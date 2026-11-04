@@ -31,14 +31,30 @@ impl ImageDecode for WebImageDecode {
 
 async fn decode_image(bytes: &[u8]) -> Result<DecodedImage, JsValue> {
     let bitmap = decode_bitmap(bytes).await?;
+    let image = read_bitmap(&bitmap);
+    bitmap.close();
+    image
+}
+
+/// Decodes an image into an `ImageBitmap`, as [`decode_bitmap`] does, and
+/// reads its texels too: a terrain DEM tile goes to the GPU and the CPU.
+pub async fn decode_bitmap_and_pixels(
+    bytes: &[u8],
+) -> Result<(web_sys::ImageBitmap, DecodedImage), JsValue> {
+    let bitmap = decode_bitmap(bytes).await?;
+    let image = read_bitmap(&bitmap)?;
+    Ok((bitmap, image))
+}
+
+/// Reads a bitmap's straight RGBA8 texels through an `OffscreenCanvas`.
+fn read_bitmap(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
     let (width, height) = (bitmap.width(), bitmap.height());
     let canvas = web_sys::OffscreenCanvas::new(width, height)?;
     let context: web_sys::OffscreenCanvasRenderingContext2d = canvas
         .get_context("2d")?
         .ok_or_else(|| JsValue::from_str("no 2d context"))?
         .dyn_into()?;
-    context.draw_image_with_image_bitmap(&bitmap, 0.0, 0.0)?;
-    bitmap.close();
+    context.draw_image_with_image_bitmap(bitmap, 0.0, 0.0)?;
     let data = context.get_image_data(0.0, 0.0, f64::from(width), f64::from(height))?;
     Ok(DecodedImage {
         width,

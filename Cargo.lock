@@ -2585,6 +2585,7 @@ dependencies = [
  "orb-runtime",
  "orb-symbol",
  "orb-text",
+ "orb-tile",
  "orb-v8",
  "wasm-bindgen",
  "wasm-bindgen-futures",

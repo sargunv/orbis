@@ -26,7 +26,7 @@ impl DemGrid {
             ));
         }
         let [r, g, b, offset] = unpack;
-        let elevations: Vec<f32> = texels
+        let elevations = texels
             .as_chunks::<4>()
             .0
             .iter()
@@ -34,6 +34,18 @@ impl DemGrid {
                 (f64::from(t[0]) * r + f64::from(t[1]) * g + f64::from(t[2]) * b - offset) as f32
             })
             .collect();
+        Self::from_elevations(dim, elevations)
+    }
+
+    /// A tile's elevations in metres, rows top to bottom, as
+    /// [`elevations`](Self::elevations) gives them (to cross threads).
+    pub fn from_elevations(dim: u32, elevations: Vec<f32>) -> Result<Self, String> {
+        if elevations.len() != (dim * dim) as usize {
+            return Err(format!(
+                "a {dim}×{dim} DEM tile has {} elevations",
+                elevations.len()
+            ));
+        }
         let (min, max) = elevations
             .iter()
             .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &e| {
@@ -45,6 +57,10 @@ impl DemGrid {
             min,
             max,
         })
+    }
+
+    pub fn elevations(&self) -> &[f32] {
+        &self.elevations
     }
 
     /// Pixels per side.

@@ -1,7 +1,7 @@
 // A job worker: fetches and lays out tiles, rasterizes glyphs and answers
 // feature queries for the render worker, replying on its port with each
-// packed tile's buffer, image tile's ImageBitmap or glyph bitmaps,
-// transferred.
+// packed tile's buffer, image tile's ImageBitmap (with a terrain DEM
+// tile's elevations) or glyph bitmaps, transferred.
 //
 // Page → worker: {module, port}. Port messages are Rust's (orb-web's
 // `jobs` module); this file only carries them.
@@ -18,7 +18,7 @@ self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAs
   port.onmessage = async ({ data }) => {
     try {
       const reply = await jobs.receive(data);
-      if (reply) port.postMessage(reply, [reply.buffer, reply.image, reply.glyphs].filter(Boolean));
+      if (reply) port.postMessage(reply, [reply.buffer, reply.image, reply.dem, reply.glyphs].filter(Boolean));
     } catch (e) {
       console.error(e);
     }

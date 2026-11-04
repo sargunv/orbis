@@ -26,7 +26,8 @@
 //! Job worker to render worker, one per load: `{id, buffer}`, the packed
 //! tile; `{id, image}`, an image source's tile as a transferred
 //! `ImageBitmap`, decoded in the job worker and copied to a texture by the
-//! render worker, so its pixels enter neither worker's wasm memory;
+//! render worker, so its pixels enter neither worker's wasm memory, with
+//! `dem`, its elevations as an f32 `ArrayBuffer`, for a terrain DEM tile;
 //! `{id, missing: true}` for a tile the source doesn't have; or
 //! `{id, error}`.
 
@@ -175,12 +176,21 @@ impl WorkerJobs {
             _ if image.is_some() => {
                 let bitmap = image.expect("checked");
                 let (width, height) = (bitmap.width(), bitmap.height());
-                Ok(TileResult {
+                let dem = match field(reply, "dem").dyn_into::<ArrayBuffer>() {
+                    Ok(buffer) => {
+                        let elevations = js_sys::Float32Array::new(&buffer).to_vec();
+                        Some(orb_tile::DemGrid::from_elevations(width, elevations).map(Arc::new))
+                    }
+                    Err(_) => None,
+                }
+                .transpose();
+                dem.map(|dem| TileResult {
                     image: Some(TileImage {
                         width,
                         height,
                         pixels: ImagePixels::Host(gpu.register_image_bitmap(bitmap)),
                     }),
+                    dem,
                     ..TileResult::default()
                 })
             }
@@ -630,6 +640,30 @@ impl JobWorker {
                         let packed = pack(&TileBuild::default());
                         let buffer = js_sys::Uint8Array::from(packed.as_slice()).buffer();
                         return reply(&[("buffer", buffer.into())]);
+                    }
+                    // A terrain DEM tile also carries its elevations.
+                    Ok((bytes, _)) if image.is_some() && request.dem_unpack.is_some() => {
+                        let unpack = request.dem_unpack.expect("checked").0;
+                        return match orb_host_web::decode_bitmap_and_pixels(&bytes).await {
+                            Ok((bitmap, pixels)) => {
+                                match orb_tile::DemGrid::from_rgba(
+                                    pixels.width,
+                                    &pixels.pixels,
+                                    unpack,
+                                ) {
+                                    Ok(grid) => {
+                                        let elevations =
+                                            js_sys::Float32Array::from(grid.elevations());
+                                        reply(&[
+                                            ("image", bitmap.into()),
+                                            ("dem", elevations.buffer().into()),
+                                        ])
+                                    }
+                                    Err(e) => reply(&[("error", e.into())]),
+                                }
+                            }
+                            Err(e) => reply(&[("error", format!("image decode: {e:?}").into())]),
+                        };
                     }
                     Ok((bytes, _)) if image.is_some() => {
                         return match orb_host_web::decode_bitmap(&bytes).await {
