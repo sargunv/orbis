@@ -64,7 +64,7 @@ Themes: **ARCH** architecture, **PORT** portability, **PERF** performance, **FLE
 | D15 | `Surface` = Plane / Sphere / Ellipsoid; OGC 2D-TMS per source; DataToWorld planner; ground-resolution camera; **style `zoom` stays Web Mercator** | #168 is GL JS's most-reacted issue; planar CRS needs "no new GLSL" (#8723) [verified] | FLEX |
 | D16 | Font-first text in jobs: ICU4X everywhere, bidi, HarfRust by glyph ID, SDF/MSDF, one atlas | RTL reversed on Native (#4513); TinySDF 27.6% of GL JS main-thread load (#8426) [verified] | FLEX |
 | D17 | Deterministic CPU collision on a placement lane; GPU compaction, fades, anchors, line-label placement | GPU collision breaks 448/414 symbol fixtures [verified] | PERF |
-| D18 | One generated C ABI with maplibre-native-ffi's conventions; bindings from the FFI's emitters | 319 functions; codegen 253/253 in 8 languages [verified] | PORT, DEVEX |
+| D18 | One annotated Rust API (a Diplomat bridge) generates the C ABI and the Kotlin/JNI and Swift bindings; Orbis owns those two emitters (decision 0018) | Diplomat's Kotlin is JNA at 369 ns/call vs JNI 4.1 ns, no Swift backend [verified, decision 0018] | PORT, DEVEX |
 | D19 | Guest embedding over raw Vulkan/Metal/D3D12 handles; Orbis records its own command buffers | wgpu 30.0.1 cannot wrap foreign command buffers [verified] | FLEX |
 | D20 | One extension model, per-runtime registries, built-ins use it, WGSL plugin shaders | maplibre-plugins writes every plugin twice [verified] | FLEX |
 | D21 | Read-only fixture mirror with own tags; real-world style suite as gate; Modern runs all, Compat its subset; web/native identity checks | 1,186 of 1,250 shared render tests identical in meaning [verified] | DEVEX |
@@ -158,7 +158,7 @@ After M12: point clouds, splats, ProjIR, expression-function and wasm plugins, a
         └──────┬──────────────┬───────────────────────────────────┬─────────────────────┘
                │ wasm-bindgen │ C ABI (generated)                  │ Rust API
         ┌──────┴──────────────┴───────────────────────────────────┴─────────────────────┐
-        │ orb-api (annotated) → orb-capi / orb-web / bindings via shared emitters       │
+        │ orb-api (Rust) → orb-capi (Diplomat bridge) → C, Kotlin/JNI, Swift; orb-web    │
         ├────────────────────────────────────────────────────────────────────────────────┤
         │ orb-runtime: Runtime / Map / Renderer / Target, commands, snapshots, events    │
         ├──────────────┬──────────────┬─────────────────┬────────────────────────────────┤
@@ -207,7 +207,8 @@ LOC are CI-enforced ceilings [inferred]; "From" is the milestone that introduces
 | `orb-host` (+`-native`, `-web`) | service traits + conformance suites; ureq/image/fontdb natively; fetch/Cache API/`createImageBitmap` on the web | 7k | M0 |
 | `orb-plugin` | per-runtime registries; native plugin ABI | 3k | M1, M12 |
 | `orb-batteries` | location layer, annotation source, PMTiles region downloader, snapshotter | 3k | M5 |
-| `orb-api`, `orb-capi`, `orb-web` | annotated API; generated C ABI; wasm-bindgen surface, roles, payload table | 6k + gen | M0 |
+| `orb-api`, `orb-capi`, `orb-web` | safe Rust embedding API (runtime, map, targets, frames, events); the annotated Diplomat bridge and its C ABI; wasm-bindgen surface, roles, payload table | 6k + gen | M0, M3 |
+| `diplomat-swift-kotlin` | project-agnostic Swift and Kotlin/JNI emitters over Diplomat's HIR (decision 0018) | 4k | M3 |
 | tools | `orb-fixtures` (`cargo xtask rt`), real-world suite, bench, `xtask`, `orb-viewer`, LSP | 8k | M0 |
 
 Total ceiling ≈ 155k lines of Rust + ~8k WGSL at M12 [inferred]; for scale, Native's core is 166,355 lines plus 259,225 of platform code and GL JS is 70,918 [verified].
@@ -757,19 +758,19 @@ the initial picking scope.
 
 ### 14.1 C ABI and bindings
 
-`orb-api` items carry annotations (execution category `command | query | snapshot | event_batch | render_driver | lifecycle | immediate`, ownership, threading), the same categories as the FFI codegen branch's `MLN_BINDING` contracts [verified]. Their schema drives the C shims, the wasm-bindgen surface and every emitter.
+`orb-capi` is a `#[diplomat::bridge]` module over `orb-api` (decision 0018). Its items carry contracts as Diplomat backend attributes under the reserved name `contract`, which code generators skip and Orbis's emitters read: an execution category per method (`command | query | snapshot | event_batch | render_driver | lifecycle | immediate`, the categories of the FFI codegen branch's `MLN_BINDING` contracts [verified]) and a thread rule per type (`owner`: one thread, the one that created it; `any`). Ownership is Diplomat's: `Box` owned, references borrowed, lifetimes tying a borrow to its owner.
 
-**Conventions from maplibre-native-ffi** (BSD-2) [verified]: generational 64-bit handles (`kind:8 | index:20 | generation:36`, after ffi#417); `noexcept` entry points with status codes and thread-local diagnostics; `size`-prefixed structs with `*_default()`; explicit borrowed vs owned buffers; event batches drained into a C-layout arena; host-supplied graphics; calendar ABI versions (`EPOCH.YYYYMM.REV`). Following ffi#760, the core owns execution, commands return generations, and queries live on `Map`. Mutation currency is style JSON, scene-document JSON and IR patches through `orb_map_apply` and a generic `orb_map_set_layer_property`, replacing ~14k lines of generated per-SDK layer code (Android 9,328 + JNI 4,381) [verified]; typed sugar is generated from `orb-schema`. Target ~180–220 C functions vs the FFI's 319 [inferred]; 0.x until M12.
+**C conventions** are Diplomat's: opaque pointers released with `*_destroy`; results as `{ union { T ok; E err; }; bool is_ok; }` with an `OrbError` status enum and a per-thread last message; UTF-8 string views in and `DiplomatWrite` buffers out; plain by-value structs. From maplibre-native-ffi (BSD-2) [verified] Orbis keeps the execution model of ffi#760 (the core owns execution, commands return generations, queries live on `Map`), event batches drained by polling, host-supplied graphics, and the mutation currency: style JSON and transactions through `OrbMap_edit` rather than generated per-property setters (Android 9,328 + JNI 4,381 lines in Native) [verified]. Generational handles and `size`-prefixed structs are not used; extensible structs are an M12 question. 0.x until M12.
 
 ```c
-orb_runtime* rt;  orb_runtime_create(&(orb_runtime_desc){ .size = sizeof(orb_runtime_desc), .mode = ORB_MODE_OWNED }, &rt);
-orb_map* map;     orb_map_create(rt, &map_desc, &map);
-orb_map_apply(map, ORB_PATCH_STYLE_URL, "https://…/style.json", &completion);
-orb_renderer* r;  orb_renderer_create(rt, map, &(orb_target_desc){ .kind = ORB_TARGET_METAL_LAYER, .handle = layer }, &r);
-// M9: orb_runtime_poll(rt, 2000); orb_renderer_render(r, &(orb_frame_desc){ .views, .color = host_tex, .depth = host_depth, .signal = sem });
+OrbRuntime_create_result rt = OrbRuntime_create();
+OrbMap* map = OrbMap_create(rt.ok);
+OrbMap_load_style_url(map, (DiplomatStringView){ url, strlen(url) });
+OrbTarget_create_metal_layer_result t = OrbTarget_create_metal_layer(rt.ok, (uintptr_t)layer, w, h, scale);
+OrbFrame f = OrbMap_render(map, t.ok);   // per display-link tick while OrbMap_needs_frame(map)
 ```
 
-**Bindings:** Rust (the crate, M0); TypeScript over `orb-web` (M0 low-level, M3 package); C/C++ (generated header, optional RAII wrapper, M3); Kotlin (FFM on JVM 22+, JNI shim on Android, cinterop on K/N, M3); Swift (module map + generated overlay, Swift 6 concurrency, M3); Dart, .NET, Go, Python, Zig experimental through the shared emitters. **One emitter set for both ABIs:** the FFI codegen branch's emitters (253/253 functions in 8 languages; hand-written binding code 134.5k → 63.7k lines) [verified] gain a Rust-annotation front end next to libclang. Diplomat is evaluated at M3 (good fit, but no execution/threading categories); UniFFI is rejected (RustBuffer serialization on hot paths, weak C/Go/Zig/.NET). Every binding runs one scenario suite.
+**Bindings:** Rust (`orb-api`, M0); TypeScript over `orb-web` (M0 low-level, M3 package); C (Diplomat's header, static library, pkg-config and CMake config, M3); Kotlin (classes over a generated JNI C shim; Android API 24+, also the desktop JVM, M3); Swift (classes over the C header through a module map, M3). The Kotlin and Swift emitters are `diplomat-swift-kotlin`: Rust, over `diplomat_core`'s HIR, no Orbis names, configured by the caller, with golden and compile-and-run tests, so they can be published or upstreamed. Diplomat's Kotlin backend (JNA: 369 ns per call vs 4.1 ns through JNI, `java.lang.ref.Cleaner` needs API 33) and its missing Swift backend are why (decision 0018). Diplomat's C++, Dart and .NET backends remain available. UniFFI is rejected (RustBuffer serialization on hot paths, weak C/Go/Zig/.NET). Every binding runs one scenario suite.
 
 ### 14.2 Graphics integration
 
@@ -891,7 +892,7 @@ Not fixed: GPU fill rate on very low-end devices (Tab A7 Lite runs Americana at 
 | MLT | `mlt-core` (MIT OR Apache-2.0) as a dependency via its columnar API (#1901); fixes upstream, not a fifth decoder |
 | GL JS (BSD-3) | fixtures mirrored read-only; globe math (#7916), subdivision, `canCombineGraphemes`, symbol leaves and placement semantics, WebGL state cache, RTT fingerprints (#7549), CSC camera (#8694), #8723's planar-CRS approach |
 | MapLibre Native (BSD-2) | WGSL seeds (4,567 lines), driver workarounds as quirks data, `plugin_api.h` discipline, `DynamicTextureAtlas` design, `TilePlacement`, unique render tests |
-| maplibre-native-ffi (BSD-2) | C ABI conventions; the ffi#760 execution model; the codegen-branch emitters, extended with a Rust front end so one emitter set serves both ABIs |
+| maplibre-native-ffi (BSD-2) | the ffi#760 execution model; execution categories; event batches; JSON as mutation currency (decision 0018 replaced its handle and status conventions and its emitters with Diplomat's) |
 | maplibre-rs | prior art: a Rust/wgpu renderer with a 401 KB br WebGPU-only wasm build, a GL JS fixture harness (#331), a globe RFC (#339); its forked Bevy render graph and wgpu churn (#311) inform §8.9 |
 | Martin | serves MLT, fonts, sprites and named TMS grids (martin#3280); a natural source of WOFF2 font subsets and KTX2 rasters |
 | deck.gl, OpenLayers, Cesium, harp.gl, Open Mobile Maps | common-space precision; raster triangulation; RTC frames and 3D Tiles; `TilingScheme × Projection`; OMM 4.0 (KMP, wasm, CRS in styles) as the closest prior art |
@@ -1087,7 +1088,7 @@ feature state and feature data draws its state when it compiles (#6).
 | **Recording into a host's command buffer; one pinned wgpu major; CPU copies for device loss** | wgpu cannot wrap foreign command buffers; wgpu, Bevy and Slint move every 3–4 months; doubles mobile memory |
 | **Keys in v8; a "ground" zoom default; a new language, v9-first or v8-exact internal model; `Intl.Segmenter` for line breaks** | §11.1; breaks every author's model of zoom; no line granularity |
 | Fork or wasm-compile Native; fork GL JS; Bevy, three.js or Cesium as a base; C++ + Dawn; Zig, TS-everywhere or KMP core | thread-affine core, 4 shader dialects, Emscripten build (2.21 MB br, COOP/COEP, JSPI, 512 MB heap); no native story; forked-graph churn (#311), weak 2D on three.js, Cesium's own styling; "5 MB extra size" (#317); missing GPU/text crates, threads or shared memory (ffi#37) [verified] |
-| vello-style paths; depth as layer order; a JS VM; sphere-only globe; Mercator-only grid; SQLite offline; UniFFI; a second emitter set; per-property codegen; a fifth MLT decoder; cesium-native-only 3D Tiles | unproven at map scale; blocks globe clipping and depth sharing; the Tangram-ES lesson; wrong for 3D Tiles and XR; no poles or national grids; PMTiles is simpler; hot-path serialization; doubles binding work; JSON setters suffice; `mlt-core` exists; no wasm |
+| vello-style paths; depth as layer order; a JS VM; sphere-only globe; Mercator-only grid; SQLite offline; UniFFI; Diplomat's JNA Kotlin; per-property codegen; a fifth MLT decoder; cesium-native-only 3D Tiles | unproven at map scale; blocks globe clipping and depth sharing; the Tangram-ES lesson; wrong for 3D Tiles and XR; no poles or national grids; PMTiles is simpler; hot-path serialization; 90–170× JNI call cost and API 33 (decision 0018); JSON setters suffice; `mlt-core` exists; no wasm |
 
 ---
 
@@ -1100,7 +1101,7 @@ feature state and feature data draws its state when it compiles (#6).
 5. WGSL composition: naga_oil-style vs WESL (M0).
 6. `subgroups` and `shader-f16` on Safari 26 and Firefox; `WorkerGlobalScope.fonts` coverage (decides cluster-raster fallbacks to main).
 7. wgpu passthrough shaders stabilizing (removes runtime naga natively).
-8. Diplomat vs the shared emitters (M3).
+8. ~~Diplomat vs the shared emitters (M3).~~ Diplomat's front end with Orbis-owned Swift and Kotlin/JNI emitters (decision 0018).
 9. ICU4X segmentation data size in wasm (M2).
 10. How fast the Android allowlist can grow, and whether Compat on Android stays worth its test cost as ANGLE-on-Vulkan spreads.
 11. Whether async GPU-projected collision boxes beat CPU projection for pitched/globe placement without visible latency.
@@ -1112,18 +1113,18 @@ feature state and feature data draws its state when it compiles (#6).
 
 ### DD1. Architecture (static)
 
-**Nodes** (group: ids): Inputs: `in_v8` v8 style, `in_scene` scene document, `in_builder` IR builder, `in_data` tiles/rasters/GeoArrow/glTF/3D Tiles. Hosts: `h_web` (package + ui role), `h_android`, `h_apple`, `h_desktop` (winit), `h_engine` (M9), `h_server` (M6). External UI: `w_wrappers` (maplibre-compose, swiftui-dsl, Flutter, Qt). Bindings: `b_supported` (Rust, C, Kotlin, Swift, TS), `b_experimental` (Dart, .NET, Go, Python, Zig). API: `api`, `capi`, `web` (roles, payload table), external `emitters`. Runtime: `rt`, `jobs`, `a11y`, `host`, `plugin`, `batteries`. Style: `schema`, `v8c`, `style`, `expr`. World: `geo`, `crs` (Surface, TMS, planner), `cam`, `inter`. Jobs (share-nothing): `src`, `tile`, `layout`, `text`, `sym`, `m3d`. GPU: `scene` (tables, arenas), `render_m` (Modern: cull/compact, indirect, bundles), `render_c` (Compat: CPU cull, direct draws, data textures), `shaders`, `hal` (caps M/M+/C), `hal_wgpu` (WebGPU, Vulkan, Metal, D3D12), `hal_gl` (WebGL2, GLES 3.0, GL 3.3). External: `c_spec`, `c_mlt`, `c_pm`, `c_glyph`, `c_fixtures`, `e_gljs`, `e_native`, `e_ffi`.
+**Nodes** (group: ids): Inputs: `in_v8` v8 style, `in_scene` scene document, `in_builder` IR builder, `in_data` tiles/rasters/GeoArrow/glTF/3D Tiles. Hosts: `h_web` (package + ui role), `h_android`, `h_apple`, `h_desktop` (winit), `h_engine` (M9), `h_server` (M6). External UI: `w_wrappers` (maplibre-compose, swiftui-dsl, Flutter, Qt). Bindings: `b_supported` (Rust, C, Kotlin, Swift, TS), `b_experimental` (C++, Dart, .NET through Diplomat's own backends). API: `api`, `capi` (Diplomat bridge), `web` (roles, payload table), `emitters` (`diplomat-swift-kotlin`), external `e_diplomat`. Runtime: `rt`, `jobs`, `a11y`, `host`, `plugin`, `batteries`. Style: `schema`, `v8c`, `style`, `expr`. World: `geo`, `crs` (Surface, TMS, planner), `cam`, `inter`. Jobs (share-nothing): `src`, `tile`, `layout`, `text`, `sym`, `m3d`. GPU: `scene` (tables, arenas), `render_m` (Modern: cull/compact, indirect, bundles), `render_c` (Compat: CPU cull, direct draws, data textures), `shaders`, `hal` (caps M/M+/C), `hal_wgpu` (WebGPU, Vulkan, Metal, D3D12), `hal_gl` (WebGL2, GLES 3.0, GL 3.3). External: `c_spec`, `c_mlt`, `c_pm`, `c_glyph`, `c_fixtures`, `e_gljs`, `e_native`, `e_ffi`, `e_diplomat`.
 
 **Edges** (from → to "label"; ⇢ dashed):
 - in_v8, in_scene → v8c "compile / merge"; in_builder → style; in_data → src "TileKey (TMS)"; schema → v8c; v8c → style "IR"; style → expr "compile once"
-- api → emitters → capi, web, b_supported, b_experimental "generated"; e_ffi ⇢ emitters "same emitters"
+- api → capi, web; capi → emitters → b_supported "generated"; capi ⇢ b_experimental "Diplomat backends"; e_diplomat ⇢ capi, emitters "macro, HIR, C backend"
 - h_web → web; h_android, h_apple, b_supported → capi; h_desktop, h_engine, h_server → api; w_wrappers ⇢ h_android, h_apple, h_web "wrapper-owned adapter"; h_engine → hal_wgpu "raw handles, own command buffers, semaphore"
 - capi, web → rt "commands → generations"; rt → jobs, style, cam, src, scene, a11y
 - inter → cam → crs → geo; crs → src "cover"; crs → layout "subdivision"; crs → scene "row params"; crs → shaders "projection WGSL"
 - src → jobs → tile → layout → text → sym "per-tile DAG (sliced on web)"; layout, m3d → scene "streams, chunks, tables (one copy on web)"; sym → scene "state diffs"; sym → a11y "snapshot"
 - scene → render_m "GPU tables"; scene → render_c "data-texture mirrors"; render_m → hal "dispatch + indirect + bundles"; render_c → hal "direct draws"; shaders → hal_wgpu "WGSL"; shaders → hal_gl "GLSL ES 3.00"; hal → hal_wgpu, hal_gl
 - plugin → src, layout, scene, crs; batteries → plugin; host → host-native, host-web; a11y → h_web, h_android, h_apple, h_desktop "platform trees (M10)"
-- c_spec → v8c, schema; c_mlt, c_pm → tile; c_glyph → text; c_fixtures ⇢ rt "read-only mirror"; e_gljs ⇢ sym, crs, render_c "ported (BSD-3)"; e_native ⇢ shaders, hal "WGSL, quirks (BSD-2)"; e_ffi ⇢ capi "ABI conventions"
+- c_spec → v8c, schema; c_mlt, c_pm → tile; c_glyph → text; c_fixtures ⇢ rt "read-only mirror"; e_gljs ⇢ sym, crs, render_c "ported (BSD-3)"; e_native ⇢ shaders, hal "WGSL, quirks (BSD-2)"; e_ffi ⇢ capi "execution model"
 
 **Styling:** scene-side blue, job-side green, GPU orange (Modern solid; Compat hatched inside a dashed box "Compat: may not constrain Modern"), API grey, wrappers outside Orbis, externals in their own band. Boundaries: language/ABI at `capi`/`web`, threads between scene and jobs, GPU at `hal`.
 

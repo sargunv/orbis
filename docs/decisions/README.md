@@ -22,3 +22,4 @@ in code and commit messages.
 - [0015](0015-style-edits.md): Style edits without reloads, and feature state
 - [0016](0016-style-playground.md): Style playground and published picking
 - [0017](0017-gpu-bytecode.md): GPU expression bytecode and the cost model
+- [0018](0018-bindings.md): Bindings: a Diplomat front end and our own Swift and Kotlin/JNI emitters
