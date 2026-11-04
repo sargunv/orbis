@@ -1,0 +1,67 @@
+# Builds the web demo and deploys it to GitHub Pages
+# (https://code.sargunv.dev/orbis/). Publishing only: tests and lints run
+# locally (`cargo xtask check`), not here.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A newer push supersedes a build or deploy still in flight.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installs rust-toolchain.toml's toolchain (with wasm32) before
+      # anything keys a cache on it or runs cargo.
+      - run: rustup toolchain install
+
+      # Registry, xtask's and the wasm-release dependencies' builds.
+      - uses: Swatinem/rust-cache@v2
+
+      # wasm-bindgen, binaryen, twiggy, node and pnpm, as locked in mise.lock.
+      - uses: jdx/mise-action@v5
+
+      - id: pnpm
+        run: echo "store=$(pnpm store path)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ${{ steps.pnpm.outputs.store }}
+          key: pnpm-${{ hashFiles('web/pnpm-lock.yaml') }}
+          restore-keys: pnpm-
+      - run: pnpm -C web install --frozen-lockfile
+
+      - run: cargo xtask pages
+
+      # The pages show the build's commit; a `-dirty` one means something
+      # above changed the checkout.
+      - run: |
+          if grep -l -- '-dirty</a>' web/dist/*.html; then
+            git status --porcelain
+            exit 1
+          fi
+
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: web/dist
+      - id: deploy
+        uses: actions/deploy-pages@v5

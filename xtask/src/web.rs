@@ -2,6 +2,9 @@
 //! `web/demo/pkg/`, reports its size by crate (twiggy) and warns when it
 //! grows past plan §14.3's numbers; then `harness.wasm`, the same module with
 //! the bench page's and the fixture driver's entry points.
+//!
+//! `cargo xtask pages`: the above, then the Vite build of the site
+//! `.github/workflows/pages.yml` deploys, into `web/dist/`.
 
 use std::io::Write;
 use std::path::Path;
@@ -79,6 +82,14 @@ pub(crate) fn build() -> Result<(), String> {
         shaper.brotli / 1024
     );
     Ok(())
+}
+
+pub(crate) fn pages() -> Result<(), String> {
+    build()?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    run(Command::new("pnpm")
+        .current_dir(root.join("web"))
+        .arg("build"))
 }
 
 struct Sizes {

@@ -6,7 +6,6 @@ mod boundaries;
 mod expression_fixtures;
 mod fixtures;
 mod labels;
-mod pages;
 mod pmtiles;
 mod unicode;
 mod web;
@@ -26,7 +25,8 @@ cargo xtask <task>
   extract      reproduce the committed Tokyo MVT/MLT PMTiles archives
   tile-parity  compare every extract tile and measure decode times
   demo-labels  add Liberty's labels, its sprite and glyph subsets to the Tokyo demo
-  pages        build the web demo and publish it to GitHub Pages
+  pages        build the Pages site (web, then Vite) into web/dist; the
+               Pages workflow runs it and deploys on every push to main
   rt [--filter <substring>] [--platform native|chrome|lavapipe|all]  render fixtures
   bench [args]  time frames, still and moving, on the default GPU (release);
                web/demo/bench.html runs the same bench in a browser
@@ -47,7 +47,7 @@ fn main() -> ExitCode {
         Some("unicode") => unicode::generate(),
         Some("demo-labels") => labels::generate(),
         Some("web") => web::build(),
-        Some("pages") => pages::publish(),
+        Some("pages") => web::pages(),
         Some("rt") => rt(&args[1..]),
         Some("bench") => {
             let mut command = vec!["run", "--release", "-p", "orb-bench", "--"];

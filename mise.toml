@@ -10,6 +10,8 @@ experimental = true
 pin = true
 minimum_release_age = "3d"
 lockfile = true
+# The Pages workflow runs on linux-x64.
+lockfile_platforms = ["macos-arm64", "linux-x64"]
 
 [tools]
 # Web build: wasm-bindgen must match the wasm-bindgen crate in Cargo.lock.

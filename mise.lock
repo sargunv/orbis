@@ -7,6 +7,12 @@ version = "133"
 backend = "aqua:WebAssembly/binaryen"
 specifiers = ["133"]
 
+[tools."aqua:WebAssembly/binaryen"."platforms.linux-x64"]
+checksum = "sha256:2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489"
+checksum_source = "mise-versions"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz"
+url_api = "https://api.github.com/repos/WebAssembly/binaryen/releases/assets/580050094"
+
 [tools."aqua:WebAssembly/binaryen"."platforms.macos-arm64"]
 checksum = "sha256:ad66da82ac13f163e424b1643f16c6dfcccc98b5966296b43e52d3cab04f84a8"
 url = "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-arm64-macos.tar.gz"
@@ -16,6 +22,12 @@ url_api = "https://api.github.com/repos/WebAssembly/binaryen/releases/assets/580
 version = "11.25.0"
 backend = "aqua:pnpm/pnpm"
 specifiers = ["11.25.0"]
+
+[tools."aqua:pnpm/pnpm"."platforms.linux-x64"]
+checksum = "sha256:11caeed8b581d460638f836f10f6ead19cbf08d774a5b8e502628b20ebf3ac43"
+url = "https://github.com/pnpm/pnpm/releases/download/v11.25.0/pnpm-linux-x64.tar.gz"
+url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/535298945"
+provenance = "github-attestations"
 
 [tools."aqua:pnpm/pnpm"."platforms.macos-arm64"]
 checksum = "sha256:cdcf7130ed2e7aa324c7c76ab597de66db0529b6b1e0db9e489bde538fdc0d04"
@@ -33,6 +45,12 @@ version = "0.2.130"
 backend = "github:wasm-bindgen/wasm-bindgen"
 specifiers = ["0.2.130"]
 
+[tools."github:wasm-bindgen/wasm-bindgen"."platforms.linux-x64"]
+checksum = "sha256:9687f3bb551b9f66f37ed32a40d7913a00f7962db653054e56857bc306c3227f"
+url = "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.130/wasm-bindgen-0.2.130-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/wasm-bindgen/wasm-bindgen/releases/assets/691140647"
+provenance = "github-attestations"
+
 [tools."github:wasm-bindgen/wasm-bindgen"."platforms.macos-arm64"]
 checksum = "sha256:b90ddb9357f584b1af897d58ad77e4cce2b48fc17e2a967bc249a87f72809444"
 url = "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.130/wasm-bindgen-0.2.130-aarch64-apple-darwin.tar.gz"
@@ -43,6 +61,10 @@ provenance = "github-attestations"
 version = "24.22.2"
 backend = "core:node"
 specifiers = ["24.22.2"]
+
+[tools.node."platforms.linux-x64"]
+checksum = "sha256:361718c444e49af2ca5a110c83ba6a8901143f23ab285ebbef0341f391f482a9"
+url = "https://nodejs.org/dist/v24.22.2/node-v24.22.2-linux-x64.tar.gz"
 
 [tools.node."platforms.macos-arm64"]
 checksum = "sha256:aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a"

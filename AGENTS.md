@@ -41,7 +41,7 @@ node, pnpm); run `pnpm -C web install` once for Playwright.
 | `pnpm -C web snapshot out.png --page=playground.html` | headless playground screenshot |
 | `cargo xtask fixtures` | fetch and verify the pinned GL JS fixture mirror into `fixtures/gl-js` (gitignored; no work when it matches; `fixtures/README.md`) |
 | `cargo xtask rt [--filter <substring>] [--platform native\|chrome\|lavapipe\|all]` | run the GL JS render fixtures (fetches the mirror first); report in `docs/scratch/rt` |
-| `cargo xtask pages` | build with Vite into `web/dist` and publish to the public Pages site; waits for GitHub's deployment |
+| `cargo xtask pages` | `cargo xtask web`, then the Vite build into `web/dist`: the site `.github/workflows/pages.yml` deploys on every push to `main` |
 | `pnpm -C web dev` | Vite dev server at `/orbis/` (run `cargo xtask web` first) |
 | `cargo xtask bench` | GPU/CPU frame timings, still and with the camera moving (decision 0002); `--experiment paint` for decision 0017 |
 | `pnpm -C web bench [--precise] [--android[=serial]]` | the same bench in headless Chromium, or in an adb-connected Android device's Chrome (`web/demo/bench.html`; keep its screen on) |
@@ -63,7 +63,8 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
   clippy natively and for wasm32, tests, and the plan §5.3 boundary rules).
   Run the heavier checks (fixture runs, lavapipe, size budgets, other
   platforms) occasionally and at milestone ends, not on every push.
-- **Commit and push straight to `main`.** No PRs, no CI.
+- **Commit and push straight to `main`.** No PRs, no CI; the one workflow
+  only publishes the demo.
 - **GL JS is a reference, not a pixel target.** What matters is that the map
   behaves well and styles render recognizably and correctly. The pinned GL JS
   and its fixtures are the best guide to that, but pixel-perfect parity isn't
@@ -106,7 +107,6 @@ know about, in `docs/decisions/NNNN-<slug>.md` and mention them in the
 milestone summary.
 
 Milestone descriptions carry exit criteria. Treat them as goals and report
-against them when a milestone wraps up. Publish the demo to Pages
-(https://code.sargunv.dev/orbis/, `gh-pages` branch) when there's something
-significant to see. The Pages site is public; never publish anything sensitive
-to it.
+against them when a milestone wraps up. Every push to `main` publishes the
+demo to Pages (https://code.sargunv.dev/orbis/) through the Pages workflow. The
+site is public; never publish anything sensitive to it.

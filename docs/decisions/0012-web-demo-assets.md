@@ -23,12 +23,21 @@ content therefore changes the archive URL, style hash and importing JS.
 The committed styles remain usable by native hosts. Development serves
 the original styles and archives through Vite; production uses the hashes.
 
-Publishing overlays `dist/` onto `gh-pages` and retains old assets. Cached
-HTML and already open tabs can request dependencies after a new publish;
-deleting the previous build would turn a cache mismatch into a 404. Existing
-fixed-name assets are frozen during the migration for old HTML. Retention
-is deliberate and currently has no automatic pruning: archive/wasm changes
-grow the published branch, while unchanged content reuses the same names.
+Publishing deploys `dist/` as the whole site from a GitHub Actions workflow
+on every push to `main` (`.github/workflows/pages.yml`, running `cargo xtask
+pages`); previous builds' assets are not retained. An earlier version
+overlaid each build onto a `gh-pages` branch and kept every old asset, so
+cached HTML and open tabs could still fetch theirs; that branch is gone.
+Retention is dropped because hashing already bounds what can go missing. A
+deploy removes only assets whose content changed. Startup assets (JS, wasm,
+workers) are fetched with their HTML and expire with it, so cached HTML is
+paired with its own cached code. What an open tab fetches later (archive
+ranges, the lazy shaper and word data) changes
+rarely and keeps its URL when unchanged. When one of those did change, the
+open tab's next fetch of it 404s and a reload recovers. That is acceptable
+for a demo, and avoids the alternatives: carrying old assets in an Actions
+cache makes each deploy depend on cache state, and the branch grew without
+bound.
 
 The snapshot and bench scripts build and serve `dist/` with Range support.
 The fixture driver serves the same generated bindings directly because it
