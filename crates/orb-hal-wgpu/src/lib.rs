@@ -37,6 +37,10 @@ pub struct WgpuGpu {
     #[cfg(not(target_arch = "wasm32"))]
     pipeline_cache: Option<wgpu::PipelineCache>,
     caps: Caps,
+    /// Texture usages the platform defines. Browsers before
+    /// `GPUTextureUsage.TRANSIENT_ATTACHMENT` (Samsung Internet 30,
+    /// Chromium 143) reject it, so that hint is dropped there.
+    texture_usages: wgpu::TextureUsages,
     buffers: Slots<wgpu::Buffer>,
     textures: Slots<Texture>,
     shader_modules: Slots<wgpu::ShaderModule>,
@@ -100,6 +104,23 @@ struct Texture {
     levels: Option<std::ops::Range<u32>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn platform_texture_usages() -> wgpu::TextureUsages {
+    wgpu::TextureUsages::all()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn platform_texture_usages() -> wgpu::TextureUsages {
+    let defined = js_sys::Reflect::get(&js_sys::global(), &"GPUTextureUsage".into())
+        .and_then(|usage| js_sys::Reflect::has(&usage, &"TRANSIENT_ATTACHMENT".into()))
+        .unwrap_or(false);
+    if defined {
+        wgpu::TextureUsages::all()
+    } else {
+        wgpu::TextureUsages::all() - wgpu::TextureUsages::TRANSIENT_ATTACHMENT
+    }
+}
+
 impl WgpuGpu {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let limits = device.limits();
@@ -134,6 +155,7 @@ impl WgpuGpu {
             #[cfg(not(target_arch = "wasm32"))]
             pipeline_cache: None,
             caps,
+            texture_usages: platform_texture_usages(),
             buffers: Slots::default(),
             textures: Slots::default(),
             shader_modules: Slots::default(),
@@ -463,7 +485,7 @@ impl Gpu for WgpuGpu {
             sample_count: desc.sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: convert::texture_format(desc.format),
-            usage: convert::texture_usages(desc.usage),
+            usage: convert::texture_usages(desc.usage) & self.texture_usages,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

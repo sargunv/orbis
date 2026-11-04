@@ -49,7 +49,8 @@ bitflags::bitflags! {
         const TEXTURE_BINDING = 1 << 2;
         const STORAGE_BINDING = 1 << 3;
         const RENDER_ATTACHMENT = 1 << 4;
-        /// Attachment contents stay within one render pass (memoryless on TBDR).
+        /// Attachment contents stay within one render pass (memoryless on
+        /// TBDR). A hint: dropped where the platform lacks it.
         const TRANSIENT_ATTACHMENT = 1 << 5;
     }
 
