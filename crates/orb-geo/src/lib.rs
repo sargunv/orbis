@@ -7,6 +7,13 @@
 pub mod wgs84 {
     /// Semi-major axis in metres.
     pub const SEMI_MAJOR_M: f64 = 6_378_137.0;
+    /// Flattening. GRS80's differs in the eleventh significant digit, a
+    /// tenth of a millimetre at the pole, so it is the same ellipsoid here.
+    pub const FLATTENING: f64 = 1.0 / 298.257_223_563;
+    /// First eccentricity squared.
+    pub const E2: f64 = FLATTENING * (2.0 - FLATTENING);
+    /// Mean radius of the IUGG sphere, which v8 feature heights use.
+    pub const MEAN_RADIUS_M: f64 = 6_371_008.8;
 }
 
 /// A geodetic position in degrees on the WGS84 datum.

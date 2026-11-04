@@ -2006,6 +2006,7 @@ version = "0.0.0"
 dependencies = [
  "glam",
  "orb-geo",
+ "serde_json",
 ]
 
 [[package]]

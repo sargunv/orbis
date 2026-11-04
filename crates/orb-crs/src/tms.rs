@@ -2,10 +2,10 @@ use std::fmt;
 
 use glam::{DAffine2, DMat2, DVec2};
 
-use crate::{Projection, WorldRect};
+use crate::{Descriptor, Projection, WorldRect};
 
-/// A tile in a tile matrix set: zoom, column (left to right) and row (top to
-/// bottom).
+/// A tile in a tile matrix set: zoom (the matrix identifier), column (left
+/// to right) and row (top to bottom).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TileIndex {
     pub z: u8,
@@ -35,80 +35,362 @@ impl TileIndex {
     }
 }
 
-/// A tiling of a projection's plane (OGC 2D TileMatrixSet). Every matrix is a
-/// quad subdivision of the zoom-0 matrix.
+/// A tiling of a projection's plane (OGC 2D TileMatrixSet) whose matrices
+/// form a quadtree: each matrix halves the previous one's cell size and
+/// doubles its columns and rows from the same corner. Matrix identifiers
+/// are consecutive zooms from [`min_zoom`](Self::min_zoom); the first
+/// matrix may have several columns and rows (`WorldCRS84Quad` is 2×1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TileMatrixSet {
-    id: &'static str,
+    id: String,
     projection: Projection,
-    /// World position of the top-left corner of the zoom-0 matrix.
+    /// World position of the top-left corner of every matrix.
     origin: DVec2,
-    /// Width and height of one zoom-0 tile in world units.
-    z0_span: f64,
-    /// Columns and rows of the zoom-0 matrix.
-    z0_size: (u32, u32),
+    /// Width and height of one tile of the first matrix in world units.
+    span: f64,
+    /// Columns and rows of the first matrix.
+    size: (u32, u32),
+    min_zoom: u8,
     max_zoom: u8,
+    /// Pixels per tile side.
+    tile_px: u32,
+    /// Rows are counted from the bottom in the set's own indices (OGC
+    /// `cornerOfOrigin: bottomLeft`).
+    bottom_origin: bool,
 }
 
-/// An identifier that names no known tile matrix set.
+/// One matrix of a tile matrix set definition, as an OGC document writes
+/// it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TileMatrix {
+    pub id: String,
+    pub scale_denominator: f64,
+    /// World units per pixel; derived from the scale denominator if absent.
+    pub cell_size: Option<f64>,
+    /// `pointOfOrigin` (`topLeftCorner` in TMS 1.0), in the order of
+    /// [`TileMatrixSetDefinition::northing_first`].
+    pub point_of_origin: [f64; 2],
+    pub bottom_left: bool,
+    pub tile_width: u32,
+    pub tile_height: u32,
+    pub matrix_width: u32,
+    pub matrix_height: u32,
+    /// Rows whose tiles coalesce several columns (`variableMatrixWidths`).
+    pub variable_widths: bool,
+}
+
+/// A tile matrix set as an OGC 2D-TMS document defines it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TileMatrixSetDefinition {
+    pub id: String,
+    /// The CRS URI or `EPSG:n` code.
+    pub crs: String,
+    /// Whether points list northing first (`orderedAxes`); the CRS's own
+    /// axis order if absent.
+    pub northing_first: Option<bool>,
+    pub matrices: Vec<TileMatrix>,
+}
+
+/// A tile matrix set Orbis can't use: unknown, malformed or not a quadtree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnknownTileMatrixSet(pub String);
 
 impl fmt::Display for UnknownTileMatrixSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unknown tile matrix set `{}`", self.0)
+        f.write_str(&self.0)
     }
 }
 
 impl std::error::Error for UnknownTileMatrixSet {}
 
+/// OGC's standardized rendering pixel size, in metres.
+const PIXEL_M: f64 = 0.000_28;
+
+/// A registered set: CRS, top-left origin (easting, northing), first
+/// matrix's cell size, columns and rows, zoom range and tile pixels.
+struct Builtin {
+    crs: &'static str,
+    origin: [f64; 2],
+    cell: f64,
+    size: (u32, u32),
+    zooms: (u8, u8),
+    tile_px: u32,
+}
+
+/// OGC's UTM grids (`UTM31WGS84Quad`) share one layout across zones.
+const UTM_QUAD: Builtin = Builtin {
+    crs: "",
+    origin: [-9_501_965.729_312_76, 20_003_931.458_625_5],
+    cell: 78_140.357_260_255_9,
+    size: (1, 2),
+    zooms: (1, 24),
+    tile_px: 256,
+};
+
+fn builtin(id: &str) -> Option<Builtin> {
+    let ups = Builtin {
+        crs: "",
+        origin: [-14_440_759.350_252, 18_440_759.350_252],
+        cell: 128_443.432_4,
+        size: (1, 1),
+        zooms: (0, 24),
+        tile_px: 256,
+    };
+    Some(match id {
+        "WorldCRS84Quad" => Builtin {
+            crs: "OGC:CRS84",
+            origin: [-180.0, 90.0],
+            cell: 0.703_125,
+            size: (2, 1),
+            zooms: (0, 23),
+            tile_px: 256,
+        },
+        // LINZ's NZTM2000 Map Tile Grid V2.
+        "NZTM2000Quad" => Builtin {
+            crs: "EPSG:2193",
+            origin: [-3_260_586.728_4, 10_438_190.165_2],
+            cell: 139_770_566.007_179 * PIXEL_M,
+            size: (1, 1),
+            zooms: (0, 21),
+            tile_px: 256,
+        },
+        "EuropeanETRS89_LAEAQuad" => Builtin {
+            crs: "EPSG:3035",
+            origin: [2_000_000.0, 5_500_000.0],
+            cell: 17_578.125,
+            size: (1, 1),
+            zooms: (0, 15),
+            tile_px: 256,
+        },
+        "UPSArcticWGS84Quad" => Builtin {
+            crs: "EPSG:5041",
+            ..ups
+        },
+        "UPSAntarcticWGS84Quad" => Builtin {
+            crs: "EPSG:5042",
+            ..ups
+        },
+        _ => return None,
+    })
+}
+
 impl TileMatrixSet {
     /// A registered tile matrix set by its OGC identifier.
     pub fn by_id(id: &str) -> Result<Self, UnknownTileMatrixSet> {
-        match id {
-            "WebMercatorQuad" => {
-                let projection =
-                    Projection::from_descriptor("web-mercator").expect("built-in projection");
-                let bounds = projection.world_bounds();
-                Ok(Self {
-                    id: "WebMercatorQuad",
-                    projection,
-                    origin: DVec2::new(bounds.min.x, bounds.max.y),
-                    z0_span: bounds.size().x,
-                    z0_size: (1, 1),
-                    max_zoom: 30,
-                })
+        if id == "WebMercatorQuad" {
+            let projection =
+                Projection::from_descriptor("web-mercator").expect("built-in projection");
+            let bounds = projection.world_bounds();
+            return Ok(Self {
+                id: id.to_string(),
+                projection,
+                origin: DVec2::new(bounds.min.x, bounds.max.y),
+                span: bounds.size().x,
+                size: (1, 1),
+                min_zoom: 0,
+                max_zoom: 30,
+                tile_px: 256,
+                bottom_origin: false,
+            });
+        }
+        let utm = id
+            .strip_prefix("UTM")
+            .and_then(|rest| rest.strip_suffix("WGS84Quad"))
+            .and_then(|zone| zone.parse::<u32>().ok())
+            .filter(|zone| (1..=60).contains(zone));
+        let (crs, b) = match (utm, builtin(id)) {
+            (Some(zone), _) => (format!("EPSG:{}", 32600 + zone), UTM_QUAD),
+            (None, Some(b)) => (b.crs.to_string(), b),
+            (None, None) => {
+                return Err(UnknownTileMatrixSet(format!(
+                    "unknown tile matrix set `{id}`"
+                )));
             }
-            _ => Err(UnknownTileMatrixSet(id.to_string())),
+        };
+        let projection = Projection::new(&Descriptor::named(&crs)).expect("built-in projection");
+        Ok(Self::quad(
+            id,
+            projection,
+            DVec2::from(b.origin),
+            b.cell * f64::from(b.tile_px),
+            b.size,
+            b.zooms,
+            b.tile_px,
+            false,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn quad(
+        id: &str,
+        projection: Projection,
+        origin: DVec2,
+        span: f64,
+        size: (u32, u32),
+        (min_zoom, max_zoom): (u8, u8),
+        tile_px: u32,
+        bottom_origin: bool,
+    ) -> Self {
+        let extent = WorldRect {
+            min: DVec2::new(origin.x, origin.y - span * f64::from(size.1)),
+            max: DVec2::new(origin.x + span * f64::from(size.0), origin.y),
+        };
+        Self {
+            id: id.to_string(),
+            projection: projection.with_extent(extent),
+            origin,
+            span,
+            size,
+            min_zoom,
+            max_zoom,
+            tile_px,
+            bottom_origin,
         }
     }
 
-    pub fn id(&self) -> &str {
-        self.id
+    /// A tile matrix set from its OGC definition. Its matrices must form a
+    /// quadtree with consecutive numeric identifiers; variable-width rows
+    /// and other layouts are reported as errors.
+    pub fn from_definition(def: &TileMatrixSetDefinition) -> Result<Self, UnknownTileMatrixSet> {
+        let fail = |message: String| Err(UnknownTileMatrixSet(format!("{}: {message}", def.id)));
+        let projection = match Projection::from_crs_uri(&def.crs) {
+            Ok(p) => p,
+            Err(e) => return fail(e.to_string()),
+        };
+        let Some(first) = def.matrices.first() else {
+            return fail("no tile matrices".into());
+        };
+        let northing_first = def.northing_first.unwrap_or(projection.northing_first());
+        let unit_m = projection.metres_per_unit();
+        let cell = |m: &TileMatrix| {
+            m.cell_size
+                .unwrap_or(m.scale_denominator * PIXEL_M / unit_m)
+        };
+        let origin = |m: &TileMatrix| {
+            let [a, b] = m.point_of_origin;
+            if northing_first {
+                DVec2::new(b, a)
+            } else {
+                DVec2::new(a, b)
+            }
+        };
+        let Ok(min_zoom) = first.id.parse::<u8>() else {
+            return fail(format!("matrix `{}` is not a zoom number", first.id));
+        };
+        if first.tile_width != first.tile_height || first.tile_width == 0 {
+            return fail("tiles are not square".into());
+        }
+        let (cell0, origin0) = (cell(first), origin(first));
+        for (k, m) in def.matrices.iter().enumerate() {
+            let zoom = u32::from(min_zoom) + k as u32;
+            if m.id.parse::<u32>().ok() != Some(zoom) {
+                return fail(format!("matrix `{}` should be zoom {zoom}", m.id));
+            }
+            if m.variable_widths {
+                return fail("variable matrix widths (coalesced rows) are not supported".into());
+            }
+            let scale = f64::from(1u32 << k);
+            let expected = cell0 / scale;
+            let corner = |m: &TileMatrix| {
+                let o = origin(m);
+                if m.bottom_left {
+                    DVec2::new(
+                        o.x,
+                        o.y + cell(m) * f64::from(m.tile_height * m.matrix_height),
+                    )
+                } else {
+                    o
+                }
+            };
+            let tolerance = 1e-6 * cell0 * f64::from(first.tile_width);
+            if (cell(m) - expected).abs() > 1e-6 * expected
+                || (corner(m) - corner(first)).abs().max_element() > tolerance
+                || m.tile_width != first.tile_width
+                || m.tile_height != first.tile_height
+                || m.matrix_width != first.matrix_width << k
+                || m.matrix_height != first.matrix_height << k
+                || m.bottom_left != first.bottom_left
+            {
+                return fail(format!(
+                    "matrix `{}` doesn't halve the one before: not a quadtree",
+                    m.id
+                ));
+            }
+        }
+        let span = cell0 * f64::from(first.tile_width);
+        let top_left = if first.bottom_left {
+            DVec2::new(origin0.x, origin0.y + span * f64::from(first.matrix_height))
+        } else {
+            origin0
+        };
+        let max_zoom = (u32::from(min_zoom) + def.matrices.len() as u32 - 1).min(30) as u8;
+        Ok(Self::quad(
+            &def.id,
+            projection,
+            top_left,
+            span,
+            (first.matrix_width, first.matrix_height),
+            (min_zoom, max_zoom),
+            first.tile_width,
+            first.bottom_left,
+        ))
     }
 
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The set's projection, whose world bounds are the set's extent.
     pub fn projection(&self) -> &Projection {
         &self.projection
+    }
+
+    /// The first matrix's zoom.
+    pub fn min_zoom(&self) -> u8 {
+        self.min_zoom
     }
 
     pub fn max_zoom(&self) -> u8 {
         self.max_zoom
     }
 
+    /// Pixels per tile side the set is defined for.
+    pub fn tile_px(&self) -> u32 {
+        self.tile_px
+    }
+
     /// World width and height of one tile at zoom `z`.
     pub fn tile_span(&self, z: u8) -> f64 {
-        self.z0_span / f64::from(1u32 << z)
+        self.span / 2f64.powi(i32::from(z) - i32::from(self.min_zoom))
     }
 
     /// Columns and rows of the matrix at zoom `z`.
     pub fn matrix_size(&self, z: u8) -> (u32, u32) {
-        (self.z0_size.0 << z, self.z0_size.1 << z)
+        let shift = z.saturating_sub(self.min_zoom);
+        (self.size.0 << shift, self.size.1 << shift)
     }
 
-    /// The tiles of the zoom-0 matrix.
+    /// Whether a tile lies inside its matrix.
+    pub fn contains(&self, tile: TileIndex) -> bool {
+        let (cols, rows) = self.matrix_size(tile.z);
+        tile.z >= self.min_zoom && tile.col < cols && tile.row < rows
+    }
+
+    /// The row a tile has in the set's own indices: counted from the
+    /// bottom for a bottom-left corner of origin.
+    pub fn native_row(&self, tile: TileIndex) -> u32 {
+        if self.bottom_origin {
+            self.matrix_size(tile.z).1 - 1 - tile.row
+        } else {
+            tile.row
+        }
+    }
+
+    /// The tiles of the first matrix.
     pub fn roots(&self) -> impl Iterator<Item = TileIndex> + '_ {
-        let (cols, rows) = self.z0_size;
-        (0..rows).flat_map(move |row| (0..cols).map(move |col| TileIndex::new(0, col, row)))
+        let (cols, rows) = self.size;
+        let z = self.min_zoom;
+        (0..rows).flat_map(move |row| (0..cols).map(move |col| TileIndex::new(z, col, row)))
     }
 
     /// The world rectangle a tile covers.
@@ -131,6 +413,25 @@ impl TileMatrixSet {
             DMat2::from_diagonal(DVec2::new(scale, -scale)),
             DVec2::new(bounds.min.x, bounds.max.y),
         )
+    }
+
+    /// The tiles at zoom `z` that a world rectangle touches.
+    pub fn tiles_in(&self, rect: WorldRect, z: u8) -> impl Iterator<Item = TileIndex> + use<> {
+        let span = self.tile_span(z);
+        let (cols, rows) = self.matrix_size(z);
+        let col = |x: f64| {
+            ((x - self.origin.x) / span)
+                .floor()
+                .clamp(0.0, f64::from(cols) - 1.0) as u32
+        };
+        let row = |y: f64| {
+            ((self.origin.y - y) / span)
+                .floor()
+                .clamp(0.0, f64::from(rows) - 1.0) as u32
+        };
+        let (c0, c1) = (col(rect.min.x), col(rect.max.x));
+        let (r0, r1) = (row(rect.max.y), row(rect.min.y));
+        (r0..=r1).flat_map(move |r| (c0..=c1).map(move |c| TileIndex::new(z, c, r)))
     }
 }
 
@@ -172,5 +473,111 @@ mod tests {
         let t = TileIndex::new(4, 7, 9);
         assert!(t.children().iter().all(|c| c.parent() == Some(t)));
         assert_eq!(TileIndex::new(0, 0, 0).parent(), None);
+    }
+
+    fn matrix(id: u32, sd: f64, origin: [f64; 2], size: (u32, u32)) -> TileMatrix {
+        TileMatrix {
+            id: id.to_string(),
+            scale_denominator: sd,
+            cell_size: None,
+            point_of_origin: origin,
+            bottom_left: false,
+            tile_width: 256,
+            tile_height: 256,
+            matrix_width: size.0,
+            matrix_height: size.1,
+            variable_widths: false,
+        }
+    }
+
+    #[test]
+    fn registry_traps() {
+        // WorldCRS84Quad is two tiles wide at zoom 0, in degrees.
+        let crs84 = TileMatrixSet::by_id("WorldCRS84Quad").unwrap();
+        assert_eq!(crs84.matrix_size(0), (2, 1));
+        assert_eq!(
+            crs84.tile_bounds(TileIndex::new(0, 1, 0)).max,
+            DVec2::new(180.0, 90.0)
+        );
+        // EuropeanETRS89_LAEAQuad lists northing first; its origin is the
+        // north-west corner at easting 2,000 km, northing 5,500 km.
+        let laea = TileMatrixSet::by_id("EuropeanETRS89_LAEAQuad").unwrap();
+        let root = laea.tile_bounds(TileIndex::new(0, 0, 0));
+        assert_eq!((root.min.x, root.max.y), (2_000_000.0, 5_500_000.0));
+        // UTM grids start at zoom 1 with one column and two rows.
+        let utm = TileMatrixSet::by_id("UTM31WGS84Quad").unwrap();
+        assert_eq!((utm.min_zoom(), utm.matrix_size(1)), (1, (1, 2)));
+        assert_eq!(utm.roots().count(), 2);
+        assert!(TileMatrixSet::by_id("UTM61WGS84Quad").is_err());
+        // NZTM2000Quad's 10,018 km square spans 256 pixels at zoom 0.
+        let nztm = TileMatrixSet::by_id("NZTM2000Quad").unwrap();
+        assert!((nztm.tile_span(0) - 10_018_754.171_394_6).abs() < 1e-3);
+        assert!(nztm.projection().world_bounds().size().x > 1e7);
+    }
+
+    #[test]
+    fn definitions_follow_axis_order_and_corner() {
+        // NZTM2000Quad as LINZ writes it: northing first, from EPSG:2193.
+        let nztm = TileMatrixSetDefinition {
+            id: "NZTM2000Quad".into(),
+            crs: "https://www.opengis.net/def/crs/EPSG/0/2193".into(),
+            northing_first: None,
+            matrices: (0..22)
+                .map(|z| {
+                    matrix(
+                        z,
+                        139_770_566.007_179 / f64::from(1u32 << z),
+                        [10_438_190.165_2, -3_260_586.728_4],
+                        (1 << z, 1 << z),
+                    )
+                })
+                .collect(),
+        };
+        let parsed = TileMatrixSet::from_definition(&nztm).unwrap();
+        let builtin = TileMatrixSet::by_id("NZTM2000Quad").unwrap();
+        assert_eq!(
+            parsed.tile_bounds(TileIndex::new(3, 2, 5)),
+            builtin.tile_bounds(TileIndex::new(3, 2, 5))
+        );
+        assert!((parsed.tile_span(4) - builtin.tile_span(4)).abs() < 1e-6);
+
+        // A bottom-left corner counts rows from the bottom.
+        let mut flipped = nztm.clone();
+        for m in &mut flipped.matrices {
+            m.bottom_left = true;
+            m.point_of_origin = [10_438_190.165_2 - 10_018_754.171_394_6, -3_260_586.728_4];
+        }
+        let flipped = TileMatrixSet::from_definition(&flipped).unwrap();
+        let tile = TileIndex::new(2, 1, 0);
+        assert_eq!(flipped.native_row(tile), 3);
+        assert!(
+            (flipped.tile_bounds(tile).max - builtin.tile_bounds(tile).max)
+                .abs()
+                .max_element()
+                < 1e-6
+        );
+
+        // Coalesced rows and scales that don't halve are refused.
+        let mut gnosis = nztm.clone();
+        gnosis.matrices[1].variable_widths = true;
+        assert!(TileMatrixSet::from_definition(&gnosis).is_err());
+        let mut lcc = nztm.clone();
+        lcc.matrices[2].scale_denominator *= 1.1;
+        assert!(TileMatrixSet::from_definition(&lcc).is_err());
+        let mut unknown = nztm;
+        unknown.crs = "EPSG:28992".into();
+        assert!(TileMatrixSet::from_definition(&unknown).is_err());
+    }
+
+    #[test]
+    fn tiles_in_a_rect() {
+        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let rect = tms.tile_bounds(TileIndex::new(2, 1, 1));
+        let inner = WorldRect {
+            min: rect.min + 1.0,
+            max: rect.max - 1.0,
+        };
+        let tiles: Vec<_> = tms.tiles_in(inner, 3).collect();
+        assert_eq!(tiles, TileIndex::new(2, 1, 1).children());
     }
 }

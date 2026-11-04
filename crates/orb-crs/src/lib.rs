@@ -9,11 +9,13 @@
 #![forbid(unsafe_code)]
 
 mod cover;
+mod epsg;
+mod family;
 mod projection;
 mod tms;
 
 pub use cover::{CoverDecision, CoveredTile};
-pub use projection::{Projection, UnknownProjection};
+pub use projection::{Descriptor, Projection, UnknownProjection};
 pub use tms::{TileIndex, TileMatrixSet, UnknownTileMatrixSet};
 
 use glam::DVec2;
