@@ -13,10 +13,12 @@ permissions:
   pages: write
   id-token: write
 
-# A newer push supersedes a build or deploy still in flight.
+# One run at a time; a newer push replaces the one waiting, so the latest
+# commit deploys next. In-flight runs finish: pushes often come faster than
+# a build, and cancelling would starve deploys and never save the cargo cache.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
