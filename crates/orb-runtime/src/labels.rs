@@ -190,10 +190,10 @@ impl BucketMeshes {
     }
 }
 
-/// Where symbol buckets' tiles are: each bucket's tile matrix set, and the
-/// surface they draw on.
-pub(crate) struct BucketPlanes<'a> {
-    pub(crate) tms: HashMap<u64, &'a orb_crs::TileMatrixSet>,
+/// Where symbol buckets' tiles are: each bucket's tile units
+/// ([`orb_symbol::EXTENT`]) to world, and the surface they draw on.
+pub(crate) struct BucketPlanes {
+    pub(crate) to_world: HashMap<u64, glam::DAffine2>,
     pub(crate) projection: orb_crs::Projection,
     /// The surface's wrap period, 0 if it doesn't wrap.
     pub(crate) period: f64,
@@ -202,8 +202,11 @@ pub(crate) struct BucketPlanes<'a> {
 /// A drawn tile's bucket of a symbol layer, for this frame's placement.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SymbolTile {
-    /// The source's index in the plan.
-    pub(crate) source: usize,
+    /// Tile units ([`orb_symbol::EXTENT`]) to world in the primary copy:
+    /// the tile's bounds, or a warped tile's linear approximation at its
+    /// centre (placement collides labels in it; the GPU draws them through
+    /// the warp).
+    pub(crate) to_world: glam::DAffine2,
     /// The layer's key.
     pub(crate) layer: u32,
     pub(crate) bucket: u64,
@@ -1050,7 +1053,6 @@ impl Labels {
         plan: &StylePlan,
         tiles: &[SymbolTile],
         view: &orb_camera::View,
-        tms: &[Option<&orb_crs::TileMatrixSet>],
         period: f64,
         camera: &orb_camera::CameraState,
         extrusion_scale: f64,
@@ -1076,16 +1078,15 @@ impl Labels {
                     .into_iter()
                     .filter_map(|t| {
                         let b = self.buckets.get(&t.bucket)?;
-                        let tms = tms.get(t.source).copied().flatten()?;
-                        let bounds = tms.tile_bounds(t.tile);
+                        let a = t.to_world;
                         let origin = glam::DVec2::new(
-                            bounds.min.x + f64::from(t.wrap) * period,
-                            bounds.max.y,
+                            a.translation.x + f64::from(t.wrap) * period,
+                            a.translation.y,
                         ) - camera_world;
-                        let s = tms.tile_span(t.tile.z) / orb_symbol::EXTENT;
+                        let (x, y) = (a.matrix2.x_axis, a.matrix2.y_axis);
                         let tile = glam::DMat4::from_cols(
-                            glam::DVec4::new(s, 0.0, 0.0, 0.0),
-                            glam::DVec4::new(0.0, -s, 0.0, 0.0),
+                            glam::DVec4::new(x.x, x.y, 0.0, 0.0),
+                            glam::DVec4::new(y.x, y.y, 0.0, 0.0),
                             glam::DVec4::new(0.0, 0.0, extrusion_scale, 0.0),
                             glam::DVec4::new(origin.x, origin.y, 0.0, 1.0),
                         );
@@ -1146,7 +1147,7 @@ impl Labels {
         &self,
         plan: &StylePlan,
         view: &orb_camera::View,
-        planes: &BucketPlanes<'_>,
+        planes: &BucketPlanes,
     ) -> Vec<crate::query::ScreenHit> {
         use orb_symbol::state;
         let Some(frame) = self.placed.as_deref() else {
@@ -1175,11 +1176,9 @@ impl Labels {
                 let Some(states) = meshes.written.get(&id.wrap) else {
                     continue;
                 };
-                let Some(tms) = planes.tms.get(&tile.bucket) else {
+                let Some(&to_world) = planes.to_world.get(&tile.bucket) else {
                     continue;
                 };
-                let index = orb_crs::TileIndex::new(id.z, id.x, id.y);
-                let to_world = tms.data_to_world(index, orb_symbol::EXTENT as u32);
                 let shift = glam::DVec2::new(f64::from(id.wrap) * period, 0.0);
                 for instance in &meshes.tables.instances {
                     let text = instance.text.iter().any(|&p| shown(&states.text, p));
@@ -1238,7 +1237,7 @@ impl Labels {
                     };
                     let key = crate::query::FeatureKey {
                         source: node.source,
-                        tile: index,
+                        tile: orb_crs::TileIndex::new(id.z, id.x, id.y),
                         feature: instance.feature,
                     };
                     hits.push(crate::query::ScreenHit::label(hit, node.layer, key, bounds));
@@ -1257,7 +1256,7 @@ impl Labels {
         plan: &StylePlan,
         center: [f64; 2],
         zoom: f64,
-        planes: &BucketPlanes<'_>,
+        planes: &BucketPlanes,
     ) -> Option<orb_a11y::Snapshot> {
         use orb_symbol::state;
         let frame = self.placed.as_deref()?;
@@ -1284,14 +1283,10 @@ impl Labels {
                 let Some(meshes) = self.buckets.get(&tile.bucket) else {
                     continue;
                 };
-                let Some(tms) = planes.tms.get(&tile.bucket) else {
+                let Some(&to_world) = planes.to_world.get(&tile.bucket) else {
                     continue;
                 };
                 let id = tile.view.id;
-                let to_world = tms.data_to_world(
-                    orb_crs::TileIndex::new(id.z, id.x, id.y),
-                    orb_symbol::EXTENT as u32,
-                );
                 let Some(states) = meshes.written.get(&id.wrap) else {
                     continue;
                 };

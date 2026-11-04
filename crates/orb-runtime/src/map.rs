@@ -169,6 +169,8 @@ pub(crate) struct ResidentTile {
     pub(crate) parts: Vec<(u32, TileId)>,
     pub(crate) meshes: Vec<Resident>,
     pub(crate) image: Option<ResidentImage>,
+    /// A vector tile drawn through a warp: its series.
+    pub(crate) series: Option<Arc<orb_crs::Series>>,
     /// Its symbol layers' buckets; their meshes are among `meshes`.
     pub(crate) symbols: Vec<crate::labels::ResidentSymbols>,
 }
@@ -209,14 +211,27 @@ pub(crate) enum SourceState {
 pub(crate) struct WarpState {
     warp: orb_crs::Warp,
     footprints: HashMap<TileIndex, Option<orb_crs::Footprint>>,
+    /// Vector tiles' quadratic patches.
+    series: HashMap<TileIndex, Option<Arc<orb_crs::Series>>>,
 }
 
 impl WarpState {
-    /// Footprints kept before the cache starts over.
-    const FOOTPRINTS: usize = 4096;
+    /// Tiles whose footprints and series are kept before the caches start
+    /// over.
+    const CACHED: usize = 4096;
+    /// A quarter pixel at 512 pixels per tile side.
+    const TOLERANCE: f64 = 1.0 / 2048.0;
+
+    fn new(warp: orb_crs::Warp) -> Self {
+        Self {
+            warp,
+            footprints: HashMap::new(),
+            series: HashMap::new(),
+        }
+    }
 
     fn footprint(&mut self, tile: TileIndex) -> Option<orb_crs::Footprint> {
-        if self.footprints.len() >= Self::FOOTPRINTS {
+        if self.footprints.len() >= Self::CACHED {
             self.footprints.clear();
         }
         let warp = &self.warp;
@@ -224,6 +239,19 @@ impl WarpState {
             .footprints
             .entry(tile)
             .or_insert_with(|| warp.footprint(tile))
+    }
+
+    /// A vector tile's patches, or `None` if it can't be drawn through
+    /// them (it crosses a wrapping plane's seam, or bends too much).
+    pub(crate) fn series(&mut self, tile: TileIndex) -> Option<Arc<orb_crs::Series>> {
+        if self.series.len() >= Self::CACHED {
+            self.series.clear();
+        }
+        let warp = &self.warp;
+        self.series
+            .entry(tile)
+            .or_insert_with(|| warp.series(tile, Self::TOLERANCE).map(Arc::new))
+            .clone()
     }
 }
 
@@ -920,17 +948,13 @@ impl Map {
     }
 
     /// The tile matrix sets of this frame's symbol buckets.
-    fn bucket_planes<'a>(&'a self, style: &'a LoadedStyle) -> crate::labels::BucketPlanes<'a> {
-        let tms = style
-            .symbol_tiles
-            .iter()
-            .filter_map(|t| match style.sources.get(t.source)? {
-                SourceState::Ready { endpoint, .. } => Some((t.bucket, &endpoint.tms)),
-                _ => None,
-            })
-            .collect();
+    fn bucket_planes(&self, style: &LoadedStyle) -> crate::labels::BucketPlanes {
         crate::labels::BucketPlanes {
-            tms,
+            to_world: style
+                .symbol_tiles
+                .iter()
+                .map(|t| (t.bucket, t.to_world))
+                .collect(),
             projection: *self.surface.projection(),
             period: self.surface.period(),
         }
@@ -1288,16 +1312,23 @@ impl Map {
         rows_only: bool,
         edit: Option<u64>,
     ) {
-        let style = self.style.as_ref().expect("jobs need a style");
-        let SourceState::Ready { endpoint, .. } = &style.sources[index] else {
+        let style = self.style.as_mut().expect("jobs need a style");
+        let vector = style.worker.plan().image_kind(index).is_none();
+        let SourceState::Ready { endpoint, warp, .. } = &mut style.sources[index] else {
             return;
         };
+        let subdivision = warp
+            .as_mut()
+            .filter(|_| vector)
+            .and_then(|warp| warp.series(tile))
+            .map(|series| series.grid());
         let key = style.worker.plan().sources[index].key;
         let request = TileRequest {
             style: style.id,
             source: key,
             tile,
             zoom: endpoint.tms.style_zoom(tile),
+            subdivision,
             data_zoom: tile.z.min(endpoint.maxzoom),
             location: endpoint.location(endpoint.data_tile(tile)),
             encoding: endpoint.encoding,
@@ -1365,19 +1396,10 @@ impl Map {
         );
         // Glyph rasterization above is the jobs'; placement starts here.
         let started = self.services.clock.now();
-        let tms: Vec<Option<&TileMatrixSet>> = style
-            .sources
-            .iter()
-            .map(|source| match source {
-                SourceState::Ready { endpoint, .. } => Some(&endpoint.tms),
-                _ => None,
-            })
-            .collect();
         let mut frame = self.labels.frame(
             style.worker.plan(),
             &style.symbol_tiles,
             view,
-            &tms,
             self.surface.period(),
             &self.camera,
             extrusion_scale,
@@ -1487,8 +1509,11 @@ impl Map {
         };
         let update = pyramid.update(&cover);
         let mut requests = Vec::new();
+        let vector = plan.image_kind(index).is_none();
         for &tile in &update.request {
-            if !endpoint.contains(tile) {
+            // Vector tiles on another plane need a series to draw through.
+            let unwarped = vector && warp.as_mut().is_some_and(|w| w.series(tile).is_none());
+            if !endpoint.contains(tile) || unwarped {
                 pyramid.insert_empty(tile);
                 continue;
             }
@@ -1548,8 +1573,12 @@ impl Map {
                 wraps.sort_unstable();
                 wraps.dedup();
                 for wrap in wraps {
+                    let to_world = match &resident.series {
+                        Some(series) => series.linear(orb_symbol::EXTENT),
+                        None => tms.data_to_world(tile, orb_symbol::EXTENT as u32),
+                    };
                     style.symbol_tiles.push(crate::labels::SymbolTile {
-                        source: index,
+                        to_world,
                         layer: symbols.layer,
                         bucket: symbols.bucket,
                         tile,
@@ -1562,7 +1591,10 @@ impl Map {
                     hits: &mut self.hits,
                     plan: style.worker.plan(),
                     view,
-                    tms,
+                    place: match &resident.series {
+                        Some(series) => crate::query::TilePlace::Warped(series),
+                        None => crate::query::TilePlace::Affine(tms),
+                    },
                     period,
                     camera: &self.camera,
                 }
@@ -1574,6 +1606,7 @@ impl Map {
                 .and_then(|image| image.warped.as_ref())
                 .map(|warped| warped.frame);
             let ground = terrain.map(|t| t.ground(tile));
+            let series = resident.series.clone();
             for &(extent, scene_tile) in &resident.parts {
                 let at = Placement {
                     extent,
@@ -1582,6 +1615,7 @@ impl Map {
                     zoom: self.camera.zoom(),
                     frame,
                     world_per_px: view.world_per_px(),
+                    series: series.as_deref(),
                 };
                 let map_rows = |draw: &Draw| -> Vec<TileRow> {
                     placements(tms, draw, at)
@@ -1765,6 +1799,7 @@ impl Map {
                 source: terrain.key,
                 tile,
                 zoom: endpoint.tms.style_zoom(tile),
+                subdivision: None,
                 data_zoom: tile.z,
                 location: endpoint.location(tile),
                 encoding: endpoint.encoding,
@@ -2020,6 +2055,7 @@ impl Map {
             zoom,
             frame: None,
             world_per_px: view.world_per_px(),
+            series: None,
         };
         let mut rows: Vec<TileRow> = cover
             .iter()
@@ -2405,10 +2441,10 @@ impl Map {
             }
         };
         drop(atlas);
-        let SourceState::Ready { pyramid, .. } = &mut style.sources[source] else {
+        let SourceState::Ready { pyramid, warp, .. } = &mut style.sources[source] else {
             unreachable!("checked above");
         };
-        let Some(resident) = resident else {
+        let Some(mut resident) = resident else {
             // Even the tiles in view don't leave room: draw what stands in.
             self.warnings.push(format!(
                 "tile {tile:?} doesn't fit in scene memory with the tiles in view"
@@ -2416,6 +2452,26 @@ impl Map {
             pyramid.insert_missing(tile);
             return;
         };
+        // A tile on another plane draws through its series' patches.
+        if let Some(series) = warp.as_mut().and_then(|warp| warp.series(tile)) {
+            let patches: Vec<f32> = series
+                .patches
+                .iter()
+                .flat_map(|p| p.points.iter().flat_map(|v| [v.x as f32, v.y as f32]))
+                .collect();
+            for &(_, part) in &resident.parts {
+                if renderer
+                    .scene()
+                    .set_tile_warp(gpu, part, series.cells, &patches)
+                    .is_err()
+                {
+                    self.warnings.push(format!(
+                        "tile {tile:?}: out of property memory for its warp"
+                    ));
+                }
+            }
+            resident.series = Some(series);
+        }
         self.counts.meshes_uploaded += build.meshes.len() as u32;
         record_maxima(&mut style.nodes, &build.meshes, &mut style.painted);
         if let Some(unwanted) = pyramid.insert(tile, resident) {
@@ -2534,10 +2590,7 @@ fn ready_source(
         Ok((endpoint, plan)) => SourceState::Ready {
             warp: match plan {
                 Plan::Affine => None,
-                Plan::Warp(warp) => Some(Box::new(WarpState {
-                    warp: *warp,
-                    footprints: HashMap::new(),
-                })),
+                Plan::Warp(warp) => Some(Box::new(WarpState::new(*warp))),
             },
             pyramid: TilePyramid::new(
                 endpoint.minzoom,
@@ -2801,7 +2854,7 @@ fn pixel_alignment(view: &View, projection: &orb_crs::Projection, bearing: f64) 
 /// the regions it stands in for.
 /// Where a tile's placement rows put it.
 #[derive(Clone, Copy, Debug)]
-struct Placement {
+struct Placement<'a> {
     /// Data units per tile side.
     extent: u32,
     camera_world: DVec2,
@@ -2814,12 +2867,15 @@ struct Placement {
     frame: Option<orb_crs::WorldRect>,
     /// World units per logical pixel at the camera target.
     world_per_px: f64,
+    /// A vector tile drawn through a warp's patches, relative to its
+    /// anchor.
+    series: Option<&'a orb_crs::Series>,
 }
 
 fn placements<'a>(
     tms: &TileMatrixSet,
     draw: &'a Draw,
-    at: Placement,
+    at: Placement<'_>,
 ) -> impl Iterator<Item = TileRow> + use<'a> {
     let Placement {
         extent,
@@ -2828,11 +2884,15 @@ fn placements<'a>(
         zoom,
         frame,
         world_per_px,
+        series,
     } = at;
     let world_per_px = world_per_px as f32;
     let bounds = frame.unwrap_or_else(|| tms.tile_bounds(draw.tile));
-    let origin =
-        DVec2::new(bounds.min.x + f64::from(draw.wrap) * period, bounds.max.y) - camera_world;
+    let wrap = DVec2::new(f64::from(draw.wrap) * period, 0.0);
+    let origin = match series {
+        Some(series) => series.anchor + wrap - camera_world,
+        None => DVec2::new(bounds.min.x, bounds.max.y) + wrap - camera_world,
+    };
     let tile = draw.tile;
     let rect = move |region: TileIndex| {
         let depth = region.z - tile.z;
@@ -2851,7 +2911,11 @@ fn placements<'a>(
         (x * pixel_size) as i64 as u32,
         (f64::from(tile.row) * pixel_size) as i64 as u32,
     ];
-    let span = frame.map_or(tms.tile_span(tile.z), |frame| frame.size().x);
+    let span = match (series, frame) {
+        (Some(series), _) => series.scale,
+        (None, Some(frame)) => frame.size().x,
+        (None, None) => tms.tile_span(tile.z),
+    };
     let scale = (span / f64::from(extent)) as f32;
     draw.regions.chunks(4).map(move |regions| {
         let mut clips = [ClipRect::EMPTY; 4];
@@ -3341,6 +3405,7 @@ mod tests {
             zoom: 3.0,
             frame: None,
             world_per_px: 1.0,
+            series: None,
         };
         let rows: Vec<_> = placements(&tms, &draw, at).collect();
         assert_eq!(rows.len(), 2);

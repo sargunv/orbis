@@ -182,6 +182,8 @@ impl crate::Map {
             source: style.worker.plan().sources[index].key,
             tile,
             zoom: endpoint.tms.style_zoom(tile),
+            // Features are read as the tile has them.
+            subdivision: None,
             data_zoom: tile.z.min(endpoint.maxzoom),
             location: endpoint.location(endpoint.data_tile(tile)),
             encoding: endpoint.encoding,

@@ -454,7 +454,7 @@ impl TileMatrixSet {
         let parallel = 2.0
             * std::f64::consts::PI
             * orb_geo::wgs84::SEMI_MAJOR_M
-            * center.lat.to_radians().cos();
+            * orb_geo::style_parallel(center.lat);
         let zoom = (parallel / ground_span).log2();
         // Snap the round-off of planes whose zooms are whole.
         if (zoom - zoom.round()).abs() < 1e-9 {

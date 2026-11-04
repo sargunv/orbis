@@ -40,6 +40,127 @@ pub struct WarpMesh {
     pub triangles: Vec<[u32; 3]>,
 }
 
+/// A tile on the target plane as quadratic patches over an even grid.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Series {
+    /// The tile centre's position on the target plane; patches are
+    /// relative to it.
+    pub anchor: DVec2,
+    /// Patches per side.
+    pub cells: u32,
+    /// Row by row, top to bottom, relative to `anchor`.
+    pub patches: Vec<Patch>,
+    /// The longest straight segment, as a fraction of the tile's side, whose
+    /// image stays within the tolerance of its curve: the tile's geometry
+    /// is subdivided to it.
+    pub max_segment: f64,
+    /// Target world units per tile side at the centre.
+    pub scale: f64,
+}
+
+impl Series {
+    /// The patch holding a tile position (fractions) and the position's
+    /// parameters in it, each in `[-1, 1]`.
+    pub fn locate(&self, uv: DVec2) -> (&Patch, DVec2) {
+        let cells = f64::from(self.cells);
+        let cell = (uv * cells)
+            .floor()
+            .clamp(DVec2::ZERO, DVec2::splat(cells - 1.0));
+        let patch = &self.patches[(cell.y as u32 * self.cells + cell.x as u32) as usize];
+        (patch, (uv * cells - cell) * 2.0 - 1.0)
+    }
+
+    /// Cells per side of the grid to cut the tile's geometry along: the
+    /// fewest, a power of two, whose cells' diagonals are within
+    /// `max_segment` (at most 256).
+    pub fn grid(&self) -> u32 {
+        let cells = (std::f64::consts::SQRT_2 / self.max_segment)
+            .log2()
+            .ceil()
+            .max(0.0);
+        1u32 << (cells as u32).min(8)
+    }
+
+    /// A tile position (fractions) on the target plane.
+    pub fn position(&self, uv: DVec2) -> DVec2 {
+        let (patch, st) = self.locate(uv);
+        self.anchor + patch.eval(st)
+    }
+
+    /// The tile's linear approximation at its centre, from data units
+    /// (`extent` per side, y down) to the target plane.
+    pub fn linear(&self, extent: f64) -> glam::DAffine2 {
+        let (patch, st) = self.locate(DVec2::splat(0.5));
+        // Parameters run over a patch's side: 2 · cells per tile side.
+        let [ds, dt] = patch
+            .derivatives(st)
+            .map(|d| d * 2.0 * f64::from(self.cells));
+        let center = self.anchor + patch.eval(st);
+        glam::DAffine2::from_mat2_translation(
+            glam::DMat2::from_cols(ds / extent, dt / extent),
+            center - (ds + dt) * 0.5,
+        )
+    }
+}
+
+/// A biquadratic patch: positions at its 3×3 nodes (row by row, top to
+/// bottom; corners, edge midpoints and centre), interpolated by quadratic
+/// Lagrange polynomials in parameters `s` (right) and `t` (down), each in
+/// `[-1, 1]`. Neighbouring patches share their edges' three nodes, so they
+/// meet exactly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Patch {
+    pub points: [DVec2; 9],
+}
+
+/// Quadratic Lagrange basis at nodes -1, 0, 1, and its derivative.
+fn basis(s: f64) -> ([f64; 3], [f64; 3]) {
+    (
+        [s * (s - 1.0) / 2.0, 1.0 - s * s, s * (s + 1.0) / 2.0],
+        [s - 0.5, -2.0 * s, s + 0.5],
+    )
+}
+
+impl Patch {
+    pub fn eval(&self, st: DVec2) -> DVec2 {
+        let ((bs, _), (bt, _)) = (basis(st.x), basis(st.y));
+        let mut p = DVec2::ZERO;
+        for (k, point) in self.points.iter().enumerate() {
+            p += *point * bs[k % 3] * bt[k / 3];
+        }
+        p
+    }
+
+    /// The derivatives along `s` and `t` at `st`.
+    pub fn derivatives(&self, st: DVec2) -> [DVec2; 2] {
+        let ((bs, ds), (bt, dt)) = (basis(st.x), basis(st.y));
+        let (mut ps, mut pt) = (DVec2::ZERO, DVec2::ZERO);
+        for (k, point) in self.points.iter().enumerate() {
+            ps += *point * ds[k % 3] * bt[k / 3];
+            pt += *point * bs[k % 3] * dt[k / 3];
+        }
+        [ps, pt]
+    }
+
+    /// The largest second difference across its rows and columns: its
+    /// second derivative's bound in its parameters.
+    fn curvature(&self) -> f64 {
+        let p = &self.points;
+        (0..3)
+            .flat_map(|i| {
+                [
+                    p[3 * i] - 2.0 * p[3 * i + 1] + p[3 * i + 2],
+                    p[i] - 2.0 * p[3 + i] + p[6 + i],
+                ]
+            })
+            .map(|d| d.length())
+            .fold(0.0, f64::max)
+    }
+}
+
+/// The most patches per side of a series.
+const MAX_SERIES_CELLS: u32 = 16;
+
 /// Samples per side when finding a footprint.
 const FOOTPRINT_STEPS: u32 = 8;
 /// The finest mesh grid, cells per side, and the steps along tile edges.
@@ -59,7 +180,7 @@ impl Warp {
 
     /// A position in a tile (fractions, y down) on the target plane, or
     /// `None` where either projection doesn't reach.
-    fn map(&self, tile: TileIndex, uv: DVec2) -> Option<DVec2> {
+    pub fn map(&self, tile: TileIndex, uv: DVec2) -> Option<DVec2> {
         let b = self.from.tile_bounds(tile);
         let world = DVec2::new(b.min.x + uv.x * b.size().x, b.max.y - uv.y * b.size().y);
         let g = self.from.projection().inverse(world);
@@ -148,6 +269,81 @@ impl Warp {
         );
         let area = dx.perp_dot(dy).abs() / (2.0 * h * 2.0 * h);
         (area > 0.0 && area.is_finite()).then(|| area.sqrt())
+    }
+
+    /// The tile's position on the target plane as quadratic patches (the
+    /// `GpuPerVertex` plan's precision series, plan §9.3): the fewest of
+    /// 1, 4, … 256 equal patches whose quadratics stay within `tolerance` of
+    /// the tile's side of the true position, or `None` where the tile
+    /// leaves the target plane's domain, crosses a wrapping plane's seam or
+    /// needs more.
+    pub fn series(&self, tile: TileIndex, tolerance: f64) -> Option<Series> {
+        let footprint = self.footprint(tile)?;
+        if self.spans_wrap(tile) {
+            return None;
+        }
+        let anchor = self.map(tile, DVec2::splat(0.5))?;
+        let limit = tolerance * footprint.span;
+        let mut cells = 1u32;
+        loop {
+            let side = 1.0 / f64::from(cells);
+            let mut patches = Vec::with_capacity((cells * cells) as usize);
+            let mut error: f64 = 0.0;
+            for j in 0..cells {
+                for i in 0..cells {
+                    let center = (DVec2::new(f64::from(i), f64::from(j)) + 0.5) * side;
+                    let patch = self.patch(tile, center, side, anchor)?;
+                    // Its worst point among a 6×6 sample between its nodes.
+                    for b in 0..6 {
+                        for a in 0..6 {
+                            let st = DVec2::new(f64::from(a), f64::from(b)) / 2.5 - 1.0;
+                            let exact = self.map(tile, center + st * side / 2.0)?;
+                            let exact = DVec2::new(self.unwrap(exact.x, anchor.x), exact.y);
+                            error = error.max((anchor + patch.eval(st)).distance(exact));
+                        }
+                    }
+                    patches.push(patch);
+                }
+            }
+            if error <= limit {
+                // Second derivatives in tile fractions: a patch's in its
+                // `[-1, 1]` parameters, times (2 / side)².
+                let curvature = patches
+                    .iter()
+                    .map(|p| p.curvature() * 4.0 / (side * side))
+                    .fold(0.0, f64::max);
+                return Some(Series {
+                    anchor,
+                    cells,
+                    patches,
+                    // A chord of `len` bows by `curvature·len²/8`; keep that
+                    // within the limit.
+                    max_segment: if curvature > 0.0 {
+                        (8.0 * limit / curvature).sqrt().min(1.0)
+                    } else {
+                        1.0
+                    },
+                    scale: footprint.span,
+                });
+            }
+            if cells >= MAX_SERIES_CELLS {
+                return None;
+            }
+            cells *= 2;
+        }
+    }
+
+    /// The biquadratic patch over the square of `side` about `center`
+    /// (tile fractions) through the exact positions at its corners, edge
+    /// midpoints and centre, relative to `anchor`.
+    fn patch(&self, tile: TileIndex, center: DVec2, side: f64, anchor: DVec2) -> Option<Patch> {
+        let mut points = [DVec2::ZERO; 9];
+        for (k, point) in points.iter_mut().enumerate() {
+            let offset = DVec2::new((k % 3) as f64 - 1.0, (k / 3) as f64 - 1.0) * side / 2.0;
+            let p = self.map(tile, center + offset)?;
+            *point = DVec2::new(self.unwrap(p.x, anchor.x), p.y) - anchor;
+        }
+        Some(Patch { points })
     }
 
     /// The tile's mesh: a grid fine enough that its linear interpolation
@@ -460,6 +656,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn series_stay_within_the_tolerance() {
+        let warp = Warp::new(mercator(), *polar().projection());
+        for tile in [
+            TileIndex::new(2, 1, 0),
+            TileIndex::new(4, 7, 3),
+            TileIndex::new(10, 600, 300),
+        ] {
+            let series = warp.series(tile, 1.0 / 2048.0).unwrap();
+            let limit = series.scale / 2048.0;
+            let side = 1.0 / f64::from(series.cells);
+            for k in 0..=20 {
+                for l in 0..=20 {
+                    let uv = DVec2::new(f64::from(k), f64::from(l)) / 20.0;
+                    let p = series.position(uv);
+                    assert!(
+                        p.distance(warp.map(tile, uv).unwrap()) <= limit * 1.5,
+                        "{tile:?} {uv}"
+                    );
+                }
+            }
+            // Patches share their edges: both sides of a seam agree.
+            for k in 1..series.cells {
+                let u = f64::from(k) * side;
+                for v in [0.1, 0.5, 0.9] {
+                    let (left, right) = (DVec2::new(u - 1e-12, v), DVec2::new(u + 1e-12, v));
+                    let gap = series.position(left).distance(series.position(right));
+                    assert!(
+                        gap < 1e-3,
+                        "{tile:?} cells {} gap {gap} at {u},{v}",
+                        series.cells
+                    );
+                }
+            }
+            assert!(series.max_segment > 0.0 && series.max_segment <= 1.0);
+        }
+        // A deep tile needs one patch.
+        assert_eq!(
+            warp.series(TileIndex::new(12, 2400, 1200), 1.0 / 2048.0)
+                .unwrap()
+                .cells,
+            1
+        );
     }
 
     #[test]

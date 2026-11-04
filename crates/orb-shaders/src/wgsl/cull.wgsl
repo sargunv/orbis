@@ -98,8 +98,11 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
         return false;
     }
     // A drape placement exists only for a slot to draw: its clip
-    // rectangles are the slot's part of the tile.
-    if draped {
+    // rectangles are the slot's part of the tile. A warped tile's chunks
+    // pass too: its patches aren't bound here (the stage's storage buffers
+    // are all in use), and cover already kept only tiles whose footprints
+    // meet the view.
+    if draped || tile.warp_cells != 0u {
         return true;
     }
     let after_clip = select(0.0, margin, point_instances);
@@ -108,10 +111,10 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
     // On terrain, content stands between the lowest and highest ground
     // under the placement; extrusions rise above it.
     let ground = unpack_i16x2(tile.terrain_range) * TERRAIN_RANGE_UNIT * frame.extrusion_scale;
-    let c0 = frame.view_proj * vec4<f32>(tile_to_world(tile, lo), ground.x, 1.0);
-    let c1 = frame.view_proj * vec4<f32>(tile_to_world(tile, vec2<f32>(hi.x, lo.y)), ground.x, 1.0);
-    let c2 = frame.view_proj * vec4<f32>(tile_to_world(tile, vec2<f32>(lo.x, hi.y)), ground.x, 1.0);
-    let c3 = frame.view_proj * vec4<f32>(tile_to_world(tile, hi), ground.x, 1.0);
+    let c0 = frame.view_proj * vec4<f32>(tile_affine(tile, lo), ground.x, 1.0);
+    let c1 = frame.view_proj * vec4<f32>(tile_affine(tile, vec2<f32>(hi.x, lo.y)), ground.x, 1.0);
+    let c2 = frame.view_proj * vec4<f32>(tile_affine(tile, vec2<f32>(lo.x, hi.y)), ground.x, 1.0);
+    let c3 = frame.view_proj * vec4<f32>(tile_affine(tile, hi), ground.x, 1.0);
     let raised = frame.view_proj * vec4<f32>(0.0, 0.0, ground.y - ground.x + elevation * frame.extrusion_scale, 0.0);
     let m = 2.0 * margin_px / frame.viewport;
     let outside = outside_planes(c0, m) & outside_planes(c1, m) & outside_planes(c2, m)

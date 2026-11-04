@@ -36,8 +36,8 @@ struct Frame {
 };
 
 // One placement of a tile's data: data units → camera-relative world is
-// `origin + vec2(x, -y) * scale`. The tile draws only inside its clip
-// rectangles.
+// `origin + vec2(x, -y) * scale`, or `origin` plus the tile's warp (see
+// project.wgsl). The tile draws only inside its clip rectangles.
 struct Tile {
     origin: vec2<f32>,
     scale: f32,
@@ -60,6 +60,10 @@ struct Tile {
     // Lowest and highest terrain elevation under it as two i16s, in
     // units of TERRAIN_RANGE_UNIT metres.
     terrain_range: u32,
+    // A warped tile's quadratic patches: first word in `props` and patches
+    // per side; 0 patches for an affine tile.
+    warp_base: u32,
+    warp_cells: u32,
 };
 
 const TERRAIN_RANGE_UNIT: f32 = 4.0;
@@ -123,12 +127,14 @@ const HIDDEN_INDEX: u32 = 0xfffffffeu;
 // Every chunk is drawn as this many vertices; the excess is degenerate.
 const CHUNK_VERTICES: u32 = 768u;
 
-fn unpack_i16x2(w: u32) -> vec2<f32> {
-    return vec2<f32>(vec2<i32>(bitcast<i32>(w << 16u) >> 16u, bitcast<i32>(w) >> 16u));
+// An affine tile's data units → camera-relative world (project.wgsl
+// handles warped tiles too).
+fn tile_affine(tile: Tile, p: vec2<f32>) -> vec2<f32> {
+    return tile.origin + vec2<f32>(p.x, -p.y) * tile.scale;
 }
 
-fn tile_to_world(tile: Tile, p: vec2<f32>) -> vec2<f32> {
-    return tile.origin + vec2<f32>(p.x, -p.y) * tile.scale;
+fn unpack_i16x2(w: u32) -> vec2<f32> {
+    return vec2<f32>(vec2<i32>(bitcast<i32>(w << 16u) >> 16u, bitcast<i32>(w) >> 16u));
 }
 
 // A clip position outside the view volume, for padding vertices.

@@ -187,6 +187,7 @@ pub(crate) fn upload(
     let mut resident = ResidentTile {
         parts: vec![(IMAGE_EXTENT, scene_tile)],
         meshes: Vec::new(),
+        series: None,
         image: Some(ResidentImage {
             page,
             layer,

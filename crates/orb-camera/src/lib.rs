@@ -90,7 +90,7 @@ fn resolution_at_zoom(target: Geodetic, zoom: f64) -> f64 {
 /// Style zoom's scale at zoom 0: the length of the parallel through `target`
 /// divided by one tile's width.
 fn equator_circumference_px_per_m(target: Geodetic) -> f64 {
-    2.0 * PI * wgs84::SEMI_MAJOR_M * target.lat.to_radians().cos() / STYLE_ZOOM_TILE_PX
+    2.0 * PI * wgs84::SEMI_MAJOR_M * orb_geo::style_parallel(target.lat) / STYLE_ZOOM_TILE_PX
 }
 
 /// A viewport in logical pixels.

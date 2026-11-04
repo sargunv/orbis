@@ -23,7 +23,9 @@ pub(crate) struct Surface {
 pub(crate) enum Plan {
     /// The source tiles the surface's own plane: one affine row per tile.
     Affine,
-    /// Raster tiles on another plane: an error-bounded mesh per tile.
+    /// Tiles on another plane: rasters as an error-bounded mesh per tile
+    /// (`RasterWarp`), vectors subdivided and drawn through quadratic
+    /// patches (`GpuPerVertex`).
     Warp(Box<orb_crs::Warp>),
 }
 
@@ -114,18 +116,14 @@ impl Surface {
             return Ok(Plan::Affine);
         }
         match image {
-            Some(ImageKind::Raster) => Ok(Plan::Warp(Box::new(orb_crs::Warp::new(
-                tms.clone(),
-                self.projection,
-            )))),
             Some(ImageKind::Dem) => Err(format!(
                 "tile matrix set `{}` is not on the surface's plane; DEM sources can't be warped yet",
                 tms.id()
             )),
-            None => Err(format!(
-                "tile matrix set `{}` is not on the surface's plane; vector sources can't be reprojected yet",
-                tms.id()
-            )),
+            _ => Ok(Plan::Warp(Box::new(orb_crs::Warp::new(
+                tms.clone(),
+                self.projection,
+            )))),
         }
     }
 }
@@ -212,7 +210,8 @@ mod tests {
         assert_eq!(&projection_from_json(&json).unwrap(), surface.projection());
         assert_eq!(surface.plan(&nztm, None), Ok(Plan::Affine));
         let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
-        assert!(surface.plan(&mercator, None).is_err());
+        assert!(matches!(surface.plan(&mercator, None), Ok(Plan::Warp(_))));
+        assert!(surface.plan(&mercator, Some(ImageKind::Dem)).is_err());
         assert!(matches!(
             surface.plan(&mercator, Some(ImageKind::Raster)),
             Ok(Plan::Warp(_))

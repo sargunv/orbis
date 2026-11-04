@@ -127,7 +127,9 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
 }
 
 /// One placement of a tile's data: its transform into camera-relative world
-/// space, `origin + (x, -y) · scale`, and where it may draw.
+/// space, `origin + (x, -y) · scale` (or, for a tile with a warp, `origin`
+/// plus the warp's quadratic patches; `scale` is then its local scale at the
+/// centre), and where it may draw.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TileRow {
     pub origin: [f32; 2],
@@ -208,7 +210,10 @@ impl ClipRect {
     }
 }
 
-const TILE_WORDS: usize = 20;
+const TILE_WORDS: usize = 22;
+/// Words per biquadratic patch of a tile's warp: nine nodes' positions
+/// (`project.wgsl`).
+pub const WARP_PATCH_WORDS: usize = 18;
 const CHUNK_WORDS: usize = 8;
 const CANDIDATE_WORDS: usize = 5;
 const VISIBLE_WORDS: usize = 2;
@@ -390,6 +395,8 @@ pub struct OutOfSpace;
 struct TileEntry {
     meshes: Vec<MeshId>,
     placements: Vec<Placement>,
+    /// Its warp's patches in the property buffer, and patches per side.
+    warp: Option<(Range<u32>, u32)>,
 }
 
 /// A tile placement: its row in the placement table, and the row's values.
@@ -780,11 +787,39 @@ impl Scene {
         for placement in entry.placements {
             self.placement_slots.free(placement.slot);
         }
+        if let Some((range, _)) = entry.warp {
+            self.prop_arena.free(range);
+        }
         for mesh in entry.meshes {
             self.drop_mesh(mesh);
         }
         self.candidates_dirty = true;
         self.revision += 1;
+    }
+
+    /// Draws a tile through a warp onto the surface (plan §9.2's
+    /// `GpuPerVertex`): `cells`² biquadratic patches over the tile, row by
+    /// row, [`WARP_PATCH_WORDS`] f32 each (`project.wgsl`). Its placements
+    /// take it from their next write.
+    pub fn set_tile_warp(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        tile: TileId,
+        cells: u32,
+        patches: &[f32],
+    ) -> Result<(), OutOfSpace> {
+        debug_assert_eq!(patches.len(), (cells * cells) as usize * WARP_PATCH_WORDS);
+        let range = self
+            .prop_arena
+            .alloc(patches.len() as u32)
+            .ok_or(OutOfSpace)?;
+        let words: Vec<u32> = patches.iter().map(|v| v.to_bits()).collect();
+        Words::Core(&words).write(gpu, self.buffers.props, range.start);
+        let entry = self.tiles[tile.0 as usize].as_mut().expect("unknown tile");
+        if let Some((old, _)) = entry.warp.replace((range, cells)) {
+            self.prop_arena.free(old);
+        }
+        Ok(())
     }
 
     /// Sets where a tile draws this frame: one row per placement, none to
@@ -815,6 +850,10 @@ impl Scene {
             self.revision += 1;
         }
         self.placements_written += rows.len() as u32;
+        let (warp_base, warp_cells) = entry
+            .warp
+            .as_ref()
+            .map_or((0, 0), |(range, cells)| (range.start, *cells));
         for (placement, row) in entry.placements.iter_mut().zip(rows) {
             placement.row = *row;
             let slot = placement.slot;
@@ -832,6 +871,8 @@ impl Scene {
             words[16] = row.world_per_px.to_bits();
             words[17..19].copy_from_slice(&row.dem.words());
             words[19] = pack_range(row.terrain_range);
+            words[20] = warp_base;
+            words[21] = warp_cells;
             for (i, clip) in row.clips.iter().enumerate() {
                 words[4 + i * 2] = pack(clip.min);
                 words[5 + i * 2] = pack(clip.max);

@@ -35,15 +35,6 @@
      "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/Coastlines/default/250m/{tileMatrix}/{tileRow}/{tileCol}.png"
     ]
    },
-   "labels": {
-    "type": "raster",
-    "tileSize": 512,
-    "maxzoom": 5,
-    "attribution": "<a href=\"https://earthdata.nasa.gov/gibs\">NASA EOSDIS GIBS</a>",
-    "tiles": [
-     "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/Reference_Labels/default/250m/{tileMatrix}/{tileRow}/{tileCol}.png"
-    ]
-   },
    "graticule": {
     "type": "geojson",
     "data": {
@@ -1239,6 +1230,11 @@
       }
      ]
     }
+   },
+   "openmaptiles": {
+    "type": "vector",
+    "url": "https://tiles.openfreemap.org/planet",
+    "attribution": "<a href=\"https://openfreemap.org\">OpenFreeMap</a> <a href=\"https://www.openmaptiles.org/\">© OpenMapTiles</a> Data from <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>"
    }
   },
   "layers": [
@@ -1289,12 +1285,125 @@
     }
    },
    {
-    "id": "labels",
-    "type": "raster",
-    "source": "labels",
-    "minzoom": 3
+    "id": "boundary",
+    "type": "line",
+    "source": "openmaptiles",
+    "source-layer": "boundary",
+    "filter": [
+     "<=",
+     [
+      "get",
+      "admin_level"
+     ],
+     2
+    ],
+    "paint": {
+     "line-color": "rgba(255,230,160,0.8)",
+     "line-width": [
+      "interpolate",
+      [
+       "linear"
+      ],
+      [
+       "zoom"
+      ],
+      2,
+      0.8,
+      8,
+      1.6
+     ],
+     "line-dasharray": [
+      3,
+      2
+     ]
+    }
+   },
+   {
+    "id": "water-name",
+    "type": "symbol",
+    "source": "openmaptiles",
+    "source-layer": "water_name",
+    "layout": {
+     "text-field": [
+      "coalesce",
+      [
+       "get",
+       "name:en"
+      ],
+      [
+       "get",
+       "name"
+      ]
+     ],
+     "text-font": [
+      "Noto Sans Italic"
+     ],
+     "text-size": 12,
+     "text-max-width": 6
+    },
+    "paint": {
+     "text-color": "#bcd8f0",
+     "text-halo-color": "rgba(10,30,60,0.8)",
+     "text-halo-width": 1.2
+    }
+   },
+   {
+    "id": "place",
+    "type": "symbol",
+    "source": "openmaptiles",
+    "source-layer": "place",
+    "filter": [
+     "in",
+     [
+      "get",
+      "class"
+     ],
+     [
+      "literal",
+      [
+       "country",
+       "state",
+       "city",
+       "town"
+      ]
+     ]
+    ],
+    "layout": {
+     "text-field": [
+      "coalesce",
+      [
+       "get",
+       "name:en"
+      ],
+      [
+       "get",
+       "name"
+      ]
+     ],
+     "text-font": [
+      "Noto Sans Regular"
+     ],
+     "text-size": [
+      "match",
+      [
+       "get",
+       "class"
+      ],
+      "country",
+      14,
+      "state",
+      12,
+      11
+     ]
+    },
+    "paint": {
+     "text-color": "#fff",
+     "text-halo-color": "rgba(10,30,60,0.85)",
+     "text-halo-width": 1.4
+    }
    }
-  ]
+  ],
+  "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf"
  },
  "projection": {
   "type": "EPSG:3413"
@@ -1440,87 +1549,6 @@
    }
   },
   "coastlines": {
-   "tileMatrixSet": {
-    "id": "GIBS_EPSG3413_250m",
-    "title": "NASA GIBS EPSG:3413 250m",
-    "crs": "http://www.opengis.net/def/crs/EPSG/0/3413",
-    "tileMatrices": [
-     {
-      "id": "0",
-      "scaleDenominator": 29257142.85714286,
-      "pointOfOrigin": [
-       -4194304,
-       4194304
-      ],
-      "tileWidth": 512,
-      "tileHeight": 512,
-      "matrixWidth": 2,
-      "matrixHeight": 2
-     },
-     {
-      "id": "1",
-      "scaleDenominator": 14628571.42857143,
-      "pointOfOrigin": [
-       -4194304,
-       4194304
-      ],
-      "tileWidth": 512,
-      "tileHeight": 512,
-      "matrixWidth": 4,
-      "matrixHeight": 4
-     },
-     {
-      "id": "2",
-      "scaleDenominator": 7314285.714285715,
-      "pointOfOrigin": [
-       -4194304,
-       4194304
-      ],
-      "tileWidth": 512,
-      "tileHeight": 512,
-      "matrixWidth": 8,
-      "matrixHeight": 8
-     },
-     {
-      "id": "3",
-      "scaleDenominator": 3657142.8571428573,
-      "pointOfOrigin": [
-       -4194304,
-       4194304
-      ],
-      "tileWidth": 512,
-      "tileHeight": 512,
-      "matrixWidth": 16,
-      "matrixHeight": 16
-     },
-     {
-      "id": "4",
-      "scaleDenominator": 1828571.4285714286,
-      "pointOfOrigin": [
-       -4194304,
-       4194304
-      ],
-      "tileWidth": 512,
-      "tileHeight": 512,
-      "matrixWidth": 32,
-      "matrixHeight": 32
-     },
-     {
-      "id": "5",
-      "scaleDenominator": 914285.7142857143,
-      "pointOfOrigin": [
-       -4194304,
-       4194304
-      ],
-      "tileWidth": 512,
-      "tileHeight": 512,
-      "matrixWidth": 64,
-      "matrixHeight": 64
-     }
-    ]
-   }
-  },
-  "labels": {
    "tileMatrixSet": {
     "id": "GIBS_EPSG3413_250m",
     "title": "NASA GIBS EPSG:3413 250m",

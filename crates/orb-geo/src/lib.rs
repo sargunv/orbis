@@ -16,6 +16,16 @@ pub mod wgs84 {
     pub const MEAN_RADIUS_M: f64 = 6_371_008.8;
 }
 
+/// The parallel's length per unit of style zoom's scale at a latitude, in
+/// degrees: cos φ. Style zoom (plan §9.3) measures ground resolution along
+/// the parallel, as Web Mercator tiles do; past the latitude where those
+/// tiles end (±85.0511°) it keeps that latitude's scale, so zoom stays
+/// finite at the poles of other planes.
+pub fn style_parallel(lat: f64) -> f64 {
+    const LIMIT: f64 = 85.051_128_779_806_59;
+    lat.clamp(-LIMIT, LIMIT).to_radians().cos()
+}
+
 /// A geodetic position in degrees on the WGS84 datum.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Geodetic {

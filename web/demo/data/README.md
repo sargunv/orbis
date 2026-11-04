@@ -81,14 +81,19 @@ them; they are never silently stringified. The real extract has none.
 ## Other projections (`crs/`)
 
 Scene documents (plan §11.4) with their v8 styles inline, written for this
-repository; the web demo opens them as `?style=arctic` and `?style=greenland`,
-the native demo as `file://$PWD/web/demo/data/crs/arctic.json`.
+repository; the web demo opens them as `?style=arctic`, `?style=nz` and
+`?style=greenland`, the native demo as
+`file://$PWD/web/demo/data/crs/arctic.json`.
 
 - `arctic.json` draws on an EPSG:3413 (NSIDC polar stereographic) surface:
   [NASA EOSDIS GIBS](https://earthdata.nasa.gov/gibs) Blue Marble shaded relief,
   MEaSUREs Greenland ice velocity, coastlines and reference labels in GIBS's
   EPSG:3413 tile matrix sets (declared inline: 512-pixel tiles from
-  ±4,194,304 m), with a graticule from inline GeoJSON tiled on the surface.
+  ±4,194,304 m), with a graticule from inline GeoJSON tiled on the surface,
+  and OpenFreeMap's planet tiles' boundaries and labels, reprojected from
+  Web Mercator (the `GpuPerVertex` plan).
+- `nz.json` draws OpenFreeMap's planet tiles on an NZTM2000 (EPSG:2193)
+  surface, reprojected from Web Mercator.
 - `greenland.json` keeps Web Mercator: OpenFreeMap's planet tiles under the
   same ice velocity raster, warped from EPSG:3413 (the `RasterWarp` plan).
 

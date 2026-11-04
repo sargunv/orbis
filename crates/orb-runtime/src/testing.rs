@@ -29,6 +29,7 @@ pub(crate) fn symbol_tile() -> (TileWorker, TileResult) {
         source: 1,
         tile,
         zoom: f64::from(tile.z),
+        subdivision: None,
         data_zoom: tile.z,
         location: TileLocation::Url(format!("local://tiles/{z}-{x}-{y}.mvt")),
         encoding: Encoding::Mvt,

@@ -140,12 +140,20 @@ fn features(plan: &StylePlan, node: &NodePlan, layer: &Layer, zoom: f64) -> Vec<
     features
 }
 
-/// A node's geometry over `features`.
-fn layout(layer: &Layer, features: &[u32], kind: &LayerKind, family: Family, zoom: f64) -> Mesh {
+/// A node's geometry over `features`. `subdivision` (grid cells per side)
+/// cuts fills for a tile drawn through a curved warp.
+fn layout(
+    layer: &Layer,
+    features: &[u32],
+    kind: &LayerKind,
+    family: Family,
+    zoom: f64,
+    subdivision: Option<u32>,
+) -> Mesh {
     match kind {
         LayerKind::Fill(_) => match family {
             Family::FillOutline => fill::outline(layer, features),
-            _ => fill::layout(layer, features),
+            _ => fill::layout_subdivided(layer, features, subdivision),
         },
         LayerKind::FillExtrusion(_) => extrusion::layout_in_extent(layer, features, 8192),
         LayerKind::Circle(c) => {
@@ -326,6 +334,7 @@ pub(crate) fn build(
     plan: &StylePlan,
     source: usize,
     zoom: f64,
+    subdivision: Option<u32>,
     select: Select<'_>,
     symbols: Symbols<'_>,
 ) -> Result<TileBuild, Vec<String>> {
@@ -381,7 +390,14 @@ pub(crate) fn build(
                 Mesh::default()
             }
             _ => {
-                let mesh = layout(layer, &features, &style_layer.kind, node.family, zoom);
+                let mesh = layout(
+                    layer,
+                    &features,
+                    &style_layer.kind,
+                    node.family,
+                    zoom,
+                    subdivision,
+                );
                 if mesh.is_empty() {
                     continue;
                 }
@@ -700,7 +716,7 @@ mod tests {
         let frame = TileFrame {
             layers: vec![builder.finish()],
         };
-        let result = build(&frame, &plan, 0, 0.0, Select::default(), no_symbols()).unwrap();
+        let result = build(&frame, &plan, 0, 0.0, None, Select::default(), no_symbols()).unwrap();
         let hits = |family| {
             &result
                 .meshes
@@ -736,7 +752,16 @@ mod tests {
         let plan = plan(
             r#"{"version":8,"sources":{"s":{"type":"vector","tiles":["test://{z}/{x}/{y}"]}},"layers":[{"id":"l","type":"line","source":"s","source-layer":"roads","paint":{"line-pattern":["get","class"]}}]}"#,
         );
-        let tile = build(&frame(), &plan, 0, 10.0, Select::default(), no_symbols()).unwrap();
+        let tile = build(
+            &frame(),
+            &plan,
+            0,
+            10.0,
+            None,
+            Select::default(),
+            no_symbols(),
+        )
+        .unwrap();
         let mesh = &tile.meshes[0];
         assert_eq!(mesh.images.len(), 9);
         assert_eq!(
@@ -777,7 +802,16 @@ mod tests {
         let plan = plan(STYLE);
         assert_eq!(plan.nodes[0].source, usize::MAX);
         assert_eq!(plan.nodes.len(), 4);
-        let build = build(&frame(), &plan, 0, 10.0, Select::default(), no_symbols()).unwrap();
+        let build = build(
+            &frame(),
+            &plan,
+            0,
+            10.0,
+            None,
+            Select::default(),
+            no_symbols(),
+        )
+        .unwrap();
         let nodes: Vec<u32> = build.meshes.iter().map(|m| m.node).collect();
         // Keys of the second and third layers' nodes.
         assert_eq!(nodes, [4, 6], "the minzoom 12 layer is skipped at z10");
@@ -796,7 +830,16 @@ mod tests {
             0,
             orb_style::CostModel::ROWS,
         );
-        let build = build(&frame(), &plan, 0, 10.0, Select::default(), no_symbols()).unwrap();
+        let build = build(
+            &frame(),
+            &plan,
+            0,
+            10.0,
+            None,
+            Select::default(),
+            no_symbols(),
+        )
+        .unwrap();
         let all = &build.meshes[1];
         assert_eq!(all.props.len(), 3 * LINE_ROW_WORDS);
         let width = |feature: usize| {
@@ -823,7 +866,16 @@ mod tests {
         );
         let node = &plan.nodes[2];
         assert_eq!(plan.bytecode_mask(node), 1 << 2, "the composite width");
-        let build = build(&frame(), &plan, 0, 10.0, Select::default(), no_symbols()).unwrap();
+        let build = build(
+            &frame(),
+            &plan,
+            0,
+            10.0,
+            None,
+            Select::default(),
+            no_symbols(),
+        )
+        .unwrap();
         let all = &build.meshes[1];
         // One string column, `class`, after each feature's row.
         let stride = LINE_ROW_WORDS + 2;

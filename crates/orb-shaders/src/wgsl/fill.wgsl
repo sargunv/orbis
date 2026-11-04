@@ -114,9 +114,20 @@ fn fill_vertex(v: Pulled) -> FillOut {
     return out;
 }
 
+// A fill's position for its clip test. A warped tile's fills interpolate
+// their tile position across mapped triangles and can stray just past the
+// tile's edge, where no other placement draws; there it belongs to the edge.
+fn fill_clip_pos(in: FillOut) -> vec2<f32> {
+    let tile = tiles[in.tile];
+    if tile.warp_cells == 0u {
+        return in.tile_pos;
+    }
+    return clamp(in.tile_pos, vec2<f32>(0.0), vec2<f32>(tile.extent - 0.5));
+}
+
 @fragment
 fn fs_fill(in: FillOut) -> @location(0) vec4<f32> {
-    if !inside_clips(tiles[in.tile], in.tile_pos) {
+    if !inside_clips(tiles[in.tile], fill_clip_pos(in)) {
         discard;
     }
     if node.pattern.enabled == 1u {

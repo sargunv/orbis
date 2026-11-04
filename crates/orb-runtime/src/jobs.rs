@@ -410,6 +410,12 @@ impl TileWorker {
             .ok_or_else(|| format!("source {} was removed", request.source))?;
         let mut warnings = Vec::new();
         let frame = self.frame(bytes, encoding, request)?;
+        // A warped tile's geometry follows the warp's curve; the cached
+        // frame keeps the tile's own, for queries.
+        let frame = match request.subdivision {
+            Some(cells) => Arc::new(frame.subdivided(cells)),
+            None => frame,
+        };
         let select = Select {
             nodes: request.nodes.as_deref(),
             rows_only: request.rows_only,
@@ -426,7 +432,16 @@ impl TileWorker {
                 Words::Unavailable => tile::WordData::Unavailable,
             },
         };
-        match tile::build(&frame, &self.plan, index, request.zoom, select, symbols) {
+        let cells = request.subdivision;
+        match tile::build(
+            &frame,
+            &self.plan,
+            index,
+            request.zoom,
+            cells,
+            select,
+            symbols,
+        ) {
             Ok(mut build) => {
                 warnings.extend(self.data.glyphs.take_warnings());
                 build.warnings.splice(0..0, warnings);
@@ -778,6 +793,9 @@ pub struct TileRequest {
     /// The style zoom the tile lays out at: its own zoom in
     /// `WebMercatorQuad`, from its ground resolution in other sets.
     pub zoom: f64,
+    /// Geometry is cut along a grid of this many cells per side: the tile
+    /// draws through a curved warp onto another plane.
+    pub subdivision: Option<u32>,
     /// Zoom of the ancestor whose bytes are fetched.
     pub data_zoom: u8,
     pub location: TileLocation,
@@ -1733,6 +1751,7 @@ pub(crate) mod tests {
             source: 1,
             tile,
             zoom: f64::from(tile.z),
+            subdivision: None,
             data_zoom: tile.z,
             location: TileLocation::Url("test://data.json".into()),
             encoding: Encoding::Mvt,

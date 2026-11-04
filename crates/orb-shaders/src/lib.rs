@@ -11,7 +11,8 @@
 const TYPES: &str = include_str!("wgsl/types.wgsl");
 const DRAW: &str = concat!(
     include_str!("wgsl/bezier.wgsl"),
-    include_str!("wgsl/draw.wgsl")
+    include_str!("wgsl/draw.wgsl"),
+    include_str!("wgsl/project.wgsl")
 );
 const GPU_PAINT: &str = include_str!("wgsl/gpu_paint.wgsl");
 const EXPR: &str = include_str!("wgsl/expr.wgsl");

@@ -16,6 +16,14 @@ pub const STRIDE: usize = 2;
 /// geometry types are skipped. Each feature's slot is its position in
 /// `features`.
 pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
+    layout_subdivided(layer, features, None)
+}
+
+/// [`layout`], with triangles cut along a grid of `cells` × `cells` over the
+/// tile, for a tile drawn through a curved warp onto another plane: edges
+/// then follow the curve (earcut drops the collinear vertices that cut the
+/// rings), and the vertices on the tile's edges are its neighbours'.
+pub fn layout_subdivided(layer: &Layer, features: &[u32], cells: Option<u32>) -> Mesh {
     let extent = i32::try_from(layer.extent()).expect("extent fits i32");
     assert!(
         extent <= i32::from(i16::MAX),
@@ -60,6 +68,13 @@ pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
                 continue;
             }
             earcut.earcut(flat.iter().copied(), &holes, &mut triangles);
+            if let Some(cells) = cells {
+                subdivide(
+                    &mut points,
+                    &mut triangles,
+                    f64::from(extent) / f64::from(cells),
+                );
+            }
             let base = builder.vertex_count();
             for &[x, y] in &points {
                 builder.push_vertex([x, y], &[pack_position(x, y), slot]);
@@ -116,6 +131,112 @@ pub fn outline(layer: &Layer, features: &[u32]) -> Mesh {
         }
     }
     builder.finish()
+}
+
+/// Cuts triangles along a grid of lines `step` apart into convex pieces,
+/// fanned into triangles. A cut on an edge is computed from the edge's ends
+/// in a fixed order, so the triangles (and tiles) sharing an edge cut it
+/// alike and the mesh stays watertight.
+fn subdivide(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, step: f64) {
+    let mut index: std::collections::HashMap<[i32; 2], u32> = points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| ([i32::from(p[0]), i32::from(p[1])], i as u32))
+        .collect();
+    let mut out = Vec::with_capacity(triangles.len());
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    for t in triangles.as_chunks::<3>().0 {
+        let corners = t.map(|i| points[i as usize].map(i32::from));
+        let cell = |v: i32| (f64::from(v) / step).floor() as i64;
+        let (x0, x1) = (
+            corners.iter().map(|p| cell(p[0])).min(),
+            corners.iter().map(|p| cell(p[0])).max(),
+        );
+        let (y0, y1) = (
+            corners.iter().map(|p| cell(p[1])).min(),
+            corners.iter().map(|p| cell(p[1])).max(),
+        );
+        let (Some(x0), Some(x1), Some(y0), Some(y1)) = (x0, x1, y0, y1) else {
+            continue;
+        };
+        if x0 == x1 && y0 == y1 {
+            out.extend_from_slice(t);
+            continue;
+        }
+        for cy in y0..=y1 {
+            for cx in x0..=x1 {
+                a.clear();
+                a.extend_from_slice(&corners);
+                let bounds = [
+                    (0, (cx as f64 * step).round() as i32, true),
+                    (0, ((cx + 1) as f64 * step).round() as i32, false),
+                    (1, (cy as f64 * step).round() as i32, true),
+                    (1, ((cy + 1) as f64 * step).round() as i32, false),
+                ];
+                for (axis, bound, keep_above) in bounds {
+                    clip(&a, axis, bound, keep_above, &mut b);
+                    std::mem::swap(&mut a, &mut b);
+                }
+                a.dedup();
+                while a.len() > 1 && a.first() == a.last() {
+                    a.pop();
+                }
+                if a.len() < 3 {
+                    continue;
+                }
+                let mut id = |p: [i32; 2]| {
+                    *index.entry(p).or_insert_with(|| {
+                        points.push([p[0] as i16, p[1] as i16]);
+                        (points.len() - 1) as u32
+                    })
+                };
+                let first = id(a[0]);
+                for k in 1..a.len() - 1 {
+                    let (p, q) = (id(a[k]), id(a[k + 1]));
+                    if first != p && p != q && q != first {
+                        out.extend([first, p, q]);
+                    }
+                }
+            }
+        }
+    }
+    *triangles = out;
+}
+
+/// One Sutherland–Hodgman step of a convex polygon against an axis-aligned
+/// line, keeping the side above (`keep_above`) or below it.
+fn clip(polygon: &[[i32; 2]], axis: usize, bound: i32, keep_above: bool, out: &mut Vec<[i32; 2]>) {
+    out.clear();
+    let inside = |p: &[i32; 2]| {
+        if keep_above {
+            p[axis] >= bound
+        } else {
+            p[axis] <= bound
+        }
+    };
+    let Some(&last) = polygon.last() else { return };
+    let mut prev = last;
+    for &p in polygon {
+        let cross = || {
+            let (lo, hi) = if prev <= p { (prev, p) } else { (p, prev) };
+            let t = f64::from(bound - lo[axis]) / f64::from(hi[axis] - lo[axis]);
+            let other = 1 - axis;
+            let mut q = [0; 2];
+            q[axis] = bound;
+            q[other] = (f64::from(lo[other]) + t * f64::from(hi[other] - lo[other])).round() as i32;
+            q
+        };
+        match (inside(&prev), inside(&p)) {
+            (true, true) => out.push(p),
+            (true, false) => out.push(cross()),
+            (false, true) => {
+                out.push(cross());
+                out.push(p);
+            }
+            (false, false) => {}
+        }
+        prev = p;
+    }
 }
 
 pub(crate) fn pack_position(x: i16, y: i16) -> u32 {
@@ -202,5 +323,44 @@ mod tests {
         assert_eq!(area(&mesh), 4096.0 * 4096.0);
         let bounds = mesh.chunks[0].bounds;
         assert_eq!((bounds.min, bounds.max), ([0, 0], [4096, 4096]));
+    }
+}
+
+#[cfg(test)]
+mod subdivide_tests {
+    use super::subdivide;
+
+    #[test]
+    fn subdivision_keeps_area_and_cuts_at_grid_lines() {
+        let mut points = vec![[0i16, 0], [4096, 0], [4096, 4096], [0, 4096]];
+        let mut triangles = vec![0, 1, 2, 0, 2, 3];
+        subdivide(&mut points, &mut triangles, 512.0);
+        let area: f64 = triangles
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|i| points[i as usize].map(f64::from));
+                ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs() / 2.0
+            })
+            .sum();
+        assert_eq!(area, 4096.0 * 4096.0);
+        // Every triangle lies in one grid cell.
+        for t in triangles.as_chunks::<3>().0 {
+            let cells: Vec<_> = t
+                .iter()
+                .map(|&i| points[i as usize].map(|v| f64::from(v) / 512.0))
+                .collect();
+            for axis in 0..2 {
+                let lo = cells.iter().map(|c| c[axis]).fold(f64::INFINITY, f64::min);
+                let hi = cells
+                    .iter()
+                    .map(|c| c[axis])
+                    .fold(f64::NEG_INFINITY, f64::max);
+                assert!(hi - lo <= 1.0 && lo.floor() >= hi.ceil() - 1.0);
+            }
+        }
+        // The square's top edge has a vertex at each grid line.
+        assert_eq!(points.iter().filter(|p| p[1] == 0).count(), 9);
     }
 }

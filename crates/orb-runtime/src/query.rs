@@ -43,6 +43,57 @@ pub(crate) struct FeatureKey {
     pub(crate) feature: u32,
 }
 
+/// Where a tile's data lands on the surface: its bounds in its own set, or
+/// a warped tile's series.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TilePlace<'a> {
+    Affine(&'a TileMatrixSet),
+    Warped(&'a orb_crs::Series),
+}
+
+impl TilePlace<'_> {
+    /// Data units (`extent` per side) to world, in the primary copy.
+    fn mapper(self, tile: TileIndex, extent: u32) -> impl Fn(DVec2) -> DVec2 {
+        let affine = match self {
+            Self::Affine(tms) => Some(tms.data_to_world(tile, extent)),
+            Self::Warped(_) => None,
+        };
+        let series = match self {
+            Self::Warped(series) => Some(series),
+            Self::Affine(_) => None,
+        };
+        move |p| match (affine, series) {
+            (Some(a), _) => a.transform_point2(p),
+            (None, Some(s)) => s.position(p / f64::from(extent)),
+            (None, None) => unreachable!(),
+        }
+    }
+
+    /// A descendant region's corners in world space.
+    fn corners(self, tile: TileIndex, region: TileIndex) -> [DVec2; 4] {
+        match self {
+            Self::Affine(tms) => {
+                let b = tms.tile_bounds(region);
+                [
+                    b.min,
+                    DVec2::new(b.max.x, b.min.y),
+                    b.max,
+                    DVec2::new(b.min.x, b.max.y),
+                ]
+            }
+            Self::Warped(series) => {
+                let depth = region.z - tile.z;
+                let n = f64::from(1u32 << depth);
+                let x = f64::from(region.col - (tile.col << depth)) / n;
+                let y = f64::from(region.row - (tile.row << depth)) / n;
+                // Tile fractions run down; corners as the affine case's.
+                [(0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]
+                    .map(|(dx, dy)| series.position(DVec2::new(x + dx / n, y + dy / n)))
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ScreenHit {
     pub(crate) hit: Hit,
@@ -68,17 +119,17 @@ impl ScreenHit {
         wrap: i32,
         regions: &[TileIndex],
         view: &View,
-        tms: &TileMatrixSet,
+        place: TilePlace<'_>,
         period: f64,
         radius: f64,
         elevation: (f64, f64),
         shift: DVec2,
     ) -> Option<Self> {
-        let transform = tms.data_to_world(tile, feature.extent);
+        let transform = place.mapper(tile, feature.extent);
         let mut min = Vec2::splat(f32::INFINITY);
         let mut max = Vec2::splat(f32::NEG_INFINITY);
         let project = |p: [i32; 2], height: f64| {
-            let world = transform.transform_point2(DVec2::new(p[0] as f64, p[1] as f64))
+            let world = transform(DVec2::new(p[0] as f64, p[1] as f64))
                 + DVec2::new(f64::from(wrap) * period, 0.0)
                 + shift;
             let relative = world - view.camera_world();
@@ -131,19 +182,14 @@ impl ScreenHit {
         let clips = regions
             .iter()
             .map(|region| {
-                let bounds = tms.tile_bounds(*region);
-                [
-                    bounds.min,
-                    DVec2::new(bounds.max.x, bounds.min.y),
-                    bounds.max,
-                    DVec2::new(bounds.min.x, bounds.max.y),
-                ]
-                .into_iter()
-                .filter_map(|p| {
-                    view.project(p + DVec2::new(f64::from(wrap) * period, 0.0) + shift)
-                        .map(|p| p.as_vec2())
-                })
-                .collect()
+                place
+                    .corners(tile, *region)
+                    .into_iter()
+                    .filter_map(|p| {
+                        view.project(p + DVec2::new(f64::from(wrap) * period, 0.0) + shift)
+                            .map(|p| p.as_vec2())
+                    })
+                    .collect()
             })
             .collect();
         Some(Self {
@@ -356,7 +402,7 @@ pub(crate) struct Publisher<'a> {
     pub(crate) hits: &'a mut Vec<ScreenHit>,
     pub(crate) plan: &'a crate::style::StylePlan,
     pub(crate) view: &'a View,
-    pub(crate) tms: &'a TileMatrixSet,
+    pub(crate) place: TilePlace<'a>,
     /// The surface's wrap period, 0 if it doesn't wrap.
     pub(crate) period: f64,
     pub(crate) camera: &'a orb_camera::CameraState,
@@ -470,7 +516,7 @@ impl Publisher<'_> {
                         draw.wrap,
                         &draw.regions,
                         self.view,
-                        self.tms,
+                        self.place,
                         self.period,
                         f64::from(radius),
                         elevation,

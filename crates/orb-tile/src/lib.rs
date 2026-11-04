@@ -17,6 +17,7 @@ mod geometry;
 pub mod mlt;
 pub mod mvt;
 mod overzoom;
+mod subdivide;
 
 pub use builder::LayerBuilder;
 pub use column::{Bitmap, Column, ColumnData, Value, ValueRef};
