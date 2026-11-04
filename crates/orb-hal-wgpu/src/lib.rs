@@ -8,6 +8,8 @@
 // `unsafe` only where a surface is made from a raw platform handle.
 #![deny(unsafe_code)]
 
+#[cfg(not(target_arch = "wasm32"))]
+mod cache;
 mod convert;
 mod offscreen;
 mod slots;
@@ -31,6 +33,9 @@ pub struct WgpuGpu {
     /// for surfaces.
     #[cfg(not(target_arch = "wasm32"))]
     native: Option<(wgpu::Instance, wgpu::Adapter)>,
+    /// Pipelines are made through it once started (natively, Vulkan).
+    #[cfg(not(target_arch = "wasm32"))]
+    pipeline_cache: Option<wgpu::PipelineCache>,
     caps: Caps,
     buffers: Slots<wgpu::Buffer>,
     textures: Slots<Texture>,
@@ -123,6 +128,8 @@ impl WgpuGpu {
             queue,
             #[cfg(not(target_arch = "wasm32"))]
             native: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pipeline_cache: None,
             caps,
             buffers: Slots::default(),
             textures: Slots::default(),
@@ -152,6 +159,14 @@ impl WgpuGpu {
     /// Render and compute pipelines created so far (plan §16).
     pub fn pipelines_created(&self) -> u32 {
         self.pipelines_created
+    }
+
+    /// The pipeline cache pipelines are made through, if any.
+    fn cache(&self) -> Option<&wgpu::PipelineCache> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.pipeline_cache.as_ref();
+        #[cfg(target_arch = "wasm32")]
+        None
     }
 
     /// Time spent making shader modules and pipelines so far.
@@ -693,7 +708,7 @@ impl Gpu for WgpuGpu {
                     targets: &targets,
                 }),
                 multiview_mask: None,
-                cache: None,
+                cache: self.cache(),
             });
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -718,7 +733,7 @@ impl Gpu for WgpuGpu {
                     constants: desc.compute.constants,
                     ..Default::default()
                 },
-                cache: None,
+                cache: self.cache(),
             });
         #[cfg(not(target_arch = "wasm32"))]
         {

@@ -23,6 +23,9 @@ uint32_t OrbRuntime_abi_version(void);
 
 uint32_t OrbRuntime_pipelines_created(const OrbRuntime* self);
 
+typedef struct OrbRuntime_set_pipeline_cache_dir_result {union { OrbError err;}; bool is_ok;} OrbRuntime_set_pipeline_cache_dir_result;
+OrbRuntime_set_pipeline_cache_dir_result OrbRuntime_set_pipeline_cache_dir(OrbRuntime* self, DiplomatStringView dir);
+
 double OrbRuntime_pipeline_ms(const OrbRuntime* self);
 
 void OrbRuntime_destroy(OrbRuntime* self);

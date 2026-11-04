@@ -61,6 +61,21 @@ public final class OrbRuntime {
         return OrbRuntime_pipelines_created(live())
     }
 
+    /// Keeps the driver's compiled pipelines in the directory `dir`
+    /// between runs, so warm starts skip compiling them (Vulkan;
+    /// elsewhere the platform caches and this does nothing). Call
+    /// before the first frame; maps save the cache when idle.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func setPipelineCacheDir(dir: String) throws {
+        let result = withStringView(dir) { dirView in OrbRuntime_set_pipeline_cache_dir(live(), dirView) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
     /// Milliseconds spent making shader modules and pipelines so far:
     /// translation and the driver's compiles.
     ///

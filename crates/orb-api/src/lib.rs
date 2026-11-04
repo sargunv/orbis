@@ -15,6 +15,7 @@ mod map;
 mod target;
 
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -91,6 +92,9 @@ struct Shared {
     images: orb_runtime::Images,
     /// The gesture and animation clock's origin.
     started: Instant,
+    /// Where the pipeline cache is kept, and the pipeline count it was
+    /// last saved at.
+    cache: RefCell<Option<(PathBuf, u32)>>,
 }
 
 impl Runtime {
@@ -109,6 +113,7 @@ impl Runtime {
                 executor: Arc::new(ThreadPool::new("jobs", threads)),
                 images: Default::default(),
                 started: Instant::now(),
+                cache: RefCell::new(None),
             }),
         })
     }
@@ -121,6 +126,48 @@ impl Runtime {
     /// Time spent making shader modules and pipelines so far.
     pub fn pipeline_time(&self) -> std::time::Duration {
         self.shared.gpu.borrow().pipeline_time()
+    }
+
+    /// Keeps the driver's compiled pipelines in `dir` between runs, so
+    /// warm starts skip compiling them (Vulkan; elsewhere the platform
+    /// caches and this does nothing). Call before the first frame; maps
+    /// save the cache when they go idle with new pipelines.
+    pub fn set_pipeline_cache_dir(&self, dir: &Path) -> Result<(), Error> {
+        let mut gpu = self.shared.gpu.borrow_mut();
+        let Some(key) = gpu.pipeline_cache_key() else {
+            return Ok(());
+        };
+        std::fs::create_dir_all(dir)
+            .map_err(|e| Error::InvalidArgument(format!("{}: {e}", dir.display())))?;
+        let file = dir.join(key);
+        let data = std::fs::read(&file).ok();
+        gpu.start_pipeline_cache(data.as_deref());
+        *self.shared.cache.borrow_mut() = Some((file, gpu.pipelines_created()));
+        Ok(())
+    }
+
+    /// Writes the pipeline cache if pipelines were made since it was last
+    /// written.
+    pub fn save_pipeline_cache(&self) -> Result<(), Error> {
+        let mut cache = self.shared.cache.borrow_mut();
+        let Some((file, saved)) = cache.as_mut() else {
+            return Ok(());
+        };
+        let gpu = self.shared.gpu.borrow();
+        let made = gpu.pipelines_created();
+        if made == *saved {
+            return Ok(());
+        }
+        let Some(data) = gpu.pipeline_cache_data() else {
+            return Ok(());
+        };
+        // Written aside and renamed, so a reader never sees half a file.
+        let partial = file.with_extension("partial");
+        std::fs::write(&partial, data)
+            .and_then(|()| std::fs::rename(&partial, &*file))
+            .map_err(|e| Error::Native(format!("{}: {e}", file.display())))?;
+        *saved = made;
+        Ok(())
     }
 
     /// A surface on a window or view that wgpu accepts safely (a winit

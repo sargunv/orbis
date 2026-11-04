@@ -59,6 +59,7 @@ class MainActivity : Activity() {
         val started = SystemClock.elapsedRealtime()
         val data = unpackData()
         runtime = OrbRuntime.create(0u)
+        runtime.setPipelineCacheDir(File(cacheDir, "orbis-pipelines").path)
         val deviceMs = SystemClock.elapsedRealtime() - started
         view = MapView(this, runtime)
         status = TextView(this).apply {

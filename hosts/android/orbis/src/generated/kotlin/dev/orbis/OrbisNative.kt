@@ -162,6 +162,9 @@ internal object OrbisNative {
     external fun orbRuntimePipelinesCreated(self: Long): Int
 
     @JvmStatic
+    external fun orbRuntimeSetPipelineCacheDir(self: Long, dir: ByteArray): Unit
+
+    @JvmStatic
     external fun orbRuntimePipelineMs(self: Long): Double
 
     @JvmStatic

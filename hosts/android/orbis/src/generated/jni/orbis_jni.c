@@ -483,6 +483,20 @@ JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRuntimePipelinesCreated(JNI
     return (jint)(result);
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeSetPipelineCacheDir(JNIEnv* env, jclass cls, jlong self, jbyteArray dir) {
+    (void)env;
+    (void)cls;
+    jbyte* dir_bytes = (*env)->GetByteArrayElements(env, dir, NULL);
+    if (!dir_bytes) return;
+    DiplomatStringView dir_view = { (const char*)dir_bytes, (size_t)(*env)->GetArrayLength(env, dir) };
+    OrbRuntime_set_pipeline_cache_dir_result result = OrbRuntime_set_pipeline_cache_dir((OrbRuntime*)(intptr_t)self, dir_view);
+    (*env)->ReleaseByteArrayElements(env, dir, dir_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
 JNIEXPORT jdouble JNICALL Java_dev_orbis_OrbisNative_orbRuntimePipelineMs(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;

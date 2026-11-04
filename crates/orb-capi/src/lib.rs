@@ -86,6 +86,17 @@ pub mod ffi {
             self.0.pipelines_created()
         }
 
+        /// Keeps the driver's compiled pipelines in the directory `dir`
+        /// between runs, so warm starts skip compiling them (Vulkan;
+        /// elsewhere the platform caches and this does nothing). Call
+        /// before the first frame; maps save the cache when idle.
+        #[diplomat::attr(contract, command)]
+        pub fn set_pipeline_cache_dir(&mut self, dir: &DiplomatStr) -> Result<(), OrbError> {
+            self.0
+                .set_pipeline_cache_dir(std::path::Path::new(&*text(dir)))
+                .map_err(fail)
+        }
+
         /// Milliseconds spent making shader modules and pipelines so far:
         /// translation and the driver's compiles.
         #[diplomat::attr(contract, snapshot)]

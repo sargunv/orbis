@@ -355,6 +355,10 @@ impl Map {
         }
         self.dirty = jumped;
         self.busy = !report.idle || gesture || animating;
+        if report.idle {
+            // A failed write costs the next run its warm start, nothing else.
+            let _ = self.runtime.save_pipeline_cache();
+        }
         Ok(Some(report))
     }
 

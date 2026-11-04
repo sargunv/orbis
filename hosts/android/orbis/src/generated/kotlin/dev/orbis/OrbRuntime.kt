@@ -39,6 +39,20 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Keeps the driver's compiled pipelines in the directory `dir`
+     * between runs, so warm starts skip compiling them (Vulkan;
+     * elsewhere the platform caches and this does nothing). Call
+     * before the first frame; maps save the cache when idle.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun setPipelineCacheDir(dir: String) {
+        OrbisNative.orbRuntimeSetPipelineCacheDir(live(), dir.encodeToByteArray())
+    }
+
+    /**
      * Milliseconds spent making shader modules and pipelines so far:
      * translation and the driver's compiles.
      *

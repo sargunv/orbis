@@ -53,6 +53,8 @@ impl WgpuGpu {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
+                // Natively, warm starts reuse pipelines through a cache.
+                required_features: adapter.features() & wgpu::Features::PIPELINE_CACHE,
                 ..Default::default()
             })
             .await
