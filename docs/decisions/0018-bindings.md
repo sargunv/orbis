@@ -142,3 +142,19 @@ The C library (`cargo xtask capi --test`) builds a static library,
 headers, a pkg-config file and a CMake package; the C smoke test passes
 through both. The Swift and Kotlin run tests exercise every supported shape,
 callbacks from another thread included.
+
+The binding scenario passes through every language Orbis binds natively:
+style, pixels, hit test, rendered-features query, edit generation, click,
+idle, projection and errors. It runs through Rust (`crates/orb-api/tests`),
+C (`crates/orb-capi/tests/smoke.c`), Kotlin on the JVM over the JNI shim
+(`hosts/android/orbis/src/jvmScenario`) and Swift (`hosts/apple/Tests`). The
+Android and Apple hosts are written against the generated bindings and
+call nothing else of Orbis. The one exception is the JNI glue that turns a
+`Surface` into an `ANativeWindow`, which only JNI can do.
+
+Known gaps in the emitters: no `Option` of values, no borrowed opaque
+returns, no callbacks with arguments, and no `Cleaner`-style release for
+owner-thread objects, which must be closed on their thread.
+`diplomat-tool` 0.17 passes the entry's directory as the source file when
+reporting lowering errors, so its reports panic; the emitters lower with
+the file and report errors as text.
