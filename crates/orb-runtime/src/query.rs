@@ -69,12 +69,12 @@ impl ScreenHit {
         regions: &[TileIndex],
         view: &View,
         tms: &TileMatrixSet,
+        period: f64,
         radius: f64,
         elevation: (f64, f64),
         shift: DVec2,
     ) -> Option<Self> {
         let transform = tms.data_to_world(tile, feature.extent);
-        let period = tms.projection().wrap_period().unwrap_or(0.0);
         let mut min = Vec2::splat(f32::INFINITY);
         let mut max = Vec2::splat(f32::NEG_INFINITY);
         let project = |p: [i32; 2], height: f64| {
@@ -357,6 +357,8 @@ pub(crate) struct Publisher<'a> {
     pub(crate) plan: &'a crate::style::StylePlan,
     pub(crate) view: &'a View,
     pub(crate) tms: &'a TileMatrixSet,
+    /// The surface's wrap period, 0 if it doesn't wrap.
+    pub(crate) period: f64,
     pub(crate) camera: &'a orb_camera::CameraState,
 }
 impl Publisher<'_> {
@@ -405,8 +407,7 @@ impl Publisher<'_> {
                     };
                     let elevation = match &layer.kind {
                         orb_v8::LayerKind::FillExtrusion(e) => {
-                            let scale =
-                                self.tms.projection().style_height_scale(self.camera.target);
+                            let scale = self.view.height_scale();
                             let uniform = |kind| {
                                 matches!(kind, orb_v8::Kind::Constant | orb_v8::Kind::Camera)
                             };
@@ -470,6 +471,7 @@ impl Publisher<'_> {
                         &draw.regions,
                         self.view,
                         self.tms,
+                        self.period,
                         f64::from(radius),
                         elevation,
                         shift,
@@ -509,6 +511,7 @@ impl HitIndex {
         point: DVec2,
         camera: &CameraState,
         viewport: Viewport,
+        projection: &orb_crs::Projection,
     ) -> Option<Hit> {
         let Some((published, published_viewport)) = &self.view else {
             return self.hit_test(point);
@@ -516,11 +519,10 @@ impl HitIndex {
         if published == camera && *published_viewport == viewport {
             return self.hit_test(point);
         }
-        let tms = TileMatrixSet::by_id("WebMercatorQuad").expect("built-in tile matrix set");
-        let ground = View::new(camera, viewport, tms.projection()).unproject(point)?;
-        let then = View::new(published, *published_viewport, tms.projection());
+        let ground = View::new(camera, viewport, projection).unproject(point)?;
+        let then = View::new(published, *published_viewport, projection);
         // The copy of a wrapping world the snapshot drew.
-        let ground = match tms.projection().wrap_period() {
+        let ground = match projection.wrap_period() {
             Some(period) => DVec2::new(
                 ground.x - ((ground.x - then.camera_world().x) / period).round() * period,
                 ground.y,

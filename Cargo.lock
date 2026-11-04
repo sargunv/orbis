@@ -2551,12 +2551,15 @@ name = "orb-tile"
 version = "0.0.0"
 dependencies = [
  "mlt-core",
+ "orb-crs",
+ "orb-geo",
 ]
 
 [[package]]
 name = "orb-v8"
 version = "0.0.0"
 dependencies = [
+ "orb-crs",
  "orb-expr",
  "orb-tile",
 ]

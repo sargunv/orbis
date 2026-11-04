@@ -1,0 +1,205 @@
+//! The surface a map draws on, from its scene document, and the planner
+//! (plan §9.2) that decides how each source's tiles reach it.
+
+use orb_crs::{Descriptor, Projection, TileMatrixSet, WorldRect};
+use orb_expr::json::{self, Json, JsonValue, Member};
+
+/// A plane, the tile matrix sets of the sources on it, and the one-tile
+/// quadtree over it that backgrounds and GeoJSON tile in.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Surface {
+    /// The plane's projection; its world bounds are the plane's extent.
+    projection: Projection,
+    /// Backgrounds and GeoJSON sources tile in this set.
+    tms: TileMatrixSet,
+    /// Sources' tile matrix sets by source id, from the scene document.
+    sources: Vec<(String, TileMatrixSet)>,
+}
+
+/// How a source's tiles map onto the surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Plan {
+    /// The source tiles the surface's own plane: one affine row per tile.
+    Affine,
+}
+
+impl Default for Surface {
+    /// Web Mercator, every source in `WebMercatorQuad`.
+    fn default() -> Self {
+        let tms = TileMatrixSet::by_id("WebMercatorQuad").expect("built-in tile matrix set");
+        Self {
+            projection: *tms.projection(),
+            tms,
+            sources: Vec::new(),
+        }
+    }
+}
+
+impl Surface {
+    /// A surface on `projection` (Web Mercator if `None`) with the scene
+    /// document's tile matrix sets. The plane's extent is that of the first
+    /// source set on it, or else the projection's own.
+    pub(crate) fn new(
+        projection: Option<Projection>,
+        sources: Vec<(String, TileMatrixSet)>,
+    ) -> Self {
+        let mercator = Self::default();
+        let projection = projection.unwrap_or(mercator.projection);
+        let tms = if projection.same_plane(&mercator.projection) {
+            mercator.tms
+        } else {
+            let extent = sources
+                .iter()
+                .find(|(_, tms)| tms.projection().same_plane(&projection))
+                .map_or(projection.world_bounds(), |(_, tms)| {
+                    tms.projection().world_bounds()
+                });
+            TileMatrixSet::square(projection, extent)
+        };
+        Self {
+            projection: *tms.projection(),
+            tms,
+            sources,
+        }
+    }
+
+    pub(crate) fn projection(&self) -> &Projection {
+        &self.projection
+    }
+
+    /// The tile matrix set backgrounds and GeoJSON use.
+    pub(crate) fn tms(&self) -> &TileMatrixSet {
+        &self.tms
+    }
+
+    /// The plane GeoJSON tiles in, for the jobs: `None` for Web Mercator.
+    pub(crate) fn plane(&self) -> Option<TileMatrixSet> {
+        let mercator = Self::default();
+        (!self.projection.same_plane(&mercator.projection)).then(|| self.tms.clone())
+    }
+
+    /// The x period of a wrapping plane; 0 if it doesn't wrap.
+    pub(crate) fn period(&self) -> f64 {
+        self.projection.wrap_period().unwrap_or(0.0)
+    }
+
+    /// The surface with another projection, keeping the sources' sets.
+    pub(crate) fn with_projection(&self, projection: Projection) -> Self {
+        Self::new(Some(projection), self.sources.clone())
+    }
+
+    /// A source's tile matrix set: the scene document's, else the
+    /// surface's own for GeoJSON (which is geodetic and tiles anywhere)
+    /// and `WebMercatorQuad` for the rest, as v8 means them.
+    pub(crate) fn source_tms(&self, id: &str, geojson: bool) -> TileMatrixSet {
+        match self.sources.iter().find(|(source, _)| source == id) {
+            Some((_, tms)) => tms.clone(),
+            None if geojson => self.tms.clone(),
+            None => Self::default().tms,
+        }
+    }
+
+    /// How a source in `tms` reaches the surface, or why it can't yet.
+    pub(crate) fn plan(&self, tms: &TileMatrixSet) -> Result<Plan, String> {
+        if tms.projection().same_plane(&self.projection) {
+            Ok(Plan::Affine)
+        } else {
+            Err(format!(
+                "tile matrix set `{}` is not on the surface's plane, which needs a reprojecting plan",
+                tms.id()
+            ))
+        }
+    }
+}
+
+/// A projection and its world extent as JSON, for another thread or worker
+/// (the web ui role's camera, job workers' GeoJSON plane):
+/// `{"projection": {"type": …, <params>}, "extent": [x0, y0, x1, y1]}`.
+pub fn projection_to_json(projection: &Projection) -> String {
+    let synthetic = |value| Json::new(value, Default::default());
+    let member = |key: &str, value: Json| Member {
+        key: key.into(),
+        key_span: Default::default(),
+        value,
+    };
+    let descriptor = projection.descriptor();
+    let mut fields = vec![member(
+        "type",
+        synthetic(JsonValue::String(descriptor.kind)),
+    )];
+    fields.extend(
+        descriptor
+            .params
+            .into_iter()
+            .map(|(name, value)| member(&name, synthetic(JsonValue::Number(value)))),
+    );
+    let b = projection.world_bounds();
+    let extent = [b.min.x, b.min.y, b.max.x, b.max.y].map(|v| synthetic(JsonValue::Number(v)));
+    synthetic(JsonValue::Object(vec![
+        member("projection", synthetic(JsonValue::Object(fields))),
+        member("extent", synthetic(JsonValue::Array(extent.to_vec()))),
+    ]))
+    .to_string()
+}
+
+/// Reads [`projection_to_json`]'s document.
+pub fn projection_from_json(text: &str) -> Result<Projection, String> {
+    let bad = || "malformed projection".to_string();
+    let doc = json::parse(text).map_err(|e| e.to_string())?;
+    let fields = doc
+        .get("projection")
+        .and_then(Json::as_object)
+        .ok_or_else(bad)?;
+    let mut descriptor = Descriptor::default();
+    for m in fields {
+        match (m.key.as_str(), &m.value.value) {
+            ("type", JsonValue::String(kind)) => descriptor.kind = kind.clone(),
+            (name, JsonValue::Number(value)) => descriptor.params.push((name.to_string(), *value)),
+            _ => return Err(bad()),
+        }
+    }
+    let extent = doc
+        .get("extent")
+        .and_then(Json::as_array)
+        .filter(|e| e.len() == 4)
+        .ok_or_else(bad)?
+        .iter()
+        .map(|v| v.as_f64().ok_or_else(bad))
+        .collect::<Result<Vec<_>, String>>()?;
+    let projection = Projection::new(&descriptor).map_err(|e| e.to_string())?;
+    Ok(projection.with_extent(WorldRect {
+        min: glam::DVec2::new(extent[0], extent[1]),
+        max: glam::DVec2::new(extent[2], extent[3]),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projections_cross_as_json() {
+        let nztm = TileMatrixSet::by_id("NZTM2000Quad").unwrap();
+        let surface = Surface::new(
+            Some(*nztm.projection()),
+            vec![("linz".into(), nztm.clone())],
+        );
+        // The plane's extent is the source set's.
+        assert_eq!(surface.projection(), nztm.projection());
+        assert_eq!(
+            surface.tms().tile_bounds(orb_crs::TileIndex::new(0, 0, 0)),
+            nztm.tile_bounds(orb_crs::TileIndex::new(0, 0, 0))
+        );
+        let json = projection_to_json(surface.projection());
+        assert_eq!(&projection_from_json(&json).unwrap(), surface.projection());
+        assert_eq!(surface.plan(&nztm), Ok(Plan::Affine));
+        assert!(
+            surface
+                .plan(&TileMatrixSet::by_id("WebMercatorQuad").unwrap())
+                .is_err()
+        );
+        assert_eq!(surface.source_tms("other", true), *surface.tms());
+        assert_eq!(surface.plane().as_ref(), Some(surface.tms()));
+        assert_eq!(Surface::default().plane(), None);
+    }
+}

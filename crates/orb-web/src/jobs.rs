@@ -11,7 +11,7 @@
 //! Messages, render worker to job worker:
 //! - `{style, update}`: lay out later requests for style id `style` with a
 //!   revision of it, a [`StyleUpdate`] as JSON.
-//! - `{id, style, source, z, dataZoom, col, row, url, archive, encoding,
+//! - `{id, style, source, z, zoom, dataZoom, col, row, url, archive, encoding,
 //!   nodes?, rowsOnly}`: load a tile, or lay out some of its nodes (by key)
 //!   again from the worker's cached tile, or only their property rows.
 //!
@@ -253,6 +253,7 @@ fn tile_fields(request: &TileRequest) -> Vec<(&'static str, JsValue)> {
         ("style", (request.style as f64).into()),
         ("source", request.source.into()),
         ("z", request.tile.z.into()),
+        ("zoom", request.zoom.into()),
         ("dataZoom", request.data_zoom.into()),
         ("col", request.tile.col.into()),
         ("row", request.tile.row.into()),
@@ -522,6 +523,7 @@ impl JobWorker {
             style,
             source,
             tile,
+            zoom: number(message, "zoom")?,
             data_zoom,
             location: location.clone(),
             encoding,

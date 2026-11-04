@@ -166,8 +166,13 @@ fn clip_line(
     out
 }
 
+/// Copies features across a wrapping world's edges. Other planes don't
+/// repeat: features keep to the unit square and its buffer.
 pub(super) fn wrap(features: Vec<Projected>, options: &Options) -> Vec<Projected> {
     let buffer = options.buffer / f64::from(options.extent);
+    if options.plane.is_some() {
+        return clip(&features, -buffer, 1.0 + buffer, 0, options);
+    }
     let left = clip(&features, -1.0 - buffer, buffer, 0, options);
     let right = clip(&features, 1.0 - buffer, 2.0 + buffer, 0, options);
     if left.is_empty() && right.is_empty() {

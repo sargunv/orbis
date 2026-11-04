@@ -373,8 +373,8 @@ impl OrbisMap {
     }
 
     /// What the map did since the last call, as plain objects: `{type:
-    /// "styleload", camera}` (the style's camera if the map took it, else
-    /// null), `{type: "styledata", generation}`, `{type: "sourcedata",
+    /// "styleload", camera, projection}` (the style's camera if the map
+    /// took it, else null; the surface's projection as JSON), `{type: "styledata", generation}`, `{type: "sourcedata",
     /// source, loaded}`, `{type: "load"}`, `{type: "idle"}`, `{type:
     /// "error", message}`.
     #[wasm_bindgen(js_name = takeEvents)]
@@ -391,6 +391,8 @@ impl OrbisMap {
                         js_sys::Float64Array::from(&ui::camera_array(&c)[..]).into()
                     });
                     set(&object, "camera", camera);
+                    let projection = orb_runtime::projection_to_json(&self.map.projection());
+                    set(&object, "projection", projection.into());
                     "styleload"
                 }
                 MapEvent::StyleData { generation } => {

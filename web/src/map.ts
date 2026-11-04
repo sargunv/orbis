@@ -297,6 +297,7 @@ export class OrbisMap {
     for (const event of ack.events) {
       switch (event.type) {
         case "styleload":
+          this.#ui.setProjection(event.projection);
           if (event.camera && this.#ui.adoptStyleCamera(event.camera)) this.#loop.request();
           this.#events.emit("styleload", {});
           break;

@@ -336,6 +336,29 @@ impl TileMatrixSet {
         ))
     }
 
+    /// A one-tile quadtree over the square around `rect`, for a plane that
+    /// has no tile matrix set of its own: 512-pixel tiles to zoom 30.
+    pub fn square(projection: Projection, rect: WorldRect) -> Self {
+        let size = rect.size();
+        let span = size.max_element();
+        let origin = if size.x == size.y {
+            DVec2::new(rect.min.x, rect.max.y)
+        } else {
+            let center = rect.center();
+            DVec2::new(center.x - span / 2.0, center.y + span / 2.0)
+        };
+        Self::quad(
+            "square",
+            projection,
+            origin,
+            span,
+            (1, 1),
+            (0, 30),
+            512,
+            false,
+        )
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -413,6 +436,87 @@ impl TileMatrixSet {
             DMat2::from_diagonal(DVec2::new(scale, -scale)),
             DVec2::new(bounds.min.x, bounds.max.y),
         )
+    }
+
+    /// A world position as a fraction of the first matrix's tile span from
+    /// the set's top-left corner, x right and y down.
+    pub fn unit(&self, world: DVec2) -> DVec2 {
+        DVec2::new(world.x - self.origin.x, self.origin.y - world.y) / self.span
+    }
+
+    /// The style zoom (plan §9.3: the Web Mercator convention) at which a
+    /// tile's ground resolution is that of a 512-pixel tile, at its centre.
+    /// Tiles lay out at this zoom; for `WebMercatorQuad` it is the tile's
+    /// own.
+    pub fn style_zoom(&self, tile: TileIndex) -> f64 {
+        let center = self.projection.inverse(self.tile_bounds(tile).center());
+        let ground_span = self.tile_span(tile.z) / self.projection.scale_factor(center);
+        let parallel = 2.0
+            * std::f64::consts::PI
+            * orb_geo::wgs84::SEMI_MAJOR_M
+            * center.lat.to_radians().cos();
+        let zoom = (parallel / ground_span).log2();
+        // Snap the round-off of planes whose zooms are whole.
+        if (zoom - zoom.round()).abs() < 1e-9 {
+            zoom.round()
+        } else {
+            zoom
+        }
+    }
+
+    /// A tile's longitude and latitude extent, `[west, south, east, north]`
+    /// in degrees, from points along its edges; a tile around a pole spans
+    /// every longitude.
+    pub fn geodetic_bounds(&self, tile: TileIndex) -> [f64; 4] {
+        const STEPS: u32 = 8;
+        let rect = self.tile_bounds(tile);
+        let mut b = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        let first = self.projection.inverse(rect.min);
+        let mut previous = first.lon;
+        let mut unwrapped = first.lon;
+        for i in 0..4 * STEPS {
+            let t = f64::from(i % STEPS) / f64::from(STEPS);
+            let p = match i / STEPS {
+                0 => DVec2::new(rect.min.x + t * rect.size().x, rect.min.y),
+                1 => DVec2::new(rect.max.x, rect.min.y + t * rect.size().y),
+                2 => DVec2::new(rect.max.x - t * rect.size().x, rect.max.y),
+                _ => DVec2::new(rect.min.x, rect.max.y - t * rect.size().y),
+            };
+            let g = self.projection.inverse(p);
+            // Follow longitude continuously around the edge.
+            unwrapped += (g.lon - previous + 540.0).rem_euclid(360.0) - 180.0;
+            previous = g.lon;
+            b = [
+                b[0].min(unwrapped),
+                b[1].min(g.lat),
+                b[2].max(unwrapped),
+                b[3].max(g.lat),
+            ];
+        }
+        let encircles = (unwrapped - first.lon).abs() > 180.0;
+        for pole in [90.0, -90.0] {
+            let p = orb_geo::Geodetic::new(0.0, pole);
+            // Planes that clamp the pole (Web Mercator) don't contain it.
+            let w = self.projection.forward(p);
+            let inside = self.projection.contains(p)
+                && (self.projection.inverse(w).lat - pole).abs() < 1e-6
+                && w.cmpge(rect.min).all()
+                && w.cmple(rect.max).all();
+            if inside || (encircles && (pole > 0.0) == (b[3] > 0.0)) {
+                b[1] = b[1].min(pole);
+                b[3] = b[3].max(pole);
+            }
+        }
+        if encircles || b[2] - b[0] >= 360.0 {
+            b[0] = -180.0;
+            b[2] = 180.0;
+        }
+        b
     }
 
     /// The tiles at zoom `z` that a world rectangle touches.
@@ -567,6 +671,44 @@ mod tests {
         let mut unknown = nztm;
         unknown.crs = "EPSG:28992".into();
         assert!(TileMatrixSet::from_definition(&unknown).is_err());
+    }
+
+    #[test]
+    fn style_zooms_and_geodetic_bounds() {
+        let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        for tile in [TileIndex::new(0, 0, 0), TileIndex::new(14, 14552, 6451)] {
+            assert_eq!(mercator.style_zoom(tile), f64::from(tile.z));
+        }
+        let b = mercator.geodetic_bounds(TileIndex::new(1, 1, 0));
+        assert!((b[0] - 0.0).abs() < 1e-9 && (b[2] - 180.0).abs() < 1e-9);
+        assert!((b[1] - 0.0).abs() < 1e-9 && (b[3] - 85.051_128_779_806_59).abs() < 1e-9);
+        // NZTM2000Quad's tiles are a quarter of Mercator's: at Wellington's
+        // latitude a tile shows 1.6 zooms deeper than its matrix.
+        let nztm = TileMatrixSet::by_id("NZTM2000Quad").unwrap();
+        let p = nztm
+            .projection()
+            .forward(orb_geo::Geodetic::new(174.78, -41.29));
+        let tile = nztm
+            .tiles_in(WorldRect { min: p, max: p }, 8)
+            .next()
+            .unwrap();
+        let zoom = nztm.style_zoom(tile);
+        assert!((zoom - 9.6).abs() < 0.05, "{zoom}");
+        // A polar tile around the pole spans every longitude.
+        let ups = TileMatrixSet::by_id("UPSArcticWGS84Quad").unwrap();
+        let pole = ups.projection().forward(orb_geo::Geodetic::new(0.0, 90.0));
+        let tile = ups
+            .tiles_in(
+                WorldRect {
+                    min: pole,
+                    max: pole,
+                },
+                3,
+            )
+            .next()
+            .unwrap();
+        let b = ups.geodetic_bounds(tile);
+        assert_eq!((b[0], b[2], b[3]), (-180.0, 180.0, 90.0));
     }
 
     #[test]

@@ -30,6 +30,9 @@ pub struct Options {
     pub promote_id: Option<String>,
     pub index_max_zoom: u8,
     pub index_max_points: usize,
+    /// The plane to tile in: a one-tile quadtree whose zoom-0 tile is the
+    /// index's unit square. `None` is Web Mercator, as GL JS tiles.
+    pub plane: Option<std::sync::Arc<orb_crs::TileMatrixSet>>,
 }
 
 impl Default for Options {
@@ -44,6 +47,7 @@ impl Default for Options {
             promote_id: None,
             index_max_zoom: 5,
             index_max_points: 100_000,
+            plane: None,
         }
     }
 }

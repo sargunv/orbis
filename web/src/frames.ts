@@ -39,7 +39,7 @@ export interface FrameAck extends FrameStats {
 }
 
 export type MapEventObject =
-  | { type: "styleload"; camera: Float64Array | null }
+  | { type: "styleload"; camera: Float64Array | null; projection: string }
   | { type: "styledata"; generation: number }
   | { type: "sourcedata"; source: string; loaded: boolean }
   | { type: "load" } | { type: "idle" }

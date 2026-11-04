@@ -16,6 +16,7 @@ mod geojson;
 mod layer;
 mod light;
 mod property;
+mod scene;
 mod sky;
 mod source;
 mod spec;
@@ -41,6 +42,7 @@ pub use property::{
     Property, PropertyValue, Resampling, Scheme, SymbolPlacement, SymbolZOrder, TextJustify,
     TextRotationAlignment, TextTransform, TranslateAnchor, Visibility, WritingMode,
 };
+pub use scene::{Scene, StyleRef, is_scene, parse_scene, tms_definition};
 pub use sky::Sky;
 pub use source::{
     GeoJsonData, GeoJsonSource, PromoteId, RasterDemSource, RasterSource, Source, SourceKind,

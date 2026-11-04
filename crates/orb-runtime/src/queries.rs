@@ -181,6 +181,7 @@ impl crate::Map {
             style: style.id,
             source: style.worker.plan().sources[index].key,
             tile,
+            zoom: endpoint.tms.style_zoom(tile),
             data_zoom: tile.z.min(endpoint.maxzoom),
             location: endpoint.location(endpoint.data_tile(tile)),
             encoding: endpoint.encoding,

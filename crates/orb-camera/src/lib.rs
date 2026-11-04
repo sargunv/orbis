@@ -230,6 +230,11 @@ impl View {
         self.world_per_px
     }
 
+    /// World units per metre of v8 feature height at the target.
+    pub fn height_scale(&self) -> f64 {
+        self.height_scale
+    }
+
     /// Camera-relative world → clip space, with depth in [0, 1].
     pub fn view_proj(&self) -> DMat4 {
         self.view_proj

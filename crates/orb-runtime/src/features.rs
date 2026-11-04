@@ -22,7 +22,7 @@ pub enum FeatureSelect {
 
 /// A query to a tile's owner worker: the tile, as it was loaded, and what
 /// to read from it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FeatureRequest {
     /// The tile's load request (`nodes` and `rows_only` unused).
     pub tile: TileRequest,

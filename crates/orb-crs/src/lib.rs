@@ -16,7 +16,9 @@ mod tms;
 
 pub use cover::{CoverDecision, CoveredTile};
 pub use projection::{Descriptor, Projection, UnknownProjection};
-pub use tms::{TileIndex, TileMatrixSet, UnknownTileMatrixSet};
+pub use tms::{
+    TileIndex, TileMatrix, TileMatrixSet, TileMatrixSetDefinition, UnknownTileMatrixSet,
+};
 
 use glam::DVec2;
 

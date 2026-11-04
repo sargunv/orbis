@@ -334,6 +334,9 @@ impl Map {
         target.end();
         let mut jumped = false;
         for event in self.map.take_events() {
+            if let MapEvent::StyleLoad { .. } = event {
+                self.camera.set_projection(self.map.projection());
+            }
             if let MapEvent::StyleLoad {
                 camera: Some(style),
             } = &event

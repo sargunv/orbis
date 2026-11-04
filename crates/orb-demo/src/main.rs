@@ -524,6 +524,9 @@ impl State {
 
     fn map_events(&mut self) {
         for event in self.map.take_events() {
+            if let MapEvent::StyleLoad { .. } = event {
+                self.camera.set_projection(self.map.projection());
+            }
             match event {
                 MapEvent::StyleLoad {
                     camera: Some(style),

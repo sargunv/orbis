@@ -1,6 +1,6 @@
 //! Tiled sources' TileJSON/tile URLs and GeoJSON source-data endpoints.
 
-use orb_crs::TileIndex;
+use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json;
 use orb_v8::{
     DemEncoding, Encoding, GeoJsonData, GeoJsonSource, RasterSource, Scheme, SourceKind, TileSet,
@@ -28,12 +28,18 @@ pub(crate) struct TileEndpoint {
     pub(crate) cover_px: f64,
     /// A `raster-dem` source's unpack vector.
     pub(crate) dem_unpack: Option<[f64; 4]>,
+    /// The tile matrix set its tiles are in.
+    pub(crate) tms: TileMatrixSet,
 }
 
 impl TileEndpoint {
     /// The endpoint of a tiled source, with the style's keys taking
     /// precedence over its TileJSON's, as in GL JS.
-    pub(crate) fn resolve(source: &SourceKind, tilejson: Option<&str>) -> Result<Self, String> {
+    pub(crate) fn resolve(
+        source: &SourceKind,
+        tilejson: Option<&str>,
+        tms: TileMatrixSet,
+    ) -> Result<Self, String> {
         let doc = tilejson
             .map(|text| json::parse(text).map_err(|e| format!("bad TileJSON: {e}")))
             .transpose()?;
@@ -84,7 +90,7 @@ impl TileEndpoint {
             style
                 .or_else(|| number(key))
                 .unwrap_or(default)
-                .clamp(0.0, 30.0) as u8
+                .clamp(f64::from(tms.min_zoom()), f64::from(tms.max_zoom())) as u8
         };
         let bounds = tileset.bounds.or_else(|| {
             let values = doc.as_ref()?.get("bounds")?.as_array()?;
@@ -136,12 +142,13 @@ impl TileEndpoint {
             encoding,
             cover_px,
             dem_unpack,
+            tms,
         })
     }
 
     /// GeoJSON uses one source URL (or no URL for inline data); the tile
     /// worker supplies geometry rather than decoding a vector tile response.
-    pub(crate) fn geojson(source: &GeoJsonSource) -> Self {
+    pub(crate) fn geojson(source: &GeoJsonSource, tms: TileMatrixSet) -> Self {
         Self {
             archive: None,
             bounds: None,
@@ -156,6 +163,7 @@ impl TileEndpoint {
             encoding: Encoding::Mvt,
             cover_px: VECTOR_TILE_PX,
             dem_unpack: None,
+            tms,
         }
     }
 
@@ -182,21 +190,16 @@ impl TileEndpoint {
     }
 
     pub(crate) fn contains(&self, tile: TileIndex) -> bool {
+        if !self.tms.contains(tile) {
+            return false;
+        }
         let Some([west, south, east, north]) = self.bounds else {
             return true;
         };
-        let n = (1u64 << tile.z) as f64;
-        let lon = |col: u32| f64::from(col) / n * 360.0 - 180.0;
-        let lat = |row: u32| {
-            ((1.0 - 2.0 * f64::from(row) / n) * std::f64::consts::PI)
-                .sinh()
-                .atan()
-                .to_degrees()
-        };
-        lon(tile.col) < east
-            && lon(tile.col + 1) > west
-            && lat(tile.row) > south
-            && lat(tile.row + 1) < north
+        let [w, s, e, n] = self.tms.geodetic_bounds(tile);
+        // Bounds crossing the antimeridian have east past 180.
+        let overlaps_lon = |shift: f64| w + shift < east && e + shift > west;
+        (overlaps_lon(0.0) || overlaps_lon(360.0) || overlaps_lon(-360.0)) && s < north && n > south
     }
 
     /// The URL of a tile, spreading tiles over the templates.
@@ -204,17 +207,61 @@ impl TileEndpoint {
         if let Some(url) = &self.data_url {
             return url.clone();
         }
+        let native = self.tms.native_row(tile);
         let row = match self.scheme {
-            Scheme::Xyz => tile.row,
-            Scheme::Tms => (1u32 << tile.z) - 1 - tile.row,
+            Scheme::Xyz => native,
+            Scheme::Tms => self.tms.matrix_size(tile.z).1 - 1 - native,
         };
         let template =
             &self.templates[(tile.col as usize + tile.row as usize) % self.templates.len()];
-        template
+        let mut url = template
             .replace("{z}", &tile.z.to_string())
             .replace("{x}", &tile.col.to_string())
             .replace("{y}", &row.to_string())
+            .replace("{tileMatrix}", &tile.z.to_string())
+            .replace("{tileCol}", &tile.col.to_string())
+            .replace("{tileRow}", &native.to_string());
+        if url.contains("{bbox}") {
+            let b = self.tms.tile_bounds(tile);
+            url = url.replace(
+                "{bbox}",
+                &format!("{},{},{},{}", b.min.x, b.min.y, b.max.x, b.max.y),
+            );
+        }
+        url
     }
+}
+
+/// `relative` resolved against `base`, as a browser resolves a link:
+/// absolute URLs stay, `/path` keeps the origin, others replace `base`'s
+/// last segment with `./` and `../` applied.
+pub(crate) fn join_url(base: &str, relative: &str) -> String {
+    if relative.contains("://") || relative.starts_with("data:") {
+        return relative.to_string();
+    }
+    let base = base.split(['?', '#']).next().unwrap_or(base);
+    let origin_end = base
+        .find("://")
+        .map(|i| base[i + 3..].find('/').map_or(base.len(), |j| i + 3 + j))
+        .unwrap_or(0);
+    let (origin, path) = base.split_at(origin_end);
+    if let Some(absolute) = relative.strip_prefix('/') {
+        return format!("{origin}/{absolute}");
+    }
+    let mut segments: Vec<&str> = path.split('/').collect();
+    segments.pop();
+    for part in relative.split('/') {
+        match part {
+            "." => {}
+            ".." => {
+                if segments.len() > 1 {
+                    segments.pop();
+                }
+            }
+            part => segments.push(part),
+        }
+    }
+    format!("{origin}{}", segments.join("/"))
 }
 
 /// Header metadata has the same precedence as TileJSON keys.
@@ -236,6 +283,52 @@ pub(crate) fn archive_tilejson(bytes: &[u8]) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    fn mercator() -> TileMatrixSet {
+        TileMatrixSet::by_id("WebMercatorQuad").unwrap()
+    }
+
+    #[test]
+    fn joins_relative_urls() {
+        let base = "https://x.org/a/b/scene.json?k=1";
+        assert_eq!(join_url(base, "style.json"), "https://x.org/a/b/style.json");
+        assert_eq!(
+            join_url(base, "./s/style.json"),
+            "https://x.org/a/b/s/style.json"
+        );
+        assert_eq!(
+            join_url(base, "../style.json"),
+            "https://x.org/a/style.json"
+        );
+        assert_eq!(join_url(base, "/style.json"), "https://x.org/style.json");
+        assert_eq!(join_url(base, "file:///s.json"), "file:///s.json");
+        assert_eq!(
+            join_url("file:///d/scene.json", "s.json"),
+            "file:///d/s.json"
+        );
+    }
+
+    #[test]
+    fn matrix_set_tokens_and_bounds() {
+        let nztm = TileMatrixSet::by_id("NZTM2000Quad").unwrap();
+        let source = vector(
+            r#"{"type": "raster", "tiles": ["t/{tileMatrix}/{tileCol}/{tileRow}?b={bbox}"], "bounds": [166, -48, 179, -34]}"#,
+        );
+        let endpoint = TileEndpoint::resolve(&source, None, nztm.clone()).unwrap();
+        let tile = TileIndex::new(1, 1, 0);
+        let b = nztm.tile_bounds(tile);
+        assert_eq!(
+            endpoint.url(tile),
+            format!("t/1/1/0?b={},{},{},{}", b.min.x, b.min.y, b.max.x, b.max.y)
+        );
+        // New Zealand is at the grid's centre: the middle four tiles at
+        // zoom 2.
+        assert!(endpoint.contains(TileIndex::new(2, 1, 1)));
+        assert!(endpoint.contains(TileIndex::new(2, 2, 2)));
+        assert!(!endpoint.contains(TileIndex::new(2, 0, 0)));
+        assert!(!endpoint.contains(TileIndex::new(2, 3, 3)));
+        assert!(!endpoint.contains(TileIndex::new(2, 4, 0)));
+    }
+
     fn vector(style: &str) -> SourceKind {
         let style = orb_v8::parse(&format!(
             r#"{{"version": 8, "sources": {{"s": {style}}}, "layers": []}}"#
@@ -248,13 +341,13 @@ mod tests {
     fn raster_sources_round_their_cover_and_unpack_dems() {
         let source =
             vector(r#"{"type": "raster", "tiles": ["t/{z}/{x}/{y}.png"], "tileSize": 256}"#);
-        let endpoint = TileEndpoint::resolve(&source, None).unwrap();
+        let endpoint = TileEndpoint::resolve(&source, None, mercator()).unwrap();
         assert_eq!(endpoint.cover_px, 256.0 / std::f64::consts::SQRT_2);
         assert_eq!(endpoint.dem_unpack, None);
         let source = vector(r#"{"type": "raster-dem", "url": "https://x/dem.json"}"#);
         let tilejson =
             r#"{"tiles": ["t/{z}/{x}/{y}.png"], "tileSize": 256, "encoding": "terrarium"}"#;
-        let endpoint = TileEndpoint::resolve(&source, Some(tilejson)).unwrap();
+        let endpoint = TileEndpoint::resolve(&source, Some(tilejson), mercator()).unwrap();
         assert_eq!(endpoint.cover_px, 256.0 / std::f64::consts::SQRT_2);
         assert_eq!(
             endpoint.dem_unpack,
@@ -279,7 +372,7 @@ mod tests {
         let metadata = archive_tilejson(&header).unwrap();
         let source =
             vector(r#"{"type":"vector","url":"pmtiles://https://x/tokyo.pmtiles","maxzoom":12}"#);
-        let endpoint = TileEndpoint::resolve(&source, Some(&metadata)).unwrap();
+        let endpoint = TileEndpoint::resolve(&source, Some(&metadata), mercator()).unwrap();
         assert_eq!(
             (endpoint.minzoom, endpoint.maxzoom, endpoint.encoding),
             (10, 12, Encoding::Mlt)
@@ -294,7 +387,7 @@ mod tests {
         let source = vector(
             r#"{"type":"vector","url":"pmtiles://https://x/a","tiles":["https://x/{z}/{x}/{y}.pbf"],"bounds":[-180,-85,180,85],"encoding":"mvt"}"#,
         );
-        let endpoint = TileEndpoint::resolve(&source, Some(&metadata)).unwrap();
+        let endpoint = TileEndpoint::resolve(&source, Some(&metadata), mercator()).unwrap();
         assert_eq!(endpoint.encoding, Encoding::Mvt);
         assert!(endpoint.contains(TileIndex::new(10, 0, 1)));
         assert!(matches!(
@@ -307,7 +400,7 @@ mod tests {
     fn style_keys_override_tilejson() {
         let source = vector(r#"{"type": "vector", "url": "https://x/tiles.json", "maxzoom": 12}"#);
         let tilejson = r#"{"tiles": ["https://x/{z}/{x}/{y}.pbf"], "minzoom": 2, "maxzoom": 14}"#;
-        let endpoint = TileEndpoint::resolve(&source, Some(tilejson)).unwrap();
+        let endpoint = TileEndpoint::resolve(&source, Some(tilejson), mercator()).unwrap();
         assert_eq!((endpoint.minzoom, endpoint.maxzoom), (2, 12));
         assert_eq!(endpoint.url(TileIndex::new(3, 1, 2)), "https://x/3/1/2.pbf");
     }
@@ -315,13 +408,13 @@ mod tests {
     #[test]
     fn tms_rows_count_from_the_bottom() {
         let source = vector(r#"{"type": "vector", "tiles": ["t/{z}/{x}/{y}"], "scheme": "tms"}"#);
-        let endpoint = TileEndpoint::resolve(&source, None).unwrap();
+        let endpoint = TileEndpoint::resolve(&source, None, mercator()).unwrap();
         assert_eq!(endpoint.url(TileIndex::new(2, 1, 0)), "t/2/1/3");
     }
 
     #[test]
     fn needs_tile_urls() {
         let source = vector(r#"{"type": "vector", "url": "https://x/tiles.json"}"#);
-        assert!(TileEndpoint::resolve(&source, Some("{}")).is_err());
+        assert!(TileEndpoint::resolve(&source, Some("{}"), mercator()).is_err());
     }
 }

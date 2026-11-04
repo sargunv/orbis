@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex};
 use glam::DVec2;
 use orb_camera::{CameraState, View, Viewport};
 use orb_crs::{TileIndex, TileMatrixSet};
+
+use crate::surface::Surface;
 use orb_hal::{Gpu, HostBytesId, TextureId};
 use orb_host::{Fetch, FetchError, ImageDecode};
 use orb_render::{
@@ -119,6 +121,11 @@ enum Message {
     },
     Style {
         request: u64,
+        /// Where the document came from, for a scene document's relative
+        /// style URL.
+        url: String,
+        /// A scene document's style: keep its surface.
+        scene: bool,
         result: Result<String, FetchError>,
     },
     Sprite {
@@ -247,7 +254,9 @@ pub struct Map {
     camera: CameraState,
     antialias_3d: bool,
     cost: CostModel,
-    tms: TileMatrixSet,
+    /// The plane the map draws on and its sources' tile matrix sets, from
+    /// the scene document.
+    pub(crate) surface: Surface,
     /// The latest `load_style_url` request; earlier ones are ignored.
     style_request: u64,
     generation: u64,
@@ -357,6 +366,7 @@ pub(crate) fn full_update(
     doc: &StyleDoc,
     revision: u64,
     local_ideographs: Option<String>,
+    plane: Option<TileMatrixSet>,
 ) -> StyleUpdate {
     StyleUpdate {
         revision,
@@ -380,6 +390,7 @@ pub(crate) fn full_update(
         font_faces: doc.style().font_faces.clone(),
         local_ideographs,
         cost: doc.cost_model(),
+        plane,
     }
 }
 
@@ -389,6 +400,7 @@ pub(crate) fn revise(
     doc: &StyleDoc,
     revision: u64,
     local_ideographs: Option<String>,
+    plane: Option<TileMatrixSet>,
 ) -> TileWorker {
     TileWorker::with_style(
         previous,
@@ -398,6 +410,7 @@ pub(crate) fn revise(
         revision,
         doc.cost_model(),
         local_ideographs,
+        plane,
     )
 }
 
@@ -416,7 +429,7 @@ impl Map {
             placement_ms: 0.0,
             services,
             camera,
-            tms: TileMatrixSet::by_id("WebMercatorQuad").expect("built-in tile matrix set"),
+            surface: Surface::default(),
             style_request: 0,
             generation: 0,
             tile_generation: 0,
@@ -520,6 +533,7 @@ impl Map {
             style.worker.plan(),
             [target.lon, target.lat],
             self.camera.zoom(),
+            &self.bucket_planes(style),
         )
     }
 
@@ -547,14 +561,27 @@ impl Map {
             .map(|(camera, viewport, ..)| (camera, viewport))
     }
 
-    /// The surface's projection, for camera moves.
+    /// The surface's projection, for camera moves. It changes when a scene
+    /// document loads (with [`MapEvent::StyleLoad`]) or with
+    /// [`set_projection`](Self::set_projection).
     pub fn projection(&self) -> orb_crs::Projection {
-        *self.tms.projection()
+        *self.surface.projection()
+    }
+
+    /// Draws the map on another plane, keeping the style, the sources'
+    /// tile matrix sets and the camera's target and resolution. Tiles load
+    /// again.
+    pub fn set_projection(&mut self, projection: orb_crs::Projection) {
+        self.surface = self.surface.with_projection(projection);
+        if let Some(style) = &self.style {
+            let doc = style.doc.clone();
+            self.install(doc);
+        }
     }
 
     /// The view the camera gives for a viewport.
     pub fn view(&self, viewport: Viewport) -> View {
-        View::new(&self.camera, viewport, self.tms.projection())
+        View::new(&self.camera, viewport, self.surface.projection())
     }
 
     /// Keeps the camera to the world's edge, as GL JS's transform does
@@ -562,7 +589,7 @@ impl Map {
     /// write the camera directly call this, since rendering never writes
     /// the camera.
     pub fn constrain_camera(&mut self, viewport: Viewport) {
-        let projection = *self.tms.projection();
+        let projection = *self.surface.projection();
         self.camera
             .constrain(&orb_camera::Constraints::WORLD, &projection, viewport);
     }
@@ -616,18 +643,56 @@ impl Map {
         }
     }
 
-    /// Loads a style from a URL; it replaces the current one when it
-    /// arrives.
+    /// Loads a v8 style or a scene document from a URL; it replaces the
+    /// current one when it arrives.
     pub fn load_style_url(&mut self, url: &str) {
-        self.style_request += 1;
-        let request = self.style_request;
-        self.fetch_text(url, move |result| Message::Style { request, result });
+        self.fetch_style(url, false);
     }
 
-    /// Replaces the style with a v8 document. Its tiles load as frames
-    /// render.
+    fn fetch_style(&mut self, url: &str, scene: bool) {
+        self.style_request += 1;
+        let request = self.style_request;
+        let owned = url.to_string();
+        self.fetch_text(url, move |result| Message::Style {
+            request,
+            url: owned,
+            scene,
+            result,
+        });
+    }
+
+    /// Replaces the style with a v8 document on the default surface (Web
+    /// Mercator), or with a scene document and its style. Its tiles load
+    /// as frames render.
     pub fn set_style_json(&mut self, json: &str) -> Result<(), String> {
+        self.set_document(json, None, false)
+    }
+
+    /// Installs a v8 style or a scene document; `base` resolves a scene's
+    /// relative style URL, and `scene` keeps the surface for a scene's own
+    /// style.
+    fn set_document(&mut self, json: &str, base: Option<&str>, scene: bool) -> Result<(), String> {
+        if !scene && orb_v8::is_scene(json) {
+            let parsed = orb_v8::parse_scene(json).map_err(|d| d.to_string())?;
+            self.warnings
+                .extend(parsed.warnings.iter().map(ToString::to_string));
+            self.surface = Surface::new(parsed.projection, parsed.sources);
+            return match parsed.style {
+                orb_v8::StyleRef::Inline(style) => self.set_document(&style, base, true),
+                orb_v8::StyleRef::Url(url) => {
+                    let url = match base {
+                        Some(base) => crate::source::join_url(base, &url),
+                        None => url,
+                    };
+                    self.fetch_style(&url, true);
+                    Ok(())
+                }
+            };
+        }
         let doc = StyleDoc::parse(json).map_err(|d| d.to_string())?;
+        if !scene {
+            self.surface = Surface::default();
+        }
         // A style URL still loading is superseded.
         self.style_request += 1;
         self.install(doc);
@@ -644,6 +709,7 @@ impl Map {
             &doc,
             self.version,
             self.labels.ideographs.clone(),
+            self.surface.plane(),
         ));
         let plan = worker.plan();
         self.warnings
@@ -673,7 +739,12 @@ impl Map {
         self.style_id += 1;
         self.services.jobs.set_style(
             self.style_id,
-            &full_update(&doc, self.version, self.labels.ideographs.clone()),
+            &full_update(
+                &doc,
+                self.version,
+                self.labels.ideographs.clone(),
+                self.surface.plane(),
+            ),
             &worker,
         );
 
@@ -758,20 +829,46 @@ impl Map {
                     SourceState::Resolving
                 }
                 None => ready_source(
-                    TileEndpoint::resolve(&source.kind, None),
+                    self.planned(&source.id, false)
+                        .and_then(|tms| TileEndpoint::resolve(&source.kind, None, tms)),
                     &source.id,
                     plan.image_kind(index).is_some(),
                     &mut self.warnings,
                 ),
             },
             (SourceKind::GeoJson(geojson), _) => ready_source(
-                Ok(TileEndpoint::geojson(geojson)),
+                self.planned(&source.id, true)
+                    .map(|tms| TileEndpoint::geojson(geojson, tms)),
                 &source.id,
                 false,
                 &mut self.warnings,
             ),
             _ => unreachable!("plan sources are drawable"),
         }
+    }
+
+    /// The tile matrix sets of this frame's symbol buckets.
+    fn bucket_planes<'a>(&'a self, style: &'a LoadedStyle) -> crate::labels::BucketPlanes<'a> {
+        let tms = style
+            .symbol_tiles
+            .iter()
+            .filter_map(|t| match style.sources.get(t.source)? {
+                SourceState::Ready { endpoint, .. } => Some((t.bucket, &endpoint.tms)),
+                _ => None,
+            })
+            .collect();
+        crate::labels::BucketPlanes {
+            tms,
+            projection: *self.surface.projection(),
+            period: self.surface.period(),
+        }
+    }
+
+    /// A source's tile matrix set, if the planner can bring it to the
+    /// surface.
+    fn planned(&self, id: &str, geojson: bool) -> Result<TileMatrixSet, String> {
+        let tms = self.surface.source_tms(id, geojson);
+        self.surface.plan(&tms).map(|_| tms)
     }
 
     /// Draws a frame into `target`: applies arrived data, loads what the
@@ -868,8 +965,9 @@ impl Map {
             // Backgrounds draw on every covered tile, as GL JS's do: never
             // beyond the world's edge.
             if let Some(tile) = style.background {
-                let cover = view.cover(&self.tms, TILE_PX, 24);
-                let period = self.tms.projection().wrap_period().unwrap_or(0.0);
+                let tms = self.surface.tms();
+                let cover = view.cover(tms, TILE_PX, 24);
+                let period = self.surface.period();
                 let rows: Vec<_> = cover
                     .iter()
                     .map(|covered| {
@@ -878,7 +976,7 @@ impl Map {
                             wrap: covered.wrap,
                             regions: vec![covered.index],
                         };
-                        placements(&self.tms, &draw, 8192, view.camera_world(), period, zoom)
+                        placements(tms, &draw, 8192, view.camera_world(), period, zoom)
                             .next()
                             .expect("one background region")
                     })
@@ -909,9 +1007,9 @@ impl Map {
         if self.rebuild_hits
             && let Some(style) = &self.style
         {
-            let labels = self
-                .labels
-                .screen_hits(style.worker.plan(), &view, &self.tms);
+            let labels =
+                self.labels
+                    .screen_hits(style.worker.plan(), &view, &self.bucket_planes(style));
             self.hits.extend(labels);
         }
         self.hits.sort_by_key(|h| h.order);
@@ -954,7 +1052,7 @@ impl Map {
             sky_horizon: view.sky_horizon() as f32,
             symbol_fade_change: self.labels.fade_change(now),
             pitch: self.camera.pitch.to_radians() as f32,
-            align: pixel_alignment(&view, &self.tms, self.camera.bearing),
+            align: pixel_alignment(&view, self.surface.projection(), self.camera.bearing),
         };
         let (renderer, _) = self.renderer.as_mut().expect("created above");
         report.frame = renderer.render(gpu, &frame, target, clear);
@@ -1101,7 +1199,9 @@ impl Map {
     // whereas projected XY uses the WGS84 semi-major axis. Retain v8's
     // vertical scale without changing the camera's true ground resolution.
     fn extrusion_scale(&self) -> f64 {
-        self.tms.projection().style_height_scale(self.camera.target)
+        self.surface
+            .projection()
+            .style_height_scale(self.camera.target)
     }
 
     /// Sends a tile job for source `index` of the current plan.
@@ -1122,6 +1222,7 @@ impl Map {
             style: style.id,
             source: key,
             tile,
+            zoom: endpoint.tms.style_zoom(tile),
             data_zoom: tile.z.min(endpoint.maxzoom),
             location: endpoint.location(endpoint.data_tile(tile)),
             encoding: endpoint.encoding,
@@ -1181,11 +1282,20 @@ impl Map {
         );
         // Glyph rasterization above is the jobs'; placement starts here.
         let started = self.services.clock.now();
+        let tms: Vec<Option<&TileMatrixSet>> = style
+            .sources
+            .iter()
+            .map(|source| match source {
+                SourceState::Ready { endpoint, .. } => Some(&endpoint.tms),
+                _ => None,
+            })
+            .collect();
         let frame = self.labels.frame(
             style.worker.plan(),
             &style.symbol_tiles,
             view,
-            &self.tms,
+            &tms,
+            self.surface.period(),
             &self.camera,
             extrusion_scale,
             now,
@@ -1263,8 +1373,10 @@ impl Map {
         else {
             return;
         };
+        let endpoint = Arc::clone(endpoint);
+        let tms = &endpoint.tms;
         let cover = view.cover_volume(
-            &self.tms,
+            tms,
             endpoint.cover_px,
             pyramid.max_zoom(),
             f64::from(height) * elevation_scale,
@@ -1294,7 +1406,7 @@ impl Map {
             rows.entry(draw.tile).or_default().push(draw);
         }
         let camera_world = view.camera_world();
-        let period = self.tms.projection().wrap_period().unwrap_or(0.0);
+        let period = self.surface.period();
         let placed = &mut style.placed[index];
         for (&tile, draws) in &rows {
             let resident = pyramid.get(tile).expect("drawn tiles are ready");
@@ -1305,6 +1417,7 @@ impl Map {
                 wraps.dedup();
                 for wrap in wraps {
                     style.symbol_tiles.push(crate::labels::SymbolTile {
+                        source: index,
                         layer: symbols.layer,
                         bucket: symbols.bucket,
                         tile,
@@ -1317,7 +1430,8 @@ impl Map {
                     hits: &mut self.hits,
                     plan: style.worker.plan(),
                     view,
-                    tms: &self.tms,
+                    tms,
+                    period,
                     camera: &self.camera,
                 }
                 .tile(resident, index, tile, draws);
@@ -1326,14 +1440,7 @@ impl Map {
                 let rows: Vec<TileRow> = draws
                     .iter()
                     .flat_map(|draw| {
-                        placements(
-                            &self.tms,
-                            draw,
-                            extent,
-                            camera_world,
-                            period,
-                            self.camera.zoom(),
-                        )
+                        placements(tms, draw, extent, camera_world, period, self.camera.zoom())
                     })
                     .collect();
                 report.tiles_drawn += rows.len() as u32;
@@ -1377,13 +1484,19 @@ impl Map {
 
     /// Installs a style that `load_style_url` fetched, unless a later
     /// request or `set_style_json` superseded it.
-    fn apply_style(&mut self, request: u64, result: Result<String, FetchError>) {
+    fn apply_style(
+        &mut self,
+        request: u64,
+        url: &str,
+        scene: bool,
+        result: Result<String, FetchError>,
+    ) {
         if request != self.style_request {
             return;
         }
         let installed = result
             .map_err(|e| e.to_string())
-            .and_then(|json| self.set_style_json(&json));
+            .and_then(|json| self.set_document(&json, Some(url), scene));
         if let Err(e) = installed {
             self.fail(format!("style: {e}"));
         }
@@ -1410,7 +1523,12 @@ impl Map {
                         );
                     }
                 }
-                Message::Style { request, result } => self.apply_style(request, result),
+                Message::Style {
+                    request,
+                    url,
+                    scene,
+                    result,
+                } => self.apply_style(request, &url, scene, result),
                 Message::Sprite { generation, result } => {
                     if let Some(style) = self
                         .style
@@ -1492,9 +1610,11 @@ impl Map {
                         continue;
                     }
                     let def = plan.source_def(index);
-                    let endpoint = match result {
-                        Ok(text) => TileEndpoint::resolve(&def.kind, Some(&text)),
-                        Err(e) => Err(format!("TileJSON: {e}")),
+                    let tms = self.surface.source_tms(&def.id, false);
+                    let endpoint = match (result, self.surface.plan(&tms)) {
+                        (Err(e), _) => Err(format!("TileJSON: {e}")),
+                        (Ok(_), Err(e)) => Err(e),
+                        (Ok(text), Ok(_)) => TileEndpoint::resolve(&def.kind, Some(&text), tms),
                     };
                     let image = plan.image_kind(index).is_some();
                     style.sources[index] =
@@ -1644,6 +1764,7 @@ impl Map {
             }
         }
         drop_stale(&mut build, plan, &stale);
+        let tile_zoom = endpoint.tms.style_zoom(tile);
         let mut atlas = self.services.images.0.lock().expect("images poisoned");
         // Make room by evicting cached tiles the view doesn't use, least
         // recently used first, this source's before others'; then the tiles
@@ -1663,7 +1784,7 @@ impl Map {
                 style.image_namespace.expect("namespace"),
                 &mut style.states,
                 &mut self.labels,
-                f64::from(tile.z),
+                tile_zoom,
                 &mut self.warnings,
             ) {
                 Ok(resident) => break Some(resident),
@@ -2051,9 +2172,9 @@ pub(crate) fn remove_resident(
 /// target to a whole pixel of the world at this zoom (half a pixel off for
 /// odd viewport sizes, turned with the bearing), so image tiles at whole
 /// pixels draw crisp.
-fn pixel_alignment(view: &View, tms: &TileMatrixSet, bearing: f64) -> [f32; 2] {
+fn pixel_alignment(view: &View, projection: &orb_crs::Projection, bearing: f64) -> [f32; 2] {
     let world_per_px = view.world_per_px();
-    let bounds = tms.projection().world_bounds();
+    let bounds = projection.world_bounds();
     let camera = view.camera_world();
     let x = (camera.x - bounds.min.x) / world_per_px;
     let y = (bounds.max.y - camera.y) / world_per_px;
@@ -2095,8 +2216,9 @@ fn placements<'a>(
     // One placement has four clip rectangles. Split larger partitions into
     // disjoint rows instead of expanding to quadrants that overlap loaded
     // descendants (and render translucent geometry twice).
-    let pixel_size = TILE_PX * 2.0f64.powf(zoom.floor() - f64::from(tile.z));
-    let x = f64::from(tile.col) + f64::from(draw.wrap) * 2.0f64.powi(i32::from(tile.z));
+    let tile_zoom = tms.style_zoom(tile);
+    let pixel_size = TILE_PX * 2.0f64.powf(zoom.floor() - tile_zoom);
+    let x = f64::from(tile.col) + f64::from(draw.wrap) * f64::from(tms.matrix_size(tile.z).0);
     let pattern_origin = [
         (x * pixel_size) as i64 as u32,
         (f64::from(tile.row) * pixel_size) as i64 as u32,
@@ -2113,7 +2235,7 @@ fn placements<'a>(
             pattern_origin,
             origin: [origin.x as f32, origin.y as f32],
             scale,
-            zoom: f32::from(tile.z),
+            zoom: tile_zoom as f32,
             clips,
         }
     })
@@ -2547,8 +2669,12 @@ mod tests {
                     "a centred zoom must not move the target"
                 );
                 assert_eq!(
-                    map.view(viewport).cover(&map.tms, 512.0, 14),
-                    View::new(&fresh, viewport, map.tms.projection()).cover(&map.tms, 512.0, 14)
+                    map.view(viewport).cover(map.surface.tms(), 512.0, 14),
+                    View::new(&fresh, viewport, map.surface.projection()).cover(
+                        map.surface.tms(),
+                        512.0,
+                        14
+                    )
                 );
             }
         }
@@ -2594,10 +2720,68 @@ mod tests {
         map.set_style_json(&style("b")).unwrap();
         let (_, done) = fetch.pending.lock().unwrap().pop().unwrap();
         done(Ok(style("a").into_bytes()));
-        while let Ok(Message::Style { request, result }) = map.receiver.try_recv() {
-            map.apply_style(request, result);
+        while let Ok(Message::Style {
+            request,
+            url,
+            scene,
+            result,
+        }) = map.receiver.try_recv()
+        {
+            map.apply_style(request, &url, scene, result);
         }
         let name = map.style.as_ref().unwrap().worker.plan().style.name.clone();
         assert_eq!(name.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn scene_documents_choose_the_surface_and_load_their_style() {
+        let fetch = Arc::new(HeldFetch::default());
+        let services = Services {
+            clock: Arc::new(NoClock),
+            image_decode: Arc::new(NoDecode),
+            images: Default::default(),
+            jobs: PoolJobs::new(
+                fetch.clone(),
+                Arc::new(crate::jobs::tests::NoImages),
+                Arc::new(Inline),
+            ),
+            fetch: fetch.clone(),
+            wake: Arc::new(|| {}),
+        };
+        let mut map = Map::new(services, None);
+        map.load_style_url("https://example.com/maps/polar.json");
+        let deliver = |map: &mut Map, body: &str| {
+            let (url, done) = fetch.pending.lock().unwrap().pop().unwrap();
+            done(Ok(body.as_bytes().to_vec()));
+            while let Ok(Message::Style {
+                request,
+                url,
+                scene,
+                result,
+            }) = map.receiver.try_recv()
+            {
+                map.apply_style(request, &url, scene, result);
+            }
+            url
+        };
+        deliver(
+            &mut map,
+            r#"{"style": "styles/b.json", "projection": {"type": "EPSG:3413"},
+                "sources": {"s": {"tileMatrixSet": "UPSArcticWGS84Quad"}}}"#,
+        );
+        assert_eq!(map.projection().descriptor().kind, "EPSG:3413");
+        // The scene's relative style URL loads next, onto its surface.
+        assert_eq!(
+            deliver(&mut map, &style("b")),
+            "https://example.com/maps/styles/b.json"
+        );
+        assert_eq!(map.projection().descriptor().kind, "EPSG:3413");
+        assert_eq!(
+            map.surface.source_tms("s", false).id(),
+            "UPSArcticWGS84Quad"
+        );
+        // A plain v8 style is the default scene again.
+        map.set_style_json(&style("c")).unwrap();
+        assert_eq!(map.projection().descriptor().kind, "web-mercator");
     }
 }

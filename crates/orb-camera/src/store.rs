@@ -121,6 +121,18 @@ impl Camera {
         &self.projection
     }
 
+    /// Moves on the surface's new plane (a scene document loaded, or the
+    /// map's projection changed): the target and ground resolution stay,
+    /// running animations stop, and the camera keeps to the new world.
+    pub fn set_projection(&mut self, projection: Projection) {
+        if projection == self.projection {
+            return;
+        }
+        self.projection = projection;
+        self.running = None;
+        self.write(self.state);
+    }
+
     /// Resizes the viewport, keeping the camera to its constraints.
     pub fn set_viewport(&mut self, viewport: Viewport) {
         self.viewport = viewport;

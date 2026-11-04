@@ -394,6 +394,16 @@ impl UiRole {
     }
 
     /// Takes a style's camera if nothing moved the camera yet.
+    /// Moves the camera onto the map's surface: the `projection` of a
+    /// `styleload` event.
+    #[wasm_bindgen(js_name = setProjection)]
+    pub fn set_projection(&mut self, projection: &str) -> Result<(), JsError> {
+        let projection =
+            orb_runtime::projection_from_json(projection).map_err(|e| JsError::new(&e))?;
+        self.camera.set_projection(projection);
+        Ok(())
+    }
+
     #[wasm_bindgen(js_name = adoptStyleCamera)]
     pub fn adopt_style_camera(&mut self, camera: &[f64]) -> Result<bool, JsError> {
         if self.camera.modified() {
@@ -555,6 +565,7 @@ impl UiRole {
             DVec2::new(x, y),
             self.camera.state(),
             self.camera.viewport(),
+            self.camera.projection(),
         ))
     }
 }

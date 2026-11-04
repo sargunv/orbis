@@ -190,9 +190,20 @@ impl BucketMeshes {
     }
 }
 
+/// Where symbol buckets' tiles are: each bucket's tile matrix set, and the
+/// surface they draw on.
+pub(crate) struct BucketPlanes<'a> {
+    pub(crate) tms: HashMap<u64, &'a orb_crs::TileMatrixSet>,
+    pub(crate) projection: orb_crs::Projection,
+    /// The surface's wrap period, 0 if it doesn't wrap.
+    pub(crate) period: f64,
+}
+
 /// A drawn tile's bucket of a symbol layer, for this frame's placement.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SymbolTile {
+    /// The source's index in the plan.
+    pub(crate) source: usize,
     /// The layer's key.
     pub(crate) layer: u32,
     pub(crate) bucket: u64,
@@ -1039,7 +1050,8 @@ impl Labels {
         plan: &StylePlan,
         tiles: &[SymbolTile],
         view: &orb_camera::View,
-        tms: &orb_crs::TileMatrixSet,
+        tms: &[Option<&orb_crs::TileMatrixSet>],
+        period: f64,
         camera: &orb_camera::CameraState,
         extrusion_scale: f64,
         now: f64,
@@ -1047,7 +1059,6 @@ impl Labels {
         let zoom = camera.zoom();
         let view_proj = view.view_proj();
         let camera_world = view.camera_world();
-        let period = tms.projection().wrap_period().unwrap_or(0.0);
         let viewport = view.viewport();
         let layers = plan
             .nodes
@@ -1065,6 +1076,7 @@ impl Labels {
                     .into_iter()
                     .filter_map(|t| {
                         let b = self.buckets.get(&t.bucket)?;
+                        let tms = tms.get(t.source).copied().flatten()?;
                         let bounds = tms.tile_bounds(t.tile);
                         let origin = glam::DVec2::new(
                             bounds.min.x + f64::from(t.wrap) * period,
@@ -1133,7 +1145,7 @@ impl Labels {
         &self,
         plan: &StylePlan,
         view: &orb_camera::View,
-        tms: &orb_crs::TileMatrixSet,
+        planes: &BucketPlanes<'_>,
     ) -> Vec<crate::query::ScreenHit> {
         use orb_symbol::state;
         let Some(frame) = self.placed.as_deref() else {
@@ -1145,7 +1157,7 @@ impl Labels {
                     .get(placed as usize * state::WORDS)
                     .is_some_and(|&w| w & state::HIDDEN == 0 && w & state::PLACED != 0)
         };
-        let period = tms.projection().wrap_period().unwrap_or(0.0);
+        let period = planes.period;
         let center_w = (view.view_proj() * glam::DVec4::new(0.0, 0.0, 0.0, 1.0)).w;
         let mut hits = Vec::new();
         for layer in &frame.layers {
@@ -1160,6 +1172,9 @@ impl Labels {
                 };
                 let id = tile.view.id;
                 let Some(states) = meshes.written.get(&id.wrap) else {
+                    continue;
+                };
+                let Some(tms) = planes.tms.get(&tile.bucket) else {
                     continue;
                 };
                 let index = orb_crs::TileIndex::new(id.z, id.x, id.y);
@@ -1241,6 +1256,7 @@ impl Labels {
         plan: &StylePlan,
         center: [f64; 2],
         zoom: f64,
+        planes: &BucketPlanes<'_>,
     ) -> Option<orb_a11y::Snapshot> {
         use orb_symbol::state;
         let frame = self.placed.as_deref()?;
@@ -1267,7 +1283,14 @@ impl Labels {
                 let Some(meshes) = self.buckets.get(&tile.bucket) else {
                     continue;
                 };
+                let Some(tms) = planes.tms.get(&tile.bucket) else {
+                    continue;
+                };
                 let id = tile.view.id;
+                let to_world = tms.data_to_world(
+                    orb_crs::TileIndex::new(id.z, id.x, id.y),
+                    orb_symbol::EXTENT as u32,
+                );
                 let Some(states) = meshes.written.get(&id.wrap) else {
                     continue;
                 };
@@ -1313,16 +1336,10 @@ impl Labels {
                     {
                         continue;
                     }
-                    let n = f64::from(1u32 << id.z);
-                    let tx = (f64::from(id.x) + ax / orb_symbol::EXTENT) / n + f64::from(id.wrap);
-                    let ty = (f64::from(id.y) + ay / orb_symbol::EXTENT) / n;
-                    let lonlat = [
-                        tx * 360.0 - 180.0,
-                        (std::f64::consts::PI * (1.0 - 2.0 * ty))
-                            .sinh()
-                            .atan()
-                            .to_degrees(),
-                    ];
+                    let p = to_world.transform_point2(glam::DVec2::new(ax, ay))
+                        + glam::DVec2::new(f64::from(id.wrap) * planes.period, 0.0);
+                    let g = planes.projection.inverse(p);
+                    let lonlat = [g.lon, g.lat];
                     let (bearing, distance) = orb_a11y::bearing_distance(center, lonlat);
                     let sort_key = tables
                         .sort_key_ranges

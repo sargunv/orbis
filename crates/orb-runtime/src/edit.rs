@@ -94,6 +94,7 @@ impl Map {
             &style.doc,
             version,
             self.labels.ideographs.clone(),
+            self.surface.plane(),
         ));
         let mut layers: Vec<u32> = patch
             .changes
@@ -128,6 +129,7 @@ impl Map {
             glyphs: doc.style().glyphs.clone(),
             font_faces: doc.style().font_faces.clone(),
             local_ideographs: self.labels.ideographs.clone(),
+            plane: self.surface.plane(),
             cost: doc.cost_model(),
         };
         self.services.jobs.set_style(style.id, &update, &worker);
@@ -311,9 +313,13 @@ impl Map {
             }
         };
         self.warnings.append(&mut build.warnings);
-        let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
+        let SourceState::Ready {
+            pyramid, endpoint, ..
+        } = &mut style.sources[index]
+        else {
             return;
         };
+        let tile_zoom = endpoint.tms.style_zoom(tile);
         let Some(resident) = pyramid.get_mut(tile) else {
             return;
         };
@@ -439,7 +445,7 @@ impl Map {
                     atlas,
                     namespace,
                     &mut style.states,
-                    f64::from(tile.z),
+                    tile_zoom,
                 )
                 .is_err()
             {

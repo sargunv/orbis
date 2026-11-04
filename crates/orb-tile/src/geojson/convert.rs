@@ -42,12 +42,16 @@ fn geometry_to_features(
     out: &mut Vec<Projected>,
 ) {
     let shape = match geometry {
-        Geometry::Points(points) => Shape::Points(points.into_iter().map(project).collect()),
+        Geometry::Points(points) => Shape::Points(
+            points
+                .into_iter()
+                .filter_map(|p| project(p, options.plane.as_deref()))
+                .collect(),
+        ),
         Geometry::Lines(lines) => {
             let lines: Vec<_> = lines
                 .into_iter()
-                .filter(|l| !l.is_empty())
-                .map(|l| line(l, tolerance, false))
+                .filter_map(|l| line(l, tolerance, false, options.plane.as_deref()))
                 .collect();
             if options.line_metrics {
                 for l in lines {
@@ -66,8 +70,7 @@ fn geometry_to_features(
                 .into_iter()
                 .map(|p| {
                     p.into_iter()
-                        .filter(|l| !l.is_empty())
-                        .map(|l| line(l, tolerance, true))
+                        .filter_map(|l| line(l, tolerance, true, options.plane.as_deref()))
                         .collect::<Vec<_>>()
                 })
                 .filter(|p| !p.is_empty())
@@ -86,17 +89,55 @@ fn geometry_to_features(
     }
 }
 
-fn project([lon, lat]: [f64; 2]) -> Point {
-    let sin = (lat * std::f64::consts::PI / 180.0).sin();
-    let y = 0.5 - 0.25 * ((1.0 + sin) / (1.0 - sin)).ln() / std::f64::consts::PI;
-    Point {
-        xy: [lon / 360.0 + 0.5, y.clamp(0.0, 1.0)],
+/// A position in the index's unit square, or `None` outside the plane's
+/// projection.
+fn project([lon, lat]: [f64; 2], plane: Option<&orb_crs::TileMatrixSet>) -> Option<Point> {
+    let xy = match plane {
+        None => {
+            let sin = (lat * std::f64::consts::PI / 180.0).sin();
+            let y = 0.5 - 0.25 * ((1.0 + sin) / (1.0 - sin)).ln() / std::f64::consts::PI;
+            [lon / 360.0 + 0.5, y.clamp(0.0, 1.0)]
+        }
+        Some(tms) => {
+            let g = orb_geo::Geodetic::new(lon, lat);
+            let projection = tms.projection();
+            if !projection.contains(g) {
+                return None;
+            }
+            let unit = tms.unit(projection.forward(g));
+            if !unit.is_finite() {
+                return None;
+            }
+            unit.to_array()
+        }
+    };
+    Some(Point {
+        xy,
         importance: 0.0,
-    }
+    })
 }
 
-fn line(coords: Vec<[f64; 2]>, tolerance: f64, polygon: bool) -> Line {
-    let mut points: Vec<_> = coords.into_iter().map(project).collect();
+/// Longitude and latitude steps no longer than this many degrees: a
+/// straight segment in longitude and latitude curves on other planes.
+const DENSIFY_DEG: f64 = 1.0;
+
+fn line(
+    coords: Vec<[f64; 2]>,
+    tolerance: f64,
+    polygon: bool,
+    plane: Option<&orb_crs::TileMatrixSet>,
+) -> Option<Line> {
+    let coords = match plane {
+        None => coords,
+        Some(_) => densify(&coords),
+    };
+    let mut points: Vec<_> = coords
+        .into_iter()
+        .filter_map(|p| project(p, plane))
+        .collect();
+    if points.is_empty() {
+        return None;
+    }
     let mut size = 0.0;
     for pair in points.windows(2) {
         let [a, b] = [pair[0].xy, pair[1].xy];
@@ -112,12 +153,12 @@ fn line(coords: Vec<[f64; 2]>, tolerance: f64, polygon: bool) -> Line {
         simplify(&mut points, tolerance);
     }
     points[last].importance = 1.0;
-    Line {
+    Some(Line {
         points,
         size: size.abs(),
         start: 0.0,
         end: size.abs(),
-    }
+    })
 }
 
 fn simplify(points: &mut [Point], tolerance: f64) {
@@ -165,4 +206,20 @@ fn segment_distance(p: [f64; 2], mut a: [f64; 2], b: [f64; 2]) -> f64 {
         }
     }
     (p[0] - a[0]).powi(2) + (p[1] - a[1]).powi(2)
+}
+
+fn densify(coords: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let mut out = Vec::with_capacity(coords.len());
+    for (i, &b) in coords.iter().enumerate() {
+        if let Some(&a) = i.checked_sub(1).and_then(|j| coords.get(j)) {
+            let span = (b[0] - a[0]).abs().max((b[1] - a[1]).abs());
+            let steps = (span / DENSIFY_DEG).ceil().max(1.0) as usize;
+            for k in 1..steps {
+                let t = k as f64 / steps as f64;
+                out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+            }
+        }
+        out.push(b);
+    }
+    out
 }

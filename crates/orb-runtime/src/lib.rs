@@ -24,6 +24,7 @@ mod source;
 mod sprite;
 mod state;
 mod style;
+mod surface;
 mod symbol;
 #[cfg(test)]
 mod testing;
@@ -48,5 +49,6 @@ pub use placement_wire::{
 pub use queries::QueryDone;
 pub use query::{Hit, HitFeature, HitIndex};
 pub use style::ImageKind;
+pub use surface::{projection_from_json, projection_to_json};
 pub use symbol::{ResultSymbols, SYMBOL_TABLES, SpriteIcons, SymbolMeta, SymbolTable};
 pub use tile::{ImageRef, TileBuild};

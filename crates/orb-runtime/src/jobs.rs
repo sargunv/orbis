@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use orb_crs::TileIndex;
+use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::{self, Json, JsonValue, Member};
 use orb_hal::{HostBytesId, HostImageId};
 use orb_host::{DecodedImage, Fetch, FetchError, ImageDecode};
@@ -119,6 +119,8 @@ pub struct TileWorker {
     data: Arc<WorkerData>,
     /// The map's `localIdeographFontFamily`.
     ideographs: Option<String>,
+    /// The plane GeoJSON tiles in; `None` for Web Mercator.
+    plane: Option<TileMatrixSet>,
 }
 
 /// A tile job's outcome: the laid-out tile, or what its labels need first.
@@ -145,11 +147,13 @@ impl TileWorker {
             0,
             CostModel::DEFAULT,
             None,
+            None,
         ))
     }
 
     /// A revision of a parsed style, keeping `previous`'s data for the
     /// sources both have.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_style(
         previous: Option<&TileWorker>,
         style: Arc<Style>,
@@ -158,6 +162,7 @@ impl TileWorker {
         revision: u64,
         cost: CostModel,
         ideographs: Option<String>,
+        plane: Option<TileMatrixSet>,
     ) -> Self {
         let plan = StylePlan::new(style, layer_keys, source_keys, revision, cost);
         let data = match previous {
@@ -175,6 +180,7 @@ impl TileWorker {
             plan,
             data,
             ideographs,
+            plane,
         }
     }
 
@@ -312,6 +318,7 @@ impl TileWorker {
             update.revision,
             update.cost,
             update.local_ideographs.clone(),
+            update.plane.clone(),
         ))
     }
 
@@ -390,7 +397,6 @@ impl TileWorker {
         encoding: Encoding,
         request: &TileRequest,
     ) -> Result<Built, String> {
-        let tile = request.tile;
         let index = self
             .plan
             .source(request.source)
@@ -413,7 +419,7 @@ impl TileWorker {
                 Words::Unavailable => tile::WordData::Unavailable,
             },
         };
-        match tile::build(&frame, &self.plan, index, tile.z, select, symbols) {
+        match tile::build(&frame, &self.plan, index, request.zoom, select, symbols) {
             Ok(mut build) => {
                 warnings.extend(self.data.glyphs.take_warnings());
                 build.warnings.splice(0..0, warnings);
@@ -477,7 +483,11 @@ impl TileWorker {
                         std::str::from_utf8(bytes).map_err(|e| e.to_string())?,
                     )?,
                 };
-                orb_tile::geojson::Index::new(features, geojson.options.clone())
+                let options = orb_tile::geojson::Options {
+                    plane: self.plane.clone().map(Arc::new),
+                    ..geojson.options.clone()
+                };
+                orb_tile::geojson::Index::new(features, options)
             });
             index
                 .as_mut()
@@ -535,6 +545,9 @@ pub struct StyleUpdate {
     pub local_ideographs: Option<String>,
     /// Which paint the GPU interprets, as the map's plan decides it.
     pub cost: CostModel,
+    /// The plane GeoJSON sources tile in: the surface's one-tile set, or
+    /// `None` for Web Mercator.
+    pub plane: Option<TileMatrixSet>,
 }
 
 impl StyleUpdate {
@@ -639,6 +652,13 @@ impl StyleUpdate {
                 "maxOps",
                 synthetic(JsonValue::Number(self.cost.max_ops as f64)),
             ),
+            member(
+                "plane",
+                synthetic(match &self.plane {
+                    None => JsonValue::Null,
+                    Some(tms) => JsonValue::String(crate::projection_to_json(tms.projection())),
+                }),
+            ),
         ]))
         .to_string()
     }
@@ -729,18 +749,28 @@ impl StyleUpdate {
             cost: CostModel {
                 max_ops: doc.get("maxOps").and_then(Json::as_f64).ok_or_else(bad)? as usize,
             },
+            plane: match doc.get("plane").and_then(Json::as_str) {
+                Some(plane) => {
+                    let projection = crate::projection_from_json(plane)?;
+                    Some(TileMatrixSet::square(projection, projection.world_bounds()))
+                }
+                None => None,
+            },
         })
     }
 }
 
 /// A tile for a job to load and lay out.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TileRequest {
     /// Which style to lay out with, as given to [`Jobs::set_style`].
     pub style: u64,
     /// The source's key.
     pub source: u32,
     pub tile: TileIndex,
+    /// The style zoom the tile lays out at: its own zoom in
+    /// `WebMercatorQuad`, from its ground resolution in other sets.
+    pub zoom: f64,
     /// Zoom of the ancestor whose bytes are fetched.
     pub data_zoom: u8,
     pub location: TileLocation,
@@ -1652,6 +1682,7 @@ pub(crate) mod tests {
             style: 1,
             source: 1,
             tile,
+            zoom: f64::from(tile.z),
             data_zoom: tile.z,
             location: TileLocation::Url("test://data.json".into()),
             encoding: Encoding::Mvt,
@@ -1825,6 +1856,40 @@ pub(crate) mod tests {
         assert!(fetch.callbacks.lock().unwrap().is_empty());
     }
 
+    fn polar_plane() -> TileMatrixSet {
+        let projection = orb_crs::Projection::from_descriptor("EPSG:3413").unwrap();
+        TileMatrixSet::square(
+            projection,
+            orb_crs::WorldRect {
+                min: glam::DVec2::splat(-4_194_304.0),
+                max: glam::DVec2::splat(4_194_304.0),
+            },
+        )
+    }
+
+    #[test]
+    fn geojson_tiles_on_the_surface_plane() {
+        let style = r#"{"version":8,"sources":{"geo":{"type":"geojson","data":{"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,90]}},
+            {"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,-60]}}]}}},
+            "layers":[{"id":"c","type":"circle","source":"geo"}]}"#;
+        let plain = TileWorker::new(style).unwrap();
+        let worker = TileWorker {
+            plane: Some(polar_plane()),
+            ..plain
+        };
+        let tile = request(TileIndex::new(0, 0, 0));
+        let frame = worker
+            .decode(&[], Encoding::Mvt, 0, &worker.data(1), tile.tile, 0)
+            .unwrap();
+        let layer = frame.layer(orb_tile::geojson::LAYER_NAME).unwrap();
+        // The pole is the plane's centre; the southern point is outside the
+        // projection's domain.
+        assert_eq!(layer.len(), 1);
+        let part = layer.geometry(0).parts().next().unwrap();
+        assert_eq!(part.rings().next().unwrap(), [[4096, 4096]]);
+    }
+
     #[test]
     fn geojson_errors_are_terminal_and_clusters_skipped() {
         let worker =
@@ -1860,9 +1925,11 @@ pub(crate) mod tests {
             )],
             local_ideographs: Some("Hiragino Sans".into()),
             cost: CostModel { max_ops: 7 },
+            plane: Some(polar_plane()),
         };
         let parsed = StyleUpdate::parse(&update.to_json()).unwrap();
         assert_eq!(parsed.to_json(), update.to_json());
+        assert_eq!(parsed.plane, update.plane);
         let revised = TileWorker::update(None, &parsed).unwrap();
         assert_eq!(revised.revision(), 3);
         assert_eq!(revised.plan.nodes.len(), 1);

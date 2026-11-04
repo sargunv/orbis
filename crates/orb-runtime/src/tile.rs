@@ -180,8 +180,10 @@ fn layout(layer: &Layer, features: &[u32], kind: &LayerKind, family: Family, zoo
     }
 }
 
-/// The tile layer a node draws from, if the node lays out at zoom `z`
-/// (GL JS's bucket rule: nothing outside the layer's zoom range).
+/// The tile layer a node draws from, if the node lays out at `zoom` (GL
+/// JS's bucket rule: nothing outside the layer's zoom range). A tile at
+/// zoom `z` shows from `z` to `z + 1`; tiles of other matrix sets lay out
+/// at fractional zooms and keep the layers that range overlaps.
 fn node_layer<'f, 'p>(
     frame: &'f TileFrame,
     plan: &'p StylePlan,
@@ -189,7 +191,7 @@ fn node_layer<'f, 'p>(
     zoom: f64,
 ) -> Option<(&'f Layer, &'p str)> {
     let style_layer = &plan.style.layers[node.layer];
-    if zoom < style_layer.minzoom.floor() || zoom >= style_layer.maxzoom {
+    if zoom + 1.0 <= style_layer.minzoom.floor() || zoom >= style_layer.maxzoom {
         return None;
     }
     let name = match &plan.source_def(node.source).kind {
@@ -316,18 +318,17 @@ fn build_symbols(
     Ok(built)
 }
 
-/// Lays out the selected nodes of `source` that draw from `frame`, at tile
-/// zoom `z`. Returns the glyph range URLs this worker must fetch first when
-/// the tile's labels need ranges it hasn't got.
+/// Lays out the selected nodes of `source` that draw from `frame`, at the
+/// tile's style `zoom`. Returns the glyph range URLs this worker must fetch
+/// first when the tile's labels need ranges it hasn't got.
 pub(crate) fn build(
     frame: &TileFrame,
     plan: &StylePlan,
     source: usize,
-    z: u8,
+    zoom: f64,
     select: Select<'_>,
     symbols: Symbols<'_>,
 ) -> Result<TileBuild, Vec<String>> {
-    let zoom = f64::from(z);
     let mut build = TileBuild {
         revision: plan.revision,
         rows_only: select.rows_only,
@@ -690,7 +691,7 @@ mod tests {
         let frame = TileFrame {
             layers: vec![builder.finish()],
         };
-        let result = build(&frame, &plan, 0, 0, Select::default(), no_symbols()).unwrap();
+        let result = build(&frame, &plan, 0, 0.0, Select::default(), no_symbols()).unwrap();
         let hits = |family| {
             &result
                 .meshes
@@ -726,7 +727,7 @@ mod tests {
         let plan = plan(
             r#"{"version":8,"sources":{"s":{"type":"vector","tiles":["test://{z}/{x}/{y}"]}},"layers":[{"id":"l","type":"line","source":"s","source-layer":"roads","paint":{"line-pattern":["get","class"]}}]}"#,
         );
-        let tile = build(&frame(), &plan, 0, 10, Select::default(), no_symbols()).unwrap();
+        let tile = build(&frame(), &plan, 0, 10.0, Select::default(), no_symbols()).unwrap();
         let mesh = &tile.meshes[0];
         assert_eq!(mesh.images.len(), 9);
         assert_eq!(
@@ -767,7 +768,7 @@ mod tests {
         let plan = plan(STYLE);
         assert_eq!(plan.nodes[0].source, usize::MAX);
         assert_eq!(plan.nodes.len(), 4);
-        let build = build(&frame(), &plan, 0, 10, Select::default(), no_symbols()).unwrap();
+        let build = build(&frame(), &plan, 0, 10.0, Select::default(), no_symbols()).unwrap();
         let nodes: Vec<u32> = build.meshes.iter().map(|m| m.node).collect();
         // Keys of the second and third layers' nodes.
         assert_eq!(nodes, [4, 6], "the minzoom 12 layer is skipped at z10");
@@ -786,7 +787,7 @@ mod tests {
             0,
             orb_style::CostModel::ROWS,
         );
-        let build = build(&frame(), &plan, 0, 10, Select::default(), no_symbols()).unwrap();
+        let build = build(&frame(), &plan, 0, 10.0, Select::default(), no_symbols()).unwrap();
         let all = &build.meshes[1];
         assert_eq!(all.props.len(), 3 * LINE_ROW_WORDS);
         let width = |feature: usize| {
@@ -813,7 +814,7 @@ mod tests {
         );
         let node = &plan.nodes[2];
         assert_eq!(plan.bytecode_mask(node), 1 << 2, "the composite width");
-        let build = build(&frame(), &plan, 0, 10, Select::default(), no_symbols()).unwrap();
+        let build = build(&frame(), &plan, 0, 10.0, Select::default(), no_symbols()).unwrap();
         let all = &build.meshes[1];
         // One string column, `class`, after each feature's row.
         let stride = LINE_ROW_WORDS + 2;
