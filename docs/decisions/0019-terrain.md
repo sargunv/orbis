@@ -35,7 +35,8 @@ Layers GL JS renders to texture (background, fill, fill outline, line,
 raster, hillshade, color-relief) drape. A run of them between layers that
 draw in 3D or on screen is a drape stack. Each terrain tile owns a block of
 drape slots, one per stack: 1024² texel squares (GL JS's quality factor 2
-over 512 pixels) of one mipmapped atlas in the target's colour format.
+over 512 pixels) of one mipmapped RGBA8 atlas. Draped families get
+pipelines for that format when the target's differs.
 
 The GPU-driven design is kept by making drape slots ordinary placements:
 
@@ -52,7 +53,10 @@ The GPU-driven design is kept by making drape slots ordinary placements:
   grow from 64 to 80 bytes: that, the DEM reference and the terrain range.
 - One render pass redraws every slot marked this frame: it clears them,
   then replays a bundle of the draped nodes over the drape scene group.
-  A pass per mip level downsamples them. Slots are aligned, so levels
+  One compute pass then downsamples them, a dispatch per mip level over
+  the redrawn slots (a render pass per level cost 3 to 5 ms each on
+  Apple GPUs whatever its size; the compute pass costs 0.35 ms for all
+  levels of 19 slots). Slots are aligned, so levels
   never mix slots, and the terrain shader clamps samples to the slot at
   the level it reads, as a texture of its own would clamp to its edge.
 
@@ -132,14 +136,25 @@ median 13 m. The pyramid is 230 KB for that view. 64² samples were 2.0,
 
 ## Measurements
 
-Fixtures, native (Apple M6, Metal), after the change: 1031 pass, 56 fail,
+Fixtures, native (Apple M6, Metal), after the change: 1032 pass, 55 fail,
 109 skip of 1196 mirrored, against 1022, 27 and 147 before on the same
 mirror (which now includes the `terrain` and `light` directories); no
-previously passing fixture fails. Of the terrain directory 8 pass, 19 fail
-and 12 skip; 14 of the failures differ by under 1% of pixels, and the
-symbol cases wait for symbols on terrain. All 12 `light` fixtures pass.
+previously passing fixture fails, and Chrome matches. Of the terrain
+directory 8 pass, 19 fail and 12 skip; 13 of the failures differ by under
+1% of pixels. All 12 `light` fixtures pass.
 Two pitched variable-anchor text fixtures fail intermittently under full
 suite load on main and with this change alike; they pass alone.
+
+Frame cost over the Alps demo view (`orb-bench`'s `alps_terrain_frame_cost`,
+1280×800, Apple M6, GPU timestamps, medians in ms):
+
+| | CPU render | GPU total | terrain pass | main pass |
+| --- | --- | --- | --- | --- |
+| at rest | 0.31 | 0.94 | 0.41 | 0.28 |
+| turning 0.2°/frame, tiles loading | 6.7 | 2.4 | 1.0 | 0.72 |
+| a zoom change redrawing all 19 slots | | 14.2 | | |
+
+The full redraw's drape pass is 5.1 ms of that, its mips 0.35 ms.
 
 Memory: a slot is 4 MiB plus a third for its mip levels; the atlas grows by
 doubling and holds 64 slots at most on an 8192-texel device. The fixture

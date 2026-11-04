@@ -90,14 +90,14 @@ pub const TERRAIN_SHADER: Shader = Shader {
     paint: false,
 };
 
-/// Clears drape slots (`fs_clear`) or builds a mip level of them
-/// (`fs_downsample`).
+/// Clears drape slots (`vs_slot`, `fs_clear`) and builds their mip levels
+/// (`downsample`).
 pub const DRAPE_SHADER: Shader = Shader {
     label: "drape",
     parts: &[include_str!("wgsl/drape.wgsl")],
     vertex: "vs_slot",
-    fragment: "fs_downsample",
-    compute: "",
+    fragment: "fs_clear",
+    compute: "downsample",
     paint: false,
 };
 

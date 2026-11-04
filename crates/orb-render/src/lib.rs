@@ -24,8 +24,8 @@ mod sky;
 mod terrain;
 pub use sky::SkyPaint;
 pub use terrain::{
-    DRAPE_SLOT_PX, DrapeLayout, Fog, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem, TerrainPaint,
-    TerrainTile,
+    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, Fog, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
+    TerrainPaint, TerrainTile,
 };
 
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, PageId, PageKind};
@@ -191,6 +191,9 @@ pub struct Renderer {
     /// The scene group over the drape frame, and the draped nodes' bundle.
     drape_group: Option<BindGroupId>,
     drape_bundle: Option<RenderBundleId>,
+    /// Draped families' pipelines for the drape atlas, made for the first
+    /// terrain when the target's format isn't the atlas's.
+    drape_pipelines: Option<DrapePipelines>,
     /// Bound for elevated content without terrain.
     no_dem: TextureId,
     /// The DEM texture the scene groups bind.
@@ -421,6 +424,7 @@ impl Renderer {
             terrain: None,
             drape_group: None,
             drape_bundle: None,
+            drape_pipelines: None,
             no_dem,
             dem_bound: no_dem,
             glyphs_bound: glyphs.revision(),
@@ -956,6 +960,9 @@ impl Renderer {
             for i in 0..self.nodes.len() {
                 self.node_commands(i, self.draw_group, &mut commands);
             }
+            if terrain_on && self.target.color != DRAPE_FORMAT {
+                self.make_drape_pipelines(gpu);
+            }
             if let Some(drape_group) = self.drape_group.filter(|_| terrain_on) {
                 let mut drape = vec![RenderCommand::SetIndexBuffer {
                     buffer: self.scene.buffers().compacted,
@@ -970,7 +977,7 @@ impl Renderer {
                 self.drape_bundle = Some(gpu.create_render_bundle(
                     &RenderBundleDesc {
                         label: "drape",
-                        color_formats: &[self.target.color],
+                        color_formats: &[DRAPE_FORMAT],
                         depth_format: None,
                         sample_count: 1,
                     },
@@ -1163,14 +1170,26 @@ impl Renderer {
             }
             return;
         }
-        let paint = match (node.bytecode, &self.bytecode) {
-            (true, Some(bytecode)) => bytecode,
-            _ => &self.paint,
+        // Into the drape atlas, with its format's pipelines if the
+        // target's differs.
+        let drape = self
+            .drape_pipelines
+            .as_ref()
+            .filter(|_| scene != self.draw_group);
+        let (paint, bytecode) = match drape {
+            Some(d) => (&d.paint, d.bytecode.as_ref()),
+            None => (&self.paint, self.bytecode.as_ref()),
         };
-        let pipeline = paint.get(node.family).unwrap_or_else(|| {
-            self.images
+        let paint = match (node.bytecode, bytecode) {
+            (true, Some(bytecode)) => bytecode,
+            _ => paint,
+        };
+        let pipeline = paint.get(node.family).unwrap_or_else(|| match drape {
+            Some(d) => d.image(node.family),
+            None => self
+                .images
                 .pipeline(node.family)
-                .expect("image families have pipelines")
+                .expect("image families have pipelines"),
         });
         commands.extend([
             RenderCommand::SetPipeline(pipeline),
@@ -1194,6 +1213,49 @@ impl Renderer {
                 }
             },
         ]);
+    }
+}
+
+/// Draped families' pipelines for the drape atlas's format.
+#[derive(Debug)]
+struct DrapePipelines {
+    paint: PaintPipelines,
+    bytecode: Option<PaintPipelines>,
+    /// Raster, hillshade, color relief.
+    images: [RenderPipelineId; 3],
+}
+
+impl DrapePipelines {
+    fn image(&self, family: Family) -> RenderPipelineId {
+        match family {
+            Family::Raster => self.images[0],
+            Family::Hillshade => self.images[1],
+            Family::ColorRelief => self.images[2],
+            _ => unreachable!("not an image family"),
+        }
+    }
+}
+
+impl Renderer {
+    /// Makes the drape atlas's pipelines, and its bytecode class once the
+    /// map's has one.
+    fn make_drape_pipelines(&mut self, gpu: &mut dyn Gpu) {
+        let format = TargetFormat {
+            color: DRAPE_FORMAT,
+            sample_count: 1,
+        };
+        let layouts = [self.draw_layout, self.node_layout];
+        if self.drape_pipelines.is_none() {
+            self.drape_pipelines = Some(DrapePipelines {
+                paint: PaintPipelines::new(gpu, format, &layouts, false),
+                bytecode: None,
+                images: self.images.pipelines_for(gpu, format, self.draw_layout),
+            });
+        }
+        let pipelines = self.drape_pipelines.as_mut().expect("made above");
+        if self.bytecode.is_some() && pipelines.bytecode.is_none() {
+            pipelines.bytecode = Some(PaintPipelines::new(gpu, format, &layouts, true));
+        }
     }
 }
 

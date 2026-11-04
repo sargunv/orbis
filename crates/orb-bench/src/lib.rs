@@ -751,4 +751,137 @@ mod extrusion_benchmark {
             assert_eq!(report.frame.paints_written, 0);
         });
     }
+
+    /// Terrain's frame cost on the Alps demo view (decision 0019): frames
+    /// at rest, frames while the camera turns (no drape redraw), and the
+    /// frame that redraws every drape slot. Fetches tiles over the network.
+    #[test]
+    #[ignore = "GPU benchmark over the network: cargo test --release -p orb-bench alps_terrain_frame_cost -- --ignored --nocapture"]
+    fn alps_terrain_frame_cost() {
+        pollster::block_on(async {
+            let device = device(Some(Timing::Timestamps)).await.unwrap();
+            eprintln!("adapter: {}", device.adapter);
+            let mut gpu = TimedGpu::new(device.gpu, true);
+            let style = std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../web/demo/data/alps.json"
+            ))
+            .unwrap();
+            let fetch = NativeFetch::new();
+            let services = Services {
+                clock: Arc::new(orb_host_native::NativeClock::default()),
+                image_decode: Arc::new(NativeImageDecode),
+                images: Default::default(),
+                jobs: PoolJobs::new(
+                    fetch.clone(),
+                    Arc::new(NativeImageDecode),
+                    Arc::new(orb_jobs::ThreadPool::new("jobs", 4)),
+                ),
+                fetch,
+                wake: Arc::new(|| {}),
+            };
+            let mut map = Map::new(services, None);
+            map.set_style_json(&style).unwrap();
+            let format = TargetFormat {
+                color: TextureFormat::Rgba8Unorm,
+                sample_count: 1,
+            };
+            let target = gpu.create_texture(&TextureDesc {
+                label: "terrain benchmark",
+                width: 1024,
+                height: 768,
+                array_layers: 1,
+                format: format.color,
+                usage: TextureUsages::RENDER_ATTACHMENT,
+                sample_count: 1,
+                mip_levels: 1,
+            });
+            let viewport = Viewport {
+                width: 1024.0,
+                height: 768.0,
+            };
+            let render = |gpu: &mut TimedGpu, map: &mut Map| {
+                map.constrain_camera(viewport);
+                map.render(gpu, target, format, viewport, 1.0)
+            };
+            let start = std::time::Instant::now();
+            loop {
+                let report = render(&mut gpu, &mut map);
+                gpu.take_frames().await;
+                if report.idle {
+                    break;
+                }
+                assert!(start.elapsed() < Duration::from_secs(180));
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let median = |mut samples: Vec<Duration>| {
+                samples.sort();
+                samples[samples.len() / 2].as_secs_f64() * 1000.0
+            };
+            let pass = |frames: &[timed::FrameTimes], label: &str| {
+                median(
+                    frames
+                        .iter()
+                        .map(|f| f.pass(label).unwrap_or_default())
+                        .collect(),
+                )
+            };
+            let sample = |gpu: &mut TimedGpu, map: &mut Map, turn: f64| {
+                let mut cpu = Vec::new();
+                let mut report = FrameReport::default();
+                for _ in 0..200 {
+                    map.camera_mut().bearing += turn;
+                    let start = std::time::Instant::now();
+                    report = render(gpu, map);
+                    cpu.push(start.elapsed());
+                    pollster::block_on(gpu.throttle());
+                }
+                (cpu, report)
+            };
+            for (label, turn) in [("at rest", 0.0), ("turning 0.2°/frame", 0.2)] {
+                for _ in 0..30 {
+                    render(&mut gpu, &mut map);
+                    gpu.throttle().await;
+                }
+                gpu.take_frames().await;
+                let (mut cpu, report) = sample(&mut gpu, &mut map, turn);
+                let frames = gpu.take_frames().await;
+                for (cpu, frame) in cpu.iter_mut().zip(&frames) {
+                    *cpu = cpu.saturating_sub(frame.overhead);
+                }
+                eprintln!(
+                    "{label}: CPU render {:.3}; GPU total {:.3}; cull {:.3}; terrain {:.3}; main {:.3}; drape redraws {}",
+                    median(cpu),
+                    median(frames.iter().map(|f| f.gpu()).collect()),
+                    pass(&frames, "cull"),
+                    pass(&frames, "terrain"),
+                    pass(&frames, "main"),
+                    frames.iter().filter(|f| f.pass("drape").is_some()).count()
+                );
+                eprintln!("{report:?}");
+            }
+            // A zoom change waits for the camera to stop, then redraws
+            // every slot in one frame.
+            let mut redraws = Vec::new();
+            for i in 0..20 {
+                map.camera_mut().set_zoom(11.6 + f64::from(i % 2) * 0.01);
+                render(&mut gpu, &mut map);
+                render(&mut gpu, &mut map);
+                gpu.throttle().await;
+                redraws.extend(
+                    gpu.take_frames()
+                        .await
+                        .into_iter()
+                        .filter(|f| f.pass("drape").is_some()),
+                );
+            }
+            eprintln!(
+                "full drape redraw ({} frames): drape {:.3}; mips {:.3}; GPU total {:.3}",
+                redraws.len(),
+                pass(&redraws, "drape"),
+                pass(&redraws, "drape mips"),
+                median(redraws.iter().map(|f| f.gpu()).collect())
+            );
+        });
+    }
 }

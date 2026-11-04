@@ -170,19 +170,8 @@ impl Images {
             label: "color relief node",
             entries: &relief_entries,
         });
-        let mut pipeline = |shader: &Shader, layout| {
-            crate::draw_pipeline(
-                gpu,
-                shader,
-                false,
-                PrimitiveTopology::TriangleList,
-                target,
-                &[draw_layout, layout],
-            )
-        };
-        let raster = pipeline(&RASTER_SHADER, image_layout);
-        let hillshade = pipeline(&HILLSHADE_SHADER, image_layout);
-        let color_relief = pipeline(&COLOR_RELIEF_SHADER, relief_layout);
+        let [raster, hillshade, color_relief] =
+            image_pipelines(gpu, target, draw_layout, image_layout, relief_layout);
 
         let mut sampler = |label, filter| {
             gpu.create_sampler(&SamplerDesc {
@@ -274,6 +263,23 @@ impl Images {
             slope,
             pages: Vec::new(),
         }
+    }
+
+    /// Raster, hillshade and color-relief pipelines for another target
+    /// (the drape atlas's format).
+    pub(crate) fn pipelines_for(
+        &self,
+        gpu: &mut dyn Gpu,
+        target: TargetFormat,
+        draw_layout: BindGroupLayoutId,
+    ) -> [RenderPipelineId; 3] {
+        image_pipelines(
+            gpu,
+            target,
+            draw_layout,
+            self.image_layout,
+            self.relief_layout,
+        )
     }
 
     pub(crate) fn pipeline(&self, family: Family) -> Option<RenderPipelineId> {
@@ -592,6 +598,31 @@ impl Images {
             gpu.destroy_texture(ramp);
         }
     }
+}
+
+/// The raster, hillshade and color-relief pipelines for `target`.
+fn image_pipelines(
+    gpu: &mut dyn Gpu,
+    target: TargetFormat,
+    draw_layout: BindGroupLayoutId,
+    image_layout: BindGroupLayoutId,
+    relief_layout: BindGroupLayoutId,
+) -> [RenderPipelineId; 3] {
+    let mut pipeline = |shader: &Shader, layout| {
+        crate::draw_pipeline(
+            gpu,
+            shader,
+            false,
+            PrimitiveTopology::TriangleList,
+            target,
+            &[draw_layout, layout],
+        )
+    };
+    [
+        pipeline(&RASTER_SHADER, image_layout),
+        pipeline(&HILLSHADE_SHADER, image_layout),
+        pipeline(&COLOR_RELIEF_SHADER, relief_layout),
+    ]
 }
 
 fn destroy_prepare(gpu: &mut dyn Gpu, prepare: Prepare) {
