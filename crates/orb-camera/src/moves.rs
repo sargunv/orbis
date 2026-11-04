@@ -82,6 +82,10 @@ impl Bounds {
 /// `maxPitch` and `maxBounds`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Constraints {
+    /// Zoom limits bound the view's scale: the zoom a Web Mercator view of
+    /// the same world units per pixel has (see
+    /// [`CameraState::scale_zoom`]), which is its style zoom in Web
+    /// Mercator and stays put as a view on another plane pans.
     pub min_zoom: f64,
     pub max_zoom: f64,
     /// Degrees from looking straight down.
@@ -117,10 +121,33 @@ impl Constraints {
 }
 
 impl CameraState {
-    /// World units per logical pixel at the target. At a given zoom it is
-    /// the same everywhere on the surface, so moves keep it.
+    /// World units per logical pixel at the target: the view's scale,
+    /// which moves keep (a pan changes ground resolution only as the
+    /// plane's own scale factor does).
     pub fn world_per_px(&self, projection: &Projection) -> f64 {
         self.resolution * projection.scale_factor(self.target.wrapped())
+    }
+
+    /// The view's scale as a zoom: the style zoom a Web Mercator view of
+    /// the same metres per pixel has. In Web Mercator it is the style
+    /// zoom; on other planes it doesn't change as the view pans, while the
+    /// style zoom (ground resolution in Web Mercator's convention, plan
+    /// §9.3) follows latitude. Zoom limits apply to it.
+    pub fn scale_zoom(&self, projection: &Projection) -> f64 {
+        let metres_per_px = self.world_per_px(projection) * projection.metres_per_unit();
+        (2.0 * std::f64::consts::PI * orb_geo::wgs84::SEMI_MAJOR_M
+            / (crate::STYLE_ZOOM_TILE_PX * metres_per_px))
+            .log2()
+    }
+
+    /// Keeps the view's scale within zoom limits (see
+    /// [`scale_zoom`](Self::scale_zoom)), keeping the target.
+    pub fn limit_zoom(&mut self, min: f64, max: f64, projection: &Projection) {
+        let scale = self.scale_zoom(projection);
+        let clamped = scale.clamp(min, max.max(min));
+        if clamped != scale {
+            self.set_zoom(self.zoom() + (clamped - scale));
+        }
     }
 
     /// The target's position in world space.
@@ -206,14 +233,7 @@ impl CameraState {
         projection: &Projection,
         viewport: Viewport,
     ) {
-        let zoom = self.zoom();
-        let clamped = zoom.clamp(
-            constraints.min_zoom,
-            constraints.max_zoom.max(constraints.min_zoom),
-        );
-        if clamped != zoom {
-            self.set_zoom(clamped);
-        }
+        self.limit_zoom(constraints.min_zoom, constraints.max_zoom, projection);
         self.pitch = self.pitch.clamp(
             constraints.min_pitch,
             constraints.max_pitch.max(constraints.min_pitch),

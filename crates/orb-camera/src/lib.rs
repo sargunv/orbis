@@ -49,7 +49,7 @@ pub struct CameraState {
 
 /// Size of one tile side at its own zoom in the style zoom convention, in
 /// logical pixels.
-const STYLE_ZOOM_TILE_PX: f64 = 512.0;
+pub(crate) const STYLE_ZOOM_TILE_PX: f64 = 512.0;
 
 /// Finite horizon policy for a flat surface. Keeping a small angle below
 /// horizontal bounds the far range and the LOD integral, as in GL JS.
