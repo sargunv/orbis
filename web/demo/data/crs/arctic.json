@@ -1,0 +1,1605 @@
+{
+ "style": {
+  "version": 8,
+  "name": "Arctic, EPSG:3413",
+  "center": [
+   -40,
+   76
+  ],
+  "zoom": 2.4,
+  "sources": {
+   "relief": {
+    "type": "raster",
+    "tileSize": 512,
+    "maxzoom": 4,
+    "attribution": "<a href=\"https://earthdata.nasa.gov/gibs\">NASA EOSDIS GIBS</a>",
+    "tiles": [
+     "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{tileMatrix}/{tileRow}/{tileCol}.jpeg"
+    ]
+   },
+   "velocity": {
+    "type": "raster",
+    "tileSize": 512,
+    "maxzoom": 4,
+    "attribution": "<a href=\"https://earthdata.nasa.gov/gibs\">NASA EOSDIS GIBS</a>",
+    "tiles": [
+     "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/MEaSUREs_Ice_Velocity_Greenland/default/2008-12-01/500m/{tileMatrix}/{tileRow}/{tileCol}.png"
+    ]
+   },
+   "coastlines": {
+    "type": "raster",
+    "tileSize": 512,
+    "maxzoom": 5,
+    "attribution": "<a href=\"https://earthdata.nasa.gov/gibs\">NASA EOSDIS GIBS</a>",
+    "tiles": [
+     "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/Coastlines/default/250m/{tileMatrix}/{tileRow}/{tileCol}.png"
+    ]
+   },
+   "labels": {
+    "type": "raster",
+    "tileSize": 512,
+    "maxzoom": 5,
+    "attribution": "<a href=\"https://earthdata.nasa.gov/gibs\">NASA EOSDIS GIBS</a>",
+    "tiles": [
+     "https://gibs.earthdata.nasa.gov/wmts/epsg3413/best/Reference_Labels/default/250m/{tileMatrix}/{tileRow}/{tileCol}.png"
+    ]
+   },
+   "graticule": {
+    "type": "geojson",
+    "data": {
+     "type": "FeatureCollection",
+     "features": [
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -180,
+          30
+         ],
+         [
+          -180,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -150,
+          30
+         ],
+         [
+          -150,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -120,
+          30
+         ],
+         [
+          -120,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -90,
+          30
+         ],
+         [
+          -90,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -60,
+          30
+         ],
+         [
+          -60,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -30,
+          30
+         ],
+         [
+          -30,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          0,
+          30
+         ],
+         [
+          0,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          30,
+          30
+         ],
+         [
+          30,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          60,
+          30
+         ],
+         [
+          60,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          90,
+          30
+         ],
+         [
+          90,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          120,
+          30
+         ],
+         [
+          120,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "meridian"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          150,
+          30
+         ],
+         [
+          150,
+          90
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "parallel",
+        "label": "30°N"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -180,
+          30
+         ],
+         [
+          -170,
+          30
+         ],
+         [
+          -160,
+          30
+         ],
+         [
+          -150,
+          30
+         ],
+         [
+          -140,
+          30
+         ],
+         [
+          -130,
+          30
+         ],
+         [
+          -120,
+          30
+         ],
+         [
+          -110,
+          30
+         ],
+         [
+          -100,
+          30
+         ],
+         [
+          -90,
+          30
+         ],
+         [
+          -80,
+          30
+         ],
+         [
+          -70,
+          30
+         ],
+         [
+          -60,
+          30
+         ],
+         [
+          -50,
+          30
+         ],
+         [
+          -40,
+          30
+         ],
+         [
+          -30,
+          30
+         ],
+         [
+          -20,
+          30
+         ],
+         [
+          -10,
+          30
+         ],
+         [
+          0,
+          30
+         ],
+         [
+          10,
+          30
+         ],
+         [
+          20,
+          30
+         ],
+         [
+          30,
+          30
+         ],
+         [
+          40,
+          30
+         ],
+         [
+          50,
+          30
+         ],
+         [
+          60,
+          30
+         ],
+         [
+          70,
+          30
+         ],
+         [
+          80,
+          30
+         ],
+         [
+          90,
+          30
+         ],
+         [
+          100,
+          30
+         ],
+         [
+          110,
+          30
+         ],
+         [
+          120,
+          30
+         ],
+         [
+          130,
+          30
+         ],
+         [
+          140,
+          30
+         ],
+         [
+          150,
+          30
+         ],
+         [
+          160,
+          30
+         ],
+         [
+          170,
+          30
+         ],
+         [
+          180,
+          30
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "parallel",
+        "label": "40°N"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -180,
+          40
+         ],
+         [
+          -170,
+          40
+         ],
+         [
+          -160,
+          40
+         ],
+         [
+          -150,
+          40
+         ],
+         [
+          -140,
+          40
+         ],
+         [
+          -130,
+          40
+         ],
+         [
+          -120,
+          40
+         ],
+         [
+          -110,
+          40
+         ],
+         [
+          -100,
+          40
+         ],
+         [
+          -90,
+          40
+         ],
+         [
+          -80,
+          40
+         ],
+         [
+          -70,
+          40
+         ],
+         [
+          -60,
+          40
+         ],
+         [
+          -50,
+          40
+         ],
+         [
+          -40,
+          40
+         ],
+         [
+          -30,
+          40
+         ],
+         [
+          -20,
+          40
+         ],
+         [
+          -10,
+          40
+         ],
+         [
+          0,
+          40
+         ],
+         [
+          10,
+          40
+         ],
+         [
+          20,
+          40
+         ],
+         [
+          30,
+          40
+         ],
+         [
+          40,
+          40
+         ],
+         [
+          50,
+          40
+         ],
+         [
+          60,
+          40
+         ],
+         [
+          70,
+          40
+         ],
+         [
+          80,
+          40
+         ],
+         [
+          90,
+          40
+         ],
+         [
+          100,
+          40
+         ],
+         [
+          110,
+          40
+         ],
+         [
+          120,
+          40
+         ],
+         [
+          130,
+          40
+         ],
+         [
+          140,
+          40
+         ],
+         [
+          150,
+          40
+         ],
+         [
+          160,
+          40
+         ],
+         [
+          170,
+          40
+         ],
+         [
+          180,
+          40
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "parallel",
+        "label": "50°N"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -180,
+          50
+         ],
+         [
+          -170,
+          50
+         ],
+         [
+          -160,
+          50
+         ],
+         [
+          -150,
+          50
+         ],
+         [
+          -140,
+          50
+         ],
+         [
+          -130,
+          50
+         ],
+         [
+          -120,
+          50
+         ],
+         [
+          -110,
+          50
+         ],
+         [
+          -100,
+          50
+         ],
+         [
+          -90,
+          50
+         ],
+         [
+          -80,
+          50
+         ],
+         [
+          -70,
+          50
+         ],
+         [
+          -60,
+          50
+         ],
+         [
+          -50,
+          50
+         ],
+         [
+          -40,
+          50
+         ],
+         [
+          -30,
+          50
+         ],
+         [
+          -20,
+          50
+         ],
+         [
+          -10,
+          50
+         ],
+         [
+          0,
+          50
+         ],
+         [
+          10,
+          50
+         ],
+         [
+          20,
+          50
+         ],
+         [
+          30,
+          50
+         ],
+         [
+          40,
+          50
+         ],
+         [
+          50,
+          50
+         ],
+         [
+          60,
+          50
+         ],
+         [
+          70,
+          50
+         ],
+         [
+          80,
+          50
+         ],
+         [
+          90,
+          50
+         ],
+         [
+          100,
+          50
+         ],
+         [
+          110,
+          50
+         ],
+         [
+          120,
+          50
+         ],
+         [
+          130,
+          50
+         ],
+         [
+          140,
+          50
+         ],
+         [
+          150,
+          50
+         ],
+         [
+          160,
+          50
+         ],
+         [
+          170,
+          50
+         ],
+         [
+          180,
+          50
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "parallel",
+        "label": "60°N"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -180,
+          60
+         ],
+         [
+          -170,
+          60
+         ],
+         [
+          -160,
+          60
+         ],
+         [
+          -150,
+          60
+         ],
+         [
+          -140,
+          60
+         ],
+         [
+          -130,
+          60
+         ],
+         [
+          -120,
+          60
+         ],
+         [
+          -110,
+          60
+         ],
+         [
+          -100,
+          60
+         ],
+         [
+          -90,
+          60
+         ],
+         [
+          -80,
+          60
+         ],
+         [
+          -70,
+          60
+         ],
+         [
+          -60,
+          60
+         ],
+         [
+          -50,
+          60
+         ],
+         [
+          -40,
+          60
+         ],
+         [
+          -30,
+          60
+         ],
+         [
+          -20,
+          60
+         ],
+         [
+          -10,
+          60
+         ],
+         [
+          0,
+          60
+         ],
+         [
+          10,
+          60
+         ],
+         [
+          20,
+          60
+         ],
+         [
+          30,
+          60
+         ],
+         [
+          40,
+          60
+         ],
+         [
+          50,
+          60
+         ],
+         [
+          60,
+          60
+         ],
+         [
+          70,
+          60
+         ],
+         [
+          80,
+          60
+         ],
+         [
+          90,
+          60
+         ],
+         [
+          100,
+          60
+         ],
+         [
+          110,
+          60
+         ],
+         [
+          120,
+          60
+         ],
+         [
+          130,
+          60
+         ],
+         [
+          140,
+          60
+         ],
+         [
+          150,
+          60
+         ],
+         [
+          160,
+          60
+         ],
+         [
+          170,
+          60
+         ],
+         [
+          180,
+          60
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "parallel",
+        "label": "70°N"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -180,
+          70
+         ],
+         [
+          -170,
+          70
+         ],
+         [
+          -160,
+          70
+         ],
+         [
+          -150,
+          70
+         ],
+         [
+          -140,
+          70
+         ],
+         [
+          -130,
+          70
+         ],
+         [
+          -120,
+          70
+         ],
+         [
+          -110,
+          70
+         ],
+         [
+          -100,
+          70
+         ],
+         [
+          -90,
+          70
+         ],
+         [
+          -80,
+          70
+         ],
+         [
+          -70,
+          70
+         ],
+         [
+          -60,
+          70
+         ],
+         [
+          -50,
+          70
+         ],
+         [
+          -40,
+          70
+         ],
+         [
+          -30,
+          70
+         ],
+         [
+          -20,
+          70
+         ],
+         [
+          -10,
+          70
+         ],
+         [
+          0,
+          70
+         ],
+         [
+          10,
+          70
+         ],
+         [
+          20,
+          70
+         ],
+         [
+          30,
+          70
+         ],
+         [
+          40,
+          70
+         ],
+         [
+          50,
+          70
+         ],
+         [
+          60,
+          70
+         ],
+         [
+          70,
+          70
+         ],
+         [
+          80,
+          70
+         ],
+         [
+          90,
+          70
+         ],
+         [
+          100,
+          70
+         ],
+         [
+          110,
+          70
+         ],
+         [
+          120,
+          70
+         ],
+         [
+          130,
+          70
+         ],
+         [
+          140,
+          70
+         ],
+         [
+          150,
+          70
+         ],
+         [
+          160,
+          70
+         ],
+         [
+          170,
+          70
+         ],
+         [
+          180,
+          70
+         ]
+        ]
+       }
+      },
+      {
+       "type": "Feature",
+       "properties": {
+        "kind": "parallel",
+        "label": "80°N"
+       },
+       "geometry": {
+        "type": "LineString",
+        "coordinates": [
+         [
+          -180,
+          80
+         ],
+         [
+          -170,
+          80
+         ],
+         [
+          -160,
+          80
+         ],
+         [
+          -150,
+          80
+         ],
+         [
+          -140,
+          80
+         ],
+         [
+          -130,
+          80
+         ],
+         [
+          -120,
+          80
+         ],
+         [
+          -110,
+          80
+         ],
+         [
+          -100,
+          80
+         ],
+         [
+          -90,
+          80
+         ],
+         [
+          -80,
+          80
+         ],
+         [
+          -70,
+          80
+         ],
+         [
+          -60,
+          80
+         ],
+         [
+          -50,
+          80
+         ],
+         [
+          -40,
+          80
+         ],
+         [
+          -30,
+          80
+         ],
+         [
+          -20,
+          80
+         ],
+         [
+          -10,
+          80
+         ],
+         [
+          0,
+          80
+         ],
+         [
+          10,
+          80
+         ],
+         [
+          20,
+          80
+         ],
+         [
+          30,
+          80
+         ],
+         [
+          40,
+          80
+         ],
+         [
+          50,
+          80
+         ],
+         [
+          60,
+          80
+         ],
+         [
+          70,
+          80
+         ],
+         [
+          80,
+          80
+         ],
+         [
+          90,
+          80
+         ],
+         [
+          100,
+          80
+         ],
+         [
+          110,
+          80
+         ],
+         [
+          120,
+          80
+         ],
+         [
+          130,
+          80
+         ],
+         [
+          140,
+          80
+         ],
+         [
+          150,
+          80
+         ],
+         [
+          160,
+          80
+         ],
+         [
+          170,
+          80
+         ],
+         [
+          180,
+          80
+         ]
+        ]
+       }
+      }
+     ]
+    }
+   }
+  },
+  "layers": [
+   {
+    "id": "background",
+    "type": "background",
+    "paint": {
+     "background-color": "#0b2239"
+    }
+   },
+   {
+    "id": "relief",
+    "type": "raster",
+    "source": "relief"
+   },
+   {
+    "id": "velocity",
+    "type": "raster",
+    "source": "velocity",
+    "paint": {
+     "raster-opacity": 0.85
+    }
+   },
+   {
+    "id": "coastlines",
+    "type": "raster",
+    "source": "coastlines",
+    "paint": {
+     "raster-opacity": 0.7
+    }
+   },
+   {
+    "id": "graticule",
+    "type": "line",
+    "source": "graticule",
+    "paint": {
+     "line-color": "rgba(255,255,255,0.45)",
+     "line-width": [
+      "match",
+      [
+       "get",
+       "kind"
+      ],
+      "parallel",
+      0.75,
+      1
+     ]
+    }
+   },
+   {
+    "id": "labels",
+    "type": "raster",
+    "source": "labels",
+    "minzoom": 3
+   }
+  ]
+ },
+ "projection": {
+  "type": "EPSG:3413"
+ },
+ "surface": "plane",
+ "sources": {
+  "relief": {
+   "tileMatrixSet": {
+    "id": "GIBS_EPSG3413_500m",
+    "title": "NASA GIBS EPSG:3413 500m",
+    "crs": "http://www.opengis.net/def/crs/EPSG/0/3413",
+    "tileMatrices": [
+     {
+      "id": "0",
+      "scaleDenominator": 29257142.85714286,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 2,
+      "matrixHeight": 2
+     },
+     {
+      "id": "1",
+      "scaleDenominator": 14628571.42857143,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 4,
+      "matrixHeight": 4
+     },
+     {
+      "id": "2",
+      "scaleDenominator": 7314285.714285715,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 8,
+      "matrixHeight": 8
+     },
+     {
+      "id": "3",
+      "scaleDenominator": 3657142.8571428573,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 16,
+      "matrixHeight": 16
+     },
+     {
+      "id": "4",
+      "scaleDenominator": 1828571.4285714286,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 32,
+      "matrixHeight": 32
+     }
+    ]
+   }
+  },
+  "velocity": {
+   "tileMatrixSet": {
+    "id": "GIBS_EPSG3413_500m",
+    "title": "NASA GIBS EPSG:3413 500m",
+    "crs": "http://www.opengis.net/def/crs/EPSG/0/3413",
+    "tileMatrices": [
+     {
+      "id": "0",
+      "scaleDenominator": 29257142.85714286,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 2,
+      "matrixHeight": 2
+     },
+     {
+      "id": "1",
+      "scaleDenominator": 14628571.42857143,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 4,
+      "matrixHeight": 4
+     },
+     {
+      "id": "2",
+      "scaleDenominator": 7314285.714285715,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 8,
+      "matrixHeight": 8
+     },
+     {
+      "id": "3",
+      "scaleDenominator": 3657142.8571428573,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 16,
+      "matrixHeight": 16
+     },
+     {
+      "id": "4",
+      "scaleDenominator": 1828571.4285714286,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 32,
+      "matrixHeight": 32
+     }
+    ]
+   }
+  },
+  "coastlines": {
+   "tileMatrixSet": {
+    "id": "GIBS_EPSG3413_250m",
+    "title": "NASA GIBS EPSG:3413 250m",
+    "crs": "http://www.opengis.net/def/crs/EPSG/0/3413",
+    "tileMatrices": [
+     {
+      "id": "0",
+      "scaleDenominator": 29257142.85714286,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 2,
+      "matrixHeight": 2
+     },
+     {
+      "id": "1",
+      "scaleDenominator": 14628571.42857143,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 4,
+      "matrixHeight": 4
+     },
+     {
+      "id": "2",
+      "scaleDenominator": 7314285.714285715,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 8,
+      "matrixHeight": 8
+     },
+     {
+      "id": "3",
+      "scaleDenominator": 3657142.8571428573,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 16,
+      "matrixHeight": 16
+     },
+     {
+      "id": "4",
+      "scaleDenominator": 1828571.4285714286,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 32,
+      "matrixHeight": 32
+     },
+     {
+      "id": "5",
+      "scaleDenominator": 914285.7142857143,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 64,
+      "matrixHeight": 64
+     }
+    ]
+   }
+  },
+  "labels": {
+   "tileMatrixSet": {
+    "id": "GIBS_EPSG3413_250m",
+    "title": "NASA GIBS EPSG:3413 250m",
+    "crs": "http://www.opengis.net/def/crs/EPSG/0/3413",
+    "tileMatrices": [
+     {
+      "id": "0",
+      "scaleDenominator": 29257142.85714286,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 2,
+      "matrixHeight": 2
+     },
+     {
+      "id": "1",
+      "scaleDenominator": 14628571.42857143,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 4,
+      "matrixHeight": 4
+     },
+     {
+      "id": "2",
+      "scaleDenominator": 7314285.714285715,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 8,
+      "matrixHeight": 8
+     },
+     {
+      "id": "3",
+      "scaleDenominator": 3657142.8571428573,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 16,
+      "matrixHeight": 16
+     },
+     {
+      "id": "4",
+      "scaleDenominator": 1828571.4285714286,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 32,
+      "matrixHeight": 32
+     },
+     {
+      "id": "5",
+      "scaleDenominator": 914285.7142857143,
+      "pointOfOrigin": [
+       -4194304,
+       4194304
+      ],
+      "tileWidth": 512,
+      "tileHeight": 512,
+      "matrixWidth": 64,
+      "matrixHeight": 64
+     }
+    ]
+   }
+  }
+ }
+}

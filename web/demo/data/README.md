@@ -77,3 +77,22 @@ we use its typed staging API, currently exposed by its `__private` feature,
 **only in xtask**, with an exact version pin. No private encoder code is linked
 into core.wasm. Mixed scalar columns are rejected because MLT v1 cannot retain
 them; they are never silently stringified. The real extract has none.
+
+## Other projections (`crs/`)
+
+Scene documents (plan §11.4) with their v8 styles inline, written for this
+repository; the web demo opens them as `?style=arctic` and `?style=greenland`,
+the native demo as `file://$PWD/web/demo/data/crs/arctic.json`.
+
+- `arctic.json` draws on an EPSG:3413 (NSIDC polar stereographic) surface:
+  [NASA EOSDIS GIBS](https://earthdata.nasa.gov/gibs) Blue Marble shaded relief,
+  MEaSUREs Greenland ice velocity, coastlines and reference labels in GIBS's
+  EPSG:3413 tile matrix sets (declared inline: 512-pixel tiles from
+  ±4,194,304 m), with a graticule from inline GeoJSON tiled on the surface.
+- `greenland.json` keeps Web Mercator: OpenFreeMap's planet tiles under the
+  same ice velocity raster, warped from EPSG:3413 (the `RasterWarp` plan).
+
+Both fetch their tiles at run time; nothing here is extracted or committed.
+GIBS imagery is NASA's and free of use restrictions; GIBS asks to be credited.
+OpenFreeMap's tiles and glyphs are as above (© OpenMapTiles, © OpenStreetMap
+contributors, ODbL).
