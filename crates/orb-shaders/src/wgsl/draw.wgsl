@@ -1,14 +1,7 @@
-// Bindings shared by every draw pipeline: group 0 is the scene, group 1 the
-// render node.
+// Helpers shared by every draw pipeline. Group 0 is the scene, group 1 the
+// render node; the scene's tables are read through `fetch`.
 
 @group(0) @binding(0) var<uniform> frame: Frame;
-@group(0) @binding(1) var<storage, read> tiles: array<Tile>;
-@group(0) @binding(2) var<storage, read> chunks: array<Chunk>;
-@group(0) @binding(3) var<storage, read> visible: array<Visible>;
-@group(0) @binding(4) var<storage, read> vertices: array<u32>;
-@group(0) @binding(5) var<storage, read> indices: array<u32>;
-@group(0) @binding(6) var<storage, read> props: array<u32>;
-@group(0) @binding(7) var<storage, read> node_cull: array<NodeCull>;
 // The terrain's DEM page: padded elevations (decision 0019).
 @group(0) @binding(14) var dem_pages: texture_2d_array<f32>;
 
@@ -56,13 +49,13 @@ struct Pulled {
 // Maps a vertex of a chunk instance to its vertex, or `None` (false) for
 // padding past the chunk's last index.
 fn pull(node_index: u32, instance: u32, index: u32, stride: u32, out: ptr<function, Pulled>) -> bool {
-    let entry = visible[node_cull[node_index].visible_base + instance];
-    let chunk = chunks[entry.chunk];
+    let entry = visible_at(node_cull_at(node_index).visible_base + instance);
+    let chunk = chunk_at(entry.chunk);
     if index >= chunk.index_count {
         return false;
     }
     (*out).tile = entry.tile;
-    (*out).vertex = chunk.vertex_base + indices[chunk.first_index + index] * stride;
+    (*out).vertex = chunk.vertex_base + index_at(chunk.first_index + index) * stride;
     (*out).prop_base = chunk.prop_base;
     (*out).state_base = chunk.state_base;
     (*out).row_words = chunk.row_words;
@@ -75,9 +68,9 @@ fn pull_indexed(node_index: u32, index: u32, stride: u32, out: ptr<function, Pul
     if index == HIDDEN_INDEX {
         return false;
     }
-    let cull = node_cull[node_index];
-    let run = visible[cull.visible_base + (index >> cull.run_shift)];
-    let chunk = chunks[run.chunk];
+    let cull = node_cull_at(node_index);
+    let run = visible_at(cull.visible_base + (index >> cull.run_shift));
+    let chunk = chunk_at(run.chunk);
     (*out).tile = run.tile;
     (*out).vertex = chunk.vertex_base + (index & ((1u << cull.run_shift) - 1u)) * stride;
     (*out).prop_base = chunk.prop_base;
@@ -109,12 +102,12 @@ fn state_block(v: Pulled, feature: u32, lookup: StateLookup) -> u32 {
     if lookup.stride == 0u || v.state_base == NO_STATE {
         return NO_STATE;
     }
-    let index = props[v.state_base + feature];
+    let index = prop_at(v.state_base + feature);
     if index == 0u {
         return NO_STATE;
     }
     let block = lookup.base + index * lookup.stride;
-    if props[block] == 0u {
+    if prop_at(block) == 0u {
         return NO_STATE;
     }
     return block + 1u;
@@ -127,7 +120,7 @@ fn from_state(block: u32, lookup: StateLookup, slot: u32) -> bool {
 
 // Property `slot`'s position among the block's values.
 fn state_slot(lookup: StateLookup, slot: u32) -> u32 {
-    return countOneBits(lookup.mask & ((1u << slot) - 1u));
+    return count_bits(lookup.mask & ((1u << slot) - 1u));
 }
 
 fn state_number(block: u32, lookup: StateLookup, slot: u32, c: Curve) -> f32 {
@@ -174,15 +167,15 @@ fn curve_t(c: Curve, tile_zoom: f32) -> f32 {
 // A number property from a property row: two f32 words, its values at the
 // tile's zoom and the next.
 fn table_number(row: u32, slot: u32, c: Curve, tile_zoom: f32) -> f32 {
-    let a = bitcast<f32>(props[row + 2u * slot]);
-    let b = bitcast<f32>(props[row + 2u * slot + 1u]);
+    let a = bitcast<f32>(prop_at(row + 2u * slot));
+    let b = bitcast<f32>(prop_at(row + 2u * slot + 1u));
     return mix(a, b, curve_t(c, tile_zoom));
 }
 
 // A colour property from a property row: two rgba8 words.
 fn table_color(row: u32, slot: u32, c: Curve, tile_zoom: f32) -> vec4<f32> {
-    let a = unpack4x8unorm(props[row + 2u * slot]);
-    let b = unpack4x8unorm(props[row + 2u * slot + 1u]);
+    let a = unpack4x8unorm(prop_at(row + 2u * slot));
+    let b = unpack4x8unorm(prop_at(row + 2u * slot + 1u));
     return mix(a, b, curve_t(c, tile_zoom));
 }
 

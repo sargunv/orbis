@@ -14,7 +14,7 @@ fn gpu_slot(paint: GpuPaint, slot: u32) -> bool {
 }
 
 fn gpu_program(paint: GpuPaint, slot: u32) -> u32 {
-    return paint.programs + props[paint.programs + slot];
+    return paint.programs + prop_at(paint.programs + slot);
 }
 
 fn gpu_state(paint: GpuPaint, block: u32) -> u32 {
@@ -36,7 +36,7 @@ fn gpu_values(paint: GpuPaint, inputs: u32, block: u32, colors: u32) -> array<ve
     let state = gpu_state(paint, block);
     var mask = paint.mask;
     while mask != 0u {
-        let slot = firstTrailingBit(mask);
+        let slot = lowest_bit(mask);
         mask &= mask - 1u;
         out[slot] = expr_value(gpu_program(paint, slot), inputs, state, zoom, (colors & (1u << slot)) != 0u);
     }

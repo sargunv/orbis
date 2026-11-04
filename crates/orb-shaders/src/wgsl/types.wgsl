@@ -86,6 +86,17 @@ struct Chunk {
     row_words: u32,
 };
 
+// ImageAtlas table: rect in physical texels, array page, source pixel ratio,
+// SDF flag. Missing rows are zero, and sample transparent without division.
+struct ImageRect {
+    origin: vec2<u32>,
+    size: vec2<u32>,
+    layer: u32,
+    pixel_ratio: f32,
+    sdf: u32,
+    _pad: u32,
+};
+
 const NO_STATE: u32 = 0xffffffffu;
 
 // A chunk to draw, and the tile placement to draw it with. An indexed

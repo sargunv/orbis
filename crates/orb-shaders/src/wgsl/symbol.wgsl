@@ -129,20 +129,20 @@ struct Placed {
 };
 
 fn read_placed(base: u32, index: u32) -> Placed {
-    let at = base + vertices[base + H_PLACED] + index * PLACED_WORDS;
+    let at = base + vertex_at(base + H_PLACED) + index * PLACED_WORDS;
     var p: Placed;
-    p.anchor = unpack_i16x2(vertices[at]);
-    let w1 = vertices[at + 1u];
+    p.anchor = unpack_i16x2(vertex_at(at));
+    let w1 = vertex_at(at + 1u);
     p.segment = w1 & 0xffffu;
     p.writing_mode = (w1 >> 16u) & 0xffu;
-    p.quad_start = vertices[at + 2u];
-    p.quad_count = vertices[at + 3u];
-    p.line_start = vertices[at + 4u];
-    p.line_count = vertices[at + 5u];
-    let size = vertices[at + 6u];
+    p.quad_start = vertex_at(at + 2u);
+    p.quad_count = vertex_at(at + 3u);
+    p.line_start = vertex_at(at + 4u);
+    p.line_count = vertex_at(at + 5u);
+    let size = vertex_at(at + 6u);
     p.size = vec2<f32>(f32(size & 0xffffu), f32(size >> 16u)) / 128.0;
-    p.line_offset = vec2<f32>(bitcast<f32>(vertices[at + 7u]), bitcast<f32>(vertices[at + 8u]));
-    p.instance = vertices[at + 9u];
+    p.line_offset = vec2<f32>(bitcast<f32>(vertex_at(at + 7u)), bitcast<f32>(vertex_at(at + 8u)));
+    p.instance = vertex_at(at + 9u);
     return p;
 }
 
@@ -317,7 +317,7 @@ fn label_plane_to_clip(tile: Tile, p: vec2<f32>) -> vec2<f32> {
 }
 
 fn line_vertex(base: u32, placed: Placed, i: u32) -> vec2<f32> {
-    return unpack_i16x2(vertices[base + vertices[base + H_LINES] + placed.line_start + i]);
+    return unpack_i16x2(vertex_at(base + vertex_at(base + H_LINES) + placed.line_start + i));
 }
 
 // A line vertex in the label plane; one behind the camera becomes a point
@@ -459,7 +459,7 @@ fn place_glyph(tile: Tile, base: u32, placed: Placed, anchor: vec2<f32>, offset_
 }
 
 fn glyph_offset(base: u32, quad: u32) -> f32 {
-    return bitcast<f32>(vertices[base + vertices[base + H_GLYPH_OFFSETS] + quad]);
+    return bitcast<f32>(vertex_at(base + vertex_at(base + H_GLYPH_OFFSETS) + quad));
 }
 
 // A line label's glyph in the label plane: GL JS `placeGlyphsAlongLine`
@@ -531,33 +531,33 @@ struct SymbolOut {
 fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> SymbolOut {
     var out: SymbolOut;
     out.position = discarded_vertex();
-    let entry = visible[node_cull[node.index].visible_base + instance / CHUNK_QUADS];
-    let chunk = chunks[entry.chunk];
+    let entry = visible_at(node_cull_at(node.index).visible_base + instance / CHUNK_QUADS);
+    let chunk = chunk_at(entry.chunk);
     let local = instance % CHUNK_QUADS;
     if local >= chunk.index_count { return out; }
-    let tile = tiles[entry.tile];
+    let tile = tile_at(entry.tile);
     let base = chunk.vertex_base;
-    let quad_index = vertices[base + vertices[base + H_ORDER] + chunk.first_index + local];
-    let qa = base + vertices[base + H_QUADS] + quad_index * QUAD_WORDS;
-    let placed_index = vertices[qa + 10u];
+    let quad_index = vertex_at(base + vertex_at(base + H_ORDER) + chunk.first_index + local);
+    let qa = base + vertex_at(base + H_QUADS) + quad_index * QUAD_WORDS;
+    let placed_index = vertex_at(qa + 10u);
     let placed = read_placed(base, placed_index);
     if !point_owned(tile, placed.anchor) { return out; }
 
     // The block of the placement's world copy; the placed table runs up to
     // the glyph offsets.
-    let placed_count = (vertices[base + H_GLYPH_OFFSETS] - vertices[base + H_PLACED]) / PLACED_WORDS;
-    let copy = u32(tile.wrap & i32(vertices[base + H_COPIES] - 1u));
-    let state_at = vertices[base + H_STATES] + (copy * placed_count + placed_index) * STATE_WORDS;
-    let state = props[state_at];
+    let placed_count = (vertex_at(base + H_GLYPH_OFFSETS) - vertex_at(base + H_PLACED)) / PLACED_WORDS;
+    let copy = u32(tile.wrap & i32(vertex_at(base + H_COPIES) - 1u));
+    let state_at = vertex_at(base + H_STATES) + (copy * placed_count + placed_index) * STATE_WORDS;
+    let state = prop_at(state_at);
     if (state & S_HIDDEN) != 0u { return out; }
     let fade_from = f32(state & S_OPACITY) / 127.0;
     let fade_change = select(-frame.symbol_fade_change, frame.symbol_fade_change, (state & S_PLACED) != 0u);
     let fade = clamp(fade_from + fade_change, 0.0, 1.0);
 
     // Instance rows: the feature's property-row slot, its height offset.
-    let instance_row = base + vertices[base + H_INSTANCE_ROWS] + placed.instance * 2u;
-    let slot = vertices[instance_row];
-    symbol_height = bitcast<f32>(vertices[instance_row + 1u]);
+    let instance_row = base + vertex_at(base + H_INSTANCE_ROWS) + placed.instance * 2u;
+    let slot = vertex_at(instance_row);
+    symbol_height = bitcast<f32>(vertex_at(instance_row + 1u));
     let row = chunk.prop_base + slot * 10u;
     var pulled: Pulled;
     pulled.state_base = chunk.state_base;
@@ -568,8 +568,8 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
 
     let is_text = (node.flags & IS_TEXT) != 0u;
     let pitch = (node.flags & PITCH_WITH_MAP) != 0u;
-    var size = feature_size(node.size, placed.size, bitcast<f32>(vertices[base + H_LAYOUT_SIZE]),
-        bitcast<f32>(vertices[base + H_ZOOM_LO]), bitcast<f32>(vertices[base + H_ZOOM_HI]));
+    var size = feature_size(node.size, placed.size, bitcast<f32>(vertex_at(base + H_LAYOUT_SIZE)),
+        bitcast<f32>(vertex_at(base + H_ZOOM_LO)), bitcast<f32>(vertex_at(base + H_ZOOM_HI)));
 
     // `*-translate`, in tile units.
     var t = node.translate;
@@ -606,17 +606,17 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
         // GL JS `updateVariableAnchorsForBucket` and `getShiftedAnchor`.
         var shift_size = size;
         if !is_text {
-            let text_packed = vertices[base + vertices[base + H_TEXT_SIZES] + placed_index];
+            let text_packed = vertex_at(base + vertex_at(base + H_TEXT_SIZES) + placed_index);
             shift_size = feature_size(node.text_size,
                 vec2<f32>(f32(text_packed & 0xffffu), f32(text_packed >> 16u)) / 128.0,
-                bitcast<f32>(vertices[base + H_TEXT_LAYOUT_SIZE]),
-                bitcast<f32>(vertices[base + H_TEXT_ZOOM_LO]), bitcast<f32>(vertices[base + H_TEXT_ZOOM_HI]));
+                bitcast<f32>(vertex_at(base + H_TEXT_LAYOUT_SIZE)),
+                bitcast<f32>(vertex_at(base + H_TEXT_ZOOM_LO)), bitcast<f32>(vertex_at(base + H_TEXT_ZOOM_HI)));
         }
         var render_size = shift_size * (0.5 + 0.5 * ctcd / projected_point.w) / 24.0;
         if pitch {
             render_size *= tile_units_per_px(tile);
         }
-        let shift = vec2<f32>(bitcast<f32>(props[state_at + 1u]), bitcast<f32>(props[state_at + 2u])) * render_size;
+        let shift = vec2<f32>(bitcast<f32>(prop_at(state_at + 1u)), bitcast<f32>(prop_at(state_at + 2u))) * render_size;
         if pitch {
             var adjusted = shift;
             if (node.flags & ROTATE_WITH_MAP) == 0u {
@@ -668,21 +668,21 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
 
     // Corners tl, tr, bl, br; two triangles.
     let corner = array<u32, 6>(0u, 1u, 2u, 1u, 2u, 3u)[index % 6u];
-    let offset = unpack_i16x2(vertices[qa + corner]);
-    let tex_words = vec2<u32>(vertices[qa + 4u], vertices[qa + 5u]);
+    let offset = unpack_i16x2(vertex_at(qa + corner));
+    let tex_words = vec2<u32>(vertex_at(qa + 4u), vertex_at(qa + 5u));
     let x0 = f32(tex_words.x & 0xffffu);
     let y0 = f32(tex_words.x >> 16u);
     let x1 = f32(tex_words.y & 0xffffu);
     let y1 = f32(tex_words.y >> 16u);
-    let px = vec2<f32>(unpack_i16x2(vertices[qa + 6u]));
-    let px_br = vec2<f32>(unpack_i16x2(vertices[qa + 7u]));
-    let min_font_scale = unpack_i16x2(vertices[qa + 8u]) / 256.0;
+    let px = vec2<f32>(unpack_i16x2(vertex_at(qa + 6u)));
+    let px_br = vec2<f32>(unpack_i16x2(vertex_at(qa + 7u)));
+    let min_font_scale = unpack_i16x2(vertex_at(qa + 8u)) / 256.0;
     let right = corner == 1u || corner == 3u;
     let bottom = corner >= 2u;
     let pixel_offset = vec2<f32>(select(px.x, px_br.x, right), select(px.y, px_br.y, bottom)) / 16.0;
     let corner_tex = vec2<f32>(select(x0, x1, right), select(y0, y1, bottom));
-    let flags = vertices[qa + 11u] >> 16u;
-    let texture = vertices[qa + 9u];
+    let flags = vertex_at(qa + 11u) >> 16u;
+    let texture = vertex_at(qa + 9u);
 
     let glyph_offset_px = rotation * (offset / 32.0 * max(min_font_scale, vec2<f32>(font_scale)) + pixel_offset);
     var final_pos: vec4<f32>;
@@ -697,32 +697,32 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     // Texels: the padded rectangle's origin plus the quad's texels.
     let image = (flags & Q_IMAGE) != 0u;
     if image {
-        let rect = vertices[base + vertices[base + H_IMAGES] + texture];
+        let rect = vertex_at(base + vertex_at(base + H_IMAGES) + texture);
         if rect == 0xffffffffu {
             return out;
         }
         out.layer = rect >> 24u;
         out.tex = (vec2<f32>(f32(rect & 0xfffu), f32((rect >> 12u) & 0xfffu)) + corner_tex) / node.image_page;
     } else {
-        let atlas_row = vertices[base + vertices[base + H_GLYPHS] + texture];
+        let atlas_row = vertex_at(base + vertex_at(base + H_GLYPHS) + texture);
         let g = node.glyph_table + atlas_row * 4u;
-        let origin = props[g];
-        out.layer = props[g + 2u];
+        let origin = prop_at(g);
+        out.layer = prop_at(g + 2u);
         out.tex = (vec2<f32>(f32(origin & 0xffffu), f32(origin >> 16u)) + corner_tex) / node.glyph_page;
-        if props[g + 1u] == 0u {
+        if prop_at(g + 1u) == 0u {
             // Not rasterized yet: nothing to draw.
             out.position = discarded_vertex();
         }
     }
     out.data = vec3<f32>(final_pos.w, size, total_opacity);
     if (flags & Q_COLOR) != 0u {
-        out.fill = unpack4x8unorm(vertices[base + vertices[base + H_COLORS] + quad_index]);
+        out.fill = unpack4x8unorm(vertex_at(base + vertex_at(base + H_COLORS) + quad_index));
     } else {
         out.fill = paint_color(row, state_at_slot, 1u, node.fill_color, tile.zoom);
     }
     out.halo = paint_color(row, state_at_slot, 2u, node.halo_color, tile.zoom);
     out.halo_params = vec2<f32>(paint_number(row, state_at_slot, 3u, node.halo_width, tile.zoom), paint_number(row, state_at_slot, 4u, node.halo_blur, tile.zoom));
-    let linear = (node.flags & LINEAR_ICONS) != 0u || (vertices[base + H_FLAGS] & 1u) != 0u
+    let linear = (node.flags & LINEAR_ICONS) != 0u || (vertex_at(base + H_FLAGS) & 1u) != 0u
         || abs(frame.pitch) > 0.0;
     out.kind = select(0u, 1u, (flags & Q_SDF) != 0u) | select(0u, 2u, image)
         | select(0u, 4u, linear);

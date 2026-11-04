@@ -108,6 +108,7 @@ impl ImageAtlas {
             width: size,
             height: size,
             array_layers: pages,
+            dimension: orb_hal::TextureViewDimension::D2Array,
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             sample_count: 1,

@@ -9,7 +9,7 @@ struct HeatmapColorOut {
 fn vs_heatmap_color(@builtin(vertex_index) index: u32) -> HeatmapColorOut {
     let positions = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
     var out: HeatmapColorOut;
-    if node_cull[node.index].candidate_count == 0u {
+    if node_cull_at(node.index).candidate_count == 0u {
         out.position = discarded_vertex();
         return out;
     }

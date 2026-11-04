@@ -102,6 +102,10 @@ pub struct TextureDesc<'a> {
     pub width: u32,
     pub height: u32,
     pub array_layers: u32,
+    /// How shaders sample it: GL fixes a texture's target at creation, so
+    /// (as WebGPU compatibility mode's `textureBindingViewDimension`)
+    /// every binding uses this dimension.
+    pub dimension: TextureViewDimension,
     pub format: TextureFormat,
     pub usage: TextureUsages,
     pub sample_count: u32,
@@ -147,7 +151,35 @@ pub struct SamplerDesc<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShaderModuleDesc<'a> {
     pub label: &'a str,
-    pub wgsl: Cow<'a, str>,
+    pub source: ShaderSource<'a>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShaderSource<'a> {
+    Wgsl(Cow<'a, str>),
+    /// A Compat program translated offline (plan §8.4), its overrides
+    /// already specialized; pipelines ignore entry points and constants.
+    Glsl(&'a GlslProgram<'a>),
+}
+
+/// A GLSL ES 3.00 program and where its uniforms read: naga names each
+/// resource after its WGSL group and binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlslProgram<'a> {
+    pub vertex: &'a str,
+    pub fragment: &'a str,
+    /// Uniform blocks: name, and the buffer's group and binding.
+    pub blocks: &'a [(&'a str, u32, u32)],
+    /// Sampler uniforms: name, the texture's (or a data texture's storage
+    /// buffer's) group and binding, and its sampler's, if it samples.
+    pub textures: &'a [GlslTexture<'a>],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlslTexture<'a> {
+    pub name: &'a str,
+    pub texture: (u32, u32),
+    pub sampler: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

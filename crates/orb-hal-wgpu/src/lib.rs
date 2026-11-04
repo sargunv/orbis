@@ -620,7 +620,10 @@ impl Gpu for WgpuGpu {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(desc.label),
-                source: wgpu::ShaderSource::Wgsl(desc.wgsl.clone()),
+                source: match &desc.source {
+                    ShaderSource::Wgsl(wgsl) => wgpu::ShaderSource::Wgsl(wgsl.clone()),
+                    ShaderSource::Glsl(_) => panic!("{}: GLSL is Compat's", desc.label),
+                },
             });
         #[cfg(not(target_arch = "wasm32"))]
         {

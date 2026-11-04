@@ -155,6 +155,7 @@ fn create_texture(gpu: &mut orb_hal_wgpu::WgpuGpu, width: u32, height: u32) -> T
         width,
         height,
         array_layers: 1,
+        dimension: orb_hal::TextureViewDimension::D2,
         format: TEXTURE_FORMAT,
         usage: TextureUsages::RENDER_ATTACHMENT
             | TextureUsages::COPY_SRC

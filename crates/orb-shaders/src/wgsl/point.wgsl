@@ -2,12 +2,12 @@
 // visible chunk reserves 256 instances; padding exits before shading.
 const CHUNK_POINTS: u32 = 256u;
 fn pull_point(node_index: u32, instance: u32, out: ptr<function, Pulled>) -> bool {
-    let entry = visible[node_cull[node_index].visible_base + instance / CHUNK_POINTS];
-    let chunk = chunks[entry.chunk];
+    let entry = visible_at(node_cull_at(node_index).visible_base + instance / CHUNK_POINTS);
+    let chunk = chunk_at(entry.chunk);
     let point = instance % CHUNK_POINTS;
     if point >= chunk.index_count { return false; }
     (*out).tile = entry.tile;
-    (*out).vertex = chunk.vertex_base + indices[chunk.first_index + point] * 2u;
+    (*out).vertex = chunk.vertex_base + index_at(chunk.first_index + point) * 2u;
     (*out).prop_base = chunk.prop_base;
     (*out).state_base = chunk.state_base;
     (*out).row_words = chunk.row_words;

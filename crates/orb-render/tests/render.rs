@@ -33,6 +33,7 @@ impl Harness {
             width: SIZE,
             height: SIZE,
             array_layers: 1,
+            dimension: orb_hal::TextureViewDimension::D2,
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
             sample_count: 1,

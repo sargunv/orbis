@@ -264,6 +264,7 @@ impl Offscreen {
             width: Self::WIDTH,
             height: Self::HEIGHT,
             array_layers: 1,
+            dimension: orb_hal::TextureViewDimension::D2,
             format: format.color,
             usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
             sample_count: 1,

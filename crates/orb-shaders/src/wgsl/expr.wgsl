@@ -51,7 +51,7 @@ fn expr_f64_to_f32(lo: u32, hi: u32) -> f32 {
     }
     // 1.m with the mantissa's top 41 bits, then the exponent.
     let m = 1.0 + f32(hi & 0xfffffu) * exp2(-20.0) + f32(lo >> 11u) * exp2(-41.0);
-    let v = ldexp(m, e);
+    let v = scale_exp2(m, e);
     return select(v, -v, sign != 0u);
 }
 
@@ -146,7 +146,7 @@ fn expr_rgba(v: vec4<u32>) -> vec4<f32> {
 
 // Input `j` of program `p`: from the feature's inputs or its state values.
 fn expr_input(p: u32, j: u32, inputs: u32, state: u32) -> vec4<u32> {
-    let entry = props[p + props[p + 3u] + j];
+    let entry = prop_at(p + prop_at(p + 3u) + j);
     let offset = entry & 0x0fffffffu;
     let color = (entry & 0x40000000u) != 0u;
     var base = inputs + offset;
@@ -157,10 +157,10 @@ fn expr_input(p: u32, j: u32, inputs: u32, state: u32) -> vec4<u32> {
         base = state + offset;
     }
     if color {
-        return vec4<u32>(props[base], props[base + 1u], props[base + 2u], 0u);
+        return vec4<u32>(prop_at(base), prop_at(base + 1u), prop_at(base + 2u), 0u);
     }
-    let lo = props[base];
-    let hi = props[base + 1u];
+    let lo = prop_at(base);
+    let hi = prop_at(base + 1u);
     if (hi & 0xfff80000u) == 0xfff80000u {
         return vec4<u32>(hi & 0xffu, lo, 0u, 0u);
     }
@@ -170,7 +170,7 @@ fn expr_input(p: u32, j: u32, inputs: u32, state: u32) -> vec4<u32> {
 fn expr_arg(r: ptr<function, array<vec4<u32>, 16>>, consts: u32, o: u32) -> vec4<u32> {
     if o >= 0x80000000u {
         let at = consts + (o & 0xffffu) * 4u;
-        return vec4<u32>(props[at], props[at + 1u], props[at + 2u], props[at + 3u]);
+        return vec4<u32>(prop_at(at), prop_at(at + 1u), prop_at(at + 2u), prop_at(at + 3u));
     }
     return (*r)[o & 15u];
 }
@@ -312,18 +312,18 @@ fn expr_unary(f: u32, a: vec4<u32>) -> vec4<u32> {
 // (from `expr_zoom`).
 fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
     var r: array<vec4<u32>, 16>;
-    let n = props[p];
-    let consts = p + props[p + 2u];
+    let n = prop_at(p);
+    let consts = p + prop_at(p + 2u);
     for (var pc = 0u; pc < n; pc++) {
         let at = p + 8u + pc * 4u;
-        let w0 = props[at];
+        let w0 = prop_at(at);
         let op = w0 & 0xffu;
         let aux = w0 >> 16u;
         let count = aux & 0xffu;
         let flags = aux >> 8u;
-        let w1 = props[at + 1u];
-        let w2 = props[at + 2u];
-        let w3 = props[at + 3u];
+        let w1 = prop_at(at + 1u);
+        let w2 = prop_at(at + 2u);
+        let w3 = prop_at(at + 3u);
         let table = p + w1;
         var out = expr_error();
         switch op {
@@ -382,7 +382,7 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
                 let any = flags != 0u;
                 out = expr_bool(!any);
                 for (var i = 0u; i < count; i++) {
-                    let v = expr_arg(&r, consts, props[table + i]);
+                    let v = expr_arg(&r, consts, prop_at(table + i));
                     if v.x != EXPR_BOOL {
                         out = expr_error();
                         break;
@@ -396,13 +396,13 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
             case 6u: {
                 out = expr_arg(&r, consts, w2);
                 for (var i = 0u; i < count; i++) {
-                    let t = expr_arg(&r, consts, props[table + 2u * i]);
+                    let t = expr_arg(&r, consts, prop_at(table + 2u * i));
                     if t.x != EXPR_BOOL {
                         out = expr_error();
                         break;
                     }
                     if t.y != 0u {
-                        out = expr_arg(&r, consts, props[table + 2u * i + 1u]);
+                        out = expr_arg(&r, consts, prop_at(table + 2u * i + 1u));
                         break;
                     }
                 }
@@ -412,9 +412,9 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
                 if v.x != EXPR_ERROR {
                     out = expr_arg(&r, consts, w3);
                     for (var i = 0u; i < count; i++) {
-                        let label = expr_arg(&r, consts, props[table + 2u * i]);
+                        let label = expr_arg(&r, consts, prop_at(table + 2u * i));
                         if label.x == v.x && ((v.x == EXPR_STRING && label.y == v.y) || (v.x == EXPR_NUMBER && !expr_is_nan(v) && expr_order(label, v) == 0)) {
-                            out = expr_arg(&r, consts, props[table + 2u * i + 1u]);
+                            out = expr_arg(&r, consts, prop_at(table + 2u * i + 1u));
                             break;
                         }
                     }
@@ -423,7 +423,7 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
             case 8u: {
                 out = vec4<u32>(EXPR_NULL, 0u, 0u, 0u);
                 for (var i = 0u; i < count; i++) {
-                    out = expr_arg(&r, consts, props[table + i]);
+                    out = expr_arg(&r, consts, prop_at(table + i));
                     if out.x != EXPR_NULL {
                         break;
                     }
@@ -431,16 +431,16 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
             }
             case 9u: {
                 if count == 0u {
-                    out = expr_arg(&r, consts, props[table]);
+                    out = expr_arg(&r, consts, prop_at(table));
                 } else {
                     let x = expr_arg(&r, consts, w2);
                     if x.x == EXPR_NUMBER && !expr_is_nan(x) {
-                        var pick = props[table];
+                        var pick = prop_at(table);
                         for (var i = 0u; i < count; i++) {
-                            if expr_order(x, expr_arg(&r, consts, props[table + 1u + 2u * i])) < 0 {
+                            if expr_order(x, expr_arg(&r, consts, prop_at(table + 1u + 2u * i))) < 0 {
                                 break;
                             }
-                            pick = props[table + 2u + 2u * i];
+                            pick = prop_at(table + 2u + 2u * i);
                         }
                         out = expr_arg(&r, consts, pick);
                     }
@@ -450,24 +450,24 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
                 let last = 2u * (count - 1u);
                 let x = expr_arg(&r, consts, w2);
                 if count == 1u {
-                    out = expr_arg(&r, consts, props[table + 1u]);
+                    out = expr_arg(&r, consts, prop_at(table + 1u));
                 } else if x.x == EXPR_NUMBER && !expr_is_nan(x) {
-                    if expr_order(x, expr_arg(&r, consts, props[table])) <= 0 {
-                        out = expr_arg(&r, consts, props[table + 1u]);
-                    } else if expr_order(x, expr_arg(&r, consts, props[table + last])) >= 0 {
-                        out = expr_arg(&r, consts, props[table + last + 1u]);
+                    if expr_order(x, expr_arg(&r, consts, prop_at(table))) <= 0 {
+                        out = expr_arg(&r, consts, prop_at(table + 1u));
+                    } else if expr_order(x, expr_arg(&r, consts, prop_at(table + last))) >= 0 {
+                        out = expr_arg(&r, consts, prop_at(table + last + 1u));
                     } else {
                         var i = 0u;
                         for (var j = 1u; j < count; j++) {
-                            if expr_order(x, expr_arg(&r, consts, props[table + 2u * j])) < 0 {
+                            if expr_order(x, expr_arg(&r, consts, prop_at(table + 2u * j))) < 0 {
                                 break;
                             }
                             i = j;
                         }
-                        let lo = expr_f32(expr_arg(&r, consts, props[table + 2u * i]));
-                        let hi = expr_f32(expr_arg(&r, consts, props[table + 2u * i + 2u]));
-                        let a = expr_arg(&r, consts, props[table + 2u * i + 1u]);
-                        let b = expr_arg(&r, consts, props[table + 2u * i + 3u]);
+                        let lo = expr_f32(expr_arg(&r, consts, prop_at(table + 2u * i)));
+                        let hi = expr_f32(expr_arg(&r, consts, prop_at(table + 2u * i + 2u)));
+                        let a = expr_arg(&r, consts, prop_at(table + 2u * i + 1u));
+                        let b = expr_arg(&r, consts, prop_at(table + 2u * i + 3u));
                         let t = expr_factor(flags == 1u, expr_arg(&r, consts, w3), expr_f32(x), lo, hi);
                         if a.x == EXPR_NUMBER && b.x == EXPR_NUMBER {
                             let fa = expr_f32(a);
@@ -484,7 +484,7 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
                 var nan = false;
                 var ok = true;
                 for (var i = 0u; i < count; i++) {
-                    let v = expr_arg(&r, consts, props[table + i]);
+                    let v = expr_arg(&r, consts, prop_at(table + i));
                     if v.x != EXPR_NUMBER {
                         ok = false;
                         break;
@@ -525,7 +525,7 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
             }
             case 14u: {
                 for (var i = 0u; i < count; i++) {
-                    let v = expr_arg(&r, consts, props[table + i]);
+                    let v = expr_arg(&r, consts, prop_at(table + i));
                     if v.x == EXPR_ERROR || v.x == flags {
                         out = v;
                         break;
@@ -536,7 +536,7 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
                 // Arguments come converted, nulls kept: `to-number` makes
                 // the first null 0; anything else unconverted is skipped.
                 for (var i = 0u; i < count; i++) {
-                    let v = expr_arg(&r, consts, props[table + i]);
+                    let v = expr_arg(&r, consts, prop_at(table + i));
                     if v.x == EXPR_ERROR || v.x == flags {
                         out = v;
                         break;
@@ -552,7 +552,7 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
                 if v.x <= EXPR_STRING {
                     out = expr_bool(false);
                     for (var i = 0u; i < count; i++) {
-                        if expr_equal(v, expr_arg(&r, consts, props[table + i])) {
+                        if expr_equal(v, expr_arg(&r, consts, prop_at(table + i))) {
                             out = expr_bool(true);
                             break;
                         }
@@ -569,7 +569,7 @@ fn expr_eval(p: u32, inputs: u32, state: u32, zoom: vec4<u32>) -> vec4<u32> {
         }
         r[(w0 >> 8u) & 15u] = out;
     }
-    return expr_arg(&r, consts, props[p + 1u]);
+    return expr_arg(&r, consts, prop_at(p + 1u));
 }
 
 fn expr_zoom(zoom: f32, bits: vec2<u32>) -> vec4<u32> {
@@ -577,7 +577,7 @@ fn expr_zoom(zoom: f32, bits: vec2<u32>) -> vec4<u32> {
 }
 
 fn expr_default(p: u32) -> vec4<u32> {
-    return vec4<u32>(props[p + 4u], props[p + 5u], props[p + 6u], props[p + 7u]);
+    return vec4<u32>(prop_at(p + 4u), prop_at(p + 5u), prop_at(p + 6u), prop_at(p + 7u));
 }
 
 // A property's value: its default where the program's result is an error,

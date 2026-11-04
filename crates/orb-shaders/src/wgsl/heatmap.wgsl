@@ -22,10 +22,10 @@ fn vs_heatmap(@builtin(vertex_index) index: u32, @builtin(instance_index) instan
     out.position = discarded_vertex();
     var v: Pulled;
     if !pull_point(node.index, instance, &v) { return out; }
-    let tile = tiles[v.tile];
-    let p = unpack_i16x2(vertices[v.vertex]);
+    let tile = tile_at(v.tile);
+    let p = unpack_i16x2(vertex_at(v.vertex));
     if !point_owned(tile, p) { return out; }
-    let row = prop_row(v, vertices[v.vertex + 1u], 4u);
+    let row = prop_row(v, vertex_at(v.vertex + 1u), 4u);
     var radius = node.radius;
     var weight = node.weight;
     if (node.table_mask & 1u) != 0u { radius = table_number(row, 0u, node.curves[0], tile.zoom); }

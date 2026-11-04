@@ -69,10 +69,7 @@ impl Heatmaps {
         });
         let density_pipeline = if gpu.caps().rgba16float_blendable {
             let shader = HEATMAP_SHADER;
-            let module = gpu.create_shader_module(&ShaderModuleDesc {
-                label: shader.label,
-                wgsl: shader.source().into(),
-            });
+            let module = crate::shader_module(gpu, &shader, false, 0);
             Some(gpu.create_render_pipeline(&RenderPipelineDesc {
                 cull_mode: None,
                 label: shader.label,
@@ -126,6 +123,7 @@ impl Heatmaps {
             width: 256,
             height: 1,
             array_layers: 1,
+            dimension: TextureViewDimension::D2,
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             sample_count: 1,
@@ -195,6 +193,7 @@ impl Heatmaps {
             width: size[0],
             height: size[1],
             array_layers: 1,
+            dimension: TextureViewDimension::D2,
             format: TextureFormat::Rgba16Float,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             sample_count: 1,

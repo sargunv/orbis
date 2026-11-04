@@ -73,9 +73,9 @@ fn fill_outline_vertex(v: Pulled) -> FillOut {
 
 fn fill_vertex(v: Pulled) -> FillOut {
     var out: FillOut;
-    let tile = tiles[v.tile];
-    let pos = unpack_i16x2(vertices[v.vertex]);
-    let feature = vertices[v.vertex + 1u];
+    let tile = tile_at(v.tile);
+    let pos = unpack_i16x2(vertex_at(v.vertex));
+    let feature = vertex_at(v.vertex + 1u);
     let row = prop_row(v, feature, v.row_words);
     let state = state_block(v, feature, node.state);
 
@@ -118,7 +118,7 @@ fn fill_vertex(v: Pulled) -> FillOut {
 // their tile position across mapped triangles and can stray just past the
 // tile's edge, where no other placement draws; there it belongs to the edge.
 fn fill_clip_pos(in: FillOut) -> vec2<f32> {
-    let tile = tiles[in.tile];
+    let tile = tile_at(in.tile);
     if tile.warp_cells == 0u {
         return in.tile_pos;
     }
@@ -127,24 +127,24 @@ fn fill_clip_pos(in: FillOut) -> vec2<f32> {
 
 @fragment
 fn fs_fill(in: FillOut) -> @location(0) vec4<f32> {
-    if !inside_clips(tiles[in.tile], fill_clip_pos(in)) {
+    if !inside_clips(tile_at(in.tile), fill_clip_pos(in)) {
         discard;
     }
     if node.pattern.enabled == 1u {
-        return fill_pattern_color(in.images, tiles[in.tile], in.pattern_pos, node.pattern, in.color, in.opacity);
+        return fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity);
     }
     return in.color;
 }
 
 @fragment
 fn fs_fill_outline(in: FillOut) -> @location(0) vec4<f32> {
-    if !inside_clips(tiles[in.tile], in.tile_pos) {
+    if !inside_clips(tile_at(in.tile), in.tile_pos) {
         discard;
     }
     let dist = length(in.screen - in.position.xy);
     var color = in.color;
     if node.pattern.enabled == 1u {
-        color = fill_pattern_color(in.images, tiles[in.tile], in.pattern_pos, node.pattern, in.color, in.opacity);
+        color = fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity);
     }
     return color * (1.0 - smoothstep(0.0, 1.0, dist));
 }

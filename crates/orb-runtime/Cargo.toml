@@ -6,6 +6,10 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# Renders on Compat devices too (plan §8.7).
+compat = ["orb-render/compat"]
+
 [dependencies]
 bytemuck.workspace = true
 glam.workspace = true

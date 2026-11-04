@@ -51,16 +51,16 @@ fn run() -> Result<(), String> {
             "--platform" => {
                 platform = args
                     .next()
-                    .ok_or("--platform needs native|chrome|lavapipe|all")?
+                    .ok_or("--platform needs native|gl|chrome|lavapipe|llvmpipe|all")?
             }
             _ => {
                 return Err(format!(
-                    "unknown argument {arg}; usage: orb-fixtures [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]"
+                    "unknown argument {arg}; usage: orb-fixtures [--suite render|query] [--filter <substring>] [--platform native|gl|chrome|lavapipe|llvmpipe|all]"
                 ));
             }
         }
     }
-    if !["native", "chrome", "lavapipe", "all"].contains(&platform.as_str()) {
+    if !["native", "gl", "chrome", "lavapipe", "llvmpipe", "all"].contains(&platform.as_str()) {
         return Err(format!("unknown platform {platform}"));
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -86,7 +86,34 @@ fn run() -> Result<(), String> {
 
 enum Backend {
     Native(Box<WgpuGpu>),
+    /// Compat on a native GLES 3 context (`gl`, `llvmpipe`).
+    Gl(Box<orb_hal_gl::egl::EglContext>),
     Chrome(chrome::Chrome),
+}
+
+/// A GPU the suite renders a fixture on and reads back.
+trait FixtureGpu: Gpu {
+    fn read_rgba8(&mut self, target: orb_hal::TextureId) -> Vec<u8>;
+}
+
+impl FixtureGpu for WgpuGpu {
+    fn read_rgba8(&mut self, target: orb_hal::TextureId) -> Vec<u8> {
+        pollster::block_on(self.read_texture(target))
+    }
+}
+
+impl FixtureGpu for orb_hal_gl::GlGpu {
+    fn read_rgba8(&mut self, target: orb_hal::TextureId) -> Vec<u8> {
+        orb_hal_gl::GlGpu::read_rgba8(self, target)
+    }
+}
+
+/// A headless GLES 3 context: from `ORB_EGL_LIBRARY` (such as ANGLE's
+/// libEGL), or the platform's libEGL.
+fn gl_context() -> Result<orb_hal_gl::egl::EglContext, String> {
+    let library = std::env::var("ORB_EGL_LIBRARY").ok();
+    let (context, _) = orb_hal_gl::egl::EglContext::headless(library.as_deref())?;
+    Ok(context)
 }
 
 fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
@@ -111,10 +138,10 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     }
     std::fs::create_dir_all(output.join("failures")).map_err(|e| e.to_string())?;
     let started = Instant::now();
-    let mut backend = if name == "chrome" {
-        Backend::Chrome(chrome::Chrome::new(root)?)
-    } else {
-        Backend::Native(Box::new(pollster::block_on(WgpuGpu::offscreen())?))
+    let mut backend = match name {
+        "chrome" => Backend::Chrome(chrome::Chrome::new(root)?),
+        "gl" | "llvmpipe" => Backend::Gl(Box::new(gl_context()?)),
+        _ => Backend::Native(Box::new(pollster::block_on(WgpuGpu::offscreen())?)),
     };
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
@@ -325,7 +352,30 @@ fn run_test(
                 finish_skip(&mut result, &reasons, started);
                 return Ok(result);
             }
-            render_native(device, &mut map, &metadata, &mut reasons, &mut diagnostics)
+            let mut gpu = WgpuGpu::new(device.device().clone(), device.queue().clone());
+            render_native(
+                &mut gpu,
+                &mut map,
+                &metadata,
+                &mut reasons,
+                &mut diagnostics,
+            )
+        }
+        Backend::Gl(context) => {
+            let mut gpu = orb_hal_gl::GlGpu::new(context.glow())?;
+            let max_size = gpu.caps().limits.max_texture_dimension_2d;
+            if width > max_size || height > max_size {
+                reasons.insert("device:canvas-size".into());
+                finish_skip(&mut result, &reasons, started);
+                return Ok(result);
+            }
+            render_native(
+                &mut gpu,
+                &mut map,
+                &metadata,
+                &mut reasons,
+                &mut diagnostics,
+            )
         }
         Backend::Chrome(chrome) => {
             if width > chrome.max_size || height > chrome.max_size {
@@ -447,14 +497,13 @@ fn run_test(
 }
 
 fn render_native(
-    device: &WgpuGpu,
+    gpu: &mut impl FixtureGpu,
     map: &mut Map,
     metadata: &Metadata,
     reasons: &mut BTreeSet<String>,
     diagnostics: &mut Vec<String>,
 ) -> (Image, Value) {
     let (width, height) = metadata.physical_size();
-    let mut gpu = WgpuGpu::new(device.device().clone(), device.queue().clone());
     let format = TargetFormat {
         color: TextureFormat::Rgba8Unorm,
         sample_count: 1,
@@ -464,6 +513,7 @@ fn render_native(
         width,
         height,
         array_layers: 1,
+        dimension: orb_hal::TextureViewDimension::D2,
         format: format.color,
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
         sample_count: 1,
@@ -495,13 +545,7 @@ fn render_native(
             let camera = map.camera_mut();
             camera.pitch = camera.pitch.min(metadata.max_pitch);
             map.constrain_camera(viewport);
-            let report = map.render(
-                &mut gpu,
-                target,
-                format,
-                viewport,
-                metadata.pixel_ratio as f32,
-            );
+            let report = map.render(gpu, target, format, viewport, metadata.pixel_ratio as f32);
             *frames += 1;
             record_warnings(map, reasons, diagnostics);
             if !reasons.is_empty() {
@@ -542,13 +586,7 @@ fn render_native(
     let last = if fades { Next::Continue } else { Next::Idle };
     if settled && settle(map, last, reasons, diagnostics, &mut frames).is_some() {
         // Draw the state installed by the last frame's messages.
-        let final_report = map.render(
-            &mut gpu,
-            target,
-            format,
-            viewport,
-            metadata.pixel_ratio as f32,
-        );
+        let final_report = map.render(gpu, target, format, viewport, metadata.pixel_ratio as f32);
         frames += 1;
         record_warnings(map, reasons, diagnostics);
         tiles_drawn = final_report.tiles_drawn;
@@ -556,7 +594,7 @@ fn render_native(
     let image = Image {
         width,
         height,
-        pixels: pollster::block_on(gpu.read_texture(target)),
+        pixels: gpu.read_rgba8(target),
     };
     (
         image,

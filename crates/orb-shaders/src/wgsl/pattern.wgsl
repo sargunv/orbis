@@ -1,14 +1,3 @@
-// ImageAtlas table: rect in physical texels, array page, source pixel ratio,
-// SDF flag. Missing rows are zero, and sample transparent without division.
-struct ImageRect {
-    origin: vec2<u32>,
-    size: vec2<u32>,
-    layer: u32,
-    pixel_ratio: f32,
-    sdf: u32,
-    _pad: u32,
-};
-@group(0) @binding(8) var<storage, read> images: array<ImageRect>;
 @group(0) @binding(9) var image_texture: texture_2d_array<f32>;
 @group(0) @binding(10) var image_sampler: sampler;
 @group(0) @binding(11) var dash_texture: texture_2d<f32>;
@@ -25,7 +14,7 @@ struct Pattern {
 };
 
 fn pattern_ids(row: u32, base: u32, image_from: u32, image_to: u32, mask: u32, pattern: Pattern) -> vec2<u32> {
-    if (mask & 64u) != 0u { return vec2<u32>(props[row + base + select(2u, 0u, pattern.from_scale > 1.0)], props[row + base + 1u]); }
+    if (mask & 64u) != 0u { return vec2<u32>(prop_at(row + base + select(2u, 0u, pattern.from_scale > 1.0)), prop_at(row + base + 1u)); }
     return vec2<u32>(image_from, image_to);
 }
 
@@ -59,8 +48,8 @@ fn pattern_sample(image: ImageRect, uv: vec2<f32>, padding: f32) -> vec4<f32> {
 }
 
 fn fill_pattern_color(ids: vec2<u32>, tile: Tile, pos: vec2<f32>, pattern: Pattern, color: vec4<f32>, opacity: f32) -> vec4<f32> {
-    let a = images[ids.x];
-    let b = images[ids.y];
+    let a = image_at(ids.x);
+    let b = image_at(ids.y);
     let ca = pattern_sample(a, fract(pattern_position(tile, pos, a, pattern.from_scale)), 0.0);
     let cb = pattern_sample(b, fract(pattern_position(tile, pos, b, pattern.to_scale)), 0.0);
     let ga = max(fwidth(ca.a) * 0.5, 1.0 / 255.0 / 16.0);

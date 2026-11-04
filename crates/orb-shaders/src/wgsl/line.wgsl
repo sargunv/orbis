@@ -95,10 +95,10 @@ fn vs_line(@builtin(vertex_index) index: u32) -> LineOut {
 
 fn line_vertex(v: Pulled) -> LineOut {
     var out: LineOut;
-    let tile = tiles[v.tile];
-    let pos = unpack_i16x2(vertices[v.vertex]);
-    let data = vertices[v.vertex + 1u];
-    let feature = vertices[v.vertex + 3u];
+    let tile = tile_at(v.tile);
+    let pos = unpack_i16x2(vertex_at(v.vertex));
+    let data = vertex_at(v.vertex + 1u);
+    let feature = vertex_at(v.vertex + 3u);
     let row = prop_row(v, feature, v.row_words);
     let state = state_block(v, feature, node.state);
 
@@ -125,7 +125,7 @@ fn line_vertex(v: Pulled) -> LineOut {
 
     let extrude = vec2<f32>(signed_byte(data, 0u), signed_byte(data, 8u));
     let offset_normal = vec2<f32>(signed_byte(data, 16u), signed_byte(data, 24u));
-    let flags = vertices[v.vertex + 2u];
+    let flags = vertex_at(v.vertex + 2u);
     let normal = vec2<f32>(f32(flags & 1u), f32((flags >> 1u) & 1u) * 2.0 - 1.0);
 
     let antialiasing = 1.0 / frame.pixel_ratio / 2.0;
@@ -163,26 +163,26 @@ fn line_vertex(v: Pulled) -> LineOut {
 
     out.color = color * opacity;
     out.opacity = opacity;
-    out.linesofar = f32(vertices[v.vertex + 2u] >> 2u) * 2.0 * tile.extent / 8192.0;
+    out.linesofar = f32(vertex_at(v.vertex + 2u) >> 2u) * 2.0 * tile.extent / 8192.0;
     out.floorwidth = node.pattern.floor_width;
     if (node.table_mask & 4u) != 0u {
-        out.floorwidth = bitcast<f32>(props[row + 4u + select(0u, 1u, floor(frame.zoom) > tile.zoom)]);
+        out.floorwidth = bitcast<f32>(prop_at(row + 4u + select(0u, 1u, floor(frame.zoom) > tile.zoom)));
     }
     // An interpreted width's floor width, from the job (row word 18).
     if gpu_slot(node.gpu, 2u) {
-        out.floorwidth = bitcast<f32>(props[row + 18u]);
+        out.floorwidth = bitcast<f32>(prop_at(row + 18u));
     }
     out.images = pattern_ids(row, 12u, node.image_from, node.image_to, node.table_mask, node.pattern);
-    out.progress = bitcast<f32>(vertices[v.vertex + 4u]);
-    if node.gradient != 0u { out.ramp = props[row + 19u]; }
+    out.progress = bitcast<f32>(vertex_at(v.vertex + 4u));
+    if node.gradient != 0u { out.ramp = prop_at(row + 19u); }
     if node.dashed != 0u {
         out.images = vec2<u32>(node.dash_from, node.dash_to);
         if (node.table_mask & 128u) != 0u {
-            out.images = vec2<u32>(props[row + 15u + select(2u, 0u, node.dash_from_scale > 1.0)], props[row + 16u]);
+            out.images = vec2<u32>(prop_at(row + 15u + select(2u, 0u, node.dash_from_scale > 1.0)), prop_at(row + 16u));
         }
         out.floorwidth = node.dash_floor_width;
         if (node.table_mask & 4u) != 0u || gpu_slot(node.gpu, 2u) {
-            out.floorwidth = bitcast<f32>(props[row + 18u]);
+            out.floorwidth = bitcast<f32>(prop_at(row + 18u));
         }
     }
     out.normal = normal;
@@ -195,18 +195,18 @@ fn line_vertex(v: Pulled) -> LineOut {
 
 @fragment
 fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
-    if !inside_clips(tiles[in.tile], in.tile_pos) {
+    if !inside_clips(tile_at(in.tile), in.tile_pos) {
         discard;
     }
     let dist = length(in.normal) * in.width2.x;
     let blur2 = (in.blur + 1.0 / frame.pixel_ratio) * in.gamma_scale;
     var alpha = clamp(min(dist - (in.width2.y - blur2), in.width2.x - dist) / blur2, 0.0, 1.0);
     if node.pattern.enabled != 0u {
-        let a = images[in.images.x];
-        let b = images[in.images.y];
+        let a = image_at(in.images.x);
+        let b = image_at(in.images.y);
         let size_a = max(vec2<f32>(a.size) / max(a.pixel_ratio, 1.0e-6), vec2<f32>(1.0e-6));
         let size_b = max(vec2<f32>(b.size) / max(b.pixel_ratio, 1.0e-6), vec2<f32>(1.0e-6));
-        let ratio = tile_pixel_ratio(tiles[in.tile]);
+        let ratio = tile_pixel_ratio(tile_at(in.tile));
         let x_a = fract(in.linesofar / (size_a.x * node.pattern.from_scale / ratio) * size_a.y / max(in.floorwidth, 1.0e-6));
         let x_b = fract(in.linesofar / (size_b.x * node.pattern.to_scale / ratio) * size_b.y / max(in.floorwidth, 1.0e-6));
         let y = in.normal.y * 0.5 + 0.5;
@@ -215,16 +215,16 @@ fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
         return mix(ca, cb, node.pattern.fade) * alpha * in.opacity;
     }
     if node.dashed != 0u {
-        let a = images[in.images.x];
-        let b = images[in.images.y];
-        let scale = tile_pixel_ratio(tiles[in.tile]) / max(in.floorwidth, 1.0e-6);
+        let a = image_at(in.images.x);
+        let b = image_at(in.images.y);
+        let scale = tile_pixel_ratio(tile_at(in.tile)) / max(in.floorwidth, 1.0e-6);
         let ca = dash_sample(a, in.linesofar * scale / node.dash_from_scale, in.normal.y);
         let cb = dash_sample(b, in.linesofar * scale, in.normal.y);
         let gamma = 1.0 / frame.pixel_ratio / max(min(a.pixel_ratio, b.pixel_ratio), 1.0e-6) / max(in.floorwidth, 1.0e-6);
         alpha *= smoothstep(0.5 - gamma, 0.5 + gamma, mix(ca, cb, node.dash_fade));
     }
     if node.gradient != 0u {
-        return gradient_sample(images[in.ramp], in.progress) * alpha * in.opacity;
+        return gradient_sample(image_at(in.ramp), in.progress) * alpha * in.opacity;
     }
     return in.color * alpha;
 }

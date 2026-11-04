@@ -10,6 +10,7 @@
 
 use orb_hal::{
     Gpu, HostImageId, Pass, TextureDesc, TextureFormat, TextureId, TextureRegion, TextureUsages,
+    TextureViewDimension,
 };
 
 use crate::OutOfSpace;
@@ -176,6 +177,7 @@ fn create(gpu: &mut dyn Gpu, desc: &PageTexture, layers: u32) -> TextureId {
         width: desc.width,
         height: desc.height,
         array_layers: layers,
+        dimension: TextureViewDimension::D2Array,
         format: desc.format,
         usage: desc.usage | TextureUsages::COPY_SRC | TextureUsages::COPY_DST,
         sample_count: 1,

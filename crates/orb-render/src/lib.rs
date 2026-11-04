@@ -16,6 +16,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "compat")]
+mod compat;
 mod extrusion;
 mod heatmap;
 mod image;
@@ -166,7 +168,9 @@ pub struct Renderer {
     sky: Option<sky::Sky>,
     scene: Scene,
     draw_group: BindGroupId,
-    cull_group: BindGroupId,
+    /// The cull dispatch's pipeline and group; none on Compat, which culls
+    /// on the CPU.
+    cull: Option<(ComputePipelineId, BindGroupId)>,
     draw_layout: BindGroupLayoutId,
     node_layout: BindGroupLayoutId,
     /// The vector families' table-class pipelines.
@@ -176,7 +180,6 @@ pub struct Renderer {
     bytecode: Option<PaintPipelines>,
     /// Symbols with halo and fill together, halo only, fill only.
     symbol_pipelines: [RenderPipelineId; 3],
-    cull_pipeline: ComputePipelineId,
     node_uniforms: BufferId,
     node_stride: u64,
     nodes: Vec<Node>,
@@ -341,6 +344,7 @@ impl Renderer {
             width: 1,
             height: 1,
             array_layers: 1,
+            dimension: TextureViewDimension::D2Array,
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::TEXTURE_BINDING,
             sample_count: 1,
@@ -354,38 +358,44 @@ impl Renderer {
             &images,
             (glyphs.texture(), nearest, no_dem),
         );
-        let cull_group = gpu.create_bind_group(&BindGroupDesc {
-            label: "cull",
-            layout: cull_layout,
-            entries: &entries(&[
-                b.frame,
-                b.tiles,
-                b.chunks,
-                b.candidates,
-                b.node_cull,
-                b.visible,
-                b.args,
-                b.indices,
-                b.compacted,
-            ]),
+        let modern = gpu.caps().tier == Tier::Modern;
+        let cull_group = modern.then(|| {
+            gpu.create_bind_group(&BindGroupDesc {
+                label: "cull",
+                layout: cull_layout,
+                entries: &entries(&[
+                    b.frame,
+                    b.tiles,
+                    b.chunks,
+                    b.candidates,
+                    b.node_cull,
+                    b.visible,
+                    b.args,
+                    b.indices,
+                    b.compacted,
+                ]),
+            })
         });
 
         let layouts = [draw_layout, node_layout];
         let paint = PaintPipelines::new(gpu, target, &layouts, false);
         let symbol_pipelines =
             [0.0, 1.0, 2.0].map(|pass| symbol_pipeline(gpu, target, &layouts, pass));
-        let cull_module = gpu.create_shader_module(&ShaderModuleDesc {
-            label: CULL_SHADER.label,
-            wgsl: CULL_SHADER.source().into(),
-        });
-        let cull_pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
-            label: CULL_SHADER.label,
-            bind_group_layouts: &[cull_layout],
-            compute: ShaderStage {
-                module: cull_module,
-                entry_point: CULL_SHADER.compute,
-                constants: &[],
-            },
+        let cull = cull_group.map(|group| {
+            let module = gpu.create_shader_module(&ShaderModuleDesc {
+                label: CULL_SHADER.label,
+                source: ShaderSource::Wgsl(CULL_SHADER.source().into()),
+            });
+            let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
+                label: CULL_SHADER.label,
+                bind_group_layouts: &[cull_layout],
+                compute: ShaderStage {
+                    module,
+                    entry_point: CULL_SHADER.compute,
+                    constants: &[],
+                },
+            });
+            (pipeline, group)
         });
 
         let image_bindings = images;
@@ -406,13 +416,12 @@ impl Renderer {
             sky: None,
             scene,
             draw_group,
-            cull_group,
+            cull,
             draw_layout,
             node_layout,
             paint,
             bytecode: None,
             symbol_pipelines,
-            cull_pipeline,
             node_uniforms,
             node_stride,
             nodes: Vec::new(),
@@ -596,6 +605,8 @@ impl Renderer {
     /// Turns terrain on over a DEM page, or off. Draped nodes then draw
     /// only drape placements: their stack's ([`PlacementTarget::Drape`]).
     pub fn set_terrain(&mut self, gpu: &mut dyn Gpu, terrain: Option<(PageId, TerrainPaint)>) {
+        // Compat draws no terrain (plan §8.7).
+        let terrain = terrain.filter(|_| gpu.caps().tier == Tier::Modern);
         let was = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
         match terrain {
             Some((page, paint)) => {
@@ -1012,7 +1023,11 @@ impl Renderer {
         // The dispatch writes every node's arguments, zeros included, so it
         // runs even when nothing is resident. Indexed nodes' batches add to
         // cleared arguments.
-        if !self.nodes.is_empty() {
+        #[cfg(feature = "compat")]
+        if self.cull.is_none() {
+            compat::cull(gpu, &mut self.scene, frame);
+        }
+        if let Some((pipeline, group)) = self.cull.filter(|_| !self.nodes.is_empty()) {
             if self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed) {
                 passes.push(Pass::ClearBuffer {
                     buffer: self.scene.buffers().args,
@@ -1026,11 +1041,8 @@ impl Renderer {
                 label: "cull".into(),
                 timestamps: None,
                 commands: vec![
-                    ComputeCommand::SetPipeline(self.cull_pipeline),
-                    ComputeCommand::SetBindGroup {
-                        index: 0,
-                        group: self.cull_group,
-                    },
+                    ComputeCommand::SetPipeline(pipeline),
+                    ComputeCommand::SetBindGroup { index: 0, group },
                     ComputeCommand::Dispatch { x, y, z: 1 },
                 ],
             }));
@@ -1259,6 +1271,29 @@ impl Renderer {
     }
 }
 
+/// A module of `shader` for the device's tier: its WGSL on Modern, or on
+/// Compat its offline GLSL (the bytecode class with `bytecode`, the
+/// symbol shader specialized for `pass`).
+fn shader_module(gpu: &mut dyn Gpu, shader: &Shader, bytecode: bool, pass: u32) -> ShaderModuleId {
+    #[cfg(feature = "compat")]
+    if gpu.caps().tier == Tier::Compat {
+        return gpu.create_shader_module(&ShaderModuleDesc {
+            label: shader.label,
+            source: ShaderSource::Glsl(orb_shaders::glsl(shader, bytecode, pass)),
+        });
+    }
+    let _ = pass;
+    let wgsl = if bytecode {
+        shader.bytecode_source()
+    } else {
+        shader.source()
+    };
+    gpu.create_shader_module(&ShaderModuleDesc {
+        label: shader.label,
+        source: ShaderSource::Wgsl(wgsl.into()),
+    })
+}
+
 /// The vector families' pipelines of one paint class.
 #[derive(Clone, Copy, Debug)]
 struct PaintPipelines {
@@ -1307,15 +1342,7 @@ fn draw_pipeline(
     target: TargetFormat,
     layouts: &[BindGroupLayoutId],
 ) -> RenderPipelineId {
-    let module = gpu.create_shader_module(&ShaderModuleDesc {
-        label: shader.label,
-        wgsl: if bytecode {
-            shader.bytecode_source()
-        } else {
-            shader.source()
-        }
-        .into(),
-    });
+    let module = shader_module(gpu, shader, bytecode, 0);
     gpu.create_render_pipeline(&RenderPipelineDesc {
         cull_mode: None,
         label: shader.label,
@@ -1401,10 +1428,7 @@ fn symbol_pipeline(
     layouts: &[BindGroupLayoutId],
     pass: f64,
 ) -> RenderPipelineId {
-    let module = gpu.create_shader_module(&ShaderModuleDesc {
-        label: SYMBOL_SHADER.label,
-        wgsl: SYMBOL_SHADER.source().into(),
-    });
+    let module = shader_module(gpu, &SYMBOL_SHADER, false, pass as u32);
     let constants = [("PASS", pass)];
     gpu.create_render_pipeline(&RenderPipelineDesc {
         cull_mode: None,

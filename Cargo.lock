@@ -1229,6 +1229,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "glow"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5e5ea60d70410161c8bf5da3fdfeaa1c72ed2c15f8bbb9d19fe3a4fad085f08"
+dependencies = [
+ "js-sys",
+ "slotmap",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "gpu-allocator"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1663,6 +1675,16 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "khronos-egl"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
+dependencies = [
+ "libc",
+ "libloading",
 ]
 
 [[package]]
@@ -2352,6 +2374,7 @@ dependencies = [
  "glam",
  "orb-geo",
  "orb-hal",
+ "orb-hal-gl",
  "orb-hal-wgpu",
  "orb-host",
  "orb-host-native",
@@ -2373,6 +2396,19 @@ name = "orb-hal"
 version = "0.0.0"
 dependencies = [
  "bitflags 2.13.2",
+]
+
+[[package]]
+name = "orb-hal-gl"
+version = "0.0.0"
+dependencies = [
+ "bytemuck",
+ "glow",
+ "js-sys",
+ "khronos-egl",
+ "orb-hal",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -2495,6 +2531,7 @@ name = "orb-shaders"
 version = "0.0.0"
 dependencies = [
  "naga",
+ "orb-hal",
 ]
 
 [[package]]

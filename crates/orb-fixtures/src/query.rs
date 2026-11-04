@@ -148,7 +148,14 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
                 map.set_style_json(&text)
                     .map_err(|e| format!("{id}: {e}"))?;
                 record_warnings(&mut map, &mut reasons, &mut diagnostics);
-                render_native(device, &mut map, &metadata, &mut reasons, &mut diagnostics);
+                let mut gpu = WgpuGpu::new(device.device().clone(), device.queue().clone());
+                render_native(
+                    &mut gpu,
+                    &mut map,
+                    &metadata,
+                    &mut reasons,
+                    &mut diagnostics,
+                );
                 query_native(&map, query)?
             }
             _ => unreachable!("one backend"),

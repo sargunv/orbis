@@ -22,6 +22,7 @@ impl LineAtlas {
                 width: WIDTH,
                 height: HEIGHT,
                 array_layers: 1,
+                dimension: orb_hal::TextureViewDimension::D2,
                 format: TextureFormat::R8Unorm,
                 usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
                 sample_count: 1,

@@ -28,6 +28,8 @@ diplomat_core = { version = "0.17.0", default-features = false, features = ["hir
 js-sys = "0.3.107"
 libm = "0.2.16"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+glow = "0.16.0"
+khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 glam = { version = "0.34.2", default-features = false, features = ["std", "f64"] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 png = "0.18.1"
@@ -54,6 +56,7 @@ orb-crs = { path = "crates/orb-crs" }
 orb-expr = { path = "crates/orb-expr" }
 orb-geo = { path = "crates/orb-geo" }
 orb-hal = { path = "crates/orb-hal" }
+orb-hal-gl = { path = "crates/orb-hal-gl" }
 orb-hal-wgpu = { path = "crates/orb-hal-wgpu" }
 orb-interact = { path = "crates/orb-interact" }
 orb-host = { path = "crates/orb-host" }

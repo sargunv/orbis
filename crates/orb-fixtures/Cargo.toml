@@ -9,12 +9,13 @@ version.workspace = true
 [dependencies]
 glam.workspace = true
 orb-hal.workspace = true
+orb-hal-gl = { workspace = true, features = ["egl"] }
 orb-hal-wgpu.workspace = true
 orb-host.workspace = true
 orb-host-native.workspace = true
 orb-jobs.workspace = true
 orb-geo.workspace = true
-orb-runtime.workspace = true
+orb-runtime = { workspace = true, features = ["compat"] }
 orb-text = { workspace = true, features = ["fonts"] }
 orb-v8.workspace = true
 png.workspace = true

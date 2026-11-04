@@ -108,6 +108,14 @@ pub(crate) struct NodeImage {
 }
 
 #[derive(Debug)]
+struct PreparePipelines {
+    pad_layout: BindGroupLayoutId,
+    slope_layout: BindGroupLayoutId,
+    pad: ComputePipelineId,
+    slope: ComputePipelineId,
+}
+
+#[derive(Debug)]
 pub(crate) struct Images {
     image_layout: BindGroupLayoutId,
     relief_layout: BindGroupLayoutId,
@@ -119,10 +127,9 @@ pub(crate) struct Images {
     /// Bound by nodes whose source has no page yet.
     placeholder: TextureId,
     placeholder_ramp: TextureId,
-    pad_layout: BindGroupLayoutId,
-    slope_layout: BindGroupLayoutId,
-    pad: ComputePipelineId,
-    slope: ComputePipelineId,
+    /// The prepare dispatch's layouts and pipelines (pad, slope); none on
+    /// Compat, which has no compute.
+    prepare: Option<PreparePipelines>,
     pages: Vec<Option<Page>>,
 }
 
@@ -183,20 +190,21 @@ impl Images {
         };
         let linear = sampler("linear", FilterMode::Linear);
         let nearest = sampler("nearest", FilterMode::Nearest);
-        let mut placeholder = |label, height, layers| {
+        let mut placeholder = |label, height, layers, dimension| {
             gpu.create_texture(&TextureDesc {
                 label,
                 width: 1,
                 height,
                 array_layers: layers,
+                dimension,
                 format: TextureFormat::Rgba8Unorm,
                 usage: TextureUsages::TEXTURE_BINDING,
                 sample_count: 1,
                 mip_levels: 1,
             })
         };
-        let placeholder_array = placeholder("no tiles", 1, 1);
-        let placeholder_ramp = placeholder("no ramp", 2, 1);
+        let placeholder_array = placeholder("no tiles", 1, 1, TextureViewDimension::D2Array);
+        let placeholder_ramp = placeholder("no ramp", 2, 1, TextureViewDimension::D2);
 
         let cs = ShaderStages::COMPUTE;
         let prepare_layout = |gpu: &mut dyn Gpu, label| {
@@ -227,12 +235,13 @@ impl Images {
                 ],
             })
         };
+        let compute_tier = gpu.caps().tier == Tier::Modern;
         let pad_layout = prepare_layout(gpu, "prepare pad");
         let slope_layout = prepare_layout(gpu, "prepare slope");
         let mut compute = |shader: &Shader, layout| {
             let module = gpu.create_shader_module(&ShaderModuleDesc {
                 label: shader.label,
-                wgsl: shader.source().into(),
+                source: ShaderSource::Wgsl(shader.source().into()),
             });
             gpu.create_compute_pipeline(&ComputePipelineDesc {
                 label: shader.label,
@@ -244,8 +253,12 @@ impl Images {
                 },
             })
         };
-        let pad = compute(&PREPARE_PAD_SHADER, pad_layout);
-        let slope = compute(&PREPARE_SLOPE_SHADER, slope_layout);
+        let prepare = compute_tier.then(|| PreparePipelines {
+            pad_layout,
+            slope_layout,
+            pad: compute(&PREPARE_PAD_SHADER, pad_layout),
+            slope: compute(&PREPARE_SLOPE_SHADER, slope_layout),
+        });
 
         Self {
             image_layout,
@@ -257,10 +270,7 @@ impl Images {
             nearest,
             placeholder: placeholder_array,
             placeholder_ramp,
-            pad_layout,
-            slope_layout,
-            pad,
-            slope,
+            prepare,
             pages: Vec::new(),
         }
     }
@@ -394,6 +404,13 @@ impl Images {
     /// The compute pass that prepares pending DEM tiles, if any, and how
     /// many tiles it prepares.
     pub(crate) fn prepare_pass(&mut self, gpu: &mut dyn Gpu) -> Option<(ComputePass, u32)> {
+        let Some(pipelines) = &self.prepare else {
+            // Compat: DEM tiles stay unprepared (plan §8.7's declared gaps).
+            for page in self.pages.iter_mut().flatten() {
+                page.pending.clear();
+            }
+            return None;
+        };
         let mut commands = Vec::new();
         let mut prepared = 0;
         for page in self.pages.iter_mut().flatten() {
@@ -445,8 +462,13 @@ impl Images {
                     revision,
                     jobs,
                     capacity,
-                    pad: group("prepare pad", self.pad_layout, DEM_RAW, DEM_PADDED),
-                    slope: group("prepare slope", self.slope_layout, DEM_PADDED, DEM_SLOPES),
+                    pad: group("prepare pad", pipelines.pad_layout, DEM_RAW, DEM_PADDED),
+                    slope: group(
+                        "prepare slope",
+                        pipelines.slope_layout,
+                        DEM_PADDED,
+                        DEM_SLOPES,
+                    ),
                 }
             });
             let jobs: Vec<u32> = page.pending.drain(..).flat_map(|j| j.words()).collect();
@@ -454,8 +476,8 @@ impl Images {
             gpu.write_buffer(prepare.jobs, 0, bytemuck::cast_slice(&jobs));
             let groups = |size: [u32; 2]| size[0].div_ceil(8);
             for (pipeline, group, texture) in [
-                (self.pad, prepare.pad, DEM_PADDED),
-                (self.slope, prepare.slope, DEM_SLOPES),
+                (pipelines.pad, prepare.pad, DEM_PADDED),
+                (pipelines.slope, prepare.slope, DEM_SLOPES),
             ] {
                 let n = groups(page.page.size(texture));
                 commands.extend([
@@ -501,6 +523,7 @@ impl Images {
             width,
             height: 2,
             array_layers: 1,
+            dimension: TextureViewDimension::D2,
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             sample_count: 1,

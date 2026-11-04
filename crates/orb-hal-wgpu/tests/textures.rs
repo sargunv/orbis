@@ -30,6 +30,7 @@ fn samples_written_layers_of_a_texture_array() {
         width: 2,
         height: 2,
         array_layers: 2,
+        dimension: orb_hal::TextureViewDimension::D2Array,
         format: TextureFormat::Rgba8Unorm,
         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
         sample_count: 1,
@@ -64,7 +65,7 @@ fn samples_written_layers_of_a_texture_array() {
                 visibility: ShaderStages::FRAGMENT,
                 ty: BindingType::Texture {
                     sample: TextureSampleType::Float { filterable: true },
-                    dimension: TextureViewDimension::D2Array,
+                    dimension: orb_hal::TextureViewDimension::D2Array,
                 },
             },
             BindGroupLayoutEntry {
@@ -82,7 +83,7 @@ fn samples_written_layers_of_a_texture_array() {
                 binding: 0,
                 resource: BindingResource::Texture {
                     texture: pages,
-                    dimension: TextureViewDimension::D2Array,
+                    dimension: orb_hal::TextureViewDimension::D2Array,
                 },
             },
             BindGroupEntry {
@@ -93,7 +94,7 @@ fn samples_written_layers_of_a_texture_array() {
     });
     let module = gpu.create_shader_module(&ShaderModuleDesc {
         label: "sample",
-        wgsl: SHADER.into(),
+        source: ShaderSource::Wgsl(SHADER.into()),
     });
     let stage = |entry_point| ShaderStage {
         module,
@@ -119,6 +120,7 @@ fn samples_written_layers_of_a_texture_array() {
         width: 4,
         height: 1,
         array_layers: 1,
+        dimension: orb_hal::TextureViewDimension::D2,
         format: TextureFormat::Rgba8Unorm,
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
         sample_count: 1,

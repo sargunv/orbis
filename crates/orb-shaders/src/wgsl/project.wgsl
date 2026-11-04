@@ -20,7 +20,7 @@ fn warp_patch(tile: Tile, p: vec2<f32>) -> vec3<f32> {
 
 fn warp_node(at: f32, k: u32) -> vec2<f32> {
     let i = u32(at) + 2u * k;
-    return vec2<f32>(bitcast<f32>(props[i]), bitcast<f32>(props[i + 1u]));
+    return vec2<f32>(bitcast<f32>(prop_at(i)), bitcast<f32>(prop_at(i + 1u)));
 }
 
 fn lagrange(s: f32) -> vec3<f32> {

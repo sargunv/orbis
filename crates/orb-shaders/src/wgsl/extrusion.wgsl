@@ -39,9 +39,9 @@ fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
 }
 fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     var out: ExtrusionOut;
-    let tile = tiles[v.tile];
-    let pos = unpack_i16x2(vertices[v.vertex]);
-    let feature = vertices[v.vertex+1u];
+    let tile = tile_at(v.tile);
+    let pos = unpack_i16x2(vertex_at(v.vertex));
+    let feature = vertex_at(v.vertex+1u);
     let row = prop_row(v, feature, v.row_words);
     let state = state_block(v, feature, node.state);
     var color = node.color;
@@ -58,13 +58,13 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     // so buildings don't hang over slopes (GL JS's `a_centroid`).
     let gradient_base = max(0.0, base);
     let gradient_height = max(0.0, height);
-    let raise = ground_elevation(tile, unpack_i16x2(props[row + 9u]));
+    let raise = ground_elevation(tile, unpack_i16x2(prop_at(row + 9u)));
     let basement = select(0.0, 10.0, base <= 0.0 && frame.dem_dim > 0.0);
     height = gradient_height + raise;
     base = gradient_base + raise - basement;
-    let packed = vertices[v.vertex+2u];
+    let packed = vertex_at(v.vertex+2u);
     let top = f32(packed & 1u);
-    let normal = vec3<f32>(unpack_i16x2(packed), unpack_i16x2(vertices[v.vertex+3u]).x) / select(16384.0, 16383.0, node.pattern.enabled != 0u);
+    let normal = vec3<f32>(unpack_i16x2(packed), unpack_i16x2(vertex_at(v.vertex+3u)).x) / select(16384.0, 16383.0, node.pattern.enabled != 0u);
     let elevation = mix(base, height, top);
     let shift = translate_world(node.translate, node.translate_anchor, tile);
     out.position = frame.view_proj * vec4<f32>(tile_to_world(tile, pos) + shift, elevation * frame.extrusion_scale, 1.0);
@@ -88,7 +88,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
         out.images = pattern_ids(row, 6u, node.image_from, node.image_to, node.table_mask, node.pattern);
         var pattern_pos = pos;
         if normal.z == 0.0 {
-            let distance = f32(vertices[v.vertex+3u] >> 16u);
+            let distance = f32(vertex_at(v.vertex+3u) >> 16u);
             pattern_pos = vec2<f32>(distance, -elevation * exp2(floor(frame.zoom)) / 65536.0 / tile_pixel_ratio(tile));
         }
         // Keep atlas reads in the fragment stage, within core WebGPU's eight
@@ -106,7 +106,7 @@ fn fs_extrusion(in: ExtrusionOut) -> @location(0) vec4<f32> {
     // Shared tile edges can contain real vertical walls. They have zero
     // ground area, and depth selects their nearest surface without blending
     // twice, so include both bounds for 3D clipping.
-    let tile = tiles[in.tile];
+    let tile = tile_at(in.tile);
     var inside = false;
     for (var i = 0u; i < 4u; i++) {
         let lo = unpack_i16x2(tile.clips[i].x);
@@ -115,7 +115,7 @@ fn fs_extrusion(in: ExtrusionOut) -> @location(0) vec4<f32> {
     }
     if !inside { discard; }
     if node.pattern.enabled != 0u {
-        let image_a = images[in.images.x]; let image_b = images[in.images.y];
+        let image_a = image_at(in.images.x); let image_b = image_at(in.images.y);
         let pos_a = pattern_position(tile, in.pattern_pos, image_a, node.pattern.from_scale);
         let pos_b = pattern_position(tile, in.pattern_pos, image_b, node.pattern.to_scale);
         let a = pattern_sample(image_a, fract(pos_a), 0.0);

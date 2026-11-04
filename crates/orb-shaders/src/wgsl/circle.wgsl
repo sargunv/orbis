@@ -51,10 +51,10 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     out.position = discarded_vertex();
     var v: Pulled;
     if !pull_point(node.index, instance, &v) { return out; }
-    let tile = tiles[v.tile];
-    let p = unpack_i16x2(vertices[v.vertex]);
+    let tile = tile_at(v.tile);
+    let p = unpack_i16x2(vertex_at(v.vertex));
     if !point_owned(tile, p) { return out; }
-    let feature = vertices[v.vertex + 1u];
+    let feature = vertex_at(v.vertex + 1u);
     let row = prop_row(v, feature, v.row_words);
     let state = state_block(v, feature, node.state);
     // Colours in slots 0 and 4.

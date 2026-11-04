@@ -34,13 +34,13 @@ fn image_vertex(node_index: u32, instance: u32, index: u32) -> ImageOut {
         out.position = discarded_vertex();
         return out;
     }
-    let tile = tiles[v.tile];
-    let pos = bitcast<vec2<f32>>(vec2<u32>(vertices[v.vertex], vertices[v.vertex + 1u]));
+    let tile = tile_at(v.tile);
+    let pos = bitcast<vec2<f32>>(vec2<u32>(vertex_at(v.vertex), vertex_at(v.vertex + 1u)));
     out.position = frame.view_proj * vec4<f32>(tile_to_world(tile, pos) + frame.align, 0.0, 1.0);
-    out.tile_pos = unpack_i16x2(vertices[v.vertex + 2u]);
+    out.tile_pos = unpack_i16x2(vertex_at(v.vertex + 2u));
     out.tile = v.tile;
-    out.layer = props[v.prop_base];
-    out.latitudes = bitcast<vec2<f32>>(vec2<u32>(props[v.prop_base + 1u], props[v.prop_base + 2u]));
+    out.layer = prop_at(v.prop_base);
+    out.latitudes = bitcast<vec2<f32>>(vec2<u32>(prop_at(v.prop_base + 1u), prop_at(v.prop_base + 2u)));
     return out;
 }
 
@@ -49,7 +49,7 @@ fn image_vertex(node_index: u32, instance: u32, index: u32) -> ImageOut {
 // where no other placement draws; it belongs to the edge.
 fn image_clipped(in: ImageOut) -> bool {
     let p = clamp(in.tile_pos, vec2<f32>(0.0), vec2<f32>(IMAGE_EXTENT - 0.5));
-    return !inside_clips(tiles[in.tile], p);
+    return !inside_clips(tile_at(in.tile), p);
 }
 
 // The tile's texel at `uv` (0–1 over its layer), filtered by nearest texel

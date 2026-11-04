@@ -261,7 +261,7 @@ impl Terrain {
         });
         let drape_module = gpu.create_shader_module(&ShaderModuleDesc {
             label: DRAPE_SHADER.label,
-            wgsl: DRAPE_SHADER.source().into(),
+            source: ShaderSource::Wgsl(DRAPE_SHADER.source().into()),
         });
         let clear = gpu.create_render_pipeline(&RenderPipelineDesc {
             label: DRAPE_SHADER.label,
@@ -435,6 +435,7 @@ impl Terrain {
             width: size[0],
             height: size[1],
             array_layers: 1,
+            dimension: TextureViewDimension::D2,
             format: DRAPE_FORMAT,
             usage: TextureUsages::RENDER_ATTACHMENT
                 | TextureUsages::TEXTURE_BINDING
@@ -646,6 +647,7 @@ impl Terrain {
                 width: size[0],
                 height: size[1],
                 array_layers: 1,
+                dimension: TextureViewDimension::D2,
                 format: self.target.color,
                 usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
                 sample_count: 1,
@@ -657,6 +659,7 @@ impl Terrain {
                     width: size[0],
                     height: size[1],
                     array_layers: 1,
+                    dimension: TextureViewDimension::D2,
                     format: self.target.color,
                     usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
                     sample_count: samples,
@@ -705,7 +708,7 @@ impl Terrain {
         }
         let module = gpu.create_shader_module(&ShaderModuleDesc {
             label: TERRAIN_SHADER.label,
-            wgsl: TERRAIN_SHADER.source().into(),
+            source: ShaderSource::Wgsl(TERRAIN_SHADER.source().into()),
         });
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
             label: TERRAIN_SHADER.label,

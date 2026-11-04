@@ -86,10 +86,7 @@ impl Extrusions {
             return;
         }
         let shader = EXTRUSION_SHADER;
-        let module = gpu.create_shader_module(&ShaderModuleDesc {
-            label: shader.label,
-            wgsl: shader.source().into(),
-        });
+        let module = crate::shader_module(gpu, &shader, false, 0);
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
             cull_mode: Some(Face::Back),
             label: shader.label,
@@ -153,6 +150,7 @@ impl Extrusions {
             width: size[0],
             height: size[1],
             array_layers: 1,
+            dimension: TextureViewDimension::D2,
             format: TextureFormat::Depth32Float,
             usage: TextureUsages::RENDER_ATTACHMENT
                 | if count == 1 {
@@ -197,6 +195,7 @@ impl Extrusions {
             width: size[0],
             height: size[1],
             array_layers: 1,
+            dimension: TextureViewDimension::D2,
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             sample_count: 1,
@@ -208,6 +207,7 @@ impl Extrusions {
                 width: size[0],
                 height: size[1],
                 array_layers: 1,
+                dimension: TextureViewDimension::D2,
                 format: TextureFormat::Rgba8Unorm,
                 usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
                 sample_count: self.samples,

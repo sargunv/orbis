@@ -157,10 +157,12 @@ impl Scene {
                 NO_STATE,
                 0,
             ];
-            gpu.write_buffer(
+            crate::write_words(
+                gpu,
                 self.buffers.chunks,
-                u64::from(id) * (crate::CHUNK_WORDS as u64 * 4),
-                bytemuck::cast_slice(&row),
+                self.cull.as_mut().map(|c| &mut c.chunks),
+                id * crate::CHUNK_WORDS as u32,
+                &row,
             );
             chunk_ids.push(id);
         }
