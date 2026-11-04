@@ -92,7 +92,7 @@ impl View {
             min: world,
             max: world,
         };
-        let z = camera.zoom().floor().clamp(0.0, 24.0) as u8;
+        let z = camera.zoom(projection).floor().clamp(0.0, 24.0) as u8;
         let lowest = terrain
             .range(point, z)
             .map_or(camera.elevation, |(lo, _)| lo);
@@ -194,7 +194,7 @@ mod tests {
             width: 800.0,
             height: 600.0,
         };
-        let mut camera = CameraState::new(Geodetic::new(0.0, 0.0), 13.0);
+        let mut camera = CameraState::new(Geodetic::new(0.0, 0.0), 13.0, &projection);
         camera.pitch = 60.0;
         (projection, viewport, camera)
     }
@@ -244,7 +244,7 @@ mod tests {
         assert!(camera.recenter_on(&ridge, &projection, viewport));
         assert!((camera.elevation - 1000.0).abs() < 1.0);
         assert!(before.distance(eye(&camera)) < 1e-3 * before.length().max(1.0));
-        assert!(camera.zoom() > 13.0, "the target came closer");
+        assert!(camera.zoom(&projection) > 13.0, "the target came closer");
     }
 
     #[test]
@@ -253,7 +253,7 @@ mod tests {
         let ridge = Ridge {
             loaded_until: f64::INFINITY,
         };
-        camera.set_zoom(20.0);
+        camera.set_zoom(&projection, 20.0);
         camera.pitch = 80.0;
         camera.elevation = 0.0;
         assert!(camera.keep_above(&ridge, &projection, viewport));

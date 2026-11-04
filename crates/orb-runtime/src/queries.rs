@@ -174,14 +174,20 @@ impl crate::Map {
     /// How tile `tile` of plan source `index` was loaded.
     fn tile_request(&self, index: usize, tile: TileIndex) -> Option<TileRequest> {
         let style = self.style.as_ref()?;
-        let SourceState::Ready { endpoint, .. } = &style.sources[index] else {
+        let SourceState::Ready {
+            endpoint, pyramid, ..
+        } = &style.sources[index]
+        else {
             return None;
         };
         Some(TileRequest {
             style: style.id,
             source: style.worker.plan().sources[index].key,
             tile,
-            zoom: endpoint.tms.style_zoom(tile),
+            // The zoom it laid out at.
+            zoom: pyramid
+                .get(tile)
+                .map_or_else(|| endpoint.tms.style_zoom(tile), |r| r.zoom),
             // Features are read as the tile has them.
             subdivision: None,
             data_zoom: tile.z.min(endpoint.maxzoom),

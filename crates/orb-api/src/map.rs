@@ -212,6 +212,11 @@ impl Map {
         *self.camera.state()
     }
 
+    /// The view's style zoom on the map's surface (decision 0021).
+    pub fn zoom(&self) -> f64 {
+        self.camera.zoom()
+    }
+
     /// The viewport the camera and gestures use: the last target's, in
     /// logical pixels.
     pub fn viewport(&self) -> Viewport {
@@ -362,7 +367,7 @@ impl Map {
             {
                 self.camera.jump_to(&CameraTarget {
                     center: Some(style.target),
-                    zoom: Some(style.zoom()),
+                    zoom: Some(style.zoom(self.camera.projection())),
                     bearing: Some(style.bearing),
                     pitch: Some(style.pitch),
                     ..CameraTarget::default()

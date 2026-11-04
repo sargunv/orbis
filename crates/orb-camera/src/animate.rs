@@ -337,15 +337,15 @@ impl Motion {
         let to_world = nearest_copy(to.target_world(projection), from_world, projection);
         let start_px = from.world_per_px(projection);
         let w0 = viewport.width.max(viewport.height);
-        let w1 = w0 / (to.zoom() - from.zoom()).exp2();
+        let w1 = w0 / (to.zoom(projection) - from.zoom(projection)).exp2();
         let u1 = (to_world - from_world).length() / start_px;
         let lowest = options
             .min_zoom
             .unwrap_or(min_zoom)
             .max(min_zoom)
-            .min(from.zoom())
-            .min(to.zoom());
-        let w_max = w0 / (lowest - from.zoom()).exp2();
+            .min(from.zoom(projection))
+            .min(to.zoom(projection));
+        let w_max = w0 / (lowest - from.zoom(projection)).exp2();
         let curve = FlyCurve::new(w0, w1, u1, options.curve, w_max);
         let duration = options.duration.unwrap_or_else(|| {
             let speed = options
@@ -432,7 +432,10 @@ impl Motion {
             } => {
                 let k = options.easing.at(t);
                 let mut next = *from;
-                next.set_zoom(lerp(from.zoom(), to.zoom(), k));
+                next.set_zoom(
+                    projection,
+                    lerp(from.zoom(projection), to.zoom(projection), k),
+                );
                 next.bearing = wrap_bearing(lerp(
                     from.bearing,
                     nearest_bearing(from.bearing, to.bearing),
@@ -473,7 +476,7 @@ impl Motion {
                 let k = easing.at(t);
                 let (w, u) = curve.at(k);
                 let mut next = *from;
-                next.set_zoom(from.zoom() + (1.0 / w).log2());
+                next.set_zoom(projection, from.zoom(projection) + (1.0 / w).log2());
                 next.bearing = wrap_bearing(lerp(
                     from.bearing,
                     nearest_bearing(from.bearing, to.bearing),
@@ -500,7 +503,7 @@ impl Motion {
                     camera.pan(projection, viewport, center, center + delta);
                 }
                 if let Some(zoom) = glide.zoom {
-                    let to = camera.zoom() + zoom.amount * (p[1] - done[1]);
+                    let to = camera.zoom(projection) + zoom.amount * (p[1] - done[1]);
                     camera.zoom_around(projection, viewport, around, to);
                 }
                 if let Some(bearing) = glide.bearing {

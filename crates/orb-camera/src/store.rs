@@ -145,6 +145,12 @@ impl Camera {
         &self.projection
     }
 
+    /// The view's style zoom on the camera's plane (see
+    /// [`CameraState::zoom`]).
+    pub fn zoom(&self) -> f64 {
+        self.state.zoom(&self.projection)
+    }
+
     /// Moves on the surface's new plane (a scene document loaded, or the
     /// map's projection changed): the target and ground resolution stay,
     /// running animations stop, and the camera keeps to the new world.
@@ -278,13 +284,13 @@ impl Camera {
                 target: center,
                 ..self.state
             };
-            at.set_zoom(zoom);
+            at.set_zoom(&self.projection, zoom);
             at.limit_zoom(
                 f64::NEG_INFINITY,
                 self.constraints.max_zoom,
                 &self.projection,
             );
-            target.zoom = Some(at.zoom());
+            target.zoom = Some(at.zoom(&self.projection));
         }
         Some(target)
     }
@@ -355,12 +361,9 @@ impl Camera {
     /// Zooms by `delta` levels around a pixel.
     pub fn zoom_by(&mut self, at: DVec2, delta: f64) {
         let mut next = self.state;
-        // Limits bound the scale; the style zoom differs from it by the
-        // target's latitude term.
-        let offset = next.zoom() - next.scale_zoom(&self.projection);
-        let scale = (next.scale_zoom(&self.projection) + delta)
+        let zoom = (next.zoom(&self.projection) + delta)
             .clamp(self.constraints.min_zoom, self.constraints.max_zoom);
-        next.zoom_around(&self.projection, self.viewport, at, scale + offset);
+        next.zoom_around(&self.projection, self.viewport, at, zoom);
         self.user_write(next);
     }
 
@@ -412,7 +415,7 @@ impl Camera {
         let (a, b) = (self.reported, self.state);
         let changed = [
             a != b,
-            a.zoom() != b.zoom(),
+            a.zoom(&self.projection) != b.zoom(&self.projection),
             a.bearing != b.bearing,
             a.pitch != b.pitch,
         ];
@@ -509,20 +512,20 @@ impl Camera {
                 target: target.center.unwrap_or(self.state.target),
                 ..self.state
             };
-            at.set_zoom(z);
+            at.set_zoom(projection, z);
             at.limit_zoom(
                 self.constraints.min_zoom,
                 self.constraints.max_zoom,
                 projection,
             );
-            at.zoom()
+            at.zoom(projection)
         });
         let mut around = None;
         match (target.center, target.around) {
             (Some(c), _) => {
                 to.target = c;
                 if let Some(zoom) = zoom {
-                    to.set_zoom(zoom);
+                    to.set_zoom(projection, zoom);
                 } else {
                     // Keep the scale on screen, as a pan does.
                     to.resolution =
@@ -534,13 +537,13 @@ impl Camera {
                 around = Some((ground, at));
                 to.holding(projection, viewport, at, |c| {
                     if let Some(zoom) = zoom {
-                        c.set_zoom(zoom);
+                        c.set_zoom(projection, zoom);
                     }
                 });
             }
             (None, None) => {
                 if let Some(zoom) = zoom {
-                    to.set_zoom(zoom);
+                    to.set_zoom(projection, zoom);
                 }
             }
         }
@@ -567,6 +570,12 @@ impl Camera {
 
 #[cfg(test)]
 mod tests {
+    fn mercator() -> orb_crs::Projection {
+        *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
+            .unwrap()
+            .projection()
+    }
+
     use super::*;
     use crate::animate::{Easing, Track};
     use orb_crs::TileMatrixSet;
@@ -576,7 +585,7 @@ mod tests {
             .unwrap()
             .projection();
         Camera::new(
-            CameraState::new(Geodetic::new(139.7, 35.68), 10.0),
+            CameraState::new(Geodetic::new(139.7, 35.68), 10.0, &mercator()),
             projection,
             Viewport {
                 width: 800.0,
@@ -642,7 +651,7 @@ mod tests {
         assert!((30..=33).contains(&frames), "{frames}");
         let state = camera.state();
         assert!((state.target.lon - to.lon).abs() < 1e-9);
-        assert!((state.zoom() - 11.0).abs() < 1e-9);
+        assert!((state.zoom(&mercator()) - 11.0).abs() < 1e-9);
         assert_eq!(state.bearing, 90.0);
         let events = camera.take_events();
         assert!(events.contains(&CameraEvent::AnimationEnd {
@@ -704,7 +713,7 @@ mod tests {
         let mut lowest = f64::INFINITY;
         let mut t = 0.0;
         while camera.frame(t) {
-            lowest = lowest.min(camera.state().zoom());
+            lowest = lowest.min(camera.state().zoom(&mercator()));
             t += 16.0;
         }
         assert!(lowest < 4.0, "{lowest}");
@@ -715,7 +724,7 @@ mod tests {
     #[test]
     fn glides_continue_and_compose() {
         let mut camera = camera();
-        let start = camera.state().zoom();
+        let start = camera.state().zoom(&mercator());
         let track = Track {
             amount: 1.0,
             duration: 200.0,
@@ -743,7 +752,7 @@ mod tests {
         while camera.frame(t) {
             t += 16.0;
         }
-        assert!((camera.state().zoom() - (start + 2.0)).abs() < 1e-6);
+        assert!((camera.state().zoom(&mercator()) - (start + 2.0)).abs() < 1e-6);
     }
 
     #[test]
@@ -766,58 +775,52 @@ mod tests {
             assert!(p.distance(at) < 1e-6, "{p}");
             t += 16.0;
         }
-        assert!((camera.state().zoom() - 12.0).abs() < 1e-9);
+        assert!((camera.state().zoom(&mercator()) - 12.0).abs() < 1e-9);
     }
 
-    /// Dragging across the pole of a polar plane keeps the map's scale:
-    /// world units per pixel stay put and ground resolution moves only with
-    /// the plane's own scale factor, though the style zoom (Web Mercator's
-    /// convention) falls toward the pole, here below the minimum zoom.
+    /// Dragging across the pole of a polar plane keeps the map's scale and
+    /// its style zoom (decision 0021): world units per pixel and the zoom
+    /// stay put, past a minimum zoom the old latitude-bound zoom would
+    /// have crossed, and ground resolution at the target moves only with
+    /// the plane's own scale factor (a rigid drag can't hold both on a
+    /// projection whose scale varies).
     #[test]
-    fn panning_across_the_pole_keeps_the_scale() {
+    fn panning_across_the_pole_keeps_scale_and_zoom() {
         let projection = orb_crs::Projection::from_descriptor("EPSG:3413").unwrap();
         let viewport = Viewport {
             width: 1024.0,
             height: 768.0,
         };
-        let start = CameraState::new(Geodetic::new(-45.0, 72.0), 1.0);
+        let start = CameraState::new(Geodetic::new(-45.0, 72.0), 2.0, &projection);
         let mut camera = Camera::new(start, projection, viewport);
         camera.set_constraints(Constraints {
-            min_zoom: 0.0,
+            min_zoom: 1.9,
             ..Constraints::default()
         });
         let world_per_px = camera.state().world_per_px(&projection);
-        let scale_zoom = camera.state().scale_zoom(&projection);
-        let mut lowest_zoom = f64::INFINITY;
+        let zoom = camera.state().zoom(&projection);
+        assert!((zoom - 2.0).abs() < 1e-9);
+        let mut crossed = false;
         // The pole is straight up the screen from 72°N on -45°: drag down
         // past it and on to 72°N on the far side.
         for _ in 0..40 {
             camera.pan(DVec2::new(512.0, 300.0), DVec2::new(512.0, 340.0));
             let state = camera.state();
-            lowest_zoom = lowest_zoom.min(state.zoom());
+            crossed |= state.target.lat > 89.0;
             let ratio = state.world_per_px(&projection) / world_per_px;
             assert!(
                 (ratio - 1.0).abs() < 1e-9,
                 "scale changed by {ratio} at {state:?}"
             );
-            assert!((state.scale_zoom(&projection) - scale_zoom).abs() < 1e-9);
+            assert!((state.zoom(&projection) - zoom).abs() < 1e-9);
             let k = projection.scale_factor(state.target);
             let k0 = projection.scale_factor(start.target);
             assert!((state.resolution * k / (start.resolution * k0) - 1.0).abs() < 1e-9);
         }
-        assert!(camera.state().target.lat < 89.0 && camera.state().target.lon > 100.0);
-        assert!(
-            lowest_zoom < 0.0,
-            "the style zoom fell below the minimum: {lowest_zoom}"
-        );
-        // Zoom limits bound the scale: zooming out stops at the minimum
-        // (one the plane's extent doesn't bind first).
-        camera.set_constraints(Constraints {
-            min_zoom: 3.0,
-            ..Constraints::default()
-        });
+        assert!(crossed && camera.state().target.lon > 100.0);
+        // Zoom limits bound the same zoom.
         camera.zoom_by(DVec2::new(512.0, 384.0), -5.0);
-        assert!((camera.state().scale_zoom(&projection) - 3.0).abs() < 1e-9);
+        assert!((camera.state().zoom(&projection) - 1.9).abs() < 1e-9);
     }
 
     #[test]

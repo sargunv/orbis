@@ -9,7 +9,11 @@ fn covers_match_pinned_gl_js() {
     let mut failures = Vec::new();
     for case in golden["cases"].as_array().unwrap() {
         let n = |key: &str| case[key].as_f64().unwrap();
-        let mut camera = CameraState::new(Geodetic::new(n("lon"), n("lat")), n("zoom"));
+        let mut camera = CameraState::new(
+            Geodetic::new(n("lon"), n("lat")),
+            n("zoom"),
+            tms.projection(),
+        );
         camera.pitch = n("pitch");
         camera.bearing = n("bearing");
         camera.fov = n("fov");
@@ -63,7 +67,8 @@ fn covers_match_pinned_gl_js() {
 fn manhattan_cover_counts() {
     let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
     for pitch in [60., 80., 85.] {
-        let mut camera = CameraState::new(Geodetic::new(-74.0113, 40.7075), 14.48);
+        let mut camera =
+            CameraState::new(Geodetic::new(-74.0113, 40.7075), 14.48, tms.projection());
         camera.bearing = 30.;
         camera.pitch = pitch;
         let view = View::new(

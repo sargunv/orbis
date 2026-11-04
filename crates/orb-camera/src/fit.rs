@@ -84,8 +84,8 @@ impl CameraState {
         }
         let px_per_world = (available.x / size.x).min(available.y / size.y);
         let world_per_px = self.world_per_px(projection);
-        let zoom = (self.zoom() + (world_per_px * px_per_world).log2()).min(max_zoom);
-        let final_world_per_px = world_per_px * (self.zoom() - zoom).exp2();
+        let zoom = (self.zoom(projection) + (world_per_px * px_per_world).log2()).min(max_zoom);
+        let final_world_per_px = world_per_px * (self.zoom(projection) - zoom).exp2();
         let shift = DVec2::new((pad.left - pad.right) / 2.0, (pad.top - pad.bottom) / 2.0).rotate(
             DVec2::new(bearing.to_radians().cos(), bearing.to_radians().sin()),
         ) + options.offset.rotate(DVec2::new(
@@ -115,11 +115,11 @@ impl CameraState {
                 viewport,
                 available,
             );
-            camera.set_zoom(camera.zoom().min(max_zoom));
+            camera.set_zoom(projection, camera.zoom(projection).min(max_zoom));
         }
         Some(CameraTarget {
             center: Some(camera.target),
-            zoom: Some(camera.zoom()),
+            zoom: Some(camera.zoom(projection)),
             bearing: Some(bearing),
             pitch: Some(pitch),
             ..CameraTarget::default()
@@ -151,7 +151,7 @@ fn fit_pitched(
             .filter(|points| points.iter().all(|p| p.y >= view.ground_horizon()))
         else {
             // A corner is past the horizon: back away and try again.
-            camera.set_zoom(camera.zoom() - 1.0);
+            camera.set_zoom(projection, camera.zoom(projection) - 1.0);
             continue;
         };
         let min = points.iter().fold(DVec2::INFINITY, |a, p| a.min(*p));
@@ -163,12 +163,23 @@ fn fit_pitched(
         }
         camera.pan(projection, viewport, middle, goal);
         let center = DVec2::new(viewport.width, viewport.height) / 2.0;
-        camera.zoom_around(projection, viewport, center, camera.zoom() + scale.log2());
+        camera.zoom_around(
+            projection,
+            viewport,
+            center,
+            camera.zoom(projection) + scale.log2(),
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
+    fn mercator() -> orb_crs::Projection {
+        *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
+            .unwrap()
+            .projection()
+    }
+
     use super::*;
     use orb_crs::TileMatrixSet;
     use orb_geo::Geodetic;
@@ -181,7 +192,7 @@ mod tests {
     fn on_screen(camera: &CameraState, target: &CameraTarget, projection: &Projection) -> View {
         let mut fitted = *camera;
         fitted.target = target.center.unwrap();
-        fitted.set_zoom(target.zoom.unwrap());
+        fitted.set_zoom(&mercator(), target.zoom.unwrap());
         fitted.bearing = target.bearing.unwrap();
         fitted.pitch = target.pitch.unwrap();
         View::new(&fitted, VIEWPORT, projection)
@@ -205,7 +216,7 @@ mod tests {
             left: 80.0,
         };
         for (bearing, pitch) in [(0.0, 0.0), (30.0, 0.0), (0.0, 50.0), (-70.0, 60.0)] {
-            let camera = CameraState::new(Geodetic::new(0.0, 0.0), 2.0);
+            let camera = CameraState::new(Geodetic::new(0.0, 0.0), 2.0, &mercator());
             let options = FitOptions {
                 padding,
                 bearing: Some(bearing),
@@ -244,7 +255,7 @@ mod tests {
             padding: Padding::uniform(400.0),
             ..FitOptions::default()
         };
-        let camera = CameraState::new(Geodetic::new(0.0, 0.0), 2.0);
+        let camera = CameraState::new(Geodetic::new(0.0, 0.0), 2.0, &mercator());
         assert!(
             camera
                 .for_bounds(bounds, &cramped, &projection, VIEWPORT)

@@ -489,18 +489,27 @@ impl TileMatrixSet {
         DVec2::new(world.x - self.origin.x, self.origin.y - world.y) / self.span
     }
 
-    /// The style zoom (plan §9.3: the Web Mercator convention) at which a
-    /// tile's ground resolution is that of a 512-pixel tile, at its centre.
-    /// Tiles lay out at this zoom; for `WebMercatorQuad` it is the tile's
-    /// own.
+    /// The style zoom a tile lays out at on its own plane: the zoom of a
+    /// view in which it spans 512 pixels (decision 0021). On a plane with a
+    /// zoom reference it is the plane's; in Web Mercator, ground resolution
+    /// at the tile's centre in GL JS's convention, which is the tile's own
+    /// zoom in `WebMercatorQuad`.
     pub fn style_zoom(&self, tile: TileIndex) -> f64 {
-        let center = self.projection.inverse(self.tile_bounds(tile).center());
-        let ground_span = self.tile_span(tile.z) / self.projection.scale_factor(center);
-        let parallel = 2.0
-            * std::f64::consts::PI
-            * orb_geo::wgs84::SEMI_MAJOR_M
-            * orb_geo::style_parallel(center.lat);
-        let zoom = (parallel / ground_span).log2();
+        let zoom = match self
+            .projection
+            .zoom_at_scale(self.tile_span(tile.z) / 512.0)
+        {
+            Some(zoom) => zoom,
+            None => {
+                let center = self.projection.inverse(self.tile_bounds(tile).center());
+                let ground_span = self.tile_span(tile.z) / self.projection.scale_factor(center);
+                let parallel = 2.0
+                    * std::f64::consts::PI
+                    * orb_geo::wgs84::SEMI_MAJOR_M
+                    * orb_geo::style_parallel(center.lat);
+                (parallel / ground_span).log2()
+            }
+        };
         // Snap the round-off of planes whose zooms are whole.
         if (zoom - zoom.round()).abs() < 1e-9 {
             zoom.round()
@@ -744,8 +753,6 @@ mod tests {
         let b = mercator.geodetic_bounds(TileIndex::new(1, 1, 0));
         assert!((b[0] - 0.0).abs() < 1e-9 && (b[2] - 180.0).abs() < 1e-9);
         assert!((b[1] - 0.0).abs() < 1e-9 && (b[3] - 85.051_128_779_806_59).abs() < 1e-9);
-        // NZTM2000Quad's tiles are a quarter of Mercator's: at Wellington's
-        // latitude a tile shows 1.6 zooms deeper than its matrix.
         let nztm = TileMatrixSet::by_id("NZTM2000Quad").unwrap();
         let p = nztm
             .projection()
@@ -754,8 +761,15 @@ mod tests {
             .tiles_in(WorldRect { min: p, max: p }, 8)
             .next()
             .unwrap();
-        let zoom = nztm.style_zoom(tile);
-        assert!((zoom - 9.6).abs() < 0.05, "{zoom}");
+        // Its tiles are a quarter of Mercator's, measured at its natural
+        // origin on the equator with its 0.9996 scale: two zooms deeper
+        // than their matrix, everywhere on the plane (decision 0021).
+        let expected = 10.0 + 0.9996f64.log2();
+        assert!((nztm.style_zoom(tile) - expected).abs() < 1e-6);
+        assert_eq!(
+            nztm.style_zoom(TileIndex::new(8, 0, 0)),
+            nztm.style_zoom(tile)
+        );
         // A polar tile around the pole spans every longitude.
         let ups = TileMatrixSet::by_id("UPSArcticWGS84Quad").unwrap();
         let pole = ups.projection().forward(orb_geo::Geodetic::new(0.0, 90.0));

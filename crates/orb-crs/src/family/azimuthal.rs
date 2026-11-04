@@ -17,6 +17,8 @@ pub(crate) struct PolarStereographic {
     pole: f64,
     /// ρ = `scale` · t.
     scale: f64,
+    /// The latitude of true scale (variant B), or the pole (variant A).
+    true_lat: f64,
 }
 
 impl PolarStereographic {
@@ -35,6 +37,7 @@ impl PolarStereographic {
             y0,
             pole,
             scale,
+            true_lat: lat_ts,
         }
     }
 
@@ -46,6 +49,7 @@ impl PolarStereographic {
             y0,
             pole: if north { 1.0 } else { -1.0 },
             scale: Self::variant_a_scale(k0),
+            true_lat: if north { FRAC_PI_2 } else { -FRAC_PI_2 },
         }
     }
 
@@ -79,6 +83,10 @@ impl PolarStereographic {
     pub(crate) fn north(&self) -> bool {
         self.pole > 0.0
     }
+
+    pub(crate) fn reference(&self) -> (f64, f64) {
+        (self.lon0, self.true_lat)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -92,6 +100,8 @@ pub(crate) struct Laea {
     d: f64,
     /// ±1 for a polar aspect, 0 for oblique.
     pole: f64,
+    /// The latitude of the origin, the centre of true scale.
+    lat0: f64,
 }
 
 impl Laea {
@@ -111,6 +121,7 @@ impl Laea {
                 A * m(lat0) / (rq * beta0.cos())
             },
             pole: if polar { lat0.signum() } else { 0.0 },
+            lat0,
         }
     }
 
@@ -161,6 +172,10 @@ impl Laea {
         let lon =
             self.lon0 + (dx * sc).atan2(self.d * rho * cb0 * cc - self.d * self.d * dy * sb0 * sc);
         (wrap_pi(lon), from_authalic(beta))
+    }
+
+    pub(crate) fn reference(&self) -> (f64, f64) {
+        (self.lon0, self.lat0)
     }
 
     /// Everything but the antipode of the origin.

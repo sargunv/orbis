@@ -171,7 +171,7 @@ pub(crate) async fn run(
     for &(view, zoom, pitch) in VIEWS {
         let camera = CameraState {
             pitch,
-            ..CameraState::new(settings.center, zoom)
+            ..CameraState::new(settings.center, zoom, &crate::web_mercator())
         };
         // Two maps a view: each swept colour is an edit of both.
         progress(&format!("{view}: loading"));

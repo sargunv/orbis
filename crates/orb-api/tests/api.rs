@@ -67,10 +67,7 @@ fn style_frame_query_edit_gesture_idle() {
     assert!(matches!(maps[0], MapEvent::StyleLoad { .. }), "{maps:?}");
     assert!(maps.contains(&&MapEvent::Load), "{maps:?}");
     assert_eq!(maps.last(), Some(&&MapEvent::Idle), "{maps:?}");
-    assert!(
-        (map.camera().zoom() - 0.0).abs() < 1e-9,
-        "the style's camera"
-    );
+    assert!((map.zoom() - 0.0).abs() < 1e-9, "the style's camera");
     assert!(!map.needs_frame());
 
     let pixels = target.read_pixels().unwrap();

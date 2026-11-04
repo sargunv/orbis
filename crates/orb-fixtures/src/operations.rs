@@ -33,7 +33,10 @@ pub(crate) fn apply(map: &mut Map, op: &Value) -> Result<Next, String> {
             });
         }
         "idle" => return Ok(Next::Idle),
-        "setZoom" => map.camera_mut().set_zoom(number(1)?),
+        "setZoom" => {
+            let (zoom, projection) = (number(1)?, map.projection());
+            map.camera_mut().set_zoom(&projection, zoom)
+        }
         "setBearing" => map.camera_mut().bearing = number(1)?,
         "setPitch" => map.camera_mut().pitch = number(1)?,
         "setCenter" => {

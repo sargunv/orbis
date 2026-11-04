@@ -143,7 +143,7 @@ pub(crate) async fn run(
     for &(view, zoom, pitch) in VIEWS {
         let camera = CameraState {
             pitch,
-            ..CameraState::new(settings.center, zoom)
+            ..CameraState::new(settings.center, zoom, &crate::web_mercator())
         };
         progress(&format!("{view}: loading"));
         let mut map = new_map(camera)?;

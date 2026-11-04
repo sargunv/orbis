@@ -368,7 +368,7 @@ pub async fn run(
         progress(&format!("{name}: loading"));
         let camera = CameraState {
             pitch,
-            ..CameraState::new(settings.center, zoom)
+            ..CameraState::new(settings.center, zoom, &crate::web_mercator())
         };
         let map = match &mut map {
             Some(map) => {
@@ -668,7 +668,11 @@ mod extrusion_benchmark {
                 Some(CameraState {
                     bearing: 30.0,
                     pitch: 60.0,
-                    ..CameraState::new(Geodetic::new(TOKYO.0, TOKYO.1), 16.0)
+                    ..CameraState::new(
+                        Geodetic::new(TOKYO.0, TOKYO.1),
+                        16.0,
+                        &crate::web_mercator(),
+                    )
                 }),
             );
             map.set_style_json(&style).unwrap();
@@ -864,7 +868,9 @@ mod extrusion_benchmark {
             // every slot in one frame.
             let mut redraws = Vec::new();
             for i in 0..20 {
-                map.camera_mut().set_zoom(11.6 + f64::from(i % 2) * 0.01);
+                let projection = map.projection();
+                map.camera_mut()
+                    .set_zoom(&projection, 11.6 + f64::from(i % 2) * 0.01);
                 render(&mut gpu, &mut map);
                 render(&mut gpu, &mut map);
                 gpu.throttle().await;
@@ -884,4 +890,11 @@ mod extrusion_benchmark {
             );
         });
     }
+}
+
+/// The default surface's projection, which the benchmarks draw on.
+pub(crate) fn web_mercator() -> orb_crs::Projection {
+    *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
+        .expect("built-in tile matrix set")
+        .projection()
 }

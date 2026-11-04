@@ -106,6 +106,34 @@ impl Surface {
         (!self.projection.same_plane(&mercator.projection)).then(|| self.tms.clone())
     }
 
+    /// The style zoom a tile lays out at (decision 0021): the view's style
+    /// zoom where the tile spans 512 pixels. A tile on the surface's plane
+    /// has its set's; a warped tile's comes from its footprint's scale on
+    /// the surface.
+    pub(crate) fn tile_zoom(
+        &self,
+        tms: &TileMatrixSet,
+        tile: orb_crs::TileIndex,
+        footprint: Option<orb_crs::Footprint>,
+    ) -> f64 {
+        match footprint {
+            None => tms.style_zoom(tile),
+            Some(f) => self
+                .projection
+                .zoom_at_scale(f.span / 512.0)
+                .unwrap_or_else(|| {
+                    // Web Mercator's style zoom of a scale, at any latitude.
+                    (2.0 * std::f64::consts::PI
+                        * orb_geo::wgs84::SEMI_MAJOR_M
+                        * self
+                            .projection
+                            .scale_factor(orb_geo::Geodetic::new(0.0, 0.0))
+                        / f.span)
+                        .log2()
+                }),
+        }
+    }
+
     /// What job workers need of the surface.
     pub(crate) fn tiles(&self) -> SurfaceTiles {
         SurfaceTiles {

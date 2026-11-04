@@ -83,7 +83,12 @@ fn assert_matches_fresh(offscreen: &mut Offscreen) {
     let mut fresh = Offscreen::load(&Options {
         style: None,
         encoding: "mvt".into(),
-        at: Some((camera.target, camera.zoom(), camera.bearing, camera.pitch)),
+        at: Some((
+            camera.target,
+            offscreen.map.zoom(),
+            camera.bearing,
+            camera.pitch,
+        )),
         snapshot: None,
         a11y: None,
         watch_style: None,
@@ -412,8 +417,11 @@ fn published_hits_follow_layer_order_visibility_and_camera() {
     map.map
         .set_style_json(include_str!("../../../web/demo/data/playground.json"))
         .unwrap();
-    *map.map.camera_mut() =
-        orb_runtime::CameraState::new(orb_geo::Geodetic::new(139.7655, 35.6835), 15.0);
+    *map.map.camera_mut() = orb_runtime::CameraState::new(
+        orb_geo::Geodetic::new(139.7655, 35.6835),
+        15.0,
+        &super::web_mercator(),
+    );
     settle(&mut map);
     // An idle frame may retain its index without emitting a new transfer.
     // Publish a camera change before testing the transfer round trip.
@@ -472,8 +480,11 @@ fn point_style(east: f64, circle_paint: &str) -> String {
 fn load_points(style: &str) -> Offscreen {
     let mut map = tokyo();
     map.map.set_style_json(style).unwrap();
-    *map.map.camera_mut() =
-        orb_runtime::CameraState::new(orb_geo::Geodetic::new(139.74, 35.685), 15.0);
+    *map.map.camera_mut() = orb_runtime::CameraState::new(
+        orb_geo::Geodetic::new(139.74, 35.685),
+        15.0,
+        &super::web_mercator(),
+    );
     settle(&mut map);
     map
 }

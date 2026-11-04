@@ -334,6 +334,47 @@ impl Projection {
         }
     }
 
+    /// The position this plane's style zoom is measured at (decision 0021),
+    /// or `None` for Web Mercator, whose style zoom follows the target's
+    /// latitude as GL JS's does.
+    pub fn zoom_reference(&self) -> Option<Geodetic> {
+        self.family
+            .zoom_reference()
+            .map(|(lon, lat)| Geodetic::new(lon.to_degrees(), lat.to_degrees()))
+    }
+
+    /// The style zoom of a view of `world_per_px` on this plane: the zoom
+    /// at which Web Mercator's ground resolution at the plane's reference
+    /// latitude is the view's there. The same everywhere on the plane, so
+    /// panning keeps it. `None` for Web Mercator (see
+    /// [`zoom_reference`](Self::zoom_reference)).
+    pub fn zoom_at_scale(&self, world_per_px: f64) -> Option<f64> {
+        let reference = self.zoom_reference()?;
+        // Ground metres per pixel at the reference, from the plane's scale
+        // there (world units per ground metre).
+        let ground_per_px = world_per_px / self.scale_factor(reference);
+        Some(
+            (2.0 * std::f64::consts::PI
+                * wgs84::SEMI_MAJOR_M
+                * orb_geo::style_parallel(reference.lat)
+                / (STYLE_TILE_PX * ground_per_px))
+                .log2(),
+        )
+    }
+
+    /// World units per pixel at a style zoom: [`zoom_at_scale`]
+    /// (Self::zoom_at_scale)'s inverse.
+    pub fn scale_at_zoom(&self, zoom: f64) -> Option<f64> {
+        let reference = self.zoom_reference()?;
+        Some(
+            2.0 * std::f64::consts::PI
+                * wgs84::SEMI_MAJOR_M
+                * orb_geo::style_parallel(reference.lat)
+                / (STYLE_TILE_PX * zoom.exp2())
+                * self.scale_factor(reference),
+        )
+    }
+
     /// World units per metre of v8 feature height at `g`. The style's height
     /// convention uses the IUGG mean sphere, while ground metres use the
     /// semi-major axis.
@@ -351,6 +392,9 @@ impl Projection {
         self.family.wrap_period()
     }
 }
+
+/// Logical pixels per tile side at its own style zoom.
+const STYLE_TILE_PX: f64 = 512.0;
 
 const FRAC_PI_2_LESS: f64 = std::f64::consts::FRAC_PI_2 - 1e-6;
 

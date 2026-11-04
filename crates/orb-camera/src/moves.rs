@@ -82,10 +82,8 @@ impl Bounds {
 /// `maxPitch` and `maxBounds`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Constraints {
-    /// Zoom limits bound the view's scale: the zoom a Web Mercator view of
-    /// the same world units per pixel has (see
-    /// [`CameraState::scale_zoom`]), which is its style zoom in Web
-    /// Mercator and stays put as a view on another plane pans.
+    /// Style zoom limits (see [`CameraState::zoom`]): on every plane the
+    /// style zoom stays put as the view pans.
     pub min_zoom: f64,
     pub max_zoom: f64,
     /// Degrees from looking straight down.
@@ -128,25 +126,12 @@ impl CameraState {
         self.resolution * projection.scale_factor(self.target.wrapped())
     }
 
-    /// The view's scale as a zoom: the style zoom a Web Mercator view of
-    /// the same metres per pixel has. In Web Mercator it is the style
-    /// zoom; on other planes it doesn't change as the view pans, while the
-    /// style zoom (ground resolution in Web Mercator's convention, plan
-    /// §9.3) follows latitude. Zoom limits apply to it.
-    pub fn scale_zoom(&self, projection: &Projection) -> f64 {
-        let metres_per_px = self.world_per_px(projection) * projection.metres_per_unit();
-        (2.0 * std::f64::consts::PI * orb_geo::wgs84::SEMI_MAJOR_M
-            / (crate::STYLE_ZOOM_TILE_PX * metres_per_px))
-            .log2()
-    }
-
-    /// Keeps the view's scale within zoom limits (see
-    /// [`scale_zoom`](Self::scale_zoom)), keeping the target.
+    /// Keeps the style zoom within limits, keeping the target.
     pub fn limit_zoom(&mut self, min: f64, max: f64, projection: &Projection) {
-        let scale = self.scale_zoom(projection);
-        let clamped = scale.clamp(min, max.max(min));
-        if clamped != scale {
-            self.set_zoom(self.zoom() + (clamped - scale));
+        let zoom = self.zoom(projection);
+        let clamped = zoom.clamp(min, max.max(min));
+        if clamped != zoom {
+            self.set_zoom(projection, clamped);
         }
     }
 
@@ -180,7 +165,9 @@ impl CameraState {
         at: DVec2,
         zoom: f64,
     ) {
-        self.holding(projection, viewport, at, |camera| camera.set_zoom(zoom));
+        self.holding(projection, viewport, at, |camera| {
+            camera.set_zoom(projection, zoom)
+        });
     }
 
     /// Sets the bearing, keeping the ground under `at` in place.
@@ -311,14 +298,14 @@ mod tests {
     #[test]
     fn zooming_around_a_point_keeps_its_ground() {
         let p = mercator();
-        let mut camera = CameraState::new(Geodetic::new(139.7, 35.6), 12.0);
+        let mut camera = CameraState::new(Geodetic::new(139.7, 35.6), 12.0, &mercator());
         camera.pitch = 40.0;
         camera.bearing = 30.0;
         let at = DVec2::new(100.0, 450.0);
         let before = View::new(&camera, VIEWPORT, &p).unproject(at).unwrap();
         camera.zoom_around(&p, VIEWPORT, at, 13.5);
         let after = View::new(&camera, VIEWPORT, &p).unproject(at).unwrap();
-        assert!((camera.zoom() - 13.5).abs() < 1e-9);
+        assert!((camera.zoom(&mercator()) - 13.5).abs() < 1e-9);
         assert!(before.distance(after) < 1e-6, "{before} {after}");
         camera.rotate_around(&p, VIEWPORT, at, 75.0);
         let rotated = View::new(&camera, VIEWPORT, &p).unproject(at).unwrap();
@@ -329,7 +316,7 @@ mod tests {
     #[test]
     fn panning_moves_ground_with_the_pointer() {
         let p = mercator();
-        let mut camera = CameraState::new(Geodetic::new(-122.3, 47.6), 10.0);
+        let mut camera = CameraState::new(Geodetic::new(-122.3, 47.6), 10.0, &mercator());
         camera.pitch = 50.0;
         let from = DVec2::new(400.0, 400.0);
         let to = DVec2::new(470.0, 350.0);
@@ -337,7 +324,10 @@ mod tests {
         camera.pan(&p, VIEWPORT, from, to);
         let now = View::new(&camera, VIEWPORT, &p).project(ground).unwrap();
         assert!(now.distance(to) < 1e-6, "{now}");
-        assert!((camera.zoom() - 10.0).abs() < 1e-9, "a pan doesn't zoom");
+        assert!(
+            (camera.zoom(&mercator()) - 10.0).abs() < 1e-9,
+            "a pan doesn't zoom"
+        );
     }
 
     #[test]
@@ -355,7 +345,7 @@ mod tests {
         };
         // Far outside and too far out: zooms in until the box fills the
         // viewport, and moves inside.
-        let mut camera = CameraState::new(Geodetic::new(0.0, 0.0), 3.0);
+        let mut camera = CameraState::new(Geodetic::new(0.0, 0.0), 3.0, &mercator());
         camera.constrain(&constraints, &p, VIEWPORT);
         let view = View::new(&camera, VIEWPORT, &p);
         let rect = bounds.world(&p);
@@ -365,15 +355,15 @@ mod tests {
             assert!(world.y >= rect.min.y - 1e-3 && world.y <= rect.max.y + 1e-3);
         }
         // A view inside is left alone.
-        let mut inside = CameraState::new(Geodetic::new(139.5, 35.5), 12.0);
+        let mut inside = CameraState::new(Geodetic::new(139.5, 35.5), 12.0, &mercator());
         let before = inside;
         inside.constrain(&constraints, &p, VIEWPORT);
         assert_eq!(inside, before);
         // Zoom and pitch ranges.
-        let mut steep = CameraState::new(Geodetic::new(139.5, 35.5), 30.0);
+        let mut steep = CameraState::new(Geodetic::new(139.5, 35.5), 30.0, &mercator());
         steep.pitch = 89.0;
         steep.constrain(&Constraints::default(), &p, VIEWPORT);
-        assert!((steep.zoom() - 22.0).abs() < 1e-9);
+        assert!((steep.zoom(&mercator()) - 22.0).abs() < 1e-9);
         assert_eq!(steep.pitch, 85.0);
     }
 
@@ -387,7 +377,7 @@ mod tests {
             ("NZTM2000Quad", Geodetic::new(174.8, -41.3)),
         ] {
             let p = *TileMatrixSet::by_id(id).unwrap().projection();
-            let mut camera = CameraState::new(target, 6.0);
+            let mut camera = CameraState::new(target, 6.0, &p);
             camera.pitch = 35.0;
             camera.bearing = -20.0;
             let (from, to) = (DVec2::new(300.0, 420.0), DVec2::new(520.0, 260.0));
@@ -403,7 +393,7 @@ mod tests {
             assert!(before.distance(after) < 1e-6, "{id}: {before} {after}");
             // The world's edge holds on both axes: a plane that doesn't wrap
             // keeps the viewport inside its extent.
-            let mut far = CameraState::new(target, 1.0);
+            let mut far = CameraState::new(target, 1.0, &p);
             far.constrain(&Constraints::WORLD, &p, VIEWPORT);
             let view = View::new(&far, VIEWPORT, &p);
             let world = p.world_bounds();
@@ -435,7 +425,7 @@ mod tests {
         let edge = p.forward(Geodetic::new(90.0, 70.0)) - pole;
         assert!((rect.center() - pole).length() < 1.0);
         assert!((rect.size().x / 2.0 - edge.length()).abs() < 1.0);
-        let camera = CameraState::new(Geodetic::new(0.0, 60.0), 2.0);
+        let camera = CameraState::new(Geodetic::new(0.0, 60.0), 2.0, &p);
         let fit = camera
             .for_bounds(cap, &crate::FitOptions::default(), &p, VIEWPORT)
             .unwrap();

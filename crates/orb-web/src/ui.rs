@@ -20,7 +20,9 @@ use orb_interact::{
 use orb_runtime::{HitIndex, Viewport};
 use wasm_bindgen::prelude::*;
 
-pub(crate) fn camera_array(camera: &CameraState) -> Vec<f64> {
+/// A camera as `[lon, lat, resolution, bearing, pitch, fov, zoom,
+/// elevation]`, its style zoom on `projection`'s plane.
+pub(crate) fn camera_array(camera: &CameraState, projection: &orb_crs::Projection) -> Vec<f64> {
     vec![
         camera.target.lon,
         camera.target.lat,
@@ -28,7 +30,7 @@ pub(crate) fn camera_array(camera: &CameraState) -> Vec<f64> {
         camera.bearing,
         camera.pitch,
         camera.fov,
-        camera.zoom(),
+        camera.zoom(projection),
         camera.elevation,
     ]
 }
@@ -143,7 +145,7 @@ impl UiRole {
         let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").expect("built-in");
         UiRole {
             camera: Camera::new(
-                CameraState::new(Geodetic::new(0.0, 0.0), 0.0),
+                CameraState::new(Geodetic::new(0.0, 0.0), 0.0, tms.projection()),
                 *tms.projection(),
                 Viewport { width, height },
             ),
@@ -382,7 +384,7 @@ impl UiRole {
 
     /// The camera: `[lon, lat, resolution, bearing, pitch, fov, zoom]`.
     pub fn camera(&self) -> Vec<f64> {
-        camera_array(self.camera.state())
+        camera_array(self.camera.state(), self.camera.projection())
     }
 
     /// Counts camera changes, so hosts send the camera only when it moved.
@@ -415,7 +417,7 @@ impl UiRole {
         let style = camera_from(camera)?;
         self.camera.jump_to(&CameraTarget {
             center: Some(style.target),
-            zoom: Some(style.zoom()),
+            zoom: Some(style.zoom(self.camera.projection())),
             bearing: Some(style.bearing),
             pitch: Some(style.pitch),
             ..CameraTarget::default()

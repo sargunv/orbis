@@ -728,7 +728,7 @@ impl Interaction {
         };
         camera.user_ease(
             &CameraTarget {
-                zoom: Some(camera.state().zoom() + delta),
+                zoom: Some(camera.zoom() + delta),
                 around: Some(around),
                 ..CameraTarget::default()
             },
@@ -831,7 +831,7 @@ impl Interaction {
             (Key::ZoomIn | Key::ZoomOut, _) => {
                 let step = if shift { 2.0 } else { 1.0 };
                 let sign = if key == Key::ZoomIn { 1.0 } else { -1.0 };
-                target.zoom = Some(state.zoom() + sign * step);
+                target.zoom = Some(camera.zoom() + sign * step);
             }
             (Key::Left, true) => target.bearing = Some(state.bearing - feel.key_bearing),
             (Key::Right, true) => target.bearing = Some(state.bearing + feel.key_bearing),

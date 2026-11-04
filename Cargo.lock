@@ -2266,6 +2266,7 @@ version = "0.0.0"
 dependencies = [
  "glam",
  "js-sys",
+ "orb-crs",
  "orb-geo",
  "orb-hal",
  "orb-hal-wgpu",
@@ -2315,6 +2316,7 @@ dependencies = [
  "glam",
  "orb-a11y",
  "orb-camera",
+ "orb-crs",
  "orb-geo",
  "orb-hal",
  "orb-hal-wgpu",

@@ -9,6 +9,8 @@ use super::ellipsoid::{A, E2, e};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TransverseMercator {
     lon0: f64,
+    /// The latitude of natural origin.
+    lat0: f64,
     k0: f64,
     x0: f64,
     y0: f64,
@@ -51,6 +53,7 @@ impl TransverseMercator {
         ];
         let mut tm = Self {
             lon0,
+            lat0,
             k0,
             x0,
             y0,
@@ -109,6 +112,12 @@ impl TransverseMercator {
 
     pub(crate) fn lon0(&self) -> f64 {
         self.lon0
+    }
+
+    /// The natural origin: transverse Mercator is true to scale along its
+    /// whole central meridian, so no latitude is its own.
+    pub(crate) fn reference(&self) -> (f64, f64) {
+        (self.lon0, self.lat0)
     }
 }
 

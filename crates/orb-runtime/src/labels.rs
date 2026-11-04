@@ -1055,10 +1055,10 @@ impl Labels {
         view: &orb_camera::View,
         period: f64,
         camera: &orb_camera::CameraState,
+        zoom: f64,
         extrusion_scale: f64,
         now: f64,
     ) -> orb_symbol::Frame {
-        let zoom = camera.zoom();
         let view_proj = view.view_proj();
         let camera_world = view.camera_world();
         let viewport = view.viewport();

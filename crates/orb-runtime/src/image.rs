@@ -95,6 +95,8 @@ pub(crate) struct Upload<'a> {
     pub(crate) unpack: Option<[f64; 4]>,
     /// The tile's mesh on the surface, from a `RasterWarp` plan.
     pub(crate) warped: Option<Arc<Warped>>,
+    /// The style zoom it draws at (decision 0021).
+    pub(crate) zoom: f64,
 }
 
 /// The quad an image tile on its own plane draws: its corners in tile
@@ -188,6 +190,7 @@ pub(crate) fn upload(
         parts: vec![(IMAGE_EXTENT, scene_tile)],
         meshes: Vec::new(),
         series: None,
+        zoom: upload.zoom,
         image: Some(ResidentImage {
             page,
             layer,

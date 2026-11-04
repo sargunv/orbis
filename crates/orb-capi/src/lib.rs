@@ -659,7 +659,7 @@ mod ffi {
             OrbCamera {
                 lon: c.target.lon,
                 lat: c.target.lat,
-                zoom: c.zoom(),
+                zoom: self.0.zoom(),
                 bearing: c.bearing,
                 pitch: c.pitch,
             }

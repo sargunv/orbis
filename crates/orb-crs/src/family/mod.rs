@@ -98,6 +98,22 @@ impl Family {
         }
     }
 
+    /// The position whose scale style zoom is measured at (decision 0021):
+    /// where the family is true to scale, else its natural origin; `None`
+    /// for Web Mercator, whose style zoom is its own convention.
+    pub(crate) fn zoom_reference(&self) -> Option<(f64, f64)> {
+        Some(match self {
+            Self::WebMercator => return None,
+            Self::Geographic => (0.0, 0.0),
+            Self::Equirectangular { lon0 } => (*lon0, 0.0),
+            Self::TransverseMercator(f) => f.reference(),
+            Self::PolarStereographic(f) => f.reference(),
+            Self::Conic(f) => f.reference(),
+            Self::Laea(f) => f.reference(),
+            Self::Pseudo(f) => (f.lon0(), 0.0),
+        })
+    }
+
     /// The x period after which the world repeats, if it wraps.
     pub(crate) fn wrap_period(&self) -> Option<f64> {
         match self {

@@ -406,6 +406,8 @@ pub(crate) struct Publisher<'a> {
     /// The surface's wrap period, 0 if it doesn't wrap.
     pub(crate) period: f64,
     pub(crate) camera: &'a orb_camera::CameraState,
+    /// The view's style zoom.
+    pub(crate) zoom: f64,
 }
 impl Publisher<'_> {
     pub(crate) fn tile(
@@ -422,14 +424,14 @@ impl Publisher<'_> {
             let plan = self.plan;
             let node = &plan.nodes[node_index];
             let layer = &plan.style.layers[node.layer];
-            if !layer.is_visible_at(self.camera.zoom()) {
+            if !layer.is_visible_at(self.zoom) {
                 continue;
             }
             for draw in draws {
                 for feature in &mesh.hits {
                     // Each value per feature where it's bound per feature, else
                     // as the style says now (uniform edits don't relayout).
-                    let zoom = self.camera.zoom();
+                    let zoom = self.zoom;
                     let per_feature =
                         |kind| matches!(kind, orb_v8::Kind::Source | orb_v8::Kind::Composite);
                     let radius = match &layer.kind {
@@ -458,12 +460,12 @@ impl Publisher<'_> {
                                 matches!(kind, orb_v8::Kind::Constant | orb_v8::Kind::Camera)
                             };
                             let base = if uniform(e.paint.base.kind()) {
-                                e.paint.base.evaluate(self.camera.zoom())
+                                e.paint.base.evaluate(self.zoom)
                             } else {
                                 feature.base
                             };
                             let height = if uniform(e.paint.height.kind()) {
-                                e.paint.height.evaluate(self.camera.zoom())
+                                e.paint.height.evaluate(self.zoom)
                             } else {
                                 feature.height
                             };
@@ -473,20 +475,20 @@ impl Publisher<'_> {
                     };
                     let (translate, anchor) = match &layer.kind {
                         orb_v8::LayerKind::Fill(f) => (
-                            f.paint.translate.evaluate(self.camera.zoom()),
-                            f.paint.translate_anchor.evaluate(self.camera.zoom()),
+                            f.paint.translate.evaluate(self.zoom),
+                            f.paint.translate_anchor.evaluate(self.zoom),
                         ),
                         orb_v8::LayerKind::Line(l) => (
-                            l.paint.translate.evaluate(self.camera.zoom()),
-                            l.paint.translate_anchor.evaluate(self.camera.zoom()),
+                            l.paint.translate.evaluate(self.zoom),
+                            l.paint.translate_anchor.evaluate(self.zoom),
                         ),
                         orb_v8::LayerKind::Circle(c) => (
-                            c.paint.translate.evaluate(self.camera.zoom()),
-                            c.paint.translate_anchor.evaluate(self.camera.zoom()),
+                            c.paint.translate.evaluate(self.zoom),
+                            c.paint.translate_anchor.evaluate(self.zoom),
                         ),
                         orb_v8::LayerKind::FillExtrusion(e) => (
-                            e.paint.translate.evaluate(self.camera.zoom()),
-                            e.paint.translate_anchor.evaluate(self.camera.zoom()),
+                            e.paint.translate.evaluate(self.zoom),
+                            e.paint.translate_anchor.evaluate(self.zoom),
                         ),
                         _ => ([0.0; 2], orb_v8::TranslateAnchor::Map),
                     };

@@ -17,6 +17,8 @@ pub(crate) struct Conic {
     /// The radius of the latitude of origin.
     rho0: f64,
     equal_area: bool,
+    /// Midway between the standard parallels, where scale is nearly true.
+    middle: f64,
 }
 
 impl Conic {
@@ -36,6 +38,7 @@ impl Conic {
             c: af,
             rho0: af * t(lat0).powf(n),
             equal_area: false,
+            middle: (lat1 + lat2) / 2.0,
         }
     }
 
@@ -55,6 +58,7 @@ impl Conic {
             c,
             rho0: 0.0,
             equal_area: true,
+            middle: (lat1 + lat2) / 2.0,
         };
         conic.rho0 = conic.rho(lat0);
         conic
@@ -100,5 +104,9 @@ impl Conic {
 
     pub(crate) fn lon0(&self) -> f64 {
         self.lon0
+    }
+
+    pub(crate) fn reference(&self) -> (f64, f64) {
+        (self.lon0, self.middle)
     }
 }

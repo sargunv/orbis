@@ -313,16 +313,13 @@ impl Map {
             }
         };
         self.warnings.append(&mut build.warnings);
-        let SourceState::Ready {
-            pyramid, endpoint, ..
-        } = &mut style.sources[index]
-        else {
+        let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
             return;
         };
-        let tile_zoom = endpoint.tms.style_zoom(tile);
         let Some(resident) = pyramid.get_mut(tile) else {
             return;
         };
+        let tile_zoom = resident.zoom;
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
         let namespace = style.image_namespace.expect("namespace");

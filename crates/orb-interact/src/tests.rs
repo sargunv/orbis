@@ -10,7 +10,7 @@ fn camera() -> Camera {
         .unwrap()
         .projection();
     Camera::new(
-        CameraState::new(Geodetic::new(139.7, 35.68), 12.0),
+        CameraState::new(Geodetic::new(139.7, 35.68), 12.0, &projection),
         projection,
         Viewport {
             width: 800.0,
@@ -143,7 +143,7 @@ fn holding_still_before_release_stops_inertia() {
 #[test]
 fn clicks_and_double_clicks() {
     let mut rig = Rig::new();
-    let zoom = rig.camera.state().zoom();
+    let zoom = rig.camera.zoom();
     rig.down(1, PointerKind::Mouse, 200.0, 200.0);
     rig.to(1, 201.0, 200.0);
     rig.up(1, 201.0, 200.0);
@@ -166,7 +166,7 @@ fn clicks_and_double_clicks() {
             })
     );
     rig.settle();
-    assert!((rig.camera.state().zoom() - (zoom + 1.0)).abs() < 1e-9);
+    assert!((rig.camera.zoom() - (zoom + 1.0)).abs() < 1e-9);
     let under = rig.camera.project(ground).unwrap();
     assert!(under.distance(DVec2::new(201.0, 200.0)) < 1e-6);
 }
@@ -174,7 +174,7 @@ fn clicks_and_double_clicks() {
 #[test]
 fn pinching_zooms_and_twisting_rotates_around_the_fingers() {
     let mut rig = Rig::new();
-    let zoom = rig.camera.state().zoom();
+    let zoom = rig.camera.zoom();
     rig.down(1, PointerKind::Touch, 300.0, 300.0);
     rig.down(2, PointerKind::Touch, 500.0, 300.0);
     let ground = rig.camera.unproject(DVec2::new(400.0, 300.0)).unwrap();
@@ -192,9 +192,9 @@ fn pinching_zooms_and_twisting_rotates_around_the_fingers() {
     let state = *rig.camera.state();
     // The first 0.1 levels of spread only arm the zoom, as in GL JS.
     assert!(
-        (state.zoom() - (zoom + 0.93)).abs() < 0.02,
+        (rig.camera.zoom() - (zoom + 0.93)).abs() < 0.02,
         "{}",
-        state.zoom()
+        rig.camera.zoom()
     );
     // Clockwise fingers turn the map clockwise: the bearing decreases, by
     // all but the 14 degrees (25 px of arc) that arm the rotation.
@@ -216,20 +216,20 @@ fn two_fingers_moving_up_together_tilt() {
     }
     let state = *rig.camera.state();
     assert!(state.pitch > 40.0, "{}", state.pitch);
-    assert!((state.zoom() - 12.0).abs() < 1e-9);
+    assert!((rig.camera.zoom() - 12.0).abs() < 1e-9);
 }
 
 #[test]
 fn double_tap_zooms_in_and_two_finger_tap_zooms_out() {
     let mut rig = Rig::new();
-    let zoom = rig.camera.state().zoom();
+    let zoom = rig.camera.zoom();
     rig.down(1, PointerKind::Touch, 300.0, 300.0);
     rig.up(1, 300.0, 300.0);
     rig.now += 150.0;
     rig.down(1, PointerKind::Touch, 305.0, 302.0);
     rig.up(1, 305.0, 302.0);
     rig.settle();
-    assert!((rig.camera.state().zoom() - (zoom + 1.0)).abs() < 1e-9);
+    assert!((rig.camera.zoom() - (zoom + 1.0)).abs() < 1e-9);
     rig.now += 1000.0;
     rig.down(1, PointerKind::Touch, 300.0, 300.0);
     rig.down(2, PointerKind::Touch, 400.0, 300.0);
@@ -237,13 +237,13 @@ fn double_tap_zooms_in_and_two_finger_tap_zooms_out() {
     rig.up(1, 300.0, 300.0);
     rig.up(2, 400.0, 300.0);
     rig.settle();
-    assert!((rig.camera.state().zoom() - zoom).abs() < 1e-9);
+    assert!((rig.camera.zoom() - zoom).abs() < 1e-9);
 }
 
 #[test]
 fn tap_and_drag_zooms() {
     let mut rig = Rig::new();
-    let zoom = rig.camera.state().zoom();
+    let zoom = rig.camera.zoom();
     rig.down(1, PointerKind::Touch, 300.0, 300.0);
     rig.up(1, 300.0, 300.0);
     rig.now += 150.0;
@@ -253,13 +253,13 @@ fn tap_and_drag_zooms() {
     rig.now += 300.0;
     rig.up(1, 300.0, 428.0);
     rig.settle();
-    assert!((rig.camera.state().zoom() - (zoom + 1.0)).abs() < 1e-9);
+    assert!((rig.camera.zoom() - (zoom + 1.0)).abs() < 1e-9);
 }
 
 #[test]
 fn wheels_zoom_smoothly_and_trackpads_at_once() {
     let mut rig = Rig::new();
-    let zoom = rig.camera.state().zoom();
+    let zoom = rig.camera.zoom();
     let at = DVec2::new(100.0, 100.0);
     let ground = rig.camera.unproject(at).unwrap();
     // One notch of a mouse wheel, toward the user: zoom in.
@@ -269,14 +269,14 @@ fn wheels_zoom_smoothly_and_trackpads_at_once() {
         unit: WheelUnit::Pixel,
         modifiers: Modifiers::default(),
     });
-    assert_eq!(rig.camera.state().zoom(), zoom, "eased, not immediate");
+    assert_eq!(rig.camera.zoom(), zoom, "eased, not immediate");
     let frames = rig.settle();
     assert!((10..=14).contains(&frames), "{frames}");
-    assert!(rig.camera.state().zoom() > zoom + 0.1);
+    assert!(rig.camera.zoom() > zoom + 0.1);
     let under = rig.camera.project(ground).unwrap();
     assert!(under.distance(at) < 1e-6);
     // A trackpad's small deltas apply at once and end the move later.
-    let before = rig.camera.state().zoom();
+    let before = rig.camera.zoom();
     rig.now += 1000.0;
     rig.send(Input::Wheel {
         position: at,
@@ -284,7 +284,7 @@ fn wheels_zoom_smoothly_and_trackpads_at_once() {
         unit: WheelUnit::Pixel,
         modifiers: Modifiers::default(),
     });
-    assert!(rig.camera.state().zoom() < before);
+    assert!(rig.camera.zoom() < before);
     rig.camera.take_events();
     rig.frame();
     assert!(!rig.camera.take_events().iter().any(|e| matches!(
@@ -308,13 +308,13 @@ fn wheels_zoom_smoothly_and_trackpads_at_once() {
 #[test]
 fn keys_step_the_camera() {
     let mut rig = Rig::new();
-    let zoom = rig.camera.state().zoom();
+    let zoom = rig.camera.zoom();
     rig.send(Input::Key {
         key: Key::ZoomIn,
         modifiers: Modifiers::default(),
     });
     rig.settle();
-    assert!((rig.camera.state().zoom() - (zoom + 1.0)).abs() < 1e-9);
+    assert!((rig.camera.zoom() - (zoom + 1.0)).abs() < 1e-9);
     rig.send(Input::Key {
         key: Key::Right,
         modifiers: Modifiers {

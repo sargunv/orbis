@@ -171,6 +171,8 @@ pub(crate) struct ResidentTile {
     pub(crate) image: Option<ResidentImage>,
     /// A vector tile drawn through a warp: its series.
     pub(crate) series: Option<Arc<orb_crs::Series>>,
+    /// The style zoom it laid out at (decision 0021).
+    pub(crate) zoom: f64,
     /// Its symbol layers' buckets; their meshes are among `meshes`.
     pub(crate) symbols: Vec<crate::labels::ResidentSymbols>,
 }
@@ -230,7 +232,7 @@ impl WarpState {
         }
     }
 
-    fn footprint(&mut self, tile: TileIndex) -> Option<orb_crs::Footprint> {
+    pub(crate) fn footprint(&mut self, tile: TileIndex) -> Option<orb_crs::Footprint> {
         if self.footprints.len() >= Self::CACHED {
             self.footprints.clear();
         }
@@ -499,8 +501,10 @@ impl Map {
     pub fn new(services: Services, camera: Option<CameraState>) -> Self {
         let (sender, receiver) = channel();
         let camera_from_style = camera.is_none();
-        let camera =
-            camera.unwrap_or_else(|| CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 0.0));
+        let camera = camera.unwrap_or_else(|| {
+            let mercator = *Surface::default().projection();
+            CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 0.0, &mercator)
+        });
         Self {
             hits: Vec::new(),
             hit_stamp: None,
@@ -617,7 +621,7 @@ impl Map {
         self.labels.semantic_snapshot(
             style.worker.plan(),
             [target.lon, target.lat],
-            self.camera.zoom(),
+            self.zoom(),
             &self.bucket_planes(style),
         )
     }
@@ -644,6 +648,12 @@ impl Map {
     pub(crate) fn hit_stamp_view(&self) -> Option<(CameraState, Viewport)> {
         self.hit_stamp
             .map(|(camera, viewport, ..)| (camera, viewport))
+    }
+
+    /// The view's style zoom (decision 0021): GL JS's in Web Mercator,
+    /// measured at the plane's reference latitude on other planes.
+    pub fn zoom(&self) -> f64 {
+        self.camera.zoom(self.surface.projection())
     }
 
     /// The surface's projection, for camera moves. It changes when a scene
@@ -819,7 +829,7 @@ impl Map {
                 self.camera.target = orb_geo::Geodetic::new(lon, lat);
             }
             if let Some(zoom) = plan.style.zoom {
-                self.camera.set_zoom(zoom);
+                self.camera.set_zoom(self.surface.projection(), zoom);
             }
             self.camera.bearing = plan.style.bearing;
             self.camera.pitch = plan.style.pitch;
@@ -1027,7 +1037,7 @@ impl Map {
             self.hits.clear();
             self.hit_stamp = Some(stamp);
         }
-        let zoom = self.camera.zoom();
+        let zoom = self.zoom();
         let mut report = FrameReport::default();
         let clear = self.clear_color;
         self.renderer.as_mut().expect("created above").0.set_sky(
@@ -1325,12 +1335,14 @@ impl Map {
             .filter(|_| vector)
             .and_then(|warp| warp.series(tile))
             .map(|series| series.grid());
+        let footprint = warp.as_mut().and_then(|warp| warp.footprint(tile));
+        let zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
         let key = style.worker.plan().sources[index].key;
         let request = TileRequest {
             style: style.id,
             source: key,
             tile,
-            zoom: endpoint.tms.style_zoom(tile),
+            zoom,
             subdivision,
             data_zoom: tile.z.min(endpoint.maxzoom),
             location: endpoint.location(endpoint.data_tile(tile)),
@@ -1405,6 +1417,7 @@ impl Map {
             view,
             self.surface.period(),
             &self.camera,
+            self.camera.zoom(self.surface.projection()),
             extrusion_scale,
             now,
         );
@@ -1456,7 +1469,7 @@ impl Map {
             // A source only the terrain reads.
             return;
         }
-        let zoom = self.camera.zoom();
+        let zoom = self.camera.zoom(self.surface.projection());
         let plan = style.worker.plan();
         // Symbol layout needs the sprites' metadata, so a source with symbol
         // layers waits for them (GL JS's worker awaits `getImages` alike).
@@ -1600,6 +1613,7 @@ impl Map {
                     },
                     period,
                     camera: &self.camera,
+                    zoom: self.camera.zoom(self.surface.projection()),
                 }
                 .tile(resident, index, tile, draws);
             }
@@ -1615,10 +1629,11 @@ impl Map {
                     extent,
                     camera_world,
                     period,
-                    zoom: self.camera.zoom(),
+                    zoom: self.camera.zoom(self.surface.projection()),
                     frame,
                     world_per_px: view.world_per_px(),
                     series: series.as_deref(),
+                    tile_zoom: resident.zoom,
                 };
                 let map_rows = |draw: &Draw| -> Vec<TileRow> {
                     placements(tms, draw, at)
@@ -1757,7 +1772,7 @@ impl Map {
             }
         }
         let paint = terrain.page.map(|page| {
-            let zoom = self.camera.zoom();
+            let zoom = self.camera.zoom(self.surface.projection());
             let height_scale = view.height_scale();
             // GL JS's `getSkirtLength`: a fifth of a tile's width at the
             // camera's zoom, in metres at the equator.
@@ -2021,7 +2036,7 @@ impl Map {
             crate::terrain::hash((revision, parts))
         };
         let look = [
-            self.camera.zoom().to_bits(),
+            self.camera.zoom(self.surface.projection()).to_bits(),
             u64::from(self.crossfade.mix.to_bits())
                 | u64::from(self.crossfade.from_scale.to_bits()) << 32,
         ];
@@ -2054,7 +2069,7 @@ impl Map {
         let Some(tile) = style.background else {
             return;
         };
-        let zoom = self.camera.zoom();
+        let zoom = self.camera.zoom(self.surface.projection());
         let tms = self.surface.tms();
         let cover = view.cover_volume(
             tms,
@@ -2072,6 +2087,7 @@ impl Map {
             frame: None,
             world_per_px: view.world_per_px(),
             series: None,
+            tile_zoom: 0.0,
         };
         let mut rows: Vec<TileRow> = cover
             .iter()
@@ -2080,6 +2096,10 @@ impl Map {
                     tile: covered.index,
                     wrap: covered.wrap,
                     regions: vec![covered.index],
+                };
+                let at = Placement {
+                    tile_zoom: tms.style_zoom(covered.index),
+                    ..at
                 };
                 placements(tms, &draw, at)
                     .next()
@@ -2093,6 +2113,10 @@ impl Map {
                     tile: terrain.index,
                     wrap: terrain.wrap,
                     regions: vec![terrain.index],
+                };
+                let at = Placement {
+                    tile_zoom: tms.style_zoom(terrain.index),
+                    ..at
                 };
                 let map = placements(tms, &draw, at);
                 crate::terrain::drape_rows(
@@ -2360,6 +2384,11 @@ impl Map {
             let kind = plan
                 .image_kind(source)
                 .expect("image results are for image sources");
+            let tile_zoom = self.surface.tile_zoom(
+                &endpoint.tms,
+                tile,
+                warp.as_mut().and_then(|w| w.footprint(tile)),
+            );
             let warped = match warp {
                 Some(warp) => match image::Warped::new(&warp.warp, tile) {
                     Some(mesh) => Some(Arc::new(mesh)),
@@ -2379,6 +2408,7 @@ impl Map {
                 image: tile_image,
                 unpack: endpoint.dem_unpack,
                 warped,
+                zoom: tile_zoom,
             };
             match image::upload(gpu, renderer, page, pyramid, &upload) {
                 Ok(resident) => {
@@ -2410,7 +2440,8 @@ impl Map {
             }
         }
         drop_stale(&mut build, plan, &stale);
-        let tile_zoom = endpoint.tms.style_zoom(tile);
+        let footprint = warp.as_mut().and_then(|warp| warp.footprint(tile));
+        let tile_zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
         let mut atlas = self.services.images.0.lock().expect("images poisoned");
         // Make room by evicting cached tiles the view doesn't use, least
         // recently used first, this source's before others'; then the tiles
@@ -2778,7 +2809,10 @@ fn upload(
     tile_zoom: f64,
     warnings: &mut Vec<String>,
 ) -> Result<ResidentTile, OutOfSpace> {
-    let mut resident = ResidentTile::default();
+    let mut resident = ResidentTile {
+        zoom: tile_zoom,
+        ..ResidentTile::default()
+    };
     for mesh in &result.meshes {
         // Symbol nodes' rows go up with their layer's bucket.
         if plan
@@ -2886,6 +2920,8 @@ struct Placement<'a> {
     /// A vector tile drawn through a warp's patches, relative to its
     /// anchor.
     series: Option<&'a orb_crs::Series>,
+    /// The style zoom the tile laid out at.
+    tile_zoom: f64,
 }
 
 fn placements<'a>(
@@ -2901,6 +2937,7 @@ fn placements<'a>(
         frame,
         world_per_px,
         series,
+        tile_zoom,
     } = at;
     let world_per_px = world_per_px as f32;
     let bounds = frame.unwrap_or_else(|| tms.tile_bounds(draw.tile));
@@ -2920,7 +2957,6 @@ fn placements<'a>(
     // One placement has four clip rectangles. Split larger partitions into
     // disjoint rows instead of expanding to quadrants that overlap loaded
     // descendants (and render translucent geometry twice).
-    let tile_zoom = tms.style_zoom(tile);
     let pixel_size = TILE_PX * 2.0f64.powf(zoom.floor() - tile_zoom);
     let x = f64::from(tile.col) + f64::from(draw.wrap) * f64::from(tms.matrix_size(tile.z).0);
     let pattern_origin = [
@@ -3367,6 +3403,7 @@ mod tests {
             wake: Arc::new(|| {}),
         };
         let target = orb_geo::Geodetic::new(139.74, 35.685);
+        let mercator = *Surface::default().projection();
         let viewport = Viewport {
             width: 1024.0,
             height: 768.0,
@@ -3376,18 +3413,18 @@ mod tests {
             let camera = CameraState {
                 bearing,
                 pitch,
-                ..CameraState::new(target, 15.0)
+                ..CameraState::new(target, 15.0, &mercator)
             };
             let mut map = Map::new(services.clone(), Some(camera));
             for delta in [-0.5; 6].into_iter().chain([0.5; 6]) {
-                let zoom = map.camera().zoom() + delta;
+                let zoom = map.zoom() + delta;
                 let projection = map.projection();
                 map.camera_mut()
                     .zoom_around(&projection, viewport, center, zoom);
                 let fresh = CameraState {
                     bearing,
                     pitch,
-                    ..CameraState::new(target, zoom)
+                    ..CameraState::new(target, zoom, &mercator)
                 };
                 assert_eq!(
                     *map.camera(),
@@ -3422,6 +3459,7 @@ mod tests {
             frame: None,
             world_per_px: 1.0,
             series: None,
+            tile_zoom: 0.0,
         };
         let rows: Vec<_> = placements(&tms, &draw, at).collect();
         assert_eq!(rows.len(), 2);

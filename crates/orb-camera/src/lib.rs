@@ -59,32 +59,42 @@ impl CameraState {
     /// GL JS's default vertical field of view.
     pub const DEFAULT_FOV: f64 = 36.869_897_645_844_02;
 
-    /// A camera looking straight down at `target` with the given style zoom.
-    pub fn new(target: Geodetic, zoom: f64) -> Self {
-        Self {
+    /// A camera looking straight down at `target` with the given style zoom
+    /// on `projection`'s plane.
+    pub fn new(target: Geodetic, zoom: f64, projection: &Projection) -> Self {
+        let mut camera = Self {
             target,
-            resolution: resolution_at_zoom(target, zoom),
+            resolution: 1.0,
             bearing: 0.0,
             pitch: 0.0,
             fov: Self::DEFAULT_FOV,
             elevation: 0.0,
+        };
+        camera.set_zoom(projection, zoom);
+        camera
+    }
+
+    /// The view's style zoom on `projection`'s plane (decision 0021), which
+    /// v8 stops, `minzoom` and `maxzoom` evaluate at. In Web Mercator (and
+    /// on the v8 globe) it is GL JS's: ground resolution at the target
+    /// against the parallel's length. On other planes it is the zoom at
+    /// which Web Mercator's ground resolution at the plane's reference
+    /// latitude is the view's: one number for the whole view, which panning
+    /// keeps.
+    pub fn zoom(&self, projection: &Projection) -> f64 {
+        match projection.zoom_at_scale(self.world_per_px(projection)) {
+            Some(zoom) => zoom,
+            None => (equator_circumference_px_per_m(self.target) / self.resolution).log2(),
         }
     }
 
-    /// The style zoom: v8 stops, `minzoom` and `maxzoom` use it on every
-    /// surface, matching GL JS.
-    pub fn zoom(&self) -> f64 {
-        (equator_circumference_px_per_m(self.target) / self.resolution).log2()
+    /// Sets the style zoom on `projection`'s plane, keeping the target.
+    pub fn set_zoom(&mut self, projection: &Projection, zoom: f64) {
+        self.resolution = match projection.scale_at_zoom(zoom) {
+            Some(world_per_px) => world_per_px / projection.scale_factor(self.target.wrapped()),
+            None => equator_circumference_px_per_m(self.target) / zoom.exp2(),
+        };
     }
-
-    pub fn set_zoom(&mut self, zoom: f64) {
-        self.resolution = resolution_at_zoom(self.target, zoom);
-    }
-}
-
-/// Ground resolution at `target` for a style zoom.
-fn resolution_at_zoom(target: Geodetic, zoom: f64) -> f64 {
-    equator_circumference_px_per_m(target) / zoom.exp2()
 }
 
 /// Style zoom's scale at zoom 0: the length of the parallel through `target`
@@ -510,6 +520,12 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mercator() -> Projection {
+        *TileMatrixSet::by_id("WebMercatorQuad")
+            .unwrap()
+            .projection()
+    }
     use orb_crs::TileIndex;
 
     #[test]
@@ -523,21 +539,21 @@ mod tests {
         };
         // Near the pole, the target moves south until the top edge is the
         // world's (GL JS `getConstrained`).
-        let mut camera = CameraState::new(Geodetic::new(0.0, 85.0), 4.0);
+        let mut camera = CameraState::new(Geodetic::new(0.0, 85.0), 4.0, &mercator());
         camera.constrain(&world, p, viewport);
-        assert!((camera.zoom() - 4.0).abs() < 1e-9);
+        assert!((camera.zoom(&mercator()) - 4.0).abs() < 1e-9);
         assert!(camera.target.lat < 85.0 && camera.target.lat > 84.0);
         // A world shorter than the viewport zooms in to fill it.
         let tall = Viewport {
             width: 256.0,
             height: 1024.0,
         };
-        let mut camera = CameraState::new(Geodetic::new(10.0, 30.0), 0.0);
+        let mut camera = CameraState::new(Geodetic::new(10.0, 30.0), 0.0, &mercator());
         camera.constrain(&world, p, tall);
-        assert!((camera.zoom() - 1.0).abs() < 1e-9);
+        assert!((camera.zoom(&mercator()) - 1.0).abs() < 1e-9);
         assert!(camera.target.lat.abs() < 1e-9);
         // A view inside the world is left alone.
-        let mut camera = CameraState::new(Geodetic::new(10.0, 30.0), 6.0);
+        let mut camera = CameraState::new(Geodetic::new(10.0, 30.0), 6.0, &mercator());
         let before = camera;
         camera.constrain(&world, p, viewport);
         assert_eq!(camera, before);
@@ -545,7 +561,7 @@ mod tests {
 
     fn setup(zoom: f64, pitch: f64) -> (View, TileMatrixSet) {
         let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
-        let mut camera = CameraState::new(Geodetic::new(0.0, 0.0), zoom);
+        let mut camera = CameraState::new(Geodetic::new(0.0, 0.0), zoom, &mercator());
         camera.pitch = pitch;
         let viewport = Viewport {
             width: 1000.0,
@@ -575,7 +591,8 @@ mod tests {
         let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
         for zoom in [0.0, 14.48, 24.0] {
             for pitch in [60.0, 80.0, 85.0] {
-                let mut camera = CameraState::new(Geodetic::new(-74.0113, 40.7075), zoom);
+                let mut camera =
+                    CameraState::new(Geodetic::new(-74.0113, 40.7075), zoom, &mercator());
                 camera.pitch = pitch;
                 camera.bearing = 90.0;
                 let view = View::new(
@@ -610,12 +627,51 @@ mod tests {
         }
     }
 
+    /// Web Mercator's style zoom is GL JS's, bit for bit: ground resolution
+    /// at the target against the parallel's length.
+    #[test]
+    fn web_mercator_zoom_is_unchanged() {
+        for (lat, zoom) in [(0.0, 3.0), (35.68, 15.2), (-60.0, 7.7), (84.9, 1.1)] {
+            let target = Geodetic::new(12.0, lat);
+            let camera = CameraState::new(target, zoom, &mercator());
+            let parallel = 2.0 * PI * wgs84::SEMI_MAJOR_M * f64::to_radians(lat).cos() / 512.0;
+            assert_eq!(camera.resolution, parallel / zoom.exp2());
+            assert_eq!(
+                camera.zoom(&mercator()),
+                (parallel / camera.resolution).log2()
+            );
+        }
+    }
+
+    /// On other planes style zoom is the view's scale against Web Mercator's
+    /// at the plane's reference latitude: NZTM2000's natural origin on the
+    /// equator, EPSG:3413's true-scale latitude of 70°N.
+    #[test]
+    fn plane_zoom_is_measured_at_the_reference() {
+        let nztm = Projection::from_descriptor("EPSG:2193").unwrap();
+        let camera = CameraState::new(Geodetic::new(174.8, -41.3), 10.0, &nztm);
+        let metres_per_px = camera.world_per_px(&nztm) / 0.9996;
+        let equator = 2.0 * PI * wgs84::SEMI_MAJOR_M / 512.0 / 1024.0;
+        assert!((metres_per_px / equator - 1.0).abs() < 1e-6);
+        let polar = Projection::from_descriptor("EPSG:3413").unwrap();
+        assert_eq!(polar.zoom_reference().unwrap().lat.round(), 70.0);
+        // The same scale anywhere on the plane is the same zoom.
+        let a = CameraState::new(Geodetic::new(-45.0, 60.0), 5.0, &polar);
+        let mut b = a;
+        b.set_target_world(
+            &polar,
+            polar.forward(Geodetic::new(100.0, 89.0)),
+            a.world_per_px(&polar),
+        );
+        assert!((b.zoom(&polar) - 5.0).abs() < 1e-9);
+    }
+
     #[test]
     fn zoom_round_trips() {
-        let mut camera = CameraState::new(Geodetic::new(10.0, 60.0), 12.3);
-        assert!((camera.zoom() - 12.3).abs() < 1e-12);
-        camera.set_zoom(4.0);
-        assert!((camera.zoom() - 4.0).abs() < 1e-12);
+        let mut camera = CameraState::new(Geodetic::new(10.0, 60.0), 12.3, &mercator());
+        assert!((camera.zoom(&mercator()) - 12.3).abs() < 1e-12);
+        camera.set_zoom(&mercator(), 4.0);
+        assert!((camera.zoom(&mercator()) - 4.0).abs() < 1e-12);
     }
 
     #[test]

@@ -7,6 +7,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+orb-crs.workspace = true
 glam.workspace = true
 orb-camera.workspace = true
 orb-interact.workspace = true

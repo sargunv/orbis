@@ -209,14 +209,23 @@ fn load_style(map: &mut Map, options: &Options) -> Result<(), String> {
     map.set_style_json(&json)
 }
 
-/// The camera from `--at`, or `None` to use the style's.
+/// The default surface's projection.
+fn web_mercator() -> orb_crs::Projection {
+    *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
+        .expect("built-in tile matrix set")
+        .projection()
+}
+
+/// The camera from `--at`, or `None` to use the style's. Its zoom is on
+/// the default Web Mercator surface: a scene document's own plane is known
+/// only once it loads.
 fn camera(options: &Options) -> Option<CameraState> {
     options
         .at
         .map(|(target, zoom, bearing, pitch)| CameraState {
             bearing,
             pitch,
-            ..CameraState::new(target, zoom)
+            ..CameraState::new(target, zoom, &web_mercator())
         })
 }
 
@@ -625,7 +634,7 @@ impl State {
                 } if !self.camera.modified() => {
                     self.camera.jump_to(&CameraTarget {
                         center: Some(style.target),
-                        zoom: Some(style.zoom()),
+                        zoom: Some(style.zoom(self.camera.projection())),
                         bearing: Some(style.bearing),
                         pitch: Some(style.pitch),
                         ..CameraTarget::default()
@@ -717,10 +726,9 @@ impl State {
 
         if self.last_title.elapsed().as_millis() > 200 {
             self.last_title = Instant::now();
-            let camera = self.map.camera();
             self.window.set_title(&format!(
                 "Orbis · z{:.2} · {:.1} ms CPU · {} draws · {} dispatch · {} candidates · {} tiles drawn · {} loading · bundle {} · wrote {} placements, {} paints",
-                camera.zoom(),
+                self.map.zoom(),
                 started.elapsed().as_secs_f64() * 1000.0,
                 report.frame.draws,
                 report.frame.dispatches,
@@ -978,7 +986,7 @@ mod tests {
         delta: f64,
     ) {
         let projection = map.projection();
-        let zoom = map.camera().zoom() + delta;
+        let zoom = map.zoom() + delta;
         map.camera_mut()
             .zoom_around(&projection, viewport, at, zoom);
         map.constrain_camera(viewport);
@@ -1012,8 +1020,13 @@ mod tests {
     fn assert_matches_fresh(offscreen: &mut super::Offscreen) {
         let camera = *offscreen.map.camera();
         let options = super::Options {
-            at: Some((camera.target, camera.zoom(), camera.bearing, camera.pitch)),
-            ..tokyo(camera.zoom())
+            at: Some((
+                camera.target,
+                offscreen.map.zoom(),
+                camera.bearing,
+                camera.pitch,
+            )),
+            ..tokyo(offscreen.map.zoom())
         };
         let (mut fresh, _, _) = super::Offscreen::load(&options).unwrap();
         // Use exactly the same camera, including its ground resolution.
@@ -1092,7 +1105,8 @@ mod tests {
             flight: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
-        offscreen.map.camera_mut().set_zoom(-1e-9);
+        let projection = offscreen.map.projection();
+        offscreen.map.camera_mut().set_zoom(&projection, -1e-9);
         let mut report = offscreen.frame();
         while !report.idle {
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1257,7 +1271,11 @@ mod tests {
                 wake_count.fetch_add(1, Ordering::SeqCst);
             }),
         };
-        let camera = super::CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 1.5);
+        let camera = super::CameraState::new(
+            orb_geo::Geodetic::new(0.0, 0.0),
+            1.5,
+            &super::web_mercator(),
+        );
         offscreen.map = super::Map::new(services, Some(camera));
         offscreen
             .map
@@ -1287,7 +1305,7 @@ mod tests {
         assert!(published.idle);
         assert_eq!(published.tiles_loading, 0);
         assert!(published.tiles_drawn > 0);
-        assert_eq!(offscreen.map.camera().zoom(), camera.zoom());
+        assert_eq!(offscreen.map.zoom(), camera.zoom(&super::web_mercator()));
         assert_eq!(offscreen.pixels(), {
             offscreen.frame();
             offscreen.pixels()
@@ -1468,7 +1486,11 @@ mod tests {
                 fetch,
                 wake: Arc::new(|| {}),
             };
-            let camera = super::CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 1.5);
+            let camera = super::CameraState::new(
+                orb_geo::Geodetic::new(0.0, 0.0),
+                1.5,
+                &super::web_mercator(),
+            );
             offscreen.map = super::Map::new(services, Some(camera));
             offscreen.map.set_style_json(style).unwrap();
             // Inline jobs publish their completion on the following frame.
@@ -1529,7 +1551,11 @@ mod tests {
             fetch,
             wake: Arc::new(|| {}),
         };
-        let camera = super::CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 1.5);
+        let camera = super::CameraState::new(
+            orb_geo::Geodetic::new(0.0, 0.0),
+            1.5,
+            &super::web_mercator(),
+        );
         offscreen.map = super::Map::new(services, Some(camera));
         offscreen
             .map
@@ -1598,7 +1624,11 @@ mod tests {
             fetch,
             wake: Arc::new(|| {}),
         };
-        let camera = super::CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 1.5);
+        let camera = super::CameraState::new(
+            orb_geo::Geodetic::new(0.0, 0.0),
+            1.5,
+            &super::web_mercator(),
+        );
         offscreen.map = super::Map::new(services, Some(camera));
         offscreen
             .map

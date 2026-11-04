@@ -397,7 +397,10 @@ impl OrbisMap {
             let kind = match event {
                 MapEvent::StyleLoad { camera } => {
                     let camera = camera.map_or(JsValue::NULL, |c| {
-                        js_sys::Float64Array::from(&ui::camera_array(&c)[..]).into()
+                        js_sys::Float64Array::from(
+                            &ui::camera_array(&c, &self.map.projection())[..],
+                        )
+                        .into()
                     });
                     set(&object, "camera", camera);
                     let projection = orb_runtime::projection_to_json(&self.map.projection());
@@ -505,8 +508,8 @@ impl OrbisMap {
             self.map.elevation_pyramid()
         });
         Ok(FrameInfo {
-            zoom: camera.zoom(),
-            camera: ui::camera_array(&camera),
+            zoom: self.map.zoom(),
+            camera: ui::camera_array(&camera, &self.map.projection()),
             hit_snapshot,
             elevation,
             meshes_uploaded: self.map.job_counts().meshes_uploaded,
