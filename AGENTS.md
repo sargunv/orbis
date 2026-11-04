@@ -40,7 +40,7 @@ node, pnpm); run `pnpm -C web install` once for Playwright.
 | `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web playground:native` | dev bridge smoke test (build `orb-demo --release` first) |
 | `pnpm -C web snapshot out.png --page=playground.html` | headless playground screenshot |
 | `cargo xtask fixtures` | fetch and verify the pinned GL JS fixture mirror into `fixtures/gl-js` (gitignored; no work when it matches; `fixtures/README.md`) |
-| `cargo xtask rt [--filter <substring>] [--platform native\|chrome\|lavapipe\|all]` | run the GL JS render fixtures (fetches the mirror first); report in `docs/scratch/rt` |
+| `cargo xtask rt [--suite render\|query] [--filter <substring>] [--platform native\|chrome\|lavapipe\|all]` | run the GL JS render fixtures, or with `--suite query` the query fixtures (native and Chrome); fetches the mirror first; report in `docs/scratch/rt` |
 | `cargo xtask pages` | `cargo xtask web`, then the Vite build into `web/dist`: the site `.github/workflows/pages.yml` deploys on every push to `main` |
 | `pnpm -C web dev` | Vite dev server at `/orbis/` (run `cargo xtask web` first) |
 | `pnpm -C web typecheck` / `pnpm -C web test` | type-check the `orbis` package (`web/src`); its unit tests and the build test |

@@ -211,6 +211,26 @@ impl FeatureStates {
         }
     }
 
+    /// The states of features of `sources` (keys), as JSON objects by
+    /// (source, source layer, id): what queried features report.
+    pub(crate) fn snapshot(
+        &self,
+        sources: &[u32],
+    ) -> HashMap<(u32, Option<String>, String), String> {
+        self.entries
+            .iter()
+            .filter(|e| !e.state.is_empty())
+            .filter_map(|e| {
+                let key = e.key.as_ref().filter(|k| sources.contains(&k.source))?;
+                let object = orb_v8::Value::Object(std::borrow::Cow::Owned(e.state.clone()));
+                Some((
+                    (key.source, key.layer.clone(), key.id.clone()),
+                    object.to_json_string(),
+                ))
+            })
+            .collect()
+    }
+
     /// Compiles the row layout for a plan revision.
     fn compile(&mut self, plan: &StylePlan) {
         self.revision = Some(plan.revision);

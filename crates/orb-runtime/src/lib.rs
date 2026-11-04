@@ -6,6 +6,7 @@
 
 mod edit;
 mod events;
+mod features;
 mod glyphs;
 mod gpu;
 mod image;
@@ -17,6 +18,7 @@ mod map;
 mod placement;
 mod placement_wire;
 mod point;
+mod queries;
 mod query;
 mod source;
 mod sprite;
@@ -28,6 +30,7 @@ mod testing;
 mod tile;
 
 pub use events::MapEvent;
+pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use jobs::{
     Built, ImagePixels, Jobs, PoolJobs, ResultMesh, Stream, StyleUpdate, TileDone, TileImage,
@@ -42,6 +45,7 @@ pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};
 pub use placement_wire::{
     pack_committed, pack_frame, pack_tables, unpack_committed, unpack_frame, unpack_tables,
 };
+pub use queries::QueryDone;
 pub use query::{Hit, HitFeature, HitIndex};
 pub use style::ImageKind;
 pub use symbol::{ResultSymbols, SYMBOL_TABLES, SpriteIcons, SymbolMeta, SymbolTable};

@@ -390,34 +390,13 @@ impl TileWorker {
         encoding: Encoding,
         request: &TileRequest,
     ) -> Result<Built, String> {
-        let TileRequest {
-            source,
-            tile,
-            data_zoom,
-            ..
-        } = *request;
-        if data_zoom > tile.z {
-            return Err("tile data must come from an ancestor".into());
-        }
+        let tile = request.tile;
         let index = self
             .plan
-            .source(source)
-            .ok_or_else(|| format!("source {source} was removed"))?;
-        let data = self.data(source);
+            .source(request.source)
+            .ok_or_else(|| format!("source {} was removed", request.source))?;
         let mut warnings = Vec::new();
-        let cached = data.frames.lock().expect("frames poisoned").get(tile);
-        let frame = match cached {
-            Some(frame) => frame,
-            None => {
-                let frame = self.decode(bytes, encoding, index, &data, tile, data_zoom)?;
-                let frame = Arc::new(frame);
-                data.frames
-                    .lock()
-                    .expect("frames poisoned")
-                    .insert(tile, Arc::clone(&frame));
-                frame
-            }
-        };
+        let frame = self.frame(bytes, encoding, request)?;
         let select = Select {
             nodes: request.nodes.as_deref(),
             rows_only: request.rows_only,
@@ -442,6 +421,41 @@ impl TileWorker {
             }
             Err(missing) => Ok(Built::Fetch(missing)),
         }
+    }
+
+    /// The tile's decoded frame: cached, or decoded from `bytes` and cached.
+    pub(crate) fn frame(
+        &self,
+        bytes: &[u8],
+        encoding: Encoding,
+        request: &TileRequest,
+    ) -> Result<Arc<TileFrame>, String> {
+        let TileRequest {
+            source,
+            tile,
+            data_zoom,
+            ..
+        } = *request;
+        if data_zoom > tile.z {
+            return Err("tile data must come from an ancestor".into());
+        }
+        let index = self
+            .plan
+            .source(source)
+            .ok_or_else(|| format!("source {source} was removed"))?;
+        let data = self.data(source);
+        let cached = data.frames.lock().expect("frames poisoned").get(tile);
+        Ok(match cached {
+            Some(frame) => frame,
+            None => {
+                let frame = Arc::new(self.decode(bytes, encoding, index, &data, tile, data_zoom)?);
+                data.frames
+                    .lock()
+                    .expect("frames poisoned")
+                    .insert(tile, Arc::clone(&frame));
+                frame
+            }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -769,6 +783,9 @@ pub trait Jobs: Send + Sync {
     /// Rasterizes glyphs for the atlas: one deduplicated job per unit, run
     /// by the unit's owner worker (decision 0009).
     fn raster(&self, request: GlyphRaster, done: RasterDone);
+    /// Reads features of a tile for a query, in the worker that loaded it
+    /// (plan §13), from its cached frame or from the tile fetched again.
+    fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone);
 }
 
 type PendingSources = HashMap<(u64, u32), Vec<(TileRequest, TileDone)>>;
@@ -998,6 +1015,10 @@ impl Jobs for PoolJobs {
         }
     }
 
+    fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone) {
+        self.query(request, done);
+    }
+
     fn load(&self, request: TileRequest, done: TileDone) {
         let worker = self
             .styles
@@ -1114,6 +1135,45 @@ impl Jobs for PoolJobs {
                         glyphs.complete(worker, Arc::new(bytes), encoding, request, done)
                     }
                     Err(e) => done(Err(e).or_else(missing)),
+                }));
+            }),
+        );
+    }
+}
+
+impl PoolJobs {
+    fn worker(&self, style: u64) -> Option<Arc<TileWorker>> {
+        self.styles
+            .lock()
+            .expect("styles poisoned")
+            .iter()
+            .find(|(id, _)| *id == style)
+            .map(|(_, w)| Arc::clone(w))
+    }
+
+    /// [`Jobs::features`]: from the cached frame, or the tile fetched again.
+    fn query(&self, request: crate::FeatureRequest, done: crate::FeaturesDone) {
+        let Some(worker) = self.worker(request.tile.style) else {
+            done(Err(format!("style {} was replaced", request.tile.style)));
+            return;
+        };
+        let executor = Arc::clone(&self.executor);
+        if worker.has_data(&request.tile) {
+            executor.spawn(Box::new(move || {
+                done(worker.features(&[], request.tile.encoding, &request));
+            }));
+            return;
+        }
+        let tile = &request.tile;
+        self.loader.load(
+            tile.location.clone(),
+            tile.data_tile(),
+            tile.encoding,
+            Box::new(move |fetched| {
+                executor.spawn(Box::new(move || match fetched {
+                    Ok((bytes, encoding)) => done(worker.features(&bytes, encoding, &request)),
+                    Err(FetchError::NotFound) => done(Ok(Vec::new())),
+                    Err(e) => done(Err(e.to_string())),
                 }));
             }),
         );
@@ -1298,6 +1358,7 @@ pub fn pack(build: &TileBuild) -> Vec<u8> {
                 write_text(&mut header, id);
             }
             header.extend([
+                h.feature,
                 h.kind,
                 h.extent,
                 h.radius.to_bits(),
@@ -1442,6 +1503,7 @@ pub fn unpack(header: &[u32], bytes: HostBytesId) -> Result<TileResult, String> 
             } else {
                 None
             };
+            let feature = next()?;
             let kind = next()?;
             let extent = next()?;
             let radius = f32::from_bits(next()?);
@@ -1462,6 +1524,7 @@ pub fn unpack(header: &[u32], bytes: HostBytesId) -> Result<TileResult, String> 
             }
             hits.push(crate::HitFeature {
                 id,
+                feature,
                 kind,
                 extent,
                 radius,
@@ -1874,6 +1937,7 @@ pub(crate) mod tests {
                 NodeMesh {
                     hits: vec![crate::HitFeature {
                         id: Some("promoted é".into()),
+                        feature: 7,
                         kind: 0,
                         extent: 4096,
                         radius: 2.0,

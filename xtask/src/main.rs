@@ -27,7 +27,7 @@ cargo xtask <task>
   demo-labels  add Liberty's labels, its sprite and glyph subsets to the Tokyo demo
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
-  rt [--filter <substring>] [--platform native|chrome|lavapipe|all]  render fixtures
+  rt [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]  GL JS fixtures
   bench [args]  time frames, still and moving, on the default GPU (release);
                web/demo/bench.html runs the same bench in a browser
 ";

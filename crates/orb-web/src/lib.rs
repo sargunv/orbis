@@ -296,6 +296,66 @@ impl OrbisMap {
         hit_object(self.map.hit_test(DVec2::new(x, y)))
     }
 
+    /// GL JS `queryRenderedFeatures` in the box `[x1, y1, x2, y2]` (CSS
+    /// pixels of the last frame; a point when the corners meet), of the
+    /// layers in `layers` (a JSON array) or all. Resolves to a JSON array of
+    /// GeoJSON features, topmost first, read in the tiles' job workers.
+    #[wasm_bindgen(js_name = queryRendered)]
+    pub fn query_rendered(
+        &self,
+        rect: &[f64],
+        layers: Option<String>,
+    ) -> Result<js_sys::Promise, JsError> {
+        let [x1, y1, x2, y2] = *rect else {
+            return Err(JsError::new("a query box has 4 numbers"));
+        };
+        let layers = layers
+            .map(|json| {
+                let json =
+                    orb_expr::json::parse(&json).map_err(|e| JsError::new(&e.to_string()))?;
+                Ok::<_, JsError>(
+                    json.as_array()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|l| l.as_str().map(str::to_string))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .transpose()?;
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        self.map.query_rendered(
+            DVec2::new(x1, y1),
+            DVec2::new(x2, y2),
+            layers.as_deref(),
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        );
+        Ok(features_promise(receiver))
+    }
+
+    /// GL JS `querySourceFeatures`: the features of `source` in its drawn
+    /// tiles, of `source_layer` or every layer, that `filter` (a v8 filter
+    /// as JSON) selects. Resolves to a JSON array of GeoJSON features.
+    #[wasm_bindgen(js_name = querySource)]
+    pub fn query_source(
+        &self,
+        source: &str,
+        source_layer: Option<String>,
+        filter: Option<String>,
+    ) -> js_sys::Promise {
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        self.map.query_source(
+            source,
+            source_layer.as_deref(),
+            filter.as_deref(),
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        );
+        features_promise(receiver)
+    }
+
     /// Matches the drawing buffer to the canvas's size in physical pixels.
     pub fn resize(&mut self, width: u32, height: u32, pixel_ratio: f64) {
         self.config.width = width.max(1);
@@ -450,6 +510,19 @@ impl OrbisMap {
             height: f64::from(self.config.height) / self.pixel_ratio,
         }
     }
+}
+
+/// A promise of a query's features as JSON text.
+fn features_promise(
+    receiver: futures_channel::oneshot::Receiver<Result<String, String>>,
+) -> js_sys::Promise {
+    wasm_bindgen_futures::future_to_promise(async move {
+        match receiver.await {
+            Ok(Ok(json)) => Ok(json.into()),
+            Ok(Err(e)) => Err(JsError::new(&e).into()),
+            Err(_) => Err(JsError::new("the map was dropped during a query").into()),
+        }
+    })
 }
 
 pub(crate) fn hit_object(hit: Option<orb_runtime::Hit>) -> JsValue {

@@ -237,7 +237,9 @@ pub struct Map {
     /// Placement and the scene side of labels.
     pub(crate) labels: crate::labels::Labels,
     pub(crate) hits: Vec<crate::query::ScreenHit>,
-    hit_stamp: Option<(CameraState, Viewport, u64, JobCounts)>,
+    /// What the picking index was built for: camera, viewport, style
+    /// revision, uploads and label commits.
+    hit_stamp: Option<(CameraState, Viewport, u64, JobCounts, u64)>,
     pub(crate) rebuild_hits: bool,
     /// This frame's placement time so far, in milliseconds.
     placement_ms: f64,
@@ -812,7 +814,13 @@ impl Map {
         self.sync_nodes(gpu);
 
         let view = self.view(viewport);
-        let stamp = (self.camera, viewport, self.version, self.counts);
+        let stamp = (
+            self.camera,
+            viewport,
+            self.version,
+            self.counts,
+            self.labels.commits(),
+        );
         self.rebuild_hits = self.hit_stamp != Some(stamp);
         if self.rebuild_hits {
             self.hits.clear();
@@ -897,6 +905,14 @@ impl Map {
                 .as_mut()
                 .unwrap()
                 .release_ramps(gpu, self.retired_ramps.drain(..));
+        }
+        if self.rebuild_hits
+            && let Some(style) = &self.style
+        {
+            let labels = self
+                .labels
+                .screen_hits(style.worker.plan(), &view, &self.tms);
+            self.hits.extend(labels);
         }
         self.hits.sort_by_key(|h| h.order);
         report.generation = self.generation();

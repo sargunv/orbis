@@ -19,6 +19,8 @@ pub struct Hit {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HitFeature {
     pub id: Option<String>,
+    /// The feature's index in its source layer, for queries.
+    pub feature: u32,
     /// 0: polygons, 1: lines, 2: points.
     pub kind: u32,
     pub extent: u32,
@@ -31,10 +33,22 @@ pub struct HitFeature {
     pub parts: Vec<Vec<Vec<[i32; 2]>>>,
 }
 
+/// Where a hit's feature lives, for queries to its owner worker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct FeatureKey {
+    /// The source's index in the plan.
+    pub(crate) source: usize,
+    pub(crate) tile: TileIndex,
+    /// The feature's index in its source layer.
+    pub(crate) feature: u32,
+}
+
 #[derive(Debug)]
 pub(crate) struct ScreenHit {
     pub(crate) hit: Hit,
     pub(crate) order: usize,
+    pub(crate) key: FeatureKey,
+    /// 0 polygons, 1 lines, 2 points, 3 a label's box.
     kind: u32,
     radius: f32,
     parts: Vec<Vec<Vec<Vec2>>>,
@@ -49,6 +63,7 @@ impl ScreenHit {
         feature: &HitFeature,
         hit: Hit,
         order: usize,
+        source: usize,
         tile: TileIndex,
         wrap: i32,
         regions: &[TileIndex],
@@ -134,6 +149,11 @@ impl ScreenHit {
         Some(Self {
             hit,
             order,
+            key: FeatureKey {
+                source,
+                tile,
+                feature: feature.feature,
+            },
             kind: feature.kind,
             radius,
             parts,
@@ -148,7 +168,10 @@ impl ScreenHit {
         if !p.is_finite() || !p.cmpge(self.min).all() || !p.cmple(self.max).all() {
             return false;
         }
-        if self.hit.source_layer.is_some() && !self.clips.iter().any(|clip| inside(p, clip)) {
+        if self.hit.source_layer.is_some()
+            && !self.clips.is_empty()
+            && !self.clips.iter().any(|clip| inside(p, clip))
+        {
             return false;
         }
         self.parts.iter().any(|part| match self.kind {
@@ -160,12 +183,113 @@ impl ScreenHit {
                 ring.windows(2)
                     .any(|pair| distance(p, pair[0], pair[1]) <= self.radius)
             }),
+            3 => part.first().is_some_and(|outer| inside(p, outer)),
             _ => {
                 part.first().is_some_and(|outer| inside(p, outer))
                     && !part.iter().skip(1).any(|hole| inside(p, hole))
             }
         })
     }
+}
+
+impl ScreenHit {
+    /// A label's or icon's hit: its box `[x1, y1, x2, y2]` in pixels.
+    pub(crate) fn label(hit: Hit, order: usize, key: FeatureKey, bounds: [f64; 4]) -> Self {
+        let [x1, y1, x2, y2] = bounds.map(|v| v as f32);
+        let ring = vec![
+            Vec2::new(x1, y1),
+            Vec2::new(x2, y1),
+            Vec2::new(x2, y2),
+            Vec2::new(x1, y2),
+        ];
+        Self {
+            hit,
+            order,
+            key,
+            kind: 3,
+            radius: 0.0,
+            parts: vec![vec![ring]],
+            clips: Vec::new(),
+            min: Vec2::new(x1, y1),
+            max: Vec2::new(x2, y2),
+        }
+    }
+
+    /// Whether the feature drawn touches the box `min..max` (GL JS's box
+    /// queries); a point query is a box with no area.
+    pub(crate) fn intersects(&self, min: DVec2, max: DVec2) -> bool {
+        if min == max {
+            return self.contains(min);
+        }
+        let (min, max) = (min.as_vec2(), max.as_vec2());
+        if self.max.cmplt(min).any() || self.min.cmpgt(max).any() {
+            return false;
+        }
+        let in_box = |q: Vec2| q.cmpge(min).all() && q.cmple(max).all();
+        let corners = [min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y)];
+        let edges_touch = |ring: &[Vec2], radius: f32, closed: bool| {
+            let n = ring.len();
+            let segments = if closed { n } else { n.saturating_sub(1) };
+            (0..segments).any(|i| {
+                let (a, b) = (ring[i], ring[(i + 1) % n]);
+                segment_box_distance(a, b, min, max) <= radius
+            }) || (n == 1 && point_box_distance(ring[0], min, max) <= radius)
+        };
+        if self.hit.source_layer.is_some()
+            && !self.clips.is_empty()
+            && !self.clips.iter().any(|clip| {
+                clip.iter().copied().any(in_box)
+                    || corners.iter().any(|&c| inside(c, clip))
+                    || edges_touch(clip, 0.0, true)
+            })
+        {
+            return false;
+        }
+        self.parts.iter().any(|part| match self.kind {
+            2 => part
+                .iter()
+                .flatten()
+                .any(|&q| point_box_distance(q, min, max) <= self.radius),
+            1 => part
+                .iter()
+                .any(|ring| edges_touch(ring, self.radius, false)),
+            _ => {
+                let Some(outer) = part.first() else {
+                    return false;
+                };
+                outer.iter().copied().any(in_box)
+                    || corners.iter().any(|&c| inside(c, outer))
+                    || part.iter().any(|ring| edges_touch(ring, 0.0, true))
+            }
+        })
+    }
+}
+
+fn point_box_distance(p: Vec2, min: Vec2, max: Vec2) -> f32 {
+    (p.clamp(min, max) - p).length()
+}
+
+/// The distance between a segment and a box: zero when they meet.
+fn segment_box_distance(a: Vec2, b: Vec2, min: Vec2, max: Vec2) -> f32 {
+    let corners = [min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y)];
+    let crosses = |p: Vec2, q: Vec2, r: Vec2, s: Vec2| {
+        let cross = |u: Vec2, v: Vec2| u.x * v.y - u.y * v.x;
+        let (d1, d2) = (cross(q - p, r - p), cross(q - p, s - p));
+        let (d3, d4) = (cross(s - r, p - r), cross(s - r, q - r));
+        (d1 > 0.0) != (d2 > 0.0) && (d3 > 0.0) != (d4 > 0.0)
+    };
+    let inside_box = |p: Vec2| p.cmpge(min).all() && p.cmple(max).all();
+    if inside_box(a)
+        || inside_box(b)
+        || (0..4).any(|i| crosses(a, b, corners[i], corners[(i + 1) % 4]))
+    {
+        return 0.0;
+    }
+    let ends = point_box_distance(a, min, max).min(point_box_distance(b, min, max));
+    corners
+        .iter()
+        .map(|&c| distance(c, a, b))
+        .fold(ends, f32::min)
 }
 
 fn distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
@@ -340,6 +464,7 @@ impl Publisher<'_> {
                         feature,
                         hit,
                         node.layer,
+                        index,
                         tile,
                         draw.wrap,
                         &draw.regions,
@@ -484,6 +609,11 @@ impl HitIndex {
                     generation: 0,
                 },
                 order: 0,
+                key: FeatureKey {
+                    source: 0,
+                    tile: TileIndex::new(0, 0, 0),
+                    feature: 0,
+                },
                 kind,
                 radius,
                 min,

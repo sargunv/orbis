@@ -99,6 +99,41 @@ impl Chrome {
     }
 }
 
+impl Chrome {
+    /// Settles a query test's style as [`render`](Self::render) does, then
+    /// queries the box `[x1, y1, x2, y2]`; returns the features.
+    pub(crate) fn query(
+        &mut self,
+        style: &str,
+        metadata: &Metadata,
+        query: [f64; 4],
+    ) -> Result<Value, String> {
+        let (width, height) = metadata.physical_size();
+        let request = json!({"style":style, "width":width, "height":height,
+            "logical_width":metadata.width,"logical_height":metadata.height,
+            "pixel_ratio":metadata.pixel_ratio,"timeout_ms":metadata.timeout_ms,
+            "fade_duration":metadata.fade_duration,
+            "cross_source_collisions":metadata.cross_source_collisions,
+            "local_ideographs":metadata.local_ideographs,
+            "operations":Value::Array(metadata.operations.clone()).to_string(),
+            "query":query});
+        let input = self.input.as_mut().expect("open transport");
+        serde_json::to_writer(&mut *input, &request).map_err(|e| e.to_string())?;
+        input
+            .write_all(b"\n")
+            .and_then(|_| input.flush())
+            .map_err(|e| e.to_string())?;
+        let response = self.receive()?;
+        if !response["error"].is_null() {
+            return Err(format!("Chrome query: {}", response["error"]));
+        }
+        let features = response["features"]
+            .as_str()
+            .ok_or("Chrome query: no features")?;
+        serde_json::from_str(features).map_err(|e| format!("Chrome query JSON: {e}"))
+    }
+}
+
 impl Drop for Chrome {
     fn drop(&mut self) {
         // Also reap on report/I/O errors; never leave a browser driver behind.

@@ -734,10 +734,21 @@ geometry with resident tile results, including promoted ids. `Map::hit_test`
 and `OrbisMap.hitTest(x, y)` synchronously read the last rendered snapshot in
 CSS pixels; camera and style mutations leave that snapshot intact until the
 next render. The worker host transfers changed picking snapshots with frame
-acknowledgements to a `PublishedHitIndex` on the page, so `orbis.hitTest` is
-synchronous in both thread modes. Symbol placement can
-publish its own index at the documented seam in `query.rs`. Full properties,
-`queryRendered` and the query fixture suite remain later work.
+acknowledgements to the page's ui role, so `hitTest` is synchronous in both
+thread modes; snapshots carry their camera and publish once it settles,
+and points picked while it moves map through the ground to the snapshot.
+[built at M3] Labels and icons the last placement commit shows join the
+index as their collision boxes (a line label as its anchor's circle).
+`Map::query_rendered` (the package's `queryRenderedFeatures`, a point or a
+box) takes the index's features, topmost first, and asks each tile's owner
+job worker for them: geometry and every property from its cached
+`TileFrame` (or the tile fetched again), as GeoJSON with GL JS's `source`,
+`sourceLayer`, `layer` and `state`. `Map::query_source` filters a source's
+drawn tiles in their workers. Of GL JS's 83 mirrored query fixtures, 58
+pass natively and in Chrome alike (`cargo xtask rt --suite query`); the
+rest are paint semantics (#8): line gap width and offset, feature-state
+dimensions, circle pitch scaling, extrusion box sorting, viewport
+translate anchors.
 
 The fourth Vite entry, `playground.html`, edits style JSON through the same
 `edit.js` transaction API as the map viewer. Validation errors preserve the

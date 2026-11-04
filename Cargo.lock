@@ -2047,6 +2047,7 @@ dependencies = [
 name = "orb-fixtures"
 version = "0.0.0"
 dependencies = [
+ "glam",
  "orb-geo",
  "orb-hal",
  "orb-hal-wgpu",

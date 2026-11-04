@@ -1,5 +1,6 @@
-// Render-only transport for orb-fixtures. Rust sends one JSON request per line;
-// each response names raw premultiplied RGBA bytes written by this process.
+// The Chrome transport for orb-fixtures. Rust sends one JSON request per line;
+// a render's response names raw premultiplied RGBA bytes written by this
+// process, a query's (`query` set) carries its features' JSON.
 // Fixture selection, metadata semantics and pixel comparison belong to Rust.
 import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
@@ -51,6 +52,19 @@ try {
   reply({ ready: true, browser: browser.version(), max_size: await page.evaluate(() => window.renderer.maxTextureDimension2D), text_matrix: await page.evaluate(() => window.renderer.textMatrixDigest()) });
   for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
     const request = JSON.parse(line);
+    if (request.query) {
+      // A query fixture: settle, then query; features come back as JSON.
+      try {
+        const r = request;
+        const features = await page.evaluate((r) => window.renderer.query(r.style, r.width, r.height, r.logical_width, r.logical_height, r.pixel_ratio, r.timeout_ms, r.fade_duration, r.cross_source_collisions, r.local_ideographs, r.operations, r.query), r);
+        reply({ features });
+      } catch (error) {
+        await page.reload();
+        await page.waitForFunction(() => window.renderer, null, { timeout: 60_000 });
+        reply({ error: String(error) });
+      }
+      continue;
+    }
     try {
       // Playwright's test timeout is not in use here. A watchdog also covers
       // device loss/readback that never completes after the render deadline.

@@ -1120,6 +1120,118 @@ impl Labels {
         }
     }
 
+    /// Placement commits applied so far.
+    pub(crate) fn commits(&self) -> u64 {
+        self.commits
+    }
+
+    /// Picking hits for the labels and icons the last commit shows, their
+    /// collision boxes around anchors projected with `view` (issue #11).
+    /// Boxes are viewport-aligned, without variable-anchor shifts; a line
+    /// label is its anchor's collision circle's square.
+    pub(crate) fn screen_hits(
+        &self,
+        plan: &StylePlan,
+        view: &orb_camera::View,
+        tms: &orb_crs::TileMatrixSet,
+    ) -> Vec<crate::query::ScreenHit> {
+        use orb_symbol::state;
+        let Some(frame) = self.placed.as_deref() else {
+            return Vec::new();
+        };
+        let shown = |words: &[u32], placed: u32| {
+            placed != orb_symbol::NONE
+                && words
+                    .get(placed as usize * state::WORDS)
+                    .is_some_and(|&w| w & state::HIDDEN == 0 && w & state::PLACED != 0)
+        };
+        let period = tms.projection().wrap_period().unwrap_or(0.0);
+        let center_w = (view.view_proj() * glam::DVec4::new(0.0, 0.0, 0.0, 1.0)).w;
+        let mut hits = Vec::new();
+        for layer in &frame.layers {
+            let Some(node) = plan.node(layer.params.layer * 2) else {
+                continue;
+            };
+            let node = &plan.nodes[node];
+            let style_layer = &plan.style.layers[node.layer];
+            for tile in &layer.tiles {
+                let Some(meshes) = self.buckets.get(&tile.bucket) else {
+                    continue;
+                };
+                let id = tile.view.id;
+                let Some(states) = meshes.written.get(&id.wrap) else {
+                    continue;
+                };
+                let index = orb_crs::TileIndex::new(id.z, id.x, id.y);
+                let to_world = tms.data_to_world(index, orb_symbol::EXTENT as u32);
+                let shift = glam::DVec2::new(f64::from(id.wrap) * period, 0.0);
+                for instance in &meshes.tables.instances {
+                    let text = instance.text.iter().any(|&p| shown(&states.text, p));
+                    let icon = instance.icon.iter().any(|&p| shown(&states.icon, p));
+                    if !(text || icon) {
+                        continue;
+                    }
+                    let [ax, ay] = instance.anchor.map(f64::from);
+                    let world = to_world.transform_point2(glam::DVec2::new(ax, ay)) + shift;
+                    let relative = world - view.camera_world();
+                    let clip = view.view_proj() * relative.extend(0.0).extend(1.0);
+                    if clip.w <= 0.0 {
+                        continue;
+                    }
+                    let Some(anchor) = view.project(world) else {
+                        continue;
+                    };
+                    // GL JS: tile units at 512 px per tile side, scaled by
+                    // the perspective ratio.
+                    let scale = 512.0 / orb_symbol::EXTENT * (0.5 + 0.5 * center_w / clip.w);
+                    let mut bounds = [
+                        f64::INFINITY,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::NEG_INFINITY,
+                    ];
+                    for (shown, i) in [(text, 0), (icon, 2)] {
+                        let b = instance.boxes[i].map(f64::from);
+                        if !shown || (b[0] == b[2] && b[1] == b[3]) {
+                            continue;
+                        }
+                        bounds = [
+                            bounds[0].min(anchor.x + b[0] * scale),
+                            bounds[1].min(anchor.y + b[1] * scale),
+                            bounds[2].max(anchor.x + b[2] * scale),
+                            bounds[3].max(anchor.y + b[3] * scale),
+                        ];
+                    }
+                    if !bounds.iter().all(|b| b.is_finite()) {
+                        // A line label collides by circles along its line;
+                        // its anchor's stands for them.
+                        if instance.flags & orb_symbol::instance_flags::RUNTIME_COLLISION_CIRCLES
+                            == 0
+                        {
+                            continue;
+                        }
+                        let r = f64::from(instance.collision_circle_diameter) / 2.0;
+                        bounds = [anchor.x - r, anchor.y - r, anchor.x + r, anchor.y + r];
+                    }
+                    let hit = crate::Hit {
+                        layer: style_layer.id.clone(),
+                        source: plan.sources[node.source].id.clone(),
+                        source_layer: plan.source_layer(node).map(str::to_string),
+                        id: None,
+                        generation: 0,
+                    };
+                    let key = crate::query::FeatureKey {
+                        source: node.source,
+                        tile: index,
+                        feature: instance.feature,
+                    };
+                    hits.push(crate::query::ScreenHit::label(hit, node.layer, key, bounds));
+                }
+            }
+        }
+        hits
+    }
+
     /// The last commit's semantic snapshot (plan §13): every shown label
     /// and icon with its text, role, layer, sort key, viewport bounds (its
     /// collision box at layout size) and bearing and distance from

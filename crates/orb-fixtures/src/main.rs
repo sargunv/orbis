@@ -9,6 +9,7 @@ mod metadata;
 mod operations;
 mod pixelmatch;
 mod platforms;
+mod query;
 mod scope;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,8 +43,10 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let mut filter = String::new();
     let mut platform = "native".to_string();
+    let mut suite = "render".to_string();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--suite" => suite = args.next().ok_or("--suite needs render|query")?,
             "--filter" => filter = args.next().ok_or("--filter needs a substring")?,
             "--platform" => {
                 platform = args
@@ -52,7 +55,7 @@ fn run() -> Result<(), String> {
             }
             _ => {
                 return Err(format!(
-                    "unknown argument {arg}; usage: orb-fixtures [--filter <substring>] [--platform native|chrome|lavapipe|all]"
+                    "unknown argument {arg}; usage: orb-fixtures [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]"
                 ));
             }
         }
@@ -64,7 +67,21 @@ fn run() -> Result<(), String> {
         .join("../..")
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    platforms::run(&root, &filter, &platform)
+    match suite.as_str() {
+        "render" => platforms::run(&root, &filter, &platform),
+        "query" => {
+            if !["native", "chrome", "all"].contains(&platform.as_str()) {
+                return Err("the query suite runs natively and in Chrome".into());
+            }
+            for name in ["native", "chrome"] {
+                if platform == name || platform == "all" {
+                    query::run_suite(&root, &filter, name)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Err(format!("unknown suite {suite}")),
+    }
 }
 
 enum Backend {

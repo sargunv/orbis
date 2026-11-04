@@ -576,6 +576,7 @@ pub(crate) fn build(
                     };
                     crate::HitFeature {
                         id: promote.unwrap_or(layer.ids()).get(i).map(id_string),
+                        feature: f,
                         kind,
                         radius,
                         stroke,

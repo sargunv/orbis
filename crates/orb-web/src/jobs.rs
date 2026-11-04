@@ -15,6 +15,10 @@
 //!   nodes?, rowsOnly}`: load a tile, or lay out some of its nodes (by key)
 //!   again from the worker's cached tile, or only their property rows.
 //!
+//! - `{features: true, id, …tile, layer?, indices?, filter?}`: features of
+//!   a tile for a query, sent to the tile's owner worker with its load's
+//!   fields; answered with `{id, layers, indices, ids, stateIds, bodies}`
+//!   (see [`orb_runtime::TileFeature`]) or `{id, error}`.
 //! - `{raster: true, id, url, codePoints}`: glyph bitmaps of one PBF range,
 //!   sent to the range's owner worker `hash(url) mod N`; answered with
 //!   `{id, glyphs}`, the packed bitmaps, or `{id, error}`.
@@ -81,6 +85,7 @@ struct State {
     next_id: u32,
     pending: HashMap<u32, TileDone>,
     rasters: HashMap<u32, RasterDone>,
+    features: HashMap<u32, orb_runtime::FeaturesDone>,
     /// Bytes of packed headers copied into this worker's wasm memory.
     header_bytes: u64,
     /// Replies received.
@@ -126,6 +131,16 @@ impl WorkerJobs {
             .expect("jobs poisoned")
             .rasters
             .remove(&id);
+        let features = self
+            .state
+            .lock()
+            .expect("jobs poisoned")
+            .features
+            .remove(&id);
+        if let Some(done) = features {
+            done(read_features(reply));
+            return Ok(());
+        }
         if let Some(done) = raster {
             let result = match field(reply, "glyphs").dyn_into::<ArrayBuffer>() {
                 Ok(buffer) => GlyphRaster::unpack(&js_sys::Uint8Array::new(&buffer).to_vec()),
@@ -185,6 +200,72 @@ impl WorkerJobs {
         done(result);
         Ok(())
     }
+}
+
+/// A features reply's features, or its error.
+fn read_features(reply: &JsValue) -> Result<Vec<orb_runtime::TileFeature>, String> {
+    if let Some(e) = field(reply, "error").as_string() {
+        return Err(e);
+    }
+    let strings = |key: &str| -> Vec<Option<String>> {
+        js_sys::Array::from(&field(reply, key))
+            .iter()
+            .map(|v| v.as_string())
+            .collect()
+    };
+    let layers = strings("layers");
+    let ids = strings("ids");
+    let state_ids = strings("stateIds");
+    let bodies = strings("bodies");
+    let indices = field(reply, "indices")
+        .dyn_into::<js_sys::Uint32Array>()
+        .map_err(|_| "malformed features reply".to_string())?
+        .to_vec();
+    if [layers.len(), ids.len(), state_ids.len(), bodies.len()] != [indices.len(); 4] {
+        return Err("malformed features reply".into());
+    }
+    Ok((0..indices.len())
+        .map(|i| orb_runtime::TileFeature {
+            layer: layers[i].clone().unwrap_or_default(),
+            index: indices[i],
+            id: ids[i].clone(),
+            state_id: state_ids[i].clone(),
+            body: bodies[i].clone().unwrap_or_default(),
+        })
+        .collect())
+}
+
+/// The job worker that loaded `tile` of `source`: `hash(source, tile) mod N`.
+fn owner(source: u32, tile: TileIndex, workers: u32) -> u32 {
+    let mut hasher = DefaultHasher::new();
+    (source, tile).hash(&mut hasher);
+    (hasher.finish() % u64::from(workers)) as u32
+}
+
+/// A tile request's fields, as a load and a features query send them.
+fn tile_fields(request: &TileRequest) -> Vec<(&'static str, JsValue)> {
+    let (url, archive) = match &request.location {
+        TileLocation::Url(url) => (url.clone(), false),
+        TileLocation::Pmtiles(url) => (url.clone(), true),
+    };
+    vec![
+        ("archive", archive.into()),
+        ("style", (request.style as f64).into()),
+        ("source", request.source.into()),
+        ("z", request.tile.z.into()),
+        ("dataZoom", request.data_zoom.into()),
+        ("col", request.tile.col.into()),
+        ("row", request.tile.row.into()),
+        ("url", url.into()),
+        (
+            "encoding",
+            match request.encoding {
+                Encoding::Mvt => 0u32,
+                Encoding::Mlt => 1,
+            }
+            .into(),
+        ),
+    ]
 }
 
 /// Copies a packed tile's header, whose first word is its length in words,
@@ -290,39 +371,46 @@ impl Jobs for WorkerJobs {
             state.pending.insert(id, done);
             id
         };
-        let mut hasher = DefaultHasher::new();
-        (request.source, request.tile).hash(&mut hasher);
-        let worker = (hasher.finish() % u64::from(self.workers)) as u32;
-        let (url, archive) = match request.location {
-            TileLocation::Url(url) => (url, false),
-            TileLocation::Pmtiles(url) => (url, true),
-        };
+        let worker = owner(request.source, request.tile, self.workers);
         let nodes = match &request.nodes {
             Some(nodes) => js_sys::Uint32Array::from(nodes.as_slice()).into(),
             None => JsValue::UNDEFINED,
         };
-        let message = object(&[
-            ("archive", archive.into()),
+        let mut fields = tile_fields(&request);
+        fields.extend([
             ("id", id.into()),
-            ("style", (request.style as f64).into()),
-            ("source", request.source.into()),
             ("nodes", nodes),
             ("rowsOnly", request.rows_only.into()),
-            ("z", request.tile.z.into()),
-            ("dataZoom", request.data_zoom.into()),
-            ("col", request.tile.col.into()),
-            ("row", request.tile.row.into()),
-            ("url", url.into()),
-            (
-                "encoding",
-                match request.encoding {
-                    Encoding::Mvt => 0u32,
-                    Encoding::Mlt => 1,
-                }
-                .into(),
-            ),
         ]);
-        post(worker, &message);
+        post(worker, &object(&fields));
+    }
+
+    fn features(&self, request: orb_runtime::FeatureRequest, done: orb_runtime::FeaturesDone) {
+        let id = {
+            let mut state = self.state.lock().expect("jobs poisoned");
+            let id = state.next_id;
+            state.next_id = id.wrapping_add(1);
+            state.features.insert(id, done);
+            id
+        };
+        let tile = &request.tile;
+        let worker = owner(tile.source, tile.tile, self.workers);
+        let mut fields = tile_fields(tile);
+        fields.extend([("id", id.into()), ("features", true.into())]);
+        match request.select {
+            orb_runtime::FeatureSelect::Indices { layer, features } => fields.extend([
+                ("layer", layer.into()),
+                (
+                    "indices",
+                    js_sys::Uint32Array::from(features.as_slice()).into(),
+                ),
+            ]),
+            orb_runtime::FeatureSelect::Filter { layer, filter } => fields.extend([
+                ("layer", layer.map_or(JsValue::UNDEFINED, JsValue::from)),
+                ("filter", filter.map_or(JsValue::UNDEFINED, JsValue::from)),
+            ]),
+        }
+        post(worker, &object(&fields));
     }
 }
 
@@ -448,6 +536,9 @@ impl JobWorker {
             .iter()
             .find(|(i, _)| *i == style)
             .map(|(_, w)| Rc::clone(w));
+        if field(message, "features").as_bool() == Some(true) {
+            return Ok(Some(query(worker, request, message, &self.loader, id)));
+        }
         let loaded = if worker
             .as_ref()
             .is_some_and(|worker| !worker.has_data(&request) && worker.data_url(source).is_none())
@@ -587,6 +678,84 @@ impl JobWorker {
             }
         })))
     }
+}
+
+/// Answers a features query from the tile's cached frame, or from the tile
+/// fetched again when the frame left the cache.
+fn query(
+    worker: Option<Rc<TileWorker>>,
+    tile: TileRequest,
+    message: &JsValue,
+    loader: &Arc<TileLoader>,
+    id: f64,
+) -> js_sys::Promise {
+    let layer = field(message, "layer").as_string();
+    let select = match field(message, "indices").dyn_into::<js_sys::Uint32Array>() {
+        Ok(indices) => orb_runtime::FeatureSelect::Indices {
+            layer: layer.unwrap_or_default(),
+            features: indices.to_vec(),
+        },
+        Err(_) => orb_runtime::FeatureSelect::Filter {
+            layer,
+            filter: field(message, "filter").as_string(),
+        },
+    };
+    let loaded = worker.as_ref().filter(|w| !w.has_data(&tile)).map(|_| {
+        let (sender, loaded) = futures_channel::oneshot::channel();
+        loader.load(
+            tile.location.clone(),
+            tile.data_tile(),
+            tile.encoding,
+            Box::new(move |r| {
+                let _ = sender.send(r);
+            }),
+        );
+        loaded
+    });
+    wasm_bindgen_futures::future_to_promise(async move {
+        let reply = |fields: Vec<(&str, JsValue)>| {
+            let mut all = vec![("id", JsValue::from(id))];
+            all.extend(fields);
+            Ok(object(&all))
+        };
+        let error = |e: String| reply(vec![("error", e.into())]);
+        let Some(worker) = worker else {
+            return error(format!("style {} was replaced", tile.style));
+        };
+        let (bytes, encoding) = match loaded {
+            None => (Vec::new(), tile.encoding),
+            Some(loaded) => match loaded.await {
+                Ok(Ok(fetched)) => fetched,
+                Ok(Err(FetchError::NotFound)) => (Vec::new(), tile.encoding),
+                Ok(Err(e)) => return error(e.to_string()),
+                Err(_) => return error("tile loader dropped".into()),
+            },
+        };
+        let request = orb_runtime::FeatureRequest { tile, select };
+        match worker.features(&bytes, encoding, &request) {
+            Ok(features) => {
+                let strings = |f: &dyn Fn(&orb_runtime::TileFeature) -> Option<&str>| {
+                    let array = js_sys::Array::new();
+                    for feature in &features {
+                        array.push(&f(feature).map_or(JsValue::NULL, JsValue::from));
+                    }
+                    JsValue::from(array)
+                };
+                let indices: Vec<u32> = features.iter().map(|f| f.index).collect();
+                reply(vec![
+                    ("layers", strings(&|f| Some(f.layer.as_str()))),
+                    (
+                        "indices",
+                        js_sys::Uint32Array::from(indices.as_slice()).into(),
+                    ),
+                    ("ids", strings(&|f| f.id.as_deref())),
+                    ("stateIds", strings(&|f| f.state_id.as_deref())),
+                    ("bodies", strings(&|f| Some(f.body.as_str()))),
+                ])
+            }
+            Err(e) => error(e),
+        }
+    })
 }
 
 /// Answers a raster job: fetches the range (from the HTTP cache, usually)

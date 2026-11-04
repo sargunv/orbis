@@ -29,7 +29,7 @@ run `cargo xtask fixtures`, review the mirror it leaves in
 ## What reads it
 
 Only `cargo xtask rt` (`orb-fixtures`: the render suite natively, in Chrome
-and on lavapipe) and `web/scripts/render-fixtures.mjs`, which it drives.
+and on lavapipe; the query suite natively and in Chrome) and `web/scripts/render-fixtures.mjs`, which it drives.
 `cargo test --workspace` runs offline from a fresh clone, on small inputs
 committed next to each crate (see [THIRD_PARTY.md](../THIRD_PARTY.md)).
 

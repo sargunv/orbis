@@ -100,6 +100,93 @@ impl FixtureRenderer {
         local_ideographs: Option<String>,
         operations: String,
     ) -> Result<FixturePixels, JsError> {
+        let (_, gpu, target, mut output) = self
+            .settle(
+                style,
+                width,
+                height,
+                logical_width,
+                logical_height,
+                pixel_ratio,
+                timeout_ms,
+                fade_duration,
+                cross_source_collisions,
+                local_ideographs,
+                operations,
+            )
+            .await?;
+        output.pixels = gpu.read_texture(target).await;
+        Ok(output)
+    }
+
+    /// Settles a query fixture's style as [`render`](Self::render) does,
+    /// then queries `rect` (`[x1, y1, x2, y2]`, logical pixels): the
+    /// features' JSON, read through the main-thread jobs.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn query(
+        &self,
+        style: String,
+        width: u32,
+        height: u32,
+        logical_width: u32,
+        logical_height: u32,
+        pixel_ratio: f32,
+        timeout_ms: f64,
+        fade_duration: f64,
+        cross_source_collisions: bool,
+        local_ideographs: Option<String>,
+        operations: String,
+        rect: Vec<f64>,
+    ) -> Result<String, JsError> {
+        let [x1, y1, x2, y2] = rect[..] else {
+            return Err(JsError::new("a query box has 4 numbers"));
+        };
+        let (map, ..) = self
+            .settle(
+                style,
+                width,
+                height,
+                logical_width,
+                logical_height,
+                pixel_ratio,
+                timeout_ms,
+                fade_duration,
+                cross_source_collisions,
+                local_ideographs,
+                operations,
+            )
+            .await?;
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        map.query_rendered(
+            glam::DVec2::new(x1, y1),
+            glam::DVec2::new(x2, y2),
+            None,
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        );
+        receiver
+            .await
+            .map_err(|_| JsError::new("query dropped"))?
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// Renders a fixture's map until it settles, as both runners do.
+    #[allow(clippy::too_many_arguments)]
+    async fn settle(
+        &self,
+        style: String,
+        width: u32,
+        height: u32,
+        logical_width: u32,
+        logical_height: u32,
+        pixel_ratio: f32,
+        timeout_ms: f64,
+        fade_duration: f64,
+        cross_source_collisions: bool,
+        local_ideographs: Option<String>,
+        operations: String,
+    ) -> Result<(Map, WgpuGpu, orb_hal::TextureId, FixturePixels), JsError> {
         let operations =
             orb_expr::json::parse(&operations).map_err(|e| JsError::new(&e.to_string()))?;
         let operations = operations.as_array().unwrap_or_default();
@@ -218,8 +305,7 @@ impl FixtureRenderer {
             output.tiles_drawn = report.tiles_drawn;
             output.warnings.extend(map.take_warnings());
         }
-        output.pixels = gpu.read_texture(target).await;
-        Ok(output)
+        Ok((map, gpu, target, output))
     }
 }
 
