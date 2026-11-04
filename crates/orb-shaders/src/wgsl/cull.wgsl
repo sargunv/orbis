@@ -46,26 +46,28 @@ struct Candidate {
 const ARGS_WORDS: u32 = 8u;
 // Candidates per workgroup of an indexed node (orb-scene's INDEXED_BATCH).
 const INDEXED_BATCH: u32 = 64u;
-fn outside_frustum(c: array<vec4<f32>, 8>, margin: vec2<f32>) -> bool {
-    var right = true;
-    var left = true;
-    var top = true;
-    var bottom = true;
-    var far = true;
-    var near = true;
-    for (var i = 0u; i < 8u; i++) {
-        let p = c[i];
-        let extra = margin * max(p.w, 0.0);
-        right = right && p.x > p.w + extra.x;
-        left = left && p.x < -p.w - extra.x;
-        top = top && p.y > p.w + extra.y;
-        bottom = bottom && p.y < -p.w - extra.y;
-        far = far && p.z > p.w;
-        near = near && p.z < 0.0;
-    }
-    return right || left || top || bottom || far || near;
+// The view-volume planes a clip-space corner lies outside, a bit each:
+// right, left, top, bottom (widened by `margin`, in NDC per unit w), far
+// and near.
+fn outside_planes(p: vec4<f32>, margin: vec2<f32>) -> u32 {
+    let extra = margin * max(p.w, 0.0);
+    return select(0u, 1u, p.x > p.w + extra.x)
+        | select(0u, 2u, p.x < -p.w - extra.x)
+        | select(0u, 4u, p.y > p.w + extra.y)
+        | select(0u, 8u, p.y < -p.w - extra.y)
+        | select(0u, 16u, p.z > p.w)
+        | select(0u, 32u, p.z < 0.0);
 }
 
+// Whether any of the candidate's chunk can draw: its bounds, inside the
+// tile's clip rectangles, standing on the ground and raised by
+// `elevation`, not wholly outside one plane of the view volume.
+//
+// No function-scope arrays: this is inlined once per cull mode, and two
+// copies of a version that indexed local arrays in loops (its eight
+// corners, the tile's copied clip rectangles) miscompiled on an Adreno 830
+// (Chrome 156, Vulkan): the dispatch wrote nothing or lost the device
+// (#23). A test in orb-shaders keeps the cull shader free of them.
 fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation: f32, draped: bool) -> bool {
     let point_instances = draw == DRAW_POINTS;
     let chunk = chunks[candidate.chunk];
@@ -84,8 +86,9 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
         clip_hi = hi;
     }
     for (var i = 0u; i < 4u && draw != DRAW_IMAGES; i++) {
-        let c_lo = max(lo, unpack_i16x2(tile.clips[i].x));
-        let c_hi = min(hi, unpack_i16x2(tile.clips[i].y));
+        let clip = tiles[candidate.tile].clips[i];
+        let c_lo = max(lo, unpack_i16x2(clip.x));
+        let c_hi = min(hi, unpack_i16x2(clip.y));
         if all(c_lo <= c_hi) {
             clip_lo = min(clip_lo, c_lo);
             clip_hi = max(clip_hi, c_hi);
@@ -105,17 +108,16 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
     // On terrain, content stands between the lowest and highest ground
     // under the placement; extrusions rise above it.
     let ground = unpack_i16x2(tile.terrain_range) * TERRAIN_RANGE_UNIT * frame.extrusion_scale;
-    var corners = array<vec4<f32>, 8>(
-        frame.view_proj * vec4<f32>(tile_to_world(tile, lo), ground.x, 1.0),
-        frame.view_proj * vec4<f32>(tile_to_world(tile, vec2<f32>(hi.x, lo.y)), ground.x, 1.0),
-        frame.view_proj * vec4<f32>(tile_to_world(tile, vec2<f32>(lo.x, hi.y)), ground.x, 1.0),
-        frame.view_proj * vec4<f32>(tile_to_world(tile, hi), ground.x, 1.0),
-        vec4<f32>(0.0),vec4<f32>(0.0),vec4<f32>(0.0),vec4<f32>(0.0),
-    );
+    let c0 = frame.view_proj * vec4<f32>(tile_to_world(tile, lo), ground.x, 1.0);
+    let c1 = frame.view_proj * vec4<f32>(tile_to_world(tile, vec2<f32>(hi.x, lo.y)), ground.x, 1.0);
+    let c2 = frame.view_proj * vec4<f32>(tile_to_world(tile, vec2<f32>(lo.x, hi.y)), ground.x, 1.0);
+    let c3 = frame.view_proj * vec4<f32>(tile_to_world(tile, hi), ground.x, 1.0);
     let raised = frame.view_proj * vec4<f32>(0.0, 0.0, ground.y - ground.x + elevation * frame.extrusion_scale, 0.0);
-    for (var i = 0u; i < 4u; i++) { corners[i+4u] = corners[i] + raised; }
-    let screen_margin = 2.0 * margin_px / frame.viewport;
-    return !outside_frustum(corners, screen_margin);
+    let m = 2.0 * margin_px / frame.viewport;
+    let outside = outside_planes(c0, m) & outside_planes(c1, m) & outside_planes(c2, m)
+        & outside_planes(c3, m) & outside_planes(c0 + raised, m) & outside_planes(c1 + raised, m)
+        & outside_planes(c2 + raised, m) & outside_planes(c3 + raised, m);
+    return outside == 0u;
 }
 
 const WORKGROUP: u32 = 256u;
