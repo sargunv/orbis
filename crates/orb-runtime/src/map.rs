@@ -171,7 +171,7 @@ pub(crate) struct ResidentTile {
     pub(crate) image: Option<ResidentImage>,
     /// A vector tile drawn through a warp: its series.
     pub(crate) series: Option<Arc<orb_crs::Series>>,
-    /// The style zoom it laid out at (decision 0021).
+    /// The style zoom it laid out at (decision 0022).
     pub(crate) zoom: f64,
     /// Its symbol layers' buckets; their meshes are among `meshes`.
     pub(crate) symbols: Vec<crate::labels::ResidentSymbols>,
@@ -650,7 +650,7 @@ impl Map {
             .map(|(camera, viewport, ..)| (camera, viewport))
     }
 
-    /// The view's style zoom (decision 0021): GL JS's in Web Mercator,
+    /// The view's style zoom (decision 0022): GL JS's in Web Mercator,
     /// measured at the plane's reference latitude on other planes.
     pub fn zoom(&self) -> f64 {
         self.camera.zoom(self.surface.projection())

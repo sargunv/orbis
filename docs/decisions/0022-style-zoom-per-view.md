@@ -1,4 +1,4 @@
-# 0021: Style zoom per view (updates D15)
+# 0022: Style zoom per view (updates D15)
 
 D15 made style `zoom` the Web Mercator convention everywhere: on any surface,
 a view's zoom was ground resolution at the camera's target against the

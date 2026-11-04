@@ -334,7 +334,7 @@ impl Projection {
         }
     }
 
-    /// The position this plane's style zoom is measured at (decision 0021),
+    /// The position this plane's style zoom is measured at (decision 0022),
     /// or `None` for Web Mercator, whose style zoom follows the target's
     /// latitude as GL JS's does.
     pub fn zoom_reference(&self) -> Option<Geodetic> {

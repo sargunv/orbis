@@ -95,7 +95,7 @@ pub(crate) struct Upload<'a> {
     pub(crate) unpack: Option<[f64; 4]>,
     /// The tile's mesh on the surface, from a `RasterWarp` plan.
     pub(crate) warped: Option<Arc<Warped>>,
-    /// The style zoom it draws at (decision 0021).
+    /// The style zoom it draws at (decision 0022).
     pub(crate) zoom: f64,
 }
 

@@ -34,7 +34,7 @@ along the parallel, measured on the sphere of the semi-major axis: the
 sphere style zoom is defined on, so resolution, zoom and scale agree in
 every projection (on the ellipsoid it would differ from Web Mercator's own
 convention by up to 0.3 %). Style zoom, at first Web Mercator's convention
-on every plane, is per view since [0021](0021-style-zoom-per-view.md).
+on every plane, is per view since [0022](0022-style-zoom-per-view.md).
 Bearing turns the plane's grid north, the axis a projected map's north is
 drawn along.
 
@@ -58,7 +58,7 @@ Registry: `WebMercatorQuad`, `WorldCRS84Quad`, `NZTM2000Quad`,
 Tile URLs take `{tileMatrix}`, `{tileRow}`, `{tileCol}` and `{bbox}` (in
 the set's units) beside `{z}{x}{y}`. A tile lays out at its **style zoom**,
 the view's zoom where it spans 512 pixels (exactly its own zoom in
-`WebMercatorQuad`, so Mercator styles are unchanged; per decision 0021 on
+`WebMercatorQuad`, so Mercator styles are unchanged; per decision 0022 on
 other planes), and keeps the layers that the zoom range `[zoom, zoom + 1)`
 overlaps.
 

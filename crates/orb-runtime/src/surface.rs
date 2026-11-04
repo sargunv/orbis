@@ -106,7 +106,7 @@ impl Surface {
         (!self.projection.same_plane(&mercator.projection)).then(|| self.tms.clone())
     }
 
-    /// The style zoom a tile lays out at (decision 0021): the view's style
+    /// The style zoom a tile lays out at (decision 0022): the view's style
     /// zoom where the tile spans 512 pixels. A tile on the surface's plane
     /// has its set's; a warped tile's comes from its footprint's scale on
     /// the surface.

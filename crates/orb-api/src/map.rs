@@ -212,7 +212,7 @@ impl Map {
         *self.camera.state()
     }
 
-    /// The view's style zoom on the map's surface (decision 0021).
+    /// The view's style zoom on the map's surface (decision 0022).
     pub fn zoom(&self) -> f64 {
         self.camera.zoom()
     }

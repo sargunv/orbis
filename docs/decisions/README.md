@@ -26,4 +26,4 @@ in code and commit messages.
 - [0019](0019-terrain.md): Terrain: draped slots, DEM references and a camera on the ground
 - [0020](0020-any-crs.md): Any CRS: planes, tile matrix sets and the planner
 - [0021](0021-interaction-and-thread-mode.md): Interaction, the web package, and the default thread mode
-- [0021](0021-style-zoom-per-view.md): Style zoom per view (updates D15)
+- [0022](0022-style-zoom-per-view.md): Style zoom per view (updates D15)

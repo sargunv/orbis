@@ -116,7 +116,9 @@ Use issues and milestones as they're useful: for follow-ups, bugs found but not
 yet fixed, and decisions only the owner can make. Commits that finish an issue
 end with `Closes #n`. Record significant decisions, the ones the owner should
 know about, in `docs/decisions/NNNN-<slug>.md` and mention them in the
-milestone summary.
+milestone summary. Several agents add records at once: after your last rebase,
+before pushing, check `origin/main` and renumber yours (file, title, README
+and every reference) if the number has been taken.
 
 Milestone descriptions carry exit criteria. Treat them as goals and report
 against them when a milestone wraps up. Every push to `main` publishes the
