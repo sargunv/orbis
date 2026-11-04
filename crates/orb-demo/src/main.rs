@@ -1,4 +1,6 @@
-//! The native demo: a v8 style in a window, with mouse pan and wheel zoom.
+//! The native demo: a v8 style in a window, moved with `orb-interact`'s
+//! gestures (mouse, trackpad, touch and keyboard). A click prints the
+//! features under it.
 //!
 //! `cargo run --release -p orb-demo -- [style URL] [--at lon,lat,zoom[,bearing,pitch]]
 //! [--format mvt|mlt] [--snapshot out.png [--a11y out.json]]`
@@ -13,16 +15,21 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use glam::DVec2;
+use orb_camera::{Camera, CameraTarget};
 use orb_geo::Geodetic;
 use orb_hal::Gpu;
 use orb_hal_wgpu::{WgpuGpu, from_texture_format};
 use orb_host_native::{NativeFetch, NativeImageDecode};
+use orb_interact::{Button, InteractEvent, Interaction, Key, Modifiers, PointerKind, WheelUnit};
 use orb_jobs::ThreadPool;
-use orb_runtime::{CameraState, Map, PoolJobs, SceneCapacity, Services, TargetFormat, Viewport};
+use orb_runtime::{
+    CameraState, Map, MapEvent, PoolJobs, SceneCapacity, Services, TargetFormat, Viewport,
+};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::keyboard::{Key as WinitKey, NamedKey};
 use winit::window::{Window, WindowId};
 
 const DEMO_DATA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/demo/data");
@@ -358,10 +365,14 @@ struct State {
     gpu: WgpuGpu,
     format: TargetFormat,
     map: Map,
+    /// The camera's single writer; the map draws what it shows.
+    camera: Camera,
+    input: Interaction,
+    /// The camera revision last given to the map.
+    pushed: u64,
+    started: Instant,
     cursor: DVec2,
-    dragging: bool,
-    /// Right-dragging: rotate sideways, tilt up and down.
-    rotating: bool,
+    modifiers: Modifiers,
     last_title: Instant,
     edit_pending: Vec<(u64, u32, f64)>,
     queued_edit: Option<String>,
@@ -415,10 +426,17 @@ impl State {
         let services = native_services(Arc::new(move || {
             let _ = proxy.send_event(Wake::Data);
         }));
-        let mut map = Map::new(services, camera(options));
+        let initial = camera(options);
+        let mut map = Map::new(services, initial);
         // The opaque swapchain has no page behind transparent style pixels.
         map.set_clear_color([1.0; 4]);
         load_style(&mut map, options).expect("demo style");
+        let scale = window.scale_factor();
+        let viewport = Viewport {
+            width: f64::from(config.width) / scale,
+            height: f64::from(config.height) / scale,
+        };
+        let camera = Camera::new(initial.unwrap_or(*map.camera()), map.projection(), viewport);
 
         Self {
             window,
@@ -430,9 +448,12 @@ impl State {
                 sample_count: 1,
             },
             map,
+            camera,
+            input: Interaction::default(),
+            pushed: 0,
+            started: Instant::now(),
             cursor: DVec2::ZERO,
-            dragging: false,
-            rotating: false,
+            modifiers: Modifiers::default(),
             last_title: Instant::now(),
             edit_pending: Vec::new(),
             queued_edit: None,
@@ -451,7 +472,75 @@ impl State {
         self.config.width = size.width.max(1);
         self.config.height = size.height.max(1);
         self.surface.configure(self.gpu.device(), &self.config);
+        self.camera.set_viewport(self.viewport());
         self.window.request_redraw();
+    }
+
+    /// Milliseconds on the gesture clock.
+    fn now(&self) -> f64 {
+        self.started.elapsed().as_secs_f64() * 1000.0
+    }
+
+    fn input(&mut self, input: orb_interact::Input) {
+        let now = self.now();
+        self.input.handle(&mut self.camera, input, now);
+        self.window.request_redraw();
+    }
+
+    /// Advances gestures and animations and gives the map the camera.
+    fn move_camera(&mut self) -> bool {
+        let now = self.now();
+        let gesture = self.input.frame(&mut self.camera, now);
+        let animating = self.camera.frame(now);
+        self.camera.take_events();
+        for event in self.input.take_events() {
+            if let InteractEvent::Click {
+                position,
+                button: Button::Primary,
+            } = event
+            {
+                match self.map.hit_test(position) {
+                    Some(hit) => println!(
+                        "clicked {} ({}{}) id {}",
+                        hit.layer,
+                        hit.source,
+                        hit.source_layer
+                            .map(|l| format!(" / {l}"))
+                            .unwrap_or_default(),
+                        hit.id.as_deref().unwrap_or("none")
+                    ),
+                    None => println!("clicked nothing"),
+                }
+            }
+        }
+        // Until the app or the user moves it, the map's camera follows the
+        // style.
+        if self.camera.modified() && self.camera.revision() != self.pushed {
+            self.pushed = self.camera.revision();
+            self.map.set_camera(*self.camera.state());
+        }
+        gesture || animating
+    }
+
+    fn map_events(&mut self) {
+        for event in self.map.take_events() {
+            match event {
+                MapEvent::StyleLoad {
+                    camera: Some(style),
+                } if !self.camera.modified() => {
+                    self.camera.jump_to(&CameraTarget {
+                        center: Some(style.target),
+                        zoom: Some(style.zoom()),
+                        bearing: Some(style.bearing),
+                        pitch: Some(style.pitch),
+                        ..CameraTarget::default()
+                    });
+                    self.window.request_redraw();
+                }
+                MapEvent::Error { message } => eprintln!("orb-demo: {message}"),
+                _ => {}
+            }
+        }
     }
 
     fn edit(&mut self, commands: String) {
@@ -485,6 +574,7 @@ impl State {
             }
         };
         let started = Instant::now();
+        let moving = self.move_camera();
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -513,7 +603,8 @@ impl State {
         self.gpu.destroy_texture(target);
         self.window.pre_present_notify();
         self.gpu.queue().present(frame);
-        if !report.idle {
+        self.map_events();
+        if !report.idle || moving {
             self.window.request_redraw();
         }
         for warning in self.map.take_warnings() {
@@ -565,39 +656,96 @@ impl ApplicationHandler<Wake> for App {
             WindowEvent::Resized(size) => state.resize(size),
             WindowEvent::Occluded(false) => state.window.request_redraw(),
             WindowEvent::RedrawRequested => state.redraw(),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                let m = modifiers.state();
+                state.modifiers = Modifiers {
+                    shift: m.shift_key(),
+                    ctrl: m.control_key(),
+                    alt: m.alt_key(),
+                    meta: m.super_key(),
+                };
+            }
             WindowEvent::MouseInput {
                 state: pressed,
-                button: MouseButton::Left,
+                button,
                 ..
-            } => state.dragging = pressed == ElementState::Pressed,
-            WindowEvent::MouseInput {
-                state: pressed,
-                button: MouseButton::Right,
-                ..
-            } => state.rotating = pressed == ElementState::Pressed,
+            } => {
+                let button = match button {
+                    MouseButton::Left => Button::Primary,
+                    MouseButton::Right => Button::Secondary,
+                    MouseButton::Middle => Button::Middle,
+                    _ => return,
+                };
+                let position = state.cursor;
+                state.input(match pressed {
+                    ElementState::Pressed => orb_interact::Input::PointerDown {
+                        id: 0,
+                        kind: PointerKind::Mouse,
+                        button,
+                        position,
+                        modifiers: state.modifiers,
+                    },
+                    ElementState::Released => orb_interact::Input::PointerUp { id: 0, position },
+                });
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let position = DVec2::new(position.x, position.y) / state.window.scale_factor();
-                if state.dragging {
-                    let viewport = state.viewport();
-                    state.map.pan(viewport, state.cursor, position);
-                    state.window.request_redraw();
-                } else if state.rotating {
-                    // GL JS's drag-rotate rates, in degrees per pixel.
-                    let delta = position - state.cursor;
-                    state.map.rotate_pitch(delta.x * 0.8, -delta.y * 0.5);
-                    state.window.request_redraw();
-                }
                 state.cursor = position;
+                state.input(orb_interact::Input::PointerMove { id: 0, position });
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let levels = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(y) / 2.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / 200.0,
+                // winit's deltas point away from the user; the DOM's, which
+                // the gestures follow, toward.
+                let (delta, unit) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        (-DVec2::new(f64::from(x), f64::from(y)), WheelUnit::Line)
+                    }
+                    MouseScrollDelta::PixelDelta(p) => (
+                        -DVec2::new(p.x, p.y) / state.window.scale_factor(),
+                        WheelUnit::Pixel,
+                    ),
                 };
-                let viewport = state.viewport();
-                state.map.zoom_at(viewport, state.cursor, levels);
-                state.window.request_redraw();
+                let position = state.cursor;
+                let modifiers = state.modifiers;
+                state.input(orb_interact::Input::Wheel {
+                    position,
+                    delta,
+                    unit,
+                    modifiers,
+                });
             }
+            WindowEvent::Touch(touch) => {
+                // Touch ids above the mouse's.
+                let id = (touch.id as u32).wrapping_add(1);
+                let position =
+                    DVec2::new(touch.location.x, touch.location.y) / state.window.scale_factor();
+                state.input(match touch.phase {
+                    TouchPhase::Started => orb_interact::Input::PointerDown {
+                        id,
+                        kind: PointerKind::Touch,
+                        button: Button::Primary,
+                        position,
+                        modifiers: state.modifiers,
+                    },
+                    TouchPhase::Moved => orb_interact::Input::PointerMove { id, position },
+                    TouchPhase::Ended => orb_interact::Input::PointerUp { id, position },
+                    TouchPhase::Cancelled => orb_interact::Input::PointerCancel { id },
+                });
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let key = match event.logical_key.as_ref() {
+                    WinitKey::Named(NamedKey::ArrowLeft) => Key::Left,
+                    WinitKey::Named(NamedKey::ArrowRight) => Key::Right,
+                    WinitKey::Named(NamedKey::ArrowUp) => Key::Up,
+                    WinitKey::Named(NamedKey::ArrowDown) => Key::Down,
+                    WinitKey::Character("+" | "=") => Key::ZoomIn,
+                    WinitKey::Character("-" | "_") => Key::ZoomOut,
+                    _ => return,
+                };
+                let modifiers = state.modifiers;
+                state.input(orb_interact::Input::Key { key, modifiers });
+            }
+            WindowEvent::Focused(false) => state.input(orb_interact::Input::Blur),
             _ => {}
         }
     }
@@ -630,6 +778,32 @@ mod tests {
             a11y: None,
             watch_style: None,
         }
+    }
+
+    /// Zooms by `delta` levels around a pixel, as the gestures do.
+    fn zoom_by(
+        map: &mut orb_runtime::Map,
+        viewport: orb_runtime::Viewport,
+        at: glam::DVec2,
+        delta: f64,
+    ) {
+        let projection = map.projection();
+        let zoom = map.camera().zoom() + delta;
+        map.camera_mut()
+            .zoom_around(&projection, viewport, at, zoom);
+        map.constrain_camera(viewport);
+    }
+
+    /// Pans the ground under `from` to `to`, as the gestures do.
+    fn pan(
+        map: &mut orb_runtime::Map,
+        viewport: orb_runtime::Viewport,
+        from: glam::DVec2,
+        to: glam::DVec2,
+    ) {
+        let projection = map.projection();
+        map.camera_mut().pan(&projection, viewport, from, to);
+        map.constrain_camera(viewport);
     }
 
     fn settle(offscreen: &mut super::Offscreen) -> orb_runtime::FrameReport {
@@ -671,7 +845,7 @@ mod tests {
         let viewport = offscreen.viewport;
         let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
         for _ in 0..6 {
-            offscreen.map.zoom_at(viewport, center, -0.5);
+            zoom_by(&mut offscreen.map, viewport, center, -0.5);
             settle(&mut offscreen);
         }
         let (fresh, report, _) = super::Offscreen::load(&tokyo(12.0)).unwrap();
@@ -692,7 +866,7 @@ mod tests {
         let viewport = offscreen.viewport;
         let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
         for _ in 0..6 {
-            offscreen.map.zoom_at(viewport, center, 0.5);
+            zoom_by(&mut offscreen.map, viewport, center, 0.5);
             settle(&mut offscreen);
         }
         assert_matches_fresh(&mut offscreen);
@@ -707,7 +881,7 @@ mod tests {
             glam::DVec2::new(512.0, 128.0),
             glam::DVec2::new(-256.0, -64.0),
         ] {
-            offscreen.map.pan(viewport, center, center + offset);
+            pan(&mut offscreen.map, viewport, center, center + offset);
             settle(&mut offscreen);
         }
         assert_matches_fresh(&mut offscreen);
@@ -772,7 +946,7 @@ mod tests {
             let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
             let mut report = offscreen.frame();
             for _ in 0..6 {
-                offscreen.map.zoom_at(viewport, center, -0.5);
+                zoom_by(&mut offscreen.map, viewport, center, -0.5);
                 report = offscreen.frame();
                 while !report.idle {
                     std::thread::sleep(std::time::Duration::from_millis(5));
@@ -898,7 +1072,7 @@ mod tests {
         };
         for stop in 0..6 {
             for f in stop * 20..(stop + 1) * 20 {
-                offscreen.map.pan(viewport, point(f), point(f + 1));
+                pan(&mut offscreen.map, viewport, point(f), point(f + 1));
                 offscreen.frame();
             }
             assert_matches_fresh(&mut offscreen);
@@ -929,7 +1103,8 @@ mod tests {
                 offscreen.frame();
             }
             let viewport = offscreen.viewport;
-            offscreen.map.pan(
+            pan(
+                &mut offscreen.map,
                 viewport,
                 glam::DVec2::new(512.0, 384.0),
                 glam::DVec2::new(520.0, 380.0),
@@ -1059,7 +1234,8 @@ mod tests {
                 }
             }
             assert!(loaded);
-            offscreen.map.pan(
+            pan(
+                &mut offscreen.map,
                 offscreen.viewport,
                 glam::DVec2::new(512.0, 384.0),
                 glam::DVec2::new(520.0, 380.0),

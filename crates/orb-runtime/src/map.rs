@@ -17,6 +17,7 @@ use orb_source::{Draw, TilePyramid};
 use orb_style::{CostModel, StyleDoc};
 use orb_v8::{LayerKind, SourceKind, TranslateAnchor};
 
+use crate::MapEvent;
 use crate::image::{self, ResidentImage};
 use crate::jobs::{Jobs, ResultMesh, Stream, StyleUpdate, TileRequest, TileResult, TileWorker};
 use crate::source::TileEndpoint;
@@ -268,6 +269,7 @@ pub struct Map {
     sender: Sender<Message>,
     receiver: Receiver<Message>,
     pub(crate) warnings: Vec<String>,
+    pub(crate) events: crate::events::EventQueue,
     /// Pages of a replaced style, to destroy with the next frame's GPU.
     retired_pages: Vec<PageId>,
     retired_images: Vec<u64>,
@@ -431,6 +433,7 @@ impl Map {
             sender,
             receiver,
             warnings: Vec::new(),
+            events: Default::default(),
             retired_pages: Vec::new(),
             retired_images: Vec::new(),
             retired_ramps: Vec::new(),
@@ -526,7 +529,19 @@ impl Map {
     /// a style that arrives later doesn't override it.
     pub fn camera_mut(&mut self) -> &mut CameraState {
         self.camera_from_style = false;
+        self.events.wake();
         &mut self.camera
+    }
+
+    /// Sets the camera, as a host's camera store does each frame it moved;
+    /// a style that arrives later doesn't override it.
+    pub fn set_camera(&mut self, camera: CameraState) {
+        *self.camera_mut() = camera;
+    }
+
+    /// The surface's projection, for camera moves.
+    pub fn projection(&self) -> orb_crs::Projection {
+        *self.tms.projection()
     }
 
     /// The view the camera gives for a viewport.
@@ -534,73 +549,29 @@ impl Map {
         View::new(&self.camera, viewport, self.tms.projection())
     }
 
-    /// Keeps a Web Mercator camera to the world vertically, as GL JS's
-    /// transform does (`getConstrained`): the view never reaches past the
-    /// world's top or bottom edge. The map's own camera moves apply it;
-    /// hosts that write the camera themselves call it, since rendering
-    /// never writes the camera.
+    /// Keeps the camera to the world's edge, as GL JS's transform does
+    /// (`getConstrained`). Camera stores keep to it themselves; hosts that
+    /// write the camera directly call this, since rendering never writes
+    /// the camera.
     pub fn constrain_camera(&mut self, viewport: Viewport) {
-        if self.tms.projection().wrap_period().is_some() {
-            self.camera.constrain_to_mercator_world(viewport);
-        }
+        let projection = *self.tms.projection();
+        self.camera
+            .constrain(&orb_camera::Constraints::WORLD, &projection, viewport);
     }
 
-    /// Moves the camera so the ground under `from` (logical pixels) ends up
-    /// under `to`.
-    pub fn pan(&mut self, viewport: Viewport, from: DVec2, to: DVec2) {
-        self.camera_from_style = false;
-        let view = self.view(viewport);
-        let (Some(a), Some(b)) = (view.unproject(from), view.unproject(to)) else {
-            return;
-        };
-        let target = view.camera_world() - (b - a);
-        self.move_target(target, view.world_per_px());
-        self.constrain_camera(viewport);
+    /// What the map did since the last call: style and source data, load,
+    /// idle and errors.
+    pub fn take_events(&mut self) -> Vec<MapEvent> {
+        std::mem::take(&mut self.events.queue)
     }
 
-    /// Moves the camera target to a world position, keeping the projected
-    /// scale: a pan doesn't zoom, even where the projection's scale varies
-    /// with position, as on Web Mercator going north.
-    fn move_target(&mut self, world: DVec2, world_per_px: f64) {
-        let projection = self.tms.projection();
-        let target = projection.inverse(world).wrapped();
-        self.camera.target = target;
-        self.camera.resolution = world_per_px / projection.scale_factor(target);
+    /// Reports a failed load as a warning and an error event.
+    pub(crate) fn fail(&mut self, message: String) {
+        self.events.push(MapEvent::Error {
+            message: message.clone(),
+        });
+        self.warnings.push(message);
     }
-
-    /// Zooms by `delta` levels, keeping the ground under `at` (logical
-    /// pixels) in place.
-    pub fn zoom_at(&mut self, viewport: Viewport, at: DVec2, delta: f64) {
-        self.camera_from_style = false;
-        let zoom = (self.camera.zoom() + delta).clamp(0.0, 24.0);
-        if at == DVec2::new(viewport.width / 2.0, viewport.height / 2.0) {
-            // The centre is the target already. A projection round trip can
-            // move it by an ULP and change the ideal cover at a zoom boundary.
-            self.camera.set_zoom(zoom);
-            self.constrain_camera(viewport);
-            return;
-        }
-        let before = self.view(viewport).unproject(at);
-        self.camera.set_zoom(zoom);
-        let view = self.view(viewport);
-        if let (Some(before), Some(after)) = (before, view.unproject(at)) {
-            let target = view.camera_world() + (before - after);
-            self.move_target(target, view.world_per_px());
-        }
-        self.constrain_camera(viewport);
-    }
-
-    /// Turns the map by `bearing` degrees (clockwise) and tilts it by
-    /// `pitch` degrees around the centre of the view. Pitch stays within
-    /// `0..=MAX_PITCH`.
-    pub fn rotate_pitch(&mut self, bearing: f64, pitch: f64) {
-        self.camera_from_style = false;
-        self.camera.bearing = (self.camera.bearing + bearing).rem_euclid(360.0);
-        self.camera.pitch = (self.camera.pitch + pitch).clamp(0.0, Self::MAX_PITCH);
-    }
-
-    /// The steepest pitch interaction reaches, in degrees.
-    pub const MAX_PITCH: f64 = 85.0;
 
     /// Sets the host's backing colour (premultiplied RGBA). Transparent by
     /// default, like GL JS's canvas. Opaque hosts can supply their window's
@@ -670,6 +641,7 @@ impl Map {
         self.warnings
             .extend(plan.style.warnings.iter().map(ToString::to_string));
         self.warnings.extend(plan.warnings.iter().cloned());
+        let mut style_camera = None;
         if std::mem::take(&mut self.camera_from_style) {
             if let Some([lon, lat]) = plan.style.center {
                 self.camera.target = orb_geo::Geodetic::new(lon, lat);
@@ -679,7 +651,15 @@ impl Map {
             }
             self.camera.bearing = plan.style.bearing;
             self.camera.pitch = plan.style.pitch;
+            style_camera = Some(self.camera);
         }
+        self.events.wake();
+        self.events.push(MapEvent::StyleLoad {
+            camera: style_camera,
+        });
+        self.events.push(MapEvent::StyleData {
+            generation: self.version,
+        });
         self.clear_style();
         self.pending.clear();
         self.style_id += 1;
@@ -926,6 +906,19 @@ impl Map {
             && self.pending.is_empty()
             && labels_settled;
         report.idle = report.loaded && !fading && !self.labels.fading(now);
+        if let Some(style) = &self.style {
+            let plan = style.worker.plan();
+            for index in std::mem::take(&mut self.events.sources) {
+                let loaded = match &style.sources[index] {
+                    SourceState::Ready { loading, .. } => *loading == 0,
+                    SourceState::Resolving => false,
+                    _ => true,
+                };
+                let source = plan.source_def(index).id.clone();
+                self.events.push(MapEvent::SourceData { source, loaded });
+            }
+        }
+        self.events.frame(report.loaded, report.idle);
 
         let frame = FrameBlock {
             view_proj: view.view_proj().as_mat4().to_cols_array_2d(),
@@ -1370,7 +1363,7 @@ impl Map {
             .map_err(|e| e.to_string())
             .and_then(|json| self.set_style_json(&json));
         if let Err(e) = installed {
-            self.warnings.push(format!("style: {e}"));
+            self.fail(format!("style: {e}"));
         }
     }
 
@@ -1404,7 +1397,13 @@ impl Map {
                     {
                         style.sprites_loading -= 1;
                         match result {
-                            Err(e) => self.warnings.push(format!("sprite: {e}")),
+                            Err(e) => {
+                                let message = format!("sprite: {e}");
+                                self.events.push(MapEvent::Error {
+                                    message: message.clone(),
+                                });
+                                self.warnings.push(message);
+                            }
                             Ok(sprites) => {
                                 let mut atlas =
                                     self.services.images.0.lock().expect("images poisoned");
@@ -1478,6 +1477,11 @@ impl Map {
                     let image = plan.image_kind(index).is_some();
                     style.sources[index] =
                         ready_source(endpoint, &def.id, image, &mut self.warnings);
+                    if matches!(style.sources[index], SourceState::Failed) {
+                        let message = self.warnings.last().cloned().unwrap_or_default();
+                        self.events.push(MapEvent::Error { message });
+                    }
+                    self.events.sources.insert(index);
                     // Color-relief ramps wait for their source's encoding.
                     style.painted = None;
                     for node in plan.nodes.iter().filter(|n| n.source == index) {
@@ -1553,10 +1557,15 @@ impl Map {
             return;
         };
         *loading = loading.saturating_sub(1);
+        self.events.sources.insert(source);
         let mut build = match result {
             Ok(build) => build,
             Err(e) => {
-                self.warnings.push(format!("tile {tile:?}: {e}"));
+                let message = format!("tile {tile:?}: {e}");
+                self.events.push(MapEvent::Error {
+                    message: message.clone(),
+                });
+                self.warnings.push(message);
                 pyramid.insert_empty(tile);
                 return;
             }
@@ -2502,7 +2511,9 @@ mod tests {
             let mut map = Map::new(services.clone(), Some(camera));
             for delta in [-0.5; 6].into_iter().chain([0.5; 6]) {
                 let zoom = map.camera().zoom() + delta;
-                map.zoom_at(viewport, center, delta);
+                let projection = map.projection();
+                map.camera_mut()
+                    .zoom_around(&projection, viewport, center, zoom);
                 let fresh = CameraState {
                     bearing,
                     pitch,

@@ -8,6 +8,8 @@ version.workspace = true
 
 [dependencies]
 glam.workspace = true
+orb-camera.workspace = true
+orb-interact.workspace = true
 orb-geo.workspace = true
 orb-hal.workspace = true
 orb-hal-wgpu.workspace = true

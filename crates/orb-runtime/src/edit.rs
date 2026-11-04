@@ -74,8 +74,11 @@ impl Map {
         for op in &patch.feature_state {
             style.states.apply(op);
         }
+        self.events.wake();
         if patch.changes.is_empty() {
-            return Ok(self.generation());
+            let generation = self.generation();
+            self.events.push(crate::MapEvent::StyleData { generation });
+            return Ok(generation);
         }
         if patch.changes.contains(&Change::Restyle) {
             let doc = style.doc.clone();
@@ -264,6 +267,9 @@ impl Map {
                 self.send_job(source, tile, Some(nodes.clone()), true, Some(version));
             }
         }
+        self.events.push(crate::MapEvent::StyleData {
+            generation: self.version,
+        });
         Ok(self.version)
     }
 

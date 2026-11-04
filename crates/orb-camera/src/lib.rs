@@ -8,6 +8,16 @@
 
 #![forbid(unsafe_code)]
 
+mod animate;
+mod fit;
+mod moves;
+mod store;
+
+pub use animate::{CameraTarget, EaseOptions, Easing, FlyOptions, Glide, Track};
+pub use fit::{FitOptions, Padding};
+pub use moves::{Bounds, Constraints, wrap_bearing};
+pub use store::{AnimationId, Camera, CameraEvent, Change, Phase};
+
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use glam::{DMat4, DVec2, DVec3, DVec4};
@@ -60,30 +70,6 @@ impl CameraState {
 
     pub fn set_zoom(&mut self, zoom: f64) {
         self.resolution = resolution_at_zoom(self.target, zoom);
-    }
-
-    /// GL JS `getConstrained` for Web Mercator with its default latitude
-    /// range: moves the target, zooming in when the world is shorter than
-    /// the viewport, so the view never reaches past the world's top or
-    /// bottom edge. As in GL JS, pitch and bearing are not considered.
-    pub fn constrain_to_mercator_world(&mut self, viewport: Viewport) {
-        const MAX_LAT: f64 = 85.051_128_779_806_59;
-        let merc_y = |lat: f64| {
-            let lat = lat.clamp(-MAX_LAT, MAX_LAT).to_radians();
-            (PI - (PI / 4.0 + lat / 2.0).tan().ln()) / (2.0 * PI)
-        };
-        let lat_of = |y: f64| (2.0 * (PI - 2.0 * PI * y).exp().atan() - PI / 2.0).to_degrees();
-        let before = self.zoom();
-        let height = viewport.height;
-        let zoom = before.max((height / STYLE_ZOOM_TILE_PX).log2());
-        let world = STYLE_ZOOM_TILE_PX * zoom.exp2();
-        let y = merc_y(self.target.lat) * world;
-        let half = height / 2.0;
-        let constrained = y.clamp(half, (world - half).max(half));
-        if constrained != y || zoom != before || self.target.lat.abs() > MAX_LAT {
-            self.target.lat = lat_of(constrained / world);
-            self.set_zoom(zoom);
-        }
     }
 }
 
@@ -397,6 +383,9 @@ mod tests {
 
     #[test]
     fn mercator_cameras_keep_to_the_world_vertically() {
+        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let p = tms.projection();
+        let world = Constraints::WORLD;
         let viewport = Viewport {
             width: 256.0,
             height: 256.0,
@@ -404,7 +393,7 @@ mod tests {
         // Near the pole, the target moves south until the top edge is the
         // world's (GL JS `getConstrained`).
         let mut camera = CameraState::new(Geodetic::new(0.0, 85.0), 4.0);
-        camera.constrain_to_mercator_world(viewport);
+        camera.constrain(&world, p, viewport);
         assert!((camera.zoom() - 4.0).abs() < 1e-9);
         assert!(camera.target.lat < 85.0 && camera.target.lat > 84.0);
         // A world shorter than the viewport zooms in to fill it.
@@ -413,13 +402,13 @@ mod tests {
             height: 1024.0,
         };
         let mut camera = CameraState::new(Geodetic::new(10.0, 30.0), 0.0);
-        camera.constrain_to_mercator_world(tall);
+        camera.constrain(&world, p, tall);
         assert!((camera.zoom() - 1.0).abs() < 1e-9);
         assert!(camera.target.lat.abs() < 1e-9);
         // A view inside the world is left alone.
         let mut camera = CameraState::new(Geodetic::new(10.0, 30.0), 6.0);
         let before = camera;
-        camera.constrain_to_mercator_world(viewport);
+        camera.constrain(&world, p, viewport);
         assert_eq!(camera, before);
     }
 

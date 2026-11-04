@@ -1,0 +1,18 @@
+[package]
+name = "orb-interact"
+description = "Gestures, inertia, feel profiles and keyboard: input to camera moves"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+glam.workspace = true
+orb-camera.workspace = true
+orb-geo.workspace = true
+
+[dev-dependencies]
+orb-crs.workspace = true
+
+[lints]
+workspace = true

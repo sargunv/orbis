@@ -526,7 +526,9 @@ impl Path {
 
     /// Pans from frame `f`'s point to the next.
     fn step(&self, map: &mut Map, f: usize) {
-        map.pan(self.viewport, self.point(f), self.point(f + 1));
+        let projection = map.projection();
+        map.camera_mut()
+            .pan(&projection, self.viewport, self.point(f), self.point(f + 1));
     }
 }
 

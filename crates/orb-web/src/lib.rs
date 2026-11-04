@@ -292,22 +292,33 @@ impl OrbisMap {
     /// Moves the camera so the ground under one point (CSS pixels) is under
     /// another.
     pub fn pan(&mut self, from_x: f64, from_y: f64, to_x: f64, to_y: f64) {
-        let viewport = self.viewport();
-        self.map
-            .pan(viewport, DVec2::new(from_x, from_y), DVec2::new(to_x, to_y));
+        let (viewport, projection) = (self.viewport(), self.map.projection());
+        self.map.camera_mut().pan(
+            &projection,
+            viewport,
+            DVec2::new(from_x, from_y),
+            DVec2::new(to_x, to_y),
+        );
+        self.map.constrain_camera(viewport);
     }
 
     /// Zooms by `delta` levels around a point in CSS pixels.
     #[wasm_bindgen(js_name = zoomAt)]
     pub fn zoom_at(&mut self, x: f64, y: f64, delta: f64) {
-        let viewport = self.viewport();
-        self.map.zoom_at(viewport, DVec2::new(x, y), delta);
+        let (viewport, projection) = (self.viewport(), self.map.projection());
+        let zoom = (self.map.camera().zoom() + delta).clamp(0.0, 24.0);
+        self.map
+            .camera_mut()
+            .zoom_around(&projection, viewport, DVec2::new(x, y), zoom);
+        self.map.constrain_camera(viewport);
     }
 
     /// Turns the map clockwise and tilts it, in degrees, around the centre.
     #[wasm_bindgen(js_name = rotatePitch)]
     pub fn rotate_pitch(&mut self, bearing: f64, pitch: f64) {
-        self.map.rotate_pitch(bearing, pitch);
+        let camera = self.map.camera_mut();
+        camera.bearing = orb_camera::wrap_bearing(camera.bearing + bearing);
+        camera.pitch = (camera.pitch + pitch).clamp(0.0, 85.0);
     }
 
     #[wasm_bindgen(js_name = jumpTo)]

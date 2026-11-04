@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod edit;
+mod events;
 mod glyphs;
 mod gpu;
 mod image;
@@ -26,6 +27,7 @@ mod symbol;
 mod testing;
 mod tile;
 
+pub use events::MapEvent;
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use jobs::{
     Built, ImagePixels, Jobs, PoolJobs, ResultMesh, Stream, StyleUpdate, TileDone, TileImage,

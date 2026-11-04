@@ -1998,10 +1998,12 @@ version = "0.0.0"
 dependencies = [
  "glam",
  "orb-a11y",
+ "orb-camera",
  "orb-geo",
  "orb-hal",
  "orb-hal-wgpu",
  "orb-host-native",
+ "orb-interact",
  "orb-jobs",
  "orb-runtime",
  "png",
@@ -2093,6 +2095,16 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "orb-interact"
+version = "0.0.0"
+dependencies = [
+ "glam",
+ "orb-camera",
+ "orb-crs",
+ "orb-geo",
 ]
 
 [[package]]
@@ -2240,6 +2252,7 @@ dependencies = [
  "glam",
  "js-sys",
  "orb-bench",
+ "orb-camera",
  "orb-crs",
  "orb-expr",
  "orb-geo",
