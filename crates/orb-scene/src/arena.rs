@@ -6,7 +6,7 @@ use std::ops::Range;
 /// Freed ranges may be reused at once: writes are queue operations ordered
 /// after every previously submitted pass, and a freed range is no longer
 /// referenced by anything submitted later.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Arena {
     /// Free blocks by start.
     free: BTreeMap<u32, u32>,

@@ -19,7 +19,10 @@
 <p>Decision 0002's bench: five views of the committed Tokyo extract, still
 and with the camera panning, timed on the GPU and CPU; the same loop as
 <code>cargo xtask bench</code>. <code>?experiment=paint</code> runs decision
-0017's paint bench instead, <code>?experiment=labels</code> the labels bench. It takes several minutes on a phone. Keep the phone
+0017's paint bench instead, <code>?experiment=labels</code> the labels bench,
+<code>?experiment=gestures</code> rotate, tilt and zoom paths through the
+<code>orbis</code> package in each thread mode (<code>&amp;thread=main|worker</code>
+for one). It takes several minutes on a phone. Keep the phone
 plugged in, the screen on and this tab in front, then copy the result into the
 issue.</p>
 <p id="status" data-state="running">starting…</p>
@@ -32,8 +35,10 @@ issue.</p>
 <script type="module">
 // Query: format=mvt|mlt or style=<url> (the Tokyo extract by default); orb-bench settings frames, warmup,
 // rounds, size=WxH, ratio, at=lon,lat, timing=timestamps|work-done,
-// experiment=frames|paint|labels, labels=on|off.
+// experiment=frames|paint|labels|gestures, labels=on|off; for gestures,
+// thread=main|worker.
 import init, { runBench } from "../pkg/harness.js";
+import { runGestures } from "./gestures.js";
 import { demoStyle } from "./styles.js";
 
 const SETTINGS = ["frames", "warmup", "rounds", "size", "ratio", "at", "timing", "experiment", "labels"];
@@ -120,7 +125,19 @@ async function run() {
     for (const name of SETTINGS) if (params.has(name)) options.push(name, params.get(name));
     const lines = await about();
     const started = performance.now();
-    let report = await runBench(style, options, lines, (line) => show(line));
+    let report;
+    if (params.get("experiment") === "gestures") {
+      const [w, h] = (params.get("size") ?? "1024x768").split("x").map(Number);
+      const center = (params.get("at") ?? "139.74,35.685").split(",").map(Number);
+      const thread = params.get("thread");
+      if (thread && !["main", "worker"].includes(thread)) throw new Error("thread must be main or worker");
+      report = await runGestures({
+        style, center, size: [w, h], threads: thread ? [thread] : ["main", "worker"], about: lines,
+        show: (line) => show(line),
+      });
+    } else {
+      report = await runBench(style, options, lines, (line) => show(line));
+    }
     const seconds = ((performance.now() - started) / 1000).toFixed(0);
     if (hidden) {
       report += "\n**The page was hidden during the run: these timings are suspect.**\n";

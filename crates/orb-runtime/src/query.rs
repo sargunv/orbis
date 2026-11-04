@@ -1,6 +1,8 @@
 //! Published picking data. Tile jobs supply only selected feature geometry;
-//! render publication projects it into CSS pixels. Symbols can publish a
-//! separate index and compare their draw order here when placement is ready.
+//! a frame records the tiles it drew, and the index projects their features
+//! into its CSS pixels when something first picks from it: a hit test, a
+//! query or a snapshot for a host's UI thread. Projecting every feature
+//! costs milliseconds, too much for every frame of a moving camera.
 use glam::{DVec2, DVec3, Vec2};
 use orb_camera::{CameraState, View, Viewport};
 use orb_crs::{TileIndex, TileMatrixSet};
@@ -364,14 +366,57 @@ fn inside(p: Vec2, ring: &[Vec2]) -> bool {
     inside
 }
 
+/// `point`, in the pixels of a frame drawn with `now`, in the pixels of
+/// one drawn with `then`: through the ground, so exact for ground features.
+pub(crate) fn through_ground(
+    point: DVec2,
+    now: (&CameraState, Viewport),
+    then: (&CameraState, Viewport),
+    projection: &orb_crs::Projection,
+) -> Option<DVec2> {
+    if now.0 == then.0 && now.1 == then.1 {
+        return Some(point);
+    }
+    let ground = View::new(now.0, now.1, projection).unproject(point)?;
+    let then = View::new(then.0, then.1, projection);
+    // The copy of a wrapping world the index drew.
+    let ground = match projection.wrap_period() {
+        Some(period) => DVec2::new(
+            ground.x - ((ground.x - then.camera_world().x) / period).round() * period,
+            ground.y,
+        ),
+        None => ground,
+    };
+    then.project(ground)
+}
+
 impl crate::Map {
-    /// Synchronous, topmost hit in CSS pixels from the last rendered frame.
+    /// Synchronous, topmost hit in CSS pixels of the last rendered frame,
+    /// building its picking index on first use. When an edit since has
+    /// left the index older than the frame, the point goes through the
+    /// ground to the index's pixels, as [`HitIndex::hit_test_from`] does
+    /// on a host's UI thread.
     pub fn hit_test(&self, point: DVec2) -> Option<Hit> {
-        self.hits
+        let point = self.to_hit_pixels(point)?;
+        self.picking()
+            .hits
             .iter()
             .rev()
             .find(|h| h.contains(point))
             .map(|h| h.hit.clone())
+    }
+
+    /// A point in the last frame's pixels in the picking index's.
+    pub(crate) fn to_hit_pixels(&self, point: DVec2) -> Option<DVec2> {
+        match (self.drawn_view(), self.picking().view()) {
+            (Some((camera, viewport)), Some((built, built_viewport))) => through_ground(
+                point,
+                (&camera, viewport),
+                (&built, built_viewport),
+                &self.projection(),
+            ),
+            _ => Some(point),
+        }
     }
 }
 
@@ -396,8 +441,92 @@ mod tests {
     }
 }
 
-/// One frame's picking publication, alongside tile placement. Kept apart
-/// from GPU uploads and from the future symbol placement index.
+/// What a frame's picking index depends on: the camera, the viewport, the
+/// style revision, uploads and label commits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HitStamp {
+    pub(crate) camera: CameraState,
+    pub(crate) viewport: Viewport,
+    pub(crate) version: u64,
+    pub(crate) counts: crate::map::JobCounts,
+    pub(crate) commits: u64,
+}
+
+/// What a frame drew, for its picking index.
+#[derive(Debug)]
+pub(crate) struct HitFrame {
+    pub(crate) stamp: HitStamp,
+    pub(crate) view: View,
+    /// The style generation the frame shows in full.
+    pub(crate) generation: u64,
+    /// Each drawn tile of each plan source, with its draws.
+    pub(crate) tiles: Vec<(usize, TileIndex, Vec<orb_source::Draw>)>,
+}
+impl HitFrame {
+    pub(crate) fn new(stamp: HitStamp, view: View) -> Self {
+        Self {
+            stamp,
+            view,
+            generation: 0,
+            tiles: Vec::new(),
+        }
+    }
+
+    pub(crate) fn tile(&mut self, source: usize, tile: TileIndex, draws: &[&orb_source::Draw]) {
+        self.tiles
+            .push((source, tile, draws.iter().map(|d| (*d).clone()).collect()));
+    }
+}
+
+/// A map's picking index: the last one built, and the last frame's
+/// drawing when the index is older.
+#[derive(Debug, Default)]
+pub(crate) struct Picking {
+    pub(crate) hits: Vec<ScreenHit>,
+    /// What `hits` were built for.
+    built: Option<HitStamp>,
+    /// The last frame, when it drew something else.
+    frame: Option<HitFrame>,
+    /// The last frame's stamp.
+    latest: Option<HitStamp>,
+    /// Counts frames whose stamp differs from the frame's before.
+    revision: u64,
+}
+impl Picking {
+    /// Whether a frame with `stamp` needs recording.
+    pub(crate) fn stale(&self, stamp: &HitStamp) -> bool {
+        self.built.as_ref() != Some(stamp)
+    }
+
+    /// Notes a frame with `stamp`, and what it drew when
+    /// [`stale`](Self::stale) asked for that.
+    pub(crate) fn drew(&mut self, stamp: HitStamp, frame: Option<HitFrame>) {
+        if self.latest != Some(stamp) {
+            self.latest = Some(stamp);
+            self.revision += 1;
+        }
+        self.frame = frame;
+    }
+
+    /// The waiting frame, if the style is still at its `version`: a later
+    /// edit may have changed the sources and layers it refers to.
+    pub(crate) fn take_frame(&mut self, version: u64) -> Option<HitFrame> {
+        self.frame.take().filter(|f| f.stamp.version == version)
+    }
+
+    pub(crate) fn install(&mut self, frame: &HitFrame, hits: Vec<ScreenHit>) {
+        self.hits = hits;
+        self.built = Some(frame.stamp);
+    }
+
+    /// The camera and viewport the index was built for.
+    pub(crate) fn view(&self) -> Option<(CameraState, Viewport)> {
+        self.built.map(|s| (s.camera, s.viewport))
+    }
+}
+
+/// Projects drawn tiles' features into a frame's pixels for its picking
+/// index.
 pub(crate) struct Publisher<'a> {
     pub(crate) hits: &'a mut Vec<ScreenHit>,
     pub(crate) plan: &'a crate::style::StylePlan,
@@ -415,7 +544,7 @@ impl Publisher<'_> {
         resident: &crate::map::ResidentTile,
         index: usize,
         tile: TileIndex,
-        draws: &[&orb_source::Draw],
+        draws: &[orb_source::Draw],
     ) {
         for mesh in &resident.meshes {
             let Some(node_index) = self.plan.node(mesh.node) else {
@@ -551,9 +680,9 @@ impl HitIndex {
     }
 
     /// [`hit_test`](Self::hit_test) for a point seen with another camera:
-    /// snapshots publish when the camera settles, so a point picked while
-    /// it moves goes through the ground to the snapshot's pixels. Exact for
-    /// ground features; elevated ones and labels are where they were.
+    /// a snapshot older than the camera answers through the ground to its
+    /// pixels. Exact for ground features; elevated ones and labels are
+    /// where they were.
     pub fn hit_test_from(
         &self,
         point: DVec2,
@@ -564,20 +693,12 @@ impl HitIndex {
         let Some((published, published_viewport)) = &self.view else {
             return self.hit_test(point);
         };
-        if published == camera && *published_viewport == viewport {
-            return self.hit_test(point);
-        }
-        let ground = View::new(camera, viewport, projection).unproject(point)?;
-        let then = View::new(published, *published_viewport, projection);
-        // The copy of a wrapping world the snapshot drew.
-        let ground = match projection.wrap_period() {
-            Some(period) => DVec2::new(
-                ground.x - ((ground.x - then.camera_world().x) / period).round() * period,
-                ground.y,
-            ),
-            None => ground,
-        };
-        self.hit_test(then.project(ground)?)
+        self.hit_test(through_ground(
+            point,
+            (camera, viewport),
+            (published, *published_viewport),
+            projection,
+        )?)
     }
     pub fn set_generation(&mut self, generation: u64) {
         self.generation = generation;
@@ -697,19 +818,22 @@ fn write_points(words: &mut Vec<u32>, points: &[Vec2]) {
     }
 }
 impl crate::Map {
-    /// Whether the last frame rebuilt the picking index: geometry, paint
-    /// or the camera changed.
-    pub fn hits_rebuilt(&self) -> bool {
-        self.rebuild_hits
+    /// Counts frames that changed what picking shows (geometry, paint,
+    /// labels or the camera): a host whose [`HitIndex`] came from an
+    /// earlier count asks for a new [`hit_snapshot`](Self::hit_snapshot).
+    pub fn hits_revision(&self) -> u64 {
+        self.picking.borrow().revision
     }
 
     /// The last frame's picking index, for a [`HitIndex`] on another
-    /// thread, with the camera and viewport it was drawn for. Hosts send it
-    /// when the camera settles, then advance its generation with every
-    /// frame acknowledgement.
+    /// thread, with the camera and viewport it was drawn for, built if
+    /// nothing has picked from it yet. Hosts ask for it when
+    /// [`hits_revision`](Self::hits_revision) moves past theirs, then
+    /// advance its generation with every frame acknowledgement.
     pub fn hit_snapshot(&self) -> Vec<u8> {
         let mut words = Vec::new();
-        let (camera, viewport) = self.hit_stamp_view().unwrap_or((
+        let picking = self.picking();
+        let (camera, viewport) = picking.view().unwrap_or((
             *self.camera(),
             Viewport {
                 width: 0.0,
@@ -729,8 +853,8 @@ impl crate::Map {
             let bits = value.to_bits();
             words.extend([bits as u32, (bits >> 32) as u32]);
         }
-        words.push(self.hits.len() as u32);
-        for h in &self.hits {
+        words.push(picking.hits.len() as u32);
+        for h in &picking.hits {
             crate::jobs::write_text(&mut words, &h.hit.layer);
             crate::jobs::write_text(&mut words, &h.hit.source);
             for value in [&h.hit.source_layer, &h.hit.id] {

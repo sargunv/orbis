@@ -11,8 +11,8 @@ use orb_hal::{Gpu, HostBytesId, TextureId};
 use orb_host::{Fetch, FetchError, ImageDecode};
 use orb_render::{
     ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameStats, LinePaint, MeshData,
-    MeshId, NodePaint, OutOfSpace, PageId, PatternPaint, PlacementTarget, Renderer, SceneCapacity,
-    SceneStats, TargetFormat, TileId, TileRow, Translate, Words,
+    MeshId, MeshSize, NodePaint, OutOfSpace, PageId, PatternPaint, PlacementTarget, Renderer,
+    SceneCapacity, SceneStats, TargetFormat, TileId, TileRow, Translate, Words,
 };
 use orb_render::{ImageAtlas, ImageUpload};
 use orb_source::{Draw, TilePyramid};
@@ -31,6 +31,9 @@ const TILE_PX: f64 = 512.0;
 
 /// Ready tiles kept per source beyond those in view.
 const TILE_CACHE: usize = 128;
+/// Milliseconds a frame spends applying arrived tiles before it leaves the
+/// rest for the next frame (plan §7.4's upload budget at 60 Hz).
+const TILE_APPLY_MS: f64 = 1.5;
 /// Ready image tiles kept per source beyond those in view: each holds a
 /// texture layer.
 const IMAGE_TILE_CACHE: usize = 32;
@@ -318,13 +321,14 @@ pub(crate) struct LoadedStyle {
 pub struct Map {
     /// Placement and the scene side of labels.
     pub(crate) labels: crate::labels::Labels,
-    pub(crate) hits: Vec<crate::query::ScreenHit>,
-    /// What the picking index was built for: camera, viewport, style
-    /// revision, uploads and label commits.
-    hit_stamp: Option<(CameraState, Viewport, u64, JobCounts, u64)>,
-    pub(crate) rebuild_hits: bool,
+    /// The picking index, built from the last frame when something picks.
+    pub(crate) picking: std::cell::RefCell<crate::query::Picking>,
+    /// The last frame's camera and viewport.
+    drawn: Option<(CameraState, Viewport)>,
     /// This frame's placement time so far, in milliseconds.
     placement_ms: f64,
+    /// Arrived tiles wait for the next frame: this one spent its budget.
+    tiles_deferred: bool,
     pub(crate) services: Services,
     camera: CameraState,
     antialias_3d: bool,
@@ -506,10 +510,10 @@ impl Map {
             CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 0.0, &mercator)
         });
         Self {
-            hits: Vec::new(),
-            hit_stamp: None,
-            rebuild_hits: true,
+            picking: Default::default(),
+            drawn: None,
             placement_ms: 0.0,
+            tiles_deferred: false,
             services,
             camera,
             surface: Surface::default(),
@@ -644,10 +648,63 @@ impl Map {
         *self.camera_mut() = camera;
     }
 
-    /// The camera and viewport the picking index was built for.
-    pub(crate) fn hit_stamp_view(&self) -> Option<(CameraState, Viewport)> {
-        self.hit_stamp
-            .map(|(camera, viewport, ..)| (camera, viewport))
+    /// The camera and viewport of the last frame.
+    pub(crate) fn drawn_view(&self) -> Option<(CameraState, Viewport)> {
+        self.drawn
+    }
+
+    /// The picking index, built from the last frame if that waits and the
+    /// style hasn't changed since; otherwise the last one built.
+    pub(crate) fn picking(&self) -> std::cell::Ref<'_, crate::query::Picking> {
+        let frame = self.picking.borrow_mut().take_frame(self.version);
+        if let Some(frame) = frame {
+            let hits = self.build_hits(&frame);
+            self.picking.borrow_mut().install(&frame, hits);
+        }
+        self.picking.borrow()
+    }
+
+    /// Projects what `frame` drew, labels included, into its pixels.
+    fn build_hits(&self, frame: &crate::query::HitFrame) -> Vec<crate::query::ScreenHit> {
+        let Some(style) = &self.style else {
+            return Vec::new();
+        };
+        let plan = style.worker.plan();
+        let period = self.surface.period();
+        let mut hits = Vec::new();
+        for (index, tile, draws) in &frame.tiles {
+            let SourceState::Ready {
+                pyramid, endpoint, ..
+            } = &style.sources[*index]
+            else {
+                continue;
+            };
+            let Some(resident) = pyramid.get(*tile) else {
+                continue;
+            };
+            crate::query::Publisher {
+                hits: &mut hits,
+                plan,
+                view: &frame.view,
+                place: match &resident.series {
+                    Some(series) => crate::query::TilePlace::Warped(series),
+                    None => crate::query::TilePlace::Affine(&endpoint.tms),
+                },
+                period,
+                camera: &frame.stamp.camera,
+                zoom: frame.stamp.camera.zoom(self.surface.projection()),
+            }
+            .tile(resident, *index, *tile, draws);
+        }
+        hits.extend(
+            self.labels
+                .screen_hits(plan, &frame.view, &self.bucket_planes(style)),
+        );
+        hits.sort_by_key(|h| h.order);
+        for h in &mut hits {
+            h.hit.generation = frame.generation;
+        }
+        hits
     }
 
     /// The view's style zoom (decision 0022): GL JS's in Web Mercator,
@@ -1025,18 +1082,21 @@ impl Map {
         self.sync_nodes(gpu);
 
         let view = self.view(viewport);
-        let stamp = (
-            self.camera,
+        self.drawn = Some((self.camera, viewport));
+        // Picking records what this frame draws when it differs from the
+        // index's; the index builds from it on first use.
+        let hit_stamp = crate::query::HitStamp {
+            camera: self.camera,
             viewport,
-            self.version,
-            self.counts,
-            self.labels.commits(),
-        );
-        self.rebuild_hits = self.hit_stamp != Some(stamp);
-        if self.rebuild_hits {
-            self.hits.clear();
-            self.hit_stamp = Some(stamp);
-        }
+            version: self.version,
+            counts: self.counts,
+            commits: self.labels.commits(),
+        };
+        let mut hit_frame = self
+            .picking
+            .get_mut()
+            .stale(&hit_stamp)
+            .then(|| crate::query::HitFrame::new(hit_stamp, view.clone()));
         let zoom = self.zoom();
         let mut report = FrameReport::default();
         let clear = self.clear_color;
@@ -1097,7 +1157,14 @@ impl Map {
                 &mut report,
             );
             for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
-                self.place_source(gpu, &view, index, drape.as_ref(), &mut report);
+                self.place_source(
+                    gpu,
+                    &view,
+                    index,
+                    drape.as_ref(),
+                    &mut report,
+                    hit_frame.as_mut(),
+                );
             }
         }
         let labels_settled = self.place_labels(gpu, &view, now);
@@ -1111,25 +1178,18 @@ impl Map {
                 .unwrap()
                 .release_ramps(gpu, self.retired_ramps.drain(..));
         }
-        if self.rebuild_hits
-            && let Some(style) = &self.style
-        {
-            let labels =
-                self.labels
-                    .screen_hits(style.worker.plan(), &view, &self.bucket_planes(style));
-            self.hits.extend(labels);
-        }
-        self.hits.sort_by_key(|h| h.order);
         report.generation = self.generation();
-        for h in &mut self.hits {
-            h.hit.generation = report.generation;
+        if let Some(frame) = &mut hit_frame {
+            frame.generation = report.generation;
         }
+        self.picking.get_mut().drew(hit_stamp, hit_frame);
         report.loaded = self.style.as_ref().is_some_and(|s| {
             s.sprites_loading == 0
                 && s.sources
                     .iter()
                     .all(|source| !matches!(source, SourceState::Resolving))
         }) && report.tiles_loading == 0
+            && !self.tiles_deferred
             && self.pending.is_empty()
             && labels_settled;
         report.idle = report.loaded && !fading && !self.labels.fading(now);
@@ -1553,6 +1613,7 @@ impl Map {
         index: usize,
         drape: Option<&DrapePlan>,
         report: &mut FrameReport,
+        mut hit_frame: Option<&mut crate::query::HitFrame>,
     ) {
         let style = self.style.as_mut().expect("called with a style");
         let Some(draws) = style.draws[index].take() else {
@@ -1602,20 +1663,8 @@ impl Map {
                     });
                 }
             }
-            if self.rebuild_hits {
-                crate::query::Publisher {
-                    hits: &mut self.hits,
-                    plan: style.worker.plan(),
-                    view,
-                    place: match &resident.series {
-                        Some(series) => crate::query::TilePlace::Warped(series),
-                        None => crate::query::TilePlace::Affine(tms),
-                    },
-                    period,
-                    camera: &self.camera,
-                    zoom: self.camera.zoom(self.surface.projection()),
-                }
-                .tile(resident, index, tile, draws);
+            if let Some(frame) = hit_frame.as_deref_mut() {
+                frame.tile(index, tile, draws);
             }
             let frame = resident
                 .image
@@ -2156,8 +2205,15 @@ impl Map {
         }
     }
 
+    /// Applies arrived results in order. New tiles apply within
+    /// [`TILE_APPLY_MS`], at least one a frame: tiles that arrive together
+    /// spread their uploads over frames rather than stalling one. Edits'
+    /// results apply whole.
     fn apply_messages(&mut self, gpu: &mut dyn Gpu) {
+        let started = self.services.clock.now();
+        self.tiles_deferred = false;
         while let Ok(message) = self.receiver.try_recv() {
+            let new_tile = matches!(message, Message::Tile { edit: None, .. });
             match message {
                 Message::Placed(committed) => {
                     if let Some((renderer, _)) = &mut self.renderer {
@@ -2320,6 +2376,10 @@ impl Map {
                     }
                 }
             }
+            if new_tile && self.services.clock.now() - started > TILE_APPLY_MS {
+                self.tiles_deferred = true;
+                break;
+            }
         }
     }
 
@@ -2443,9 +2503,20 @@ impl Map {
         let footprint = warp.as_mut().and_then(|warp| warp.footprint(tile));
         let tile_zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
         let mut atlas = self.services.images.0.lock().expect("images poisoned");
-        // Make room by evicting cached tiles the view doesn't use, least
-        // recently used first, this source's before others'; then the tiles
-        // this one replaces as soon as it's ready.
+        // Make room for the whole tile before writing any of it: an upload
+        // that runs out part way starts over, so making room one eviction
+        // at a time would write the tile again for every tile evicted.
+        let sizes = mesh_sizes(plan, &build);
+        while !renderer.scene().fits(sizes.iter().copied()) {
+            let Some(victim) = evict_unused(&mut style.sources, source) else {
+                break;
+            };
+            self.retired_ramps
+                .extend(remove_resident(renderer, victim, &mut style.states));
+        }
+        // Then evict cached tiles the view doesn't use, least recently used
+        // first, this source's before others'; then the tiles this one
+        // replaces as soon as it's ready.
         let resident = loop {
             atlas
                 .atlas
@@ -2466,12 +2537,7 @@ impl Map {
             ) {
                 Ok(resident) => break Some(resident),
                 Err(OutOfSpace) => {
-                    let unused = std::iter::once(source)
-                        .chain((0..style.sources.len()).filter(|&s| s != source))
-                        .find_map(|s| match &mut style.sources[s] {
-                            SourceState::Ready { pyramid, .. } => pyramid.evict_lru(),
-                            _ => None,
-                        });
+                    let unused = evict_unused(&mut style.sources, source);
                     let victim = unused.or_else(|| match &mut style.sources[source] {
                         SourceState::Ready { pyramid, .. } => pyramid.evict_within(tile),
                         _ => None,
@@ -2852,6 +2918,42 @@ fn upload(
         return Err(e);
     }
     Ok(resident)
+}
+
+/// Evicts the least recently used cached tile the view doesn't use, of
+/// source `first` before others'.
+fn evict_unused(sources: &mut [SourceState], first: usize) -> Option<ResidentTile> {
+    let others = (0..sources.len()).filter(|&s| s != first);
+    std::iter::once(first)
+        .chain(others)
+        .find_map(|s| match &mut sources[s] {
+            SourceState::Ready { pyramid, .. } => pyramid.evict_lru(),
+            _ => None,
+        })
+}
+
+/// What a tile result's meshes take in the scene, as [`upload`] inserts
+/// them.
+fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize> {
+    let words = |stream: &Stream| match stream {
+        Stream::Core(words) => words.len() as u32,
+        Stream::Host { len, .. } => *len,
+    };
+    result
+        .meshes
+        .iter()
+        .filter(|mesh| {
+            !plan
+                .node(mesh.node)
+                .is_some_and(|i| plan.nodes[i].family.is_symbol())
+        })
+        .map(|mesh| MeshSize {
+            vertices: words(&mesh.vertices),
+            indices: words(&mesh.indices),
+            props: words(&mesh.props),
+            chunks: mesh.chunks.len() as u32,
+        })
+        .collect()
 }
 
 /// Removes a tile from the scene. Returns the ramps its rows retained.

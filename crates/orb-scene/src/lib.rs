@@ -434,6 +434,15 @@ pub struct MeshData<'a> {
     pub chunks: &'a [Chunk],
 }
 
+/// The words and chunks of a mesh to insert, for [`Scene::fits`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MeshSize {
+    pub vertices: u32,
+    pub indices: u32,
+    pub props: u32,
+    pub chunks: u32,
+}
+
 impl<'a> MeshData<'a> {
     /// A mesh laid out in core memory, with its property rows.
     pub fn new(mesh: &'a Mesh, props: &'a [u32], row_words: u32) -> Self {
@@ -1001,6 +1010,26 @@ impl Scene {
     /// Uploads a mesh of `tile` for render `node`, with its property rows.
     /// Host-held words are written straight from the host; releasing them
     /// stays with the caller.
+    /// Whether meshes of these sizes would all insert now, in order: the
+    /// arena ranges and chunk slots [`insert_mesh`](Self::insert_mesh)
+    /// would take, found without writing anything.
+    pub fn fits(&self, meshes: impl IntoIterator<Item = MeshSize>) -> bool {
+        let mut vertices = self.vertex_arena.clone();
+        let mut indices = self.index_arena.clone();
+        let mut props = self.prop_arena.clone();
+        let mut chunks = 0u64;
+        for mesh in meshes {
+            if vertices.alloc(mesh.vertices).is_none()
+                || indices.alloc(mesh.indices).is_none()
+                || props.alloc(mesh.props).is_none()
+            {
+                return false;
+            }
+            chunks += u64::from(mesh.chunks);
+        }
+        chunks <= u64::from(self.chunk_slots.available())
+    }
+
     pub fn insert_mesh(
         &mut self,
         gpu: &mut dyn Gpu,

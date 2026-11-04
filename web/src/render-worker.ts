@@ -33,6 +33,19 @@ const loop = frameLoop(() => {
   }
   return draw(false);
 }, fail);
+// A camera draws once the messages queued before it are in, so when frames
+// fall behind the page's, a backlog of cameras draws only the newest
+// rather than every one in turn.
+const cameraDraw = new MessageChannel();
+let cameraQueued = false;
+cameraDraw.port1.onmessage = () => {
+  cameraQueued = false;
+  try {
+    if (map && draw(true)) loop.request();
+  } catch (e) {
+    fail(e);
+  }
+};
 
 self.onmessage = async ({ data }: MessageEvent) => {
   switch (data.type) {
@@ -53,7 +66,10 @@ self.onmessage = async ({ data }: MessageEvent) => {
   switch (data.type) {
     case "camera":
       map.setCamera(data.camera);
-      if (draw(true)) loop.request();
+      if (!cameraQueued) {
+        cameraQueued = true;
+        cameraDraw.port2.postMessage(null);
+      }
       break;
     case "resize":
       map.resize(data.width, data.height, data.ratio);

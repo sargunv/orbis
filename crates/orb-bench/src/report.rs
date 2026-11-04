@@ -316,7 +316,7 @@ fn coarse_note(stat: Stat) -> &'static str {
     }
 }
 
-fn resolution(r: Option<Duration>) -> String {
+pub(crate) fn resolution(r: Option<Duration>) -> String {
     match r {
         Some(r) if r < Duration::from_micros(1) => format!("{} ns", r.as_nanos()),
         Some(r) => format!("{:.1} µs", r.as_secs_f64() * 1e6),

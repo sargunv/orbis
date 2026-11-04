@@ -263,7 +263,7 @@ Lanes: MAIN [H + ui], RENDER-W [S], JOB-W k [J], PLACE-W [P] (dedicated when `ha
 9. **PLACE-W:** cross-tile matching → placement on the latest camera → symbol-state diff (u32 per symbol) + sort-key permutations → RENDER-W.
 10. **RENDER-W:** frame block + changed rows; diff applied (≤0.2 ms) → **one cull/compact dispatch** → replay the pass bundle (≈ one `drawIndirect` per node) → present.
 11. **GPU:** Cull/Compact → Prepare → Layer2D → Symbols → ViewAnnotations.
-12. **RENDER-W → MAIN:** frame ack `{generation, camera, viewport}`; hit snapshot on settle; accessibility delta.
+12. **RENDER-W → MAIN:** frame ack `{generation, camera, viewport, hits revision}`; hit snapshot on request; accessibility delta.
 
 Main-path messages: 4 (+2 per glyph batch), against 14–16 hops per uncached tile on Native Android [verified baseline]. Worker frames usually present one rAF later than main-thread rendering [reviewer-reported; measured in M3].
 
@@ -325,7 +325,7 @@ Costs and answers:
 - **Overlay skew**: a transferred OffscreenCanvas cannot commit atomically with the DOM. Default overlays are **engine-drawn view annotations** (composited in-frame, collided with labels, depth-tested); DOM overlays are opt-in on frame acks, documented ±1 frame.
 - **Terrain (M7)**: the ui role receives a compact elevation pyramid (min/max + 32×32 u16 coarse DEM per covered tile, ~2 KB each); sync `unproject` under terrain returns `{lngLat, approximate: true}`, `unprojectExact` is async.
 
-**M3 rule:** measure input-to-photon latency (pan, pinch, rotate), overlay skew and main busy time on Chrome (Windows, Android), Safari (macOS, iOS) and Firefox (Windows). The worker default stands if its p95 penalty is ≤1 frame and main busy time is ≤25% of GL JS's; otherwise `thread: "main"` becomes the default. The API is identical either way. [measured at M3, decision 0021] In headless Chrome 156 on an Apple M6 the worker's penalty is one frame at p50 (pan +17.1 ms, pinch +16.5 at 60 Hz) but 1.1–1.75 frames at the pan p95; its main busy time is 19% of GL JS 6.16.0's there and 25% on a moto g 5G (2024); DOM annotations on frame acknowledgements skew by under a frame (p95 1.6–9.2 ms). By the rule, **`thread: "main"` is the default**; `"worker"` and `"auto"` stay. Windows, Safari, iOS and Firefox, and Android latency, are unmeasured.
+**M3 rule:** measure input-to-photon latency (pan, pinch, rotate), overlay skew and main busy time on Chrome (Windows, Android), Safari (macOS, iOS) and Firefox (Windows). The worker default stands if its p95 penalty is ≤1 frame and main busy time is ≤25% of GL JS's; otherwise `thread: "main"` becomes the default. The API is identical either way. [measured at M3, decision 0021] In headless Chrome 156 on an Apple M6 the worker's penalty is one frame at p50 (pan +17.1 ms, pinch +16.5 at 60 Hz) but 1.1–1.75 frames at the pan p95; its main busy time is 19% of GL JS 6.16.0's there and 25% on a moto g 5G (2024); DOM annotations on frame acknowledgements skew by under a frame (p95 1.6–9.2 ms). By the rule, **`thread: "main"` is the default**; `"worker"` and `"auto"` stay. Windows, Safari, iOS and Firefox, and Android latency, are unmeasured. [built at M3, decision 0023] Both modes send tile jobs and labels to the job and placement workers; only where the map draws differs (main mode had run jobs on the page, 30–190 ms tasks per live tile).
 
 **One binary, three roles:** `compileStreaming` overlapped with the style fetch; the compiled `Module` is posted to workers; main instantiates the ui role at no extra download. `wasm-split` only if M2 shows instantiation or memory cost on low-end phones.
 
@@ -353,6 +353,14 @@ Costs and answers:
 | Encode/replay + submit | Modern ≤0.1 ms; Compat remainder | — |
 
 These answer Native's p1 encode at 15–27 ms and GL JS's 102 ms worst frame [verified].
+
+[built at M3] Arrived tiles apply within the 1.5 ms upload budget, at least
+one a frame, the rest in order on the next frames (edits' results apply
+whole). A tile makes room for all its meshes before writing any: the scene
+checks that its arena ranges and chunk slots fit, evicting unused tiles
+until they do, where a tile that ran out part way used to write itself again
+for every tile it evicted (about 250 rewrites in a 6 s rotation at Seattle,
+40–100 MiB in one frame).
 
 ### 7.5 Invalidation, idle, pacing
 
@@ -733,12 +741,17 @@ CRS/TMS and composition are the candidates for spec RFCs with fixtures. An offli
 
 The M1 playground publishes non-symbol fill, line, circle and extrusion hit
 geometry with resident tile results, including promoted ids. `Map::hit_test`
-and `OrbisMap.hitTest(x, y)` synchronously read the last rendered snapshot in
-CSS pixels; camera and style mutations leave that snapshot intact until the
-next render. The worker host transfers changed picking snapshots with frame
-acknowledgements to the page's ui role, so `hitTest` is synchronous in both
-thread modes; snapshots carry their camera and publish once it settles,
-and points picked while it moves map through the ground to the snapshot.
+and `OrbisMap.hitTest(x, y)` synchronously read the last rendered frame in
+CSS pixels; camera and style mutations leave it intact until the next
+render. A frame only records the tiles it drew; the index projects their
+features into its pixels when something first picks from it (a hit test, a
+query or a snapshot), since projecting every feature took 20–30 ms of
+render-thread time per moving frame at Seattle z14 in Chrome. Frame
+acknowledgements carry a hits revision; the page's ui role asks the render
+worker for a snapshot when a hit test finds its own older, and before it
+emits `idle`, so `hitTest` is synchronous in both thread modes and exact
+after `idle`. Snapshots carry their camera, and points picked with a newer
+one map through the ground to the snapshot.
 [built at M3] Labels and icons the last placement commit shows join the
 index as their collision boxes (a line label as its anchor's circle).
 `Map::query_rendered` (the package's `queryRenderedFeatures`, a point or a

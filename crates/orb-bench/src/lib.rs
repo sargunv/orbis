@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod clock;
+mod gestures;
 mod labels;
 mod paint;
 mod report;
@@ -23,6 +24,7 @@ mod timed;
 
 use std::time::Duration;
 
+pub use gestures::GesturesReport;
 pub use labels::LabelsReport;
 use orb_geo::Geodetic;
 use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureUsages};
@@ -69,6 +71,9 @@ pub enum Experiment {
     /// M2's label exits: placement time while turning, hidden symbols' GPU
     /// cost.
     Labels,
+    /// Rotate, tilt and zoom paths at a 60 Hz pace with tiles arriving:
+    /// frame-time distributions.
+    Gestures,
 }
 
 /// A bench's results.
@@ -77,6 +82,7 @@ pub enum Report {
     Frames(FramesReport),
     Paint(PaintReport),
     Labels(LabelsReport),
+    Gestures(GesturesReport),
 }
 
 impl Report {
@@ -87,6 +93,7 @@ impl Report {
             Self::Frames(r) => r.write(&mut out),
             Self::Paint(r) => r.write(&mut out),
             Self::Labels(r) => r.write(&mut out),
+            Self::Gestures(r) => r.write(&mut out),
         }
         .expect("writing to a String");
         out
@@ -147,7 +154,8 @@ impl Settings {
     /// Sets one option by name, as the native tool's `--name value` and the
     /// page's `?name=value` give it: `frames`, `warmup`, `rounds`, `size`
     /// (`WxH`), `ratio`, `at` (`lon,lat`), `timing` (`timestamps` or
-    /// `work-done`), `experiment` (`frames`, `paint` or `labels`) or
+    /// `work-done`), `experiment` (`frames`, `paint`, `labels` or
+    /// `gestures`) or
     /// `labels` (`on` or `off`).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let number = |value: &str| {
@@ -195,7 +203,10 @@ impl Settings {
                     "frames" => Experiment::Frames,
                     "paint" => Experiment::Paint,
                     "labels" => Experiment::Labels,
-                    _ => return Err("experiment needs frames, paint or labels".into()),
+                    "gestures" => Experiment::Gestures,
+                    _ => {
+                        return Err("experiment needs frames, paint, labels or gestures".into());
+                    }
                 }
             }
             _ => return Err(format!("unknown option {name}")),
@@ -352,6 +363,21 @@ pub async fn run(
         )
         .await
         .map(Report::Labels);
+    }
+    if settings.experiment == Experiment::Gestures {
+        let size = (width, height);
+        return gestures::run(
+            &mut gpu,
+            timing,
+            (target, size),
+            format,
+            settings,
+            about,
+            new_map,
+            progress,
+        )
+        .await
+        .map(Report::Gestures);
     }
     let render = |gpu: &mut TimedGpu, map: &mut Map| {
         let started = clock::now();

@@ -4,7 +4,8 @@
 //   pnpm bench [--precise] [--android[=serial]] [--name=value…]
 //
 // `--name=value` pairs become the page's query (format, style, frames,
-// warmup, rounds, size, ratio, at, timing, experiment, labels). Chrome runs as a
+// warmup, rounds, size, ratio, at, timing, experiment, labels; thread for
+// `--experiment=gestures`, which runs both thread modes without it). Chrome runs as a
 // user's would, quantizing timestamps (to 65.5 µs on a Mac) and
 // `performance.now()` (to 100 µs). `--precise` allows WebGPU's unsafe APIs,
 // which stops the first, and serves the page cross-origin isolated, which

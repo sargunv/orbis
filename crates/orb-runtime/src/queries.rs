@@ -60,7 +60,11 @@ fn layer_type(kind: &LayerKind) -> &str {
 impl crate::Map {
     /// GL JS `queryRenderedFeatures`: the features drawn in the box
     /// `min..max` (logical pixels; a point when they are equal) in the last
-    /// frame, topmost first, of `layers` or of every layer.
+    /// frame, topmost first, of `layers` or of every layer. When the
+    /// picking index is older than the frame (see
+    /// [`hit_test`](Self::hit_test)), the box goes through the ground to its
+    /// pixels: its corners' bounds there, or the whole index when a corner
+    /// of a box is above the horizon.
     pub fn query_rendered(
         &self,
         min: DVec2,
@@ -73,9 +77,29 @@ impl crate::Map {
         };
         let plan = style.worker.plan();
         let (min, max) = (min.min(max), min.max(max));
+        let corners = [min, DVec2::new(max.x, min.y), max, DVec2::new(min.x, max.y)]
+            .map(|p| self.to_hit_pixels(p));
+        let (min, max) = if corners.iter().all(Option::is_some) {
+            let corners = corners.map(Option::unwrap);
+            (
+                corners
+                    .into_iter()
+                    .reduce(DVec2::min)
+                    .expect("four corners"),
+                corners
+                    .into_iter()
+                    .reduce(DVec2::max)
+                    .expect("four corners"),
+            )
+        } else if min == max {
+            return done(Ok("[]".into()));
+        } else {
+            (DVec2::NEG_INFINITY, DVec2::INFINITY)
+        };
         let mut seen = HashSet::new();
         let mut wanted = Vec::new();
-        for hit in self.hits.iter().rev() {
+        let picking = self.picking();
+        for hit in picking.hits.iter().rev() {
             if layers.is_some_and(|l| !l.contains(&hit.hit.layer))
                 || !hit.intersects(min, max)
                 || !seen.insert((hit.order, hit.key))

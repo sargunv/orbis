@@ -1302,8 +1302,11 @@ mod tests {
             job();
         }
         assert_eq!(wakes.load(Ordering::SeqCst), first.tiles_loading as usize);
-        let published = offscreen.frame();
-        assert!(published.idle);
+        // Each frame applies at least one arrived tile (plan §7.4's budget).
+        let published = (0..first.tiles_loading)
+            .map(|_| offscreen.frame())
+            .find(|report| report.idle)
+            .expect("one frame per arrived tile at most");
         assert_eq!(published.tiles_loading, 0);
         assert!(published.tiles_drawn > 0);
         assert_eq!(offscreen.map.zoom(), camera.zoom(&super::web_mercator()));
