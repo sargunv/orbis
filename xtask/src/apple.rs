@@ -3,6 +3,9 @@
 //! with the C headers and a Clang module map, then the Swift package and
 //! its macOS reference app with SwiftPM (plan §17: SwiftPM only packages).
 //! `--test` also runs the package's Swift binding scenario.
+//! `--ios-sim[=name]` builds the iOS reference app for the simulator,
+//! wraps it in an app bundle, and installs and launches it on a booted
+//! simulator of that name (default "iPhone 17"), booting it if needed.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,11 +38,18 @@ const SLICES: &[(&str, &str, &str, &str)] = &[
 const PACKAGE: &str = "hosts/apple";
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
-    let test = match args {
-        [] => false,
-        [flag] if flag == "--test" => true,
-        _ => return Err("apple: usage: cargo xtask apple [--test]".into()),
-    };
+    let mut test = false;
+    let mut simulator = None;
+    for arg in args {
+        match arg.as_str() {
+            "--test" => test = true,
+            "--ios-sim" => simulator = Some("iPhone 17".to_owned()),
+            a if a.starts_with("--ios-sim=") => {
+                simulator = Some(a["--ios-sim=".len()..].to_owned())
+            }
+            _ => return Err("apple: usage: cargo xtask apple [--test] [--ios-sim[=name]]".into()),
+        }
+    }
     let root = root();
     let headers = headers(&root)?;
     let mut libraries = Vec::new();
@@ -94,8 +104,73 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
                 .arg(&package),
         )?;
     }
+    if let Some(name) = simulator {
+        ios_simulator(&root, &package, &name)?;
+    }
     Ok(())
 }
+
+/// Builds the iOS reference app for the simulator and runs it there.
+fn ios_simulator(root: &Path, package: &Path, name: &str) -> Result<(), String> {
+    let derived = root.join("target/apple/derived");
+    check(
+        Command::new("xcodebuild")
+            .current_dir(package)
+            .args([
+                "-quiet",
+                "-scheme",
+                "OrbisDemoIOS",
+                "-destination",
+                "generic/platform=iOS Simulator",
+                "-configuration",
+                "Release",
+                "-derivedDataPath",
+            ])
+            .arg(&derived)
+            // The simulator slice is arm64 only.
+            .args(["ARCHS=arm64", "build"]),
+    )?;
+    let binary = derived.join("Build/Products/Release-iphonesimulator/OrbisDemoIOS");
+    let app = root.join("target/apple/OrbisDemo.app");
+    let _ = std::fs::remove_dir_all(&app);
+    std::fs::create_dir_all(&app).map_err(|e| e.to_string())?;
+    std::fs::copy(&binary, app.join("OrbisDemoIOS"))
+        .map_err(|e| format!("{}: {e}", binary.display()))?;
+    std::fs::write(app.join("Info.plist"), INFO_PLIST).map_err(|e| e.to_string())?;
+    let size = std::fs::metadata(&binary).map_err(|e| e.to_string())?.len();
+    eprintln!(
+        "apple: iOS simulator app binary {:.1} MB",
+        size as f64 / 1e6
+    );
+    // Booting a booted device fails; that's fine.
+    let _ = Command::new("xcrun")
+        .args(["simctl", "boot", name])
+        .status();
+    check(
+        Command::new("xcrun")
+            .args(["simctl", "install", name])
+            .arg(&app),
+    )?;
+    check(Command::new("xcrun").args(["simctl", "launch", name, "dev.orbis.demo"]))
+}
+
+const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>OrbisDemoIOS</string>
+    <key>CFBundleIdentifier</key><string>dev.orbis.demo</string>
+    <key>CFBundleName</key><string>Orbis</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.0.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSRequiresIPhoneOS</key><true/>
+    <key>MinimumOSVersion</key><string>16.0</string>
+    <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
+    <key>UILaunchScreen</key><dict/>
+</dict>
+</plist>
+"#;
 
 /// The C headers and a Clang module map for them.
 fn headers(root: &Path) -> Result<PathBuf, String> {

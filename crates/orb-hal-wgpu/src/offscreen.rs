@@ -50,11 +50,27 @@ impl WgpuGpu {
         if info.backend == wgpu::Backend::Vulkan && info.vendor == QUALCOMM {
             (instance, adapter) = self::adapter(true).await?;
         }
+        // The Modern tier draws indirectly from compute (plan §4.2); devices
+        // without that (the iOS simulator's Metal) are Compat's, from M4.
+        let downlevel = adapter.get_downlevel_capabilities().flags;
+        let modern = wgpu::DownlevelFlags::COMPUTE_SHADERS
+            | wgpu::DownlevelFlags::INDIRECT_EXECUTION
+            | wgpu::DownlevelFlags::VERTEX_STORAGE;
+        if !downlevel.contains(modern) {
+            return Err(format!(
+                "{} lacks {:?}, which the Modern tier needs",
+                adapter.get_info().name,
+                modern - downlevel
+            ));
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
                 // Natively, warm starts reuse pipelines through a cache.
                 required_features: adapter.features() & wgpu::Features::PIPELINE_CACHE,
+                // WebGPU's defaults, lowered where the adapter falls short
+                // of them: the iOS simulator has 15 inter-stage variables.
+                required_limits: wgpu::Limits::default().or_worse_values_from(&adapter.limits()),
                 ..Default::default()
             })
             .await
