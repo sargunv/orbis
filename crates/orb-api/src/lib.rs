@@ -118,6 +118,11 @@ impl Runtime {
         self.shared.gpu.borrow().pipelines_created()
     }
 
+    /// Time spent making shader modules and pipelines so far.
+    pub fn pipeline_time(&self) -> std::time::Duration {
+        self.shared.gpu.borrow().pipeline_time()
+    }
+
     /// A surface on a window or view that wgpu accepts safely (a winit
     /// window), in physical pixels.
     pub fn create_surface(

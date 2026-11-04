@@ -83,6 +83,26 @@ fn style_frame_query_edit_gesture_idle() {
     assert_eq!((hit.layer.as_str(), hit.id.as_deref()), ("box", Some("7")));
     assert!(map.hit_test(glam::DVec2::new(1.0, 1.0)).is_none());
 
+    // Rendered features arrive as an event, and wake the map.
+    let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
+    let id = map.query_rendered(center, center);
+    let started = std::time::Instant::now();
+    let features = loop {
+        if let Some(Event::Query { id: done, result }) = map.poll_event() {
+            assert_eq!(done, id);
+            break result.expect("query");
+        }
+        assert!(started.elapsed().as_secs() < 10, "no query result");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert!(features.contains(r#""id":"box""#), "{features}");
+    assert!(
+        features.starts_with('[') && features.contains(r#""id":7"#),
+        "{features}"
+    );
+    assert!(map.needs_frame(), "the result woke the map");
+    settle(&mut map, &mut target);
+
     let generation = map
         .edit(r##"[["setPaintProperty", "box", "fill-color", "#00ff00"]]"##)
         .expect("edit");

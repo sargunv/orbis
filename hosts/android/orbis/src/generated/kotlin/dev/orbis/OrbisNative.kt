@@ -36,7 +36,7 @@ internal object OrbisNative {
     external fun orbEventGeneration(self: Long): Long
 
     @JvmStatic
-    external fun orbEventAnimation(self: Long): Long
+    external fun orbEventId(self: Long): Long
 
     @JvmStatic
     external fun orbEventFlag(self: Long): Boolean
@@ -135,6 +135,9 @@ internal object OrbisNative {
     external fun orbMapHitTest(self: Long, x: Double, y: Double): Long
 
     @JvmStatic
+    external fun orbMapQueryRendered(self: Long, x0: Double, y0: Double, x1: Double, y1: Double): Long
+
+    @JvmStatic
     external fun orbMapProject(self: Long, lon: Double, lat: Double): OrbPoint
 
     @JvmStatic
@@ -157,6 +160,9 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbRuntimePipelinesCreated(self: Long): Int
+
+    @JvmStatic
+    external fun orbRuntimePipelineMs(self: Long): Double
 
     @JvmStatic
     external fun orbTargetCreateTexture(runtime: Long, width: Int, height: Int, scale: Double): Long

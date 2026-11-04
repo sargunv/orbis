@@ -61,4 +61,12 @@ public final class OrbRuntime {
         return OrbRuntime_pipelines_created(live())
     }
 
+    /// Milliseconds spent making shader modules and pipelines so far:
+    /// translation and the driver's compiles.
+    ///
+    /// Contract: `snapshot`.
+    public func pipelineMs() -> Double {
+        return OrbRuntime_pipeline_ms(live())
+    }
+
 }

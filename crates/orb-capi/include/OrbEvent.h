@@ -27,7 +27,7 @@ double OrbEvent_y(const OrbEvent* self);
 
 uint64_t OrbEvent_generation(const OrbEvent* self);
 
-uint64_t OrbEvent_animation(const OrbEvent* self);
+uint64_t OrbEvent_id(const OrbEvent* self);
 
 bool OrbEvent_flag(const OrbEvent* self);
 

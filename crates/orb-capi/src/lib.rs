@@ -85,6 +85,13 @@ pub mod ffi {
         pub fn pipelines_created(&self) -> u32 {
             self.0.pipelines_created()
         }
+
+        /// Milliseconds spent making shader modules and pipelines so far:
+        /// translation and the driver's compiles.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn pipeline_ms(&self) -> f64 {
+            self.0.pipeline_time().as_secs_f64() * 1000.0
+        }
     }
 
     /// What a map draws into: a window surface, or a texture the runtime
@@ -344,6 +351,10 @@ pub mod ffi {
         /// A press and release that didn't move the map, at `x`, `y`.
         Click = 8,
         DoubleClick = 9,
+        /// A `query_rendered` finished: `id` is its id, `flag` whether it
+        /// succeeded, `text` the features as a JSON array of GeoJSON
+        /// features, topmost first, or the error.
+        QueryResult = 10,
     }
 
     /// For camera events: what changed.
@@ -396,17 +407,19 @@ pub mod ffi {
             }
         }
 
-        /// The animation, for animation ends.
+        /// The animation, for animation ends; the query, for query
+        /// results.
         #[diplomat::attr(contract, snapshot)]
-        pub fn animation(&self) -> u64 {
+        pub fn id(&self) -> u64 {
             match self.0 {
                 orb_api::Event::Camera(orb_api::CameraEvent::AnimationEnd { id, .. }) => id.0,
+                orb_api::Event::Query { id, .. } => id,
                 _ => 0,
             }
         }
 
         /// Camera events: from user input. Animation ends: interrupted.
-        /// Source data: loaded.
+        /// Source data: loaded. Query results: succeeded.
         #[diplomat::attr(contract, snapshot)]
         pub fn flag(&self) -> bool {
             match self.0 {
@@ -415,6 +428,7 @@ pub mod ffi {
                     interrupted, ..
                 }) => interrupted,
                 orb_api::Event::Map(orb_api::MapEvent::SourceData { loaded, .. }) => loaded,
+                orb_api::Event::Query { ref result, .. } => result.is_ok(),
                 _ => false,
             }
         }
@@ -463,12 +477,17 @@ pub mod ffi {
             }
         }
 
-        /// Source data: the source's id. Errors: the message.
+        /// Source data: the source's id. Errors: the message. Query
+        /// results: the features' JSON, or the error.
         #[diplomat::attr(contract, snapshot)]
         pub fn text(&self, out: &mut DiplomatWrite) {
             let text = match &self.0 {
                 orb_api::Event::Map(orb_api::MapEvent::SourceData { source, .. }) => source,
                 orb_api::Event::Map(orb_api::MapEvent::Error { message }) => message,
+                orb_api::Event::Query {
+                    result: Ok(text) | Err(text),
+                    ..
+                } => text,
                 _ => "",
             };
             out.write_str(text).ok();
@@ -773,6 +792,16 @@ pub mod ffi {
                 .map(|hit| Box::new(OrbFeature(hit)))
         }
 
+        /// GL JS `queryRenderedFeatures` over a box in logical pixels (a
+        /// point when the corners are equal), in the last frame drawn.
+        /// Returns the query's id; a `QueryResult` event with it brings the
+        /// features, and the map wakes when it arrives.
+        #[diplomat::attr(contract, query)]
+        pub fn query_rendered(&mut self, x0: f64, y0: f64, x1: f64, y1: f64) -> u64 {
+            self.0
+                .query_rendered(glam::DVec2::new(x0, y0), glam::DVec2::new(x1, y1))
+        }
+
         /// Where a point is in the viewport, in logical pixels.
         #[diplomat::attr(contract, query)]
         pub fn project(&self, lon: f64, lat: f64) -> OrbPoint {
@@ -945,6 +974,7 @@ fn event_kind(event: &orb_api::Event) -> OrbEventKind {
         Event::Camera(CameraEvent::AnimationEnd { .. }) => OrbEventKind::AnimationEnd,
         Event::Click { .. } => OrbEventKind::Click,
         Event::DoubleClick { .. } => OrbEventKind::DoubleClick,
+        Event::Query { .. } => OrbEventKind::QueryResult,
     }
 }
 

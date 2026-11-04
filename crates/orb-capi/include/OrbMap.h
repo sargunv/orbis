@@ -81,6 +81,8 @@ bool OrbMap_blur(OrbMap* self);
 
 OrbFeature* OrbMap_hit_test(const OrbMap* self, double x, double y);
 
+uint64_t OrbMap_query_rendered(OrbMap* self, double x0, double y0, double x1, double y1);
+
 OrbPoint OrbMap_project(const OrbMap* self, double lon, double lat);
 
 OrbLngLat OrbMap_unproject(const OrbMap* self, double x, double y);

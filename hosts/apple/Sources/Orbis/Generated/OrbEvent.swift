@@ -45,15 +45,16 @@ public final class OrbEvent: @unchecked Sendable {
         return OrbEvent_generation(handle)
     }
 
-    /// The animation, for animation ends.
+    /// The animation, for animation ends; the query, for query
+    /// results.
     ///
     /// Contract: `snapshot`.
-    public func animation() -> UInt64 {
-        return OrbEvent_animation(handle)
+    public func id() -> UInt64 {
+        return OrbEvent_id(handle)
     }
 
     /// Camera events: from user input. Animation ends: interrupted.
-    /// Source data: loaded.
+    /// Source data: loaded. Query results: succeeded.
     ///
     /// Contract: `snapshot`.
     public func flag() -> Bool {
@@ -81,7 +82,8 @@ public final class OrbEvent: @unchecked Sendable {
         return OrbButton(rawValue: numericCast(OrbEvent_button(handle).rawValue))!
     }
 
-    /// Source data: the source's id. Errors: the message.
+    /// Source data: the source's id. Errors: the message. Query
+    /// results: the features' JSON, or the error.
     ///
     /// Contract: `snapshot`.
     public func text() -> String {

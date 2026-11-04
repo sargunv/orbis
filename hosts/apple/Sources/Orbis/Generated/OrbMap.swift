@@ -196,6 +196,16 @@ public final class OrbMap {
         return OrbMap_hit_test(live(), x, y).map { OrbFeature(handle: $0) }
     }
 
+    /// GL JS `queryRenderedFeatures` over a box in logical pixels (a
+    /// point when the corners are equal), in the last frame drawn.
+    /// Returns the query's id; a `QueryResult` event with it brings the
+    /// features, and the map wakes when it arrives.
+    ///
+    /// Contract: `query`.
+    public func queryRendered(x0: Double, y0: Double, x1: Double, y1: Double) -> UInt64 {
+        return OrbMap_query_rendered(live(), x0, y0, x1, y1)
+    }
+
     /// Where a point is in the viewport, in logical pixels.
     ///
     /// Contract: `query`.

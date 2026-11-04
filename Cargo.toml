@@ -83,3 +83,12 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# Native libraries for apps (cargo xtask capi, android, apple): small and
+# whole-program optimized; panics abort, as they do at the C ABI anyway.
+[profile.dist]
+inherits = "release"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

@@ -34,6 +34,8 @@ Playwright.
 | `cargo xtask check` | fmt, clippy (native and wasm32), tests, generated bindings up to date, boundary rules; offline, no fixture mirror needed |
 | `cargo xtask bindings` | regenerate the C header (`crates/orb-capi/include`), Kotlin/JNI and Swift bindings from `orb-capi`'s bridge; run after changing it |
 | `mise x -- cargo xtask bindings test` | the emitters' Swift and Kotlin compile-and-run tests |
+| `cargo xtask apple [--test]` | `hosts/apple/OrbisC.xcframework` (macOS, iOS, iOS simulator) and the Swift package; `--test` runs the Swift binding scenario |
+| `hosts/apple/.build/release/OrbisDemo [--snapshot out.png] [style]` | macOS reference app (after `cargo xtask apple`); `--snapshot` renders into a texture target, prints timings and pipeline counts |
 | `mise x -- cargo xtask capi --test` | the C library in `target/capi` (static lib, headers, pkg-config, CMake) and the C smoke test through both |
 | `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]]` | native demo window |
 | `… -p orb-demo -- --snapshot out.png` | render offscreen until idle, write a PNG |

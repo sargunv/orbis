@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod apple;
 mod bindings;
 mod boundaries;
 mod capi;
@@ -22,6 +23,9 @@ cargo xtask <task>
   bindings [--check | test]  the C header, Kotlin and Swift bindings from orb-capi
                (decision 0018); --check fails when they're stale; test runs the
                emitters' Swift and Kotlin compile-and-run tests
+  apple [--test]  liborbis.a for macOS, iOS and the iOS simulator as
+               hosts/apple/OrbisC.xcframework, then the Swift package and the
+               macOS reference app; --test runs the Swift binding scenario
   capi [--test]  the C library for this host: static library, headers,
                pkg-config and CMake files in target/capi; --test builds and runs
                the C smoke test against it, through pkg-config and CMake
@@ -47,6 +51,7 @@ fn main() -> ExitCode {
         Some("boundaries") => boundaries::check(),
         Some("bindings") => bindings::run(&args[1..]),
         Some("capi") => capi::run(&args[1..]),
+        Some("apple") => apple::run(&args[1..]),
         Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
             expression_fixtures::bundle()
         }

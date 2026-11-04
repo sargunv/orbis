@@ -59,17 +59,18 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * The animation, for animation ends.
+     * The animation, for animation ends; the query, for query
+     * results.
      *
      * Contract: `snapshot`.
      */
-    fun animation(): ULong {
-        return OrbisNative.orbEventAnimation(live()).toULong()
+    fun id(): ULong {
+        return OrbisNative.orbEventId(live()).toULong()
     }
 
     /**
      * Camera events: from user input. Animation ends: interrupted.
-     * Source data: loaded.
+     * Source data: loaded. Query results: succeeded.
      *
      * Contract: `snapshot`.
      */
@@ -105,7 +106,8 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * Source data: the source's id. Errors: the message.
+     * Source data: the source's id. Errors: the message. Query
+     * results: the features' JSON, or the error.
      *
      * Contract: `snapshot`.
      */

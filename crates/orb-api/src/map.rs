@@ -50,9 +50,16 @@ pub enum Event {
     DoubleClick {
         position: DVec2,
     },
+    /// A query from [`Map::query_rendered`] finished: a JSON array of
+    /// GeoJSON features, topmost first, or why it failed.
+    Query {
+        id: u64,
+        result: Result<String, String>,
+    },
 }
 
 type WakeHook = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
+type Finished = Arc<Mutex<Vec<(u64, Result<String, String>)>>>;
 
 /// A map: style, camera store, gestures and events. Draw it with
 /// [`render`](Self::render) whenever [`needs_frame`](Self::needs_frame).
@@ -67,7 +74,12 @@ pub struct Map {
     /// Set from any thread when data arrived.
     woken: Arc<AtomicBool>,
     hook: WakeHook,
+    /// Marks the map woken and calls the hook, from any thread.
+    wake: Arc<dyn Fn() + Send + Sync>,
     events: VecDeque<Event>,
+    /// Queries finished on worker threads, not yet events.
+    finished: Finished,
+    next_query: u64,
     format: Option<TargetFormat>,
     /// The last frame left work: loads, fades or placement.
     busy: bool,
@@ -88,7 +100,7 @@ impl Map {
     pub fn new(runtime: &Runtime, options: MapOptions) -> Self {
         let woken = Arc::new(AtomicBool::new(false));
         let hook: WakeHook = Arc::default();
-        let wake = {
+        let wake: Arc<dyn Fn() + Send + Sync> = {
             let woken = woken.clone();
             let hook = hook.clone();
             Arc::new(move || {
@@ -98,7 +110,7 @@ impl Map {
                 }
             })
         };
-        let mut map = orb_runtime::Map::new(runtime.services(wake), options.camera);
+        let mut map = orb_runtime::Map::new(runtime.services(wake.clone()), options.camera);
         map.set_clear_color(options.clear_color);
         let camera = Camera::new(
             *map.camera(),
@@ -117,7 +129,10 @@ impl Map {
             pushed: 0,
             woken,
             hook,
+            wake,
             events: VecDeque::new(),
+            finished: Arc::default(),
+            next_query: 0,
             format: None,
             busy: true,
             dirty: true,
@@ -227,6 +242,30 @@ impl Map {
         self.map.hit_test(point)
     }
 
+    /// GL JS `queryRenderedFeatures` over the box `min..max` in logical
+    /// pixels (a point when they're equal), in every layer of the last
+    /// frame drawn. The features arrive as an [`Event::Query`] with the
+    /// returned id; the map wakes when they do.
+    pub fn query_rendered(&mut self, min: DVec2, max: DVec2) -> u64 {
+        self.next_query += 1;
+        let id = self.next_query;
+        let finished = self.finished.clone();
+        let wake = self.wake.clone();
+        self.map.query_rendered(
+            min,
+            max,
+            None,
+            Box::new(move |result| {
+                finished
+                    .lock()
+                    .expect("queries poisoned")
+                    .push((id, result));
+                wake();
+            }),
+        );
+        id
+    }
+
     /// Where a point is in the viewport, in logical pixels; `None` when
     /// it's behind the camera.
     pub fn project(&self, point: Geodetic) -> Option<DVec2> {
@@ -318,6 +357,12 @@ impl Map {
 
     /// The oldest event not yet taken.
     pub fn poll_event(&mut self) -> Option<Event> {
+        let finished = std::mem::take(&mut *self.finished.lock().expect("queries poisoned"));
+        self.events.extend(
+            finished
+                .into_iter()
+                .map(|(id, result)| Event::Query { id, result }),
+        );
         self.events.pop_front()
     }
 

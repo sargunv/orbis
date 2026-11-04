@@ -1,3 +1,4 @@
+#define _GNU_SOURCE /* memmem */
 /* The binding scenario through the C ABI (plan §14.1): a style into a
  * texture target, a hit test, an edit, a click, events, idle and errors.
  * `cargo xtask capi --test` builds it against the installed library. */
@@ -113,6 +114,32 @@ int main(void) {
     CHECK(strcmp(text, "7") == 0);
     OrbFeature_destroy(hit);
     CHECK(!OrbMap_hit_test(map, 1, 1));
+
+    /* Rendered features arrive as an event with the query's id. */
+    uint64_t query = OrbMap_query_rendered(map, SIZE / 2.0, SIZE / 2.0, SIZE / 2.0, SIZE / 2.0);
+    int answered = 0;
+    for (int tries = 0; tries < 5000 && !answered; tries++) {
+        OrbEvent* q;
+        while ((q = OrbMap_poll_event(map))) {
+            if (OrbEvent_kind(q) == OrbEventKind_QueryResult && OrbEvent_id(q) == query) {
+                CHECK(OrbEvent_flag(q));
+                DiplomatWrite* json = diplomat_buffer_write_create(0);
+                OrbEvent_text(q, json);
+                char* bytes = diplomat_buffer_write_get_bytes(json);
+                size_t len = diplomat_buffer_write_len(json);
+                CHECK(len > 2 && bytes[0] == '[');
+                const char* needle = "\"id\":\"box\"";
+                CHECK(memmem(bytes, len, needle, strlen(needle)) != NULL);
+                diplomat_buffer_write_destroy(json);
+                answered = 1;
+            }
+            OrbEvent_destroy(q);
+        }
+        struct timespec ms = {0, 1000000};
+        nanosleep(&ms, NULL);
+    }
+    CHECK(answered);
+    settle(map, target, counts);
 
     OrbMap_edit_result edit =
         OrbMap_edit(map, view("[[\"setPaintProperty\", \"box\", \"fill-color\", \"#00ff00\"]]"));

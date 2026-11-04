@@ -164,10 +164,10 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbEventGeneration(JNIEnv* en
     return (jlong)(result);
 }
 
-JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbEventAnimation(JNIEnv* env, jclass cls, jlong self) {
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbEventId(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
-    uint64_t result = OrbEvent_animation((const OrbEvent*)(intptr_t)self);
+    uint64_t result = OrbEvent_id((const OrbEvent*)(intptr_t)self);
     return (jlong)(result);
 }
 
@@ -416,6 +416,13 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapHitTest(JNIEnv* env, jc
     return (jlong)(intptr_t)(result);
 }
 
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapQueryRendered(JNIEnv* env, jclass cls, jlong self, jdouble x0, jdouble y0, jdouble x1, jdouble y1) {
+    (void)env;
+    (void)cls;
+    uint64_t result = OrbMap_query_rendered((OrbMap*)(intptr_t)self, (double)(x0), (double)(y0), (double)(x1), (double)(y1));
+    return (jlong)(result);
+}
+
 JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapProject(JNIEnv* env, jclass cls, jlong self, jdouble lon, jdouble lat) {
     (void)env;
     (void)cls;
@@ -479,6 +486,13 @@ JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRuntimePipelinesCreated(JNI
     (void)cls;
     uint32_t result = OrbRuntime_pipelines_created((const OrbRuntime*)(intptr_t)self);
     return (jint)(result);
+}
+
+JNIEXPORT jdouble JNICALL Java_dev_orbis_OrbisNative_orbRuntimePipelineMs(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    double result = OrbRuntime_pipeline_ms((const OrbRuntime*)(intptr_t)self);
+    return (jdouble)(result);
 }
 
 JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbTargetCreateTexture(JNIEnv* env, jclass cls, jlong runtime, jint width, jint height, jdouble scale) {

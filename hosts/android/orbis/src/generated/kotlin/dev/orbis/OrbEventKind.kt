@@ -44,7 +44,13 @@ enum class OrbEventKind(val value: Int) {
      * A press and release that didn't move the map, at `x`, `y`.
      */
     Click(8),
-    DoubleClick(9);
+    DoubleClick(9),
+    /**
+     * A `query_rendered` finished: `id` is its id, `flag` whether it
+     * succeeded, `text` the features as a JSON array of GeoJSON
+     * features, topmost first, or the error.
+     */
+    QueryResult(10);
 
     companion object {
         @JvmStatic

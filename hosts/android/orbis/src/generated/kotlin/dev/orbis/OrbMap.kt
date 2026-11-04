@@ -219,6 +219,18 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * GL JS `queryRenderedFeatures` over a box in logical pixels (a
+     * point when the corners are equal), in the last frame drawn.
+     * Returns the query's id; a `QueryResult` event with it brings the
+     * features, and the map wakes when it arrives.
+     *
+     * Contract: `query`.
+     */
+    fun queryRendered(x0: Double, y0: Double, x1: Double, y1: Double): ULong {
+        return OrbisNative.orbMapQueryRendered(live(), x0, y0, x1, y1).toULong()
+    }
+
+    /**
      * Where a point is in the viewport, in logical pixels.
      *
      * Contract: `query`.

@@ -1,7 +1,7 @@
 //! `cargo xtask capi [--test]`: the C library for this host (plan §17), in
 //! `target/capi`:
 //!
-//! - `lib/liborbis.a`, release, with everything Orbis needs from Rust;
+//! - `lib/liborbis.a`, built with the `dist` profile;
 //! - `include/orbis/`, Diplomat's headers and the `orbis.h` umbrella;
 //! - `lib/pkgconfig/orbis.pc` and `lib/cmake/orbis/orbisConfig.cmake`
 //!   (`orbis::orbis`), with the system libraries rustc reports.
@@ -31,14 +31,15 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
 
 fn build() -> Result<PathBuf, String> {
     let root = root();
-    eprintln!("$ cargo rustc -p orb-capi --release --lib --crate-type staticlib");
+    eprintln!("$ cargo rustc -p orb-capi --profile dist --lib --crate-type staticlib");
     let output = Command::new(env!("CARGO"))
         .current_dir(&root)
         .args([
             "rustc",
             "-p",
             "orb-capi",
-            "--release",
+            "--profile",
+            "dist",
             "--lib",
             "--crate-type",
             "staticlib",
@@ -62,7 +63,7 @@ fn build() -> Result<PathBuf, String> {
     {
         Some(libs) => link_items(libs).join(" "),
         None => std::fs::read_to_string(&libs_file).map_err(|_| {
-            "rustc didn't report native-static-libs; `cargo clean -p orb-capi --release` and retry"
+            "rustc didn't report native-static-libs; `cargo clean -p orb-capi --profile dist` and retry"
                 .to_owned()
         })?,
     };
@@ -78,7 +79,7 @@ fn build() -> Result<PathBuf, String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     std::fs::write(&libs_file, &native).map_err(|e| e.to_string())?;
-    let built = root.join("target/release/liborbis.a");
+    let built = root.join("target/dist/liborbis.a");
     std::fs::copy(&built, lib.join("liborbis.a"))
         .map_err(|e| format!("{}: {e}", built.display()))?;
     for header in std::fs::read_dir(root.join(C_DIR)).map_err(|e| e.to_string())? {

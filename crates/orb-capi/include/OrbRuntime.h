@@ -23,6 +23,8 @@ uint32_t OrbRuntime_abi_version(void);
 
 uint32_t OrbRuntime_pipelines_created(const OrbRuntime* self);
 
+double OrbRuntime_pipeline_ms(const OrbRuntime* self);
+
 void OrbRuntime_destroy(OrbRuntime* self);
 
 

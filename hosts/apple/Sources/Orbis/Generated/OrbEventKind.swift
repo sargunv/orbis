@@ -31,4 +31,8 @@ public enum OrbEventKind: Int, Sendable, CaseIterable {
     /// A press and release that didn't move the map, at `x`, `y`.
     case click = 8
     case doubleClick = 9
+    /// A `query_rendered` finished: `id` is its id, `flag` whether it
+    /// succeeded, `text` the features as a JSON array of GeoJSON
+    /// features, topmost first, or the error.
+    case queryResult = 10
 }

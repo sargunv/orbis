@@ -38,6 +38,16 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
         return OrbisNative.orbRuntimePipelinesCreated(live()).toUInt()
     }
 
+    /**
+     * Milliseconds spent making shader modules and pipelines so far:
+     * translation and the driver's compiles.
+     *
+     * Contract: `snapshot`.
+     */
+    fun pipelineMs(): Double {
+        return OrbisNative.orbRuntimePipelineMs(live())
+    }
+
     companion object {
         /**
          * Makes a device on the default adapter and starts the job and

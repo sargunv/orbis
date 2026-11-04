@@ -9,3 +9,10 @@
 # The GL JS fixture mirror, fetched by `cargo xtask fixtures`.
 /fixtures/gl-js/
 /fixtures/gl-js.partial/
+# Built by `cargo xtask apple` and `cargo xtask android`.
+/hosts/apple/OrbisC.xcframework/
+/hosts/apple/.build/
+/hosts/android/.gradle/
+/hosts/android/**/build/
+/hosts/android/orbis/src/main/jniLibs/
+/hosts/android/local.properties

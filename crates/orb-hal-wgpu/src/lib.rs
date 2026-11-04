@@ -50,6 +50,11 @@ pub struct WgpuGpu {
     host_images: Slots<web_sys::ImageBitmap>,
     uploaded: Uploaded,
     pipelines_created: u32,
+    /// Time spent making shader modules and pipelines. Natively wgpu
+    /// translates and the driver compiles there; browsers do it in the GPU
+    /// process, out of sight.
+    #[cfg(not(target_arch = "wasm32"))]
+    pipeline_time: std::time::Duration,
 }
 
 /// Bytes written to buffers and textures since the device was created, by
@@ -134,6 +139,8 @@ impl WgpuGpu {
             host_images: Slots::default(),
             uploaded: Uploaded::default(),
             pipelines_created: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            pipeline_time: std::time::Duration::ZERO,
         }
     }
 
@@ -145,6 +152,12 @@ impl WgpuGpu {
     /// Render and compute pipelines created so far (plan §16).
     pub fn pipelines_created(&self) -> u32 {
         self.pipelines_created
+    }
+
+    /// Time spent making shader modules and pipelines so far.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn pipeline_time(&self) -> std::time::Duration {
+        self.pipeline_time
     }
 
     /// Registers bytes in Rust memory for [`Gpu::write_buffer_from_host`].
@@ -540,12 +553,18 @@ impl Gpu for WgpuGpu {
     }
 
     fn create_shader_module(&mut self, desc: &ShaderModuleDesc<'_>) -> ShaderModuleId {
+        #[cfg(not(target_arch = "wasm32"))]
+        let started = std::time::Instant::now();
         let module = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(desc.label),
                 source: wgpu::ShaderSource::Wgsl(desc.wgsl.clone()),
             });
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.pipeline_time += started.elapsed();
+        }
         ShaderModuleId(self.shader_modules.insert(module))
     }
 
@@ -619,6 +638,8 @@ impl Gpu for WgpuGpu {
     }
 
     fn create_render_pipeline(&mut self, desc: &RenderPipelineDesc<'_>) -> RenderPipelineId {
+        #[cfg(not(target_arch = "wasm32"))]
+        let started = std::time::Instant::now();
         let layout = self.pipeline_layout(desc.label, desc.bind_group_layouts);
         let targets: Vec<_> = desc
             .targets
@@ -674,11 +695,17 @@ impl Gpu for WgpuGpu {
                 multiview_mask: None,
                 cache: None,
             });
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.pipeline_time += started.elapsed();
+        }
         self.pipelines_created += 1;
         RenderPipelineId(self.render_pipelines.insert(pipeline))
     }
 
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> ComputePipelineId {
+        #[cfg(not(target_arch = "wasm32"))]
+        let started = std::time::Instant::now();
         let layout = self.pipeline_layout(desc.label, desc.bind_group_layouts);
         let pipeline = self
             .device
@@ -693,6 +720,10 @@ impl Gpu for WgpuGpu {
                 },
                 cache: None,
             });
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.pipeline_time += started.elapsed();
+        }
         self.pipelines_created += 1;
         ComputePipelineId(self.compute_pipelines.insert(pipeline))
     }
