@@ -9,7 +9,9 @@
 //! buffers.
 //!
 //! Messages, render worker to placement worker: `{ingest, buffer}` (a
-//! bucket id and its packed tables), `{remove}` (a bucket id) and
+//! bucket id and its packed tables), `{remove}` (a bucket id),
+//! `{ground: buffer}` (the terrain's elevation pyramid for the frames that
+//! follow, empty for none; sent when the terrain changes) and
 //! `{place: buffer}` (a packed frame). Placement worker to render worker:
 //! `{committed: buffer}`, one per frame.
 
@@ -19,10 +21,10 @@ use std::sync::{Arc, Mutex};
 
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use orb_runtime::{
-    InlinePlacement, PlaceDone, PlacementLane, pack_committed, pack_frame, pack_tables,
-    unpack_committed, unpack_frame, unpack_tables,
+    InlinePlacement, PlaceDone, PlacementLane, TerrainElevation, pack_committed, pack_frame,
+    pack_tables, unpack_committed, unpack_frame, unpack_tables,
 };
-use orb_symbol::{Frame, PlacementTables};
+use orb_symbol::{Frame, GroundRef, PlacementTables};
 use wasm_bindgen::prelude::*;
 
 thread_local! {
@@ -31,6 +33,8 @@ thread_local! {
     /// single-threaded, so the runtime's `Send` lane reaches them here.
     static POST: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
     static OWED: RefCell<VecDeque<PlaceDone>> = const { RefCell::new(VecDeque::new()) };
+    /// The terrain the placement worker has last been sent.
+    static GROUND: RefCell<Option<GroundRef>> = const { RefCell::new(None) };
 }
 
 fn object(fields: &[(&str, JsValue)]) -> Object {
@@ -96,6 +100,20 @@ impl PlacementLane for WorkerPlacement {
 
     fn place(&self, frame: Frame, done: PlaceDone) {
         OWED.with(|owed| owed.borrow_mut().push_back(done));
+        let changed = GROUND.with(|sent| {
+            let mut sent = sent.borrow_mut();
+            let changed = *sent != frame.ground;
+            sent.clone_from(&frame.ground);
+            changed
+        });
+        if changed {
+            let bytes = frame
+                .ground
+                .as_ref()
+                .map_or_else(Vec::new, |g| g.0.pyramid());
+            let buffer = Uint8Array::from(bytes.as_slice());
+            post(&object(&[("ground", buffer.clone().into())]), Some(&buffer));
+        }
         let buffer = Uint8Array::from(pack_frame(&frame).as_slice());
         post(&object(&[("place", buffer.clone().into())]), Some(&buffer));
     }
@@ -106,6 +124,8 @@ impl PlacementLane for WorkerPlacement {
 #[derive(Debug, Default)]
 pub struct PlacementWorker {
     lane: InlinePlacement,
+    /// The terrain frames place on.
+    ground: Option<GroundRef>,
 }
 
 #[wasm_bindgen]
@@ -134,7 +154,20 @@ impl PlacementWorker {
             self.lane.remove(bucket as u64);
             return Ok(JsValue::UNDEFINED);
         }
-        let frame = unpack_frame(&bytes(get("place"))?).map_err(|e| JsError::new(&e))?;
+        let ground = get("ground");
+        if !ground.is_undefined() {
+            let pyramid = bytes(ground)?;
+            self.ground = if pyramid.is_empty() {
+                None
+            } else {
+                let terrain =
+                    TerrainElevation::from_pyramid(&pyramid).map_err(|e| JsError::new(&e))?;
+                Some(GroundRef(Arc::new(terrain)))
+            };
+            return Ok(JsValue::UNDEFINED);
+        }
+        let mut frame = unpack_frame(&bytes(get("place"))?).map_err(|e| JsError::new(&e))?;
+        frame.ground.clone_from(&self.ground);
         let reply = Arc::new(Mutex::new(None));
         let sink = Arc::clone(&reply);
         self.lane.place(

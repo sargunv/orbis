@@ -2324,6 +2324,7 @@ dependencies = [
  "orb-runtime",
  "png",
  "pollster",
+ "serde_json",
  "wgpu",
  "winit",
 ]

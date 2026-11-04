@@ -16,6 +16,7 @@ orb-hal-wgpu.workspace = true
 orb-host-native.workspace = true
 orb-jobs.workspace = true
 orb-runtime.workspace = true
+serde_json.workspace = true
 png.workspace = true
 pollster.workspace = true
 wgpu.workspace = true

@@ -127,6 +127,10 @@ pub(crate) fn pitched_label_plane(
 /// for a tile).
 pub trait Ground: Send + Sync + std::fmt::Debug {
     fn elevation(&self, tile: TileId, x: f64, y: f64) -> f64;
+
+    /// A compact copy of these elevations as bytes, for placement on
+    /// another thread (the web's placement worker).
+    fn pyramid(&self) -> Vec<u8>;
 }
 
 /// A symbol's elevation in metres (GL JS `getSymbolElevation`): its height

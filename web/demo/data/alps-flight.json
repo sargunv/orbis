@@ -1,0 +1,9 @@
+{
+  "description": "A loop over the Valais Alps for alps.json: Zermatt, the Matterhorn, Monte Rosa and the Aletsch glacier. Each leg is a flyTo of CameraOptions with a duration in milliseconds.",
+  "legs": [
+    {"center": [7.6586, 45.9763], "zoom": 13.2, "bearing": -60, "pitch": 74, "duration": 14000},
+    {"center": [7.8670, 45.9370], "zoom": 12.6, "bearing": 40, "pitch": 70, "duration": 14000},
+    {"center": [8.0300, 46.4700], "zoom": 11.8, "bearing": 160, "pitch": 72, "duration": 16000},
+    {"center": [7.7491, 46.0207], "zoom": 11.6, "bearing": -32, "pitch": 72, "duration": 16000}
+  ]
+}

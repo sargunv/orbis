@@ -3,11 +3,14 @@
 //! features under it.
 //!
 //! `cargo run --release -p orb-demo -- [style URL] [--at lon,lat,zoom[,bearing,pitch]]
-//! [--format mvt|mlt] [--snapshot out.png [--a11y out.json]]`
+//! [--format mvt|mlt] [--flight flight.json] [--snapshot out.png [--a11y out.json]]`
 //!
-//! Frame counters are shown in the window title. `--snapshot` renders
-//! 1024×768 offscreen until everything has loaded, writes a PNG and exits;
-//! `--a11y` also writes the frame's semantic snapshot (plan §13) as JSON.
+//! Frame counters are shown in the window title. `--flight` flies a loop
+//! of `flyTo` legs until the user takes the camera (the terrain demo:
+//! `file://$PWD/web/demo/data/alps.json --flight
+//! web/demo/data/alps-flight.json`). `--snapshot` renders 1024×768
+//! offscreen until everything has loaded, writes a PNG and exits; `--a11y`
+//! also writes the frame's semantic snapshot (plan §13) as JSON.
 //! `--count-frames <seconds>` prints how many frames the window drew in
 //! that long after the map first went idle, then exits.
 
@@ -55,6 +58,8 @@ struct Options {
     /// Count the frames drawn this many seconds after the map first goes
     /// idle, print them and exit: idle means zero frames (plan §7.5).
     count_frames: Option<f64>,
+    /// A flight file to fly in a loop (`web/demo/data/alps-flight.json`).
+    flight: Option<String>,
 }
 
 fn options() -> Result<Options, String> {
@@ -66,6 +71,7 @@ fn options() -> Result<Options, String> {
         a11y: None,
         watch_style: None,
         count_frames: None,
+        flight: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -90,6 +96,8 @@ fn options() -> Result<Options, String> {
                     .parse()
                     .map_err(|e| format!("--count-frames: {e}"))?,
             );
+        } else if arg == "--flight" {
+            options.flight = Some(args.next().ok_or("--flight needs a flight file")?);
         } else if arg == "--watch-style" {
             options.watch_style = Some(args.next().ok_or("--watch-style needs a path")?);
         } else if arg == "--snapshot" {
@@ -398,6 +406,51 @@ struct State {
     last_title: Instant,
     edit_pending: Vec<(u64, u32, f64)>,
     queued_edit: Option<String>,
+    /// Flying until the user takes the camera.
+    flight: Option<Flight>,
+}
+
+/// A loop of camera flights: legs of `flyTo` options (center, zoom,
+/// bearing, pitch and duration in milliseconds), as the web demo flies them.
+struct Flight {
+    legs: Vec<(orb_camera::CameraTarget, orb_camera::FlyOptions)>,
+    next: usize,
+}
+
+impl Flight {
+    fn read(path: &str) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+        let legs = json["legs"]
+            .as_array()
+            .ok_or_else(|| format!("{path}: no legs"))?
+            .iter()
+            .map(|leg| {
+                let number = |key: &str| leg[key].as_f64();
+                let center = leg["center"]
+                    .as_array()
+                    .and_then(|c| Some(Geodetic::new(c.first()?.as_f64()?, c.get(1)?.as_f64()?)));
+                (
+                    orb_camera::CameraTarget {
+                        center,
+                        zoom: number("zoom"),
+                        bearing: number("bearing"),
+                        pitch: number("pitch"),
+                        ..Default::default()
+                    },
+                    orb_camera::FlyOptions {
+                        duration: number("duration"),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        if legs.is_empty() {
+            return Err(format!("{path}: no legs"));
+        }
+        Ok(Self { legs, next: 0 })
+    }
 }
 
 impl State {
@@ -482,6 +535,10 @@ impl State {
             last_title: Instant::now(),
             edit_pending: Vec::new(),
             queued_edit: None,
+            flight: options
+                .flight
+                .as_deref()
+                .map(|path| Flight::read(path).expect("flight file")),
         }
     }
 
@@ -507,6 +564,8 @@ impl State {
     }
 
     fn input(&mut self, input: orb_interact::Input) {
+        // The user takes the camera from a flight.
+        self.flight = None;
         let now = self.now();
         self.input.handle(&mut self.camera, input, now);
         self.window.request_redraw();
@@ -515,6 +574,14 @@ impl State {
     /// Advances gestures and animations and gives the map the camera.
     fn move_camera(&mut self) -> bool {
         let now = self.now();
+        if let Some(flight) = &mut self.flight
+            && !self.camera.is_animating()
+            && !self.camera.is_held()
+        {
+            let (target, options) = &flight.legs[flight.next];
+            self.camera.fly_to(target, options, now);
+            flight.next = (flight.next + 1) % flight.legs.len();
+        }
         let gesture = self.input.frame(&mut self.camera, now);
         let animating = self.camera.frame(now);
         self.camera.take_events();
@@ -834,7 +901,73 @@ mod tests {
             a11y: None,
             watch_style: None,
             count_frames: None,
+            flight: None,
         }
+    }
+
+    /// The web ui role's approximate terrain (decision 0019): how far the
+    /// elevation pyramid's elevations and terrain unprojections are from
+    /// the map's over the Alps demo. Needs the network (Mapterhorn and
+    /// OpenFreeMap tiles): `cargo test --release -p orb-demo -- --ignored
+    /// pyramid`.
+    #[test]
+    #[ignore = "fetches tiles over the network"]
+    fn pyramid_error_over_the_alps() {
+        use orb_camera::Elevation;
+        let style = format!(
+            "file://{}/../../web/demo/data/alps.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let options = super::Options {
+            style: Some(style),
+            at: None,
+            ..tokyo(0.0)
+        };
+        let (offscreen, _, _) = super::Offscreen::load(&options).unwrap();
+        let full = offscreen.map.elevation().unwrap();
+        let pyramid =
+            orb_runtime::TerrainElevation::from_pyramid(&offscreen.map.elevation_pyramid())
+                .unwrap();
+        let viewport = offscreen.viewport;
+        let projection = offscreen.map.projection();
+        let view = orb_camera::View::over(offscreen.map.camera(), viewport, &projection, &*full);
+        let (mut metres, mut pixels) = (Vec::new(), Vec::new());
+        for i in 0..40 {
+            for j in 0..30 {
+                let px = glam::DVec2::new(
+                    (f64::from(i) + 0.5) / 40.0 * viewport.width,
+                    (f64::from(j) + 0.5) / 30.0 * viewport.height,
+                );
+                let Some((approx, _)) = view.unproject_terrain(px, &pyramid) else {
+                    continue;
+                };
+                let (Some(true_m), Some(approx_m)) = (full.at(approx), pyramid.at(approx)) else {
+                    continue;
+                };
+                metres.push((true_m - approx_m).abs());
+                // Where the approximate point really draws.
+                if let Some(drawn) = view.project_3d(approx, true_m * view.height_scale()) {
+                    pixels.push(drawn.distance(px));
+                }
+            }
+        }
+        let stats = |v: &mut Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            (v[v.len() / 2], v[v.len() * 95 / 100], v[v.len() - 1])
+        };
+        let (m, p) = (stats(&mut metres), stats(&mut pixels));
+        println!(
+            "pyramid over the Alps, {} pixels: elevation error median {:.1} m, p95 {:.1} m, max {:.1} m; unproject error median {:.2} px, p95 {:.2} px, max {:.2} px; {} bytes",
+            metres.len(),
+            m.0,
+            m.1,
+            m.2,
+            p.0,
+            p.1,
+            p.2,
+            offscreen.map.elevation_pyramid().len()
+        );
+        assert!(p.1 < 8.0, "p95 {} px", p.1);
     }
 
     /// Zooms by `delta` levels around a pixel, as the gestures do.
@@ -956,6 +1089,7 @@ mod tests {
             a11y: None,
             watch_style: None,
             count_frames: None,
+            flight: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         offscreen.map.camera_mut().set_zoom(-1e-9);
@@ -986,6 +1120,7 @@ mod tests {
             a11y: None,
             watch_style: None,
             count_frames: None,
+            flight: None,
         };
         let (_, report, _) = super::Offscreen::load(&at(12.0)).unwrap();
         let used = report.scene;
@@ -1101,6 +1236,7 @@ mod tests {
             a11y: None,
             watch_style: None,
             count_frames: None,
+            flight: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let executor = Arc::new(HeldExecutor::default());
@@ -1195,6 +1331,7 @@ mod tests {
                 a11y: None,
                 watch_style: None,
                 count_frames: None,
+                flight: None,
             };
             let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
             if patterned {
@@ -1256,6 +1393,7 @@ mod tests {
             a11y: None,
             watch_style: None,
             count_frames: None,
+            flight: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         for (bearing, pitch) in [(31.0, 61.0), (10.0, 40.0)] {
@@ -1314,6 +1452,7 @@ mod tests {
                 a11y: None,
                 watch_style: None,
                 count_frames: None,
+                flight: None,
             };
             let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
             let fetch = super::NativeFetch::new();
@@ -1372,6 +1511,7 @@ mod tests {
             a11y: None,
             watch_style: None,
             count_frames: None,
+            flight: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let fetch = super::NativeFetch::new();
@@ -1442,6 +1582,7 @@ mod tests {
             a11y: None,
             watch_style: None,
             count_frames: None,
+            flight: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let fetch = super::NativeFetch::new();
@@ -1500,6 +1641,7 @@ mod tests {
                 a11y: None,
                 watch_style: None,
                 count_frames: None,
+                flight: None,
             };
             let path =
                 std::env::temp_dir().join(format!("orbis-{encoding}-{}.png", std::process::id()));

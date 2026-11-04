@@ -26,6 +26,18 @@ sprites once served.
   symbol layers, in Liberty's order. It inherits OSM Liberty's BSD code and
   CC BY design licences; see [STYLE-LICENSE.md](STYLE-LICENSE.md).
   Upstream style SHA-256: `408245464e76791801a64393c403433d09e8110eb9516040f8dc2b62584eee2a`.
+- `alps.json` and `alps-flight.json`: the terrain demo (`?style=alps&flight`
+  on the web, `--flight` natively; decision 0019), written for this
+  repository. It draws OpenFreeMap's planet tiles (data as above) over
+  [Mapterhorn](https://mapterhorn.com/)'s terrain tiles, fetched at run time
+  and not committed: Terrarium-encoded WebP from open elevation data,
+  around the Alps mainly Copernicus GLO-30 (© DLR e.V. 2010–2014 and
+  © Airbus Defence and Space GmbH 2014–2018, provided under COPERNICUS by
+  the European Union and ESA), swisstopo's swissALTI3D (open government
+  data) and Austria's BEV ALS-DGM (CC BY 4.0); every source and licence is
+  in [Mapterhorn's attribution list](https://mapterhorn.com/attribution).
+  The flight's legs are `flyTo` options looped until the user takes the
+  camera.
 - `scripts.json`: the Cairo, Delhi and Bangkok page's style (`cities.html`,
   `?style=scripts`), written for this repository. It draws OpenFreeMap's
   planet tiles with labels in Arabic, Devanagari, Thai and Latin from

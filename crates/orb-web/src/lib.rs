@@ -78,6 +78,8 @@ pub struct OrbisMap {
     /// The last frame's camera and how many frames in a row showed it, to
     /// publish picking once it settles.
     last_camera: Option<(CameraState, u32)>,
+    /// The terrain revision last published to the ui role.
+    elevation_revision: u64,
 }
 
 /// Frame counters, for the page's HUD.
@@ -94,6 +96,11 @@ pub struct FrameInfo {
     /// once the camera settles on a changed index.
     #[wasm_bindgen(readonly)]
     pub hit_snapshot: Option<Vec<u8>>,
+    /// The terrain's elevation pyramid for the page's [`UiRole`] when it
+    /// changed (empty: the terrain is gone), so its camera stands on the
+    /// terrain (plan §7.1).
+    #[wasm_bindgen(readonly)]
+    pub elevation: Option<Vec<u8>>,
     #[wasm_bindgen(readonly)]
     pub meshes_uploaded: u32,
     #[wasm_bindgen(readonly)]
@@ -270,6 +277,7 @@ async fn create(
         worker_jobs,
         hits_dirty: false,
         last_camera: None,
+        elevation_revision: 0,
     })
 }
 
@@ -488,10 +496,19 @@ impl OrbisMap {
             self.hits_dirty = false;
             self.map.hit_snapshot()
         });
+        // The pyramid publishes once the camera settles too: DEM tiles
+        // arrive in bursts, and the ui role's camera keeps its elevation
+        // meanwhile.
+        let revision = self.map.elevation_revision();
+        let elevation = (settled && revision != self.elevation_revision).then(|| {
+            self.elevation_revision = revision;
+            self.map.elevation_pyramid()
+        });
         Ok(FrameInfo {
             zoom: camera.zoom(),
             camera: ui::camera_array(&camera),
             hit_snapshot,
+            elevation,
             meshes_uploaded: self.map.job_counts().meshes_uploaded,
             rows_uploaded: self.map.job_counts().rows_uploaded,
             draws: report.frame.draws,

@@ -549,6 +549,22 @@ impl UiRole {
         Ok(out)
     }
 
+    /// Stands the camera on the terrain of a frame acknowledgement's
+    /// elevation pyramid (empty: no terrain). Projections then go through
+    /// the pyramid, approximately (decision 0019).
+    #[wasm_bindgen(js_name = updateElevation)]
+    pub fn update_elevation(&mut self, bytes: &[u8]) -> Result<(), JsError> {
+        let terrain = if bytes.is_empty() {
+            None
+        } else {
+            let pyramid =
+                orb_runtime::TerrainElevation::from_pyramid(bytes).map_err(|e| JsError::new(&e))?;
+            Some(std::sync::Arc::new(pyramid) as std::sync::Arc<dyn orb_camera::Elevation>)
+        };
+        self.camera.set_terrain(terrain);
+        Ok(())
+    }
+
     /// Takes a picking snapshot from a frame acknowledgement.
     #[wasm_bindgen(js_name = updateHits)]
     pub fn update_hits(&mut self, bytes: &[u8]) -> Result<(), JsError> {

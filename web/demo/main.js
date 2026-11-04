@@ -7,7 +7,7 @@
 // Tap or click a feature to see its properties in a popup; hovering names
 // the feature under the pointer; a pin marks Tokyo Station.
 import { createMap } from "orbis";
-import { LIVE_CAMERA, demoStyle, isLive } from "./styles.js";
+import { LIVE_CAMERA, demoFlight, demoStyle, isLive } from "./styles.js";
 import { expose, feel, hashCamera } from "./expose.js";
 
 const params = new URLSearchParams(location.search);
@@ -66,7 +66,19 @@ async function main() {
   map.on("render", showFrame);
   map.on("error", ({ message }) => console.error(message));
 
-  if (params.get("style") !== "scripts") {
+  // `?style=alps&flight` flies a loop over the Alps until the user takes
+  // the camera.
+  const flight = demoFlight(params);
+  if (flight) {
+    (async () => {
+      for (let leg = 0; ; leg = (leg + 1) % flight.length) {
+        const arrived = await map.camera.flyTo(flight[leg]);
+        if (!arrived) return;
+      }
+    })();
+  }
+
+  if (!["scripts", "alps"].includes(params.get("style"))) {
     const pin = document.createElement("div");
     pin.className = "pin demo-annotation";
     pin.title = "Tokyo Station";

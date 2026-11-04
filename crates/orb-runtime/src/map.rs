@@ -362,6 +362,8 @@ pub struct Map {
     crossfade: Crossfade,
     /// What elevated content reads of the terrain this frame.
     frame_terrain: Option<orb_render::FrameTerrain>,
+    /// Terrains made so far: each new one's id.
+    terrains: u64,
 }
 
 impl std::fmt::Debug for Map {
@@ -534,6 +536,7 @@ impl Map {
                 mix: 1.0,
             },
             frame_terrain: None,
+            terrains: 0,
             labels: crate::labels::Labels::new(default_lane()),
         }
     }
@@ -1727,7 +1730,9 @@ impl Map {
                 // Raster sources cover with `tileSize / √2` (GL JS's
                 // rounded raster cover).
                 let tile_px = endpoint.cover_px * std::f64::consts::SQRT_2;
+                self.terrains += 1;
                 style.terrain = Some(crate::terrain::Terrain::new(
+                    self.terrains,
                     index,
                     plan.sources[index].key,
                     exaggeration,
@@ -1852,12 +1857,23 @@ impl Map {
         Some(terrain.snapshot() as Arc<dyn orb_camera::Elevation>)
     }
 
+    /// [`elevation`](Self::elevation) at reduced resolution, as bytes for a
+    /// camera on another thread (plan §7.1's elevation pyramid; read with
+    /// [`TerrainElevation::from_pyramid`](crate::TerrainElevation::from_pyramid));
+    /// empty without terrain.
+    pub fn elevation_pyramid(&self) -> Vec<u8> {
+        self.style
+            .as_ref()
+            .and_then(|s| s.terrain.as_ref())
+            .map_or_else(Vec::new, |t| t.snapshot().pyramid())
+    }
+
     /// Changes whenever [`elevation`](Self::elevation) has new data.
     pub fn elevation_revision(&self) -> u64 {
         self.style
             .as_ref()
             .and_then(|s| s.terrain.as_ref())
-            .map_or(0, |t| t.revision)
+            .map_or(0, |t| t.id << 32 | t.revision)
     }
 
     /// A terrain DEM tile arrived: into the terrain's page, prepared with

@@ -40,6 +40,7 @@ Playwright.
 | `mise x -- cargo xtask capi --test` | the C library in `target/capi` (static lib, headers, pkg-config, CMake), the C smoke test through both, and the Kotlin binding scenario on the JVM |
 | `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]]` | native demo window |
 | `… -p orb-demo -- --snapshot out.png` | render offscreen until idle, write a PNG |
+| `… -p orb-demo -- file://$PWD/web/demo/data/alps.json --flight web/demo/data/alps-flight.json` | the terrain flight over the Alps (web: `?style=alps&flight`) |
 | `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/pkg` |
 | `pnpm -C web snapshot out.png '#z/lat/lon' [--thread=main\|worker]` | web demo on the Tokyo extract (the site defaults to the live map) in headless Chromium, screenshot |
 | `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web dev` | playground at `/orbis/playground.html`; write accepted style and hover snapshots to that file (dev only) |

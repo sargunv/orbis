@@ -20,7 +20,8 @@ let ready: Promise<void> | undefined;
 let last = { idle: true, camera: false };
 const draw = (camera: boolean) => {
   const ack = renderFrame(map as unknown as Renderer);
-  self.postMessage({ type: "frame", ack }, ack.hitSnapshot ? [ack.hitSnapshot.buffer] : []);
+  const transfer = [ack.hitSnapshot?.buffer, ack.elevation?.buffer].filter((b) => b !== undefined);
+  self.postMessage({ type: "frame", ack }, transfer);
   last = { idle: ack.idle, camera };
   return !ack.idle;
 };

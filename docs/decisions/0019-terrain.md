@@ -1,7 +1,7 @@
 # 0019: Terrain: draped slots, DEM references and a camera on the ground
 
-Status: implemented under Mercator; symbols on terrain, the web worker's
-CPU elevations and symbol occlusion follow (see the end). The behavioural
+Status: implemented under Mercator, natively and on the web; occlusion of
+symbols and circles by terrain follows (see the end). The behavioural
 reference is MapLibre GL JS `2b68611a4e2d4f7f076f6c6ebf758e2d53f91471`:
 `terrain.ts`, `terrain_tile_manager.ts`, `render_to_texture.ts`,
 `draw_terrain.ts`, `terrain_coverage.ts` and the terrain shaders.
@@ -108,7 +108,27 @@ the map publishes (`Map::elevation`, `Map::elevation_revision`):
 
 CPU elevations are decoded once in the DEM tile's job (`DemGrid`) and
 sampled as GL JS's `TerrainCoverage` does: bilinear in the DEM tile the
-drawn terrain tile reads, past tile edges in its neighbours.
+drawn terrain tile reads, past tile edges in its neighbours. On the web a
+job worker reads a DEM tile's texels once for this and transfers them as
+f32s beside the tile's `ImageBitmap`.
+
+## The web's ui role and placement worker
+
+Threads without the map's DEM tiles get the elevation pyramid (plan §7.1):
+each DEM tile resampled to 128² samples at pixel centres, quantized to 16
+bits per tile, with the drawn tiles. The render worker publishes it with a
+frame once the camera settles after the terrain changed; the ui role's
+camera stands on it, and its `project`/`unproject` go through it, so the
+synchronous `unproject` is approximate. The placement worker receives it
+when it changes, before the frames that use it.
+
+Its documented error, from `orb-demo`'s ignored
+`pyramid_error_over_the_alps` test over the Alps demo (1024×768, zoom
+11.6, pitch 72, 1,120 sampled pixels): the point the ui role unprojects
+draws a median 0.87 px from the pixel, 5.3 px at the 95th percentile and
+21 px at most (steep faces near the horizon); elevations differ by a
+median 13 m. The pyramid is 230 KB for that view. 64² samples were 2.0,
+10.8 and 26 px (58 KB); 256² were 0.33, 2.2 and 5.4 px (918 KB).
 
 ## Measurements
 
@@ -125,12 +145,16 @@ Memory: a slot is 4 MiB plus a third for its mip levels; the atlas grows by
 doubling and holds 64 slots at most on an 8192-texel device. The fixture
 views use 4 to 12 terrain tiles.
 
+## Demo
+
+`?style=alps&flight` (web) and `orb-demo … alps.json --flight
+alps-flight.json` (native) loop a flight over the Valais Alps: OpenFreeMap's
+planet draped over Mapterhorn's terrain tiles (open elevation data, mainly
+Copernicus GLO-30 and swisstopo there), with hillshade, peaks and fog.
+The legs are geodetic `flyTo` targets, nothing in them Mercator's.
+
 ## Follow-ups
 
 - Symbols and circles behind terrain: GL JS fades them by the terrain's
   depth; Orbis draws them still.
-- The web placement worker receives no terrain yet: its symbols place as
-  on flat ground.
-- The web worker path decodes DEM tiles to `ImageBitmap`s and returns no
-  CPU elevations yet; the ui role's elevation pyramid (plan §7.1).
 - Slots for far, small tiles could be smaller than 1024² texels.

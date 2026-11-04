@@ -50,6 +50,8 @@ struct Slot {
 
 #[derive(Debug)]
 pub(crate) struct Terrain {
+    /// Unique among the map's terrains, for revisions.
+    pub(crate) id: u64,
     /// The DEM source's index in the plan and its key.
     pub(crate) source: usize,
     pub(crate) key: u32,
@@ -82,6 +84,7 @@ impl Terrain {
     /// Terrain over a `raster-dem` source of `tile_px` tiles between
     /// `min_zoom` and `max_zoom`.
     pub(crate) fn new(
+        id: u64,
         source: usize,
         key: u32,
         exaggeration: f64,
@@ -90,6 +93,7 @@ impl Terrain {
     ) -> Self {
         let delta = 1 + (tile_px / 256.0).log2().round().max(0.0) as u8;
         Self {
+            id,
             source,
             key,
             exaggeration,
@@ -550,6 +554,126 @@ impl TerrainElevation {
     }
 }
 
+/// Elevation samples per side of each tile of the elevation
+/// [`pyramid`](TerrainElevation::pyramid).
+const PYRAMID_DIM: u32 = 128;
+
+impl TerrainElevation {
+    /// The elevation pyramid (plan §7.1): these elevations with each DEM
+    /// tile resampled to 128² samples quantized to 16 bits, as
+    /// bytes, for a camera on another thread (the web ui role).
+    /// [`from_pyramid`](Self::from_pyramid) reads them back.
+    pub fn pyramid(&self) -> Vec<u8> {
+        let mut words: Vec<u32> = vec![
+            1,
+            (self.exaggeration as f32).to_bits(),
+            u32::from(self.delta),
+            u32::from(self.min_zoom),
+            u32::from(self.max_zoom),
+            self.drawn.len() as u32,
+            self.dems.len() as u32,
+        ];
+        let id = self.tms.id().as_bytes();
+        words.push(id.len() as u32);
+        for chunk in id.chunks(4) {
+            let mut b = [0u8; 4];
+            b[..chunk.len()].copy_from_slice(chunk);
+            words.push(u32::from_le_bytes(b));
+        }
+        for t in &self.drawn {
+            words.extend([u32::from(t.z), t.col, t.row]);
+        }
+        let n = PYRAMID_DIM;
+        for (tile, grid) in &self.dems {
+            // Samples at the coarse grid's pixel centres keep GL JS's pixel
+            // placement, so the coarse tile samples like the full one.
+            let samples: Vec<f32> = (0..n * n)
+                .map(|i| {
+                    let uv = (DVec2::new(f64::from(i % n), f64::from(i / n)) + 0.5) / f64::from(n);
+                    self.sample(*tile, grid, uv) as f32
+                })
+                .collect();
+            let (lo, hi) = samples
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(l, h), &v| {
+                    (l.min(v), h.max(v))
+                });
+            let step = ((hi - lo) / 65535.0).max(f32::MIN_POSITIVE);
+            words.extend([
+                u32::from(tile.z),
+                tile.col,
+                tile.row,
+                lo.to_bits(),
+                step.to_bits(),
+            ]);
+            let q: Vec<u16> = samples
+                .iter()
+                .map(|v| ((v - lo) / step).round().clamp(0.0, 65535.0) as u16)
+                .collect();
+            words.extend(q.chunks(2).map(|p| u32::from(p[0]) | u32::from(p[1]) << 16));
+        }
+        bytemuck::cast_slice(&words).to_vec()
+    }
+
+    /// Reads an [`pyramid`](Self::pyramid).
+    pub fn from_pyramid(bytes: &[u8]) -> Result<Self, String> {
+        let bad = || "malformed elevation pyramid".to_string();
+        if !bytes.len().is_multiple_of(4) {
+            return Err(bad());
+        }
+        let words: Vec<u32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b))
+            .collect();
+        let mut at = 0usize;
+        let mut next = || -> Result<u32, String> {
+            let w = *words.get(at).ok_or_else(bad)?;
+            at += 1;
+            Ok(w)
+        };
+        if next()? != 1 {
+            return Err(bad());
+        }
+        let exaggeration = f64::from(f32::from_bits(next()?));
+        let (delta, min_zoom, max_zoom) = (next()? as u8, next()? as u8, next()? as u8);
+        let (drawn, tiles) = (next()?, next()?);
+        let id_len = next()? as usize;
+        let mut id = Vec::new();
+        for _ in 0..id_len.div_ceil(4) {
+            id.extend(next()?.to_le_bytes());
+        }
+        id.truncate(id_len);
+        let id = String::from_utf8(id).map_err(|_| bad())?;
+        let tms = TileMatrixSet::by_id(&id).map_err(|e| format!("elevation pyramid: {e:?}"))?;
+        let mut elevation = Self::empty(tms, exaggeration);
+        elevation.delta = delta;
+        elevation.min_zoom = min_zoom;
+        elevation.max_zoom = max_zoom;
+        for _ in 0..drawn {
+            let (z, col, row) = (next()? as u8, next()?, next()?);
+            elevation.drawn.insert(TileIndex::new(z, col, row));
+        }
+        let n = PYRAMID_DIM;
+        for _ in 0..tiles {
+            let (z, col, row) = (next()? as u8, next()?, next()?);
+            let (lo, step) = (f32::from_bits(next()?), f32::from_bits(next()?));
+            let mut samples = Vec::with_capacity((n * n) as usize);
+            for _ in 0..(n * n).div_ceil(2) {
+                let w = next()?;
+                samples.extend([w & 0xffff, w >> 16].map(|q| lo + q as f32 * step));
+            }
+            samples.truncate((n * n) as usize);
+            let grid = DemGrid::from_elevations(n, samples)?;
+            elevation
+                .dems
+                .insert(TileIndex::new(z, col, row), Arc::new(grid));
+        }
+        Ok(elevation)
+    }
+}
+
 impl orb_symbol::Ground for TerrainElevation {
     /// GL JS's `Terrain.getElevation(tileID, x, y)`: the DEM tile the drawn
     /// tile reads, as its placements' DEM references name it on the GPU.
@@ -557,6 +681,10 @@ impl orb_symbol::Ground for TerrainElevation {
         let index = TileIndex::new(tile.z, tile.x, tile.y);
         let uv = DVec2::new(x, y) / orb_symbol::EXTENT;
         self.on_tile(index, uv).unwrap_or(0.0)
+    }
+
+    fn pyramid(&self) -> Vec<u8> {
+        TerrainElevation::pyramid(self)
     }
 }
 
@@ -637,6 +765,44 @@ mod tests {
         );
         // Nothing loaded elsewhere.
         assert!(elevation.at(at(-1.0, 0.5)).is_none());
+    }
+
+    #[test]
+    fn the_pyramid_keeps_elevations_within_metres() {
+        let tms = tms();
+        let mut full = TerrainElevation::empty(tms.clone(), 1.5);
+        full.max_zoom = 12;
+        // A 256-pixel tile of rolling hills, 0–1000 m.
+        let dim = 256u32;
+        let hills: Vec<f32> = (0..dim * dim)
+            .map(|i| {
+                let (x, y) = (f64::from(i % dim), f64::from(i / dim));
+                (500.0 + 300.0 * (x / 20.0).sin() + 200.0 * (y / 31.0).cos()) as f32
+            })
+            .collect();
+        let tile = TileIndex::new(10, 530, 360);
+        full.dems.insert(
+            tile,
+            Arc::new(DemGrid::from_elevations(dim, hills).unwrap()),
+        );
+        full.drawn.insert(TileIndex::new(11, 1060, 720));
+        let coarse = TerrainElevation::from_pyramid(&full.pyramid()).unwrap();
+        assert_eq!(coarse.drawn, full.drawn);
+        let bounds = tms.tile_bounds(tile);
+        let mut worst = 0.0f64;
+        for i in 0..50 {
+            for j in 0..50 {
+                let p = DVec2::new(
+                    bounds.min.x + (f64::from(i) + 0.5) / 50.0 * bounds.size().x,
+                    bounds.max.y - (f64::from(j) + 0.5) / 50.0 * bounds.size().y,
+                );
+                let (a, b) = (full.at(p).unwrap(), coarse.at(p).unwrap());
+                worst = worst.max((a - b).abs());
+            }
+        }
+        // Four pixels a sample over hills 20 pixels across.
+        assert!(worst < 10.0, "{worst}");
+        assert!(worst > 0.0);
     }
 
     #[test]

@@ -179,7 +179,8 @@ impl Camera {
         }
     }
 
-    /// The logical pixel showing `point`, or `None` behind the eye.
+    /// The logical pixel showing `point`, on the terrain if there is one,
+    /// or `None` behind the eye.
     pub fn project(&self, point: Geodetic) -> Option<DVec2> {
         let view = self.view();
         let world = self.projection.forward(point);
@@ -191,14 +192,26 @@ impl Camera {
             ),
             None => world,
         };
-        view.project(world)
+        match self.terrain.as_deref() {
+            Some(terrain) => {
+                let metres = terrain.at(world).unwrap_or(0.0);
+                view.project_3d(world, metres * view.height_scale())
+            }
+            None => view.project(world),
+        }
     }
 
-    /// The ground point under a logical pixel, or `None` above the horizon.
+    /// The ground point under a logical pixel, on the terrain if there is
+    /// one (a CPU ray walk over the elevations this camera has: on the web
+    /// ui role, the approximate elevation pyramid), or `None` above the
+    /// horizon.
     pub fn unproject(&self, px: DVec2) -> Option<Geodetic> {
-        self.view()
-            .unproject(px)
-            .map(|world| self.projection.inverse(world))
+        let view = self.view();
+        let world = match self.terrain.as_deref() {
+            Some(terrain) => view.unproject_terrain(px, terrain).map(|(world, _)| world),
+            None => view.unproject(px),
+        };
+        world.map(|world| self.projection.inverse(world))
     }
 
     /// Moves to `target` at once (GL JS `jumpTo`).
