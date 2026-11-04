@@ -5,13 +5,15 @@
 //! instance. Chunks hold at most 256 point instances. No radius or paint is baked into geometry.
 
 use crate::{Mesh, MeshBuilder};
-use orb_tile::Layer;
+use orb_tile::{GeometryType, Layer};
 
 pub const STRIDE: usize = 2;
 
 /// Layout points in feature order, skipping the source's buffer region.
 /// As in GL JS's circle bucket, the tile is half open: [0, extent).
-/// Lines and polygons also contribute their vertices, matching GL JS.
+/// Lines and polygons also contribute their vertices, matching GL JS, whose
+/// polygon rings repeat their first vertex at the end: it counts twice, as
+/// a heatmap's density shows.
 pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
     layout_sorted(layer, features, |_| None)
 }
@@ -31,9 +33,11 @@ pub fn layout_sorted(
     let mut builder = MeshBuilder::new(STRIDE);
     for (slot, &feature) in features.iter().enumerate() {
         builder.set_sort_key(sort_key(feature));
+        let polygon = layer.geometry_type(feature as usize) == GeometryType::Polygon;
         for part in layer.geometry(feature as usize).parts() {
             for ring in part.rings() {
-                for &[x, y] in ring {
+                let closing = ring.first().filter(|_| polygon);
+                for &[x, y] in ring.iter().chain(closing) {
                     if x < 0 || y < 0 || x >= extent || y >= extent {
                         continue;
                     }
@@ -51,7 +55,7 @@ pub fn layout_sorted(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orb_tile::{GeometryType, LayerBuilder};
+    use orb_tile::LayerBuilder;
 
     #[test]
     fn owns_half_open_tile_and_keeps_feature_slots() {
@@ -65,5 +69,18 @@ mod tests {
         let mesh = layout(&b.finish(), &[0]);
         assert_eq!(mesh.vertices.len(), 4);
         assert_eq!(mesh.indices, [0, 1]);
+    }
+
+    #[test]
+    fn polygon_rings_count_their_first_vertex_twice() {
+        let mut b = LayerBuilder::new("polygons", 4096);
+        b.begin_feature(None, GeometryType::Polygon);
+        b.begin_part();
+        b.begin_ring();
+        for p in [[10, 10], [20, 10], [20, 20]] {
+            b.push_vertex(p);
+        }
+        let mesh = layout(&b.finish(), &[0]);
+        assert_eq!(mesh.indices.len(), 4);
     }
 }
