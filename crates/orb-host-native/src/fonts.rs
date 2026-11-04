@@ -64,9 +64,14 @@ impl State {
     fn new() -> Self {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
+        // fontdb doesn't know Android's font directory.
+        #[cfg(target_os = "android")]
+        db.load_fonts_dir("/system/fonts");
         // What `sans-serif` is in a browser on this platform.
         #[cfg(target_os = "macos")]
         db.set_sans_serif_family("Helvetica");
+        #[cfg(target_os = "android")]
+        db.set_sans_serif_family("Roboto");
         Self {
             db,
             faces: HashMap::new(),

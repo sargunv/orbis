@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod android;
 mod apple;
 mod bindings;
 mod boundaries;
@@ -23,6 +24,8 @@ cargo xtask <task>
   bindings [--check | test]  the C header, Kotlin and Swift bindings from orb-capi
                (decision 0018); --check fails when they're stale; test runs the
                emitters' Swift and Kotlin compile-and-run tests
+  android [--run[=serial]]  liborbis.so for arm64-v8a (NDK, API 24), the AAR and
+               the reference app with Gradle; --run installs and starts it
   apple [--test]  liborbis.a for macOS, iOS and the iOS simulator as
                hosts/apple/OrbisC.xcframework, then the Swift package and the
                macOS reference app; --test runs the Swift binding scenario
@@ -52,6 +55,7 @@ fn main() -> ExitCode {
         Some("bindings") => bindings::run(&args[1..]),
         Some("capi") => capi::run(&args[1..]),
         Some("apple") => apple::run(&args[1..]),
+        Some("android") => android::run(&args[1..]),
         Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
             expression_fixtures::bundle()
         }

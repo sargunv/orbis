@@ -190,6 +190,16 @@ impl WgpuGpu {
         Ok(id)
     }
 
+    /// Readies a surface to be dropped: drops its frame and waits until
+    /// the GPU is done with submitted work, which holds its images until
+    /// retired (Vulkan can't release a swapchain whose images are held).
+    pub fn retire_surface(&mut self, surface: &mut Surface) {
+        if let Some((_, id)) = surface.frame.take() {
+            self.destroy_texture(id);
+        }
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+    }
+
     /// Shows the frame started with [`acquire`](Self::acquire).
     pub fn present(&mut self, surface: &mut Surface) {
         if let Some((frame, id)) = surface.frame.take() {

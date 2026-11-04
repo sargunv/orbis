@@ -636,11 +636,15 @@ impl Kotlin<'_> {
         for header in &self.config.c_headers {
             writeln!(out, "#include \"{header}\"").unwrap();
         }
-        out += r#"
-static JavaVM* g_vm;
-static jclass g_native;
-static jmethodID g_function0_invoke;
-"#;
+        let params = || self.all_methods().flat_map(|(_, m)| m.params.iter());
+        let callbacks = params().any(|p| p.ty == Ty::Callback);
+        let writes = self.all_methods().any(|(_, m)| m.ret == Ret::Write)
+            || self.api.error_messages.values().any(Option::is_some);
+        let unit_failures = self.all_methods().any(|(_, m)| m.fail == Fail::Unit);
+        out += "\nstatic JavaVM* g_vm;\nstatic jclass g_native;\n";
+        if callbacks {
+            out += "static jmethodID g_function0_invoke;\n";
+        }
         let structs: Vec<&Def> = self
             .api
             .defs
@@ -653,7 +657,8 @@ static jmethodID g_function0_invoke;
         for e in self.api.errors() {
             writeln!(out, "static jmethodID g_new_{e}_exception;").unwrap();
         }
-        out += r#"
+        if callbacks {
+            out += r#"
 /* The calling thread's JNIEnv, attaching threads the JVM doesn't know. */
 static JNIEnv* attached_env(void) {
     JNIEnv* env = NULL;
@@ -681,7 +686,10 @@ static void callback_destroy(const void* data) {
     JNIEnv* env = attached_env();
     (*env)->DeleteGlobalRef(env, (jobject)data);
 }
-
+"#;
+        }
+        if writes {
+            out += r#"
 static jbyteArray write_to_bytes(JNIEnv* env, DiplomatWrite* write) {
     jsize len = (jsize)diplomat_buffer_write_len(write);
     jbyteArray bytes = (*env)->NewByteArray(env, len);
@@ -693,6 +701,7 @@ static jbyteArray write_to_bytes(JNIEnv* env, DiplomatWrite* write) {
     return bytes;
 }
 "#;
+        }
         let mut slices: Vec<Prim> = Vec::new();
         for (_, m) in self.all_methods() {
             if let Ret::Value(Ty::Slice(p)) = &m.ret
@@ -736,14 +745,19 @@ static jbyteArray write_to_bytes(JNIEnv* env, DiplomatWrite* write) {
             )
             .unwrap();
         }
-        out += "\nstatic void throw_unit(JNIEnv* env, const char* what) {\n    jclass type = (*env)->FindClass(env, \"java/lang/RuntimeException\");\n    if (type) (*env)->ThrowNew(env, type, what);\n}\n";
+        if unit_failures {
+            out += "\nstatic void throw_unit(JNIEnv* env, const char* what) {\n    jclass type = (*env)->FindClass(env, \"java/lang/RuntimeException\");\n    if (type) (*env)->ThrowNew(env, type, what);\n}\n";
+        }
 
         // JNI_OnLoad: cache the classes and methods.
         write!(
             out,
-            "\nJNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {{\n    (void)reserved;\n    g_vm = vm;\n    JNIEnv* env;\n    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;\n    jclass native = (*env)->FindClass(env, \"{native_class}\");\n    if (!native) return JNI_ERR;\n    g_native = (jclass)(*env)->NewGlobalRef(env, native);\n    jclass function0 = (*env)->FindClass(env, \"kotlin/jvm/functions/Function0\");\n    if (!function0) return JNI_ERR;\n    g_function0_invoke = (*env)->GetMethodID(env, function0, \"invoke\", \"()Ljava/lang/Object;\");\n"
+            "\nJNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {{\n    (void)reserved;\n    g_vm = vm;\n    JNIEnv* env;\n    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;\n    jclass native = (*env)->FindClass(env, \"{native_class}\");\n    if (!native) return JNI_ERR;\n    g_native = (jclass)(*env)->NewGlobalRef(env, native);\n"
         )
         .unwrap();
+        if callbacks {
+            out += "    jclass function0 = (*env)->FindClass(env, \"kotlin/jvm/functions/Function0\");\n    if (!function0) return JNI_ERR;\n    g_function0_invoke = (*env)->GetMethodID(env, function0, \"invoke\", \"()Ljava/lang/Object;\");\n";
+        }
         for s in &structs {
             let sig: String = self
                 .leaves(vec![], &Ty::Struct(s.name.clone()))

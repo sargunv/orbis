@@ -141,8 +141,10 @@ impl Target {
 
 impl Drop for Target {
     fn drop(&mut self) {
-        if let Kind::Texture(id) = self.kind {
-            self.shared.gpu.borrow_mut().destroy_texture(id);
+        let mut gpu = self.shared.gpu.borrow_mut();
+        match &mut self.kind {
+            Kind::Texture(id) => gpu.destroy_texture(*id),
+            Kind::Surface(surface) => gpu.retire_surface(surface),
         }
     }
 }

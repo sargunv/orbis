@@ -12,18 +12,44 @@ use orb_hal::{BufferId, TextureId};
 
 use crate::WgpuGpu;
 
+/// Qualcomm's PCI vendor id, as Vulkan reports it.
+const QUALCOMM: u32 = 0x5143;
+
+/// An instance, configured from the environment, and its default adapter.
+async fn adapter(
+    skip_indirect_validation: bool,
+) -> Result<(wgpu::Instance, wgpu::Adapter), String> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    if skip_indirect_validation {
+        descriptor
+            .flags
+            .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+    }
+    let instance = wgpu::Instance::new(descriptor);
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions::default())
+        .await
+        .map_err(|e| format!("no adapter: {e}"))?;
+    Ok((instance, adapter))
+}
+
 impl WgpuGpu {
     /// A device on the default adapter with WebGPU's default limits, without
     /// a surface. `WGPU_BACKEND` and the other wgpu environment variables
     /// choose the adapter. Natively the device keeps its instance, so it can
     /// also draw to window surfaces.
     pub async fn offscreen() -> Result<Self, String> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions::default())
-            .await
-            .map_err(|e| format!("no adapter: {e}"))?;
+        let (mut instance, mut adapter) = adapter(false).await?;
+        // Quirk (plan §8.8): after wgpu's indirect-call validation pass,
+        // Qualcomm's Vulkan driver draws nothing from drawIndexedIndirect
+        // (Adreno 619 measured; gfx-rs/wgpu#8801 on the 650 and 740), while
+        // direct draws and drawIndirect work. Orbis's indirect arguments
+        // are its cull shader's, bounded by the scene's own buffers, so on
+        // those drivers the device skips that validation.
+        let info = adapter.get_info();
+        if info.backend == wgpu::Backend::Vulkan && info.vendor == QUALCOMM {
+            (instance, adapter) = self::adapter(true).await?;
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
@@ -37,6 +63,8 @@ impl WgpuGpu {
         {
             gpu.native = Some((instance, adapter));
         }
+        #[cfg(target_arch = "wasm32")]
+        let _ = instance;
         Ok(gpu)
     }
 

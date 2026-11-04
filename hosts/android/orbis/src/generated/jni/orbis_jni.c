@@ -78,11 +78,6 @@ static void throw_OrbError(JNIEnv* env, OrbError error) {
     if (exception) (*env)->Throw(env, (jthrowable)exception);
 }
 
-static void throw_unit(JNIEnv* env, const char* what) {
-    jclass type = (*env)->FindClass(env, "java/lang/RuntimeException");
-    if (type) (*env)->ThrowNew(env, type, what);
-}
-
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     (void)reserved;
     g_vm = vm;
