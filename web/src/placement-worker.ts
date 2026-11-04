@@ -3,9 +3,9 @@
 //
 // Page → worker: {module, port}. Port messages are Rust's (orb-web's
 // `placement` module); this file only carries them.
-import init, { PlacementWorker } from "./pkg/core.js";
+import init, { PlacementWorker } from "../pkg/core.js";
 
-self.onmessage = async ({ data: { module, port } }) => {
+self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAssembly.Module; port: MessagePort }>) => {
   await init({ module_or_path: module });
   const placer = new PlacementWorker();
   port.onmessage = ({ data }) => {

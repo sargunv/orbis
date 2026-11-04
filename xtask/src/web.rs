@@ -1,5 +1,5 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
-//! `web/demo/pkg/`, reports its size by crate (twiggy) and warns when it
+//! `web/pkg/`, reports its size by crate (twiggy) and warns when it
 //! grows past plan §14.3's numbers; then `harness.wasm`, the same module with
 //! the bench page's and the fixture driver's entry points.
 //!
@@ -12,7 +12,7 @@ use std::process::Command;
 
 use crate::cargo;
 
-const OUT_DIR: &str = "web/demo/pkg";
+const OUT_DIR: &str = "web/pkg";
 
 /// Plan §14.3's initial-payload target. Size is watched, not a gate: above
 /// it, and above the ceiling, the build only warns.

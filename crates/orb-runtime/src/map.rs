@@ -539,6 +539,12 @@ impl Map {
         *self.camera_mut() = camera;
     }
 
+    /// The camera and viewport the picking index was built for.
+    pub(crate) fn hit_stamp_view(&self) -> Option<(CameraState, Viewport)> {
+        self.hit_stamp
+            .map(|(camera, viewport, ..)| (camera, viewport))
+    }
+
     /// The surface's projection, for camera moves.
     pub fn projection(&self) -> orb_crs::Projection {
         *self.tms.projection()

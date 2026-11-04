@@ -2,7 +2,7 @@
 //! render publication projects it into CSS pixels. Symbols can publish a
 //! separate index and compare their draw order here when placement is ready.
 use glam::{DVec2, DVec3, Vec2};
-use orb_camera::View;
+use orb_camera::{CameraState, View, Viewport};
 use orb_crs::{TileIndex, TileMatrixSet};
 
 /// The topmost feature under a point in the last published frame.
@@ -363,6 +363,8 @@ impl Publisher<'_> {
 pub struct HitIndex {
     hits: Vec<ScreenHit>,
     generation: u64,
+    /// The camera and viewport the snapshot's pixels are for.
+    view: Option<(CameraState, Viewport)>,
 }
 impl HitIndex {
     pub fn hit_test(&self, point: DVec2) -> Option<Hit> {
@@ -371,6 +373,36 @@ impl HitIndex {
             hit.generation = self.generation;
             hit
         })
+    }
+
+    /// [`hit_test`](Self::hit_test) for a point seen with another camera:
+    /// snapshots publish when the camera settles, so a point picked while
+    /// it moves goes through the ground to the snapshot's pixels. Exact for
+    /// ground features; elevated ones and labels are where they were.
+    pub fn hit_test_from(
+        &self,
+        point: DVec2,
+        camera: &CameraState,
+        viewport: Viewport,
+    ) -> Option<Hit> {
+        let Some((published, published_viewport)) = &self.view else {
+            return self.hit_test(point);
+        };
+        if published == camera && *published_viewport == viewport {
+            return self.hit_test(point);
+        }
+        let tms = TileMatrixSet::by_id("WebMercatorQuad").expect("built-in tile matrix set");
+        let ground = View::new(camera, viewport, tms.projection()).unproject(point)?;
+        let then = View::new(published, *published_viewport, tms.projection());
+        // The copy of a wrapping world the snapshot drew.
+        let ground = match tms.projection().wrap_period() {
+            Some(period) => DVec2::new(
+                ground.x - ((ground.x - then.camera_world().x) / period).round() * period,
+                ground.y,
+            ),
+            None => ground,
+        };
+        self.hit_test(then.project(ground)?)
     }
     pub fn set_generation(&mut self, generation: u64) {
         self.generation = generation;
@@ -392,6 +424,25 @@ impl HitIndex {
             words
                 .next()
                 .ok_or_else(|| "malformed hit snapshot".to_string())
+        };
+        let (camera, viewport) = {
+            let mut float = || -> Result<f64, String> {
+                let lo = u64::from(next()?);
+                let hi = u64::from(next()?);
+                Ok(f64::from_bits(lo | hi << 32))
+            };
+            let viewport = Viewport {
+                width: float()?,
+                height: float()?,
+            };
+            let camera = CameraState {
+                target: orb_geo::Geodetic::new(float()?, float()?),
+                resolution: float()?,
+                bearing: float()?,
+                pitch: float()?,
+                fov: float()?,
+            };
+            (camera, viewport)
         };
         let mut hits = Vec::new();
         for _ in 0..next()? {
@@ -445,6 +496,7 @@ impl HitIndex {
             return Err("malformed hit snapshot".into());
         }
         self.hits = hits;
+        self.view = Some((camera, viewport));
         Ok(())
     }
 }
@@ -464,14 +516,39 @@ fn write_points(words: &mut Vec<u32>, points: &[Vec2]) {
     }
 }
 impl crate::Map {
-    /// A new picking snapshot only when geometry, paint or camera changed.
-    /// Send it with the frame acknowledgement, then advance its generation
-    /// on every acknowledgement even when the index is retained.
-    pub fn hit_snapshot(&self) -> Option<Vec<u8>> {
-        if !self.rebuild_hits {
-            return None;
+    /// Whether the last frame rebuilt the picking index: geometry, paint
+    /// or the camera changed.
+    pub fn hits_rebuilt(&self) -> bool {
+        self.rebuild_hits
+    }
+
+    /// The last frame's picking index, for a [`HitIndex`] on another
+    /// thread, with the camera and viewport it was drawn for. Hosts send it
+    /// when the camera settles, then advance its generation with every
+    /// frame acknowledgement.
+    pub fn hit_snapshot(&self) -> Vec<u8> {
+        let mut words = Vec::new();
+        let (camera, viewport) = self.hit_stamp_view().unwrap_or((
+            *self.camera(),
+            Viewport {
+                width: 0.0,
+                height: 0.0,
+            },
+        ));
+        for value in [
+            viewport.width,
+            viewport.height,
+            camera.target.lon,
+            camera.target.lat,
+            camera.resolution,
+            camera.bearing,
+            camera.pitch,
+            camera.fov,
+        ] {
+            let bits = value.to_bits();
+            words.extend([bits as u32, (bits >> 32) as u32]);
         }
-        let mut words = vec![self.hits.len() as u32];
+        words.push(self.hits.len() as u32);
         for h in &self.hits {
             crate::jobs::write_text(&mut words, &h.hit.layer);
             crate::jobs::write_text(&mut words, &h.hit.source);
@@ -497,6 +574,6 @@ impl crate::Map {
                 write_points(&mut words, clip);
             }
         }
-        Some(words.into_iter().flat_map(u32::to_le_bytes).collect())
+        words.into_iter().flat_map(u32::to_le_bytes).collect()
     }
 }

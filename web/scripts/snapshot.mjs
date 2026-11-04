@@ -41,7 +41,7 @@ try {
   await page.waitForTimeout(250);
   console.log(`${await page.locator("#hud").textContent()} (${Date.now() - started} ms)`);
   await page.screenshot({ path: out });
-  await page.locator("#hud, #about").evaluateAll((elements) => {
+  await page.locator("#hud, #about, .demo-annotation").evaluateAll((elements) => {
     for (const element of elements) element.style.visibility = "hidden";
   });
   const pixels = await page.locator("#map").screenshot({ path: out.replace(/\.png$/, "-map.png") });

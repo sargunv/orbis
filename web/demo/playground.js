@@ -1,10 +1,36 @@
-import { call, whenReady, latestFrame } from "./main.js";
+// The style playground: edits style JSON through the map's transaction API
+// as you type, and highlights the feature under the pointer with feature
+// state (decision 0016).
+import { createMap } from "orbis";
+import { demoStyle } from "./styles.js";
+import { expose, feel } from "./expose.js";
+
+const params = new URLSearchParams(location.search);
+const map = await createMap({
+  container: document.querySelector("#map"),
+  style: demoStyle(params),
+  thread: params.get("thread") ?? "auto",
+  feel: feel(),
+});
+expose(map);
+const hud = document.querySelector("#hud");
+let latestFrame;
+map.on("render", (ack) => {
+  latestFrame = ack;
+  hud.textContent = `${map.thread} thread · z${ack.zoom.toFixed(2)} · ${ack.draws} draws · generation ${ack.generation}${ack.idle ? " · idle" : ""}`;
+});
+const call = async (method, ...args) => {
+  if (method === "edit") return map.edit((tx) => { for (const [name, ...rest] of JSON.parse(args[0])) tx[name](...rest); });
+  if (method === "hitTest") return map.hitTest(args);
+  if (method === "getStyle") return JSON.stringify(await map.getStyle());
+  throw new Error(`unknown call ${method}`);
+};
 
 const editor = document.querySelector("#style");
 const error = document.querySelector("#error");
 const status = document.querySelector("#edit-status");
 const native = document.querySelector("#native");
-const canvas = document.querySelector("#map");
+const canvas = map.canvas;
 let original;
 let pending = [];
 let frame = 0;
@@ -14,7 +40,7 @@ let hovered;
 let mirroredStyle;
 let mirrorQueue = Promise.resolve();
 
-window.addEventListener("orbis-frame", ({detail: ack}) => {
+map.on("render", (ack) => {
   frame++;
   pending = pending.filter((edit) => {
     if (ack.generation < edit.generation) return true;
@@ -95,11 +121,7 @@ async function hover() {
 canvas.addEventListener("pointermove", (e) => { if (!e.buttons) { pointer=[e.offsetX,e.offsetY]; void hover(); } });
 canvas.addEventListener("pointerleave", () => { pointer=null; void hover(); });
 
-await whenReady;
-if (!latestFrame?.idle) await new Promise((resolve) => {
-  const listener = ({detail}) => { if (detail.idle) { window.removeEventListener("orbis-frame",listener); resolve(); } };
-  window.addEventListener("orbis-frame",listener);
-});
+if (!latestFrame?.idle) await map.once("idle");
 const {layers,sources,...root} = JSON.parse(await call("getStyle"));
 original = JSON.stringify({...root,layers,sources},null,2);
 editor.value = original;

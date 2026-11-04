@@ -11,7 +11,7 @@ import { chromium } from "playwright";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 // The fixture driver is in `harness.wasm`, which no demo page loads. Serve the
 // generated wasm-bindgen modules directly; only the public demo uses dist/.
-const mounts = { "/pkg/": resolve(root, "web/demo/pkg"), "/assets/": resolve(root, "fixtures/gl-js/assets") };
+const mounts = { "/pkg/": resolve(root, "web/pkg"), "/assets/": resolve(root, "fixtures/gl-js/assets") };
 const types = { ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json" };
 const server = createServer(async (req, res) => {
   try {

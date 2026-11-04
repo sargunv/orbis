@@ -424,7 +424,7 @@ fn published_hits_follow_layer_order_visibility_and_camera() {
     assert_eq!(hit.source, "district");
     assert_eq!(hit.source_layer, None);
     let mut published = orb_runtime::HitIndex::default();
-    published.update(&map.map.hit_snapshot().unwrap()).unwrap();
+    published.update(&map.map.hit_snapshot()).unwrap();
     published.set_generation(hit.generation);
     assert_eq!(published.hit_test(center), Some(hit.clone()));
     assert!(published.update(&[1, 2, 3]).is_err());

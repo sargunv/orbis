@@ -25,6 +25,7 @@ orb-crs.workspace = true
 orb-expr.workspace = true
 orb-geo.workspace = true
 orb-hal.workspace = true
+orb-interact.workspace = true
 orb-hal-wgpu.workspace = true
 orb-host.workspace = true
 orb-host-web.workspace = true

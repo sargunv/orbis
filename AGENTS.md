@@ -32,7 +32,7 @@ node, pnpm); run `pnpm -C web install` once for Playwright.
 | `cargo xtask check` | fmt, clippy (native and wasm32), tests, boundary rules; offline, no fixture mirror needed |
 | `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]]` | native demo window |
 | `… -p orb-demo -- --snapshot out.png` | render offscreen until idle, write a PNG |
-| `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/demo/pkg` |
+| `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/pkg` |
 | `pnpm -C web snapshot out.png '#z/lat/lon' [--thread=main\|worker]` | web demo in headless Chromium, screenshot |
 | `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web dev` | playground at `/orbis/playground.html`; write accepted style and hover snapshots to that file (dev only) |
 | `cargo run --release -p orb-demo -- file://$PWD/web/demo/data/playground.json --watch-style <same path>` | native viewer beside the playground; follows that file as diffed transactions; logs generation, frames and edit ms |
@@ -43,6 +43,7 @@ node, pnpm); run `pnpm -C web install` once for Playwright.
 | `cargo xtask rt [--filter <substring>] [--platform native\|chrome\|lavapipe\|all]` | run the GL JS render fixtures (fetches the mirror first); report in `docs/scratch/rt` |
 | `cargo xtask pages` | `cargo xtask web`, then the Vite build into `web/dist`: the site `.github/workflows/pages.yml` deploys on every push to `main` |
 | `pnpm -C web dev` | Vite dev server at `/orbis/` (run `cargo xtask web` first) |
+| `pnpm -C web typecheck` / `pnpm -C web test` | type-check the `orbis` package (`web/src`); its unit tests and the build test |
 | `cargo xtask bench` | GPU/CPU frame timings, still and with the camera moving (decision 0002); `--experiment paint` for decision 0017 |
 | `pnpm -C web bench [--precise] [--android[=serial]]` | the same bench in headless Chromium, or in an adb-connected Android device's Chrome (`web/demo/bench.html`; keep its screen on) |
 

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
 const demo = fileURLToPath(new URL("./demo/", import.meta.url));
+const web = fileURLToPath(new URL("./", import.meta.url));
 const base = "/orbis/";
 
 // Replaces %ORBIS_COMMIT% in the pages with the build's commit, linked on
@@ -70,6 +71,9 @@ export default defineConfig({
   root: demo,
   base,
   publicDir: false,
+  // The demo consumes the package by name.
+  resolve: { alias: { orbis: fileURLToPath(new URL("./src/index.ts", import.meta.url)) } },
+  server: { fs: { allow: [web] } },
   plugins: [extractStyles(), commit(), {
     name: "playground-native",
     configureServer(server) {

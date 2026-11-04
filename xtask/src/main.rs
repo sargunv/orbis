@@ -21,7 +21,7 @@ cargo xtask <task>
                (fixtures/gl-js, not committed); no work when it matches
   fixtures expressions  bundle the pinned style-spec expression fixtures
   unicode      regenerate orb-text's character tables from the UCD
-  web          build core.wasm and harness.wasm into web/demo/pkg, report sizes
+  web          build core.wasm and harness.wasm into web/pkg, report sizes
   extract      reproduce the committed Tokyo MVT/MLT PMTiles archives
   tile-parity  compare every extract tile and measure decode times
   demo-labels  add Liberty's labels, its sprite and glyph subsets to the Tokyo demo

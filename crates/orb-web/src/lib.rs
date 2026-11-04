@@ -1,6 +1,8 @@
 //! The browser build of Orbis: `core.wasm` and its wasm-bindgen surface.
 //!
 //! One module, three roles (plan §7.1), chosen by the page's JS:
+//! - **ui** ([`UiRole`]), always on the page's thread: the camera, gestures
+//!   and synchronous `project`, `unproject` and `hitTest`.
 //! - **main thread** ([`create_map`], plan §7.2's `thread: "main"`): the
 //!   map, its jobs and rendering share the page's thread, drawing into a
 //!   canvas.
@@ -21,22 +23,23 @@ pub mod bench;
 mod fixture;
 mod jobs;
 mod placement;
+mod ui;
 
 #[cfg(feature = "harness")]
 pub use fixture::{FixturePixels, FixtureRenderer};
 pub use jobs::JobWorker;
 pub use placement::PlacementWorker;
+pub use ui::UiRole;
 
 use std::cell::RefCell;
 use std::sync::Arc;
 
 use glam::DVec2;
-use orb_geo::Geodetic;
 use orb_hal::Gpu;
 use orb_hal_wgpu::{WgpuGpu, from_texture_format};
 use orb_host_web::{WebFetch, WebImageDecode};
 use orb_jobs::Inline;
-use orb_runtime::{CameraState, Jobs, Map, PoolJobs, Services, TargetFormat, Viewport};
+use orb_runtime::{CameraState, Jobs, Map, MapEvent, PoolJobs, Services, TargetFormat, Viewport};
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, OffscreenCanvas};
 
@@ -70,6 +73,10 @@ pub struct OrbisMap {
     pixel_ratio: f64,
     /// Set in the render worker.
     worker_jobs: Option<Arc<WorkerJobs>>,
+    /// The picking index changed since it was last published.
+    hits_dirty: bool,
+    /// The last frame's camera, to publish picking once it settles.
+    last_camera: Option<CameraState>,
 }
 
 /// Frame counters, for the page's HUD.
@@ -78,6 +85,12 @@ pub struct OrbisMap {
 pub struct FrameInfo {
     #[wasm_bindgen(readonly)]
     pub zoom: f64,
+    /// The frame's camera, as [`UiRole::camera`] gives it, so DOM overlays
+    /// can follow the frame on screen.
+    #[wasm_bindgen(readonly)]
+    pub camera: Vec<f64>,
+    /// A picking snapshot for the page's [`UiRole`]: in the render worker,
+    /// once the camera settles on a changed index.
     #[wasm_bindgen(readonly)]
     pub hit_snapshot: Option<Vec<u8>>,
     #[wasm_bindgen(readonly)]
@@ -254,6 +267,8 @@ async fn create(
         },
         pixel_ratio: 1.0,
         worker_jobs,
+        hits_dirty: false,
+        last_camera: None,
     })
 }
 
@@ -289,45 +304,55 @@ impl OrbisMap {
         self.surface.configure(self.gpu.device(), &self.config);
     }
 
-    /// Moves the camera so the ground under one point (CSS pixels) is under
-    /// another.
-    pub fn pan(&mut self, from_x: f64, from_y: f64, to_x: f64, to_y: f64) {
-        let (viewport, projection) = (self.viewport(), self.map.projection());
-        self.map.camera_mut().pan(
-            &projection,
-            viewport,
-            DVec2::new(from_x, from_y),
-            DVec2::new(to_x, to_y),
-        );
-        self.map.constrain_camera(viewport);
+    /// Sets the camera from the ui role: `[lon, lat, resolution, bearing,
+    /// pitch, fov, …]`. Until the first call the map takes its style's.
+    #[wasm_bindgen(js_name = setCamera)]
+    pub fn set_camera(&mut self, camera: &[f64]) -> Result<(), JsError> {
+        self.map.set_camera(ui::camera_from(camera)?);
+        Ok(())
     }
 
-    /// Zooms by `delta` levels around a point in CSS pixels.
-    #[wasm_bindgen(js_name = zoomAt)]
-    pub fn zoom_at(&mut self, x: f64, y: f64, delta: f64) {
-        let (viewport, projection) = (self.viewport(), self.map.projection());
-        let zoom = (self.map.camera().zoom() + delta).clamp(0.0, 24.0);
-        self.map
-            .camera_mut()
-            .zoom_around(&projection, viewport, DVec2::new(x, y), zoom);
-        self.map.constrain_camera(viewport);
-    }
-
-    /// Turns the map clockwise and tilts it, in degrees, around the centre.
-    #[wasm_bindgen(js_name = rotatePitch)]
-    pub fn rotate_pitch(&mut self, bearing: f64, pitch: f64) {
-        let camera = self.map.camera_mut();
-        camera.bearing = orb_camera::wrap_bearing(camera.bearing + bearing);
-        camera.pitch = (camera.pitch + pitch).clamp(0.0, 85.0);
-    }
-
-    #[wasm_bindgen(js_name = jumpTo)]
-    pub fn jump_to(&mut self, lon: f64, lat: f64, zoom: f64, bearing: f64, pitch: f64) {
-        *self.map.camera_mut() = CameraState {
-            bearing,
-            pitch,
-            ..CameraState::new(Geodetic::new(lon, lat), zoom)
+    /// What the map did since the last call, as plain objects: `{type:
+    /// "styleload", camera}` (the style's camera if the map took it, else
+    /// null), `{type: "styledata", generation}`, `{type: "sourcedata",
+    /// source, loaded}`, `{type: "load"}`, `{type: "idle"}`, `{type:
+    /// "error", message}`.
+    #[wasm_bindgen(js_name = takeEvents)]
+    pub fn take_events(&mut self) -> js_sys::Array {
+        let out = js_sys::Array::new();
+        let set = |object: &js_sys::Object, key: &str, value: JsValue| {
+            let _ = js_sys::Reflect::set(object, &key.into(), &value);
         };
+        for event in self.map.take_events() {
+            let object = js_sys::Object::new();
+            let kind = match event {
+                MapEvent::StyleLoad { camera } => {
+                    let camera = camera.map_or(JsValue::NULL, |c| {
+                        js_sys::Float64Array::from(&ui::camera_array(&c)[..]).into()
+                    });
+                    set(&object, "camera", camera);
+                    "styleload"
+                }
+                MapEvent::StyleData { generation } => {
+                    set(&object, "generation", (generation as f64).into());
+                    "styledata"
+                }
+                MapEvent::SourceData { source, loaded } => {
+                    set(&object, "source", source.into());
+                    set(&object, "loaded", loaded.into());
+                    "sourcedata"
+                }
+                MapEvent::Load => "load",
+                MapEvent::Idle => "idle",
+                MapEvent::Error { message } => {
+                    set(&object, "message", message.into());
+                    "error"
+                }
+            };
+            set(&object, "type", kind.into());
+            out.push(&object);
+        }
+        out
     }
 
     /// Applies GL JS map calls as one transaction (plan §11.2): a JSON array
@@ -382,12 +407,21 @@ impl OrbisMap {
         self.gpu.queue().present(frame);
         let uploaded = self.gpu.uploaded();
         let jobs = self.worker_jobs.as_ref().map(|j| j.stats());
+        // Picking publishes once the camera settles: a moving camera would
+        // send a snapshot every frame, and the ui role maps points through
+        // the ground meanwhile.
+        let camera = *self.map.camera();
+        self.hits_dirty |= self.map.hits_rebuilt();
+        let settled = self.last_camera == Some(camera);
+        self.last_camera = Some(camera);
+        let hit_snapshot = (self.worker_jobs.is_some() && settled && self.hits_dirty).then(|| {
+            self.hits_dirty = false;
+            self.map.hit_snapshot()
+        });
         Ok(FrameInfo {
-            zoom: self.map.camera().zoom(),
-            hit_snapshot: self
-                .worker_jobs
-                .as_ref()
-                .and_then(|_| self.map.hit_snapshot()),
+            zoom: camera.zoom(),
+            camera: ui::camera_array(&camera),
+            hit_snapshot,
             meshes_uploaded: self.map.job_counts().meshes_uploaded,
             rows_uploaded: self.map.job_counts().rows_uploaded,
             draws: report.frame.draws,
@@ -418,7 +452,7 @@ impl OrbisMap {
     }
 }
 
-fn hit_object(hit: Option<orb_runtime::Hit>) -> JsValue {
+pub(crate) fn hit_object(hit: Option<orb_runtime::Hit>) -> JsValue {
     let Some(hit) = hit else {
         return JsValue::NULL;
     };
@@ -435,28 +469,4 @@ fn hit_object(hit: Option<orb_runtime::Hit>) -> JsValue {
     set("id", hit.id.map_or(JsValue::NULL, JsValue::from));
     set("generation", (hit.generation as f64).into());
     object.into()
-}
-
-/// A synchronous picking index on the page, including worker-rendered maps.
-#[wasm_bindgen]
-#[derive(Debug, Default)]
-pub struct PublishedHitIndex {
-    index: orb_runtime::HitIndex,
-}
-#[wasm_bindgen]
-impl PublishedHitIndex {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn update(&mut self, bytes: &[u8]) -> Result<(), JsError> {
-        self.index.update(bytes).map_err(|e| JsError::new(&e))
-    }
-    pub fn advance(&mut self, generation: f64) {
-        self.index.set_generation(generation as u64);
-    }
-    #[wasm_bindgen(js_name = hitTest)]
-    pub fn hit_test(&self, x: f64, y: f64) -> JsValue {
-        hit_object(self.index.hit_test(DVec2::new(x, y)))
-    }
 }

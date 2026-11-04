@@ -57,7 +57,7 @@ try {
     }
     if (thread === "main") {
       const cost = await page.evaluate((writes) => {
-        const map = globalThis.orbis.map;
+        const map = globalThis.orbis.core;
         const write = (i) => JSON.stringify([["setFeatureState", { source: "grid", id: 123 }, { hover: i % 2 === 0 }]]);
         for (let i = 0; i < 20; i++) { map.edit(write(i)); map.render().free(); }
         let t = performance.now();

@@ -1,5 +1,5 @@
 {
-  "name": "orbis-web",
+  "name": "orbis",
   "private": true,
   "license": "BSD-3-Clause",
   "type": "module",
@@ -11,10 +11,17 @@
     "snapshot": "node scripts/snapshot.mjs",
     "bench": "node scripts/bench.mjs",
     "edits": "node scripts/edits.mjs",
-    "test": "node --test demo/*.test.js scripts/*.test.mjs"
+    "test": "node --test src/*.test.ts scripts/*.test.mjs",
+    "typecheck": "tsc -p ."
   },
   "devDependencies": {
+    "@webgpu/types": "0.1.74",
     "playwright": "1.64.1",
+    "typescript": "7.0.2",
     "vite": "8.3.5"
+  },
+  "description": "Orbis on the web: a GPU-driven map renderer in a render worker or on the page",
+  "exports": {
+    ".": "./src/index.ts"
   }
 }

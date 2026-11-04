@@ -32,7 +32,7 @@ try {
     const original = await page.locator("#style").inputValue();
     await page.locator("#style").fill("{broken");
     await page.waitForFunction(() => document.querySelector("#error").textContent.length > 0);
-    assert.equal(await page.evaluate(() => JSON.parse(orbis.map?.getStyle?.() ?? "{}").version ?? 8),8);
+    assert.equal(await page.evaluate(() => JSON.parse(orbis.core?.getStyle?.() ?? "{}").version ?? 8),8);
     const edited = JSON.parse(original);
     edited.layers[0].paint["background-color"] = "#ccddee";
     await page.locator("#style").fill(JSON.stringify(edited,null,2));
