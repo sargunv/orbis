@@ -15,7 +15,8 @@ use crate::WgpuGpu;
 impl WgpuGpu {
     /// A device on the default adapter with WebGPU's default limits, without
     /// a surface. `WGPU_BACKEND` and the other wgpu environment variables
-    /// choose the adapter.
+    /// choose the adapter. Natively the device keeps its instance, so it can
+    /// also draw to window surfaces.
     pub async fn offscreen() -> Result<Self, String> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -30,7 +31,13 @@ impl WgpuGpu {
             })
             .await
             .map_err(|e| format!("no device: {e}"))?;
-        Ok(Self::new(device, queue))
+        #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+        let mut gpu = Self::new(device, queue);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            gpu.native = Some((instance, adapter));
+        }
+        Ok(gpu)
     }
 
     /// Resolves when the GPU has finished all work submitted so far.

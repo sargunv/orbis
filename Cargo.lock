@@ -1956,6 +1956,22 @@ name = "orb-a11y"
 version = "0.0.0"
 
 [[package]]
+name = "orb-api"
+version = "0.0.0"
+dependencies = [
+ "glam",
+ "orb-camera",
+ "orb-geo",
+ "orb-hal",
+ "orb-hal-wgpu",
+ "orb-host-native",
+ "orb-interact",
+ "orb-jobs",
+ "orb-runtime",
+ "pollster",
+]
+
+[[package]]
 name = "orb-bench"
 version = "0.0.0"
 dependencies = [

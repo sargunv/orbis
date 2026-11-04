@@ -70,6 +70,7 @@ const SCENE_SIDE: &[&str] = &[
 /// Crates that don't build for wasm32.
 pub(crate) const NATIVE_ONLY: &[&str] = &[
     "orb-host-native",
+    "orb-api",
     "orb-capi",
     "orb-demo",
     "orb-fixtures",

@@ -1,0 +1,22 @@
+[package]
+name = "orb-api"
+description = "The Rust embedding API for native hosts: runtime, maps, targets, frames and events"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+glam.workspace = true
+orb-camera.workspace = true
+orb-geo.workspace = true
+orb-hal.workspace = true
+orb-hal-wgpu.workspace = true
+orb-host-native.workspace = true
+orb-interact.workspace = true
+orb-jobs.workspace = true
+orb-runtime.workspace = true
+pollster.workspace = true
+
+[lints]
+workspace = true

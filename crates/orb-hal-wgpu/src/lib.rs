@@ -5,21 +5,32 @@
 //! register their own targets (a surface frame, an offscreen texture) with
 //! [`WgpuGpu::register_view`].
 
-#![forbid(unsafe_code)]
+// `unsafe` only where a surface is made from a raw platform handle.
+#![deny(unsafe_code)]
 
 mod convert;
 mod offscreen;
 mod slots;
+#[cfg(not(target_arch = "wasm32"))]
+mod surface;
 
 pub use convert::from_texture_format;
 use orb_hal::*;
 use slots::Slots;
+#[cfg(not(target_arch = "wasm32"))]
+pub use surface::{RawSurface, Surface, SurfaceError};
+/// The wgpu this HAL is built on, for hosts that hand it windows.
+pub use wgpu;
 
 /// The wgpu device and queue, and every resource created through them.
 #[derive(Debug)]
 pub struct WgpuGpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// The instance and adapter behind the device, when it was made here,
+    /// for surfaces.
+    #[cfg(not(target_arch = "wasm32"))]
+    native: Option<(wgpu::Instance, wgpu::Adapter)>,
     caps: Caps,
     buffers: Slots<wgpu::Buffer>,
     textures: Slots<Texture>,
@@ -105,6 +116,8 @@ impl WgpuGpu {
         Self {
             device,
             queue,
+            #[cfg(not(target_arch = "wasm32"))]
+            native: None,
             caps,
             buffers: Slots::default(),
             textures: Slots::default(),
