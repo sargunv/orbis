@@ -98,6 +98,7 @@ impl FixtureRenderer {
         fade_duration: f64,
         cross_source_collisions: bool,
         local_ideographs: Option<String>,
+        max_pitch: f64,
         operations: String,
     ) -> Result<FixturePixels, JsError> {
         let (_, gpu, target, mut output) = self
@@ -112,6 +113,7 @@ impl FixtureRenderer {
                 fade_duration,
                 cross_source_collisions,
                 local_ideographs,
+                max_pitch,
                 operations,
             )
             .await?;
@@ -135,6 +137,7 @@ impl FixtureRenderer {
         fade_duration: f64,
         cross_source_collisions: bool,
         local_ideographs: Option<String>,
+        max_pitch: f64,
         operations: String,
         rect: Vec<f64>,
     ) -> Result<String, JsError> {
@@ -153,6 +156,7 @@ impl FixtureRenderer {
                 fade_duration,
                 cross_source_collisions,
                 local_ideographs,
+                max_pitch,
                 operations,
             )
             .await?;
@@ -185,6 +189,7 @@ impl FixtureRenderer {
         fade_duration: f64,
         cross_source_collisions: bool,
         local_ideographs: Option<String>,
+        max_pitch: f64,
         operations: String,
     ) -> Result<(Map, WgpuGpu, orb_hal::TextureId, FixturePixels), JsError> {
         let operations =
@@ -253,7 +258,10 @@ impl FixtureRenderer {
             async |map: &mut Map, until: Next, gpu: &mut WgpuGpu, output: &mut FixturePixels| {
                 let step = js_sys::Date::now();
                 loop {
-                    // GL JS's transform keeps to the world as the harness moves it.
+                    // GL JS's transform keeps to the world and its pitch
+                    // limit as the harness moves it.
+                    let camera = map.camera_mut();
+                    camera.pitch = camera.pitch.min(max_pitch);
                     map.constrain_camera(viewport);
                     let report = map.render(gpu, target, format, viewport, pixel_ratio);
                     output.frames += 1;

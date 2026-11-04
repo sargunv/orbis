@@ -490,7 +490,10 @@ fn render_native(
                       frames: &mut u32| {
         let started = Instant::now();
         loop {
-            // GL JS's transform keeps to the world as the harness moves it.
+            // GL JS's transform keeps to the world and its pitch limit as
+            // the harness moves it.
+            let camera = map.camera_mut();
+            camera.pitch = camera.pitch.min(metadata.max_pitch);
             map.constrain_camera(viewport);
             let report = map.render(
                 &mut gpu,

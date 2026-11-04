@@ -72,6 +72,7 @@ impl Chrome {
             "fade_duration":metadata.fade_duration,
             "cross_source_collisions":metadata.cross_source_collisions,
             "local_ideographs":metadata.local_ideographs,
+            "max_pitch":metadata.max_pitch,
             "operations":Value::Array(metadata.operations.clone()).to_string(),"output":output});
         let input = self.input.as_mut().expect("open transport");
         serde_json::to_writer(&mut *input, &request).map_err(|e| e.to_string())?;
@@ -115,6 +116,7 @@ impl Chrome {
             "fade_duration":metadata.fade_duration,
             "cross_source_collisions":metadata.cross_source_collisions,
             "local_ideographs":metadata.local_ideographs,
+            "max_pitch":metadata.max_pitch,
             "operations":Value::Array(metadata.operations.clone()).to_string(),
             "query":query});
         let input = self.input.as_mut().expect("open transport");

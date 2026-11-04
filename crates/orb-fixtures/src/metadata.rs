@@ -19,6 +19,9 @@ pub(crate) struct Metadata {
     /// GL JS `localIdeographFontFamily`; the harness passes `false` unless
     /// the test sets it.
     pub(crate) local_ideographs: Option<String>,
+    /// GL JS `maxPitch`: the harness leaves it to the map's default, 60
+    /// degrees, which clamps steeper style pitches.
+    pub(crate) max_pitch: f64,
     pub(crate) value: Value,
     /// GL JS's `operations`, applied after the map first goes idle.
     pub(crate) operations: Vec<Value>,
@@ -74,12 +77,7 @@ impl Metadata {
                             }
                             None => false,
                         },
-                        // Orbis cameras are unclamped. This limit is inert when
-                        // the requested pitch already lies within it.
-                        "maxPitch" => v.as_f64().is_some_and(|max| {
-                            (0.0..=180.0).contains(&max)
-                                && style.get("pitch").and_then(Value::as_f64).unwrap_or(0.0) <= max
-                        }),
+                        "maxPitch" => v.as_f64().is_some_and(|max| (0.0..=180.0).contains(&max)),
                         // Inert values of harness options can be honoured without new APIs.
                         "debug" | "showOverdrawInspector" | "showPadding" | "collisionDebug" => {
                             v == false
@@ -119,6 +117,7 @@ impl Metadata {
         let threshold = number("threshold", 0.1285, 0.0, 1.0, false);
         let timeout_ms = number("timeout", 60000.0, 1.0, u32::MAX as f64, true) as u64;
         let fade_duration = value["fadeDuration"].as_f64().unwrap_or(0.0);
+        let max_pitch = value["maxPitch"].as_f64().unwrap_or(60.0);
         let cross_source_collisions = value["crossSourceCollisions"].as_bool().unwrap_or(true);
         let local_ideographs = value["localIdeographFontFamily"]
             .as_str()
@@ -141,6 +140,7 @@ impl Metadata {
             fade_duration,
             cross_source_collisions,
             local_ideographs,
+            max_pitch,
             value,
             operations,
             skips,
@@ -165,6 +165,7 @@ mod tests {
         assert_eq!(defaults.physical_size(), (512, 512));
         assert_eq!(defaults.allowed, 0.00025);
         assert_eq!(defaults.threshold, 0.1285);
+        assert_eq!(defaults.max_pitch, 60.0);
         let m = Metadata::read(
             &json!({"metadata":{"test":{"width":31,"height":17,"pixelRatio":1.5,"threshold":0.01}}}),
         );
