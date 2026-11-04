@@ -27,6 +27,8 @@ const PLATFORM: &[&str] = &[
     "orb-demo",
     "orb-fixtures",
     "orb-bench",
+    "diplomat-swift-kotlin",
+    "dsk-fixture",
     "xtask",
 ];
 
@@ -53,6 +55,8 @@ const UNSAFE_ALLOWED: &[&str] = &[
     "orb-capi",
     "orb-web",
     "orb-jobs",
+    // The binding emitters' test bridge: Diplomat's macro writes `extern "C"`.
+    "dsk-fixture",
 ];
 
 /// Job-side crates are share-nothing and never depend on scene-side crates.
@@ -71,6 +75,8 @@ const SCENE_SIDE: &[&str] = &[
 pub(crate) const NATIVE_ONLY: &[&str] = &[
     "orb-host-native",
     "orb-api",
+    "diplomat-swift-kotlin",
+    "dsk-fixture",
     "orb-capi",
     "orb-demo",
     "orb-fixtures",

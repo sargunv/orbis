@@ -6,6 +6,8 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+diplomat-swift-kotlin.path = "../crates/diplomat-swift-kotlin"
+diplomat-tool = "0.17.0"
 orb-crs.workspace = true
 orb-host.workspace = true
 orb-source.workspace = true

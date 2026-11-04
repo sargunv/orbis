@@ -13,7 +13,8 @@ path M0–M12. Work is tracked in GitHub issues and milestones on
 The layout follows `docs/plan.md` §5.2:
 
 ```
-crates/         orb-* crates, one per row of plan §5.2
+crates/         orb-* crates, one per row of plan §5.2, and diplomat-swift-kotlin
+                (the project-agnostic binding emitters, decision 0018)
 xtask/          build, test, demo and pages tasks
 fixtures/       GL JS fixture mirror, fetched by `cargo xtask fixtures`, not committed
 web/            TypeScript host package and the demo site
@@ -25,11 +26,15 @@ docs/           plan, research, decisions
 ## Commands
 
 `mise install` provides the pinned tools (wasm-bindgen, wasm-opt, twiggy,
-node, pnpm); run `pnpm -C web install` once for Playwright.
+node, pnpm, a JDK, Gradle, kotlinc, CMake); run `pnpm -C web install` once for
+Playwright.
 
 | Command | What it does |
 | --- | --- |
-| `cargo xtask check` | fmt, clippy (native and wasm32), tests, boundary rules; offline, no fixture mirror needed |
+| `cargo xtask check` | fmt, clippy (native and wasm32), tests, generated bindings up to date, boundary rules; offline, no fixture mirror needed |
+| `cargo xtask bindings` | regenerate the C header (`crates/orb-capi/include`), Kotlin/JNI and Swift bindings from `orb-capi`'s bridge; run after changing it |
+| `mise x -- cargo xtask bindings test` | the emitters' Swift and Kotlin compile-and-run tests |
+| `mise x -- cargo xtask capi --test` | the C library in `target/capi` (static lib, headers, pkg-config, CMake) and the C smoke test through both |
 | `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]]` | native demo window |
 | `… -p orb-demo -- --snapshot out.png` | render offscreen until idle, write a PNG |
 | `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/pkg` |

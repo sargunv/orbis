@@ -2,7 +2,9 @@
 
 #![forbid(unsafe_code)]
 
+mod bindings;
 mod boundaries;
+mod capi;
 mod expression_fixtures;
 mod fixtures;
 mod labels;
@@ -17,6 +19,12 @@ cargo xtask <task>
 
   check        fmt, clippy (native and wasm32), tests and boundary rules
   boundaries   plan §5.3 boundary rules only
+  bindings [--check | test]  the C header, Kotlin and Swift bindings from orb-capi
+               (decision 0018); --check fails when they're stale; test runs the
+               emitters' Swift and Kotlin compile-and-run tests
+  capi [--test]  the C library for this host: static library, headers,
+               pkg-config and CMake files in target/capi; --test builds and runs
+               the C smoke test against it, through pkg-config and CMake
   fixtures     fetch and verify the pinned MapLibre GL JS fixture mirror
                (fixtures/gl-js, not committed); no work when it matches
   fixtures expressions  bundle the pinned style-spec expression fixtures
@@ -37,6 +45,8 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("check") => check(),
         Some("boundaries") => boundaries::check(),
+        Some("bindings") => bindings::run(&args[1..]),
+        Some("capi") => capi::run(&args[1..]),
         Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
             expression_fixtures::bundle()
         }
@@ -109,6 +119,7 @@ fn check() -> Result<(), String> {
     wasm.extend(["--", "-D", "warnings"]);
     cargo(&wasm)?;
     cargo(&["test", "--workspace", "--quiet"])?;
+    bindings::run(&["--check".into()])?;
     boundaries::check()
 }
 

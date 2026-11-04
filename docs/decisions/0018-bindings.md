@@ -117,5 +117,28 @@ What this changes from D18 and plan §14.1:
 
 ## Measured on the built version
 
-To be filled as the crates land: binding sizes per language, call overhead
-through the generated Swift and Kotlin bindings, and the scenario suite.
+`diplomat-swift-kotlin` is 2,379 lines of Rust, plus a 224-line fixture
+bridge, golden files and Swift and Kotlin run tests. For `orb-capi`'s bridge
+(59 C functions, destructors included, on 5 opaque types, 7 structs and 9
+enums), `cargo xtask bindings` writes:
+
+| Output | Files | Lines | Bytes |
+|---|---:|---:|---:|
+| C headers (Diplomat) and `orbis.h` | 44 | 1,232 | 21,757 |
+| Kotlin | 23 | 1,221 | 33,701 |
+| JNI shim (C) | 1 | 556 | 24,651 |
+| Swift | 23 | 1,073 | 31,265 |
+
+A trivial getter (`i64`) through the generated bindings, with each
+binding's owner-thread check, Apple M-series:
+
+| Caller | ns per call |
+|---|---:|
+| Swift class over the C header | 7.38 |
+| Kotlin over the JNI shim, JVM 25 | 6.12 |
+| Kotlin through Diplomat's JNA (prototype above) | 368.8 |
+
+The C library (`cargo xtask capi --test`) builds a static library,
+headers, a pkg-config file and a CMake package; the C smoke test passes
+through both. The Swift and Kotlin run tests exercise every supported shape,
+callbacks from another thread included.

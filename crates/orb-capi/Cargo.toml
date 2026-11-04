@@ -1,0 +1,21 @@
+[package]
+name = "orb-capi"
+description = "The C ABI (0.x): a Diplomat bridge over orb-api, the annotated API the C header and the Kotlin and Swift bindings are generated from"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[lib]
+# liborbis.a, liborbis.so / .dylib
+name = "orbis"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+diplomat.workspace = true
+diplomat-runtime.workspace = true
+glam.workspace = true
+orb-api.workspace = true
+
+[lints]
+workspace = true

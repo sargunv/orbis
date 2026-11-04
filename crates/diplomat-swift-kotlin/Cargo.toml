@@ -1,0 +1,18 @@
+[package]
+name = "diplomat-swift-kotlin"
+description = "Swift and Kotlin/JNI bindings for Diplomat bridges, over diplomat_core's HIR"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+diplomat_core.workspace = true
+syn = { version = "3.0", features = ["full"] }
+syn-inline-mod = "0.7.0"
+
+[dev-dependencies]
+diplomat-tool = "0.17.0"
+
+[lints]
+workspace = true
