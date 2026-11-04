@@ -2,6 +2,8 @@
 //! (plan §9.2) that decides how each source's tiles reach it.
 
 use orb_crs::{Descriptor, Projection, TileMatrixSet, WorldRect};
+
+use crate::style::ImageKind;
 use orb_expr::json::{self, Json, JsonValue, Member};
 
 /// A plane, the tile matrix sets of the sources on it, and the one-tile
@@ -17,10 +19,12 @@ pub(crate) struct Surface {
 }
 
 /// How a source's tiles map onto the surface.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Plan {
     /// The source tiles the surface's own plane: one affine row per tile.
     Affine,
+    /// Raster tiles on another plane: an error-bounded mesh per tile.
+    Warp(Box<orb_crs::Warp>),
 }
 
 impl Default for Surface {
@@ -99,15 +103,29 @@ impl Surface {
         }
     }
 
-    /// How a source in `tms` reaches the surface, or why it can't yet.
-    pub(crate) fn plan(&self, tms: &TileMatrixSet) -> Result<Plan, String> {
+    /// How a source in `tms` reaches the surface, or why it can't yet:
+    /// `image` is the kind of an image source.
+    pub(crate) fn plan(
+        &self,
+        tms: &TileMatrixSet,
+        image: Option<ImageKind>,
+    ) -> Result<Plan, String> {
         if tms.projection().same_plane(&self.projection) {
-            Ok(Plan::Affine)
-        } else {
-            Err(format!(
-                "tile matrix set `{}` is not on the surface's plane, which needs a reprojecting plan",
+            return Ok(Plan::Affine);
+        }
+        match image {
+            Some(ImageKind::Raster) => Ok(Plan::Warp(Box::new(orb_crs::Warp::new(
+                tms.clone(),
+                self.projection,
+            )))),
+            Some(ImageKind::Dem) => Err(format!(
+                "tile matrix set `{}` is not on the surface's plane; DEM sources can't be warped yet",
                 tms.id()
-            ))
+            )),
+            None => Err(format!(
+                "tile matrix set `{}` is not on the surface's plane; vector sources can't be reprojected yet",
+                tms.id()
+            )),
         }
     }
 }
@@ -192,12 +210,13 @@ mod tests {
         );
         let json = projection_to_json(surface.projection());
         assert_eq!(&projection_from_json(&json).unwrap(), surface.projection());
-        assert_eq!(surface.plan(&nztm), Ok(Plan::Affine));
-        assert!(
-            surface
-                .plan(&TileMatrixSet::by_id("WebMercatorQuad").unwrap())
-                .is_err()
-        );
+        assert_eq!(surface.plan(&nztm, None), Ok(Plan::Affine));
+        let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        assert!(surface.plan(&mercator, None).is_err());
+        assert!(matches!(
+            surface.plan(&mercator, Some(ImageKind::Raster)),
+            Ok(Plan::Warp(_))
+        ));
         assert_eq!(surface.source_tms("other", true), *surface.tms());
         assert_eq!(surface.plane().as_ref(), Some(surface.tms()));
         assert_eq!(Surface::default().plane(), None);

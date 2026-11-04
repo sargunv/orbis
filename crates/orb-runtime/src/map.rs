@@ -6,7 +6,7 @@ use glam::DVec2;
 use orb_camera::{CameraState, View, Viewport};
 use orb_crs::{TileIndex, TileMatrixSet};
 
-use crate::surface::Surface;
+use crate::surface::{Plan, Surface};
 use orb_hal::{Gpu, HostBytesId, TextureId};
 use orb_host::{Fetch, FetchError, ImageDecode};
 use orb_render::{
@@ -186,8 +186,33 @@ pub(crate) enum SourceState {
         loading: u32,
         /// An image source's texture page, made for its first tile.
         page: Option<PageId>,
+        /// How its tiles reach the surface when they are on another plane.
+        warp: Option<Box<WarpState>>,
     },
     Failed,
+}
+
+/// A `RasterWarp` source's plan and the footprints its tiles have had.
+#[derive(Debug)]
+pub(crate) struct WarpState {
+    warp: orb_crs::Warp,
+    footprints: HashMap<TileIndex, Option<orb_crs::Footprint>>,
+}
+
+impl WarpState {
+    /// Footprints kept before the cache starts over.
+    const FOOTPRINTS: usize = 4096;
+
+    fn footprint(&mut self, tile: TileIndex) -> Option<orb_crs::Footprint> {
+        if self.footprints.len() >= Self::FOOTPRINTS {
+            self.footprints.clear();
+        }
+        let warp = &self.warp;
+        *self
+            .footprints
+            .entry(tile)
+            .or_insert_with(|| warp.footprint(tile))
+    }
 }
 
 /// A render node's state across style revisions, by node key.
@@ -829,16 +854,18 @@ impl Map {
                     SourceState::Resolving
                 }
                 None => ready_source(
-                    self.planned(&source.id, false)
-                        .and_then(|tms| TileEndpoint::resolve(&source.kind, None, tms)),
+                    self.planned(&source.id, false, plan.image_kind(index))
+                        .and_then(|(tms, warp)| {
+                            Ok((TileEndpoint::resolve(&source.kind, None, tms)?, warp))
+                        }),
                     &source.id,
                     plan.image_kind(index).is_some(),
                     &mut self.warnings,
                 ),
             },
             (SourceKind::GeoJson(geojson), _) => ready_source(
-                self.planned(&source.id, true)
-                    .map(|tms| TileEndpoint::geojson(geojson, tms)),
+                self.planned(&source.id, true, None)
+                    .map(|(tms, warp)| (TileEndpoint::geojson(geojson, tms), warp)),
                 &source.id,
                 false,
                 &mut self.warnings,
@@ -866,9 +893,14 @@ impl Map {
 
     /// A source's tile matrix set, if the planner can bring it to the
     /// surface.
-    fn planned(&self, id: &str, geojson: bool) -> Result<TileMatrixSet, String> {
+    fn planned(
+        &self,
+        id: &str,
+        geojson: bool,
+        image: Option<crate::style::ImageKind>,
+    ) -> Result<(TileMatrixSet, Plan), String> {
         let tms = self.surface.source_tms(id, geojson);
-        self.surface.plan(&tms).map(|_| tms)
+        self.surface.plan(&tms, image).map(|plan| (tms, plan))
     }
 
     /// Draws a frame into `target`: applies arrived data, loads what the
@@ -976,7 +1008,14 @@ impl Map {
                             wrap: covered.wrap,
                             regions: vec![covered.index],
                         };
-                        placements(tms, &draw, 8192, view.camera_world(), period, zoom)
+                        let at = Placement {
+                            extent: 8192,
+                            camera_world: view.camera_world(),
+                            period,
+                            zoom,
+                            frame: None,
+                        };
+                        placements(tms, &draw, at)
                             .next()
                             .expect("one background region")
                     })
@@ -1368,6 +1407,7 @@ impl Map {
             endpoint,
             pyramid,
             loading,
+            warp,
             ..
         } = &mut style.sources[index]
         else {
@@ -1375,12 +1415,17 @@ impl Map {
         };
         let endpoint = Arc::clone(endpoint);
         let tms = &endpoint.tms;
-        let cover = view.cover_volume(
-            tms,
-            endpoint.cover_px,
-            pyramid.max_zoom(),
-            f64::from(height) * elevation_scale,
-        );
+        let cover = match warp {
+            None => view.cover_volume(
+                tms,
+                endpoint.cover_px,
+                pyramid.max_zoom(),
+                f64::from(height) * elevation_scale,
+            ),
+            Some(warp) => view.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
+                warp.footprint(tile)
+            }),
+        };
         let update = pyramid.update(&cover);
         let mut requests = Vec::new();
         for &tile in &update.request {
@@ -1436,11 +1481,23 @@ impl Map {
                 }
                 .tile(resident, index, tile, draws);
             }
+            let frame = resident
+                .image
+                .as_ref()
+                .and_then(|image| image.warped.as_ref())
+                .map(|warped| warped.frame);
             for &(extent, scene_tile) in &resident.parts {
                 let rows: Vec<TileRow> = draws
                     .iter()
                     .flat_map(|draw| {
-                        placements(tms, draw, extent, camera_world, period, self.camera.zoom())
+                        let at = Placement {
+                            extent,
+                            camera_world,
+                            period,
+                            zoom: self.camera.zoom(),
+                            frame,
+                        };
+                        placements(tms, draw, at)
                     })
                     .collect();
                 report.tiles_drawn += rows.len() as u32;
@@ -1611,10 +1668,11 @@ impl Map {
                     }
                     let def = plan.source_def(index);
                     let tms = self.surface.source_tms(&def.id, false);
-                    let endpoint = match (result, self.surface.plan(&tms)) {
+                    let endpoint = match (result, self.surface.plan(&tms, plan.image_kind(index))) {
                         (Err(e), _) => Err(format!("TileJSON: {e}")),
                         (Ok(_), Err(e)) => Err(e),
-                        (Ok(text), Ok(_)) => TileEndpoint::resolve(&def.kind, Some(&text), tms),
+                        (Ok(text), Ok(warp)) => TileEndpoint::resolve(&def.kind, Some(&text), tms)
+                            .map(|endpoint| (endpoint, warp)),
                     };
                     let image = plan.image_kind(index).is_some();
                     style.sources[index] =
@@ -1694,6 +1752,7 @@ impl Map {
             loading,
             endpoint,
             page,
+            warp,
         } = &mut style.sources[source]
         else {
             return;
@@ -1726,6 +1785,17 @@ impl Map {
             let kind = plan
                 .image_kind(source)
                 .expect("image results are for image sources");
+            let warped = match warp {
+                Some(warp) => match image::Warped::new(&warp.warp, tile) {
+                    Some(mesh) => Some(Arc::new(mesh)),
+                    None => {
+                        // Nothing of the tile reaches the surface.
+                        pyramid.insert_empty(tile);
+                        return;
+                    }
+                },
+                None => None,
+            };
             let upload = image::Upload {
                 plan,
                 source,
@@ -1733,6 +1803,7 @@ impl Map {
                 tile,
                 image: tile_image,
                 unpack: endpoint.dem_unpack,
+                warped,
             };
             match image::upload(gpu, renderer, page, pyramid, &upload) {
                 Ok(resident) => {
@@ -1927,13 +1998,20 @@ pub(crate) fn record_maxima(
 
 /// A source whose endpoint resolved; `image` sources cache fewer tiles.
 fn ready_source(
-    endpoint: Result<TileEndpoint, String>,
+    endpoint: Result<(TileEndpoint, Plan), String>,
     id: &str,
     image: bool,
     warnings: &mut Vec<String>,
 ) -> SourceState {
     match endpoint {
-        Ok(endpoint) => SourceState::Ready {
+        Ok((endpoint, plan)) => SourceState::Ready {
+            warp: match plan {
+                Plan::Affine => None,
+                Plan::Warp(warp) => Some(Box::new(WarpState {
+                    warp: *warp,
+                    footprints: HashMap::new(),
+                })),
+            },
             pyramid: TilePyramid::new(
                 endpoint.minzoom,
                 if image {
@@ -2194,15 +2272,34 @@ fn pixel_alignment(view: &View, projection: &orb_crs::Projection, bearing: f64) 
 
 /// Placement rows for drawing `draw.tile` in its world copy, clipped to
 /// the regions it stands in for.
+/// Where a tile's placement rows put it.
+#[derive(Clone, Copy, Debug)]
+struct Placement {
+    /// Data units per tile side.
+    extent: u32,
+    camera_world: DVec2,
+    /// The surface's wrap period, 0 if it doesn't wrap.
+    period: f64,
+    /// The camera's style zoom.
+    zoom: f64,
+    /// A warped tile's frame on the surface, which its mesh spans `extent`
+    /// of; tiles on the surface's plane span their own bounds.
+    frame: Option<orb_crs::WorldRect>,
+}
+
 fn placements<'a>(
     tms: &TileMatrixSet,
     draw: &'a Draw,
-    extent: u32,
-    camera_world: DVec2,
-    period: f64,
-    zoom: f64,
+    at: Placement,
 ) -> impl Iterator<Item = TileRow> + use<'a> {
-    let bounds = tms.tile_bounds(draw.tile);
+    let Placement {
+        extent,
+        camera_world,
+        period,
+        zoom,
+        frame,
+    } = at;
+    let bounds = frame.unwrap_or_else(|| tms.tile_bounds(draw.tile));
     let origin =
         DVec2::new(bounds.min.x + f64::from(draw.wrap) * period, bounds.max.y) - camera_world;
     let tile = draw.tile;
@@ -2223,7 +2320,8 @@ fn placements<'a>(
         (x * pixel_size) as i64 as u32,
         (f64::from(tile.row) * pixel_size) as i64 as u32,
     ];
-    let scale = (tms.tile_span(tile.z) / f64::from(extent)) as f32;
+    let span = frame.map_or(tms.tile_span(tile.z), |frame| frame.size().x);
+    let scale = (span / f64::from(extent)) as f32;
     draw.regions.chunks(4).map(move |regions| {
         let mut clips = [ClipRect::EMPTY; 4];
         for (clip, &region) in clips.iter_mut().zip(regions) {
@@ -2688,7 +2786,14 @@ mod tests {
             wrap: 1,
             regions: (0..8).map(|col| TileIndex::new(3, col, 0)).collect(),
         };
-        let rows: Vec<_> = placements(&tms, &draw, 4096, DVec2::ZERO, 100.0, 3.0).collect();
+        let at = Placement {
+            extent: 4096,
+            camera_world: DVec2::ZERO,
+            period: 100.0,
+            zoom: 3.0,
+            frame: None,
+        };
+        let rows: Vec<_> = placements(&tms, &draw, at).collect();
         assert_eq!(rows.len(), 2);
         for (col, clip) in rows.iter().flat_map(|row| row.clips).enumerate() {
             assert_eq!(

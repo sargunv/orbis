@@ -2,6 +2,8 @@
 //! texture page as one quad per render node, DEM neighbours for the
 //! prepare pass, and the paint of raster, hillshade and color-relief nodes.
 
+use std::sync::Arc;
+
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
 use orb_layout::{Chunk, TileBox};
@@ -16,11 +18,70 @@ use crate::jobs::{ImagePixels, TileImage};
 use crate::map::{Resident, ResidentTile};
 use crate::style::{ImageKind, NodePlan, StylePlan};
 
-/// An image tile's layer in its source's page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// An image tile's layer in its source's page, and the mesh that warps it
+/// onto another plane.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ResidentImage {
     pub(crate) page: PageId,
     pub(crate) layer: u32,
+    pub(crate) warped: Option<Arc<Warped>>,
+}
+
+/// A tile's warp mesh as its nodes draw it (plan §9.2, `RasterWarp`).
+#[derive(Debug, PartialEq)]
+pub(crate) struct Warped {
+    /// The square of the drawing plane its positions span `IMAGE_EXTENT`
+    /// of.
+    pub(crate) frame: orb_crs::WorldRect,
+    vertices: Vec<u32>,
+    indices: Vec<u32>,
+    chunks: Vec<Chunk>,
+}
+
+impl Warped {
+    /// The tile's mesh from `warp`, its linear interpolation within a
+    /// quarter of a pixel at 512 pixels per tile side.
+    pub(crate) fn new(warp: &orb_crs::Warp, tile: TileIndex) -> Option<Self> {
+        let mesh = warp.mesh(tile, 1.0 / 2048.0, 1.0)?;
+        let units = |v: f64| (v * f64::from(IMAGE_EXTENT)).round() as i16 as u16 as u32;
+        let position = |v: f64| ((v * f64::from(IMAGE_EXTENT)) as f32).to_bits();
+        let vertices = mesh
+            .positions
+            .iter()
+            .zip(&mesh.sources)
+            .flat_map(|(p, s)| [position(p.x), position(p.y), units(s.x) | units(s.y) << 16])
+            .collect();
+        let indices: Vec<u32> = mesh.triangles.iter().flatten().copied().collect();
+        let point = |k: u32| mesh.positions[k as usize] * f64::from(IMAGE_EXTENT);
+        let chunks = mesh
+            .triangles
+            .chunks(256)
+            .enumerate()
+            .map(|(c, triangles)| {
+                let mut min = glam::DVec2::splat(f64::INFINITY);
+                let mut max = glam::DVec2::splat(f64::NEG_INFINITY);
+                for p in triangles.iter().flatten().map(|&k| point(k)) {
+                    min = min.min(p);
+                    max = max.max(p);
+                }
+                // Bounds round outward, so the cull keeps every pixel.
+                let min = [min.x.floor() as i16, min.y.floor() as i16];
+                let max = [max.x.ceil() as i16, max.y.ceil() as i16];
+                Chunk {
+                    sort_key: None,
+                    first_index: (c * 256 * 3) as u32,
+                    index_count: (triangles.len() * 3) as u32,
+                    bounds: TileBox { min, max },
+                }
+            })
+            .collect();
+        Some(Self {
+            frame: mesh.frame,
+            vertices,
+            indices,
+            chunks,
+        })
+    }
 }
 
 /// An image tile to upload.
@@ -32,12 +93,29 @@ pub(crate) struct Upload<'a> {
     pub(crate) image: &'a TileImage,
     /// A DEM source's unpack vector.
     pub(crate) unpack: Option<[f64; 4]>,
+    /// The tile's mesh on the surface, from a `RasterWarp` plan.
+    pub(crate) warped: Option<Arc<Warped>>,
 }
 
-/// The quad every image tile draws: its corners in tile units.
-const QUAD: [u32; 4] = {
+/// The quad an image tile on its own plane draws: its corners in tile
+/// units, as f32 positions and as image units (the same for a quad).
+const QUAD: [u32; 12] = {
     let e = IMAGE_EXTENT;
-    [0, e, e << 16, e | e << 16]
+    let (zero, full) = (0f32.to_bits(), (e as f32).to_bits());
+    [
+        zero,
+        zero,
+        0, //
+        full,
+        zero,
+        e, //
+        zero,
+        full,
+        e << 16, //
+        full,
+        full,
+        e | e << 16,
+    ]
 };
 const QUAD_INDICES: [u32; 6] = [0, 1, 2, 2, 1, 3];
 const QUAD_CHUNK: Chunk = Chunk {
@@ -109,7 +187,11 @@ pub(crate) fn upload(
     let mut resident = ResidentTile {
         parts: vec![(IMAGE_EXTENT, scene_tile)],
         meshes: Vec::new(),
-        image: Some(ResidentImage { page, layer }),
+        image: Some(ResidentImage {
+            page,
+            layer,
+            warped: upload.warped.clone(),
+        }),
         symbols: Vec::new(),
     };
     for (index, node) in plan.nodes.iter().enumerate() {
@@ -138,7 +220,7 @@ pub(crate) fn upload(
             let Some(neighbour) = offset_tile(tile, offset) else {
                 continue;
             };
-            if let Some(image) = pyramid.get(neighbour).and_then(|r| r.image) {
+            if let Some(image) = pyramid.get(neighbour).and_then(|r| r.image.as_ref()) {
                 renderer.prepare_dem(
                     page,
                     DemPrepare {
@@ -163,17 +245,26 @@ pub(crate) fn add_node(
     index: u32,
     key: u32,
 ) -> Result<(), orb_render::OutOfSpace> {
-    let image = resident.image.expect("image tiles hold an image");
+    let image = resident.image.as_ref().expect("image tiles hold an image");
     let part = resident.parts[0].1;
     let [top, bottom] = [tile.row, tile.row + 1].map(|row| latitude(tile.z, row));
     let mut row = [0; IMAGE_ROW_WORDS];
     row[..3].copy_from_slice(&[image.layer, top.to_bits(), bottom.to_bits()]);
-    let mesh = MeshData {
-        vertices: Words::Core(&QUAD),
-        indices: Words::Core(&QUAD_INDICES),
-        props: Words::Core(&row),
-        row_words: IMAGE_ROW_WORDS as u32,
-        chunks: &[QUAD_CHUNK],
+    let mesh = match &image.warped {
+        Some(warped) => MeshData {
+            vertices: Words::Core(&warped.vertices),
+            indices: Words::Core(&warped.indices),
+            props: Words::Core(&row),
+            row_words: IMAGE_ROW_WORDS as u32,
+            chunks: &warped.chunks,
+        },
+        None => MeshData {
+            vertices: Words::Core(&QUAD),
+            indices: Words::Core(&QUAD_INDICES),
+            props: Words::Core(&row),
+            row_words: IMAGE_ROW_WORDS as u32,
+            chunks: &[QUAD_CHUNK],
+        },
     };
     let mesh = renderer.scene().insert_mesh(gpu, part, index, &mesh)?;
     resident.meshes.push(Resident {
@@ -224,7 +315,7 @@ fn neighbours(
         if neighbour == arrived.0 {
             return Some(arrived.1);
         }
-        Some(pyramid.get(neighbour)?.image?.layer)
+        Some(pyramid.get(neighbour)?.image.as_ref()?.layer)
     })
 }
 

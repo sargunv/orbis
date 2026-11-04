@@ -369,9 +369,11 @@ pub struct NodeCull {
 /// prepares (plan §8.3, decision 0002).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeDraw {
-    /// Vertex pulling: one instance of 768 vertices per visible chunk, from
-    /// the node's visible list.
-    Chunks,
+    /// Image meshes, by vertex pulling: one instance of 768 vertices per
+    /// visible chunk, from the node's visible list. Their fragments clip in
+    /// the image's own tile units (a warped tile's mesh is in other units),
+    /// so the cull doesn't narrow their bounds to the clip rectangles.
+    Images,
     /// Point families: 256 six-vertex instances per visible chunk. Anchors
     /// are clipped, then the full footprints expanded.
     Points,
@@ -386,7 +388,7 @@ pub enum NodeDraw {
 impl NodeDraw {
     fn word(self) -> u32 {
         match self {
-            Self::Chunks => 0,
+            Self::Images => 0,
             Self::Points => 1,
             Self::Indexed => 2,
         }

@@ -66,7 +66,8 @@ fn outside_frustum(c: array<vec4<f32>, 8>, margin: vec2<f32>) -> bool {
     return right || left || top || bottom || far || near;
 }
 
-fn candidate_visible(candidate: Candidate, margin_px: f32, point_instances: bool, elevation: f32) -> bool {
+fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation: f32) -> bool {
+    let point_instances = draw == DRAW_POINTS;
     let chunk = chunks[candidate.chunk];
     let tile = tiles[candidate.tile];
 
@@ -74,10 +75,15 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, point_instances: bool
     let before_clip = select(margin, 0.0, point_instances);
     var lo = unpack_i16x2(chunk.bounds_min) - vec2<f32>(before_clip);
     var hi = unpack_i16x2(chunk.bounds_max) + vec2<f32>(before_clip);
-    // Only the part inside the tile's clip rectangles can draw.
+    // Only the part inside the tile's clip rectangles can draw. Images clip
+    // per fragment in their own units.
     var clip_lo = vec2<f32>(1e9);
     var clip_hi = vec2<f32>(-1e9);
-    for (var i = 0u; i < 4u; i++) {
+    if draw == DRAW_IMAGES {
+        clip_lo = lo;
+        clip_hi = hi;
+    }
+    for (var i = 0u; i < 4u && draw != DRAW_IMAGES; i++) {
         let c_lo = max(lo, unpack_i16x2(tile.clips[i].x));
         let c_hi = min(hi, unpack_i16x2(tile.clips[i].y));
         if all(c_lo <= c_hi) {
@@ -133,11 +139,12 @@ fn cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     if draw == DRAW_INDEXED {
         cull_indexed(group.x, group.y, lane, node);
     } else if group.y == 0u {
-        cull_listed(group.x, lane, node, draw == DRAW_POINTS);
+        cull_listed(group.x, lane, node, draw);
     }
 }
 
-fn cull_listed(index: u32, lane: u32, node: NodeCull, points: bool) {
+fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
+    let points = draw == DRAW_POINTS;
     let count = workgroupUniformLoad(&node_count);
     var written = 0u;
     for (var start = 0u; start < count; start += WORKGROUP) {
@@ -146,7 +153,7 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, points: bool) {
         var candidate: Candidate;
         if i < count {
             candidate = candidates[node.visible_base + i];
-            keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, points, node.elevation));
+            keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, draw, node.elevation));
         }
         // Inclusive Hillis–Steele scan of `keep` across the workgroup.
         scan[lane] = keep;
@@ -192,7 +199,7 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
     let i = start + lane;
     if lane < INDEXED_BATCH && i < count {
         let candidate = candidates[node.visible_base + i];
-        let keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, false, node.elevation));
+        let keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation));
         let chunk = chunks[candidate.chunk];
         if keep == 1u {
             atomicMax(&extent, candidate.slot + chunk.index_count - node.index_base);

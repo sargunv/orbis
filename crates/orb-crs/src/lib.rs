@@ -13,12 +13,14 @@ mod epsg;
 mod family;
 mod projection;
 mod tms;
+mod warp;
 
 pub use cover::{CoverDecision, CoveredTile};
 pub use projection::{Descriptor, Projection, UnknownProjection};
 pub use tms::{
     TileIndex, TileMatrix, TileMatrixSet, TileMatrixSetDefinition, UnknownTileMatrixSet,
 };
+pub use warp::{Footprint, Warp, WarpMesh};
 
 use glam::DVec2;
 

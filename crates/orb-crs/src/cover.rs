@@ -35,18 +35,39 @@ impl TileMatrixSet {
         max_zoom: u8,
         mut decide: impl FnMut(TileIndex, WorldRect) -> CoverDecision,
     ) -> Vec<CoveredTile> {
-        let period = self.projection().wrap_period();
+        self.cover_with(
+            wraps,
+            self.projection().wrap_period(),
+            max_zoom,
+            |index, offset| {
+                decide(
+                    index,
+                    self.tile_bounds(index).translated(DVec2::new(offset, 0.0)),
+                )
+            },
+        )
+    }
+
+    /// [`cover`](Self::cover) for tiles drawn on another plane: `decide`
+    /// sees each tile with the x offset of its copy of the drawing plane,
+    /// whose wrap `period` (if it wraps) sets the copies.
+    pub fn cover_with(
+        &self,
+        wraps: RangeInclusive<i32>,
+        period: Option<f64>,
+        max_zoom: u8,
+        mut decide: impl FnMut(TileIndex, f64) -> CoverDecision,
+    ) -> Vec<CoveredTile> {
         let wraps = if period.is_some() { wraps } else { 0..=0 };
         let max_zoom = max_zoom.min(self.max_zoom());
 
         let mut out = Vec::new();
         let mut stack = Vec::new();
         for wrap in wraps {
-            let offset = DVec2::new(f64::from(wrap) * period.unwrap_or(0.0), 0.0);
+            let offset = f64::from(wrap) * period.unwrap_or(0.0);
             stack.extend(self.roots());
             while let Some(index) = stack.pop() {
-                let bounds = self.tile_bounds(index).translated(offset);
-                match decide(index, bounds) {
+                match decide(index, offset) {
                     CoverDecision::Skip => {}
                     CoverDecision::Refine if index.z < max_zoom => stack.extend(index.children()),
                     CoverDecision::Accept | CoverDecision::Refine => {

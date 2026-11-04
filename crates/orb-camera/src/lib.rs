@@ -21,7 +21,9 @@ pub use store::{AnimationId, Camera, CameraEvent, Change, Phase};
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use glam::{DMat4, DVec2, DVec3, DVec4};
-use orb_crs::{CoverDecision, CoveredTile, Projection, TileMatrixSet, WorldRect};
+use orb_crs::{
+    CoverDecision, CoveredTile, Footprint, Projection, TileIndex, TileMatrixSet, WorldRect,
+};
 use orb_geo::{Geodetic, wgs84};
 
 /// Where the camera looks and how.
@@ -285,6 +287,42 @@ impl View {
         max_zoom: u8,
         height: f64,
     ) -> Vec<CoveredTile> {
+        let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
+        self.cover_tiles(tms, max_zoom, height, |index, offset| {
+            let bounds = tms.tile_bounds(index).translated(DVec2::new(offset, 0.0));
+            Some((bounds, center_zoom))
+        })
+    }
+
+    /// Covers the view with tiles of a set on another plane (the
+    /// `RasterWarp` plan), from where each tile lands on this one.
+    pub fn cover_warped(
+        &self,
+        tms: &TileMatrixSet,
+        tile_px: f64,
+        max_zoom: u8,
+        mut footprint: impl FnMut(TileIndex) -> Option<Footprint>,
+    ) -> Vec<CoveredTile> {
+        let scale = self.world_per_px * tile_px;
+        self.cover_tiles(tms, max_zoom, 0.0, |index, offset| {
+            let f = footprint(index)?;
+            // The zoom at which this tile, at its own scale, would span
+            // `tile_px` pixels at the camera.
+            let center = f64::from(index.z) + (f.span / scale).log2();
+            Some((f.bounds.translated(DVec2::new(offset, 0.0)), center))
+        })
+    }
+
+    /// The cover's traversal: `place` gives each tile's bounds in its copy
+    /// of the world (by x offset) and the zoom whose tiles would span the
+    /// source's tile size at the target's scale, or `None` to skip it.
+    fn cover_tiles(
+        &self,
+        tms: &TileMatrixSet,
+        max_zoom: u8,
+        height: f64,
+        mut place: impl FnMut(TileIndex, f64) -> Option<(WorldRect, f64)>,
+    ) -> Vec<CoveredTile> {
         // GL JS grows the culling volume as the bottom edge approaches the
         // horizon. Heights here stay in world units, just like tile bounds.
         let proximity =
@@ -298,7 +336,6 @@ impl View {
             .map_or(0, |period| ((reach / period).ceil() as i32).min(3));
         // GL JS holds a constant zoom through 60 degrees (or the
         // FOV-dependent threshold). Above it, use its default tile LOD.
-        let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
         let threshold = (78.5 - self.fov / 2.0).clamp(0.0, 60.0);
         let lod = (self.pitch > threshold).then(|| {
             let horizon = MAX_HORIZON_PITCH.to_radians();
@@ -323,32 +360,40 @@ impl View {
                 (count / count0 / 3.0).max(1.0).log2() / 2.0,
             )
         });
-        tms.cover(-copies..=copies, max_zoom, |index, bounds| {
-            let rel = bounds.translated(-self.camera_world);
-            if !self.intersects_frustum(&rel, height) {
-                return CoverDecision::Skip;
-            }
-            let nearest = rel.clamp(self.eye.truncate()).extend(0.0);
-            let desired = if let Some((behavior, fov_scale, penalty)) = lod {
-                let distance = nearest.distance(self.eye).max(1.0e-9);
-                let tile_pitch = nearest
-                    .truncate()
-                    .distance(self.eye.truncate())
-                    .atan2(self.eye.z.abs());
-                let center_distance = self.eye_distance_px * self.world_per_px;
-                center_zoom
-                    + (center_distance / distance / fov_scale).log2()
-                    + behavior * tile_pitch.cos().log2() / 2.0
-                    - penalty
-            } else {
-                center_zoom
-            };
-            if f64::from(index.z) < desired.floor().max(0.0) {
-                CoverDecision::Refine
-            } else {
-                CoverDecision::Accept
-            }
-        })
+        tms.cover_with(
+            -copies..=copies,
+            self.wrap_period,
+            max_zoom,
+            |index, offset| {
+                let Some((bounds, center_zoom)) = place(index, offset) else {
+                    return CoverDecision::Skip;
+                };
+                let rel = bounds.translated(-self.camera_world);
+                if !self.intersects_frustum(&rel, height) {
+                    return CoverDecision::Skip;
+                }
+                let nearest = rel.clamp(self.eye.truncate()).extend(0.0);
+                let desired = if let Some((behavior, fov_scale, penalty)) = lod {
+                    let distance = nearest.distance(self.eye).max(1.0e-9);
+                    let tile_pitch = nearest
+                        .truncate()
+                        .distance(self.eye.truncate())
+                        .atan2(self.eye.z.abs());
+                    let center_distance = self.eye_distance_px * self.world_per_px;
+                    center_zoom
+                        + (center_distance / distance / fov_scale).log2()
+                        + behavior * tile_pitch.cos().log2() / 2.0
+                        - penalty
+                } else {
+                    center_zoom
+                };
+                if f64::from(index.z) < desired.floor().max(0.0) {
+                    CoverDecision::Refine
+                } else {
+                    CoverDecision::Accept
+                }
+            },
+        )
     }
 
     /// Conservative test of a camera-relative ground rectangle against the

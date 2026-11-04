@@ -75,7 +75,7 @@ struct Visible {
 };
 
 // How a node draws (orb-scene's `NodeDraw`).
-const DRAW_CHUNKS: u32 = 0u;
+const DRAW_IMAGES: u32 = 0u;
 // Points clip anchors, then expand the whole footprint.
 const DRAW_POINTS: u32 = 1u;
 const DRAW_INDEXED: u32 = 2u;

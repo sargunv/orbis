@@ -87,7 +87,7 @@ impl Family {
         match self {
             Self::Fill | Self::FillOutline | Self::Line | Self::FillExtrusion => NodeDraw::Indexed,
             Self::Circle | Self::Heatmap | Self::SymbolIcon | Self::SymbolText => NodeDraw::Points,
-            Self::Raster | Self::Hillshade | Self::ColorRelief => NodeDraw::Chunks,
+            Self::Raster | Self::Hillshade | Self::ColorRelief => NodeDraw::Images,
         }
     }
 }
