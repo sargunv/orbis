@@ -10,6 +10,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
+import dev.orbis.OrbCameraTarget
 import dev.orbis.OrbEventKind
 import dev.orbis.OrbMap
 import dev.orbis.OrbRuntime
@@ -18,10 +19,13 @@ import org.json.JSONArray
 import java.io.File
 
 /**
- * The Android reference app: the web demo's Tokyo style with gestures, a
- * popup from queryRenderedFeatures on tap, hover names with a mouse, and a
- * pin at Tokyo Station that follows the map. Logs load timings (tag
- * "Orbis").
+ * The Android reference app: the web demo's style with gestures, a popup
+ * from queryRenderedFeatures on tap, hover names with a mouse, and a pin at
+ * Tokyo Station that follows the map. Logs load timings (tag "Orbis").
+ *
+ * The web demo's live OpenFreeMap Liberty over Tokyo by default; the
+ * committed extract with `adb shell am start -n dev.orbis.demo/.MainActivity
+ * --es style tokyo`.
  */
 class MainActivity : Activity() {
     private lateinit var runtime: OrbRuntime
@@ -69,10 +73,15 @@ class MainActivity : Activity() {
         setContentView(root)
         addPin(Pin("Tokyo Station", 139.7671, 35.6812, Color.YELLOW))
 
-        val style = File(data, "tokyo-mvt.json").readText()
-            .replace("pmtiles://./data/", "pmtiles://file://${data.path}/")
-            .replace("\"./data/", "\"file://${data.path}/")
-        view.map.setStyleJson(style)
+        if (intent.getStringExtra("style") == "tokyo") {
+            val style = File(data, "tokyo-mvt.json").readText()
+                .replace("pmtiles://./data/", "pmtiles://file://${data.path}/")
+                .replace("\"./data/", "\"file://${data.path}/")
+            view.map.setStyleJson(style)
+        } else {
+            view.map.jumpTo(OrbCameraTarget(139.767, 35.681, 13.0, Double.NaN, Double.NaN))
+            view.map.loadStyleUrl("https://tiles.openfreemap.org/styles/liberty")
+        }
 
         view.onFrame = { frame ->
             for (pin in pins + listOfNotNull(popup)) pin.place(view.map)

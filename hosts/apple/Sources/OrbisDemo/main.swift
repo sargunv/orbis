@@ -1,9 +1,11 @@
-// The macOS reference app: the web demo's Tokyo style and behaviour on a
+// The macOS reference app: the web demo's style and behaviour on a
 // MapView. Gestures move the map; a click shows the features under it in a
 // popup anchored to the map; hovering names the feature under the pointer;
-// a pin marks Tokyo Station. `swift run OrbisDemo [style.json]`.
+// a pin marks Tokyo Station. `OrbisDemo [tokyo | style URL or path]`: the
+// web demo's live OpenFreeMap Liberty over Tokyo by default, `tokyo` for
+// the committed extract.
 //
-// `OrbisDemo --snapshot out.png [style.json]` draws the map into a texture
+// `OrbisDemo --snapshot out.png [style]` draws the map into a texture
 // target instead (plan §5.4's owned texture), until it is idle, with the
 // pin drawn on, writes a PNG and prints timings and pipeline counts.
 
@@ -15,6 +17,23 @@ let demoData = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .appendingPathComponent("../../../../web/demo/data")
     .standardizedFileURL
+
+/// The web demo's default: live Liberty over Tokyo Station.
+let liveStyle = "https://tiles.openfreemap.org/styles/liberty"
+
+/// Loads the style an argument names: nothing for live Liberty at the web
+/// demo's camera, `tokyo` for the extract, or a URL or path.
+func loadStyle(_ argument: String?, into map: OrbMap) throws {
+    switch argument {
+    case nil:
+        map.jumpTo(target: OrbCameraTarget(lon: 139.767, lat: 35.681, zoom: 13, bearing: .nan, pitch: .nan))
+        map.loadStyleUrl(url: liveStyle)
+    case "tokyo":
+        try map.setStyleJson(json: try tokyoStyle())
+    case let path?:
+        map.loadStyleUrl(url: path.contains("://") ? path : "file://\(path)")
+    }
+}
 
 /// The Tokyo style with its tiles, glyphs and sprites as file URLs.
 func tokyoStyle() throws -> String {
@@ -149,13 +168,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fatalError("no GPU device: \(error)")
         }
         let view = DemoView(runtime: runtime, frame: NSRect(x: 0, y: 0, width: 1024, height: 768))
-        let arguments = CommandLine.arguments.dropFirst()
         do {
-            if let path = arguments.first {
-                view.map.loadStyleUrl(url: path.contains("://") ? path : "file://\(path)")
-            } else {
-                try view.map.setStyleJson(json: try tokyoStyle())
-            }
+            try loadStyle(CommandLine.arguments.dropFirst().first, into: view.map)
         } catch {
             fatalError("style: \(error)")
         }
@@ -187,11 +201,7 @@ func snapshot(to path: String, style: String?) throws {
         runtime: runtime, width: UInt32(Double(width) * scale), height: UInt32(Double(height) * scale),
         scale: scale)
     let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 1, clearG: 1, clearB: 1, clearA: 1)
-    if let style {
-        map.loadStyleUrl(url: style.contains("://") ? style : "file://\(style)")
-    } else {
-        try map.setStyleJson(json: try tokyoStyle())
-    }
+    try loadStyle(style, into: map)
     var frames = 0
     var slowest = 0.0
     var renderMs = 0.0
