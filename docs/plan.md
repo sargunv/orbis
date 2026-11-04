@@ -325,7 +325,7 @@ Costs and answers:
 - **Overlay skew**: a transferred OffscreenCanvas cannot commit atomically with the DOM. Default overlays are **engine-drawn view annotations** (composited in-frame, collided with labels, depth-tested); DOM overlays are opt-in on frame acks, documented ±1 frame.
 - **Terrain (M7)**: the ui role receives a compact elevation pyramid (min/max + 32×32 u16 coarse DEM per covered tile, ~2 KB each); sync `unproject` under terrain returns `{lngLat, approximate: true}`, `unprojectExact` is async.
 
-**M3 rule:** measure input-to-photon latency (pan, pinch, rotate), overlay skew and main busy time on Chrome (Windows, Android), Safari (macOS, iOS) and Firefox (Windows). The worker default stands if its p95 penalty is ≤1 frame and main busy time is ≤25% of GL JS's; otherwise `thread: "main"` becomes the default. The API is identical either way.
+**M3 rule:** measure input-to-photon latency (pan, pinch, rotate), overlay skew and main busy time on Chrome (Windows, Android), Safari (macOS, iOS) and Firefox (Windows). The worker default stands if its p95 penalty is ≤1 frame and main busy time is ≤25% of GL JS's; otherwise `thread: "main"` becomes the default. The API is identical either way. [measured at M3, decision 0021] In headless Chrome 156 on an Apple M6 the worker's penalty is one frame at p50 (pan +17.1 ms, pinch +16.5 at 60 Hz) but 1.1–1.75 frames at the pan p95; its main busy time is 19% of GL JS 6.16.0's there and 25% on a moto g 5G (2024); DOM annotations on frame acknowledgements skew by under a frame (p95 1.6–9.2 ms). By the rule, **`thread: "main"` is the default**; `"worker"` and `"auto"` stay. Windows, Safari, iOS and Firefox, and Android latency, are unmeasured.
 
 **One binary, three roles:** `compileStreaming` overlapped with the style fetch; the compiled `Module` is posted to workers; main instantiates the ui role at no extra download. `wasm-split` only if M2 shows instantiation or memory cost on low-end phones.
 
@@ -727,7 +727,7 @@ CRS/TMS and composition are the candidates for spec RFCs with fixtures. An offli
 
 ## 13. Interaction, queries, accessibility
 
-**Interaction (M3).** `orb-interact` turns pointer, touch, wheel and keyboard into camera intents with inertia and **feel profiles** (iOS-like, Android-like, desktop, custom). Independent property animations (removing FFI patch 0015, #4637); closed-form pitch-aware fitting (ffi#764) and horizon-aware visible regions (ffi#622) [verified]; globe-aware panning (versors near poles, GL JS #8154) and terrain constraints from M7. Input-owning hosts drive the camera directly.
+**Interaction (M3).** `orb-interact` turns pointer, touch, wheel and keyboard into camera intents with inertia and **feel profiles** (iOS-like, Android-like, desktop, custom). [built at M3, decision 0021] It drives `orb-camera`'s single-writer store, which holds constraints, `jumpTo`/`easeTo`/`flyTo`, glides and `cameraForBounds` and reports GL JS-style camera events; GL JS's handlers are the reference for each gesture's rates and thresholds. Independent property animations (removing FFI patch 0015, #4637); closed-form pitch-aware fitting (ffi#764) and horizon-aware visible regions (ffi#622) [verified]; globe-aware panning (versors near poles, GL JS #8154) and terrain constraints from M7. Input-owning hosts drive the camera directly.
 
 **Queries.** `hitTest(point)` is synchronous on the published hit index and symbol index. `project`/`unproject` are synchronous and exact without terrain; with terrain, synchronous approximate on the web ui role plus an async exact variant. `queryRendered` is async in the tile's owner worker (features) and on the placement lane (symbols), with full properties from `TileFrame` (no whole-tile re-decode on main and no PBF re-encode, both done by GL JS today) [verified]. `querySource` is a column scan with the compiled filter. Queries go through the inverse DataToWorld plan and carry a snapshot generation. 3D picking (M8): CPU ray tests on terrain; an async id-buffer pass for models.
 
@@ -820,6 +820,8 @@ map.annotations.add({ image, lngLat });          // engine-drawn view annotation
 map.overlays.add(element, lngLat);               // DOM overlay on frame acks (±1 frame in worker mode)
 for await (const e of map.events("idle")) { … }
 ```
+
+[built at M3, decision 0021] `web/src` is the `orbis` package as above, with `map.camera` as a control (`current`, `jumpTo`, `easeTo`, `flyTo`, `fitBounds`, `cameraForBounds`, constraints), `queryRenderedFeatures`/`querySourceFeatures`, and DOM `annotations` (engine-drawn annotations are later work); the demo and playground use it.
 
 - **Wasm features:** required SIMD128, bulk memory, sign-ext, non-trapping float-to-int, multi-value, reference types; not used: threads/SAB, exception handling (`panic=abort`), JSPI, Memory64, relaxed SIMD (would need a second build), GC. WebGPU in dedicated workers is in the spec [inferred]; probed at runtime from M0.
 - **Modules:** TS host and `core.wasm` (ui, render and jobs roles; Modern HAL) initial; lazy `compat.wasm` (glow executor, Compat nodes, CPU cull, GLSL text), `shaper.wasm` (HarfRust), `seasia.wasm` (ICU4X SE-Asian data), `world3d.wasm` (M7–M8).

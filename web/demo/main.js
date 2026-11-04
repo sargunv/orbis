@@ -1,8 +1,8 @@
 // The web demo: OpenFreeMap's live Liberty map (the committed Tokyo extract
 // with `?style=tokyo-mvt|tokyo-mlt`), drawing through WebGPU with the
-// `orbis` package. In worker mode (the default where it
-// works) this page is the ui role: it owns the camera and input while a
-// render worker draws (plan §7.1). `?thread=main` runs everything here.
+// `orbis` package: on this thread by default (decision 0021), or with
+// `?thread=worker` as the ui role, owning the camera and input while a
+// render worker draws (plan §7.1).
 //
 // Tap or click a feature to see its properties in a popup; hovering names
 // the feature under the pointer; a pin marks Tokyo Station.
@@ -56,7 +56,7 @@ async function main() {
   const map = await createMap({
     container: document.getElementById("map"),
     style: demoStyle(params),
-    thread: params.get("thread") ?? "auto",
+    thread: params.get("thread") ?? undefined,
     camera: hashCamera() ?? (isLive(params) ? LIVE_CAMERA : undefined),
     feel: feel(),
   });

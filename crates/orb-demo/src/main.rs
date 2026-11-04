@@ -8,6 +8,8 @@
 //! Frame counters are shown in the window title. `--snapshot` renders
 //! 1024×768 offscreen until everything has loaded, writes a PNG and exits;
 //! `--a11y` also writes the frame's semantic snapshot (plan §13) as JSON.
+//! `--count-frames <seconds>` prints how many frames the window drew in
+//! that long after the map first went idle, then exits.
 
 #![forbid(unsafe_code)]
 
@@ -28,7 +30,7 @@ use orb_runtime::{
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key as WinitKey, NamedKey};
 use winit::window::{Window, WindowId};
 
@@ -50,6 +52,9 @@ struct Options {
     /// With `snapshot`: where to write the semantic snapshot's JSON.
     a11y: Option<String>,
     watch_style: Option<String>,
+    /// Count the frames drawn this many seconds after the map first goes
+    /// idle, print them and exit: idle means zero frames (plan §7.5).
+    count_frames: Option<f64>,
 }
 
 fn options() -> Result<Options, String> {
@@ -60,6 +65,7 @@ fn options() -> Result<Options, String> {
         snapshot: None,
         a11y: None,
         watch_style: None,
+        count_frames: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -77,6 +83,13 @@ fn options() -> Result<Options, String> {
                 _ => return Err("--at needs lon,lat,zoom[,bearing,pitch]".into()),
             };
             options.at = Some((Geodetic::new(lon, lat), zoom, bearing, pitch));
+        } else if arg == "--count-frames" {
+            let seconds = args.next().ok_or("--count-frames needs seconds")?;
+            options.count_frames = Some(
+                seconds
+                    .parse()
+                    .map_err(|e| format!("--count-frames: {e}"))?,
+            );
         } else if arg == "--watch-style" {
             options.watch_style = Some(args.next().ok_or("--watch-style needs a path")?);
         } else if arg == "--snapshot" {
@@ -377,6 +390,9 @@ struct State {
     /// The map's terrain revision the camera stands on.
     terrain: u64,
     started: Instant,
+    /// Frames drawn, and when the map first went idle with the count then.
+    frames: u32,
+    idle_at: Option<(Instant, u32)>,
     cursor: DVec2,
     modifiers: Modifiers,
     last_title: Instant,
@@ -459,6 +475,8 @@ impl State {
             pushed: 0,
             terrain: 0,
             started: Instant::now(),
+            frames: 0,
+            idle_at: None,
             cursor: DVec2::ZERO,
             modifiers: Modifiers::default(),
             last_title: Instant::now(),
@@ -619,6 +637,10 @@ impl State {
         self.window.pre_present_notify();
         self.gpu.queue().present(frame);
         self.map_events();
+        self.frames += 1;
+        if report.idle && !moving && self.idle_at.is_none() {
+            self.idle_at = Some((Instant::now(), self.frames));
+        }
         if !report.idle || moving {
             self.window.request_redraw();
         }
@@ -647,6 +669,25 @@ impl State {
 }
 
 impl ApplicationHandler<Wake> for App {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let (Some(seconds), Some(state)) = (self.options.count_frames, &self.state) else {
+            return;
+        };
+        let Some((idle, at)) = state.idle_at else {
+            return;
+        };
+        let deadline = idle + std::time::Duration::from_secs_f64(seconds);
+        if Instant::now() >= deadline {
+            println!(
+                "orb-demo: idle after {at} frames; {} frames in the {seconds} s since",
+                state.frames - at
+            );
+            event_loop.exit();
+        } else {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none() {
             self.state = Some(State::new(event_loop, &self.options, self.proxy.clone()));
@@ -792,6 +833,7 @@ mod tests {
             snapshot: None,
             a11y: None,
             watch_style: None,
+            count_frames: None,
         }
     }
 
@@ -913,6 +955,7 @@ mod tests {
             snapshot: None,
             a11y: None,
             watch_style: None,
+            count_frames: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         offscreen.map.camera_mut().set_zoom(-1e-9);
@@ -942,6 +985,7 @@ mod tests {
             snapshot: None,
             a11y: None,
             watch_style: None,
+            count_frames: None,
         };
         let (_, report, _) = super::Offscreen::load(&at(12.0)).unwrap();
         let used = report.scene;
@@ -1002,6 +1046,51 @@ mod tests {
         }
     }
 
+    /// Plan §7.5: once idle, a map, its camera and its gestures ask for no
+    /// frames: no wake-ups, no animation, nothing that redraws.
+    #[test]
+    fn idle_maps_ask_for_no_frames() {
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wake_count = wakes.clone();
+        let services = super::native_services(Arc::new(move || {
+            wake_count.fetch_add(1, Ordering::SeqCst);
+        }));
+        let mut offscreen = super::Offscreen::load(&tokyo(15.0)).unwrap().0;
+        offscreen.map = super::Map::new(services, super::camera(&tokyo(15.0)));
+        super::load_style(&mut offscreen.map, &tokyo(15.0)).unwrap();
+        let report = settle(&mut offscreen);
+        assert!(report.idle);
+        assert!(
+            offscreen
+                .map
+                .take_events()
+                .contains(&orb_runtime::MapEvent::Idle)
+        );
+        let mut camera = super::Camera::new(
+            *offscreen.map.camera(),
+            offscreen.map.projection(),
+            offscreen.viewport,
+        );
+        let mut input = super::Interaction::default();
+        let before = wakes.load(Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        let mut now = 0.0;
+        while started.elapsed() < std::time::Duration::from_secs(2) {
+            now += 16.0;
+            assert!(!input.frame(&mut camera, now) && !camera.frame(now));
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            before,
+            "no wake-ups while idle"
+        );
+        assert!(camera.take_events().is_empty());
+        // The next frame, were one drawn, is still idle and reports nothing.
+        assert!(offscreen.frame().idle);
+        assert!(offscreen.map.take_events().is_empty());
+    }
+
     #[test]
     fn delayed_results_wake_and_publish_without_camera_input() {
         let options = super::Options {
@@ -1011,6 +1100,7 @@ mod tests {
             snapshot: None,
             a11y: None,
             watch_style: None,
+            count_frames: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let executor = Arc::new(HeldExecutor::default());
@@ -1104,6 +1194,7 @@ mod tests {
                 snapshot: None,
                 a11y: None,
                 watch_style: None,
+                count_frames: None,
             };
             let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
             if patterned {
@@ -1164,6 +1255,7 @@ mod tests {
             snapshot: None,
             a11y: None,
             watch_style: None,
+            count_frames: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         for (bearing, pitch) in [(31.0, 61.0), (10.0, 40.0)] {
@@ -1221,6 +1313,7 @@ mod tests {
                 snapshot: None,
                 a11y: None,
                 watch_style: None,
+                count_frames: None,
             };
             let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
             let fetch = super::NativeFetch::new();
@@ -1278,6 +1371,7 @@ mod tests {
             snapshot: None,
             a11y: None,
             watch_style: None,
+            count_frames: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let fetch = super::NativeFetch::new();
@@ -1347,6 +1441,7 @@ mod tests {
             snapshot: None,
             a11y: None,
             watch_style: None,
+            count_frames: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let fetch = super::NativeFetch::new();
@@ -1404,6 +1499,7 @@ mod tests {
                 snapshot: None,
                 a11y: None,
                 watch_style: None,
+                count_frames: None,
             };
             let path =
                 std::env::temp_dir().join(format!("orbis-{encoding}-{}.png", std::process::id()));

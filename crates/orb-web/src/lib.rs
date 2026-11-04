@@ -75,8 +75,9 @@ pub struct OrbisMap {
     worker_jobs: Option<Arc<WorkerJobs>>,
     /// The picking index changed since it was last published.
     hits_dirty: bool,
-    /// The last frame's camera, to publish picking once it settles.
-    last_camera: Option<CameraState>,
+    /// The last frame's camera and how many frames in a row showed it, to
+    /// publish picking once it settles.
+    last_camera: Option<(CameraState, u32)>,
 }
 
 /// Frame counters, for the page's HUD.
@@ -474,8 +475,15 @@ impl OrbisMap {
         // the ground meanwhile.
         let camera = *self.map.camera();
         self.hits_dirty |= self.map.hits_rebuilt();
-        let settled = self.last_camera == Some(camera);
-        self.last_camera = Some(camera);
+        let still = match self.last_camera {
+            Some((last, frames)) if last == camera => frames + 1,
+            _ => 0,
+        };
+        self.last_camera = Some((camera, still));
+        // A gesture's camera can rest for a frame between inputs; a
+        // snapshot is worth sending once it has rested a few, or the map is
+        // idle.
+        let settled = still >= SETTLE_FRAMES || (still > 0 && report.idle);
         let hit_snapshot = (self.worker_jobs.is_some() && settled && self.hits_dirty).then(|| {
             self.hits_dirty = false;
             self.map.hit_snapshot()
@@ -513,6 +521,9 @@ impl OrbisMap {
         }
     }
 }
+
+/// Frames a camera rests before the render worker publishes picking.
+const SETTLE_FRAMES: u32 = 3;
 
 /// A promise of a query's features as JSON text.
 fn features_promise(

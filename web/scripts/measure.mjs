@@ -5,6 +5,7 @@
 // device over adb (keep its screen on).
 //
 //   pnpm measure [--android[=serial]] [--runs=3] [--configs=orbis-worker,orbis-main,gljs]
+//     [--no-capture] [--no-annotation]
 //
 // Method: DevTools dispatches touch gestures (8 ms apart, one second each)
 // while it captures composited frames (Page.startScreencast, PNG). Each
@@ -24,6 +25,11 @@ const androidArg = args.find((a) => a === "--android" || a.startsWith("--android
 const android = androidArg ? { serial: androidArg.split("=")[1] ?? null } : null;
 const runs = Number(option("runs", "3"));
 const configs = option("configs", "orbis-worker,orbis-main,gljs").split(",");
+// Busy time and idle frames only, without frame capture (whose PNG encoding
+// also loads the device).
+const capture = !args.includes("--no-capture");
+// Without the DOM annotation, for what it costs the main thread.
+const annotation = !args.includes("--no-annotation");
 const GESTURES = ["pan", "pinch", "rotate"];
 
 /** Decodes an 8-bit RGB or RGBA, non-interlaced PNG. */
@@ -92,7 +98,7 @@ function gesture(kind, [cx, cy]) {
     // in view.
     if (kind === "pan") return [[cx + 100 - 300 * t, cy]];
     if (kind === "pinch") {
-      const d = 60 + 60 * t;
+      const d = 60 + 30 * t;
       return [[cx - d, cy], [cx + d, cy]];
     }
     const angle = (t * Math.PI) / 2;
@@ -108,6 +114,12 @@ function parameter(kind, [x, y], [cx, cy]) {
   return Math.atan2(y - cy, x - cx);
 }
 
+/** The log with each run of equal positions cut to its last input: the
+ * one a frame showing that position shows (gestures arm before they move). */
+function monotonic(log) {
+  return log.filter((e, i) => i === log.length - 1 || Math.abs(log[i + 1].p - e.p) > 1e-6);
+}
+
 /** The input time at which the logged circle position reached `value`. */
 function inputTime(log, value) {
   for (let i = 1; i < log.length; i++) {
@@ -119,14 +131,17 @@ function inputTime(log, value) {
   return NaN;
 }
 
-async function run(page, cdp, config, viewport) {
+async function run(page, config, viewport) {
   const [engine, thread] = config.split("-");
+  // A session per page: Android's Chrome delivers synthetic touches only to
+  // the first page a session navigates.
+  const cdp = await page.context().newCDPSession(page);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await cdp.send("Performance.enable");
   const busy = async () => (await cdp.send("Performance.getMetrics")).metrics
     .find((m) => m.name === "TaskDuration").value * 1000;
-  const query = new URLSearchParams({ engine, ...(thread ? { thread } : {}) });
+  const query = new URLSearchParams({ engine, ...(thread ? { thread } : {}), ...(annotation ? {} : { annotation: "0" }) });
   await page.goto("about:blank");
   const before = await busy();
   await page.goto(`${server.url}measure.html?${query}`);
@@ -136,17 +151,21 @@ async function run(page, cdp, config, viewport) {
   });
   const loadBusy = (await busy()) - before;
   const idleQuiet = await page.evaluate(() => window.measure.then((m) => m.quiet(2000)));
+  // The page's own viewport: a blank page's can differ on phones.
+  Object.assign(viewport, await page.evaluate(() => ({ width: innerWidth, height: innerHeight })));
   const center = [viewport.width / 2, viewport.height / 2];
   const result = { config, thread: info.thread, loadMs: info.loadMs, loadBusyMs: loadBusy, idle: idleQuiet, gestures: {} };
   for (const kind of GESTURES) {
     await page.evaluate(() => window.measure.then(async (m) => { await m.home(); await new Promise((r) => setTimeout(r, 300)); m.reset(); }));
     const frames = [];
-    const onFrame = async ({ data, metadata, sessionId }) => {
+    // A session per capture: Android's Chrome stops sending frames to one
+    // that captured before.
+    const session = capture ? await page.context().newCDPSession(page) : null;
+    session?.on("Page.screencastFrame", ({ data, metadata, sessionId }) => {
       frames.push({ data, metadata });
-      await cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
-    };
-    cdp.on("Page.screencastFrame", onFrame);
-    await cdp.send("Page.startScreencast", { format: "png", everyNthFrame: 1, maxWidth: Math.min(viewport.width, 800) });
+      session.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
+    });
+    await session?.send("Page.startScreencast", { format: "png", everyNthFrame: 1, maxWidth: Math.min(viewport.width, 800) });
     await sleep(300);
     const busyStart = await busy();
     const path = gesture(kind, center);
@@ -159,13 +178,14 @@ async function run(page, cdp, config, viewport) {
       await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: touches(t) });
       await sleep(8);
     }
-    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    // Android's Chrome keeps a gesture open unless the end names its points.
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: touches(1) });
     await sleep(700);
     const gestureBusy = (await busy()) - busyStart;
-    await cdp.send("Page.stopScreencast");
-    cdp.off("Page.screencastFrame", onFrame);
-    const log = (await page.evaluate(() => window.measure.then((m) => m.log())))
-      .map((e) => ({ t: e.t, p: parameter(kind, [e.x, e.y], center) }));
+    await session?.send("Page.stopScreencast");
+    await session?.detach();
+    const log = monotonic((await page.evaluate(() => window.measure.then((m) => m.log())))
+      .map((e) => ({ t: e.t, p: parameter(kind, [e.x, e.y], center) })));
     const latencies = [];
     const skews = [];
     for (const { data, metadata } of frames) {
@@ -175,7 +195,10 @@ async function run(page, cdp, config, viewport) {
       const blue = toCss(centroid(image, isBlue));
       const cyan = toCss(centroid(image, isCyan));
       if (!blue) continue;
-      const shown = inputTime(log, parameter(kind, blue, center));
+      const value = parameter(kind, blue, center);
+      // Not moved yet: which input it shows is undetermined.
+      if (!log.length || Math.abs(value - log[0].p) < (kind === "rotate" ? 0.005 : 0.5)) continue;
+      const shown = inputTime(log, value);
       if (!Number.isFinite(shown)) continue;
       latencies.push(metadata.timestamp * 1000 - (info.timeOrigin + shown));
       if (cyan) {
@@ -184,7 +207,7 @@ async function run(page, cdp, config, viewport) {
       }
     }
     result.gestures[kind] = {
-      frames: frames.length, measured: latencies.length,
+      inputs: log.length, frames: frames.length, measured: latencies.length,
       latencyP50: percentile(latencies, 0.5), latencyP95: percentile(latencies, 0.95),
       skewP50: percentile(skews.map(Math.abs), 0.5), skewP95: percentile(skews.map(Math.abs), 0.95),
       skewMean: skews.reduce((a, b) => a + b, 0) / Math.max(skews.length, 1),
@@ -194,6 +217,7 @@ async function run(page, cdp, config, viewport) {
   }
   result.afterQuiet = await page.evaluate(() => window.measure.then((m) => m.quiet(3000)));
   result.errors = errors;
+  await cdp.detach();
   return result;
 }
 
@@ -207,7 +231,6 @@ if (android) {
   close = () => browser.close();
 }
 try {
-  const cdp = await page.context().newCDPSession(page);
   const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, ratio: devicePixelRatio,
     refresh: null, ua: navigator.userAgent }));
   // The display's frame interval, from animation frames.
@@ -220,7 +243,13 @@ try {
   const results = [];
   for (let r = 0; r < runs; r++) {
     for (const config of configs) {
-      const result = await run(page, cdp, config, viewport);
+      // Android's Chrome delivers synthetic touches to one page per tab
+      // only: each config gets a tab of its own.
+      if (android && results.length) {
+        await close();
+        ({ browser, page, close } = await openAndroid(server, android.serial));
+      }
+      const result = await run(page, config, viewport);
       console.error(`measure: run ${r + 1} ${config}: ${JSON.stringify(result)}`);
       results.push(result);
     }

@@ -373,7 +373,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   canvas.width = Math.round(canvas.clientWidth * ratio);
   canvas.height = Math.round(canvas.clientHeight * ratio);
 
-  let thread = options.thread ?? "auto";
+  let thread = options.thread ?? "main";
   let probed: Awaited<ReturnType<typeof probeWorker>> | undefined;
   const offscreen = typeof OffscreenCanvas !== "undefined" && "transferControlToOffscreen" in canvas;
   if (thread !== "main") {

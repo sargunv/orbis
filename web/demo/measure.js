@@ -35,7 +35,7 @@ const circleLngLat = (project, unproject) => {
 
 async function startOrbis() {
   const { createMap } = await import("orbis");
-  const map = await createMap({ container, style: demoStyle(params, "tokyo"), thread: params.get("thread") ?? "auto",
+  const map = await createMap({ container, style: demoStyle(params, "tokyo"), thread: params.get("thread") ?? undefined,
     camera: { center: CENTER, zoom: ZOOM } });
   await map.once("idle");
   const at = circleLngLat((l) => map.project(l), (p) => map.unproject(p));
@@ -44,7 +44,7 @@ async function startOrbis() {
     .addLayer({ id: "measure", type: "circle", source: "measure", paint: { "circle-radius": 12, "circle-color": "#0000ff" } }));
   const element = document.createElement("div");
   element.className = "mark";
-  map.annotations.add({ element, lngLat: at });
+  if (params.get("annotation") !== "0") map.annotations.add({ element, lngLat: at });
   // After the map's own listeners: the ui role has applied the input, so
   // its camera says where the circle should be drawn for it.
   const record = (e) => {
@@ -83,7 +83,7 @@ async function startGlJs() {
   map.addLayer({ id: "measure", type: "circle", source: "measure", paint: { "circle-radius": 12, "circle-color": "#0000ff" } });
   const element = document.createElement("div");
   element.className = "mark";
-  new maplibregl.Marker({ element }).setLngLat(at).addTo(map);
+  if (params.get("annotation") !== "0") new maplibregl.Marker({ element }).setLngLat(at).addTo(map);
   // GL JS applies input in its render frame: the camera there is the one
   // for the latest input it has seen.
   map.on("move", () => {
@@ -97,9 +97,16 @@ async function startGlJs() {
   return { thread: "main", idle, home, stats: () => null };
 }
 
+// No map: what receiving the driver's input costs the page by itself.
+async function startNone() {
+  container.style.touchAction = "none";
+  container.addEventListener("pointermove", (e) => log.push({ t: e.timeStamp, x: e.offsetX, y: e.offsetY }));
+  return { thread: "none", idle: async () => {}, home: async () => {}, stats: () => null };
+}
+
 window.measure = (async () => {
   const started = performance.now();
-  const map = engine === "gljs" ? await startGlJs() : await startOrbis();
+  const map = engine === "gljs" ? await startGlJs() : engine === "none" ? await startNone() : await startOrbis();
   status.textContent = `${engine} ${map.thread} · ready in ${(performance.now() - started).toFixed(0)} ms`;
   return {
     engine,

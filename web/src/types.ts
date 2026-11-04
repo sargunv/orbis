@@ -80,9 +80,10 @@ export interface MapOptions {
   /** A v8 style URL, or a style object. */
   style: string | object;
   /**
-   * Where the map draws: in a render worker with the camera on this thread
-   * (plan §7.2), or all on this thread. "auto" picks the worker where
-   * OffscreenCanvas and WebGPU in workers work.
+   * Where the map draws: all on this thread ("main", the default by plan
+   * §7.2's rule, decision 0021), or in a render worker with the camera on
+   * this thread ("worker"). "auto" takes the worker where OffscreenCanvas
+   * and WebGPU in workers work, else this thread.
    */
   thread?: "auto" | "worker" | "main";
   /** The starting camera; the style's by default. */

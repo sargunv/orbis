@@ -9,7 +9,7 @@ const params = new URLSearchParams(location.search);
 const map = await createMap({
   container: document.querySelector("#map"),
   style: demoStyle(params),
-  thread: params.get("thread") ?? "auto",
+  thread: params.get("thread") ?? undefined,
   feel: feel(),
 });
 expose(map);

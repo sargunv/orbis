@@ -25,3 +25,4 @@ in code and commit messages.
 - [0018](0018-bindings.md): Bindings: a Diplomat front end and our own Swift and Kotlin/JNI emitters
 - [0019](0019-terrain.md): Terrain: draped slots, DEM references and a camera on the ground
 - [0020](0020-any-crs.md): Any CRS: planes, tile matrix sets and the planner
+- [0021](0021-interaction-and-thread-mode.md): Interaction, the web package, and the default thread mode
