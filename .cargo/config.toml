@@ -1,0 +1,6 @@
+[alias]
+xtask = "run --quiet --package xtask --"
+
+# Plan §14.3: core.wasm requires SIMD128.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

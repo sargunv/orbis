@@ -1,0 +1,38 @@
+{
+  "version": 8,
+  "sources": {
+    "blocks": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {"height": 10},
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[[-0.0003, -0.0004], [-0.0003, -0.0001], [0, -0.0001], [0, -0.0004], [-0.0003, -0.0004]]]
+            }
+          },
+          {
+            "type": "Feature",
+            "properties": {"height": 20},
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [[[0, 0.0001], [0, 0.0004], [0.0003, 0.0004], [0.0003, 0.0001], [0, 0.0001]]]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "layers": [
+    {"id": "ground", "type": "background", "paint": {"background-color": "#c8e6c9"}},
+    {
+      "id": "blocks",
+      "type": "fill-extrusion",
+      "source": "blocks",
+      "paint": {"fill-extrusion-height": ["get", "height"], "fill-extrusion-opacity": 0.75}
+    }
+  ]
+}

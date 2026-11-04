@@ -1,0 +1,400 @@
+{
+  "version": 8,
+  "center": [
+    139.7655,
+    35.6835
+  ],
+  "zoom": 15,
+  "sources": {
+    "district": {
+      "type": "geojson",
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "id": 1,
+            "properties": {
+              "kind": "block",
+              "name": "Block 1",
+              "tint": "#bfd5c7",
+              "height": 20
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [
+                [
+                  [
+                    139.76,
+                    35.68
+                  ],
+                  [
+                    139.763,
+                    35.68
+                  ],
+                  [
+                    139.763,
+                    35.683
+                  ],
+                  [
+                    139.76,
+                    35.683
+                  ],
+                  [
+                    139.76,
+                    35.68
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "id": 2,
+            "properties": {
+              "kind": "block",
+              "name": "Block 2",
+              "tint": "#bfd5c7",
+              "height": 28
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [
+                [
+                  [
+                    139.764,
+                    35.68
+                  ],
+                  [
+                    139.767,
+                    35.68
+                  ],
+                  [
+                    139.767,
+                    35.683
+                  ],
+                  [
+                    139.764,
+                    35.683
+                  ],
+                  [
+                    139.764,
+                    35.68
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "id": 3,
+            "properties": {
+              "kind": "block",
+              "name": "Block 3",
+              "tint": "#bfd5c7",
+              "height": 36
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [
+                [
+                  [
+                    139.768,
+                    35.68
+                  ],
+                  [
+                    139.771,
+                    35.68
+                  ],
+                  [
+                    139.771,
+                    35.683
+                  ],
+                  [
+                    139.768,
+                    35.683
+                  ],
+                  [
+                    139.768,
+                    35.68
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "id": 4,
+            "properties": {
+              "kind": "block",
+              "name": "Block 4",
+              "tint": "#bfd5c7",
+              "height": 44
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [
+                [
+                  [
+                    139.76,
+                    35.684
+                  ],
+                  [
+                    139.763,
+                    35.684
+                  ],
+                  [
+                    139.763,
+                    35.687
+                  ],
+                  [
+                    139.76,
+                    35.687
+                  ],
+                  [
+                    139.76,
+                    35.684
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "id": 5,
+            "properties": {
+              "kind": "block",
+              "name": "Block 5",
+              "tint": "#bfd5c7",
+              "height": 52
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [
+                [
+                  [
+                    139.764,
+                    35.684
+                  ],
+                  [
+                    139.767,
+                    35.684
+                  ],
+                  [
+                    139.767,
+                    35.687
+                  ],
+                  [
+                    139.764,
+                    35.687
+                  ],
+                  [
+                    139.764,
+                    35.684
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "id": 6,
+            "properties": {
+              "kind": "block",
+              "name": "Block 6",
+              "tint": "#bfd5c7",
+              "height": 60
+            },
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [
+                [
+                  [
+                    139.768,
+                    35.684
+                  ],
+                  [
+                    139.771,
+                    35.684
+                  ],
+                  [
+                    139.771,
+                    35.687
+                  ],
+                  [
+                    139.768,
+                    35.687
+                  ],
+                  [
+                    139.768,
+                    35.684
+                  ]
+                ]
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "id": 20,
+            "properties": {
+              "kind": "route"
+            },
+            "geometry": {
+              "type": "LineString",
+              "coordinates": [
+                [
+                  139.758,
+                  35.6835
+                ],
+                [
+                  139.773,
+                  35.6835
+                ]
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "id": 30,
+            "properties": {
+              "kind": "station"
+            },
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                139.759,
+                35.6835
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "id": 31,
+            "properties": {
+              "kind": "station"
+            },
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                139.7655,
+                35.6835
+              ]
+            }
+          },
+          {
+            "type": "Feature",
+            "id": 32,
+            "properties": {
+              "kind": "station"
+            },
+            "geometry": {
+              "type": "Point",
+              "coordinates": [
+                139.772,
+                35.6835
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "layers": [
+    {
+      "id": "paper",
+      "type": "background",
+      "paint": {
+        "background-color": "#edf2f5"
+      }
+    },
+    {
+      "id": "blocks",
+      "type": "fill",
+      "source": "district",
+      "filter": [
+        "==",
+        [
+          "get",
+          "kind"
+        ],
+        "block"
+      ],
+      "paint": {
+        "fill-color": [
+          "case",
+          [
+            "boolean",
+            [
+              "feature-state",
+              "hover"
+            ],
+            false
+          ],
+          "#e75f35",
+          "#bfd5c7"
+        ],
+        "fill-opacity": 0.9
+      }
+    },
+    {
+      "id": "route",
+      "type": "line",
+      "source": "district",
+      "filter": [
+        "==",
+        [
+          "get",
+          "kind"
+        ],
+        "route"
+      ],
+      "paint": {
+        "line-color": [
+          "case",
+          [
+            "boolean",
+            [
+              "feature-state",
+              "hover"
+            ],
+            false
+          ],
+          "#e75f35",
+          "#567b99"
+        ],
+        "line-width": 7
+      }
+    },
+    {
+      "id": "stations",
+      "type": "circle",
+      "source": "district",
+      "filter": [
+        "==",
+        [
+          "get",
+          "kind"
+        ],
+        "station"
+      ],
+      "paint": {
+        "circle-color": [
+          "case",
+          [
+            "boolean",
+            [
+              "feature-state",
+              "hover"
+            ],
+            false
+          ],
+          "#e75f35",
+          "#ffffff"
+        ],
+        "circle-radius": 8,
+        "circle-stroke-color": "#567b99",
+        "circle-stroke-width": 3
+      }
+    }
+  ]
+}

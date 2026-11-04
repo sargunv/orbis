@@ -1,0 +1,129 @@
+//! Devices without a surface, readback and waiting for the GPU: for tests,
+//! the fixture runner, snapshots and the bench.
+//!
+//! Readback is async on both targets. Natively the futures block on
+//! `Device::poll` and are ready when first polled (drive them with any
+//! executor, such as `pollster`); in the browser they resolve from the
+//! event loop.
+
+use std::future::Future;
+
+use orb_hal::{BufferId, TextureId};
+
+use crate::WgpuGpu;
+
+impl WgpuGpu {
+    /// A device on the default adapter with WebGPU's default limits, without
+    /// a surface. `WGPU_BACKEND` and the other wgpu environment variables
+    /// choose the adapter.
+    pub async fn offscreen() -> Result<Self, String> {
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions::default())
+            .await
+            .map_err(|e| format!("no adapter: {e}"))?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("orbis"),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| format!("no device: {e}"))?;
+        Ok(Self::new(device, queue))
+    }
+
+    /// Resolves when the GPU has finished all work submitted so far.
+    pub fn work_done(&self) -> impl Future<Output = ()> + 'static {
+        let index = self.queue.submit([]);
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        self.queue.on_submitted_work_done(move || {
+            let _ = sender.send(());
+        });
+        let device = self.device.clone();
+        async move {
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: Some(index),
+                    timeout: None,
+                })
+                .expect("device lost");
+            receiver.await.expect("work-done callback dropped");
+        }
+    }
+
+    /// Copies the pixels of a 4-byte-per-texel texture out, row by row
+    /// without padding.
+    pub async fn read_texture(&self, id: TextureId) -> Vec<u8> {
+        let texture = self.texture(id);
+        let (width, height) = (texture.width(), texture.height());
+        let row = width * 4;
+        let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: u64::from(padded_row * height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: None,
+                },
+            },
+            texture.size(),
+        );
+        self.queue.submit([encoder.finish()]);
+        let mapped = self.map_read(&buffer).await;
+        let mut pixels = Vec::with_capacity((row * height) as usize);
+        for y in 0..height {
+            let start = (y * padded_row) as usize;
+            pixels.extend_from_slice(&mapped[start..start + row as usize]);
+        }
+        pixels
+    }
+
+    /// Copies a buffer's bytes out. The buffer needs `COPY_SRC`.
+    pub async fn read_buffer(&self, id: BufferId) -> Vec<u8> {
+        let source = self.buffer(id);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: source.size(),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_buffer_to_buffer(source, 0, &buffer, 0, source.size());
+        self.queue.submit([encoder.finish()]);
+        self.map_read(&buffer).await.to_vec()
+    }
+
+    async fn map_read(&self, buffer: &wgpu::Buffer) -> wgpu::BufferView {
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device lost during readback");
+        receiver
+            .await
+            .expect("mapping callback dropped")
+            .expect("readback mapping failed");
+        buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("readback buffer is mapped")
+    }
+}

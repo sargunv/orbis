@@ -1,0 +1,18 @@
+[package]
+name = "orb-host-native"
+description = "Host services on native platforms: HTTP via ureq, files"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+fontdb = "0.24.0"
+image.workspace = true
+orb-host = { workspace = true, features = ["fonts"] }
+orb-jobs.workspace = true
+orb-text = { workspace = true, features = ["fonts"] }
+ureq.workspace = true
+
+[lints]
+workspace = true

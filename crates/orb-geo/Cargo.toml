@@ -1,0 +1,13 @@
+[package]
+name = "orb-geo"
+description = "f64 geodesy primitives"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true

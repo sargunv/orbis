@@ -1,0 +1,80 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+edition = "2024"
+license = "BSD-3-Clause"
+publish = false
+version = "0.0.0"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+mlt-core = { version = "0.22.1", default-features = false }
+brotli = "9.1.1"
+bitflags = "2.13.2"
+# geo (through mlt-core) pins earcut 0.4.5; share that version with layout.
+earcut = "=0.4.5"
+bytemuck = "1.25.2"
+js-sys = "0.3.107"
+libm = "0.2.16"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+glam = { version = "0.34.2", default-features = false, features = ["std", "f64"] }
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+png = "0.18.1"
+pollster = "1.0.1"
+ureq = "3.5.1"
+flate2 = "1.1"
+miniz_oxide = { version = "0.9.1", features = ["with-alloc"] }
+futures-channel = "0.3"
+tar = "0.4"
+sha2 = "0.11.1"
+base64 = "0.23.1"
+serde_json = "1.0.154"
+winit = "0.30.13"
+wasm-bindgen = "0.2.130"
+wasm-bindgen-futures = "0.4.80"
+web-sys = "0.3.107"
+wgpu = { version = "30.0.1", default-features = false, features = ["wgsl", "std", "parking_lot"] }
+
+orb-a11y = { path = "crates/orb-a11y" }
+orb-bench = { path = "crates/orb-bench" }
+orb-camera = { path = "crates/orb-camera" }
+orb-crs = { path = "crates/orb-crs" }
+orb-expr = { path = "crates/orb-expr" }
+orb-geo = { path = "crates/orb-geo" }
+orb-hal = { path = "crates/orb-hal" }
+orb-hal-wgpu = { path = "crates/orb-hal-wgpu" }
+orb-host = { path = "crates/orb-host" }
+orb-host-native = { path = "crates/orb-host-native" }
+orb-host-web = { path = "crates/orb-host-web" }
+orb-jobs = { path = "crates/orb-jobs" }
+orb-layout = { path = "crates/orb-layout" }
+orb-render = { path = "crates/orb-render" }
+orb-runtime = { path = "crates/orb-runtime" }
+orb-scene = { path = "crates/orb-scene" }
+orb-shaders = { path = "crates/orb-shaders" }
+orb-source = { path = "crates/orb-source" }
+orb-symbol = { path = "crates/orb-symbol" }
+orb-text = { path = "crates/orb-text", default-features = false }
+orb-style = { path = "crates/orb-style" }
+orb-tile = { path = "crates/orb-tile" }
+orb-v8 = { path = "crates/orb-v8" }
+orb-web = { path = "crates/orb-web" }
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# The web build: smallest code, one codegen unit, whole-program LTO.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

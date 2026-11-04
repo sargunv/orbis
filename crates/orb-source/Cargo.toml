@@ -1,0 +1,17 @@
+[package]
+name = "orb-source"
+description = "Tile sources: which tiles to load and draw, fallbacks and caching"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+miniz_oxide.workspace = true
+orb-crs.workspace = true
+
+[dev-dependencies]
+flate2.workspace = true
+
+[lints]
+workspace = true

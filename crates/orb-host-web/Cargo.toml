@@ -1,0 +1,17 @@
+[package]
+name = "orb-host-web"
+description = "Host services in the browser: fetch"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+js-sys.workspace = true
+orb-host.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = ["Performance", "Response", "Headers", "RequestInit", "ReadableStream", "ReadableStreamDefaultReader", "Blob", "ImageBitmap", "ImageData", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "TextMetrics"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,134 @@
+use crate::{
+    BindGroupId, BufferId, ComputePipelineId, IndexFormat, QuerySetId, RenderBundleId,
+    RenderPipelineId, TextureId,
+};
+
+/// One pass of a submission.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pass {
+    Compute(ComputePass),
+    Render(RenderPass),
+    /// Copies layers `0..layers` of `source` into the same layers of
+    /// `destination`, a texture of the same size and format.
+    CopyTextureLayers {
+        source: TextureId,
+        destination: TextureId,
+        layers: u32,
+    },
+    /// Zeroes a buffer range; `size: None` clears to the end.
+    ClearBuffer {
+        buffer: BufferId,
+        offset: u64,
+        size: Option<u64>,
+    },
+    /// Writes timestamps `queries` as u64 values into `destination` at
+    /// `offset`, a multiple of 256. The unit is the implementation's
+    /// (nanoseconds in WebGPU).
+    ResolveQuerySet {
+        query_set: QuerySetId,
+        queries: std::ops::Range<u32>,
+        destination: BufferId,
+        offset: u64,
+    },
+}
+
+/// Where a pass writes timestamps at its beginning and end
+/// (`GPU*PassTimestampWrites`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PassTimestamps {
+    pub query_set: QuerySetId,
+    pub beginning: Option<u32>,
+    pub end: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComputePass {
+    pub label: String,
+    pub timestamps: Option<PassTimestamps>,
+    pub commands: Vec<ComputeCommand>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ComputeCommand {
+    SetPipeline(ComputePipelineId),
+    SetBindGroup { index: u32, group: BindGroupId },
+    Dispatch { x: u32, y: u32, z: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderPass {
+    pub label: String,
+    pub color: ColorAttachment,
+    pub depth: Option<DepthAttachment>,
+    pub timestamps: Option<PassTimestamps>,
+    pub commands: Vec<RenderCommand>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorAttachment {
+    pub target: TextureId,
+    /// Multisampled targets resolve into this texture.
+    pub resolve: Option<TextureId>,
+    pub store: StoreOp,
+    /// Clear colour as premultiplied linear RGBA, or load.
+    pub load: LoadOp<[f64; 4]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DepthAttachment {
+    pub target: TextureId,
+    pub load: LoadOp<f32>,
+    pub store: StoreOp,
+}
+
+/// Whether attachment contents are needed after the pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreOp {
+    Store,
+    Discard,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LoadOp<T> {
+    Clear(T),
+    Load,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RenderCommand {
+    SetPipeline(RenderPipelineId),
+    SetBindGroup {
+        index: u32,
+        group: BindGroupId,
+    },
+    Draw {
+        vertices: std::ops::Range<u32>,
+        instances: std::ops::Range<u32>,
+    },
+    /// Binds `buffer` from `offset` to the end as the index buffer.
+    SetIndexBuffer {
+        buffer: BufferId,
+        format: IndexFormat,
+        offset: u64,
+    },
+    DrawIndexed {
+        indices: std::ops::Range<u32>,
+        base_vertex: i32,
+        instances: std::ops::Range<u32>,
+    },
+    /// Draw arguments `{vertex_count, instance_count, first_vertex,
+    /// first_instance}` as four u32 at `offset`.
+    DrawIndirect {
+        buffer: BufferId,
+        offset: u64,
+    },
+    /// Indexed draw arguments `{index_count, instance_count, first_index,
+    /// base_vertex, first_instance}` as five 32-bit words at `offset`;
+    /// `first_instance` must be 0 (core WebGPU).
+    DrawIndexedIndirect {
+        buffer: BufferId,
+        offset: u64,
+    },
+    /// Replays bundles; only valid in a pass, not inside a bundle.
+    ExecuteBundles(Vec<RenderBundleId>),
+}

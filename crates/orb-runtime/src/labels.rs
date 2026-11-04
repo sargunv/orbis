@@ -1,0 +1,1638 @@
+//! Labels on the scene side (decision 0009): resident tiles' symbol
+//! meshes, the glyph rows they lease, rasterization of new glyphs, and the
+//! placement lane's inputs and results.
+
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use orb_hal::{Gpu, HostBytesId};
+use orb_render::{
+    GlyphAtlas, ImageAtlas, MeshId, OutOfSpace, PLACED_WORDS, Renderer, SymbolMeshData, Words,
+    pack_image_rect,
+};
+use orb_symbol::{
+    AnchorOffset, Committed, PlacedSymbol, PlacementTables, Quad, SizeKind, SortKeyRange,
+    SymbolInstance,
+};
+use orb_text::GlyphKey;
+use orb_v8::LayerKind;
+
+use crate::jobs::{Stream, TileResult};
+use crate::map::{Resident, ResidentTile};
+use crate::placement::PlacementLane;
+use crate::state::FeatureStates;
+use crate::style::StylePlan;
+use crate::symbol::{ResultSymbols, SymbolTable};
+use crate::{GlyphBitmap, GlyphRaster, Jobs};
+
+/// Buckets dropped since the last frame, with the glyph rows they held.
+type Retired = Arc<Mutex<Vec<(u64, Vec<u32>)>>>;
+
+/// A symbol layer's bucket of a resident tile. Dropping it hands its glyph
+/// rows and placement bucket back, however the tile leaves the scene.
+#[derive(Debug)]
+pub(crate) struct ResidentSymbols {
+    /// The layer's key.
+    pub(crate) layer: u32,
+    pub(crate) bucket: u64,
+    rows: Vec<u32>,
+    retired: Retired,
+}
+
+impl Drop for ResidentSymbols {
+    fn drop(&mut self) {
+        let rows = std::mem::take(&mut self.rows);
+        if let Ok(mut retired) = self.retired.lock() {
+            retired.push((self.bucket, rows));
+        }
+    }
+}
+
+/// A glyph as leases know it: its key and, for PBF glyphs, the style's
+/// glyphs template, since two styles' stacks of one name are different
+/// fonts.
+type LeaseKey = (Option<String>, GlyphKey);
+
+/// A glyph row's raster request: the glyph's index in its job, the row,
+/// and the lease it was made for, since the row may be released and leased
+/// again before the bitmap arrives.
+pub(crate) type RasterRow = (u32, u32, u64);
+
+/// Glyph atlas rows leased by glyph key, and the rasterization they wait
+/// for.
+#[derive(Debug, Default)]
+struct GlyphRows {
+    leases: HashMap<LeaseKey, (u32, u32)>,
+    /// Per leased row, its key and lease.
+    keys: HashMap<u32, (LeaseKey, u64)>,
+    next_lease: u64,
+    /// Per PBF range URL, the code points and rows to rasterize.
+    pending: HashMap<String, Vec<(u32, u32, u64)>>,
+    /// Per font stack, the local glyphs and rows to draw.
+    pending_local: HashMap<String, Vec<(Box<str>, u32, u64)>>,
+    /// Per declared font file, the glyphs and rows to draw.
+    pending_files: HashMap<orb_text::FontId, Vec<(Box<str>, u32, u64)>>,
+    /// Raster jobs out.
+    in_flight: u32,
+}
+
+impl GlyphRows {
+    /// A row for `key`, rasterized once (row 0 when the atlas is full).
+    fn lease(&mut self, atlas: &mut GlyphAtlas, key: &GlyphKey, template: Option<&str>) -> u32 {
+        let provider = matches!(key, GlyphKey::Pbf { .. })
+            .then(|| template.map(str::to_string))
+            .flatten();
+        let lease_key = (provider, key.clone());
+        if let Some((row, refs)) = self.leases.get_mut(&lease_key) {
+            *refs += 1;
+            return *row;
+        }
+        let Ok(row) = atlas.reserve() else {
+            return 0;
+        };
+        self.next_lease += 1;
+        let lease = self.next_lease;
+        self.leases.insert(lease_key.clone(), (row, 1));
+        self.keys.insert(row, (lease_key, lease));
+        match key {
+            GlyphKey::Pbf { stack, code_point } => {
+                if let Some(template) = template {
+                    let url = orb_text::glyphs_url(template, stack, code_point / 256);
+                    self.pending
+                        .entry(url)
+                        .or_default()
+                        .push((*code_point, row, lease));
+                }
+            }
+            GlyphKey::Cluster { stack, text, .. } => self
+                .pending_local
+                .entry(stack.as_str().to_string())
+                .or_default()
+                .push((text.clone(), row, lease)),
+            GlyphKey::Font { font, text, .. } => self
+                .pending_files
+                .entry(*font)
+                .or_default()
+                .push((text.clone(), row, lease)),
+        }
+        row
+    }
+
+    fn release(&mut self, gpu: &mut dyn Gpu, atlas: &mut GlyphAtlas, row: u32) {
+        if row == 0 {
+            return;
+        }
+        let (key, _) = self.keys.get(&row).expect("leased rows have keys").clone();
+        let (_, refs) = self.leases.get_mut(&key).expect("leased");
+        *refs -= 1;
+        if *refs == 0 {
+            self.leases.remove(&key);
+            self.keys.remove(&row);
+            atlas.release(gpu, row);
+        }
+    }
+
+    /// Writes a raster job's bitmaps into the rows still waiting for them.
+    fn apply(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        atlas: &mut GlyphAtlas,
+        rows: &[RasterRow],
+        bitmaps: &[GlyphBitmap],
+    ) {
+        self.in_flight -= 1;
+        for b in bitmaps {
+            for &(_, row, lease) in rows.iter().filter(|(i, _, _)| *i == b.index) {
+                // The row may have been released, and leased again since.
+                let current = self.keys.get(&row).is_some_and(|(_, l)| *l == lease);
+                if current && atlas.upload(gpu, row, b.size, &b.sdf).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Per bucket, the world copies a placement draws.
+type WorldCopies = HashMap<u64, Vec<i32>>;
+
+/// A resident bucket: the meshes its states go to, and what its text
+/// size is evaluated from.
+#[derive(Clone, Debug, Default)]
+struct BucketMeshes {
+    text: Option<MeshId>,
+    icon: Option<MeshId>,
+    text_size: SizeKind,
+    tile_zoom: f64,
+    /// The states last written, per drawn world copy, to write again when
+    /// the meshes make room for more copies.
+    written: HashMap<i32, orb_symbol::BucketStates>,
+    /// The bucket's placement tables and, per instance, what it reads as:
+    /// the semantic snapshot's input.
+    tables: Arc<PlacementTables>,
+    names: Vec<Box<str>>,
+}
+
+impl BucketMeshes {
+    fn write(&self, gpu: &mut dyn Gpu, renderer: &mut Renderer, wrap: i32) {
+        let states = &self.written[&wrap];
+        for (mesh, words, order) in [
+            (self.text, &states.text, &states.text_order),
+            (self.icon, &states.icon, &states.icon_order),
+        ] {
+            let Some(mesh) = mesh else { continue };
+            renderer.scene().write_symbol_states(gpu, mesh, wrap, words);
+            if !order.is_empty() {
+                renderer.scene().write_symbol_order(gpu, mesh, order);
+            }
+        }
+    }
+}
+
+/// A drawn tile's bucket of a symbol layer, for this frame's placement.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SymbolTile {
+    /// The layer's key.
+    pub(crate) layer: u32,
+    pub(crate) bucket: u64,
+    pub(crate) tile: orb_crs::TileIndex,
+    pub(crate) wrap: i32,
+}
+
+fn overlap(mode: Option<orb_v8::Overlap>, allow: bool) -> orb_symbol::Overlap {
+    match mode {
+        Some(orb_v8::Overlap::Never) => orb_symbol::Overlap::Never,
+        Some(orb_v8::Overlap::Always) => orb_symbol::Overlap::Always,
+        Some(orb_v8::Overlap::Cooperative) => orb_symbol::Overlap::Cooperative,
+        None if allow => orb_symbol::Overlap::Always,
+        None => orb_symbol::Overlap::Never,
+    }
+}
+
+/// `text-rotation-alignment` is `map`, after `auto` (GL JS `recalculate`).
+pub(crate) fn text_rotates_with_map(symbol: &orb_v8::Symbol, zoom: f64) -> bool {
+    match symbol.layout.text_rotation_alignment.evaluate(zoom) {
+        orb_v8::TextRotationAlignment::Map => true,
+        orb_v8::TextRotationAlignment::Auto => {
+            symbol.layout.placement.evaluate(zoom) != orb_v8::SymbolPlacement::Point
+        }
+        _ => false,
+    }
+}
+
+/// `text-pitch-alignment` is `map`, after `auto`.
+pub(crate) fn text_pitches_with_map(symbol: &orb_v8::Symbol, zoom: f64) -> bool {
+    match symbol.layout.text_pitch_alignment.evaluate(zoom) {
+        orb_v8::Alignment::Map => true,
+        orb_v8::Alignment::Viewport => false,
+        orb_v8::Alignment::Auto => text_rotates_with_map(symbol, zoom),
+    }
+}
+
+/// A symbol layer's placement settings at `zoom`.
+fn layer_params(
+    plan: &StylePlan,
+    node: &crate::style::NodePlan,
+    zoom: f64,
+) -> orb_symbol::LayerParams {
+    let layer = &plan.style.layers[node.layer];
+    let LayerKind::Symbol(symbol) = &layer.kind else {
+        unreachable!("symbol nodes are of symbol layers")
+    };
+    let l = &symbol.layout;
+    let z_order = l.z_order.evaluate(zoom);
+    let point = l.placement.evaluate(zoom) == orb_v8::SymbolPlacement::Point;
+    let writing_modes = if point {
+        let mut modes = Vec::new();
+        for m in l.text_writing_mode.evaluate(zoom).unwrap_or_default() {
+            let m = match m {
+                orb_v8::WritingMode::Horizontal => orb_text::WritingMode::Horizontal,
+                orb_v8::WritingMode::Vertical => orb_text::WritingMode::Vertical,
+            };
+            if !modes.contains(&m) {
+                modes.push(m);
+            }
+        }
+        if modes.is_empty() {
+            modes.push(orb_text::WritingMode::Horizontal);
+        }
+        modes
+    } else {
+        Vec::new()
+    };
+    let translate = |p: &orb_v8::SymbolPartPaint| {
+        let t = p.translate.evaluate(zoom);
+        (
+            [f64::from(t[0]), f64::from(t[1])],
+            p.translate_anchor.evaluate(zoom) == orb_v8::TranslateAnchor::Viewport,
+        )
+    };
+    orb_symbol::LayerParams {
+        layer: node.key / 2,
+        source: plan.sources[node.source].key,
+        minzoom: layer.minzoom,
+        maxzoom: if layer.maxzoom.is_finite() {
+            layer.maxzoom
+        } else {
+            0.0
+        },
+        text_overlap: overlap(
+            l.text_overlap.evaluate(zoom),
+            l.text_allow_overlap.evaluate(zoom),
+        ),
+        icon_overlap: overlap(
+            l.icon_overlap.evaluate(zoom),
+            l.icon_allow_overlap.evaluate(zoom),
+        ),
+        text_optional: l.text_optional.evaluate(zoom),
+        icon_optional: l.icon_optional.evaluate(zoom),
+        text_ignore_placement: l.text_ignore_placement.evaluate(zoom),
+        icon_ignore_placement: l.icon_ignore_placement.evaluate(zoom),
+        rotate_with_map: text_rotates_with_map(symbol, zoom),
+        pitch_with_map: text_pitches_with_map(symbol, zoom),
+        icon_text_fit: l.icon_text_fit.evaluate(zoom) != orb_v8::IconTextFit::None,
+        z_order_viewport_y: z_order == orb_v8::SymbolZOrder::ViewportY,
+        draw_by_viewport_y: draws_by_viewport_y(symbol, zoom),
+        sort_across_tiles: z_order != orb_v8::SymbolZOrder::ViewportY
+            && matches!(
+                l.sort_key.kind(),
+                orb_v8::Kind::Source | orb_v8::Kind::Composite
+            ),
+        height_anchor_ground: l.height_anchor.evaluate(zoom) == orb_v8::HeightAnchor::Ground,
+        text_padding: l.text_padding.evaluate(zoom),
+        text_translate: translate(&symbol.paint.text),
+        icon_translate: translate(&symbol.paint.icon),
+        writing_modes,
+        variable_placement: has_variable_placement(symbol),
+    }
+}
+
+/// GL JS `sortFeaturesByY`: symbols that may overlap draw ordered by
+/// viewport y, unless the layer sorts by key.
+/// GL JS `sortFeaturesByKey`.
+fn draws_by_key(symbol: &orb_v8::Symbol, zoom: f64) -> bool {
+    let l = &symbol.layout;
+    l.z_order.evaluate(zoom) != orb_v8::SymbolZOrder::ViewportY
+        && matches!(
+            l.sort_key.kind(),
+            orb_v8::Kind::Source | orb_v8::Kind::Composite
+        )
+}
+
+fn draws_by_viewport_y(symbol: &orb_v8::Symbol, zoom: f64) -> bool {
+    let l = &symbol.layout;
+    let z_order = l.z_order.evaluate(zoom);
+    let by_key = draws_by_key(symbol, zoom);
+    let by_y = z_order == orb_v8::SymbolZOrder::ViewportY
+        || (z_order == orb_v8::SymbolZOrder::Auto && !by_key);
+    let can_overlap = overlap(
+        l.text_overlap.evaluate(zoom),
+        l.text_allow_overlap.evaluate(zoom),
+    ) != orb_symbol::Overlap::Never
+        || overlap(
+            l.icon_overlap.evaluate(zoom),
+            l.icon_allow_overlap.evaluate(zoom),
+        ) != orb_symbol::Overlap::Never
+        || l.text_ignore_placement.evaluate(zoom)
+        || l.icon_ignore_placement.evaluate(zoom);
+    by_y && can_overlap
+}
+
+/// The layer sets `text-variable-anchor` or `text-variable-anchor-offset`.
+pub(crate) fn has_variable_placement(symbol: &orb_v8::Symbol) -> bool {
+    let l = &symbol.layout;
+    l.text_variable_anchor.as_constant() != Some(&None)
+        || l.text_variable_anchor_offset.as_constant() != Some(&None)
+}
+
+/// A bucket's text size at the camera's zoom (GL JS `evaluateSizeForZoom`).
+fn zoom_size(
+    property: &orb_v8::Property<f64>,
+    kind: SizeKind,
+    tile_zoom: f64,
+    zoom: f64,
+) -> orb_symbol::ZoomSize {
+    let layout = property.evaluate(tile_zoom + 1.0);
+    match kind {
+        SizeKind::Constant => orb_symbol::ZoomSize {
+            size: layout,
+            t: 0.0,
+        },
+        SizeKind::Camera => orb_symbol::ZoomSize {
+            size: property.evaluate(zoom).min(layout),
+            t: 0.0,
+        },
+        SizeKind::Composite { zooms } => orb_symbol::ZoomSize {
+            size: 0.0,
+            t: property
+                .as_expression()
+                .map_or(0.0, |e| e.interpolation_factor(zoom, zooms[0], zooms[1]))
+                .clamp(0.0, 1.0),
+        },
+        SizeKind::Source => orb_symbol::ZoomSize::default(),
+    }
+}
+
+/// Labels of one map: placement lane, buckets and glyph rows.
+pub(crate) struct Labels {
+    pub(crate) lane: Arc<dyn PlacementLane>,
+    retired: Retired,
+    buckets: HashMap<u64, BucketMeshes>,
+    next_bucket: u64,
+    glyphs: GlyphRows,
+    /// The last commit applied.
+    committed: Option<Committed>,
+    /// The placement out on the lane: its frame, and the world copies of
+    /// each bucket it draws, which its commit is applied against.
+    in_flight: Option<(Arc<orb_symbol::Frame>, WorldCopies)>,
+    /// The frame the last placement was asked for, or `None` when the
+    /// next frame needs placing whatever it is.
+    last_frame: Option<Arc<orb_symbol::Frame>>,
+    /// The frame of the last commit applied, and how many have been.
+    placed: Option<Arc<orb_symbol::Frame>>,
+    commits: u64,
+    /// Milliseconds labels fade over (GL JS `fadeDuration`).
+    pub(crate) fade_duration: f64,
+    /// Whether labels of different sources collide (GL JS
+    /// `crossSourceCollisions`).
+    pub(crate) cross_source_collisions: bool,
+    /// The map's `localIdeographFontFamily`, for local raster jobs.
+    pub(crate) ideographs: Option<String>,
+}
+
+impl std::fmt::Debug for Labels {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Labels")
+            .field("buckets", &self.buckets.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A table's words in core memory, copied from the host when they are
+/// there.
+fn core_words<'a>(gpu: &dyn Gpu, stream: &'a Stream, bytes: Option<HostBytesId>) -> Cow<'a, [u32]> {
+    match stream {
+        Stream::Core(words) => Cow::Borrowed(words),
+        Stream::Host { offset, len } => {
+            let bytes = gpu.read_host_bytes(
+                bytes.expect("host streams come with host bytes"),
+                *offset..offset + u64::from(*len) * 4,
+            );
+            Cow::Owned(
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|w| u32::from_le_bytes(*w))
+                    .collect(),
+            )
+        }
+    }
+}
+
+/// Rows of a `Pod` table from its words, copied to the rows' alignment.
+fn rows<T: bytemuck::Pod>(words: &[u32]) -> Vec<T> {
+    let bytes: &[u8] = bytemuck::cast_slice(words);
+    let size = std::mem::size_of::<T>();
+    let count = bytes.len() / size;
+    let mut out = vec![T::zeroed(); count];
+    bytemuck::cast_slice_mut::<T, u8>(&mut out).copy_from_slice(&bytes[..count * size]);
+    out
+}
+
+/// The layer's size at `zoom + 1`, the size collision boxes are built for
+/// and camera sizes are capped at (GL JS `layoutSize`).
+fn layout_size(property: &orb_v8::Property<f64>, tile_zoom: f64) -> f32 {
+    property.evaluate(tile_zoom + 1.0) as f32
+}
+
+/// Chunks of up to 256 quads, in quad order. With `symbol-sort-key` a
+/// chunk holds one key, which the scene orders candidates by across tiles
+/// (GL JS draws sort-key segments across tiles in key order).
+fn quad_chunks(placed: &[PlacedSymbol], sort_keys: &[SortKeyRange]) -> Vec<orb_layout::Chunk> {
+    // The ranges run in instance order.
+    let key_of = |instance: u32| {
+        let i = sort_keys.partition_point(|r| r.end <= instance);
+        sort_keys
+            .get(i)
+            .filter(|r| r.start <= instance)
+            .map(|r| r.sort_key as f32)
+    };
+    let quads = placed
+        .iter()
+        .map(|p| p.quads[0] + p.quads[1])
+        .max()
+        .unwrap_or(0);
+    let mut owners: Vec<Option<([i16; 2], Option<f32>)>> = vec![None; quads as usize];
+    for p in placed {
+        let key = key_of(p.instance);
+        let [start, count] = p.quads;
+        for q in start..start + count {
+            owners[q as usize] = Some((p.anchor, key));
+        }
+    }
+    let mut chunks: Vec<orb_layout::Chunk> = Vec::new();
+    for (q, owner) in owners.iter().enumerate() {
+        let Some((anchor, key)) = *owner else {
+            continue;
+        };
+        let q = q as u32;
+        let fits = chunks.last().is_some_and(|c| {
+            c.index_count < 256 && c.sort_key == key && c.first_index + c.index_count == q
+        });
+        if !fits {
+            chunks.push(orb_layout::Chunk {
+                first_index: q,
+                index_count: 0,
+                bounds: orb_layout::TileBox {
+                    min: [i16::MAX; 2],
+                    max: [i16::MIN; 2],
+                },
+                sort_key: key,
+            });
+        }
+        let c = chunks.last_mut().expect("pushed above");
+        c.index_count += 1;
+        c.bounds.min = [0, 1].map(|i| c.bounds.min[i].min(anchor[i]));
+        c.bounds.max = [0, 1].map(|i| c.bounds.max[i].max(anchor[i]));
+    }
+    chunks
+}
+
+impl Labels {
+    pub(crate) fn new(lane: Arc<dyn PlacementLane>) -> Self {
+        Self {
+            lane,
+            retired: Arc::default(),
+            buckets: HashMap::new(),
+            next_bucket: 0,
+            glyphs: GlyphRows::default(),
+            committed: None,
+            in_flight: None,
+            last_frame: None,
+            placed: None,
+            commits: 0,
+            fade_duration: 300.0,
+            cross_source_collisions: true,
+            ideographs: Some("sans-serif".into()),
+        }
+    }
+
+    /// Uploads a tile's symbol layers into `resident`, replacing what it held
+    /// of those layers, and gives their buckets to the placement lane.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn upload(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        plan: &StylePlan,
+        result: &TileResult,
+        resident: &mut ResidentTile,
+        images: &mut ImageAtlas,
+        namespace: u64,
+        states: &mut FeatureStates,
+        tile_zoom: f64,
+    ) -> Result<(), OutOfSpace> {
+        for s in &result.symbols {
+            self.upload_layer(
+                gpu, renderer, plan, result, s, resident, images, namespace, states, tile_zoom,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upload_layer(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        plan: &StylePlan,
+        result: &TileResult,
+        s: &ResultSymbols,
+        resident: &mut ResidentTile,
+        images: &mut ImageAtlas,
+        namespace: u64,
+        states: &mut FeatureStates,
+        tile_zoom: f64,
+    ) -> Result<(), OutOfSpace> {
+        let (icon_key, text_key) = (s.layer * 2, s.layer * 2 + 1);
+        // What the tile held of the layer goes.
+        resident.symbols.retain(|r| r.layer != s.layer);
+        resident.meshes.retain(|m| {
+            if m.node == icon_key || m.node == text_key {
+                renderer.scene().remove_mesh(m.mesh);
+                for &index in &m.states {
+                    states.release(index);
+                }
+                false
+            } else {
+                true
+            }
+        });
+        let Some(icon_node) = plan.node(icon_key) else {
+            return Ok(());
+        };
+        let LayerKind::Symbol(symbol) = &plan.style.layers[plan.nodes[icon_node].layer].kind else {
+            unreachable!("symbol nodes are of symbol layers")
+        };
+        let bytes = result.host_bytes;
+        let table = |t: SymbolTable| core_words(gpu, s.table(t), bytes);
+        let instances: Vec<SymbolInstance> = rows(&table(SymbolTable::Instances));
+        let text_placed: Vec<PlacedSymbol> = rows(&table(SymbolTable::TextPlaced));
+        let icon_placed: Vec<PlacedSymbol> = rows(&table(SymbolTable::IconPlaced));
+        let text_glyph_offsets: Vec<f32> = rows(&table(SymbolTable::TextGlyphOffsets));
+        let lines: Vec<[i16; 2]> = rows(&table(SymbolTable::Lines));
+        let anchor_offsets: Vec<AnchorOffset> = rows(&table(SymbolTable::AnchorOffsets));
+        let sort_key_ranges: Vec<SortKeyRange> = rows(&table(SymbolTable::SortKeyRanges));
+        if instances.is_empty() {
+            return Ok(());
+        }
+        let name_ranges = table(SymbolTable::NameRanges);
+        let name_bytes = table(SymbolTable::NameBytes);
+        let name_bytes: &[u8] = bytemuck::cast_slice(&name_bytes);
+        let names: Vec<Box<str>> = name_ranges
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[start, len]| {
+                let (start, len) = (start as usize, len as usize);
+                name_bytes
+                    .get(start..start + len)
+                    .and_then(|b| std::str::from_utf8(b).ok())
+                    .unwrap_or_default()
+                    .into()
+            })
+            .collect();
+
+        let template = plan.style.glyphs.as_deref();
+        self.next_bucket += 1;
+        // The leases' owner from the start: if an upload below fails, it
+        // drops, and the next `retire` hands the rows back.
+        let owner = ResidentSymbols {
+            layer: s.layer,
+            bucket: self.next_bucket,
+            rows: s
+                .glyphs
+                .iter()
+                .map(|key| match key {
+                    Some(key) => self.glyphs.lease(renderer.glyphs(), key, template),
+                    None => 0,
+                })
+                .collect(),
+            retired: Arc::clone(&self.retired),
+        };
+        let image_rects: Vec<u32> = s
+            .images
+            .iter()
+            .map(|name| {
+                images
+                    .resolve_icon(namespace, name)
+                    .ok()
+                    .and_then(|id| images.rect(id))
+                    .map_or(u32::MAX, |[x, y, layer]| pack_image_rect(x, y, layer))
+            })
+            .collect();
+
+        let part = match resident.parts.iter().find(|(extent, _)| *extent == 8192) {
+            Some(&(_, id)) => id,
+            None => {
+                let id = renderer.scene().insert_tile();
+                resident.parts.push((8192, id));
+                id
+            }
+        };
+        let meta = &s.meta;
+        let text_layout = layout_size(&symbol.layout.text_size, tile_zoom);
+        let icon_layout = layout_size(&symbol.layout.icon_size, tile_zoom);
+        let zooms = |kind: SizeKind| match kind {
+            SizeKind::Composite { zooms } => zooms.map(|z| z as f32),
+            _ => [0.0; 2],
+        };
+        let [text_lo, text_hi] = zooms(meta.text_size);
+        let [icon_lo, icon_hi] = zooms(meta.icon_size);
+        let f = f32::to_bits;
+        // Images need filtering when drawn at another pixel ratio, rotated,
+        // or as SDFs (GL JS `iconsNeedLinear`).
+        let mesh_flags = u32::from(meta.icons_need_linear || meta.sdf_icons == Some(true));
+        let text_params = [
+            f(text_layout),
+            f(text_lo),
+            f(text_hi),
+            f(text_layout),
+            f(text_lo),
+            f(text_hi),
+            0,
+            0,
+        ];
+        let icon_params = [
+            f(icon_layout),
+            f(icon_lo),
+            f(icon_hi),
+            f(text_layout),
+            f(text_lo),
+            f(text_hi),
+            mesh_flags,
+            0,
+        ];
+        // An icon fitted to text moves with that text: per placed icon, the
+        // text's packed size.
+        let mut icon_text_sizes = vec![0u32; icon_placed.len()];
+        for t in &text_placed {
+            if let Some(size) = icon_text_sizes.get_mut(t.associated_icon as usize) {
+                *size = u32::from(t.size[0]) | u32::from(t.size[1]) << 16;
+            }
+        }
+
+        let mut meshes = BucketMeshes::default();
+        let streams = [
+            (
+                text_key,
+                &text_placed,
+                SymbolTable::TextQuads,
+                SymbolTable::TextGlyphOffsets,
+                text_params,
+                &[][..],
+            ),
+            (
+                icon_key,
+                &icon_placed,
+                SymbolTable::IconQuads,
+                SymbolTable::IconGlyphOffsets,
+                icon_params,
+                &icon_text_sizes[..],
+            ),
+        ];
+        for (key, placed, quads, offsets, params, text_sizes) in streams {
+            if placed.is_empty() || plan.node(key).is_none() {
+                continue;
+            }
+            let node = plan.node(key).expect("checked") as u32;
+            let mut chunks = quad_chunks(placed, &sort_key_ranges);
+            if draws_by_viewport_y(symbol, tile_zoom) {
+                // Placement reorders the quads: every chunk may hold any.
+                let mut all = orb_layout::TileBox {
+                    min: [i16::MAX; 2],
+                    max: [i16::MIN; 2],
+                };
+                for c in &chunks {
+                    all.min = [0, 1].map(|i| all.min[i].min(c.bounds.min[i]));
+                    all.max = [0, 1].map(|i| all.max[i].max(c.bounds.max[i]));
+                }
+                for c in &mut chunks {
+                    c.bounds = all;
+                }
+            }
+            let quads_words = crate::map::words(s.table(quads), bytes);
+            if quads_words.len() / (std::mem::size_of::<Quad>() as u32 / 4) == 0 {
+                continue;
+            }
+            let rows_mesh = result.meshes.iter().find(|m| m.node == key);
+            let props = rows_mesh.map_or(Words::Core(&[]), |m| crate::map::words(&m.props, bytes));
+            let data = SymbolMeshData {
+                quads: quads_words,
+                placed: crate::map::words(
+                    if key == text_key {
+                        s.table(SymbolTable::TextPlaced)
+                    } else {
+                        s.table(SymbolTable::IconPlaced)
+                    },
+                    bytes,
+                ),
+                glyph_offsets: crate::map::words(s.table(offsets), bytes),
+                lines: crate::map::words(s.table(SymbolTable::Lines), bytes),
+                glyphs: &owner.rows,
+                images: &image_rects,
+                instance_rows: crate::map::words(s.table(SymbolTable::InstanceRows), bytes),
+                text_sizes,
+                colors: if key == text_key {
+                    crate::map::words(s.table(SymbolTable::TextColors), bytes)
+                } else {
+                    Words::Core(&[])
+                },
+                props,
+                params,
+                chunks: &chunks,
+            };
+            debug_assert_eq!(data.placed.len(), placed.len() as u32 * PLACED_WORDS);
+            let mesh = renderer
+                .scene()
+                .insert_symbol_mesh(gpu, part, node, &data)?;
+            resident.meshes.push(Resident {
+                node: key,
+                mesh,
+                hits: rows_mesh.map(|m| m.hits.clone()).unwrap_or_default(),
+                layout_rev: result.revision,
+                rows_rev: result.revision,
+                ramps: Vec::new(),
+                states: Vec::new(),
+            });
+            if let Some(rows_mesh) = rows_mesh {
+                let mut warnings = Vec::new();
+                let (ramps, indices) = crate::map::attach_rows(
+                    gpu,
+                    renderer,
+                    plan,
+                    result,
+                    rows_mesh,
+                    mesh,
+                    images,
+                    namespace,
+                    states,
+                    &mut warnings,
+                )?;
+                debug_assert!(
+                    ramps.is_empty() && warnings.is_empty(),
+                    "symbol rows name no images"
+                );
+                resident.meshes.last_mut().expect("pushed above").states = indices;
+            }
+            if key == text_key {
+                meshes.text = Some(mesh);
+            } else {
+                meshes.icon = Some(mesh);
+            }
+        }
+
+        let bucket = owner.bucket;
+        meshes.text_size = meta.text_size;
+        meshes.tile_zoom = tile_zoom;
+        meshes.tables = Arc::new(PlacementTables {
+            instances,
+            text_placed,
+            icon_placed,
+            text_glyph_offsets,
+            lines,
+            anchor_offsets,
+            sort_key_ranges,
+            text_size: meta.text_size,
+            allow_vertical_placement: meta.allow_vertical_placement,
+        });
+        meshes.names = names;
+        self.lane.ingest(bucket, Arc::clone(&meshes.tables));
+        self.buckets.insert(bucket, meshes);
+        resident.symbols.push(owner);
+        // The new bucket needs a placement.
+        self.last_frame = None;
+        Ok(())
+    }
+
+    /// Releases what dropped buckets held, and asks for the glyphs leased
+    /// since the last frame.
+    pub(crate) fn maintain(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        atlas: &mut GlyphAtlas,
+        jobs: &dyn Jobs,
+        raster_done: &dyn Fn(Vec<RasterRow>) -> crate::RasterDone,
+        faces: &orb_v8::FontFaces,
+    ) {
+        self.retire(gpu, atlas);
+        // Each job's glyphs, deduplicated, with every row by its index.
+        fn indexed<T: Ord + Clone>(rows: Vec<(T, u32, u64)>) -> (Vec<T>, Vec<RasterRow>) {
+            let mut items: Vec<T> = rows.iter().map(|(item, _, _)| item.clone()).collect();
+            items.sort_unstable();
+            items.dedup();
+            let rows = rows
+                .into_iter()
+                .map(|(item, row, lease)| {
+                    let index = items.binary_search(&item).expect("listed above") as u32;
+                    (index, row, lease)
+                })
+                .collect();
+            (items, rows)
+        }
+        for (url, rows) in std::mem::take(&mut self.glyphs.pending) {
+            let (code_points, rows) = indexed(rows);
+            self.glyphs.in_flight += 1;
+            jobs.raster(GlyphRaster::Pbf { url, code_points }, raster_done(rows));
+        }
+        for (stack, rows) in std::mem::take(&mut self.glyphs.pending_local) {
+            let (texts, rows) = indexed(rows);
+            let raster = GlyphRaster::Local {
+                stack,
+                texts: texts.into_iter().map(String::from).collect(),
+                ideographs: self.ideographs.clone(),
+            };
+            self.glyphs.in_flight += 1;
+            jobs.raster(raster, raster_done(rows));
+        }
+        for (font, rows) in std::mem::take(&mut self.glyphs.pending_files) {
+            // A file the style no longer declares leaves its rows clear.
+            let Some(url) = faces
+                .iter()
+                .flat_map(|(_, files)| files)
+                .map(|f| f.url.as_str())
+                .find(|&url| crate::glyphs::file_id(url) == font)
+            else {
+                continue;
+            };
+            let (texts, rows) = indexed(rows);
+            let raster = GlyphRaster::File {
+                url: url.to_string(),
+                texts: texts.into_iter().map(String::from).collect(),
+            };
+            self.glyphs.in_flight += 1;
+            jobs.raster(raster, raster_done(rows));
+        }
+    }
+
+    /// Releases what dropped buckets held. Their meshes are already gone,
+    /// so this runs before anything writes to a bucket's meshes.
+    fn retire(&mut self, gpu: &mut dyn Gpu, atlas: &mut GlyphAtlas) {
+        let retired = std::mem::take(&mut *self.retired.lock().expect("retired poisoned"));
+        for (bucket, rows) in retired {
+            for row in rows {
+                self.glyphs.release(gpu, atlas, row);
+            }
+            if self.buckets.remove(&bucket).is_some() {
+                self.lane.remove(bucket);
+            }
+            self.last_frame = None;
+        }
+    }
+
+    /// A raster job's result arrived.
+    pub(crate) fn rastered(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        atlas: &mut GlyphAtlas,
+        rows: &[RasterRow],
+        result: Result<Vec<GlyphBitmap>, String>,
+        warnings: &mut Vec<String>,
+    ) {
+        match result {
+            Ok(bitmaps) => self.glyphs.apply(gpu, atlas, rows, &bitmaps),
+            Err(e) => {
+                self.glyphs.in_flight -= 1;
+                warnings.push(e);
+            }
+        }
+    }
+
+    /// Whether `frame` needs placing: it differs from the last one placed
+    /// (clock aside), nothing is out on the lane, and fades allow it.
+    pub(crate) fn wants_placement(&self, frame: &orb_symbol::Frame) -> bool {
+        if self.in_flight.is_some() {
+            return false;
+        }
+        let same = self.last_frame.as_ref().is_some_and(|last| {
+            last.camera == frame.camera
+                && last.layers == frame.layers
+                && last.cross_source_collisions == frame.cross_source_collisions
+        });
+        if same {
+            return false;
+        }
+        // GL JS `stillRecent`: let a fade run before placing again.
+        self.committed
+            .as_ref()
+            .is_none_or(|c| c.fade_duration == 0.0 || frame.now >= c.commit_time + c.fade_duration)
+    }
+
+    /// Whether the last placement asked was of `frame`'s inputs, and has
+    /// committed.
+    pub(crate) fn is_placed(&self, frame: &orb_symbol::Frame) -> bool {
+        self.in_flight.is_none()
+            && self.last_frame.as_ref().is_some_and(|last| {
+                last.camera == frame.camera
+                    && last.layers == frame.layers
+                    && last.cross_source_collisions == frame.cross_source_collisions
+            })
+    }
+
+    /// Records a placement asked of the lane.
+    pub(crate) fn placing(&mut self, frame: &orb_symbol::Frame) {
+        let mut drawn: HashMap<u64, Vec<i32>> = HashMap::new();
+        for t in frame.layers.iter().flat_map(|l| &l.tiles) {
+            drawn.entry(t.bucket).or_default().push(t.view.id.wrap);
+        }
+        let frame = Arc::new(frame.clone());
+        self.in_flight = Some((Arc::clone(&frame), drawn));
+        self.last_frame = Some(frame);
+    }
+
+    /// Applies a commit: changed state words go to their meshes.
+    pub(crate) fn committed(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        mut committed: Committed,
+    ) {
+        let Some((frame, drawn)) = self.in_flight.take() else {
+            return;
+        };
+        self.placed = Some(frame);
+        self.commits += 1;
+        // Buckets dropped since the placement was asked for have no meshes.
+        self.retire(gpu, renderer.glyphs());
+        let mut changed: HashMap<u64, Vec<(i32, orb_symbol::BucketStates)>> = HashMap::new();
+        for (bucket, wrap, states) in std::mem::take(&mut committed.changed) {
+            changed.entry(bucket).or_default().push((wrap, states));
+        }
+        for (bucket, states) in changed {
+            let Some(meshes) = self.buckets.get_mut(&bucket) else {
+                continue;
+            };
+            let wraps = drawn.get(&bucket).map_or(&[][..], Vec::as_slice);
+            meshes.written.retain(|w, _| wraps.contains(w));
+            let written: Vec<i32> = states.iter().map(|&(wrap, _)| wrap).collect();
+            for (wrap, s) in states {
+                meshes.written.insert(wrap, s);
+            }
+            // Copies whose wraps differ modulo the block count.
+            let span = wraps.iter().max().zip(wraps.iter().min());
+            let copies = span
+                .map_or(1, |(max, min)| (max - min + 1) as u32)
+                .next_power_of_two();
+            let mut rewrite = false;
+            for mesh in [meshes.text, meshes.icon].into_iter().flatten() {
+                if renderer.scene().symbol_copies(mesh) < copies {
+                    // Out of memory: copies keep sharing their words.
+                    rewrite |= renderer
+                        .scene()
+                        .set_symbol_copies(gpu, mesh, copies)
+                        .is_ok();
+                }
+            }
+            if rewrite {
+                for &wrap in meshes.written.keys() {
+                    meshes.write(gpu, renderer, wrap);
+                }
+            } else {
+                for wrap in written {
+                    meshes.write(gpu, renderer, wrap);
+                }
+            }
+        }
+        self.committed = Some(committed);
+    }
+
+    /// How far fades have run at `now`.
+    pub(crate) fn fade_change(&self, now: f64) -> f32 {
+        self.committed
+            .as_ref()
+            .map_or(1.0, |c| c.fade_change(now) as f32)
+    }
+
+    /// A placement is out or glyphs are still on their way.
+    pub(crate) fn settling(&self) -> bool {
+        self.in_flight.is_some()
+            || self.glyphs.in_flight > 0
+            || !self.glyphs.pending.is_empty()
+            || !self.glyphs.pending_local.is_empty()
+            || !self.glyphs.pending_files.is_empty()
+    }
+
+    /// The last commit's fades are still running.
+    pub(crate) fn fading(&self, now: f64) -> bool {
+        self.committed
+            .as_ref()
+            .is_some_and(|c| c.placement_changed && c.fade_change(now) < 1.0)
+    }
+
+    /// This frame's placement inputs: every symbol layer in style order
+    /// with its drawn buckets.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn frame(
+        &self,
+        plan: &StylePlan,
+        tiles: &[SymbolTile],
+        view: &orb_camera::View,
+        tms: &orb_crs::TileMatrixSet,
+        camera: &orb_camera::CameraState,
+        extrusion_scale: f64,
+        now: f64,
+    ) -> orb_symbol::Frame {
+        let zoom = camera.zoom();
+        let view_proj = view.view_proj();
+        let camera_world = view.camera_world();
+        let period = tms.projection().wrap_period().unwrap_or(0.0);
+        let viewport = view.viewport();
+        let layers = plan
+            .nodes
+            .iter()
+            .filter(|n| n.family == orb_render::Family::SymbolIcon)
+            .map(|node| {
+                let LayerKind::Symbol(symbol) = &plan.style.layers[node.layer].kind else {
+                    unreachable!("symbol nodes are of symbol layers")
+                };
+                let mut drawn: Vec<&SymbolTile> =
+                    tiles.iter().filter(|t| t.layer == node.key / 2).collect();
+                // Frames compare equal for the same tiles in any order.
+                drawn.sort_by_key(|t| (t.tile, t.wrap, t.bucket));
+                let tiles = drawn
+                    .into_iter()
+                    .filter_map(|t| {
+                        let b = self.buckets.get(&t.bucket)?;
+                        let bounds = tms.tile_bounds(t.tile);
+                        let origin = glam::DVec2::new(
+                            bounds.min.x + f64::from(t.wrap) * period,
+                            bounds.max.y,
+                        ) - camera_world;
+                        let s = tms.tile_span(t.tile.z) / orb_symbol::EXTENT;
+                        let tile = glam::DMat4::from_cols(
+                            glam::DVec4::new(s, 0.0, 0.0, 0.0),
+                            glam::DVec4::new(0.0, -s, 0.0, 0.0),
+                            glam::DVec4::new(0.0, 0.0, extrusion_scale, 0.0),
+                            glam::DVec4::new(origin.x, origin.y, 0.0, 1.0),
+                        );
+                        Some(orb_symbol::PlacedTile {
+                            bucket: t.bucket,
+                            view: orb_symbol::TileView {
+                                id: orb_symbol::TileId {
+                                    z: t.tile.z,
+                                    x: t.tile.col,
+                                    y: t.tile.row,
+                                    wrap: t.wrap,
+                                },
+                                matrix: (view_proj * tile).to_cols_array(),
+                            },
+                            text_size: zoom_size(
+                                &symbol.layout.text_size,
+                                b.text_size,
+                                b.tile_zoom,
+                                zoom,
+                            ),
+                        })
+                    })
+                    .collect();
+                orb_symbol::LayerFrame {
+                    params: layer_params(plan, node, zoom),
+                    tiles,
+                }
+            })
+            .collect();
+        orb_symbol::Frame {
+            camera: orb_symbol::Camera {
+                width: viewport.width,
+                height: viewport.height,
+                zoom,
+                bearing: camera.bearing.to_radians(),
+                pitch: camera.pitch.to_radians(),
+                camera_to_center_distance: view_proj.col(3).w,
+            },
+            layers,
+            now,
+            fade_duration: self.fade_duration,
+            cross_source_collisions: self.cross_source_collisions,
+            lng: camera.target.lon,
+        }
+    }
+
+    /// The last commit's semantic snapshot (plan §13): every shown label
+    /// and icon with its text, role, layer, sort key, viewport bounds (its
+    /// collision box at layout size) and bearing and distance from
+    /// `center` (longitude, latitude).
+    pub(crate) fn semantic_snapshot(
+        &self,
+        plan: &StylePlan,
+        center: [f64; 2],
+        zoom: f64,
+    ) -> Option<orb_a11y::Snapshot> {
+        use orb_symbol::state;
+        let frame = self.placed.as_deref()?;
+        let shown = |words: &[u32], placed: u32| {
+            placed != orb_symbol::NONE
+                && words
+                    .get(placed as usize * state::WORDS)
+                    .is_some_and(|&w| w & state::HIDDEN == 0 && w & state::PLACED != 0)
+        };
+        let (width, height) = (frame.camera.width, frame.camera.height);
+        let mut nodes = Vec::new();
+        // Frames list symbol layers in style order; the topmost places first.
+        for (rank, layer) in frame.layers.iter().rev().enumerate() {
+            let Some(node) = plan.node(layer.params.layer * 2) else {
+                continue;
+            };
+            let style_layer = &plan.style.layers[plan.nodes[node].layer];
+            let LayerKind::Symbol(symbol) = &style_layer.kind else {
+                continue;
+            };
+            let along_line =
+                symbol.layout.placement.evaluate(zoom) != orb_v8::SymbolPlacement::Point;
+            for tile in &layer.tiles {
+                let Some(meshes) = self.buckets.get(&tile.bucket) else {
+                    continue;
+                };
+                let id = tile.view.id;
+                let Some(states) = meshes.written.get(&id.wrap) else {
+                    continue;
+                };
+                let m = &tile.view.matrix;
+                let to_px = |x: f64, y: f64| {
+                    let clip = |r: usize| m[r] * x + m[4 + r] * y + m[12 + r];
+                    let w = clip(3);
+                    [
+                        (clip(0) / w * 0.5 + 0.5) * width,
+                        (0.5 - clip(1) / w * 0.5) * height,
+                        w,
+                    ]
+                };
+                let tables = &meshes.tables;
+                for (i, instance) in tables.instances.iter().enumerate() {
+                    let text = instance.text.iter().any(|&p| shown(&states.text, p));
+                    let icon = instance.icon.iter().any(|&p| shown(&states.icon, p));
+                    let name = meshes.names.get(i).map_or("", |n| &**n);
+                    if !(text || icon) || name.is_empty() {
+                        continue;
+                    }
+                    let [ax, ay] = instance.anchor.map(f64::from);
+                    let [px, py, w] = to_px(ax, ay);
+                    if w <= 0.0 {
+                        continue;
+                    }
+                    // The collision box, tile units around the anchor at
+                    // the tile's zoom, projected corner by corner.
+                    let b = instance.boxes[if text { 0 } else { 2 }].map(f64::from);
+                    let mut bounds = [px, py, px, py];
+                    for (dx, dy) in [(b[0], b[1]), (b[2], b[1]), (b[0], b[3]), (b[2], b[3])] {
+                        let [x, y, _] = to_px(ax + dx, ay + dy);
+                        bounds = [
+                            bounds[0].min(x),
+                            bounds[1].min(y),
+                            bounds[2].max(x),
+                            bounds[3].max(y),
+                        ];
+                    }
+                    // Placement keeps labels just past the edges; a reader
+                    // gets what is on screen.
+                    if bounds[2] < 0.0 || bounds[3] < 0.0 || bounds[0] > width || bounds[1] > height
+                    {
+                        continue;
+                    }
+                    let n = f64::from(1u32 << id.z);
+                    let tx = (f64::from(id.x) + ax / orb_symbol::EXTENT) / n + f64::from(id.wrap);
+                    let ty = (f64::from(id.y) + ay / orb_symbol::EXTENT) / n;
+                    let lonlat = [
+                        tx * 360.0 - 180.0,
+                        (std::f64::consts::PI * (1.0 - 2.0 * ty))
+                            .sinh()
+                            .atan()
+                            .to_degrees(),
+                    ];
+                    let (bearing, distance) = orb_a11y::bearing_distance(center, lonlat);
+                    let sort_key = tables
+                        .sort_key_ranges
+                        .iter()
+                        .find(|r| (r.start..r.end).contains(&(i as u32)))
+                        .map(|r| r.sort_key);
+                    nodes.push(orb_a11y::Node {
+                        text: name.to_string(),
+                        role: if along_line {
+                            orb_a11y::Role::Road
+                        } else if icon {
+                            orb_a11y::Role::Poi
+                        } else {
+                            orb_a11y::Role::Label
+                        },
+                        layer: style_layer.id.clone(),
+                        layer_rank: rank as u32,
+                        sort_key,
+                        bounds,
+                        bearing,
+                        distance,
+                    });
+                }
+            }
+        }
+        Some(orb_a11y::Snapshot::new(self.commits, nodes, center, zoom))
+    }
+
+    /// Forgets the placement inputs, so the next frame places again.
+    pub(crate) fn invalidate(&mut self) {
+        self.last_frame = None;
+    }
+}
+
+/// How a size property is drawn per frame.
+fn size_paint(property: &orb_v8::Property<f64>) -> orb_render::SymbolSize {
+    let curve = || {
+        let interpolation = property
+            .as_expression()
+            .and_then(|e| e.zoom_curve())
+            .and_then(|c| c.interpolation);
+        match interpolation {
+            None => orb_render::Curve::Step,
+            Some(orb_expr::Interpolation::Linear) => orb_render::Curve::Exponential(1.0),
+            Some(orb_expr::Interpolation::Exponential(base)) => {
+                orb_render::Curve::Exponential(base as f32)
+            }
+            Some(orb_expr::Interpolation::CubicBezier(p)) => {
+                orb_render::Curve::CubicBezier(p.map(|v| v as f32))
+            }
+        }
+    };
+    match property.kind() {
+        orb_v8::Kind::Constant => orb_render::SymbolSize::Constant(property.evaluate(0.0) as f32),
+        orb_v8::Kind::Source => orb_render::SymbolSize::Source,
+        orb_v8::Kind::Composite => orb_render::SymbolSize::Composite { curve: curve() },
+        orb_v8::Kind::Camera => {
+            let zooms = property
+                .as_expression()
+                .and_then(|e| e.zoom_curve())
+                .map_or(&[][..], |c| &c.stops);
+            let mut stops = [[0.0f32; 2]; orb_render::SymbolSize::MAX_STOPS];
+            for (stop, &zoom) in stops.iter_mut().zip(zooms) {
+                *stop = [zoom as f32, property.evaluate(zoom) as f32];
+            }
+            orb_render::SymbolSize::Camera {
+                curve: curve(),
+                stops,
+                count: zooms.len().min(orb_render::SymbolSize::MAX_STOPS),
+            }
+        }
+    }
+}
+
+/// A symbol node's paint at `zoom` (GL JS `drawSymbols` and
+/// `drawLayerSymbols`), or `None` when it draws nothing.
+pub(crate) fn paint(
+    plan: &StylePlan,
+    node: &crate::style::NodePlan,
+    zoom: f64,
+    maxima: &[f32],
+    state: orb_render::StateLookup,
+) -> Option<orb_render::SymbolPaint> {
+    let LayerKind::Symbol(symbol) = &plan.style.layers[node.layer].kind else {
+        unreachable!("symbol nodes are of symbol layers")
+    };
+    let is_text = node.family == orb_render::Family::SymbolText;
+    let part = if is_text {
+        &symbol.paint.text
+    } else {
+        &symbol.paint.icon
+    };
+    // GL JS skips a part whose constant opacity is 0.
+    if part.opacity.as_constant() == Some(&0.0) {
+        return None;
+    }
+    let l = &symbol.layout;
+    let point = l.placement.evaluate(zoom) == orb_v8::SymbolPlacement::Point;
+    let (rotate, pitch, keep_upright) = if is_text {
+        (
+            text_rotates_with_map(symbol, zoom),
+            text_pitches_with_map(symbol, zoom),
+            l.text_keep_upright.evaluate(zoom),
+        )
+    } else {
+        let rotate = match l.icon_rotation_alignment.as_constant() {
+            Some(orb_v8::Alignment::Map) => true,
+            Some(orb_v8::Alignment::Viewport) => false,
+            _ => !point,
+        };
+        let pitch = match l.icon_pitch_alignment.evaluate(zoom) {
+            orb_v8::Alignment::Map => true,
+            orb_v8::Alignment::Viewport => false,
+            orb_v8::Alignment::Auto => rotate,
+        };
+        (rotate, pitch, l.icon_keep_upright.evaluate(zoom))
+    };
+    let viewport_aligned = if is_text {
+        l.text_rotation_alignment.evaluate(zoom) == orb_v8::TextRotationAlignment::Viewport
+            || (!rotate && point)
+    } else {
+        !rotate
+    };
+    let along_line = !viewport_aligned && !point;
+    let variable = has_variable_placement(symbol);
+    let fitted = l.icon_text_fit.evaluate(zoom) != orb_v8::IconTextFit::None;
+
+    let mut paint = orb_render::SymbolPaint {
+        color: [0.0; 4],
+        halo_color: [0.0; 4],
+        opacity: 0.0,
+        halo_width: 0.0,
+        halo_blur: 0.0,
+        table_mask: 0,
+        curves: [orb_render::Curve::Step; 5],
+        translate: orb_render::Translate {
+            px: part.translate.evaluate(zoom),
+            viewport: part.translate_anchor.evaluate(zoom) == orb_v8::TranslateAnchor::Viewport,
+        },
+        size: size_paint(if is_text { &l.text_size } else { &l.icon_size }),
+        text_size: size_paint(&l.text_size),
+        is_text,
+        pitch_with_map: pitch,
+        rotate_with_map: rotate,
+        along_line,
+        rotate_in_shader: rotate && !pitch && !along_line,
+        variable_anchor: variable && (is_text || fitted),
+        is_offset: l.icon_offset_set,
+        keep_upright,
+        // GL JS draws halos, then fills, per sort-key segment of a tile;
+        // a layer sorted by key draws them per quad instead.
+        separate_halo: !draws_by_key(symbol, zoom)
+            && (l
+                .text_letter_spacing
+                .as_constant()
+                .is_some_and(|s| s * orb_text::ONE_EM < 0.0)
+                || part.halo_width.as_constant().is_none_or(|w| *w > 1.0)),
+        reach_px: 0.0,
+        state,
+        // GL JS samples images linearly for scaled icons, zoom-dependent
+        // inline images and pitched views.
+        linear_icons: pitch
+            || (is_text
+                && matches!(
+                    l.text_size.kind(),
+                    orb_v8::Kind::Camera | orb_v8::Kind::Composite
+                ))
+            || (!is_text && l.icon_size.as_constant() != Some(&1.0)),
+    };
+    for (slot, property) in plan.paint_properties(node).iter().enumerate() {
+        if property.per_feature() {
+            paint.table_mask |= 1 << slot;
+            paint.curves[slot] = property.curve();
+        }
+        // A state lookup's constant is its value with no state.
+        let lookup = property.is_state_lookup();
+        if lookup {
+            paint.curves[slot] = property.curve();
+        }
+        let number = |p: &crate::style::PaintProperty<'_>| match p {
+            _ if lookup => p.default_number(zoom),
+            crate::style::PaintProperty::Number(n) => n.evaluate(zoom),
+            _ => 0.0,
+        };
+        let color = |p: &crate::style::PaintProperty<'_>| {
+            if lookup {
+                p.default_color(zoom)
+            } else {
+                p.color(zoom)
+            }
+        };
+        match slot {
+            0 => paint.opacity = number(property),
+            1 => paint.color = color(property),
+            2 => paint.halo_color = color(property),
+            3 => paint.halo_width = number(property).max(maxima.get(3).copied().unwrap_or(0.0)),
+            _ => paint.halo_blur = number(property),
+        }
+    }
+    // Culling reach: a long label, with its offsets and halo, at the
+    // largest size the layer draws now.
+    let size = match paint.size {
+        orb_render::SymbolSize::Constant(s) => s,
+        _ => {
+            (if is_text {
+                l.text_size.evaluate(zoom)
+            } else {
+                l.icon_size.evaluate(zoom)
+            }) as f32
+        }
+    };
+    paint.reach_px = size.max(16.0) * if is_text { 24.0 } else { 4.0 } + paint.halo_width;
+    Some(paint)
+}
+
+#[cfg(test)]
+mod tests {
+    use orb_hal::TextureFormat;
+    use orb_hal_wgpu::WgpuGpu;
+    use orb_render::{SceneCapacity, TargetFormat};
+    use orb_symbol::{BucketStates, Camera, Frame, LayerFrame, PlacedTile, TileId, TileView};
+
+    use super::*;
+    use crate::jobs::TileWorker;
+
+    struct Harness {
+        gpu: WgpuGpu,
+        renderer: Renderer,
+        images: ImageAtlas,
+        namespace: u64,
+        states: FeatureStates,
+        worker: TileWorker,
+        result: TileResult,
+        labels: Labels,
+    }
+
+    impl Harness {
+        fn new(capacity: SceneCapacity) -> Self {
+            let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+            let mut images = ImageAtlas::new(&mut gpu, 256, 1, 16);
+            let namespace = images.namespace();
+            let target = TargetFormat {
+                color: TextureFormat::Rgba8Unorm,
+                sample_count: 1,
+            };
+            let mut renderer = Renderer::with_images(&mut gpu, target, capacity, images.bindings());
+            let (worker, result) = crate::testing::symbol_tile();
+            let families: Vec<_> = worker.plan().nodes.iter().map(|n| n.family).collect();
+            renderer.remap_nodes(&mut gpu, &families, &vec![None; families.len()]);
+            Self {
+                gpu,
+                renderer,
+                images,
+                namespace,
+                states: FeatureStates::default(),
+                worker,
+                result,
+                labels: Labels::new(Arc::new(crate::InlinePlacement::default())),
+            }
+        }
+
+        fn upload(&mut self, resident: &mut ResidentTile) -> Result<(), OutOfSpace> {
+            self.labels.upload(
+                &mut self.gpu,
+                &mut self.renderer,
+                self.worker.plan(),
+                &self.result,
+                resident,
+                &mut self.images,
+                self.namespace,
+                &mut self.states,
+                14.0,
+            )
+        }
+
+        /// A placement of `bucket`'s tile at `wraps`, out on the lane.
+        fn placing(&mut self, bucket: u64, wraps: &[i32]) {
+            let tile = |wrap| PlacedTile {
+                bucket,
+                view: TileView {
+                    id: TileId {
+                        z: crate::testing::SYMBOL_TILE.0,
+                        x: crate::testing::SYMBOL_TILE.1,
+                        y: crate::testing::SYMBOL_TILE.2,
+                        wrap,
+                    },
+                    matrix: [0.0; 16],
+                },
+                text_size: orb_symbol::ZoomSize::default(),
+            };
+            let params = layer_params(self.worker.plan(), &self.worker.plan().nodes[0], 14.0);
+            self.labels.placing(&Frame {
+                camera: Camera {
+                    width: 512.0,
+                    height: 512.0,
+                    zoom: 14.0,
+                    bearing: 0.0,
+                    pitch: 0.0,
+                    camera_to_center_distance: 1.0,
+                },
+                layers: vec![LayerFrame {
+                    params,
+                    tiles: wraps.iter().map(|&w| tile(w)).collect(),
+                }],
+                now: 0.0,
+                fade_duration: 0.0,
+                cross_source_collisions: true,
+                lng: 0.0,
+            });
+        }
+
+        /// A commit showing every text symbol of `bucket` at `wraps`.
+        fn commit(&self, bucket: u64, wraps: &[i32]) -> Committed {
+            let placed = self.result.symbols[0].table(SymbolTable::TextPlaced);
+            let Stream::Core(words) = placed else {
+                panic!("core streams")
+            };
+            let count = words.len() / PLACED_WORDS as usize;
+            let states = BucketStates {
+                text: [orb_symbol::state::PLACED | 127, 0, 0].repeat(count),
+                ..BucketStates::default()
+            };
+            Committed {
+                changed: wraps.iter().map(|&w| (bucket, w, states.clone())).collect(),
+                fade_duration: 0.0,
+                ..Committed::default()
+            }
+        }
+    }
+
+    /// S1: a relayout drops the bucket a placement was asked for; its
+    /// commit must not write to the freed meshes.
+    #[test]
+    fn commits_skip_buckets_replaced_while_placing() {
+        let mut h = Harness::new(SceneCapacity::default());
+        let mut resident = ResidentTile::default();
+        h.upload(&mut resident).unwrap();
+        let old = resident.symbols[0].bucket;
+        h.placing(old, &[0]);
+        // The relayout's result lands before the commit.
+        h.upload(&mut resident).unwrap();
+        let commit = h.commit(old, &[0]);
+        h.labels.committed(&mut h.gpu, &mut h.renderer, commit);
+        assert!(!h.labels.buckets.contains_key(&old));
+    }
+
+    /// S4: a commit applies against the frame it was asked for, even if
+    /// the needs-placement marker was cleared meanwhile.
+    #[test]
+    fn commits_keep_world_copies_apart_after_invalidation() {
+        let mut h = Harness::new(SceneCapacity::default());
+        let mut resident = ResidentTile::default();
+        h.upload(&mut resident).unwrap();
+        let bucket = resident.symbols[0].bucket;
+        h.placing(bucket, &[0, 1]);
+        h.labels.invalidate();
+        let commit = h.commit(bucket, &[0, 1]);
+        h.labels.committed(&mut h.gpu, &mut h.renderer, commit);
+        let mesh = h.labels.buckets[&bucket].text.expect("a text mesh");
+        assert_eq!(h.renderer.scene().symbol_copies(mesh), 2);
+    }
+
+    /// S6: a failed upload hands its glyph leases back.
+    #[test]
+    fn failed_uploads_release_their_glyph_rows() {
+        let mut h = Harness::new(SceneCapacity {
+            vertex_words: 64,
+            ..SceneCapacity::default()
+        });
+        let mut resident = ResidentTile::default();
+        assert!(h.upload(&mut resident).is_err());
+        h.labels.retire(&mut h.gpu, h.renderer.glyphs());
+        assert!(h.labels.glyphs.leases.is_empty());
+    }
+
+    fn pbf(stack: &str, code_point: u32) -> GlyphKey {
+        GlyphKey::Pbf {
+            stack: orb_text::FontStack::from_joined(stack),
+            code_point,
+        }
+    }
+
+    fn bitmap(index: u32) -> GlyphBitmap {
+        GlyphBitmap {
+            index,
+            size: [2, 2],
+            sdf: vec![255; 4],
+        }
+    }
+
+    /// S2: a bitmap asked for one lease of a row never lands in a later
+    /// lease of the same row.
+    #[test]
+    fn raster_replies_land_only_in_their_lease() {
+        let mut h = Harness::new(SceneCapacity::default());
+        let atlas = h.renderer.glyphs();
+        let mut rows = GlyphRows::default();
+        let template = Some("t/{fontstack}/{range}.pbf");
+        let row = rows.lease(atlas, &pbf("X", 65), template);
+        let first: Vec<RasterRow> = rows.pending.drain().flat_map(|(_, r)| r).collect();
+        rows.release(&mut h.gpu, atlas, row);
+        assert_eq!(
+            rows.lease(atlas, &pbf("Y", 65), template),
+            row,
+            "row reused"
+        );
+        let second: Vec<RasterRow> = rows.pending.drain().flat_map(|(_, r)| r).collect();
+        rows.in_flight = 2;
+        rows.apply(&mut h.gpu, atlas, &first, &[bitmap(65)]);
+        // Uploading twice into one row would panic.
+        rows.apply(&mut h.gpu, atlas, &second, &[bitmap(65)]);
+    }
+
+    /// S3: one stack name under two glyphs templates is two fonts.
+    #[test]
+    fn glyph_leases_are_per_glyphs_template() {
+        let mut h = Harness::new(SceneCapacity::default());
+        let atlas = h.renderer.glyphs();
+        let mut rows = GlyphRows::default();
+        let a = rows.lease(atlas, &pbf("X", 65), Some("a/{fontstack}/{range}.pbf"));
+        let b = rows.lease(atlas, &pbf("X", 65), Some("b/{fontstack}/{range}.pbf"));
+        assert_ne!(a, b);
+        assert!(rows.pending.contains_key("b/X/0-255.pbf"));
+    }
+}

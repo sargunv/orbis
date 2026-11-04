@@ -1,0 +1,13 @@
+[package]
+name = "orb-tile"
+description = "TileFrame: the columnar in-memory vector tile, and its decoders"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+mlt-core.workspace = true
+
+[lints]
+workspace = true

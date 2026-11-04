@@ -1,0 +1,18 @@
+[package]
+name = "orb-host"
+description = "Host service traits: fetch and friends"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[features]
+# `FontFileFaces`: `FontFiles` drawn by `orb-text` in this module (native
+# hosts and the test harness; map pages load `shaper.wasm` instead).
+fonts = ["dep:orb-text", "orb-text/fonts"]
+
+[dependencies]
+orb-text = { workspace = true, optional = true }
+
+[lints]
+workspace = true

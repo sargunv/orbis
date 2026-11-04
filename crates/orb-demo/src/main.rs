@@ -1,0 +1,1225 @@
+//! The native demo: a v8 style in a window, with mouse pan and wheel zoom.
+//!
+//! `cargo run --release -p orb-demo -- [style URL] [--at lon,lat,zoom[,bearing,pitch]]
+//! [--format mvt|mlt] [--snapshot out.png [--a11y out.json]]`
+//!
+//! Frame counters are shown in the window title. `--snapshot` renders
+//! 1024×768 offscreen until everything has loaded, writes a PNG and exits;
+//! `--a11y` also writes the frame's semantic snapshot (plan §13) as JSON.
+
+#![forbid(unsafe_code)]
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use glam::DVec2;
+use orb_geo::Geodetic;
+use orb_hal::Gpu;
+use orb_hal_wgpu::{WgpuGpu, from_texture_format};
+use orb_host_native::{NativeFetch, NativeImageDecode};
+use orb_jobs::ThreadPool;
+use orb_runtime::{CameraState, Map, PoolJobs, SceneCapacity, Services, TargetFormat, Viewport};
+use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::window::{Window, WindowId};
+
+const DEMO_DATA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/demo/data");
+
+/// Data arrived; draw a frame.
+#[derive(Debug)]
+enum Wake {
+    Data,
+    Edit(String),
+}
+
+struct Options {
+    style: Option<String>,
+    encoding: String,
+    /// Target, zoom, bearing and pitch.
+    at: Option<(Geodetic, f64, f64, f64)>,
+    snapshot: Option<String>,
+    /// With `snapshot`: where to write the semantic snapshot's JSON.
+    a11y: Option<String>,
+    watch_style: Option<String>,
+}
+
+fn options() -> Result<Options, String> {
+    let mut options = Options {
+        style: None,
+        encoding: "mvt".into(),
+        at: None,
+        snapshot: None,
+        a11y: None,
+        watch_style: None,
+    };
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--at" {
+            let value = args
+                .next()
+                .ok_or("--at needs lon,lat,zoom[,bearing,pitch]")?;
+            let parts: Vec<f64> = value
+                .split(',')
+                .map(|p| p.trim().parse::<f64>().map_err(|e| format!("--at: {e}")))
+                .collect::<Result<_, _>>()?;
+            let (lon, lat, zoom, bearing, pitch) = match parts[..] {
+                [lon, lat, zoom] => (lon, lat, zoom, 0.0, 0.0),
+                [lon, lat, zoom, bearing, pitch] => (lon, lat, zoom, bearing, pitch),
+                _ => return Err("--at needs lon,lat,zoom[,bearing,pitch]".into()),
+            };
+            options.at = Some((Geodetic::new(lon, lat), zoom, bearing, pitch));
+        } else if arg == "--watch-style" {
+            options.watch_style = Some(args.next().ok_or("--watch-style needs a path")?);
+        } else if arg == "--snapshot" {
+            options.snapshot = Some(args.next().ok_or("--snapshot needs a path")?);
+        } else if arg == "--a11y" {
+            options.a11y = Some(args.next().ok_or("--a11y needs a path")?);
+        } else if arg == "--format" {
+            options.encoding = args.next().ok_or("--format needs mvt or mlt")?;
+            if !matches!(options.encoding.as_str(), "mvt" | "mlt") {
+                return Err("--format needs mvt or mlt".into());
+            }
+        } else if arg.starts_with("--") {
+            return Err(format!("unknown option {arg}"));
+        } else {
+            options.style = Some(arg);
+        }
+    }
+    Ok(options)
+}
+
+fn main() {
+    let options = match options() {
+        Ok(options) => options,
+        Err(e) => {
+            eprintln!("orb-demo: {e}");
+            std::process::exit(2);
+        }
+    };
+    if let Some(path) = &options.snapshot {
+        if let Err(e) = snapshot(&options, path) {
+            eprintln!("orb-demo: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let event_loop = EventLoop::<Wake>::with_user_event()
+        .build()
+        .expect("event loop");
+    if let Some(path) = options.watch_style.clone() {
+        let proxy = event_loop.create_proxy();
+        std::thread::Builder::new()
+            .name("playground-style".into())
+            .spawn(move || {
+                let mut previous = String::new();
+                loop {
+                    if let Ok(json) = std::fs::read_to_string(&path)
+                        && json != previous
+                    {
+                        previous.clone_from(&json);
+                        if proxy
+                            .send_event(Wake::Edit(if json.trim_start().starts_with('[') {
+                                json
+                            } else {
+                                format!("[[\"setStyle\",{json}]]")
+                            }))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(16));
+                }
+            })
+            .expect("style watcher");
+    }
+    let mut app = App {
+        options,
+        proxy: event_loop.create_proxy(),
+        state: None,
+    };
+    event_loop.run_app(&mut app).expect("event loop failed");
+}
+
+/// HTTP and file fetches, and tile jobs on a thread pool.
+fn native_services(wake: Arc<dyn Fn() + Send + Sync>) -> Services {
+    let fetch = NativeFetch::new();
+    let executor = Arc::new(ThreadPool::new("jobs", ThreadPool::default_size()));
+    let jobs = PoolJobs::new(fetch.clone(), Arc::new(NativeImageDecode), executor);
+    jobs.set_local_glyphs(orb_host_native::SystemFonts::shared());
+    jobs.set_font_files(Arc::new(orb_host_native::FontFileFaces::new()));
+    Services {
+        clock: Arc::new(orb_host_native::NativeClock::default()),
+        image_decode: Arc::new(orb_host_native::NativeImageDecode),
+        images: Default::default(),
+        jobs,
+        fetch,
+        wake,
+    }
+}
+
+/// The committed extract and reduced Liberty style, or an explicit style URL.
+fn load_style(map: &mut Map, options: &Options) -> Result<(), String> {
+    if let Some(url) = &options.style {
+        map.load_style_url(url);
+        return Ok(());
+    }
+    let path = std::path::Path::new(DEMO_DATA)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let json = std::fs::read_to_string(path.join(format!("tokyo-{}.json", options.encoding)))
+        .map_err(|e| e.to_string())?;
+    // Tiles, glyphs and sprites beside the style.
+    let json = json
+        .replace(
+            "pmtiles://./data/",
+            &format!("pmtiles://file://{}/", path.display()),
+        )
+        .replace("\"./data/", &format!("\"file://{}/", path.display()));
+    map.set_style_json(&json)
+}
+
+/// The camera from `--at`, or `None` to use the style's.
+fn camera(options: &Options) -> Option<CameraState> {
+    options
+        .at
+        .map(|(target, zoom, bearing, pitch)| CameraState {
+            bearing,
+            pitch,
+            ..CameraState::new(target, zoom)
+        })
+}
+
+/// Renders offscreen until the map is idle and writes the frame as a PNG.
+/// A map rendering offscreen at 1024×768, for snapshots and tests.
+struct Offscreen {
+    gpu: WgpuGpu,
+    target: orb_hal::TextureId,
+    format: TargetFormat,
+    viewport: Viewport,
+    map: Map,
+}
+
+impl Offscreen {
+    const WIDTH: u32 = 1024;
+    const HEIGHT: u32 = 768;
+
+    /// Loads the style and renders until everything in view has arrived.
+    /// Returns the map, the last frame's report and the frame count.
+    fn load(options: &Options) -> Result<(Self, orb_runtime::FrameReport, u32), String> {
+        Self::load_with(options, SceneCapacity::default())
+    }
+
+    /// Like [`load`](Self::load), with a given GPU scene capacity.
+    fn load_with(
+        options: &Options,
+        capacity: SceneCapacity,
+    ) -> Result<(Self, orb_runtime::FrameReport, u32), String> {
+        let mut gpu = pollster::block_on(WgpuGpu::offscreen())?;
+        let format = TargetFormat {
+            color: orb_hal::TextureFormat::Rgba8Unorm,
+            sample_count: 1,
+        };
+        let target = gpu.create_texture(&orb_hal::TextureDesc {
+            label: "snapshot",
+            width: Self::WIDTH,
+            height: Self::HEIGHT,
+            array_layers: 1,
+            format: format.color,
+            usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
+            sample_count: 1,
+        });
+        let services = native_services(Arc::new(|| {}));
+        let mut map = Map::new(services, camera(options));
+        // Snapshots use the same white backing as the native demo window.
+        map.set_clear_color([1.0; 4]);
+        map.set_scene_capacity(capacity);
+        load_style(&mut map, options)?;
+        let mut this = Self {
+            gpu,
+            target,
+            format,
+            viewport: Viewport {
+                width: f64::from(Self::WIDTH),
+                height: f64::from(Self::HEIGHT),
+            },
+            map,
+        };
+        let started = Instant::now();
+        let mut frames = 0;
+        loop {
+            let report = this.frame();
+            frames += 1;
+            for warning in this.map.take_warnings() {
+                eprintln!("orb-demo: {warning}");
+            }
+            if report.idle {
+                return Ok((this, report, frames));
+            }
+            if started.elapsed().as_secs() > 60 {
+                return Err("timed out waiting for tiles".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn frame(&mut self) -> orb_runtime::FrameReport {
+        self.map
+            .render(&mut self.gpu, self.target, self.format, self.viewport, 1.0)
+    }
+
+    fn pixels(&self) -> Vec<u8> {
+        pollster::block_on(self.gpu.read_texture(self.target))
+    }
+}
+
+/// Renders offscreen until idle and writes the frame as a PNG.
+fn snapshot(options: &Options, path: &str) -> Result<Vec<u8>, String> {
+    let started = Instant::now();
+    let (mut offscreen, mut report, mut frames) = Offscreen::load(options)?;
+    if let Some(path) = &options.watch_style {
+        let json = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+        let commands = if json.trim_start().starts_with('[') {
+            json
+        } else {
+            format!("[[\"setStyle\",{json}]]")
+        };
+        let started = Instant::now();
+        let generation = offscreen
+            .map
+            .edit(&orb_runtime::Transaction::from_commands(&commands)?)?;
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let mut edit_frames = 0;
+        loop {
+            report = offscreen.frame();
+            frames += 1;
+            edit_frames += 1;
+            if report.generation >= generation {
+                break;
+            }
+            if started.elapsed().as_secs() > 60 {
+                return Err("snapshot edit did not settle".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        eprintln!(
+            "playground: generation {generation} visible in {edit_frames} frames; edit {ms:.4} ms"
+        );
+    }
+    let pixels = offscreen.pixels();
+    let file = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut encoder = png::Encoder::new(
+        std::io::BufWriter::new(file),
+        Offscreen::WIDTH,
+        Offscreen::HEIGHT,
+    );
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .and_then(|mut w| w.write_image_data(&pixels))
+        .map_err(|e| format!("{path}: {e}"))?;
+    eprintln!(
+        "orb-demo: wrote {path} after {frames} frames, {:.0} ms, {} pipelines; {:?}",
+        started.elapsed().as_secs_f64() * 1000.0,
+        offscreen.gpu.pipelines_created(),
+        report
+    );
+    if let Some(path) = &options.a11y {
+        let snapshot = offscreen
+            .map
+            .semantic_snapshot()
+            .ok_or("no labels were placed")?;
+        std::fs::write(path, snapshot.to_json()).map_err(|e| format!("{path}: {e}"))?;
+        eprintln!(
+            "orb-demo: wrote {path}: {} nodes, {:?}",
+            snapshot.nodes.len(),
+            snapshot.summary.highlights
+        );
+    }
+    if report.tiles_drawn == 0 {
+        return Err("snapshot drew no tiles".into());
+    }
+    Ok(pixels)
+}
+
+struct App {
+    options: Options,
+    proxy: EventLoopProxy<Wake>,
+    state: Option<State>,
+}
+
+struct State {
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    gpu: WgpuGpu,
+    format: TargetFormat,
+    map: Map,
+    cursor: DVec2,
+    dragging: bool,
+    /// Right-dragging: rotate sideways, tilt up and down.
+    rotating: bool,
+    last_title: Instant,
+    edit_pending: Vec<(u64, u32, f64)>,
+    queued_edit: Option<String>,
+}
+
+impl State {
+    fn new(event_loop: &ActiveEventLoop, options: &Options, proxy: EventLoopProxy<Wake>) -> Self {
+        let window = Arc::new(
+            event_loop
+                .create_window(Window::default_attributes().with_title("Orbis"))
+                .expect("window"),
+        );
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let surface = instance
+            .create_surface(Arc::clone(&window))
+            .expect("surface");
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        }))
+        .expect("adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("orbis"),
+            ..Default::default()
+        }))
+        .expect("device");
+        let caps = surface.get_capabilities(&adapter);
+        // GL JS blends in the style's colour space, so draw to a non-sRGB
+        // target.
+        let surface_format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| !f.is_srgb() && from_texture_format(*f).is_some())
+            .expect("a non-sRGB 8-bit surface format");
+        let size = window.inner_size();
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::AutoVsync,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: vec![],
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        surface.configure(&device, &config);
+
+        let services = native_services(Arc::new(move || {
+            let _ = proxy.send_event(Wake::Data);
+        }));
+        let mut map = Map::new(services, camera(options));
+        // The opaque swapchain has no page behind transparent style pixels.
+        map.set_clear_color([1.0; 4]);
+        load_style(&mut map, options).expect("demo style");
+
+        Self {
+            window,
+            surface,
+            config,
+            gpu: WgpuGpu::new(device, queue),
+            format: TargetFormat {
+                color: from_texture_format(surface_format).expect("checked above"),
+                sample_count: 1,
+            },
+            map,
+            cursor: DVec2::ZERO,
+            dragging: false,
+            rotating: false,
+            last_title: Instant::now(),
+            edit_pending: Vec::new(),
+            queued_edit: None,
+        }
+    }
+
+    fn viewport(&self) -> Viewport {
+        let scale = self.window.scale_factor();
+        Viewport {
+            width: f64::from(self.config.width) / scale,
+            height: f64::from(self.config.height) / scale,
+        }
+    }
+
+    fn resize(&mut self, size: PhysicalSize<u32>) {
+        self.config.width = size.width.max(1);
+        self.config.height = size.height.max(1);
+        self.surface.configure(self.gpu.device(), &self.config);
+        self.window.request_redraw();
+    }
+
+    fn edit(&mut self, commands: String) {
+        if self.map.style_doc().is_none() {
+            self.queued_edit = Some(commands);
+            return;
+        }
+        let started = Instant::now();
+        match orb_runtime::Transaction::from_commands(&commands).and_then(|tx| self.map.edit(&tx)) {
+            Ok(generation) => {
+                self.edit_pending
+                    .push((generation, 0, started.elapsed().as_secs_f64() * 1000.0))
+            }
+            Err(e) => eprintln!("playground: {e}"),
+        }
+        self.window.request_redraw();
+    }
+
+    fn redraw(&mut self) {
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(self.gpu.device(), &self.config);
+                self.window.request_redraw();
+                return;
+            }
+            other => {
+                eprintln!("orb-demo: surface: {other:?}");
+                return;
+            }
+        };
+        let started = Instant::now();
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let target = self.gpu.register_view(view);
+        let viewport = self.viewport();
+        let report = self.map.render(
+            &mut self.gpu,
+            target,
+            self.format,
+            viewport,
+            self.window.scale_factor() as f32,
+        );
+        self.edit_pending.retain_mut(|(generation, frames, ms)| {
+            *frames += 1;
+            if report.generation >= *generation {
+                eprintln!("playground: generation {generation} visible in {frames} frames; edit {ms:.4} ms; meshes {} rows {}",
+                    self.map.job_counts().meshes_uploaded, self.map.job_counts().rows_uploaded);
+                false
+            } else { true }
+        });
+        if self.map.style_doc().is_some()
+            && let Some(commands) = self.queued_edit.take()
+        {
+            self.edit(commands);
+        }
+        self.gpu.destroy_texture(target);
+        self.window.pre_present_notify();
+        self.gpu.queue().present(frame);
+        if !report.idle {
+            self.window.request_redraw();
+        }
+        for warning in self.map.take_warnings() {
+            eprintln!("orb-demo: {warning}");
+        }
+
+        if self.last_title.elapsed().as_millis() > 200 {
+            self.last_title = Instant::now();
+            let camera = self.map.camera();
+            self.window.set_title(&format!(
+                "Orbis · z{:.2} · {:.1} ms CPU · {} draws · {} dispatch · {} candidates · {} tiles drawn · {} loading · bundle {} · wrote {} placements, {} paints",
+                camera.zoom(),
+                started.elapsed().as_secs_f64() * 1000.0,
+                report.frame.draws,
+                report.frame.dispatches,
+                report.frame.candidates,
+                report.tiles_drawn,
+                report.tiles_loading,
+                if report.frame.bundle_recorded { "recorded" } else { "replayed" },
+                report.frame.placements_written,
+                report.frame.paints_written,
+            ));
+        }
+    }
+}
+
+impl ApplicationHandler<Wake> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.state.is_none() {
+            self.state = Some(State::new(event_loop, &self.options, self.proxy.clone()));
+        }
+    }
+
+    fn user_event(&mut self, _: &ActiveEventLoop, event: Wake) {
+        if let Some(state) = &mut self.state {
+            if let Wake::Edit(commands) = event {
+                state.edit(commands);
+            }
+            state.window.request_redraw();
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        let Some(state) = &mut self.state else {
+            return;
+        };
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(size) => state.resize(size),
+            WindowEvent::Occluded(false) => state.window.request_redraw(),
+            WindowEvent::RedrawRequested => state.redraw(),
+            WindowEvent::MouseInput {
+                state: pressed,
+                button: MouseButton::Left,
+                ..
+            } => state.dragging = pressed == ElementState::Pressed,
+            WindowEvent::MouseInput {
+                state: pressed,
+                button: MouseButton::Right,
+                ..
+            } => state.rotating = pressed == ElementState::Pressed,
+            WindowEvent::CursorMoved { position, .. } => {
+                let position = DVec2::new(position.x, position.y) / state.window.scale_factor();
+                if state.dragging {
+                    let viewport = state.viewport();
+                    state.map.pan(viewport, state.cursor, position);
+                    state.window.request_redraw();
+                } else if state.rotating {
+                    // GL JS's drag-rotate rates, in degrees per pixel.
+                    let delta = position - state.cursor;
+                    state.map.rotate_pitch(delta.x * 0.8, -delta.y * 0.5);
+                    state.window.request_redraw();
+                }
+                state.cursor = position;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let levels = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(y) / 2.0,
+                    MouseScrollDelta::PixelDelta(p) => p.y / 200.0,
+                };
+                let viewport = state.viewport();
+                state.map.zoom_at(viewport, state.cursor, levels);
+                state.window.request_redraw();
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod edits;
+
+/// Pixels that differ by more than one level in a channel. Glyphs sit where
+/// the shared atlas packed them, which depends on the order they arrived,
+/// and filtering at another texel origin can round one level apart.
+#[cfg(test)]
+fn differing_pixels(a: &[u8], b: &[u8]) -> usize {
+    a.as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.as_chunks::<4>().0)
+        .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > 1))
+        .count()
+}
+
+#[cfg(test)]
+mod tests {
+    fn tokyo(zoom: f64) -> super::Options {
+        super::Options {
+            style: None,
+            encoding: "mvt".into(),
+            at: Some((orb_geo::Geodetic::new(139.74, 35.685), zoom, 0.0, 0.0)),
+            snapshot: None,
+            a11y: None,
+            watch_style: None,
+        }
+    }
+
+    fn settle(offscreen: &mut super::Offscreen) -> orb_runtime::FrameReport {
+        let started = std::time::Instant::now();
+        loop {
+            let report = offscreen.frame();
+            if report.idle {
+                assert!(offscreen.map.take_warnings().is_empty());
+                return report;
+            }
+            assert!(started.elapsed().as_secs() < 60, "tiles did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn assert_matches_fresh(offscreen: &mut super::Offscreen) {
+        let camera = *offscreen.map.camera();
+        let options = super::Options {
+            at: Some((camera.target, camera.zoom(), camera.bearing, camera.pitch)),
+            ..tokyo(camera.zoom())
+        };
+        let (mut fresh, _, _) = super::Offscreen::load(&options).unwrap();
+        // Use exactly the same camera, including its ground resolution.
+        *fresh.map.camera_mut() = camera;
+        let fresh_report = settle(&mut fresh);
+        let report = settle(offscreen);
+        let pixels = offscreen.pixels();
+        let reference = fresh.pixels();
+        let differing = super::differing_pixels(&pixels, &reference);
+        assert_eq!(
+            differing, 0,
+            "pixels differ from a fresh view: moved {report:?}, fresh {fresh_report:?}"
+        );
+    }
+
+    #[test]
+    fn zooming_out_matches_a_fresh_view() {
+        let (mut offscreen, _, _) = super::Offscreen::load(&tokyo(15.0)).unwrap();
+        let viewport = offscreen.viewport;
+        let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
+        for _ in 0..6 {
+            offscreen.map.zoom_at(viewport, center, -0.5);
+            settle(&mut offscreen);
+        }
+        let (fresh, report, _) = super::Offscreen::load(&tokyo(12.0)).unwrap();
+        let pixels = offscreen.pixels();
+        let reference = fresh.pixels();
+        let differing = super::differing_pixels(&pixels, &reference);
+        let moved = offscreen.frame();
+        eprintln!("zoom-out: {differing} differing pixels; moved {moved:?}; fresh {report:?}");
+        assert_eq!(
+            differing, 0,
+            "nominal z12: moved {moved:?}, fresh {report:?}"
+        );
+    }
+
+    #[test]
+    fn zooming_in_matches_a_fresh_view() {
+        let (mut offscreen, _, _) = super::Offscreen::load(&tokyo(12.0)).unwrap();
+        let viewport = offscreen.viewport;
+        let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
+        for _ in 0..6 {
+            offscreen.map.zoom_at(viewport, center, 0.5);
+            settle(&mut offscreen);
+        }
+        assert_matches_fresh(&mut offscreen);
+    }
+
+    #[test]
+    fn panning_matches_a_fresh_view() {
+        let (mut offscreen, _, _) = super::Offscreen::load(&tokyo(12.0)).unwrap();
+        let viewport = offscreen.viewport;
+        let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
+        for offset in [
+            glam::DVec2::new(512.0, 128.0),
+            glam::DVec2::new(-256.0, -64.0),
+        ] {
+            offscreen.map.pan(viewport, center, center + offset);
+            settle(&mut offscreen);
+        }
+        assert_matches_fresh(&mut offscreen);
+    }
+
+    /// A fling past zoom 0 lands a hair below it; the map must still draw
+    /// there, as GL JS's does.
+    #[test]
+    fn draws_just_below_zoom_zero() {
+        let options = super::Options {
+            style: None,
+            encoding: "mvt".into(),
+            at: Some((orb_geo::Geodetic::new(139.74, 35.685), 3.0, 0.0, 0.0)),
+            snapshot: None,
+            a11y: None,
+            watch_style: None,
+        };
+        let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
+        offscreen.map.camera_mut().set_zoom(-1e-9);
+        let mut report = offscreen.frame();
+        while !report.idle {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            report = offscreen.frame();
+        }
+        report = offscreen.frame();
+        assert!(report.frame.candidates > 0, "{report:?}");
+        assert_ne!(
+            &offscreen.pixels()[..4],
+            [0, 0, 0, 0],
+            "the background draws"
+        );
+    }
+
+    /// Tiles never draw with some of their layers missing: when the scene
+    /// is full, uploads evict unused cached tiles, so a small scene that has
+    /// zoomed through several levels draws what an unbounded one does.
+    #[test]
+    fn a_full_scene_evicts_cached_tiles_instead_of_dropping_layers() {
+        let at = |zoom| super::Options {
+            style: None,
+            encoding: "mvt".into(),
+            at: Some((orb_geo::Geodetic::new(139.74, 35.685), zoom, 0.0, 0.0)),
+            snapshot: None,
+            a11y: None,
+            watch_style: None,
+        };
+        let (_, report, _) = super::Offscreen::load(&at(12.0)).unwrap();
+        let used = report.scene;
+        // Labels take more property words at the start than at 12.
+        let (_, start, _) = super::Offscreen::load(&at(15.0)).unwrap();
+        // Room for the views on the way, with their fallbacks, but not for
+        // every level's tiles at once: vertex words run out.
+        let capacity = super::SceneCapacity {
+            vertex_words: used.vertex_words * 7 / 4,
+            index_words: used.index_words * 2,
+            prop_words: (used.prop_words.max(start.scene.prop_words) * 2).max(1024),
+            ..super::SceneCapacity::default()
+        };
+        let zoom_out = |capacity| {
+            let (mut offscreen, _, _) = super::Offscreen::load_with(&at(15.0), capacity).unwrap();
+            let viewport = offscreen.viewport;
+            let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
+            let mut report = offscreen.frame();
+            for _ in 0..6 {
+                offscreen.map.zoom_at(viewport, center, -0.5);
+                report = offscreen.frame();
+                while !report.idle {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    report = offscreen.frame();
+                }
+                report = offscreen.frame();
+                let warnings = offscreen.map.take_warnings();
+                assert!(
+                    !warnings.iter().any(|w| w.contains("scene memory")),
+                    "{warnings:?}"
+                );
+            }
+            (offscreen, report)
+        };
+        let (unbounded, report) = zoom_out(super::SceneCapacity::default());
+        assert!(
+            report.scene.vertex_words > capacity.vertex_words,
+            "the path must need eviction to fit: {} cached, {} budget",
+            report.scene.vertex_words,
+            capacity.vertex_words
+        );
+        let reference = unbounded.pixels();
+        let (zoomed, _) = zoom_out(capacity);
+        let pixels = zoomed.pixels();
+        let differing = super::differing_pixels(&pixels, &reference);
+        assert_eq!(differing, 0, "pixels differ from an unbounded scene");
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct HeldExecutor(Mutex<Vec<orb_jobs::Job>>);
+
+    impl orb_jobs::Executor for HeldExecutor {
+        fn spawn(&self, job: orb_jobs::Job) {
+            self.0.lock().unwrap().push(job);
+        }
+    }
+
+    #[test]
+    fn delayed_results_wake_and_publish_without_camera_input() {
+        let options = super::Options {
+            style: None,
+            encoding: "mvt".into(),
+            at: None,
+            snapshot: None,
+            a11y: None,
+            watch_style: None,
+        };
+        let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
+        let executor = Arc::new(HeldExecutor::default());
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wake_count = wakes.clone();
+        let fetch = super::NativeFetch::new();
+        let services = super::Services {
+            clock: Arc::new(orb_host_native::NativeClock::default()),
+            image_decode: Arc::new(super::NativeImageDecode),
+            images: Default::default(),
+            jobs: super::PoolJobs::new(
+                fetch.clone(),
+                Arc::new(super::NativeImageDecode),
+                executor.clone(),
+            ),
+            fetch,
+            wake: Arc::new(move || {
+                wake_count.fetch_add(1, Ordering::SeqCst);
+            }),
+        };
+        let camera = super::CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 1.5);
+        offscreen.map = super::Map::new(services, Some(camera));
+        offscreen
+            .map
+            .set_style_json(
+                r##"{
+            "version":8,
+            "sources":{"test":{"type":"geojson","data":{
+                "type":"Polygon","coordinates":[[[-40,-40],[40,-40],[40,40],[-40,40],[-40,-40]]]
+            }}},
+            "layers":[{"id":"fill","type":"fill","source":"test","paint":{"fill-color":"#ff0000"}}]
+        }"##,
+            )
+            .unwrap();
+        let first = offscreen.frame();
+        assert!(!first.idle);
+        assert_eq!(first.tiles_drawn, 0);
+        assert!(first.tiles_loading > 0);
+        let waiting = offscreen.frame();
+        assert_eq!(waiting.tiles_loading, first.tiles_loading);
+        let jobs = std::mem::take(&mut *executor.0.lock().unwrap());
+        assert_eq!(jobs.len(), first.tiles_loading as usize);
+        for job in jobs.into_iter().rev() {
+            job();
+        }
+        assert_eq!(wakes.load(Ordering::SeqCst), first.tiles_loading as usize);
+        let published = offscreen.frame();
+        assert!(published.idle);
+        assert_eq!(published.tiles_loading, 0);
+        assert!(published.tiles_drawn > 0);
+        assert_eq!(offscreen.map.camera().zoom(), camera.zoom());
+        assert_eq!(offscreen.pixels(), {
+            offscreen.frame();
+            offscreen.pixels()
+        });
+        assert!(offscreen.map.take_warnings().is_empty());
+    }
+
+    /// M0 exit criterion 4: a camera-only frame is one dispatch and one
+    /// bundle replay, records no commands, and touches only the placement
+    /// rows of the tiles in view.
+    #[test]
+    fn panning_frame_by_frame_matches_a_fresh_view() {
+        // Compacted indices rewrite only the slots of chunks that enter or
+        // leave the view, and every slot when tiles arrive or leave.
+        let (mut offscreen, _, _) = super::Offscreen::load(&tokyo(12.0)).unwrap();
+        let viewport = offscreen.viewport;
+        // Around a circle of 128 px, as the bench's moving camera, stopping
+        // six times to compare with a map loaded there.
+        let point = |f: usize| {
+            let angle = std::f64::consts::TAU * f as f64 / 120.0;
+            glam::DVec2::new(512.0, 384.0)
+                + 128.0 * glam::DVec2::new(angle.cos() - 1.0, angle.sin())
+        };
+        for stop in 0..6 {
+            for f in stop * 20..(stop + 1) * 20 {
+                offscreen.map.pan(viewport, point(f), point(f + 1));
+                offscreen.frame();
+            }
+            assert_matches_fresh(&mut offscreen);
+        }
+    }
+
+    #[test]
+    fn camera_only_frames_touch_only_placements() {
+        for patterned in [false, true] {
+            let options = super::Options {
+                style: None,
+                encoding: "mvt".into(),
+                at: None,
+                snapshot: None,
+                a11y: None,
+                watch_style: None,
+            };
+            let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
+            if patterned {
+                let sprite = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../web/demo/data/sprites/ofm");
+                offscreen.map.set_style_json(&format!(r#"{{"version":8,"sprite":"file://{}","sources":{{}},"layers":[{{"id":"pattern","type":"background","paint":{{"background-pattern":"wetland"}}}}]}}"#, sprite.display())).unwrap();
+                let start = std::time::Instant::now();
+                while !offscreen.frame().idle {
+                    assert!(start.elapsed().as_secs() < 10);
+                    std::thread::yield_now();
+                }
+                offscreen.frame();
+            }
+            let viewport = offscreen.viewport;
+            offscreen.map.pan(
+                viewport,
+                glam::DVec2::new(512.0, 384.0),
+                glam::DVec2::new(520.0, 380.0),
+            );
+            let report = offscreen.frame();
+            assert_eq!(report.frame.dispatches, 1);
+            assert!(!report.frame.bundle_recorded);
+            assert_eq!(report.frame.paints_written, 0);
+            assert!(report.tiles_drawn > 0);
+            assert_eq!(report.frame.placements_written, report.tiles_drawn);
+            assert_eq!(report.tiles_loading, 0);
+        }
+    }
+
+    #[test]
+    fn sky_keeps_camera_only_uploads_to_placements() {
+        let (mut offscreen, _, _) = super::Offscreen::load(&tokyo(14.0)).unwrap();
+        offscreen.map.set_style_json(r##"{"version":8,"sources":{},"sky":{},"layers":[{"id":"background","type":"background","paint":{"background-color":"#ccaa83"}}]}"##).unwrap();
+        offscreen.frame();
+        offscreen.frame();
+        for pitch in [60.0, 80.0, 85.0] {
+            offscreen.map.camera_mut().pitch = pitch;
+            let report = offscreen.frame();
+            assert_eq!(report.frame.dispatches, 1);
+            assert!(!report.frame.bundle_recorded);
+            assert_eq!(report.frame.paints_written, 0);
+            assert_eq!(report.frame.placements_written, report.tiles_drawn);
+            assert_eq!(report.frame.draws, 2);
+            assert!(report.idle);
+        }
+    }
+
+    #[test]
+    fn extrusions_keep_camera_only_uploads_to_placements() {
+        let options = super::Options {
+            style: Some(format!(
+                "file://{}/tests/data/extrusion.json",
+                env!("CARGO_MANIFEST_DIR")
+            )),
+            encoding: "mvt".into(),
+            at: Some((orb_geo::Geodetic::new(0.0, 0.0), 19.0, -20.0, 60.0)),
+            snapshot: None,
+            a11y: None,
+            watch_style: None,
+        };
+        let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
+        for (bearing, pitch) in [(31.0, 61.0), (10.0, 40.0)] {
+            let camera = offscreen.map.camera_mut();
+            camera.bearing = bearing;
+            camera.pitch = pitch;
+            let report = offscreen.frame();
+            assert_eq!(report.frame.dispatches, 1);
+            assert!(!report.frame.bundle_recorded);
+            assert_eq!(report.frame.paints_written, 0);
+            assert_eq!(report.frame.placements_written, report.tiles_drawn);
+            assert!(report.tiles_drawn > 0);
+        }
+        // Switching 1×/4× rebuilds dependent targets and bundles once; the
+        // next camera-only frame still replays them without paint writes.
+        for enabled in [false, true] {
+            offscreen.map.set_antialias_3d(enabled);
+            let changed = offscreen.frame();
+            assert!(changed.frame.bundle_recorded);
+            let replay = offscreen.frame();
+            assert!(!replay.frame.bundle_recorded);
+            assert_eq!(replay.frame.paints_written, 0);
+            assert_eq!(replay.frame.dispatches, 1);
+        }
+        assert!(
+            !offscreen
+                .map
+                .take_warnings()
+                .iter()
+                .any(|w| w.contains("fill-extrusion"))
+        );
+    }
+
+    #[test]
+    fn point_and_line_families_keep_camera_only_uploads_to_placements() {
+        for style in [
+            r#"{
+            "version":8,
+            "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
+            "layers":[{"id":"heat","type":"heatmap","source":"s"},{"id":"circle","type":"circle","source":"s"}]
+        }"#,
+            r#"{
+            "version":8,
+            "sources":{"s":{"type":"geojson","lineMetrics":true,"data":{"type":"LineString","coordinates":[[-30,0],[30,0]]}}},
+            "layers":[
+                {"id":"dash","type":"line","source":"s","paint":{"line-width":8,"line-dasharray":[2,1]}},
+                {"id":"gradient","type":"line","source":"s","paint":{"line-width":5,"line-gradient":["interpolate",["linear"],["line-progress"],0,"red",1,"blue"],"line-dasharray":[1,1]}}
+            ]
+        }"#,
+        ] {
+            let options = super::Options {
+                style: None,
+                encoding: "mvt".into(),
+                at: None,
+                snapshot: None,
+                a11y: None,
+                watch_style: None,
+            };
+            let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
+            let fetch = super::NativeFetch::new();
+            let services = super::Services {
+                clock: Arc::new(orb_host_native::NativeClock::default()),
+                image_decode: Arc::new(super::NativeImageDecode),
+                images: Default::default(),
+                jobs: super::PoolJobs::new(
+                    fetch.clone(),
+                    Arc::new(super::NativeImageDecode),
+                    Arc::new(orb_jobs::Inline),
+                ),
+                fetch,
+                wake: Arc::new(|| {}),
+            };
+            let camera = super::CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 1.5);
+            offscreen.map = super::Map::new(services, Some(camera));
+            offscreen.map.set_style_json(style).unwrap();
+            // Inline jobs publish their completion on the following frame.
+            let mut loaded = false;
+            for _ in 0..8 {
+                let report = offscreen.frame();
+                if report.idle && report.tiles_drawn > 0 {
+                    loaded = true;
+                    break;
+                }
+            }
+            assert!(loaded);
+            offscreen.map.pan(
+                offscreen.viewport,
+                glam::DVec2::new(512.0, 384.0),
+                glam::DVec2::new(520.0, 380.0),
+            );
+            let report = offscreen.frame();
+            assert_eq!(report.frame.dispatches, 1);
+            assert!(!report.frame.bundle_recorded);
+            assert_eq!(report.frame.paints_written, 0);
+            assert_eq!(report.frame.placements_written, report.tiles_drawn);
+            assert_eq!(report.tiles_loading, 0);
+            assert!(offscreen.map.take_warnings().is_empty());
+        }
+    }
+
+    /// A style with a symbol layer loads, places and goes idle. Without a
+    /// glyphs URL its text needs local fonts, which warn.
+    /// Plan §13: a placement commit's semantic snapshot reads the labels it
+    /// shows.
+    #[test]
+    fn semantic_snapshots_read_shown_labels() {
+        let options = super::Options {
+            style: None,
+            encoding: "mvt".into(),
+            at: None,
+            snapshot: None,
+            a11y: None,
+            watch_style: None,
+        };
+        let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
+        let fetch = super::NativeFetch::new();
+        let jobs = super::PoolJobs::new(
+            fetch.clone(),
+            Arc::new(super::NativeImageDecode),
+            Arc::new(orb_jobs::Inline),
+        );
+        jobs.set_local_glyphs(orb_host_native::SystemFonts::shared());
+        let services = super::Services {
+            clock: Arc::new(orb_host_native::NativeClock::default()),
+            image_decode: Arc::new(super::NativeImageDecode),
+            images: Default::default(),
+            jobs,
+            fetch,
+            wake: Arc::new(|| {}),
+        };
+        let camera = super::CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 1.5);
+        offscreen.map = super::Map::new(services, Some(camera));
+        offscreen
+            .map
+            .set_style_json(
+                r#"{"version":8,
+                "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
+                "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
+            )
+            .unwrap();
+        assert!(
+            offscreen.map.semantic_snapshot().is_none(),
+            "nothing placed yet"
+        );
+        // The commit comes from the placement thread.
+        let started = std::time::Instant::now();
+        let mut snapshot = None;
+        while snapshot.is_none() && started.elapsed() < std::time::Duration::from_secs(10) {
+            let report = offscreen.frame();
+            if report.idle && report.tiles_drawn > 0 {
+                snapshot = offscreen.map.semantic_snapshot();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let snapshot = snapshot.expect("labels were placed");
+        let node = &snapshot.nodes[snapshot.reading_order[0] as usize];
+        assert_eq!(
+            (node.text.as_str(), node.role, node.layer.as_str()),
+            ("Null Island", orb_a11y::Role::Label, "label")
+        );
+        assert!(node.distance < 1.0, "{node:?}");
+        let [x0, y0, x1, y1] = node.bounds;
+        let center = (
+            f64::from(super::Offscreen::WIDTH) / 2.0,
+            f64::from(super::Offscreen::HEIGHT) / 2.0,
+        );
+        assert!(
+            x0 < center.0 && center.0 < x1 && y0 < center.1 && center.1 < y1,
+            "{node:?}"
+        );
+        assert_eq!(snapshot.summary.highlights, vec!["Null Island"]);
+    }
+
+    #[test]
+    fn styles_with_symbol_layers_render() {
+        let options = super::Options {
+            style: None,
+            encoding: "mvt".into(),
+            at: None,
+            snapshot: None,
+            a11y: None,
+            watch_style: None,
+        };
+        let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
+        let fetch = super::NativeFetch::new();
+        let services = super::Services {
+            clock: Arc::new(orb_host_native::NativeClock::default()),
+            image_decode: Arc::new(super::NativeImageDecode),
+            images: Default::default(),
+            jobs: super::PoolJobs::new(
+                fetch.clone(),
+                Arc::new(super::NativeImageDecode),
+                Arc::new(orb_jobs::Inline),
+            ),
+            fetch,
+            wake: Arc::new(|| {}),
+        };
+        let camera = super::CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 1.5);
+        offscreen.map = super::Map::new(services, Some(camera));
+        offscreen
+            .map
+            .set_style_json(
+                r#"{"version":8,
+                "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
+                "layers":[
+                    {"id":"circle","type":"circle","source":"s"},
+                    {"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}
+                ]}"#,
+            )
+            .unwrap();
+        let mut loaded = false;
+        for _ in 0..8 {
+            let report = offscreen.frame();
+            if report.idle && report.tiles_drawn > 0 {
+                loaded = true;
+                break;
+            }
+        }
+        assert!(loaded);
+        let warnings = offscreen.map.take_warnings();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("glyphs that need local fonts")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn mvt_and_mlt_extract_pixels_match() {
+        let mut images = Vec::new();
+        for encoding in ["mvt", "mlt"] {
+            let options = super::Options {
+                style: None,
+                encoding: encoding.into(),
+                at: None,
+                snapshot: None,
+                a11y: None,
+                watch_style: None,
+            };
+            let path =
+                std::env::temp_dir().join(format!("orbis-{encoding}-{}.png", std::process::id()));
+            images.push(super::snapshot(&options, path.to_str().unwrap()).unwrap());
+            std::fs::remove_file(path).unwrap();
+        }
+        let differing = super::differing_pixels(&images[0], &images[1]);
+        assert_eq!(differing, 0, "MVT/MLT differing pixels");
+    }
+}

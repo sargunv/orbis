@@ -1,0 +1,34 @@
+[package]
+name = "orb-hal-wgpu"
+description = "orb-hal on wgpu: browser WebGPU, Vulkan, Metal and D3D12"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+futures-channel.workspace = true
+orb-hal.workspace = true
+wgpu.workspace = true
+
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+web-sys = { workspace = true, features = ["ImageBitmap"] }
+wgpu = { workspace = true, features = ["webgpu"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+wgpu = { workspace = true, features = ["metal"] }
+
+[target.'cfg(any(windows, target_os = "linux", target_os = "android"))'.dependencies]
+wgpu = { workspace = true, features = ["vulkan"] }
+
+[target.'cfg(windows)'.dependencies]
+wgpu = { workspace = true, features = ["dx12"] }
+
+
+[dev-dependencies]
+pollster.workspace = true
+
+[lints]
+workspace = true

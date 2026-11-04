@@ -1,0 +1,139 @@
+{
+  "version": 8,
+  "name": "Orbis scripts",
+  "metadata": {
+    "orbis:about": "Labels in Arabic, Devanagari, Thai and Latin from font-faces files, so web and native lay them out identically (decision 0009). Planet tiles by OpenFreeMap; fonts are Noto Sans from @fontsource 5.3.0 (SIL OFL 1.1)."
+  },
+  "center": [31.2357, 30.0444],
+  "zoom": 13,
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "url": "https://tiles.openfreemap.org/planet"
+    }
+  },
+  "font-faces": {
+    "Noto Sans Regular": [
+      {
+        "url": "https://cdn.jsdelivr.net/npm/@fontsource/noto-sans@5.3.0/files/noto-sans-latin-400-normal.woff2",
+        "unicode-range": ["U+0000-00FF", "U+0131", "U+0152-0153", "U+02BB-02BC", "U+02C6", "U+02DA", "U+02DC", "U+0304", "U+0308", "U+0329", "U+2000-206F", "U+20AC", "U+2122", "U+2212"]
+      },
+      {
+        "url": "https://cdn.jsdelivr.net/npm/@fontsource/noto-sans@5.3.0/files/noto-sans-latin-ext-400-normal.woff2",
+        "unicode-range": ["U+0100-02BA", "U+02BD-02C5", "U+02C7-02CC", "U+02CE-02D7", "U+02DD-02FF", "U+0300-036F", "U+1D00-1DBF", "U+1E00-1EFF", "U+2020", "U+20A0-20AB", "U+20AD-20C0", "U+2113", "U+2C60-2C7F", "U+A720-A7FF"]
+      },
+      {
+        "url": "https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-arabic@5.3.0/files/noto-sans-arabic-arabic-400-normal.woff2",
+        "unicode-range": ["U+0600-06FF", "U+0750-077F", "U+0870-088E", "U+0890-0891", "U+0897-08E1", "U+08E3-08FF", "U+FB50-FDFF", "U+FE70-FEFC"]
+      },
+      {
+        "url": "https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-devanagari@5.3.0/files/noto-sans-devanagari-devanagari-400-normal.woff2",
+        "unicode-range": ["U+0900-097F", "U+1CD0-1CF9", "U+20B9", "U+A830-A839", "U+A8E0-A8FF"]
+      },
+      {
+        "url": "https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-thai@5.3.0/files/noto-sans-thai-thai-400-normal.woff2",
+        "unicode-range": ["U+0E01-0E5B"]
+      }
+    ]
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": { "background-color": "#f6f3ee" }
+    },
+    {
+      "id": "park",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "park",
+      "paint": { "fill-color": "#d8e8c8" }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "water",
+      "paint": { "fill-color": "#a9cbe8" }
+    },
+    {
+      "id": "waterway",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "waterway",
+      "paint": { "line-color": "#a9cbe8", "line-width": 1.5 }
+    },
+    {
+      "id": "road-minor",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "minzoom": 12,
+      "filter": ["in", ["get", "class"], ["literal", ["minor", "service", "tertiary"]]],
+      "layout": { "line-cap": "round", "line-join": "round" },
+      "paint": {
+        "line-color": "#ffffff",
+        "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 12, 0.75, 18, 12]
+      }
+    },
+    {
+      "id": "road-major",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "transportation",
+      "filter": ["in", ["get", "class"], ["literal", ["motorway", "trunk", "primary", "secondary"]]],
+      "layout": { "line-cap": "round", "line-join": "round" },
+      "paint": {
+        "line-color": ["match", ["get", "class"], ["motorway", "trunk"], "#f7c26b", "#fde6a8"],
+        "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 8, 0.75, 18, 20]
+      }
+    },
+    {
+      "id": "road-label",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "transportation_name",
+      "minzoom": 13,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": ["get", "name"],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": 12
+      },
+      "paint": {
+        "text-color": "#5a5248",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 1.5
+      }
+    },
+    {
+      "id": "place-label",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "place",
+      "filter": ["in", ["get", "class"], ["literal", ["city", "town", "village", "suburb", "quarter", "neighbourhood"]]],
+      "layout": {
+        "text-field": [
+          "let",
+          "local", ["coalesce", ["get", "name:nonlatin"], ["get", "name:hi"], ["get", "name"], ""],
+          "latin", ["coalesce", ["get", "name:latin"], ""],
+          [
+            "format",
+            ["var", "local"], {},
+            "\n", {},
+            ["case", ["==", ["var", "local"], ["var", "latin"]], "", ["var", "latin"]], { "font-scale": 0.8 }
+          ]
+        ],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["match", ["get", "class"], "city", 20, ["town", "suburb"], 15, 13],
+        "text-max-width": 8,
+        "symbol-sort-key": ["coalesce", ["get", "rank"], 99]
+      },
+      "paint": {
+        "text-color": "#2d2a26",
+        "text-halo-color": "#ffffff",
+        "text-halo-width": 2
+      }
+    }
+  ]
+}

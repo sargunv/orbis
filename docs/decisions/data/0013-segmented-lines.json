@@ -1,0 +1,2203 @@
+{
+  "decision": 13,
+  "method": {
+    "adapter": "Apple M6",
+    "native_backend": "Metal / wgpu 30",
+    "browser": "HeadlessChrome/156.0.8078.4, WebGPU Metal",
+    "physical_viewport": [
+      2048,
+      1536
+    ],
+    "logical_viewport": [
+      1024,
+      768
+    ],
+    "rounds": 3,
+    "measured_frames_per_round": 100,
+    "warmup_frames_per_round": 50,
+    "round_order": "alternate CPU/segmented first",
+    "native_stat": "median",
+    "chrome_stat": "mean",
+    "native_timestamp_resolution_ns": 1,
+    "chrome_timestamp_resolution_us": 65.5,
+    "chrome_cpu_resolution_us": 100,
+    "memory": "occupied vertex+index words plus 32-byte GPU chunk rows; excludes paint/atlas/free arena capacity; same bytes uploaded; denominator counts distinct placed line tiles; total includes all resident line meshes",
+    "variant_styles": {
+      "solid": "Tokyo reduced Liberty, only line layers",
+      "dashed": "same polylines/paint plus line-dasharray [2,2]",
+      "gradient": "same polylines/paint plus linear line-progress red to blue ramp",
+      "pattern": "same polylines/paint plus pinned GL JS emerald sprite generic_icon"
+    },
+    "planet": "live OpenFreeMap Liberty at Seattle (-122.3321,47.6062)",
+    "tokyo": [
+      139.74,
+      35.685
+    ],
+    "tokyo_archive_sha256": "347454dee39ccdd5ca68d33a10ed93a56c945a2f2d084019d02bc246b1eea20e",
+    "tokyo_style_sha256": "4d3a64582f2c34659b20218254a27dfe223e7fed6c5bf5dbedad390ed01cbe20",
+    "browser_host": "An unbundled benchmark page and Playwright driver, removed with the experiment."
+  },
+  "fixtures": {
+    "native": {
+      "cpu": {
+        "solid": {
+          "pass_count": 67,
+          "fail_count": 1,
+          "skip_count": 23
+        },
+        "dashed": {
+          "pass_count": 21,
+          "fail_count": 0,
+          "skip_count": 2
+        },
+        "gradient": {
+          "pass_count": 16,
+          "fail_count": 0,
+          "skip_count": 1
+        },
+        "pattern": {
+          "pass_count": 9,
+          "fail_count": 0,
+          "skip_count": 2
+        }
+      },
+      "segmented": {
+        "solid": {
+          "pass_count": 67,
+          "fail_count": 1,
+          "skip_count": 23
+        },
+        "dashed": {
+          "pass_count": 21,
+          "fail_count": 0,
+          "skip_count": 2
+        },
+        "gradient": {
+          "pass_count": 16,
+          "fail_count": 0,
+          "skip_count": 1
+        },
+        "pattern": {
+          "pass_count": 9,
+          "fail_count": 0,
+          "skip_count": 2
+        }
+      }
+    },
+    "chrome": {
+      "cpu": {
+        "solid": {
+          "pass_count": 67,
+          "fail_count": 1,
+          "skip_count": 23
+        },
+        "dashed": {
+          "pass_count": 21,
+          "fail_count": 0,
+          "skip_count": 2
+        },
+        "gradient": {
+          "pass_count": 16,
+          "fail_count": 0,
+          "skip_count": 1
+        },
+        "pattern": {
+          "pass_count": 9,
+          "fail_count": 0,
+          "skip_count": 2
+        }
+      },
+      "segmented": {
+        "solid": {
+          "pass_count": 67,
+          "fail_count": 1,
+          "skip_count": 23
+        },
+        "dashed": {
+          "pass_count": 21,
+          "fail_count": 0,
+          "skip_count": 2
+        },
+        "gradient": {
+          "pass_count": 16,
+          "fail_count": 0,
+          "skip_count": 1
+        },
+        "pattern": {
+          "pass_count": 9,
+          "fail_count": 0,
+          "skip_count": 2
+        }
+      }
+    },
+    "totals": {
+      "cpu_pass": 113,
+      "segmented_pass": 113,
+      "in_scope": 114,
+      "skip": 28
+    },
+    "shared_failure": "line-miter-limit/default",
+    "regressions": [],
+    "native_chrome_matches_under_existing_comparison": 120,
+    "passing_line_fixtures": [
+      "line-blur/default",
+      "line-blur/function",
+      "line-blur/literal",
+      "line-blur/property-function",
+      "line-cap/butt",
+      "line-cap/default",
+      "line-cap/line-dasharray/property-function",
+      "line-cap/property-function",
+      "line-cap/round",
+      "line-cap/square",
+      "line-color/default",
+      "line-color/function",
+      "line-color/literal",
+      "line-color/property-function",
+      "line-color/property-function-identity",
+      "line-color/transparent-overlap",
+      "line-dasharray/case/butt",
+      "line-dasharray/default",
+      "line-dasharray/diagonal-dash",
+      "line-dasharray/fractional-zoom",
+      "line-dasharray/function/line-width-composite-function",
+      "line-dasharray/function/line-width-constant",
+      "line-dasharray/function/line-width-property-function",
+      "line-dasharray/literal/line-width-composite-function",
+      "line-dasharray/literal/line-width-constant",
+      "line-dasharray/literal/line-width-property-function",
+      "line-dasharray/literal/line-width-zoom-function",
+      "line-dasharray/long-segment",
+      "line-dasharray/overscaled",
+      "line-dasharray/property-function/cap-default",
+      "line-dasharray/property-function/cap-round",
+      "line-dasharray/round/segments",
+      "line-dasharray/round/single-dasharray-element",
+      "line-dasharray/round/zero-gap-width",
+      "line-dasharray/slant",
+      "line-dasharray/zero-length-gap",
+      "line-gap-width/default",
+      "line-gap-width/function",
+      "line-gap-width/literal",
+      "line-gap-width/property-function",
+      "line-gradient-dasharray/color-interpolation-hcl-lab",
+      "line-gradient-dasharray/gradient-shared-source",
+      "line-gradient-dasharray/gradient-tile-boundaries",
+      "line-gradient-dasharray/gradient-with-dash",
+      "line-gradient-dasharray/property-function",
+      "line-gradient-dasharray/step-gradient",
+      "line-gradient-dasharray/translucent",
+      "line-gradient/color-interpolation-rgb-hcl-lab",
+      "line-gradient/color-interpolation-transparent",
+      "line-gradient/gradient",
+      "line-gradient/gradient-shared-source",
+      "line-gradient/gradient-step",
+      "line-gradient/gradient-step-zoomed",
+      "line-gradient/gradient-step-zoomed-cross-continental",
+      "line-gradient/gradient-tile-boundaries",
+      "line-gradient/translucent",
+      "line-join/bevel",
+      "line-join/bevel-transparent",
+      "line-join/default",
+      "line-join/miter",
+      "line-join/miter-transparent",
+      "line-join/property-function",
+      "line-join/property-function-dasharray",
+      "line-join/round",
+      "line-join/round-transparent",
+      "line-layer-opacity/default",
+      "line-miter-limit/property-function",
+      "line-offset/default",
+      "line-offset/function",
+      "line-offset/literal",
+      "line-offset/literal-negative",
+      "line-offset/loop",
+      "line-offset/matches-offset-geometry",
+      "line-offset/property-function",
+      "line-offset/sharp-corners-bevel",
+      "line-offset/sharp-corners-miter-limit",
+      "line-offset/sharp-corners-round",
+      "line-opacity/default",
+      "line-opacity/function",
+      "line-opacity/literal",
+      "line-opacity/overlap",
+      "line-opacity/property-function",
+      "line-opacity/step-curve",
+      "line-pattern/@2x",
+      "line-pattern/literal",
+      "line-pattern/opacity",
+      "line-pattern/overscaled",
+      "line-pattern/pitch",
+      "line-pattern/property-function",
+      "line-pattern/step-curve",
+      "line-pattern/with-dasharray",
+      "line-pattern/zoom-expression",
+      "line-pitch/default",
+      "line-pitch/pitch0",
+      "line-pitch/pitch15",
+      "line-pitch/pitch30",
+      "line-pitch/pitchAndBearing",
+      "line-round-limit/default",
+      "line-round-limit/property-function",
+      "line-translate-anchor/map",
+      "line-translate-anchor/viewport",
+      "line-translate/default",
+      "line-translate/function",
+      "line-translate/literal",
+      "line-triangulation/default",
+      "line-triangulation/round",
+      "line-width/default",
+      "line-width/function",
+      "line-width/literal",
+      "line-width/property-function",
+      "line-width/very-overscaled",
+      "line-width/zero-width",
+      "line-width/zero-width-function"
+    ]
+  },
+  "series": {
+    "dash-chrome": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.513,
+          "gpu_p90_ms": 0.524,
+          "main_ms": 0.506,
+          "cpu_render_ms": 0.023,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.889,
+          "gpu_p90_ms": 0.918,
+          "main_ms": 0.885,
+          "cpu_render_ms": 0.02,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 5
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.193,
+          "gpu_p90_ms": 0.197,
+          "main_ms": 0.189,
+          "cpu_render_ms": 0.022,
+          "cpu_submit_ms": 0.009,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.257,
+          "gpu_p90_ms": 0.262,
+          "main_ms": 0.253,
+          "cpu_render_ms": 0.02,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 0.253,
+          "gpu_p90_ms": 0.262,
+          "main_ms": 0.248,
+          "cpu_render_ms": 0.027,
+          "cpu_submit_ms": 0.006,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 0.35,
+          "gpu_p90_ms": 0.393,
+          "main_ms": 0.347,
+          "cpu_render_ms": 0.03,
+          "cpu_submit_ms": 0.004,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.102,
+          "gpu_p90_ms": 0.131,
+          "main_ms": 0.098,
+          "cpu_render_ms": 0.025,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.121,
+          "gpu_p90_ms": 0.131,
+          "main_ms": 0.117,
+          "cpu_render_ms": 0.026,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 11206920,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 5603460.0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 5405196,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 2702598.0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 1126272,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 187712.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 582808,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 97134.7
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 1764472,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 196052.4
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 901092,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 100121.3
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 111968,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 12440.9
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 55864,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 6207.1
+        }
+      ]
+    },
+    "dash-native": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.541,
+          "gpu_p90_ms": 0.546,
+          "main_ms": 0.532,
+          "cpu_render_ms": 0.234,
+          "cpu_submit_ms": 0.165,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.992,
+          "gpu_p90_ms": 0.995,
+          "main_ms": 0.985,
+          "cpu_render_ms": 0.249,
+          "cpu_submit_ms": 0.178,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 5
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.214,
+          "gpu_p90_ms": 0.337,
+          "main_ms": 0.208,
+          "cpu_render_ms": 0.193,
+          "cpu_submit_ms": 0.13,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.285,
+          "gpu_p90_ms": 0.378,
+          "main_ms": 0.28,
+          "cpu_render_ms": 0.165,
+          "cpu_submit_ms": 0.106,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 0.279,
+          "gpu_p90_ms": 0.283,
+          "main_ms": 0.273,
+          "cpu_render_ms": 0.206,
+          "cpu_submit_ms": 0.12,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 0.39,
+          "gpu_p90_ms": 0.394,
+          "main_ms": 0.385,
+          "cpu_render_ms": 0.208,
+          "cpu_submit_ms": 0.12,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.119,
+          "gpu_p90_ms": 0.134,
+          "main_ms": 0.114,
+          "cpu_render_ms": 0.201,
+          "cpu_submit_ms": 0.123,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.134,
+          "gpu_p90_ms": 0.183,
+          "main_ms": 0.13,
+          "cpu_render_ms": 0.215,
+          "cpu_submit_ms": 0.136,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 11206920,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 5603460.0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 5405196,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 2702598.0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 1126272,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 187712.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 582808,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 97134.7
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 1764472,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 196052.4
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 901092,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 100121.3
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 111968,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 12440.9
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 55864,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 6207.1
+        }
+      ]
+    },
+    "gradient-chrome": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.447,
+          "gpu_p90_ms": 0.459,
+          "main_ms": 0.441,
+          "cpu_render_ms": 0.023,
+          "cpu_submit_ms": 0.01,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.814,
+          "gpu_p90_ms": 0.852,
+          "main_ms": 0.81,
+          "cpu_render_ms": 0.019,
+          "cpu_submit_ms": 0.006,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.156,
+          "gpu_p90_ms": 0.197,
+          "main_ms": 0.152,
+          "cpu_render_ms": 0.02,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.22,
+          "gpu_p90_ms": 0.262,
+          "main_ms": 0.216,
+          "cpu_render_ms": 0.017,
+          "cpu_submit_ms": 0.005,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 0.208,
+          "gpu_p90_ms": 0.262,
+          "main_ms": 0.204,
+          "cpu_render_ms": 0.029,
+          "cpu_submit_ms": 0.006,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 0.306,
+          "gpu_p90_ms": 0.328,
+          "main_ms": 0.301,
+          "cpu_render_ms": 0.034,
+          "cpu_submit_ms": 0.009,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.085,
+          "gpu_p90_ms": 0.131,
+          "main_ms": 0.081,
+          "cpu_render_ms": 0.025,
+          "cpu_submit_ms": 0.01,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.102,
+          "gpu_p90_ms": 0.131,
+          "main_ms": 0.099,
+          "cpu_render_ms": 0.028,
+          "cpu_submit_ms": 0.008,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 11206920,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 5603460.0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 5405196,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 2702598.0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 1126272,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 187712.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 582808,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 97134.7
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 1764472,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 196052.4
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 901092,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 100121.3
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 111968,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 12440.9
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 55864,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 6207.1
+        }
+      ]
+    },
+    "gradient-native": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.471,
+          "gpu_p90_ms": 0.472,
+          "main_ms": 0.462,
+          "cpu_render_ms": 0.2,
+          "cpu_submit_ms": 0.147,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.918,
+          "gpu_p90_ms": 0.919,
+          "main_ms": 0.911,
+          "cpu_render_ms": 0.225,
+          "cpu_submit_ms": 0.163,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.174,
+          "gpu_p90_ms": 0.176,
+          "main_ms": 0.169,
+          "cpu_render_ms": 0.19,
+          "cpu_submit_ms": 0.134,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.245,
+          "gpu_p90_ms": 0.246,
+          "main_ms": 0.24,
+          "cpu_render_ms": 0.164,
+          "cpu_submit_ms": 0.105,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 0.233,
+          "gpu_p90_ms": 0.236,
+          "main_ms": 0.228,
+          "cpu_render_ms": 0.209,
+          "cpu_submit_ms": 0.124,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 0.343,
+          "gpu_p90_ms": 0.345,
+          "main_ms": 0.337,
+          "cpu_render_ms": 0.207,
+          "cpu_submit_ms": 0.123,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.12,
+          "gpu_p90_ms": 0.16,
+          "main_ms": 0.114,
+          "cpu_render_ms": 0.19,
+          "cpu_submit_ms": 0.121,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.146,
+          "gpu_p90_ms": 0.167,
+          "main_ms": 0.14,
+          "cpu_render_ms": 0.182,
+          "cpu_submit_ms": 0.119,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 11206920,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 5603460.0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 5405196,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 2702598.0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 1126272,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 187712.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 582808,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 97134.7
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 1764472,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 196052.4
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 901092,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 100121.3
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 111968,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 12440.9
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 55864,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 6207.1
+        }
+      ]
+    },
+    "pattern-chrome": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.514,
+          "gpu_p90_ms": 0.524,
+          "main_ms": 0.508,
+          "cpu_render_ms": 0.019,
+          "cpu_submit_ms": 0.006,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.883,
+          "gpu_p90_ms": 0.918,
+          "main_ms": 0.878,
+          "cpu_render_ms": 0.025,
+          "cpu_submit_ms": 0.01,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 7
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.198,
+          "gpu_p90_ms": 0.197,
+          "main_ms": 0.194,
+          "cpu_render_ms": 0.022,
+          "cpu_submit_ms": 0.009,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.254,
+          "gpu_p90_ms": 0.262,
+          "main_ms": 0.251,
+          "cpu_render_ms": 0.023,
+          "cpu_submit_ms": 0.005,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 0.254,
+          "gpu_p90_ms": 0.262,
+          "main_ms": 0.25,
+          "cpu_render_ms": 0.033,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 0.35,
+          "gpu_p90_ms": 0.393,
+          "main_ms": 0.346,
+          "cpu_render_ms": 0.032,
+          "cpu_submit_ms": 0.008,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.103,
+          "gpu_p90_ms": 0.131,
+          "main_ms": 0.099,
+          "cpu_render_ms": 0.027,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.123,
+          "gpu_p90_ms": 0.131,
+          "main_ms": 0.12,
+          "cpu_render_ms": 0.026,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 11206920,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 5603460.0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 5405196,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 2702598.0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 1126272,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 187712.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 582808,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 97134.7
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 1764472,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 196052.4
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 901092,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 100121.3
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 111968,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 12440.9
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 55864,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 6207.1
+        }
+      ]
+    },
+    "pattern-native": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.552,
+          "gpu_p90_ms": 0.556,
+          "main_ms": 0.543,
+          "cpu_render_ms": 0.234,
+          "cpu_submit_ms": 0.17,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.994,
+          "gpu_p90_ms": 0.998,
+          "main_ms": 0.988,
+          "cpu_render_ms": 0.258,
+          "cpu_submit_ms": 0.187,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 7
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.22,
+          "gpu_p90_ms": 0.221,
+          "main_ms": 0.214,
+          "cpu_render_ms": 0.151,
+          "cpu_submit_ms": 0.097,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.289,
+          "gpu_p90_ms": 0.291,
+          "main_ms": 0.284,
+          "cpu_render_ms": 0.162,
+          "cpu_submit_ms": 0.104,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 0.286,
+          "gpu_p90_ms": 0.291,
+          "main_ms": 0.281,
+          "cpu_render_ms": 0.178,
+          "cpu_submit_ms": 0.104,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 0.395,
+          "gpu_p90_ms": 0.4,
+          "main_ms": 0.39,
+          "cpu_render_ms": 0.186,
+          "cpu_submit_ms": 0.109,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.129,
+          "gpu_p90_ms": 0.14,
+          "main_ms": 0.124,
+          "cpu_render_ms": 0.184,
+          "cpu_submit_ms": 0.115,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.138,
+          "gpu_p90_ms": 0.143,
+          "main_ms": 0.133,
+          "cpu_render_ms": 0.194,
+          "cpu_submit_ms": 0.118,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 11206920,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 5603460.0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 5405196,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 2702598.0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 1126272,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 187712.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 582808,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 97134.7
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 1764472,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 196052.4
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 901092,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 100121.3
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 111968,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 12440.9
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 55864,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 6207.1
+        }
+      ]
+    },
+    "seattle-chrome-full": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.49,
+          "gpu_p90_ms": 0.524,
+          "main_ms": 0.414,
+          "cpu_render_ms": 0.041,
+          "cpu_submit_ms": 0.008,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.861,
+          "gpu_p90_ms": 0.983,
+          "main_ms": 0.765,
+          "cpu_render_ms": 0.038,
+          "cpu_submit_ms": 0.01,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.647,
+          "gpu_p90_ms": 0.721,
+          "main_ms": 0.443,
+          "cpu_render_ms": 0.03,
+          "cpu_submit_ms": 0.007,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.922,
+          "gpu_p90_ms": 0.983,
+          "main_ms": 0.581,
+          "cpu_render_ms": 0.028,
+          "cpu_submit_ms": 0.005,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 19
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 1.279,
+          "gpu_p90_ms": 1.311,
+          "main_ms": 0.726,
+          "cpu_render_ms": 0.054,
+          "cpu_submit_ms": 0.007,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 2.117,
+          "gpu_p90_ms": 2.163,
+          "main_ms": 1.147,
+          "cpu_render_ms": 0.056,
+          "cpu_submit_ms": 0.007,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 29
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.434,
+          "gpu_p90_ms": 0.459,
+          "main_ms": 0.287,
+          "cpu_render_ms": 0.036,
+          "cpu_submit_ms": 0.009,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.511,
+          "gpu_p90_ms": 0.524,
+          "main_ms": 0.326,
+          "cpu_render_ms": 0.036,
+          "cpu_submit_ms": 0.008,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 1
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 12335984,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 1370664.9
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 6087056,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 676339.6
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 2025168,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 337528.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 1061360,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 176893.3
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 6582376,
+          "placed_tiles": 25,
+          "bytes_per_placed_tile": 263295.0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 3467660,
+          "placed_tiles": 25,
+          "bytes_per_placed_tile": 138706.4
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 189992,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 31665.3
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 99936,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 16656.0
+        }
+      ]
+    },
+    "seattle-native-full": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.49,
+          "gpu_p90_ms": 0.503,
+          "main_ms": 0.434,
+          "cpu_render_ms": 0.406,
+          "cpu_submit_ms": 0.268,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.902,
+          "gpu_p90_ms": 1.059,
+          "main_ms": 0.839,
+          "cpu_render_ms": 0.401,
+          "cpu_submit_ms": 0.253,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 1.027,
+          "gpu_p90_ms": 1.03,
+          "main_ms": 0.645,
+          "cpu_render_ms": 0.32,
+          "cpu_submit_ms": 0.226,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 1.324,
+          "gpu_p90_ms": 1.327,
+          "main_ms": 0.794,
+          "cpu_render_ms": 0.329,
+          "cpu_submit_ms": 0.239,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 19
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 2.055,
+          "gpu_p90_ms": 2.067,
+          "main_ms": 1.129,
+          "cpu_render_ms": 0.58,
+          "cpu_submit_ms": 0.319,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 3.0,
+          "gpu_p90_ms": 3.013,
+          "main_ms": 1.601,
+          "cpu_render_ms": 0.588,
+          "cpu_submit_ms": 0.34,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 29
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.796,
+          "gpu_p90_ms": 0.799,
+          "main_ms": 0.474,
+          "cpu_render_ms": 0.271,
+          "cpu_submit_ms": 0.194,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.874,
+          "gpu_p90_ms": 0.876,
+          "main_ms": 0.513,
+          "cpu_render_ms": 0.271,
+          "cpu_submit_ms": 0.194,
+          "draws": 100,
+          "dispatches": 1,
+          "different_pixels": 1
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 12335984,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 1370664.9
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 6087056,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 676339.6
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 2025168,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 337528.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 1061360,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 176893.3
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 6582376,
+          "placed_tiles": 25,
+          "bytes_per_placed_tile": 263295.0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 3467660,
+          "placed_tiles": 25,
+          "bytes_per_placed_tile": 138706.4
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 189992,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 31665.3
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 99936,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 16656.0
+        }
+      ]
+    },
+    "tokyo-chrome-full": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.483,
+          "gpu_p90_ms": 0.524,
+          "main_ms": 0.476,
+          "cpu_render_ms": 0.021,
+          "cpu_submit_ms": 0.006,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.861,
+          "gpu_p90_ms": 0.918,
+          "main_ms": 0.858,
+          "cpu_render_ms": 0.025,
+          "cpu_submit_ms": 0.006,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 2
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.235,
+          "gpu_p90_ms": 0.262,
+          "main_ms": 0.231,
+          "cpu_render_ms": 0.032,
+          "cpu_submit_ms": 0.007,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.305,
+          "gpu_p90_ms": 0.328,
+          "main_ms": 0.301,
+          "cpu_render_ms": 0.028,
+          "cpu_submit_ms": 0.006,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 0.291,
+          "gpu_p90_ms": 0.328,
+          "main_ms": 0.288,
+          "cpu_render_ms": 0.036,
+          "cpu_submit_ms": 0.004,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 0.382,
+          "gpu_p90_ms": 0.393,
+          "main_ms": 0.379,
+          "cpu_render_ms": 0.033,
+          "cpu_submit_ms": 0.005,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.138,
+          "gpu_p90_ms": 0.197,
+          "main_ms": 0.133,
+          "cpu_render_ms": 0.031,
+          "cpu_submit_ms": 0.006,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.143,
+          "gpu_p90_ms": 0.197,
+          "main_ms": 0.14,
+          "cpu_render_ms": 0.031,
+          "cpu_submit_ms": 0.008,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 11206920,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 5603460.0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 5405196,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 2702598.0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 1126272,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 187712.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 582808,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 97134.7
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 1764472,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 196052.4
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 901092,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 100121.3
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 111968,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 12440.9
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 55864,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 6207.1
+        }
+      ]
+    },
+    "tokyo-chrome-lines": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.428,
+          "gpu_p90_ms": 0.459,
+          "main_ms": 0.422,
+          "cpu_render_ms": 0.02,
+          "cpu_submit_ms": 0.008,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.8,
+          "gpu_p90_ms": 0.852,
+          "main_ms": 0.795,
+          "cpu_render_ms": 0.018,
+          "cpu_submit_ms": 0.004,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 4
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.154,
+          "gpu_p90_ms": 0.197,
+          "main_ms": 0.151,
+          "cpu_render_ms": 0.022,
+          "cpu_submit_ms": 0.006,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.209,
+          "gpu_p90_ms": 0.262,
+          "main_ms": 0.205,
+          "cpu_render_ms": 0.021,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 0.195,
+          "gpu_p90_ms": 0.197,
+          "main_ms": 0.192,
+          "cpu_render_ms": 0.026,
+          "cpu_submit_ms": 0.004,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 0.29,
+          "gpu_p90_ms": 0.328,
+          "main_ms": 0.288,
+          "cpu_render_ms": 0.031,
+          "cpu_submit_ms": 0.007,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.081,
+          "gpu_p90_ms": 0.131,
+          "main_ms": 0.078,
+          "cpu_render_ms": 0.023,
+          "cpu_submit_ms": 0.003,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.095,
+          "gpu_p90_ms": 0.131,
+          "main_ms": 0.092,
+          "cpu_render_ms": 0.024,
+          "cpu_submit_ms": 0.006,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 11206920,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 5603460.0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 5405196,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 2702598.0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 1126272,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 187712.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 582808,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 97134.7
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 1764472,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 196052.4
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 901092,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 100121.3
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 111968,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 12440.9
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 55864,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 6207.1
+        }
+      ]
+    },
+    "tokyo-native-full": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.507,
+          "gpu_p90_ms": 0.508,
+          "main_ms": 0.497,
+          "cpu_render_ms": 0.225,
+          "cpu_submit_ms": 0.163,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.957,
+          "gpu_p90_ms": 0.958,
+          "main_ms": 0.95,
+          "cpu_render_ms": 0.256,
+          "cpu_submit_ms": 0.183,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 2
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.256,
+          "gpu_p90_ms": 0.258,
+          "main_ms": 0.25,
+          "cpu_render_ms": 0.17,
+          "cpu_submit_ms": 0.113,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.333,
+          "gpu_p90_ms": 0.334,
+          "main_ms": 0.327,
+          "cpu_render_ms": 0.171,
+          "cpu_submit_ms": 0.113,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 0.313,
+          "gpu_p90_ms": 0.316,
+          "main_ms": 0.307,
+          "cpu_render_ms": 0.204,
+          "cpu_submit_ms": 0.121,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 0.421,
+          "gpu_p90_ms": 0.423,
+          "main_ms": 0.415,
+          "cpu_render_ms": 0.209,
+          "cpu_submit_ms": 0.124,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.136,
+          "gpu_p90_ms": 0.138,
+          "main_ms": 0.131,
+          "cpu_render_ms": 0.21,
+          "cpu_submit_ms": 0.136,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.155,
+          "gpu_p90_ms": 0.157,
+          "main_ms": 0.15,
+          "cpu_render_ms": 0.22,
+          "cpu_submit_ms": 0.141,
+          "draws": 76,
+          "dispatches": 1,
+          "different_pixels": 0
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 11206920,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 5603460.0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 5405196,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 2702598.0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 1126272,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 187712.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 582808,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 97134.7
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 1764472,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 196052.4
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 901092,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 100121.3
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 111968,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 12440.9
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 55864,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 6207.1
+        }
+      ]
+    },
+    "tokyo-native-lines": {
+      "frames": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "gpu_ms": 0.452,
+          "gpu_p90_ms": 0.453,
+          "main_ms": 0.442,
+          "cpu_render_ms": 0.186,
+          "cpu_submit_ms": 0.137,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "gpu_ms": 0.896,
+          "gpu_p90_ms": 0.897,
+          "main_ms": 0.89,
+          "cpu_render_ms": 0.225,
+          "cpu_submit_ms": 0.162,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 4
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "gpu_ms": 0.163,
+          "gpu_p90_ms": 0.165,
+          "main_ms": 0.158,
+          "cpu_render_ms": 0.162,
+          "cpu_submit_ms": 0.11,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "gpu_ms": 0.234,
+          "gpu_p90_ms": 0.235,
+          "main_ms": 0.229,
+          "cpu_render_ms": 0.153,
+          "cpu_submit_ms": 0.098,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "gpu_ms": 0.219,
+          "gpu_p90_ms": 0.222,
+          "main_ms": 0.214,
+          "cpu_render_ms": 0.195,
+          "cpu_submit_ms": 0.117,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "gpu_ms": 0.329,
+          "gpu_p90_ms": 0.331,
+          "main_ms": 0.323,
+          "cpu_render_ms": 0.182,
+          "cpu_submit_ms": 0.105,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "gpu_ms": 0.089,
+          "gpu_p90_ms": 0.091,
+          "main_ms": 0.084,
+          "cpu_render_ms": 0.212,
+          "cpu_submit_ms": 0.134,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "gpu_ms": 0.109,
+          "gpu_p90_ms": 0.11,
+          "main_ms": 0.104,
+          "cpu_render_ms": 0.189,
+          "cpu_submit_ms": 0.113,
+          "draws": 50,
+          "dispatches": 1,
+          "different_pixels": 0
+        }
+      ],
+      "memory": [
+        {
+          "view": "z12",
+          "geometry": "cpu",
+          "bytes": 11206920,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 5603460.0
+        },
+        {
+          "view": "z12",
+          "geometry": "segmented",
+          "bytes": 5405196,
+          "placed_tiles": 2,
+          "bytes_per_placed_tile": 2702598.0
+        },
+        {
+          "view": "z15",
+          "geometry": "cpu",
+          "bytes": 1126272,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 187712.0
+        },
+        {
+          "view": "z15",
+          "geometry": "segmented",
+          "bytes": 582808,
+          "placed_tiles": 6,
+          "bytes_per_placed_tile": 97134.7
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "cpu",
+          "bytes": 1764472,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 196052.4
+        },
+        {
+          "view": "z15 pitch 60",
+          "geometry": "segmented",
+          "bytes": 901092,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 100121.3
+        },
+        {
+          "view": "z17",
+          "geometry": "cpu",
+          "bytes": 111968,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 12440.9
+        },
+        {
+          "view": "z17",
+          "geometry": "segmented",
+          "bytes": 55864,
+          "placed_tiles": 9,
+          "bytes_per_placed_tile": 6207.1
+        }
+      ]
+    }
+  },
+  "layout_cpu": {
+    "method": "pure tile build after MVT decode, complete Tokyo style; 3 rotating rounds; 100 measured and 10 warm-up tile layouts per round",
+    "tiles": [
+      {
+        "z": 12,
+        "col": 3637,
+        "row": 1612,
+        "cpu_median_ms": 10.700875,
+        "segmented_median_ms": 11.946333,
+        "cpu_p90_ms": 12.407083,
+        "segmented_p90_ms": 14.456709
+      },
+      {
+        "z": 14,
+        "col": 14551,
+        "row": 6451,
+        "cpu_median_ms": 1.578458,
+        "segmented_median_ms": 1.71675,
+        "cpu_p90_ms": 1.672125,
+        "segmented_p90_ms": 1.838791
+      }
+    ]
+  },
+  "wasm": {
+    "initial_baseline": {
+      "raw": 1307636,
+      "brotli": 425953
+    },
+    "prototype": {
+      "raw": 1349349,
+      "brotli": 440984
+    },
+    "cpu_on_same_base": {
+      "raw": 1308032,
+      "brotli": 426225
+    },
+    "isolated_prototype_delta": {
+      "raw": 41317,
+      "brotli": 14759
+    },
+    "net_shipping_delta": {
+      "raw": 0,
+      "brotli": 0
+    },
+    "compression_method": "Exact Brotli byte counts use node:zlib Brotli quality 11, lgwin 22 on cargo xtask web output; Rust compressor budget reports are rounded KiB and can differ slightly."
+  },
+  "outcome": "Shelve all four variants: fixture parity and occupied-memory gates pass; GPU gate fails decisively for every variant at z12; remove experimental code and retain this evidence."
+}

@@ -1,0 +1,25 @@
+[package]
+name = "xtask"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+orb-crs.workspace = true
+orb-host.workspace = true
+orb-source.workspace = true
+orb-text = { workspace = true, features = ["sea-export"] }
+orb-tile.workspace = true
+# Typed staging preserves wire types; tooling only, pinned to this API.
+mlt-core = { version = "=0.22.1", default-features = false, features = ["__private"] }
+brotli.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+ureq.workspace = true
+flate2.workspace = true
+tar.workspace = true
+sha2.workspace = true
+base64.workspace = true
+
+[lints]
+workspace = true

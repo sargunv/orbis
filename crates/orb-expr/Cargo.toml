@@ -1,0 +1,27 @@
+[package]
+name = "orb-expr"
+description = "MapLibre v8 expressions: JSON, parsing with type checking, legacy lowering, classification and evaluation"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+orb-tile.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+bytemuck.workspace = true
+futures-channel.workspace = true
+# Brings wgpu's platform backends.
+orb-hal-wgpu.workspace = true
+orb-shaders.workspace = true
+wgpu.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+pollster.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.80"

@@ -1,0 +1,902 @@
+[
+  {
+    "name": "point-labels",
+    "sourceLayer": "place",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-size": 14,
+      "text-anchor": "top",
+      "text-offset": [
+        0,
+        0.5
+      ],
+      "text-max-width": 6,
+      "text-justify": "auto",
+      "text-letter-spacing": 0.05,
+      "text-rotate": 12,
+      "icon-image": "dot",
+      "icon-anchor": "bottom",
+      "icon-offset": [
+        1,
+        -2
+      ],
+      "icon-padding": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    "images": {
+      "dot": {
+        "width": 8,
+        "height": 8,
+        "pixelRatio": 1,
+        "sdf": false
+      }
+    }
+  },
+  {
+    "name": "line-labels",
+    "sourceLayer": "transportation_name",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "symbol-placement": "line",
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-size": 13,
+      "symbol-spacing": 200,
+      "text-max-angle": 38,
+      "text-letter-spacing": 0.1
+    }
+  },
+  {
+    "name": "line-center",
+    "sourceLayer": "transportation_name",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "symbol-placement": "line-center",
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-size": 12,
+      "text-max-angle": 60
+    }
+  },
+  {
+    "name": "line-overscaled",
+    "sourceLayer": "transportation_name",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 15,
+    "overscaling": 2,
+    "layout": {
+      "symbol-placement": "line",
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-keep-upright": false,
+      "text-offset": [
+        0,
+        -1
+      ],
+      "icon-image": "dot",
+      "symbol-spacing": 120
+    },
+    "images": {
+      "dot": {
+        "width": 8,
+        "height": 8,
+        "pixelRatio": 1,
+        "sdf": false
+      }
+    }
+  },
+  {
+    "name": "line-icons",
+    "sourceLayer": "transportation",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "symbol-placement": "line",
+      "icon-image": "arrow",
+      "icon-rotation-alignment": "map",
+      "symbol-spacing": 300
+    },
+    "images": {
+      "arrow": {
+        "width": 12,
+        "height": 6,
+        "pixelRatio": 2,
+        "sdf": true
+      }
+    }
+  },
+  {
+    "name": "variable-anchors",
+    "sourceLayer": "place",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-variable-anchor": [
+        "top",
+        "bottom",
+        "left",
+        "right",
+        "top-left"
+      ],
+      "text-radial-offset": 1.2,
+      "text-justify": "auto",
+      "text-max-width": 5,
+      "icon-image": "dot"
+    },
+    "images": {
+      "dot": {
+        "width": 8,
+        "height": 8,
+        "pixelRatio": 1,
+        "sdf": false
+      }
+    }
+  },
+  {
+    "name": "variable-anchor-offset",
+    "sourceLayer": "poi",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-justify": "auto",
+      "text-variable-anchor-offset": [
+        "top",
+        [
+          0,
+          1
+        ],
+        "bottom",
+        [
+          0,
+          -1
+        ],
+        "left",
+        [
+          1,
+          0
+        ],
+        "bottom-right",
+        [
+          -0.5,
+          -0.5
+        ]
+      ]
+    },
+    "filter": [
+      "==",
+      [
+        "get",
+        "class"
+      ],
+      "museum"
+    ]
+  },
+  {
+    "name": "variable-anchor-text-offset",
+    "sourceLayer": "place",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-variable-anchor": [
+        "left",
+        "right"
+      ],
+      "text-offset": [
+        1,
+        0.5
+      ],
+      "text-justify": "left"
+    }
+  },
+  {
+    "name": "icon-text-fit",
+    "sourceLayer": "place",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "icon-image": "pill",
+      "icon-text-fit": "both",
+      "icon-text-fit-padding": [
+        2,
+        6,
+        2,
+        6
+      ],
+      "text-size": 12
+    },
+    "images": {
+      "pill": {
+        "width": 30,
+        "height": 20,
+        "pixelRatio": 2,
+        "sdf": false,
+        "stretchX": [
+          [
+            5,
+            25
+          ]
+        ],
+        "stretchY": [
+          [
+            5,
+            15
+          ]
+        ],
+        "content": [
+          5,
+          5,
+          25,
+          15
+        ]
+      }
+    }
+  },
+  {
+    "name": "icon-text-fit-proportional",
+    "sourceLayer": "poi",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "icon-image": "pill",
+      "icon-text-fit": "width",
+      "text-max-width": 4
+    },
+    "images": {
+      "pill": {
+        "width": 40,
+        "height": 16,
+        "pixelRatio": 1,
+        "sdf": true,
+        "stretchX": [
+          [
+            4,
+            10
+          ],
+          [
+            30,
+            36
+          ]
+        ],
+        "content": [
+          4,
+          2,
+          36,
+          14
+        ],
+        "textFitWidth": "stretchOnly",
+        "textFitHeight": "proportional"
+      }
+    },
+    "filter": [
+      "==",
+      [
+        "get",
+        "class"
+      ],
+      "museum"
+    ]
+  },
+  {
+    "name": "vertical-point",
+    "sourceLayer": "place",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": [
+        "concat",
+        "東京（",
+        [
+          "get",
+          "name_en"
+        ],
+        "）〜１２"
+      ],
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-writing-mode": [
+        "vertical",
+        "horizontal"
+      ],
+      "text-anchor": "left",
+      "icon-image": "pill",
+      "icon-text-fit": "height",
+      "text-size": 18
+    },
+    "images": {
+      "pill": {
+        "width": 20,
+        "height": 20,
+        "pixelRatio": 1,
+        "sdf": false,
+        "stretchY": [
+          [
+            4,
+            16
+          ]
+        ],
+        "content": [
+          4,
+          4,
+          16,
+          16
+        ]
+      }
+    }
+  },
+  {
+    "name": "vertical-line",
+    "sourceLayer": "transportation_name",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "symbol-placement": "line",
+      "text-field": [
+        "concat",
+        "中央通り「",
+        [
+          "get",
+          "class"
+        ],
+        "」ＡＢ12"
+      ],
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "symbol-spacing": 150
+    }
+  },
+  {
+    "name": "sort-key-sizes",
+    "sourceLayer": "place",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "symbol-sort-key": [
+        "%",
+        [
+          "to-number",
+          [
+            "get",
+            "rank"
+          ],
+          0
+        ],
+        7
+      ],
+      "text-size": [
+        "interpolate",
+        [
+          "linear"
+        ],
+        [
+          "zoom"
+        ],
+        10,
+        [
+          "+",
+          8,
+          [
+            "%",
+            [
+              "to-number",
+              [
+                "get",
+                "rank"
+              ],
+              0
+            ],
+            7
+          ]
+        ],
+        16,
+        [
+          "+",
+          14,
+          [
+            "*",
+            2,
+            [
+              "%",
+              [
+                "to-number",
+                [
+                  "get",
+                  "rank"
+                ],
+                0
+              ],
+              7
+            ]
+          ]
+        ]
+      ],
+      "icon-image": "dot",
+      "icon-size": [
+        "/",
+        [
+          "+",
+          1,
+          [
+            "%",
+            [
+              "to-number",
+              [
+                "get",
+                "rank"
+              ],
+              0
+            ],
+            4
+          ]
+        ],
+        2
+      ],
+      "icon-rotate": [
+        "*",
+        [
+          "%",
+          [
+            "to-number",
+            [
+              "get",
+              "rank"
+            ],
+            0
+          ],
+          5
+        ],
+        10
+      ],
+      "text-allow-overlap": true,
+      "symbol-height-offset": [
+        "%",
+        [
+          "to-number",
+          [
+            "get",
+            "rank"
+          ],
+          0
+        ],
+        7
+      ]
+    },
+    "images": {
+      "dot": {
+        "width": 8,
+        "height": 8,
+        "pixelRatio": 2,
+        "sdf": false
+      }
+    }
+  },
+  {
+    "name": "polygons",
+    "sourceLayer": "landuse",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": "{class}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-size": 11,
+      "text-transform": "uppercase"
+    }
+  },
+  {
+    "name": "inline-images",
+    "sourceLayer": "place",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": [
+        "format",
+        [
+          "image",
+          "dot"
+        ],
+        {},
+        " ",
+        {},
+        [
+          "get",
+          "name_en"
+        ],
+        {
+          "font-scale": 0.8,
+          "vertical-align": "center"
+        }
+      ],
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-max-width": 4
+    },
+    "images": {
+      "dot": {
+        "width": 16,
+        "height": 30,
+        "pixelRatio": 1,
+        "sdf": true
+      }
+    }
+  },
+  {
+    "name": "promote-id",
+    "sourceLayer": "place",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "promoteId": "name_en",
+    "layout": {
+      "text-field": "{class}",
+      "text-font": [
+        "Noto Sans Regular"
+      ]
+    }
+  },
+  {
+    "name": "poi-cyrillic",
+    "sourceLayer": "poi",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "filter": [
+      "has",
+      "name:ru"
+    ],
+    "layout": {
+      "text-field": "{name:ru}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-max-width": 5,
+      "text-justify": "right",
+      "text-anchor": "bottom-left",
+      "text-letter-spacing": 0.08,
+      "text-line-height": 1.4,
+      "text-size": [
+        "interpolate",
+        [
+          "linear"
+        ],
+        [
+          "zoom"
+        ],
+        10,
+        10,
+        16,
+        20
+      ],
+      "icon-image": "cross",
+      "icon-rotate": 30,
+      "icon-size": 1.5,
+      "icon-anchor": "top-right",
+      "text-padding": 4
+    },
+    "images": {
+      "cross": {
+        "width": 15,
+        "height": 15,
+        "pixelRatio": 1,
+        "sdf": true
+      }
+    }
+  },
+  {
+    "name": "poi-variable-many",
+    "sourceLayer": "poi",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "filter": [
+      "==",
+      [
+        "get",
+        "class"
+      ],
+      "bank"
+    ],
+    "layout": {
+      "text-field": "{name}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-max-width": 6,
+      "text-justify": "auto",
+      "text-variable-anchor": [
+        "center",
+        "top-left",
+        "bottom-right",
+        "left",
+        "right"
+      ],
+      "text-offset": [
+        0.5,
+        0.5
+      ],
+      "icon-image": "dot",
+      "icon-size": [
+        "interpolate",
+        [
+          "linear"
+        ],
+        [
+          "zoom"
+        ],
+        12,
+        [
+          "+",
+          1,
+          [
+            "%",
+            [
+              "to-number",
+              [
+                "get",
+                "rank"
+              ],
+              0
+            ],
+            3
+          ]
+        ],
+        16,
+        2
+      ],
+      "symbol-sort-key": [
+        "-",
+        0,
+        [
+          "to-number",
+          [
+            "get",
+            "rank"
+          ],
+          0
+        ]
+      ]
+    },
+    "images": {
+      "dot": {
+        "width": 9,
+        "height": 9,
+        "pixelRatio": 2,
+        "sdf": false
+      }
+    }
+  },
+  {
+    "name": "line-cyrillic",
+    "sourceLayer": "transportation_name",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "symbol-placement": "line",
+      "text-field": [
+        "coalesce",
+        [
+          "get",
+          "name:ru"
+        ],
+        [
+          "get",
+          "name"
+        ]
+      ],
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-max-angle": 20,
+      "symbol-spacing": 100,
+      "text-size": 15,
+      "text-rotation-alignment": "viewport-glyph"
+    }
+  },
+  {
+    "name": "line-repeat",
+    "sourceLayer": "transportation",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "symbol-placement": "line",
+      "text-field": "Road",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "symbol-spacing": 250,
+      "text-size": 10
+    }
+  },
+  {
+    "name": "polygon-outlines",
+    "sourceLayer": "landuse",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "symbol-placement": "line",
+      "text-field": "{class}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "symbol-spacing": 150,
+      "text-size": 10
+    }
+  },
+  {
+    "name": "line-points",
+    "sourceLayer": "transportation_name",
+    "tile": "14-14552-6450.mvt",
+    "tileId": [
+      14,
+      14552,
+      6450
+    ],
+    "zoom": 14,
+    "layout": {
+      "text-field": "{name_en}",
+      "text-font": [
+        "Noto Sans Regular"
+      ],
+      "text-size": [
+        "+",
+        10,
+        [
+          "to-number",
+          [
+            "get",
+            "ref_length"
+          ],
+          0
+        ]
+      ],
+      "text-anchor": "bottom-right",
+      "text-max-width": 8
+    }
+  }
+]

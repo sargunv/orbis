@@ -1,0 +1,8 @@
+// Loads shaper.wasm (decision 0009): `font-faces` files drawn with HarfRust
+// and skrifa, as natively, outside core.wasm. The map calls this once per
+// thread, the first time a style declares a font file.
+export async function loadShaper() {
+  const shaper = await import("./pkg/shaper.js");
+  await shaper.default();
+  return new shaper.Shaper();
+}

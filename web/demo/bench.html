@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbis · frame bench</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, monospace; margin: 16px; max-width: 72em; }
+  #status { padding: 8px 12px; background: #f4f4f0; border-radius: 6px; }
+  #status[data-state="error"] { background: #fbe3e0; }
+  #status[data-state="done"] { background: #e3f3e0; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+  th, td { border: 1px solid #ccc; padding: 2px 6px; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  textarea { width: 100%; height: 12em; font: 11px ui-monospace, monospace; }
+  button { font: inherit; padding: 6px 14px; margin: 4px 4px 4px 0; }
+</style>
+<h1>Frame bench</h1>
+<p>Decision 0002's bench: five views of the committed Tokyo extract, still
+and with the camera panning, timed on the GPU and CPU; the same loop as
+<code>cargo xtask bench</code>. <code>?experiment=paint</code> runs decision
+0017's paint bench instead, <code>?experiment=labels</code> the labels bench. It takes several minutes on a phone. Keep the phone
+plugged in, the screen on and this tab in front, then copy the result into the
+issue.</p>
+<p id="status" data-state="running">starting…</p>
+<div id="buttons" hidden>
+  <button id="copy">Copy as Markdown</button>
+  <button id="again">Run again</button>
+</div>
+<div id="result" class="scroll"></div>
+<textarea id="markdown" readonly hidden></textarea>
+<script type="module">
+// Query: format=mvt|mlt or style=<url>; orb-bench settings frames, warmup,
+// rounds, size=WxH, ratio, at=lon,lat, timing=timestamps|work-done,
+// experiment=frames|paint|labels, labels=on|off.
+import init, { runBench } from "./pkg/harness.js";
+import { demoStyle } from "./styles.js";
+
+const SETTINGS = ["frames", "warmup", "rounds", "size", "ratio", "at", "timing", "experiment", "labels"];
+const params = new URLSearchParams(location.search);
+const format = params.get("format") ?? "mvt";
+if (!["mvt", "mlt"].includes(format)) throw new Error("format must be mvt or mlt");
+const style = demoStyle(params);
+const status = document.getElementById("status");
+const markdown = document.getElementById("markdown");
+
+function show(text, state = "running") {
+  status.textContent = text;
+  status.dataset.state = state;
+}
+
+// What the browser says about the adapter: wgpu's adapter info has only the
+// description on the web.
+async function about() {
+  const lines = [];
+  const adapter = await navigator.gpu?.requestAdapter({ powerPreference: "high-performance" });
+  if (adapter) {
+    const info = adapter.info ?? {};
+    const parts = [info.vendor, info.architecture, info.device, info.description].filter(Boolean);
+    lines.push(`adapter: ${parts.join(" · ") || "(no info)"}; timestamp-query ` +
+      (adapter.features.has("timestamp-query") ? "available" : "**missing**"));
+  }
+  lines.push(`user agent: ${navigator.userAgent}`);
+  lines.push(`browser, WebGPU; devicePixelRatio ${devicePixelRatio}; ` +
+    `${navigator.hardwareConcurrency ?? "?"} threads; cross-origin isolated: ${crossOriginIsolated}`);
+  lines.push(params.has("style") ? `data: ${style}` : `data: Tokyo extract (${format}, reduced Liberty)`);
+  return lines;
+}
+
+// The report's Markdown subset: headings, lists, paragraphs and pipe tables.
+function render(md) {
+  const escape = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+  const inline = (s) => escape(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`(.+?)`/g, "<code>$1</code>");
+  const cells = (line) => line.slice(1, -1).split("|").map((c) => inline(c.trim()));
+  let html = "", list = null, table = null;
+  const close = () => {
+    if (list) { html += `</${list}>`; list = null; }
+    if (table) { html += "</table>"; table = null; }
+  };
+  for (const line of md.split("\n")) {
+    if (line.startsWith("|")) {
+      if (/^\|[-| ]+\|$/.test(line)) continue;
+      if (!table) {
+        close();
+        table = true;
+        html += `<table><tr>${cells(line).map((c) => `<th>${c}</th>`).join("")}</tr>`;
+      } else {
+        html += `<tr>${cells(line).map((c) => `<td>${c}</td>`).join("")}</tr>`;
+      }
+      continue;
+    }
+    const heading = line.match(/^(#{1,4}) (.*)/);
+    const item = line.match(/^(- |\d+\. )(.*)/);
+    if (item) {
+      const kind = item[1] === "- " ? "ul" : "ol";
+      if (list !== kind) { close(); list = kind; html += `<${kind}>`; }
+      html += `<li>${inline(item[2])}</li>`;
+    } else {
+      close();
+      if (heading) html += `<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`;
+      else if (line.trim()) html += `<p>${inline(line)}</p>`;
+    }
+  }
+  close();
+  return html;
+}
+
+async function run() {
+  document.getElementById("buttons").hidden = true;
+  document.getElementById("result").innerHTML = "";
+  markdown.hidden = true;
+  let hidden = false;
+  const onHide = () => { if (document.hidden) hidden = true; };
+  document.addEventListener("visibilitychange", onHide);
+  const lock = await navigator.wakeLock?.request("screen").catch(() => null);
+  try {
+    if (!navigator.gpu) throw new Error("this browser has no WebGPU");
+    const options = [];
+    for (const name of SETTINGS) if (params.has(name)) options.push(name, params.get(name));
+    const lines = await about();
+    const started = performance.now();
+    let report = await runBench(style, options, lines, (line) => show(line));
+    const seconds = ((performance.now() - started) / 1000).toFixed(0);
+    if (hidden) {
+      report += "\n**The page was hidden during the run: these timings are suspect.**\n";
+    }
+    markdown.value = report;
+    document.getElementById("result").innerHTML = render(report);
+    show(`done in ${seconds} s`, "done");
+  } catch (e) {
+    show(`Error: ${e?.message ?? e}`, "error");
+    console.error(e);
+  } finally {
+    document.removeEventListener("visibilitychange", onHide);
+    await lock?.release();
+    document.getElementById("buttons").hidden = false;
+    markdown.hidden = !markdown.value;
+  }
+}
+
+document.getElementById("copy").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(markdown.value);
+    show("copied as Markdown", "done");
+  } catch {
+    markdown.select();
+    show("select the Markdown below and copy it", "done");
+  }
+};
+document.getElementById("again").onclick = run;
+await init();
+await run();
+</script>
+</html>

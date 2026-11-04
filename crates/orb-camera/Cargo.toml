@@ -1,0 +1,18 @@
+[package]
+name = "orb-camera"
+description = "Camera state and view transforms"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+glam.workspace = true
+orb-crs.workspace = true
+orb-geo.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

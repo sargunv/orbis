@@ -1,0 +1,20 @@
+# https://mise.jdx.dev
+#
+# Host requirements beyond mise: Xcode (Metal, iOS Simulator), an Android SDK
+# with an emulator image (ANDROID_HOME), Chrome, and a signed-in `gh` CLI.
+
+min_version = "2026.10.0"
+
+[settings]
+experimental = true
+pin = true
+minimum_release_age = "3d"
+lockfile = true
+
+[tools]
+# Web build: wasm-bindgen must match the wasm-bindgen crate in Cargo.lock.
+"github:wasm-bindgen/wasm-bindgen" = "0.2.130"
+"aqua:WebAssembly/binaryen" = "133"
+"cargo:twiggy" = "0.8.0"
+node = "24.22.2"
+"aqua:pnpm/pnpm" = "11.25.0"

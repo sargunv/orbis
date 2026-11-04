@@ -1,0 +1,281 @@
+//! GL JS `grid_index.ts`: placed boxes and circles in viewport cells, for
+//! collision queries.
+
+/// `text-overlap`, `icon-overlap` (GL JS `OverlapMode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Overlap {
+    #[default]
+    Never,
+    Always,
+    Cooperative,
+}
+
+/// What a placed shape is, as collision queries see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GridKey {
+    pub(crate) overlap: Overlap,
+    /// The collision group: a source, unless sources collide with each
+    /// other.
+    pub(crate) group: u32,
+}
+
+/// GL JS `overlapAllowed`.
+fn overlap_allowed(a: Overlap, b: Overlap) -> bool {
+    a == Overlap::Always || !(a == Overlap::Never || b == Overlap::Never)
+}
+
+/// A query's filter on the keys it may hit (GL JS's collision group
+/// predicate): `None` hits every group.
+pub(crate) type Group = Option<u32>;
+
+fn in_group(group: Group, key: &GridKey) -> bool {
+    group.is_none_or(|g| key.group == g)
+}
+
+#[derive(Debug)]
+pub(crate) struct GridIndex {
+    box_cells: Vec<Vec<u32>>,
+    circle_cells: Vec<Vec<u32>>,
+    box_keys: Vec<GridKey>,
+    circle_keys: Vec<GridKey>,
+    bboxes: Vec<f64>,
+    circles: Vec<f64>,
+    x_cells: usize,
+    y_cells: usize,
+    width: f64,
+    height: f64,
+    x_scale: f64,
+    y_scale: f64,
+    /// Per box and circle uid, the query that last saw it.
+    box_seen: Vec<u32>,
+    circle_seen: Vec<u32>,
+    query: u32,
+}
+
+impl GridIndex {
+    pub(crate) fn new(width: f64, height: f64, cell_size: f64) -> Self {
+        let x_cells = (width / cell_size).ceil().max(1.0) as usize;
+        let y_cells = (height / cell_size).ceil().max(1.0) as usize;
+        Self {
+            box_cells: vec![Vec::new(); x_cells * y_cells],
+            circle_cells: vec![Vec::new(); x_cells * y_cells],
+            box_keys: Vec::new(),
+            circle_keys: Vec::new(),
+            bboxes: Vec::new(),
+            circles: Vec::new(),
+            x_cells,
+            y_cells,
+            width,
+            height,
+            x_scale: x_cells as f64 / width,
+            y_scale: y_cells as f64 / height,
+            box_seen: Vec::new(),
+            circle_seen: Vec::new(),
+            query: 0,
+        }
+    }
+
+    fn cells(&self, x1: f64, y1: f64, x2: f64, y2: f64) -> impl Iterator<Item = usize> + use<> {
+        let cx = |x: f64| ((x * self.x_scale).floor().max(0.0) as usize).min(self.x_cells - 1);
+        let cy = |y: f64| ((y * self.y_scale).floor().max(0.0) as usize).min(self.y_cells - 1);
+        let (cx1, cy1, cx2, cy2) = (cx(x1), cy(y1), cx(x2), cy(y2));
+        let stride = self.x_cells;
+        (cx1..=cx2).flat_map(move |x| (cy1..=cy2).map(move |y| stride * y + x))
+    }
+
+    pub(crate) fn insert(&mut self, key: GridKey, x1: f64, y1: f64, x2: f64, y2: f64) {
+        let uid = self.box_keys.len() as u32;
+        for cell in self.cells(x1, y1, x2, y2) {
+            self.box_cells[cell].push(uid);
+        }
+        self.box_keys.push(key);
+        self.bboxes.extend([x1, y1, x2, y2]);
+        self.box_seen.push(0);
+    }
+
+    pub(crate) fn insert_circle(&mut self, key: GridKey, x: f64, y: f64, radius: f64) {
+        let uid = self.circle_keys.len() as u32;
+        for cell in self.cells(x - radius, y - radius, x + radius, y + radius) {
+            self.circle_cells[cell].push(uid);
+        }
+        self.circle_keys.push(key);
+        self.circles.extend([x, y, radius]);
+        self.circle_seen.push(0);
+    }
+
+    fn next_query(&mut self) -> u32 {
+        self.query += 1;
+        self.query
+    }
+
+    /// Whether a box hits anything it may not overlap (GL JS `hitTest`).
+    pub(crate) fn hit_test(
+        &mut self,
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+        overlap: Overlap,
+        group: Group,
+    ) -> bool {
+        if x2 < 0.0 || x1 > self.width || y2 < 0.0 || y1 > self.height {
+            return false;
+        }
+        // A box over the whole grid collides with everything.
+        if x1 <= 0.0 && y1 <= 0.0 && self.width <= x2 && self.height <= y2 {
+            return true;
+        }
+        // Boxes computed through different projections should still meet.
+        const EPSILON: f64 = 1e-6;
+        let query = self.next_query();
+        for cell in self.cells(x1, y1, x2, y2) {
+            for &uid in &self.box_cells[cell] {
+                let seen = &mut self.box_seen[uid as usize];
+                if *seen == query {
+                    continue;
+                }
+                *seen = query;
+                let b = &self.bboxes[uid as usize * 4..][..4];
+                let key = &self.box_keys[uid as usize];
+                if x1 <= b[2] + EPSILON
+                    && y1 <= b[3] + EPSILON
+                    && x2 >= b[0] - EPSILON
+                    && y2 >= b[1] - EPSILON
+                    && in_group(group, key)
+                    && !overlap_allowed(overlap, key.overlap)
+                {
+                    return true;
+                }
+            }
+            for &uid in &self.circle_cells[cell] {
+                let seen = &mut self.circle_seen[uid as usize];
+                if *seen == query {
+                    continue;
+                }
+                *seen = query;
+                let c = &self.circles[uid as usize * 3..][..3];
+                let key = &self.circle_keys[uid as usize];
+                if circle_and_rect_collide(c[0], c[1], c[2], x1, y1, x2, y2)
+                    && in_group(group, key)
+                    && !overlap_allowed(overlap, key.overlap)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether a circle hits anything it may not overlap (GL JS
+    /// `hitTestCircle`).
+    pub(crate) fn hit_test_circle(
+        &mut self,
+        x: f64,
+        y: f64,
+        radius: f64,
+        overlap: Overlap,
+        group: Group,
+    ) -> bool {
+        let (x1, y1, x2, y2) = (x - radius, y - radius, x + radius, y + radius);
+        if x2 < 0.0 || x1 > self.width || y2 < 0.0 || y1 > self.height {
+            return false;
+        }
+        let query = self.next_query();
+        for cell in self.cells(x1, y1, x2, y2) {
+            for &uid in &self.box_cells[cell] {
+                let seen = &mut self.box_seen[uid as usize];
+                if *seen == query {
+                    continue;
+                }
+                *seen = query;
+                let b = &self.bboxes[uid as usize * 4..][..4];
+                let key = &self.box_keys[uid as usize];
+                if circle_and_rect_collide(x, y, radius, b[0], b[1], b[2], b[3])
+                    && in_group(group, key)
+                    && !overlap_allowed(overlap, key.overlap)
+                {
+                    return true;
+                }
+            }
+            for &uid in &self.circle_cells[cell] {
+                let seen = &mut self.circle_seen[uid as usize];
+                if *seen == query {
+                    continue;
+                }
+                *seen = query;
+                let c = &self.circles[uid as usize * 3..][..3];
+                let key = &self.circle_keys[uid as usize];
+                if circles_collide(c[0], c[1], c[2], x, y, radius)
+                    && in_group(group, key)
+                    && !overlap_allowed(overlap, key.overlap)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+fn circles_collide(x1: f64, y1: f64, r1: f64, x2: f64, y2: f64, r2: f64) -> bool {
+    let (dx, dy) = (x2 - x1, y2 - y1);
+    let both = r1 + r2;
+    both * both > dx * dx + dy * dy
+}
+
+fn circle_and_rect_collide(cx: f64, cy: f64, r: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> bool {
+    let half_w = (x2 - x1) / 2.0;
+    let dist_x = (cx - (x1 + half_w)).abs();
+    if dist_x > half_w + r {
+        return false;
+    }
+    let half_h = (y2 - y1) / 2.0;
+    let dist_y = (cy - (y1 + half_h)).abs();
+    if dist_y > half_h + r {
+        return false;
+    }
+    if dist_x <= half_w || dist_y <= half_h {
+        return true;
+    }
+    let (dx, dy) = (dist_x - half_w, dist_y - half_h);
+    dx * dx + dy * dy <= r * r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NEVER: GridKey = GridKey {
+        overlap: Overlap::Never,
+        group: 0,
+    };
+
+    #[test]
+    fn boxes_and_circles_collide_by_overlap_mode() {
+        let mut grid = GridIndex::new(100.0, 100.0, 10.0);
+        grid.insert(NEVER, 10.0, 10.0, 20.0, 20.0);
+        grid.insert_circle(
+            GridKey {
+                overlap: Overlap::Cooperative,
+                group: 1,
+            },
+            60.0,
+            60.0,
+            5.0,
+        );
+        assert!(grid.hit_test(15.0, 15.0, 30.0, 30.0, Overlap::Never, None));
+        assert!(!grid.hit_test(21.0, 21.0, 30.0, 30.0, Overlap::Never, None));
+        assert!(!grid.hit_test(15.0, 15.0, 30.0, 30.0, Overlap::Always, None));
+        // Cooperative symbols may overlap each other, never a `never` one.
+        assert!(grid.hit_test(15.0, 15.0, 30.0, 30.0, Overlap::Cooperative, None));
+        assert!(!grid.hit_test(58.0, 58.0, 62.0, 62.0, Overlap::Cooperative, None));
+        assert!(grid.hit_test(58.0, 58.0, 62.0, 62.0, Overlap::Never, None));
+        // Groups: only keys of the query's group collide.
+        assert!(!grid.hit_test(58.0, 58.0, 62.0, 62.0, Overlap::Never, Some(0)));
+        assert!(grid.hit_test_circle(66.0, 60.0, 2.0, Overlap::Never, None));
+        assert!(!grid.hit_test_circle(68.0, 60.0, 2.0, Overlap::Never, None));
+        assert!(grid.hit_test_circle(22.0, 22.0, 3.0, Overlap::Never, None));
+        // A box over the whole grid collides with everything.
+        assert!(grid.hit_test(-1.0, -1.0, 101.0, 101.0, Overlap::Always, None));
+    }
+}

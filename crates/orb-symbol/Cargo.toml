@@ -1,0 +1,23 @@
+[package]
+name = "orb-symbol"
+description = "Symbol layout: anchors, glyph and icon quads, collision features and stable keys"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+bytemuck = { workspace = true, features = ["derive"] }
+libm.workspace = true
+orb-text.workspace = true
+orb-tile.workspace = true
+
+[dev-dependencies]
+# Golden vectors hold shortest round-trip doubles; parse them exactly.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.80"
+
+[lints]
+workspace = true
