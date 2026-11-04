@@ -50,7 +50,9 @@ pub use placement_wire::{
 pub use queries::QueryDone;
 pub use query::{Hit, HitFeature, HitIndex};
 pub use style::ImageKind;
-pub use surface::{projection_from_json, projection_to_json};
+pub use surface::{
+    SurfaceTiles, projection_from_json, projection_to_json, tms_from_json, tms_to_json,
+};
 pub use symbol::{ResultSymbols, SYMBOL_TABLES, SpriteIcons, SymbolMeta, SymbolTable};
 pub use terrain::TerrainElevation;
 pub use tile::{ImageRef, TileBuild};

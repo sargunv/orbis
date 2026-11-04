@@ -67,14 +67,14 @@ impl CameraState {
         let max_zoom = options.max_zoom.unwrap_or(f64::INFINITY);
 
         // Looking straight down (GL JS `cameraForBoxAndBearing`): the box's
-        // corners in a y-down frame turned by the bearing.
-        let corners = bounds.corners().map(|c| projection.forward(c));
+        // outline in a y-down frame turned by the bearing.
+        let outline = bounds.outline(projection);
         let angle = (-bearing).to_radians();
         let turn = DVec2::new(angle.cos(), angle.sin());
         let mut min = DVec2::splat(f64::INFINITY);
         let mut max = DVec2::splat(f64::NEG_INFINITY);
-        for corner in corners {
-            let p = DVec2::new(corner.x, -corner.y).rotate(turn);
+        for point in &outline {
+            let p = DVec2::new(point.x, -point.y).rotate(turn);
             min = min.min(p);
             max = max.max(p);
         }
@@ -92,7 +92,14 @@ impl CameraState {
             bearing.to_radians().cos(),
             bearing.to_radians().sin(),
         ));
-        let middle = (corners[0] + corners[2]) / 2.0;
+        // A rectangle's middle is its diagonal's; a curved outline's is its
+        // turned bounds', turned back.
+        let middle = if outline.len() == 4 {
+            (outline[0] + outline[2]) / 2.0
+        } else {
+            let m = ((min + max) / 2.0).rotate(DVec2::new(angle.cos(), -angle.sin()));
+            DVec2::new(m.x, -m.y)
+        };
         let center = middle - DVec2::new(shift.x, -shift.y) * final_world_per_px;
 
         let mut camera = *self;
@@ -102,7 +109,7 @@ impl CameraState {
         if pitch > 0.0 {
             fit_pitched(
                 &mut camera,
-                &corners,
+                &outline,
                 options,
                 projection,
                 viewport,
@@ -126,7 +133,7 @@ impl CameraState {
 /// projection is nearly a scale at a fixed pitch.
 fn fit_pitched(
     camera: &mut CameraState,
-    corners: &[DVec2; 4],
+    corners: &[DVec2],
     options: &FitOptions,
     projection: &Projection,
     viewport: Viewport,

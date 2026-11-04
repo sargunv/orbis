@@ -443,7 +443,7 @@ pub(crate) fn full_update(
     doc: &StyleDoc,
     revision: u64,
     local_ideographs: Option<String>,
-    plane: Option<TileMatrixSet>,
+    surface: crate::SurfaceTiles,
 ) -> StyleUpdate {
     StyleUpdate {
         revision,
@@ -467,7 +467,7 @@ pub(crate) fn full_update(
         font_faces: doc.style().font_faces.clone(),
         local_ideographs,
         cost: doc.cost_model(),
-        plane,
+        surface,
     }
 }
 
@@ -477,7 +477,7 @@ pub(crate) fn revise(
     doc: &StyleDoc,
     revision: u64,
     local_ideographs: Option<String>,
-    plane: Option<TileMatrixSet>,
+    surface: crate::SurfaceTiles,
 ) -> TileWorker {
     TileWorker::with_style(
         previous,
@@ -487,7 +487,7 @@ pub(crate) fn revise(
         revision,
         doc.cost_model(),
         local_ideographs,
-        plane,
+        surface,
     )
 }
 
@@ -804,7 +804,7 @@ impl Map {
             &doc,
             self.version,
             self.labels.ideographs.clone(),
-            self.surface.plane(),
+            self.surface.tiles(),
         ));
         let plan = worker.plan();
         self.warnings
@@ -838,7 +838,7 @@ impl Map {
                 &doc,
                 self.version,
                 self.labels.ideographs.clone(),
-                self.surface.plane(),
+                self.surface.tiles(),
             ),
             &worker,
         );

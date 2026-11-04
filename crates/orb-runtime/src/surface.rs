@@ -18,6 +18,28 @@ pub(crate) struct Surface {
     sources: Vec<(String, TileMatrixSet)>,
 }
 
+/// What job workers need of the surface: the plane GeoJSON tiles in, and
+/// the tile matrix sets of sources not in `WebMercatorQuad`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SurfaceTiles {
+    /// The surface's one-tile set; `None` for Web Mercator.
+    pub plane: Option<TileMatrixSet>,
+    /// By source id.
+    pub sources: Vec<(String, TileMatrixSet)>,
+}
+
+impl SurfaceTiles {
+    /// A source's set: its own, the plane for GeoJSON, or `None` for
+    /// `WebMercatorQuad`.
+    pub fn source(&self, id: &str, geojson: bool) -> Option<&TileMatrixSet> {
+        match self.sources.iter().find(|(source, _)| source == id) {
+            Some((_, tms)) => Some(tms),
+            None if geojson => self.plane.as_ref(),
+            None => None,
+        }
+    }
+}
+
 /// How a source's tiles map onto the surface.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Plan {
@@ -82,6 +104,14 @@ impl Surface {
     pub(crate) fn plane(&self) -> Option<TileMatrixSet> {
         let mercator = Self::default();
         (!self.projection.same_plane(&mercator.projection)).then(|| self.tms.clone())
+    }
+
+    /// What job workers need of the surface.
+    pub(crate) fn tiles(&self) -> SurfaceTiles {
+        SurfaceTiles {
+            plane: self.plane(),
+            sources: self.sources.clone(),
+        }
     }
 
     /// The x period of a wrapping plane; 0 if it doesn't wrap.
@@ -158,6 +188,69 @@ pub fn projection_to_json(projection: &Projection) -> String {
     .to_string()
 }
 
+/// A tile matrix set as an OGC 2D-TMS document, for another thread or
+/// worker; `None` for a set whose projection has no CRS code.
+pub fn tms_to_json(tms: &TileMatrixSet) -> Option<String> {
+    let def = tms.definition()?;
+    let synthetic = |value| Json::new(value, Default::default());
+    let member = |key: &str, value: Json| Member {
+        key: key.into(),
+        key_span: Default::default(),
+        value,
+    };
+    let number = |v: f64| synthetic(JsonValue::Number(v));
+    let text = |v: &str| synthetic(JsonValue::String(v.to_string()));
+    let matrices = def
+        .matrices
+        .iter()
+        .map(|m| {
+            synthetic(JsonValue::Object(vec![
+                member("id", text(&m.id)),
+                member("scaleDenominator", number(m.scale_denominator)),
+                member(
+                    "cellSize",
+                    number(m.cell_size.expect("definitions give cells")),
+                ),
+                member(
+                    "pointOfOrigin",
+                    synthetic(JsonValue::Array(m.point_of_origin.map(number).to_vec())),
+                ),
+                member(
+                    "cornerOfOrigin",
+                    text(if m.bottom_left {
+                        "bottomLeft"
+                    } else {
+                        "topLeft"
+                    }),
+                ),
+                member("tileWidth", number(f64::from(m.tile_width))),
+                member("tileHeight", number(f64::from(m.tile_height))),
+                member("matrixWidth", number(f64::from(m.matrix_width))),
+                member("matrixHeight", number(f64::from(m.matrix_height))),
+            ]))
+        })
+        .collect();
+    Some(
+        synthetic(JsonValue::Object(vec![
+            member("id", text(&def.id)),
+            member("crs", text(&def.crs)),
+            member(
+                "orderedAxes",
+                synthetic(JsonValue::Array(vec![text("E"), text("N")])),
+            ),
+            member("tileMatrices", synthetic(JsonValue::Array(matrices))),
+        ]))
+        .to_string(),
+    )
+}
+
+/// Reads [`tms_to_json`]'s document (or any OGC 2D-TMS document).
+pub fn tms_from_json(text: &str) -> Result<TileMatrixSet, String> {
+    let doc = json::parse(text).map_err(|e| e.to_string())?;
+    let def = orb_v8::tms_definition(&doc)?;
+    TileMatrixSet::from_definition(&def).map_err(|e| e.to_string())
+}
+
 /// Reads [`projection_to_json`]'s document.
 pub fn projection_from_json(text: &str) -> Result<Projection, String> {
     let bad = || "malformed projection".to_string();
@@ -219,5 +312,9 @@ mod tests {
         assert_eq!(surface.source_tms("other", true), *surface.tms());
         assert_eq!(surface.plane().as_ref(), Some(surface.tms()));
         assert_eq!(Surface::default().plane(), None);
+        let back = tms_from_json(&tms_to_json(&nztm).unwrap()).unwrap();
+        let tile = orb_crs::TileIndex::new(6, 31, 33);
+        assert_eq!(back.tile_bounds(tile), nztm.tile_bounds(tile));
+        assert_eq!(surface.tiles().source("linz", false), Some(&nztm));
     }
 }

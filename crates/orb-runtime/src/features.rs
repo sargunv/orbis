@@ -62,10 +62,14 @@ impl TileWorker {
             .plan()
             .source(request.tile.source)
             .ok_or("the source was removed")?;
-        let promote = match &self.plan().source_def(index).kind {
+        let def = self.plan().source_def(index);
+        let promote = match &def.kind {
             SourceKind::Vector(v) => v.promote_id.as_ref(),
             _ => None,
         };
+        let tms = self
+            .surface()
+            .source(&def.id, matches!(def.kind, SourceKind::GeoJson(_)));
         let read = |layer: &Layer, features: &mut dyn Iterator<Item = u32>| {
             let promoted = promote
                 .and_then(|p| p.key(layer.name()))
@@ -84,7 +88,7 @@ impl TileWorker {
                             out
                         }),
                         state_id: id.map(state_key),
-                        body: body(layer, f as usize, tile),
+                        body: body(layer, f as usize, tile, tms),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -108,7 +112,7 @@ impl TileWorker {
                     }
                     None => None,
                 };
-                let zoom = f64::from(tile.z);
+                let zoom = request.tile.zoom;
                 frame
                     .layers
                     .iter()
@@ -138,18 +142,34 @@ fn state_key(value: ValueRef<'_>) -> String {
 }
 
 /// A feature's GeoJSON geometry and properties, in longitude and latitude
-/// from the tile's coordinates, as GL JS's `toGeoJSON` gives them.
-fn body(layer: &Layer, feature: usize, tile: orb_crs::TileIndex) -> String {
+/// from the tile's coordinates, as GL JS's `toGeoJSON` gives them: through
+/// the tile's matrix set, or `WebMercatorQuad`'s formula without one.
+fn body(
+    layer: &Layer,
+    feature: usize,
+    tile: orb_crs::TileIndex,
+    tms: Option<&orb_crs::TileMatrixSet>,
+) -> String {
     let n = f64::from(1u32 << tile.z);
     let extent = f64::from(layer.extent());
+    let to_world = tms.map(|tms| (tms, tms.data_to_world(tile, layer.extent())));
     let point = |out: &mut String, p: [i32; 2]| {
-        let x = (f64::from(tile.col) + f64::from(p[0]) / extent) / n;
-        let y = (f64::from(tile.row) + f64::from(p[1]) / extent) / n;
-        let lon = x * 360.0 - 180.0;
-        let lat = (std::f64::consts::PI * (1.0 - 2.0 * y))
-            .sinh()
-            .atan()
-            .to_degrees();
+        let (lon, lat) = match &to_world {
+            Some((tms, a)) => {
+                let world = a.transform_point2(glam::DVec2::new(f64::from(p[0]), f64::from(p[1])));
+                let g = tms.projection().inverse(world);
+                (g.lon, g.lat)
+            }
+            None => {
+                let x = (f64::from(tile.col) + f64::from(p[0]) / extent) / n;
+                let y = (f64::from(tile.row) + f64::from(p[1]) / extent) / n;
+                let lat = (std::f64::consts::PI * (1.0 - 2.0 * y))
+                    .sinh()
+                    .atan()
+                    .to_degrees();
+                (x * 360.0 - 180.0, lat)
+            }
+        };
         out.push('[');
         out.push_str(&orb_expr::js_number_string(lon));
         out.push(',');

@@ -47,12 +47,33 @@ impl Bounds {
         ]
     }
 
+    /// The box's outline in world space: its corners on a wrapping
+    /// (cylindrical) plane, where its edges are straight, else points along
+    /// its edges, which curve.
+    pub(crate) fn outline(&self, projection: &Projection) -> Vec<DVec2> {
+        if projection.wrap_period().is_some() {
+            return self.corners().map(|c| projection.forward(c)).to_vec();
+        }
+        const STEPS: u32 = 32;
+        let [nw, ne, se, sw] = self.corners();
+        [(nw, ne), (ne, se), (se, sw), (sw, nw)]
+            .into_iter()
+            .flat_map(|(a, b)| {
+                (0..STEPS).map(move |i| {
+                    let t = f64::from(i) / f64::from(STEPS);
+                    Geodetic::new(a.lon + (b.lon - a.lon) * t, a.lat + (b.lat - a.lat) * t)
+                })
+            })
+            .filter(|g| projection.contains(*g))
+            .map(|g| projection.forward(g))
+            .collect()
+    }
+
     fn world(&self, projection: &Projection) -> WorldRect {
-        let sw = projection.forward(Geodetic::new(self.west, self.south));
-        let ne = projection.forward(Geodetic::new(self.east, self.north));
+        let outline = self.outline(projection);
         WorldRect {
-            min: sw.min(ne),
-            max: sw.max(ne),
+            min: outline.iter().fold(DVec2::INFINITY, |a, p| a.min(*p)),
+            max: outline.iter().fold(DVec2::NEG_INFINITY, |a, p| a.max(*p)),
         }
     }
 }
@@ -334,6 +355,72 @@ mod tests {
         steep.constrain(&Constraints::default(), &p, VIEWPORT);
         assert!((steep.zoom() - 22.0).abs() < 1e-9);
         assert_eq!(steep.pitch, 85.0);
+    }
+
+    /// Moves on planes other than Web Mercator: a polar plane (where north
+    /// turns around the pole) and a transverse Mercator one, each with its
+    /// tile matrix set's extent.
+    #[test]
+    fn moves_keep_their_ground_on_other_planes() {
+        for (id, target) in [
+            ("UPSArcticWGS84Quad", Geodetic::new(-40.0, 78.0)),
+            ("NZTM2000Quad", Geodetic::new(174.8, -41.3)),
+        ] {
+            let p = *TileMatrixSet::by_id(id).unwrap().projection();
+            let mut camera = CameraState::new(target, 6.0);
+            camera.pitch = 35.0;
+            camera.bearing = -20.0;
+            let (from, to) = (DVec2::new(300.0, 420.0), DVec2::new(520.0, 260.0));
+            let ground = View::new(&camera, VIEWPORT, &p).unproject(from).unwrap();
+            camera.pan(&p, VIEWPORT, from, to);
+            let now = View::new(&camera, VIEWPORT, &p).project(ground).unwrap();
+            assert!(now.distance(to) < 1e-6, "{id}: pan {now}");
+            let at = DVec2::new(150.0, 500.0);
+            let before = View::new(&camera, VIEWPORT, &p).unproject(at).unwrap();
+            camera.zoom_around(&p, VIEWPORT, at, 9.0);
+            camera.rotate_around(&p, VIEWPORT, at, 60.0);
+            let after = View::new(&camera, VIEWPORT, &p).unproject(at).unwrap();
+            assert!(before.distance(after) < 1e-6, "{id}: {before} {after}");
+            // The world's edge holds on both axes: a plane that doesn't wrap
+            // keeps the viewport inside its extent.
+            let mut far = CameraState::new(target, 1.0);
+            far.constrain(&Constraints::WORLD, &p, VIEWPORT);
+            let view = View::new(&far, VIEWPORT, &p);
+            let world = p.world_bounds();
+            for corner in [DVec2::ZERO, DVec2::new(VIEWPORT.width, VIEWPORT.height)] {
+                let w = view.unproject(corner).unwrap();
+                assert!(
+                    w.cmpge(world.min - 1e-3).all() && w.cmple(world.max + 1e-3).all(),
+                    "{id}"
+                );
+            }
+        }
+    }
+
+    /// A box around a pole is a disc on a polar plane: its outline, not its
+    /// corners, bounds it.
+    #[test]
+    fn polar_boxes_bound_their_outline() {
+        let p = *TileMatrixSet::by_id("UPSArcticWGS84Quad")
+            .unwrap()
+            .projection();
+        let cap = Bounds {
+            west: -180.0,
+            south: 70.0,
+            east: 180.0,
+            north: 90.0,
+        };
+        let rect = cap.world(&p);
+        let pole = p.forward(Geodetic::new(0.0, 90.0));
+        let edge = p.forward(Geodetic::new(90.0, 70.0)) - pole;
+        assert!((rect.center() - pole).length() < 1.0);
+        assert!((rect.size().x / 2.0 - edge.length()).abs() < 1.0);
+        let camera = CameraState::new(Geodetic::new(0.0, 60.0), 2.0);
+        let fit = camera
+            .for_bounds(cap, &crate::FitOptions::default(), &p, VIEWPORT)
+            .unwrap();
+        let center = fit.center.unwrap();
+        assert!(center.lat > 89.99, "{center:?}");
     }
 
     #[test]

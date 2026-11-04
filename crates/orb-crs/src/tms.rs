@@ -363,6 +363,51 @@ impl TileMatrixSet {
         &self.id
     }
 
+    /// The set as an OGC definition, which [`from_definition`]
+    /// (Self::from_definition) reads back; `None` for a set whose
+    /// projection has no CRS code (a parametric descriptor's).
+    pub fn definition(&self) -> Option<TileMatrixSetDefinition> {
+        let kind = self.projection.descriptor().kind;
+        let crs = match kind.as_str() {
+            "geographic" => "OGC:CRS84".to_string(),
+            kind if kind.starts_with("EPSG:") => kind.to_string(),
+            _ => return None,
+        };
+        let unit_m = self.projection.metres_per_unit();
+        let matrices = (self.min_zoom..=self.max_zoom)
+            .map(|z| {
+                let (cols, rows) = self.matrix_size(z);
+                let cell = self.tile_span(z) / f64::from(self.tile_px);
+                let origin = if self.bottom_origin {
+                    [
+                        self.origin.x,
+                        self.origin.y - self.tile_span(z) * f64::from(rows),
+                    ]
+                } else {
+                    [self.origin.x, self.origin.y]
+                };
+                TileMatrix {
+                    id: z.to_string(),
+                    scale_denominator: cell * unit_m / PIXEL_M,
+                    cell_size: Some(cell),
+                    point_of_origin: origin,
+                    bottom_left: self.bottom_origin,
+                    tile_width: self.tile_px,
+                    tile_height: self.tile_px,
+                    matrix_width: cols,
+                    matrix_height: rows,
+                    variable_widths: false,
+                }
+            })
+            .collect();
+        Some(TileMatrixSetDefinition {
+            id: self.id.clone(),
+            crs,
+            northing_first: Some(false),
+            matrices,
+        })
+    }
+
     /// The set's projection, whose world bounds are the set's extent.
     pub fn projection(&self) -> &Projection {
         &self.projection
@@ -659,6 +704,23 @@ mod tests {
                 .abs()
                 .max_element()
                 < 1e-6
+        );
+
+        // A set's definition reads back as the same set.
+        let back = TileMatrixSet::from_definition(&parsed.definition().unwrap()).unwrap();
+        assert_eq!(
+            back.tile_bounds(TileIndex::new(5, 7, 9)),
+            parsed.tile_bounds(TileIndex::new(5, 7, 9))
+        );
+        assert_eq!(
+            (back.min_zoom(), back.max_zoom()),
+            (parsed.min_zoom(), parsed.max_zoom())
+        );
+        let utm = TileMatrixSet::by_id("UTM33WGS84Quad").unwrap();
+        let back = TileMatrixSet::from_definition(&utm.definition().unwrap()).unwrap();
+        assert_eq!(
+            back.tile_bounds(TileIndex::new(3, 1, 5)),
+            utm.tile_bounds(TileIndex::new(3, 1, 5))
         );
 
         // Coalesced rows and scales that don't halve are refused.

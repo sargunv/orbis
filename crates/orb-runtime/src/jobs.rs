@@ -119,8 +119,8 @@ pub struct TileWorker {
     data: Arc<WorkerData>,
     /// The map's `localIdeographFontFamily`.
     ideographs: Option<String>,
-    /// The plane GeoJSON tiles in; `None` for Web Mercator.
-    plane: Option<TileMatrixSet>,
+    /// The plane GeoJSON tiles in, and sources' tile matrix sets.
+    surface: crate::SurfaceTiles,
 }
 
 /// A tile job's outcome: the laid-out tile, or what its labels need first.
@@ -147,7 +147,7 @@ impl TileWorker {
             0,
             CostModel::DEFAULT,
             None,
-            None,
+            crate::SurfaceTiles::default(),
         ))
     }
 
@@ -162,7 +162,7 @@ impl TileWorker {
         revision: u64,
         cost: CostModel,
         ideographs: Option<String>,
-        plane: Option<TileMatrixSet>,
+        surface: crate::SurfaceTiles,
     ) -> Self {
         let plan = StylePlan::new(style, layer_keys, source_keys, revision, cost);
         let data = match previous {
@@ -180,7 +180,7 @@ impl TileWorker {
             plan,
             data,
             ideographs,
-            plane,
+            surface,
         }
     }
 
@@ -319,12 +319,17 @@ impl TileWorker {
             update.revision,
             update.cost,
             update.local_ideographs.clone(),
-            update.plane.clone(),
+            update.surface.clone(),
         ))
     }
 
     pub(crate) fn plan(&self) -> &StylePlan {
         &self.plan
+    }
+
+    /// The plane GeoJSON tiles in and sources' tile matrix sets.
+    pub(crate) fn surface(&self) -> &crate::SurfaceTiles {
+        &self.surface
     }
 
     /// The style revision this worker lays out.
@@ -506,7 +511,7 @@ impl TileWorker {
                     )?,
                 };
                 let options = orb_tile::geojson::Options {
-                    plane: self.plane.clone().map(Arc::new),
+                    plane: self.surface.plane.clone().map(Arc::new),
                     ..geojson.options.clone()
                 };
                 orb_tile::geojson::Index::new(features, options)
@@ -567,9 +572,9 @@ pub struct StyleUpdate {
     pub local_ideographs: Option<String>,
     /// Which paint the GPU interprets, as the map's plan decides it.
     pub cost: CostModel,
-    /// The plane GeoJSON sources tile in: the surface's one-tile set, or
-    /// `None` for Web Mercator.
-    pub plane: Option<TileMatrixSet>,
+    /// The plane GeoJSON sources tile in and the tile matrix sets of
+    /// sources not in `WebMercatorQuad`.
+    pub surface: crate::SurfaceTiles,
 }
 
 impl StyleUpdate {
@@ -676,10 +681,25 @@ impl StyleUpdate {
             ),
             member(
                 "plane",
-                synthetic(match &self.plane {
+                synthetic(match &self.surface.plane {
                     None => JsonValue::Null,
                     Some(tms) => JsonValue::String(crate::projection_to_json(tms.projection())),
                 }),
+            ),
+            member(
+                "sourceTms",
+                synthetic(JsonValue::Array(
+                    self.surface
+                        .sources
+                        .iter()
+                        .filter_map(|(id, tms)| {
+                            Some(synthetic(JsonValue::Array(vec![
+                                synthetic(JsonValue::String(id.clone())),
+                                synthetic(JsonValue::String(crate::tms_to_json(tms)?)),
+                            ])))
+                        })
+                        .collect(),
+                )),
             ),
         ]))
         .to_string()
@@ -771,12 +791,24 @@ impl StyleUpdate {
             cost: CostModel {
                 max_ops: doc.get("maxOps").and_then(Json::as_f64).ok_or_else(bad)? as usize,
             },
-            plane: match doc.get("plane").and_then(Json::as_str) {
-                Some(plane) => {
-                    let projection = crate::projection_from_json(plane)?;
-                    Some(TileMatrixSet::square(projection, projection.world_bounds()))
-                }
-                None => None,
+            surface: crate::SurfaceTiles {
+                plane: match doc.get("plane").and_then(Json::as_str) {
+                    Some(plane) => {
+                        let projection = crate::projection_from_json(plane)?;
+                        Some(TileMatrixSet::square(projection, projection.world_bounds()))
+                    }
+                    None => None,
+                },
+                sources: entries("sourceTms")?
+                    .iter()
+                    .map(|e| match e.as_array() {
+                        Some([id, tms]) => Ok((
+                            id.as_str().ok_or_else(bad)?.to_string(),
+                            crate::tms_from_json(tms.as_str().ok_or_else(bad)?)?,
+                        )),
+                        _ => Err(bad()),
+                    })
+                    .collect::<Result<_, String>>()?,
             },
         })
     }
@@ -1945,7 +1977,10 @@ pub(crate) mod tests {
             "layers":[{"id":"c","type":"circle","source":"geo"}]}"#;
         let plain = TileWorker::new(style).unwrap();
         let worker = TileWorker {
-            plane: Some(polar_plane()),
+            surface: crate::SurfaceTiles {
+                plane: Some(polar_plane()),
+                sources: Vec::new(),
+            },
             ..plain
         };
         let tile = request(TileIndex::new(0, 0, 0));
@@ -1995,11 +2030,19 @@ pub(crate) mod tests {
             )],
             local_ideographs: Some("Hiragino Sans".into()),
             cost: CostModel { max_ops: 7 },
-            plane: Some(polar_plane()),
+            surface: crate::SurfaceTiles {
+                plane: Some(polar_plane()),
+                sources: vec![("geo".into(), TileMatrixSet::by_id("NZTM2000Quad").unwrap())],
+            },
         };
         let parsed = StyleUpdate::parse(&update.to_json()).unwrap();
         assert_eq!(parsed.to_json(), update.to_json());
-        assert_eq!(parsed.plane, update.plane);
+        assert_eq!(parsed.surface.plane, update.surface.plane);
+        let tile = TileIndex::new(4, 7, 9);
+        assert_eq!(
+            parsed.surface.sources[0].1.tile_bounds(tile),
+            update.surface.sources[0].1.tile_bounds(tile)
+        );
         let revised = TileWorker::update(None, &parsed).unwrap();
         assert_eq!(revised.revision(), 3);
         assert_eq!(revised.plan.nodes.len(), 1);

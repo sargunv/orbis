@@ -94,7 +94,7 @@ impl Map {
             &style.doc,
             version,
             self.labels.ideographs.clone(),
-            self.surface.plane(),
+            self.surface.tiles(),
         ));
         let mut layers: Vec<u32> = patch
             .changes
@@ -129,7 +129,7 @@ impl Map {
             glyphs: doc.style().glyphs.clone(),
             font_faces: doc.style().font_faces.clone(),
             local_ideographs: self.labels.ideographs.clone(),
-            plane: self.surface.plane(),
+            surface: self.surface.tiles(),
             cost: doc.cost_model(),
         };
         self.services.jobs.set_style(style.id, &update, &worker);
