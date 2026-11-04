@@ -40,7 +40,7 @@ Playwright.
 | `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]]` | native demo window |
 | `… -p orb-demo -- --snapshot out.png` | render offscreen until idle, write a PNG |
 | `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/pkg` |
-| `pnpm -C web snapshot out.png '#z/lat/lon' [--thread=main\|worker]` | web demo in headless Chromium, screenshot |
+| `pnpm -C web snapshot out.png '#z/lat/lon' [--thread=main\|worker]` | web demo on the Tokyo extract (the site defaults to the live map) in headless Chromium, screenshot |
 | `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web dev` | playground at `/orbis/playground.html`; write accepted style and hover snapshots to that file (dev only) |
 | `cargo run --release -p orb-demo -- file://$PWD/web/demo/data/playground.json --watch-style <same path>` | native viewer beside the playground; follows that file as diffed transactions; logs generation, frames and edit ms |
 | `pnpm -C web playground` | headless playground checks in main and worker modes |
@@ -53,6 +53,7 @@ Playwright.
 | `pnpm -C web typecheck` / `pnpm -C web test` | type-check the `orbis` package (`web/src`); its unit tests and the build test |
 | `cargo xtask bench` | GPU/CPU frame timings, still and with the camera moving (decision 0002); `--experiment paint` for decision 0017 |
 | `pnpm -C web bench [--precise] [--android[=serial]]` | the same bench in headless Chromium, or in an adb-connected Android device's Chrome (`web/demo/bench.html`; keep its screen on) |
+| `pnpm -C web measure [--android[=serial]] [--runs=3]` | plan §7.2's measurements in Chrome: input-to-photon latency (pan, pinch, rotate), DOM overlay skew, main-thread busy time and idle frames, for Orbis worker and main-thread mode and the pinned GL JS (`web/demo/measure.html`) |
 
 ## How we work
 

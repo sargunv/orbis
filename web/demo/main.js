@@ -1,12 +1,13 @@
-// The web demo: the same map as `cargo run -p orb-demo`, drawing through
-// WebGPU with the `orbis` package. In worker mode (the default where it
+// The web demo: OpenFreeMap's live Liberty map (the committed Tokyo extract
+// with `?style=tokyo-mvt|tokyo-mlt`), drawing through WebGPU with the
+// `orbis` package. In worker mode (the default where it
 // works) this page is the ui role: it owns the camera and input while a
 // render worker draws (plan §7.1). `?thread=main` runs everything here.
 //
 // Tap or click a feature to see its properties in a popup; hovering names
 // the feature under the pointer; a pin marks Tokyo Station.
 import { createMap } from "orbis";
-import { demoStyle } from "./styles.js";
+import { LIVE_CAMERA, demoStyle, isLive } from "./styles.js";
 import { expose, feel, hashCamera } from "./expose.js";
 
 const params = new URLSearchParams(location.search);
@@ -56,7 +57,7 @@ async function main() {
     container: document.getElementById("map"),
     style: demoStyle(params),
     thread: params.get("thread") ?? "auto",
-    camera: hashCamera(),
+    camera: hashCamera() ?? (isLive(params) ? LIVE_CAMERA : undefined),
     feel: feel(),
   });
   status = `${map.thread} thread`;
@@ -65,11 +66,11 @@ async function main() {
   map.on("render", showFrame);
   map.on("error", ({ message }) => console.error(message));
 
-  if (!params.get("style")) {
+  if (params.get("style") !== "scripts") {
     const pin = document.createElement("div");
     pin.className = "pin demo-annotation";
     pin.title = "Tokyo Station";
-    map.annotations.add({ element: pin, lngLat: [139.7671, 35.6812], anchor: "bottom" });
+    map.annotations.add({ element: pin, lngLat: [139.7671, 35.6812] });
   }
 
   let popup;

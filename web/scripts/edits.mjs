@@ -41,7 +41,7 @@ try {
       if (["error", "warning"].includes(m.type())) { errors++; console.error(`page: ${m.text()}`); }
     });
     page.on("pageerror", (e) => { errors++; console.error(`page: ${e.message}`); });
-    await page.goto(`${server.url}?thread=${thread}#15/35.685/139.74`);
+    await page.goto(`${server.url}?thread=${thread}&style=tokyo-mvt#15/35.685/139.74`);
     const idle = () => page.waitForFunction(() =>
       document.getElementById("hud").textContent.endsWith(" · idle"), null, { timeout: 60_000 });
     await idle();

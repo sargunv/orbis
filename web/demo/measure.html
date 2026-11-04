@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Orbis · latency, skew and main-thread measurements</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f8f4f0; font: 12px ui-monospace, monospace; }
+  #map { position: fixed; inset: 0; }
+  #status { position: fixed; left: 4px; bottom: 4px; background: #fffd; padding: 2px 4px; }
+  .mark { width: 14px; height: 14px; background: #00ffff; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="status">loading…</div>
+<script type="module" src="./measure.js"></script>
+</body>
+</html>

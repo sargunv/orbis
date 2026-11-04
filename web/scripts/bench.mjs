@@ -12,9 +12,7 @@
 // exact medians. `--android` reverses the server's port onto the device,
 // opens the page in its Chrome and drives it through DevTools; keep the
 // screen on and unlocked.
-import { execFileSync } from "node:child_process";
-import { chromium } from "playwright";
-import { launchChromium, serveDemo } from "./serve.mjs";
+import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
 
 const args = process.argv.slice(2);
 const precise = args.includes("--precise");
@@ -32,22 +30,7 @@ if (android && precise) throw new Error("--precise needs headless Chromium");
 const server = await serveDemo({ isolated: precise });
 let browser, page, cleanup = () => {};
 if (android) {
-  const adb = (...a) => execFileSync("adb", [...(android.serial ? ["-s", android.serial] : []), ...a],
-    { encoding: "utf8" });
-  const port = new URL(server.url).port;
-  adb("reverse", `tcp:${port}`, `tcp:${port}`);
-  const devtools = adb("forward", "tcp:0", "localabstract:chrome_devtools_remote").trim();
-  cleanup = () => {
-    adb("forward", "--remove", `tcp:${devtools}`);
-    adb("reverse", "--remove", `tcp:${port}`);
-  };
-  adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-n",
-    "com.android.chrome/com.google.android.apps.chrome.Main", "-d", "about:blank");
-  for (let i = 0; ; i++) {
-    try { browser = await chromium.connectOverCDP(`http://127.0.0.1:${devtools}`); break; }
-    catch (e) { if (i > 60) throw e; await new Promise((r) => setTimeout(r, 500)); }
-  }
-  page = await browser.contexts()[0].newPage();
+  ({ browser, page, close: cleanup } = await openAndroid(server, android.serial));
 } else {
   browser = await launchChromium({ unsafe: precise });
   page = await browser.newPage();
@@ -73,8 +56,7 @@ try {
   process.stdout.write(await page.locator("#markdown").inputValue());
   if (errors) throw new Error(`${errors} page warnings/errors`);
 } finally {
-  if (android) await page.close().catch(() => {});
-  await browser.close();
+  if (android) await cleanup();
+  else await browser.close();
   server.close();
-  cleanup();
 }

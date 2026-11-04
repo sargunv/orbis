@@ -1,5 +1,6 @@
 // Builds and serves web/dist over HTTP with Range support, and launches headless
 // Chromium with WebGPU, for the snapshot and bench scripts.
+import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { open, readFile, stat } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
@@ -60,4 +61,31 @@ export function launchChromium({ unsafe = true } = {}) {
     args: [...(unsafe ? ["--enable-unsafe-webgpu"] : []), "--enable-features=Vulkan,WebGPU",
       "--use-angle=metal"],
   });
+}
+
+// Opens a tab in Chrome on an adb-connected Android device, serving
+// `server` to it over `adb reverse`, and drives it through DevTools; keep
+// the screen on and unlocked. Resolves to { browser, page, close }.
+export async function openAndroid(server, serial = null) {
+  const adb = (...a) => execFileSync("adb", [...(serial ? ["-s", serial] : []), ...a], { encoding: "utf8" });
+  const port = new URL(server.url).port;
+  adb("reverse", `tcp:${port}`, `tcp:${port}`);
+  const devtools = adb("forward", "tcp:0", "localabstract:chrome_devtools_remote").trim();
+  adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-n",
+    "com.android.chrome/com.google.android.apps.chrome.Main", "-d", "about:blank");
+  let browser;
+  for (let i = 0; ; i++) {
+    try { browser = await chromium.connectOverCDP(`http://127.0.0.1:${devtools}`); break; }
+    catch (e) { if (i > 60) throw e; await new Promise((r) => setTimeout(r, 500)); }
+  }
+  const page = await browser.contexts()[0].newPage();
+  return {
+    browser, page,
+    close: async () => {
+      await page.close().catch(() => {});
+      await browser.close();
+      adb("forward", "--remove", `tcp:${devtools}`);
+      adb("reverse", "--remove", `tcp:${port}`);
+    },
+  };
 }

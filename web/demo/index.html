@@ -7,7 +7,7 @@
 <style>
   html, body { margin: 0; height: 100%; background: #f8f4f0; font: 12px ui-monospace, monospace; }
   #map { position: fixed; inset: 0; }
-  .pin { width: 14px; height: 14px; border-radius: 50% 50% 50% 0; background: #d0342c; border: 2px solid white; transform-origin: center; rotate: -45deg; box-shadow: 0 1px 3px #0006; }
+  .pin { width: 14px; height: 14px; border-radius: 50%; background: #d0342c; border: 2px solid white; box-shadow: 0 1px 3px #0006; }
   .popup { pointer-events: auto; max-width: 260px; padding: 6px 8px; background: #fffe; border-radius: 4px; box-shadow: 0 1px 4px #0005; font-size: 11px; }
   .popup dl { display: grid; grid-template-columns: auto 1fr; gap: 0 8px; margin: 4px 0 0; }
   .popup dt { color: #666; } .popup dd { margin: 0; overflow-wrap: anywhere; }
@@ -18,7 +18,7 @@
 <body>
 <div id="map"></div>
 <div id="hud">loading…</div>
-<div id="about">Orbis preview %ORBIS_COMMIT% · <a href="./playground.html">style playground</a> · <a href="./cities.html">Cairo, Delhi and Bangkok</a> · drag to pan, scroll, pinch or double-click to zoom, right-drag or Ctrl+drag (two fingers on touch) to rotate and tilt, arrows and +/− keys; click a feature for its properties · data: Tokyo extract as <a href="?format=mvt">MVT</a> or <a href="?format=mlt">MLT</a>, or the live planet in <a href="?style=https://tiles.openfreemap.org/styles/liberty#12/47.608/-122.335">Liberty</a> or <a href="?style=https://americanamap.org/style.json#13/38.897/-77.036">Americana</a> (its route shields are drawn by its own page and not shown) · tiles <a href="https://openfreemap.org/">OpenFreeMap</a>, <a href="https://tiles.openstreetmap.us/">OpenStreetMap US</a> · <a href="https://github.com/osm-americana/openstreetmap-americana">OSM Americana</a> · <a href="https://openmaptiles.org/">© OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors (ODbL)</a></div>
+<div id="about">Orbis preview %ORBIS_COMMIT% · <a href="./playground.html">style playground</a> · <a href="./cities.html">Cairo, Delhi and Bangkok</a> · drag to pan, scroll, pinch or double-click to zoom, right-drag or Ctrl+drag (two fingers on touch) to rotate and tilt, arrows and +/− keys; click a feature for its properties · data: the live planet in <a href="./">Liberty</a> or <a href="?style=https://americanamap.org/style.json#13/38.897/-77.036">Americana</a> (its route shields are drawn by its own page and not shown), or the committed Tokyo extract as <a href="?style=tokyo-mvt">MVT</a> or <a href="?style=tokyo-mlt">MLT</a> · tiles <a href="https://openfreemap.org/">OpenFreeMap</a>, <a href="https://tiles.openstreetmap.us/">OpenStreetMap US</a> · <a href="https://github.com/osm-americana/openstreetmap-americana">OSM Americana</a> · <a href="https://openmaptiles.org/">© OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors (ODbL)</a></div>
 <script type="module" src="./main.js"></script>
 </body>
 </html>

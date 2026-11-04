@@ -30,7 +30,7 @@ issue.</p>
 <div id="result" class="scroll"></div>
 <textarea id="markdown" readonly hidden></textarea>
 <script type="module">
-// Query: format=mvt|mlt or style=<url>; orb-bench settings frames, warmup,
+// Query: format=mvt|mlt or style=<url> (the Tokyo extract by default); orb-bench settings frames, warmup,
 // rounds, size=WxH, ratio, at=lon,lat, timing=timestamps|work-done,
 // experiment=frames|paint|labels, labels=on|off.
 import init, { runBench } from "../pkg/harness.js";
@@ -40,7 +40,7 @@ const SETTINGS = ["frames", "warmup", "rounds", "size", "ratio", "at", "timing",
 const params = new URLSearchParams(location.search);
 const format = params.get("format") ?? "mvt";
 if (!["mvt", "mlt"].includes(format)) throw new Error("format must be mvt or mlt");
-const style = demoStyle(params);
+const style = demoStyle(params, "tokyo");
 const status = document.getElementById("status");
 const markdown = document.getElementById("markdown");
 

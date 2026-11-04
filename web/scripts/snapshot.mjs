@@ -2,7 +2,10 @@
 // map to go idle and writes a screenshot.
 //
 //   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]] [--thread=main|worker]
-//     [--format=mvt|mlt] [--style=URL] [--compare=reference-map.png]
+//     [--format=mvt|mlt] [--style=URL|scripts] [--compare=reference-map.png]
+//
+// The map viewer draws the Tokyo extract (MVT by default) unless `--style`
+// names another.
 import { readFile } from "node:fs/promises";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
@@ -18,8 +21,9 @@ const [out = "snapshot.png", hash = ""] = args.filter((a) => !a.startsWith("--")
 const server = await serveDemo();
 const params = new URLSearchParams();
 if (thread) params.set("thread", thread);
-if (format) params.set("format", format);
+// Snapshots draw the committed extract unless told otherwise.
 if (style) params.set("style", style);
+else if (entry === "") params.set("style", `tokyo-${format ?? "mvt"}`);
 const query = `?${params}`;
 const url = `${server.url}${entry}${query}${hash}`;
 

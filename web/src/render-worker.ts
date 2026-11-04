@@ -15,11 +15,22 @@ import { frameLoop, renderFrame, type Renderer } from "./frames.ts";
 const fail = (e: unknown) => self.postMessage({ type: "error", message: String(e) });
 let map: OrbisMap | undefined;
 let ready: Promise<void> | undefined;
-const loop = frameLoop(() => {
-  if (!map) return false;
+// The last frame drawn: whether it was idle, and whether a camera drew it
+// since this worker's last animation frame.
+let last = { idle: true, camera: false };
+const draw = (camera: boolean) => {
   const ack = renderFrame(map as unknown as Renderer);
   self.postMessage({ type: "frame", ack }, ack.hitSnapshot ? [ack.hitSnapshot.buffer] : []);
+  last = { idle: ack.idle, camera };
   return !ack.idle;
+};
+const loop = frameLoop(() => {
+  if (!map) return false;
+  if (last.camera) {
+    last.camera = false;
+    return !last.idle;
+  }
+  return draw(false);
 }, fail);
 
 self.onmessage = async ({ data }: MessageEvent) => {
@@ -41,7 +52,7 @@ self.onmessage = async ({ data }: MessageEvent) => {
   switch (data.type) {
     case "camera":
       map.setCamera(data.camera);
-      loop.request();
+      if (draw(true)) loop.request();
       break;
     case "resize":
       map.resize(data.width, data.height, data.ratio);
