@@ -2229,7 +2229,7 @@ pub(crate) mod tests {
             build.meshes[0].props.len() % orb_render::SYMBOL_ROW_WORDS,
             0
         );
-        assert_eq!(symbols.instance_rows.len(), b.instances.len());
+        assert_eq!(symbols.instance_rows.len(), 2 * b.instances.len());
 
         let packed = pack(&build);
         let words: Vec<u32> = packed

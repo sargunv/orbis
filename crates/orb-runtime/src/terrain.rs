@@ -550,6 +550,16 @@ impl TerrainElevation {
     }
 }
 
+impl orb_symbol::Ground for TerrainElevation {
+    /// GL JS's `Terrain.getElevation(tileID, x, y)`: the DEM tile the drawn
+    /// tile reads, as its placements' DEM references name it on the GPU.
+    fn elevation(&self, tile: orb_symbol::TileId, x: f64, y: f64) -> f64 {
+        let index = TileIndex::new(tile.z, tile.x, tile.y);
+        let uv = DVec2::new(x, y) / orb_symbol::EXTENT;
+        self.on_tile(index, uv).unwrap_or(0.0)
+    }
+}
+
 impl orb_camera::Elevation for TerrainElevation {
     fn at(&self, world: DVec2) -> Option<f64> {
         let world = self.wrapped(world);

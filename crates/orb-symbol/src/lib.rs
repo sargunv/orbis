@@ -44,8 +44,8 @@ pub use layout::{
     TextJustify, TileImages, TileParams, add_glyph_requests, layout,
 };
 pub use placement::{
-    BucketStates, Camera, Committed, Frame, LayerFrame, LayerParams, Mat4, Overlap, PlacedTile,
-    PlacementTables, Placer, TileId, TileView, ZoomSize, state,
+    BucketStates, Camera, Committed, Frame, Ground, GroundRef, LayerFrame, LayerParams, Mat4,
+    Overlap, PlacedTile, PlacementTables, Placer, TileId, TileView, ZoomSize, state,
 };
 
 #[cfg(all(test, target_arch = "wasm32"))]

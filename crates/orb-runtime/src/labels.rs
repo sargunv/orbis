@@ -1129,6 +1129,7 @@ impl Labels {
             fade_duration: self.fade_duration,
             cross_source_collisions: self.cross_source_collisions,
             lng: camera.target.lon,
+            ground: None,
         }
     }
 
@@ -1489,6 +1490,7 @@ pub(crate) fn paint(
         variable_anchor: variable && (is_text || fitted),
         is_offset: l.icon_offset_set,
         keep_upright,
+        height_anchor_ground: l.height_anchor.evaluate(zoom) == orb_v8::HeightAnchor::Ground,
         // GL JS draws halos, then fills, per sort-key segment of a tile;
         // a layer sorted by key draws them per quad instead.
         separate_halo: !draws_by_key(symbol, zoom)
@@ -1648,6 +1650,7 @@ mod tests {
                 fade_duration: 0.0,
                 cross_source_collisions: true,
                 lng: 0.0,
+                ground: None,
             });
         }
 

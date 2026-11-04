@@ -4,10 +4,10 @@
 use crate::bucket::PlacedSymbol;
 use crate::geometry::{Point, js_max, js_min};
 use crate::lines::{Lines, clip_line};
-use crate::placement::along_line::{LabelPlane, LineContext, first_and_last_glyph};
+use crate::placement::along_line::{Elevation, LabelPlane, LineContext, first_and_last_glyph};
 use crate::placement::grid::{GridIndex, GridKey, Group, Overlap};
 use crate::placement::view::{
-    Camera, TileView, pitched_label_plane, project, symbol_elevation, tile_skew_vectors,
+    Camera, Ground, TileView, pitched_label_plane, project, symbol_elevation, tile_skew_vectors,
 };
 use orb_text::ONE_EM;
 
@@ -58,6 +58,7 @@ pub(crate) struct BoxPlacement<'a> {
     pub(crate) group: Group,
     pub(crate) height_offset: f64,
     pub(crate) height_anchor_ground: bool,
+    pub(crate) ground: Option<&'a dyn Ground>,
 }
 
 struct Projected {
@@ -130,7 +131,8 @@ impl CollisionIndex {
     ) -> PlacedBox {
         let x = b.anchor.x + p.translation[0];
         let y = b.anchor.y + p.translation[1];
-        let elevation = symbol_elevation(p.height_offset, p.height_anchor_ground);
+        let ground = p.ground.map(|g| g.elevation(p.tile.id, x, y));
+        let elevation = symbol_elevation(ground, p.height_offset, p.height_anchor_ground);
         let projected = self.project(p.tile, x, y, elevation);
         let tile_to_viewport = p.pixel_ratio * projected.perspective_ratio;
         let bounds = if !p.pitch_with_map && !p.rotate_with_map {
@@ -264,9 +266,12 @@ impl CollisionIndex {
         circle_diameter: f64,
         text_padding: f64,
         translation: [f64; 2],
+        (ground, height_offset, anchor_ground): (Option<&dyn Ground>, f64, bool),
     ) -> PlacedCircles {
         let anchor = Point::new(f64::from(symbol.anchor[0]), f64::from(symbol.anchor[1]));
-        let projected_anchor = self.project(tile, anchor.x, anchor.y, None);
+        // GL JS takes the anchor's perspective on the terrain alone.
+        let anchor_elevation = ground.map(|g| g.elevation(tile.id, anchor.x, anchor.y));
+        let projected_anchor = self.project(tile, anchor.x, anchor.y, anchor_elevation);
         let perspective_ratio = projected_anchor.perspective_ratio;
         let plane_font_size = if pitch_with_map {
             font_size / perspective_ratio
@@ -297,7 +302,11 @@ impl CollisionIndex {
             &camera,
             anchor,
             translation,
-            None,
+            Elevation {
+                ground: ground.map(|g| (g, tile.id)),
+                height_offset,
+                anchor_ground,
+            },
         );
         let collision_detected = false;
         let mut in_grid = false;

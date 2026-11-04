@@ -338,6 +338,7 @@ pub fn unpack_frame(bytes: &[u8]) -> Result<Frame, String> {
         fade_duration: fade,
         cross_source_collisions,
         lng,
+        ground: None,
     })
 }
 
@@ -461,6 +462,7 @@ mod tests {
             fade_duration: 300.0,
             cross_source_collisions: true,
             lng: -170.0,
+            ground: None,
         };
         assert_eq!(unpack_frame(&pack_frame(&frame)).unwrap(), frame);
 

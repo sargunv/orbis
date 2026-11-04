@@ -563,7 +563,12 @@ pub(crate) fn layout(
     let instance_rows = bucket
         .instances
         .iter()
-        .map(|i| slots.get(&i.feature).copied().unwrap_or(0))
+        .flat_map(|i| {
+            [
+                slots.get(&i.feature).copied().unwrap_or(0),
+                i.height_offset.to_bits(),
+            ]
+        })
         .collect();
     let text_colors = override_colors(&mut bucket, &prepared.section_colors);
     let (mut name_ranges, mut name_bytes) = (Vec::new(), Vec::new());
@@ -926,7 +931,8 @@ pub enum SymbolTable {
     Lines,
     AnchorOffsets,
     SortKeyRanges,
-    /// Per instance, the property-row slot of its feature.
+    /// Per instance, the property-row slot of its feature and its
+    /// `symbol-height-offset` (f32 bits).
     InstanceRows,
     /// Per text quad, its `format` colour override (empty if none has one).
     TextColors,

@@ -5,7 +5,7 @@
 use crate::bucket::PlacedSymbol;
 use crate::geometry::Point;
 
-use super::view::{Camera, Mat4, project};
+use super::view::{Camera, Ground, Mat4, TileId, project, symbol_elevation};
 
 /// The plane labels are laid out in: screen pixels, or a pitched map
 /// plane in pixels.
@@ -26,10 +26,33 @@ pub(crate) struct LineContext<'a> {
     pub(crate) camera: &'a Camera,
     pub(crate) anchor: Point,
     pub(crate) translation: [f64; 2],
-    pub(crate) elevation: Option<f64>,
+    pub(crate) elevation: Elevation<'a>,
     projections: Vec<Option<Point>>,
     offsets: Vec<Option<Point>>,
     cached_anchor: Option<Point>,
+}
+
+/// Where a line label's points stand: GL JS's `elevationAt` over its
+/// projection context.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Elevation<'a> {
+    pub(crate) ground: Option<(&'a dyn Ground, TileId)>,
+    pub(crate) height_offset: f64,
+    pub(crate) anchor_ground: bool,
+}
+
+impl Elevation<'_> {
+    #[cfg(test)]
+    pub(crate) const FLAT: Self = Self {
+        ground: None,
+        height_offset: 0.0,
+        anchor_ground: true,
+    };
+
+    pub(crate) fn at(&self, x: f64, y: f64) -> Option<f64> {
+        let ground = self.ground.map(|(g, tile)| g.elevation(tile, x, y));
+        symbol_elevation(ground, self.height_offset, self.anchor_ground)
+    }
 }
 
 /// A point projected into the label plane, and how far in front of the
@@ -49,7 +72,7 @@ impl<'a> LineContext<'a> {
         camera: &'a Camera,
         anchor: Point,
         translation: [f64; 2],
-        elevation: Option<f64>,
+        elevation: Elevation<'a>,
     ) -> Self {
         Self {
             lines,
@@ -85,7 +108,7 @@ impl<'a> LineContext<'a> {
     /// Tile units to screen pixels, untranslated (GL JS
     /// `projectTileCoordinates` as `projectPathSpecialProjection` uses it).
     pub(crate) fn to_screen(&self, x: f64, y: f64) -> PlanePoint {
-        let p = project(self.tile_matrix, x, y, self.elevation);
+        let p = project(self.tile_matrix, x, y, self.elevation.at(x, y));
         PlanePoint {
             point: Point::new(
                 (p.point.x * 0.5 + 0.5) * self.camera.width,
@@ -391,7 +414,7 @@ mod tests {
             &camera,
             Point::new(50.0, 0.0),
             [0.0; 2],
-            None,
+            Elevation::FLAT,
         );
         let at = |g: &PlacedGlyph| *g.path.last().unwrap();
         let g = place_glyph(&mut cx, 80.0, 0.0, 0.0, false, 0, (0, 3)).unwrap();

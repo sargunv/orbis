@@ -122,12 +122,26 @@ pub(crate) fn pitched_label_plane(
     m.map(|v| v / tile_units_per_pixel)
 }
 
-/// The anchor's elevation in metres (GL JS `getSymbolElevation`, without
-/// terrain).
-pub(crate) fn symbol_elevation(height_offset: f64, height_anchor_ground: bool) -> Option<f64> {
-    if !height_anchor_ground || height_offset != 0.0 {
-        Some(height_offset)
-    } else {
-        None
+/// The terrain symbols stand on: its elevation in metres, with
+/// exaggeration, at tile units of a drawn tile (GL JS's `getElevation`
+/// for a tile).
+pub trait Ground: Send + Sync + std::fmt::Debug {
+    fn elevation(&self, tile: TileId, x: f64, y: f64) -> f64;
+}
+
+/// A symbol's elevation in metres (GL JS `getSymbolElevation`): its height
+/// offset, over the terrain's elevation `ground` when anchored to the
+/// ground. `None` at the datum, for the flat fast path.
+pub(crate) fn symbol_elevation(
+    ground: Option<f64>,
+    height_offset: f64,
+    height_anchor_ground: bool,
+) -> Option<f64> {
+    if !height_anchor_ground {
+        return Some(height_offset);
+    }
+    match ground {
+        Some(ground) => Some(ground + height_offset),
+        None => (height_offset != 0.0).then_some(height_offset),
     }
 }

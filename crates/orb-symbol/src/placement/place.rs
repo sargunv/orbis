@@ -120,6 +120,19 @@ pub struct Frame {
     pub cross_source_collisions: bool,
     /// The camera's longitude, degrees, for world copies.
     pub lng: f64,
+    /// The terrain, if the map has one.
+    pub ground: Option<GroundRef>,
+}
+
+/// A frame's terrain. Frames with the same terrain snapshot compare
+/// equal.
+#[derive(Clone, Debug)]
+pub struct GroundRef(pub std::sync::Arc<dyn super::Ground>);
+
+impl PartialEq for GroundRef {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// Bits of a placed symbol's state word (decision 0009). The two words
@@ -468,6 +481,7 @@ impl Placer {
             },
             prev: self.prev.as_ref(),
             camera,
+            ground: frame.ground.as_ref().map(|g| &*g.0),
         };
         for (params, tiles) in layers.iter().rev() {
             let zoom = camera.zoom;
@@ -535,6 +549,7 @@ struct Pass<'a> {
     now: Decisions,
     prev: Option<&'a Decisions>,
     camera: &'a Camera,
+    ground: Option<&'a dyn super::Ground>,
 }
 
 impl Pass<'_> {
@@ -588,6 +603,7 @@ impl Pass<'_> {
             if seen.contains(&id) {
                 continue;
             }
+            let ground = self.ground;
             let base = |overlap, translation| BoxPlacement {
                 tile: &tile.view,
                 overlap,
@@ -598,6 +614,7 @@ impl Pass<'_> {
                 group,
                 height_offset: f64::from(instance.height_offset),
                 height_anchor_ground: p.height_anchor_ground,
+                ground,
             };
             let text_box = collision_box(instance, 0, instance_flags::TEXT_BOX);
             let vertical_text_box = collision_box(instance, 1, instance_flags::VERTICAL_TEXT_BOX);
@@ -737,6 +754,11 @@ impl Pass<'_> {
                     f64::from(instance.collision_circle_diameter),
                     p.text_padding,
                     text_translation,
+                    (
+                        ground,
+                        f64::from(instance.height_offset),
+                        p.height_anchor_ground,
+                    ),
                 );
                 place_text =
                     text_always || (!result.circles.is_empty() && !result.collision_detected);
@@ -1153,6 +1175,7 @@ mod tests {
             fade_duration: fade,
             cross_source_collisions: true,
             lng: 0.0,
+            ground: None,
         }
     }
 

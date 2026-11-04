@@ -1373,7 +1373,7 @@ impl Map {
                 _ => None,
             })
             .collect();
-        let frame = self.labels.frame(
+        let mut frame = self.labels.frame(
             style.worker.plan(),
             &style.symbol_tiles,
             view,
@@ -1383,6 +1383,11 @@ impl Map {
             extrusion_scale,
             now,
         );
+        // Symbols stand on the terrain as drawn.
+        frame.ground = style
+            .terrain
+            .as_ref()
+            .map(|t| orb_symbol::GroundRef(t.snapshot() as Arc<dyn orb_symbol::Ground>));
         // Without symbol tiles there is nothing to place.
         if frame.layers.iter().all(|l| l.tiles.is_empty()) {
             self.placement_ms += self.services.clock.now() - started;

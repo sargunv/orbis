@@ -13,7 +13,7 @@ mod view;
 
 pub use grid::Overlap;
 pub use place::{
-    BucketStates, Committed, Frame, LayerFrame, LayerParams, PlacedTile, PlacementTables, Placer,
-    ZoomSize, state,
+    BucketStates, Committed, Frame, GroundRef, LayerFrame, LayerParams, PlacedTile,
+    PlacementTables, Placer, ZoomSize, state,
 };
-pub use view::{Camera, Mat4, TileId, TileView};
+pub use view::{Camera, Ground, Mat4, TileId, TileView};

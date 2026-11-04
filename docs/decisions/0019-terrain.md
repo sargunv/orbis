@@ -77,6 +77,14 @@ ground under their feature's centroid, ground-level parts with GL JS's
 polygon, carried in the extrusion row (now ten words; constant-paint
 extrusions get rows too).
 
+Symbols stand where GL JS's `getSymbolElevation` puts them: their
+`symbol-height-offset` (now in the instance rows, two words per instance),
+over the ground under each anchor or line vertex when
+`symbol-height-anchor` is `ground`. The GPU reads the placement's DEM
+reference; placement reads the same DEM tile on the CPU through
+`orb_symbol::Ground`, which the map's terrain snapshot implements, so
+collision boxes and drawn glyphs agree.
+
 ## The camera on the ground
 
 `CameraState::elevation` is the target's height (GL JS's center elevation);
@@ -119,8 +127,10 @@ views use 4 to 12 terrain tiles.
 
 ## Follow-ups
 
-- Symbols on terrain: elevated anchors on the GPU and in placement, and
-  occlusion by the terrain's depth.
+- Symbols and circles behind terrain: GL JS fades them by the terrain's
+  depth; Orbis draws them still.
+- The web placement worker receives no terrain yet: its symbols place as
+  on flat ground.
 - The web worker path decodes DEM tiles to `ImageBitmap`s and returns no
   CPU elevations yet; the ui role's elevation pyramid (plan §7.1).
 - Slots for far, small tiles could be smaller than 1024² texels.

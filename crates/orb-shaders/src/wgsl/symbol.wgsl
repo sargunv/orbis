@@ -65,6 +65,8 @@ const IS_OFFSET: u32 = 128u;
 const KEEP_UPRIGHT: u32 = 256u;
 const TRANSLATE_VIEWPORT: u32 = 512u;
 const ICONS_IN_TEXT: u32 = 1024u;
+// `symbol-height-anchor: ground`: heights count from the terrain.
+const HEIGHT_ANCHOR_GROUND: u32 = 2048u;
 
 // Header words (orb-scene `symbol_header`).
 const H_QUADS: u32 = 0u;
@@ -222,9 +224,18 @@ fn paint_color(row: u32, state: u32, slot: u32, constant: vec4<f32>, z: f32) -> 
     return constant;
 }
 
-// Tile units (and metres up) → clip.
+// The drawn symbol's `symbol-height-offset`, metres.
+var<private> symbol_height: f32;
+
+// Tile units → clip, at the symbol's elevation there: its height offset,
+// over the terrain when anchored to the ground (GL JS
+// `getSymbolElevation`).
 fn tile_clip(tile: Tile, p: vec2<f32>) -> vec4<f32> {
-    return frame.view_proj * vec4<f32>(tile_to_world(tile, p), 0.0, 1.0);
+    var metres = symbol_height;
+    if (node.flags & HEIGHT_ANCHOR_GROUND) != 0u {
+        metres += ground_elevation(tile, p);
+    }
+    return frame.view_proj * vec4<f32>(tile_to_world(tile, p), metres * frame.extrusion_scale, 1.0);
 }
 
 fn clip_to_px(c: vec4<f32>) -> vec2<f32> {
@@ -543,7 +554,10 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let fade_change = select(-frame.symbol_fade_change, frame.symbol_fade_change, (state & S_PLACED) != 0u);
     let fade = clamp(fade_from + fade_change, 0.0, 1.0);
 
-    let slot = vertices[base + vertices[base + H_INSTANCE_ROWS] + placed.instance];
+    // Instance rows: the feature's property-row slot, its height offset.
+    let instance_row = base + vertices[base + H_INSTANCE_ROWS] + placed.instance * 2u;
+    let slot = vertices[instance_row];
+    symbol_height = bitcast<f32>(vertices[instance_row + 1u]);
     let row = chunk.prop_base + slot * 10u;
     var pulled: Pulled;
     pulled.state_base = chunk.state_base;

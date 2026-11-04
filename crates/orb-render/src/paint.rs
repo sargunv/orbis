@@ -342,6 +342,8 @@ pub struct SymbolPaint {
     /// perspective ratio.
     pub is_offset: bool,
     pub keep_upright: bool,
+    /// `symbol-height-anchor: ground`: heights count from the terrain.
+    pub height_anchor_ground: bool,
     /// Halos are drawn in a pass of their own, under every fill (GL JS
     /// `isGlyphOverlap`).
     pub separate_halo: bool,
@@ -542,7 +544,8 @@ impl NodePaint {
                 ]
                 .iter()
                 .enumerate()
-                .fold(0u32, |w, (i, &b)| w | u32::from(b) << i);
+                .fold(0u32, |w, (i, &b)| w | u32::from(b) << i)
+                    | u32::from(p.height_anchor_ground) << 11;
                 let mut words = p.color.map(f).to_vec();
                 words.extend(p.halo_color.map(f));
                 words.extend([
