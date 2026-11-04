@@ -24,19 +24,16 @@ pub(crate) fn t(phi: f64) -> f64 {
     (std::f64::consts::FRAC_PI_4 - phi / 2.0).tan() / ((1.0 - e * s) / (1.0 + e * s)).powf(e / 2.0)
 }
 
-/// The geodetic latitude whose conformal function is `t`.
+/// The geodetic latitude whose conformal function is `t`: the conformal
+/// latitude's tangent `(1 − t²) / 2t`, inverted by Newton's method.
 pub(crate) fn phi_from_t(t: f64) -> f64 {
-    let e = e();
-    let mut phi = FRAC_PI_2 - 2.0 * t.atan();
-    for _ in 0..15 {
-        let s = phi.sin();
-        let next = FRAC_PI_2 - 2.0 * (t * ((1.0 - e * s) / (1.0 + e * s)).powf(e / 2.0)).atan();
-        if (next - phi).abs() < 1e-14 {
-            return next;
-        }
-        phi = next;
+    if t <= 0.0 {
+        return FRAC_PI_2;
     }
-    phi
+    if !t.is_finite() {
+        return -FRAC_PI_2;
+    }
+    super::tm::tau_from_taup((1.0 - t * t) / (2.0 * t)).atan()
 }
 
 /// The authalic function `q`.

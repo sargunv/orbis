@@ -24,3 +24,4 @@ in code and commit messages.
 - [0017](0017-gpu-bytecode.md): GPU expression bytecode and the cost model
 - [0018](0018-bindings.md): Bindings: a Diplomat front end and our own Swift and Kotlin/JNI emitters
 - [0019](0019-terrain.md): Terrain: draped slots, DEM references and a camera on the ground
+- [0020](0020-any-crs.md): Any CRS: planes, tile matrix sets and the planner
