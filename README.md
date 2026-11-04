@@ -9,7 +9,7 @@ wgpu) from the same crates. "Orbis" is a working codename.
 and APIs change freely. Background, fill, line, circle, heatmap, raster,
 hillshade, color-relief, fill-extrusion and symbol layers render, with
 expressions, feature state and live style edits. Interactive hosts, the
-WebGL2 fallback and the first release are ahead; see the
+WebGL2 fallback and non-Mercator, globe and 3D rendering are ahead; see the
 [build path](docs/plan.md#20-build-path). A live demo is at
 <https://code.sargunv.dev/orbis/>.
 

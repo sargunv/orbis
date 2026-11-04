@@ -53,7 +53,7 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
 
 - **No hacks or tech debt for short-term progress.** Fix things in a principled
   way, or leave them open in an issue. No speculative abstraction, and no
-  backward-compatibility machinery before the first release.
+  backward-compatibility machinery while there are no users.
 - **Clean up as you go.** Delete dead code, stale docs and stale config in the
   same change that makes them stale.
 - **Move forward before polishing every detail.** Bugs will turn up; fix them
@@ -77,7 +77,8 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
 ## Orchestration
 
 Opus is the project manager and orchestrator, and does most of the work
-directly.
+directly. After M2, work runs in two parallel lanes (plan §20), rendering and
+platform, with one or two sub-lanes each at a time.
 
 - **Delegate** through T3 orchestration: implementation work, grind work
   included, to Opus 5.5, and easy or mechanical work to DeepSeek Flash on pi

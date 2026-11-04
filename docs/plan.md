@@ -27,7 +27,7 @@ Three ideas:
 
 | It is | It is not |
 |---|---|
-| An embeddable interactive engine whose **first release runs from one core in browsers (wasm + WebGPU) and on desktop, iOS and Android** | a GL JS or Native replacement, fork or API clone |
+| An embeddable interactive engine that **runs from one core in browsers (wasm + WebGPU) and on desktop, iOS and Android** | a GL JS or Native replacement, fork or API clone |
 | A consumer of **unmodified v8 styles**, GL JS semantics by default, within a declared subset per release | a source of new keys in v8 JSON; new capabilities go in a separate **scene document** |
 | Designed from day one for any CRS, globe/ellipsoid, 3D and guest embedding, **shipped as later milestones** | a general 3D engine, GIS toolkit, router or editor |
 | A low-level engine with host helpers and generated bindings | first-party declarative UI SDKs or controls (wrappers such as maplibre-compose own those) |
@@ -35,9 +35,9 @@ Three ideas:
 
 Also out: a JS VM in styles (Tangram-ES embedded Duktape and JavaScriptCore) [verified]; SharedArrayBuffer, JSPI or Memory64 on the default web path; SQLite offline databases; Mapbox-only spec features; WebGL1 and GLES 2.
 
-### 0.3 First release (M5)
+### 0.3 Build order
 
-An interactive v8 vector map on every target from one core: browsers (WebGPU; WebGL2 via Compat), Windows, macOS, Linux, Android, iOS. v8 layers background, fill, line, circle, symbol, raster, heatmap, hillshade, color-relief, fill-extrusion; all 88 expression operators; feature and global state; MVT, MLT, GeoJSON, raster, raster-dem, PMTiles, MBTiles; the full text stack and placement; gestures, camera, queries, events; a TS package, Rust crate, C ABI (0.x), generated Kotlin and Swift bindings, Android and Apple host helpers. Web Mercator only: `projection: globe`, `terrain` and `sky` warn and render flat. Then (§20): any CRS, globe/ellipsoid/terrain, 3D, guest embedding, accessibility host mappings, data layers, stable contracts.
+The plan is a buildout; it tracks no release. M0–M2 build the 2D core: v8 layers background, fill, line, circle, symbol, raster, heatmap, hillshade, color-relief, fill-extrusion; all 88 expression operators; feature and global state; MVT, MLT, GeoJSON, raster, raster-dem, PMTiles, MBTiles; the full text stack and placement; in browsers (WebGPU) and natively. Then two lanes run in parallel (§20). The **platform lane** puts an interactive map on every target from one core (M3–M5): gestures, camera, queries, events; a TS package, Rust crate, C ABI (0.x), generated Kotlin and Swift bindings, Android and Apple host helpers; browsers on WebGL2 via Compat; Windows, macOS, Linux, Android, iOS; then hardening, batteries and the offline cache. The **rendering lane** widens what renders (M6–M8): any CRS and servers; globe, ellipsoid, terrain and atmosphere; 3D content and lighting. Guest embedding, accessibility host mappings, data layers and stable contracts follow (M9–M12).
 
 ---
 
@@ -92,15 +92,15 @@ Themes: **ARCH** architecture, **PORT** portability, **PERF** performance, **FLE
 
 ## 3. Scope
 
-| First release (M5) | Not in the first release |
+| M0–M5: the 2D map on every target | Rendering lane (M6–M8), M9–M12 or later |
 |---|---|
 | Web (WebGPU; WebGL2 Compat), Windows, macOS, Linux, Android, iOS | OpenHarmony, tvOS, visionOS-specific hosts |
-| background, fill (patterns), line (dash, gradient, pattern), circle, symbol, raster, heatmap, hillshade, color-relief, fill-extrusion (v8 flat shading) | non-Mercator `projection`, `terrain`, `sky`, lighting beyond v8 |
-| 88 operators; feature and global state; `promoteId`/`generateId` | scene-document modules (CRS, lighting, 3D, a11y hints) |
-| MVT, MLT, GeoJSON (clustering, `updateData`), raster, raster-dem, PMTiles, MBTiles (native) | GeoArrow data layers, COG, GeoParquet |
+| background, fill (patterns), line (dash, gradient, pattern), circle, symbol, raster, heatmap, hillshade, color-relief, fill-extrusion (v8 flat shading) | non-Mercator `projection`, `terrain`, `sky` (M6–M7), lighting beyond v8 (M8) |
+| 88 operators; feature and global state; `promoteId`/`generateId` | scene-document modules: CRS, lighting, 3D (M6–M8), a11y hints (M10) |
+| MVT, MLT, GeoJSON (clustering, `updateData`), raster, raster-dem, PMTiles, MBTiles (native) | GeoArrow data layers (M11), COG, GeoParquet |
 | full text stack and placement | curve text, variable-font axes |
-| gestures, camera animations, queries, events, idle, view annotations | accessibility host mappings (the snapshot exists) |
-| TS package, Rust crate, C ABI 0.x, Kotlin and Swift bindings, host helpers; surface and owned-texture targets | stable ABIs, plugin ABI, SharedDevice, HostDriven integrations, multi-view, host-texture import |
+| gestures, camera animations, queries, events, idle, view annotations | accessibility host mappings (M10; the snapshot exists from M2) |
+| TS package, Rust crate, C ABI 0.x, Kotlin and Swift bindings, host helpers; surface and owned-texture targets | SharedDevice, HostDriven integrations, multi-view, host-texture import (M9); stable ABIs, plugin ABI (M12) |
 
 After M12: point clouds, splats, ProjIR, expression-function and wasm plugins, a SharedArrayBuffer build, XR and game-engine packages. Never: first-party declarative UI SDKs, SQLite offline, routing/geocoding/editing, a JS VM.
 
@@ -695,7 +695,7 @@ It references or embeds an unchanged v8 style; it may decorate sources (TMS) and
 | Module | Content | Milestone |
 |---|---|---|
 | CRS/TMS | `tileMatrixSet`, descriptor `projection` (#1866 shape), `surface`; demand #168, discussion #163, GL JS #8723 [verified] | M6–M7 |
-| Composition, groups | `imports`, `slot`s, namespaced state (style-spec#591); `blend-mode`, z-groups (gl-js #48) | M5+ |
+| Composition, groups | `imports`, `slot`s, namespaced state (style-spec#591); `blend-mode`, z-groups (gl-js #48) | M5 |
 | Lighting, atmosphere | `lights`, `atmosphere` (unifies `sky`/`fog`), `*-emissive-strength` (style-spec#1797) | M7–M8 |
 | 3D content | `model`, `clip`, `3d-tiles` | M8 |
 | Data | `columnar` source | M11 |
@@ -832,7 +832,7 @@ Built-ins are plugins from M1 and optional families are Cargo features and lazy 
 ## 16. Testing and conformance
 
 - **`orb-fixtures`**: a read-only mirror of GL JS render and query tests, Native's unique tests and the spec's 583 expression fixtures, pinned per release. Orbis keeps its own tags (`expected-orb.png` → `expected-orb-compat.png` → `expected-web-*`, perceptual tolerances) and ignore lists, each linked to an issue; maplibre-rs #331 vendored the GL JS tests the same way [verified]. Seeds: GL JS's 1,718 render tests and Native's 87 unique; 1,186 of 1,250 shared are semantically identical; query tests 136/126 [verified]. A declared operation vocabulary replaces "call any `map[name](...)`" and Native's ~41 hand-parsed ops [verified].
-- **Real-world style suite** (gate from M5): pinned OpenFreeMap Liberty, Bright, Positron; Protomaps light and dark; Americana; OSM Bright; VersaTiles Colorful; from M6 NZTM2000Quad, EPSG:3413 and UTM-grid styles; local PMTiles extracts; 30 cameras each. **Yardstick:** Orbis's perceptual difference from pinned GL JS ≤ Native's difference from the same GL JS on ≥90% of snapshots (M5), ≥95% (M12). Non-Mercator styles use reviewed goldens and GL JS #8723 output once merged.
+- **Real-world style suite** (gates M5's Mercator styles and M6's non-Mercator ones; whichever lands first builds it): pinned OpenFreeMap Liberty, Bright, Positron; Protomaps light and dark; Americana; OSM Bright; VersaTiles Colorful; from M6 NZTM2000Quad, EPSG:3413 and UTM-grid styles; local PMTiles extracts; 30 cameras each. **Yardstick:** Orbis's perceptual difference from pinned GL JS ≤ Native's difference from the same GL JS on ≥90% of snapshots (M5), ≥95% (M12). Non-Mercator styles use reviewed goldens and GL JS #8723 output once merged.
 - **Orbis suites:** CRS (Mercator vs GL JS on a 4,000-camera sample, the #8723 method; CPU/GPU agreement z0–z22; TMS traps; poles; transitions); 3D (Khronos glTF samples, lighting, occlusion); text (Arabic, Kurdish, Hebrew, Devanagari, Khmer, Burmese, Thai, vertical CJK, astral, emoji); **GPU-path equivalence** (cull/compact compute vs a CPU reference; GPU interpreter vs VM); accessibility trees; host-service, plugin and binding conformance.
 - **Runners:** one Rust runner, every PR, on Modern (lavapipe, Metal, WARP, Chrome WebGPU/SwiftShader) and Compat (llvmpipe, Chrome WebGL2); real GPUs nightly. **Web/native identity:** the same fixture through `core.wasm` in Chrome and natively must agree within tolerance. Golden vectors for layout, chunking and placement; golden draw streams and read-back indirect args; property tests; fuzzing of every input format, styles, scene documents and expressions (Native's #4440/#4403 crash classes) [verified]; Miri/loom on scheduler and atlases; sanitizers on the C shims.
 - **Deterministic perf CI from M0:** frozen scenarios over local extracts (Americana, Liberty, a #4749-like nautical chart, a CJK/Arabic/Devanagari city; later polar, globe + terrain, ellipsoid + glTF, 5M points); PR gates on counters (commands per camera-only frame, draws, dispatches, bundle re-records, pipelines per style, bytes uploaded, objects touched, visible chunks, glyphs, instruction counts, sizes), never name-filtered (Native's PR regex `^[^A][^P][^I].*` skips every render benchmark) [verified]. A nightly device matrix (Pixel 7a, Tab A7 Lite class, an API 24–26 GLES device, Exynos S24, MediaTek, budget Mali and PowerVR, iPhone, M-series Mac, Windows NVIDIA, three browsers) records p50/p99 frame time, tile-arrival p99, GPU time, per-worker memory and a power proxy. GL JS and Native packages run read-only in the same harness.
@@ -903,27 +903,33 @@ Bugs found through mirrored fixtures or ported algorithms are reported to the ow
 
 ## 20. Build path
 
-Each milestone is a vertical slice rendering on the web and natively from the same crates, with CI for both. No dates, no costs: a milestone is done when its exit criteria pass. Fixture percentages refer to the frozen snapshot pinned at the milestone's start, restricted to the directories it declares.
+Each milestone is a vertical slice rendering on the web and natively from the same crates, with CI for both. No dates, no costs: a milestone is done when its exit criteria pass. Fixture percentages refer to the frozen snapshot pinned at the milestone's start, restricted to the directories it declares. The path is a buildout and tracks no release.
 
-> **As tracked:** the GitHub milestones M0–M8 carry working versions of these exit criteria, used as goals reported at each milestone's end rather than hard gates (emulators, simulators and one phone instead of a device farm; no Windows before M8). The architecture is unchanged.
+After M2 the path splits into two lanes that run in parallel, each with one or two sub-lanes at a time:
+- **Rendering lane** (style spec → rendering breadth): M6 any CRS and servers → M7 globe, ellipsoid, terrain, atmosphere → M8 3D content and lighting; M11 data layers.
+- **Platform lane** (bindings → platforms): M3 interactive hosts → M4 Compat and device robustness → M5 hardening and batteries; M9 guest embedding, M10 accessibility host mappings.
 
-| # | Milestone | Proves | Depends on |
-|---|---|---|---|
-| **M0** | First light | sans-thread core; wasm + WebGPU and native wgpu from one crate graph; GPU-driven submission; web upload path; CI on both | — |
-| M1 | Style engine and 2D layers | expression/style compiler, binding classes, feature state, every non-symbol 2D layer | M0 |
-| M2 | Text and symbols | text stack, placement lane, GPU symbol path, identical layout on web and native | M1 |
-| M3 | Interactive hosts everywhere | gestures, camera, queries; web package; desktop, Android, iOS hosts; C ABI and bindings | M2 |
-| M4 | Compat and device robustness | WebGL2/GLES path that leaves Modern untouched; allowlist, quirks, sentinel, device loss | M3 |
-| **M5** | **First release** | real-world styles, budgets and size ceilings on the device matrix | M4 |
-| M6 | Any CRS and servers | TMS per source, planner, planar families, Still/Tile | M5 |
-| M7 | Globe, ellipsoid, terrain | surfaces, non-affine rows, precision, terrain incl. the web ui role | M6 |
-| M8 | 3D content and lighting | glTF, lit extrusions, `world-3d` labels, 3D Tiles 1.1, shadows (M+) | M7 |
-| M9 | Guest embedding | SharedDevice, host depth, HostDriven, multi-view, toolkit texture import | M5 (full value after M8) |
-| M10 | Accessibility host mappings | AccessKit, Android, iOS, ARIA from one snapshot | M5 |
-| M11 | Data layers | GeoArrow → GPU chunks sharing placement with the basemap | M5 |
-| M12 | Stable contracts | plugin ABI, C ABI 1.0, scene document 1.0 | M9–M11 |
+Rendering-lane milestones do not wait for M3–M5. Where an exit criterion needs the other lane's work (Compat coverage in M6–M8 and M11 needs M4; any-CRS gestures and queries in M6, and M11's phone demo, need M3), whichever of the two milestones finishes second carries it.
 
-M9–M11 need only M5 for their core and can be reordered.
+> **As tracked:** the GitHub milestones M0–M8 carry working versions of these exit criteria, used as goals reported at each milestone's end rather than hard gates (emulators, simulators and one phone instead of a device farm; no Windows in M0–M8). The GitHub milestones follow the same two lanes. The architecture is unchanged.
+
+| # | Milestone | Lane | Proves | Depends on |
+|---|---|---|---|---|
+| **M0** | First light | core | sans-thread core; wasm + WebGPU and native wgpu from one crate graph; GPU-driven submission; web upload path; CI on both | — |
+| M1 | Style engine and 2D layers | core | expression/style compiler, binding classes, feature state, every non-symbol 2D layer | M0 |
+| M2 | Text and symbols | core | text stack, placement lane, GPU symbol path, identical layout on web and native | M1 |
+| M3 | Interactive hosts everywhere | platform | gestures, camera, queries; web package; desktop, Android, iOS hosts; C ABI and bindings | M2 |
+| M4 | Compat and device robustness | platform | WebGL2/GLES path that leaves Modern untouched; allowlist, quirks, sentinel, device loss | M3 |
+| M5 | Hardening and batteries | platform | real-world styles, budgets and size ceilings on the device matrix; batteries, offline cache, composition | M4 |
+| M6 | Any CRS and servers | rendering | TMS per source, planner, planar families, Still/Tile | M2 |
+| M7 | Globe, ellipsoid, terrain | rendering | surfaces, non-affine rows, precision, terrain incl. the web ui role, atmosphere | M6 |
+| M8 | 3D content and lighting | rendering | glTF, lit extrusions, `world-3d` labels, 3D Tiles 1.1, shadows (M+) | M7 |
+| M9 | Guest embedding | platform | SharedDevice, host depth, HostDriven, multi-view, toolkit texture import | M4 (full value after M8) |
+| M10 | Accessibility host mappings | platform | AccessKit, Android, iOS, ARIA from one snapshot | M3 |
+| M11 | Data layers | rendering | GeoArrow → GPU chunks sharing placement with the basemap | M2 |
+| M12 | Stable contracts | both | plugin ABI, C ABI 1.0, scene document 1.0 | M5, M8–M11 |
+
+M9–M11 need only the listed milestone for their core and can be reordered within and across lanes; M12 joins the lanes.
 
 **M0 First light** (the smallest slice that proves the architecture).
 - *Builds:* workspace, `xtask` and CI from the first commit (Linux lavapipe, macOS Metal, Windows WARP, headless Chrome WebGPU/SwiftShader; size, counter and boundary gates; kernels built for `wasm32-unknown-unknown` and `wasm32-wasip2`). `orb-runtime`, `orb-jobs` (native pool; sliced web workers; inline; a `HostDriven` test driver), `orb-host` (ureq; `fetch`; PMTiles range reads). `orb-tile` (MVT, MLT via `mlt-core`), `orb-source`, `orb-layout` (earcut, clip-at-layout, GL JS line extrusion, chunking). `orb-schema`/`orb-v8`/`orb-expr` subset for background, fill and line (constants, zoom `interpolate`/`step`, `get`, `match`, `case`, comparison filters; VM and column evaluator; constant, curve and table classes). `orb-geo`, `orb-crs` (WebMercatorQuad, `Affine`, cover), `orb-camera`. `orb-hal` + `orb-hal-wgpu` with the web upload path; `orb-shaders` (composer; background, fill, line, cull); `orb-scene` (arenas, affine rows, chunk table, candidate lists); `orb-render` (Upload, Cull, Layer2D; vertex-pulled `drawIndirect`; bundle replay). `orb-web` (one `core.wasm`, three roles, both thread modes). Fixture mirror, headless runner for native and Chrome, winit demo, browser demo, one perf scenario.
@@ -1005,15 +1011,15 @@ feature state and feature data draws its state when it compiles (#6).
 - *Demo:* the reference app on Firefox Linux, Safari on iOS 18 and an Android 10 GLES device; a forced device loss mid-pan recovers.
 - *Exit:* ≥90% of the declared Compat fixture subset on llvmpipe and Chrome WebGL2, with every §8.7 gap warning under test; Modern counters, sizes and fixture results unchanged by the merge; device-loss targets met and sentinel demotion tested by fault injection; Android `.so` ≤8 MB (2D, both backends); Compat LOC ceilings held.
 
-**M5 First release.**
-- *Builds:* hardening; batteries; offline cache; generated support matrix; docs; composition and groups if they fit without moving the gate.
+**M5 Hardening and batteries.**
+- *Builds:* hardening; batteries; offline cache; generated support matrix; docs; composition and groups.
 - *Demo:* the reference app on every target with the real-world suite's public styles.
-- *Exit:* real-world suite ≥90% within the yardstick on Modern (web and native) and on Compat for its supported layers; §18 rows 1–3, 5–16 and 19 on the device matrix; initial payload ≤550 KB br; fuzzers green 30 days; no open crash or blank-screen bugs on Tier 1; `terrain`, `sky` and non-Mercator `projection` warn (error under `strict`).
+- *Exit:* real-world suite ≥90% within the yardstick on Modern (web and native) and on Compat for its supported layers; §18 rows 1–3, 5–16 and 19 on the device matrix; initial payload ≤550 KB br; fuzzers green 30 days; no open crash or blank-screen bugs on Tier 1; docs and the generated support matrix on Pages.
 
 **M6 Any CRS and servers.**
 - *Builds:* TMS registry; scene document v0; `CpuResample`, `RasterWarp`, planar `GpuPerVertex`; planar families and EPSG table; mixed TMSs; any-CRS gestures and queries; `Still`/`Tile`; the CLI; the `wasm32-wasip2` kernel component.
 - *Demo:* interactive NZTM2000Quad and EPSG:3413 maps on web and native; a Mercator basemap over a warped EPSG:3413 raster; a UTM tile pyramid from the CLI.
-- *Exit:* CRS suite green (4,000-camera Mercator pin, per-family agreement, TMS traps, polar data); non-Mercator real-world styles pass reviewed goldens on Modern and Compat; tile-edge label agreement and byte-identical repeat output in `Tile` mode; Mercator results unchanged from M5.
+- *Exit:* CRS suite green (4,000-camera Mercator pin, per-family agreement, TMS traps, polar data); non-Mercator real-world styles pass reviewed goldens on Modern and Compat; tile-edge label agreement and byte-identical repeat output in `Tile` mode; Mercator fixture and real-world results unchanged by the merge.
 
 **M7 Globe, ellipsoid, terrain.**
 - *Builds:* surfaces and `Geodetic`; non-affine rows; adaptive projections and v8 `globe`; horizon culling; globe gestures; terrain; the web elevation pyramid; `Atmosphere`; v8 `terrain`/`sky`/fog; KTX2; lazy `world3d.wasm`.
@@ -1077,7 +1083,7 @@ feature state and feature data draws its state when it compiles (#6).
 |---|---|
 | **Baseline algorithms shaped by WebGPU compat / GLES 3.0 / WebGL2 limits** | no vertex-stage storage, compute only as an accelerator, per-tile direct draws as the reference algorithm: the main path pays for a shrinking minority (§4.1), which a separate reduced tier now serves |
 | **Web last or conditional** | the web is the strictest environment; deferring it lets blocking waits, thread assumptions and large dependencies into the core |
-| **Headless any-CRS renderer as first release** | interactive portability first; any-CRS reuses M0 hooks at M6 |
+| **Headless any-CRS renderer as the first target** | interactive portability shapes the core from M0; any-CRS reuses M0 hooks at M6 |
 | **No fallback at all** | iOS < 26 browsers, Firefox Linux/Android, non-allowlisted Android devices and WebViews without WebGPU would get nothing; Compat is one executor plus CPU kernels |
 | **WebGPU compatibility mode as its own tier** | a third render configuration for devices that also expose WebGL2 |
 | **Per-tile bundles as primary submission; requiring MDI, bindless or mesh shaders** | ≈ tiles × layers draws; not in core WebGPU or portable via wgpu (M+ only) |
@@ -1146,7 +1152,7 @@ Lanes: game thread · render thread · Orbis command buffers on the shared devic
 
 ### DD6. Build path (no dates)
 
-Nodes M0–M12 (M5 highlighted) plus "After M12". Edges: M0 → M1 → M2 → M3 → M4 → M5; M5 → M6 → M7 → M8; M5 → M9, M10, M11; M8 ⇢ M9 "ECEF content"; M9, M10, M11 → M12 → After. Label each node with its demo and key gate (M0 "web/native identity, 1 dispatch per frame"; M3 "thread default decided"; M4 "Modern unchanged"; M5 "suite ≥90%, ≤550 KB br"). Overlay "platforms green": web WebGPU + desktop from M0; Android Vulkan + iOS from M3; WebGL2 + Android GLES from M4; servers from M6; engines from M9.
+Nodes M0–M12 plus "After M12", in a core band (M0–M2) that splits into two parallel swimlanes: rendering (M6, M7, M8, M11) and platform (M3, M4, M5, M9, M10); M12 joins them. Edges: M0 → M1 → M2; M2 → M3 → M4 → M5; M2 → M6 → M7 → M8; M2 → M11; M4 → M9; M3 → M10; M3 ⇢ M6, M11 "gestures, hosts"; M4 ⇢ M6, M7, M8, M11 "Compat criteria"; M8 ⇢ M9 "ECEF content"; M5, M8, M9, M10, M11 → M12 → After. Label each node with its demo and key gate (M0 "web/native identity, 1 dispatch per frame"; M3 "thread default decided"; M4 "Modern unchanged"; M5 "suite ≥90%, ≤550 KB br"; M6 "CRS suite green"). Overlay "platforms green": web WebGPU + desktop from M0; Android Vulkan + iOS from M3; WebGL2 + Android GLES from M4; servers from M6; engines from M9.
 
 ### DD7. Charts
 
