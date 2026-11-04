@@ -7,7 +7,9 @@
 //!   (`orbis::orbis`), with the system libraries rustc reports.
 //!
 //! `--test` compiles `crates/orb-capi/tests/smoke.c` once through
-//! pkg-config and once through CMake, and runs both.
+//! pkg-config and once through CMake, and runs both; then runs the Kotlin
+//! binding scenario on the host's JVM, over the generated JNI shim linked
+//! with the same library (a JDK, `JAVA_HOME` and `kotlinc`, from mise).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -191,6 +193,76 @@ fn smoke(prefix: &Path) -> Result<(), String> {
     check(Command::new("cmake").arg("--build").arg(&build))?;
     check(&mut Command::new(build.join("smoke")))?;
     eprintln!("capi: the smoke test passed through pkg-config and CMake");
+    kotlin_scenario(prefix, &flags)
+}
+
+/// The Kotlin scenario on the JVM: the JNI shim and liborbis.a as a
+/// shared library, the generated Kotlin and the scenario compiled with
+/// kotlinc.
+fn kotlin_scenario(prefix: &Path, link: &str) -> Result<(), String> {
+    let root = root();
+    let out = prefix.join("smoke/kotlin");
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let java_home = PathBuf::from(
+        std::env::var_os("JAVA_HOME")
+            .ok_or("capi: the Kotlin scenario needs JAVA_HOME (mise x --)")?,
+    );
+    let platform = if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        "linux"
+    };
+    let library = out.join(if cfg!(target_os = "macos") {
+        "liborbis.dylib"
+    } else {
+        "liborbis.so"
+    });
+    let cc = std::env::var("CC").unwrap_or_else(|_| "clang".into());
+    check(
+        Command::new(&cc)
+            .args(["-shared", "-fPIC", "-O2", "-Wall", "-Werror", "-I"])
+            .arg(java_home.join("include"))
+            .arg("-I")
+            .arg(java_home.join("include").join(platform))
+            .arg(root.join("hosts/android/orbis/src/generated/jni/orbis_jni.c"))
+            .args(link.split_whitespace())
+            .arg("-o")
+            .arg(&library),
+    )?;
+    let mut sources = Vec::new();
+    kotlin_files(
+        &root.join("hosts/android/orbis/src/generated/kotlin"),
+        &mut sources,
+    )?;
+    sources.push(root.join("hosts/android/orbis/src/jvmScenario/kotlin/Scenario.kt"));
+    let jar = out.join("scenario.jar");
+    check(
+        Command::new("kotlinc")
+            .args(["-nowarn", "-include-runtime", "-d"])
+            .arg(&jar)
+            .args(&sources),
+    )?;
+    check(
+        Command::new(java_home.join("bin/java"))
+            .arg("--enable-native-access=ALL-UNNAMED")
+            .arg(format!("-Djava.library.path={}", out.display()))
+            .arg("-cp")
+            .arg(&jar)
+            .arg("ScenarioKt"),
+    )?;
+    eprintln!("capi: the Kotlin scenario passed on the JVM");
+    Ok(())
+}
+
+fn kotlin_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.is_dir() {
+            kotlin_files(&path, out)?;
+        } else if path.extension().is_some_and(|e| e == "kt") {
+            out.push(path);
+        }
+    }
     Ok(())
 }
 
