@@ -21,32 +21,49 @@ static jmethodID g_new_OrbModifiers;
 static jmethodID g_new_OrbPoint;
 static jmethodID g_new_OrbError_exception;
 
-/* The calling thread's JNIEnv, attaching threads the JVM doesn't know. */
-static JNIEnv* attached_env(void) {
+/* The calling thread's JNIEnv, attaching the thread if the JVM doesn't
+ * know it; `attached` says whether this call did. NULL if it can't. */
+static JNIEnv* attached_env(int* attached) {
     JNIEnv* env = NULL;
-    if ((*g_vm)->GetEnv(g_vm, (void**)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
+    *attached = 0;
+    jint known = (*g_vm)->GetEnv(g_vm, (void**)&env, JNI_VERSION_1_6);
+    if (known == JNI_OK) return env;
+    if (known != JNI_EDETACHED) return NULL;
 #ifdef __ANDROID__
-        (*g_vm)->AttachCurrentThreadAsDaemon(g_vm, &env, NULL);
+    if ((*g_vm)->AttachCurrentThreadAsDaemon(g_vm, &env, NULL) != JNI_OK) return NULL;
 #else
-        (*g_vm)->AttachCurrentThreadAsDaemon(g_vm, (void**)&env, NULL);
+    if ((*g_vm)->AttachCurrentThreadAsDaemon(g_vm, (void**)&env, NULL) != JNI_OK) return NULL;
 #endif
-    }
+    *attached = 1;
     return env;
 }
 
+/* Detaches a thread `attached_env` attached: the library's threads may
+ * exit, and the JVM must not see a thread exit attached. */
+static void release_env(int attached) {
+    if (attached) (*g_vm)->DetachCurrentThread(g_vm);
+}
+
 static void callback_run(const void* data) {
-    JNIEnv* env = attached_env();
+    int attached;
+    JNIEnv* env = attached_env(&attached);
+    if (!env) return;
     jobject result = (*env)->CallObjectMethod(env, (jobject)data, g_function0_invoke);
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionDescribe(env);
         (*env)->ExceptionClear(env);
     }
     if (result) (*env)->DeleteLocalRef(env, result);
+    release_env(attached);
 }
 
+/* Without a JNIEnv the reference can't be deleted, and stays. */
 static void callback_destroy(const void* data) {
-    JNIEnv* env = attached_env();
+    int attached;
+    JNIEnv* env = attached_env(&attached);
+    if (!env) return;
     (*env)->DeleteGlobalRef(env, (jobject)data);
+    release_env(attached);
 }
 
 static jbyteArray write_to_bytes(JNIEnv* env, DiplomatWrite* write) {

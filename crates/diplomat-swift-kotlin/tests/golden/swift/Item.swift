@@ -26,4 +26,11 @@ public final class Item: @unchecked Sendable {
         return Item_value(handle)
     }
 
+    /// The value after `ms` milliseconds: a call long enough to race.
+    ///
+    /// Contract: `query`.
+    public func slowValue(ms: UInt32) -> Int64 {
+        return Item_slow_value(handle, ms)
+    }
+
 }

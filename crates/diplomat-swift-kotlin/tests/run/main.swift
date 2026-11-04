@@ -1,6 +1,21 @@
 // Calls every shape of the fixture bridge through the generated Swift.
 import Foundation
 
+// Releasing an owner-thread object on another thread must stop the
+// program, not destroy it under its owner: run.rs expects this to trap.
+if CommandLine.arguments.contains("--release-elsewhere") {
+    final class Box: @unchecked Sendable {
+        var counter: Counter?
+    }
+    let box = Box()
+    box.counter = Counter.create(start: 0)
+    let thread = Thread { box.counter = nil }
+    thread.start()
+    Thread.sleep(forTimeInterval: 5)
+    print("released elsewhere without trapping")
+    exit(0)
+}
+
 func expectThrows<E: Error>(_ type: E.Type, _ body: () throws -> Void) -> E {
     do {
         try body()

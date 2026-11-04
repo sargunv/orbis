@@ -4,7 +4,7 @@ package dev.fixture
 /**
  * A value any thread may use.
  *
- * It may be used on any thread. Release it with [close]; owned objects that are never closed leak.
+ * It may be used on any thread; calls and [close] are serialized. Release it with [close]; owned objects that are never closed leak.
  */
 class Item internal constructor(handle: Long) : AutoCloseable {
     @Volatile
@@ -18,19 +18,33 @@ class Item internal constructor(handle: Long) : AutoCloseable {
     }
 
     override fun close() {
-        val h = synchronized(this) {
+        synchronized(this) {
             val h = handle
-            handle = 0L
-            h
+            if (h != 0L) {
+                handle = 0L
+                FixtureNative.itemDestroy(h)
+            }
         }
-        if (h != 0L) FixtureNative.itemDestroy(h)
     }
 
     /**
      * Contract: `snapshot`.
      */
     fun value(): Long {
-        return FixtureNative.itemValue(live())
+        synchronized(this) {
+            return FixtureNative.itemValue(live())
+        }
+    }
+
+    /**
+     * The value after `ms` milliseconds: a call long enough to race.
+     *
+     * Contract: `query`.
+     */
+    fun slowValue(ms: UInt): Long {
+        synchronized(this) {
+            return FixtureNative.itemSlowValue(live(), ms.toInt())
+        }
     }
 
 }

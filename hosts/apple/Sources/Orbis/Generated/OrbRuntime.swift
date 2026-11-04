@@ -9,7 +9,7 @@ import OrbisC
 
 /// A GPU device and host services, shared by the maps made from it.
 ///
-/// Use it only on the thread that created it.
+/// Use it only on the thread that created it, and release it there.
 public final class OrbRuntime {
     let handle: OpaquePointer
     private let owner = pthread_self()
@@ -19,6 +19,10 @@ public final class OrbRuntime {
     }
 
     deinit {
+        precondition(
+            pthread_equal(owner, pthread_self()) != 0,
+            "OrbRuntime is released on a thread other than the one that created it"
+        )
         OrbRuntime_destroy(handle)
     }
 

@@ -69,6 +69,9 @@ internal object FixtureNative {
     external fun itemValue(self: Long): Long
 
     @JvmStatic
+    external fun itemSlowValue(self: Long, ms: Int): Long
+
+    @JvmStatic
     external fun fixtureErrorLastMessage(): ByteArray
 
     @JvmStatic

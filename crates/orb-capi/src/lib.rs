@@ -17,9 +17,36 @@
 //!   `any`; `error_message` marks the function the bindings call for an
 //!   error's message. Code generators skip these; the binding emitters
 //!   read them.
+//!
+//! The bridge isn't Rust API: its functions take raw addresses and keep
+//! callbacks across threads on the C caller's word, so Rust can't reach
+//! them. A non-`Send` wake callback doesn't compile:
+//!
+//! ```compile_fail,E0603
+//! let wake = std::rc::Rc::new(std::cell::Cell::new(0));
+//! let _ = |map: &mut orbis::ffi::OrbMap| map.set_wake(move || wake.set(1));
+//! ```
+//!
+//! Nor does a surface on an arbitrary address:
+//!
+//! ```compile_fail,E0603
+//! let _ = |rt: &orbis::ffi::OrbRuntime| {
+//!     orbis::ffi::OrbTarget::create_metal_layer(rt, 0xdead, 1, 1, 1.0)
+//! };
+//! ```
+//!
+//! Rust embedders use `orb-api`, whose wake callback must be `Send +
+//! Sync` and whose surfaces come from `orb_hal_wgpu`'s `unsafe`
+//! constructor.
 
+// Crate-private: the bridge is the C ABI, whose callers keep its documented
+// contracts (raw handles live, callbacks callable from any thread). Rust
+// embedders use `orb-api`, which states them in its types. Diplomat wants
+// its items `pub`; enum variants that only C passes in are never
+// constructed here.
 #[diplomat::bridge]
-pub mod ffi {
+#[allow(dead_code, unreachable_pub)]
+mod ffi {
     use std::fmt::Write;
 
     use diplomat_runtime::{DiplomatStr, DiplomatWrite};
@@ -916,9 +943,10 @@ fn text(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
 
 /// A callback the caller promises can run on any thread (`OrbMap::set_wake`).
 struct AnyThread<F>(F);
-// SAFETY: the C ABI's contract for `set_wake` is that the callback may be
-// called from any thread, at any time until it is replaced or the map is
-// destroyed; the bindings pass thread-safe closures.
+// SAFETY: only Diplomat's C entry point builds these (the bridge module is
+// crate-private), from a C callback whose contract is that it may be called
+// from any thread until it is replaced or the map is destroyed; the
+// generated bindings pass thread-safe closures.
 unsafe impl<F> Send for AnyThread<F> {}
 // SAFETY: as above; the callback takes no arguments and shares no Rust
 // state.

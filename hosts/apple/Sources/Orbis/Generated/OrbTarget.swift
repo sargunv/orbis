@@ -11,7 +11,7 @@ import OrbisC
 /// owns. Sizes are physical pixels; `scale` is physical pixels per
 /// logical pixel, the unit of every map coordinate.
 ///
-/// Use it only on the thread that created it.
+/// Use it only on the thread that created it, and release it there.
 public final class OrbTarget {
     let handle: OpaquePointer
     private let owner = pthread_self()
@@ -21,6 +21,10 @@ public final class OrbTarget {
     }
 
     deinit {
+        precondition(
+            pthread_equal(owner, pthread_self()) != 0,
+            "OrbTarget is released on a thread other than the one that created it"
+        )
         OrbTarget_destroy(handle)
     }
 

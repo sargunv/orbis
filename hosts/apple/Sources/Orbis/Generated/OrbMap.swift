@@ -10,7 +10,7 @@ import OrbisC
 /// A map: style, camera store, gestures and events. Draw it with
 /// `render` whenever `needs_frame`.
 ///
-/// Use it only on the thread that created it.
+/// Use it only on the thread that created it, and release it there.
 public final class OrbMap {
     let handle: OpaquePointer
     private let owner = pthread_self()
@@ -20,6 +20,10 @@ public final class OrbMap {
     }
 
     deinit {
+        precondition(
+            pthread_equal(owner, pthread_self()) != 0,
+            "OrbMap is released on a thread other than the one that created it"
+        )
         OrbMap_destroy(handle)
     }
 

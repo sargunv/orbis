@@ -4,7 +4,7 @@ package dev.orbis
 /**
  * The topmost feature under a point.
  *
- * It may be used on any thread. Release it with [close]; owned objects that are never closed leak.
+ * It may be used on any thread; calls and [close] are serialized. Release it with [close]; owned objects that are never closed leak.
  */
 class OrbFeature internal constructor(handle: Long) : AutoCloseable {
     @Volatile
@@ -18,12 +18,13 @@ class OrbFeature internal constructor(handle: Long) : AutoCloseable {
     }
 
     override fun close() {
-        val h = synchronized(this) {
+        synchronized(this) {
             val h = handle
-            handle = 0L
-            h
+            if (h != 0L) {
+                handle = 0L
+                OrbisNative.orbFeatureDestroy(h)
+            }
         }
-        if (h != 0L) OrbisNative.orbFeatureDestroy(h)
     }
 
     /**
@@ -32,7 +33,9 @@ class OrbFeature internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun layer(): String {
-        return OrbisNative.orbFeatureLayer(live()).decodeToString()
+        synchronized(this) {
+            return OrbisNative.orbFeatureLayer(live()).decodeToString()
+        }
     }
 
     /**
@@ -41,7 +44,9 @@ class OrbFeature internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun source(): String {
-        return OrbisNative.orbFeatureSource(live()).decodeToString()
+        synchronized(this) {
+            return OrbisNative.orbFeatureSource(live()).decodeToString()
+        }
     }
 
     /**
@@ -50,7 +55,9 @@ class OrbFeature internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun sourceLayer(): String {
-        return OrbisNative.orbFeatureSourceLayer(live()).decodeToString()
+        synchronized(this) {
+            return OrbisNative.orbFeatureSourceLayer(live()).decodeToString()
+        }
     }
 
     /**
@@ -59,7 +66,9 @@ class OrbFeature internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun hasId(): Boolean {
-        return OrbisNative.orbFeatureHasId(live())
+        synchronized(this) {
+            return OrbisNative.orbFeatureHasId(live())
+        }
     }
 
     /**
@@ -68,7 +77,9 @@ class OrbFeature internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun id(): String {
-        return OrbisNative.orbFeatureId(live()).decodeToString()
+        synchronized(this) {
+            return OrbisNative.orbFeatureId(live()).decodeToString()
+        }
     }
 
     /**
@@ -77,7 +88,9 @@ class OrbFeature internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun generation(): ULong {
-        return OrbisNative.orbFeatureGeneration(live()).toULong()
+        synchronized(this) {
+            return OrbisNative.orbFeatureGeneration(live()).toULong()
+        }
     }
 
 }

@@ -94,6 +94,18 @@ fn swift_bindings_run() {
     let out = run(&mut Command::new(&exe));
     print!("{out}");
     assert!(out.contains("swift ok"));
+
+    // An owner-thread object released on another thread stops the program.
+    let elsewhere = Command::new(&exe)
+        .arg("--release-elsewhere")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&elsewhere.stderr);
+    assert!(!elsewhere.status.success(), "released elsewhere: {stderr}");
+    assert!(
+        !String::from_utf8_lossy(&elsewhere.stdout).contains("without trapping"),
+        "{stderr}"
+    );
 }
 
 #[test]

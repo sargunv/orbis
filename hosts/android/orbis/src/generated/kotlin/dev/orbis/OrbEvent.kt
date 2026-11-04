@@ -4,7 +4,7 @@ package dev.orbis
 /**
  * Something a map, its camera or a gesture did.
  *
- * It may be used on any thread. Release it with [close]; owned objects that are never closed leak.
+ * It may be used on any thread; calls and [close] are serialized. Release it with [close]; owned objects that are never closed leak.
  */
 class OrbEvent internal constructor(handle: Long) : AutoCloseable {
     @Volatile
@@ -18,19 +18,22 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
     }
 
     override fun close() {
-        val h = synchronized(this) {
+        synchronized(this) {
             val h = handle
-            handle = 0L
-            h
+            if (h != 0L) {
+                handle = 0L
+                OrbisNative.orbEventDestroy(h)
+            }
         }
-        if (h != 0L) OrbisNative.orbEventDestroy(h)
     }
 
     /**
      * Contract: `snapshot`.
      */
     fun kind(): OrbEventKind {
-        return OrbEventKind.fromValue(OrbisNative.orbEventKind(live()))
+        synchronized(this) {
+            return OrbEventKind.fromValue(OrbisNative.orbEventKind(live()))
+        }
     }
 
     /**
@@ -39,14 +42,18 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun x(): Double {
-        return OrbisNative.orbEventX(live())
+        synchronized(this) {
+            return OrbisNative.orbEventX(live())
+        }
     }
 
     /**
      * Contract: `snapshot`.
      */
     fun y(): Double {
-        return OrbisNative.orbEventY(live())
+        synchronized(this) {
+            return OrbisNative.orbEventY(live())
+        }
     }
 
     /**
@@ -55,7 +62,9 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun generation(): ULong {
-        return OrbisNative.orbEventGeneration(live()).toULong()
+        synchronized(this) {
+            return OrbisNative.orbEventGeneration(live()).toULong()
+        }
     }
 
     /**
@@ -65,7 +74,9 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun id(): ULong {
-        return OrbisNative.orbEventId(live()).toULong()
+        synchronized(this) {
+            return OrbisNative.orbEventId(live()).toULong()
+        }
     }
 
     /**
@@ -75,7 +86,9 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun flag(): Boolean {
-        return OrbisNative.orbEventFlag(live())
+        synchronized(this) {
+            return OrbisNative.orbEventFlag(live())
+        }
     }
 
     /**
@@ -84,7 +97,9 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun change(): OrbChange {
-        return OrbChange.fromValue(OrbisNative.orbEventChange(live()))
+        synchronized(this) {
+            return OrbChange.fromValue(OrbisNative.orbEventChange(live()))
+        }
     }
 
     /**
@@ -93,7 +108,9 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun phase(): OrbPhase {
-        return OrbPhase.fromValue(OrbisNative.orbEventPhase(live()))
+        synchronized(this) {
+            return OrbPhase.fromValue(OrbisNative.orbEventPhase(live()))
+        }
     }
 
     /**
@@ -102,7 +119,9 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun button(): OrbButton {
-        return OrbButton.fromValue(OrbisNative.orbEventButton(live()))
+        synchronized(this) {
+            return OrbButton.fromValue(OrbisNative.orbEventButton(live()))
+        }
     }
 
     /**
@@ -112,7 +131,9 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
      * Contract: `snapshot`.
      */
     fun text(): String {
-        return OrbisNative.orbEventText(live()).decodeToString()
+        synchronized(this) {
+            return OrbisNative.orbEventText(live()).decodeToString()
+        }
     }
 
 }

@@ -98,6 +98,21 @@ impl std::fmt::Debug for Map {
     }
 }
 
+impl Drop for Map {
+    /// Fetches and jobs the map started keep its wake closure, and may
+    /// finish after it: the host's callback is dropped first. The closure
+    /// holds the hook's mutex while calling it, so this also waits out a
+    /// call under way on another thread.
+    fn drop(&mut self) {
+        let hook = self
+            .hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        drop(hook);
+    }
+}
+
 impl Map {
     pub fn new(runtime: &Runtime, options: MapOptions) -> Self {
         let woken = Arc::new(AtomicBool::new(false));

@@ -2380,6 +2380,7 @@ dependencies = [
  "js-sys",
  "orb-hal",
  "pollster",
+ "sha2",
  "web-sys",
  "wgpu",
 ]

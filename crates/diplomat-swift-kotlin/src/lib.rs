@@ -6,12 +6,16 @@
 //! same bridge through `diplomat_core`'s HIR and writes:
 //!
 //! - **Swift**: one file per type over the C header, imported as a Clang
-//!   module. Opaque types are classes that free themselves on `deinit`;
-//!   structs and enums are values; fallible calls `throw`.
+//!   module. Opaque types are classes that free themselves on `deinit`
+//!   (owner-thread ones trap if released on another thread); structs and
+//!   enums are values; fallible calls `throw`.
 //! - **Kotlin**: one file per type, calling a generated JNI shim in C that
 //!   calls the C functions. No JNA, no reflection, no
 //!   `java.lang.ref.Cleaner`: it runs on Android API 21+ and any JVM.
-//!   Opaque types are `AutoCloseable`.
+//!   Opaque types are `AutoCloseable`; calls on objects any thread may use
+//!   hold the object's monitor, as `close` does, so none is freed under a
+//!   call. Threads the library calls back on are attached to the JVM for
+//!   the call and detached after.
 //!
 //! **Contracts.** Bridges may say how each item is used, with Diplomat
 //! backend attributes under the name `contract`, which no code generator

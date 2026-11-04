@@ -179,3 +179,39 @@ fn texture_targets_report_size_and_read_back() {
     target.resize(8, 4, 1.0);
     assert_eq!(target.read_pixels().unwrap().len(), 8 * 4 * 4);
 }
+
+/// A wake callback dies with its map, even while a fetch the map started
+/// is still in flight and the runtime lives on: a host may free the
+/// callback's state as soon as the map is gone.
+#[test]
+fn wake_callbacks_die_with_their_map() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    // Accepts connections and never answers, so the style fetch waits.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/style.json", listener.local_addr().unwrap());
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.load_style_url(&url);
+    let (connection, _) = listener.accept().unwrap();
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let probe = calls.clone();
+    map.set_wake(move || {
+        probe.fetch_add(1, Ordering::SeqCst);
+    });
+    drop(map);
+    assert_eq!(
+        Arc::strong_count(&calls),
+        1,
+        "the map kept its wake callback"
+    );
+
+    // The fetch fails now, and its completion finds no callback to call.
+    drop(connection);
+    drop(listener);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    drop(runtime);
+}

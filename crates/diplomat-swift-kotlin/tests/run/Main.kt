@@ -48,17 +48,36 @@ fun main() {
 
         val calls = AtomicInteger()
         val caller = Thread.currentThread()
-        var otherThread = false
+        val threads = java.util.Collections.synchronizedList(mutableListOf<Thread>())
         counter.setWake {
             calls.incrementAndGet()
-            if (Thread.currentThread() !== caller) otherThread = true
+            threads += Thread.currentThread()
         }
         counter.fire(3u)
         check(calls.get() == 3)
-        check(otherThread)
+        check(threads.none { it === caller })
+        // The library's thread is detached after each call, so each call
+        // attaches it afresh: the thread may exit without the JVM's leave.
+        check(threads.toSet().size == 3) { "attached once and kept: $threads" }
         counter.setWake {}
         counter.fire(1u)
         check(calls.get() == 3)
+
+        // Closing an object any thread may use waits for a call under way
+        // on another thread, rather than freeing it under the call.
+        counter.item().let { item ->
+            var seen = 0L
+            val reader = Thread { seen = item.slowValue(300u) }
+            reader.start()
+            Thread.sleep(50)
+            val closing = System.nanoTime()
+            item.close()
+            val waited = (System.nanoTime() - closing) / 1_000_000
+            reader.join()
+            check(seen == 6L) { "read $seen" }
+            check(waited >= 150) { "close returned after $waited ms, under the call" }
+            check(runCatching { item.value() }.exceptionOrNull() is IllegalStateException)
+        }
 
         // Owner-thread objects refuse other threads.
         var refused = false

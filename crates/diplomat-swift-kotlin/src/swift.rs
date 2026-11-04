@@ -294,7 +294,9 @@ impl Swift<'_> {
             Kind::Opaque { destroy, thread } => {
                 let mut docs = def.docs.clone();
                 docs += match thread {
-                    Thread::Owner => "\n\nUse it only on the thread that created it.",
+                    Thread::Owner => {
+                        "\n\nUse it only on the thread that created it, and release it there."
+                    }
                     Thread::Any => "\n\nIt may be used on any thread.",
                 };
                 out += &doc(docs.trim_start(), "");
@@ -309,7 +311,18 @@ impl Swift<'_> {
                 }
                 out +=
                     "\n    init(handle: OpaquePointer) {\n        self.handle = handle\n    }\n\n";
-                writeln!(out, "    deinit {{\n        {destroy}(handle)\n    }}\n").unwrap();
+                if *thread == Thread::Owner {
+                    // Releasing the last reference elsewhere would destroy
+                    // the object under its owner's feet.
+                    writeln!(
+                        out,
+                        "    deinit {{\n        precondition(\n            pthread_equal(owner, pthread_self()) != 0,\n            \"{} is released on a thread other than the one that created it\"\n        )\n        {destroy}(handle)\n    }}\n",
+                        def.name
+                    )
+                    .unwrap();
+                } else {
+                    writeln!(out, "    deinit {{\n        {destroy}(handle)\n    }}\n").unwrap();
+                }
                 if *thread == Thread::Owner {
                     writeln!(
                         out,

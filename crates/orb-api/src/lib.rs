@@ -161,10 +161,7 @@ impl Runtime {
         let Some(data) = gpu.pipeline_cache_data() else {
             return Ok(());
         };
-        // Written aside and renamed, so a reader never sees half a file.
-        let partial = file.with_extension("partial");
-        std::fs::write(&partial, data)
-            .and_then(|()| std::fs::rename(&partial, &*file))
+        write_atomically(file, &data)
             .map_err(|e| Error::Native(format!("{}: {e}", file.display())))?;
         *saved = made;
         Ok(())
@@ -212,5 +209,53 @@ impl Runtime {
     /// Milliseconds on the runtime's gesture and animation clock.
     fn now(&self) -> f64 {
         self.shared.started.elapsed().as_secs_f64() * 1000.0
+    }
+}
+
+/// Writes `data` to a file of its own beside `path`, then renames it over
+/// `path`: readers see the old file or the new one whole, and writers in
+/// other runtimes or processes never share the temporary file.
+fn write_atomically(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(format!(".{}.{n}.partial", std::process::id()));
+    let partial = path.with_file_name(name);
+    let written = std::fs::write(&partial, data).and_then(|()| std::fs::rename(&partial, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn concurrent_writers_publish_whole_files() {
+        let dir = std::env::temp_dir().join(format!("orb-api-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cache");
+        let writers: Vec<_> = (0..8u8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..20 {
+                        super::write_atomically(&path, &vec![i; 64 << 10]).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(data.len(), 64 << 10);
+        assert!(data.iter().all(|&b| b == data[0]), "bytes of two writers");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "partial files left"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

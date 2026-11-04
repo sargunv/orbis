@@ -129,7 +129,9 @@ class Counter internal constructor(handle: Long) : AutoCloseable {
      * Contract: `command`.
      */
     fun absorb(item: Item): Long {
-        return FixtureNative.counterAbsorb(live(), item.live())
+        synchronized(item) {
+            return FixtureNative.counterAbsorb(live(), item.live())
+        }
     }
 
     /**

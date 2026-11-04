@@ -9,7 +9,7 @@ import FixtureC
 
 /// A counter that belongs to one thread.
 ///
-/// Use it only on the thread that created it.
+/// Use it only on the thread that created it, and release it there.
 public final class Counter {
     let handle: OpaquePointer
     private let owner = pthread_self()
@@ -19,6 +19,10 @@ public final class Counter {
     }
 
     deinit {
+        precondition(
+            pthread_equal(owner, pthread_self()) != 0,
+            "Counter is released on a thread other than the one that created it"
+        )
         Counter_destroy(handle)
     }
 

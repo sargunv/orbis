@@ -195,6 +195,13 @@ pub mod ffi {
         pub fn value(&self) -> i64 {
             self.0
         }
+
+        /// The value after `ms` milliseconds: a call long enough to race.
+        #[diplomat::attr(contract, query)]
+        pub fn slow_value(&self, ms: u32) -> i64 {
+            std::thread::sleep(std::time::Duration::from_millis(u64::from(ms)));
+            self.0
+        }
     }
 }
 

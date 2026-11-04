@@ -273,7 +273,7 @@ impl Kotlin<'_> {
                 )
                 .unwrap();
                 for m in &def.methods {
-                    out += &self.method(m, "        ");
+                    out += &self.method(def, m, "        ");
                 }
                 out += "    }\n}\n";
             }
@@ -296,7 +296,7 @@ impl Kotlin<'_> {
                 } else {
                     out += " {\n    companion object {\n";
                     for m in &def.methods {
-                        out += &self.method(m, "        ");
+                        out += &self.method(def, m, "        ");
                     }
                     out += "    }\n}\n";
                 }
@@ -306,7 +306,7 @@ impl Kotlin<'_> {
                 if *thread == Thread::Owner {
                     docs += "\n\nUse it only on the thread that created it.";
                 } else {
-                    docs += "\n\nIt may be used on any thread.";
+                    docs += "\n\nIt may be used on any thread; calls and [close] are serialized.";
                 }
                 docs += " Release it with [close]; owned objects that are never closed leak.";
                 out += &comment(docs.trim_start(), " * ", "").pipe_doc("");
@@ -347,7 +347,7 @@ impl Kotlin<'_> {
                 } else {
                     writeln!(
                         out,
-                        "    override fun close() {{\n        val h = synchronized(this) {{\n            val h = handle\n            handle = 0L\n            h\n        }}\n        if (h != 0L) {}.{destroy_fn}(h)\n    }}\n",
+                        "    override fun close() {{\n        synchronized(this) {{\n            val h = handle\n            if (h != 0L) {{\n                handle = 0L\n                {}.{destroy_fn}(h)\n            }}\n        }}\n    }}\n",
                         self.native()
                     )
                     .unwrap();
@@ -355,12 +355,12 @@ impl Kotlin<'_> {
                 let (statics, instance): (Vec<_>, Vec<_>) =
                     def.methods.iter().partition(|m| m.receiver.is_none());
                 for m in instance {
-                    out += &self.method(m, "    ");
+                    out += &self.method(def, m, "    ");
                 }
                 if !statics.is_empty() {
                     out += "    companion object {\n";
                     for m in statics {
-                        out += &self.method(m, "        ");
+                        out += &self.method(def, m, "        ");
                     }
                     out += "    }\n";
                 }
@@ -385,7 +385,18 @@ impl Kotlin<'_> {
     }
 
     /// A Kotlin method calling its external function.
-    fn method(&self, m: &Method, indent: &str) -> String {
+    /// Whether objects of an opaque type may be used from any thread.
+    fn any_thread(&self, name: &str) -> bool {
+        matches!(
+            self.api.def(name).kind,
+            Kind::Opaque {
+                thread: Thread::Any,
+                ..
+            }
+        )
+    }
+
+    fn method(&self, def: &Def, m: &Method, indent: &str) -> String {
         let mut out = comment(&self.method_docs(m), " * ", indent).pipe_doc(indent);
         let params: Vec<String> = m
             .params
@@ -425,7 +436,35 @@ impl Kotlin<'_> {
             Ret::Write => format!("return {call}.decodeToString()"),
             Ret::Value(ty) => format!("return {}", self.kotlin_result(ty, &call)),
         };
-        writeln!(out, "{indent}    {body}\n{indent}}}\n").unwrap();
+        // Objects any thread may use are locked across the handle check and
+        // the call, as `close` is, so none is freed under a call.
+        let mut locks = Vec::new();
+        if m.receiver.is_some() && self.any_thread(&def.name) {
+            locks.push("this".to_owned());
+        }
+        for p in &m.params {
+            if let Ty::Opaque { name, optional, .. } = &p.ty
+                && self.any_thread(name)
+            {
+                let param = ident(&p.name);
+                locks.push(if *optional {
+                    format!("{param} ?: Unit")
+                } else {
+                    param
+                });
+            }
+        }
+        let mut inner = format!("{indent}    ");
+        for lock in &locks {
+            writeln!(out, "{inner}synchronized({lock}) {{").unwrap();
+            inner += "    ";
+        }
+        writeln!(out, "{inner}{body}").unwrap();
+        for _ in &locks {
+            inner.truncate(inner.len() - 4);
+            writeln!(out, "{inner}}}").unwrap();
+        }
+        writeln!(out, "{indent}}}\n").unwrap();
         out
     }
 
@@ -659,32 +698,49 @@ impl Kotlin<'_> {
         }
         if callbacks {
             out += r#"
-/* The calling thread's JNIEnv, attaching threads the JVM doesn't know. */
-static JNIEnv* attached_env(void) {
+/* The calling thread's JNIEnv, attaching the thread if the JVM doesn't
+ * know it; `attached` says whether this call did. NULL if it can't. */
+static JNIEnv* attached_env(int* attached) {
     JNIEnv* env = NULL;
-    if ((*g_vm)->GetEnv(g_vm, (void**)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
+    *attached = 0;
+    jint known = (*g_vm)->GetEnv(g_vm, (void**)&env, JNI_VERSION_1_6);
+    if (known == JNI_OK) return env;
+    if (known != JNI_EDETACHED) return NULL;
 #ifdef __ANDROID__
-        (*g_vm)->AttachCurrentThreadAsDaemon(g_vm, &env, NULL);
+    if ((*g_vm)->AttachCurrentThreadAsDaemon(g_vm, &env, NULL) != JNI_OK) return NULL;
 #else
-        (*g_vm)->AttachCurrentThreadAsDaemon(g_vm, (void**)&env, NULL);
+    if ((*g_vm)->AttachCurrentThreadAsDaemon(g_vm, (void**)&env, NULL) != JNI_OK) return NULL;
 #endif
-    }
+    *attached = 1;
     return env;
 }
 
+/* Detaches a thread `attached_env` attached: the library's threads may
+ * exit, and the JVM must not see a thread exit attached. */
+static void release_env(int attached) {
+    if (attached) (*g_vm)->DetachCurrentThread(g_vm);
+}
+
 static void callback_run(const void* data) {
-    JNIEnv* env = attached_env();
+    int attached;
+    JNIEnv* env = attached_env(&attached);
+    if (!env) return;
     jobject result = (*env)->CallObjectMethod(env, (jobject)data, g_function0_invoke);
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionDescribe(env);
         (*env)->ExceptionClear(env);
     }
     if (result) (*env)->DeleteLocalRef(env, result);
+    release_env(attached);
 }
 
+/* Without a JNIEnv the reference can't be deleted, and stays. */
 static void callback_destroy(const void* data) {
-    JNIEnv* env = attached_env();
+    int attached;
+    JNIEnv* env = attached_env(&attached);
+    if (!env) return;
     (*env)->DeleteGlobalRef(env, (jobject)data);
+    release_env(attached);
 }
 "#;
         }
