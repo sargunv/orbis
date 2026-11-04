@@ -127,6 +127,19 @@ impl Extrusions {
         self.size = [0; 2];
         true
     }
+    /// The depth 3D passes share, once a resize made it, and how its
+    /// passes store it: a single pass's is transient.
+    pub(crate) fn depth(&self) -> Option<(TextureId, StoreOp)> {
+        let store = if self.single_layer {
+            StoreOp::Discard
+        } else {
+            StoreOp::Store
+        };
+        self.depth.map(|d| (d, store))
+    }
+
+    /// Sizes the depth `count` 3D passes share: extrusion layers and
+    /// terrain stacks.
     pub(crate) fn resize(&mut self, gpu: &mut dyn Gpu, size: [u32; 2], count: usize) -> bool {
         if count == 0 || (self.size == size && self.single_layer == (count == 1)) {
             return false;
@@ -136,7 +149,7 @@ impl Extrusions {
             gpu.destroy_texture(depth);
         }
         self.depth = Some(gpu.create_texture(&TextureDesc {
-            label: "extrusion depth",
+            label: "3d depth",
             width: size[0],
             height: size[1],
             array_layers: 1,
@@ -148,6 +161,7 @@ impl Extrusions {
                     TextureUsages::empty()
                 },
             sample_count: self.samples,
+            mip_levels: 1,
         }));
         self.size = size;
         self.single_layer = count == 1;
@@ -186,6 +200,7 @@ impl Extrusions {
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             sample_count: 1,
+            mip_levels: 1,
         });
         let multisample = (self.samples > 1).then(|| {
             gpu.create_texture(&TextureDesc {
@@ -196,6 +211,7 @@ impl Extrusions {
                 format: TextureFormat::Rgba8Unorm,
                 usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
                 sample_count: self.samples,
+                mip_levels: 1,
             })
         });
         let group = gpu.create_bind_group(&BindGroupDesc {

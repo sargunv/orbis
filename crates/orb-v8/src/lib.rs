@@ -21,6 +21,7 @@ mod sky;
 mod source;
 mod spec;
 mod sprite;
+mod terrain;
 
 use std::collections::HashSet;
 use std::fmt;
@@ -49,6 +50,7 @@ pub use source::{
     TileSet, VectorSource,
 };
 pub use sprite::Sprite;
+pub use terrain::Terrain;
 
 use orb_expr::json::{self, Json, Member};
 
@@ -70,6 +72,7 @@ pub struct Style {
     /// The root `state`: each global state property's default.
     pub state: Vec<(String, Value<'static>)>,
     pub sky: Option<Sky>,
+    pub terrain: Option<Terrain>,
     pub sources: Vec<Source>,
     pub layers: Vec<Layer>,
     /// What parsed but isn't supported or rendered yet.
@@ -144,13 +147,7 @@ pub fn parse_with_state(
 }
 
 /// Root keys v8 defines that Orbis does not model yet.
-const UNMODELED_ROOT: &[&str] = &[
-    "centerAltitude",
-    "roll",
-    "projection",
-    "terrain",
-    "transition",
-];
+const UNMODELED_ROOT: &[&str] = &["centerAltitude", "roll", "projection", "transition"];
 
 fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -> Option<Style> {
     let root = cx.object(doc, "")?;
@@ -158,7 +155,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         match m.key.as_str() {
             "version" | "name" | "metadata" | "center" | "zoom" | "bearing" | "pitch"
             | "sources" | "layers" | "sprite" | "glyphs" | "font-faces" | "light" | "state"
-            | "sky" => {}
+            | "sky" | "terrain" => {}
             // Edits apply at once: what a zero-duration transition asks.
             "transition" if m.value.get("duration").and_then(Json::as_f64) == Some(0.0) => {}
             key if UNMODELED_ROOT.contains(&key) => {
@@ -243,6 +240,9 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         light: light::parse(cx, doc.get("light")),
         state,
         sky: doc.get("sky").map(|json| sky::parse(cx, json)),
+        terrain: doc
+            .get("terrain")
+            .and_then(|json| terrain::parse(cx, json, &sources)),
         sources,
         layers,
         warnings: Vec::new(),
@@ -325,6 +325,19 @@ pub fn parse_sky(
         Ok((sky, cx.diagnostics.warnings))
     } else {
         Err(cx.diagnostics)
+    }
+}
+
+/// Parses a root `terrain` against the style's sources, returning its
+/// warnings.
+pub fn parse_terrain(
+    json: &Json,
+    sources: &[Source],
+) -> Result<(Terrain, Vec<Diagnostic>), Diagnostics> {
+    let mut cx = Cx::default();
+    match terrain::parse(&mut cx, json, sources) {
+        Some(terrain) if cx.diagnostics.errors.is_empty() => Ok((terrain, cx.diagnostics.warnings)),
+        _ => Err(cx.diagnostics),
     }
 }
 

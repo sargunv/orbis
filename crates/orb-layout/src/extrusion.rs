@@ -41,6 +41,34 @@ pub fn layout_in_extent(layer: &Layer, features: &[u32], output_extent: u32) -> 
     )
 }
 
+/// A feature's centroid in a tile grid of `output_extent` units: the mean
+/// of its rings' vertices, each closed ring's repeated last vertex left
+/// out, floored, as GL JS's `accumulatePointsToCentroid` takes it per
+/// polygon. Terrain raises extrusions by the ground under it.
+pub fn centroid(layer: &Layer, feature: u32, output_extent: u32) -> [i16; 2] {
+    let (mut x, mut y, mut n) = (0i64, 0i64, 0i64);
+    for part in layer.geometry(feature as usize).parts() {
+        for ring in part.rings() {
+            let last = ring.len().saturating_sub(1);
+            for (i, p) in ring.iter().enumerate() {
+                if i == last && i > 0 && ring[0] == *p {
+                    continue;
+                }
+                x += i64::from(p[0]);
+                y += i64::from(p[1]);
+                n += 1;
+            }
+        }
+    }
+    if n == 0 {
+        return [0; 2];
+    }
+    let scale = f64::from(output_extent) / f64::from(layer.extent());
+    let mean = |s: i64| ((s as f64 / n as f64) * scale).floor();
+    let clamp = |v: f64| v.clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+    [clamp(mean(x)), clamp(mean(y))]
+}
+
 fn layout_normalized(layer: &Layer, features: &[u32]) -> Mesh {
     let roof = fill::layout(layer, features);
     let mut builder = MeshBuilder::new(STRIDE);

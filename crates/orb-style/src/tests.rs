@@ -312,3 +312,25 @@ fn sky_rebinds_changed_global_state() {
         [0.0, 0.0, 1.0, 1.0]
     );
 }
+
+#[test]
+fn terrain_switches_without_a_reload_and_follows_its_source() {
+    let mut doc = StyleDoc::parse(r##"{"version":8,"sources":{"dem":{"type":"raster-dem","tiles":["x/{z}/{x}/{y}.png"]}},"layers":[{"id":"bg","type":"background"}]}"##).unwrap();
+    assert!(doc.style().terrain.is_none());
+    let patch = commands(
+        &mut doc,
+        r#"[["setTerrain",{"source":"dem","exaggeration":2}]]"#,
+    );
+    assert!(!patch.changes.contains(&Change::Restyle));
+    assert_eq!(doc.style().terrain.as_ref().unwrap().exaggeration, 2.0);
+    // Layer edits keep it.
+    commands(
+        &mut doc,
+        r#"[["setPaintProperty","bg","background-color","green"]]"#,
+    );
+    assert_eq!(doc.style().terrain.as_ref().unwrap().source, "dem");
+    commands(&mut doc, r#"[["setTerrain",null]]"#);
+    assert!(doc.style().terrain.is_none());
+    let missing = Transaction::from_commands(r#"[["setTerrain",{"source":"nope"}]]"#).unwrap();
+    assert!(doc.apply(&missing).is_err());
+}

@@ -111,6 +111,7 @@ impl ImageAtlas {
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             sample_count: 1,
+            mip_levels: 1,
         });
         let table = gpu.create_buffer(&BufferDesc {
             label: "image rects",
@@ -121,6 +122,7 @@ impl ImageAtlas {
             label: "images",
             filter: FilterMode::Linear,
             address: AddressMode::ClampToEdge,
+            mipmap_filter: FilterMode::Nearest,
         });
         let lines = crate::line::LineAtlas::new(gpu);
         Self {

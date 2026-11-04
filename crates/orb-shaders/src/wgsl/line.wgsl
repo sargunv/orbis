@@ -143,11 +143,11 @@ fn line_vertex(v: Pulled) -> LineOut {
     // GL JS lineUniformValues uses transform.zoom for u_ratio (tileZoom
     // is used only for patterned/dashed line atlas scaling). In our camera-
     // relative world space, its reciprocal is world_per_px / tile.scale.
-    let px_to_data = frame.world_per_px / tile.scale;
+    let px_to_data = tile.world_per_px / tile.scale;
     let dist = outset * extrude * EXTRUDE_SCALE;
     let offset2 = offset * offset_normal * EXTRUDE_SCALE * normal.y;
 
-    let shift = translate_world(node.translate, node.translate_anchor);
+    let shift = translate_world(node.translate, node.translate_anchor, tile);
     let center = pos + offset2 * px_to_data + vec2<f32>(shift.x, -shift.y) / tile.scale;
     let projected_no_extrude = frame.view_proj * vec4<f32>(tile_to_world(tile, center), 0.0, 1.0);
     let extruded = center + dist * px_to_data;

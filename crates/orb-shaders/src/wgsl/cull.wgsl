@@ -66,12 +66,12 @@ fn outside_frustum(c: array<vec4<f32>, 8>, margin: vec2<f32>) -> bool {
     return right || left || top || bottom || far || near;
 }
 
-fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation: f32) -> bool {
+fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation: f32, draped: bool) -> bool {
     let point_instances = draw == DRAW_POINTS;
     let chunk = chunks[candidate.chunk];
     let tile = tiles[candidate.tile];
 
-    let margin = margin_px * frame.world_per_px / tile.scale;
+    let margin = margin_px * tile.world_per_px / tile.scale;
     let before_clip = select(margin, 0.0, point_instances);
     var lo = unpack_i16x2(chunk.bounds_min) - vec2<f32>(before_clip);
     var hi = unpack_i16x2(chunk.bounds_max) + vec2<f32>(before_clip);
@@ -94,17 +94,25 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
     if any(clip_lo > clip_hi) {
         return false;
     }
+    // A drape placement exists only for a slot to draw: its clip
+    // rectangles are the slot's part of the tile.
+    if draped {
+        return true;
+    }
     let after_clip = select(0.0, margin, point_instances);
     lo = clip_lo - vec2<f32>(after_clip);
     hi = clip_hi + vec2<f32>(after_clip);
+    // On terrain, content stands between the lowest and highest ground
+    // under the placement; extrusions rise above it.
+    let ground = unpack_i16x2(tile.terrain_range) * TERRAIN_RANGE_UNIT * frame.extrusion_scale;
     var corners = array<vec4<f32>, 8>(
-        frame.view_proj * vec4<f32>(tile_to_world(tile, lo), 0.0, 1.0),
-        frame.view_proj * vec4<f32>(tile_to_world(tile, vec2<f32>(hi.x, lo.y)), 0.0, 1.0),
-        frame.view_proj * vec4<f32>(tile_to_world(tile, vec2<f32>(lo.x, hi.y)), 0.0, 1.0),
-        frame.view_proj * vec4<f32>(tile_to_world(tile, hi), 0.0, 1.0),
+        frame.view_proj * vec4<f32>(tile_to_world(tile, lo), ground.x, 1.0),
+        frame.view_proj * vec4<f32>(tile_to_world(tile, vec2<f32>(hi.x, lo.y)), ground.x, 1.0),
+        frame.view_proj * vec4<f32>(tile_to_world(tile, vec2<f32>(lo.x, hi.y)), ground.x, 1.0),
+        frame.view_proj * vec4<f32>(tile_to_world(tile, hi), ground.x, 1.0),
         vec4<f32>(0.0),vec4<f32>(0.0),vec4<f32>(0.0),vec4<f32>(0.0),
     );
-    let raised = frame.view_proj * vec4<f32>(0.0,0.0,elevation * frame.extrusion_scale,0.0);
+    let raised = frame.view_proj * vec4<f32>(0.0, 0.0, ground.y - ground.x + elevation * frame.extrusion_scale, 0.0);
     for (var i = 0u; i < 4u; i++) { corners[i+4u] = corners[i] + raised; }
     let screen_margin = 2.0 * margin_px / frame.viewport;
     return !outside_frustum(corners, screen_margin);
@@ -133,7 +141,7 @@ fn cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     let node = node_cull[group.x];
     if lane == 0u {
         node_count = node.candidate_count;
-        node_draw = node.draw;
+        node_draw = node.draw & 255u;
     }
     let draw = workgroupUniformLoad(&node_draw);
     if draw == DRAW_INDEXED {
@@ -153,7 +161,7 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
         var candidate: Candidate;
         if i < count {
             candidate = candidates[node.visible_base + i];
-            keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, draw, node.elevation));
+            keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, draw, node.elevation, (node.draw & DRAPED) != 0u));
         }
         // Inclusive Hillis–Steele scan of `keep` across the workgroup.
         scan[lane] = keep;
@@ -199,7 +207,7 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
     let i = start + lane;
     if lane < INDEXED_BATCH && i < count {
         let candidate = candidates[node.visible_base + i];
-        let keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation));
+        let keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u));
         let chunk = chunks[candidate.chunk];
         if keep == 1u {
             atomicMax(&extent, candidate.slot + chunk.index_count - node.index_base);

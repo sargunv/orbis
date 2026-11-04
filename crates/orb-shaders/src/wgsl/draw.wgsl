@@ -9,6 +9,35 @@
 @group(0) @binding(5) var<storage, read> indices: array<u32>;
 @group(0) @binding(6) var<storage, read> props: array<u32>;
 @group(0) @binding(7) var<storage, read> node_cull: array<NodeCull>;
+// The terrain's DEM page: padded elevations (decision 0019).
+@group(0) @binding(14) var dem_pages: texture_2d_array<f32>;
+
+fn dem_pixel(p: vec2<i32>, layer: u32) -> f32 {
+    let hi = vec2<i32>(textureDimensions(dem_pages)) - 1;
+    let texel = textureLoad(dem_pages, clamp(p, vec2<i32>(0), hi), layer, 0);
+    return dot(vec4<f32>(texel.rgb * 255.0, -1.0), frame.dem_unpack);
+}
+
+// The terrain's elevation in metres, with exaggeration, under data point
+// `p` of a placement: its DEM, bilinear between pixels as the terrain's
+// mesh samples it. Sea level where it has none.
+fn ground_elevation(tile: Tile, p: vec2<f32>) -> f32 {
+    let layer = tile.dem & 0xffffu;
+    if layer == 0xffffu || frame.terrain_exaggeration == 0.0 {
+        return 0.0;
+    }
+    let depth = f32((tile.dem >> 16u) & 255u);
+    let offset = vec2<f32>(f32(tile.dem_offset & 0xffffu), f32(tile.dem_offset >> 16u));
+    let uv = (p / tile.extent + offset) / exp2(depth);
+    let coord = uv * frame.dem_dim + 1.5;
+    let f = fract(coord);
+    let c = vec2<i32>(floor(coord));
+    let tl = dem_pixel(c, layer);
+    let tr = dem_pixel(c + vec2<i32>(1, 0), layer);
+    let bl = dem_pixel(c + vec2<i32>(0, 1), layer);
+    let br = dem_pixel(c + vec2<i32>(1, 1), layer);
+    return mix(mix(tl, tr, f.x), mix(bl, br, f.x), f.y) * frame.terrain_exaggeration;
+}
 
 // A vertex to shade, however the draw found it.
 struct Pulled {
@@ -160,12 +189,12 @@ fn table_color(row: u32, slot: u32, c: Curve, tile_zoom: f32) -> vec4<f32> {
 // A `*-translate` in pixels as a camera-relative world offset, after GL JS's
 // `translatePosition`: map-anchored, or turned with the map's bearing for
 // the `viewport` anchor.
-fn translate_world(px: vec2<f32>, viewport_anchor: u32) -> vec2<f32> {
+fn translate_world(px: vec2<f32>, viewport_anchor: u32, tile: Tile) -> vec2<f32> {
     var t = px;
     if viewport_anchor != 0u {
         let s = sin(frame.bearing);
         let c = cos(frame.bearing);
         t = vec2<f32>(t.x * c - t.y * s, t.x * s + t.y * c);
     }
-    return vec2<f32>(t.x, -t.y) * frame.world_per_px;
+    return vec2<f32>(t.x, -t.y) * tile.world_per_px;
 }

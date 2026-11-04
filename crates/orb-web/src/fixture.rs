@@ -231,6 +231,7 @@ impl FixtureRenderer {
             format: format.color,
             usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
             sample_count: 1,
+            mip_levels: 1,
         });
         let viewport = Viewport {
             width: logical_width as f64,

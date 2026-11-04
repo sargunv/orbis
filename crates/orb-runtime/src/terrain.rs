@@ -1,0 +1,703 @@
+//! Terrain on the scene side (plan §9.4, decision 0019): the DEM tiles the
+//! terrain stands on, its cover of terrain tiles, their drape slots, and
+//! the CPU elevations the camera, cover and queries read.
+//!
+//! Terrain tiles are 512 logical pixels at their zoom, covered as GL JS's
+//! terrain covers; each samples the DEM tile at its zoom less `delta`, so
+//! that its 128-cell grid has one vertex per DEM pixel: GL JS's density
+//! for 256- and 512-pixel DEM tiles alike. A terrain tile redraws its
+//! drape slots when the draped content under it changes, and when only
+//! the zoom changed once the camera has stopped, as GL JS's render to
+//! texture does.
+
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+use glam::DVec2;
+use orb_camera::{CameraState, View};
+use orb_crs::{CoveredTile, TileIndex, TileMatrixSet, WorldRect};
+use orb_render::{
+    ClipRect, DRAPE_SLOT_PX, DemRef, DrapeLayout, PageId, PlacementTarget, TerrainDem, TerrainTile,
+    TileRow,
+};
+use orb_source::{Draw, TilePyramid};
+use orb_tile::DemGrid;
+
+/// Terrain tiles' side at their zoom, in logical pixels.
+pub(crate) const TERRAIN_TILE_PX: f64 = 512.0;
+/// GL JS's terrain tile manager covers up to zoom 22.
+const TERRAIN_MAX_ZOOM: u8 = 22;
+/// Ready DEM tiles kept beyond those in use.
+const DEM_CACHE: usize = 64;
+
+/// A DEM tile the terrain stands on: its layer in the terrain's page and
+/// its elevations on the CPU.
+#[derive(Debug)]
+pub(crate) struct DemTile {
+    pub(crate) layer: u32,
+    pub(crate) grid: Arc<DemGrid>,
+}
+
+/// A terrain tile's drape slots and what they were drawn with.
+#[derive(Debug)]
+struct Slot {
+    index: u32,
+    content: u64,
+    /// The zoom and pattern cross-fade they were drawn at.
+    look: [u64; 2],
+}
+
+#[derive(Debug)]
+pub(crate) struct Terrain {
+    /// The DEM source's index in the plan and its key.
+    pub(crate) source: usize,
+    pub(crate) key: u32,
+    pub(crate) exaggeration: f64,
+    pub(crate) pyramid: TilePyramid<DemTile>,
+    /// The DEM tiles' page, made for the first.
+    pub(crate) page: Option<PageId>,
+    pub(crate) loading: u32,
+    /// DEM zooms below a terrain tile's.
+    delta: u8,
+    min_zoom: u8,
+    max_zoom: u8,
+    /// This frame's terrain tiles.
+    pub(crate) tiles: Vec<CoveredTile>,
+    slots: HashMap<CoveredTile, Slot>,
+    free: Vec<u32>,
+    next_slot: u32,
+    generation: u64,
+    elevation: Arc<TerrainElevation>,
+    /// DEM tiles arrived or left, or the drawn tiles changed, since the
+    /// elevations were last taken.
+    stale: bool,
+    pub(crate) revision: u64,
+    /// The camera of the previous frame: zoom-only changes wait until it
+    /// stops.
+    last_camera: Option<CameraState>,
+}
+
+impl Terrain {
+    /// Terrain over a `raster-dem` source of `tile_px` tiles between
+    /// `min_zoom` and `max_zoom`.
+    pub(crate) fn new(
+        source: usize,
+        key: u32,
+        exaggeration: f64,
+        tms: &TileMatrixSet,
+        (tile_px, min_zoom, max_zoom): (f64, u8, u8),
+    ) -> Self {
+        let delta = 1 + (tile_px / 256.0).log2().round().max(0.0) as u8;
+        Self {
+            source,
+            key,
+            exaggeration,
+            pyramid: TilePyramid::new(min_zoom, max_zoom, DEM_CACHE),
+            page: None,
+            loading: 0,
+            delta,
+            min_zoom,
+            max_zoom,
+            tiles: Vec::new(),
+            slots: HashMap::new(),
+            free: Vec::new(),
+            next_slot: 0,
+            generation: 0,
+            elevation: Arc::new(TerrainElevation::empty(tms.clone(), exaggeration)),
+            stale: true,
+            revision: 0,
+            last_camera: None,
+        }
+    }
+
+    /// The DEM zoom a tile at zoom `z` reads: GL JS's `_getSourceZoom`,
+    /// never deeper than the tile.
+    fn dem_zoom(&self, z: u8) -> Option<u8> {
+        let zd = z
+            .saturating_sub(self.delta)
+            .min(self.max_zoom)
+            .max(self.min_zoom);
+        (zd <= z).then_some(zd)
+    }
+
+    /// The ready DEM tile a tile at `tile` reads, or its nearest ready
+    /// ancestor while it loads.
+    fn dem_for(&self, tile: TileIndex) -> Option<(TileIndex, &DemTile)> {
+        let mut at = scaled(tile, self.dem_zoom(tile.z)?);
+        loop {
+            if let Some(dem) = self.pyramid.get(at) {
+                return Some((at, dem));
+            }
+            if at.z <= self.min_zoom {
+                return None;
+            }
+            at = at.parent()?;
+        }
+    }
+
+    /// Covers the view, asks for the DEM tiles missing and returns the
+    /// tiles to request.
+    pub(crate) fn update(&mut self, view: &View, tms: &TileMatrixSet) -> Vec<TileIndex> {
+        let tiles = view.cover_volume(
+            tms,
+            TERRAIN_TILE_PX,
+            TERRAIN_MAX_ZOOM,
+            0.0,
+            Some(&*self.elevation),
+        );
+        if tiles != self.tiles {
+            self.stale = true;
+        }
+        self.tiles = tiles;
+        let mut wanted: Vec<CoveredTile> = self
+            .tiles
+            .iter()
+            .filter_map(|t| {
+                Some(CoveredTile {
+                    index: scaled(t.index, self.dem_zoom(t.index.z)?),
+                    wrap: 0,
+                })
+            })
+            .collect();
+        wanted.sort();
+        wanted.dedup();
+        let update = self.pyramid.update(&wanted);
+        update.request
+    }
+
+    /// A DEM tile arrived: its page layer and elevations.
+    pub(crate) fn insert(&mut self, tile: TileIndex, dem: DemTile) -> Option<DemTile> {
+        self.stale = true;
+        self.pyramid.insert(tile, dem)
+    }
+
+    pub(crate) fn evict(&mut self) -> Vec<DemTile> {
+        let evicted = self.pyramid.evict();
+        if !evicted.is_empty() {
+            self.stale = true;
+        }
+        evicted
+    }
+
+    /// The CPU elevations, taken again when DEM tiles or drawn tiles
+    /// changed.
+    pub(crate) fn elevation(&mut self, tms: &TileMatrixSet) -> &Arc<TerrainElevation> {
+        if std::mem::take(&mut self.stale) {
+            let dems = self
+                .pyramid
+                .ready()
+                .map(|(tile, dem)| (tile, Arc::clone(&dem.grid)))
+                .collect();
+            let drawn = self.tiles.iter().map(|t| t.index).collect();
+            let mut elevation = TerrainElevation::empty(tms.clone(), self.exaggeration);
+            elevation.dems = dems;
+            elevation.drawn = drawn;
+            elevation.delta = self.delta;
+            elevation.min_zoom = self.min_zoom;
+            elevation.max_zoom = self.max_zoom;
+            self.elevation = Arc::new(elevation);
+            self.revision += 1;
+        }
+        &self.elevation
+    }
+
+    /// The elevations as last taken.
+    pub(crate) fn snapshot(&self) -> Arc<TerrainElevation> {
+        Arc::clone(&self.elevation)
+    }
+
+    /// The DEM a placement of `tile` stands on, and the range of
+    /// elevations under it.
+    pub(crate) fn ground(&self, tile: TileIndex) -> (DemRef, [f32; 2]) {
+        let Some((dem_tile, dem)) = self.dem_for(tile) else {
+            return (DemRef::NONE, [0.0; 2]);
+        };
+        let depth = tile.z - dem_tile.z;
+        let offset = |v: u32| (v - (v >> depth << depth)) as u16;
+        let e = self.exaggeration as f32;
+        (
+            DemRef {
+                layer: dem.layer as u16,
+                depth,
+                offset: [offset(tile.col), offset(tile.row)],
+            },
+            [dem.grid.min() * e, dem.grid.max() * e],
+        )
+    }
+
+    /// This frame's terrain tiles for the renderer, with slots assigned
+    /// from `layout`, and which tile slots to redraw. `content` hashes the
+    /// draped content under a terrain tile; `look` is the zoom and
+    /// cross-fade it draws at, redrawn for only once `camera` stops.
+    pub(crate) fn plan(
+        &mut self,
+        tms: &TileMatrixSet,
+        view: &View,
+        camera: &CameraState,
+        layout: DrapeLayout,
+        content: &dyn Fn(CoveredTile) -> u64,
+        look: [u64; 2],
+    ) -> (Vec<TerrainTile>, Vec<(CoveredTile, u32)>) {
+        if layout.generation != self.generation {
+            self.generation = layout.generation;
+            self.slots.clear();
+            self.free.clear();
+            self.next_slot = 0;
+        }
+        let moving = self.last_camera.is_some_and(|last| last != *camera);
+        self.last_camera = Some(*camera);
+        let keep: HashSet<CoveredTile> = self.tiles.iter().copied().collect();
+        let free = &mut self.free;
+        self.slots.retain(|tile, slot| {
+            let kept = keep.contains(tile);
+            if !kept {
+                free.push(slot.index);
+            }
+            kept
+        });
+        let period = tms.projection().wrap_period().unwrap_or(0.0);
+        let mut out = Vec::with_capacity(self.tiles.len());
+        let mut redraw = Vec::new();
+        for &tile in &self.tiles {
+            let content = content(tile);
+            let slot = match self.slots.get_mut(&tile) {
+                Some(slot) => {
+                    if slot.content != content || (slot.look != look && !moving) {
+                        slot.content = content;
+                        slot.look = look;
+                        redraw.push((tile, slot.index));
+                    }
+                    slot.index
+                }
+                None => {
+                    let index = self.free.pop().unwrap_or_else(|| {
+                        self.next_slot += 1;
+                        self.next_slot - 1
+                    });
+                    self.slots.insert(
+                        tile,
+                        Slot {
+                            index,
+                            content,
+                            look,
+                        },
+                    );
+                    redraw.push((tile, index));
+                    index
+                }
+            };
+            let bounds = tms.tile_bounds(tile.index);
+            let origin = DVec2::new(bounds.min.x + f64::from(tile.wrap) * period, bounds.max.y)
+                - view.camera_world();
+            let dem = self.dem_for(tile.index).map(|(dem_tile, _)| {
+                let depth = tile.index.z - dem_tile.z;
+                let scale = 0.5f32.powi(i32::from(depth));
+                let d = |v: u32| (v - (v >> depth << depth)) as f32 * scale;
+                TerrainDem {
+                    layer: self.pyramid.get(dem_tile).expect("ready").layer,
+                    offset: [d(tile.index.col), d(tile.index.row)],
+                    scale,
+                }
+            });
+            out.push(TerrainTile {
+                origin: [origin.x as f32, origin.y as f32],
+                scale: (tms.tile_span(tile.index.z) / f64::from(orb_render::TERRAIN_EXTENT)) as f32,
+                dem,
+                slot,
+            });
+        }
+        (out, redraw)
+    }
+
+    /// Tile slots in use: the atlas must hold this many.
+    pub(crate) fn slots_needed(&self) -> u32 {
+        self.next_slot.max(self.tiles.len() as u32)
+    }
+}
+
+/// `tile`'s ancestor (or itself) at zoom `z ≤ tile.z`.
+fn scaled(tile: TileIndex, z: u8) -> TileIndex {
+    let d = tile.z - z;
+    TileIndex::new(z, tile.col >> d, tile.row >> d)
+}
+
+/// A drawn tile's place on the surface: its bounds in its world copy (a
+/// warped tile's frame).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Drawn {
+    pub(crate) bounds: WorldRect,
+}
+
+impl Drawn {
+    pub(crate) fn of(
+        tms: &TileMatrixSet,
+        draw: &Draw,
+        frame: Option<WorldRect>,
+        period: f64,
+    ) -> Self {
+        let bounds = frame.unwrap_or_else(|| tms.tile_bounds(draw.tile));
+        Self {
+            bounds: bounds.translated(DVec2::new(f64::from(draw.wrap) * period, 0.0)),
+        }
+    }
+
+    /// Whether it overlaps a terrain tile of the surface's matrix set.
+    pub(crate) fn overlaps(&self, surface: &TileMatrixSet, terrain: CoveredTile) -> bool {
+        let (a, b) = (self.bounds, terrain_bounds(surface, terrain));
+        let eps = 1e-9 * surface.tile_span(0);
+        a.min.x < b.max.x - eps
+            && b.min.x < a.max.x - eps
+            && a.min.y < b.max.y - eps
+            && b.min.y < a.max.y - eps
+    }
+}
+
+/// A terrain tile's bounds in its world copy.
+fn terrain_bounds(surface: &TileMatrixSet, terrain: CoveredTile) -> WorldRect {
+    let period = surface.projection().wrap_period().unwrap_or(0.0);
+    surface
+        .tile_bounds(terrain.index)
+        .translated(DVec2::new(f64::from(terrain.wrap) * period, 0.0))
+}
+
+/// Drape placements of a drawn tile (`extent` data units a side, mapped
+/// by its map placements `map_rows`) for a terrain tile and its tile slot:
+/// one row set per drape stack, each mapping the tile's data into the
+/// stack's slot and clipped to the terrain tile.
+pub(crate) fn drape_rows(
+    surface: &TileMatrixSet,
+    drawn: Drawn,
+    extent: u32,
+    (terrain, slot): (CoveredTile, u32),
+    layout: &DrapeLayout,
+    map_rows: impl Iterator<Item = TileRow>,
+    out: &mut Vec<TileRow>,
+) {
+    let origin = DVec2::new(drawn.bounds.min.x, drawn.bounds.max.y);
+    let scale = drawn.bounds.size().x / f64::from(extent);
+    let t = terrain_bounds(surface, terrain);
+    let t_origin = DVec2::new(t.min.x, t.max.y);
+    let span = t.size().x;
+    // The terrain tile in the drawn tile's data units.
+    let lo = (t_origin - origin) / scale * DVec2::new(1.0, -1.0);
+    let hi = lo + DVec2::splat(span / scale);
+    let clamp = |v: f64| v.round().clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+    let (lo, hi) = ([clamp(lo.x), clamp(lo.y)], [clamp(hi.x), clamp(hi.y)]);
+    let k = f64::from(DRAPE_SLOT_PX) / span;
+    for row in map_rows {
+        let mut clips = [ClipRect::EMPTY; 4];
+        let mut any = false;
+        for (clip, out) in row.clips.iter().zip(&mut clips) {
+            let min = [clip.min[0].max(lo[0]), clip.min[1].max(lo[1])];
+            let max = [clip.max[0].min(hi[0]), clip.max[1].min(hi[1])];
+            if min[0] < max[0] && min[1] < max[1] {
+                *out = ClipRect::new(min, max);
+                any = true;
+            }
+        }
+        if !any {
+            continue;
+        }
+        for stack in 0..layout.stacks {
+            let [cx, cy] = layout.corner(slot, stack);
+            let corner = DVec2::new(f64::from(cx), -f64::from(cy));
+            let o = corner + (origin - t_origin) * k;
+            out.push(TileRow {
+                origin: [o.x as f32, o.y as f32],
+                scale: (scale * k) as f32,
+                clips,
+                world_per_px: (f64::from(row.world_per_px) * k) as f32,
+                target: PlacementTarget::Drape(stack as u8),
+                ..row
+            });
+        }
+    }
+}
+
+/// A content hash.
+pub(crate) fn hash(value: impl Hash) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The terrain's elevations on the CPU, as drawn: a snapshot the camera
+/// and queries hold while the map moves on (plan §9.4).
+#[derive(Debug)]
+pub struct TerrainElevation {
+    tms: TileMatrixSet,
+    exaggeration: f64,
+    delta: u8,
+    min_zoom: u8,
+    max_zoom: u8,
+    dems: HashMap<TileIndex, Arc<DemGrid>>,
+    /// Terrain tiles drawn: a point on one reads the DEM it draws with.
+    drawn: HashSet<TileIndex>,
+}
+
+impl TerrainElevation {
+    fn empty(tms: TileMatrixSet, exaggeration: f64) -> Self {
+        Self {
+            tms,
+            exaggeration,
+            delta: 1,
+            min_zoom: 0,
+            max_zoom: 0,
+            dems: HashMap::new(),
+            drawn: HashSet::new(),
+        }
+    }
+
+    /// Bytes of DEM data held.
+    pub fn bytes(&self) -> usize {
+        self.dems.values().map(|g| g.bytes()).sum()
+    }
+
+    /// The tile at zoom `z` containing a world position in the primary
+    /// world copy, with the position's uv in it.
+    fn locate(&self, world: DVec2, z: u8) -> Option<(TileIndex, DVec2)> {
+        let bounds = self.tms.projection().world_bounds();
+        let span = self.tms.tile_span(z);
+        let x = (world.x - bounds.min.x) / span;
+        let y = (bounds.max.y - world.y) / span;
+        let (cols, rows) = self.tms.matrix_size(z);
+        if !(0.0..f64::from(rows)).contains(&y) || !(0.0..f64::from(cols)).contains(&x) {
+            return None;
+        }
+        let tile = TileIndex::new(z, x as u32, y as u32);
+        Some((tile, DVec2::new(x.fract(), y.fract())))
+    }
+
+    fn wrapped(&self, world: DVec2) -> DVec2 {
+        let bounds = self.tms.projection().world_bounds();
+        match self.tms.projection().wrap_period() {
+            Some(period) => DVec2::new(
+                (world.x - bounds.min.x).rem_euclid(period) + bounds.min.x,
+                world.y,
+            ),
+            None => world,
+        }
+    }
+
+    fn dem_zoom(&self, z: u8) -> Option<u8> {
+        let zd = z
+            .saturating_sub(self.delta)
+            .min(self.max_zoom)
+            .max(self.min_zoom);
+        (zd <= z).then_some(zd)
+    }
+
+    /// The DEM tile `tile` reads, or its nearest loaded ancestor.
+    fn dem_for(&self, tile: TileIndex) -> Option<(TileIndex, &DemGrid)> {
+        let mut at = scaled(tile, self.dem_zoom(tile.z)?);
+        loop {
+            if let Some(grid) = self.dems.get(&at) {
+                return Some((at, grid));
+            }
+            if at.z <= self.min_zoom {
+                return None;
+            }
+            at = at.parent()?;
+        }
+    }
+
+    /// A DEM pixel, from the neighbouring tile past an edge as the GPU's
+    /// padded pages backfill it.
+    fn texel(&self, tile: TileIndex, grid: &DemGrid, i: i64, j: i64) -> f32 {
+        let dim = i64::from(grid.dim());
+        let (dx, dy) = (i.div_euclid(dim), j.div_euclid(dim));
+        if (dx, dy) == (0, 0) || dx.abs() > 1 || dy.abs() > 1 {
+            return grid.texel(i, j);
+        }
+        let (cols, rows) = self.tms.matrix_size(tile.z);
+        let row = i64::from(tile.row) + dy;
+        if !(0..i64::from(rows)).contains(&row) {
+            return grid.texel(i, j);
+        }
+        let col = (i64::from(tile.col) + dx).rem_euclid(i64::from(cols));
+        match self
+            .dems
+            .get(&TileIndex::new(tile.z, col as u32, row as u32))
+        {
+            Some(n) if n.dim() == grid.dim() => n.texel(i - dx * dim, j - dy * dim),
+            _ => grid.texel(i, j),
+        }
+    }
+
+    /// GL JS's `get_elevation` at a DEM tile's uv, in metres.
+    fn sample(&self, tile: TileIndex, grid: &DemGrid, uv: DVec2) -> f64 {
+        let coord = uv * f64::from(grid.dim()) - 0.5;
+        let c = coord.floor();
+        let f = coord - c;
+        let (i, j) = (c.x as i64, c.y as i64);
+        let t = |di, dj| f64::from(self.texel(tile, grid, i + di, j + dj));
+        let top = t(0, 0) + (t(1, 0) - t(0, 0)) * f.x;
+        let bottom = t(0, 1) + (t(1, 1) - t(0, 1)) * f.x;
+        top + (bottom - top) * f.y
+    }
+
+    /// Elevation of terrain tile `tile` at its uv, from the DEM tile it
+    /// draws with: GL JS's `TerrainCoverage` sample, bilinear between DEM
+    /// pixels as the mesh's vertices are.
+    fn on_tile(&self, tile: TileIndex, uv: DVec2) -> Option<f64> {
+        let (dem_tile, grid) = self.dem_for(tile)?;
+        let depth = tile.z - dem_tile.z;
+        let scale = 0.5f64.powi(i32::from(depth));
+        let offset = |v: u32| f64::from(v - (v >> depth << depth)) * scale;
+        let uv = DVec2::new(offset(tile.col), offset(tile.row)) + uv * scale;
+        Some(self.sample(dem_tile, grid, uv) * self.exaggeration)
+    }
+}
+
+impl orb_camera::Elevation for TerrainElevation {
+    fn at(&self, world: DVec2) -> Option<f64> {
+        let world = self.wrapped(world);
+        // Where a terrain tile is drawn, its surface.
+        let deepest = self.drawn.iter().map(|t| t.z).max().unwrap_or(0);
+        for z in (0..=deepest).rev() {
+            if let Some((tile, uv)) = self.locate(world, z)
+                && self.drawn.contains(&tile)
+            {
+                return self.on_tile(tile, uv);
+            }
+        }
+        // Elsewhere the deepest DEM tile loaded.
+        (self.min_zoom..=self.max_zoom).rev().find_map(|z| {
+            let (tile, uv) = self.locate(world, z)?;
+            let grid = self.dems.get(&tile)?;
+            Some(self.sample(tile, grid, uv) * self.exaggeration)
+        })
+    }
+
+    fn range(&self, rect: WorldRect, z: u8) -> Option<(f64, f64)> {
+        let (tile, _) = self.locate(self.wrapped(rect.center()), z)?;
+        let (_, grid) = self.dem_for(tile)?;
+        let e = self.exaggeration;
+        Some((f64::from(grid.min()) * e, f64::from(grid.max()) * e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orb_camera::Elevation;
+
+    fn tms() -> TileMatrixSet {
+        TileMatrixSet::by_id("WebMercatorQuad").unwrap()
+    }
+
+    /// A 4×4 DEM tile rising eastward by 10 m a pixel from 100 m.
+    fn ramp() -> Arc<DemGrid> {
+        let terrarium = [256.0, 1.0, 1.0 / 256.0, 32768.0];
+        let texels: Vec<u8> = (0..16)
+            .flat_map(|i| {
+                let metres = 100 + 10 * (i % 4);
+                let v = 32768 + metres;
+                [(v >> 8) as u8, (v & 255) as u8, 0, 255]
+            })
+            .collect();
+        Arc::new(DemGrid::from_rgba(4, &texels, terrarium).unwrap())
+    }
+
+    #[test]
+    fn elevations_follow_the_drawn_mesh_and_dem_pixels() {
+        let tms = tms();
+        let mut elevation = TerrainElevation::empty(tms.clone(), 2.0);
+        elevation.delta = 1;
+        elevation.max_zoom = 12;
+        let dem = TileIndex::new(4, 8, 8);
+        elevation.dems.insert(dem, ramp());
+        let bounds = tms.tile_bounds(dem);
+        // Pixel 1's centre, 3/8 across: 110 m, doubled.
+        let at = |u: f64, v: f64| {
+            DVec2::new(
+                bounds.min.x + u * bounds.size().x,
+                bounds.max.y - v * bounds.size().y,
+            )
+        };
+        assert!((elevation.at(at(0.375, 0.5)).unwrap() - 220.0).abs() < 1e-9);
+        // Drawn at zoom 5, the terrain tile reads the same DEM.
+        elevation.drawn.insert(TileIndex::new(5, 16, 16));
+        let drawn = elevation.at(at(0.375, 0.375)).unwrap();
+        assert!((drawn - 220.0).abs() < 1e-6, "{drawn}");
+        assert_eq!(
+            elevation.range(tms.tile_bounds(TileIndex::new(5, 16, 16)), 5),
+            Some((200.0, 260.0))
+        );
+        // Nothing loaded elsewhere.
+        assert!(elevation.at(at(-1.0, 0.5)).is_none());
+    }
+
+    #[test]
+    fn drape_rows_map_tiles_into_their_slots() {
+        let tms = tms();
+        let layout = DrapeLayout {
+            stacks: 2,
+            columns: 8,
+            tile_slots: 4,
+            generation: 1,
+        };
+        let terrain = CoveredTile {
+            index: TileIndex::new(3, 2, 2),
+            wrap: 0,
+        };
+        // A vector tile one zoom deeper, in the terrain tile's south-east.
+        let draw = Draw {
+            tile: TileIndex::new(4, 5, 5),
+            wrap: 0,
+            regions: vec![TileIndex::new(4, 5, 5)],
+        };
+        let drawn = Drawn::of(&tms, &draw, None, 0.0);
+        assert!(drawn.overlaps(&tms, terrain));
+        let row = TileRow {
+            origin: [0.0; 2],
+            scale: 1.0,
+            zoom: 4.0,
+            clips: [
+                ClipRect::new([0, 0], [4096, 4096]),
+                ClipRect::EMPTY,
+                ClipRect::EMPTY,
+                ClipRect::EMPTY,
+            ],
+            pattern_origin: [0; 2],
+            extent: 4096.0,
+            wrap: 0,
+            world_per_px: 1.0,
+            dem: DemRef::NONE,
+            terrain_range: [0.0; 2],
+            target: PlacementTarget::Map,
+        };
+        let mut rows = Vec::new();
+        drape_rows(
+            &tms,
+            drawn,
+            4096,
+            (terrain, 1),
+            &layout,
+            [row].into_iter(),
+            &mut rows,
+        );
+        assert_eq!(rows.len(), 2);
+        let slot = DRAPE_SLOT_PX as f32;
+        // Slot 1, stack 0 is atlas slot 2: column 2. The tile's top-left
+        // is the slot's centre; its 4096 units span half a slot.
+        assert_eq!(rows[0].origin, [2.5 * slot, -0.5 * slot]);
+        assert_eq!(rows[0].scale, slot / 2.0 / 4096.0);
+        assert_eq!(
+            rows[0].world_per_px,
+            (f64::from(DRAPE_SLOT_PX) / tms.tile_span(3)) as f32
+        );
+        assert_eq!(rows[1].target, PlacementTarget::Drape(1));
+        assert_eq!(rows[1].origin[0], 3.5 * slot);
+        // Clipped to the terrain tile: the whole vector tile is inside.
+        assert_eq!(rows[0].clips[0], ClipRect::new([0, 0], [4096, 4096]));
+        // A neighbour outside contributes nothing.
+        let away = Draw {
+            tile: TileIndex::new(4, 7, 5),
+            wrap: 0,
+            regions: vec![TileIndex::new(4, 7, 5)],
+        };
+        assert!(!Drawn::of(&tms, &away, None, 0.0).overlaps(&tms, terrain));
+    }
+}

@@ -68,6 +68,8 @@ pub(crate) struct FeatureStates {
     table: Option<Range<u32>>,
     /// Rows written to the GPU, for counters.
     pub(crate) rows_written: u64,
+    /// State operations applied.
+    writes: u64,
 }
 
 impl Default for FeatureStates {
@@ -86,6 +88,7 @@ impl Default for FeatureStates {
             zoom: f64::NAN,
             table: None,
             rows_written: 0,
+            writes: 0,
         }
     }
 }
@@ -153,7 +156,13 @@ impl FeatureStates {
         }
     }
 
+    /// Counts state writes, so what feature state draws can be redrawn.
+    pub(crate) fn writes(&self) -> u64 {
+        self.writes
+    }
+
     pub(crate) fn apply(&mut self, op: &FeatureStateOp) {
+        self.writes += 1;
         match op {
             FeatureStateOp::Set {
                 source,

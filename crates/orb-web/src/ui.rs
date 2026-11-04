@@ -3,7 +3,8 @@
 //! `hitTest` synchronously, and hands the camera to the map once a frame,
 //! on this thread or in the render worker.
 //!
-//! Cameras cross as `[lon, lat, resolution, bearing, pitch, fov, zoom]`;
+//! Cameras cross as `[lon, lat, resolution, bearing, pitch, fov, zoom,
+//! elevation]`, elevation optional;
 //! camera targets as `[lon, lat, zoom, bearing, pitch, aroundLon,
 //! aroundLat, offsetX, offsetY]` with NaN for what stays.
 
@@ -28,6 +29,7 @@ pub(crate) fn camera_array(camera: &CameraState) -> Vec<f64> {
         camera.pitch,
         camera.fov,
         camera.zoom(),
+        camera.elevation,
     ]
 }
 
@@ -39,6 +41,7 @@ pub(crate) fn camera_from(words: &[f64]) -> Result<CameraState, JsError> {
             bearing,
             pitch,
             fov,
+            elevation: words.get(7).copied().unwrap_or(0.0),
         }),
         _ => Err(JsError::new("a camera has 6 numbers or more")),
     }

@@ -439,6 +439,7 @@ impl Motion {
                     k,
                 ));
                 next.pitch = lerp(from.pitch, to.pitch, k);
+                next.elevation = lerp(from.elevation, to.elevation, k);
                 match around {
                     Some((ground, at)) => {
                         let world = projection.forward(*ground);
@@ -479,6 +480,7 @@ impl Motion {
                     k,
                 ));
                 next.pitch = lerp(from.pitch, to.pitch, k);
+                next.elevation = lerp(from.elevation, to.elevation, k);
                 let start = from.target_world(projection);
                 let world_per_px = next.world_per_px(projection);
                 next.set_target_world(projection, start + (*to_world - start) * u, world_per_px);

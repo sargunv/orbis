@@ -228,7 +228,7 @@ pub struct ColorReliefPaint {
     pub nearest: bool,
 }
 
-pub const EXTRUSION_ROW_WORDS: usize = 9;
+pub const EXTRUSION_ROW_WORDS: usize = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExtrusionPaint {

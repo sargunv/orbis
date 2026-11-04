@@ -568,6 +568,7 @@ impl HitIndex {
                 bearing: float()?,
                 pitch: float()?,
                 fov: float()?,
+                elevation: 0.0,
             };
             (camera, viewport)
         };

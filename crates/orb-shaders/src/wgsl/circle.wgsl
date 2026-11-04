@@ -75,17 +75,19 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     if gpu_slot(node.gpu, 0u) { color = gpu[0]; }
     if gpu_slot(node.gpu, 4u) { stroke = gpu[4]; }
     let corner = point_corner(index);
-    let center = tile_to_world(tile, p) + translate_world(node.translate, node.flags & 1u);
-    let projected = frame.view_proj * vec4<f32>(center, 0.0, 1.0);
+    let center = tile_to_world(tile, p) + translate_world(node.translate, node.flags & 1u, tile);
+    // On terrain, the ground under the anchor (GL JS `get_elevation`).
+    let z = ground_elevation(tile, p) * frame.extrusion_scale;
+    let projected = frame.view_proj * vec4<f32>(center, z, 1.0);
     // At the camera target (camera-relative world 0), clip.w is GL JS's
     // camera-to-center distance in logical pixels.
     let camera_distance = frame.view_proj[3].w;
     let scale_map = (node.flags & 2u) != 0u;
     if (node.flags & 4u) != 0u {
-        var scale = total * frame.world_per_px;
+        var scale = total * tile.world_per_px;
         if !scale_map { scale *= projected.w / camera_distance; }
         let offset = corner * vec2<f32>(1.0, -1.0) * scale;
-        out.position = frame.view_proj * vec4<f32>(center + offset, 0.0, 1.0);
+        out.position = frame.view_proj * vec4<f32>(center + offset, z, 1.0);
     } else {
         out.position = projected;
         let scale = select(projected.w, camera_distance, scale_map);

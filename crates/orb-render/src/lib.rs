@@ -21,14 +21,19 @@ mod heatmap;
 mod image;
 mod paint;
 mod sky;
+mod terrain;
 pub use sky::SkyPaint;
+pub use terrain::{
+    DRAPE_SLOT_PX, DrapeLayout, Fog, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem, TerrainPaint,
+    TerrainTile,
+};
 
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, PageId, PageKind};
 pub use orb_scene::Pixels;
 pub use orb_scene::{
-    ARGS_WORDS, ClipRect, FrameBlock, ImageAtlas, ImageBindings, ImageKey, ImageMetadata,
-    ImageUpload, MeshData, MeshId, NodeCull, NodeDraw, OutOfSpace, Scene, SceneCapacity,
-    SceneStats, TileId, TileRow, Words,
+    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameTerrain, ImageAtlas, ImageBindings, ImageKey,
+    ImageMetadata, ImageUpload, MeshData, MeshId, NodeCull, NodeDraw, OutOfSpace, PlacementTarget,
+    Scene, SceneCapacity, SceneStats, TileId, TileRow, Words,
 };
 pub use orb_scene::{
     GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas, PLACED_WORDS, QUAD_WORDS, SYMBOL_HEADER_WORDS,
@@ -79,6 +84,20 @@ impl Family {
     /// Whether the family draws symbol quads.
     pub fn is_symbol(self) -> bool {
         matches!(self, Self::SymbolIcon | Self::SymbolText)
+    }
+
+    /// Whether terrain drapes the family's layers over its surface rather
+    /// than drawing them in 3D or on screen (GL JS's render to texture).
+    pub fn is_draped(self) -> bool {
+        matches!(
+            self,
+            Self::Fill
+                | Self::FillOutline
+                | Self::Line
+                | Self::Raster
+                | Self::Hillshade
+                | Self::ColorRelief
+        )
     }
 
     /// How the family's nodes draw (decision 0002): meshes from compacted
@@ -137,6 +156,8 @@ struct Node {
     extrusion: Option<extrusion::NodeExtrusion>,
     /// A symbol node draws its halos in a pass of their own.
     separate_halo: bool,
+    /// On terrain, the drape stack a draped node draws into.
+    stack: Option<u8>,
 }
 
 #[derive(Debug)]
@@ -165,6 +186,15 @@ pub struct Renderer {
     images: image::Images,
     heatmaps: heatmap::Heatmaps,
     extrusions: extrusion::Extrusions,
+    /// Made for the first terrain.
+    terrain: Option<terrain::Terrain>,
+    /// The scene group over the drape frame, and the draped nodes' bundle.
+    drape_group: Option<BindGroupId>,
+    drape_bundle: Option<RenderBundleId>,
+    /// Bound for elevated content without terrain.
+    no_dem: TextureId,
+    /// The DEM texture the scene groups bind.
+    dem_bound: TextureId,
     glyphs: GlyphAtlas,
     /// The glyph atlas revision the scene group binds.
     glyphs_bound: u32,
@@ -255,6 +285,14 @@ impl Renderer {
                     visibility: ShaderStages::FRAGMENT,
                     ty: BindingType::Sampler { filtering: true },
                 },
+                BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: ShaderStages::VERTEX,
+                    ty: BindingType::Texture {
+                        sample: TextureSampleType::Float { filterable: false },
+                        dimension: TextureViewDimension::D2Array,
+                    },
+                },
             ],
         });
         let node_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -293,8 +331,26 @@ impl Renderer {
             label: "nearest",
             filter: FilterMode::Nearest,
             address: AddressMode::ClampToEdge,
+            mipmap_filter: FilterMode::Nearest,
         });
-        let draw_group = scene_group(gpu, draw_layout, &b, &images, glyphs.texture(), nearest);
+        let no_dem = gpu.create_texture(&TextureDesc {
+            label: "no dem",
+            width: 1,
+            height: 1,
+            array_layers: 1,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::TEXTURE_BINDING,
+            sample_count: 1,
+            mip_levels: 1,
+        });
+        let draw_group = scene_group(
+            gpu,
+            draw_layout,
+            &b,
+            b.frame,
+            &images,
+            (glyphs.texture(), nearest, no_dem),
+        );
         let cull_group = gpu.create_bind_group(&BindGroupDesc {
             label: "cull",
             layout: cull_layout,
@@ -362,6 +418,11 @@ impl Renderer {
             images,
             heatmaps,
             extrusions,
+            terrain: None,
+            drape_group: None,
+            drape_bundle: None,
+            no_dem,
+            dem_bound: no_dem,
             glyphs_bound: glyphs.revision(),
             nearest,
             glyphs,
@@ -464,6 +525,7 @@ impl Renderer {
                         elevation: 0.0,
                         draw: family.draw(),
                         visible: true,
+                        target: PlacementTarget::Map,
                     },
                 ),
             };
@@ -489,11 +551,108 @@ impl Renderer {
                 written: Vec::new(),
                 image,
                 separate_halo: false,
+                stack: None,
             });
         }
+        self.assign_stacks();
         let cull: Vec<NodeCull> = self.nodes.iter().map(|n| n.cull).collect();
         self.scene.remap_nodes(&map, &cull);
         self.invalidate_bundle(gpu);
+    }
+
+    /// Puts draped nodes in their drape stacks while terrain is on: each
+    /// run of them between nodes that aren't draped is a stack.
+    fn assign_stacks(&mut self) {
+        let on = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
+        let mut stacks = 0u8;
+        let mut previous = false;
+        for node in &mut self.nodes {
+            let draped = on && node.family.is_draped();
+            if draped && !previous {
+                stacks = stacks.saturating_add(1);
+            }
+            previous = draped;
+            node.stack = draped.then(|| stacks - 1);
+            node.cull.target = match node.stack {
+                Some(stack) => PlacementTarget::Drape(stack),
+                None => PlacementTarget::Map,
+            };
+        }
+    }
+
+    /// Drape stacks of the current nodes while terrain is on.
+    pub fn drape_stacks(&self) -> u32 {
+        self.nodes
+            .iter()
+            .filter_map(|n| n.stack)
+            .max()
+            .map_or(0, |s| u32::from(s) + 1)
+    }
+
+    /// Turns terrain on over a DEM page, or off. Draped nodes then draw
+    /// only drape placements: their stack's ([`PlacementTarget::Drape`]).
+    pub fn set_terrain(&mut self, gpu: &mut dyn Gpu, terrain: Option<(PageId, TerrainPaint)>) {
+        let was = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
+        match terrain {
+            Some((page, paint)) => {
+                let target = self.target;
+                let dem = self.images.dem_texture(page);
+                let dim = self.images.page_size(page)[0];
+                let t = self
+                    .terrain
+                    .get_or_insert_with(|| terrain::Terrain::new(gpu, target));
+                t.set_paint(gpu, paint, dem, dim);
+            }
+            None => {
+                if let Some(t) = &mut self.terrain {
+                    t.disable(gpu);
+                }
+            }
+        }
+        if was != self.terrain.as_ref().is_some_and(|t| t.paint.is_some()) {
+            self.assign_stacks();
+            self.sync_cull();
+            self.invalidate_bundle(gpu);
+        }
+    }
+
+    /// Whether terrain is on: draped nodes draw drape placements.
+    pub fn terrain_on(&self) -> bool {
+        self.terrain.as_ref().is_some_and(|t| t.paint.is_some())
+    }
+
+    /// Makes room for `tile_slots` terrain tiles' drape slots, one per
+    /// drape stack. A new layout generation means every slot is blank.
+    pub fn reserve_drape(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        tile_slots: u32,
+    ) -> Result<DrapeLayout, OutOfSpace> {
+        let stacks = self.drape_stacks();
+        let terrain = self.terrain.as_mut().expect("terrain is on");
+        let before = terrain.layout().generation;
+        terrain.reserve(gpu, tile_slots, stacks)?;
+        let layout = terrain.layout();
+        if layout.generation != before {
+            // Stack layers and the main bundle's composites follow it.
+            self.invalidate_bundle(gpu);
+        }
+        Ok(layout)
+    }
+
+    /// Redraws these terrain tiles' drape slots this frame: their drape
+    /// placements are in the scene.
+    pub fn redraw_drape(&mut self, tile_slots: &[u32]) {
+        if let Some(terrain) = &mut self.terrain {
+            terrain.redraw(tile_slots);
+        }
+    }
+
+    /// This frame's terrain tiles.
+    pub fn set_terrain_tiles(&mut self, gpu: &mut dyn Gpu, tiles: &[TerrainTile]) {
+        if let Some(terrain) = &mut self.terrain {
+            terrain.set_tiles(gpu, tiles);
+        }
     }
 
     fn node_uniform(&self, node: u32) -> BindingResource {
@@ -506,6 +665,9 @@ impl Renderer {
 
     fn invalidate_bundle(&mut self, gpu: &mut dyn Gpu) {
         if let Some(bundle) = self.bundle.take() {
+            gpu.destroy_render_bundle(bundle);
+        }
+        if let Some(bundle) = self.drape_bundle.take() {
             gpu.destroy_render_bundle(bundle);
         }
     }
@@ -691,19 +853,28 @@ impl Renderer {
         target: TextureId,
         clear: [f64; 4],
     ) -> FrameStats {
-        if self.glyphs.revision() != self.glyphs_bound {
-            // The glyph pages grew into new textures.
+        let dem = self
+            .terrain
+            .as_ref()
+            .and_then(terrain::Terrain::dem_texture)
+            .unwrap_or(self.no_dem);
+        // The glyph pages grew into new textures, or the terrain changed.
+        if self.glyphs.revision() != self.glyphs_bound || dem != self.dem_bound {
             gpu.destroy_bind_group(self.draw_group);
             let b = *self.scene.buffers();
             self.draw_group = scene_group(
                 gpu,
                 self.draw_layout,
                 &b,
+                b.frame,
                 &self.image_bindings,
-                self.glyphs.texture(),
-                self.nearest,
+                (self.glyphs.texture(), self.nearest, dem),
             );
             self.glyphs_bound = self.glyphs.revision();
+            self.dem_bound = dem;
+            if let Some(group) = self.drape_group.take() {
+                gpu.destroy_bind_group(group);
+            }
             self.invalidate_bundle(gpu);
             // Extrusion and heatmap nodes record the scene group too.
             for node in &mut self.nodes {
@@ -729,6 +900,23 @@ impl Renderer {
     ) -> FrameStats {
         let candidates = self.scene.prepare(gpu, frame);
         self.refresh_image_groups(gpu);
+        let terrain_on = self.terrain.as_ref().is_some_and(terrain::Terrain::active);
+        if let Some(terrain) = self.terrain.as_ref().filter(|_| terrain_on) {
+            orb_scene::write_frame(gpu, terrain.drape_frame, &terrain.drape_frame(frame));
+            if self.drape_group.is_none() {
+                let b = *self.scene.buffers();
+                self.drape_group = Some(scene_group(
+                    gpu,
+                    self.draw_layout,
+                    &b,
+                    terrain.drape_frame,
+                    &self.image_bindings,
+                    (self.glyphs.texture(), self.nearest, self.dem_bound),
+                ));
+                self.invalidate_bundle(gpu);
+            }
+        }
+        let stacks = if terrain_on { self.drape_stacks() } else { 0 };
         let density_size = frame
             .viewport
             .map(|v| (v * frame.pixel_ratio / 4.0).floor().max(1.0) as u32);
@@ -738,8 +926,11 @@ impl Renderer {
         let mut resized = self.extrusions.resize(
             gpu,
             size,
-            self.nodes.iter().filter(|n| n.extrusion.is_some()).count(),
+            self.nodes.iter().filter(|n| n.extrusion.is_some()).count() + stacks as usize,
         );
+        if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
+            resized |= terrain.resize(gpu, size, self.extrusions.samples);
+        }
         for i in 0..self.nodes.len() {
             let uniform = self.node_uniform(i as u32);
             if let Some(extrusion) = &mut self.nodes[i].extrusion {
@@ -763,7 +954,28 @@ impl Renderer {
                 });
             }
             for i in 0..self.nodes.len() {
-                self.node_commands(i, &mut commands);
+                self.node_commands(i, self.draw_group, &mut commands);
+            }
+            if let Some(drape_group) = self.drape_group.filter(|_| terrain_on) {
+                let mut drape = vec![RenderCommand::SetIndexBuffer {
+                    buffer: self.scene.buffers().compacted,
+                    format: IndexFormat::Uint32,
+                    offset: 0,
+                }];
+                for i in 0..self.nodes.len() {
+                    if self.nodes[i].stack.is_some() {
+                        self.node_commands(i, drape_group, &mut drape);
+                    }
+                }
+                self.drape_bundle = Some(gpu.create_render_bundle(
+                    &RenderBundleDesc {
+                        label: "drape",
+                        color_formats: &[self.target.color],
+                        depth_format: None,
+                        sample_count: 1,
+                    },
+                    &drape,
+                ));
             }
             self.bundle = Some(gpu.create_render_bundle(
                 &RenderBundleDesc {
@@ -831,7 +1043,17 @@ impl Renderer {
                 passes.push(Pass::Render(pass));
             }
         }
-        let mut first = true;
+        if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
+            let depth = self.extrusions.depth().expect("sized above");
+            stats.draws += terrain.passes(
+                gpu,
+                self.scene.buffers().frame,
+                self.drape_bundle,
+                depth,
+                &mut passes,
+            );
+        }
+        let mut first = !terrain_on;
         for (index, node) in self.nodes.iter_mut().enumerate() {
             if let Some(extrusion) = &mut node.extrusion {
                 passes.push(Pass::Render(self.extrusions.prepare(
@@ -866,17 +1088,27 @@ impl Renderer {
         stats
     }
 
-    /// Node `i`'s commands in the main pass, as the bundle records them.
-    fn node_commands(&self, i: usize, commands: &mut Vec<RenderCommand>) {
+    /// Node `i`'s commands as a bundle records them, over the scene group
+    /// `scene`: the map's, or the drape's for draped nodes on terrain. In
+    /// the map, a drape stack draws its terrain layer in its first node's
+    /// place.
+    fn node_commands(&self, i: usize, scene: BindGroupId, commands: &mut Vec<RenderCommand>) {
         let node = &self.nodes[i];
         let args = args_offset(i as u32);
+        if let (Some(stack), true) = (node.stack, scene == self.draw_group) {
+            let first = i == 0 || self.nodes[i - 1].stack != Some(stack);
+            if let Some(terrain) = self.terrain.as_ref().filter(|_| first) {
+                commands.extend(terrain.composite_commands(u32::from(stack)));
+            }
+            return;
+        }
         if let Some(extrusion) = &node.extrusion {
             if let Some(group) = extrusion.group {
                 commands.extend([
                     RenderCommand::SetPipeline(self.extrusions.composite),
                     RenderCommand::SetBindGroup {
                         index: 0,
-                        group: self.draw_group,
+                        group: scene,
                     },
                     RenderCommand::SetBindGroup { index: 1, group },
                     RenderCommand::Draw {
@@ -893,7 +1125,7 @@ impl Renderer {
                     RenderCommand::SetPipeline(self.heatmaps.color_pipeline),
                     RenderCommand::SetBindGroup {
                         index: 0,
-                        group: self.draw_group,
+                        group: scene,
                     },
                     RenderCommand::SetBindGroup { index: 1, group },
                     RenderCommand::Draw {
@@ -913,7 +1145,7 @@ impl Renderer {
             commands.extend([
                 RenderCommand::SetBindGroup {
                     index: 0,
-                    group: self.draw_group,
+                    group: scene,
                 },
                 RenderCommand::SetBindGroup {
                     index: 1,
@@ -944,7 +1176,7 @@ impl Renderer {
             RenderCommand::SetPipeline(pipeline),
             RenderCommand::SetBindGroup {
                 index: 0,
-                group: self.draw_group,
+                group: scene,
             },
             RenderCommand::SetBindGroup {
                 index: 1,
@@ -1051,13 +1283,13 @@ fn scene_group(
     gpu: &mut dyn Gpu,
     layout: BindGroupLayoutId,
     b: &orb_scene::SceneBuffers,
+    frame: BufferId,
     images: &ImageBindings,
-    glyphs: TextureId,
-    nearest: SamplerId,
+    (glyphs, nearest, dem): (TextureId, SamplerId, TextureId),
 ) -> BindGroupId {
     let whole = BindingResource::buffer;
     let mut entries: Vec<BindGroupEntry> = [
-        b.frame,
+        frame,
         b.tiles,
         b.chunks,
         b.visible,
@@ -1090,6 +1322,7 @@ fn scene_group(
             binding: 13,
             resource: BindingResource::Sampler(nearest),
         },
+        texture(14, dem, TextureViewDimension::D2Array),
     ]);
     gpu.create_bind_group(&BindGroupDesc {
         label: "scene",

@@ -42,7 +42,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let tile = tiles[v.tile];
     let pos = unpack_i16x2(vertices[v.vertex]);
     let feature = vertices[v.vertex+1u];
-    let row = prop_row(v, feature, 9u);
+    let row = prop_row(v, feature, v.row_words);
     let state = state_block(v, feature, node.state);
     var color = node.color;
     var height = node.height;
@@ -53,12 +53,20 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0]); }
     if from_state(state, node.state, 1u) { height = state_number(state, node.state, 1u, node.curves[1]); }
     if from_state(state, node.state, 2u) { base = state_number(state, node.state, 2u, node.curves[2]); }
-    height = max(0.0, height); base = max(0.0, base);
+    // On terrain, raise the roof by the ground under the feature's
+    // centroid (row word 9) and give ground-level parts a 10 m basement,
+    // so buildings don't hang over slopes (GL JS's `a_centroid`).
+    let gradient_base = max(0.0, base);
+    let gradient_height = max(0.0, height);
+    let raise = ground_elevation(tile, unpack_i16x2(props[row + 9u]));
+    let basement = select(0.0, 10.0, base <= 0.0 && frame.dem_dim > 0.0);
+    height = gradient_height + raise;
+    base = gradient_base + raise - basement;
     let packed = vertices[v.vertex+2u];
     let top = f32(packed & 1u);
     let normal = vec3<f32>(unpack_i16x2(packed), unpack_i16x2(vertices[v.vertex+3u]).x) / select(16384.0, 16383.0, node.pattern.enabled != 0u);
     let elevation = mix(base, height, top);
-    let shift = translate_world(node.translate, node.translate_anchor);
+    let shift = translate_world(node.translate, node.translate_anchor, tile);
     out.position = frame.view_proj * vec4<f32>(tile_to_world(tile, pos) + shift, elevation * frame.extrusion_scale, 1.0);
     // Modern uses reversed Z; the shared camera matrix remains usable by 2D.
     out.position.z = out.position.w - out.position.z;
@@ -74,7 +82,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     var directional = clamp(dot(normal, light), 0.0, 1.0);
     directional = mix(1.0-node.light_intensity, max(1.0-luminance+node.light_intensity, 1.0), directional);
     if normal.z == 0.0 && node.vertical_gradient != 0u {
-        directional *= clamp((top+base)*sqrt(height/150.0), mix(0.7,0.98,1.0-node.light_intensity), 1.0);
+        directional *= clamp((top+gradient_base)*sqrt(gradient_height/150.0), mix(0.7,0.98,1.0-node.light_intensity), 1.0);
     }
     if node.pattern.enabled != 0u {
         out.images = pattern_ids(row, 6u, node.image_from, node.image_to, node.table_mask, node.pattern);

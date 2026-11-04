@@ -274,13 +274,20 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         font_faces: old.font_faces.clone(),
         light: old.light.clone(),
         sky: old.sky.clone(),
+        terrain: None,
         state: old.state.clone(),
         sources: Vec::new(),
         layers: Vec::new(),
         warnings: Vec::new(),
     };
     if draft.new_root {
-        let mut members: Vec<Member> = draft.root.as_ref().clone();
+        // Terrain names a source: it is parsed with the sources below.
+        let mut members: Vec<Member> = draft
+            .root
+            .iter()
+            .filter(|m| m.key != "terrain")
+            .cloned()
+            .collect();
         for (key, value) in [
             ("sources", JsonValue::Object(Vec::new())),
             ("layers", JsonValue::Array(Vec::new())),
@@ -347,6 +354,13 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         if !draft.sources.iter().any(|s| s.key == key) {
             changes.push(Change::SourceRemoved(key));
         }
+    }
+
+    // Terrain reads the new sources; switching it needs no reload.
+    if let Some(json) = member(&draft.root, "terrain") {
+        let (terrain, w) = orb_v8::parse_terrain(json, &style.sources)?;
+        warnings.extend(w);
+        style.terrain = Some(terrain);
     }
 
     // Layers.

@@ -25,6 +25,7 @@ impl LineAtlas {
                 format: TextureFormat::R8Unorm,
                 usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
                 sample_count: 1,
+                mip_levels: 1,
             }),
             used: vec![false; HEIGHT as usize],
         }

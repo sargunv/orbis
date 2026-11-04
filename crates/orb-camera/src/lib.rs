@@ -12,11 +12,13 @@ mod animate;
 mod fit;
 mod moves;
 mod store;
+mod terrain;
 
 pub use animate::{CameraTarget, EaseOptions, Easing, FlyOptions, Glide, Track};
 pub use fit::{FitOptions, Padding};
 pub use moves::{Bounds, Constraints, wrap_bearing};
 pub use store::{AnimationId, Camera, CameraEvent, Change, Phase};
+pub use terrain::Elevation;
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -39,6 +41,10 @@ pub struct CameraState {
     pub pitch: f64,
     /// Vertical field of view, in degrees.
     pub fov: f64,
+    /// The target's height above the surface in metres (GL JS's center
+    /// elevation): the camera orbits a point this high. On terrain it is
+    /// the ground's elevation under the target.
+    pub elevation: f64,
 }
 
 /// Size of one tile side at its own zoom in the style zoom convention, in
@@ -61,6 +67,7 @@ impl CameraState {
             bearing: 0.0,
             pitch: 0.0,
             fov: Self::DEFAULT_FOV,
+            elevation: 0.0,
         }
     }
 
@@ -105,6 +112,12 @@ pub struct View {
     view_proj: DMat4,
     /// The eye in camera-relative world space.
     eye: DVec3,
+    /// The target's height in world units: camera-relative world space
+    /// keeps the surface datum at z = 0.
+    target_z: f64,
+    /// Distance from the eye to sea level along the view, in pixels: GL
+    /// JS's fog matrix starts here.
+    sea_level_px: f64,
     /// Distance from the eye to the target, in pixels.
     eye_distance_px: f64,
     /// Distance from the eye to the farthest visible ground point, in pixels.
@@ -117,6 +130,19 @@ pub struct View {
 
 impl View {
     pub fn new(camera: &CameraState, viewport: Viewport, projection: &Projection) -> Self {
+        Self::on_ground(camera, viewport, projection, camera.elevation)
+    }
+
+    /// A view over ground whose lowest elevation near the target is
+    /// `lowest` metres (GL JS's `minElevationForCurrentTile`, from the
+    /// terrain's DEM tile under the target): the far plane reaches down to
+    /// it.
+    pub fn on_ground(
+        camera: &CameraState,
+        viewport: Viewport,
+        projection: &Projection,
+        lowest: f64,
+    ) -> Self {
         let target = camera.target.wrapped();
         let camera_world = projection.forward(target);
         let world_per_px = camera.resolution * projection.scale_factor(target);
@@ -126,12 +152,22 @@ impl View {
         let half_fov = fov / 2.0;
         let eye_distance_px = 0.5 * viewport.height / half_fov.tan();
         let height_scale = projection.style_height_scale(target);
-        // Keep at least 100 style metres below the eye inside the far
-        // range. GL JS extends to this lower plane when the eye is close
-        // to the ground; omitting it clips high-zoom ground too early.
-        let lowest_plane_px = eye_distance_px.max(
-            100.0 * height_scale / (world_per_px * pitch.min(MAX_HORIZON_PITCH.to_radians()).cos()),
-        );
+        let target_z = camera.elevation * height_scale;
+        // GL JS's `_calculateNearFarZ`: the far range reaches sea level,
+        // or the lowest of the target and a plane 100 style metres below
+        // the eye when that is lower. Omitting the plane below the eye
+        // clips high-zoom ground too early.
+        let px_per_m = height_scale / world_per_px;
+        let limited = pitch.min(MAX_HORIZON_PITCH.to_radians());
+        let sea_level_px = (eye_distance_px / 2.0)
+            .max(eye_distance_px + camera.elevation * px_per_m / limited.cos());
+        let altitude = camera.elevation + eye_distance_px * pitch.cos() / px_per_m;
+        let lowest = camera.elevation.min(lowest).min(altitude - 100.0);
+        let lowest_plane_px = if lowest < 0.0 {
+            sea_level_px - lowest * px_per_m / limited.cos()
+        } else {
+            sea_level_px
+        };
 
         // Distance to the ground point at the top edge of the viewport, after
         // GL JS's transform.
@@ -155,7 +191,8 @@ impl View {
         let view = DMat4::from_translation(DVec3::new(0.0, 0.0, -eye_distance_px))
             * DMat4::from_rotation_x(-pitch)
             * DMat4::from_rotation_z(camera.bearing.to_radians())
-            * to_px;
+            * to_px
+            * DMat4::from_translation(DVec3::new(0.0, 0.0, -target_z));
         let proj = glam::dcamera::rh::proj::directx::perspective(
             fov,
             viewport.width / viewport.height,
@@ -186,6 +223,8 @@ impl View {
             world_per_px,
             view_proj,
             eye,
+            target_z,
+            sea_level_px,
             eye_distance_px,
             far_px,
             wrap_period: projection.wrap_period(),
@@ -245,7 +284,12 @@ impl View {
     /// Projects a world position to logical pixels, top-left origin, or
     /// `None` if it is behind the eye.
     pub fn project(&self, world: DVec2) -> Option<DVec2> {
-        let clip = self.view_proj * (world - self.camera_world).extend(0.0).extend(1.0);
+        self.project_3d(world, self.target_z)
+    }
+
+    /// Projects a world position `z` world units above the datum.
+    pub fn project_3d(&self, world: DVec2, z: f64) -> Option<DVec2> {
+        let clip = self.view_proj * (world - self.camera_world).extend(z).extend(1.0);
         (clip.w > 0.0).then(|| {
             let ndc = clip.truncate().truncate() / clip.w;
             DVec2::new(
@@ -255,40 +299,70 @@ impl View {
         })
     }
 
-    /// The world position on the ground under a point in logical pixels, or
-    /// `None` above the horizon.
+    /// The world position under a point in logical pixels on the plane
+    /// through the target, level with it (the ground without terrain; on
+    /// terrain the plane gestures drag, as GL JS's do), or `None` above
+    /// its horizon.
     pub fn unproject(&self, px: DVec2) -> Option<DVec2> {
+        let (near, far) = self.ray(px);
+        let t = (near.z - self.target_z) / (near.z - far.z);
+        (far.z < near.z && t >= 0.0)
+            .then(|| (near + (far - near) * t).truncate() + self.camera_world)
+    }
+
+    /// The near and far ends of the view ray through a point in logical
+    /// pixels, in camera-relative world space.
+    fn ray(&self, px: DVec2) -> (DVec3, DVec3) {
         let ndc = DVec2::new(
             px.x / self.viewport.width * 2.0 - 1.0,
             1.0 - px.y / self.viewport.height * 2.0,
         );
         let inverse = self.view_proj.inverse();
-        let near = inverse.project_point3(ndc.extend(0.0));
-        let far = inverse.project_point3(ndc.extend(1.0));
-        let t = near.z / (near.z - far.z);
-        (far.z < near.z && t >= 0.0)
-            .then(|| (near + (far - near) * t).truncate() + self.camera_world)
+        (
+            inverse.project_point3(ndc.extend(0.0)),
+            inverse.project_point3(ndc.extend(1.0)),
+        )
+    }
+
+    /// The target's height in world units.
+    pub fn target_z(&self) -> f64 {
+        self.target_z
+    }
+
+    /// GL JS's fog depth range in pixels along the view: from where the
+    /// view meets sea level to the far plane.
+    pub fn fog_range_px(&self) -> (f64, f64) {
+        (self.sea_level_px, self.far_px)
+    }
+
+    /// The eye's position in camera-relative world space.
+    pub fn eye(&self) -> DVec3 {
+        self.eye
     }
 
     /// The tiles of `tms` that cover the view, choosing for each the zoom at
     /// which GL JS's default level-of-detail policy selects `tile_px` tiles.
     pub fn cover(&self, tms: &TileMatrixSet, tile_px: f64, max_zoom: u8) -> Vec<CoveredTile> {
-        self.cover_volume(tms, tile_px, max_zoom, 0.0)
+        self.cover_volume(tms, tile_px, max_zoom, 0.0, None)
     }
 
     /// Covers ground and elevated content. `height` is the maximum content
     /// height in world units. As the bottom edge approaches the horizon the
     /// culling volume grows toward this height (at least 500 style metres),
     /// retaining tiles whose roofs can enter the view above their ground.
+    /// On `terrain`, tiles are culled by the elevations under them where
+    /// known, and detail varies with distance at any pitch, as GL JS's
+    /// cover does with terrain.
     pub fn cover_volume(
         &self,
         tms: &TileMatrixSet,
         tile_px: f64,
         max_zoom: u8,
         height: f64,
+        terrain: Option<&dyn Elevation>,
     ) -> Vec<CoveredTile> {
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
-        self.cover_tiles(tms, max_zoom, height, |index, offset| {
+        self.cover_tiles(tms, max_zoom, height, terrain, |index, offset| {
             let bounds = tms.tile_bounds(index).translated(DVec2::new(offset, 0.0));
             Some((bounds, center_zoom))
         })
@@ -304,7 +378,7 @@ impl View {
         mut footprint: impl FnMut(TileIndex) -> Option<Footprint>,
     ) -> Vec<CoveredTile> {
         let scale = self.world_per_px * tile_px;
-        self.cover_tiles(tms, max_zoom, 0.0, |index, offset| {
+        self.cover_tiles(tms, max_zoom, 0.0, None, |index, offset| {
             let f = footprint(index)?;
             // The zoom at which this tile, at its own scale, would span
             // `tile_px` pixels at the camera.
@@ -321,13 +395,15 @@ impl View {
         tms: &TileMatrixSet,
         max_zoom: u8,
         height: f64,
+        terrain: Option<&dyn Elevation>,
         mut place: impl FnMut(TileIndex, f64) -> Option<(WorldRect, f64)>,
     ) -> Vec<CoveredTile> {
         // GL JS grows the culling volume as the bottom edge approaches the
         // horizon. Heights here stay in world units, just like tile bounds.
         let proximity =
             ((15.0 - (MAX_HORIZON_PITCH - self.pitch - self.fov / 2.0)) / 15.0).clamp(0.0, 1.0);
-        let height = proximity * height.max(500.0 * self.height_scale);
+        let culling_z = self.target_z + proximity * height.max(500.0 * self.height_scale);
+        let flat_range = (culling_z.min(0.0), culling_z.max(0.0));
         let reach = (self.far_px * self.world_per_px).max(self.viewport.width * self.world_per_px);
         // Match the reference's bounded repeated-world policy: at most
         // three copies on either side, with the same generic DFS in each.
@@ -335,9 +411,10 @@ impl View {
             .wrap_period
             .map_or(0, |period| ((reach / period).ceil() as i32).min(3));
         // GL JS holds a constant zoom through 60 degrees (or the
-        // FOV-dependent threshold). Above it, use its default tile LOD.
+        // FOV-dependent threshold) without terrain. Above it, and on
+        // terrain, use its default tile LOD.
         let threshold = (78.5 - self.fov / 2.0).clamp(0.0, 60.0);
-        let lod = (self.pitch > threshold).then(|| {
+        let lod = (terrain.is_some() || self.pitch > threshold).then(|| {
             let horizon = MAX_HORIZON_PITCH.to_radians();
             let fov = self.fov.to_radians();
             let behavior =
@@ -360,6 +437,8 @@ impl View {
                 (count / count0 / 3.0).max(1.0).log2() / 2.0,
             )
         });
+        // The eye's height above the target, GL JS's `distanceToTileZ`.
+        let eye_height = (self.eye.z - self.target_z).abs();
         tms.cover_with(
             -copies..=copies,
             self.wrap_period,
@@ -368,17 +447,19 @@ impl View {
                 let Some((bounds, center_zoom)) = place(index, offset) else {
                     return CoverDecision::Skip;
                 };
+                let (lo, hi) = terrain
+                    .and_then(|t| t.range(bounds, index.z))
+                    .map_or(flat_range, |(lo, hi)| {
+                        (lo * self.height_scale, hi * self.height_scale)
+                    });
                 let rel = bounds.translated(-self.camera_world);
-                if !self.intersects_frustum(&rel, height) {
+                if !self.intersects_frustum(&rel, lo, hi) {
                     return CoverDecision::Skip;
                 }
-                let nearest = rel.clamp(self.eye.truncate()).extend(0.0);
                 let desired = if let Some((behavior, fov_scale, penalty)) = lod {
-                    let distance = nearest.distance(self.eye).max(1.0e-9);
-                    let tile_pitch = nearest
-                        .truncate()
-                        .distance(self.eye.truncate())
-                        .atan2(self.eye.z.abs());
+                    let distance_2d = rel.clamp(self.eye.truncate()).distance(self.eye.truncate());
+                    let distance = distance_2d.hypot(eye_height).max(1.0e-9);
+                    let tile_pitch = distance_2d.atan2(eye_height);
                     let center_distance = self.eye_distance_px * self.world_per_px;
                     center_zoom
                         + (center_distance / distance / fov_scale).log2()
@@ -398,22 +479,22 @@ impl View {
 
     /// Conservative test of a camera-relative ground rectangle against the
     /// view frustum.
-    fn intersects_frustum(&self, rect: &WorldRect, height: f64) -> bool {
+    fn intersects_frustum(&self, rect: &WorldRect, lo: f64, hi: f64) -> bool {
         // The frustum planes alone can accept disjoint boxes near a corner.
         // Include the box's three axes, as GL JS's AABB test does.
         if rect.min.x > self.frustum_max.x
             || rect.min.y > self.frustum_max.y
-            || 0.0 > self.frustum_max.z
+            || lo > self.frustum_max.z
             || rect.max.x < self.frustum_min.x
             || rect.max.y < self.frustum_min.y
-            || height < self.frustum_min.z
+            || hi < self.frustum_min.z
         {
             return false;
         }
         let corners: [_; 8] = std::array::from_fn(|i| {
             let x = if i & 1 == 0 { rect.min.x } else { rect.max.x };
             let y = if i & 2 == 0 { rect.min.y } else { rect.max.y };
-            let z = if i & 4 == 0 { 0.0 } else { height };
+            let z = if i & 4 == 0 { lo } else { hi };
             self.view_proj * DVec4::new(x, y, z, 1.0)
         });
         let all = |f: &dyn Fn(&DVec4) -> bool| corners.iter().all(f);
@@ -480,7 +561,8 @@ mod tests {
         assert!(
             ground.iter().any(|tile| {
                 let rect = tms.tile_bounds(tile.index).translated(-view.camera_world());
-                !view.intersects_frustum(&rect, 0.0) && view.intersects_frustum(&rect, 500.0)
+                !view.intersects_frustum(&rect, 0.0, 0.0)
+                    && view.intersects_frustum(&rect, 0.0, 500.0)
             }),
             "the assumed feature height retains tiles whose roofs enter the view"
         );

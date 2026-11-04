@@ -189,6 +189,7 @@ impl Images {
                 label,
                 filter,
                 address: AddressMode::ClampToEdge,
+                mipmap_filter: FilterMode::Nearest,
             })
         };
         let linear = sampler("linear", FilterMode::Linear);
@@ -202,6 +203,7 @@ impl Images {
                 format: TextureFormat::Rgba8Unorm,
                 usage: TextureUsages::TEXTURE_BINDING,
                 sample_count: 1,
+                mip_levels: 1,
             })
         };
         let placeholder_array = placeholder("no tiles", 1, 1);
@@ -343,6 +345,14 @@ impl Images {
 
     fn page_mut(&mut self, id: PageId) -> &mut Page {
         self.pages[id.0 as usize].as_mut().expect("unknown page")
+    }
+
+    /// A DEM page's padded elevations (2-texel borders from neighbours), and
+    /// the revision of its textures.
+    pub(crate) fn dem_texture(&self, id: PageId) -> (TextureId, u32) {
+        let page = self.page(id);
+        assert_eq!(page.kind, PageKind::Dem, "terrain reads DEM pages");
+        (page.page.texture(DEM_PADDED), page.page.revision())
     }
 
     /// The size of a page's tiles.
@@ -488,6 +498,7 @@ impl Images {
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             sample_count: 1,
+            mip_levels: 1,
         });
         let texels: Vec<u32> = colors.iter().chain(elevations).copied().collect();
         gpu.write_texture(

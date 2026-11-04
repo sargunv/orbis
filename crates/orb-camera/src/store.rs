@@ -2,6 +2,8 @@
 //! app's animations and jumps all move it; the host reads it once a frame
 //! and draws what it shows.
 
+use std::sync::Arc;
+
 use glam::DVec2;
 use orb_crs::Projection;
 use orb_geo::Geodetic;
@@ -9,7 +11,7 @@ use orb_geo::Geodetic;
 use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion};
 use crate::fit::FitOptions;
 use crate::moves::{Bounds, Constraints, wrap_bearing};
-use crate::{CameraState, View, Viewport};
+use crate::{CameraState, Elevation, View, Viewport};
 
 /// Identifies an animation in [`CameraEvent::AnimationEnd`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -77,6 +79,11 @@ pub struct Camera {
     events: Vec<CameraEvent>,
     modified: bool,
     revision: u64,
+    /// The map's terrain, which the target stands on.
+    terrain: Option<Arc<dyn Elevation>>,
+    /// A gesture held the target's elevation: putting it back on the
+    /// terrain keeps the eye in place.
+    elevation_held: bool,
 }
 
 impl Camera {
@@ -95,7 +102,24 @@ impl Camera {
             events: Vec::new(),
             modified: false,
             revision: 0,
+            terrain: None,
+            elevation_held: false,
         }
+    }
+
+    /// Stands the target on `terrain`, or on the surface without it. Call
+    /// it again when the terrain's DEM data changes (`Map::elevation`).
+    pub fn set_terrain(&mut self, terrain: Option<Arc<dyn Elevation>>) {
+        if terrain.is_none() {
+            self.state.elevation = 0.0;
+        }
+        self.terrain = terrain;
+        self.write(self.state);
+    }
+
+    /// The terrain the camera stands on.
+    pub fn terrain(&self) -> Option<&dyn Elevation> {
+        self.terrain.as_deref()
     }
 
     pub fn state(&self) -> &CameraState {
@@ -149,7 +173,10 @@ impl Camera {
     }
 
     pub fn view(&self) -> View {
-        View::new(&self.state, self.viewport, &self.projection)
+        match self.terrain.as_deref() {
+            Some(terrain) => View::over(&self.state, self.viewport, &self.projection, terrain),
+            None => View::new(&self.state, self.viewport, &self.projection),
+        }
     }
 
     /// The logical pixel showing `point`, or `None` behind the eye.
@@ -286,6 +313,7 @@ impl Camera {
 
     pub fn release(&mut self) {
         self.held = false;
+        self.write(self.state);
     }
 
     pub fn is_held(&self) -> bool {
@@ -420,6 +448,21 @@ impl Camera {
     fn write(&mut self, mut next: CameraState) {
         next.bearing = wrap_bearing(next.bearing);
         next.constrain(&self.constraints, &self.projection, self.viewport);
+        if let Some(terrain) = self.terrain.as_deref() {
+            // Gestures hold the target's elevation, as GL JS's do; at rest
+            // it stands on the terrain.
+            let gesture = self.held || self.running.as_ref().is_some_and(|r| r.user);
+            if gesture {
+                self.elevation_held = true;
+            } else if self.running.is_none() {
+                if std::mem::take(&mut self.elevation_held) {
+                    next.recenter_on(terrain, &self.projection, self.viewport);
+                } else {
+                    next.settle_on(terrain, &self.projection);
+                }
+            }
+            next.keep_above(terrain, &self.projection, self.viewport);
+        }
         if next != self.state {
             self.state = next;
             self.revision += 1;
@@ -476,6 +519,9 @@ impl Camera {
         }
         to.bearing = wrap_bearing(to.bearing);
         to.constrain(&self.constraints, projection, viewport);
+        if let Some(terrain) = self.terrain.as_deref() {
+            to.settle_on(terrain, projection);
+        }
         (to, around)
     }
 }

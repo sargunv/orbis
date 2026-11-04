@@ -11,6 +11,7 @@
 mod builder;
 mod column;
 mod decode;
+mod dem;
 pub mod geojson;
 mod geometry;
 pub mod mlt;
@@ -20,6 +21,7 @@ mod overzoom;
 pub use builder::LayerBuilder;
 pub use column::{Bitmap, Column, ColumnData, Value, ValueRef};
 pub use decode::DecodeError;
+pub use dem::DemGrid;
 pub use geometry::{FeatureGeometry, GeometryType, Part};
 
 #[cfg(test)]

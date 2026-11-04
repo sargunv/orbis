@@ -305,6 +305,7 @@ impl TileWorker {
             font_faces: update.font_faces.clone(),
             light: Default::default(),
             sky: None,
+            terrain: None,
             state: Vec::new(),
             sources,
             layers,
@@ -337,9 +338,15 @@ impl TileWorker {
     }
 
     /// Whether `source` (a source key) has image tiles to decode rather
-    /// than lay out, and of which kind.
+    /// than lay out, and of which kind: any of the style's sources, drawn
+    /// by layers or by the terrain alone.
     pub fn image_kind(&self, source: u32) -> Option<ImageKind> {
-        self.plan.image_kind(self.plan.source(source)?)
+        let at = self.plan.source_keys.iter().position(|&k| k == source)?;
+        match self.plan.style.sources[at].kind {
+            orb_v8::SourceKind::Raster(_) => Some(ImageKind::Raster),
+            orb_v8::SourceKind::RasterDem(_) => Some(ImageKind::Dem),
+            _ => None,
+        }
     }
 
     fn geojson_source(&self, source: u32) -> Option<&orb_v8::GeoJsonSource> {
@@ -779,7 +786,24 @@ pub struct TileRequest {
     pub nodes: Option<Vec<u32>>,
     /// Only property rows: a column job.
     pub rows_only: bool,
+    /// A terrain DEM tile: also decode its elevations with this unpack
+    /// vector, for the CPU ([`TileResult::dem`]).
+    pub dem_unpack: Option<DemUnpack>,
 }
+
+/// GL JS's unpack vector of a DEM encoding: metres are
+/// `r·x + g·y + b·z − w` over the 0–255 channels. Requests compare it
+/// bit for bit.
+#[derive(Clone, Copy, Debug)]
+pub struct DemUnpack(pub [f64; 4]);
+
+impl PartialEq for DemUnpack {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.map(f64::to_bits) == other.0.map(f64::to_bits)
+    }
+}
+
+impl Eq for DemUnpack {}
 
 impl TileRequest {
     /// The ancestor whose bytes the host fetches (including archive reads).
@@ -1137,6 +1161,7 @@ impl Jobs for PoolJobs {
         let executor = Arc::clone(&self.executor);
         if let Some(kind) = worker.image_kind(request.source) {
             let decode = Arc::clone(&self.decode);
+            let dem_unpack = request.dem_unpack;
             self.loader.load(
                 request.location,
                 request.tile,
@@ -1146,7 +1171,9 @@ impl Jobs for PoolJobs {
                     Ok((bytes, _)) => executor.spawn(Box::new(move || {
                         decode.decode(
                             bytes,
-                            Box::new(move |decoded| done(decoded.map(|i| image_result(kind, i)))),
+                            Box::new(move |decoded| {
+                                done(decoded.and_then(|i| image_result(kind, i, dem_unpack)))
+                            }),
                         );
                     })),
                     Err(e) => done(Err(e).or_else(missing)),
@@ -1223,19 +1250,38 @@ fn missing(error: FetchError) -> Result<TileResult, String> {
 }
 
 /// A decoded image tile as a result: raster colours premultiplied, as GL
-/// JS uploads them; DEM texels as decoded.
-pub(crate) fn image_result(kind: ImageKind, mut image: DecodedImage) -> TileResult {
+/// JS uploads them; DEM texels as decoded, with their elevations when
+/// terrain asked for them.
+pub(crate) fn image_result(
+    kind: ImageKind,
+    mut image: DecodedImage,
+    dem_unpack: Option<DemUnpack>,
+) -> Result<TileResult, String> {
     if kind == ImageKind::Raster {
         premultiply(&mut image.pixels);
     }
-    TileResult {
+    let dem = match dem_unpack {
+        Some(DemUnpack(unpack)) if kind == ImageKind::Dem => {
+            if image.width != image.height {
+                return Err("DEM tiles must be square".into());
+            }
+            Some(Arc::new(orb_tile::DemGrid::from_rgba(
+                image.width,
+                &image.pixels,
+                unpack,
+            )?))
+        }
+        _ => None,
+    };
+    Ok(TileResult {
+        dem,
         image: Some(TileImage {
             width: image.width,
             height: image.height,
             pixels: ImagePixels::Core(image.pixels),
         }),
         ..TileResult::default()
-    }
+    })
 }
 
 /// GL JS's `premultiplyAlpha`, in place on RGBA8 texels.
@@ -1269,6 +1315,8 @@ pub struct TileResult {
     pub host_bytes: Option<HostBytesId>,
     /// An image source's tile.
     pub image: Option<TileImage>,
+    /// A terrain DEM tile's elevations.
+    pub dem: Option<Arc<orb_tile::DemGrid>>,
     /// The tileset doesn't have the tile; nearby zooms stand in.
     pub missing: bool,
 }
@@ -1354,6 +1402,7 @@ impl From<TileBuild> for TileResult {
             host_bytes: None,
             warnings: build.warnings,
             image: None,
+            dem: None,
             missing: false,
         }
     }
@@ -1667,6 +1716,7 @@ pub fn unpack(header: &[u32], bytes: HostBytesId) -> Result<TileResult, String> 
         host_bytes: Some(bytes),
         warnings,
         image: None,
+        dem: None,
         missing: false,
     })
 }
@@ -1688,6 +1738,7 @@ pub(crate) mod tests {
             encoding: Encoding::Mvt,
             nodes: None,
             rows_only: false,
+            dem_unpack: None,
         }
     }
 

@@ -101,7 +101,7 @@ fn fill_vertex(v: Pulled) -> FillOut {
         opacity = state_number(state, node.state, 1u, node.curves[1]);
     }
 
-    let shift = translate_world(node.translate, node.translate_anchor);
+    let shift = translate_world(node.translate, node.translate_anchor, tile);
     out.position = frame.view_proj * vec4<f32>(tile_to_world(tile, pos) + shift, 0.0, 1.0);
     out.color = color * opacity;
     out.opacity = opacity;

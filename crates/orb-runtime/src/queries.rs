@@ -187,6 +187,7 @@ impl crate::Map {
             encoding: endpoint.encoding,
             nodes: None,
             rows_only: false,
+            dem_unpack: None,
         })
     }
 

@@ -395,7 +395,9 @@ pub(crate) fn build(
             .pattern(node)
             .filter(|p| matches!(p.kind(), Kind::Source | Kind::Composite));
         let line_effects = matches!(&style_layer.kind, LayerKind::Line(l) if l.paint.dasharray.as_constant() != Some(&None) || l.paint.gradient.is_some());
+        // Extrusion rows carry each feature's centroid, for terrain.
         let per_feature = line_effects
+            || node.family == Family::FillExtrusion
             || pattern.is_some()
             || bytecode != 0
             || properties.iter().any(PaintProperty::per_feature);
@@ -465,6 +467,12 @@ pub(crate) fn build(
                     }
                 }
             }
+            if node.family == Family::FillExtrusion {
+                for (i, &feature) in features.iter().enumerate() {
+                    let [x, y] = orb_layout::extrusion::centroid(layer, feature, 8192);
+                    rows[i * row_words + 9] = u32::from(x as u16) | u32::from(y as u16) << 16;
+                }
+            }
             rows
         } else {
             Vec::new()
@@ -479,10 +487,11 @@ pub(crate) fn build(
                     if let Some(name) = bound.evaluate(z, feature as usize) {
                         images.push(ImageRef {
                             word: (slot * row_words
-                                + if node.family == Family::Line {
-                                    12
-                                } else {
-                                    family_words - 3
+                                + match node.family {
+                                    Family::Line => 12,
+                                    // The feature's centroid follows.
+                                    Family::FillExtrusion => 6,
+                                    _ => family_words - 3,
                                 }
                                 + j) as u32,
                             key: orb_render::ImageKey::Name(name),

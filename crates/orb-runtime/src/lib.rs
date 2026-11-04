@@ -26,6 +26,7 @@ mod state;
 mod style;
 mod surface;
 mod symbol;
+mod terrain;
 #[cfg(test)]
 mod testing;
 mod tile;
@@ -34,8 +35,8 @@ pub use events::MapEvent;
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use jobs::{
-    Built, ImagePixels, Jobs, PoolJobs, ResultMesh, Stream, StyleUpdate, TileDone, TileImage,
-    TileRequest, TileResult, TileWorker, pack, unpack,
+    Built, DemUnpack, ImagePixels, Jobs, PoolJobs, ResultMesh, Stream, StyleUpdate, TileDone,
+    TileImage, TileRequest, TileResult, TileWorker, pack, unpack,
 };
 pub use loader::{LoadDone, TileLoader, TileLocation};
 pub use map::{FrameReport, Images, JobCounts, Map, Services};
@@ -51,4 +52,5 @@ pub use query::{Hit, HitFeature, HitIndex};
 pub use style::ImageKind;
 pub use surface::{projection_from_json, projection_to_json};
 pub use symbol::{ResultSymbols, SYMBOL_TABLES, SpriteIcons, SymbolMeta, SymbolTable};
+pub use terrain::TerrainElevation;
 pub use tile::{ImageRef, TileBuild};

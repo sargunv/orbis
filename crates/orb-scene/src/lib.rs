@@ -75,9 +75,56 @@ pub struct FrameBlock {
     pub symbol_fade_change: f32,
     /// Camera pitch, radians.
     pub pitch: f32,
+    /// The terrain elevated content stands on, if any.
+    pub terrain: Option<FrameTerrain>,
 }
 
-const FRAME_WORDS: usize = 32;
+/// What elevated content reads of the terrain's DEM page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameTerrain {
+    /// GL JS's unpack vector.
+    pub unpack: [f32; 4],
+    pub exaggeration: f32,
+    /// DEM pixels per side, without borders.
+    pub dem_dim: f32,
+}
+
+const FRAME_WORDS: usize = 40;
+
+/// Bytes of a frame block's uniform buffer.
+pub const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 4;
+
+/// Writes a frame block into a uniform buffer of [`FRAME_BYTES`]: the
+/// scene's own, or another view's of the same scene (the terrain drape's).
+pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
+    let mut words = [0u32; FRAME_WORDS];
+    for (i, v) in frame.view_proj.iter().flatten().enumerate() {
+        words[i] = v.to_bits();
+    }
+    words[16] = frame.viewport[0].to_bits();
+    words[17] = frame.viewport[1].to_bits();
+    words[18] = frame.world_per_px.to_bits();
+    words[19] = frame.pixel_ratio.to_bits();
+    words[20] = (frame.zoom as f32).to_bits();
+    words[21] = frame.bearing.to_bits();
+    words[22] = frame.align[0].to_bits();
+    words[23] = frame.align[1].to_bits();
+    words[24] = frame.extrusion_scale.to_bits();
+    words[25] = frame.ground_horizon.to_bits();
+    words[26] = frame.sky_horizon.to_bits();
+    words[27] = frame.symbol_fade_change.to_bits();
+    words[28] = frame.pitch.to_bits();
+    words[30] = frame.zoom.to_bits() as u32;
+    words[31] = (frame.zoom.to_bits() >> 32) as u32;
+    if let Some(t) = frame.terrain {
+        for (word, v) in words[32..36].iter_mut().zip(t.unpack) {
+            *word = v.to_bits();
+        }
+        words[36] = t.exaggeration.to_bits();
+        words[37] = t.dem_dim.to_bits();
+    }
+    gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&words));
+}
 
 /// One placement of a tile's data: its transform into camera-relative world
 /// space, `origin + (x, -y) · scale`, and where it may draw.
@@ -95,6 +142,52 @@ pub struct TileRow {
     pub extent: f32,
     /// The world copy it draws; symbol meshes keep state words per copy.
     pub wrap: i32,
+    /// World units per logical pixel of the camera, at this placement's
+    /// scale: pixel sizes (line widths, translations) convert with it. A
+    /// map placement has the camera's; a drape placement scales it with
+    /// its slot.
+    pub world_per_px: f32,
+    /// The DEM tile elevated content of this placement stands on.
+    pub dem: DemRef,
+    /// The lowest and highest terrain elevation under the placement, in
+    /// metres with exaggeration, for culling.
+    pub terrain_range: [f32; 2],
+    /// Which render nodes draw it.
+    pub target: PlacementTarget,
+}
+
+/// Where a placement draws: on the map, or into the terrain's drape
+/// textures for the render nodes of one drape stack.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PlacementTarget {
+    #[default]
+    Map,
+    Drape(u8),
+}
+
+/// A placement's DEM: tile data unit `p` reads the DEM page's `layer` at
+/// `(p / extent + offset) / 2^depth` of the DEM tile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DemRef {
+    pub layer: u16,
+    pub depth: u8,
+    pub offset: [u16; 2],
+}
+
+impl DemRef {
+    /// No DEM: the ground at sea level.
+    pub const NONE: Self = Self {
+        layer: u16::MAX,
+        depth: 0,
+        offset: [0; 2],
+    };
+
+    fn words(self) -> [u32; 2] {
+        [
+            u32::from(self.layer) | u32::from(self.depth) << 16,
+            u32::from(self.offset[0]) | u32::from(self.offset[1]) << 16,
+        ]
+    }
 }
 
 /// A rectangle in tile data units, minimum inclusive and maximum exclusive.
@@ -115,7 +208,7 @@ impl ClipRect {
     }
 }
 
-const TILE_WORDS: usize = 16;
+const TILE_WORDS: usize = 20;
 const CHUNK_WORDS: usize = 8;
 const CANDIDATE_WORDS: usize = 5;
 const VISIBLE_WORDS: usize = 2;
@@ -277,6 +370,18 @@ pub struct TileId(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MeshId(u32);
 
+/// Metres per unit of a placement's packed terrain range (`types.wgsl`'s
+/// `TERRAIN_RANGE_UNIT`).
+const TERRAIN_RANGE_UNIT: f32 = 4.0;
+
+/// A terrain range as two i16s of [`TERRAIN_RANGE_UNIT`], rounded
+/// outward so it still covers the range.
+fn pack_range([lo, hi]: [f32; 2]) -> u32 {
+    let unit = |v: f32| v.clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16 as u16;
+    u32::from(unit((lo / TERRAIN_RANGE_UNIT).floor()))
+        | u32::from(unit((hi / TERRAIN_RANGE_UNIT).ceil())) << 16
+}
+
 /// The scene is full; evict something and retry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OutOfSpace;
@@ -363,6 +468,9 @@ pub struct NodeCull {
     pub draw: NodeDraw,
     /// Hidden nodes contribute no candidates and draw nothing.
     pub visible: bool,
+    /// The placements it draws: on the map, or those of its drape stack,
+    /// which the cull keeps by their clip rectangles alone.
+    pub target: PlacementTarget,
 }
 
 /// How a render node draws its visible chunks, which the cull pass
@@ -394,6 +502,10 @@ impl NodeDraw {
         }
     }
 }
+
+/// The cull's flag on a node's draw word: its candidates are drape
+/// placements (`cull.wgsl`'s `DRAPED`).
+const DRAPED: u32 = 1 << 8;
 
 #[derive(Debug)]
 pub struct Scene {
@@ -717,6 +829,9 @@ impl Scene {
             words[12..14].copy_from_slice(&row.pattern_origin);
             words[14] = row.extent.to_bits();
             words[15] = row.wrap as u32;
+            words[16] = row.world_per_px.to_bits();
+            words[17..19].copy_from_slice(&row.dem.words());
+            words[19] = pack_range(row.terrain_range);
             for (i, clip) in row.clips.iter().enumerate() {
                 words[4 + i * 2] = pack(clip.min);
                 words[5 + i * 2] = pack(clip.max);
@@ -985,26 +1100,7 @@ impl Scene {
             self.rebuild_candidates(gpu);
         }
 
-        let mut words = [0u32; FRAME_WORDS];
-        for (i, v) in frame.view_proj.iter().flatten().enumerate() {
-            words[i] = v.to_bits();
-        }
-        words[16] = frame.viewport[0].to_bits();
-        words[17] = frame.viewport[1].to_bits();
-        words[18] = frame.world_per_px.to_bits();
-        words[19] = frame.pixel_ratio.to_bits();
-        words[20] = (frame.zoom as f32).to_bits();
-        words[21] = frame.bearing.to_bits();
-        words[22] = frame.align[0].to_bits();
-        words[23] = frame.align[1].to_bits();
-        words[24] = frame.extrusion_scale.to_bits();
-        words[25] = frame.ground_horizon.to_bits();
-        words[26] = frame.sky_horizon.to_bits();
-        words[27] = frame.symbol_fade_change.to_bits();
-        words[28] = frame.pitch.to_bits();
-        words[30] = frame.zoom.to_bits() as u32;
-        words[31] = (frame.zoom.to_bits() >> 32) as u32;
-        gpu.write_buffer(self.buffers.frame, 0, bytemuck::cast_slice(&words));
+        write_frame(gpu, self.buffers.frame, frame);
         self.candidate_count
     }
 
@@ -1041,6 +1137,9 @@ impl Scene {
                     };
                     vertex_words = vertex_words.max(mesh.vertices.len() as u32);
                     for placement in &tile.placements {
+                        if placement.row.target != node.cull.target {
+                            continue;
+                        }
                         let run = node_runs.len() as u32;
                         node_runs.push([first, placement.slot]);
                         for (&chunk, record) in mesh.chunk_slots.iter().zip(&mesh.chunks) {
@@ -1104,7 +1203,12 @@ impl Scene {
                 base,
                 node.cull.margin_px.to_bits(),
                 count,
-                node.cull.draw.word(),
+                node.cull.draw.word()
+                    | if node.cull.target == PlacementTarget::Map {
+                        0
+                    } else {
+                        DRAPED
+                    },
                 node.cull.elevation.to_bits(),
                 index_base,
                 compacted - index_base,

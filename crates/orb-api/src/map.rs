@@ -71,6 +71,8 @@ pub struct Map {
     input: Interaction,
     /// The camera revision last given to the map.
     pushed: u64,
+    /// The map's terrain revision the camera stands on.
+    terrain: u64,
     /// Set from any thread when data arrived.
     woken: Arc<AtomicBool>,
     hook: WakeHook,
@@ -127,6 +129,7 @@ impl Map {
             camera,
             input: Interaction::new(options.feel),
             pushed: 0,
+            terrain: 0,
             woken,
             hook,
             wake,
@@ -352,6 +355,11 @@ impl Map {
                 jumped = true;
             }
             self.events.push_back(Event::Map(event));
+        }
+        // The camera stands on the terrain the map has loaded.
+        if self.map.elevation_revision() != self.terrain {
+            self.terrain = self.map.elevation_revision();
+            self.camera.set_terrain(self.map.elevation());
         }
         self.dirty = jumped;
         self.busy = !report.idle || gesture || animating;

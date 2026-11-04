@@ -382,6 +382,13 @@ impl Jobs for WorkerJobs {
             ("id", id.into()),
             ("nodes", nodes),
             ("rowsOnly", request.rows_only.into()),
+            (
+                "demUnpack",
+                match request.dem_unpack {
+                    Some(unpack) => js_sys::Float64Array::from(unpack.0.as_slice()).into(),
+                    None => JsValue::UNDEFINED,
+                },
+            ),
         ]);
         post(worker, &object(&fields));
     }
@@ -532,6 +539,11 @@ impl JobWorker {
                 .ok()
                 .map(|nodes| nodes.to_vec()),
             rows_only: field(message, "rowsOnly").as_bool() == Some(true),
+            dem_unpack: field(message, "demUnpack")
+                .dyn_into::<js_sys::Float64Array>()
+                .ok()
+                .and_then(|unpack| unpack.to_vec().try_into().ok())
+                .map(orb_runtime::DemUnpack),
         };
         let worker = self
             .styles

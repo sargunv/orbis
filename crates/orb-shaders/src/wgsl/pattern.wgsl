@@ -30,7 +30,7 @@ fn pattern_ids(row: u32, base: u32, image_from: u32, image_to: u32, mask: u32, p
 }
 
 fn tile_pixel_ratio(tile: Tile) -> f32 {
-    return tile.scale / frame.world_per_px * exp2(floor(frame.zoom) - frame.zoom);
+    return tile.scale / tile.world_per_px * exp2(floor(frame.zoom) - frame.zoom);
 }
 
 fn modulo(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return a - b * floor(a / b); }

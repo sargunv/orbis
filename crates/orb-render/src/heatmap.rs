@@ -110,6 +110,7 @@ impl Heatmaps {
             label: "heatmap linear",
             filter: FilterMode::Linear,
             address: AddressMode::ClampToEdge,
+            mipmap_filter: FilterMode::Nearest,
         });
         Self {
             density_pipeline,
@@ -128,6 +129,7 @@ impl Heatmaps {
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
             sample_count: 1,
+            mip_levels: 1,
         });
         NodeHeatmap {
             ramp,
@@ -196,6 +198,7 @@ impl Heatmaps {
             format: TextureFormat::Rgba16Float,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
             sample_count: 1,
+            mip_levels: 1,
         });
         node.target = Some(target);
         node.size = size;

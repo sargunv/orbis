@@ -342,6 +342,17 @@ impl StylePlan {
             }
         }
 
+        // The terrain's DEM source loads even when no layer draws it.
+        if let Some(terrain) = &style.terrain
+            && !sources.iter().any(|s| s.id == terrain.source)
+            && let Some(at) = style.sources.iter().position(|s| s.id == terrain.source)
+        {
+            sources.push(PlanSource {
+                key: source_keys[at],
+                id: terrain.source.clone(),
+            });
+        }
+
         let mut plan = Self {
             revision,
             style,
@@ -451,6 +462,13 @@ impl StylePlan {
     /// The index of the node with `key`.
     pub(crate) fn node(&self, key: u32) -> Option<usize> {
         self.nodes.iter().position(|n| n.key == key)
+    }
+
+    /// The index of the terrain's DEM source and its exaggeration.
+    pub(crate) fn terrain(&self) -> Option<(usize, f64)> {
+        let terrain = self.style.terrain.as_ref()?;
+        let index = self.sources.iter().position(|s| s.id == terrain.source)?;
+        Some((index, terrain.exaggeration))
     }
 
     /// The index of the source with `key`.

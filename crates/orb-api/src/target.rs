@@ -160,6 +160,7 @@ fn create_texture(gpu: &mut orb_hal_wgpu::WgpuGpu, width: u32, height: u32) -> T
             | TextureUsages::COPY_SRC
             | TextureUsages::TEXTURE_BINDING,
         sample_count: 1,
+        mip_levels: 1,
     })
 }
 

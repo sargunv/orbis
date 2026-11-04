@@ -27,6 +27,12 @@ struct Frame {
     _pad3: u32,
     // The zoom's f64 bits, which the GPU interpreter branches on.
     zoom_bits: vec2<u32>,
+    // The terrain's DEM unpack vector (metres = r·x + g·y + b·z − w),
+    // its exaggeration (0 without terrain) and DEM pixels per side.
+    dem_unpack: vec4<f32>,
+    terrain_exaggeration: f32,
+    dem_dim: f32,
+    _pad4: vec2<f32>,
 };
 
 // One placement of a tile's data: data units → camera-relative world is
@@ -44,7 +50,19 @@ struct Tile {
     extent: f32,
     // The world copy it draws.
     wrap: i32,
+    // World units per logical camera pixel at this placement's scale.
+    world_per_px: f32,
+    // The DEM elevated content stands on: page layer (low 16 bits, all
+    // ones for none) and depth below the tile (bits 16–23), then the
+    // tile's offset in the DEM tile as two u16s.
+    dem: u32,
+    dem_offset: u32,
+    // Lowest and highest terrain elevation under it as two i16s, in
+    // units of TERRAIN_RANGE_UNIT metres.
+    terrain_range: u32,
 };
+
+const TERRAIN_RANGE_UNIT: f32 = 4.0;
 
 // A run of at most 256 triangles of one mesh.
 struct Chunk {
@@ -79,6 +97,9 @@ const DRAW_IMAGES: u32 = 0u;
 // Points clip anchors, then expand the whole footprint.
 const DRAW_POINTS: u32 = 1u;
 const DRAW_INDEXED: u32 = 2u;
+// On a node's draw word: its candidates are drape placements, kept by
+// their clip rectangles alone.
+const DRAPED: u32 = 256u;
 
 // A render node's slice of the candidate and visible lists.
 struct NodeCull {

@@ -65,6 +65,12 @@ pub enum Op {
     SetStyle {
         style: Json,
     },
+    /// Sets or removes a root property other than sources and layers:
+    /// GL JS's `setTerrain`, `setSky` and `setLight`.
+    SetRoot {
+        key: String,
+        value: Option<Json>,
+    },
 }
 
 /// The feature, or features, a feature-state edit addresses.
@@ -281,6 +287,18 @@ impl Op {
                     style: style.clone(),
                 },
                 _ => return Err("setStyle: only style objects are supported".into()),
+            },
+            "setTerrain" => Op::SetRoot {
+                key: "terrain".into(),
+                value: arg(1).cloned(),
+            },
+            "setSky" => Op::SetRoot {
+                key: "sky".into(),
+                value: arg(1).cloned(),
+            },
+            "setLight" => Op::SetRoot {
+                key: "light".into(),
+                value: arg(1).cloned(),
             },
             other => return Err(format!("unsupported operation {other}")),
         })

@@ -31,7 +31,7 @@ export function frameLoop(frame: (now: number) => boolean, onError: (e: unknown)
 
 /** What crosses from the renderer to the page after each frame. */
 export interface FrameAck extends FrameStats {
-  /** The frame's camera: [lon, lat, resolution, bearing, pitch, fov, zoom]. */
+  /** The frame's camera: [lon, lat, resolution, bearing, pitch, fov, zoom, elevation]. */
   camera: Float64Array;
   hitSnapshot?: Uint8Array;
   /** The map's events since the last frame. */

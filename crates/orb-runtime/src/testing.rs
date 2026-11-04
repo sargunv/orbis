@@ -34,6 +34,7 @@ pub(crate) fn symbol_tile() -> (TileWorker, TileResult) {
         encoding: Encoding::Mvt,
         nodes: None,
         rows_only: false,
+        dem_unpack: None,
     };
     let bytes = std::fs::read(format!("{ASSETS}/tiles/{z}-{x}-{y}.mvt")).unwrap();
     let Built::Fetch(urls) = worker.build(&bytes, Encoding::Mvt, &request).unwrap() else {

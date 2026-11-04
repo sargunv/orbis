@@ -46,6 +46,14 @@ pub trait Gpu {
     fn release_host_bytes(&mut self, bytes: HostBytesId);
 
     fn create_texture(&mut self, desc: &TextureDesc<'_>) -> TextureId;
+    /// A view of some of a texture's mip levels, to render into or sample
+    /// apart from the others (WebGPU's `createView`). Destroying it with
+    /// [`destroy_texture`](Self::destroy_texture) leaves the texture.
+    fn create_texture_view(
+        &mut self,
+        texture: TextureId,
+        levels: std::ops::Range<u32>,
+    ) -> TextureId;
     fn destroy_texture(&mut self, id: TextureId);
     /// Queues a write of tightly packed texel rows into a region; it lands
     /// before the next submitted pass.

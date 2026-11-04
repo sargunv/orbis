@@ -467,6 +467,7 @@ fn render_native(
         format: format.color,
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
         sample_count: 1,
+        mip_levels: 1,
     });
     let viewport = Viewport {
         width: f64::from(metadata.width),

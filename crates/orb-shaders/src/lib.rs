@@ -80,6 +80,35 @@ impl Shader {
     }
 }
 
+pub const TERRAIN_SHADER: Shader = Shader {
+    label: "terrain",
+    parts: &[TYPES, DEM, include_str!("wgsl/terrain.wgsl")],
+    vertex: "vs_terrain",
+    fragment: "fs_terrain",
+    compute: "",
+    paint: false,
+};
+
+/// Clears drape slots (`fs_clear`) or builds a mip level of them
+/// (`fs_downsample`).
+pub const DRAPE_SHADER: Shader = Shader {
+    label: "drape",
+    parts: &[include_str!("wgsl/drape.wgsl")],
+    vertex: "vs_slot",
+    fragment: "fs_downsample",
+    compute: "",
+    paint: false,
+};
+
+pub const TERRAIN_STACK_SHADER: Shader = Shader {
+    label: "terrain stack",
+    parts: &[include_str!("wgsl/terrain_stack.wgsl")],
+    vertex: "vs_stack",
+    fragment: "fs_stack",
+    compute: "",
+    paint: false,
+};
+
 pub const SKY_SHADER: Shader = Shader {
     label: "sky",
     parts: &[TYPES, include_str!("wgsl/sky.wgsl")],
@@ -251,6 +280,9 @@ mod tests {
     fn shaders_validate() {
         for shader in [
             SKY_SHADER,
+            TERRAIN_SHADER,
+            DRAPE_SHADER,
+            TERRAIN_STACK_SHADER,
             EXTRUSION_SHADER,
             EXTRUSION_COMPOSITE_SHADER,
             FILL_SHADER,

@@ -237,6 +237,7 @@ impl Offscreen {
             format: format.color,
             usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
             sample_count: 1,
+            mip_levels: 1,
         });
         let services = native_services(Arc::new(|| {}));
         let mut map = Map::new(services, camera(options));
@@ -273,6 +274,9 @@ impl Offscreen {
     }
 
     fn frame(&mut self) -> orb_runtime::FrameReport {
+        // The camera is written directly: keep it to the world and on the
+        // terrain, as a camera store would.
+        self.map.constrain_camera(self.viewport);
         self.map
             .render(&mut self.gpu, self.target, self.format, self.viewport, 1.0)
     }
@@ -370,6 +374,8 @@ struct State {
     input: Interaction,
     /// The camera revision last given to the map.
     pushed: u64,
+    /// The map's terrain revision the camera stands on.
+    terrain: u64,
     started: Instant,
     cursor: DVec2,
     modifiers: Modifiers,
@@ -451,6 +457,7 @@ impl State {
             camera,
             input: Interaction::default(),
             pushed: 0,
+            terrain: 0,
             started: Instant::now(),
             cursor: DVec2::ZERO,
             modifiers: Modifiers::default(),
@@ -590,6 +597,11 @@ impl State {
             viewport,
             self.window.scale_factor() as f32,
         );
+        // The camera stands on the terrain the map has loaded.
+        if self.map.elevation_revision() != self.terrain {
+            self.terrain = self.map.elevation_revision();
+            self.camera.set_terrain(self.map.elevation());
+        }
         self.edit_pending.retain_mut(|(generation, frames, ms)| {
             *frames += 1;
             if report.generation >= *generation {

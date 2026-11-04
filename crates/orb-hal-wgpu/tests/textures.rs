@@ -33,6 +33,7 @@ fn samples_written_layers_of_a_texture_array() {
         format: TextureFormat::Rgba8Unorm,
         usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
         sample_count: 1,
+        mip_levels: 1,
     });
     let red = [255, 0, 0, 255].repeat(4);
     let blue = [0, 0, 255, 255].repeat(4);
@@ -53,6 +54,7 @@ fn samples_written_layers_of_a_texture_array() {
         label: "nearest",
         filter: FilterMode::Nearest,
         address: AddressMode::ClampToEdge,
+        mipmap_filter: FilterMode::Nearest,
     });
     let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
         label: "pages",
@@ -120,6 +122,7 @@ fn samples_written_layers_of_a_texture_array() {
         format: TextureFormat::Rgba8Unorm,
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
         sample_count: 1,
+        mip_levels: 1,
     });
     gpu.submit(&[Pass::Render(RenderPass {
         label: "sample".into(),

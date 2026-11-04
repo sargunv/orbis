@@ -4,12 +4,13 @@ use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureId, TextureUsages};
 use orb_hal_wgpu::WgpuGpu;
 use orb_layout::fill;
 use orb_render::{
-    ClipRect, Curve, Family, FillPaint, FrameBlock, FrameStats, MeshData, NodePaint, Renderer,
-    SceneCapacity, TargetFormat, TileRow, Words,
+    ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameStats, MeshData, NodePaint,
+    PlacementTarget, Renderer, SceneCapacity, TargetFormat, TileRow, Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
 
 const SIZE: u32 = 64;
+const WORLD_PER_PX: f32 = 2.0 / SIZE as f32;
 const RED: [u8; 4] = [255, 0, 0, 255];
 const CLEAR: [u8; 4] = [0, 0, 255, 255];
 
@@ -35,6 +36,7 @@ impl Harness {
             format: TextureFormat::Rgba8Unorm,
             usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
             sample_count: 1,
+            mip_levels: 1,
         });
         let capacity = SceneCapacity {
             placements: 4,
@@ -92,7 +94,7 @@ impl Harness {
                 [0.0, 0.0, 0.0, 1.0],
             ],
             viewport: [SIZE as f32; 2],
-            world_per_px: 2.0 / SIZE as f32,
+            world_per_px: WORLD_PER_PX,
             pixel_ratio,
             zoom: 0.0,
             bearing: 0.0,
@@ -102,6 +104,7 @@ impl Harness {
             sky_horizon: 0.0,
             symbol_fade_change: 1.0,
             pitch: 0.0,
+            terrain: None,
         }
     }
 }
@@ -127,6 +130,10 @@ fn full_view_tile(offset_x: f32) -> TileRow {
             ClipRect::EMPTY,
             ClipRect::EMPTY,
         ],
+        world_per_px: WORLD_PER_PX,
+        dem: DemRef::NONE,
+        terrain_range: [0.0; 2],
+        target: PlacementTarget::Map,
     }
 }
 

@@ -316,6 +316,7 @@ pub async fn run(
         format: format.color,
         usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
         sample_count: 1,
+        mip_levels: 1,
     });
     let viewport = Viewport {
         width: f64::from(settings.width),
@@ -683,6 +684,7 @@ mod extrusion_benchmark {
                 format: format.color,
                 usage: TextureUsages::RENDER_ATTACHMENT,
                 sample_count: 1,
+                mip_levels: 1,
             });
             let render = |gpu: &mut TimedGpu, map: &mut Map| {
                 map.render(

@@ -95,6 +95,9 @@ struct Texture {
     /// `None` for views the host registered and owns.
     texture: Option<wgpu::Texture>,
     view: wgpu::TextureView,
+    /// A view of these mip levels of another entry's texture, which it
+    /// doesn't own.
+    levels: Option<std::ops::Range<u32>>,
 }
 
 impl WgpuGpu {
@@ -207,6 +210,7 @@ impl WgpuGpu {
         TextureId(self.textures.insert(Texture {
             texture: None,
             view,
+            levels: None,
         }))
     }
 
@@ -455,7 +459,7 @@ impl Gpu for WgpuGpu {
                 height: desc.height,
                 depth_or_array_layers: desc.array_layers,
             },
-            mip_level_count: 1,
+            mip_level_count: desc.mip_levels,
             sample_count: desc.sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: convert::texture_format(desc.format),
@@ -466,11 +470,31 @@ impl Gpu for WgpuGpu {
         TextureId(self.textures.insert(Texture {
             texture: Some(texture),
             view,
+            levels: None,
+        }))
+    }
+
+    fn create_texture_view(
+        &mut self,
+        texture: TextureId,
+        levels: std::ops::Range<u32>,
+    ) -> TextureId {
+        let texture = self.texture(texture).clone();
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            base_mip_level: levels.start,
+            mip_level_count: Some(levels.len() as u32),
+            ..Default::default()
+        });
+        TextureId(self.textures.insert(Texture {
+            texture: Some(texture),
+            view,
+            levels: Some(levels),
         }))
     }
 
     fn destroy_texture(&mut self, id: TextureId) {
-        if let Some(texture) = self.textures.remove(id.0).texture {
+        let entry = self.textures.remove(id.0);
+        if let (Some(texture), None) = (entry.texture, entry.levels) {
             texture.destroy();
         }
     }
@@ -605,13 +629,18 @@ impl Gpu for WgpuGpu {
             .entries
             .iter()
             .map(|entry| match entry.resource {
-                BindingResource::Texture { texture, dimension } => Some(
-                    self.texture(texture)
-                        .create_view(&wgpu::TextureViewDescriptor {
-                            dimension: Some(convert::view_dimension(dimension)),
-                            ..Default::default()
-                        }),
-                ),
+                BindingResource::Texture { texture, dimension } => {
+                    let levels = self.textures[texture.0].levels.clone();
+                    Some(
+                        self.texture(texture)
+                            .create_view(&wgpu::TextureViewDescriptor {
+                                dimension: Some(convert::view_dimension(dimension)),
+                                base_mip_level: levels.as_ref().map_or(0, |l| l.start),
+                                mip_level_count: levels.map(|l| l.len() as u32),
+                                ..Default::default()
+                            }),
+                    )
+                }
                 _ => None,
             })
             .collect();

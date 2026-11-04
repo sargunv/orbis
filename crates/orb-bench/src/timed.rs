@@ -294,6 +294,14 @@ impl Gpu for TimedGpu {
         self.inner.create_texture(desc)
     }
 
+    fn create_texture_view(
+        &mut self,
+        texture: TextureId,
+        levels: std::ops::Range<u32>,
+    ) -> TextureId {
+        self.inner.create_texture_view(texture, levels)
+    }
+
     fn destroy_texture(&mut self, id: TextureId) {
         self.inner.destroy_texture(id);
     }

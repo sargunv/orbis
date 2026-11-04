@@ -188,6 +188,10 @@ pub(crate) fn sampler(desc: &SamplerDesc<'_>) -> wgpu::SamplerDescriptor<'static
         address_mode_v: address,
         mag_filter: filter,
         min_filter: filter,
+        mipmap_filter: match desc.mipmap_filter {
+            FilterMode::Nearest => wgpu::MipmapFilterMode::Nearest,
+            FilterMode::Linear => wgpu::MipmapFilterMode::Linear,
+        },
         ..Default::default()
     }
 }

@@ -205,35 +205,49 @@ pub(crate) fn upload(
     }
 
     if let Some(unpack) = upload.unpack {
-        let unpack = unpack.map(|v| v as f32);
-        let arrived = (tile, layer);
-        renderer.prepare_dem(
-            page,
-            DemPrepare {
-                layer,
-                neighbours: neighbours(pyramid, tile, arrived),
-                zoom: f32::from(tile.z),
-                unpack,
-            },
-        );
-        for offset in OFFSETS {
-            let Some(neighbour) = offset_tile(tile, offset) else {
-                continue;
-            };
-            if let Some(image) = pyramid.get(neighbour).and_then(|r| r.image.as_ref()) {
-                renderer.prepare_dem(
-                    page,
-                    DemPrepare {
-                        layer: image.layer,
-                        neighbours: neighbours(pyramid, neighbour, arrived),
-                        zoom: f32::from(neighbour.z),
-                        unpack,
-                    },
-                );
-            }
+        let layer_of = |t: TileIndex| {
+            pyramid
+                .get(t)
+                .and_then(|r| r.image.as_ref())
+                .map(|i| i.layer)
+        };
+        for job in dem_prepares(tile, layer, unpack.map(|v| v as f32), &layer_of) {
+            renderer.prepare_dem(page, job);
         }
     }
     Ok(resident)
+}
+
+/// The prepare jobs a DEM tile's arrival at `layer` starts: its own, and
+/// its resident neighbours', whose borders it fills. `layer_of` finds a
+/// resident tile's layer.
+pub(crate) fn dem_prepares(
+    tile: TileIndex,
+    layer: u32,
+    unpack: [f32; 4],
+    layer_of: &dyn Fn(TileIndex) -> Option<u32>,
+) -> Vec<DemPrepare> {
+    let arrived = (tile, layer);
+    let mut jobs = vec![DemPrepare {
+        layer,
+        neighbours: neighbours(layer_of, tile, arrived),
+        zoom: f32::from(tile.z),
+        unpack,
+    }];
+    for offset in OFFSETS {
+        let Some(neighbour) = offset_tile(tile, offset) else {
+            continue;
+        };
+        if let Some(layer) = layer_of(neighbour) {
+            jobs.push(DemPrepare {
+                layer,
+                neighbours: neighbours(layer_of, neighbour, arrived),
+                zoom: f32::from(neighbour.z),
+                unpack,
+            });
+        }
+    }
+    jobs
 }
 
 /// Adds the quad of render node `index` (key `key`) to an image tile.
@@ -306,7 +320,7 @@ fn offset_tile(tile: TileIndex, (dx, dy): (i32, i32)) -> Option<TileIndex> {
 /// The layers of `tile`'s resident neighbours, counting `arrived`, a tile
 /// not yet in the pyramid.
 fn neighbours(
-    pyramid: &TilePyramid<ResidentTile>,
+    layer_of: &dyn Fn(TileIndex) -> Option<u32>,
     tile: TileIndex,
     arrived: (TileIndex, u32),
 ) -> [Option<u32>; 8] {
@@ -315,7 +329,7 @@ fn neighbours(
         if neighbour == arrived.0 {
             return Some(arrived.1);
         }
-        Some(pyramid.get(neighbour)?.image.as_ref()?.layer)
+        layer_of(neighbour)
     })
 }
 

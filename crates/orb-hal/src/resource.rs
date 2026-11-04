@@ -104,6 +104,8 @@ pub struct TextureDesc<'a> {
     pub format: TextureFormat,
     pub usage: TextureUsages,
     pub sample_count: u32,
+    /// Mip levels, at least 1. Level 0 is the full size.
+    pub mip_levels: u32,
 }
 
 /// A rectangle of one layer of a texture, for writes.
@@ -129,13 +131,16 @@ pub enum AddressMode {
     Repeat,
 }
 
-/// A sampler without mipmaps: one filter for magnification and
-/// minification, one address mode for both axes.
+/// One filter for magnification and minification, one address mode for
+/// both axes, and how mip levels blend.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SamplerDesc<'a> {
     pub label: &'a str,
     pub filter: FilterMode,
     pub address: AddressMode,
+    /// Between mip levels: `Nearest` samples one level (all a texture
+    /// without mipmaps has), `Linear` blends the two nearest.
+    pub mipmap_filter: FilterMode,
 }
 
 #[derive(Clone, Debug, PartialEq)]

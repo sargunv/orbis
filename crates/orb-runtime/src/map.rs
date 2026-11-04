@@ -10,9 +10,9 @@ use crate::surface::{Plan, Surface};
 use orb_hal::{Gpu, HostBytesId, TextureId};
 use orb_host::{Fetch, FetchError, ImageDecode};
 use orb_render::{
-    ClipRect, Curve, Family, FillPaint, FrameBlock, FrameStats, LinePaint, MeshData, MeshId,
-    NodePaint, OutOfSpace, PageId, PatternPaint, Renderer, SceneCapacity, SceneStats, TargetFormat,
-    TileId, TileRow, Translate, Words,
+    ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameStats, LinePaint, MeshData,
+    MeshId, NodePaint, OutOfSpace, PageId, PatternPaint, PlacementTarget, Renderer, SceneCapacity,
+    SceneStats, TargetFormat, TileId, TileRow, Translate, Words,
 };
 use orb_render::{ImageAtlas, ImageUpload};
 use orb_source::{Draw, TilePyramid};
@@ -146,8 +146,20 @@ enum Message {
         /// The style generation of the edit a relayout or column job is
         /// for; `None` for a load.
         edit: Option<u64>,
+        /// A DEM tile for the terrain rather than for the source's layers.
+        terrain: bool,
         result: Result<TileResult, String>,
     },
+}
+
+/// The drape slots a frame redraws: terrain tiles with their tile slots,
+/// and where slots are.
+#[derive(Debug)]
+pub(crate) struct DrapePlan {
+    /// The surface's matrix set, which terrain tiles are of.
+    pub(crate) surface: TileMatrixSet,
+    pub(crate) layout: orb_render::DrapeLayout,
+    pub(crate) redraw: Vec<(orb_crs::CoveredTile, u32)>,
 }
 
 /// A tile in the scene: one scene tile per layer extent holding a mesh per
@@ -261,6 +273,14 @@ pub(crate) struct LoadedStyle {
     /// This frame's drawn symbol buckets, for placement.
     pub(crate) symbol_tiles: Vec<crate::labels::SymbolTile>,
     pub(crate) programs: crate::gpu::ProgramTable,
+    /// This frame's tiles to draw, per source, between their update and
+    /// their placement.
+    pub(crate) draws: Vec<Option<Vec<Draw>>>,
+    /// The terrain, once its DEM source is ready.
+    pub(crate) terrain: Option<crate::terrain::Terrain>,
+    /// The terrain's DEM is on another tile matrix set than the surface;
+    /// warned once.
+    terrain_unusable: bool,
 }
 
 /// A map: a style, a camera and the tiles they need, drawn by
@@ -310,6 +330,10 @@ pub struct Map {
     retired_pages: Vec<PageId>,
     retired_images: Vec<u64>,
     pub(crate) retired_ramps: Vec<u32>,
+    /// This frame's pattern and dash cross-fade.
+    crossfade: Crossfade,
+    /// What elevated content reads of the terrain this frame.
+    frame_terrain: Option<orb_render::FrameTerrain>,
 }
 
 impl std::fmt::Debug for Map {
@@ -477,6 +501,11 @@ impl Map {
             retired_pages: Vec::new(),
             retired_images: Vec::new(),
             retired_ramps: Vec::new(),
+            crossfade: Crossfade {
+                from_scale: 1.0,
+                mix: 1.0,
+            },
+            frame_terrain: None,
             labels: crate::labels::Labels::new(default_lane()),
         }
     }
@@ -606,17 +635,30 @@ impl Map {
 
     /// The view the camera gives for a viewport.
     pub fn view(&self, viewport: Viewport) -> View {
-        View::new(&self.camera, viewport, self.surface.projection())
+        match self.elevation() {
+            Some(terrain) => {
+                View::over(&self.camera, viewport, self.surface.projection(), &*terrain)
+            }
+            None => View::new(&self.camera, viewport, self.surface.projection()),
+        }
     }
 
     /// Keeps the camera to the world's edge, as GL JS's transform does
-    /// (`getConstrained`). Camera stores keep to it themselves; hosts that
-    /// write the camera directly call this, since rendering never writes
-    /// the camera.
+    /// (`getConstrained`), and stands its target on the terrain, as a
+    /// camera store at rest does. Camera stores keep to these themselves;
+    /// hosts that write the camera directly call this, since rendering
+    /// never writes the camera.
     pub fn constrain_camera(&mut self, viewport: Viewport) {
         let projection = *self.surface.projection();
         self.camera
             .constrain(&orb_camera::Constraints::WORLD, &projection, viewport);
+        match self.elevation() {
+            Some(terrain) => {
+                self.camera.settle_on(&*terrain, &projection);
+                self.camera.keep_above(&*terrain, &projection, viewport);
+            }
+            None => self.camera.elevation = 0.0,
+        }
     }
 
     /// What the map did since the last call: style and source data, load,
@@ -806,6 +848,9 @@ impl Map {
             states: FeatureStates::default(),
             symbol_tiles: Vec::new(),
             programs: Default::default(),
+            draws: Vec::new(),
+            terrain: None,
+            terrain_unusable: false,
         });
         self.nodes_stale = true;
     }
@@ -994,42 +1039,28 @@ impl Map {
                 crossfade,
                 images.atlas.as_mut().expect("initialized"),
             );
-            // Backgrounds draw on every covered tile, as GL JS's do: never
-            // beyond the world's edge.
-            if let Some(tile) = style.background {
-                let tms = self.surface.tms();
-                let cover = view.cover(tms, TILE_PX, 24);
-                let period = self.surface.period();
-                let rows: Vec<_> = cover
-                    .iter()
-                    .map(|covered| {
-                        let draw = Draw {
-                            tile: covered.index,
-                            wrap: covered.wrap,
-                            regions: vec![covered.index],
-                        };
-                        let at = Placement {
-                            extent: 8192,
-                            camera_world: view.camera_world(),
-                            period,
-                            zoom,
-                            frame: None,
-                        };
-                        placements(tms, &draw, at)
-                            .next()
-                            .expect("one background region")
-                    })
-                    .collect();
-                report.tiles_drawn += rows.len() as u32;
-                renderer
-                    .scene()
-                    .place_tile(gpu, tile, &rows)
-                    .expect("background placements fit");
-            }
             drop(images);
             style.symbol_tiles.clear();
-            for index in 0..style.sources.len() {
-                self.request_and_place(gpu, &view, index, &mut report);
+            self.crossfade = crossfade;
+        }
+        if self.style.is_some() {
+            // Terrain's DEM and cover first: the sources cover over its
+            // elevations, and drape over its tiles.
+            self.update_terrain(gpu, &view, &mut report);
+            let elevation = self.terrain_elevation();
+            for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
+                self.update_source(&view, index, elevation.as_deref(), &mut report);
+            }
+            let drape = self.plan_drape(gpu, &view);
+            self.place_background(
+                gpu,
+                &view,
+                elevation.as_deref(),
+                drape.as_ref(),
+                &mut report,
+            );
+            for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
+                self.place_source(gpu, &view, index, drape.as_ref(), &mut report);
             }
         }
         let labels_settled = self.place_labels(gpu, &view, now);
@@ -1092,6 +1123,7 @@ impl Map {
             symbol_fade_change: self.labels.fade_change(now),
             pitch: self.camera.pitch.to_radians() as f32,
             align: pixel_alignment(&view, self.surface.projection(), self.camera.bearing),
+            terrain: self.frame_terrain,
         };
         let (renderer, _) = self.renderer.as_mut().expect("created above");
         report.frame = renderer.render(gpu, &frame, target, clear);
@@ -1160,6 +1192,10 @@ impl Map {
             self.warnings.push("heatmap requires filterable, blendable rgba16float render attachments (Compat: EXT_color_buffer_float); heatmap layers are skipped".into());
         }
         renderer.remap_nodes(gpu, &families, &retained);
+        if !self.retired_pages.is_empty() {
+            // The terrain may bind a retired page; it turns on again next.
+            renderer.set_terrain(gpu, None);
+        }
         for page in self.retired_pages.drain(..) {
             renderer.remove_page(gpu, page);
         }
@@ -1267,6 +1303,7 @@ impl Map {
             encoding: endpoint.encoding,
             nodes,
             rows_only,
+            dem_unpack: None,
         };
         match (edit, rows_only) {
             (None, _) => self.counts.loads += 1,
@@ -1276,19 +1313,26 @@ impl Map {
         if let Some(edit) = edit {
             *self.pending.entry(edit).or_default() += 1;
         }
+        self.load(request, edit, false);
+    }
+
+    /// Sends a request to the jobs; its result comes back as a message.
+    fn load(&mut self, request: TileRequest, edit: Option<u64>, terrain: bool) {
         let (sender, wake, generation) = (
             self.sender.clone(),
             Arc::clone(&self.services.wake),
             self.tile_generation,
         );
+        let (source, tile) = (request.source, request.tile);
         self.services.jobs.load(
             request,
             Box::new(move |result| {
                 let _ = sender.send(Message::Tile {
                     generation,
-                    source: key,
+                    source,
                     tile,
                     edit,
+                    terrain,
                     result,
                 });
                 wake();
@@ -1364,15 +1408,24 @@ impl Map {
 
     /// Covers the view with one source's tiles: requests missing ones,
     /// places the drawable ones and evicts the rest.
-    fn request_and_place(
+    /// Covers the view for source `index` over the terrain's
+    /// `elevation`, requests its missing tiles and keeps what to draw for
+    /// [`place_source`](Self::place_source).
+    fn update_source(
         &mut self,
-        gpu: &mut dyn Gpu,
         view: &View,
         index: usize,
+        elevation: Option<&crate::terrain::TerrainElevation>,
         report: &mut FrameReport,
     ) {
         let elevation_scale = self.extrusion_scale();
         let style = self.style.as_mut().expect("called with a style");
+        style.draws.resize_with(style.sources.len(), || None);
+        style.draws[index] = None;
+        if !style.worker.plan().nodes.iter().any(|n| n.source == index) {
+            // A source only the terrain reads.
+            return;
+        }
         let zoom = self.camera.zoom();
         let plan = style.worker.plan();
         // Symbol layout needs the sprites' metadata, so a source with symbol
@@ -1421,6 +1474,7 @@ impl Map {
                 endpoint.cover_px,
                 pyramid.max_zoom(),
                 f64::from(height) * elevation_scale,
+                elevation.map(|e| e as &dyn orb_camera::Elevation),
             ),
             Some(warp) => view.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
                 warp.footprint(tile)
@@ -1437,17 +1491,45 @@ impl Map {
             requests.push(tile);
         }
         report.tiles_loading += *loading;
+        style.draws[index] = Some(update.draw);
         for tile in requests {
             self.send_job(index, tile, None, false, None);
         }
+    }
 
+    /// Places source `index`'s tiles for this frame: map placements
+    /// standing on the terrain, and drape placements into the drape slots
+    /// being redrawn.
+    fn place_source(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        view: &View,
+        index: usize,
+        drape: Option<&DrapePlan>,
+        report: &mut FrameReport,
+    ) {
         let style = self.style.as_mut().expect("called with a style");
-        let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
-            unreachable!("checked above");
+        let Some(draws) = style.draws[index].take() else {
+            return;
         };
+        let draped = drape.filter(|_| {
+            let plan = style.worker.plan();
+            plan.nodes
+                .iter()
+                .any(|n| n.source == index && n.family.is_draped())
+        });
+        let terrain = style.terrain.as_ref();
+        let SourceState::Ready {
+            pyramid, endpoint, ..
+        } = &mut style.sources[index]
+        else {
+            return;
+        };
+        let endpoint = Arc::clone(endpoint);
+        let tms = &endpoint.tms;
         let (renderer, _) = self.renderer.as_mut().expect("created before placing");
         let mut rows: HashMap<TileIndex, Vec<&Draw>> = HashMap::new();
-        for draw in &update.draw {
+        for draw in &draws {
             rows.entry(draw.tile).or_default().push(draw);
         }
         let camera_world = view.camera_world();
@@ -1486,20 +1568,46 @@ impl Map {
                 .as_ref()
                 .and_then(|image| image.warped.as_ref())
                 .map(|warped| warped.frame);
+            let ground = terrain.map(|t| t.ground(tile));
             for &(extent, scene_tile) in &resident.parts {
-                let rows: Vec<TileRow> = draws
-                    .iter()
-                    .flat_map(|draw| {
-                        let at = Placement {
-                            extent,
-                            camera_world,
-                            period,
-                            zoom: self.camera.zoom(),
-                            frame,
-                        };
-                        placements(tms, draw, at)
-                    })
-                    .collect();
+                let at = Placement {
+                    extent,
+                    camera_world,
+                    period,
+                    zoom: self.camera.zoom(),
+                    frame,
+                    world_per_px: view.world_per_px(),
+                };
+                let map_rows = |draw: &Draw| -> Vec<TileRow> {
+                    placements(tms, draw, at)
+                        .map(|mut row| {
+                            if let Some((dem, range)) = ground {
+                                row.dem = dem;
+                                row.terrain_range = range;
+                            }
+                            row
+                        })
+                        .collect()
+                };
+                let mut rows: Vec<TileRow> = draws.iter().flat_map(|d| map_rows(d)).collect();
+                if let Some(drape) = draped {
+                    for draw in draws {
+                        let drawn = crate::terrain::Drawn::of(tms, draw, frame, period);
+                        for &(terrain, slot) in &drape.redraw {
+                            if drawn.overlaps(&drape.surface, terrain) {
+                                crate::terrain::drape_rows(
+                                    &drape.surface,
+                                    drawn,
+                                    extent,
+                                    (terrain, slot),
+                                    &drape.layout,
+                                    map_rows(draw).into_iter(),
+                                    &mut rows,
+                                );
+                            }
+                        }
+                    }
+                }
                 report.tiles_drawn += rows.len() as u32;
                 if renderer.scene().place_tile(gpu, scene_tile, &rows).is_err() {
                     self.warnings
@@ -1518,7 +1626,7 @@ impl Map {
             }
         }
         let mut ordered = Vec::new();
-        for draw in &update.draw {
+        for draw in &draws {
             // Multiple wraps of a tile share its meshes and placements.
             if ordered.last() != Some(&draw.tile) {
                 ordered.push(draw.tile);
@@ -1536,6 +1644,414 @@ impl Map {
         for resident in pyramid.evict() {
             self.retired_ramps
                 .extend(remove_resident(renderer, resident, &mut style.states));
+        }
+    }
+
+    /// Keeps the terrain to the style's `terrain`: made once its DEM
+    /// source is ready, its DEM tiles requested for this view, and the
+    /// renderer told, once a DEM tile has arrived.
+    fn update_terrain(&mut self, gpu: &mut dyn Gpu, view: &View, report: &mut FrameReport) {
+        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+            return;
+        };
+        let plan = style.worker.plan();
+        let wanted = plan.terrain();
+        let same = match (&style.terrain, wanted) {
+            (Some(t), Some((index, exaggeration))) => {
+                t.source == index
+                    && t.key == plan.sources[index].key
+                    && t.exaggeration == exaggeration
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            if let Some(old) = style.terrain.take() {
+                renderer.set_terrain(gpu, None);
+                remove_terrain(gpu, renderer, old);
+            }
+            if let Some((index, _)) = wanted
+                && let SourceState::Ready { endpoint, .. } = &style.sources[index]
+                && endpoint.tms != *self.surface.tms()
+            {
+                // Terrain tiles are the surface's; their DEM must be too.
+                if !std::mem::replace(&mut style.terrain_unusable, true) {
+                    self.warnings.push(format!(
+                        "terrain: the DEM source's tiles ({}) are not the map's ({}); the map is flat",
+                        endpoint.tms.id(),
+                        self.surface.tms().id()
+                    ));
+                }
+            } else if let Some((index, exaggeration)) = wanted
+                && let SourceState::Ready { endpoint, .. } = &style.sources[index]
+            {
+                // Raster sources cover with `tileSize / √2` (GL JS's
+                // rounded raster cover).
+                let tile_px = endpoint.cover_px * std::f64::consts::SQRT_2;
+                style.terrain = Some(crate::terrain::Terrain::new(
+                    index,
+                    plan.sources[index].key,
+                    exaggeration,
+                    self.surface.tms(),
+                    (tile_px, endpoint.minzoom, endpoint.maxzoom),
+                ));
+            }
+        }
+        let Some(terrain) = &mut style.terrain else {
+            self.frame_terrain = None;
+            renderer.set_terrain(gpu, None);
+            return;
+        };
+        let SourceState::Ready { endpoint, .. } = &style.sources[terrain.source] else {
+            return;
+        };
+        let endpoint = Arc::clone(endpoint);
+        let requests = terrain.update(view, self.surface.tms());
+        for retired in terrain.evict() {
+            if let Some(page) = terrain.page {
+                renderer.free_layer(page, retired.layer);
+            }
+        }
+        let paint = terrain.page.map(|page| {
+            let zoom = self.camera.zoom();
+            let height_scale = view.height_scale();
+            // GL JS's `getSkirtLength`: a fifth of a tile's width at the
+            // camera's zoom, in metres at the equator.
+            let skirt = 2.0 * std::f64::consts::PI * 6_371_008.8 / zoom.max(0.0).exp2() / 5.0;
+            let (near, far) = view.fog_range_px();
+            let fog = plan
+                .style
+                .sky
+                .as_ref()
+                .map_or(orb_render::Fog::NONE, |sky| orb_render::Fog {
+                    color: sky.fog_color.evaluate(zoom).premultiplied(),
+                    horizon_color: sky.horizon_color.evaluate(zoom).premultiplied(),
+                    ground_blend: sky.fog_ground_blend.evaluate(zoom),
+                    ground_blend_opacity: fog_blend_opacity(self.camera.pitch),
+                    horizon_blend: sky.horizon_fog_blend.evaluate(zoom),
+                    near: near as f32,
+                    far: far as f32,
+                });
+            (
+                page,
+                orb_render::TerrainPaint {
+                    unpack: endpoint.dem_unpack.expect("raster-dem").map(|v| v as f32),
+                    exaggeration: terrain.exaggeration as f32,
+                    skirt: (skirt * height_scale) as f32,
+                    fog,
+                },
+            )
+        });
+        self.frame_terrain = paint.map(|(page, p)| orb_render::FrameTerrain {
+            unpack: p.unpack,
+            exaggeration: p.exaggeration,
+            dem_dim: renderer.page_size(page)[0] as f32,
+        });
+        renderer.set_terrain(gpu, paint);
+        let mut loading = 0;
+        for tile in requests {
+            if !endpoint.contains(tile) {
+                terrain.pyramid.insert_empty(tile);
+                continue;
+            }
+            loading += 1;
+            let request = TileRequest {
+                style: style.id,
+                source: terrain.key,
+                tile,
+                zoom: endpoint.tms.style_zoom(tile),
+                data_zoom: tile.z,
+                location: endpoint.location(tile),
+                encoding: endpoint.encoding,
+                nodes: None,
+                rows_only: false,
+                dem_unpack: endpoint.dem_unpack.map(crate::DemUnpack),
+            };
+            self.counts.loads += 1;
+            let (sender, wake, generation) = (
+                self.sender.clone(),
+                Arc::clone(&self.services.wake),
+                self.tile_generation,
+            );
+            let key = terrain.key;
+            self.services.jobs.load(
+                request,
+                Box::new(move |result| {
+                    let _ = sender.send(Message::Tile {
+                        generation,
+                        source: key,
+                        tile,
+                        edit: None,
+                        terrain: true,
+                        result,
+                    });
+                    wake();
+                }),
+            );
+        }
+        terrain.loading += loading;
+        report.tiles_loading += terrain.loading;
+    }
+
+    /// The terrain's CPU elevations, if the style has terrain.
+    fn terrain_elevation(&mut self) -> Option<Arc<crate::terrain::TerrainElevation>> {
+        let tms = self.surface.tms();
+        self.style
+            .as_mut()?
+            .terrain
+            .as_mut()
+            .map(|t| Arc::clone(t.elevation(tms)))
+    }
+
+    /// The terrain's elevations as drawn, for the camera
+    /// ([`orb_camera::Camera::set_terrain`]) and queries; `None` without
+    /// terrain. A new snapshot comes with each
+    /// [`elevation_revision`](Self::elevation_revision).
+    pub fn elevation(&self) -> Option<Arc<dyn orb_camera::Elevation>> {
+        let terrain = self.style.as_ref()?.terrain.as_ref()?;
+        Some(terrain.snapshot() as Arc<dyn orb_camera::Elevation>)
+    }
+
+    /// Changes whenever [`elevation`](Self::elevation) has new data.
+    pub fn elevation_revision(&self) -> u64 {
+        self.style
+            .as_ref()
+            .and_then(|s| s.terrain.as_ref())
+            .map_or(0, |t| t.revision)
+    }
+
+    /// A terrain DEM tile arrived: into the terrain's page, prepared with
+    /// its neighbours, its elevations kept.
+    fn apply_terrain_tile(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        source: u32,
+        tile: TileIndex,
+        result: Result<TileResult, String>,
+    ) {
+        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+            return;
+        };
+        let Some(terrain) = style.terrain.as_mut().filter(|t| t.key == source) else {
+            return;
+        };
+        terrain.loading = terrain.loading.saturating_sub(1);
+        if !terrain.pyramid.is_loading(tile) {
+            return;
+        }
+        let result = result.and_then(|r| match r {
+            TileResult { missing: true, .. } => Ok(None),
+            TileResult {
+                image: Some(image),
+                dem: Some(dem),
+                ..
+            } => Ok(Some((image, dem))),
+            _ => Err("a terrain tile without elevations".to_string()),
+        });
+        let (image, grid) = match result {
+            Ok(Some(found)) => found,
+            Ok(None) => {
+                terrain.pyramid.insert_missing(tile);
+                return;
+            }
+            Err(e) => {
+                self.warnings.push(format!("terrain tile {tile:?}: {e}"));
+                terrain.pyramid.insert_empty(tile);
+                return;
+            }
+        };
+        let SourceState::Ready { endpoint, .. } = &style.sources[terrain.source] else {
+            return;
+        };
+        let unpack = endpoint.dem_unpack.expect("raster-dem").map(|v| v as f32);
+        let size = [image.width, image.height];
+        let page = *terrain
+            .page
+            .get_or_insert_with(|| renderer.create_page(gpu, orb_render::PageKind::Dem, size));
+        if renderer.page_size(page) != size {
+            self.warnings.push(format!(
+                "terrain tile {tile:?}: {}×{} among {:?} tiles",
+                size[0],
+                size[1],
+                renderer.page_size(page)
+            ));
+            terrain.pyramid.insert_empty(tile);
+            return;
+        }
+        let Ok(layer) = renderer.alloc_layer(gpu, page) else {
+            self.warnings
+                .push("out of terrain texture layers; a DEM tile is not drawn".into());
+            terrain.pyramid.insert_empty(tile);
+            return;
+        };
+        let pixels = match &image.pixels {
+            crate::ImagePixels::Core(bytes) => orb_render::Pixels::Core(bytes),
+            &crate::ImagePixels::Host(image) => orb_render::Pixels::Host {
+                image,
+                premultiply: false,
+            },
+        };
+        renderer.write_layer(gpu, page, layer, pixels);
+        let layer_of = |t: TileIndex| terrain.pyramid.get(t).map(|d| d.layer);
+        for job in image::dem_prepares(tile, layer, unpack, &layer_of) {
+            renderer.prepare_dem(page, job);
+        }
+        if let Some(old) = terrain.insert(tile, crate::terrain::DemTile { layer, grid }) {
+            renderer.free_layer(page, old.layer);
+        }
+    }
+
+    /// Plans this frame's drape: makes room for the terrain tiles' slots
+    /// and picks those to redraw, by what is draped under each tile and
+    /// the zoom it was drawn at.
+    fn plan_drape(&mut self, gpu: &mut dyn Gpu, view: &View) -> Option<DrapePlan> {
+        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+            return None;
+        };
+        let terrain = style.terrain.as_mut()?;
+        if !renderer.terrain_on() {
+            return None;
+        }
+        let layout = match renderer.reserve_drape(gpu, terrain.slots_needed()) {
+            Ok(layout) => layout,
+            Err(_) => {
+                self.warnings
+                    .push("too many terrain tiles for the drape atlas; terrain is flat".into());
+                renderer.set_terrain(gpu, None);
+                return None;
+            }
+        };
+        let plan = style.worker.plan();
+        let draped: Vec<usize> = (0..style.sources.len())
+            .filter(|&i| {
+                plan.nodes
+                    .iter()
+                    .any(|n| n.source == i && n.family.is_draped())
+            })
+            .collect();
+        let surface = self.surface.tms().clone();
+        let period = self.surface.period();
+        let sources = &style.sources;
+        let draws = &style.draws;
+        let revision = (self.version, style.states.writes());
+        let content = |t: orb_crs::CoveredTile| {
+            let mut parts = Vec::new();
+            for &i in &draped {
+                let (
+                    Some(draws),
+                    SourceState::Ready {
+                        pyramid, endpoint, ..
+                    },
+                ) = (&draws[i], &sources[i])
+                else {
+                    continue;
+                };
+                for draw in draws {
+                    let resident = pyramid.get(draw.tile);
+                    let frame = resident
+                        .and_then(|r| r.image.as_ref())
+                        .and_then(|image| image.warped.as_ref())
+                        .map(|warped| warped.frame);
+                    let drawn = crate::terrain::Drawn::of(&endpoint.tms, draw, frame, period);
+                    if !drawn.overlaps(&surface, t) {
+                        continue;
+                    }
+                    let meshes: Vec<_> = resident
+                        .map(|r| r.meshes.iter().map(|m| m.mesh).collect())
+                        .unwrap_or_default();
+                    parts.push((i, draw.tile, draw.wrap, draw.regions.clone(), meshes));
+                }
+            }
+            crate::terrain::hash((revision, parts))
+        };
+        let look = [
+            self.camera.zoom().to_bits(),
+            u64::from(self.crossfade.mix.to_bits())
+                | u64::from(self.crossfade.from_scale.to_bits()) << 32,
+        ];
+        let (tiles, redraw) = terrain.plan(&surface, view, &self.camera, layout, &content, look);
+        renderer.set_terrain_tiles(gpu, &tiles);
+        let slots: Vec<u32> = redraw.iter().map(|&(_, slot)| slot).collect();
+        renderer.redraw_drape(&slots);
+        Some(DrapePlan {
+            surface,
+            layout,
+            redraw,
+        })
+    }
+
+    /// Places the background layers' quads on every covered tile, and on
+    /// the drape slots being redrawn.
+    fn place_background(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        view: &View,
+        elevation: Option<&crate::terrain::TerrainElevation>,
+        drape: Option<&DrapePlan>,
+        report: &mut FrameReport,
+    ) {
+        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+            return;
+        };
+        // Backgrounds draw on every covered tile, as GL JS's do: never
+        // beyond the world's edge.
+        let Some(tile) = style.background else {
+            return;
+        };
+        let zoom = self.camera.zoom();
+        let tms = self.surface.tms();
+        let cover = view.cover_volume(
+            tms,
+            TILE_PX,
+            24,
+            0.0,
+            elevation.map(|e| e as &dyn orb_camera::Elevation),
+        );
+        let period = self.surface.period();
+        let at = Placement {
+            extent: 8192,
+            camera_world: view.camera_world(),
+            period,
+            zoom,
+            frame: None,
+            world_per_px: view.world_per_px(),
+        };
+        let mut rows: Vec<TileRow> = cover
+            .iter()
+            .map(|covered| {
+                let draw = Draw {
+                    tile: covered.index,
+                    wrap: covered.wrap,
+                    regions: vec![covered.index],
+                };
+                placements(tms, &draw, at)
+                    .next()
+                    .expect("one background region")
+            })
+            .collect();
+        report.tiles_drawn += rows.len() as u32;
+        if let Some(drape) = drape {
+            for &(terrain, slot) in &drape.redraw {
+                let draw = Draw {
+                    tile: terrain.index,
+                    wrap: terrain.wrap,
+                    regions: vec![terrain.index],
+                };
+                let map = placements(tms, &draw, at);
+                crate::terrain::drape_rows(
+                    tms,
+                    crate::terrain::Drawn::of(tms, &draw, None, period),
+                    8192,
+                    (terrain, slot),
+                    &drape.layout,
+                    map,
+                    &mut rows,
+                );
+            }
+        }
+        if renderer.scene().place_tile(gpu, tile, &rows).is_err() {
+            self.warnings
+                .push("out of tile placements; the background is not drawn".into());
         }
     }
 
@@ -1693,6 +2209,7 @@ impl Map {
                     source,
                     tile,
                     edit,
+                    terrain,
                     result,
                 } => {
                     let host_bytes = result.as_ref().ok().and_then(|r| r.host_bytes);
@@ -1708,6 +2225,7 @@ impl Map {
                     }
                     if generation == self.tile_generation {
                         match edit {
+                            None if terrain => self.apply_terrain_tile(gpu, source, tile, result),
                             None => self.apply_tile(gpu, source, tile, result),
                             Some(_) => self.apply_edit(gpu, source, tile, result),
                         }
@@ -1967,6 +2485,10 @@ impl Map {
         }
         for placed in &mut style.placed {
             placed.clear();
+        }
+        if let Some(terrain) = style.terrain.take() {
+            // Destroyed with the source pages, the renderer's terrain off.
+            self.retired_pages.extend(terrain.page);
         }
         // In-flight tiles belong to the old scene.
         self.tile_generation += 1;
@@ -2285,6 +2807,8 @@ struct Placement {
     /// A warped tile's frame on the surface, which its mesh spans `extent`
     /// of; tiles on the surface's plane span their own bounds.
     frame: Option<orb_crs::WorldRect>,
+    /// World units per logical pixel at the camera target.
+    world_per_px: f64,
 }
 
 fn placements<'a>(
@@ -2298,7 +2822,9 @@ fn placements<'a>(
         period,
         zoom,
         frame,
+        world_per_px,
     } = at;
+    let world_per_px = world_per_px as f32;
     let bounds = frame.unwrap_or_else(|| tms.tile_bounds(draw.tile));
     let origin =
         DVec2::new(bounds.min.x + f64::from(draw.wrap) * period, bounds.max.y) - camera_world;
@@ -2335,8 +2861,25 @@ fn placements<'a>(
             scale,
             zoom: tile_zoom as f32,
             clips,
+            world_per_px,
+            dem: DemRef::NONE,
+            terrain_range: [0.0; 2],
+            target: PlacementTarget::Map,
         }
     })
+}
+
+/// Removes a terrain's DEM page; the renderer's terrain is off.
+fn remove_terrain(gpu: &mut dyn Gpu, renderer: &mut Renderer, terrain: crate::terrain::Terrain) {
+    if let Some(page) = terrain.page {
+        renderer.remove_page(gpu, page);
+    }
+}
+
+/// GL JS's `calculateFogBlendOpacity`: terrain fog fades in from 60° to
+/// 70° of pitch.
+fn fog_blend_opacity(pitch: f64) -> f32 {
+    ((pitch - 60.0) / 10.0).clamp(0.0, 1.0) as f32
 }
 
 /// Writes every node's paint and visibility for `zoom`, if it changed.
@@ -2792,6 +3335,7 @@ mod tests {
             period: 100.0,
             zoom: 3.0,
             frame: None,
+            world_per_px: 1.0,
         };
         let rows: Vec<_> = placements(&tms, &draw, at).collect();
         assert_eq!(rows.len(), 2);

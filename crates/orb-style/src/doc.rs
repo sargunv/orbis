@@ -488,6 +488,20 @@ impl Draft {
                 Ok(())
             }
             Op::SetStyle { style } => self.replace(style),
+            Op::SetRoot { key, value } => {
+                let mut root: Vec<Member> = self.root.as_ref().clone();
+                root.retain(|m| m.key != *key);
+                if let Some(value) = value {
+                    root.push(Member {
+                        key: key.clone(),
+                        key_span: Default::default(),
+                        value: value.clone(),
+                    });
+                }
+                self.root = Arc::new(root);
+                self.new_root = true;
+                Ok(())
+            }
         }
     }
 
