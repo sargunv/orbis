@@ -70,6 +70,10 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
   backward-compatibility machinery while there are no users.
 - **Clean up as you go.** Delete dead code, stale docs and stale config in the
   same change that makes them stale.
+- **Leave it smaller.** The first release (plan §20) wants the codebase
+  simpler and net negative in lines. Prefer deleting, merging duplicate paths
+  and collapsing indirection over adding code. When you touch a module,
+  leave it simpler than you found it.
 - **Move forward before polishing every detail.** Bugs will turn up; fix them
   forward.
 - **Keep module interfaces neat and narrow**, so that a later bug squash can go
