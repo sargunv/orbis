@@ -93,9 +93,11 @@ fn settle(map: &mut Map, target: &mut Target) {
         .expect("the map idles");
 }
 
-/// The pixels a map draws at `end` once settled, after moving there frame
-/// by frame from `start` (a gesture: one frame per step, nothing waits for
-/// data), and the pixels a fresh map draws at rest at `end`.
+/// The still picture a map draws at `end` after moving there frame by
+/// frame from `start` (a gesture: one frame per step, nothing waits for
+/// data), and a fresh map's at `end`. Still pictures, since continuous
+/// placement keeps labels it showed before, as GL JS's does: the tiles
+/// must not depend on the path, the labels may.
 fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
@@ -117,15 +119,13 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
         moved.render(&mut target, 0.0).unwrap();
         std::thread::sleep(Duration::from_millis(8));
     }
-    settle(&mut moved, &mut target);
-    let gestured = target.read_pixels().unwrap();
+    let gestured = moved.snapshot(WIDTH, HEIGHT, 1.0).unwrap().pixels;
     drop(moved);
 
     let mut fresh = Map::new(&runtime, MapOptions::default());
     fresh.set_style_json(style).unwrap();
     fresh.jump_to(&camera(end));
-    settle(&mut fresh, &mut target);
-    (gestured, target.read_pixels().unwrap())
+    (gestured, fresh.snapshot(WIDTH, HEIGHT, 1.0).unwrap().pixels)
 }
 
 /// Asserts the two pictures equal, to one step in a channel: the GPU cull

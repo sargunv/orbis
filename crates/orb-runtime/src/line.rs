@@ -8,7 +8,7 @@ use orb_style::{
 };
 use orb_tile::Layer;
 
-use crate::map::Crossfade;
+use crate::paint::Crossfade;
 use crate::tile::ImageRef;
 
 /// Whether a line layer's property rows carry dash or gradient textures.

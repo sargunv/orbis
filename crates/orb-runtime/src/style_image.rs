@@ -230,7 +230,7 @@ impl Map {
                 self.warnings.push(format!("image {name}: {e}"));
             }
         }
-        style.painted = None;
+        style.paint.invalidate();
     }
 }
 

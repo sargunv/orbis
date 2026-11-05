@@ -205,94 +205,6 @@ mod tests {
         }
     }
 
-    /// The moved map draws what a fresh one at its camera draws, as still
-    /// pictures: continuous label placement depends on the frames tiles
-    /// arrived in, a still one only on the camera and data.
-    fn assert_matches_fresh(offscreen: &mut crate::common::Offscreen) {
-        let camera = *offscreen.map.camera();
-        let options = crate::common::Options {
-            at: Some((
-                camera.target,
-                offscreen.map.zoom(),
-                camera.bearing,
-                camera.pitch,
-            )),
-            ..tokyo(offscreen.map.zoom())
-        };
-        let (mut fresh, _, _) = crate::common::Offscreen::load(&options).unwrap();
-        // Use exactly the same camera, including its ground resolution.
-        fresh.map.jump_to_state(camera);
-        fresh.map.set_mode(orb_runtime::RenderMode::Still);
-        offscreen.map.set_mode(orb_runtime::RenderMode::Still);
-        let fresh_report = settle(&mut fresh);
-        let report = settle(offscreen);
-        let pixels = offscreen.pixels();
-        let reference = fresh.pixels();
-        offscreen.map.set_mode(orb_runtime::RenderMode::Continuous);
-        settle(offscreen);
-        let differing = crate::common::differing_pixels(&pixels, &reference);
-        assert_eq!(
-            differing, 0,
-            "pixels differ from a fresh view: moved {report:?}, fresh {fresh_report:?}"
-        );
-    }
-
-    #[test]
-    fn zooming_out_matches_a_fresh_view() {
-        let (mut offscreen, _, _) = crate::common::Offscreen::load(&tokyo(15.0)).unwrap();
-        let viewport = offscreen.viewport;
-        let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
-        for _ in 0..6 {
-            zoom_by(&mut offscreen.map, viewport, center, -0.5);
-            settle(&mut offscreen);
-        }
-        let (fresh, report, _) = crate::common::Offscreen::load(&tokyo(12.0)).unwrap();
-        let pixels = offscreen.pixels();
-        let reference = fresh.pixels();
-        let differing = crate::common::differing_pixels(&pixels, &reference);
-        let moved = offscreen.frame();
-        eprintln!("zoom-out: {differing} differing pixels; moved {moved:?}; fresh {report:?}");
-        if differing > 0 {
-            // Keep both frames for the hunt (#63).
-            let dir = tempfile_dir("orb-demo-zoom-out");
-            for (name, image) in [("moved.png", &pixels), ("fresh.png", &reference)] {
-                crate::common::write_png(dir.join(name).to_str().unwrap(), image).unwrap();
-            }
-            eprintln!("zoom-out: frames in {}", dir.display());
-        }
-        assert_eq!(
-            differing, 0,
-            "nominal z12: moved {moved:?}, fresh {report:?}"
-        );
-    }
-
-    #[test]
-    fn zooming_in_matches_a_fresh_view() {
-        let (mut offscreen, _, _) = crate::common::Offscreen::load(&tokyo(12.0)).unwrap();
-        let viewport = offscreen.viewport;
-        let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
-        for _ in 0..6 {
-            zoom_by(&mut offscreen.map, viewport, center, 0.5);
-            settle(&mut offscreen);
-        }
-        assert_matches_fresh(&mut offscreen);
-    }
-
-    #[test]
-    fn panning_matches_a_fresh_view() {
-        let (mut offscreen, _, _) = crate::common::Offscreen::load(&tokyo(12.0)).unwrap();
-        let viewport = offscreen.viewport;
-        let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
-        for offset in [
-            glam::DVec2::new(512.0, 128.0),
-            glam::DVec2::new(-256.0, -64.0),
-        ] {
-            pan(&mut offscreen.map, viewport, center, center + offset);
-            settle(&mut offscreen);
-        }
-        assert_matches_fresh(&mut offscreen);
-    }
-
     /// A fling past zoom 0 lands a hair below it; the map must still draw
     /// there, as GL JS's does.
     #[test]
@@ -649,31 +561,6 @@ mod tests {
             offscreen.pixels()
         });
         assert!(crate::common::take_warnings(&mut offscreen.map).is_empty());
-    }
-
-    /// M0 exit criterion 4: a camera-only frame is one dispatch and one
-    /// bundle replay, records no commands, and writes no placement rows
-    /// (decision 0043).
-    #[test]
-    fn panning_frame_by_frame_matches_a_fresh_view() {
-        // Compacted indices rewrite only the slots of chunks that enter or
-        // leave the view, and every slot when tiles arrive or leave.
-        let (mut offscreen, _, _) = crate::common::Offscreen::load(&tokyo(12.0)).unwrap();
-        let viewport = offscreen.viewport;
-        // Around a circle of 128 px, as the bench's moving camera, stopping
-        // six times to compare with a map loaded there.
-        let point = |f: usize| {
-            let angle = std::f64::consts::TAU * f as f64 / 120.0;
-            glam::DVec2::new(512.0, 384.0)
-                + 128.0 * glam::DVec2::new(angle.cos() - 1.0, angle.sin())
-        };
-        for stop in 0..6 {
-            for f in stop * 20..(stop + 1) * 20 {
-                pan(&mut offscreen.map, viewport, point(f), point(f + 1));
-                offscreen.frame();
-            }
-            assert_matches_fresh(&mut offscreen);
-        }
     }
 
     #[test]

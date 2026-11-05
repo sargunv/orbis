@@ -286,7 +286,7 @@ impl Map {
             state.rows_epoch = version;
             relayout.entry(node.source).or_default().push(node.key);
         }
-        style.painted = None;
+        style.paint.invalidate();
         self.style = Some(style);
         for index in added {
             let state = self.start_source(plan, index);
@@ -355,7 +355,7 @@ impl Map {
                 relayout.entry(node.source).or_default().push(node.key);
             }
         }
-        style.painted = None;
+        style.paint.invalidate();
         self.style = Some(style);
         for (source, nodes) in relayout {
             for tile in self.resident_tiles(source, None) {
@@ -571,7 +571,7 @@ impl Map {
         // Rows from a column job can raise a node's maxima (a radius made
         // per feature, say), which culling pads by; results skipped as
         // stale can only pad more than needed.
-        record_maxima(&mut style.nodes, &build.meshes, &mut style.painted);
+        record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);
         resident.cost = crate::map::tile_cost(renderer, resident);
         drop(images);
         if !stale_rows.is_empty() {

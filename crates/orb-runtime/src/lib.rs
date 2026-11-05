@@ -21,6 +21,7 @@ mod loader;
 mod map;
 pub mod model;
 pub mod offline;
+mod paint;
 mod placement;
 mod point;
 mod queries;
