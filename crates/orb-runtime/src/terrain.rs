@@ -211,7 +211,7 @@ impl Terrain {
             tms,
             TERRAIN_TILE_PX,
             0..=TERRAIN_MAX_ZOOM,
-            0.0,
+            orb_camera::Standing::default(),
             Some(&*self.elevation),
             0.0,
         );

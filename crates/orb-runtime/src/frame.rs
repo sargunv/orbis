@@ -27,6 +27,7 @@ impl Map {
         view: &View,
         index: usize,
         elevation: Option<&crate::terrain::TerrainElevation>,
+        shadow: glam::DVec2,
         report: &mut FrameReport,
     ) {
         let elevation_scale = self.extrusion_scale();
@@ -49,20 +50,10 @@ impl Map {
         {
             return;
         }
-        let height = plan
-            .nodes
-            .iter()
-            .filter(|node| node.source == index && node.family == Family::FillExtrusion)
-            .map(|node| {
-                let e = &plan.style.layers[node.layer];
-                let maxima = style.nodes.get(&node.key).map_or(&[][..], |n| &n.maxima);
-                let max = |i: usize| maxima.get(i).copied().unwrap_or(0.0);
-                e.get(orb_style::EXTRUSION_HEIGHT)
-                    .evaluate(zoom)
-                    .max(e.get(orb_style::EXTRUSION_BASE).evaluate(zoom))
-                    .max(max(1))
-                    .max(max(2))
-            })
+        // The tallest extrusion or model, as this frame's paint has it.
+        let height = (plan.nodes.iter().enumerate())
+            .filter(|(_, n)| n.source == index)
+            .map(|(i, _)| renderer.cull_elevation(i as u32))
             .fold(0.0f32, f32::max);
         // Circles and heatmaps draw from the tile their point is in alone,
         // where GL JS draws the copies in its neighbours' buffers too: a
@@ -115,7 +106,10 @@ impl Map {
                 tms,
                 endpoint.cover_px,
                 data_zoom..=pyramid.max_zoom(),
-                f64::from(height) * elevation_scale,
+                orb_camera::Standing {
+                    height: f64::from(height) * elevation_scale,
+                    shadow,
+                },
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
                 f64::from(reach),
             ),
@@ -613,7 +607,7 @@ impl Map {
                 tms,
                 TILE_PX,
                 0..=24,
-                0.0,
+                orb_camera::Standing::default(),
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
                 0.0,
             ),

@@ -53,7 +53,13 @@ can't sample what it draws into.
 The cull keeps an extrusion chunk or model instance whose shadow falls in the view even when
 the chunk itself is outside: the frame carries the shadow's reach per unit
 of height (`shadow_reach`), and the cull also tests the chunk's corners
-moved by it. Camera-only frames keep one dispatch and replay the bundles.
+moved by it. Camera-only frames keep one dispatch and replay the bundles. The cover keeps the tiles
+those come from: a tile out of view stays when its rectangle, drawn out
+along the shadow by the source's tallest extrusion or model, meets the view
+on the ground (`orb_camera::Standing`). The lights are evaluated before the
+sources are covered for it. Over Manhattan's afternoon sun (about 25° up,
+buildings to about 540 m) that holds 136 → 160 tiles at z14.52 pitch 61 and
+157 → 214 at z15.6 pitch 70, for 13.5 → 15.0 ms and 16.0 → 16.7 ms.
 
 ## Receivers
 
@@ -116,7 +122,6 @@ GPU, so their totals run several ms over the wall time).
 
 ## Not done
 
-- Casters in tiles the view's cover leaves out cast nothing: the cull widens
-  only within resident tiles (#92).
-- Per-cascade culling or a lighter caster vertex path, which would cut the
-  casters' cost (#93).
+- Per-cascade culling, which would cut the casters' cost (about 1.8 ms of
+  Manhattan's 15 ms at z14.52; #93). The caster's vertex path is already
+  lean: the compiler drops the lit draw's colour and state work.

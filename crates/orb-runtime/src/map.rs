@@ -1259,13 +1259,32 @@ impl Map {
             style.symbol_tiles.clear();
             (self.crossfade, fading) = (crossfade, fades);
         }
+        let mut frame_lights = None;
         if self.style.is_some() {
             // Terrain's DEM and cover first: the sources cover over its
             // elevations, and drape over its tiles.
             self.update_terrain(gpu, renderer, &view, &mut report);
             let elevation = self.terrain_elevation();
+            // The lights before the sources: their covers keep the tiles
+            // whose casters' shadows fall in the view.
+            let heights = self.shadow_heights(&view, zoom);
+            frame_lights = lights.map(|lights| {
+                crate::lights::frame_lights(
+                    lights,
+                    zoom,
+                    self.camera.state().bearing,
+                    self.camera.state().target,
+                    heights,
+                )
+            });
+            let shadow = frame_lights
+                .and_then(|l| l.shadow_reach())
+                .map_or(glam::DVec2::ZERO, |[x, y]| {
+                    glam::DVec2::new(x.into(), y.into())
+                });
             for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
-                self.update_source(renderer, &view, index, elevation.as_deref(), &mut report);
+                let elevation = elevation.as_deref();
+                self.update_source(renderer, &view, index, elevation, shadow, &mut report);
             }
             let drape = self.plan_drape(gpu, renderer, &view);
             self.place_background(
@@ -1341,16 +1360,6 @@ impl Map {
         }
 
         let globe = view.globe().map(|globe| frame_globe(globe, &view));
-        let heights = self.shadow_heights(&view, zoom);
-        let frame_lights = lights.map(|lights| {
-            crate::lights::frame_lights(
-                lights,
-                zoom,
-                self.camera.state().bearing,
-                self.camera.state().target,
-                heights,
-            )
-        });
         // Say once, as they turn off, why shadows the lights cast aren't
         // drawn.
         let shadows_off = frame_lights.and_then(|l| l.shadow).and_then(|_| {

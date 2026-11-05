@@ -37,7 +37,11 @@ fn covers_match_pinned_gl_js() {
                 &tms,
                 n("tileSize"),
                 0..=n("maxzoom") as u8,
-                n("maxContentElevation") * tms.projection().style_height_scale(camera.target),
+                orb_camera::Standing {
+                    height: n("maxContentElevation")
+                        * tms.projection().style_height_scale(camera.target),
+                    shadow: glam::DVec2::ZERO,
+                },
                 None,
                 0.0,
             )

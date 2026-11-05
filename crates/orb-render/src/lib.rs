@@ -1299,6 +1299,12 @@ impl Renderer {
         self.nodes[node as usize].cull.margin_px
     }
 
+    /// How high node `node`'s content stands, style metres (extrusions'
+    /// and models' tallest; 0 for flat content), from its last paint.
+    pub fn cull_elevation(&self, node: u32) -> f32 {
+        self.nodes[node as usize].cull.elevation
+    }
+
     /// Writes a node's paint values. The paint's family must match the
     /// node's.
     pub fn set_paint(&mut self, gpu: &mut dyn Gpu, node: u32, paint: &NodePaint) {

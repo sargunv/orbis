@@ -171,18 +171,28 @@ pub struct FrameShadow {
 /// would run past the view.
 const SHADOW_MIN_ELEVATION_SIN: f32 = 0.035;
 
-impl FrameBlock {
-    /// The shadows cast this frame and the unit vector toward their light
-    /// in camera-relative world axes (x east, y north, z up): on a plane,
-    /// from a light above the horizon.
+impl FrameLights {
+    /// The shadows the lights cast and the unit vector toward their light
+    /// in camera-relative world axes (x east, y north, z up): from a light
+    /// above the horizon.
     pub fn shadow(&self) -> Option<(FrameShadow, [f32; 3])> {
-        let lights = self.lights?;
-        let shadow = lights
-            .shadow
-            .filter(|s| s.intensity > 0.0 && self.globe.is_none())?;
-        let [x, y, z] = lights.position;
+        let shadow = self.shadow.filter(|s| s.intensity > 0.0)?;
+        let [x, y, z] = self.position;
         let length = (x * x + y * y + z * z).sqrt();
         (z > SHADOW_MIN_ELEVATION_SIN * length).then(|| (shadow, [-x, y, z].map(|v| v / length)))
+    }
+
+    /// Where a caster's shadow falls on the ground per unit of its height,
+    /// from the caster, when shadows are cast.
+    pub fn shadow_reach(&self) -> Option<[f32; 2]> {
+        self.shadow().map(|(_, [x, y, z])| [-x / z, -y / z])
+    }
+}
+
+impl FrameBlock {
+    /// [`FrameLights::shadow`], on a plane.
+    pub fn shadow(&self) -> Option<(FrameShadow, [f32; 3])> {
+        self.lights?.shadow().filter(|_| self.globe.is_none())
     }
 }
 
@@ -287,8 +297,8 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     }
     // Where a casting chunk's shadow reaches, per world unit of height,
     // for the cull.
-    if let Some((_, [x, y, z])) = frame.shadow() {
-        b.f(f::SHADOW_REACH, &[-x / z, -y / z]);
+    if let Some(reach) = frame.shadow().and_then(|_| frame.lights?.shadow_reach()) {
+        b.f(f::SHADOW_REACH, &reach);
     }
     let globe = frame.globe.map(|g| {
         b.f(f::GLOBE_VIEW_PROJ, g.view_proj.as_flattened());
