@@ -44,8 +44,8 @@ enum State<T> {
     /// Loaded with nothing to draw (HTTP 204, outside the source's
     /// bounds): counts as ready.
     Empty,
-    /// Not in the tileset (HTTP 404): ancestors or children stand in, as
-    /// for a loading tile.
+    /// Not in the tileset (HTTP 404): its nearest ancestor in the tileset
+    /// stands in.
     Missing,
     /// Failed for a reason that may pass, such as the network: ancestors or
     /// children stand in, as for a loading tile, and it is requested again
@@ -59,6 +59,13 @@ enum State<T> {
 /// it, up to [`RETRY_MAX_MS`].
 const RETRY_MS: f64 = 1000.0;
 const RETRY_MAX_MS: f64 = 60_000.0;
+
+/// What stands in for a missing tile.
+enum StandIn {
+    Ready(TileIndex),
+    Loading,
+    Nothing,
+}
 
 #[derive(Debug)]
 struct Entry<T> {
@@ -181,17 +188,29 @@ impl<T> TilePyramid<T> {
                 }
             });
             entry.last_used = frame;
-            // A missing tile, unlike a loading one, has its ancestors
-            // requested.
-            let missing_tile = match entry.state {
+            match entry.state {
                 State::Ready(_) => {
                     draws.insert((ideal.z, ideal, covered.wrap), vec![ideal]);
                     continue;
                 }
                 State::Empty => continue,
-                State::Loading | State::Failed { .. } => false,
-                State::Missing => true,
-            };
+                State::Loading | State::Failed { .. } => {}
+                // A missing tile's nearest ancestor in the tileset stands
+                // in for it, whatever else is resident: other tiles stand
+                // in only while that ancestor loads.
+                State::Missing => match self.stand_in(ideal, &mut update.request) {
+                    StandIn::Ready(ancestor) => {
+                        self.touch(ancestor);
+                        draws
+                            .entry((ancestor.z, ancestor, covered.wrap))
+                            .or_default()
+                            .push(ideal);
+                        continue;
+                    }
+                    StandIn::Nothing => continue,
+                    StandIn::Loading => {}
+                },
+            }
 
             let mut descendants = Vec::new();
             let mut missing = Vec::new();
@@ -210,8 +229,6 @@ impl<T> TilePyramid<T> {
                     .entry((ancestor.z, ancestor, covered.wrap))
                     .or_default()
                     .extend(missing);
-            } else if missing_tile && !missing.is_empty() {
-                self.request_ancestor(ideal, &mut update.request);
             }
         }
 
@@ -290,8 +307,10 @@ impl<T> TilePyramid<T> {
         waiting
     }
 
-    /// Marks a loading tile as absent from the tileset: it draws nothing,
-    /// and its nearest ready ancestor, or else its ready children, stand in.
+    /// Marks a loading tile as absent from the tileset: its nearest
+    /// ancestor in the tileset stands in, loaded if need be; while that
+    /// loads, ready ancestors and descendants stand in as for a loading
+    /// tile.
     pub fn insert_missing(&mut self, tile: TileIndex) {
         if let Some(entry) = self.tiles.get_mut(&tile)
             && matches!(entry.state, State::Loading)
@@ -439,32 +458,31 @@ impl<T> TilePyramid<T> {
         }
     }
 
-    /// Requests the nearest ancestor of a missing tile not yet known, past
-    /// missing ones, as GL JS loads the parents of tiles that failed.
-    /// Ancestors on the way stay in use.
-    fn request_ancestor(&mut self, mut tile: TileIndex, request: &mut Vec<TileIndex>) {
+    /// The nearest ancestor of a missing tile that isn't missing, as GL JS
+    /// loads the parents of tiles that failed: requested when not yet
+    /// known. Ancestors on the way stay in use.
+    fn stand_in(&mut self, mut tile: TileIndex, request: &mut Vec<TileIndex>) -> StandIn {
         let frame = self.frame;
         while let Some(parent) = tile.parent() {
             if parent.z < self.min_zoom {
-                return;
+                break;
             }
-            let Some(entry) = self.tiles.get_mut(&parent) else {
-                self.tiles.insert(
-                    parent,
-                    Entry {
-                        state: State::Loading,
-                        last_used: frame,
-                    },
-                );
+            let entry = self.tiles.entry(parent).or_insert_with(|| {
                 request.push(parent);
-                return;
-            };
+                Entry {
+                    state: State::Loading,
+                    last_used: frame,
+                }
+            });
             entry.last_used = frame;
-            if !matches!(entry.state, State::Missing) {
-                return;
+            match entry.state {
+                State::Missing => tile = parent,
+                State::Loading | State::Failed { .. } => return StandIn::Loading,
+                State::Ready(_) => return StandIn::Ready(parent),
+                State::Empty => break,
             }
-            tile = parent;
         }
+        StandIn::Nothing
     }
 
     fn ready_ancestor(&self, mut tile: TileIndex) -> Option<TileIndex> {
@@ -760,6 +778,28 @@ mod tests {
         assert_eq!(update.draw[0].tile, t(0, 0, 0));
         assert_eq!(update.draw[0].regions, vec![t(1, 0, 0)]);
         assert_eq!(pyramid.loading(), 0);
+    }
+
+    /// A missing tile's stand-in doesn't depend on what else is resident:
+    /// its nearest ancestor in the tileset, not a coarser one cached
+    /// earlier, nor descendants.
+    #[test]
+    fn missing_tiles_draw_their_nearest_ancestor_whatever_is_cached() {
+        let mut pyramid = TilePyramid::new(0, 4, 8);
+        pyramid.update(&cover(&[(0, 0, 0)]));
+        pyramid.insert(t(0, 0, 0), ());
+        pyramid.update(&cover(&[(3, 0, 0)]));
+        pyramid.insert(t(3, 0, 0), ());
+        pyramid.update(&cover(&[(2, 0, 0)]));
+        pyramid.insert_missing(t(2, 0, 0));
+        let update = pyramid.update(&cover(&[(2, 0, 0)]));
+        assert_eq!(update.request, [t(1, 0, 0)]);
+        pyramid.insert(t(1, 0, 0), ());
+        let update = pyramid.update(&cover(&[(2, 0, 0)]));
+        assert!(update.request.is_empty());
+        assert_eq!(update.draw.len(), 1);
+        assert_eq!(update.draw[0].tile, t(1, 0, 0));
+        assert_eq!(update.draw[0].regions, vec![t(2, 0, 0)]);
     }
 
     #[test]

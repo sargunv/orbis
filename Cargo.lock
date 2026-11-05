@@ -2289,6 +2289,7 @@ dependencies = [
  "orb-interact",
  "orb-jobs",
  "orb-runtime",
+ "png",
  "pollster",
 ]
 

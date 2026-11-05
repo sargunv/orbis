@@ -19,5 +19,8 @@ orb-jobs.workspace = true
 orb-runtime = { workspace = true, features = ["compat"] }
 pollster.workspace = true
 
+[dev-dependencies]
+png.workspace = true
+
 [lints]
 workspace = true
