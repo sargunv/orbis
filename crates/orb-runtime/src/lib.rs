@@ -12,6 +12,7 @@ mod gpu;
 mod image;
 mod jobs;
 mod labels;
+mod lights;
 mod line;
 mod loader;
 mod map;

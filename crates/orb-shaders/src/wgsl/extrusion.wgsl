@@ -1,4 +1,5 @@
-// Flat v8 extrusion shading, ported from MapLibre GL JS (BSD-3-Clause).
+// Extrusions, lit by the style's lights (lighting.wgsl), ported from
+// MapLibre GL JS (BSD-3-Clause).
 struct ExtrusionNode {
     color: vec4<f32>,
     height: f32,
@@ -8,12 +9,10 @@ struct ExtrusionNode {
     translate: vec2<f32>,
     translate_anchor: u32,
     vertical_gradient: u32,
-    light_position: vec3<f32>,
-    light_viewport: u32,
-    light_color: vec3<f32>,
-    light_intensity: f32,
     opacity: f32,
-    image_from: u32, image_to: u32, _pad0: u32,
+    image_from: u32, image_to: u32,
+    // How much of its own colour it shows (0: lit fully).
+    emissive: f32,
     curves: array<Curve, 3>,
     pattern: Pattern,
     state: StateLookup,
@@ -72,17 +71,9 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     out.position.z = out.position.w - out.position.z;
     out.tile_pos = pos;
     out.tile = v.tile;
-    var light = node.light_position;
-    if node.light_viewport != 0u {
-        let s = sin(frame.bearing); let c = cos(frame.bearing);
-        light = vec3<f32>(light.x*c - light.y*s, light.x*s + light.y*c, light.z);
-    }
-    var luminance = dot(color.rgb, vec3<f32>(0.2126,0.7152,0.0722));
-    if node.pattern.enabled != 0u { luminance = 0.5; }
-    var directional = clamp(dot(normal, light), 0.0, 1.0);
-    directional = mix(1.0-node.light_intensity, max(1.0-luminance+node.light_intensity, 1.0), directional);
+    var gradient = 1.0;
     if normal.z == 0.0 && node.vertical_gradient != 0u {
-        directional *= clamp((top+gradient_base)*sqrt(gradient_height/150.0), mix(0.7,0.98,1.0-node.light_intensity), 1.0);
+        gradient = light_wall_gradient(top + gradient_base, gradient_height);
     }
     if node.pattern.enabled != 0u {
         out.images = pattern_ids(row, 6u, node.image_from, node.image_to, node.table_mask, node.pattern);
@@ -94,11 +85,14 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
         // Keep atlas reads in the fragment stage, within core WebGPU's eight
         // storage slots per stage.
         out.pattern_pos = pattern_pos;
-        out.color = vec4<f32>(clamp(directional * node.light_color, (vec3<f32>(1.0)-node.light_color)*0.3, vec3<f32>(1.0)), 1.0);
+        // The pattern's texels multiply the light, as GL JS shades them at
+        // mid luminance.
+        let light = clamp(light_factor(normal, 0.5, gradient),
+            (vec3<f32>(1.0) - frame.light_color.rgb) * 0.3, vec3<f32>(1.0));
+        out.color = vec4<f32>(mix(light, vec3<f32>(1.0), node.emissive), 1.0);
         return out;
     }
-    out.color = vec4<f32>(clamp((color.rgb + vec3<f32>(0.03)) * directional * node.light_color,
-        (vec3<f32>(1.0)-node.light_color)*0.3, vec3<f32>(1.0)), 1.0);
+    out.color = vec4<f32>(light_surface(color.rgb, normal, gradient, node.emissive), 1.0);
     return out;
 }
 @fragment

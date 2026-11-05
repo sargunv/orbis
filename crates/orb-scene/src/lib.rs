@@ -128,6 +128,27 @@ pub struct FrameBlock {
     pub pitch: f32,
     /// The terrain elevated content stands on, if any.
     pub terrain: Option<FrameTerrain>,
+    /// The style's lights (decision 0026); without them lit surfaces are
+    /// black.
+    pub lights: Option<FrameLights>,
+}
+
+/// The style's lights as shaders take them (decision 0026): the ambient
+/// and directional terms of GL JS's flat response, each a premultiplied
+/// colour and a level.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameLights {
+    pub ambient: [f32; 3],
+    pub ambient_level: f32,
+    pub directional: [f32; 3],
+    pub directional_level: f32,
+    /// The directional light's position as GL JS's `sphericalToCartesian`
+    /// gives it: tile axes (y south) with the horizontal parts negated, as
+    /// long as v8's radial position (1 for scene lights). Viewport
+    /// anchoring is already applied.
+    pub position: [f32; 3],
+    /// Whether the terrain surface is lit too.
+    pub terrain: bool,
 }
 
 /// What elevated content reads of the terrain's DEM page.
@@ -140,7 +161,7 @@ pub struct FrameTerrain {
     pub dem_dim: f32,
 }
 
-const FRAME_WORDS: usize = 40;
+const FRAME_WORDS: usize = 52;
 
 /// Bytes of a frame block's uniform buffer.
 pub const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 4;
@@ -172,6 +193,16 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
         }
         words[36] = t.exaggeration.to_bits();
         words[37] = t.dem_dim.to_bits();
+    }
+    if let Some(l) = frame.lights {
+        let mut put = |at: usize, v: [f32; 3], w: f32| {
+            for (word, v) in words[at..at + 4].iter_mut().zip([v[0], v[1], v[2], w]) {
+                *word = v.to_bits();
+            }
+        };
+        put(40, l.ambient, l.ambient_level);
+        put(44, l.directional, l.directional_level);
+        put(48, l.position, if l.terrain { 1.0 } else { 0.0 });
     }
     gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&words));
 }

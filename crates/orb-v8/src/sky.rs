@@ -1,11 +1,14 @@
-//! The style's sky. Fog and atmosphere values are retained for the terrain
-//! and globe paths; on a flat surface GL JS draws only the sky gradient.
+//! v8's `sky`, lowered into the style's [`Atmosphere`] (decision 0025):
+//! one sky and fog model, which the scene document's atmosphere extends
+//! (the globe's `atmosphere-blend` is already here).
 use crate::{Color, Cx, Property, layer::property_at, spec::Prop};
 use orb_expr::{PropertyType, json::Json};
 
 #[derive(Clone, Debug)]
-pub struct Sky {
-    pub color: Property<Color>,
+/// The style's atmosphere: the sky above the horizon and the fog over
+/// terrain.
+pub struct Atmosphere {
+    pub sky_color: Property<Color>,
     pub horizon_color: Property<Color>,
     pub fog_color: Property<Color>,
     pub fog_ground_blend: Property<f32>,
@@ -14,7 +17,7 @@ pub struct Sky {
     pub atmosphere_blend: Property<f32>,
 }
 
-pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Sky {
+pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
     const NAMES: &[&str] = &[
         "sky-color",
         "horizon-color",
@@ -63,8 +66,8 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Sky {
             &prop(name, PropertyType::Number, default),
         )
     };
-    Sky {
-        color: color(cx, "sky-color", "\"#88C6FC\""),
+    Atmosphere {
+        sky_color: color(cx, "sky-color", "\"#88C6FC\""),
         horizon_color: color(cx, "horizon-color", "\"white\""),
         fog_color: color(cx, "fog-color", "\"white\""),
         fog_ground_blend: number(cx, "fog-ground-blend", "0.5"),
@@ -79,11 +82,11 @@ mod tests {
     #[test]
     fn absent_sky_is_transparent_but_empty_sky_uses_spec_defaults() {
         let absent = crate::parse(r#"{"version":8,"sources":{},"layers":[]}"#).unwrap();
-        assert!(absent.sky.is_none());
+        assert!(absent.atmosphere.is_none());
         let defaults = crate::parse(r#"{"version":8,"sky":{},"sources":{},"layers":[]}"#).unwrap();
-        let sky = defaults.sky.unwrap();
+        let sky = defaults.atmosphere.unwrap();
         assert_eq!(
-            sky.color.evaluate(0.0).straight(),
+            sky.sky_color.evaluate(0.0).straight(),
             [136.0 / 255.0, 198.0 / 255.0, 252.0 / 255.0, 1.0]
         );
         assert_eq!(sky.sky_horizon_blend.evaluate(0.0), 0.8);
@@ -92,7 +95,10 @@ mod tests {
     #[test]
     fn sky_zoom_expressions_and_ranges_follow_the_spec() {
         let style = crate::parse(r#"{"version":8,"sky":{"sky-horizon-blend":["interpolate",["linear"],["zoom"],0,0,10,1]},"sources":{},"layers":[]}"#).unwrap();
-        assert_eq!(style.sky.unwrap().sky_horizon_blend.evaluate(5.0), 0.5);
+        assert_eq!(
+            style.atmosphere.unwrap().sky_horizon_blend.evaluate(5.0),
+            0.5
+        );
         assert!(
             crate::parse(r#"{"version":8,"sky":{"sky-horizon-blend":2},"sources":{},"layers":[]}"#)
                 .is_err()

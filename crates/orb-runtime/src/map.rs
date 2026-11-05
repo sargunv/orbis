@@ -334,6 +334,8 @@ pub struct Map {
     /// The plane the map draws on and its sources' tile matrix sets, from
     /// the scene document.
     pub(crate) surface: Surface,
+    /// The scene document's lights, which replace the style's.
+    lights: Option<orb_v8::Lights>,
     /// The latest `load_style_url` request; earlier ones are ignored.
     style_request: u64,
     generation: u64,
@@ -514,6 +516,7 @@ impl Map {
             services,
             camera,
             surface: Surface::default(),
+            lights: None,
             style_request: 0,
             generation: 0,
             tile_generation: 0,
@@ -780,6 +783,7 @@ impl Map {
             self.warnings
                 .extend(parsed.warnings.iter().map(ToString::to_string));
             self.surface = Surface::new(parsed.projection, parsed.sources);
+            self.lights = parsed.lights;
             return match parsed.style {
                 orb_v8::StyleRef::Inline(style) => self.set_document(&style, base, true),
                 orb_v8::StyleRef::Url(url) => {
@@ -795,6 +799,7 @@ impl Map {
         let doc = StyleDoc::parse(json).map_err(|d| d.to_string())?;
         if !scene {
             self.surface = Surface::default();
+            self.lights = None;
         }
         // A style URL still loading is superseded.
         self.style_request += 1;
@@ -1075,14 +1080,14 @@ impl Map {
                 gpu,
                 self.style
                     .as_ref()
-                    .and_then(|style| style.worker.plan().style.sky.as_ref())
-                    .map(|sky| orb_render::AtmospherePaint {
-                        sky_color: sky.color.evaluate(zoom).premultiplied(),
-                        horizon_color: sky.horizon_color.evaluate(zoom).premultiplied(),
-                        fog_color: sky.fog_color.evaluate(zoom).premultiplied(),
-                        sky_horizon_blend: sky.sky_horizon_blend.evaluate(zoom),
-                        horizon_fog_blend: sky.horizon_fog_blend.evaluate(zoom),
-                        fog_ground_blend: sky.fog_ground_blend.evaluate(zoom),
+                    .and_then(|style| style.worker.plan().style.atmosphere.as_ref())
+                    .map(|atmosphere| orb_render::AtmospherePaint {
+                        sky_color: atmosphere.sky_color.evaluate(zoom).premultiplied(),
+                        horizon_color: atmosphere.horizon_color.evaluate(zoom).premultiplied(),
+                        fog_color: atmosphere.fog_color.evaluate(zoom).premultiplied(),
+                        sky_horizon_blend: atmosphere.sky_horizon_blend.evaluate(zoom),
+                        horizon_fog_blend: atmosphere.horizon_fog_blend.evaluate(zoom),
+                        fog_ground_blend: atmosphere.fog_ground_blend.evaluate(zoom),
                     }),
                 orb_render::AtmosphereView {
                     horizon: [(viewport.width / 2.0) as f32, view.sky_horizon() as f32],
@@ -1112,10 +1117,10 @@ impl Map {
                 gpu,
                 renderer,
                 style,
-                zoom,
-                self.camera.bearing,
+                (zoom, self.camera.bearing),
                 crossfade,
                 images.atlas.as_mut().expect("initialized"),
+                self.lights.as_ref(),
             );
             drop(images);
             style.symbol_tiles.clear();
@@ -1198,6 +1203,18 @@ impl Map {
             pitch: self.camera.pitch.to_radians() as f32,
             align: pixel_alignment(&view, self.surface.projection(), self.camera.bearing),
             terrain: self.frame_terrain,
+            lights: self
+                .lights
+                .as_ref()
+                .or(self.style.as_ref().map(|s| &s.worker.plan().style.lights))
+                .map(|lights| {
+                    crate::lights::frame_lights(
+                        lights,
+                        zoom,
+                        self.camera.bearing,
+                        self.camera.target,
+                    )
+                }),
         };
         let (renderer, _) = self.renderer.as_mut().expect("created above");
         report.frame = renderer.render(gpu, &frame, target, clear);
@@ -3107,10 +3124,10 @@ fn write_paint(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     style: &mut LoadedStyle,
-    zoom: f64,
-    bearing: f64,
+    (zoom, bearing): (f64, f64),
     crossfade: Crossfade,
     atlas: &mut ImageAtlas,
+    lights: Option<&orb_v8::Lights>,
 ) {
     if style.painted == Some((zoom, bearing)) && style.painted_fade == Some(crossfade) {
         return;
@@ -3231,11 +3248,6 @@ fn write_paint(
                 let LayerKind::FillExtrusion(e) = &plan.style.layers[node.layer].kind else {
                     unreachable!()
                 };
-                let light = &plan.style.light;
-                let [radius, azimuth, polar] = light.position.evaluate(zoom);
-                let azimuth = (azimuth + 90.0).to_radians();
-                let polar = polar.to_radians();
-                let lc = light.color.evaluate(zoom).premultiplied();
                 NodePaint::Extrusion(orb_render::ExtrusionPaint {
                     color,
                     height: numbers[1],
@@ -3243,14 +3255,8 @@ fn write_paint(
                     opacity: e.paint.opacity.evaluate(zoom),
                     translate,
                     vertical_gradient: e.paint.vertical_gradient.evaluate(zoom),
-                    light_position: [
-                        radius * azimuth.cos() * polar.sin(),
-                        radius * azimuth.sin() * polar.sin(),
-                        radius * polar.cos(),
-                    ],
-                    light_viewport: light.anchor.evaluate(zoom) == TranslateAnchor::Viewport,
-                    light_color: [lc[0], lc[1], lc[2]],
-                    light_intensity: light.intensity.evaluate(zoom),
+                    emissive: lights.map_or(0.0, |l| l.emissive(&plan.style.layers[node.layer].id))
+                        as f32,
                     table_mask,
                     curves: [curves[0], curves[1], curves[2]],
                     state: lookup,

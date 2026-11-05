@@ -30,3 +30,4 @@ in code and commit messages.
 - [0023](0023-frame-time-regressions.md): Picking on demand, budgeted tile intake, and jobs off the page
 - [0024](0024-picking-without-the-camera.md): Picking without the camera
 - [0025](0025-atmosphere.md): The atmosphere: one sky and fog model for every surface
+- [0026](0026-lighting.md): Lighting: one model, v8's light lowered onto it

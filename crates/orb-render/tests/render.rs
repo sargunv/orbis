@@ -105,6 +105,7 @@ impl Harness {
             symbol_fade_change: 1.0,
             pitch: 0.0,
             terrain: None,
+            lights: None,
         }
     }
 }

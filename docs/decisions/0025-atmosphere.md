@@ -5,6 +5,15 @@ every surface", where GL JS has a sky shader and a separate fog inside its
 Mercator terrain shader (#4337). This records how Orbis draws it and where
 the globe joins it.
 
+## One model, v8 lowered onto it
+
+The Style IR has one `Atmosphere`; v8's `sky` lowers into it in the style
+compiler (`orb-v8`), property for property, `atmosphere-blend` included.
+The scene document's atmosphere (plan §11.4) will set the same IR rather
+than add a second one. The renderer likewise has one `Atmosphere` node.
+Nothing below is v8-specific: GL JS's formulas are the model's first
+shape, and the globe and the scene document extend it.
+
 ## What it draws
 
 `orb_render::Atmosphere` holds one uniform from the style's `sky`

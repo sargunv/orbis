@@ -272,8 +272,8 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         sprites: old.sprites.clone(),
         glyphs: old.glyphs.clone(),
         font_faces: old.font_faces.clone(),
-        light: old.light.clone(),
-        sky: old.sky.clone(),
+        lights: old.lights.clone(),
+        atmosphere: old.atmosphere.clone(),
         terrain: None,
         state: old.state.clone(),
         sources: Vec::new(),
@@ -330,7 +330,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         && reads_global(json, &changed)
     {
         let (sky, w) = orb_v8::parse_sky(json, &new_state)?;
-        style.sky = Some(sky);
+        style.atmosphere = Some(sky);
         warnings.extend(w);
         if !changes.contains(&Change::Restyle) {
             changes.push(Change::Restyle);

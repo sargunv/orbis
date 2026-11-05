@@ -15,6 +15,7 @@ mod font_faces;
 mod geojson;
 mod layer;
 mod light;
+pub mod lights;
 mod property;
 mod scene;
 mod sky;
@@ -34,7 +35,7 @@ pub use layer::{
     Hillshade, HillshadePaint, Layer, LayerKind, Line, LineLayout, LinePaint, Raster, RasterPaint,
     Selection, Symbol, SymbolLayout, SymbolPaint, SymbolPartPaint,
 };
-pub use light::Light;
+pub use lights::{AmbientLight, Direction, DirectionalLight, Level, Lights, parse_time};
 pub use orb_expr::json::Span;
 pub use orb_expr::{Color, Diagnostic, Filter, Kind, PropertyExpression, Value};
 pub use property::{
@@ -44,7 +45,7 @@ pub use property::{
     TextRotationAlignment, TextTransform, TranslateAnchor, Visibility, WritingMode,
 };
 pub use scene::{Scene, StyleRef, is_scene, parse_scene, tms_definition};
-pub use sky::Sky;
+pub use sky::Atmosphere;
 pub use source::{
     GeoJsonData, GeoJsonSource, PromoteId, RasterDemSource, RasterSource, Source, SourceKind,
     TileSet, VectorSource,
@@ -68,10 +69,12 @@ pub struct Style {
     pub glyphs: Option<String>,
     /// Font files for `text-font` names (the root `font-faces`).
     pub font_faces: FontFaces,
-    pub light: Light,
+    /// The lights: v8's `light` lowered (decision 0026).
+    pub lights: Lights,
     /// The root `state`: each global state property's default.
     pub state: Vec<(String, Value<'static>)>,
-    pub sky: Option<Sky>,
+    /// The atmosphere: v8's `sky` lowered (decision 0025).
+    pub atmosphere: Option<Atmosphere>,
     pub terrain: Option<Terrain>,
     pub sources: Vec<Source>,
     pub layers: Vec<Layer>,
@@ -237,9 +240,9 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         sprites,
         glyphs,
         font_faces: font_faces::parse(cx, doc.get("font-faces")),
-        light: light::parse(cx, doc.get("light")),
+        lights: light::parse(cx, doc.get("light")).lower(),
         state,
-        sky: doc.get("sky").map(|json| sky::parse(cx, json)),
+        atmosphere: doc.get("sky").map(|json| sky::parse(cx, json)),
         terrain: doc
             .get("terrain")
             .and_then(|json| terrain::parse(cx, json, &sources)),
@@ -333,7 +336,7 @@ pub fn property_spec(layer_type: &str, paint: bool, name: &str) -> Option<orb_ex
 pub fn parse_sky(
     json: &Json,
     state: &[(String, Value<'static>)],
-) -> Result<(Sky, Vec<Diagnostic>), Diagnostics> {
+) -> Result<(Atmosphere, Vec<Diagnostic>), Diagnostics> {
     let mut cx = Cx {
         state: state.to_vec(),
         ..Cx::default()

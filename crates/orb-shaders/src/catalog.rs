@@ -39,6 +39,8 @@ const IMAGE: &str = include_str!("wgsl/image.wgsl");
 const DEM: &str = include_str!("wgsl/dem.wgsl");
 /// The atmosphere's sky and fog (decision 0025).
 const ATMOSPHERE: &str = include_str!("wgsl/atmosphere.wgsl");
+/// The style's lights on a surface (decision 0026).
+const LIGHTING: &str = include_str!("wgsl/lighting.wgsl");
 const RASTER: &str = include_str!("wgsl/raster.wgsl");
 const HILLSHADE: &str = include_str!("wgsl/hillshade.wgsl");
 const COLOR_RELIEF: &str = include_str!("wgsl/color_relief.wgsl");
@@ -97,7 +99,13 @@ impl Shader {
 
 pub const TERRAIN_SHADER: Shader = Shader {
     label: "terrain",
-    parts: &[TYPES, DEM, ATMOSPHERE, include_str!("wgsl/terrain.wgsl")],
+    parts: &[
+        TYPES,
+        DEM,
+        ATMOSPHERE,
+        LIGHTING,
+        include_str!("wgsl/terrain.wgsl"),
+    ],
     vertex: "vs_terrain",
     fragment: "fs_terrain",
     compute: "",
@@ -293,7 +301,7 @@ pub const CULL_SHADER: Shader = Shader {
 /// Lit roofs and walls with reversed-Z depth.
 pub const EXTRUSION_SHADER: Shader = Shader {
     label: "extrusion",
-    parts: &[TYPES, DRAW, PATTERN, EXTRUSION],
+    parts: &[TYPES, DRAW, PATTERN, LIGHTING, EXTRUSION],
     vertex: "vs_extrusion",
     fragment: "fs_extrusion",
     compute: "",
@@ -301,7 +309,14 @@ pub const EXTRUSION_SHADER: Shader = Shader {
 };
 pub const EXTRUSION_COMPOSITE_SHADER: Shader = Shader {
     label: "extrusion composite",
-    parts: &[TYPES, DRAW, PATTERN, EXTRUSION, EXTRUSION_COMPOSITE],
+    parts: &[
+        TYPES,
+        DRAW,
+        PATTERN,
+        LIGHTING,
+        EXTRUSION,
+        EXTRUSION_COMPOSITE,
+    ],
     vertex: "vs_extrusion_composite",
     fragment: "fs_extrusion_composite",
     compute: "",

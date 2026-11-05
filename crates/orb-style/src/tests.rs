@@ -271,10 +271,10 @@ fn sky_survives_layer_edits_and_sky_replacement_restyles() {
     );
     assert_eq!(
         doc.style()
-            .sky
+            .atmosphere
             .as_ref()
             .unwrap()
-            .color
+            .sky_color
             .evaluate(0.0)
             .straight(),
         [1.0, 0.0, 0.0, 1.0]
@@ -286,10 +286,10 @@ fn sky_survives_layer_edits_and_sky_replacement_restyles() {
     assert!(patch.changes.contains(&Change::Restyle));
     assert_eq!(
         doc.style()
-            .sky
+            .atmosphere
             .as_ref()
             .unwrap()
-            .color
+            .sky_color
             .evaluate(0.0)
             .straight(),
         [0.0, 0.0, 1.0, 1.0]
@@ -303,10 +303,10 @@ fn sky_rebinds_changed_global_state() {
     assert!(patch.changes.contains(&Change::Restyle));
     assert_eq!(
         doc.style()
-            .sky
+            .atmosphere
             .as_ref()
             .unwrap()
-            .color
+            .sky_color
             .evaluate(0.0)
             .straight(),
         [0.0, 0.0, 1.0, 1.0]

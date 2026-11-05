@@ -1,6 +1,8 @@
 //! The scene document, v0 (plan §11.4): what v8 can't say about a map,
-//! next to an unmodified v8 style. v0 carries the CRS/TMS module: a
-//! projection for the surface and a tile matrix set per source.
+//! next to an unmodified v8 style. v0 carries the CRS/TMS module (a
+//! projection for the surface and a tile matrix set per source) and the
+//! lighting module (`lights` and per-layer `emissive-strength`; see
+//! [`crate::lights`]).
 //!
 //! ```json
 //! {
@@ -29,6 +31,9 @@ pub struct Scene {
     /// Tile matrix sets of sources by source id; the rest use
     /// `WebMercatorQuad`.
     pub sources: Vec<(String, TileMatrixSet)>,
+    /// The scene's lights and emissive layers, which replace the style's
+    /// lowered `light`.
+    pub lights: Option<crate::Lights>,
     pub warnings: Vec<crate::Diagnostic>,
 }
 
@@ -66,6 +71,7 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
     let mut style = None;
     let mut projection = None;
     let mut sources = Vec::new();
+    let (mut lights, mut emissive) = (None, Vec::new());
     for m in root {
         match m.key.as_str() {
             "$schema" => {}
@@ -115,8 +121,19 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
                     }
                 }
             }
+            "lights" => lights = Some(crate::lights::parse_lights(&mut cx, &m.value)),
+            "layers" => emissive = crate::lights::parse_layers(&mut cx, &m.value),
             key => cx.warn(key, m.key_span, format!("unknown property \"{key}\"")),
         }
+    }
+    match &mut lights {
+        Some(lights) => lights.emissive = emissive,
+        None if !emissive.is_empty() => cx.warn(
+            "layers",
+            doc.span,
+            "emissive-strength takes effect with the scene's lights",
+        ),
+        None => {}
     }
     let Some(style) = style else {
         cx.error("", doc.span, "missing required property \"style\"");
@@ -129,6 +146,7 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
         style,
         projection,
         sources,
+        lights,
         warnings: cx.diagnostics.warnings,
     })
 }

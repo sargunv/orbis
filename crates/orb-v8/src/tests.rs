@@ -314,9 +314,16 @@ fn extrusion_paint_and_light_are_typed() {
       "layers":[{"id":"e","type":"fill-extrusion","source":"s","paint":{"fill-extrusion-height":["get","height"],"fill-extrusion-base":12,
       "fill-extrusion-opacity":0.5,"fill-extrusion-vertical-gradient":false}}]}"##).unwrap();
     assert!(s.warnings.is_empty(), "{:?}", s.warnings);
-    assert_eq!(s.light.position.evaluate(0.0), [1.5, 120.0, 50.0]);
-    assert_eq!(s.light.anchor.evaluate(0.0), TranslateAnchor::Map);
-    assert_eq!(s.light.intensity.evaluate(0.0), 0.7);
+    // v8's light lowers to ambient `1 − i` and directional `2i`.
+    let directional = s.lights.directional.as_ref().unwrap();
+    let crate::Direction::Position(position) = &directional.direction else {
+        panic!("a positioned light")
+    };
+    assert_eq!(position.evaluate(0.0), [1.5, 120.0, 50.0]);
+    assert_eq!(directional.anchor.evaluate(0.0), TranslateAnchor::Map);
+    assert!((directional.level.evaluate(0.0) - 1.4).abs() < 1e-6);
+    let ambient = s.lights.ambient.as_ref().unwrap();
+    assert!((ambient.level.evaluate(0.0) - 0.3).abs() < 1e-6);
     let LayerKind::FillExtrusion(e) = &s.layers[0].kind else {
         panic!()
     };

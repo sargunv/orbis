@@ -33,9 +33,9 @@ pub use terrain::{
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, PageId, PageKind};
 pub use orb_scene::Pixels;
 pub use orb_scene::{
-    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameTerrain, ImageAtlas, ImageBindings, ImageKey,
-    ImageMetadata, ImageUpload, MeshData, MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace,
-    PlacementTarget, Scene, SceneCapacity, SceneStats, TileId, TileRow, Words,
+    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameLights, FrameTerrain, ImageAtlas, ImageBindings,
+    ImageKey, ImageMetadata, ImageUpload, MeshData, MeshId, MeshSize, NodeCull, NodeDraw,
+    OutOfSpace, PlacementTarget, Scene, SceneCapacity, SceneStats, TileId, TileRow, Words,
 };
 pub use orb_scene::{
     GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas, PLACED_WORDS, QUAD_WORDS, SYMBOL_HEADER_WORDS,

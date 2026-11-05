@@ -33,6 +33,12 @@ struct Frame {
     terrain_exaggeration: f32,
     dem_dim: f32,
     _pad4: vec2<f32>,
+    // The style's lights (decision 0026; see lighting.wgsl): the ambient
+    // and directional colours with their levels in w, and the vector
+    // toward the directional light in tile axes, w = 1 when terrain is lit.
+    light_ambient: vec4<f32>,
+    light_color: vec4<f32>,
+    light_position: vec4<f32>,
 };
 
 // One placement of a tile's data: data units → camera-relative world is

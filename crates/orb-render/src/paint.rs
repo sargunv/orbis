@@ -238,11 +238,9 @@ pub struct ExtrusionPaint {
     pub opacity: f32,
     pub translate: Translate,
     pub vertical_gradient: bool,
-    /// Cartesian light in tile axes (y south); rotate viewport lights in the shader.
-    pub light_position: [f32; 3],
-    pub light_viewport: bool,
-    pub light_color: [f32; 3],
-    pub light_intensity: f32,
+    /// How much of its own colour it shows under the style's lights (0 lit
+    /// fully, 1 unlit), which the frame block carries.
+    pub emissive: f32,
     pub table_mask: u32,
     pub curves: [Curve; 3],
     pub state: StateLookup,
@@ -412,11 +410,7 @@ impl NodePaint {
                     u32::from(p.translate.viewport),
                     u32::from(p.vertical_gradient),
                 ]);
-                words.extend(p.light_position.map(f));
-                words.push(u32::from(p.light_viewport));
-                words.extend(p.light_color.map(f));
-                words.push(f(p.light_intensity));
-                words.extend([f(p.opacity), 0, 0, 0]);
+                words.extend([f(p.opacity), 0, 0, f(p.emissive)]);
                 (words, &p.curves)
             }
             Self::Line(p) | Self::LinePattern(p, _) => {
@@ -598,7 +592,7 @@ impl NodePaint {
         };
         let at = match self {
             Self::Fill(_) | Self::Background(_) | Self::FillPattern(..) => 10,
-            Self::Extrusion(_) | Self::ExtrusionPattern(..) => 21,
+            Self::Extrusion(_) | Self::ExtrusionPattern(..) => 13,
             _ => 14,
         };
         if let Some(p) = pattern {

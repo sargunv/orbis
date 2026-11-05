@@ -1544,6 +1544,61 @@ mod tests {
         );
     }
 
+    /// A scene's lights (decision 0026) shade an extrusion's roof in the
+    /// response v8's light uses, and emissive strength shows its colour.
+    #[test]
+    fn scene_lights_shade_extrusions() {
+        let options = super::Options {
+            style: Some(format!(
+                "file://{}/tests/data/extrusion.json",
+                env!("CARGO_MANIFEST_DIR")
+            )),
+            encoding: "mvt".into(),
+            at: Some((orb_geo::Geodetic::new(-0.00015, -0.00025), 19.0, 0.0, 0.0)),
+            snapshot: None,
+            a11y: None,
+            watch_style: None,
+            count_frames: None,
+            flight: None,
+        };
+        let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
+        let style = r##"{"version": 8,
+            "sources": {"b": {"type": "geojson", "data": {"type": "Polygon",
+                "coordinates": [[[-0.0003, -0.0004], [-0.0003, -0.0001], [0, -0.0001], [0, -0.0004], [-0.0003, -0.0004]]]}}},
+            "layers": [
+                {"id": "ground", "type": "background", "paint": {"background-color": "#000000"}},
+                {"id": "block", "type": "fill-extrusion", "source": "b",
+                 "paint": {"fill-extrusion-height": 10, "fill-extrusion-color": "#808080"}}]}"##;
+        let mut roof = |direction: &str, emissive: f64| {
+            let scene = format!(
+                r#"{{"style": {style}, "lights": [
+                    {{"type": "ambient", "properties": {{"intensity": 0.5}}}},
+                    {{"type": "directional", "properties": {{"direction": {direction}, "intensity": 0.5}}}}],
+                    "layers": {{"block": {{"emissive-strength": {emissive}}}}}}}"#
+            );
+            offscreen.map.set_style_json(&scene).unwrap();
+            let projection = offscreen.map.projection();
+            *offscreen.map.camera_mut() = orb_runtime::CameraState::new(
+                orb_geo::Geodetic::new(-0.00015, -0.00025),
+                19.0,
+                &projection,
+            );
+            settle(&mut offscreen);
+            let pixels = offscreen.pixels();
+            let at = (super::Offscreen::HEIGHT as usize / 2 * super::Offscreen::WIDTH as usize
+                + super::Offscreen::WIDTH as usize / 2)
+                * 4;
+            pixels[at]
+        };
+        // GL JS's flat response (decision 0026). Overhead the roof gets
+        // max(0.5 + 0.5 − its luminance, 1) of its colour lifted by 0.03.
+        assert!(roof("[0, 0]", 0.0).abs_diff(136) <= 1);
+        // At the horizon only the ambient level, 0.5.
+        assert!(roof("[90, 90]", 0.0).abs_diff(68) <= 1);
+        // Fully emissive: its own colour.
+        assert!(roof("[90, 90]", 1.0).abs_diff(128) <= 1);
+    }
+
     #[test]
     fn point_and_line_families_keep_camera_only_uploads_to_placements() {
         for style in [
