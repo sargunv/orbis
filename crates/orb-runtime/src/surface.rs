@@ -85,17 +85,6 @@ impl SurfaceTiles {
     }
 }
 
-/// How a source's tiles map onto the surface.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Plan {
-    /// The source tiles the surface's own plane: one affine row per tile.
-    Affine,
-    /// Tiles on another plane: rasters as an error-bounded mesh per tile
-    /// (`RasterWarp`), vectors subdivided and drawn through quadratic
-    /// patches (`GpuPerVertex`).
-    Warp(Box<orb_crs::Warp>),
-}
-
 impl Default for Surface {
     /// Web Mercator, every source in `WebMercatorQuad`.
     fn default() -> Self {
@@ -228,25 +217,25 @@ impl Surface {
         }
     }
 
-    /// How a source in `tms` reaches the surface, or why it can't yet:
-    /// `image` is the kind of an image source.
+    /// Whether a source in `tms` reaches the surface through a warp, or why
+    /// it can't yet: `image` is the kind of an image source. A source on
+    /// the surface's own plane draws one affine row per tile; on another,
+    /// rasters draw as an error-bounded mesh per tile (`RasterWarp`) and
+    /// vectors subdivided through quadratic patches (`GpuPerVertex`).
     pub(crate) fn plan(
         &self,
         tms: &TileMatrixSet,
         image: Option<ImageKind>,
-    ) -> Result<Plan, String> {
+    ) -> Result<bool, String> {
         if tms.projection().same_plane(&self.projection) {
-            return Ok(Plan::Affine);
+            return Ok(false);
         }
         match image {
             Some(ImageKind::Dem) => Err(format!(
                 "tile matrix set `{}` is not on the surface's plane; DEM sources can't be warped yet",
                 tms.id()
             )),
-            _ => Ok(Plan::Warp(Box::new(orb_crs::Warp::new(
-                tms.clone(),
-                self.projection,
-            )))),
+            _ => Ok(true),
         }
     }
 }
@@ -473,15 +462,15 @@ mod tests {
         let crs84 = TileMatrixSet::by_id("WorldCRS84Quad").unwrap();
         assert!(matches!(
             globe.plan(&crs84, Some(ImageKind::Raster)),
-            Ok(Plan::Warp(_))
+            Ok(true)
         ));
-        assert_eq!(surface.plan(&nztm, None), Ok(Plan::Affine));
+        assert_eq!(surface.plan(&nztm, None), Ok(false));
         let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
-        assert!(matches!(surface.plan(&mercator, None), Ok(Plan::Warp(_))));
+        assert!(matches!(surface.plan(&mercator, None), Ok(true)));
         assert!(surface.plan(&mercator, Some(ImageKind::Dem)).is_err());
         assert!(matches!(
             surface.plan(&mercator, Some(ImageKind::Raster)),
-            Ok(Plan::Warp(_))
+            Ok(true)
         ));
         assert_eq!(surface.source_tms("other", true), *surface.tms());
         assert_eq!(surface.plane().as_ref(), Some(surface.tms()));

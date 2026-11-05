@@ -18,7 +18,6 @@ use crate::jobs::{ResultMesh, Stream, TileResult};
 use crate::map::NodeState;
 use crate::state::FeatureStates;
 use crate::style::StylePlan;
-use crate::surface::Plan;
 
 /// A tile in the scene: one scene tile per layer extent holding a mesh per
 /// render node with features, and an image tile's texture layer.
@@ -78,59 +77,11 @@ pub(crate) enum SourceState {
         endpoint: Arc<TileEndpoint>,
         pyramid: TilePyramid<ResidentTile>,
         loading: u32,
-        /// How its tiles reach the surface when they are on another plane.
-        warp: Option<Box<WarpState>>,
+        /// Its tiles are on another plane than the surface's, and reach
+        /// it through their warp (`Map::globe_warps`).
+        warped: bool,
     },
     Failed,
-}
-
-/// A `RasterWarp` source's plan and the footprints its tiles have had.
-#[derive(Debug)]
-pub(crate) struct WarpState {
-    pub(crate) warp: orb_crs::Warp,
-    pub(crate) footprints: HashMap<TileIndex, Option<orb_crs::Footprint>>,
-    /// Vector tiles' quadratic patches.
-    pub(crate) series: HashMap<TileIndex, Option<Arc<orb_crs::Series>>>,
-}
-
-impl WarpState {
-    /// Tiles whose footprints and series are kept before the caches start
-    /// over.
-    const CACHED: usize = 4096;
-    /// A quarter pixel at 512 pixels per tile side.
-    const TOLERANCE: f64 = 1.0 / 2048.0;
-
-    pub(crate) fn new(warp: orb_crs::Warp) -> Self {
-        Self {
-            warp,
-            footprints: HashMap::new(),
-            series: HashMap::new(),
-        }
-    }
-
-    pub(crate) fn footprint(&mut self, tile: TileIndex) -> Option<orb_crs::Footprint> {
-        if self.footprints.len() >= Self::CACHED {
-            self.footprints.clear();
-        }
-        let warp = &self.warp;
-        *self
-            .footprints
-            .entry(tile)
-            .or_insert_with(|| warp.footprint(tile))
-    }
-
-    /// A vector tile's patches, or `None` if it can't be drawn through
-    /// them (it crosses a wrapping plane's seam, or bends too much).
-    pub(crate) fn series(&mut self, tile: TileIndex) -> Option<Arc<orb_crs::Series>> {
-        if self.series.len() >= Self::CACHED {
-            self.series.clear();
-        }
-        let warp = &self.warp;
-        self.series
-            .entry(tile)
-            .or_insert_with(|| warp.series(tile, Self::TOLERANCE).map(Arc::new))
-            .clone()
-    }
 }
 
 /// The host data a tile result holds until it's uploaded or dropped.
@@ -196,17 +147,14 @@ pub(crate) fn record_maxima(
 
 /// A source whose endpoint resolved; `image` sources cache fewer tiles.
 pub(crate) fn ready_source(
-    endpoint: Result<(TileEndpoint, Plan), String>,
+    endpoint: Result<(TileEndpoint, bool), String>,
     id: &str,
     image: bool,
     events: &mut crate::events::EventQueue,
 ) -> SourceState {
     match endpoint {
-        Ok((endpoint, plan)) => SourceState::Ready {
-            warp: match plan {
-                Plan::Affine => None,
-                Plan::Warp(warp) => Some(Box::new(WarpState::new(*warp))),
-            },
+        Ok((endpoint, warped)) => SourceState::Ready {
+            warped,
             pyramid: TilePyramid::new(
                 endpoint.minzoom,
                 if image {

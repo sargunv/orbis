@@ -3,6 +3,7 @@
 //! tile matrix set and tile; the renderer uploads them when a placement
 //! first needs them.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -18,72 +19,121 @@ const PLANE_TOLERANCE: f64 = 1.0 / 2048.0;
 /// Tiles kept before unused ones are dropped.
 const CACHED: usize = 2048;
 
-#[derive(Debug, Default)]
+/// Tiles' places on planes other than their own: on the surface's plane
+/// (a source planned as a `Warp`) and on the low-zoom surface.
+#[derive(Debug)]
 pub(crate) struct GlobeWarps {
+    surface: Projection,
     /// The low-zoom plane, or `None` for the sphere.
     plane: Option<Projection>,
-    /// Each set's warp onto the low-zoom plane.
-    warps: HashMap<String, Warp>,
-    tiles: HashMap<(String, TileIndex), GlobeTile>,
+    /// Each set's warp onto the surface's plane (`false`) or the low-zoom
+    /// one (`true`).
+    warps: HashMap<(String, bool), Warp>,
+    tiles: HashMap<(String, TileIndex), Tile>,
     /// Counts frames, to drop what recent ones didn't use.
     frame: u64,
 }
 
-#[derive(Debug)]
-struct GlobeTile {
-    series: Option<Arc<Series<DVec3>>>,
-    /// Where the tile lands on a low-zoom plane, for the cover.
-    footprint: Option<Footprint>,
+/// A tile's patches on the low-zoom surface, and its footprint there.
+type OnGlobe = (Option<Arc<Series<DVec3>>>, Option<Footprint>);
+
+/// A tile's places, each made when first asked for.
+#[derive(Debug, Default)]
+struct Tile {
+    /// On the low-zoom surface: its patches, and on a low-zoom plane its
+    /// footprint, for the cover.
+    globe: OnceCell<OnGlobe>,
+    /// On the surface's plane: its footprint, and a vector tile's patches
+    /// (`None` across a wrapping plane's seam, or bent too much).
+    footprint: OnceCell<Option<Footprint>>,
+    series: OnceCell<Option<Arc<Series>>>,
     used: u64,
 }
 
 impl GlobeWarps {
-    /// Puts the tiles on a low-zoom plane, or on the sphere (`None`),
-    /// freeing the patches of another.
-    pub(crate) fn set_plane(&mut self, renderer: &mut Renderer, plane: Option<Projection>) {
-        if self.plane != plane {
-            self.frame += 1;
-            self.tiles.clear();
-            renderer.clear_surface_warps();
-            self.warps.clear();
-            self.plane = plane;
+    pub(crate) fn new(surface: Projection) -> Self {
+        Self {
+            surface,
+            plane: None,
+            warps: HashMap::new(),
+            tiles: HashMap::new(),
+            frame: 0,
         }
     }
 
-    fn entry(&mut self, tms: &TileMatrixSet, tile: TileIndex) -> &mut GlobeTile {
-        let frame = self.frame;
-        let key = (tms.id().to_owned(), tile);
-        if !self.tiles.contains_key(&key) {
-            let (series, footprint) = match self.plane {
-                None => (orb_crs::sphere::series(tms, tile, TOLERANCE), None),
-                Some(plane) => {
-                    let warp = self
-                        .warps
-                        .entry(tms.id().to_owned())
-                        .or_insert_with(|| Warp::new(tms.clone(), plane));
-                    (
-                        warp.series(tile, PLANE_TOLERANCE).map(lift),
-                        warp.footprint(tile),
-                    )
-                }
+    /// Puts the tiles on the surface's plane `surface` and its low-zoom
+    /// plane, or on the sphere (`None`), freeing those of others.
+    pub(crate) fn set_planes(
+        &mut self,
+        renderer: &mut Renderer,
+        surface: Projection,
+        plane: Option<Projection>,
+    ) {
+        if (self.surface, self.plane) != (surface, plane) {
+            renderer.clear_surface_warps();
+            let frame = self.frame + 1;
+            *self = Self {
+                plane,
+                frame,
+                ..Self::new(surface)
             };
-            self.tiles.insert(
-                key.clone(),
-                GlobeTile {
-                    series: series.map(Arc::new),
-                    footprint,
-                    used: frame,
-                },
-            );
         }
-        let entry = self.tiles.get_mut(&key).expect("inserted above");
-        entry.used = frame;
-        entry
+    }
+
+    /// `tms`'s warp onto the surface's plane.
+    pub(crate) fn surface_warp(&mut self, tms: &TileMatrixSet) -> &Warp {
+        self.at(tms, None, Some(false)).0.expect("asked for")
+    }
+
+    /// `tile`'s entry, and `tms`'s warp onto the surface's plane (`false`)
+    /// or the low-zoom one (`true`) if asked for.
+    fn at(
+        &mut self,
+        tms: &TileMatrixSet,
+        tile: Option<TileIndex>,
+        low: Option<bool>,
+    ) -> (Option<&Warp>, Option<&Tile>) {
+        let to = |low| {
+            if low {
+                self.plane.expect("a low-zoom plane")
+            } else {
+                self.surface
+            }
+        };
+        let warp = low.map(|low| {
+            let to = to(low);
+            &*self
+                .warps
+                .entry((tms.id().to_owned(), low))
+                .or_insert_with(|| Warp::new(tms.clone(), to))
+        });
+        let frame = self.frame;
+        let tile = tile.map(|tile| {
+            let entry = self.tiles.entry((tms.id().to_owned(), tile)).or_default();
+            entry.used = frame;
+            &*entry
+        });
+        (warp, tile)
+    }
+
+    fn globe(&mut self, tms: &TileMatrixSet, tile: TileIndex) -> &OnGlobe {
+        let low = self.plane.is_some();
+        let (warp, entry) = self.at(tms, Some(tile), low.then_some(true));
+        entry.expect("asked for").globe.get_or_init(|| match warp {
+            None => (
+                orb_crs::sphere::series(tms, tile, TOLERANCE).map(Arc::new),
+                None,
+            ),
+            Some(warp) => (
+                warp.series(tile, PLANE_TOLERANCE).map(lift).map(Arc::new),
+                warp.footprint(tile),
+            ),
+        })
     }
 
     /// Where the tile lands on the low-zoom plane.
     pub(crate) fn footprint(&mut self, tms: &TileMatrixSet, tile: TileIndex) -> Option<Footprint> {
-        self.entry(tms, tile).footprint
+        self.globe(tms, tile).1
     }
 
     /// The tile's patches on the low-zoom surface, or `None` where its
@@ -93,7 +143,7 @@ impl GlobeWarps {
         tms: &TileMatrixSet,
         tile: TileIndex,
     ) -> Option<Arc<Series<DVec3>>> {
-        self.entry(tms, tile).series.clone()
+        self.globe(tms, tile).0.clone()
     }
 
     /// Cells per side to cut the tile's geometry along on the globe.
@@ -110,7 +160,7 @@ impl GlobeWarps {
         tms: &TileMatrixSet,
         tile: TileIndex,
     ) -> Option<(TileWarp, DVec3)> {
-        let series = self.entry(tms, tile).series.clone()?;
+        let series = self.series(tms, tile)?;
         let key = WarpKey {
             set: crate::terrain::hash(tms.id()),
             tile,
@@ -125,7 +175,33 @@ impl GlobeWarps {
         Some((warp, series.anchor))
     }
 
-    /// Ends a frame: past the cache's size, tiles this frame didn't place
+    /// Where a tile of another plane lands on the surface's.
+    pub(crate) fn surface_footprint(
+        &mut self,
+        tms: &TileMatrixSet,
+        tile: TileIndex,
+    ) -> Option<Footprint> {
+        let (warp, entry) = self.at(tms, Some(tile), Some(false));
+        let (warp, entry) = (warp.expect("asked for"), entry.expect("asked for"));
+        *entry.footprint.get_or_init(|| warp.footprint(tile))
+    }
+
+    /// A vector tile of another plane's patches on the surface's, or
+    /// `None` if it can't be drawn through them.
+    pub(crate) fn surface_series(
+        &mut self,
+        tms: &TileMatrixSet,
+        tile: TileIndex,
+    ) -> Option<Arc<Series>> {
+        let (warp, entry) = self.at(tms, Some(tile), Some(false));
+        let (warp, entry) = (warp.expect("asked for"), entry.expect("asked for"));
+        entry
+            .series
+            .get_or_init(|| warp.series(tile, PLANE_TOLERANCE).map(Arc::new))
+            .clone()
+    }
+
+    /// Ends a frame: past the cache's size, tiles this frame didn't use
     /// are dropped.
     pub(crate) fn end_frame(&mut self) {
         if self.tiles.len() > CACHED {

@@ -13,6 +13,7 @@ use crate::MapEvent;
 use crate::image::ResidentImage;
 use crate::jobs::TileResult;
 use crate::map::*;
+use crate::meshes::*;
 use crate::resident::*;
 use orb_source::endpoint::TileEndpoint;
 
@@ -331,12 +332,13 @@ impl Map {
             pyramid,
             loading,
             endpoint,
-            warp,
+            warped,
             ..
         } = &mut style.sources[source]
         else {
             return None;
         };
+        let warped = *warped;
         if arrived {
             *loading = loading.saturating_sub(1);
             self.events.sources.insert(source);
@@ -377,7 +379,9 @@ impl Map {
             }
         }
         drop_stale(&mut build, plan, &stale);
-        let footprint = warp.as_mut().and_then(|w| w.footprint(tile));
+        let footprint = warped
+            .then(|| self.globe_warps.surface_footprint(&endpoint.tms, tile))
+            .flatten();
         let tile_zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
         let globe = self.surface.globe().is_some();
         let key = TileKey {
@@ -388,13 +392,8 @@ impl Map {
         let mut fade_ms = 0.0;
         let now = self.frame_time;
         if let Some(tile_image) = &build.image {
-            let Ok(warped) = image_mesh(
-                &mut self.globe_warps,
-                globe,
-                warp.as_deref_mut(),
-                endpoint,
-                tile,
-            ) else {
+            let Ok(warped) = image_mesh(&mut self.globe_warps, globe, warped, endpoint, tile)
+            else {
                 // Nothing of the tile reaches the surface.
                 pyramid.insert_empty(tile);
                 return None;
@@ -415,10 +414,9 @@ impl Map {
         }
         // A tile on another plane draws through its series' patches; a
         // warped image only on a globe surface.
-        let series = warp
-            .as_deref_mut()
-            .filter(|_| image.is_none() || globe)
-            .and_then(|w| w.series(tile));
+        let series = (warped && (image.is_none() || globe))
+            .then(|| self.globe_warps.surface_series(&endpoint.tms, tile))
+            .flatten();
         let patches = series.as_deref().map(series_patches);
         let patches = patches.as_ref().map(|(cells, p)| (*cells, &p[..]));
         let image_build = image.as_ref().map(|(tile_image, warped)| {
