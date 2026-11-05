@@ -47,7 +47,6 @@ fn shadowed_tokyo() -> String {
         1,
     );
     assert!(style.contains("building-3d"));
-    let style = without_labels(&style);
     format!(
         r##"{{"style": {style},
             "lights": [
@@ -55,23 +54,6 @@ fn shadowed_tokyo() -> String {
               {{"type": "sun", "properties": {{"time": "2024-10-20T06:30:00Z",
                 "intensity": 0.6, "cast-shadows": true}}}}]}}"##
     )
-}
-
-/// A style without its symbol layers: the shadows scene compares shadows,
-/// and labels by buildings settle apart after a gesture now and then (a
-/// labels path issue the other tests cover).
-fn without_labels(style: &str) -> String {
-    use orb_api::json::{self, JsonValue};
-    let mut doc = json::parse(style).unwrap();
-    let JsonValue::Object(members) = &mut doc.value else {
-        panic!("a style is an object");
-    };
-    for m in members.iter_mut().filter(|m| m.key == "layers") {
-        if let JsonValue::Array(layers) = &mut m.value.value {
-            layers.retain(|l| l.get("type").and_then(json::Json::as_str) != Some("symbol"));
-        }
-    }
-    doc.to_string()
 }
 
 /// A camera: centre, zoom, bearing, pitch.

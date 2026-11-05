@@ -213,9 +213,10 @@ pub struct Committed {
     pub fade_duration: f64,
     /// GL JS `prevZoomAdjustment`.
     pub zoom_adjustment: f64,
-    /// Whether any symbol is placed or hidden differently from the
-    /// previous commit, so fades run.
-    pub placement_changed: bool,
+    /// When a symbol was last placed or hidden differently, so a fade
+    /// started (GL JS `lastPlacementChangeTime`): a commit that changes
+    /// nothing keeps the earlier fades' time, as they run on.
+    pub last_change_time: f64,
 }
 
 impl Committed {
@@ -226,6 +227,11 @@ impl Committed {
         } else {
             (now - self.commit_time) / self.fade_duration + self.zoom_adjustment
         }
+    }
+
+    /// GL JS `Placement.hasTransitions`: whether fades still run at `now`.
+    pub fn fading(&self, now: f64) -> bool {
+        now - self.last_change_time < self.fade_duration
     }
 }
 
@@ -575,8 +581,7 @@ impl Placer {
             }
         };
         let mut now = now;
-        let placement_changed =
-            commit(&mut now, self.prev.as_ref(), frame.now, frame.fade_duration);
+        commit(&mut now, self.prev.as_ref(), frame.now, frame.fade_duration);
         let zoom_adjustment = self
             .prev
             .as_ref()
@@ -600,7 +605,7 @@ impl Placer {
             commit_time: frame.now,
             fade_duration: frame.fade_duration,
             zoom_adjustment,
-            placement_changed,
+            last_change_time: now.last_change_time,
         };
         self.prev = Some(now);
         committed
@@ -1160,8 +1165,8 @@ impl<'a> Pass<'a> {
     }
 }
 
-/// GL JS `Placement.commit`. Returns whether the placement changed.
-fn commit(now: &mut Decisions, prev: Option<&Decisions>, time: f64, fade_duration: f64) -> bool {
+/// GL JS `Placement.commit`.
+fn commit(now: &mut Decisions, prev: Option<&Decisions>, time: f64, fade_duration: f64) {
     now.commit_time = time;
     let increment = match prev {
         None => 1.0,
@@ -1220,12 +1225,12 @@ fn commit(now: &mut Decisions, prev: Option<&Decisions>, time: f64, fade_duratio
             }
         }
     }
+    // Without a change nor an earlier one, nothing fades.
     now.last_change_time = if changed {
         time
     } else {
-        prev.map_or(time, |p| p.last_change_time)
+        prev.map_or(f64::NEG_INFINITY, |p| p.last_change_time)
     };
-    changed
 }
 
 /// GL JS `updateBucketOpacities` with `_markDuplicates`, and the draw-time

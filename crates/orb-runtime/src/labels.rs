@@ -1181,7 +1181,7 @@ impl Labels {
         let held = self.held.values().any(|h| *h == Held::Fading);
         self.committed
             .as_ref()
-            .is_some_and(|c| (c.placement_changed || held) && c.fade_change(now) < 1.0)
+            .is_some_and(|c| c.fading(now) || (held && c.fade_change(now) < 1.0))
     }
 
     /// This frame's placement inputs: every symbol layer in style order
