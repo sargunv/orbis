@@ -14,7 +14,7 @@ orb-hal-wgpu.workspace = true
 orb-host.workspace = true
 orb-host-native.workspace = true
 orb-jobs.workspace = true
-orb-geo.workspace = true
+orb-crs.workspace = true
 orb-runtime = { workspace = true, features = ["compat"] }
 orb-text = { workspace = true, features = ["fonts"] }
 orb-v8.workspace = true

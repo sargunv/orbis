@@ -1,7 +1,7 @@
 use glam::DVec2;
 use orb_camera::{Camera, CameraEvent, CameraState, Change, Phase, Viewport};
+use orb_crs::Geodetic;
 use orb_crs::TileMatrixSet;
-use orb_geo::Geodetic;
 
 use super::*;
 

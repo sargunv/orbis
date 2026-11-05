@@ -26,8 +26,8 @@ pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraTarget, Change, EaseOptions, Easing, FitOptions,
     FlyOptions, Padding, Phase,
 };
+pub use orb_crs::Geodetic;
 pub use orb_crs::TileMatrixSet;
-pub use orb_geo::Geodetic;
 pub use orb_hal::Tier;
 pub use orb_hal_gl::egl::EglWindow;
 pub use orb_hal_wgpu::RawSurface;

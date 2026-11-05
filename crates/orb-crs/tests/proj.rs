@@ -2,8 +2,8 @@
 //! a nano-degree, over sample positions in each code's area of use
 //! (`proj_reference.py` writes the reference).
 
+use orb_crs::Geodetic;
 use orb_crs::{Descriptor, Projection};
-use orb_geo::Geodetic;
 use serde_json::Value;
 
 #[test]

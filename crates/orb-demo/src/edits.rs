@@ -12,7 +12,7 @@ fn tokyo() -> Offscreen {
     let options = Options {
         style: None,
         encoding: "mvt".into(),
-        at: Some((orb_geo::Geodetic::new(139.74, 35.685), 15.0, 0.0, 0.0)),
+        at: Some((orb_crs::Geodetic::new(139.74, 35.685), 15.0, 0.0, 0.0)),
         snapshot: None,
         a11y: None,
         watch_style: None,
@@ -423,7 +423,7 @@ fn published_hits_follow_layer_order_visibility_and_camera() {
         .set_style_json(include_str!("../../../web/demo/data/playground.json"))
         .unwrap();
     *map.map.camera_mut() = orb_runtime::CameraState::new(
-        orb_geo::Geodetic::new(139.7655, 35.6835),
+        orb_crs::Geodetic::new(139.7655, 35.6835),
         15.0,
         &super::web_mercator(),
     );
@@ -474,7 +474,7 @@ fn published_hits_follow_layer_order_visibility_and_camera() {
     let route = map.map.hit_test(center).expect("route under station");
     assert_eq!(route.layer, "route");
     assert_eq!(route.generation, frame.generation);
-    map.map.camera_mut().target = orb_geo::Geodetic::new(0., 0.);
+    map.map.camera_mut().target = orb_crs::Geodetic::new(0., 0.);
     assert_eq!(map.map.hit_test(center), Some(route));
     settle(&mut map);
     assert_eq!(map.map.hit_test(center), None);
@@ -505,7 +505,7 @@ fn load_points(style: &str) -> Offscreen {
     let mut map = tokyo();
     map.map.set_style_json(style).unwrap();
     *map.map.camera_mut() = orb_runtime::CameraState::new(
-        orb_geo::Geodetic::new(139.74, 35.685),
+        orb_crs::Geodetic::new(139.74, 35.685),
         15.0,
         &super::web_mercator(),
     );

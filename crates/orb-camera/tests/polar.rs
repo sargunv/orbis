@@ -4,9 +4,9 @@
 
 use glam::DVec2;
 use orb_camera::{CameraState, View, Viewport};
+use orb_crs::Geodetic;
 use orb_crs::Surface;
 use orb_crs::{Projection, TileMatrixSet};
-use orb_geo::Geodetic;
 
 fn check(tms: &TileMatrixSet, target: Geodetic) {
     let projection: &Projection = tms.projection();

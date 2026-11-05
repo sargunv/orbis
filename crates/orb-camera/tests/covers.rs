@@ -1,7 +1,7 @@
 use orb_camera::{CameraState, View, Viewport};
+use orb_crs::Geodetic;
 use orb_crs::Surface;
 use orb_crs::TileMatrixSet;
-use orb_geo::Geodetic;
 
 #[test]
 fn covers_match_pinned_gl_js() {

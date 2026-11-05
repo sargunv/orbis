@@ -9,7 +9,6 @@ version.workspace = true
 [dependencies]
 glam.workspace = true
 orb-crs.workspace = true
-orb-geo.workspace = true
 
 [lints]
 workspace = true

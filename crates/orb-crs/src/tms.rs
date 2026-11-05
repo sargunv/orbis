@@ -500,8 +500,8 @@ impl TileMatrixSet {
                 let ground_span = self.tile_span(tile.z) / self.projection.scale_factor(center);
                 let parallel = 2.0
                     * std::f64::consts::PI
-                    * orb_geo::wgs84::SEMI_MAJOR_M
-                    * orb_geo::style_parallel(center.lat);
+                    * crate::wgs84::SEMI_MAJOR_M
+                    * crate::style_parallel(center.lat);
                 (parallel / ground_span).log2()
             }
         };
@@ -549,7 +549,7 @@ impl TileMatrixSet {
         }
         let encircles = (unwrapped - first.lon).abs() > 180.0;
         for pole in [90.0, -90.0] {
-            let p = orb_geo::Geodetic::new(0.0, pole);
+            let p = crate::Geodetic::new(0.0, pole);
             // Planes that clamp the pole (Web Mercator) don't contain it.
             let w = self.projection.forward(p);
             let inside = self.projection.contains(p)
@@ -751,7 +751,7 @@ mod tests {
         let nztm = TileMatrixSet::by_id("NZTM2000Quad").unwrap();
         let p = nztm
             .projection()
-            .forward(orb_geo::Geodetic::new(174.78, -41.29));
+            .forward(crate::Geodetic::new(174.78, -41.29));
         let tile = nztm
             .tiles_in(WorldRect { min: p, max: p }, 8)
             .next()
@@ -767,7 +767,7 @@ mod tests {
         );
         // A polar tile around the pole spans every longitude.
         let ups = TileMatrixSet::by_id("UPSArcticWGS84Quad").unwrap();
-        let pole = ups.projection().forward(orb_geo::Geodetic::new(0.0, 90.0));
+        let pole = ups.projection().forward(crate::Geodetic::new(0.0, 90.0));
         let tile = ups
             .tiles_in(
                 WorldRect {

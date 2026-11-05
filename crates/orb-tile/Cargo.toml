@@ -8,7 +8,6 @@ version.workspace = true
 
 [dependencies]
 orb-crs.workspace = true
-orb-geo.workspace = true
 mlt-core.workspace = true
 
 [lints]

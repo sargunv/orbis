@@ -217,8 +217,8 @@ impl CameraState {
 mod tests {
     use super::*;
     use crate::{Camera, CameraTarget};
+    use orb_crs::Geodetic;
     use orb_crs::TileMatrixSet;
-    use orb_geo::Geodetic;
     use std::sync::Arc;
 
     /// A ridge rising eastward, loaded only west of `loaded_until`.

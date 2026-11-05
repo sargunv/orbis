@@ -2,8 +2,8 @@
 //! from, and the limits every move is kept to.
 
 use glam::{DVec2, DVec3};
+use orb_crs::Geodetic;
 use orb_crs::{Projection, WorldRect, sphere};
-use orb_geo::Geodetic;
 
 use crate::{CameraState, View, Viewport};
 use orb_crs::Surface;

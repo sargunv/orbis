@@ -55,7 +55,6 @@ orb-bench = { path = "crates/orb-bench" }
 orb-camera = { path = "crates/orb-camera" }
 orb-crs = { path = "crates/orb-crs" }
 orb-expr = { path = "crates/orb-expr" }
-orb-geo = { path = "crates/orb-geo" }
 orb-hal = { path = "crates/orb-hal" }
 orb-hal-gl = { path = "crates/orb-hal-gl" }
 orb-hal-wgpu = { path = "crates/orb-hal-wgpu" }

@@ -635,7 +635,7 @@ impl Map {
         let camera_from_style = camera.is_none();
         let camera = camera.unwrap_or_else(|| {
             let mercator = *Surface::default().projection();
-            CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 0.0, &mercator)
+            CameraState::new(orb_crs::Geodetic::new(0.0, 0.0), 0.0, &mercator)
         });
         let born = services.clock.now();
         Self {
@@ -1052,7 +1052,7 @@ impl Map {
         let mut style_camera = None;
         if previous.is_none() && std::mem::take(&mut self.camera_from_style) {
             if let Some([lon, lat]) = plan.style.center {
-                self.camera.target = orb_geo::Geodetic::new(lon, lat);
+                self.camera.target = orb_crs::Geodetic::new(lon, lat);
             }
             if let Some(zoom) = plan.style.zoom {
                 self.camera.set_zoom(self.surface.projection(), zoom);
@@ -4502,7 +4502,7 @@ mod tests {
             fetch,
             wake: Arc::new(|| {}),
         };
-        let target = orb_geo::Geodetic::new(139.74, 35.685);
+        let target = orb_crs::Geodetic::new(139.74, 35.685);
         let mercator = *Surface::default().projection();
         let viewport = Viewport {
             width: 1024.0,

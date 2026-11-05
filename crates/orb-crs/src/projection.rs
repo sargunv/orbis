@@ -1,7 +1,7 @@
 use std::fmt;
 
+use crate::{Geodetic, wgs84};
 use glam::DVec2;
-use orb_geo::{Geodetic, wgs84};
 
 use crate::WorldRect;
 use crate::family::{
@@ -356,7 +356,7 @@ impl Projection {
         Some(
             (2.0 * std::f64::consts::PI
                 * wgs84::SEMI_MAJOR_M
-                * orb_geo::style_parallel(reference.lat)
+                * crate::style_parallel(reference.lat)
                 / (STYLE_TILE_PX * ground_per_px))
                 .log2(),
         )
@@ -367,9 +367,7 @@ impl Projection {
     pub fn scale_at_zoom(&self, zoom: f64) -> Option<f64> {
         let reference = self.zoom_reference()?;
         Some(
-            2.0 * std::f64::consts::PI
-                * wgs84::SEMI_MAJOR_M
-                * orb_geo::style_parallel(reference.lat)
+            2.0 * std::f64::consts::PI * wgs84::SEMI_MAJOR_M * crate::style_parallel(reference.lat)
                 / (STYLE_TILE_PX * zoom.exp2())
                 * self.scale_factor(reference),
         )

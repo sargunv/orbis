@@ -3,7 +3,7 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use orb_geo::wgs84;
+use crate::wgs84;
 
 pub(crate) const A: f64 = wgs84::SEMI_MAJOR_M;
 pub(crate) const E2: f64 = wgs84::E2;

@@ -46,7 +46,7 @@ mod native {
         let args: Vec<String> = std::env::args().skip(1).collect();
         if args.iter().any(|a| a == "alps") {
             // The Alps' view and paths, unless the options say otherwise.
-            settings.center = orb_geo::Geodetic::new(orb_bench::ALPS.0, orb_bench::ALPS.1);
+            settings.center = orb_crs::Geodetic::new(orb_bench::ALPS.0, orb_bench::ALPS.1);
             settings.paths = orb_bench::GesturePaths::Alps;
         }
         let mut args = args.into_iter();

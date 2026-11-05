@@ -1,7 +1,4 @@
-//! f64 geodesy primitives shared by every crate that reasons about positions
-//! on the Earth.
-
-#![forbid(unsafe_code)]
+//! f64 geodesy primitives: WGS84 and geodetic positions.
 
 /// The WGS84 ellipsoid.
 pub mod wgs84 {

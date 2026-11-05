@@ -177,7 +177,7 @@ impl TileEndpoint {
     pub(crate) fn image(source: &orb_v8::ImageSource, projection: &orb_crs::Projection) -> Self {
         let corners = source
             .coordinates
-            .map(|[lon, lat]| projection.forward(orb_geo::Geodetic::new(lon, lat)));
+            .map(|[lon, lat]| projection.forward(orb_crs::Geodetic::new(lon, lat)));
         let quad = orb_crs::ImageQuad::new(corners);
         let bounds = quad.bounds();
         let half = bounds.size().max_element().max(1e-9) / 2.0;

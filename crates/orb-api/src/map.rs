@@ -10,8 +10,8 @@ use glam::DVec2;
 use orb_camera::{
     AnimationId, Bounds, Camera, CameraEvent, CameraTarget, EaseOptions, FitOptions, FlyOptions,
 };
+use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
-use orb_geo::Geodetic;
 use orb_interact::{Button, Feel, Input, InteractEvent, Interaction};
 use orb_runtime::{
     CameraState, FrameReport, GridTile, Hit, MapEvent, RenderMode, StyleImage, TargetFormat,

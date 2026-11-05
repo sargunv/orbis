@@ -185,7 +185,7 @@ LOC are CI-enforced ceilings [inferred]; "From" is the milestone that introduces
 | `orb-v8` | v8 parse/validate with JSON-path diagnostics, legacy migration, lowering, deviation flags; scene-document merge | 6k | M0 |
 | `orb-style` | Style IR, persistent `StyleDoc` with dirty bits, transactions, diff → patch, transitions, composition | 8k | M1 |
 | `orb-expr` | SSA expression IR; VM; SIMD column evaluator; GPU bytecode; binding-mask classifier; cost model | 9k | M0 |
-| `orb-geo` | f64 geodesy, ECEF/ENU, WGS84, RTC and Jacobian helpers | 3k | M0 |
+| ~~`orb-geo`~~ | folded into `orb-crs` (WGS84 and `Geodetic`) | — | M0 |
 | `orb-crs` | `Surface`, projection families + WGSL, descriptors, EPSG table, OGC TMS registry, DataToWorld planner, subdivision, tile cover | 9k | M0 |
 | `orb-camera` | single-writer camera store, resolution truth, animations against `Surface`, multi-view, terrain constraints | 4k | M0 |
 | `orb-interact` | recognizers, inertia, feel profiles, keyboard | 3k | M3 |

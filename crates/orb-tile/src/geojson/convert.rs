@@ -99,7 +99,7 @@ fn project([lon, lat]: [f64; 2], plane: Option<&orb_crs::TileMatrixSet>) -> Opti
             [lon / 360.0 + 0.5, y.clamp(0.0, 1.0)]
         }
         Some(tms) => {
-            let g = orb_geo::Geodetic::new(lon, lat);
+            let g = orb_crs::Geodetic::new(lon, lat);
             let projection = tms.projection();
             if !projection.contains(g) {
                 return None;

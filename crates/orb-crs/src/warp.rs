@@ -332,7 +332,7 @@ impl Warp {
     fn spans_wrap(&self, tile: TileIndex) -> bool {
         self.to.wrap_period().is_some()
             && [90.0, -90.0].into_iter().any(|lat| {
-                let pole = orb_geo::Geodetic::new(0.0, lat);
+                let pole = crate::Geodetic::new(0.0, lat);
                 let from = self.from.projection();
                 if !from.contains(pole) {
                     return false;
@@ -654,7 +654,7 @@ mod tests {
         // A tile of the polar grid around Svalbard, away from the pole.
         let sval = polar()
             .projection()
-            .forward(orb_geo::Geodetic::new(15.0, 78.0));
+            .forward(crate::Geodetic::new(15.0, 78.0));
         let tile = polar()
             .tiles_in(
                 WorldRect {
@@ -668,7 +668,7 @@ mod tests {
         let footprint = warp.footprint(tile).unwrap();
         let center = mercator()
             .projection()
-            .forward(orb_geo::Geodetic::new(15.0, 78.0));
+            .forward(crate::Geodetic::new(15.0, 78.0));
         assert!(
             footprint.bounds.min.cmple(center).all() && footprint.bounds.max.cmpge(center).all()
         );
@@ -677,7 +677,7 @@ mod tests {
         // The tile holding the pole spreads over the whole Mercator width.
         let pole = polar()
             .projection()
-            .forward(orb_geo::Geodetic::new(0.0, 90.0));
+            .forward(crate::Geodetic::new(0.0, 90.0));
         let tile = polar()
             .tiles_in(
                 WorldRect {

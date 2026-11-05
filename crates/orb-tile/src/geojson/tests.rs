@@ -341,7 +341,7 @@ fn polar_caps_tile_as_discs_on_polar_planes() {
         let ring = rings[0];
 
         let unit = |lon: f64, lat: f64| {
-            tms.unit(tms.projection().forward(orb_geo::Geodetic::new(lon, lat))) * 8192.0
+            tms.unit(tms.projection().forward(orb_crs::Geodetic::new(lon, lat))) * 8192.0
         };
         let pole = unit(0.0, pole_lat);
         let radius = unit(0.0, lat).distance(pole);

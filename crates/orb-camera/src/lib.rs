@@ -27,7 +27,7 @@ use orb_crs::{
     CoverDecision, CoveredTile, Footprint, Projection, Surface, TileIndex, TileMatrixSet,
     WorldRect, sphere,
 };
-use orb_geo::{Geodetic, wgs84};
+use orb_crs::{Geodetic, wgs84};
 
 /// Where the camera looks and how.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -105,7 +105,7 @@ impl CameraState {
 /// Style zoom's scale at zoom 0: the length of the parallel through `target`
 /// divided by one tile's width.
 fn equator_circumference_px_per_m(target: Geodetic) -> f64 {
-    2.0 * PI * wgs84::SEMI_MAJOR_M * orb_geo::style_parallel(target.lat) / STYLE_ZOOM_TILE_PX
+    2.0 * PI * wgs84::SEMI_MAJOR_M * orb_crs::style_parallel(target.lat) / STYLE_ZOOM_TILE_PX
 }
 
 /// A viewport in logical pixels.

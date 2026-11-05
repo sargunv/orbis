@@ -2,8 +2,8 @@
 //! and smooth wheel zoom) whose properties ease independently.
 
 use glam::DVec2;
+use orb_crs::Geodetic;
 use orb_crs::Projection;
-use orb_geo::Geodetic;
 
 use crate::moves::wrap_bearing;
 use crate::{CameraState, View, Viewport};

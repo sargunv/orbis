@@ -13,7 +13,7 @@ use orb_camera::{
     Bounds, Camera, CameraEvent, CameraState, CameraTarget, Change, Constraints, EaseOptions,
     Easing, FitOptions, FlyOptions, Padding, Phase,
 };
-use orb_geo::Geodetic;
+use orb_crs::Geodetic;
 use orb_interact::{
     Button, Feel, InteractEvent, Interaction, Key, Modifiers, PointerKind, WheelUnit,
 };

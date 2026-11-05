@@ -2,7 +2,7 @@
 //! lights folded into what shaders take, the sun placed for the camera's
 //! target.
 
-use orb_geo::Geodetic;
+use orb_crs::Geodetic;
 use orb_render::FrameLights;
 use orb_v8::{Direction, Lights, TranslateAnchor};
 

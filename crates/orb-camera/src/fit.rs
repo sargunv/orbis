@@ -176,8 +176,8 @@ mod tests {
     }
 
     use super::*;
+    use orb_crs::Geodetic;
     use orb_crs::TileMatrixSet;
-    use orb_geo::Geodetic;
 
     const VIEWPORT: Viewport = Viewport {
         width: 800.0,

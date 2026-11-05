@@ -3,8 +3,8 @@
 //! Positions are Earth-centred, Earth-fixed metres: x towards (0°, 0°),
 //! y towards (90°E, 0°), z towards the North Pole.
 
+use crate::{Geodetic, wgs84};
 use glam::{DMat3, DVec2, DVec3};
-use orb_geo::{Geodetic, wgs84};
 
 use crate::{Series, TileIndex, TileMatrixSet};
 

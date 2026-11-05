@@ -4,9 +4,9 @@
 
 use glam::DVec2;
 use orb_camera::{CameraState, View, Viewport};
+use orb_crs::Geodetic;
 use orb_crs::Surface;
 use orb_crs::TileMatrixSet;
-use orb_geo::Geodetic;
 
 /// The screen points each camera unprojects, as fractions of its viewport:
 /// all in the lower half, below any horizon.

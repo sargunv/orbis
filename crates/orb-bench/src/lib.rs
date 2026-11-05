@@ -25,7 +25,7 @@ use std::time::Duration;
 
 pub use gestures::GesturesReport;
 pub use labels::LabelsReport;
-use orb_geo::Geodetic;
+use orb_crs::Geodetic;
 use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureUsages};
 use orb_hal_wgpu::WgpuGpu;
 use orb_runtime::{CameraState, FrameReport, Map, TargetFormat, Transaction, Viewport};

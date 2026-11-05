@@ -10,7 +10,6 @@ version.workspace = true
 orb-camera.workspace = true
 orb-crs.workspace = true
 glam.workspace = true
-orb-geo.workspace = true
 orb-hal.workspace = true
 orb-hal-wgpu.workspace = true
 orb-runtime.workspace = true

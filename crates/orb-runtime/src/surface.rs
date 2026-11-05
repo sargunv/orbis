@@ -146,10 +146,10 @@ impl Surface {
                 .unwrap_or_else(|| {
                     // Web Mercator's style zoom of a scale, at any latitude.
                     (2.0 * std::f64::consts::PI
-                        * orb_geo::wgs84::SEMI_MAJOR_M
+                        * orb_crs::wgs84::SEMI_MAJOR_M
                         * self
                             .projection
-                            .scale_factor(orb_geo::Geodetic::new(0.0, 0.0))
+                            .scale_factor(orb_crs::Geodetic::new(0.0, 0.0))
                         / f.span)
                         .log2()
                 }),

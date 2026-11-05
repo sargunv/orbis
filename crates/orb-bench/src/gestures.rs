@@ -58,7 +58,7 @@ const CITY_PATHS: &[Path] = &[
 
 /// The terrain demo's view: z11.6, bearing −32, pitch 72.
 fn alps_view(s: &Settings, lon: f64, bearing: f64) -> CameraState {
-    let center = orb_geo::Geodetic::new(s.center.lon + lon, s.center.lat);
+    let center = orb_crs::Geodetic::new(s.center.lon + lon, s.center.lat);
     CameraState {
         bearing,
         pitch: 72.0,
@@ -99,7 +99,7 @@ fn flight_legs() -> Vec<(orb_camera::CameraTarget, orb_camera::FlyOptions)> {
             let center = &leg["center"];
             (
                 orb_camera::CameraTarget {
-                    center: Some(orb_geo::Geodetic::new(
+                    center: Some(orb_crs::Geodetic::new(
                         center[0].as_f64().expect("lon"),
                         center[1].as_f64().expect("lat"),
                     )),

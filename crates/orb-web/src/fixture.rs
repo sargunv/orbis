@@ -477,7 +477,7 @@ fn apply(map: &mut Map, op: &orb_expr::json::Json) -> Result<Next, String> {
                     .and_then(|n| n.as_f64())
                     .ok_or("expected a number")
             };
-            map.camera_mut().target = orb_geo::Geodetic::new(at(0)?, at(1)?);
+            map.camera_mut().target = orb_crs::Geodetic::new(at(0)?, at(1)?);
         }
         "removeImage" => {
             let name = items

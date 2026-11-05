@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use glam::DVec2;
+use orb_crs::Geodetic;
 use orb_crs::Projection;
-use orb_geo::Geodetic;
 
 use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion};
 use crate::fit::FitOptions;

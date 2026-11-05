@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use glam::DVec2;
 use orb_camera::{Camera, CameraTarget};
-use orb_geo::Geodetic;
+use orb_crs::Geodetic;
 use orb_hal::Gpu;
 use orb_hal_wgpu::{WgpuGpu, from_texture_format};
 use orb_host_native::{NativeFetch, NativeImageDecode};
@@ -979,7 +979,7 @@ mod tests {
         super::Options {
             style: None,
             encoding: "mvt".into(),
-            at: Some((orb_geo::Geodetic::new(139.74, 35.685), zoom, 0.0, 0.0)),
+            at: Some((orb_crs::Geodetic::new(139.74, 35.685), zoom, 0.0, 0.0)),
             snapshot: None,
             a11y: None,
             watch_style: None,
@@ -1282,7 +1282,7 @@ mod tests {
         let options = super::Options {
             style: None,
             encoding: "mvt".into(),
-            at: Some((orb_geo::Geodetic::new(139.74, 35.685), 3.0, 0.0, 0.0)),
+            at: Some((orb_crs::Geodetic::new(139.74, 35.685), 3.0, 0.0, 0.0)),
             snapshot: None,
             a11y: None,
             watch_style: None,
@@ -1315,7 +1315,7 @@ mod tests {
         let at = |zoom| super::Options {
             style: None,
             encoding: "mvt".into(),
-            at: Some((orb_geo::Geodetic::new(139.74, 35.685), zoom, 0.0, 0.0)),
+            at: Some((orb_crs::Geodetic::new(139.74, 35.685), zoom, 0.0, 0.0)),
             snapshot: None,
             a11y: None,
             watch_style: None,
@@ -1445,7 +1445,7 @@ mod tests {
         std::fs::write(&path, style).unwrap();
         let options = |lon: f64, zoom: f64| super::Options {
             style: Some(format!("file://{}", path.display())),
-            at: Some((orb_geo::Geodetic::new(lon, 0.0), zoom, 0.0, 0.0)),
+            at: Some((orb_crs::Geodetic::new(lon, 0.0), zoom, 0.0, 0.0)),
             ..tokyo(zoom)
         };
         let settle = |offscreen: &mut super::Offscreen| {
@@ -1473,7 +1473,7 @@ mod tests {
         let (_, warnings) = settle(&mut offscreen);
         assert!(warnings.is_empty(), "{warnings:?}");
         *offscreen.map.camera_mut() = orb_runtime::CameraState::new(
-            orb_geo::Geodetic::new(150.0, 0.0),
+            orb_crs::Geodetic::new(150.0, 0.0),
             6.0,
             &offscreen.map.projection(),
         );
@@ -1602,7 +1602,7 @@ mod tests {
             }),
         };
         let camera = super::CameraState::new(
-            orb_geo::Geodetic::new(0.0, 0.0),
+            orb_crs::Geodetic::new(0.0, 0.0),
             1.5,
             &super::web_mercator(),
         );
@@ -1740,7 +1740,7 @@ mod tests {
                 env!("CARGO_MANIFEST_DIR")
             )),
             encoding: "mvt".into(),
-            at: Some((orb_geo::Geodetic::new(0.0, 0.0), 19.0, -20.0, 60.0)),
+            at: Some((orb_crs::Geodetic::new(0.0, 0.0), 19.0, -20.0, 60.0)),
             snapshot: None,
             a11y: None,
             watch_style: None,
@@ -1790,7 +1790,7 @@ mod tests {
                 env!("CARGO_MANIFEST_DIR")
             )),
             encoding: "mvt".into(),
-            at: Some((orb_geo::Geodetic::new(-0.00015, -0.00025), 19.0, 0.0, 0.0)),
+            at: Some((orb_crs::Geodetic::new(-0.00015, -0.00025), 19.0, 0.0, 0.0)),
             snapshot: None,
             a11y: None,
             watch_style: None,
@@ -1816,7 +1816,7 @@ mod tests {
             offscreen.map.set_style_json(&scene).unwrap();
             let projection = offscreen.map.projection();
             *offscreen.map.camera_mut() = orb_runtime::CameraState::new(
-                orb_geo::Geodetic::new(-0.00015, -0.00025),
+                orb_crs::Geodetic::new(-0.00015, -0.00025),
                 19.0,
                 &projection,
             );
@@ -1879,7 +1879,7 @@ mod tests {
                 wake: Arc::new(|| {}),
             };
             let camera = super::CameraState::new(
-                orb_geo::Geodetic::new(0.0, 0.0),
+                orb_crs::Geodetic::new(0.0, 0.0),
                 1.5,
                 &super::web_mercator(),
             );
@@ -1945,7 +1945,7 @@ mod tests {
             wake: Arc::new(|| {}),
         };
         let camera = super::CameraState::new(
-            orb_geo::Geodetic::new(0.0, 0.0),
+            orb_crs::Geodetic::new(0.0, 0.0),
             1.5,
             &super::web_mercator(),
         );
@@ -2019,7 +2019,7 @@ mod tests {
             wake: Arc::new(|| {}),
         };
         let camera = super::CameraState::new(
-            orb_geo::Geodetic::new(0.0, 0.0),
+            orb_crs::Geodetic::new(0.0, 0.0),
             1.5,
             &super::web_mercator(),
         );

@@ -65,7 +65,7 @@ pub(crate) fn apply(map: &mut Map, op: &Value, assets: &Path) -> Result<Next, St
                     .and_then(Value::as_f64)
                     .ok_or("expected a number")
             };
-            map.camera_mut().target = orb_geo::Geodetic::new(at(0)?, at(1)?);
+            map.camera_mut().target = orb_crs::Geodetic::new(at(0)?, at(1)?);
         }
         // `["addImage", name, path, options?]`.
         "addImage" => {

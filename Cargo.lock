@@ -2282,7 +2282,6 @@ dependencies = [
  "glam",
  "orb-camera",
  "orb-crs",
- "orb-geo",
  "orb-hal",
  "orb-hal-gl",
  "orb-hal-wgpu",
@@ -2301,7 +2300,6 @@ dependencies = [
  "js-sys",
  "orb-camera",
  "orb-crs",
- "orb-geo",
  "orb-hal",
  "orb-hal-wgpu",
  "orb-host-native",
@@ -2321,7 +2319,6 @@ version = "0.0.0"
 dependencies = [
  "glam",
  "orb-crs",
- "orb-geo",
  "serde_json",
 ]
 
@@ -2351,7 +2348,6 @@ name = "orb-crs"
 version = "0.0.0"
 dependencies = [
  "glam",
- "orb-geo",
  "serde_json",
 ]
 
@@ -2363,7 +2359,6 @@ dependencies = [
  "orb-a11y",
  "orb-camera",
  "orb-crs",
- "orb-geo",
  "orb-hal",
  "orb-hal-wgpu",
  "orb-host-native",
@@ -2396,7 +2391,7 @@ name = "orb-fixtures"
 version = "0.0.0"
 dependencies = [
  "glam",
- "orb-geo",
+ "orb-crs",
  "orb-hal",
  "orb-hal-gl",
  "orb-hal-wgpu",
@@ -2410,10 +2405,6 @@ dependencies = [
  "pollster",
  "serde_json",
 ]
-
-[[package]]
-name = "orb-geo"
-version = "0.0.0"
 
 [[package]]
 name = "orb-hal"
@@ -2487,7 +2478,6 @@ dependencies = [
  "glam",
  "orb-camera",
  "orb-crs",
- "orb-geo",
 ]
 
 [[package]]
@@ -2526,7 +2516,6 @@ dependencies = [
  "orb-camera",
  "orb-crs",
  "orb-expr",
- "orb-geo",
  "orb-hal",
  "orb-hal-wgpu",
  "orb-host",
@@ -2621,7 +2610,6 @@ version = "0.0.0"
 dependencies = [
  "mlt-core",
  "orb-crs",
- "orb-geo",
 ]
 
 [[package]]
@@ -2644,7 +2632,6 @@ dependencies = [
  "orb-camera",
  "orb-crs",
  "orb-expr",
- "orb-geo",
  "orb-hal",
  "orb-hal-gl",
  "orb-hal-wgpu",
