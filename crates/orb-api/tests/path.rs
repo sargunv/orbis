@@ -26,10 +26,10 @@ fn tokyo(extra: &str, sources: &str) -> String {
     let style = std::fs::read_to_string(data.join("tokyo-mvt.json"))
         .unwrap()
         .replace(
-            "pmtiles://./data/",
+            "pmtiles://./",
             &format!("pmtiles://file://{}/", data.display()),
         )
-        .replace("\"./data/", &format!("\"file://{}/", data.display()));
+        .replace("\"./", &format!("\"file://{}/", data.display()));
     let style = style.replacen('{', &format!("{{{extra}"), 1);
     style.replacen("\"sources\": {", &format!("\"sources\": {{{sources}"), 1)
 }
@@ -94,6 +94,17 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
 /// fresh maps. On failure, writes both and their difference to a fresh
 /// directory and names it.
 fn assert_same(name: &str, (gestured, fresh): (Vec<u8>, Vec<u8>)) {
+    // A map that loaded nothing draws its background alike both ways.
+    let colours: std::collections::HashSet<&[u8]> = fresh.chunks(4).collect();
+    if colours.len() <= 64 {
+        let at = std::env::temp_dir().join(format!("orb-path-{name}-{}.png", std::process::id()));
+        write_png(&at, WIDTH, HEIGHT, &fresh);
+        panic!(
+            "{name}: the map drew next to nothing ({} colours): {}",
+            colours.len(),
+            at.display()
+        );
+    }
     let differ: Vec<(usize, u8)> = gestured
         .chunks(4)
         .zip(fresh.chunks(4))
@@ -161,9 +172,11 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) {
         .unwrap();
 }
 
+/// Inside the extract's data, which covers `[139.725, 35.677, 139.755,
+/// 35.697]` (web/demo/data/README.md).
 const STATION: Geodetic = Geodetic {
-    lon: 139.7671,
-    lat: 35.6812,
+    lon: 139.745,
+    lat: 35.6852,
 };
 
 #[test]
