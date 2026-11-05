@@ -9,9 +9,10 @@ impl TileFrame {
     /// The frame with a vertex wherever a line or polygon-ring segment
     /// crosses a line of a grid of `cells` × `cells` over each layer's
     /// extent (polygon rings' implicit closing segments included).
-    /// Polygons are first clipped to the tile square, as layout would clip
-    /// them, so the edges clipping makes along it are cut too. Points, ids
-    /// and properties are unchanged.
+    /// Polygons are first clipped to the box line layout keeps (the tile
+    /// square and a sixteenth of it around), so the edges clipping makes
+    /// are cut too and lie outside the tile, where no stroke of them shows.
+    /// Points, ids and properties are unchanged.
     pub fn subdivided(&self, cells: u32) -> Self {
         Self {
             layers: self.layers.iter().map(|l| subdivide(l, cells)).collect(),
@@ -42,7 +43,7 @@ fn subdivide(layer: &Layer, cells: u32) -> Layer {
                 let mut points = &layer.vertices
                     [layer.ring_vertices[ring] as usize..layer.ring_vertices[ring + 1] as usize];
                 if kind == GeometryType::Polygon {
-                    clip_ring(points, extent, &mut clipped);
+                    clip_ring(points, -extent / 16, extent + extent / 16, &mut clipped);
                     if clipped.is_empty() {
                         if ring == rings.start {
                             // Without its exterior the polygon is gone.
@@ -117,15 +118,11 @@ pub(crate) fn grid_crossings(a: [i32; 2], b: [i32; 2], step: f64, out: &mut Vec<
 
 /// Clips a closed ring to the square `0..=extent` (Sutherland–Hodgman), as
 /// layout does; empty when nothing is inside.
-fn clip_ring(ring: &[[i32; 2]], extent: i32, out: &mut Vec<[i32; 2]>) {
+fn clip_ring(ring: &[[i32; 2]], lo: i32, hi: i32, out: &mut Vec<[i32; 2]>) {
     let mut a: Vec<[i32; 2]> = ring.to_vec();
     let mut b = Vec::with_capacity(ring.len() + 4);
-    for (axis, bound, keep_above) in [
-        (0, 0, true),
-        (0, extent, false),
-        (1, 0, true),
-        (1, extent, false),
-    ] {
+    for (axis, bound, keep_above) in [(0, lo, true), (0, hi, false), (1, lo, true), (1, hi, false)]
+    {
         b.clear();
         let inside = |p: &[i32; 2]| {
             if keep_above {
@@ -194,7 +191,7 @@ mod tests {
         b.begin_feature(None, GeometryType::Polygon);
         b.begin_part();
         b.begin_ring();
-        for p in [[-100, -100], [4196, -100], [4196, 2048], [-100, 2048]] {
+        for p in [[-1000, -1000], [5096, -1000], [5096, 2048], [-1000, 2048]] {
             b.push_vertex(p);
         }
         let frame = TileFrame {
@@ -210,15 +207,17 @@ mod tests {
         assert_eq!(ring(0).len(), 9);
         assert_eq!(ring(0)[4], [2048, 100]);
         assert_eq!(ring(1), [[10, 10], [4000, 4000]]);
-        // The polygon is clipped to the tile first; the edges along the
-        // square are cut at the grid lines too.
+        // The polygon is clipped to line layout's box first (a sixteenth of
+        // the tile around it); the edges along the box are cut at the grid
+        // lines too.
         let square = ring(2);
         assert!(
             square
                 .iter()
-                .all(|p| (0..=4096).contains(&p[0]) && (0..=4096).contains(&p[1]))
+                .all(|p| (-256..=4352).contains(&p[0]) && (-256..=4352).contains(&p[1]))
         );
-        assert_eq!(square.len(), 4 + 7 + 3 + 7 + 3);
+        let top: Vec<_> = square.iter().filter(|p| p[1] == -256).collect();
+        assert_eq!(top.len(), 2 + 9, "{top:?}");
     }
 
     #[test]

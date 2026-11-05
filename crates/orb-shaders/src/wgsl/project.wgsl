@@ -118,6 +118,8 @@ struct Ground {
     flat: vec2<f32>,
     globe: vec3<f32>,
     on_plane: bool,
+    // A cap's vertex at a pole (`tile_ground`).
+    pole: bool,
 };
 
 // Vertices at y -32768 and 32767 are at the North and South Pole (caps,
@@ -143,6 +145,7 @@ fn tile_ground(tile: Tile, p: vec2<f32>) -> Ground {
         var g = tile_surface(tile, vec2<f32>(clamp(p.x, 0.0, tile.extent), select(tile.extent, 0.0, north)));
         if frame.globe_amount > 0.0 && reaches_pole(tile, north) {
             g.globe = vec3<f32>(0.0, 0.0, select(-SPHERE_RADIUS, SPHERE_RADIUS, north)) - frame.globe_target;
+            g.pole = true;
         }
         return g;
     }
@@ -175,26 +178,91 @@ fn sphere_at(base: u32, cells: u32, origin: vec3<f32>, uv: vec2<f32>) -> vec3<f3
     return origin + globe_sum(at, lagrange(st.x), lagrange(st.y));
 }
 
+// Tile point `p` translated by `shift` world units along the map (fill
+// and circle translate). On a globe, as in GL JS, the translation moves the
+// point in the tile's own units before it goes onto the sphere.
+fn tile_ground_shifted(tile: Tile, p: vec2<f32>, shift: vec2<f32>) -> Ground {
+    if frame.globe_amount <= 0.0 {
+        var g = tile_ground(tile, p);
+        g.flat += shift;
+        return g;
+    }
+    return tile_ground(tile, p + vec2<f32>(shift.x, -shift.y) / tile.scale);
+}
+
 // Clip position of a ground point moved by `offset` world units along the
 // map (x east, y north) and raised `z` world units: on the plane, or on the
 // globe along its east, north and up there, mixed as the globe hands over.
+// Depth on the globe comes from the horizon plane, which hides its far side.
 fn ground_clip(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
+    return ground_clip_depth(g, offset, z, false);
+}
+
+// Whether the sphere stands between the eye and camera-relative `p`.
+fn sphere_hides(p: vec3<f32>) -> bool {
+    let from_center = frame.globe_eye + frame.globe_target;
+    let d = p - frame.globe_eye;
+    let a = dot(d, d);
+    let b = dot(from_center, d);
+    let c = dot(from_center, from_center) - SPHERE_RADIUS * SPHERE_RADIUS;
+    let disc = b * b - a * c;
+    if disc <= 0.0 {
+        return false;
+    }
+    let t = (-b - sqrt(disc)) / a;
+    return t > 0.0 && t < 0.999;
+}
+
+// `ground_clip` for 3D content (extrusions), with perspective depth on the
+// globe, as GL JS's `projectTileFor3D` keeps.
+fn ground_clip_3d(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
+    return ground_clip_depth(g, offset, z, true);
+}
+
+fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<f32> {
     let flat = frame.view_proj * vec4<f32>(g.flat + offset, z, 1.0);
     if frame.globe_amount <= 0.0 {
         return flat;
     }
     let up = normalize(g.globe + frame.globe_target);
-    let level = vec3<f32>(-up.y, up.x, 0.0);
-    let east = select(vec3<f32>(0.0, 1.0, 0.0), normalize(level), length(level) > 1e-6);
-    let north = cross(up, east);
-    let p = g.globe + (east * offset.x + north * offset.y + up * z) * frame.globe_metres;
+    var p = g.globe + up * (z * frame.globe_metres);
+    if any(offset != vec2<f32>(0.0)) {
+        // The offset turns the point around the sphere by its east and
+        // north parts in radians, as GL JS's `globeRotateVector` does.
+        let level = vec3<f32>(-up.y, up.x, 0.0);
+        let east = select(vec3<f32>(0.0, 1.0, 0.0), normalize(level), length(level) > 1e-6);
+        let north = cross(up, east);
+        let t = tan(offset * frame.globe_metres / SPHERE_RADIUS);
+        let turned = normalize(up + east * t.x + north * t.y);
+        p += (turned - up) * (SPHERE_RADIUS + z * frame.globe_metres);
+    }
     var clip = frame.globe_view_proj * vec4<f32>(p, 1.0);
+    if solid {
+        // Behind the sphere from the eye: past the far plane (extrusions
+        // draw with reversed depth, so beyond either end clips).
+        if sphere_hides(p) {
+            clip.z = -clip.w;
+        }
+        if !g.on_plane {
+            return clip;
+        }
+        return mix(flat, clip, frame.globe_amount);
+    }
     // Depth from the horizon plane, as GL JS's globe: past the horizon is
     // beyond the far plane.
     let facing = dot(frame.globe_horizon.xyz, p) + frame.globe_horizon.w;
     clip.z = (1.0 - facing * 0.5) * clip.w;
-    if !g.on_plane {
+    if !g.on_plane || frame.globe_amount >= 1.0 {
         return clip;
     }
-    return mix(flat, clip, frame.globe_amount);
+    // As GL JS hands over: the poles' caps only in the last 2%, and the
+    // horizon's depth only past a fifth of the way to the globe.
+    if g.pole {
+        let hidden = pow(max((1.0 - frame.globe_amount) / 0.02, 0.0), 8.0);
+        clip.z = mix(clip.z, 100.0 * clip.w, min(hidden, 1.0));
+        return clip;
+    }
+    var mixed = mix(flat, clip, frame.globe_amount);
+    mixed.z = mix(0.0, clip.z / clip.w, clamp((frame.globe_amount - 0.2) / 0.8, 0.0, 1.0)) * mixed.w;
+    return mixed;
 }

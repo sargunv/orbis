@@ -256,7 +256,7 @@ fn layout(
         },
         LayerKind::FillExtrusion(e) => {
             let rounding = f64::from(e.rounded_corner_distance.evaluate(zoom)) * units_per_metre;
-            extrusion::layout_in_extent(layer, features, 8192, rounding)
+            extrusion::layout_in_extent(layer, features, 8192, rounding, bend)
         }
         LayerKind::Circle(c) => {
             let key = c.layout.sort_key.bind(layer);

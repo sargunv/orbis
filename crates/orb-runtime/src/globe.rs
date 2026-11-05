@@ -11,7 +11,7 @@ use orb_hal::Gpu;
 use orb_render::{Scene, TileWarp};
 
 /// A quarter pixel at 512 pixels per tile side.
-const TOLERANCE: f64 = 1.0 / 2048.0;
+const TOLERANCE: f64 = 1.0 / 8192.0;
 /// Tiles kept before unused ones are dropped.
 const CACHED: usize = 2048;
 

@@ -76,8 +76,12 @@ pub fn series(tms: &TileMatrixSet, tile: TileIndex, tolerance: f64) -> Option<Se
     let dx = map(c + DVec2::new(h, 0.0))? - map(c - DVec2::new(h, 0.0))?;
     let dy = map(c + DVec2::new(0.0, h))? - map(c - DVec2::new(0.0, h))?;
     let span = (dx.cross(dy).length() / (4.0 * h * h)).sqrt();
-    Series::fit(map, tolerance * span, span)
+    Series::fit(map, tolerance * span, span, MAX_CELLS)
 }
+
+/// The most patches per side of a tile on the sphere: a whole-world tile
+/// needs 32 at an eighth of a pixel.
+const MAX_CELLS: u32 = 32;
 
 #[cfg(test)]
 mod tests {

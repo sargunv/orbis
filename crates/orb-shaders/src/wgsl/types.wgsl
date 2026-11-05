@@ -50,6 +50,9 @@ struct Frame {
     globe_metres: f32,
     _pad5: f32,
     _pad6: vec2<f32>,
+    // The eye, camera-relative ECEF metres.
+    globe_eye: vec3<f32>,
+    _pad7: f32,
 };
 
 // One placement of a tile's data: data units → camera-relative world is

@@ -3418,6 +3418,7 @@ fn frame_globe(globe: &orb_camera::GlobeView, view: &View) -> orb_render::FrameG
             ((globe.target.dot(toward) - horizon) * scale) as f32,
         ],
         metres_per_unit: (globe.metres_per_px / view.world_per_px()) as f32,
+        eye: globe.eye.as_vec3().to_array(),
     }
 }
 
@@ -3713,7 +3714,7 @@ fn globe_grid(
 
 /// Cells per side of the background's grid on a globe: fine enough for a
 /// whole-world tile.
-const BACKGROUND_GLOBE_CELLS: u32 = 32;
+const BACKGROUND_GLOBE_CELLS: u32 = 64;
 
 /// One scene tile with a tile-sized quad for every background layer, or on
 /// a globe a grid the sphere bends.

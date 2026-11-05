@@ -93,7 +93,12 @@ impl<V: Node> Series<V> {
     /// within `limit` of `map` (tile fractions, y down, to positions), or
     /// `None` where `map` doesn't reach or the tile needs more. `map`
     /// returns positions continuous across the tile (unwrapped).
-    pub(crate) fn fit(map: impl Fn(DVec2) -> Option<V>, limit: f64, scale: f64) -> Option<Self> {
+    pub(crate) fn fit(
+        map: impl Fn(DVec2) -> Option<V>,
+        limit: f64,
+        scale: f64,
+        max_cells: u32,
+    ) -> Option<Self> {
         let anchor = map(DVec2::splat(0.5))?;
         let mut cells = 1u32;
         loop {
@@ -136,7 +141,7 @@ impl<V: Node> Series<V> {
                     scale,
                 });
             }
-            if cells >= MAX_SERIES_CELLS {
+            if cells >= max_cells {
                 return None;
             }
             cells *= 2;
@@ -267,7 +272,7 @@ impl<V: Node> Patch<V> {
     }
 }
 
-/// The most patches per side of a series.
+/// The most patches per side of a planar series.
 const MAX_SERIES_CELLS: u32 = 16;
 
 /// Samples per side when finding a footprint.
@@ -413,6 +418,7 @@ impl Warp {
             },
             tolerance * footprint.span,
             footprint.span,
+            MAX_SERIES_CELLS,
         )
     }
 

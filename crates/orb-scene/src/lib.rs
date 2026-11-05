@@ -173,6 +173,8 @@ pub struct FrameGlobe {
     /// Metres on the globe per plane world unit at the target: offsets and
     /// heights in world units scale by it.
     pub metres_per_unit: f32,
+    /// The eye, camera-relative: 3D content behind the sphere hides.
+    pub eye: [f32; 3],
 }
 
 /// What elevated content reads of the terrain's DEM page.
@@ -185,7 +187,7 @@ pub struct FrameTerrain {
     pub dem_dim: f32,
 }
 
-const FRAME_WORDS: usize = 80;
+const FRAME_WORDS: usize = 84;
 
 /// Bytes of a frame block's uniform buffer.
 pub const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 4;
@@ -241,6 +243,9 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
         }
         words[75] = g.amount.to_bits();
         words[76] = g.metres_per_unit.to_bits();
+        for (word, v) in words[80..83].iter_mut().zip(g.eye) {
+            *word = v.to_bits();
+        }
     }
     gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&words));
 }

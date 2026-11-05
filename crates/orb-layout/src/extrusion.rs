@@ -10,22 +10,31 @@ use orb_tile::{GeometryType, Layer, LayerBuilder};
 pub const STRIDE: usize = 4;
 
 pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
-    layout_in_extent(layer, features, layer.extent(), 0.0)
+    layout_in_extent(layer, features, layer.extent(), 0.0, None)
 }
 
 /// Layout in a normalized tile grid. The pinned bucket uses 8192 units,
 /// including for edge-distance resets and integer vertex snapping.
 /// `rounding` rounds polygon corners by that many grid units
-/// (`fill-extrusion-rounded-corner-distance`), 0 for none.
+/// (`fill-extrusion-rounded-corner-distance`), 0 for none. Roofs are cut
+/// along `bend`'s grid for a curved surface, as fills are (walls follow
+/// the source geometry, which the jobs cut along it too).
 pub fn layout_in_extent(
     layer: &Layer,
     features: &[u32],
     output_extent: u32,
     rounding: f64,
+    bend: Option<fill::Bend>,
 ) -> Mesh {
+    // Roofs don't reach the poles: caps are the ground's.
+    let bend = bend.map(|b| fill::Bend {
+        north: false,
+        south: false,
+        ..b
+    });
     let rounded = rounding > 0.0;
     if output_extent == layer.extent() && !rounded {
-        return layout_normalized(layer, features, false);
+        return layout_normalized(layer, features, false, bend);
     }
     let extent = output_extent as i32;
     let mut normalized = LayerBuilder::new("extrusion", output_extent);
@@ -62,6 +71,7 @@ pub fn layout_in_extent(
         &normalized.finish(),
         &(0..features.len() as u32).collect::<Vec<_>>(),
         rounded,
+        bend,
     )
 }
 
@@ -94,8 +104,13 @@ pub fn centroid(layer: &Layer, feature: u32, output_extent: u32) -> [i16; 2] {
 }
 
 /// `rounded`: polygon walls take normals that blend across rounded corners.
-fn layout_normalized(layer: &Layer, features: &[u32], rounded: bool) -> Mesh {
-    let roof = fill::layout(layer, features);
+fn layout_normalized(
+    layer: &Layer,
+    features: &[u32],
+    rounded: bool,
+    bend: Option<fill::Bend>,
+) -> Mesh {
+    let roof = fill::layout_subdivided(layer, features, bend);
     let mut builder = MeshBuilder::new(STRIDE);
     // Preserve roof chunks by feeding their triangles through the builder.
     for v in roof.vertices.as_chunks::<2>().0 {
@@ -195,7 +210,7 @@ mod tests {
             for p in [[0, 0], [1, 0], [1, 1], [0, 1]] {
                 b.push_vertex(p.map(|v| v * extent as i32 / 2));
             }
-            layout_in_extent(&b.finish(), &[0], 8192, 0.0)
+            layout_in_extent(&b.finish(), &[0], 8192, 0.0, None)
         };
         let a = make(4096);
         let b = make(8192);
