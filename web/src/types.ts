@@ -193,6 +193,8 @@ export interface StyleImageOptions {
   content?: [number, number, number, number];
   textFitWidth?: "stretchOrShrink" | "stretchOnly" | "proportional";
   textFitHeight?: "stretchOrShrink" | "stretchOnly" | "proportional";
+}
+
 /** The map's GPU memory by pool: the scene's pools grow within ceilings
  * the budget sets; tiles out of view stay cached within `cacheBudget`. */
 export interface FrameMemory {
