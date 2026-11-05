@@ -45,6 +45,13 @@ pub enum Op {
     RemoveSource {
         id: String,
     },
+    /// Replaces a GeoJSON source's `data` (GL JS's `setData`): a new data
+    /// revision of the same source, whose drawn tiles stay until the new
+    /// data's replace them.
+    SetSourceData {
+        id: String,
+        data: Json,
+    },
     /// Sets a global state property; `None` (or `null`) resets it to the
     /// style's default.
     SetGlobalState {
@@ -205,6 +212,10 @@ impl Op {
             },
             "removeSource" => Op::RemoveSource {
                 id: string(1, "the source id")?,
+            },
+            "setSourceData" => Op::SetSourceData {
+                id: string(1, "the source id")?,
+                data: arg(2).cloned().ok_or("setSourceData: no data")?,
             },
             "setGlobalStateProperty" => Op::SetGlobalState {
                 key: string(1, "the property")?,

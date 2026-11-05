@@ -682,6 +682,7 @@ pub(crate) fn full_update(
 pub(crate) fn revise(
     previous: Option<&TileWorker>,
     doc: &StyleDoc,
+    new_data: &[u32],
     revision: u64,
     local_ideographs: Option<String>,
     surface: crate::SurfaceTiles,
@@ -691,6 +692,7 @@ pub(crate) fn revise(
         Arc::clone(doc.style()),
         doc.layer_keys().map(|k| k.0).collect(),
         doc.source_keys().map(|k| k.0).collect(),
+        new_data,
         revision,
         local_ideographs,
         surface,
@@ -1148,6 +1150,7 @@ impl Map {
         let worker = Arc::new(revise(
             previous.map(|(_, worker)| &**worker),
             &doc,
+            &[],
             self.version,
             self.labels.ideographs.clone(),
             self.surface.tiles(),

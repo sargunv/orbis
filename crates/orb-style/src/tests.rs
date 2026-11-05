@@ -355,3 +355,32 @@ fn a_scene_extends_its_style_in_the_scene_dialect() {
     .unwrap();
     assert!(plain.apply(&tx).is_err());
 }
+
+#[test]
+fn source_data_is_a_new_revision_of_the_same_source() {
+    let mut doc = doc();
+    let keys: Vec<_> = doc.source_keys().collect();
+    let patch = commands(
+        &mut doc,
+        r#"[["setSourceData", "g", {"type": "Feature", "properties": {},
+            "geometry": {"type": "Point", "coordinates": [1, 2]}}]]"#,
+    );
+    assert_eq!(patch.changes, [Change::SourceData(keys[1])]);
+    assert_eq!(classes(&patch), [Class::Relayout]);
+    assert_eq!(doc.source_keys().collect::<Vec<_>>(), keys);
+    let orb_v8::SourceKind::GeoJson(g) = &doc.style().sources[1].kind else {
+        panic!("a GeoJSON source");
+    };
+    assert!(matches!(&g.data, orb_v8::GeoJsonData::Inline(f) if f.len() == 1));
+    assert!(doc.source_json(1).to_string().contains("[1,2]"));
+    for bad in [
+        r#"[["setSourceData", "v", {}]]"#,
+        r#"[["setSourceData", "nope", {}]]"#,
+    ] {
+        assert!(
+            doc.apply(&Transaction::from_commands(bad).unwrap())
+                .is_err(),
+            "{bad}"
+        );
+    }
+}

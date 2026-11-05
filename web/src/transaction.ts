@@ -12,6 +12,9 @@ export interface Transaction {
   moveLayer(layer: string, before?: string): Transaction;
   addSource(id: string, source: object): Transaction;
   removeSource(id: string): Transaction;
+  /** A GeoJSON source's new data (GL JS's `setData`): its drawn tiles stay
+   * until the new data's replace them. */
+  setSourceData(id: string, data: object): Transaction;
   setGlobalStateProperty(name: string, value: unknown): Transaction;
   setFeatureState(feature: FeatureTarget, state: Record<string, unknown>): Transaction;
   removeFeatureState(feature: Partial<FeatureTarget>, key?: string): Transaction;
@@ -28,7 +31,7 @@ export interface FeatureTarget {
 
 const CALLS = [
   "setPaintProperty", "setLayoutProperty", "setFilter", "setLayerZoomRange",
-  "addLayer", "removeLayer", "moveLayer", "addSource", "removeSource",
+  "addLayer", "removeLayer", "moveLayer", "addSource", "removeSource", "setSourceData",
   "setGlobalStateProperty", "setFeatureState", "removeFeatureState", "setStyle",
   "setProjection",
 ] as const;

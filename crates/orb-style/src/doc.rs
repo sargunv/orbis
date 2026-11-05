@@ -55,6 +55,8 @@ pub(crate) struct Draft {
     pub(crate) overrides: Vec<(String, Value<'static>)>,
     /// Layers whose JSON changed.
     pub(crate) dirty: Vec<LayerKey>,
+    /// Sources given new data.
+    pub(crate) new_data: Vec<SourceKey>,
     /// The root (other than sources and layers) was replaced.
     pub(crate) new_root: bool,
     pub(crate) feature_state: Vec<FeatureStateOp>,
@@ -311,6 +313,7 @@ impl StyleDoc {
             layers: self.layers.clone(),
             overrides: self.overrides.clone(),
             dirty: Vec::new(),
+            new_data: Vec::new(),
             new_root: false,
             feature_state: Vec::new(),
             next_key: self.next_key,
@@ -502,6 +505,27 @@ impl Draft {
                     ));
                 }
                 self.sources.retain(|s| s.id != *id);
+                Ok(())
+            }
+            Op::SetSourceData { id, data } => {
+                let entry = self
+                    .sources
+                    .iter_mut()
+                    .find(|s| s.id == *id)
+                    .ok_or_else(|| format!("the source \"{id}\" does not exist"))?;
+                if entry.json.get("type").and_then(Json::as_str) != Some("geojson") {
+                    return Err(format!("the source \"{id}\" is not a GeoJSON source"));
+                }
+                let mut members = entry
+                    .json
+                    .as_object()
+                    .expect("sources are objects")
+                    .to_vec();
+                set_member(&mut members, "data", Some(data.clone()));
+                entry.json = Arc::new(synthetic(JsonValue::Object(members)));
+                if !self.new_data.contains(&entry.key) {
+                    self.new_data.push(entry.key);
+                }
                 Ok(())
             }
             Op::SetGlobalState { key, value } => {

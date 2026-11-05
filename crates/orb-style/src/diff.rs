@@ -67,6 +67,8 @@ pub enum Change {
     Projection,
     SourceAdded(SourceKey),
     SourceRemoved(SourceKey),
+    /// A GeoJSON source's new data: its layers lay out again from it.
+    SourceData(SourceKey),
     LayerAdded(LayerKey),
     LayerRemoved(LayerKey),
     /// The order of the layers that stayed changed.
@@ -108,7 +110,7 @@ impl Change {
     pub fn class(&self) -> Class {
         match self {
             Self::Restyle => Class::Restyle,
-            Self::Projection => Class::Relayout,
+            Self::Projection | Self::SourceData(_) => Class::Relayout,
             Self::SourceAdded(_) | Self::SourceRemoved(_) => Class::Reload,
             Self::LayerAdded(_) | Self::LayerRemoved(_) | Self::LayersReordered => Class::Nodes,
             Self::Visibility(_) => Class::Block,
@@ -373,6 +375,12 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
     let old_sources: HashMap<SourceKey, &Source> = doc.source_keys().zip(&old.sources).collect();
     for entry in &draft.sources {
         match old_sources.get(&entry.key) {
+            Some(_) if draft.new_data.contains(&entry.key) => {
+                let (source, w) = orb_v8::parse_source(&entry.id, &entry.json)?;
+                warnings.extend(w);
+                style.sources.push(source);
+                changes.push(Change::SourceData(entry.key));
+            }
             Some(source) => style.sources.push((*source).clone()),
             None => {
                 let (source, w) = orb_v8::parse_source(&entry.id, &entry.json)?;

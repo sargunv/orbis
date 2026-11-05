@@ -49,6 +49,7 @@ const EDITS = [
   ["filter", [["setFilter", "road_minor", ["==", ["get", "class"], "service"]]]],
   ["layers", [["moveLayer", "water", "road_minor"], ["removeLayer", "park"]]],
   ["source", GRID],
+  ["source data", [["setSourceData", "grid", { type: "FeatureCollection", features: features.slice(0, 800) }]]],
   ["feature state", [["setFeatureState", { source: "grid", id: 7 }, { hover: true }]]],
   ["global state", [["setGlobalStateProperty", "unused", 1]]],
 ];

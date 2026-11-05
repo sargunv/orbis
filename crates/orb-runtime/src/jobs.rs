@@ -143,6 +143,7 @@ impl TileWorker {
             Arc::new(style),
             layers,
             sources,
+            &[],
             0,
             None,
             crate::SurfaceTiles::default(),
@@ -152,11 +153,16 @@ impl TileWorker {
     /// A revision of a parsed style, keeping `previous`'s data for the
     /// sources both have.
     #[allow(clippy::too_many_arguments)]
+    /// A revision of a style, keeping `previous`'s data for the cached tile
+    /// frames but for the sources in `new_data` (GeoJSON data replaced),
+    /// whose index and frames are made again from the new data.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_style(
         previous: Option<&TileWorker>,
         style: Arc<Style>,
         layer_keys: Vec<u32>,
         source_keys: Vec<u32>,
+        new_data: &[u32],
         revision: u64,
         ideographs: Option<String>,
         surface: crate::SurfaceTiles,
@@ -168,7 +174,7 @@ impl TileWorker {
                 data.sources
                     .lock()
                     .expect("worker data poisoned")
-                    .retain(|key, _| plan.source(*key).is_some());
+                    .retain(|key, _| plan.source(*key).is_some() && !new_data.contains(key));
                 data
             }
             None => Arc::default(),
@@ -322,11 +328,14 @@ impl TileWorker {
             layers,
             warnings: Vec::new(),
         };
+        // A source sent again has new data (an added one has none yet).
+        let new_data: Vec<u32> = update.source_json.iter().map(|(k, ..)| *k).collect();
         Ok(Self::with_style(
             previous,
             Arc::new(style),
             update.layers.clone(),
             update.sources.clone(),
+            &new_data,
             update.revision,
             update.local_ideographs.clone(),
             update.surface.clone(),

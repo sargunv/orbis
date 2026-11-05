@@ -85,9 +85,20 @@ impl Map {
         let version = self.version;
         let mut style = self.style.take().expect("checked above");
         let old = Arc::clone(&style.worker);
+        // Sources with new data: the jobs index it again, and their layers
+        // lay out again from it while their tiles stay drawn.
+        let new_data: Vec<u32> = patch
+            .changes
+            .iter()
+            .filter_map(|c| match c {
+                Change::SourceData(key) => Some(key.0),
+                _ => None,
+            })
+            .collect();
         let worker = Arc::new(revise(
             Some(&old),
             &style.doc,
+            &new_data,
             version,
             self.labels.ideographs.clone(),
             self.surface.tiles(),
@@ -113,7 +124,7 @@ impl Map {
                 .changes
                 .iter()
                 .filter_map(|c| match c {
-                    Change::SourceAdded(key) => {
+                    Change::SourceAdded(key) | Change::SourceData(key) => {
                         let i = doc.source_index(*key).expect("added sources exist");
                         let id = doc.style().sources[i].id.clone();
                         Some((key.0, id, Arc::new(doc.source_json(i).clone())))
@@ -259,17 +270,16 @@ impl Map {
                 }
             }
         }
-        if reproject {
-            for node in &plan.nodes {
-                let image = node.source == usize::MAX || plan.image_kind(node.source).is_some();
-                let state = style.nodes.get_mut(&node.key).expect("added above");
-                if image || state.layout_epoch == version {
-                    continue;
-                }
-                state.layout_epoch = version;
-                state.rows_epoch = version;
-                relayout.entry(node.source).or_default().push(node.key);
+        for node in &plan.nodes {
+            let image = node.source == usize::MAX || plan.image_kind(node.source).is_some();
+            let new_data = !image && new_data.contains(&plan.sources[node.source].key);
+            let state = style.nodes.get_mut(&node.key).expect("added above");
+            if !(reproject || new_data) || image || state.layout_epoch == version {
+                continue;
             }
+            state.layout_epoch = version;
+            state.rows_epoch = version;
+            relayout.entry(node.source).or_default().push(node.key);
         }
         style.painted = None;
         self.style = Some(style);
@@ -311,6 +321,7 @@ impl Map {
         let worker = Arc::new(revise(
             Some(&style.worker),
             &style.doc,
+            &[],
             version,
             self.labels.ideographs.clone(),
             self.surface.tiles(),
