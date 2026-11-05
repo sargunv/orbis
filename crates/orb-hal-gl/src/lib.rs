@@ -29,14 +29,13 @@ mod data;
 #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
 pub mod egl;
 mod exec;
-mod slots;
 mod state;
 #[cfg(target_arch = "wasm32")]
 mod web;
 
 use glow::HasContext;
+use orb_hal::slots::Slots;
 use orb_hal::*;
-use slots::Slots;
 
 pub use data::{DATA_WIDTH, DATA_WIDTH_LOG2};
 

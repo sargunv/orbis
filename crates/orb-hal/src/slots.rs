@@ -1,10 +1,12 @@
+//! The backends' resource tables.
+
 use std::collections::HashMap;
 
 /// Resources by id. Ids count up and are never reused, so a stale id finds
 /// nothing instead of another resource; removed entries are dropped, so the
 /// table holds only live resources.
 #[derive(Debug)]
-pub(crate) struct Slots<T> {
+pub struct Slots<T> {
     items: HashMap<u32, T>,
     next: u32,
 }
@@ -19,22 +21,27 @@ impl<T> Default for Slots<T> {
 }
 
 impl<T> Slots<T> {
-    pub(crate) fn insert(&mut self, item: T) -> u32 {
+    pub fn insert(&mut self, item: T) -> u32 {
         let id = self.next;
         self.next = id.checked_add(1).expect("resource ids exhausted");
         self.items.insert(id, item);
         id
     }
 
+    /// Replaces a live entry.
+    pub fn set(&mut self, id: u32, item: T) {
+        self[id] = item;
+    }
+
     /// An id for an entry that [`fill`](Self::fill) adds later.
-    pub(crate) fn reserve(&mut self) -> u32 {
+    pub fn reserve(&mut self) -> u32 {
         let id = self.next;
         self.next = id.checked_add(1).expect("resource ids exhausted");
         id
     }
 
     /// Adds the entry of a reserved id.
-    pub(crate) fn fill(&mut self, id: u32, item: T) {
+    pub fn fill(&mut self, id: u32, item: T) {
         assert!(id < self.next, "resource {id} was never reserved");
         assert!(
             self.items.insert(id, item).is_none(),
@@ -42,16 +49,16 @@ impl<T> Slots<T> {
         );
     }
 
-    pub(crate) fn contains(&self, id: u32) -> bool {
+    pub fn contains(&self, id: u32) -> bool {
         self.items.contains_key(&id)
     }
 
     /// Takes every live resource.
-    pub(crate) fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
+    pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
         self.items.drain().map(|(_, item)| item)
     }
 
-    pub(crate) fn remove(&mut self, id: u32) -> T {
+    pub fn remove(&mut self, id: u32) -> T {
         self.items
             .remove(&id)
             .unwrap_or_else(|| panic!("resource {id} was destroyed or never created"))

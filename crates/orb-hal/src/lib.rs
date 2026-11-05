@@ -11,6 +11,7 @@
 mod command;
 pub mod device;
 mod resource;
+pub mod slots;
 
 pub use command::{
     ColorAttachment, ComputeCommand, ComputePass, DepthAttachment, LoadOp, Pass, PassTimestamps,

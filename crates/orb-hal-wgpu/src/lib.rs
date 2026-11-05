@@ -13,14 +13,13 @@ mod cache;
 mod compile;
 mod convert;
 mod offscreen;
-mod slots;
 #[cfg(not(target_arch = "wasm32"))]
 mod surface;
 mod writes;
 
 pub use convert::from_texture_format;
+use orb_hal::slots::Slots;
 use orb_hal::*;
-use slots::Slots;
 #[cfg(not(target_arch = "wasm32"))]
 pub use surface::{RawSurface, Surface, SurfaceError};
 /// The wgpu this HAL is built on, for hosts that hand it windows.

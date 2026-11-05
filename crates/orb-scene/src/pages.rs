@@ -8,6 +8,7 @@
 //! their layers into the larger arrays; [`TilePage::revision`] changes so
 //! bind groups over the old arrays are rebuilt.
 
+use crate::arena::Slots;
 use orb_hal::{
     Gpu, HostImageId, Pass, TextureDesc, TextureFormat, TextureId, TextureRegion, TextureUsages,
     TextureViewDimension,
@@ -49,9 +50,7 @@ pub struct TilePage {
     textures: Vec<(PageTexture, TextureId)>,
     capacity: u32,
     max_layers: u32,
-    /// Layers below `next` have been handed out; freed ones wait in `free`.
-    next: u32,
-    free: Vec<u32>,
+    layers: Slots,
     revision: u32,
 }
 
@@ -83,8 +82,7 @@ impl TilePage {
                 .collect(),
             capacity,
             max_layers,
-            next: 0,
-            free: Vec::new(),
+            layers: Slots::new(capacity),
             revision: 0,
         }
     }
@@ -100,27 +98,18 @@ impl TilePage {
         [t.width, t.height]
     }
 
-    /// Changes whenever the textures are replaced.
     /// The `index`th array's mip levels.
     pub fn mip_levels(&self, index: usize) -> u32 {
         self.textures[index].0.mip_levels
     }
 
+    /// Changes whenever the textures are replaced.
     pub fn revision(&self) -> u32 {
         self.revision
     }
 
     pub fn capacity(&self) -> u32 {
         self.capacity
-    }
-
-    /// Layers in use.
-    pub fn len(&self) -> u32 {
-        self.next - self.free.len() as u32
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// A free layer, growing the page if it is full.
@@ -134,23 +123,16 @@ impl TilePage {
 
     /// Layers handed out and not freed.
     pub fn used(&self) -> u32 {
-        self.next - self.free.len() as u32
+        self.layers.used()
     }
 
     /// A layer the arrays already have, without growing them.
     pub fn alloc_existing(&mut self) -> Option<u32> {
-        if let Some(layer) = self.free.pop() {
-            return Some(layer);
-        }
-        (self.next < self.capacity).then(|| {
-            self.next += 1;
-            self.next - 1
-        })
+        self.layers.alloc()
     }
 
     pub fn free(&mut self, layer: u32) {
-        debug_assert!(layer < self.next && !self.free.contains(&layer));
-        self.free.push(layer);
+        self.layers.free(layer);
     }
 
     /// Writes a layer of the `index`th array, whole.
@@ -205,6 +187,7 @@ impl TilePage {
             }
         }
         self.capacity = capacity;
+        self.layers.grow(capacity);
         self.revision += 1;
         Ok(())
     }
