@@ -586,6 +586,9 @@ mod tests {
     struct FakeFiles;
 
     impl FontFiles for FakeFiles {
+        fn is_open(&self, _: &str) -> bool {
+            true
+        }
         fn open(&self, _: &str, bytes: &[u8]) -> Result<(), String> {
             if bytes == b"font" {
                 Ok(())

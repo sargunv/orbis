@@ -13,6 +13,7 @@ mod geojson;
 mod globe;
 mod glyphs;
 mod image;
+mod job_host;
 mod jobs;
 mod labels;
 mod lights;
@@ -61,6 +62,7 @@ pub const COMPAT_NO_MODELS: &str = "model layers draw on WebGPU and native GPUs 
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
+pub use job_host::{JobHost, Loaded, LoadedDone};
 pub use jobs::{
     Built, DemUnpack, ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, ResultMesh, Stream,
     StyleUpdate, TileDone, TileImage, TileRequest, TileResult, TileWorker, pack, packed_header,

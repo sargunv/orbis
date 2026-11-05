@@ -19,17 +19,17 @@ use std::sync::{Arc, Mutex};
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::Json;
 use orb_hal::{HostBytesId, HostImageId};
-use orb_host::{DecodedImage, Fetch, FetchError, ImageDecode};
+use orb_host::{DecodedImage, Fetch, ImageDecode};
 use orb_jobs::Executor;
 use orb_layout::Chunk;
 use orb_style::{Encoding, GeoJsonData, Scene, SourceKind, Value};
 use orb_tile::TileFrame;
 
+use crate::TileLocation;
 use crate::glyphs::{GlyphCatalog, GlyphRaster, LocalGlyphs, RasterDone};
 use crate::style::{ImageKind, StylePlan};
 use crate::symbol::{ResultSymbols, SpriteIcons};
 use crate::tile::{self, ImageRef, Select, TileBuild};
-use crate::{TileLoader, TileLocation};
 
 /// Decoded tiles a worker keeps per source, least recently used first out.
 const FRAME_CACHE: usize = 256;
@@ -80,11 +80,11 @@ const DATA_REVISIONS: usize = 3;
 
 /// What a worker keeps across a style's revisions.
 #[derive(Debug, Default)]
-struct WorkerData {
+pub(crate) struct WorkerData {
     /// Per source key, kept while the source is.
     sources: Mutex<HashMap<u32, SourceRevisions>>,
     /// Glyph metrics of the PBF ranges fetched so far.
-    glyphs: GlyphCatalog,
+    pub(crate) glyphs: GlyphCatalog,
     /// Sprite metadata for icon layout.
     icons: Mutex<Arc<SpriteIcons>>,
     /// Southeast Asian word data, and the URL it is fetched from.
@@ -124,7 +124,7 @@ impl Default for Words {
 #[derive(Debug)]
 pub struct TileWorker {
     plan: StylePlan,
-    data: Arc<WorkerData>,
+    pub(crate) data: Arc<WorkerData>,
     /// The map's `localIdeographFontFamily`.
     ideographs: Option<String>,
     /// The plane GeoJSON tiles in, and sources' tile matrix sets.
@@ -901,140 +901,17 @@ pub trait Jobs: Send + Sync {
     fn cluster(&self, request: crate::ClusterRequest, done: crate::QueryDone);
 }
 
-type PendingSources = HashMap<(u64, u32), Vec<(TileRequest, TileDone)>>;
-
-/// Glyph range fetches in flight, by style and URL: what to run when each
-/// arrives.
-type GlyphWaiters = HashMap<(u64, String), Vec<Box<dyn FnOnce() + Send>>>;
-
-/// Jobs in this process: fetch through the host, then decode and lay out on
-/// an executor.
+/// Jobs in this process: a [`JobHost`](crate::JobHost) on an executor,
+/// decoding image tiles with the host's decoder.
 pub struct PoolJobs {
-    fetch: Arc<dyn Fetch>,
+    host: Arc<crate::JobHost>,
     decode: Arc<dyn ImageDecode>,
-    loader: Arc<TileLoader>,
     executor: Arc<dyn Executor>,
-    styles: Mutex<Vec<(u64, Arc<TileWorker>)>>,
-    // In-flight source fetches, shared by all tile requests for that source.
-    geojson_loads: Arc<Mutex<PendingSources>>,
-    glyphs: Arc<GlyphLoads>,
-    /// The host's local fonts, if any.
-    local: Mutex<Option<Arc<dyn LocalGlyphs>>>,
-    files: Mutex<Option<Arc<dyn crate::glyphs::FontFiles>>>,
 }
 
 impl std::fmt::Debug for PoolJobs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PoolJobs").finish_non_exhaustive()
-    }
-}
-
-/// Fetches glyph ranges for tiles that wait on them, once per range.
-struct GlyphLoads {
-    fetch: Arc<dyn Fetch>,
-    executor: Arc<dyn Executor>,
-    waiting: Mutex<GlyphWaiters>,
-}
-
-impl GlyphLoads {
-    /// Runs `ready` once `worker` has `url`, fetching it unless that's
-    /// already under way.
-    fn wait(
-        self: &Arc<Self>,
-        worker: &Arc<TileWorker>,
-        style: u64,
-        url: String,
-        ready: Box<dyn FnOnce() + Send>,
-    ) {
-        let key = (style, url);
-        let mut waiting = self.waiting.lock().expect("glyph loads poisoned");
-        if let Some(waiters) = waiting.get_mut(&key) {
-            waiters.push(ready);
-            return;
-        }
-        // A fetch that finished after the build asked would be fetched again.
-        if worker.data.glyphs.has(&key.1) {
-            drop(waiting);
-            ready();
-            return;
-        }
-        waiting.insert(key.clone(), vec![ready]);
-        drop(waiting);
-        let (this, worker) = (Arc::clone(self), Arc::clone(worker));
-        let url = key.1.clone();
-        self.fetch.get(
-            &key.1.clone(),
-            Box::new(move |fetched| {
-                let files = worker
-                    .data
-                    .glyphs
-                    .files()
-                    .filter(|_| worker.declares_font(&url));
-                let finish = move |prepared: Result<(), String>| {
-                    let bytes = prepared.and(fetched.as_deref().map_err(ToString::to_string));
-                    worker.add_resource(&url, bytes);
-                    let waiters = this
-                        .waiting
-                        .lock()
-                        .expect("glyph loads poisoned")
-                        .remove(&key)
-                        .unwrap_or_default();
-                    for ready in waiters {
-                        ready();
-                    }
-                };
-                // A font file opens once the engine is in.
-                match files {
-                    Some(files) => files.prepare(Box::new(finish)),
-                    None => finish(Ok(())),
-                }
-            }),
-        );
-    }
-
-    /// Builds a tile on this thread, fetching the glyph ranges its labels
-    /// need first and building again once they are all in.
-    fn complete(
-        self: &Arc<Self>,
-        worker: Arc<TileWorker>,
-        bytes: Arc<Vec<u8>>,
-        encoding: Encoding,
-        request: TileRequest,
-        done: TileDone,
-    ) {
-        let urls = match worker.build(&bytes, encoding, &request) {
-            Ok(Built::Tile(build)) => return done(Ok(build.into())),
-            Err(e) => return done(Err(e)),
-            Ok(Built::Fetch(urls)) => urls,
-        };
-        let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(urls.len()));
-        let retry = Arc::new(Mutex::new(Some((bytes, request, done))));
-        let style = retry
-            .lock()
-            .expect("retry poisoned")
-            .as_ref()
-            .expect("set")
-            .1
-            .style;
-        for url in urls {
-            let (this, worker2) = (Arc::clone(self), Arc::clone(&worker));
-            let (remaining, retry) = (Arc::clone(&remaining), Arc::clone(&retry));
-            let ready = Box::new(move || {
-                if remaining.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) != 1 {
-                    return;
-                }
-                let (bytes, request, done) = retry
-                    .lock()
-                    .expect("retry poisoned")
-                    .take()
-                    .expect("retried once");
-                let executor = Arc::clone(&this.executor);
-                executor.spawn(Box::new(move || {
-                    this.complete(worker2, bytes, encoding, request, done);
-                }));
-            });
-            self.wait(&worker, style, url, ready);
-        }
     }
 }
 
@@ -1045,48 +922,26 @@ impl PoolJobs {
         executor: Arc<dyn Executor>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            loader: TileLoader::new(fetch.clone()),
-            glyphs: Arc::new(GlyphLoads {
-                fetch: fetch.clone(),
-                executor: executor.clone(),
-                waiting: Mutex::default(),
-            }),
-            fetch,
+            host: crate::JobHost::new(fetch, Arc::clone(&executor)),
             decode,
             executor,
-            styles: Mutex::new(Vec::new()),
-            geojson_loads: Arc::default(),
-            local: Mutex::new(None),
-            files: Mutex::new(None),
         })
     }
 
-    /// Draws local glyphs (decision 0009) with the host's fonts: system
-    /// fonts natively, the canvas on the web's main thread.
+    /// Draws local glyphs (decision 0009) with the host's fonts.
     pub fn set_local_glyphs(&self, local: Arc<dyn LocalGlyphs>) {
-        *self.local.lock().expect("local glyphs poisoned") = Some(local);
+        self.host.set_local_glyphs(local);
     }
 
-    /// Draws declared font files with the host's engine: `orb-text`
-    /// natively, `shaper.wasm` in the web's job workers.
+    /// Draws declared font files with the host's engine.
     pub fn set_font_files(&self, files: Arc<dyn crate::glyphs::FontFiles>) {
-        *self.files.lock().expect("font files poisoned") = Some(files);
+        self.host.set_font_files(files);
     }
 }
 
 impl Jobs for PoolJobs {
     fn set_style(&self, id: u64, _: &StyleUpdate, worker: &Arc<TileWorker>) {
-        let mut styles = self.styles.lock().expect("styles poisoned");
-        // Requests for the previous style may still be in flight; requests
-        // for an older revision of this one use the newest.
-        styles.retain(|(i, _)| *i + 1 >= id && *i != id);
-        styles.push((id, Arc::clone(worker)));
-        if let Some(local) = &*self.local.lock().expect("local glyphs poisoned") {
-            worker.set_local_glyphs(Arc::clone(local));
-        }
-        if let Some(files) = &*self.files.lock().expect("font files poisoned") {
-            worker.set_font_files(Arc::clone(files));
-        }
+        self.host.set_style(id, Arc::clone(worker));
     }
 
     fn set_icons(&self, _: u64, icons: &Arc<SpriteIcons>, worker: &Arc<TileWorker>) {
@@ -1095,258 +950,51 @@ impl Jobs for PoolJobs {
     }
 
     fn raster(&self, request: GlyphRaster, done: RasterDone) {
-        let executor = Arc::clone(&self.executor);
-        match &request {
-            GlyphRaster::Pbf { url, .. } => {
-                let url = url.clone();
-                self.fetch.get(
-                    &url.clone(),
-                    Box::new(move |fetched| match fetched {
-                        Ok(bytes) => executor.spawn(Box::new(move || done(request.run(&bytes)))),
-                        Err(e) => done(Err(format!("glyphs {url}: {e}"))),
-                    }),
-                );
-            }
-            GlyphRaster::Local { .. } => {
-                match self.local.lock().expect("local glyphs poisoned").clone() {
-                    Some(local) => {
-                        executor.spawn(Box::new(move || done(request.draw(local.as_ref()))));
-                    }
-                    None => done(Err("this host draws no local glyphs".into())),
-                }
-            }
-            // The workers share the engine, which opened the file when a
-            // tile resolved its glyphs.
-            GlyphRaster::File { .. } => {
-                match self.files.lock().expect("font files poisoned").clone() {
-                    Some(files) => executor.spawn(Box::new(move || {
-                        done(request.draw_file(files.as_ref(), None))
-                    })),
-                    None => done(Err("this host draws no font files".into())),
-                }
-            }
-        }
+        self.host.raster(request, done);
     }
 
     fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone) {
-        self.query(request, done);
+        self.host.features(request, done);
     }
 
     fn model(&self, url: String, done: crate::model::ModelDone) {
-        crate::model::load(
-            Arc::clone(&self.fetch),
-            Arc::clone(&self.executor),
-            url,
-            done,
-        );
+        self.host.model(url, done);
     }
 
     fn cluster(&self, request: crate::ClusterRequest, done: crate::QueryDone) {
-        let Some(worker) = self.worker(request.tile.style) else {
-            done(Err(format!("style {} was replaced", request.tile.style)));
-            return;
-        };
-        let executor = Arc::clone(&self.executor);
-        if worker.has_data(&request.tile) {
-            executor.spawn(Box::new(move || done(worker.cluster(&[], &request))));
-            return;
-        }
-        let tile = &request.tile;
-        self.loader.load(
-            tile.location.clone(),
-            tile.data_tile(),
-            tile.encoding,
-            Box::new(move |fetched| {
-                executor.spawn(Box::new(move || match fetched {
-                    Ok((bytes, _)) => done(worker.cluster(&bytes, &request)),
-                    Err(e) => done(Err(e.to_string())),
-                }));
-            }),
-        );
+        self.host.cluster(request, done);
     }
 
     fn load(&self, request: TileRequest, done: TileDone) {
-        let worker = self
-            .styles
-            .lock()
-            .expect("styles poisoned")
-            .iter()
-            .find(|(id, _)| *id == request.style)
-            .map(|(_, w)| Arc::clone(w));
-        let Some(worker) = worker else {
-            done(Err(format!("style {} was replaced", request.style)));
-            return;
-        };
-        let glyphs = Arc::clone(&self.glyphs);
-        if worker.has_data(&request) {
-            self.executor.spawn(Box::new(move || {
-                let encoding = request.encoding;
-                glyphs.complete(worker, Arc::default(), encoding, request, done);
-            }));
-            return;
-        }
-        if worker.geojson_source(request.source).is_some() {
-            let key = (request.style, request.source);
-            let mut loads = self.geojson_loads.lock().expect("GeoJSON loads poisoned");
-            if let Some(waiting) = loads.get_mut(&key) {
-                waiting.push((request, done));
-                return;
-            }
-            // Recheck while holding the fetch registry lock: a previous load
-            // may have initialized the index between the checks.
-            if worker.has_data(&request) {
-                drop(loads);
-                self.executor.spawn(Box::new(move || {
-                    let encoding = request.encoding;
-                    glyphs.complete(worker, Arc::default(), encoding, request, done);
-                }));
-                return;
-            }
-            let TileLocation::Url(url) = &request.location else {
-                done(Err("GeoJSON source requires a document URL".into()));
-                return;
-            };
-            let url = url.clone();
-            loads.insert(key, vec![(request, done)]);
-            drop(loads);
-            let loads = Arc::clone(&self.geojson_loads);
-            let executor = Arc::clone(&self.executor);
-            self.fetch.get(
-                &url,
-                Box::new(move |fetched| {
-                    executor.spawn(Box::new(move || {
-                        // Initialize the index before removing the in-flight
-                        // entry, without holding the registry during CPU work.
-                        let (request, done) = loads
-                            .lock()
-                            .expect("GeoJSON loads poisoned")
-                            .get_mut(&key)
-                            .expect("registered fetch")
-                            .pop()
-                            .expect("first request");
-                        let fetched = fetched.map(Arc::new).map_err(|e| e.to_string());
-                        let build = |request: TileRequest, done: TileDone, bytes| match &fetched {
-                            Ok(_) => glyphs.complete(
-                                Arc::clone(&worker),
-                                bytes,
-                                request.encoding,
-                                request,
-                                done,
-                            ),
-                            Err(e) => done(Err(e.clone())),
-                        };
-                        build(request, done, fetched.clone().unwrap_or_default());
-                        let waiting = loads
-                            .lock()
-                            .expect("GeoJSON loads poisoned")
-                            .remove(&key)
-                            .expect("registered fetch");
-                        // The index is built: later requests ignore bytes.
-                        for (request, done) in waiting {
-                            build(request, done, Arc::default());
-                        }
-                    }));
-                }),
-            );
-            return;
-        }
-        let executor = Arc::clone(&self.executor);
-        if let Some(kind) = worker.image_kind(request.source) {
-            let decode = Arc::clone(&self.decode);
-            let dem_unpack = request.dem_unpack;
-            self.loader.load(
-                request.location,
-                request.tile,
-                request.encoding,
-                Box::new(move |fetched| match fetched {
-                    Ok((bytes, _)) if bytes.is_empty() => done(Ok(TileResult::default())),
-                    // DEM tiles are data: the core decodes them exactly.
-                    Ok((bytes, _)) if kind == ImageKind::Dem => {
-                        executor.spawn(Box::new(move || {
-                            done(
-                                orb_host::decode_image(&bytes)
-                                    .and_then(|i| image_result(kind, i, dem_unpack)),
-                            );
-                        }))
-                    }
-                    Ok((bytes, _)) => executor.spawn(Box::new(move || {
-                        decode.decode(
-                            bytes,
-                            Box::new(move |decoded| {
-                                done(decoded.and_then(|i| image_result(kind, i, dem_unpack)))
-                            }),
+        let (decode, executor) = (Arc::clone(&self.decode), Arc::clone(&self.executor));
+        let dem_unpack = request.dem_unpack;
+        self.host.load(
+            request,
+            Box::new(move |loaded| match loaded {
+                Ok(crate::Loaded::Tile(build)) => done(Ok(build.into())),
+                Ok(crate::Loaded::Missing) => done(Ok(TileResult {
+                    missing: true,
+                    ..TileResult::default()
+                })),
+                // DEM tiles are data: the core decodes them exactly.
+                Ok(crate::Loaded::Image { bytes, kind }) if kind == ImageKind::Dem => executor
+                    .spawn(Box::new(move || {
+                        done(
+                            orb_host::decode_image(&bytes)
+                                .and_then(|i| image_result(kind, i, dem_unpack)),
                         );
                     })),
-                    Err(e) => done(Err(e).or_else(missing)),
-                }),
-            );
-            return;
-        }
-        let data_tile = request.data_tile();
-        self.loader.load(
-            request.location.clone(),
-            data_tile,
-            request.encoding,
-            Box::new(move |fetched| {
-                executor.spawn(Box::new(move || match fetched {
-                    Ok((bytes, encoding)) => {
-                        glyphs.complete(worker, Arc::new(bytes), encoding, request, done)
-                    }
-                    Err(e) => done(Err(e).or_else(missing)),
-                }));
+                Ok(crate::Loaded::Image { bytes, kind }) => executor.spawn(Box::new(move || {
+                    decode.decode(
+                        bytes,
+                        Box::new(move |decoded| {
+                            done(decoded.and_then(|i| image_result(kind, i, dem_unpack)))
+                        }),
+                    );
+                })),
+                Err(e) => done(Err(e)),
             }),
         );
-    }
-}
-
-impl PoolJobs {
-    fn worker(&self, style: u64) -> Option<Arc<TileWorker>> {
-        self.styles
-            .lock()
-            .expect("styles poisoned")
-            .iter()
-            .find(|(id, _)| *id == style)
-            .map(|(_, w)| Arc::clone(w))
-    }
-
-    /// [`Jobs::features`]: from the cached frame, or the tile fetched again.
-    fn query(&self, request: crate::FeatureRequest, done: crate::FeaturesDone) {
-        let Some(worker) = self.worker(request.tile.style) else {
-            done(Err(format!("style {} was replaced", request.tile.style)));
-            return;
-        };
-        let executor = Arc::clone(&self.executor);
-        if worker.has_data(&request.tile) {
-            executor.spawn(Box::new(move || {
-                done(worker.features(&[], request.tile.encoding, &request));
-            }));
-            return;
-        }
-        let tile = &request.tile;
-        self.loader.load(
-            tile.location.clone(),
-            tile.data_tile(),
-            tile.encoding,
-            Box::new(move |fetched| {
-                executor.spawn(Box::new(move || match fetched {
-                    Ok((bytes, encoding)) => done(worker.features(&bytes, encoding, &request)),
-                    Err(FetchError::NotFound) => done(Ok(Vec::new())),
-                    Err(e) => done(Err(e.to_string())),
-                }));
-            }),
-        );
-    }
-}
-
-/// A tile the source doesn't have (HTTP 404) is [`TileResult::missing`];
-/// other fetch errors are errors.
-fn missing(error: FetchError) -> Result<TileResult, String> {
-    match error {
-        FetchError::NotFound => Ok(TileResult {
-            missing: true,
-            ..TileResult::default()
-        }),
-        e => Err(e.to_string()),
     }
 }
 
@@ -2071,7 +1719,7 @@ pub(crate) mod tests {
         fn release(&self) {
             let held = std::mem::take(&mut *self.held.lock().unwrap());
             for (path, done) in held {
-                done(std::fs::read(path).map_err(|_| FetchError::NotFound));
+                done(std::fs::read(path).map_err(|_| orb_host::FetchError::NotFound));
             }
         }
     }
@@ -2087,7 +1735,7 @@ pub(crate) mod tests {
             if url.contains("/glyphs/") {
                 self.held.lock().unwrap().push((path, done));
             } else {
-                done(std::fs::read(path).map_err(|_| FetchError::NotFound));
+                done(std::fs::read(path).map_err(|_| orb_host::FetchError::NotFound));
             }
         }
     }

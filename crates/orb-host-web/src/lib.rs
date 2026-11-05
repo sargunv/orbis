@@ -376,6 +376,10 @@ impl orb_host::FontFiles for ShaperFiles {
         wasm_bindgen_futures::spawn_local(async move { ready(Self::load().await) });
     }
 
+    fn is_open(&self, url: &str) -> bool {
+        Self::is_open(url)
+    }
+
     fn open(&self, url: &str, bytes: &[u8]) -> Result<(), String> {
         Self::call("open", &[url.into(), Uint8Array::from(bytes).into()])?;
         SHAPER_OPEN.with(|o| o.borrow_mut().insert(url.to_string()));

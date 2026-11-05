@@ -202,6 +202,8 @@ pub trait FontFiles: Send + Sync + std::fmt::Debug {
     /// Opens the file `url`'s bytes; an error if they aren't a font this
     /// can read.
     fn open(&self, url: &str, bytes: &[u8]) -> Result<(), String>;
+    /// Whether `url` is open here: a raster job for it needs no fetch.
+    fn is_open(&self, url: &str) -> bool;
     /// `text` shaped with the open file `url` and measured as
     /// [`LocalGlyphs::measure`] measures it, at 48 px.
     fn measure(&self, url: &str, text: &str) -> TextMetrics;
@@ -232,6 +234,10 @@ impl FontFileFaces {
 impl FontFiles for FontFileFaces {
     fn open(&self, url: &str, bytes: &[u8]) -> Result<(), String> {
         self.files().open(url, bytes)
+    }
+
+    fn is_open(&self, url: &str) -> bool {
+        self.files().is_open(url)
     }
 
     fn measure(&self, url: &str, text: &str) -> TextMetrics {

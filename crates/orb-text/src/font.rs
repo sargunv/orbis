@@ -283,6 +283,11 @@ impl Files {
         Ok(())
     }
 
+    /// Whether `url` is open.
+    pub fn is_open(&self, url: &str) -> bool {
+        self.faces.contains_key(url)
+    }
+
     fn drawn(&mut self, url: &str, text: &str) -> Option<&Drawn> {
         let cached = self
             .last

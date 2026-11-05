@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use orb_host::{Fetch, FetchError, Storage};
+use orb_host::{Fetch, Storage};
 use orb_host_web::{OpfsStorage, WebFetch};
 use orb_runtime::offline::{self, RegionDefinition, RegionEvent, RegionFetch};
 use wasm_bindgen::prelude::*;
@@ -23,14 +23,6 @@ thread_local! {
 /// What this context's maps and tile jobs fetch through.
 pub(crate) fn service() -> Arc<dyn Fetch> {
     FETCH.with(|f| f.clone())
-}
-
-/// A fetch through the regions.
-pub(crate) async fn fetch(url: &str) -> Result<Vec<u8>, FetchError> {
-    let (tx, rx) = futures_channel::oneshot::channel();
-    service().get(url, Box::new(move |r| drop(tx.send(r))));
-    rx.await
-        .unwrap_or_else(|_| Err(FetchError::Network("fetch dropped".into())))
 }
 
 /// Reads the regions again, after another context changed them.
