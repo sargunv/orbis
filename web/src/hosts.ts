@@ -73,7 +73,17 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
       (worker: number, message: unknown) => ports[worker].postMessage(message),
       (message: unknown, transfer: Transferable[]) => placement.postMessage(message, transfer));
     placement.onmessage = receive((data) => core.receivePlacement(data));
-    for (const port of ports) port.onmessage = receive((data) => core.receiveJob(data));
+    // A job worker whose wasm trapped says so and closes; one that dies
+    // fires `error`. Either way its requests fail and are retried on the
+    // others.
+    ports.forEach((port, i) => {
+      port.onmessage = receive((data) => {
+        const lost = (data as { lost?: string }).lost;
+        if (lost !== undefined) core.jobWorkerLost(i, lost);
+        else core.receiveJob(data);
+      });
+      workers[i].addEventListener("error", (e) => { e.preventDefault(); core.jobWorkerLost(i, e.message || "the worker died"); });
+    });
     const regions = onRegionsChanged(reload);
     callbacks.setup(core);
     return { core, stop: () => { regions(); for (const w of workers) w.terminate(); core.free(); } };

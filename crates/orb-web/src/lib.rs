@@ -690,6 +690,13 @@ impl OrbisMap {
         self.worker_jobs.receive(self.canvas.gpu(), reply)
     }
 
+    /// Job worker `worker` is lost (its wasm trapped, or it died): the
+    /// requests it had fail and are retried on the others.
+    #[wasm_bindgen(js_name = jobWorkerLost)]
+    pub fn job_worker_lost(&mut self, worker: u32, why: &str) {
+        self.worker_jobs.lost(worker, why);
+    }
+
     /// Completes a placement with the placement worker's reply.
     #[wasm_bindgen(js_name = receivePlacement)]
     pub fn receive_placement(&mut self, reply: &JsValue) -> Result<(), JsError> {

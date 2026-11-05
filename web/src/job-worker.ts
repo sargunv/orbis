@@ -17,6 +17,16 @@ self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAs
   jobs.setWordDataUrl(new URL("../pkg/seasia.bin", import.meta.url).href);
   // Styles with `font-faces` draw their files with shaper.wasm.
   jobs.setShaperLoader(loadShaper);
+  // A trap (a Rust panic) leaves the wasm unusable: the worker says it is
+  // lost and closes, and the map fails and retries what it had here.
+  const trapped = (e: unknown) => {
+    if (!(e instanceof WebAssembly.RuntimeError)) return false;
+    port.postMessage({ lost: e.message });
+    self.close();
+    return true;
+  };
+  self.addEventListener("unhandledrejection", (e) => { if (trapped(e.reason)) e.preventDefault(); });
+  self.addEventListener("error", (e) => { if (trapped(e.error)) e.preventDefault(); });
   port.onmessage = async ({ data }) => {
     try {
       const reply = await jobs.receive(data);
@@ -24,7 +34,7 @@ self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAs
     } catch (e) {
       // Requests with an id reply with their failure; this is a malformed
       // message or a style update that didn't apply.
-      console.error(e);
+      if (!trapped(e)) console.error(e);
     }
   };
 };

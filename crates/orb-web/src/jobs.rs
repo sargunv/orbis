@@ -11,7 +11,9 @@
 //! header into wasm memory; the payload goes from the buffer to the GPU.
 //! A tile, its relayouts and its queries go to job worker
 //! `hash(source, tile) mod N`, which has its data; a glyph unit to its
-//! owner worker.
+//! owner worker. A worker that is lost (its wasm trapped, or it died) fails
+//! the requests it had, which the map retries, and its share goes to the
+//! next worker on.
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -67,6 +69,10 @@ struct State {
     features: HashMap<u32, orb_runtime::FeaturesDone>,
     models: HashMap<u32, orb_runtime::model::ModelDone>,
     answers: HashMap<u32, orb_runtime::QueryDone>,
+    /// The worker each request went to, until it answers.
+    sent_to: HashMap<u32, u32>,
+    /// Workers lost.
+    lost: Vec<bool>,
     /// Bytes of packed headers copied into this worker's wasm memory.
     header_bytes: u64,
     /// Replies received.
@@ -84,10 +90,14 @@ impl WorkerJobs {
     /// Map `map`'s jobs on `workers` job workers, reached through `post`.
     pub(crate) fn new(map: u32, workers: u32, post: js_sys::Function) -> Arc<Self> {
         POSTS.with(|posts| posts.borrow_mut().insert(map, post));
+        let workers = workers.max(1);
         Arc::new(Self {
             map,
-            workers: workers.max(1),
-            state: Mutex::new(State::default()),
+            workers,
+            state: Mutex::new(State {
+                lost: vec![false; workers as usize],
+                ..State::default()
+            }),
         })
     }
 
@@ -119,8 +129,48 @@ impl WorkerJobs {
             .map_err(|_| JsError::new("job reply without a message"))?;
         let message: JobReply = wire::decode(&message.to_vec()).map_err(|e| JsError::new(&e))?;
         let buffer = field(reply, "buffer").dyn_into::<ArrayBuffer>().ok();
+        self.complete(Some(gpu), message, buffer, reply)
+    }
+
+    /// Job worker `worker` is lost: the requests it had fail, and the next
+    /// worker on takes its share.
+    pub(crate) fn lost(&self, worker: u32, why: &str) {
+        let ids: Vec<u32> = {
+            let mut state = self.state.lock().expect("jobs poisoned");
+            let Some(lost) = state.lost.get_mut(worker as usize) else {
+                return;
+            };
+            *lost = true;
+            state
+                .sent_to
+                .iter()
+                .filter(|&(_, &w)| w == worker)
+                .map(|(&id, _)| id)
+                .collect()
+        };
+        for id in ids {
+            let message = format!("job worker {worker} lost: {why}");
+            let _ = self.complete(
+                None,
+                JobReply::Error { id, message },
+                None,
+                &JsValue::UNDEFINED,
+            );
+        }
+    }
+
+    /// Completes the request `message` answers; tile and image replies
+    /// register their buffers with `gpu`.
+    fn complete(
+        &self,
+        gpu: Option<&mut dyn crate::canvas::WebGpu>,
+        message: JobReply,
+        buffer: Option<ArrayBuffer>,
+        reply: &JsValue,
+    ) -> Result<(), JsError> {
         let id = message.id();
         let mut state = self.state.lock().expect("jobs poisoned");
+        state.sent_to.remove(&id);
         if let Some(done) = state.features.remove(&id) {
             drop(state);
             done(match message {
@@ -192,8 +242,11 @@ impl WorkerJobs {
                 })
             }
             JobReply::Image { .. } => {
-                match field(reply, "image").dyn_into::<web_sys::ImageBitmap>() {
-                    Ok(bitmap) => Ok(TileResult {
+                match (
+                    field(reply, "image").dyn_into::<web_sys::ImageBitmap>(),
+                    gpu,
+                ) {
+                    (Ok(bitmap), Some(gpu)) => Ok(TileResult {
                         image: Some(TileImage {
                             width: bitmap.width(),
                             height: bitmap.height(),
@@ -201,11 +254,11 @@ impl WorkerJobs {
                         }),
                         ..TileResult::default()
                     }),
-                    Err(_) => Err("image reply without a bitmap".into()),
+                    _ => Err("image reply without a bitmap".into()),
                 }
             }
-            JobReply::Tile { .. } => match buffer {
-                Some(buffer) => {
+            JobReply::Tile { .. } => match (buffer, gpu) {
+                (Some(buffer), Some(gpu)) => {
                     let header = header_bytes(&buffer);
                     if let Ok(header) = &header {
                         state.header_bytes += header.len() as u64;
@@ -219,7 +272,7 @@ impl WorkerJobs {
                         result
                     })
                 }
-                None => Err("tile reply without a buffer".into()),
+                _ => Err("tile reply without a buffer".into()),
             },
             JobReply::Error { message, .. } => Err(message),
             _ => Err("malformed job reply".into()),
@@ -253,93 +306,108 @@ fn header_bytes(buffer: &ArrayBuffer) -> Result<Vec<u8>, String> {
     Ok(packed_header(&prefix)?.to_vec())
 }
 
+/// The first worker not lost from `preferred` on, if any is left.
+fn route(lost: &[bool], preferred: u32) -> Option<u32> {
+    let n = lost.len() as u32;
+    (0..n)
+        .map(|i| (preferred + i) % n)
+        .find(|&w| !lost[w as usize])
+}
+
 impl WorkerJobs {
-    /// A request's id, its done kept by `keep`.
-    fn next_id(&self, keep: impl FnOnce(&mut State, u32)) -> u32 {
+    /// Sends the request `make` builds with its id to the worker
+    /// `preferred` routes to, its done kept by `keep`. With every worker
+    /// lost, the request fails at once.
+    fn send(
+        &self,
+        preferred: u32,
+        keep: impl FnOnce(&mut State, u32),
+        make: impl FnOnce(u32) -> JobRequest,
+    ) {
         let mut state = self.state.lock().expect("jobs poisoned");
         let id = state.next_id;
         state.next_id = id.wrapping_add(1);
         keep(&mut state, id);
-        id
+        let Some(worker) = route(&state.lost, preferred) else {
+            drop(state);
+            let message = "every job worker was lost".to_string();
+            let _ = self.complete(
+                None,
+                JobReply::Error { id, message },
+                None,
+                &JsValue::UNDEFINED,
+            );
+            return;
+        };
+        state.sent_to.insert(id, worker);
+        drop(state);
+        self.post(worker, &bytes(&wire::encode(&make(id))));
+    }
+
+    /// Posts `message` to every worker not lost.
+    fn broadcast(&self, message: &JsValue) {
+        let lost = self.state.lock().expect("jobs poisoned").lost.clone();
+        for worker in (0..self.workers).filter(|&w| !lost[w as usize]) {
+            self.post(worker, message);
+        }
     }
 }
 
 impl Jobs for WorkerJobs {
     fn set_style(&self, style: u64, update: &StyleUpdate, _: &Arc<TileWorker>) {
-        let message = bytes(&wire::encode(&JobRequest::Style {
+        self.broadcast(&bytes(&wire::encode(&JobRequest::Style {
             style,
             update: Box::new(update.clone()),
-        }));
-        for worker in 0..self.workers {
-            self.post(worker, &message);
-        }
+        })));
     }
 
     fn set_icons(&self, style: u64, icons: &Arc<SpriteIcons>, _: &Arc<TileWorker>) {
-        let message = bytes(&wire::encode(&JobRequest::Icons {
+        self.broadcast(&bytes(&wire::encode(&JobRequest::Icons {
             style,
             icons: (**icons).clone(),
-        }));
-        for worker in 0..self.workers {
-            self.post(worker, &message);
-        }
+        })));
     }
 
     fn raster(&self, request: GlyphRaster, done: RasterDone) {
-        let id = self.next_id(|state, id| {
-            state.rasters.insert(id, done);
-        });
         // A unit's owner worker rasterizes it (plan §7.3 affinity).
-        let worker = request.owner(self.workers);
-        self.post(
-            worker,
-            &bytes(&wire::encode(&JobRequest::Raster { id, request })),
+        self.send(
+            request.owner(self.workers),
+            |state, id| drop(state.rasters.insert(id, done)),
+            |id| JobRequest::Raster { id, request },
         );
     }
 
     fn load(&self, request: TileRequest, done: TileDone) {
-        let id = self.next_id(|state, id| {
-            state.pending.insert(id, done);
-        });
-        let worker = owner(request.source, request.tile, self.workers);
-        self.post(
-            worker,
-            &bytes(&wire::encode(&JobRequest::Load { id, request })),
+        self.send(
+            owner(request.source, request.tile, self.workers),
+            |state, id| drop(state.pending.insert(id, done)),
+            |id| JobRequest::Load { id, request },
         );
     }
 
     fn features(&self, request: orb_runtime::FeatureRequest, done: orb_runtime::FeaturesDone) {
-        let id = self.next_id(|state, id| {
-            state.features.insert(id, done);
-        });
-        let worker = owner(request.tile.source, request.tile.tile, self.workers);
-        self.post(
-            worker,
-            &bytes(&wire::encode(&JobRequest::Features { id, request })),
+        self.send(
+            owner(request.tile.source, request.tile.tile, self.workers),
+            |state, id| drop(state.features.insert(id, done)),
+            |id| JobRequest::Features { id, request },
         );
     }
 
     fn model(&self, url: String, done: orb_runtime::model::ModelDone) {
-        let id = self.next_id(|state, id| {
-            state.models.insert(id, done);
-        });
         let mut hasher = DefaultHasher::new();
         url.hash(&mut hasher);
-        let worker = (hasher.finish() % u64::from(self.workers)) as u32;
-        self.post(
-            worker,
-            &bytes(&wire::encode(&JobRequest::Model { id, url })),
+        self.send(
+            (hasher.finish() % u64::from(self.workers)) as u32,
+            |state, id| drop(state.models.insert(id, done)),
+            |id| JobRequest::Model { id, url },
         );
     }
 
     fn cluster(&self, request: orb_runtime::ClusterRequest, done: orb_runtime::QueryDone) {
-        let id = self.next_id(|state, id| {
-            state.answers.insert(id, done);
-        });
-        let worker = owner(request.tile.source, request.tile.tile, self.workers);
-        self.post(
-            worker,
-            &bytes(&wire::encode(&JobRequest::Cluster { id, request })),
+        self.send(
+            owner(request.tile.source, request.tile.tile, self.workers),
+            |state, id| drop(state.answers.insert(id, done)),
+            |id| JobRequest::Cluster { id, request },
         );
     }
 }
