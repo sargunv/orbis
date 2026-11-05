@@ -840,10 +840,6 @@ impl<'a> Pass<'a> {
                         }
                     }
                 } else {
-                    let prev_anchor = self
-                        .prev
-                        .and_then(|prev| prev.variable_offsets.get(&id))
-                        .map(|o| o.anchor);
                     for mode in modes {
                         if mode == WritingMode::Vertical && placed.is_some_and(|b| b.placeable) {
                             break;
@@ -880,7 +876,6 @@ impl<'a> Pass<'a> {
                             } else {
                                 SymbolWritingMode::None
                             },
-                            prev_anchor,
                             &mut shift,
                         );
                         placed = result;
@@ -1062,28 +1057,24 @@ impl<'a> Pass<'a> {
         icon_box: Option<CollisionBox>,
         // The orientation to record, or `None`.
         orientation: SymbolWritingMode,
-        mut prev_anchor: Option<Anchor>,
         shift_out: &mut Option<Point>,
     ) -> Option<PlacedBox> {
         let width = text_box.x2 - text_box.x1;
         let height = text_box.y2 - text_box.y1;
         let scale = f64::from(instance.text_box_scale);
-        let mut passes = if p.text_overlap == Overlap::Never {
+        // GL JS tries each label's previous anchor first, so where a label
+        // stands depends on the placements before it. Orbis tries anchors in
+        // the style's order: a frame's labels depend on its camera alone.
+        let passes = if p.text_overlap == Overlap::Never {
             1
         } else {
             2
         };
-        if prev_anchor.is_some() {
-            passes += 1;
-        }
         let mut overlap = Overlap::Never;
         let mut placed = None;
         for _ in 0..passes {
             for o in offsets {
                 let anchor = o.text_anchor();
-                if prev_anchor.is_some_and(|a| a != anchor) {
-                    continue;
-                }
                 let text_offset = o.offset.map(f64::from);
                 let shift = layout_shift(anchor, width, height, text_offset, scale);
                 let result =
@@ -1116,11 +1107,7 @@ impl<'a> Pass<'a> {
                     return placed;
                 }
             }
-            if prev_anchor.is_some() {
-                prev_anchor = None;
-            } else {
-                overlap = p.text_overlap;
-            }
+            overlap = p.text_overlap;
         }
         placed
     }
