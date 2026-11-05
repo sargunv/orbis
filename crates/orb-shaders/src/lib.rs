@@ -147,6 +147,8 @@ mod tests {
             TERRAIN_STACK_SHADER,
             EXTRUSION_SHADER,
             EXTRUSION_COMPOSITE_SHADER,
+            OCCLUSION_SHADERS[0],
+            OCCLUSION_SHADERS[1],
             FILL_SHADER,
             FILL_OUTLINE_SHADER,
             LINE_SHADER,

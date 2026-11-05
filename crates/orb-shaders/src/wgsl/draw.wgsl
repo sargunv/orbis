@@ -8,11 +8,12 @@
 // 0, the far plane, without terrain.
 @group(0) @binding(15) var terrain_depth: texture_2d<f32>;
 
-// How much of a point at `clip` shows past the terrain in front of it, 0
-// to 1: GL JS's `calculate_visibility`. Partly hidden points average with
-// a point just above them.
+// How much of a point at `clip` shows past the terrain in front of it, or
+// with `symbol-occlusion` the 3D layers too (the depth in `terrain_depth`;
+// a texel when there is neither), 0 to 1: GL JS's `calculate_visibility`.
+// Partly hidden points average with a point just above them.
 fn terrain_visibility(clip: vec4<f32>) -> f32 {
-    if frame.terrain_exaggeration == 0.0 || clip.w <= 0.0 {
+    if textureDimensions(terrain_depth).x <= 1u || clip.w <= 0.0 {
         return 1.0;
     }
     let ndc = clip.xyz / clip.w;

@@ -249,6 +249,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         globe: doc.get("projection").and_then(|p| parse_globe(cx, p)),
         projection: None,
         tile_matrix_sets: Vec::new(),
+        symbol_occlusion: false,
         state,
         atmosphere: doc
             .get("sky")

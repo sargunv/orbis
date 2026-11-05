@@ -327,6 +327,7 @@ impl TileWorker {
             globe: None,
             projection: None,
             tile_matrix_sets: Vec::new(),
+            symbol_occlusion: false,
             state: Vec::new(),
             sources,
             layers,

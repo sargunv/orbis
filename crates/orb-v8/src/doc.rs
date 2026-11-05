@@ -50,11 +50,13 @@ struct Decoration {
     tile_matrix_sets: Vec<(String, orb_crs::TileMatrixSet)>,
     lights: Option<Lights>,
     atmosphere: Option<Atmosphere>,
+    symbol_occlusion: bool,
 }
 
 impl Decoration {
     fn apply(&self, mut scene: Scene) -> Scene {
         scene.projection = self.projection;
+        scene.symbol_occlusion = self.symbol_occlusion;
         scene.globe = self.globe.or(scene.globe);
         scene.tile_matrix_sets = self.tile_matrix_sets.clone();
         if let Some(lights) = &self.lights {
@@ -191,6 +193,7 @@ impl StyleDoc {
             tile_matrix_sets: scene.sources.clone(),
             lights: scene.lights.clone(),
             atmosphere: scene.atmosphere.clone(),
+            symbol_occlusion: scene.symbol_occlusion,
         });
         doc.style = Arc::new(doc.decoration.apply((*doc.style).clone()));
         Ok(doc)

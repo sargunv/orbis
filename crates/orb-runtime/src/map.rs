@@ -514,6 +514,8 @@ pub struct Map {
     /// A scene document whose style is loading, which the style parses
     /// under (models resolved against the scene).
     pending_scene: Option<orb_v8::SceneDocument>,
+    /// Compat's lack of `symbol-occlusion` was reported.
+    occlusion_warned: bool,
     /// The first frame's time: frames' time counts from it (decision 0042:
     /// fades, transitions and the shaders' time run on frame time).
     born: Option<f64>,
@@ -745,6 +747,7 @@ impl Map {
             terrain_seen: 0,
             surface,
             pending_scene: None,
+            occlusion_warned: false,
             transitions: Default::default(),
             style_request: 0,
             generation: 0,
@@ -1555,6 +1558,15 @@ impl Map {
             }),
             globe,
         };
+        let occluded = scene.as_deref().is_some_and(|s| s.symbol_occlusion);
+        if occluded
+            && gpu.caps().tier == orb_hal::Tier::Compat
+            && !std::mem::replace(&mut self.occlusion_warned, true)
+        {
+            self.warnings
+                .push("symbol-occlusion: Compat hides labels behind the terrain alone".into());
+        }
+        renderer.set_symbol_occlusion(gpu, occluded);
         report.frame = renderer.render(gpu, &frame, target, clear);
         // A frame that left something out for a compiling pipeline isn't
         // complete (plan §8.4).

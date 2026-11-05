@@ -18,6 +18,8 @@ pub(crate) struct Extrusions {
     depth: Option<TextureId>,
     size: [u32; 2],
     single_layer: bool,
+    /// The depth is kept and read after the 3D passes (`occlusion`).
+    sampled: bool,
 }
 #[derive(Debug, Default)]
 pub(crate) struct NodeExtrusion {
@@ -73,6 +75,7 @@ impl Extrusions {
             depth: None,
             size: [0; 2],
             single_layer: false,
+            sampled: false,
         }
     }
     /// Makes the composite and the pipeline at the current sample count,
@@ -154,7 +157,7 @@ impl Extrusions {
     /// The depth 3D passes share, once a resize made it, and how its
     /// passes store it: a single pass's is transient.
     pub(crate) fn depth(&self) -> Option<(TextureId, StoreOp)> {
-        let store = if self.single_layer {
+        let store = if self.single_layer && !self.sampled {
             StoreOp::Discard
         } else {
             StoreOp::Store
@@ -179,7 +182,9 @@ impl Extrusions {
             dimension: TextureViewDimension::D2,
             format: TextureFormat::Depth32Float,
             usage: TextureUsages::RENDER_ATTACHMENT
-                | if count == 1 {
+                | if self.sampled {
+                    TextureUsages::TEXTURE_BINDING
+                } else if count == 1 {
                     TextureUsages::TRANSIENT_ATTACHMENT
                 } else {
                     TextureUsages::empty()
@@ -191,6 +196,17 @@ impl Extrusions {
         self.single_layer = count == 1;
         true
     }
+    /// Keeps the depth for reading after the 3D passes, or lets a single
+    /// pass's be transient; whether that changed (it's made again).
+    pub(crate) fn set_sampled(&mut self, sampled: bool) -> bool {
+        if sampled == self.sampled {
+            return false;
+        }
+        self.sampled = sampled;
+        self.size = [0; 2];
+        true
+    }
+
     pub(crate) fn release(gpu: &mut dyn Gpu, node: NodeExtrusion) {
         if let Some(bundle) = node.bundle {
             gpu.destroy_render_bundle(bundle);
@@ -323,11 +339,7 @@ impl Extrusions {
                 load: LoadOp::Clear([0.0; 4]),
             },
             depth: Some(DepthAttachment {
-                store: if self.single_layer {
-                    StoreOp::Discard
-                } else {
-                    StoreOp::Store
-                },
+                store: self.depth().expect("sized").1,
                 target: self.depth.unwrap(),
                 load: if first {
                     LoadOp::Clear(0.0)

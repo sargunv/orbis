@@ -114,6 +114,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
         globe: old.globe,
         projection: old.projection,
         tile_matrix_sets: old.tile_matrix_sets.clone(),
+        symbol_occlusion: old.symbol_occlusion,
         state: old.state.clone(),
         sources: Vec::new(),
         layers: Vec::new(),

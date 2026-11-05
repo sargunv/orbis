@@ -779,10 +779,16 @@ mod web {
                                         "unfilterable-float"
                                     }
                                     TextureSampleType::Uint => "uint",
+                                    TextureSampleType::Depth
+                                    | TextureSampleType::DepthMultisampled => "depth",
                                 }
                                 .into(),
                             ),
                             ("viewDimension", dimension(d).into()),
+                            (
+                                "multisampled",
+                                (sample == TextureSampleType::DepthMultisampled).into(),
+                            ),
                         ]),
                     ),
                     BindingType::Sampler { filtering } => (

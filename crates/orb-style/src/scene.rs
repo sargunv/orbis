@@ -57,6 +57,9 @@ pub struct Scene {
     /// Sources' tile matrix sets by source id (the scene document's); the
     /// rest use `WebMercatorQuad`, GeoJSON the plane's own.
     pub tile_matrix_sets: Vec<(String, orb_crs::TileMatrixSet)>,
+    /// Symbols and circles are hidden by 3D layers as well as by the
+    /// terrain (the scene document's `symbol-occlusion`).
+    pub symbol_occlusion: bool,
     pub sources: Vec<std::sync::Arc<Source>>,
     /// Shared, so a snapshot that changes some layers (an edit, a frame's
     /// transitions) copies only those.

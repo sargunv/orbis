@@ -126,9 +126,12 @@ pub(crate) fn bind_group_layout_entry(entry: &BindGroupLayoutEntry) -> wgpu::Bin
                         wgpu::TextureSampleType::Float { filterable }
                     }
                     TextureSampleType::Uint => wgpu::TextureSampleType::Uint,
+                    TextureSampleType::Depth | TextureSampleType::DepthMultisampled => {
+                        wgpu::TextureSampleType::Depth
+                    }
                 },
                 view_dimension: view_dimension(dimension),
-                multisampled: false,
+                multisampled: sample == TextureSampleType::DepthMultisampled,
             },
             BindingType::Sampler { filtering } => wgpu::BindingType::Sampler(if filtering {
                 wgpu::SamplerBindingType::Filtering

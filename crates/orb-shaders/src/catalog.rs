@@ -315,6 +315,30 @@ pub const EXTRUSION_SHADER: Shader = Shader {
     fragment: "fs_extrusion",
     compute: "",
 };
+/// The 3D depth resolved for the symbols it hides, from one sample and
+/// from several.
+pub const OCCLUSION_SHADERS: [Shader; 2] = [
+    Shader {
+        label: "occlusion",
+        parts: &[
+            include_str!("wgsl/occlusion.wgsl"),
+            include_str!("wgsl/occlusion_single.wgsl"),
+        ],
+        vertex: "vs_occlusion",
+        fragment: "fs_occlusion",
+        compute: "",
+    },
+    Shader {
+        label: "occlusion multisampled",
+        parts: &[
+            include_str!("wgsl/occlusion.wgsl"),
+            include_str!("wgsl/occlusion_multi.wgsl"),
+        ],
+        vertex: "vs_occlusion",
+        fragment: "fs_occlusion",
+        compute: "",
+    },
+];
 pub const EXTRUSION_COMPOSITE_SHADER: Shader = Shader {
     label: "extrusion composite",
     parts: &[

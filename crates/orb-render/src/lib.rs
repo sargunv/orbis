@@ -23,6 +23,7 @@ mod extrusion;
 mod heatmap;
 mod image;
 mod layer_composite;
+mod occlusion;
 mod paint;
 mod terrain;
 mod tiles;
@@ -237,6 +238,8 @@ pub struct Renderer {
     images: image::Images,
     heatmaps: heatmap::Heatmaps,
     extrusions: extrusion::Extrusions,
+    /// The 3D depth resolved for the symbols it hides, when they are.
+    occlusion: occlusion::Occlusion,
     /// Layers drawn whole and composited at their layer opacity.
     composites: layer_composite::LayerComposites,
     /// Made for the first terrain.
@@ -480,6 +483,7 @@ impl Renderer {
         let heatmaps = heatmap::Heatmaps::new(gpu, target, draw_layout, node_layout);
         let composites = layer_composite::LayerComposites::new(gpu, target);
         let extrusions = extrusion::Extrusions::new(gpu, target, draw_layout, node_layout);
+        let occlusion = occlusion::Occlusion::new(gpu);
         let node_stride = NODE_UNIFORM_SIZE.max(u64::from(
             gpu.caps().limits.min_uniform_buffer_offset_alignment,
         ));
@@ -519,6 +523,7 @@ impl Renderer {
             heatmaps,
             composites,
             extrusions,
+            occlusion,
             terrain: None,
             drape_zooms: BTreeMap::new(),
             drape_pipelines: None,
@@ -1263,6 +1268,27 @@ impl Renderer {
         stats
     }
 
+    /// Whether a frame has 3D passes: extrusion layers or terrain.
+    fn has_3d(&self) -> bool {
+        self.nodes.iter().any(|n| n.extrusion.is_some())
+            || self.terrain.as_ref().is_some_and(terrain::Terrain::active)
+    }
+
+    /// Hides symbols and circles behind 3D layers as well as the terrain
+    /// (the scene document's `symbol-occlusion`).
+    /// Compat draws them over the terrain's depth alone.
+    pub fn set_symbol_occlusion(&mut self, gpu: &mut dyn Gpu, enabled: bool) {
+        let enabled = enabled && gpu.caps().tier == Tier::Modern;
+        if enabled == self.occlusion.enabled {
+            return;
+        }
+        self.occlusion.enabled = enabled;
+        if !enabled {
+            self.occlusion.release(gpu);
+        }
+        self.extrusions.set_sampled(enabled);
+    }
+
     /// Binds what the scene groups bind anew when it changed: the glyph
     /// pages grew into new textures, the terrain changed, or a scene pool
     /// moved into a larger buffer.
@@ -1272,10 +1298,17 @@ impl Renderer {
             .as_ref()
             .and_then(terrain::Terrain::dem_texture)
             .unwrap_or(self.no_dem);
+        // Symbols and circles read the 3D depth where it hides them, else
+        // the terrain's.
         let occlusion = self
-            .terrain
-            .as_ref()
-            .and_then(terrain::Terrain::occlusion_texture)
+            .occlusion
+            .texture()
+            .filter(|_| self.has_3d())
+            .or_else(|| {
+                self.terrain
+                    .as_ref()
+                    .and_then(terrain::Terrain::occlusion_texture)
+            })
             .unwrap_or(self.no_occlusion);
         let buffers = self.scene.buffers_revision();
         if self.glyphs.revision() != self.glyphs_bound
@@ -1374,6 +1407,11 @@ impl Renderer {
             if let Some(heatmap) = &mut self.nodes[i].heatmap {
                 resized |= self.heatmaps.resize(gpu, heatmap, uniform, density_size);
             }
+        }
+        if self.occlusion.resize(gpu, size) {
+            // Symbols' bundles bind the new texture.
+            self.bind_scene(gpu);
+            resized = true;
         }
         if resized {
             self.invalidate_bundle(gpu);
@@ -1590,6 +1628,14 @@ impl Renderer {
                 first = false;
                 stats.draws += 1;
             }
+        }
+        // The 3D depth, now complete, for the symbols it hides.
+        if self.has_3d()
+            && let Some((depth, _)) = self.extrusions.depth()
+            && let Some(pass) = self.occlusion.pass(gpu, depth, self.extrusions.samples)
+        {
+            passes.push(pass);
+            stats.draws += 1;
         }
         passes.extend(self.composites.passes());
         passes.extend(self.composites.main_passes(

@@ -47,6 +47,9 @@ pub struct SceneDocument {
     /// scene dialect with the style ([`crate::Dialect::Scene`]).
     pub models: Vec<(String, String)>,
     pub layers: Vec<AddedLayer>,
+    /// Symbols and circles are hidden by 3D layers as well as by the
+    /// terrain (`symbol-occlusion`).
+    pub symbol_occlusion: bool,
     pub warnings: Vec<crate::Diagnostic>,
 }
 
@@ -97,6 +100,7 @@ pub fn parse_scene(text: &str) -> Result<SceneDocument, Diagnostics> {
     let mut atmosphere = None;
     let mut models = Vec::new();
     let mut added = Vec::new();
+    let mut symbol_occlusion = false;
     for m in root {
         match m.key.as_str() {
             "$schema" => {}
@@ -148,6 +152,10 @@ pub fn parse_scene(text: &str) -> Result<SceneDocument, Diagnostics> {
             }
             "lights" => lights = Some(crate::lights::parse_lights(&mut cx, &m.value)),
             "layers" => emissive = crate::lights::parse_layers(&mut cx, &m.value),
+            "symbol-occlusion" => match m.value.as_bool() {
+                Some(b) => symbol_occlusion = b,
+                None => cx.error("symbol-occlusion", m.value.span, "expected a boolean"),
+            },
             "models" => {
                 for model in cx.object(&m.value, "models").unwrap_or_default() {
                     if let Some(url) = cx.string(&model.value, &format!("models.{}", model.key)) {
@@ -241,6 +249,7 @@ pub fn parse_scene(text: &str) -> Result<SceneDocument, Diagnostics> {
         atmosphere,
         models,
         layers: added,
+        symbol_occlusion,
         warnings: cx.diagnostics.warnings,
     })
 }

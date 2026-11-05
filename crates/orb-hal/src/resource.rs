@@ -239,8 +239,13 @@ pub enum BindingType {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextureSampleType {
-    Float { filterable: bool },
+    Float {
+        filterable: bool,
+    },
     Uint,
+    /// A depth texture read with `textureLoad`, of one sample or several.
+    Depth,
+    DepthMultisampled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
