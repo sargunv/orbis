@@ -3481,7 +3481,8 @@ impl Map {
                 .sources
                 .iter()
                 .any(|s| matches!(s, SourceState::Ready { loading, .. } if *loading > 0));
-            let mut grow = false;
+            // Under the budget the pools grow before cached tiles go.
+            let mut grow = pools_under(renderer, self.budget);
             let uploaded = loop {
                 match renderer.upload_image(gpu, &image_build, grow) {
                     Ok(handle) => break Ok(handle),
@@ -3562,7 +3563,10 @@ impl Map {
         // that runs out part way starts over, so making room one eviction
         // at a time would write the tile again for every tile evicted.
         let sizes = mesh_sizes(plan, &build);
-        let mut fits = renderer.fits(&sizes);
+        // Under the budget the pools grow before cached tiles go; past it,
+        // unused tiles make room first.
+        let mut fits = renderer.fits(&sizes)
+            || (pools_under(renderer, self.budget) && renderer.grow_for(gpu, &sizes));
         while !fits {
             let Some(victim) = evict_unused(&mut style.sources, source) else {
                 break;
@@ -4054,6 +4058,19 @@ fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize> {
             chunks: mesh.chunks.len() as u32,
         })
         .collect()
+}
+
+/// Whether the scene's pools and tables hold less than `budget` bytes: the
+/// pools grow for arriving tiles before cached ones go, and the cache is
+/// held to its share of the budget by `trim_cache`.
+fn pools_under(renderer: &Renderer, budget: u64) -> bool {
+    let m = renderer.memory();
+    let allocated = m.vertices.allocated
+        + m.indices.allocated
+        + m.compacted.allocated
+        + m.props.allocated
+        + m.tables;
+    allocated < budget
 }
 
 /// What a resident tile costs to keep: the GPU bytes of its meshes and its

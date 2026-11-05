@@ -112,8 +112,13 @@ otherwise lets a coarser tile stand in.
   candidate and visible lists grow when a layout outgrows them. The image
   atlas starts with one page and adds pages up to eight; a map hands its
   renderer the atlas's bindings each frame. Tokyo at z12, z15 and z16
-  pitched: 115.5 MB → 26–47 MB allocated, guarded by
+  pitched: 115.5 MB → 26–45 MB allocated, guarded by
   `crates/orb-api/tests/memory.rs`.
+  - Room for an arriving tile: while the pools hold less than the memory
+    budget they grow before cached tiles go, and `trim_cache` keeps the
+    cache to a quarter of the budget; past the budget, unused tiles make
+    room first (decision 0037's order). With pools that start small,
+    evicting first would have left no cache at all.
 
 ## Still to land
 

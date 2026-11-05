@@ -38,15 +38,12 @@ fn tokyo_takes_what_it_draws() {
         let report = map
             .render_until_idle(&mut target, Duration::from_secs(60))
             .unwrap();
-        let events: Vec<_> = std::iter::from_fn(|| map.poll_event()).collect();
+        let memory = report.memory;
+        assert!(report.tiles_drawn > 0, "z{zoom}: Tokyo draws");
         eprintln!(
-            "z{zoom} p{pitch}: drawn {} events {events:?}",
-            report.tiles_drawn
+            "z{zoom} pitch {pitch}: {:.1} MB allocated",
+            memory.allocated() as f64 / 1e6
         );
-        eprintln!(
-            "z{zoom} p{pitch}: {:#?} allocated {}",
-            report.memory,
-            report.memory.allocated()
-        );
+        assert!(memory.allocated() < 64 << 20, "z{zoom}: {memory:#?}");
     }
 }
