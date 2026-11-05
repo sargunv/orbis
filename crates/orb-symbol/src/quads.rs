@@ -121,54 +121,39 @@ pub(crate) fn icon_quads(
     let icon_height = bounds.y2 - icon_top;
 
     let make_box = |left: Cut, top: Cut, right: Cut, bottom: Cut| {
-        let left_em = em_offset(
-            left.stretch - stretch_offset_x,
-            stretch_content_width,
-            icon_width,
-            icon_left,
-        );
-        let left_px = px_offset(
-            left.fixed - fixed_offset_x,
-            fixed_content_width,
-            left.stretch,
-            stretch_width,
-        );
-        let top_em = em_offset(
-            top.stretch - stretch_offset_y,
-            stretch_content_height,
-            icon_height,
-            icon_top,
-        );
-        let top_px = px_offset(
-            top.fixed - fixed_offset_y,
-            fixed_content_height,
-            top.stretch,
-            stretch_height,
-        );
-        let right_em = em_offset(
-            right.stretch - stretch_offset_x,
-            stretch_content_width,
-            icon_width,
-            icon_left,
-        );
-        let right_px = px_offset(
-            right.fixed - fixed_offset_x,
-            fixed_content_width,
-            right.stretch,
-            stretch_width,
-        );
-        let bottom_em = em_offset(
-            bottom.stretch - stretch_offset_y,
-            stretch_content_height,
-            icon_height,
-            icon_top,
-        );
-        let bottom_px = px_offset(
-            bottom.fixed - fixed_offset_y,
-            fixed_content_height,
-            bottom.stretch,
-            stretch_height,
-        );
+        // A cut's em offset and pixel offset along x or y.
+        let x = |c: Cut| {
+            let em = em_offset(
+                c.stretch - stretch_offset_x,
+                stretch_content_width,
+                icon_width,
+                icon_left,
+            );
+            let px = px_offset(
+                c.fixed - fixed_offset_x,
+                fixed_content_width,
+                c.stretch,
+                stretch_width,
+            );
+            (em, px)
+        };
+        let y = |c: Cut| {
+            let em = em_offset(
+                c.stretch - stretch_offset_y,
+                stretch_content_height,
+                icon_height,
+                icon_top,
+            );
+            let px = px_offset(
+                c.fixed - fixed_offset_y,
+                fixed_content_height,
+                c.stretch,
+                stretch_height,
+            );
+            (em, px)
+        };
+        let ((left_em, left_px), (right_em, right_px)) = (x(left), x(right));
+        let ((top_em, top_px), (bottom_em, bottom_px)) = (y(top), y(bottom));
 
         let mut tl = Point::new(left_em, top_em);
         let mut tr = Point::new(right_em, top_em);

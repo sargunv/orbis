@@ -841,7 +841,7 @@ impl<'a> Builder<'a> {
                             self.anchor_is_too_close(&s.text, text_repeat_distance, anchor.point)
                         });
                         if !too_close {
-                            self.add_symbol_at_anchor(&symbols, anchor, line, &mut shared_line);
+                            self.add_symbol(&symbols, anchor, line, &mut shared_line);
                         }
                     }
                 }
@@ -857,7 +857,7 @@ impl<'a> Builder<'a> {
                         GLYPH_SIZE,
                         text_max_box_scale,
                     ) {
-                        self.add_symbol_at_anchor(&symbols, &anchor, line, &mut None);
+                        self.add_symbol(&symbols, &anchor, line, &mut None);
                     }
                 }
             }
@@ -872,25 +872,20 @@ impl<'a> Builder<'a> {
                             continue;
                         }
                         let pole = pole_of_inaccessibility(&rings, 16.0);
-                        self.add_symbol_at_anchor(
-                            &symbols,
-                            &SymbolAnchor::at(pole),
-                            &[],
-                            &mut None,
-                        );
+                        self.add_symbol(&symbols, &SymbolAnchor::at(pole), &[], &mut None);
                     }
                 }
                 GeometryType::LineString => {
                     for line in &geometry.lines {
                         let anchor = SymbolAnchor::at(line[0]);
-                        self.add_symbol_at_anchor(&symbols, &anchor, line, &mut None);
+                        self.add_symbol(&symbols, &anchor, line, &mut None);
                     }
                 }
                 GeometryType::Point => {
                     for points in &geometry.lines {
                         for &point in points {
                             let anchor = SymbolAnchor::at(point);
-                            self.add_symbol_at_anchor(&symbols, &anchor, &[], &mut None);
+                            self.add_symbol(&symbols, &anchor, &[], &mut None);
                         }
                     }
                 }
@@ -913,19 +908,6 @@ impl<'a> Builder<'a> {
         false
     }
 
-    fn add_symbol_at_anchor(
-        &mut self,
-        symbols: &FeatureSymbols<'_>,
-        anchor: &SymbolAnchor,
-        line: &[Point],
-        shared_line: &mut Option<[u32; 2]>,
-    ) {
-        if is_outside_tile(anchor.point) {
-            return;
-        }
-        self.add_symbol(symbols, anchor, line, shared_line);
-    }
-
     /// The line vertices a symbol rides on (GL JS `addToLineVertexArray`,
     /// without the unused distances), shared by the anchors of one line.
     fn line_range(
@@ -946,7 +928,8 @@ impl<'a> Builder<'a> {
         })
     }
 
-    /// GL JS `addSymbol`: one symbol instance and its placed symbols.
+    /// GL JS `addSymbol`: one symbol instance and its placed symbols, for
+    /// an anchor inside the tile.
     fn add_symbol(
         &mut self,
         s: &FeatureSymbols<'_>,
@@ -954,6 +937,9 @@ impl<'a> Builder<'a> {
         line: &[Point],
         shared_line: &mut Option<[u32; 2]>,
     ) {
+        if is_outside_tile(anchor.point) {
+            return;
+        }
         let style = self.style;
         let f = &s.feature.layout;
         let text_along_line = style.text_along_line();
@@ -994,7 +980,7 @@ impl<'a> Builder<'a> {
         let mut vertical_placed_icon = NONE;
         if let Some((image, icon)) = &s.icon {
             let has_icon_text_fit = style.icon_text_fit != IconTextFit::None;
-            let size = self.icon_size_vertex(f);
+            let size = self.size_vertex(false, f);
             icon_feature = Some(collision_feature(
                 Shape::icon(icon),
                 s.icon_box_scale,
@@ -1003,47 +989,18 @@ impl<'a> Builder<'a> {
                 f.icon_rotate,
             ));
             let mut quads = std::mem::take(&mut self.quads);
-            quads.clear();
-            icon_quads(
-                icon,
-                *image,
-                f.icon_rotate,
-                s.sdf_icon,
-                has_icon_text_fit,
-                &mut quads,
-            );
-            placed_icon = self.add_symbols(
-                false,
-                &quads,
-                size,
-                f.icon_offset,
-                SymbolWritingMode::None,
-                anchor,
-                line_range,
-                instance,
-                NONE,
-            );
-            if let Some(vertical_icon) = &s.vertical_icon {
+            let mut add = |this: &mut Self, icon, mode| {
                 quads.clear();
-                icon_quads(
-                    vertical_icon,
-                    *image,
-                    f.icon_rotate,
-                    s.sdf_icon,
-                    has_icon_text_fit,
-                    &mut quads,
-                );
-                vertical_placed_icon = self.add_symbols(
-                    false,
-                    &quads,
-                    size,
-                    f.icon_offset,
-                    SymbolWritingMode::Vertical,
-                    anchor,
-                    line_range,
-                    instance,
-                    NONE,
-                );
+                let fit = has_icon_text_fit;
+                icon_quads(icon, *image, f.icon_rotate, s.sdf_icon, fit, &mut quads);
+                let offset = f.icon_offset;
+                this.add_symbols(
+                    false, &quads, size, offset, mode, anchor, line_range, instance, NONE,
+                )
+            };
+            placed_icon = add(self, icon, SymbolWritingMode::None);
+            if let Some(vertical_icon) = &s.vertical_icon {
+                vertical_placed_icon = add(self, vertical_icon, SymbolWritingMode::Vertical);
             }
             self.quads = quads;
         }
@@ -1198,7 +1155,7 @@ impl<'a> Builder<'a> {
             },
             &mut quads,
         );
-        let size = self.text_size_vertex(f);
+        let size = self.size_vertex(true, f);
         let placed = self.add_symbols(
             true,
             &quads,
@@ -1214,18 +1171,19 @@ impl<'a> Builder<'a> {
         placed
     }
 
-    fn text_size_vertex(&mut self, f: &FeatureLayout) -> Option<[f64; 2]> {
-        let size = size_vertex(self.style.text_size, &f.text_size);
+    /// The per-feature text or icon size GL JS bakes into vertices,
+    /// noting sizes too large to pack.
+    fn size_vertex(&mut self, text: bool, f: &FeatureLayout) -> Option<[f64; 2]> {
+        let (kind, size, warning) = if text {
+            let w = &mut self.bucket.warnings.text_size_too_large;
+            (self.style.text_size, &f.text_size, w)
+        } else {
+            let w = &mut self.bucket.warnings.icon_size_too_large;
+            (self.style.icon_size, &f.icon_size, w)
+        };
+        let size = size_vertex(kind, size);
         if size.is_some_and(|s| s[0] > MAX_PACKED_SIZE || s[1] > MAX_PACKED_SIZE) {
-            self.bucket.warnings.text_size_too_large = true;
-        }
-        size
-    }
-
-    fn icon_size_vertex(&mut self, f: &FeatureLayout) -> Option<[f64; 2]> {
-        let size = size_vertex(self.style.icon_size, &f.icon_size);
-        if size.is_some_and(|s| s[0] > MAX_PACKED_SIZE || s[1] > MAX_PACKED_SIZE) {
-            self.bucket.warnings.icon_size_too_large = true;
+            *warning = true;
         }
         size
     }
