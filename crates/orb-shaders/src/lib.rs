@@ -123,8 +123,6 @@ mod tests {
             PREPARE_PAD_SHADER,
             PREPARE_SLOPE_SHADER,
             IMAGE_MIPS_SHADER,
-            PREPARE_PAD_DRAW_SHADER,
-            PREPARE_SLOPE_DRAW_SHADER,
             CULL_SHADER,
         ] {
             let module = validate(&shader);

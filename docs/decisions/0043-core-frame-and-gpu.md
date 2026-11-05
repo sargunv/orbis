@@ -178,6 +178,17 @@ The browser's double creation (`create*PipelineAsync`, then wgpu's own
 pipeline from Dawn's cache) stays until wgpu has async creation
 (gfx-rs/wgpu#10438, on #35): wgpu 30 can't wrap a browser pipeline.
 
+## One DEM prepare path
+
+The DEM prepare ran as two compute dispatches per page on Modern and as two
+draws per tile on Compat, with the texel functions shared and two bindings
+around them. It is now the draws on both tiers: the job is a uniform, each
+step a triangle over the tile's layer. Five shader files, two compute
+pipelines and their layouts and bind groups went. Native fixtures for
+hillshade, color-relief, terrain and raster match main (27/0/1, 9/0/0,
+44/30/14, 56/2/1), and Chrome's hillshade too. The Alps still renders the
+same picture: 6 runs each, 0.70–1.15 s before, 0.51–0.94 s after.
+
 ## Still to land
 
 `plan_frame` as a pure function of the camera and the resident set (with

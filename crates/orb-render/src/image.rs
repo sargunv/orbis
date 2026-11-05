@@ -10,14 +10,13 @@
 //!
 //! DEM tiles are prepared once when they arrive, and again when a
 //! neighbour arrives: `pad` fills a two-texel border from the neighbours
-//! (GL JS's `backfillBorder`), `slope` computes hillshade slopes. Both are
-//! one dispatch per page over every pending tile.
+//! (GL JS's `backfillBorder`), `slope` computes hillshade slopes. Each is
+//! a draw into the tile's layer, on both tiers.
 
 use orb_hal::*;
 use orb_scene::{PageTexture, Pixels, TilePage};
 use orb_shaders::{
-    COLOR_RELIEF_SHADER, HILLSHADE_SHADER, IMAGE_MIPS_SHADER, PREPARE_PAD_SHADER,
-    PREPARE_SLOPE_SHADER, RASTER_SHADER, Shader,
+    COLOR_RELIEF_SHADER, HILLSHADE_SHADER, IMAGE_MIPS_SHADER, RASTER_SHADER, Shader,
 };
 
 use crate::{Family, OutOfSpace, TargetFormat};
@@ -96,15 +95,16 @@ const JOB_WORDS: usize = 16;
 const NO_TILE: u32 = u32::MAX;
 
 impl DemPrepare {
+    /// `prepare.wgsl`'s `Job`: unpack, neighbours, layer, zoom.
     fn words(&self) -> [u32; JOB_WORDS] {
         let mut words = [0; JOB_WORDS];
         for (word, v) in words.iter_mut().zip(self.unpack) {
             *word = v.to_bits();
         }
-        words[4] = self.layer;
-        for (word, n) in words[5..13].iter_mut().zip(self.neighbours) {
+        for (word, n) in words[4..12].iter_mut().zip(self.neighbours) {
             *word = n.unwrap_or(NO_TILE);
         }
+        words[12] = self.layer;
         words[13] = self.zoom.to_bits();
         words
     }
@@ -120,23 +120,11 @@ struct Page {
     kind: PageKind,
     page: TilePage,
     pending: Vec<DemPrepare>,
-    prepare: Option<Prepare>,
     /// Raster layers uploaded since their mip levels were last made.
     mip_layers: Vec<u32>,
     mips: Option<Mips>,
-    /// Compat's prepare targets.
-    #[cfg(feature = "compat")]
-    targets: Option<compat_prepare::Targets>,
-}
-
-/// A DEM page's prepare bindings, for one revision of its textures.
-#[derive(Debug)]
-struct Prepare {
-    revision: u32,
-    jobs: BufferId,
-    capacity: u32,
-    pad: BindGroupId,
-    slope: BindGroupId,
+    /// The prepare draws' targets.
+    targets: Option<prepare::Targets>,
 }
 
 /// A raster page's mip bindings, for one revision of its texture: views of
@@ -173,14 +161,7 @@ pub(crate) struct NodeImage {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Prepared {
     pub(crate) tiles: u32,
-    pub(crate) dispatches: u32,
     pub(crate) draws: u32,
-}
-
-#[derive(Debug)]
-struct PreparePipelines {
-    pad: ComputePipelineId,
-    slope: ComputePipelineId,
 }
 
 /// One target format's raster, hillshade and color-relief pipelines, each
@@ -216,18 +197,12 @@ pub(crate) struct Images {
     /// Bound by nodes whose source has no page yet.
     placeholder: TextureId,
     placeholder_ramp: TextureId,
-    pad_layout: BindGroupLayoutId,
-    slope_layout: BindGroupLayoutId,
     mips_layout: BindGroupLayoutId,
-    /// The prepare dispatch's pipelines (pad, slope), made for the first
-    /// DEM page; none on Compat, which has no compute.
-    prepare: Option<PreparePipelines>,
+    /// The prepare draws, made for the first DEM page.
+    prepare: Option<prepare::Draws>,
     /// The raster mip levels' pipeline, made for the first raster page on
     /// Modern; Compat's raster tiles have one level.
     mips: Option<ComputePipelineId>,
-    /// Compat's prepare draws, made for the first DEM page.
-    #[cfg(feature = "compat")]
-    draws: Option<compat_prepare::Draws>,
     pages: Vec<Option<Page>>,
 }
 
@@ -307,37 +282,32 @@ impl Images {
         let placeholder_ramp = placeholder("no ramp", 2, 1, TextureViewDimension::D2);
 
         let cs = ShaderStages::COMPUTE;
-        let prepare_layout = |gpu: &mut dyn Gpu, label| {
-            gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-                label,
-                entries: &[
-                    BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: cs,
-                        ty: BindingType::Texture {
-                            sample: TextureSampleType::Float { filterable: false },
-                            dimension: TextureViewDimension::D2Array,
-                        },
+        let mips_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: "image mips",
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: cs,
+                    ty: BindingType::Texture {
+                        sample: TextureSampleType::Float { filterable: false },
+                        dimension: TextureViewDimension::D2Array,
                     },
-                    BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: cs,
-                        ty: BindingType::StorageTexture {
-                            format: TextureFormat::Rgba8Unorm,
-                            dimension: TextureViewDimension::D2Array,
-                        },
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: cs,
+                    ty: BindingType::StorageTexture {
+                        format: TextureFormat::Rgba8Unorm,
+                        dimension: TextureViewDimension::D2Array,
                     },
-                    BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: cs,
-                        ty: BindingType::Storage { read_only: true },
-                    },
-                ],
-            })
-        };
-        let pad_layout = prepare_layout(gpu, "prepare pad");
-        let slope_layout = prepare_layout(gpu, "prepare slope");
-        let mips_layout = prepare_layout(gpu, "image mips");
+                },
+                BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: cs,
+                    ty: BindingType::Storage { read_only: true },
+                },
+            ],
+        });
 
         Self {
             target,
@@ -349,13 +319,9 @@ impl Images {
             nearest,
             placeholder: placeholder_array,
             placeholder_ramp,
-            pad_layout,
-            slope_layout,
             mips_layout,
             prepare: None,
             mips: None,
-            #[cfg(feature = "compat")]
-            draws: None,
             pages: Vec::new(),
         }
     }
@@ -401,20 +367,9 @@ impl Images {
 
     /// Makes the DEM prepare pipelines, for the first DEM page.
     fn make_prepare(&mut self, gpu: &mut dyn Gpu) {
-        #[cfg(feature = "compat")]
-        if gpu.caps().tier == Tier::Compat {
-            if self.draws.is_none() {
-                self.draws = Some(compat_prepare::Draws::new(gpu));
-            }
-            return;
+        if self.prepare.is_none() {
+            self.prepare = Some(prepare::Draws::new(gpu));
         }
-        if self.prepare.is_some() {
-            return;
-        }
-        self.prepare = Some(PreparePipelines {
-            pad: compute_pipeline(gpu, &PREPARE_PAD_SHADER, self.pad_layout),
-            slope: compute_pipeline(gpu, &PREPARE_SLOPE_SHADER, self.slope_layout),
-        });
     }
 
     /// Whether raster tiles have their mip levels: the pipeline that makes
@@ -432,24 +387,14 @@ impl Images {
     /// DEM page needs them. What reads prepared DEM tiles (hillshade,
     /// color relief, terrain) waits for it.
     pub(crate) fn prepare_ready(&self, gpu: &mut dyn Gpu) -> bool {
-        #[cfg(feature = "compat")]
-        if let Some(draws) = &self.draws {
-            return draws.ready(gpu);
-        }
-        self.prepare
-            .as_ref()
-            .is_none_or(|p| gpu.pipeline_ready(p.pad.into()) && gpu.pipeline_ready(p.slope.into()))
+        self.prepare.as_ref().is_none_or(|p| p.ready(gpu))
     }
 
     /// The prepare pipelines, for the first-visible order.
     pub(crate) fn prepare_pipelines(&self) -> Vec<PipelineId> {
-        #[cfg(feature = "compat")]
-        if let Some(draws) = &self.draws {
-            return draws.pipelines();
-        }
         self.prepare
             .iter()
-            .flat_map(|p| [p.pad.into(), p.slope.into()])
+            .flat_map(prepare::Draws::pipelines)
             .collect()
     }
 
@@ -460,9 +405,9 @@ impl Images {
         [width, height]: [u32; 2],
     ) -> PageId {
         let sampled = TextureUsages::TEXTURE_BINDING;
-        // Host images are copied in as render targets.
+        // Host images are copied in as render targets, and the prepare
+        // draws into its layers.
         let uploaded = sampled | TextureUsages::RENDER_ATTACHMENT;
-        let prepared = sampled | TextureUsages::STORAGE_BINDING;
         let texture = |label, border: u32, usage| PageTexture {
             label,
             width: width + 2 * border,
@@ -487,18 +432,16 @@ impl Images {
             PageKind::Raster => vec![texture("raster tiles", 0, uploaded)],
             PageKind::Dem => vec![
                 texture("dem tiles", 0, uploaded),
-                texture("padded dem tiles", 2, prepared),
-                texture("hillshade slopes", 1, prepared),
+                texture("padded dem tiles", 2, uploaded),
+                texture("hillshade slopes", 1, uploaded),
             ],
         };
         let page = Page {
             kind,
             page: TilePage::new(gpu, &textures),
             pending: Vec::new(),
-            prepare: None,
             mip_layers: Vec::new(),
             mips: None,
-            #[cfg(feature = "compat")]
             targets: None,
         };
         let id = match self.pages.iter().position(Option::is_none) {
@@ -518,13 +461,9 @@ impl Images {
         let page = self.pages[id.0 as usize]
             .take()
             .expect("page already removed");
-        if let Some(prepare) = page.prepare {
-            destroy_prepare(gpu, prepare);
-        }
         if let Some(mips) = page.mips {
             destroy_mips(gpu, mips);
         }
-        #[cfg(feature = "compat")]
         if let Some(targets) = page.targets {
             targets.destroy(gpu);
         }
@@ -691,124 +630,20 @@ impl Images {
         page.pending.push(job);
     }
 
-    /// The compute pass that prepares pending DEM tiles, if any, and how
-    /// many tiles it prepares. Jobs wait while the pipelines compile.
+    /// The draws that prepare pending DEM tiles, if any, and how many
+    /// tiles they prepare. Jobs wait while the pipelines compile.
     pub(crate) fn prepare_pass(&mut self, gpu: &mut dyn Gpu) -> Option<(Vec<Pass>, Prepared)> {
         if !self.prepare_ready(gpu) {
             return None;
         }
-        #[cfg(feature = "compat")]
-        if let Some(draws) = &self.draws {
-            let mut passes = Vec::new();
-            let mut prepared = 0;
-            for page in self.pages.iter_mut().flatten() {
-                prepared += draws.passes(gpu, page, &mut passes);
-            }
-            return (prepared > 0).then(|| {
-                let draws = passes.len() as u32;
-                (
-                    passes,
-                    Prepared {
-                        tiles: prepared,
-                        dispatches: 0,
-                        draws,
-                    },
-                )
-            });
-        }
-        let pipelines = self.prepare.as_ref()?;
-        let (pad_layout, slope_layout) = (self.pad_layout, self.slope_layout);
-        let mut commands = Vec::new();
-        let mut prepared = 0;
+        let draws = self.prepare.as_ref()?;
+        let mut passes = Vec::new();
+        let mut tiles = 0;
         for page in self.pages.iter_mut().flatten() {
-            if page.pending.is_empty() {
-                continue;
-            }
-            let revision = page.page.revision();
-            let capacity = page.page.capacity();
-            if page
-                .prepare
-                .as_ref()
-                .is_some_and(|p| p.revision != revision || p.capacity < capacity)
-            {
-                destroy_prepare(gpu, page.prepare.take().expect("checked"));
-            }
-            let prepare = page.prepare.get_or_insert_with(|| {
-                let jobs = gpu.create_buffer(&BufferDesc {
-                    label: "dem jobs",
-                    size: u64::from(capacity) * JOB_WORDS as u64 * 4,
-                    usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-                });
-                let mut group = |label, layout, from, to| {
-                    gpu.create_bind_group(&BindGroupDesc {
-                        label,
-                        layout,
-                        entries: &[
-                            BindGroupEntry {
-                                binding: 0,
-                                resource: BindingResource::Texture {
-                                    texture: page.page.texture(from),
-                                    dimension: TextureViewDimension::D2Array,
-                                },
-                            },
-                            BindGroupEntry {
-                                binding: 1,
-                                resource: BindingResource::Texture {
-                                    texture: page.page.texture(to),
-                                    dimension: TextureViewDimension::D2Array,
-                                },
-                            },
-                            BindGroupEntry {
-                                binding: 2,
-                                resource: BindingResource::buffer(jobs),
-                            },
-                        ],
-                    })
-                };
-                Prepare {
-                    revision,
-                    jobs,
-                    capacity,
-                    pad: group("prepare pad", pad_layout, DEM_RAW, DEM_PADDED),
-                    slope: group("prepare slope", slope_layout, DEM_PADDED, DEM_SLOPES),
-                }
-            });
-            let jobs: Vec<u32> = page.pending.drain(..).flat_map(|j| j.words()).collect();
-            let count = (jobs.len() / JOB_WORDS) as u32;
-            gpu.write_buffer(prepare.jobs, 0, bytemuck::cast_slice(&jobs));
-            let groups = |size: [u32; 2]| size[0].div_ceil(8);
-            for (pipeline, group, texture) in [
-                (pipelines.pad, prepare.pad, DEM_PADDED),
-                (pipelines.slope, prepare.slope, DEM_SLOPES),
-            ] {
-                let n = groups(page.page.size(texture));
-                commands.extend([
-                    ComputeCommand::SetPipeline(pipeline),
-                    ComputeCommand::SetBindGroup { index: 0, group },
-                    ComputeCommand::Dispatch {
-                        x: n,
-                        y: n,
-                        z: count,
-                    },
-                ]);
-            }
-            prepared += count;
+            tiles += draws.passes(gpu, page, &mut passes);
         }
-        (prepared > 0).then(|| {
-            let pass = ComputePass {
-                label: "prepare".into(),
-                timestamps: None,
-                commands,
-            };
-            (
-                vec![Pass::Compute(pass)],
-                Prepared {
-                    tiles: prepared,
-                    dispatches: 2,
-                    draws: 0,
-                },
-            )
-        })
+        let draws = passes.len() as u32;
+        (tiles > 0).then_some((passes, Prepared { tiles, draws }))
     }
 
     /// Writes a color-relief ramp: `colors` (premultiplied rgba8) and the
@@ -963,19 +798,12 @@ fn compute_pipeline(
     })
 }
 
-fn destroy_prepare(gpu: &mut dyn Gpu, prepare: Prepare) {
-    gpu.destroy_bind_group(prepare.pad);
-    gpu.destroy_bind_group(prepare.slope);
-    gpu.destroy_buffer(prepare.jobs);
-}
-
-/// Compat's prepare (plan §8.5's render-to-texture `Prepare`): for each
-/// pending job a draw into its padded layer, then one into its slope layer,
-/// the job read from a uniform slot of its own.
-#[cfg(feature = "compat")]
-mod compat_prepare {
+/// The prepare (plan §8.5's render-to-texture `Prepare`): for each pending
+/// job a draw into its padded layer, then one into its slope layer, the job
+/// read from a uniform slot of its own.
+mod prepare {
     use orb_hal::*;
-    use orb_shaders::{PREPARE_PAD_DRAW_SHADER, PREPARE_SLOPE_DRAW_SHADER, Shader};
+    use orb_shaders::{PREPARE_PAD_SHADER, PREPARE_SLOPE_SHADER, Shader};
 
     use super::{DEM_PADDED, DEM_RAW, DEM_SLOPES, JOB_WORDS, Page};
 
@@ -1060,8 +888,8 @@ mod compat_prepare {
                 })
             };
             Self {
-                pad: pipeline(&PREPARE_PAD_DRAW_SHADER),
-                slope: pipeline(&PREPARE_SLOPE_DRAW_SHADER),
+                pad: pipeline(&PREPARE_PAD_SHADER),
+                slope: pipeline(&PREPARE_SLOPE_SHADER),
                 layout,
             }
         }
@@ -1070,8 +898,8 @@ mod compat_prepare {
             gpu.pipeline_ready(self.pad.into()) && gpu.pipeline_ready(self.slope.into())
         }
 
-        pub(super) fn pipelines(&self) -> Vec<PipelineId> {
-            vec![self.pad.into(), self.slope.into()]
+        pub(super) fn pipelines(&self) -> [PipelineId; 2] {
+            [self.pad.into(), self.slope.into()]
         }
 
         /// Appends a page's pending jobs' passes; returns the jobs.
@@ -1108,17 +936,10 @@ mod compat_prepare {
                 }
             });
             for (slot, job) in page.pending.drain(..).enumerate() {
-                let words = job.words();
-                // The uniform's layout: unpack, neighbours, layer, zoom.
-                let mut uniform = [0u32; JOB_WORDS];
-                uniform[..4].copy_from_slice(&words[..4]);
-                uniform[4..12].copy_from_slice(&words[5..13]);
-                uniform[12] = words[4];
-                uniform[13] = words[13];
                 gpu.write_buffer(
                     targets.jobs,
                     slot as u64 * SLOT,
-                    bytemuck::cast_slice(&uniform),
+                    bytemuck::cast_slice(&job.words()),
                 );
                 while targets.groups.len() <= slot {
                     let at = targets.groups.len() as u64 * SLOT;

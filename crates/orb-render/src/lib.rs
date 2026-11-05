@@ -1671,7 +1671,6 @@ impl Renderer {
             ..FrameStats::default()
         };
         if let Some((prepare, prepared)) = self.images.prepare_pass(gpu) {
-            stats.dispatches += prepared.dispatches;
             stats.draws += prepared.draws;
             stats.prepared = prepared.tiles;
             passes.extend(prepare);

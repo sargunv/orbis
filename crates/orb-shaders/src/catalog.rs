@@ -50,7 +50,6 @@ const COLOR_RELIEF: &str = include_str!("wgsl/color_relief.wgsl");
 const PREPARE: &str = include_str!("wgsl/prepare.wgsl");
 const PREPARE_PAD: &str = include_str!("wgsl/prepare_pad.wgsl");
 const PREPARE_SLOPE: &str = include_str!("wgsl/prepare_slope.wgsl");
-const PREPARE_FS: &str = include_str!("wgsl/prepare_fs.wgsl");
 
 /// A composed shader module and its entry points.
 #[derive(Clone, Copy, Debug)]
@@ -233,7 +232,6 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
     compute: "",
 };
 
-/// The DEM prepare pass's border fill, from raw tiles into padded ones.
 /// A raster page's mip levels for its new layers (`downsample`).
 pub const IMAGE_MIPS_SHADER: Shader = Shader {
     label: "image mips",
@@ -243,56 +241,21 @@ pub const IMAGE_MIPS_SHADER: Shader = Shader {
     compute: "downsample",
 };
 
+/// The DEM prepare pass's border fill, from a raw tile into its padded
+/// layer: a draw into the layer.
 pub const PREPARE_PAD_SHADER: Shader = Shader {
     label: "prepare pad",
-    parts: &[
-        PREPARE,
-        PREPARE_PAD,
-        include_str!("wgsl/prepare_pad_cs.wgsl"),
-    ],
-    vertex: "",
-    fragment: "",
-    compute: "pad",
-};
-
-/// The DEM prepare pass's hillshade slopes, from padded tiles.
-pub const PREPARE_SLOPE_SHADER: Shader = Shader {
-    label: "prepare slope",
-    parts: &[
-        DEM,
-        PREPARE,
-        PREPARE_SLOPE,
-        include_str!("wgsl/prepare_slope_cs.wgsl"),
-    ],
-    vertex: "",
-    fragment: "",
-    compute: "slope",
-};
-
-/// The border fill drawn into one padded layer (Compat).
-pub const PREPARE_PAD_DRAW_SHADER: Shader = Shader {
-    label: "prepare pad draw",
-    parts: &[
-        PREPARE,
-        PREPARE_PAD,
-        PREPARE_FS,
-        include_str!("wgsl/prepare_pad_fs.wgsl"),
-    ],
+    parts: &[PREPARE, PREPARE_PAD],
     vertex: "vs_prepare",
     fragment: "fs_pad",
     compute: "",
 };
 
-/// The slopes drawn into one slope layer (Compat).
-pub const PREPARE_SLOPE_DRAW_SHADER: Shader = Shader {
-    label: "prepare slope draw",
-    parts: &[
-        DEM,
-        PREPARE,
-        PREPARE_SLOPE,
-        PREPARE_FS,
-        include_str!("wgsl/prepare_slope_fs.wgsl"),
-    ],
+/// The DEM prepare pass's hillshade slopes, from a padded tile into its
+/// slope layer.
+pub const PREPARE_SLOPE_SHADER: Shader = Shader {
+    label: "prepare slope",
+    parts: &[DEM, PREPARE, PREPARE_SLOPE],
     vertex: "vs_prepare",
     fragment: "fs_slope",
     compute: "",
@@ -379,6 +342,6 @@ pub const COMPAT_SHADERS: &[Shader] = &[
     HILLSHADE_SHADER,
     COLOR_RELIEF_SHADER,
     EXTRUSION_SHADER,
-    PREPARE_PAD_DRAW_SHADER,
-    PREPARE_SLOPE_DRAW_SHADER,
+    PREPARE_PAD_SHADER,
+    PREPARE_SLOPE_SHADER,
 ];

@@ -490,7 +490,7 @@ Compiled per (style IR, projection plan, scene features, tier); empty passes cul
 |---|---|---|
 | `Upload` (budgeted, P0 first) | queue writes / staging ring | `bufferSubData` into idle ranges + data-texture mirrors |
 | `Cull` (chunks, symbol compaction, line-label placement, fades) | compute | CPU (a port of the cull); VS early-out; line labels in the vertex shader, as on Modern |
-| `Prepare` (DEM borders backfilled from neighbours and hillshade slopes into texture arrays, on tile arrival; heatmap density) | compute for DEM; render-to-texture for heatmap | render-to-texture |
+| `Prepare` (DEM borders backfilled from neighbours and hillshade slopes into texture arrays, on tile arrival; heatmap density) | render-to-texture, a draw per tile layer (one path for both tiers, decision 0043) | render-to-texture |
 | `Terrain`/`Drape` (M7; fingerprint cache, GL JS #7549: hit rate 0.2% → 94.6% [verified]) | yes | no |
 | `Layer2D` (per style layer and pass, batched across tiles) | indirect | direct |
 | `Group` (blend modes, z-groups, layer opacity; gl-js #48, #2108) | yes | yes |

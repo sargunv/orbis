@@ -4,20 +4,20 @@
 // `getLog2WorldWidth` gives for wrapping worlds.
 const LOG2_WORLD_WIDTH: f32 = 25.2562;
 
-// Texel `id` of a job's slope layer, (dim + 2)² texels.
-fn slope_texel(job: DemJob, id: vec2<u32>) -> vec4<f32> {
+// Texel `id` of the job's slope layer, (dim + 2)² texels.
+fn slope_texel(id: vec2<u32>) -> vec4<f32> {
     let size = textureDimensions(padded).x - 2u;
     let pos = vec2<i32>(id) + 1;
     let tile_size = f32(size - 2u);
 
-    let a = elevation_at(job, pos + vec2<i32>(-1, -1));
-    let b = elevation_at(job, pos + vec2<i32>(0, -1));
-    let c = elevation_at(job, pos + vec2<i32>(1, -1));
-    let d = elevation_at(job, pos + vec2<i32>(-1, 0));
-    let f = elevation_at(job, pos + vec2<i32>(1, 0));
-    let g = elevation_at(job, pos + vec2<i32>(-1, 1));
-    let h = elevation_at(job, pos + vec2<i32>(0, 1));
-    let i = elevation_at(job, pos + vec2<i32>(1, 1));
+    let a = elevation_at(pos + vec2<i32>(-1, -1));
+    let b = elevation_at(pos + vec2<i32>(0, -1));
+    let c = elevation_at(pos + vec2<i32>(1, -1));
+    let d = elevation_at(pos + vec2<i32>(-1, 0));
+    let f = elevation_at(pos + vec2<i32>(1, 0));
+    let g = elevation_at(pos + vec2<i32>(-1, 1));
+    let h = elevation_at(pos + vec2<i32>(0, 1));
+    let i = elevation_at(pos + vec2<i32>(1, 1));
 
     // Below zoom 15, slopes are exaggerated so hillshading shows at low
     // zooms (GL JS's `hillshade_prepare`).
@@ -41,6 +41,11 @@ fn slope_texel(job: DemJob, id: vec2<u32>) -> vec4<f32> {
     return color;
 }
 
-fn elevation_at(job: DemJob, p: vec2<i32>) -> f32 {
+fn elevation_at(p: vec2<i32>) -> f32 {
     return dem_elevation(textureLoad(padded, p, job.layer, 0), job.unpack);
+}
+
+@fragment
+fn fs_slope(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    return slope_texel(vec2<u32>(position.xy));
 }
