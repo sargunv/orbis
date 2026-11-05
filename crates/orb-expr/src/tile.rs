@@ -66,10 +66,6 @@ impl<'a> Bound<'a> {
         }
         .eval_root()
     }
-
-    pub fn layer(&self) -> &'a Layer {
-        self.layer
-    }
 }
 
 struct Row<'s, 'a> {

@@ -36,11 +36,6 @@ impl Binding {
     pub fn is_rows(self) -> bool {
         matches!(self, Self::Source | Self::Composite | Self::Bytecode)
     }
-
-    /// Whether the value is a uniform alone.
-    pub fn is_uniform(self) -> bool {
-        matches!(self, Self::Constant | Self::Camera)
-    }
 }
 
 /// What changed in a layer's layout inputs.

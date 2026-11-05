@@ -93,10 +93,6 @@ impl Column {
         self.present.len() == 0
     }
 
-    pub fn present(&self) -> &Bitmap {
-        &self.present
-    }
-
     pub fn data(&self) -> &ColumnData {
         &self.data
     }
@@ -142,15 +138,6 @@ impl Bitmap {
         Self::default()
     }
 
-    /// `len` bits, all set.
-    pub fn all_set(len: usize) -> Self {
-        let mut words = vec![u64::MAX; len.div_ceil(64)];
-        if !len.is_multiple_of(64) {
-            *words.last_mut().expect("non-empty") = (1 << (len % 64)) - 1;
-        }
-        Self { words, len }
-    }
-
     pub fn len(&self) -> usize {
         self.len
     }
@@ -177,10 +164,6 @@ impl Bitmap {
         );
         self.words[i / 64] & (1 << (i % 64)) != 0
     }
-
-    pub fn count_ones(&self) -> usize {
-        self.words.iter().map(|w| w.count_ones() as usize).sum()
-    }
 }
 
 #[cfg(test)]
@@ -195,15 +178,5 @@ mod tests {
         }
         assert_eq!(b.len(), 130);
         assert!((0..130).all(|i| b.get(i) == (i % 3 == 0)));
-        assert_eq!(b.count_ones(), 44);
-    }
-
-    #[test]
-    fn bitmap_all_set() {
-        for len in [0, 1, 63, 64, 65, 128] {
-            let b = Bitmap::all_set(len);
-            assert_eq!(b.count_ones(), len);
-            assert_eq!(b.len(), len);
-        }
     }
 }

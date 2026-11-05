@@ -19,26 +19,6 @@ pub struct Bounds {
 }
 
 impl Bounds {
-    /// The smallest box holding every point, or `None` for no points.
-    pub fn around(points: impl IntoIterator<Item = Geodetic>) -> Option<Self> {
-        points.into_iter().fold(None, |bounds, p| {
-            Some(match bounds {
-                None => Self {
-                    west: p.lon,
-                    south: p.lat,
-                    east: p.lon,
-                    north: p.lat,
-                },
-                Some(b) => Self {
-                    west: b.west.min(p.lon),
-                    south: b.south.min(p.lat),
-                    east: b.east.max(p.lon),
-                    north: b.north.max(p.lat),
-                },
-            })
-        })
-    }
-
     pub fn corners(&self) -> [Geodetic; 4] {
         [
             Geodetic::new(self.west, self.north),

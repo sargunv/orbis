@@ -81,10 +81,10 @@ fn simplification_preserves_endpoints_and_maxzoom_detail() {
     )
     .unwrap();
     let root = i.tile(0, 0, 0).unwrap();
-    assert_eq!(root.layers[0].vertices().len(), 4);
-    assert_eq!(root.layers[0].vertices().first(), Some(&[2048, 4096]));
+    assert_eq!(root.layers[0].vertices.len(), 4);
+    assert_eq!(root.layers[0].vertices.first(), Some(&[2048, 4096]));
     let detail = i.tile(2, 1, 1).unwrap();
-    assert!(detail.layers[0].vertices().len() >= 2);
+    assert!(detail.layers[0].vertices.len() >= 2);
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn clipping_splits_lines_and_tracks_metrics() {
     let f = frame(vec![line], o, 1, 0, 0);
     let l = &f.layers[0];
     assert_eq!(l.len(), 2);
-    for p in l.vertices() {
+    for p in &l.vertices {
         assert!(p[0] >= 0 && p[0] <= 8192);
     }
     assert_eq!(
@@ -121,7 +121,7 @@ fn buffer_keeps_neighbors_and_clips_at_buffer_edge() {
         ]]))]
     };
     let no = frame(make(), options(), 1, 0, 0);
-    assert_eq!(no.layers[0].vertices().last().unwrap()[0], 8192);
+    assert_eq!(no.layers[0].vertices.last().unwrap()[0], 8192);
     let buffered = frame(
         make(),
         Options {
@@ -132,7 +132,7 @@ fn buffer_keeps_neighbors_and_clips_at_buffer_edge() {
         0,
         0,
     );
-    assert_eq!(buffered.layers[0].vertices().last().unwrap()[0], 8320);
+    assert_eq!(buffered.layers[0].vertices.last().unwrap()[0], 8320);
     let point = || vec![feature(Geometry::Points(vec![[1.0, 40.0]]))];
     assert_eq!(frame(point(), options(), 1, 0, 0).layers[0].len(), 0);
     assert_eq!(
@@ -167,7 +167,7 @@ fn wraps_dateline_and_tile_x() {
     let east = i.tile(1, 1, 0).unwrap();
     assert_eq!(west.layers[0].len(), 1);
     assert_eq!(east.layers[0].len(), 1);
-    assert!(east.layers[0].vertices()[0][0] > 8192);
+    assert!(east.layers[0].vertices[0][0] > 8192);
     assert_eq!(east, i.tile(1, -1, 0).unwrap());
 }
 
@@ -226,7 +226,7 @@ fn polygon_winding_and_implicit_closure() {
     );
     assert!(
         clipped.layers[0]
-            .vertices()
+            .vertices
             .iter()
             .all(|p| p[0] <= 8192 && p[1] <= 8192)
     );

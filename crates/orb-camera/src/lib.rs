@@ -373,11 +373,6 @@ impl View {
             * ((FRAC_PI_2 - pitch).tan() * 0.85).min((MAX_HORIZON_PITCH.to_radians() - pitch).tan())
     }
 
-    /// Degrees about the view axis.
-    pub fn roll(&self) -> f64 {
-        self.roll
-    }
-
     pub fn viewport(&self) -> Viewport {
         self.viewport
     }

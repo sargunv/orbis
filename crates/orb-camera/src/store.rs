@@ -151,11 +151,6 @@ impl Camera {
         });
     }
 
-    /// The terrain the camera stands on.
-    pub fn terrain(&self) -> Option<&dyn Elevation> {
-        self.terrain.as_deref()
-    }
-
     pub fn state(&self) -> &CameraState {
         &self.state
     }
@@ -206,10 +201,6 @@ impl Camera {
     pub fn set_viewport(&mut self, viewport: Viewport) {
         self.viewport = viewport;
         self.write(self.state);
-    }
-
-    pub fn constraints(&self) -> &Constraints {
-        &self.constraints
     }
 
     pub fn set_constraints(&mut self, constraints: Constraints) {

@@ -422,11 +422,6 @@ impl TileMatrixSet {
         self.max_zoom
     }
 
-    /// Pixels per tile side the set is defined for.
-    pub fn tile_px(&self) -> u32 {
-        self.tile_px
-    }
-
     /// World width and height of one tile at zoom `z`.
     pub fn tile_span(&self, z: u8) -> f64 {
         self.span / 2f64.powi(i32::from(z) - i32::from(self.min_zoom))

@@ -127,19 +127,10 @@ impl Expression {
         !self.deps().contains(Deps::FEATURE)
     }
 
-    /// Whether the expression reads `global-state` (left unresolved).
-    pub fn reads_global_state(&self) -> bool {
-        self.deps().contains(Deps::GLOBAL_STATE)
-    }
-
     /// Whether the expression reads `image`, whose availability evaluation
     /// decides.
     pub fn reads_images(&self) -> bool {
         self.deps().contains(Deps::IMAGE)
-    }
-
-    pub fn is_zoom_constant(&self) -> bool {
-        !self.deps().contains(Deps::ZOOM)
     }
 
     pub(crate) fn deps(&self) -> Deps {

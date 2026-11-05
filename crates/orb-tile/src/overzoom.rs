@@ -175,7 +175,7 @@ mod tests {
         .overzoom(1, 1, 0);
         let l = &child.layers[0];
         assert_eq!(l.extent(), 8192);
-        assert_eq!(l.vertices(), [[-256, 402], [8448, 404]]);
+        assert_eq!(l.vertices, [[-256, 402], [8448, 404]]);
         assert_eq!(l.ids().get(0), Some(ValueRef::U64(42)));
         assert_eq!(
             l.property("class").unwrap().get(0),

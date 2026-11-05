@@ -93,11 +93,6 @@ impl Layer {
         FeatureGeometry::new(self, parts)
     }
 
-    /// Every vertex of the layer, in feature, part and ring order.
-    pub fn vertices(&self) -> &[[i32; 2]] {
-        &self.vertices
-    }
-
     /// The column for a property key.
     pub fn property(&self, key: &str) -> Option<&Column> {
         self.properties

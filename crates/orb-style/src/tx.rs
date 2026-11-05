@@ -117,10 +117,6 @@ impl Transaction {
         self
     }
 
-    pub fn ops(&self) -> &[Op] {
-        &self.ops
-    }
-
     pub fn is_empty(&self) -> bool {
         self.ops.is_empty()
     }
@@ -132,54 +128,6 @@ impl Transaction {
                 op,
                 Op::SetFeatureState { .. } | Op::RemoveFeatureState { .. }
             )
-        })
-    }
-
-    pub fn set_paint_property(
-        &mut self,
-        layer: &str,
-        name: &str,
-        value: Option<Json>,
-    ) -> &mut Self {
-        self.push(Op::SetPaint {
-            layer: layer.into(),
-            name: name.into(),
-            value,
-        })
-    }
-
-    pub fn set_layout_property(
-        &mut self,
-        layer: &str,
-        name: &str,
-        value: Option<Json>,
-    ) -> &mut Self {
-        self.push(Op::SetLayout {
-            layer: layer.into(),
-            name: name.into(),
-            value,
-        })
-    }
-
-    pub fn set_filter(&mut self, layer: &str, filter: Option<Json>) -> &mut Self {
-        self.push(Op::SetFilter {
-            layer: layer.into(),
-            filter,
-        })
-    }
-
-    pub fn set_feature_state(
-        &mut self,
-        target: FeatureTarget,
-        state: Vec<(String, Value<'static>)>,
-    ) -> &mut Self {
-        self.push(Op::SetFeatureState { target, state })
-    }
-
-    pub fn set_global_state(&mut self, key: &str, value: Option<Value<'static>>) -> &mut Self {
-        self.push(Op::SetGlobalState {
-            key: key.into(),
-            value,
         })
     }
 

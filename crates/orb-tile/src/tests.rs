@@ -154,7 +154,7 @@ fn all_geometry_types_and_ids() {
     assert_eq!(rings(&frame, 5)[1][0], [[30, 30], [40, 30], [30, 40]]);
     // ClosePath never repeats the first vertex in the stored ring.
     assert_eq!(rings(&frame, 4)[0][0].len(), 4);
-    assert_eq!(layer.vertices().len(), 34);
+    assert_eq!(layer.vertices.len(), 34);
 }
 
 fn fixed_value(field: u32, wire: u8, bytes: &[u8]) -> Vec<u8> {
@@ -688,7 +688,7 @@ fn decodes_mvt_version_1_and_rejects_unknown_versions() {
     // Version 1 shares version 2's encoding, and a missing version means 1.
     for version in [Some(1), None, Some(2)] {
         let frame = mvt::decode(&with_version(version)).unwrap();
-        assert_eq!(frame.layers[0].vertices(), &[[5, 7]], "{version:?}");
+        assert_eq!(frame.layers[0].vertices, &[[5, 7]], "{version:?}");
     }
     assert!(matches!(
         mvt::decode(&with_version(Some(3))),

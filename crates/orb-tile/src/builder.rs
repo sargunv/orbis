@@ -332,7 +332,7 @@ mod tests {
         b.abandon_feature();
         let layer = b.finish();
         assert_eq!(layer.len(), 1);
-        assert_eq!(layer.vertices(), &[[1, 1]]);
+        assert_eq!(layer.vertices, &[[1, 1]]);
         assert_eq!(layer.property("k").unwrap().get(0), None);
     }
 }

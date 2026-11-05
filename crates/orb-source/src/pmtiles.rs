@@ -255,10 +255,6 @@ pub struct Reader {
 }
 
 impl Reader {
-    pub fn header(&self) -> Option<&Header> {
-        self.header.as_ref()
-    }
-
     pub fn insert(&mut self, range: Range, bytes: &[u8]) -> Result<(), String> {
         if bytes.len() as u64 != range.length {
             return Err("short PMTiles range".into());

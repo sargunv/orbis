@@ -223,10 +223,6 @@ impl Interaction {
         }
     }
 
-    pub fn feel(&self) -> &Feel {
-        &self.feel
-    }
-
     pub fn set_feel(&mut self, feel: Feel) {
         self.feel = feel;
     }
