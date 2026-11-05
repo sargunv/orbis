@@ -684,6 +684,9 @@ impl Renderer {
                 usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             });
             retired_uniforms = Some(std::mem::replace(&mut self.node_uniforms, uniforms));
+            // The uniforms' CPU copy grows with them.
+            let words = (self.node_stride / 4) as usize * self.scene.capacity().nodes as usize;
+            self.node_words.resize(words, 0);
         }
         let mut old: Vec<Option<Node>> = self.nodes.drain(..).map(Some).collect();
         let mut map = vec![None; old.len()];
