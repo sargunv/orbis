@@ -62,8 +62,8 @@ pub struct TileView {
     pub globe: Option<TileGlobe>,
 }
 
-/// A tile on a globe: its patches on the sphere (`orb_crs::sphere`) and the
-/// globe's camera.
+/// A tile on a low-zoom surface: its patches on the sphere
+/// (`orb_crs::sphere`) or a low-zoom plane, and that surface's camera.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TileGlobe {
     pub series: std::sync::Arc<orb_crs::Series<glam::DVec3>>,
@@ -74,6 +74,9 @@ pub struct TileGlobe {
     pub view_proj: glam::DMat4,
     /// The eye's ECEF position: positions beyond its horizon are hidden.
     pub eye: glam::DVec3,
+    /// The patches are on a low-zoom plane rather than the sphere: its
+    /// world units, z up, with no horizon.
+    pub plane: bool,
 }
 
 impl TileView {
@@ -84,8 +87,13 @@ impl TileView {
             return project(&self.matrix, x, y, z);
         };
         let ground = globe.series.position(glam::DVec2::new(x, y) / EXTENT);
-        let raised = ground + ground.normalize() * z.unwrap_or(0.0);
-        if sphere_hides(globe.eye, raised) {
+        let up = if globe.plane {
+            glam::DVec3::Z
+        } else {
+            ground.normalize()
+        };
+        let raised = ground + up * z.unwrap_or(0.0);
+        if !globe.plane && sphere_hides(globe.eye, raised) {
             return Projected {
                 point: Point::new(-10.0, -10.0),
                 w: 1.0,

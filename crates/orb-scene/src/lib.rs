@@ -158,7 +158,7 @@ pub struct FrameLights {
     pub terrain: bool,
 }
 
-/// A globe view's terms (`project.wgsl`): positions on the sphere are
+/// A low-zoom surface's terms (`project.wgsl`), as a globe's; positions on the sphere are
 /// camera-relative ECEF metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameGlobe {
@@ -178,6 +178,9 @@ pub struct FrameGlobe {
     pub metres_per_unit: f32,
     /// The eye, camera-relative: 3D content behind the sphere hides.
     pub eye: [f32; 3],
+    /// The low-zoom surface is a plane, not the sphere: positions are its
+    /// world units, z up, with no horizon.
+    pub plane: bool,
 }
 
 /// What elevated content reads of the terrain's DEM page.
@@ -247,6 +250,7 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
         }
         words[75] = g.amount.to_bits();
         words[76] = g.metres_per_unit.to_bits();
+        words[77] = u32::from(g.plane);
         for (word, v) in words[80..83].iter_mut().zip(g.eye) {
             *word = v.to_bits();
         }

@@ -115,7 +115,7 @@ pub(crate) fn globe_sky(
 /// east, north and up at the target (projected coordinates are eastings
 /// and northings), turned onto the Earth's axes there.
 pub(crate) fn ray_inverse(view: &orb_camera::View, target: Geodetic) -> [[f32; 4]; 4] {
-    let inverse = match view.globe() {
+    let inverse = match view.globe().filter(|g| g.plane.is_none()) {
         Some(globe) => globe.view_proj.inverse(),
         None => glam::DMat4::from_mat3(orb_crs::sphere::frame(target)) * view.view_proj().inverse(),
     };

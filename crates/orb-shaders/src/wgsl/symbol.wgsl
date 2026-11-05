@@ -247,7 +247,7 @@ fn symbol_metres(tile: Tile, p: vec2<f32>) -> f32 {
 // toward the poles: GL JS's pitched text correction, the cosine of the
 // target's latitude over the anchor's, mixed in as the globe hands over.
 fn pitched_correction(tile: Tile, p: vec2<f32>) -> f32 {
-    if frame.globe_amount <= 0.0 {
+    if frame.globe_amount <= 0.0 || frame.globe_plane != 0u {
         return 1.0;
     }
     let up = normalize(tile_ground(tile, p).globe + frame.globe_target);
@@ -259,7 +259,7 @@ fn pitched_correction(tile: Tile, p: vec2<f32>) -> f32 {
 // On a globe, whether the sphere stands between the eye and the symbol's
 // anchor at its height, as GL JS hides symbols behind the planet.
 fn globe_hides_anchor(tile: Tile, p: vec2<f32>) -> bool {
-    if frame.globe_amount <= 0.0 {
+    if frame.globe_amount <= 0.0 || frame.globe_plane != 0u {
         return false;
     }
     let g = tile_ground(tile, p);
@@ -523,12 +523,14 @@ fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32)
     // 0, 1: the first and last glyph; 2, 3: both flipped; 4: this glyph.
     var step = select(4u, 0u, several);
     var first = vec2<f32>(0.0);
+    var placed_glyph = fail;
     loop {
         let offset = select(select(last_offset, first_offset, step % 2u == 0u), own, step == 4u);
         let flipped = select(step >= 2u, flip, step == 4u);
         let glyph = place_glyph(tile, base, placed, anchor, offset, line_offset, flipped);
         if step == 4u {
-            return glyph;
+            placed_glyph = glyph;
+            break;
         }
         if !glyph.ok {
             return fail;
@@ -562,8 +564,7 @@ fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32)
         }
         step += 1u;
     }
-    // Unreachable: step 4 returns.
-    return fail;
+    return placed_glyph;
 }
 
 struct SymbolOut {

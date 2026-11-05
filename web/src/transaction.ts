@@ -16,7 +16,7 @@ export interface Transaction {
   setFeatureState(feature: FeatureTarget, state: Record<string, unknown>): Transaction;
   removeFeatureState(feature: Partial<FeatureTarget>, key?: string): Transaction;
   setStyle(style: object): Transaction;
-  /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"`, `"mercator"`. */
+  /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"`, `"mercator"`, `"equal-earth"`, `"natural-earth"`, `"equirectangular"`, with an optional `transition: [start, end] | false`. */
   setProjection(projection: object): Transaction;
 }
 

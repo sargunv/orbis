@@ -34,6 +34,7 @@ fn write_globe(w: &mut Writer, globe: Option<&TileGlobe>) {
     for v in g.view_proj.to_cols_array() {
         w.f64(v);
     }
+    w.bool(g.plane);
 }
 
 fn read_globe(r: &mut Reader<'_>) -> Result<Option<TileGlobe>, String> {
@@ -74,6 +75,7 @@ fn read_globe(r: &mut Reader<'_>) -> Result<Option<TileGlobe>, String> {
         target,
         view_proj: glam::DMat4::from_cols_array(&m),
         eye,
+        plane: r.bool()?,
     }))
 }
 
@@ -573,6 +575,7 @@ mod tests {
                                 i as f64 * 0.5
                             })),
                             eye: glam::DVec3::new(4.0, 5.0, 6.0),
+                            plane: true,
                         }),
                     },
                     text_size: ZoomSize { size: 16.0, t: 0.5 },

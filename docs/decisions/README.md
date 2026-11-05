@@ -45,3 +45,4 @@ in code and commit messages.
 - [0038](0038-async-pipelines.md): Pipelines compile off the drawing thread, only what the nodes use, under a watchdog
 - [0039](0039-still-and-tile.md): Still and Tile output, and tile-scope placement
 - [0040](0040-first-release-architecture.md): The first-release architecture
+- [0041](0041-adaptive-planes.md): Adaptive projections: low-zoom planes over Web Mercator

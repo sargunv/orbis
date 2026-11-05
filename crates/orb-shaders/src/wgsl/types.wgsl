@@ -40,7 +40,8 @@ struct Frame {
     light_ambient: vec4<f32>,
     light_color: vec4<f32>,
     light_position: vec4<f32>,
-    // The globe (orb-scene's `FrameGlobe`): camera-relative ECEF metres →
+    // The low-zoom surface (orb-scene's `FrameGlobe`), the sphere or a plane
+    // as `globe_plane` says: camera-relative ECEF metres →
     // clip, the horizon plane (`dot(xyz, p) + w`: 1 under the eye, 0 at the
     // horizon), the target's ECEF position, how much of a globe the view
     // is (0 the plane), and metres per plane world unit at the target.
@@ -49,7 +50,9 @@ struct Frame {
     globe_target: vec3<f32>,
     globe_amount: f32,
     globe_metres: f32,
-    _pad5: f32,
+    // 1 when the low-zoom surface is a plane (its world units, z up, no
+    // horizon) rather than the sphere.
+    globe_plane: u32,
     _pad6: vec2<f32>,
     // The eye, camera-relative ECEF metres.
     globe_eye: vec3<f32>,

@@ -1005,7 +1005,7 @@ impl Map {
             let parsed = orb_v8::parse_scene(json).map_err(|d| d.to_string())?;
             self.warnings
                 .extend(parsed.warnings.iter().map(ToString::to_string));
-            self.surface = Surface::new(parsed.projection, parsed.sources);
+            self.surface = Surface::new(parsed.projection, parsed.sources, parsed.globe);
             self.lights = parsed.lights;
             self.atmosphere = parsed.atmosphere;
             return match parsed.style {
@@ -1305,6 +1305,10 @@ impl Map {
         self.start_sprites(gpu, pixel_ratio);
         self.sync_nodes(gpu);
 
+        // Tiles' patches are on the low-zoom surface the style draws on.
+        let plane = self.surface.globe().and_then(|g| g.plane);
+        let (renderer, _) = self.renderer.as_mut().expect("created above");
+        self.globe_warps.set_plane(renderer.scene(), plane);
         let view = self.view(viewport);
         // What this frame draws, for picking.
         let mut drawn = Vec::new();
@@ -1319,8 +1323,10 @@ impl Map {
             .lights
             .as_ref()
             .or(self.style.as_ref().map(|s| &s.worker.plan().style.lights));
+        // The sky over a sphere; a low-zoom plane's is a plane's.
         let globe = view
             .globe()
+            .filter(|g| g.plane.is_none())
             .map(|g| crate::lights::globe_sky(g, &view, &self.camera, lights, zoom));
         self.renderer
             .as_mut()
@@ -1756,18 +1762,25 @@ impl Map {
             .filter(|_| vector)
             .and_then(|warp| warp.series(tile))
             .map(|series| bend_of(series.grid(), [false; 2]));
-        // On a globe, geometry bends with the sphere, and the world's edge
-        // rows reach the poles.
-        if vector && self.surface.globe().is_some() {
+        let footprint = warp.as_mut().and_then(|warp| warp.footprint(tile));
+        let zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
+        // On a low-zoom surface, geometry bends with it, and on the sphere
+        // the world's edge rows reach the poles: in tiles it can show, those
+        // laid out below the zoom it hands over by.
+        if let Some(globe) = self.surface.globe()
+            && vector
+            && globe.handover.is_none_or(|[_, end]| zoom < end)
+        {
             let grid = self.globe_warps.grid(&endpoint.tms, tile);
-            let poles = orb_crs::sphere::poles(&endpoint.tms, tile);
+            let poles = match globe.plane {
+                Some(_) => [false; 2],
+                None => orb_crs::sphere::poles(&endpoint.tms, tile),
+            };
             if grid > 1 || poles.contains(&true) {
                 let cells = bend.map_or(grid, |b| b.cells.max(grid));
                 bend = Some(bend_of(cells, poles));
             }
         }
-        let footprint = warp.as_mut().and_then(|warp| warp.footprint(tile));
-        let zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
         let key = style.worker.plan().sources[index].key;
         let request = TileRequest {
             style: style.id,
@@ -1982,17 +1995,25 @@ impl Map {
         let endpoint = Arc::clone(endpoint);
         let tms = &endpoint.tms;
         pyramid.retry_failed(self.services.clock.now());
-        let cover = match warp {
-            None => view.cover_volume(
+        let cover = match (view.low_plane(), warp.as_mut()) {
+            // On a low-zoom plane every set's tiles land through its warp.
+            (Some(low), _) => {
+                low.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
+                    self.globe_warps.footprint(tms, tile)
+                })
+            }
+            (None, None) => view.cover_volume(
                 tms,
                 endpoint.cover_px,
                 pyramid.max_zoom(),
                 f64::from(height) * elevation_scale,
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
             ),
-            Some(warp) => view.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
-                warp.footprint(tile)
-            }),
+            (None, Some(warp)) => {
+                view.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
+                    warp.footprint(tile)
+                })
+            }
         };
         let update = pyramid.update(&cover);
         let mut requests = Vec::new();
@@ -2675,13 +2696,18 @@ impl Map {
         };
         let zoom = self.camera.zoom(self.surface.projection());
         let tms = self.surface.tms();
-        let cover = view.cover_volume(
-            tms,
-            TILE_PX,
-            24,
-            0.0,
-            elevation.map(|e| e as &dyn orb_camera::Elevation),
-        );
+        let cover = match view.low_plane() {
+            Some(low) => low.cover_warped(tms, TILE_PX, 24, |tile| {
+                self.globe_warps.footprint(tms, tile)
+            }),
+            None => view.cover_volume(
+                tms,
+                TILE_PX,
+                24,
+                0.0,
+                elevation.map(|e| e as &dyn orb_camera::Elevation),
+            ),
+        };
         let period = self.surface.period();
         let at = Placement {
             extent: 8192,
@@ -3919,26 +3945,34 @@ fn placements<'a>(
 /// A globe view's frame terms: its matrix, the target, and the horizon
 /// plane that depth and the far side's clipping come from.
 fn frame_globe(globe: &orb_camera::GlobeView, view: &View) -> orb_render::FrameGlobe {
-    let radius = orb_crs::sphere::RADIUS;
-    let eye = globe.target + globe.eye;
-    let distance = eye.length();
-    let toward = eye / distance;
-    // `facing` is 1 under the eye and 0 at the horizon circle.
-    let horizon = radius * radius / distance;
-    let scale = 1.0 / (radius - horizon).max(1e-9);
-    let n = toward * scale;
-    orb_render::FrameGlobe {
-        view_proj: globe.view_proj.as_mat4().to_cols_array_2d(),
-        target: globe.target.as_vec3().to_array(),
-        amount: globe.amount as f32,
-        horizon: [
+    let plane = globe.plane.is_some();
+    let horizon = if plane {
+        // A plane has no horizon: everything faces the eye.
+        [0.0, 0.0, 0.0, 1.0]
+    } else {
+        let radius = orb_crs::sphere::RADIUS;
+        let eye = globe.target + globe.eye;
+        let distance = eye.length();
+        let toward = eye / distance;
+        // `facing` is 1 under the eye and 0 at the horizon circle.
+        let horizon = radius * radius / distance;
+        let scale = 1.0 / (radius - horizon).max(1e-9);
+        let n = toward * scale;
+        [
             n.x as f32,
             n.y as f32,
             n.z as f32,
             ((globe.target.dot(toward) - horizon) * scale) as f32,
-        ],
+        ]
+    };
+    orb_render::FrameGlobe {
+        view_proj: globe.view_proj.as_mat4().to_cols_array_2d(),
+        target: globe.target.as_vec3().to_array(),
+        amount: globe.amount as f32,
+        horizon,
         metres_per_unit: (globe.metres_per_px / view.world_per_px()) as f32,
         eye: globe.eye.as_vec3().to_array(),
+        plane,
     }
 }
 

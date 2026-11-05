@@ -55,7 +55,7 @@ pub use source::{
 pub use sprite::Sprite;
 pub use terrain::Terrain;
 
-use orb_expr::json::{self, Json, Member};
+use orb_expr::json::{self, Json, JsonValue, Member};
 
 /// A parsed style.
 #[derive(Clone, Debug)]
@@ -407,10 +407,14 @@ pub fn parse_projection(
     (globe, cx.diagnostics.warnings)
 }
 
-/// v8 `projection.type`: `mercator`, `globe` (GL JS's interpolation from
-/// a vertical perspective through zoom 11 to Mercator from zoom 12) or
-/// `vertical-perspective`, or that interpolation with other zooms. Others
-/// warn and stay Web Mercator.
+/// v8 `projection`: a `type` of `mercator`, `globe` (GL JS's
+/// interpolation from a vertical perspective through zoom 11 to Mercator
+/// from zoom 12), `vertical-perspective` or a low-zoom plane
+/// (style-spec#1865: `equal-earth`, `natural-earth`, `equirectangular`,
+/// handing over to Mercator between zooms 6 and 7), or GL JS's zoom
+/// interpolation from one of them to `mercator`; and style-spec#1866's
+/// `transition`, `[start, end]` or `false`, which replaces the zooms it
+/// hands over between. Others warn and stay Web Mercator.
 fn parse_globe(cx: &mut Cx, json: &Json) -> Option<orb_crs::Globe> {
     let path = "projection.type";
     let ty = json.get("type")?;
@@ -418,7 +422,7 @@ fn parse_globe(cx: &mut Cx, json: &Json) -> Option<orb_crs::Globe> {
         cx.warn(
             path,
             ty.span,
-            "only \"mercator\", \"globe\", \"vertical-perspective\" and zoom interpolations between the last and \"mercator\" are supported; drawing Web Mercator",
+            "only \"mercator\", \"globe\", \"vertical-perspective\", \"equal-earth\", \"natural-earth\", \"equirectangular\" and zoom interpolations from the last four to \"mercator\" are supported; drawing Web Mercator",
         );
         None
     };
@@ -433,47 +437,88 @@ fn parse_globe(cx: &mut Cx, json: &Json) -> Option<orb_crs::Globe> {
         }
         _ => None,
     });
-    if let Some(name) = from_state.as_deref().or(ty.as_str()) {
-        return match name {
-            "mercator" => None,
-            "globe" => Some(orb_crs::Globe::V8),
-            "vertical-perspective" => Some(orb_crs::Globe { handover: None }),
-            _ => unsupported(cx),
-        };
+    let (low, handover) = if let Some(name) = from_state.as_deref().or(ty.as_str()) {
+        if name == "mercator" {
+            return None;
+        }
+        match low_surface(name) {
+            Some((low, handover)) => (low, handover),
+            None => return unsupported(cx),
+        }
+    } else {
+        // ["interpolate", ["linear"], ["zoom"], z0, low, z1, "mercator"]
+        let items = ty.as_array()?;
+        let text = |k: usize| items.get(k).and_then(Json::as_str);
+        let number = |k: usize| items.get(k).and_then(Json::as_f64);
+        let linear = items
+            .get(1)
+            .and_then(Json::as_array)
+            .is_some_and(|a| a.first().and_then(Json::as_str) == Some("linear"));
+        let zoom = items
+            .get(2)
+            .and_then(Json::as_array)
+            .is_some_and(|a| a.len() == 1 && a[0].as_str() == Some("zoom"));
+        let low = text(4).filter(|&t| t != "globe").and_then(low_surface);
+        match (text(0), linear, zoom, number(3), low, number(5), text(6)) {
+            (
+                Some("interpolate"),
+                true,
+                true,
+                Some(from),
+                Some((low, _)),
+                Some(to),
+                Some("mercator"),
+            ) if items.len() == 7 && from < to => (low, Some([from, to])),
+            _ => return unsupported(cx),
+        }
+    };
+    let handover = match json.get("transition") {
+        None => handover,
+        Some(t) => match parse_transition(t) {
+            Some(transition) => transition,
+            None => {
+                cx.warn(
+                    "projection.transition",
+                    t.span,
+                    "expected [start, end] zooms with start < end, or false",
+                );
+                handover
+            }
+        },
+    };
+    Some(orb_crs::Globe {
+        handover,
+        plane: low,
+    })
+}
+
+/// A low-zoom surface v8 names: the sphere (`None`) or a plane, and the
+/// zooms it hands over to Mercator between by default.
+fn low_surface(name: &str) -> Option<(Option<orb_crs::Projection>, Option<[f64; 2]>)> {
+    match name {
+        "globe" => Some((None, orb_crs::Globe::V8.handover)),
+        "vertical-perspective" => Some((None, None)),
+        "equal-earth" | "natural-earth" | "equirectangular" => Some((
+            orb_crs::Projection::from_descriptor(name).ok(),
+            Some(orb_crs::Globe::PLANE_HANDOVER),
+        )),
+        _ => None,
     }
-    // ["interpolate", ["linear"], ["zoom"], z0, "vertical-perspective", z1, "mercator"]
-    let items = ty.as_array()?;
-    let text = |k: usize| items.get(k).and_then(Json::as_str);
-    let number = |k: usize| items.get(k).and_then(Json::as_f64);
-    let linear = items
-        .get(1)
-        .and_then(Json::as_array)
-        .is_some_and(|a| a.first().and_then(Json::as_str) == Some("linear"));
-    let zoom = items
-        .get(2)
-        .and_then(Json::as_array)
-        .is_some_and(|a| a.len() == 1 && a[0].as_str() == Some("zoom"));
-    match (
-        text(0),
-        linear,
-        zoom,
-        number(3),
-        text(4),
-        number(5),
-        text(6),
-    ) {
-        (
-            Some("interpolate"),
-            true,
-            true,
-            Some(from),
-            Some("vertical-perspective"),
-            Some(to),
-            Some("mercator"),
-        ) if items.len() == 7 && from < to => Some(orb_crs::Globe {
-            handover: Some([from, to]),
-        }),
-        _ => unsupported(cx),
+}
+
+/// style-spec#1866's `transition`: `[start, end]` zooms, or `false` for no
+/// handover. `None` if it is neither.
+pub(crate) fn parse_transition(json: &Json) -> Option<Option<[f64; 2]>> {
+    match &json.value {
+        JsonValue::Bool(false) => Some(None),
+        JsonValue::Array(zooms) => match zooms.as_slice() {
+            [a, b] => {
+                let (a, b) = (a.as_f64()?, b.as_f64()?);
+                (a < b).then_some(Some([a, b]))
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 

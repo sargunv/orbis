@@ -29,6 +29,11 @@ pub struct Scene {
     pub style: StyleRef,
     /// The surface's projection; Web Mercator when absent.
     pub projection: Option<Projection>,
+    /// A low-zoom plane the surface's tiles draw on before handing over to
+    /// it: a `projection` with a `transition` (style-spec#1866), or one
+    /// that adapts by default (`equal-earth`, `natural-earth`,
+    /// `equirectangular`). Its plane is then Web Mercator.
+    pub globe: Option<orb_crs::Globe>,
     /// Tile matrix sets of sources by source id; the rest use
     /// `WebMercatorQuad`.
     pub sources: Vec<(String, TileMatrixSet)>,
@@ -153,9 +158,22 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
     if !cx.diagnostics.errors.is_empty() {
         return Err(cx.diagnostics);
     }
+    // An adapting projection is a low-zoom plane over Web Mercator.
+    let (projection, globe) = match projection {
+        Some((plane, Some(handover))) => (
+            None,
+            Some(orb_crs::Globe {
+                handover: Some(handover),
+                plane: Some(plane),
+            }),
+        ),
+        Some((plane, None)) => (Some(plane), None),
+        None => (None, None),
+    };
     Ok(Scene {
         style,
         projection,
+        globe,
         sources,
         lights,
         atmosphere,
@@ -163,13 +181,33 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
     })
 }
 
-/// A projection descriptor: `{"type": ..., <PROJ-named parameters>}`.
-pub(crate) fn parse_projection(cx: &mut Cx, json: &Json, path: &str) -> Option<Projection> {
+/// A projection descriptor: `{"type": ..., <PROJ-named parameters>}`,
+/// and the zooms it hands over to Web Mercator between: its `transition`,
+/// or by default `[6, 7]` for `equal-earth`, `natural-earth` and
+/// `equirectangular` and none for the rest, which may well be the plane
+/// their data is on.
+pub(crate) fn parse_projection(
+    cx: &mut Cx,
+    json: &Json,
+    path: &str,
+) -> Option<(Projection, Option<[f64; 2]>)> {
     let members = cx.object(json, path)?;
     let mut descriptor = Descriptor::default();
+    let mut transition = None;
     for m in members {
         match (m.key.as_str(), &m.value.value) {
             ("type", JsonValue::String(kind)) => descriptor.kind = kind.clone(),
+            ("transition", _) => match crate::parse_transition(&m.value) {
+                Some(t) => transition = Some(t),
+                None => {
+                    cx.error(
+                        format!("{path}.transition"),
+                        m.value.span,
+                        "expected [start, end] zooms with start < end, or false",
+                    );
+                    return None;
+                }
+            },
             (key, JsonValue::Number(n)) if key != "type" => {
                 descriptor.params.push((key.to_string(), *n));
             }
@@ -179,8 +217,13 @@ pub(crate) fn parse_projection(cx: &mut Cx, json: &Json, path: &str) -> Option<P
             }
         }
     }
+    let adapts = matches!(
+        descriptor.kind.as_str(),
+        "equal-earth" | "natural-earth" | "equirectangular"
+    );
+    let handover = transition.unwrap_or(adapts.then_some(orb_crs::Globe::PLANE_HANDOVER));
     match Projection::new(&descriptor) {
-        Ok(p) => Some(p),
+        Ok(p) => Some((p, handover)),
         Err(e) => {
             cx.error(path, json.span, e.to_string());
             None
@@ -318,6 +361,33 @@ mod tests {
         assert_eq!(gibs.matrix_size(0), (2, 2));
         // 8,192 m pixels, 512 per tile.
         assert!((gibs.tile_span(0) - 4_194_304.0).abs() < 1e-3);
+        assert_eq!(scene.globe, None, "national planes stay fixed");
+    }
+
+    #[test]
+    fn world_planes_adapt_to_mercator() {
+        let scene = |projection: &str| {
+            parse_scene(&format!(
+                r#"{{"style": "s.json", "projection": {projection}}}"#
+            ))
+            .unwrap()
+        };
+        let equal_earth = Projection::from_descriptor("equal-earth").unwrap();
+        let adaptive = scene(r#"{"type": "equal-earth"}"#);
+        assert_eq!(adaptive.projection, None);
+        assert_eq!(
+            adaptive.globe,
+            Some(orb_crs::Globe {
+                handover: Some([6.0, 7.0]),
+                plane: Some(equal_earth),
+            })
+        );
+        let fixed = scene(r#"{"type": "equal-earth", "transition": false}"#);
+        assert_eq!((fixed.projection, fixed.globe), (Some(equal_earth), None));
+        let utm = scene(r#"{"type": "EPSG:32633", "transition": [8, 9]}"#);
+        assert_eq!(utm.projection, None);
+        assert_eq!(utm.globe.unwrap().handover, Some([8.0, 9.0]));
+        assert!(parse_scene(r#"{"style": "s.json", "projection": {"type": "equal-earth", "transition": [9, 8]}}"#).is_err());
     }
 
     #[test]

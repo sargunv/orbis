@@ -88,9 +88,9 @@ fn plane_scale_at(tile: Tile, p: vec2<f32>) -> f32 {
     return sqrt(abs(ds.x * dt.y - ds.y * dt.x)) * per_unit;
 }
 
-// On a globe (frame.globe_amount > 0), every tile's patches are in space:
-// nine nodes' camera-relative ECEF metres, 27 f32, around its row's
-// `globe_origin`.
+// On a low-zoom surface (frame.globe_amount > 0), every tile's patches are
+// in space: nine nodes' camera-relative ECEF metres (on a low-zoom plane,
+// its world units at height 0), 27 f32, around its row's `globe_origin`.
 fn globe_patch(tile: Tile, p: vec2<f32>) -> vec3<f32> {
     let c = warp_cell(tile, tile.globe_cells, p);
     return vec3<f32>(c.xy, f32(tile.globe_base + u32(c.z) * 27u));
@@ -143,7 +143,7 @@ fn tile_ground(tile: Tile, p: vec2<f32>) -> Ground {
     let north = p.y <= -32767.5;
     if north || p.y >= 32766.5 {
         var g = tile_surface(tile, vec2<f32>(clamp(p.x, 0.0, tile.extent), select(tile.extent, 0.0, north)));
-        if frame.globe_amount > 0.0 && reaches_pole(tile, north) {
+        if frame.globe_amount > 0.0 && frame.globe_plane == 0u && reaches_pole(tile, north) {
             g.globe = vec3<f32>(0.0, 0.0, select(-SPHERE_RADIUS, SPHERE_RADIUS, north)) - frame.globe_target;
             g.pole = true;
         }
@@ -228,6 +228,15 @@ fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<
     let flat = frame.view_proj * vec4<f32>(g.flat + offset, z, 1.0);
     if frame.globe_amount <= 0.0 {
         return flat;
+    }
+    if frame.globe_plane != 0u {
+        // A low-zoom plane: moved and raised in its own units, the two
+        // planes' clip positions mixed as it hands over.
+        let low = frame.globe_view_proj * vec4<f32>(g.globe + vec3<f32>(offset, z) * frame.globe_metres, 1.0);
+        if !g.on_plane || frame.globe_amount >= 1.0 {
+            return low;
+        }
+        return mix(flat, low, frame.globe_amount);
     }
     let up = normalize(g.globe + frame.globe_target);
     var p = g.globe + up * (z * frame.globe_metres);

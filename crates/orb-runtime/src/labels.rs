@@ -1218,6 +1218,7 @@ impl Labels {
                                         target: globe.target,
                                         view_proj: globe.view_proj,
                                         eye: globe.target + globe.eye,
+                                        plane: globe.plane.is_some(),
                                     }
                                 }),
                             },

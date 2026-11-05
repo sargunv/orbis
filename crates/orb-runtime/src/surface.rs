@@ -16,9 +16,11 @@ pub(crate) struct Surface {
     tms: TileMatrixSet,
     /// Sources' tile matrix sets by source id, from the scene document.
     sources: Vec<(String, TileMatrixSet)>,
-    /// The style's globe (v8 `projection`), which the plane's tiles wrap
-    /// at low zoom.
+    /// The low-zoom surface the plane's tiles draw on: the scene
+    /// document's, else the style's (v8 `projection`).
     globe: Option<orb_crs::Globe>,
+    /// The scene document's low-zoom plane, which the style's can't replace.
+    scene_globe: Option<orb_crs::Globe>,
 }
 
 /// What job workers need of the surface: the plane GeoJSON tiles in, and
@@ -63,17 +65,19 @@ impl Default for Surface {
             tms,
             sources: Vec::new(),
             globe: None,
+            scene_globe: None,
         }
     }
 }
 
 impl Surface {
     /// A surface on `projection` (Web Mercator if `None`) with the scene
-    /// document's tile matrix sets. The plane's extent is that of the first
-    /// source set on it, or else the projection's own.
+    /// document's tile matrix sets and low-zoom plane. The plane's extent
+    /// is that of the first source set on it, or else the projection's own.
     pub(crate) fn new(
         projection: Option<Projection>,
         sources: Vec<(String, TileMatrixSet)>,
+        globe: Option<orb_crs::Globe>,
     ) -> Self {
         let mercator = Self::default();
         let projection = projection.unwrap_or(mercator.projection);
@@ -92,7 +96,8 @@ impl Surface {
             projection: *tms.projection(),
             tms,
             sources,
-            globe: None,
+            globe,
+            scene_globe: globe,
         }
     }
 
@@ -112,9 +117,10 @@ impl Surface {
         self.globe
     }
 
-    /// Wraps the plane's tiles around a globe at low zoom, or not.
+    /// Draws the plane's tiles on the style's low-zoom surface (a globe,
+    /// or another plane), or not, unless the scene document chose one.
     pub(crate) fn set_globe(&mut self, globe: Option<orb_crs::Globe>) {
-        self.globe = globe;
+        self.globe = self.scene_globe.or(globe);
     }
 
     /// The tile matrix set backgrounds and GeoJSON use.
@@ -174,7 +180,7 @@ impl Surface {
     pub(crate) fn with_projection(&self, projection: Projection) -> Self {
         Self {
             globe: self.globe,
-            ..Self::new(Some(projection), self.sources.clone())
+            ..Self::new(Some(projection), self.sources.clone(), self.scene_globe)
         }
     }
 
@@ -221,7 +227,8 @@ pub fn projection_to_json(projection: &Projection) -> String {
 
 /// A surface as JSON, for the web ui role's camera: its projection as in
 /// [`projection_to_json`], and `"globe": [from, to]` (the zooms it hands
-/// over between) or `"globe": true` (a globe at every zoom) if it has one.
+/// over between) or `"globe": true` (at every zoom) if it has a low-zoom
+/// surface, with `"lowPlane"` its plane's descriptor if it isn't a sphere.
 pub fn surface_to_json(surface: &orb_crs::Surface) -> String {
     let projection = &surface.projection;
     let synthetic = |value| Json::new(value, Default::default());
@@ -230,21 +237,25 @@ pub fn surface_to_json(surface: &orb_crs::Surface) -> String {
         key_span: Default::default(),
         value,
     };
-    let descriptor = projection.descriptor();
-    let mut fields = vec![member(
-        "type",
-        synthetic(JsonValue::String(descriptor.kind)),
-    )];
-    fields.extend(
-        descriptor
-            .params
-            .into_iter()
-            .map(|(name, value)| member(&name, synthetic(JsonValue::Number(value)))),
-    );
+    let descriptor_json = |projection: &Projection| {
+        let descriptor = projection.descriptor();
+        let mut fields = vec![member(
+            "type",
+            synthetic(JsonValue::String(descriptor.kind)),
+        )];
+        fields.extend(
+            descriptor
+                .params
+                .into_iter()
+                .map(|(name, value)| member(&name, synthetic(JsonValue::Number(value)))),
+        );
+        synthetic(JsonValue::Object(fields))
+    };
+    let fields = descriptor_json(projection);
     let b = projection.world_bounds();
     let extent = [b.min.x, b.min.y, b.max.x, b.max.y].map(|v| synthetic(JsonValue::Number(v)));
     let mut members = vec![
-        member("projection", synthetic(JsonValue::Object(fields))),
+        member("projection", fields),
         member("extent", synthetic(JsonValue::Array(extent.to_vec()))),
     ];
     if let Some(globe) = surface.globe {
@@ -255,6 +266,9 @@ pub fn surface_to_json(surface: &orb_crs::Surface) -> String {
             None => JsonValue::Bool(true),
         };
         members.push(member("globe", synthetic(value)));
+        if let Some(plane) = &globe.plane {
+            members.push(member("lowPlane", descriptor_json(plane)));
+        }
     }
     synthetic(JsonValue::Object(members)).to_string()
 }
@@ -335,14 +349,19 @@ pub fn surface_from_json(text: &str) -> Result<orb_crs::Surface, String> {
         .get("projection")
         .and_then(Json::as_object)
         .ok_or_else(bad)?;
-    let mut descriptor = Descriptor::default();
-    for m in fields {
-        match (m.key.as_str(), &m.value.value) {
-            ("type", JsonValue::String(kind)) => descriptor.kind = kind.clone(),
-            (name, JsonValue::Number(value)) => descriptor.params.push((name.to_string(), *value)),
-            _ => return Err(bad()),
+    let descriptor = |fields: &[Member]| {
+        let mut descriptor = Descriptor::default();
+        for m in fields {
+            match (m.key.as_str(), &m.value.value) {
+                ("type", JsonValue::String(kind)) => descriptor.kind = kind.clone(),
+                (name, JsonValue::Number(value)) => {
+                    descriptor.params.push((name.to_string(), *value));
+                }
+                _ => return Err(bad()),
+            }
         }
-    }
+        Projection::new(&descriptor).map_err(|e| e.to_string())
+    };
     let extent = doc
         .get("extent")
         .and_then(Json::as_array)
@@ -351,15 +370,23 @@ pub fn surface_from_json(text: &str) -> Result<orb_crs::Surface, String> {
         .iter()
         .map(|v| v.as_f64().ok_or_else(bad))
         .collect::<Result<Vec<_>, String>>()?;
-    let projection = Projection::new(&descriptor).map_err(|e| e.to_string())?;
+    let projection = descriptor(fields)?;
+    let plane = match doc.get("lowPlane") {
+        Some(low) => Some(descriptor(low.as_object().ok_or_else(bad)?)?),
+        None => None,
+    };
     let globe = match doc.get("globe").map(|g| &g.value) {
         None => None,
-        Some(JsonValue::Bool(true)) => Some(orb_crs::Globe { handover: None }),
+        Some(JsonValue::Bool(true)) => Some(orb_crs::Globe {
+            handover: None,
+            plane,
+        }),
         Some(JsonValue::Array(zooms)) if zooms.len() == 2 => Some(orb_crs::Globe {
             handover: Some([
                 zooms[0].as_f64().ok_or_else(bad)?,
                 zooms[1].as_f64().ok_or_else(bad)?,
             ]),
+            plane,
         }),
         Some(_) => return Err(bad()),
     };
@@ -382,6 +409,7 @@ mod tests {
         let surface = Surface::new(
             Some(*nztm.projection()),
             vec![("linz".into(), nztm.clone())],
+            None,
         );
         // The plane's extent is the source set's.
         assert_eq!(surface.projection(), nztm.projection());
@@ -394,7 +422,11 @@ mod tests {
         for globe in [
             None,
             Some(orb_crs::Globe::V8),
-            Some(orb_crs::Globe { handover: None }),
+            Some(orb_crs::Globe::SPHERE),
+            Some(orb_crs::Globe {
+                handover: Some([6.0, 7.0]),
+                plane: Some(Projection::from_descriptor("equal-earth").unwrap()),
+            }),
         ] {
             let mercator = orb_crs::Surface {
                 globe,

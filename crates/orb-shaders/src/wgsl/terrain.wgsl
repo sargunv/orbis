@@ -129,7 +129,7 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
         // do.
         let north = cell.y == 0.0 && (tile.poles & 1u) != 0u;
         let south = cell.y == f32(GRID) && (tile.poles & 2u) != 0u;
-        if skirt != 0u && (north || south) {
+        if skirt != 0u && (north || south) && frame.globe_plane == 0u {
             g.globe = vec3<f32>(0.0, 0.0, select(-SPHERE_RADIUS, SPHERE_RADIUS, north)) - frame.globe_target;
             z = 0.0;
         }

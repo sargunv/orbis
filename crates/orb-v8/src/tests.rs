@@ -557,7 +557,7 @@ fn projections_parse_to_globes() {
     assert_eq!(globe(r#"{"type": "globe"}"#), (Some(orb_crs::Globe::V8), 0));
     assert_eq!(
         globe(r#"{"type": "vertical-perspective"}"#),
-        (Some(orb_crs::Globe { handover: None }), 0)
+        (Some(orb_crs::Globe::SPHERE), 0)
     );
     assert_eq!(
         globe(
@@ -565,12 +565,53 @@ fn projections_parse_to_globes() {
         ),
         (
             Some(orb_crs::Globe {
-                handover: Some([5.0, 7.0])
+                handover: Some([5.0, 7.0]),
+                plane: None,
             }),
             0
         )
     );
-    assert_eq!(globe(r#"{"type": "equal-earth"}"#), (None, 1));
+    // style-spec#1865 and #1866: low-zoom planes, and transitions.
+    let equal_earth = orb_crs::Projection::from_descriptor("equal-earth").ok();
+    assert_eq!(
+        globe(r#"{"type": "equal-earth"}"#),
+        (
+            Some(orb_crs::Globe {
+                handover: Some([6.0, 7.0]),
+                plane: equal_earth,
+            }),
+            0
+        )
+    );
+    assert_eq!(
+        globe(r#"{"type": "equal-earth", "transition": false}"#),
+        (
+            Some(orb_crs::Globe {
+                handover: None,
+                plane: equal_earth,
+            }),
+            0
+        )
+    );
+    assert_eq!(
+        globe(r#"{"type": "globe", "transition": [4, 5]}"#),
+        (
+            Some(orb_crs::Globe {
+                handover: Some([4.0, 5.0]),
+                plane: None,
+            }),
+            0
+        )
+    );
+    assert_eq!(
+        globe(r#"{"type": "globe", "transition": false}"#),
+        (Some(orb_crs::Globe::SPHERE), 0)
+    );
+    assert_eq!(
+        globe(r#"{"type": "globe", "transition": [5, 4]}"#),
+        (Some(orb_crs::Globe::V8), 1)
+    );
+    assert_eq!(globe(r#"{"type": "lcc"}"#), (None, 1));
 }
 
 #[test]
@@ -580,7 +621,7 @@ fn projections_read_the_global_state() {
             "projection": {"type": ["global-state", "kind"]}, "sources": {}, "layers": []}"#,
     )
     .unwrap();
-    assert_eq!(style.globe, Some(orb_crs::Globe { handover: None }));
+    assert_eq!(style.globe, Some(orb_crs::Globe::SPHERE));
     let state = vec![("kind".to_string(), Value::String("mercator".into()))];
     let json = orb_expr::json::parse(r#"{"type": ["global-state", "kind"]}"#).unwrap();
     assert_eq!(parse_projection(&json, &state).0, None);

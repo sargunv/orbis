@@ -1,5 +1,5 @@
 {
   "style": "https://tiles.openfreemap.org/styles/liberty",
-  "projection": {"type": "EPSG:8857"},
+  "projection": {"type": "equal-earth"},
   "surface": "plane"
 }
