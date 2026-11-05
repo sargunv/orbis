@@ -38,3 +38,4 @@ in code and commit messages.
 - [0031](0031-paint-transitions.md): Paint transitions over by-name paint in the Style IR
 - [0032](0032-raster-tiles-make-room.md): Raster tiles make room like vector tiles
 - [0033](0033-layer-blend.md): Layer blends: one composite, backdrop reads by splitting the main pass
+- [0034](0034-image-sources.md): Image sources: one tile, a warped grid, on every surface

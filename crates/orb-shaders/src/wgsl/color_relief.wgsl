@@ -32,7 +32,7 @@ fn fs_color_relief(in: ImageOut) -> @location(0) vec4<f32> {
     let dimension = f32(textureDimensions(images).x);
     let epsilon = 2.0 / dimension;
     let scale = (dimension - 4.0) / dimension;
-    let v_pos = (in.tile_pos / IMAGE_EXTENT) * scale + epsilon;
+    let v_pos = (image_pos(in) / IMAGE_EXTENT) * scale + epsilon;
     let el = dem_elevation(sample_image(in, v_pos, node.nearest), node.unpack);
 
     // Binary search.

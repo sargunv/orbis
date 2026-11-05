@@ -18,10 +18,20 @@ pub enum SourceKind {
     GeoJson(GeoJsonSource),
     Raster(RasterSource),
     RasterDem(RasterDemSource),
-    /// A v8 source type Orbis doesn't load yet (`image`, `video`).
+    Image(ImageSource),
+    /// A v8 source type Orbis doesn't load yet (`video`).
     Unsupported {
         ty: String,
     },
+}
+
+/// An `image` source: one image on four geographic corners.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageSource {
+    pub url: String,
+    /// Longitude and latitude of the image's top left, top right, bottom
+    /// right and bottom left corners.
+    pub coordinates: [[f64; 2]; 4],
 }
 
 /// A `geojson` source, ready for the tile worker to index.
@@ -180,6 +190,7 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
         "geojson" => SourceKind::GeoJson(parse_geojson_source(cx, json, path)?),
         "raster" => SourceKind::Raster(parse_raster(cx, json, path)?),
         "raster-dem" => SourceKind::RasterDem(parse_raster_dem(cx, json, path)?),
+        "image" => SourceKind::Image(parse_image(cx, json, path)?),
         _ => {
             cx.warn(
                 type_path,
@@ -192,6 +203,37 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
     Some(Source {
         id: id.to_string(),
         kind,
+    })
+}
+
+fn parse_image(cx: &mut Cx, json: &Json, path: &str) -> Option<ImageSource> {
+    let url_path = format!("{path}.url");
+    let Some(url) = json.get("url") else {
+        cx.error(path, json.span, "missing required property \"url\"");
+        return None;
+    };
+    let url = cx.string(url, &url_path)?;
+    let coordinates_path = format!("{path}.coordinates");
+    let Some(coordinates) = json.get("coordinates") else {
+        cx.error(path, json.span, "missing required property \"coordinates\"");
+        return None;
+    };
+    let corners = cx.array(coordinates, &coordinates_path)?;
+    if corners.len() != 4 {
+        cx.error(
+            coordinates_path,
+            coordinates.span,
+            format!("array length 4 expected, length {} found", corners.len()),
+        );
+        return None;
+    }
+    let mut out = [[0.0; 2]; 4];
+    for (i, corner) in corners.iter().enumerate() {
+        out[i] = cx.numbers::<2>(corner, &format!("{coordinates_path}[{i}]"))?;
+    }
+    Some(ImageSource {
+        url,
+        coordinates: out,
     })
 }
 

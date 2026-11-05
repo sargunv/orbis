@@ -12,6 +12,7 @@ mod cover;
 mod epsg;
 mod family;
 mod projection;
+mod quad;
 pub mod sphere;
 mod surface;
 mod tms;
@@ -19,6 +20,7 @@ mod warp;
 
 pub use cover::{CoverDecision, CoveredTile};
 pub use projection::{Descriptor, Projection, UnknownProjection};
+pub use quad::ImageQuad;
 pub use surface::{Globe, Surface};
 pub use tms::{
     TileIndex, TileMatrix, TileMatrixSet, TileMatrixSetDefinition, UnknownTileMatrixSet,

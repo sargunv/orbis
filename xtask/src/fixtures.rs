@@ -22,7 +22,7 @@ const COMMIT: &str = "2b68611a4e2d4f7f076f6c6ebf758e2d53f91471";
 
 /// The mirror's [`content_hash`] at [`COMMIT`]. Changing the pin changes it:
 /// a fetch that doesn't match reports the hash it got, for review.
-const MIRROR_SHA256: &str = "d1143ef2a7d1363bf8699226e5a7271675a3192e42b8b056a1ae16e38e51b0d6";
+const MIRROR_SHA256: &str = "659bd97130da7fd0a0d3dee71634554bb8249a38a0334a423431c7a4cf8a7d98";
 
 /// The test directory prefixes the mirrored milestones need, for the render and
 /// query suites alike. Matching is by prefix, so `fill-` already covers
@@ -30,7 +30,7 @@ const MIRROR_SHA256: &str = "d1143ef2a7d1363bf8699226e5a7271675a3192e42b8b056a1a
 /// because upstream names those directories exactly that. The style
 /// engine's directories (`runtime-styling` and the feature and global state
 /// ones) drive maps through `operations`.
-const PREFIXES: [&str; 23] = [
+const PREFIXES: [&str; 25] = [
     "background-",
     "circle-",
     "color-relief",
@@ -41,6 +41,8 @@ const PREFIXES: [&str; 23] = [
     "heatmap-",
     "hillshade-",
     "icon-",
+    // `image` and `video` sources.
+    "image",
     "light",
     "line-",
     // The globe and its vertical perspective (decision 0030), and the
@@ -54,6 +56,7 @@ const PREFIXES: [&str; 23] = [
     "symbol-",
     "terrain",
     "text-",
+    "video",
     "visibility",
     "zoom-history",
 ];

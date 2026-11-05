@@ -1045,6 +1045,15 @@ impl Map {
                     &mut self.warnings,
                 ),
             },
+            (SourceKind::Image(image), _) => ready_source(
+                Ok((
+                    TileEndpoint::image(image, self.surface.projection()),
+                    Plan::Affine,
+                )),
+                &source.id,
+                true,
+                &mut self.warnings,
+            ),
             (SourceKind::GeoJson(geojson), _) => ready_source(
                 self.planned(&source.id, true, None)
                     .map(|(tms, warp)| (TileEndpoint::geojson(geojson, tms), warp)),
@@ -1370,7 +1379,7 @@ impl Map {
                         &mut self.globe_warps,
                         globe,
                         warp.as_deref_mut(),
-                        &endpoint.tms,
+                        endpoint,
                         tile,
                     ) else {
                         continue;
@@ -1387,13 +1396,15 @@ impl Map {
                     }
                     // A warped image draws through planar patches only on a
                     // globe surface; elsewhere through its warp's mesh.
-                    renderer
-                        .scene()
-                        .remove_warp(std::mem::take(&mut resident.warp));
-                    resident.series = None;
-                    if let Some(warp) = warp.as_mut().filter(|_| globe) {
-                        planar_patches(gpu, renderer, warp, tile, resident, &mut self.warnings);
-                    }
+                    image_patches(
+                        gpu,
+                        renderer,
+                        warp.as_deref_mut(),
+                        globe,
+                        tile,
+                        resident,
+                        &mut self.warnings,
+                    );
                     for &(i, key) in &nodes {
                         if image::add_node(gpu, renderer, resident, tile, i, key).is_err() {
                             self.warnings
@@ -2726,7 +2737,7 @@ impl Map {
                 &mut self.globe_warps,
                 globe,
                 warp.as_deref_mut(),
-                &endpoint.tms,
+                endpoint,
                 tile,
             ) else {
                 // Nothing of the tile reaches the surface.
@@ -2779,18 +2790,15 @@ impl Map {
             };
             match uploaded {
                 Ok(mut resident) => {
-                    // On a globe, a warped image draws in its own space:
-                    // through planar patches on the plane.
-                    if let Some(warp) = warp.as_mut().filter(|_| globe) {
-                        planar_patches(
-                            gpu,
-                            renderer,
-                            warp,
-                            tile,
-                            &mut resident,
-                            &mut self.warnings,
-                        );
-                    }
+                    image_patches(
+                        gpu,
+                        renderer,
+                        warp.as_deref_mut(),
+                        globe,
+                        tile,
+                        &mut resident,
+                        &mut self.warnings,
+                    );
                     if let Some(unwanted) = pyramid.insert(tile, resident) {
                         self.retired_ramps.extend(remove_resident(
                             renderer,
@@ -3767,6 +3775,30 @@ fn planar_patches(
     resident.series = Some(series);
 }
 
+/// Cells per side of an image source's grid: GL JS's granularity for warped
+/// image quads.
+const IMAGE_SOURCE_CELLS: u32 = 16;
+
+/// Gives an image tile the patches it draws through: on a globe surface, a
+/// warped source's planar patches.
+fn image_patches(
+    gpu: &mut dyn Gpu,
+    renderer: &mut Renderer,
+    warp: Option<&mut WarpState>,
+    globe: bool,
+    tile: TileIndex,
+    resident: &mut ResidentTile,
+    warnings: &mut Vec<String>,
+) {
+    renderer
+        .scene()
+        .remove_warp(std::mem::take(&mut resident.warp));
+    resident.series = None;
+    if let Some(warp) = warp.filter(|_| globe) {
+        planar_patches(gpu, renderer, warp, tile, resident, warnings);
+    }
+}
+
 /// An image tile's mesh: on a globe, a grid in the tile's own space that
 /// the sphere and the plane's patches bend; on another plane, the warp's
 /// mesh; else `None` for its quad. `Err` when nothing of it reaches the
@@ -3775,9 +3807,24 @@ fn image_mesh(
     globe_warps: &mut crate::globe::GlobeWarps,
     globe: bool,
     warp: Option<&mut WarpState>,
-    tms: &TileMatrixSet,
+    endpoint: &TileEndpoint,
     tile: TileIndex,
 ) -> Result<Option<Arc<image::Warped>>, ()> {
+    let tms = &endpoint.tms;
+    // An image source: its quad's warp at the vertices of a grid over the
+    // image, in its one tile; on a globe, as fine as the sphere bends.
+    if let Some(quad) = &endpoint.quad {
+        let cells = if globe {
+            globe_warps.grid(tms, tile).max(IMAGE_SOURCE_CELLS)
+        } else {
+            IMAGE_SOURCE_CELLS
+        };
+        return Ok(Some(Arc::new(image::Warped::quad(
+            tms.tile_bounds(tile),
+            quad,
+            cells,
+        ))));
+    }
     match warp {
         Some(warp) if !globe => image::Warped::new(&warp.warp, tile)
             .map(|mesh| Some(Arc::new(mesh)))

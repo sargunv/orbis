@@ -272,11 +272,11 @@ impl StylePlan {
                     );
                     continue;
                 }
-                Some(SourceKind::Raster(_) | SourceKind::RasterDem(_)) => {}
+                Some(SourceKind::Raster(_) | SourceKind::RasterDem(_) | SourceKind::Image(_)) => {}
                 _ => {
                     warn(
                         index,
-                        "only vector, GeoJSON, raster and raster-dem sources are drawn yet",
+                        "only vector, GeoJSON, raster, raster-dem and image sources are drawn yet",
                     );
                     continue;
                 }
@@ -591,7 +591,7 @@ impl StylePlan {
     /// Whether a source's tiles are images, and of which kind.
     pub(crate) fn image_kind(&self, source: usize) -> Option<ImageKind> {
         match self.style.source(&self.sources[source].id)?.kind {
-            SourceKind::Raster(_) => Some(ImageKind::Raster),
+            SourceKind::Raster(_) | SourceKind::Image(_) => Some(ImageKind::Raster),
             SourceKind::RasterDem(_) => Some(ImageKind::Dem),
             _ => None,
         }

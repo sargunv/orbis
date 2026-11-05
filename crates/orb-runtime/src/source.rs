@@ -30,6 +30,9 @@ pub(crate) struct TileEndpoint {
     pub(crate) dem_unpack: Option<[f64; 4]>,
     /// The tile matrix set its tiles are in.
     pub(crate) tms: TileMatrixSet,
+    /// An `image` source's quad on the surface's plane: its one tile draws
+    /// the image warped onto it.
+    pub(crate) quad: Option<orb_crs::ImageQuad>,
 }
 
 impl TileEndpoint {
@@ -143,6 +146,7 @@ impl TileEndpoint {
             cover_px,
             dem_unpack,
             tms,
+            quad: None,
         })
     }
 
@@ -164,6 +168,36 @@ impl TileEndpoint {
             cover_px: VECTOR_TILE_PX,
             dem_unpack: None,
             tms,
+            quad: None,
+        }
+    }
+
+    /// An `image` source on `projection`'s plane: one tile, the image at
+    /// its URL, in a one-tile set around its quad.
+    pub(crate) fn image(source: &orb_v8::ImageSource, projection: &orb_crs::Projection) -> Self {
+        let corners = source
+            .coordinates
+            .map(|[lon, lat]| projection.forward(orb_geo::Geodetic::new(lon, lat)));
+        let quad = orb_crs::ImageQuad::new(corners);
+        let bounds = quad.bounds();
+        let half = bounds.size().max_element().max(1e-9) / 2.0;
+        let square = orb_crs::WorldRect {
+            min: bounds.center() - half,
+            max: bounds.center() + half,
+        };
+        Self {
+            archive: None,
+            bounds: None,
+            templates: vec![source.url.clone()],
+            data_url: None,
+            scheme: Scheme::Xyz,
+            minzoom: 0,
+            maxzoom: 0,
+            encoding: Encoding::Mvt,
+            cover_px: RasterSource::DEFAULT_TILE_SIZE / std::f64::consts::SQRT_2,
+            dem_unpack: None,
+            tms: TileMatrixSet::square(*projection, square),
+            quad: Some(quad),
         }
     }
 

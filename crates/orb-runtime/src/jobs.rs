@@ -369,7 +369,7 @@ impl TileWorker {
     pub fn image_kind(&self, source: u32) -> Option<ImageKind> {
         let at = self.plan.source_keys.iter().position(|&k| k == source)?;
         match self.plan.style.sources[at].kind {
-            orb_v8::SourceKind::Raster(_) => Some(ImageKind::Raster),
+            orb_v8::SourceKind::Raster(_) | orb_v8::SourceKind::Image(_) => Some(ImageKind::Raster),
             orb_v8::SourceKind::RasterDem(_) => Some(ImageKind::Dem),
             _ => None,
         }

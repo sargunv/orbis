@@ -13,7 +13,8 @@ struct RasterNode {
     index: u32,
     // 1 to filter by nearest texel.
     nearest: u32,
-    _pad: u32,
+    // 1 to read the full-size level alone, without mip levels.
+    level0: u32,
 };
 
 @group(1) @binding(0) var<uniform> node: RasterNode;
@@ -26,13 +27,18 @@ fn vs_raster(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
 @fragment
 fn fs_raster(in: ImageOut) -> @location(0) vec4<f32> {
     // The texture's footprint, in uniform control flow, for its mip levels.
-    let uv = in.tile_pos / IMAGE_EXTENT;
+    let uv = image_pos(in) / IMAGE_EXTENT;
     let ddx = dpdx(uv);
     let ddy = dpdy(uv);
     if image_clipped(in) {
         discard;
     }
-    var color = sample_image_grad(in, uv, node.nearest, ddx, ddy);
+    var color: vec4<f32>;
+    if node.level0 != 0u {
+        color = sample_image(in, uv, node.nearest);
+    } else {
+        color = sample_image_grad(in, uv, node.nearest, ddx, ddy);
+    }
     if color.a > 0.0 {
         color = vec4<f32>(color.rgb / color.a, color.a);
     }

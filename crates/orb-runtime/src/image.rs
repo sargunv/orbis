@@ -43,7 +43,7 @@ impl Warped {
     /// The tile's mesh from `warp`, its linear interpolation within a
     /// quarter of a pixel at 512 pixels per tile side.
     pub(crate) fn new(warp: &orb_crs::Warp, tile: TileIndex) -> Option<Self> {
-        Some(Self::of(warp.mesh(tile, 1.0 / 2048.0, 1.0)?))
+        Some(Self::of(warp.mesh(tile, 1.0 / 2048.0, 1.0)?, None))
     }
 
     /// A tile's own square (`frame`) as a grid of `cells` per side, for a
@@ -80,22 +80,72 @@ impl Warped {
                 triangles.push([row * n + i, row * n + i + 1, tip]);
             }
         }
-        Self::of(orb_crs::WarpMesh {
-            frame,
-            sources,
-            positions,
-            triangles,
-        })
+        Self::of(
+            orb_crs::WarpMesh {
+                frame,
+                sources,
+                positions,
+                triangles,
+            },
+            None,
+        )
     }
 
-    fn of(mesh: orb_crs::WarpMesh) -> Self {
+    /// An image source's mesh: its quad's warp at the vertices of a grid
+    /// of `cells` per side over the image, in the tile `frame`, with the
+    /// image's own positions as sources (GL JS warps per vertex too).
+    pub(crate) fn quad(frame: orb_crs::WorldRect, quad: &orb_crs::ImageQuad, cells: u32) -> Self {
+        let n = cells + 1;
+        let sources: Vec<glam::DVec2> = (0..n * n)
+            .map(|k| glam::DVec2::new(f64::from(k % n), f64::from(k / n)) / f64::from(cells))
+            .collect();
+        let size = frame.size();
+        let positions = sources
+            .iter()
+            .map(|&uv| {
+                let p = quad.at(uv);
+                glam::DVec2::new((p.x - frame.min.x) / size.x, (frame.max.y - p.y) / size.y)
+            })
+            .collect();
+        let triangles = (0..cells * cells)
+            .flat_map(|c| {
+                let k = c / cells * n + c % cells;
+                [[k, k + 1, k + n + 1], [k, k + n + 1, k + n]]
+            })
+            .collect();
+        let weights: Vec<f32> = sources.iter().map(|&uv| quad.weight(uv) as f32).collect();
+        Self::of(
+            orb_crs::WarpMesh {
+                frame,
+                positions,
+                sources,
+                triangles,
+            },
+            Some(&weights),
+        )
+    }
+
+    fn of(mesh: orb_crs::WarpMesh, weights: Option<&[f32]>) -> Self {
+        let quad = weights.is_some();
         let units = |v: f64| (v * f64::from(IMAGE_EXTENT)).round() as i16 as u16 as u32;
         let position = |v: f64| ((v * f64::from(IMAGE_EXTENT)) as f32).to_bits();
         let vertices = mesh
             .positions
             .iter()
             .zip(&mesh.sources)
-            .flat_map(|(p, s)| [position(p.x), position(p.y), units(s.x) | units(s.y) << 16])
+            .enumerate()
+            .flat_map(|(k, (p, s))| {
+                let weight = weights.map_or(1.0, |w| w[k]);
+                let image = units(s.x) | units(s.y) << 16;
+                // Clipping is in the image's tile units, but an image
+                // source's grid sits in its tile's own units.
+                let clip = if quad {
+                    units(p.x) | units(p.y) << 16
+                } else {
+                    image
+                };
+                [position(p.x), position(p.y), clip, weight.to_bits(), image]
+            })
             .collect();
         let indices: Vec<u32> = mesh.triangles.iter().flatten().copied().collect();
         let point = |k: u32| mesh.positions[k as usize] * f64::from(IMAGE_EXTENT);
@@ -147,21 +197,29 @@ pub(crate) struct Upload<'a> {
 
 /// The quad an image tile on its own plane draws: its corners in tile
 /// units, as f32 positions and as image units (the same for a quad).
-const QUAD: [u32; 12] = {
+const QUAD: [u32; 20] = {
     let e = IMAGE_EXTENT;
-    let (zero, full) = (0f32.to_bits(), (e as f32).to_bits());
+    let (zero, full, one) = (0f32.to_bits(), (e as f32).to_bits(), 1f32.to_bits());
     [
         zero,
         zero,
+        0,
+        one,
         0, //
         full,
         zero,
+        e,
+        one,
         e, //
         zero,
         full,
+        e << 16,
+        one,
         e << 16, //
         full,
         full,
+        e | e << 16,
+        one,
         e | e << 16,
     ]
 };
@@ -451,6 +509,11 @@ pub(crate) fn paint(
                 saturation: p.saturation.evaluate(zoom),
                 contrast: p.contrast.evaluate(zoom),
                 nearest: nearest(&p.resampling) || nearest(&p.raster_resampling),
+                // Image sources are one texture without mip levels in GL JS.
+                mipmapped: !matches!(
+                    plan.source_def(node.source).kind,
+                    orb_v8::SourceKind::Image(_)
+                ),
             })
         }
         LayerKind::Hillshade(hillshade) => {

@@ -613,7 +613,7 @@ fn selection(
                 format!("layer \"{id}\" must specify a \"source-layer\""),
             ),
             Some(Source {
-                kind: SourceKind::Raster(_) | SourceKind::RasterDem(_),
+                kind: SourceKind::Raster(_) | SourceKind::RasterDem(_) | SourceKind::Image(_),
                 ..
             }) => cx.error(
                 format!("{path}.source"),
@@ -667,9 +667,9 @@ fn image_source(
             );
             return None;
         }
-        Some(SourceKind::Raster(_)) => !dem,
+        Some(SourceKind::Raster(_) | SourceKind::Image(_)) => !dem,
         Some(SourceKind::RasterDem(_)) => dem,
-        // Image and video sources warn on their own.
+        // Video sources warn on their own.
         Some(SourceKind::Unsupported { .. }) => true,
         Some(_) => false,
     };

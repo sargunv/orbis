@@ -49,8 +49,8 @@ pub use property::{
 pub use scene::{Scene, StyleRef, is_scene, parse_scene, tms_definition};
 pub use sky::Atmosphere;
 pub use source::{
-    GeoJsonData, GeoJsonSource, PromoteId, RasterDemSource, RasterSource, Source, SourceKind,
-    TileSet, VectorSource,
+    GeoJsonData, GeoJsonSource, ImageSource, PromoteId, RasterDemSource, RasterSource, Source,
+    SourceKind, TileSet, VectorSource,
 };
 pub use sprite::Sprite;
 pub use terrain::Terrain;

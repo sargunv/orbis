@@ -183,6 +183,9 @@ pub struct RasterPaint {
     pub contrast: f32,
     /// Filter by nearest texel rather than linearly.
     pub nearest: bool,
+    /// Sample mip levels for the texture's footprint; `false` reads the
+    /// full-size level alone, as GL JS samples image sources.
+    pub mipmapped: bool,
 }
 
 /// The most light sources a hillshade node holds.
@@ -496,7 +499,7 @@ impl NodePaint {
                     f(contrast),
                     node,
                     u32::from(p.nearest),
-                    0,
+                    u32::from(!p.mipmapped),
                 ]);
                 (words, &[][..])
             }
@@ -737,6 +740,7 @@ mod tests {
             saturation: 0.0,
             contrast: 0.0,
             nearest: false,
+            mipmapped: true,
         });
         assert_eq!(raster.uniform_words(0).len() * 4, 48);
         // No hue rotation is the identity.
