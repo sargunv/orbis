@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use orb_api::{
     CameraState, Geodetic, Map, MapOptions, RegionDefinition, RegionEvent, Runtime, RuntimeOptions,
-    Target, TileMatrixSet,
+    TileMatrixSet,
 };
 
 const LIBERTY: &str = "https://tiles.openfreemap.org/styles/liberty";
@@ -76,12 +76,11 @@ fn a_downloaded_region_opens_offline() {
         },
     );
     map.load_style_url(LIBERTY);
-    let mut target = Target::texture(&runtime, 256, 256, 1.0);
-    let report = map
-        .render_still(&mut target, Duration::from_secs(30))
-        .unwrap();
+    let image = map.snapshot(256, 256, 1.0).unwrap();
     let warnings = map.take_warnings();
-    assert!(report.tiles_drawn > 0, "{report:?}");
+    // Drawn: more than the background's one colour.
+    let first = &image.pixels[..4];
+    assert!(image.pixels.chunks(4).any(|p| p != first));
     assert!(
         !warnings.iter().any(|w| w.contains("network")),
         "{warnings:#?}"
