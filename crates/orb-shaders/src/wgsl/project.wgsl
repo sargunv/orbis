@@ -159,9 +159,30 @@ fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
         g.flat = tile_to_world(tile, p);
     }
     if frame.globe_amount > 0.0 && tile.globe_cells > 0u {
-        g.globe = sphere_at(tile.globe_base, tile.globe_cells, tile_globe_origin(tile), p / tile.extent);
+        // A point past the tile (a translated label or fill, a stroke's
+        // edge) goes onto the sphere at the tile's edge through its
+        // patches, and on from there exactly: the patches don't extend.
+        let edge = clamp(p, vec2<f32>(0.0), vec2<f32>(tile.extent));
+        g.globe = sphere_at(tile.globe_base, tile.globe_cells, tile_globe_origin(tile), edge / tile.extent);
+        if any(edge != p) && g.on_plane && frame.globe_plane == 0u {
+            g.globe += mercator_sphere(g.flat) - mercator_sphere(tile_to_world(tile, edge));
+        }
     }
     return g;
+}
+
+// A camera-relative Web Mercator world position (metres) on the sphere,
+// camera-relative: exact, for points no tile's patches hold. Differences
+// of two nearby points keep f32's precision about the target.
+fn mercator_sphere(world: vec2<f32>) -> vec3<f32> {
+    let up = normalize(frame.globe_target);
+    let target_lat = asin(clamp(up.z, -1.0, 1.0));
+    let target_lon = atan2(up.y, up.x);
+    let target_y = SPHERE_RADIUS * log(tan(0.7853982 + target_lat * 0.5));
+    let lon = target_lon + world.x / SPHERE_RADIUS;
+    let lat = 2.0 * atan(exp((target_y + world.y) / SPHERE_RADIUS)) - 1.5707964;
+    let at = vec3<f32>(cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat)) * SPHERE_RADIUS;
+    return at - up * SPHERE_RADIUS;
 }
 
 // A tile's point on the sphere, camera-relative, from its patches in space
