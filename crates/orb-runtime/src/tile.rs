@@ -725,9 +725,21 @@ pub(crate) fn build(
                         0.0,
                         0.0,
                     ],
-                    LayerType::Line => [at(orb_style::LINE_WIDTH) / 2.0, 0.0, 0.0, 0.0],
+                    LayerType::Line => {
+                        let offset = at(orb_style::LINE_OFFSET);
+                        [
+                            at(orb_style::LINE_WIDTH) / 2.0,
+                            at(orb_style::LINE_GAP_WIDTH),
+                            offset.abs(),
+                            offset,
+                        ]
+                    }
+                    // Whether it's whole, as layout keeps it, for picking
+                    // to own it as drawing does.
                     LayerType::FillExtrusion => [
-                        0.0,
+                        f32::from(u8::from(
+                            bend.is_none() && layer.is_whole(i, layer.clip_buffer()),
+                        )),
                         0.0,
                         at(orb_style::EXTRUSION_HEIGHT),
                         at(orb_style::EXTRUSION_BASE),
