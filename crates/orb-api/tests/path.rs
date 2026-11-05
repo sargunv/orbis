@@ -269,15 +269,24 @@ fn a_globe_gesture_draws_what_a_fresh_globe_does() {
     assert_same("globe", both_ways(&style, start, end, 30));
 }
 
+/// A directory of DEM tiles, removed when the test is done with it.
+struct DemDir(PathBuf);
+
+impl Drop for DemDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Terrarium DEM tiles of `metres(lon, lat)` over `(west, south, east,
 /// north)`, zooms 0–`max_zoom`, written to a fresh directory; the source
-/// `name`'s JSON.
+/// `name`'s JSON, and the directory to keep while it's read.
 fn dem(
     name: &str,
     (west, south, east, north): (f64, f64, f64, f64),
     max_zoom: u8,
     metres: impl Fn(f64, f64) -> f64,
-) -> String {
+) -> (String, DemDir) {
     let dir = std::env::temp_dir().join(format!(
         "orb-path-dem-{}-{}",
         std::process::id(),
@@ -316,16 +325,17 @@ fn dem(
             }
         }
     }
-    format!(
+    let source = format!(
         r#""{name}": {{"type": "raster-dem", "encoding": "terrarium", "tileSize": {SIZE},
             "maxzoom": {max_zoom}, "bounds": [{west}, {south}, {east}, {north}],
             "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}},"#,
         dir.display()
-    )
+    );
+    (source, DemDir(dir))
 }
 
 /// Rolling hills over central Tokyo, zooms 0–11.
-fn hills() -> String {
+fn hills() -> (String, DemDir) {
     dem("hills", (139.2, 35.2, 140.3, 36.2), 11, |lon, lat| {
         600.0
             + 500.0 * (lon * 40.0).sin() * (lat * 55.0).cos()
@@ -333,18 +343,19 @@ fn hills() -> String {
     })
 }
 
-/// Sharp ridges over the Valais Alps, 700 to about 4,500 m, zooms 0–11,
+/// Steep ridges over the Valais Alps, 700 to about 4,500 m, zooms 0–11,
 /// hillshaded on the terrain under a sky: ridge silhouettes stand against
-/// it at a high pitch.
-fn alps() -> String {
-    let dem = dem("alps", (7.4, 45.7, 8.4, 46.3), 11, |lon, lat| {
-        let ridge = |v: f64| 1.0 - v.sin().abs();
+/// it at a high pitch. Crests are rounded: a crease one DEM pixel wide
+/// running across the pixel grid shades as dotted lines (#103).
+fn alps() -> (String, DemDir) {
+    let (dem, dir) = dem("alps", (7.4, 45.7, 8.4, 46.3), 11, |lon, lat| {
+        let ridge = |v: f64| 1.0 - (v.sin().powi(2) + 0.04).sqrt();
         700.0
             + 2600.0 * ridge(lon * 31.0 + lat * 9.0) * ridge(lat * 23.0 - lon * 5.0)
             + 1200.0 * ridge(lon * 97.0 - lat * 61.0)
     });
     let dem = dem.trim_end_matches(',');
-    format!(
+    let style = format!(
         r##"{{"version": 8,
             "sources": {{{dem}}},
             "terrain": {{"source": "alps", "exaggeration": 1.2}},
@@ -353,16 +364,18 @@ fn alps() -> String {
               {{"id": "ground", "type": "background", "paint": {{"background-color": "#d8e0c8"}}}},
               {{"id": "relief", "type": "hillshade", "source": "alps"}}
             ]}}"##
-    )
+    );
+    (style, dir)
 }
 
 /// Terrain over local hills: DEM borders come from the neighbours the view
 /// draws, not from those a gesture saw (#84).
 #[test]
 fn a_terrain_gesture_draws_what_a_fresh_map_does() {
+    let (hills, _dem) = hills();
     let style = tokyo(
         r#""terrain": {"source": "hills", "exaggeration": 1.5},"#,
-        &hills(),
+        &hills,
     );
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
@@ -375,7 +388,8 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
 fn an_alpine_gesture_draws_what_a_fresh_map_does() {
     let start = (Geodetic::new(7.95, 46.0), 11.2, 0.0, 30.0);
     let end = (Geodetic::new(7.85, 45.95), 12.4, 60.0, 75.0);
-    assert_same("alps", both_ways(&alps(), start, end, 30));
+    let (alps, _dem) = alps();
+    assert_same("alps", both_ways(&alps, start, end, 30));
 }
 
 /// A draped fill whose hovered colour varies with zoom shows the colour of
@@ -385,6 +399,7 @@ fn an_alpine_gesture_draws_what_a_fresh_map_does() {
 #[test]
 fn a_fast_zoom_drapes_state_paint_of_its_new_zoom() {
     let (lon, lat) = (139.76, 35.68);
+    let (hills, _dem) = hills();
     let style = format!(
         r##"{{"version": 8,
             "sources": {{{}
@@ -399,7 +414,7 @@ fn a_fast_zoom_drapes_state_paint_of_its_new_zoom() {
                   10, ["case", ["boolean", ["feature-state", "hover"], false], "#ff0000", "#00ff00"],
                   18, ["case", ["boolean", ["feature-state", "hover"], false], "#0000ff", "#00ff00"]]}}}}
             ]}}"##,
-        hills(),
+        hills,
         w = lon - 0.05,
         e = lon + 0.05,
         s = lat - 0.05,
