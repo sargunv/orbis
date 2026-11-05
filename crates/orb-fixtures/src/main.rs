@@ -19,13 +19,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use operations::Next;
-use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureUsages};
-use orb_hal_wgpu::WgpuGpu;
-use orb_jobs::ThreadPool;
-use orb_runtime::{Map, PoolJobs, Services, TargetFormat, Viewport};
+use orb_api::{Event, Map, MapEvent, MapOptions, Runtime, RuntimeOptions, Target, UrlTransform};
 use serde_json::{Value, json};
 
-use fetch::FixtureFetch;
 use images::Image;
 use metadata::Metadata;
 
@@ -95,35 +91,32 @@ fn run() -> Result<(), String> {
 }
 
 enum Backend {
-    Native(Box<WgpuGpu>),
-    /// Compat on a native GLES 3 context (`gl`, `llvmpipe`).
-    Gl(Box<orb_hal_gl::egl::EglContext>),
+    /// `orb-api`'s runtime: Modern (`native`, `lavapipe`), or Compat on a
+    /// headless GLES 3 context (`gl`, `llvmpipe`) from `ORB_EGL_LIBRARY`
+    /// (such as ANGLE's libEGL) or the platform's libEGL.
+    Native(Runtime),
     Chrome(chrome::Chrome),
 }
 
-/// A GPU the suite renders a fixture on and reads back.
-trait FixtureGpu: Gpu {
-    fn read_rgba8(&mut self, target: orb_hal::TextureId) -> Vec<u8>;
+/// The runtime every native fixture's map is made from, on `backend`,
+/// fetching the mirror's assets for GL JS's test server.
+pub(crate) fn runtime(root: &Path, backend: orb_api::Backend) -> Result<Backend, String> {
+    let assets = assets(root);
+    let runtime = Runtime::new(&RuntimeOptions {
+        backend,
+        egl_library: std::env::var("ORB_EGL_LIBRARY").ok(),
+        url_transform: Some(UrlTransform(Arc::new(move |url| {
+            fetch::resolve(&assets, url)
+        }))),
+        ..RuntimeOptions::default()
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(Backend::Native(runtime))
 }
 
-impl FixtureGpu for WgpuGpu {
-    fn read_rgba8(&mut self, target: orb_hal::TextureId) -> Vec<u8> {
-        pollster::block_on(self.read_texture(target))
-    }
-}
-
-impl FixtureGpu for orb_hal_gl::GlGpu {
-    fn read_rgba8(&mut self, target: orb_hal::TextureId) -> Vec<u8> {
-        orb_hal_gl::GlGpu::read_rgba8(self, target)
-    }
-}
-
-/// A headless GLES 3 context: from `ORB_EGL_LIBRARY` (such as ANGLE's
-/// libEGL), or the platform's libEGL.
-fn gl_context() -> Result<orb_hal_gl::egl::EglContext, String> {
-    let library = std::env::var("ORB_EGL_LIBRARY").ok();
-    let (context, _) = orb_hal_gl::egl::EglContext::headless(library.as_deref())?;
-    Ok(context)
+/// The mirror's assets, which `addImage` operations name.
+pub(crate) fn assets(root: &Path) -> PathBuf {
+    root.join("fixtures/gl-js/assets")
 }
 
 fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
@@ -151,20 +144,20 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     let mut backend = match name {
         "chrome" => Backend::Chrome(chrome::Chrome::new(root, "webgpu")?),
         "chrome-webgl2" => Backend::Chrome(chrome::Chrome::new(root, "webgl2")?),
-        "gl" | "llvmpipe" => Backend::Gl(Box::new(gl_context()?)),
-        _ => Backend::Native(Box::new(pollster::block_on(WgpuGpu::offscreen())?)),
+        "gl" | "llvmpipe" => runtime(root, orb_api::Backend::Compat)?,
+        _ => runtime(root, orb_api::Backend::Modern)?,
     };
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
     paths.sort();
     paths.retain(|path| test_id(path, &fixtures).contains(filter));
-    let harness = Harness::new(root);
+    let assets = assets(root);
     let mut results = Vec::new();
     let mut prefixes: BTreeMap<String, Counts> = BTreeMap::new();
     let mut skip_counts: BTreeMap<String, usize> = BTreeMap::new();
     for path in paths {
         let id = test_id(&path, &fixtures);
-        let result = run_test(&path, &id, &output, &harness, &mut backend)?;
+        let result = run_test(&path, &id, &output, &assets, &mut backend)?;
         let status = result["status"].as_str().expect("our status");
         prefixes.entry(prefix(&id).into()).or_default().add(status);
         if let Some(reasons) = result["skip_reasons"].as_array() {
@@ -278,66 +271,37 @@ fn prefix(id: &str) -> &str {
         .unwrap_or("other")
 }
 
-/// What every fixture's map shares: the mirror's assets, its fetch and the
-/// job pool.
-pub(crate) struct Harness {
-    pub(crate) assets: PathBuf,
-    fetch: Arc<FixtureFetch>,
-    executor: Arc<ThreadPool>,
-    wake: Arc<dyn Fn() + Send + Sync>,
-}
-
-impl Harness {
-    pub(crate) fn new(root: &Path) -> Self {
-        let assets = root.join("fixtures/gl-js/assets");
-        let current = std::thread::current();
-        Self {
-            fetch: Arc::new(FixtureFetch::new(assets.clone())),
-            assets,
-            executor: Arc::new(ThreadPool::new("fixtures", ThreadPool::default_size())),
-            wake: Arc::new(move || current.unpark()),
-        }
-    }
-
-    /// A map with fresh services, set up as GL JS's harness runs a test.
-    pub(crate) fn map(&self, metadata: &Metadata) -> Map {
-        let decode = Arc::new(orb_host_native::NativeImageDecode);
-        let jobs = PoolJobs::new(self.fetch.clone(), decode.clone(), self.executor.clone());
-        jobs.set_local_glyphs(orb_host_native::SystemFonts::shared());
-        jobs.set_font_files(Arc::new(orb_host_native::FontFileFaces::new()));
-        let services = Services {
-            clock: Arc::new(orb_host_native::NativeClock::default()),
-            image_decode: decode,
-            images: Default::default(),
-            fetch: self.fetch.clone(),
-            jobs,
-            wake: self.wake.clone(),
-        };
-        let mut map = Map::new(services, None);
-        // GL JS's transform keeps to the world and the test's pitch limit
-        // as the harness moves it.
-        map.set_constraints(orb_runtime::Constraints {
-            max_pitch: metadata.max_pitch,
-            ..orb_runtime::Constraints::WORLD
-        });
-        map.set_antialias_3d(false);
-        // GL JS's render tests run with `fadeDuration: 0` unless they say.
-        map.set_fade_duration(metadata.fade_duration);
-        map.set_cross_source_collisions(metadata.cross_source_collisions);
-        map.set_terrain_skirts(metadata.terrain_skirts);
-        map.set_local_ideograph_font_family(metadata.local_ideographs.as_deref());
-        map
-    }
+/// A map set up as GL JS's harness sets up a test's.
+pub(crate) fn map(runtime: &Runtime, metadata: &Metadata) -> Map {
+    let mut map = Map::new(
+        runtime,
+        MapOptions {
+            // GL JS's render tests run with `fadeDuration: 0` unless they
+            // say.
+            fade_duration: metadata.fade_duration,
+            cross_source_collisions: metadata.cross_source_collisions,
+            local_ideograph_font_family: metadata.local_ideographs.clone(),
+            antialias: false,
+            terrain_skirts: metadata.terrain_skirts,
+            ..MapOptions::default()
+        },
+    );
+    // GL JS's transform keeps to the world and the test's pitch limit as
+    // the harness moves it.
+    map.set_constraints(orb_api::Constraints {
+        max_pitch: metadata.max_pitch,
+        ..orb_api::Constraints::WORLD
+    });
+    map
 }
 
 fn run_test(
     path: &Path,
     id: &str,
     output: &Path,
-    harness: &Harness,
+    assets: &Path,
     backend: &mut Backend,
 ) -> Result<Value, String> {
-    let assets = &harness.assets;
     let started = Instant::now();
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let value: Value =
@@ -345,14 +309,19 @@ fn run_test(
     let metadata = Metadata::read(&value);
     let mut reasons = metadata.skips.clone();
     let mut diagnostics = Vec::new();
-    let mut map = harness.map(&metadata);
+    let mut map = match backend {
+        Backend::Native(runtime) => Some(map(runtime, &metadata)),
+        Backend::Chrome(_) => None,
+    };
     match orb_v8::parse(&text) {
         Ok(style) => {
             reasons.extend(scope::reasons(&style));
             // set_style_json also exposes plan diagnostics absent from the parser.
-            map.set_style_json(&text)
-                .map_err(|e| format!("{id}: {e}"))?;
-            record_warnings(&mut map, &mut reasons, &mut diagnostics);
+            if let Some(map) = &mut map {
+                map.set_style_json(&text)
+                    .map_err(|e| format!("{id}: {e}"))?;
+                record_warnings(map, &mut reasons, &mut diagnostics);
+            }
         }
         Err(errors) => {
             reasons.insert("style-parse".into());
@@ -386,28 +355,14 @@ fn run_test(
     let (width, height) = metadata.physical_size();
     let mut failure = None;
     let rendered = match backend {
-        Backend::Native(device) => {
-            let mut gpu = WgpuGpu::new(device.device().clone(), device.queue().clone());
-            render_native(
-                &mut gpu,
-                &mut map,
-                &metadata,
-                assets,
-                &mut reasons,
-                &mut diagnostics,
-            )
-        }
-        Backend::Gl(context) => {
-            let mut gpu = orb_hal_gl::GlGpu::new(context.glow())?;
-            render_native(
-                &mut gpu,
-                &mut map,
-                &metadata,
-                assets,
-                &mut reasons,
-                &mut diagnostics,
-            )
-        }
+        Backend::Native(runtime) => render_native(
+            runtime,
+            map.as_mut().expect("a native map"),
+            &metadata,
+            assets,
+            &mut reasons,
+            &mut diagnostics,
+        ),
         Backend::Chrome(chrome) if width.max(height) > chrome.max_size => {
             reasons.insert("device:canvas-size".into());
             None
@@ -525,7 +480,7 @@ fn run_test(
 /// Renders the test natively and reads it back; `None` with a skip reason
 /// when its canvas is larger than the device's textures.
 fn render_native(
-    gpu: &mut impl FixtureGpu,
+    runtime: &Runtime,
     map: &mut Map,
     metadata: &Metadata,
     assets: &Path,
@@ -533,29 +488,11 @@ fn render_native(
     diagnostics: &mut Vec<String>,
 ) -> Option<(Image, Value)> {
     let (width, height) = metadata.physical_size();
-    if width.max(height) > gpu.caps().limits.max_texture_dimension_2d {
+    if width.max(height) > runtime.stats().max_texture_size {
         reasons.insert("device:canvas-size".into());
         return None;
     }
-    let format = TargetFormat {
-        color: TextureFormat::Rgba8Unorm,
-        sample_count: 1,
-    };
-    let target = gpu.create_texture(&TextureDesc {
-        label: "render fixture",
-        width,
-        height,
-        array_layers: 1,
-        dimension: orb_hal::TextureViewDimension::D2,
-        format: format.color,
-        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
-        sample_count: 1,
-        mip_levels: 1,
-    });
-    let viewport = Viewport {
-        width: f64::from(metadata.width),
-        height: f64::from(metadata.height),
-    };
+    let mut target = Target::texture(runtime, width, height, metadata.pixel_ratio);
     let mut frames = 0;
     let mut tiles_drawn = 0;
     let mut failure = None;
@@ -564,22 +501,17 @@ fn render_native(
     // loaded, fades or not, and wait in wall time; the rest settle fully.
     let fades = metadata.fade_duration > 0.0;
     let loaded = if fades { Next::Loaded } else { Next::Idle };
-    // Renders until `until`, or for a wait's wall time; false when the run
-    // stops (a skip reason or the timeout).
-    // The fixture map's renderer, made for its first frame.
-    let renderer = std::cell::RefCell::new(None);
-    let render = |gpu: &mut dyn orb_hal::Gpu, map: &mut Map| {
-        let mut renderer = renderer.borrow_mut();
-        let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
-        map.render(
-            gpu,
-            renderer,
-            target,
-            viewport,
-            metadata.pixel_ratio as f32,
-            frame_time(render_started),
-        )
+    let mut render = |map: &mut Map, diagnostics: &mut Vec<String>| match map
+        .render(&mut target, frame_time(render_started))
+    {
+        Ok(report) => report,
+        Err(e) => {
+            diagnostics.push(format!("render: {e}"));
+            None
+        }
     };
+    // Renders until `until`, or for a wait's wall time; `None` when the run
+    // stops (a skip reason, a failed frame or the timeout).
     let mut settle = |map: &mut Map,
                       until: Next,
                       reasons: &mut BTreeSet<String>,
@@ -587,7 +519,7 @@ fn render_native(
                       frames: &mut u32| {
         let started = Instant::now();
         loop {
-            let report = render(gpu, map);
+            let report = render(map, diagnostics)?;
             *frames += 1;
             record_warnings(map, reasons, diagnostics);
             if !reasons.is_empty() {
@@ -631,17 +563,24 @@ fn render_native(
     } else {
         Next::Idle
     };
-    if settled && settle(map, last, reasons, diagnostics, &mut frames).is_some() {
+    if settled
+        && settle(map, last, reasons, diagnostics, &mut frames).is_some()
         // Draw the state installed by the last frame's messages.
-        let final_report = render(gpu, map);
-        frames += 1;
-        record_warnings(map, reasons, diagnostics);
-        tiles_drawn = final_report.tiles_drawn;
+        && let Some(report) = settle(map, Next::Continue, reasons, diagnostics, &mut frames)
+    {
+        tiles_drawn = report.tiles_drawn;
     }
+    let pixels = match target.read_pixels() {
+        Ok(pixels) => pixels,
+        Err(e) => {
+            diagnostics.push(format!("read back: {e}"));
+            vec![0; width as usize * height as usize * 4]
+        }
+    };
     let image = Image {
         width,
         height,
-        pixels: gpu.read_rgba8(target),
+        pixels,
     };
     let report = json!({"frames":frames,"tiles_drawn":tiles_drawn,"timed_out":failure.is_some()});
     Some((image, report))
@@ -654,10 +593,8 @@ fn frame_time(started: Instant) -> f64 {
 }
 
 fn record_warnings(map: &mut Map, reasons: &mut BTreeSet<String>, diagnostics: &mut Vec<String>) {
-    for event in map.take_events() {
-        if let orb_runtime::MapEvent::Warning { message }
-        | orb_runtime::MapEvent::Error { message } = event
-        {
+    while let Some(event) = map.poll_event() {
+        if let Event::Map(MapEvent::Warning { message } | MapEvent::Error { message }) = event {
             note_warning(message, reasons, diagnostics);
         }
     }

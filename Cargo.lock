@@ -2385,19 +2385,12 @@ name = "orb-fixtures"
 version = "0.0.0"
 dependencies = [
  "glam",
- "orb-crs",
- "orb-hal",
- "orb-hal-gl",
- "orb-hal-wgpu",
- "orb-host",
- "orb-host-native",
- "orb-jobs",
+ "orb-api",
  "orb-runtime",
  "orb-style",
  "orb-text",
  "orb-v8",
  "png",
- "pollster",
  "serde_json",
 ]
 

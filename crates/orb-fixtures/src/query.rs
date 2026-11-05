@@ -9,14 +9,13 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use orb_hal_wgpu::WgpuGpu;
-use orb_runtime::Map;
+use orb_api::{Event, Map};
 use serde_json::{Value, json};
 
 use crate::metadata::Metadata;
 use crate::{
-    Backend, Counts, Harness, chrome, discover, finish_skip, record_warnings, render_native, scope,
-    test_id, write_json,
+    Backend, Counts, assets, chrome, discover, finish_skip, record_warnings, render_native,
+    runtime, scope, test_id, write_json,
 };
 
 /// Metadata keys only the query harness reads.
@@ -51,20 +50,20 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     let mut backend = if name == "chrome" {
         Backend::Chrome(chrome::Chrome::new(root, "webgpu")?)
     } else {
-        Backend::Native(Box::new(pollster::block_on(WgpuGpu::offscreen())?))
+        runtime(root, orb_api::Backend::Modern)?
     };
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
     paths.sort();
     paths.retain(|path| test_id(path, &fixtures).contains(filter));
-    let harness = Harness::new(root);
+    let assets = assets(root);
     let mut totals = Counts::default();
     let mut ordered = 0;
     let mut prefixes: BTreeMap<String, Counts> = BTreeMap::new();
     let mut results = Vec::new();
     for path in paths {
         let id = test_id(&path, &fixtures);
-        let result = run_test(&path, &id, &output, name, &harness, &mut backend)?;
+        let result = run_test(&path, &id, &output, name, &assets, &mut backend)?;
         let status = result["status"].as_str().expect("our status");
         if status == "pass" && result["in_order"] == true {
             ordered += 1;
@@ -99,7 +98,7 @@ fn run_test(
     id: &str,
     output: &Path,
     name: &str,
-    harness: &Harness,
+    assets: &Path,
     backend: &mut Backend,
 ) -> Result<Value, String> {
     let started = Instant::now();
@@ -141,25 +140,22 @@ fn run_test(
     let actual = match (query.filter(|_| reasons.is_empty()), backend) {
         (None, _) => None,
         (Some(query), Backend::Chrome(chrome)) => Some(chrome.query(&text, &metadata, query)?),
-        (Some(query), Backend::Native(device)) => {
-            let mut map = harness.map(&metadata);
+        (Some(query), Backend::Native(runtime)) => {
+            let mut map = crate::map(runtime, &metadata);
             map.set_style_json(&text)
                 .map_err(|e| format!("{id}: {e}"))?;
             record_warnings(&mut map, &mut reasons, &mut diagnostics);
-            let mut gpu = WgpuGpu::new(device.device().clone(), device.queue().clone());
-            let assets = &harness.assets;
             render_native(
-                &mut gpu,
+                runtime,
                 &mut map,
                 &metadata,
                 assets,
                 &mut reasons,
                 &mut diagnostics,
             )
-            .map(|_| query_native(&map, query))
+            .map(|_| query_native(&mut map, query))
             .transpose()?
         }
-        (Some(_), Backend::Gl(_)) => unreachable!("the query suite runs natively and in Chrome"),
     };
     let Some(mut actual) = actual else {
         finish_skip(&mut result, &reasons, started);
@@ -198,19 +194,20 @@ fn prefix(id: &str) -> String {
 }
 
 /// Runs the query on a settled map and waits for its workers.
-fn query_native(map: &Map, [x1, y1, x2, y2]: [f64; 4]) -> Result<Value, String> {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    map.query_rendered(
-        glam::DVec2::new(x1, y1),
-        glam::DVec2::new(x2, y2),
-        None,
-        Box::new(move |result| {
-            let _ = sender.send(result);
-        }),
-    );
-    let json = receiver
-        .recv_timeout(Duration::from_secs(30))
-        .map_err(|_| "query timed out".to_string())??;
+fn query_native(map: &mut Map, [x1, y1, x2, y2]: [f64; 4]) -> Result<Value, String> {
+    let id = map.query_rendered(glam::DVec2::new(x1, y1), glam::DVec2::new(x2, y2));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let json = loop {
+        if let Some(Event::Query { result, .. }) = std::iter::from_fn(|| map.poll_event())
+            .find(|e| matches!(e, Event::Query { id: i, .. } if *i == id))
+        {
+            break result?;
+        }
+        if Instant::now() >= deadline {
+            return Err("query timed out".into());
+        }
+        std::thread::park_timeout(Duration::from_millis(1));
+    };
     serde_json::from_str(&json).map_err(|e| format!("query JSON: {e}"))
 }
 

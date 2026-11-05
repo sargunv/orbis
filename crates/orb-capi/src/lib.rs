@@ -133,7 +133,7 @@ mod ffi {
                 },
                 state_dir: (!state_dir.is_empty()).then(|| state_dir.as_ref().into()),
                 android_api_level,
-                egl_library: None,
+                ..orb_api::RuntimeOptions::default()
             })
             .map(|r| Box::new(OrbRuntime(r)))
             .map_err(fail)
@@ -977,6 +977,7 @@ mod ffi {
                         OrbFeel::Android => orb_api::Feel::ANDROID,
                     },
                     clear_color: [clear_r, clear_g, clear_b, clear_a],
+                    ..orb_api::MapOptions::default()
                 },
             )))
         }

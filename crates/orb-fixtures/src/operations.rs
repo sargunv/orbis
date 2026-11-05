@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use orb_runtime::{Map, StyleImage, Transaction};
+use orb_api::{CameraTarget, Map, StyleImage};
 use serde_json::Value;
 
 use crate::images::Image;
@@ -39,22 +39,23 @@ pub(crate) fn apply(map: &mut Map, op: &Value, assets: &Path) -> Result<Next, St
             });
         }
         "idle" => return Ok(Next::Idle),
-        "setZoom" => {
-            let (zoom, projection) = (number(1)?, map.projection());
-            move_camera(map, |c| c.set_zoom(&projection, zoom));
-        }
-        "setBearing" => {
-            let bearing = number(1)?;
-            move_camera(map, |c| c.bearing = bearing);
-        }
-        "setPitch" => {
-            let pitch = number(1)?;
-            move_camera(map, |c| c.pitch = pitch);
-        }
-        "setRoll" => {
-            let roll = number(1)?;
-            move_camera(map, |c| c.roll = roll);
-        }
+        // GL JS's setters jump to a changed copy of the camera.
+        "setZoom" => map.jump_to(&CameraTarget {
+            zoom: Some(number(1)?),
+            ..CameraTarget::default()
+        }),
+        "setBearing" => map.jump_to(&CameraTarget {
+            bearing: Some(number(1)?),
+            ..CameraTarget::default()
+        }),
+        "setPitch" => map.jump_to(&CameraTarget {
+            pitch: Some(number(1)?),
+            ..CameraTarget::default()
+        }),
+        "setRoll" => map.jump_to(&CameraTarget {
+            roll: Some(number(1)?),
+            ..CameraTarget::default()
+        }),
         "setCenterElevation" => map.set_center_elevation(number(1)?),
         "setCenterClampedToGround" => {
             let clamped = op
@@ -74,8 +75,11 @@ pub(crate) fn apply(map: &mut Map, op: &Value, assets: &Path) -> Result<Next, St
                     .and_then(Value::as_f64)
                     .ok_or("expected a number")
             };
-            let target = orb_crs::Geodetic::new(at(0)?, at(1)?);
-            move_camera(map, |c| c.target = target);
+            let center = orb_api::Geodetic::new(at(0)?, at(1)?);
+            map.jump_to(&CameraTarget {
+                center: Some(center),
+                ..CameraTarget::default()
+            });
         }
         // `["addImage", name, path, options?]`.
         "addImage" => {
@@ -85,24 +89,15 @@ pub(crate) fn apply(map: &mut Map, op: &Value, assets: &Path) -> Result<Next, St
             let options = op.get(3).map_or_else(String::new, Value::to_string);
             let image =
                 StyleImage::with_options(image.width, image.height, image.pixels, &options)?;
-            map.add_image(text(1)?, image)?;
+            map.add_image(text(1)?, image).map_err(|e| e.to_string())?;
         }
         "removeImage" => {
             let name = op.get(1).and_then(Value::as_str).ok_or("expected a name")?;
-            map.remove_image(name)?;
+            map.remove_image(name).map_err(|e| e.to_string())?;
         }
         _ => {
-            let tx = Transaction::from_commands(&format!("[{op}]"))?;
-            map.edit(&tx)?;
+            map.edit(&format!("[{op}]")).map_err(|e| e.to_string())?;
         }
     }
     Ok(Next::Continue)
-}
-
-/// Jumps the camera to a changed copy of itself, as GL JS's harness's
-/// setters do.
-fn move_camera(map: &mut Map, change: impl FnOnce(&mut orb_runtime::CameraState)) {
-    let mut camera = *map.camera();
-    change(&mut camera);
-    map.jump_to_state(camera);
 }

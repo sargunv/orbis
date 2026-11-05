@@ -101,6 +101,44 @@ pub struct RuntimeOptions {
     pub android_api_level: u32,
     /// The libEGL Compat loads (ANGLE's, say); the platform's by default.
     pub egl_library: Option<String>,
+    /// Rewrites every URL the runtime's maps fetch, before the HTTP cache.
+    pub url_transform: Option<UrlTransform>,
+}
+
+/// Rewrites a URL before it's fetched (GL JS `transformRequest`'s URL): the
+/// URL to fetch, or `None` to refuse it.
+#[derive(Clone)]
+pub struct UrlTransform(pub Arc<UrlRewrite>);
+
+/// A [`UrlTransform`]'s function.
+pub type UrlRewrite = dyn Fn(&str) -> Option<String> + Send + Sync;
+
+impl std::fmt::Debug for UrlTransform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UrlTransform")
+    }
+}
+
+/// Fetches through a [`UrlTransform`].
+struct Transformed {
+    fetch: Arc<dyn orb_host::Fetch>,
+    transform: UrlTransform,
+}
+
+impl orb_host::Fetch for Transformed {
+    fn get(&self, url: &str, done: orb_host::FetchDone) {
+        match (self.transform.0)(url) {
+            Some(url) => self.fetch.get(&url, done),
+            None => done(Err(orb_host::FetchError::UnsupportedUrl(url.into()))),
+        }
+    }
+
+    fn get_range(&self, url: &str, offset: u64, length: u64, done: orb_host::FetchDone) {
+        match (self.transform.0)(url) {
+            Some(url) => self.fetch.get_range(&url, offset, length, done),
+            None => done(Err(orb_host::FetchError::UnsupportedUrl(url.into()))),
+        }
+    }
 }
 
 /// Which GPU tier a runtime draws at (plan §4.2).
@@ -169,6 +207,8 @@ pub struct RuntimeStats {
     pub hung_compile: Option<String>,
     /// What the HTTP cache holds, if there is one.
     pub http_cache: Option<CacheStats>,
+    /// The widest and tallest texture target the device makes, in pixels.
+    pub max_texture_size: u32,
 }
 
 /// Every map's wake, held weakly: a dropped map's goes.
@@ -241,6 +281,12 @@ impl Runtime {
             pipeline_timings,
             hung_compile: gpu.hung(),
             http_cache: self.shared.fetch.cache().map(|c| c.stats()),
+            max_texture_size: match &*gpu {
+                Device::Modern(gpu) => orb_hal::Gpu::caps(gpu),
+                Device::Compat(c) => orb_hal::Gpu::caps(&c.gpu),
+            }
+            .limits
+            .max_texture_dimension_2d,
         }
     }
 
@@ -437,10 +483,16 @@ impl Runtime {
     }
 
     fn services(&self, wake: Arc<dyn Fn() + Send + Sync>) -> orb_runtime::Services {
-        let fetch: Arc<dyn orb_host::Fetch> = match &self.shared.regions {
+        let mut fetch: Arc<dyn orb_host::Fetch> = match &self.shared.regions {
             Some(regions) => regions.fetch.clone(),
             None => self.shared.fetch.clone(),
         };
+        if let Some(transform) = &self.shared.options.url_transform {
+            fetch = Arc::new(Transformed {
+                fetch,
+                transform: transform.clone(),
+            });
+        }
         let jobs = orb_runtime::PoolJobs::new(
             fetch.clone(),
             Arc::new(NativeImageDecode),

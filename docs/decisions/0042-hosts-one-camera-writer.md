@@ -142,3 +142,15 @@ device, frame loop and camera handoff are gone (about 1,500 lines). Still
 pictures, its old `--snapshot` and `--a11y`, are `orbis render` (`--a11y`
 writes the semantic snapshot); its tests, which drive the runtime directly,
 moved to `orb-runtime/tests` (`frames`, `edits`).
+
+## The fixtures draw through `orb-api`
+
+`cargo xtask rt` makes one `orb-api` `Runtime` per suite (Modern, or Compat
+for `gl` and `llvmpipe`) and a `Map` per test into a texture `Target`, set
+up from GL JS's map options, which `MapOptions` now carries
+(`fade_duration`, `cross_source_collisions`, `local_ideograph_font_family`,
+`antialias`, `terrain_skirts`). The mirror's `local://` assets resolve
+through `RuntimeOptions::url_transform`, the first of the host's fetch
+hooks. Queries go through `Map::query_rendered` and its event. The native
+render suite is unchanged at 1191 passes, 104 failures and 50 skips, test
+for test (62.9 s → 58.0 s); the query suite at 71 of 83.

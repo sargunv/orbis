@@ -33,6 +33,23 @@ pub struct MapOptions {
     /// The backing colour behind transparent style pixels, premultiplied
     /// RGBA; opaque surfaces want their view's background.
     pub clear_color: [f64; 4],
+    /// How long labels fade in and out, in milliseconds (GL JS
+    /// `fadeDuration`); still output doesn't fade.
+    pub fade_duration: f64,
+    /// Whether labels of different sources collide with each other (GL JS
+    /// `crossSourceCollisions`).
+    pub cross_source_collisions: bool,
+    /// The CSS font family ideographs of the default font stack are drawn
+    /// with instead of the style's glyphs (GL JS
+    /// `localIdeographFontFamily`); `None` draws the glyphs.
+    pub local_ideograph_font_family: Option<String>,
+    /// Multisampling for 3D surfaces (GL JS `antialias`, which is off by
+    /// default there).
+    pub antialias: bool,
+    /// Whether terrain tiles hang skirts that hide the cracks between
+    /// tiles of different detail; translucent terrain shows them (GL JS
+    /// `terrainSkirtLength`).
+    pub terrain_skirts: bool,
 }
 
 impl Default for MapOptions {
@@ -41,6 +58,11 @@ impl Default for MapOptions {
             camera: None,
             feel: Feel::default(),
             clear_color: [0.0; 4],
+            fade_duration: 300.0,
+            cross_source_collisions: true,
+            local_ideograph_font_family: Some("sans-serif".into()),
+            antialias: true,
+            terrain_skirts: true,
         }
     }
 }
@@ -176,6 +198,11 @@ impl Map {
         }
         map.set_clear_color(options.clear_color);
         map.set_feel(options.feel);
+        map.set_fade_duration(options.fade_duration);
+        map.set_cross_source_collisions(options.cross_source_collisions);
+        map.set_local_ideograph_font_family(options.local_ideograph_font_family.as_deref());
+        map.set_antialias_3d(options.antialias);
+        map.set_terrain_skirts(options.terrain_skirts);
         Self {
             shared: runtime.shared.clone(),
             runtime: runtime.clone(),
@@ -204,6 +231,11 @@ impl Map {
     /// don't call it; check [`needs_frame`](Self::needs_frame) after them.
     pub fn set_wake(&mut self, wake: impl Fn() + Send + Sync + 'static) {
         *self.hook.lock().expect("wake hook poisoned") = Some(Box::new(wake));
+    }
+
+    /// Whether a paint transition runs (decision 0031).
+    pub fn transitioning(&self) -> bool {
+        self.map.transitioning()
     }
 
     /// Whether an animation, a glide or a gesture moves the camera.
