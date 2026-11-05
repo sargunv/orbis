@@ -721,6 +721,7 @@ impl Map {
         self.set_mode(RenderMode::Still);
         while self.map.style_doc().is_none() {
             self.frame(target, self.now())?;
+            self.style_failed()?;
             if self.map.style_doc().is_none() {
                 self.wait(deadline)?;
             }
@@ -791,7 +792,10 @@ impl Map {
     fn settle(&mut self, target: &mut Target, deadline: Instant) -> Result<FrameReport, Error> {
         let mut was_idle = false;
         loop {
-            if let Some(report) = self.frame(target, self.now())? {
+            let report = self.frame(target, self.now())?;
+            // A style that failed to load never settles: say why at once.
+            self.style_failed()?;
+            if let Some(report) = report {
                 if report.idle && was_idle {
                     return Ok(report);
                 }
@@ -801,6 +805,14 @@ impl Map {
                 }
             }
             self.wait(deadline)?;
+        }
+    }
+
+    /// The latest style request's failure, as an error.
+    fn style_failed(&self) -> Result<(), Error> {
+        match self.map.style_error() {
+            Some(message) => Err(Error::InvalidArgument(message.to_string())),
+            None => Ok(()),
         }
     }
 

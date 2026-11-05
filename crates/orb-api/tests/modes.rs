@@ -203,3 +203,33 @@ fn tiles_repeat_and_agree_across_edges() {
         );
     }
 }
+
+#[test]
+fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let dir = std::env::temp_dir().join(format!("orbis-bad-style-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("style.json");
+    // An array output without `literal` doesn't parse.
+    std::fs::write(
+        &path,
+        r#"{"version":8,"sources":{},"layers":[{"id":"bg","type":"background",
+            "paint":{"background-color":["match",1,1,[1,2],"red"]}}]}"#,
+    )
+    .unwrap();
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.load_style_url(&format!("file://{}", path.display()));
+    let started = std::time::Instant::now();
+    let error = map.snapshot(64, 64, 1.0).unwrap_err();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        error.message().starts_with("style: "),
+        "{}",
+        error.message()
+    );
+    assert!(
+        started.elapsed().as_secs() < 10,
+        "took {:?}",
+        started.elapsed()
+    );
+}

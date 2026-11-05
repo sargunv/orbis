@@ -555,6 +555,9 @@ pub struct Map {
     pub(crate) transitions: crate::transitions::Transitions,
     /// The latest `load_style_url` request; earlier ones are ignored.
     style_request: u64,
+    /// Why the latest style request failed: nothing will load until
+    /// another style replaces it.
+    style_error: Option<String>,
     generation: u64,
     tile_generation: u64,
     pub(crate) style: Option<LoadedStyle>,
@@ -783,6 +786,7 @@ impl Map {
             occlusion_warned: false,
             transitions: Default::default(),
             style_request: 0,
+            style_error: None,
             generation: 0,
             tile_generation: 0,
             style: None,
@@ -1030,7 +1034,14 @@ impl Map {
         self.fetch_style(url, false);
     }
 
+    /// Why the latest style request failed, if it did: a fetch or parse
+    /// error. Frames draw nothing until another style replaces it.
+    pub fn style_error(&self) -> Option<&str> {
+        self.style_error.as_deref()
+    }
+
     fn fetch_style(&mut self, url: &str, scene: bool) {
+        self.style_error = None;
         self.style_request += 1;
         let request = self.style_request;
         let owned = url.to_string();
@@ -1094,6 +1105,7 @@ impl Map {
         // A style URL still loading is superseded, and the old style's
         // paint transitions with it.
         self.style_request += 1;
+        self.style_error = None;
         self.transitions = Default::default();
         self.install(doc);
         Ok(())
@@ -3099,7 +3111,9 @@ impl Map {
             .map_err(|e| e.to_string())
             .and_then(|json| self.set_document(&json, Some(url), scene));
         if let Err(e) = installed {
-            self.fail(format!("style: {e}"));
+            let message = format!("style: {e}");
+            self.style_error = Some(message.clone());
+            self.fail(message);
         }
     }
 
