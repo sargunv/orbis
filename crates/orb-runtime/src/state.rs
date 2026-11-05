@@ -24,6 +24,10 @@ use orb_style::Value;
 
 use crate::style::{PaintProperty, StylePlan};
 
+/// A feature's state, and the data paint mixing state and data reads.
+pub(crate) type FeatureState<'a> =
+    Option<(&'a [(String, Value<'static>)], Option<&'a FeatureData>)>;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct StateKey {
     source: u32,
@@ -250,12 +254,7 @@ impl FeatureStates {
 
     /// A feature's state, and what paint reading both state and data
     /// reads of it, if it has an entry.
-    pub(crate) fn feature(
-        &self,
-        source: u32,
-        layer: Option<&str>,
-        id: &str,
-    ) -> Option<(&[(String, Value<'static>)], Option<&FeatureData>)> {
+    pub(crate) fn feature(&self, source: u32, layer: Option<&str>, id: &str) -> FeatureState<'_> {
         let key = StateKey {
             source,
             layer: layer.map(str::to_string),

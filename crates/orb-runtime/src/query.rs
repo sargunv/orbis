@@ -17,6 +17,7 @@ use orb_crs::{TileIndex, TileMatrixSet};
 use orb_style::{Kind, LayerType, Property, TranslateAnchor};
 
 use crate::jobs::{read_text, write_text};
+use crate::state::FeatureState;
 
 /// The topmost feature under a point in the last published frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -774,12 +775,6 @@ pub(crate) struct Scene<'a> {
     /// Feature states, for paint that reads them.
     pub(crate) states: Option<&'a crate::state::FeatureStates>,
 }
-
-/// A feature's state and the data paint mixing state and data reads.
-type FeatureState<'a> = Option<(
-    &'a [(String, orb_style::Value<'static>)],
-    Option<&'a orb_expr::FeatureData>,
-)>;
 
 /// A dimension at the query's zoom: under the feature's state where it
 /// reads state (with its captured data where it mixes in properties),
