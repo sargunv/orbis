@@ -2634,7 +2634,10 @@ impl Map {
                 renderer.free_layer(page, retired.layer);
             }
         }
-        let paint = terrain.page.map(|page| {
+        // The terrain draws before its DEM tiles arrive, and where its
+        // source has none: flat, skirts and all, as GL JS draws it.
+        let paint = {
+            let page = terrain.page;
             let zoom = self.camera.state().zoom(self.surface.projection());
             let height_scale = view.height_scale();
             // GL JS's `getSkirtLength`: a fifth of a tile's width at the
@@ -2652,13 +2655,13 @@ impl Map {
                     skirt: (skirt * height_scale) as f32,
                 },
             )
+        };
+        self.frame_terrain = Some(orb_render::FrameTerrain {
+            unpack: paint.1.unpack,
+            exaggeration: paint.1.exaggeration,
+            dem_dim: paint.0.map_or(1, |page| renderer.page_size(page)[0]) as f32,
         });
-        self.frame_terrain = paint.map(|(page, p)| orb_render::FrameTerrain {
-            unpack: p.unpack,
-            exaggeration: p.exaggeration,
-            dem_dim: renderer.page_size(page)[0] as f32,
-        });
-        renderer.set_terrain(gpu, paint);
+        renderer.set_terrain(gpu, Some(paint));
         let mut loading = 0;
         for tile in requests {
             if !endpoint.contains(tile) {

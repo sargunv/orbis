@@ -873,15 +873,26 @@ impl Renderer {
 
     /// Turns terrain on over a DEM page, or off. Draped nodes then draw
     /// only drape placements: their stack's ([`PlacementTarget::Drape`]).
-    pub fn set_terrain(&mut self, gpu: &mut dyn Gpu, terrain: Option<(PageId, TerrainPaint)>) {
+    /// Turns terrain on with its DEM page, or flat before it has one, or
+    /// off (`None`).
+    pub fn set_terrain(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        terrain: Option<(Option<PageId>, TerrainPaint)>,
+    ) {
         // Compat draws no terrain (plan §8.7).
         let terrain = terrain.filter(|_| gpu.caps().tier == Tier::Modern);
         let was = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
         match terrain {
             Some((page, paint)) => {
                 let target = self.target;
-                let dem = self.images.dem_texture(page);
-                let dim = self.images.page_size(page)[0];
+                let (dem, dim) = match page {
+                    Some(page) => (
+                        self.images.dem_texture(page),
+                        self.images.page_size(page)[0],
+                    ),
+                    None => ((self.images.placeholder(), 0), 1),
+                };
                 let atmosphere = self.atmosphere.uniform;
                 let t = self
                     .terrain

@@ -478,6 +478,11 @@ impl Images {
         self.pages[id.0 as usize].as_mut().expect("unknown page")
     }
 
+    /// A one-texel array, bound where no page is.
+    pub(crate) fn placeholder(&self) -> TextureId {
+        self.placeholder
+    }
+
     /// A DEM page's padded elevations (2-texel borders from neighbours), and
     /// the revision of its textures.
     pub(crate) fn dem_texture(&self, id: PageId) -> (TextureId, u32) {
