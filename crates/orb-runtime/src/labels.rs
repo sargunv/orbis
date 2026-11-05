@@ -1677,7 +1677,7 @@ mod tests {
             let mut renderer = Renderer::with_images(&mut gpu, target, capacity, images.bindings());
             let (worker, result) = crate::testing::symbol_tile();
             let families: Vec<_> = worker.plan().nodes.iter().map(|n| n.family).collect();
-            renderer.remap_nodes(&mut gpu, &families, &vec![None; families.len()]);
+            renderer.set_nodes(&mut gpu, &families);
             Self {
                 gpu,
                 renderer,

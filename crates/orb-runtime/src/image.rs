@@ -8,26 +8,18 @@ use orb_crs::TileIndex;
 use orb_hal::Gpu;
 use orb_layout::{Chunk, TileBox};
 use orb_render::{
-    ColorReliefPaint, DemPrepare, HillshadeMethod, HillshadePaint, IMAGE_EXTENT, IMAGE_ROW_WORDS,
-    ImageFade, MAX_LIGHTS, MeshData, MeshSize, NodePaint, PageId, PageKind, Pixels, RasterPaint,
-    Renderer, Words,
+    ColorReliefPaint, HillshadeMethod, HillshadePaint, IMAGE_EXTENT, ImageMesh, MAX_LIGHTS,
+    NodePaint, RasterPaint, Renderer,
 };
-use orb_source::TilePyramid;
 use orb_v8::{Color, IlluminationAnchor, LayerKind, Property, PropertyValue, Resampling};
 
-use crate::jobs::{ImagePixels, TileImage};
-use crate::map::{Resident, ResidentTile};
-use crate::style::{ImageKind, NodePlan, StylePlan};
+use crate::style::{NodePlan, StylePlan};
 
-/// An image tile's layer in its source's page, and the mesh that warps it
-/// onto another plane.
+/// What the map keeps of a resident image tile: the mesh that warps it
+/// onto another plane, if any. The renderer holds its texels and quads.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ResidentImage {
-    pub(crate) page: PageId,
-    pub(crate) layer: u32,
     pub(crate) warped: Option<Arc<Warped>>,
-    /// How it fades in, decided when it arrived.
-    pub(crate) fade: ImageFade,
 }
 
 /// A tile's warp mesh as its nodes draw it (plan §9.2, `RasterWarp`).
@@ -36,9 +28,7 @@ pub(crate) struct Warped {
     /// The square of the drawing plane its positions span `IMAGE_EXTENT`
     /// of.
     pub(crate) frame: orb_crs::WorldRect,
-    vertices: Vec<u32>,
-    indices: Vec<u32>,
-    chunks: Vec<Chunk>,
+    pub(crate) mesh: Arc<ImageMesh>,
 }
 
 impl Warped {
@@ -175,371 +165,13 @@ impl Warped {
             .collect();
         Self {
             frame: mesh.frame,
-            vertices,
-            indices,
-            chunks,
+            mesh: Arc::new(ImageMesh {
+                vertices,
+                indices,
+                chunks,
+            }),
         }
     }
-}
-
-/// An image tile to upload.
-pub(crate) struct Upload<'a> {
-    pub(crate) plan: &'a StylePlan,
-    pub(crate) source: usize,
-    pub(crate) kind: ImageKind,
-    pub(crate) tile: TileIndex,
-    pub(crate) image: &'a TileImage,
-    /// A DEM source's unpack vector.
-    pub(crate) unpack: Option<[f64; 4]>,
-    /// The tile's mesh on the surface, from a `RasterWarp` plan.
-    pub(crate) warped: Option<Arc<Warped>>,
-    /// The style zoom it draws at (decision 0022).
-    pub(crate) zoom: f64,
-    /// Now, in the frame's milliseconds, and whether the tile fades in
-    /// (a raster source with a fade duration).
-    pub(crate) time: f32,
-    pub(crate) fades: bool,
-}
-
-/// How many zooms up a fading tile looks for the ancestor it cross-fades
-/// from: the row packs the tile's offsets in it in 12 bits.
-const FADE_DEPTH: u8 = 12;
-
-/// How a tile arriving at `time` fades in, by what of its source was
-/// resident (GL JS's `getFadeValues`, its tile retention reduced to what
-/// the pyramid holds): where descendants covered it (zooming out) it shows
-/// at once; otherwise it cross-fades from the nearest resident ancestor, or
-/// without one fades in.
-fn fade_in(pyramid: &TilePyramid<ResidentTile>, tile: TileIndex, time: f32) -> ImageFade {
-    let image = |t: TileIndex| pyramid.get(t).and_then(|r| r.image.as_ref());
-    let children = tile.children();
-    if children
-        .iter()
-        .any(|&c| image(c).is_some() || c.children().iter().any(|&g| image(g).is_some()))
-    {
-        return ImageFade::NONE;
-    }
-    let mut ancestor = tile.parent();
-    let mut depth = 1;
-    while let Some(at) = ancestor.filter(|_| depth <= FADE_DEPTH) {
-        if let Some(image) = image(at) {
-            let offset = |v: u32| (v - (v >> depth << depth)) as u16;
-            return ImageFade {
-                arrived: time,
-                ancestor: Some((image.layer, depth, [offset(tile.col), offset(tile.row)])),
-            };
-        }
-        ancestor = at.parent();
-        depth += 1;
-    }
-    ImageFade {
-        arrived: time,
-        ancestor: None,
-    }
-}
-
-/// The quad an image tile on its own plane draws: its corners in tile
-/// units, as f32 positions and as image units (the same for a quad).
-const QUAD: [u32; 20] = {
-    let e = IMAGE_EXTENT;
-    let (zero, full, one) = (0f32.to_bits(), (e as f32).to_bits(), 1f32.to_bits());
-    [
-        zero,
-        zero,
-        0,
-        one,
-        0, //
-        full,
-        zero,
-        e,
-        one,
-        e, //
-        zero,
-        full,
-        e << 16,
-        one,
-        e << 16, //
-        full,
-        full,
-        e | e << 16,
-        one,
-        e | e << 16,
-    ]
-};
-const QUAD_INDICES: [u32; 6] = [0, 1, 2, 2, 1, 3];
-const QUAD_CHUNK: Chunk = Chunk {
-    sort_key: None,
-    first_index: 0,
-    index_count: 6,
-    bounds: TileBox {
-        min: [0, 0],
-        max: [IMAGE_EXTENT as i16, IMAGE_EXTENT as i16],
-    },
-};
-
-/// Why an image tile didn't upload.
-#[derive(Debug)]
-pub(crate) enum UploadError {
-    /// Out of layers in the page: evicting tiles, or growing the page, may
-    /// make room.
-    NoLayer,
-    /// Out of scene memory: evicting tiles may make room.
-    NoRoom,
-    /// The tile itself can't draw.
-    Invalid(String),
-}
-
-/// What an image tile's quads (or warped meshes) take in the scene: one
-/// per node of its source.
-pub(crate) fn mesh_sizes(
-    plan: &StylePlan,
-    source: usize,
-    warped: Option<&Warped>,
-) -> Vec<MeshSize> {
-    let size = match warped {
-        Some(warped) => MeshSize {
-            vertices: warped.vertices.len() as u32,
-            indices: warped.indices.len() as u32,
-            props: IMAGE_ROW_WORDS as u32,
-            chunks: warped.chunks.len() as u32,
-        },
-        None => MeshSize {
-            vertices: QUAD.len() as u32,
-            indices: QUAD_INDICES.len() as u32,
-            props: IMAGE_ROW_WORDS as u32,
-            chunks: 1,
-        },
-    };
-    let nodes = plan.nodes.iter().filter(|n| n.source == source).count();
-    vec![size; nodes]
-}
-
-/// Writes an image tile into its source's page, which the first tile
-/// creates at its size, and adds its quad to every node of the source. A
-/// DEM tile is queued for the prepare pass, and so are its resident
-/// neighbours, whose borders it fills.
-pub(crate) fn upload(
-    gpu: &mut dyn Gpu,
-    renderer: &mut Renderer,
-    page: &mut Option<PageId>,
-    pyramid: &TilePyramid<ResidentTile>,
-    upload: &Upload<'_>,
-    grow_page: bool,
-) -> Result<ResidentTile, UploadError> {
-    let Upload {
-        plan,
-        source,
-        kind,
-        tile,
-        image,
-        ..
-    } = *upload;
-    let size = [image.width, image.height];
-    if kind == ImageKind::Dem && image.width != image.height {
-        return Err(UploadError::Invalid("DEM tiles must be square".into()));
-    }
-    let page = *page.get_or_insert_with(|| {
-        let kind = match kind {
-            ImageKind::Raster => PageKind::Raster,
-            ImageKind::Dem => PageKind::Dem,
-        };
-        let page = renderer.create_page(gpu, kind, size);
-        for (index, node) in plan.nodes.iter().enumerate() {
-            if node.source == source {
-                renderer.bind_page(index as u32, page);
-            }
-        }
-        page
-    });
-    let expected = renderer.page_size(page);
-    if expected != size {
-        return Err(UploadError::Invalid(format!(
-            "a {}×{} image in a source of {}×{} tiles",
-            size[0], size[1], expected[0], expected[1]
-        )));
-    }
-    let layer = if grow_page {
-        renderer.alloc_layer(gpu, page).ok()
-    } else {
-        renderer.alloc_existing_layer(page)
-    }
-    .ok_or(UploadError::NoLayer)?;
-    let pixels = match &image.pixels {
-        ImagePixels::Core(bytes) => Pixels::Core(bytes),
-        &ImagePixels::Host(image) => Pixels::Host {
-            image,
-            premultiply: kind == ImageKind::Raster,
-        },
-    };
-    renderer.write_layer(gpu, page, layer, pixels);
-
-    let scene_tile = renderer.scene().insert_tile();
-    let mut resident = ResidentTile {
-        parts: vec![(IMAGE_EXTENT, scene_tile)],
-        meshes: Vec::new(),
-        series: None,
-        warp: orb_render::TileWarp::NONE,
-        zoom: upload.zoom,
-        image: Some(ResidentImage {
-            page,
-            layer,
-            warped: upload.warped.clone(),
-            fade: if upload.fades {
-                fade_in(pyramid, tile, upload.time)
-            } else {
-                ImageFade::NONE
-            },
-        }),
-        symbols: Vec::new(),
-        cost: 0,
-    };
-    for (index, node) in plan.nodes.iter().enumerate() {
-        if node.source == source
-            && add_node(gpu, renderer, &mut resident, tile, index as u32, node.key).is_err()
-        {
-            renderer.scene().remove_tile(scene_tile);
-            renderer.free_layer(page, layer);
-            return Err(UploadError::NoRoom);
-        }
-    }
-
-    if let Some(unpack) = upload.unpack {
-        let layer_of = |t: TileIndex| {
-            pyramid
-                .get(t)
-                .and_then(|r| r.image.as_ref())
-                .map(|i| i.layer)
-        };
-        for job in dem_prepares(tile, layer, unpack.map(|v| v as f32), &layer_of) {
-            renderer.prepare_dem(page, job);
-        }
-    }
-    Ok(resident)
-}
-
-/// The prepare jobs a DEM tile's arrival at `layer` starts: its own, and
-/// its resident neighbours', whose borders it fills. `layer_of` finds a
-/// resident tile's layer.
-pub(crate) fn dem_prepares(
-    tile: TileIndex,
-    layer: u32,
-    unpack: [f32; 4],
-    layer_of: &dyn Fn(TileIndex) -> Option<u32>,
-) -> Vec<DemPrepare> {
-    let arrived = (tile, layer);
-    let mut jobs = vec![DemPrepare {
-        layer,
-        neighbours: neighbours(layer_of, tile, arrived),
-        zoom: f32::from(tile.z),
-        unpack,
-    }];
-    for offset in OFFSETS {
-        let Some(neighbour) = offset_tile(tile, offset) else {
-            continue;
-        };
-        if let Some(layer) = layer_of(neighbour) {
-            jobs.push(DemPrepare {
-                layer,
-                neighbours: neighbours(layer_of, neighbour, arrived),
-                zoom: f32::from(neighbour.z),
-                unpack,
-            });
-        }
-    }
-    jobs
-}
-
-/// Adds the quad of render node `index` (key `key`) to an image tile.
-pub(crate) fn add_node(
-    gpu: &mut dyn Gpu,
-    renderer: &mut Renderer,
-    resident: &mut ResidentTile,
-    tile: TileIndex,
-    index: u32,
-    key: u32,
-) -> Result<(), orb_render::OutOfSpace> {
-    let image = resident.image.as_ref().expect("image tiles hold an image");
-    let part = resident.parts[0].1;
-    let [top, bottom] = [tile.row, tile.row + 1].map(|row| latitude(tile.z, row));
-    let mut row = [0; IMAGE_ROW_WORDS];
-    row[..3].copy_from_slice(&[image.layer, top.to_bits(), bottom.to_bits()]);
-    row[3..].copy_from_slice(&image.fade.words());
-    let mesh = match &image.warped {
-        Some(warped) => MeshData {
-            vertices: Words::Core(&warped.vertices),
-            indices: Words::Core(&warped.indices),
-            props: Words::Core(&row),
-            row_words: IMAGE_ROW_WORDS as u32,
-            chunks: &warped.chunks,
-        },
-        None => MeshData {
-            vertices: Words::Core(&QUAD),
-            indices: Words::Core(&QUAD_INDICES),
-            props: Words::Core(&row),
-            row_words: IMAGE_ROW_WORDS as u32,
-            chunks: &[QUAD_CHUNK],
-        },
-    };
-    let mesh = renderer.scene().insert_mesh(gpu, part, index, &mesh)?;
-    resident.meshes.push(Resident {
-        hits: Default::default(),
-        node: key,
-        mesh,
-        layout_rev: 0,
-        rows_rev: 0,
-        ramps: Vec::new(),
-        states: Vec::new(),
-    });
-    Ok(())
-}
-
-/// Neighbour offsets in [`DemPrepare::neighbours`] order.
-const OFFSETS: [(i32, i32); 8] = [
-    (-1, -1),
-    (0, -1),
-    (1, -1),
-    (-1, 0),
-    (1, 0),
-    (-1, 1),
-    (0, 1),
-    (1, 1),
-];
-
-/// The tile `offset` away at the same zoom, wrapping east and west as GL
-/// JS's `_getNeighboringTiles` does; `None` past the poles.
-fn offset_tile(tile: TileIndex, (dx, dy): (i32, i32)) -> Option<TileIndex> {
-    let n = 1i64 << tile.z;
-    let row = i64::from(tile.row) + i64::from(dy);
-    if !(0..n).contains(&row) {
-        return None;
-    }
-    let col = (i64::from(tile.col) + i64::from(dx)).rem_euclid(n);
-    Some(TileIndex::new(tile.z, col as u32, row as u32))
-}
-
-/// The layers of `tile`'s resident neighbours, counting `arrived`, a tile
-/// not yet in the pyramid.
-fn neighbours(
-    layer_of: &dyn Fn(TileIndex) -> Option<u32>,
-    tile: TileIndex,
-    arrived: (TileIndex, u32),
-) -> [Option<u32>; 8] {
-    OFFSETS.map(|offset| {
-        let neighbour = offset_tile(tile, offset)?;
-        if neighbour == arrived.0 {
-            return Some(arrived.1);
-        }
-        layer_of(neighbour)
-    })
-}
-
-/// The latitude of a row edge of the Web Mercator tile grid, in degrees.
-fn latitude(z: u8, row: u32) -> f32 {
-    let n = (1u64 << z) as f64;
-    ((1.0 - 2.0 * f64::from(row) / n) * std::f64::consts::PI)
-        .sinh()
-        .atan()
-        .to_degrees() as f32
 }
 
 /// An image node's paint at `zoom` with the map rotated by `bearing`
@@ -766,13 +398,5 @@ mod tests {
         let (colors, _) = color_ramp(Some(&ramp), [6553.6, 25.6, 0.1, 10000.0], 8192);
         // Half-transparent red: 255 straight, alpha 128, premultiplied 128.
         assert_eq!(colors, [128 | 128 << 24, 0xffff_0000]);
-    }
-
-    #[test]
-    fn neighbours_wrap_east_and_west() {
-        let tile = TileIndex::new(2, 0, 0);
-        assert_eq!(offset_tile(tile, (-1, 0)), Some(TileIndex::new(2, 3, 0)));
-        assert_eq!(offset_tile(tile, (0, -1)), None);
-        assert_eq!(offset_tile(tile, (1, 1)), Some(TileIndex::new(2, 1, 1)));
     }
 }

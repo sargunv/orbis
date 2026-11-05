@@ -25,6 +25,7 @@ mod image;
 mod layer_composite;
 mod paint;
 mod terrain;
+mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
 pub use terrain::{
@@ -51,6 +52,7 @@ pub use paint::{
     HillshadePaint, LINE_ROW_WORDS, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint,
     SYMBOL_ROW_WORDS, StateLookup, SymbolPaint, SymbolSize, Translate, pack_color,
 };
+pub use tiles::{GpuTile, ImageBuild, ImageMesh, TileKey, UploadError, dem_prepares};
 
 use orb_hal::*;
 use orb_shaders::{
@@ -157,9 +159,18 @@ pub struct FrameStats {
     pub waited: bool,
 }
 
+/// A render node: its family, and the source an image node draws the
+/// tiles of (by style key).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenderNode {
+    pub family: Family,
+    pub source: Option<u32>,
+}
+
 #[derive(Debug)]
 struct Node {
     family: Family,
+    source: Option<u32>,
     /// Draws with the bytecode-class pipeline.
     bytecode: bool,
     group: BindGroupId,
@@ -216,6 +227,7 @@ pub struct Renderer {
     node_uniforms: BufferId,
     node_stride: u64,
     nodes: Vec<Node>,
+    tiles: tiles::Tiles,
     /// The main pass's bundles: one, or one more than the groups that
     /// blend other than normally (empty until recorded).
     bundles: Vec<RenderBundleId>,
@@ -501,6 +513,7 @@ impl Renderer {
             node_uniforms,
             node_stride,
             nodes: Vec::new(),
+            tiles: Default::default(),
             bundles: Vec::new(),
             paints_written: 0,
             images,
@@ -554,24 +567,35 @@ impl Renderer {
         (self.scene.buffers().args, self.nodes.len() as u32)
     }
 
-    /// Replaces the render nodes, in draw order. The scene must hold no
-    /// meshes.
+    /// Replaces the render nodes, in draw order, none of them drawing a
+    /// source's image tiles. The scene must hold no meshes.
     pub fn set_nodes(&mut self, gpu: &mut dyn Gpu, families: &[Family]) {
-        let retained = vec![None; families.len()];
-        self.remap_nodes(gpu, families, &retained);
+        let nodes: Vec<RenderNode> = families
+            .iter()
+            .map(|&family| RenderNode {
+                family,
+                source: None,
+            })
+            .collect();
+        self.remap_nodes(gpu, &nodes, &vec![None; nodes.len()]);
     }
 
     /// Replaces the render nodes, in draw order, keeping some with their
-    /// meshes: new node `i` is old node `retained[i]`, of the same family,
-    /// or a new node. Old nodes not retained must hold no meshes. Paint is
-    /// written again for every node.
+    /// meshes: new node `i` is old node `retained[i]`, of the same family
+    /// and source, or a new node. Old nodes not retained must hold no
+    /// vector meshes; their image tiles' quads go with them, and new image
+    /// nodes draw the tiles their source has resident. Paint is written
+    /// again for every node. Returns whether every resident image tile
+    /// found room in the new nodes.
     pub fn remap_nodes(
         &mut self,
         gpu: &mut dyn Gpu,
-        families: &[Family],
+        nodes: &[RenderNode],
         retained: &[Option<u32>],
-    ) {
-        assert_eq!(families.len(), retained.len());
+    ) -> bool {
+        assert_eq!(nodes.len(), retained.len());
+        let families: Vec<Family> = nodes.iter().map(|n| n.family).collect();
+        let families = &families[..];
         assert!(
             families.len() as u32 <= self.scene.capacity().nodes,
             "{} render nodes exceed the scene's {}",
@@ -581,17 +605,29 @@ impl Renderer {
         let mut old: Vec<Option<Node>> = self.nodes.drain(..).map(Some).collect();
         let mut map = vec![None; old.len()];
         let mut kept: Vec<Option<Node>> = Vec::with_capacity(families.len());
-        for (i, (&family, &from)) in families.iter().zip(retained).enumerate() {
+        for (i, (new, &from)) in nodes.iter().zip(retained).enumerate() {
             let node = from.map(|from| {
                 let node = old[from as usize]
                     .take()
                     .expect("each old node is retained once");
-                assert_eq!(node.family, family, "a retained node keeps its family");
+                assert_eq!(
+                    (node.family, node.source),
+                    (new.family, new.source),
+                    "a retained node keeps its family and source"
+                );
                 map[from as usize] = Some(i as u32);
                 node
             });
             kept.push(node);
         }
+        // Image tiles' quads in nodes leaving go first.
+        for (index, _) in map.iter().enumerate().filter(|(_, m)| m.is_none()) {
+            let meshes: Vec<MeshId> = self.tiles.meshes_of(index as u32).collect();
+            for mesh in meshes {
+                self.scene.remove_mesh(mesh);
+            }
+        }
+        self.tiles.remap(&map);
         for node in old.into_iter().flatten() {
             gpu.destroy_bind_group(node.group);
             if let Some(extrusion) = node.extrusion {
@@ -604,8 +640,12 @@ impl Renderer {
                 image::Images::release_node(gpu, image);
             }
         }
-        for (i, (&family, node)) in families.iter().zip(kept).enumerate() {
+        let mut added = Vec::new();
+        for (i, ((&family, node), desc)) in families.iter().zip(kept).zip(nodes).enumerate() {
             let uniform = self.node_uniform(i as u32);
+            if node.is_none() && family.is_image() {
+                added.push(i as u32);
+            }
             let (mut image, cull) = match node {
                 Some(node) => {
                     // Groups bind the uniform at the node's index.
@@ -642,6 +682,7 @@ impl Renderer {
             };
             self.nodes.push(Node {
                 family,
+                source: desc.source,
                 bytecode: false,
                 group,
                 extrusion: (family == Family::FillExtrusion)
@@ -661,6 +702,13 @@ impl Renderer {
         self.scene.remap_nodes(&map, &cull);
         self.pipelines_stale = true;
         self.invalidate_bundle(gpu);
+        let complete = self.add_image_nodes(gpu, &added);
+        let sources: Vec<u32> = self.tiles.sources().map(|(source, _)| source).collect();
+        for source in sources {
+            self.drop_unused_page(source);
+        }
+        self.destroy_retired_pages(gpu);
+        complete
     }
 
     /// Puts draped nodes in their drape stacks while terrain is on: each
@@ -829,22 +877,8 @@ impl Renderer {
     }
 
     /// The size of a page's tiles in texels.
-    /// Bytes one layer of a page takes.
-    pub fn layer_bytes(&self, page: PageId) -> u64 {
-        self.images.layer_bytes(page)
-    }
-
     pub fn page_size(&self, page: PageId) -> [u32; 2] {
         self.images.page_size(page)
-    }
-
-    /// Makes an image node draw from `page`'s textures.
-    pub fn bind_page(&mut self, node: u32, page: PageId) {
-        let image = self.nodes[node as usize]
-            .image
-            .as_mut()
-            .expect("pages bind to image nodes");
-        image::Images::bind_page(image, page);
     }
 
     /// A free layer of `page` for one tile, growing the page if needed.
@@ -861,11 +895,6 @@ impl Renderer {
     /// Tile page layers in use.
     pub fn used_layers(&self) -> u64 {
         self.images.used_layers()
-    }
-
-    /// A layer `page` already has, without growing it.
-    pub fn alloc_existing_layer(&mut self, page: PageId) -> Option<u32> {
-        self.images.alloc_existing_layer(page)
     }
 
     pub fn free_layer(&mut self, page: PageId, layer: u32) {
@@ -1185,6 +1214,7 @@ impl Renderer {
         target: TextureId,
         clear: [f64; 4],
     ) -> FrameStats {
+        self.destroy_retired_pages(gpu);
         self.bind_scene(gpu);
         let mut stats = self.render_modern(gpu, frame, target, clear);
         stats.draws += u32::from(self.atmosphere.enabled);

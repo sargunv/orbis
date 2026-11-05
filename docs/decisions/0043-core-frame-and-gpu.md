@@ -54,6 +54,24 @@ Apple M6, 2048×1536, `cargo xtask bench --experiment gestures`, render CPU:
 The rows still written are tiles arriving or leaving, and the background's
 cover. Native fixtures are unchanged: 1179 pass, 116 fail, 50 skip.
 
+## The renderer holds tiles
+
+`Renderer::upload_*` turns a tile into an opaque `GpuTile` that the map
+keeps in its pyramid, and `release_tile` frees it. The renderer owns all of
+a tile's GPU residency, and asks the map for room by failing with `NoRoom`:
+the map evicts an unused tile, or uploads again allowed to grow, and
+otherwise lets a coarser tile stand in.
+
+- **Image tiles first.** A raster or DEM tile takes a layer of its source's
+  page and a quad in each of the source's image nodes. The renderer makes
+  the page with the source's first tile, binds it to the source's nodes,
+  adds resident tiles' quads to nodes that edits add, and destroys the page
+  once no node draws the source and no tile is left. It indexes image tiles
+  by source and tile, so a DEM tile's arrival prepares the resident
+  neighbours whose borders it fills, and a raster tile finds the ancestor
+  it cross-fades from, without the map's bookkeeping. Render nodes name the
+  source they draw (`RenderNode`).
+
 ## Still to land
 
 The Map/Renderer split (`plan_frame`, a narrow `Renderer` that owns all

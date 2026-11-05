@@ -1089,23 +1089,40 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
     assert_eq!(stats.placements_written, 0);
 }
 
-/// A raster node drawing one image tile over the whole view, sampling
-/// layer `child` of a page whose layer `parent` is its ancestor a zoom up
-/// (the tile is its north-west child), fading over 1000 ms from time 0.
+/// A raster node drawing one image tile over the whole view: red, the
+/// north-west child of a blue tile a zoom up that is resident with
+/// `ancestor`, fading in over 1000 ms from time 0.
 fn fading_raster(ancestor: bool) -> Harness {
-    use orb_render::{ImageFade, PageKind, Pixels, RasterPaint};
+    use orb_render::{ImageBuild, PageKind, Pixels, RasterPaint, RenderNode, TileKey};
     let mut h = Harness::new();
-    h.renderer.set_nodes(&mut h.gpu, &[Family::Raster]);
-    let page = h.renderer.create_page(&mut h.gpu, PageKind::Raster, [2, 2]);
-    h.renderer.bind_page(0, page);
-    let mut layer = |rgba: [u8; 4]| {
-        let layer = h.renderer.alloc_layer(&mut h.gpu, page).unwrap();
-        h.renderer
-            .write_layer(&mut h.gpu, page, layer, Pixels::Core(&rgba.repeat(4)));
-        layer
+    let source = 7;
+    let node = RenderNode {
+        family: Family::Raster,
+        source: Some(source),
     };
-    let parent = layer([0, 0, 255, 255]);
-    let child = layer([255, 0, 0, 255]);
+    assert!(h.renderer.remap_nodes(&mut h.gpu, &[node], &[None]));
+    let mut upload = |tile: orb_crs::TileIndex, rgba: [u8; 4], fade_from: Option<f32>| {
+        let pixels = rgba.repeat(4);
+        let build = ImageBuild {
+            key: TileKey { source, tile },
+            kind: PageKind::Raster,
+            size: [2, 2],
+            pixels: Pixels::Core(&pixels),
+            mesh: None,
+            patches: None,
+            fade_from,
+            unpack: None,
+        };
+        h.renderer.upload_image(&mut h.gpu, &build, true).unwrap()
+    };
+    if ancestor {
+        upload(orb_crs::TileIndex::new(0, 0, 0), [0, 0, 255, 255], None);
+    }
+    let child = upload(
+        orb_crs::TileIndex::new(1, 0, 0),
+        [255, 0, 0, 255],
+        Some(0.0),
+    );
     h.renderer.set_paint(
         &mut h.gpu,
         0,
@@ -1121,7 +1138,6 @@ fn fading_raster(ancestor: bool) -> Harness {
             fade_duration: 1000.0,
         }),
     );
-    let tile = h.renderer.scene().insert_tile();
     let row = TileRow {
         extent: 8192.0,
         scale: 2.0 / 8192.0,
@@ -1133,50 +1149,8 @@ fn fading_raster(ancestor: bool) -> Harness {
         ],
         ..full_view_tile(0.0)
     };
-    h.renderer.scene().place_tile(tile, &[row]).unwrap();
-    // The runtime's image quad: f32 position, clip units, weight, image
-    // units.
-    let (e, one) = (8192u32, 1f32.to_bits());
-    let corner = |x: u32, y: u32| {
-        [
-            (x as f32).to_bits(),
-            (y as f32).to_bits(),
-            x | y << 16,
-            one,
-            x | y << 16,
-        ]
-    };
-    let vertices: Vec<u32> = [corner(0, 0), corner(e, 0), corner(0, e), corner(e, e)].concat();
-    let fade = ImageFade {
-        arrived: 0.0,
-        ancestor: ancestor.then_some((parent, 1, [0, 0])),
-    };
-    let mut props = vec![child, 0, 0];
-    props.extend(fade.words());
-    let chunk = orb_layout::Chunk {
-        sort_key: None,
-        first_index: 0,
-        index_count: 6,
-        bounds: orb_layout::TileBox {
-            min: [0, 0],
-            max: [8192, 8192],
-        },
-    };
-    h.renderer
-        .scene()
-        .insert_mesh(
-            &mut h.gpu,
-            tile,
-            0,
-            &MeshData {
-                vertices: Words::Core(&vertices),
-                indices: Words::Core(&[0, 1, 2, 2, 1, 3]),
-                props: Words::Core(&props),
-                row_words: orb_render::IMAGE_ROW_WORDS as u32,
-                chunks: &[chunk],
-            },
-        )
-        .unwrap();
+    let part = h.renderer.tile_parts(child)[0].1;
+    h.renderer.scene().place_tile(part, &[row]).unwrap();
     h
 }
 
