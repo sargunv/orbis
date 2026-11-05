@@ -226,7 +226,7 @@ impl State {
             ..RuntimeOptions::default()
         })
         .expect("runtime");
-        eprintln!("orb-demo: {}", runtime.stats().selection);
+        eprintln!("orb-demo: {}", runtime.stats().adapter);
         let mut map = Map::new(
             &runtime,
             MapOptions {

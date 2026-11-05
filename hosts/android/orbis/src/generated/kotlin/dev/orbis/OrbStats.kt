@@ -28,24 +28,13 @@ class OrbStats internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * Whether the runtime draws at the Compat tier (GLES 3.0).
+     * The device's adapter: its name and graphics API.
      *
      * Contract: `snapshot`.
      */
-    fun compat(): Boolean {
+    fun adapter(): String {
         synchronized(this) {
-            return OrbisNative.orbStatsCompat(live())
-        }
-    }
-
-    /**
-     * Why the device is the tier it is: "Modern: …" or "Compat: …".
-     *
-     * Contract: `snapshot`.
-     */
-    fun selection(): String {
-        synchronized(this) {
-            return OrbisNative.orbStatsSelection(live()).decodeToString()
+            return OrbisNative.orbStatsAdapter(live()).decodeToString()
         }
     }
 

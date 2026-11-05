@@ -481,7 +481,7 @@ impl OrbisMap {
     /// What the map did since the last call, as plain objects by `type`:
     /// `styleload`, `styledata` (`generation`), `sourcedata` (`source`,
     /// `loaded`), `load`, `idle`, `error` and `warning` (`message`),
-    /// `styleimagemissing` (`id`), `capability`, `camera`
+    /// `styleimagemissing` (`id`), `restored`, `camera`
     /// (`change`: move, zoom, rotate or pitch; `phase`: start, progress or
     /// end; `user`), `animationend` (`id`, `interrupted`), `click` (`x`,
     /// `y`, `button`), `dblclick` (`x`, `y`), and for the page's video
@@ -549,7 +549,7 @@ impl OrbisMap {
                     set(&object, "request", name(request));
                     "video"
                 }
-                MapEvent::Capability { .. } => "capability",
+                MapEvent::Restored => "restored",
                 MapEvent::Camera(orb_runtime::CameraEvent::Changed {
                     change,
                     phase,

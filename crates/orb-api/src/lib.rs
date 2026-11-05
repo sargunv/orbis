@@ -27,9 +27,7 @@ pub use orb_camera::{
     FitOptions, FlyOptions, FreeCamera, Padding, Phase,
 };
 pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
-pub use orb_hal::Tier;
-pub use orb_hal_gl::egl::EglWindow;
-pub use orb_hal_wgpu::{RawSurface, SubmitTimes};
+pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};
 pub use orb_host::{Request, RequestTransform};
 pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_runtime::batteries::{Location, Marker};
@@ -38,10 +36,8 @@ pub use orb_runtime::{
     StyleDoc, StyleImage, Transaction, VideoRequest, json,
 };
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
-pub use target::Surface;
 pub use target::Target;
 
-use device::Device;
 use orb_hal_wgpu::WgpuGpu;
 pub use orb_host_native::CacheStats;
 use orb_host_native::{HttpCache, NativeFetch, NativeImageDecode};
@@ -89,32 +85,11 @@ impl std::error::Error for Error {}
 pub struct RuntimeOptions {
     /// Tile job threads; the platform default when `None`.
     pub job_threads: Option<usize>,
-    /// The GPU tier to draw at.
-    pub backend: Backend,
-    /// Where the runtime keeps state between runs: the crash sentinel, the
-    /// driver's compiled pipelines (`pipelines/`), the
-    /// HTTP cache (`http/`, [`HTTP_CACHE_BYTES`]) and offline regions.
-    /// Without one, a device that crashed its driver last time is tried on
-    /// Modern again, pipelines compile on every start, and nothing fetched
-    /// is kept.
+    /// Where the runtime keeps state between runs: the driver's compiled
+    /// pipelines (`pipelines/`), the HTTP cache (`http/`,
+    /// [`HTTP_CACHE_BYTES`]) and offline regions. Without one, pipelines
+    /// compile on every start and nothing fetched is kept.
     pub state_dir: Option<PathBuf>,
-    /// Android's API level (`Build.VERSION.SDK_INT`), for the allowlist.
-    pub android_api_level: u32,
-    /// The libEGL Compat loads (ANGLE's, say); the platform's by default.
-    pub egl_library: Option<String>,
-}
-
-/// Which GPU tier a runtime draws at.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Backend {
-    /// Modern where the device policy allows it (the Android allowlist,
-    /// the crash sentinel) and a Modern adapter exists, else Compat.
-    #[default]
-    Auto,
-    /// WebGPU-class (wgpu: Vulkan, Metal, D3D12).
-    Modern,
-    /// GLES 3.0 through EGL.
-    Compat,
 }
 
 /// A GPU device and host services, shared by the maps made from it. A
@@ -130,14 +105,12 @@ pub struct Runtime {
 
 #[derive(Debug)]
 struct Shared {
-    gpu: RefCell<Device>,
+    gpu: RefCell<WgpuGpu>,
     options: RuntimeOptions,
-    /// Why the device is the tier it is.
-    selection: RefCell<String>,
+    /// The device's adapter.
+    adapter: RefCell<String>,
     /// Counts devices made: maps and targets of an older one rebuild.
     generation: std::cell::Cell<u64>,
-    /// The crash sentinel's marker while armed.
-    sentinel: RefCell<Option<PathBuf>>,
     /// Fetches, through the HTTP cache with a state directory.
     fetch: Arc<NativeFetch>,
     /// Offline regions, with a state directory.
@@ -151,8 +124,6 @@ struct Shared {
     /// Every map's wake: the device calls them all when a pipeline
     /// compiles.
     wakes: Wakes,
-    /// Whether the device wakes the maps when a pipeline compiles.
-    compile_wakes: std::cell::Cell<bool>,
     /// Whether submissions are timed ([`Runtime::set_gpu_timing`]).
     timing: std::cell::Cell<bool>,
 }
@@ -160,10 +131,8 @@ struct Shared {
 /// What a runtime's device is and has done ([`Runtime::stats`]).
 #[derive(Clone, Debug)]
 pub struct RuntimeStats {
-    /// The tier the runtime draws at.
-    pub tier: Tier,
-    /// Why the device is the tier it is: "Modern: …" or "Compat: …".
-    pub selection: String,
+    /// The device's adapter: its name and graphics API.
+    pub adapter: String,
     /// Render and compute pipelines the device has made so far.
     pub pipelines_created: u32,
     /// Time spent making shader modules and pipelines so far.
@@ -172,8 +141,8 @@ pub struct RuntimeStats {
     /// they finished (pipelines created cold and warm).
     pub pipeline_timings: Vec<(String, std::time::Duration)>,
     /// The compile the watchdog found hung, or the pipeline the driver
-    /// couldn't make, if one was: a Modern GPU is then lost,
-    /// and the next frame demotes it.
+    /// couldn't make, if one was: the GPU is then lost, and frames fail
+    /// with the reason.
     pub hung_compile: Option<String>,
     /// What the HTTP cache holds, if there is one.
     pub http_cache: Option<CacheStats>,
@@ -214,22 +183,21 @@ impl Runtime {
     /// Makes a device on the default adapter and starts the job and fetch
     /// pools. Blocks while the device is made.
     pub fn new(options: &RuntimeOptions) -> Result<Self, Error> {
-        let (mut gpu, selection, sentinel) = Device::choose(options)?;
+        let (mut gpu, adapter) = device::make()?;
         let wakes = Arc::default();
         let threads = options
             .job_threads
             .unwrap_or_else(ThreadPool::default_size)
             .max(1);
         let executor = Arc::new(ThreadPool::new("jobs", threads));
-        let compile_wakes = gpu.set_compiler(executor.clone(), wake_all(&wakes));
+        device::set_compiler(&mut gpu, executor.clone(), wake_all(&wakes));
         let fetch = NativeFetch::with_cache(http_cache(options)?);
         let runtime = Self {
             shared: Rc::new(Shared {
                 gpu: RefCell::new(gpu),
                 options: options.clone(),
-                selection: RefCell::new(selection),
+                adapter: RefCell::new(adapter),
                 generation: std::cell::Cell::new(0),
-                sentinel: RefCell::new(sentinel),
                 fetch: fetch.clone(),
                 regions: options
                     .state_dir
@@ -239,7 +207,6 @@ impl Runtime {
                 images: Default::default(),
                 cache: RefCell::new(None),
                 wakes,
-                compile_wakes: std::cell::Cell::new(compile_wakes),
                 timing: std::cell::Cell::new(false),
             }),
         };
@@ -269,66 +236,38 @@ impl Runtime {
     /// measurements.
     pub fn stats(&self) -> RuntimeStats {
         let gpu = self.shared.gpu.borrow();
-        let (pipeline_time, pipeline_timings) = match &*gpu {
-            Device::Modern(gpu) => (gpu.pipeline_time(), gpu.pipeline_timings().to_vec()),
-            Device::Compat(c) => (c.gpu.pipeline_time(), c.gpu.pipeline_timings().to_vec()),
-        };
+        let caps = orb_hal::Gpu::caps(&*gpu);
+        let u = gpu.uploaded();
         RuntimeStats {
-            tier: gpu.tier(),
-            selection: self.shared.selection.borrow().clone(),
+            adapter: self.shared.adapter.borrow().clone(),
             pipelines_created: gpu.pipelines_created(),
-            pipeline_time,
-            pipeline_timings,
-            hung_compile: gpu.hung(),
-            live_resources: match &*gpu {
-                Device::Modern(gpu) => orb_hal::Gpu::live_resources(gpu),
-                Device::Compat(c) => orb_hal::Gpu::live_resources(&c.gpu),
-            },
+            pipeline_time: gpu.pipeline_time(),
+            pipeline_timings: gpu.pipeline_timings().to_vec(),
+            hung_compile: gpu.hung().map(str::to_owned),
+            live_resources: orb_hal::Gpu::live_resources(&*gpu),
             http_cache: self.shared.fetch.cache().map(|c| c.stats()),
             region_bytes: self
                 .regions()
                 .map_or(0, |r| r.iter().map(|r| r.bytes).sum()),
-            max_texture_size: match &*gpu {
-                Device::Modern(gpu) => orb_hal::Gpu::caps(gpu),
-                Device::Compat(c) => orb_hal::Gpu::caps(&c.gpu),
-            }
-            .limits
-            .max_texture_dimension_2d,
-            uploaded_bytes: match &*gpu {
-                Device::Modern(gpu) => {
-                    let u = gpu.uploaded();
-                    u.from_core + u.from_js + u.texels_from_core + u.texels_from_js
-                }
-                Device::Compat(c) => c.gpu.uploaded(),
-            },
-            gpu_timestamps: match &*gpu {
-                Device::Modern(gpu) => orb_hal::Gpu::caps(gpu).timestamp_query,
-                Device::Compat(_) => false,
-            },
-            timestamp_resolution: match &*gpu {
-                Device::Modern(gpu) => gpu.timestamp_resolution(),
-                Device::Compat(_) => None,
-            },
+            max_texture_size: caps.limits.max_texture_dimension_2d,
+            uploaded_bytes: u.from_core + u.from_js + u.texels_from_core + u.texels_from_js,
+            gpu_timestamps: caps.timestamp_query,
+            timestamp_resolution: gpu.timestamp_resolution(),
         }
     }
 
     /// Times every submission from now on, for measurements:
-    /// [`gpu_timings`](Self::gpu_timings) collects them. Modern only.
+    /// [`gpu_timings`](Self::gpu_timings) collects them.
     pub fn set_gpu_timing(&self, on: bool) {
         self.shared.timing.set(on);
-        if let Device::Modern(gpu) = &mut *self.shared.gpu.borrow_mut() {
-            gpu.set_timing(on);
-        }
+        self.shared.gpu.borrow_mut().set_timing(on);
     }
 
     /// Each submission's times since the last call, in order, once the GPU
     /// has finished them: its CPU time, and its passes' GPU times where
     /// the device has timestamp queries. Blocks until the GPU is done.
     pub fn gpu_timings(&self) -> Vec<SubmitTimes> {
-        match &mut *self.shared.gpu.borrow_mut() {
-            Device::Modern(gpu) => pollster::block_on(gpu.take_timings()),
-            Device::Compat(_) => Vec::new(),
-        }
+        pollster::block_on(self.shared.gpu.borrow_mut().take_timings())
     }
 
     /// Whether the GPU was lost; the next frame drawn makes another.
@@ -341,42 +280,38 @@ impl Runtime {
         self.shared.gpu.borrow_mut().lose();
     }
 
-    /// Makes a new device after a loss, on the tier the
-    /// policy chooses again, with the pipeline cache started again. Maps
-    /// lay their tiles out again on their next frame from cached data;
-    /// texture targets are made again, window targets fail with
-    /// [`Error::TargetLost`].
-    pub(crate) fn recover(&self) -> Result<Tier, Error> {
-        // A loss mid-compile isn't a crash in it: only a compile the
-        // watchdog found hung keeps the sentinel armed, so the device
-        // chosen now demotes as at the next start.
-        let hung = self.shared.gpu.borrow().hung();
-        if let Some(marker) = self.shared.sentinel.borrow_mut().take()
-            && hung.is_none()
-        {
-            device::disarm(&marker);
+    /// Makes a new device after a loss, with the pipeline cache started
+    /// again. Maps lay their tiles out again on their next frame from
+    /// cached data; texture targets are made again, window targets fail
+    /// with [`Error::TargetLost`]. A device lost to a driver that hung or
+    /// failed compiling isn't replaced: another would do the same.
+    pub(crate) fn recover(&self) -> Result<(), Error> {
+        if let Some(hung) = self.shared.gpu.borrow().hung() {
+            return Err(Error::Native(format!(
+                "the GPU driver hung or failed making {hung}"
+            )));
         }
-        let (mut gpu, selection, sentinel) = Device::choose(&self.shared.options)?;
-        self.shared
-            .compile_wakes
-            .set(gpu.set_compiler(self.shared.executor.clone(), wake_all(&self.shared.wakes)));
+        let (mut gpu, adapter) = device::make()?;
+        device::set_compiler(
+            &mut gpu,
+            self.shared.executor.clone(),
+            wake_all(&self.shared.wakes),
+        );
         drop(std::mem::replace(&mut *self.shared.gpu.borrow_mut(), gpu));
-        self.shared.gpu.borrow().make_current();
-        *self.shared.selection.borrow_mut() = selection;
-        *self.shared.sentinel.borrow_mut() = sentinel;
+        *self.shared.adapter.borrow_mut() = adapter;
         self.shared.generation.set(self.shared.generation.get() + 1);
         // The maps' images were on the old device.
         self.shared.images.reset();
         *self.shared.cache.borrow_mut() = None;
         self.start_pipeline_cache()?;
         self.set_gpu_timing(self.shared.timing.get());
-        Ok(self.shared.gpu.borrow().tier())
+        Ok(())
     }
 
     /// Keeps the driver's compiled pipelines in the state directory's
     /// `pipelines/` between runs, so warm starts skip compiling them
-    /// (Vulkan's pipeline cache, GLES's program binaries; elsewhere the
-    /// platform caches and this does nothing). Maps save the cache when
+    /// (Vulkan's pipeline cache; elsewhere the platform caches and this
+    /// does nothing). Maps save the cache when
     /// they go idle with new pipelines.
     fn start_pipeline_cache(&self) -> Result<(), Error> {
         let Some(dir) = self
@@ -389,22 +324,14 @@ impl Runtime {
             return Ok(());
         };
         let mut device = self.shared.gpu.borrow_mut();
-        let key = match &*device {
-            Device::Modern(gpu) => gpu.pipeline_cache_key(),
-            // Compat keeps program binaries (GLES 3.0) the same way.
-            Device::Compat(c) => Some(c.gpu.program_cache_key()),
-        };
-        let Some(key) = key else {
+        let Some(key) = device.pipeline_cache_key() else {
             return Ok(());
         };
         std::fs::create_dir_all(&dir)
             .map_err(|e| Error::InvalidArgument(format!("{}: {e}", dir.display())))?;
         let file = dir.join(key);
         let data = std::fs::read(&file).ok();
-        match &mut *device {
-            Device::Modern(gpu) => gpu.start_pipeline_cache(data.as_deref()),
-            Device::Compat(c) => c.gpu.start_program_cache(data.as_deref()),
-        }
+        device.start_pipeline_cache(data.as_deref());
         *self.shared.cache.borrow_mut() = Some((file, device.pipelines_created()));
         Ok(())
     }
@@ -416,16 +343,12 @@ impl Runtime {
         let Some((file, saved)) = cache.as_mut() else {
             return Ok(());
         };
-        let mut device = self.shared.gpu.borrow_mut();
+        let device = self.shared.gpu.borrow();
         let made = device.pipelines_created();
         if made == *saved {
             return Ok(());
         }
-        let data = match &mut *device {
-            Device::Modern(gpu) => gpu.pipeline_cache_data(),
-            Device::Compat(c) => c.gpu.program_cache_data(),
-        };
-        let Some(data) = data else {
+        let Some(data) = device.pipeline_cache_data() else {
             return Ok(());
         };
         orb_host_native::write_atomically(file, &data)
@@ -481,25 +404,17 @@ impl Runtime {
         width: u32,
         height: u32,
     ) -> Result<Surface, Error> {
-        match &*self.shared.gpu.borrow() {
-            Device::Modern(gpu) => gpu
-                .create_surface(window, width, height)
-                .map(Surface::Modern)
-                .map_err(Error::Unsupported),
-            Device::Compat(_) => Err(Error::Unsupported(
-                "Compat draws into raw native windows only".into(),
-            )),
-        }
+        self.shared
+            .gpu
+            .borrow()
+            .create_surface(window, width, height)
+            .map_err(Error::Unsupported)
     }
 
     /// Lets `f` make a surface from a raw platform handle with the device;
-    /// `orb-capi` does so for `CAMetalLayer`s and `ANativeWindow`s: with
-    /// wgpu on Modern, through EGL on Compat.
-    pub fn with_device<R>(&self, f: impl FnOnce(DeviceRef<'_>) -> R) -> R {
-        match &*self.shared.gpu.borrow() {
-            Device::Modern(gpu) => f(DeviceRef::Modern(gpu)),
-            Device::Compat(c) => f(DeviceRef::Compat(&c.egl)),
-        }
+    /// `orb-capi` does so for `CAMetalLayer`s and `ANativeWindow`s.
+    pub fn with_device<R>(&self, f: impl FnOnce(&WgpuGpu) -> R) -> R {
+        f(&self.shared.gpu.borrow())
     }
 
     /// Wakes `wake` when a pipeline compiles, while it lives.
@@ -509,19 +424,6 @@ impl Runtime {
             .lock()
             .expect("wakes poisoned")
             .push(Arc::downgrade(wake));
-    }
-
-    /// Whether the device wakes the maps when a pipeline compiles, so a
-    /// map waiting only for pipelines needs no frames.
-    fn compile_wakes(&self) -> bool {
-        self.shared.compile_wakes.get()
-    }
-
-    /// Clears the crash sentinel once the pipelines are made.
-    fn pipelines_made(&self) {
-        if let Some(marker) = self.shared.sentinel.borrow_mut().take() {
-            device::disarm(&marker);
-        }
     }
 
     fn services(&self, wake: Arc<dyn Fn() + Send + Sync>) -> orb_runtime::Services {
@@ -561,11 +463,4 @@ fn http_cache(options: &RuntimeOptions) -> Result<Option<Arc<HttpCache>>, Error>
     HttpCache::open(storage, HTTP_CACHE_BYTES)
         .map(Some)
         .map_err(|e| Error::InvalidArgument(format!("{}: {e}", dir.display())))
-}
-
-/// The device a raw surface is made with.
-#[derive(Debug)]
-pub enum DeviceRef<'a> {
-    Modern(&'a WgpuGpu),
-    Compat(&'a orb_hal_gl::egl::EglContext),
 }

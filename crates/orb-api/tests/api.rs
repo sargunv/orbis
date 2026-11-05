@@ -389,8 +389,8 @@ fn frames_to_idle_save_the_pipeline_cache() {
     map.set_style_json(STYLE).expect("style");
     settle(&mut map, &mut target);
     settle(&mut map, &mut target);
-    // Drivers with a pipeline cache (Vulkan, GLES) keep it there; Metal
-    // caches pipelines itself and keeps none.
+    // Drivers with a pipeline cache (Vulkan) keep it there; Metal caches
+    // pipelines itself and keeps none, and the directory may never be made.
     if let Ok(entries) = std::fs::read_dir(dir.join("pipelines")) {
         assert!(
             entries.count() > 0,
@@ -398,7 +398,7 @@ fn frames_to_idle_save_the_pipeline_cache() {
         );
     }
     drop((map, target, runtime));
-    std::fs::remove_dir_all(dir).unwrap();
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A camera given at creation is the map's, at any zoom: the style's own

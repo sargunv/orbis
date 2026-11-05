@@ -21,18 +21,11 @@ public final class OrbStats: @unchecked Sendable {
         OrbStats_destroy(handle)
     }
 
-    /// Whether the runtime draws at the Compat tier (GLES 3.0).
+    /// The device's adapter: its name and graphics API.
     ///
     /// Contract: `snapshot`.
-    public func compat() -> Bool {
-        return OrbStats_compat(handle)
-    }
-
-    /// Why the device is the tier it is: "Modern: …" or "Compat: …".
-    ///
-    /// Contract: `snapshot`.
-    public func selection() -> String {
-        return withWrite { write in OrbStats_selection(handle, write) }.text
+    public func adapter() -> String {
+        return withWrite { write in OrbStats_adapter(handle, write) }.text
     }
 
     /// Render and compute pipelines the device had made.

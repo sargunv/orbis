@@ -7,7 +7,6 @@
 #include <stdbool.h>
 #include "diplomat_runtime.h"
 
-#include "OrbBackend.d.h"
 #include "OrbError.d.h"
 #include "OrbRegionEvent.d.h"
 #include "OrbStats.d.h"
@@ -23,7 +22,7 @@ typedef struct OrbRuntime_create_result {union {OrbRuntime* ok; OrbError err;}; 
 OrbRuntime_create_result OrbRuntime_create(uint32_t job_threads);
 
 typedef struct OrbRuntime_create_with_result {union {OrbRuntime* ok; OrbError err;}; bool is_ok;} OrbRuntime_create_with_result;
-OrbRuntime_create_with_result OrbRuntime_create_with(uint32_t job_threads, OrbBackend backend, DiplomatStringView state_dir, uint32_t android_api_level);
+OrbRuntime_create_with_result OrbRuntime_create_with(uint32_t job_threads, DiplomatStringView state_dir);
 
 typedef struct OrbRuntime_set_request_rules_result {union { OrbError err;}; bool is_ok;} OrbRuntime_set_request_rules_result;
 OrbRuntime_set_request_rules_result OrbRuntime_set_request_rules(OrbRuntime* self, DiplomatStringView rules);

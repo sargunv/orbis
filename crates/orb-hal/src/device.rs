@@ -1,33 +1,18 @@
-//! Device policy: which GPUs get the Modern tier, the quirks
-//! table, and the crash sentinel's decision. Data and pure logic: hosts
-//! bring the adapter's facts and keep the sentinel's marker.
+//! Known driver bugs: the quirks table, and the compile watchdog's limit.
+//! Data and pure logic: hosts bring the adapter's facts.
 
 /// PCI vendor ids, as Vulkan, Metal and WebGPU report them.
 pub mod vendor {
     pub const QUALCOMM: u32 = 0x5143;
-    pub const ARM: u32 = 0x13b5;
-    pub const IMAGINATION: u32 = 0x1010;
-    pub const INTEL: u32 = 0x8086;
-    pub const SAMSUNG: u32 = 0x144d;
 }
 
-/// What a host knows about a GPU when choosing its tier.
+/// What a host knows about a GPU when matching quirks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Adapter<'a> {
-    pub platform: Platform,
     pub api: Api,
     pub vendor: u32,
     pub name: &'a str,
     pub driver: &'a str,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Platform {
-    Android { api_level: u32 },
-    Apple,
-    Windows,
-    Linux,
-    Web,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,26 +22,6 @@ pub enum Api {
     Dx12,
     WebGpu,
     Gl,
-}
-
-/// The Android allowlist: Vulkan is Modern only on Android
-/// 12+ with GPUs and drivers known to work, seeded from Chrome's WebGPU
-/// rollout on Android (Qualcomm, ARM and Intel from 12, Imagination from
-/// 16, Samsung Xclipse pending). Everything else draws on GLES (Compat).
-/// It grows from farm and field reports only. `Err` says why not.
-pub fn android_vulkan_allowed(api_level: u32, vendor_id: u32) -> Result<(), &'static str> {
-    const ANDROID_12: u32 = 31;
-    const ANDROID_16: u32 = 36;
-    if api_level < ANDROID_12 {
-        return Err("Vulkan is Modern from Android 12");
-    }
-    match vendor_id {
-        vendor::QUALCOMM | vendor::ARM | vendor::INTEL => Ok(()),
-        vendor::IMAGINATION if api_level >= ANDROID_16 => Ok(()),
-        vendor::IMAGINATION => Err("Imagination GPUs are Modern from Android 16"),
-        vendor::SAMSUNG => Err("Samsung Xclipse GPUs are pending"),
-        _ => Err("this GPU is not on the allowlist"),
-    }
 }
 
 /// How Orbis meets a known driver bug.
@@ -117,66 +82,19 @@ pub fn needs(adapter: &Adapter<'_>, workaround: Workaround) -> bool {
         .any(|q| q.workaround == workaround && q.applies.is_some_and(|applies| applies(adapter)))
 }
 
-/// The crash sentinel: a marker naming the device is written
-/// before the first pipelines are made and cleared once they are. A marker
-/// found at the next start for the same device means its driver crashed
-/// compiling them, so it draws on Compat; a driver update (a new key)
-/// tries Modern again.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Sentinel {
-    /// Nothing recorded: the device starts on its usual tier.
-    Clear,
-    /// The device crashed making pipelines last time: start on Compat.
-    Tripped,
-}
-
-impl Sentinel {
-    /// What a marker found at start (`None` without one) says about the
-    /// device `key` names.
-    pub fn read(marker: Option<&str>, key: &str) -> Self {
-        match marker {
-            Some(found) if found == key => Self::Tripped,
-            _ => Self::Clear,
-        }
-    }
-}
-
 /// How long one pipeline may compile before its driver is taken to have
-/// hung in its compiler: the sentinel then trips as for a
-/// crash, and the device is lost. Set from M4's slowest cold compile on an
-/// Adreno 619 with a wide margin.
+/// hung in its compiler: the device is then lost, and the runtime reports
+/// the hang rather than make another. Set from the slowest cold compile
+/// on an Adreno 619 with a wide margin.
 pub const COMPILE_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// A sentinel key for a device: its identity and driver.
-pub fn sentinel_key(adapter: &Adapter<'_>) -> String {
-    format!(
-        "{:?} {:?} {:#06x} {} {}",
-        adapter.platform, adapter.api, adapter.vendor, adapter.name, adapter.driver
-    )
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn allowlist_follows_chromes_rollout() {
-        assert!(android_vulkan_allowed(31, vendor::QUALCOMM).is_ok());
-        assert!(android_vulkan_allowed(34, vendor::ARM).is_ok());
-        assert!(
-            android_vulkan_allowed(30, vendor::QUALCOMM).is_err(),
-            "Android 11"
-        );
-        assert!(android_vulkan_allowed(35, vendor::IMAGINATION).is_err());
-        assert!(android_vulkan_allowed(36, vendor::IMAGINATION).is_ok());
-        assert!(android_vulkan_allowed(36, vendor::SAMSUNG).is_err());
-        assert!(android_vulkan_allowed(36, 0x1234).is_err());
-    }
-
-    #[test]
     fn quirks_match_their_adapters() {
         let adreno = Adapter {
-            platform: Platform::Android { api_level: 35 },
             api: Api::Vulkan,
             vendor: vendor::QUALCOMM,
             name: "Adreno (TM) 619",
@@ -191,17 +109,6 @@ mod tests {
         assert!(
             !needs(&adreno, Workaround::ShaderRewrite),
             "applied everywhere"
-        );
-    }
-
-    #[test]
-    fn sentinel_trips_for_the_same_device_only() {
-        assert_eq!(Sentinel::read(None, "a"), Sentinel::Clear);
-        assert_eq!(Sentinel::read(Some("a"), "a"), Sentinel::Tripped);
-        assert_eq!(
-            Sentinel::read(Some("a"), "b"),
-            Sentinel::Clear,
-            "a new driver retries Modern"
         );
     }
 }

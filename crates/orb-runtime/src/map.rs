@@ -1157,12 +1157,10 @@ impl Map {
         if self.renderer != Some(renderer.id()) {
             if self.renderer.is_some() {
                 self.forget_gpu();
+                self.events.push(MapEvent::Restored);
             }
             self.renderer = Some(renderer.id());
             self.nodes_stale = true;
-            self.events.push(MapEvent::Capability {
-                tier: gpu.caps().tier,
-            });
         }
         self.retired.release(renderer);
         renderer.set_antialias_3d(gpu, self.antialias_3d);

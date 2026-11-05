@@ -19,8 +19,8 @@ import dev.orbis.OrbErrorException
 import dev.orbis.OrbError
 
 /**
- * A view that draws an Orbis map into its surface (Vulkan, or GLES on the
- * Compat tier), paced by Choreographer, and hands touch and mouse input to
+ * A view that draws an Orbis map into its surface (Vulkan), paced by
+ * Choreographer, and hands touch and mouse input to
  * the map's gestures with their event times (`MotionEvent` times and
  * historical samples, on the clock Choreographer's frame times use). It
  * draws only while the map needs frames: an idle map

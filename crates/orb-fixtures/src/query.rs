@@ -50,7 +50,7 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     let mut backend = if name == "chrome" {
         Backend::Chrome(chrome::Chrome::new(root)?)
     } else {
-        runtime(root, orb_api::Backend::Modern)?
+        runtime(root)?
     };
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;

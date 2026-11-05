@@ -23,7 +23,7 @@ typedef enum OrbEventKind {
   OrbEventKind_Click = 8,
   OrbEventKind_DoubleClick = 9,
   OrbEventKind_QueryResult = 10,
-  OrbEventKind_Capability = 11,
+  OrbEventKind_Restored = 11,
   OrbEventKind_StyleImageMissing = 12,
   OrbEventKind_VideoOpen = 13,
   OrbEventKind_VideoPlay = 14,

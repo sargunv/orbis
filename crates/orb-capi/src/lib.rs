@@ -72,19 +72,6 @@ mod ffi {
         TargetLost = 5,
     }
 
-    /// The GPU tier a runtime draws at.
-    #[diplomat::attr(contract, thread = "any")]
-    #[derive(Debug, PartialEq, Eq)]
-    pub enum OrbBackend {
-        /// Modern where the device policy allows it (the Android
-        /// allowlist, the crash sentinel), else Compat.
-        Auto = 0,
-        /// Vulkan, Metal or D3D12 through wgpu.
-        Modern = 1,
-        /// GLES 3.0 through EGL.
-        Compat = 2,
-    }
-
     impl OrbError {
         /// Writes the message of the last error on the calling thread.
         #[diplomat::attr(contract, immediate)]
@@ -110,32 +97,21 @@ mod ffi {
         /// and everything made from it.
         #[diplomat::attr(contract, lifecycle)]
         pub fn create(job_threads: u32) -> Result<Box<OrbRuntime>, OrbError> {
-            Self::create_with(job_threads, OrbBackend::Auto, "".as_bytes(), 0)
+            Self::create_with(job_threads, "".as_bytes())
         }
 
-        /// As `create`, on `backend`, keeping state between runs (the crash
-        /// sentinel, the HTTP cache) in the directory `state_dir` (none when
-        /// empty);
-        /// `android_api_level` is `Build.VERSION.SDK_INT` on Android, for
-        /// the allowlist, and 0 elsewhere.
+        /// As `create`, keeping state between runs (compiled pipelines,
+        /// the HTTP cache, offline regions) in the directory `state_dir`
+        /// (none when empty).
         #[diplomat::attr(contract, lifecycle)]
         pub fn create_with(
             job_threads: u32,
-            backend: OrbBackend,
             state_dir: &DiplomatStr,
-            android_api_level: u32,
         ) -> Result<Box<OrbRuntime>, OrbError> {
             let state_dir = text(state_dir);
             orb_api::Runtime::new(&orb_api::RuntimeOptions {
                 job_threads: (job_threads > 0).then_some(job_threads as usize),
-                backend: match backend {
-                    OrbBackend::Auto => orb_api::Backend::Auto,
-                    OrbBackend::Modern => orb_api::Backend::Modern,
-                    OrbBackend::Compat => orb_api::Backend::Compat,
-                },
                 state_dir: (!state_dir.is_empty()).then(|| state_dir.as_ref().into()),
-                android_api_level,
-                ..orb_api::RuntimeOptions::default()
             })
             .map(|r| Box::new(OrbRuntime(r)))
             .map_err(fail)
@@ -258,16 +234,10 @@ mod ffi {
     pub struct OrbStats(orb_api::RuntimeStats);
 
     impl OrbStats {
-        /// Whether the runtime draws at the Compat tier (GLES 3.0).
+        /// The device's adapter: its name and graphics API.
         #[diplomat::attr(contract, snapshot)]
-        pub fn compat(&self) -> bool {
-            self.0.tier == orb_api::Tier::Compat
-        }
-
-        /// Why the device is the tier it is: "Modern: …" or "Compat: …".
-        #[diplomat::attr(contract, snapshot)]
-        pub fn selection(&self, out: &mut DiplomatWrite) {
-            out.write_str(&self.0.selection).ok();
+        pub fn adapter(&self, out: &mut DiplomatWrite) {
+            out.write_str(&self.0.adapter).ok();
         }
 
         /// Render and compute pipelines the device had made.
@@ -637,9 +607,9 @@ mod ffi {
         /// succeeded, `text` the features as a JSON array of GeoJSON
         /// features, topmost first, or the error.
         QueryResult = 10,
-        /// The map renders on a GPU tier: on its first frame and after a
-        /// device change; `text` is `modern` or `compat`.
-        Capability = 11,
+        /// The map draws on a new GPU after a device loss: its first frame
+        /// there.
+        Restored = 11,
         /// A tile's layers name an image the style doesn't have; `text` is
         /// its name. Once per name until the style gets it.
         StyleImageMissing = 12,
@@ -916,14 +886,10 @@ mod ffi {
 
         /// Source data and video requests: the source's id. Errors: the
         /// message. Query results: the features' JSON, or the error.
-        /// Capability: the tier. A missing image: its name.
+        /// A missing image: its name.
         #[diplomat::attr(contract, snapshot)]
         pub fn text(&self, out: &mut DiplomatWrite) {
             let text = match &self.0 {
-                orb_api::Event::Map(orb_api::MapEvent::Capability { tier }) => match tier {
-                    orb_api::Tier::Modern => "modern",
-                    orb_api::Tier::Compat => "compat",
-                },
                 orb_api::Event::Map(
                     orb_api::MapEvent::SourceData { source, .. }
                     | orb_api::MapEvent::Video { source, .. }
@@ -2103,7 +2069,7 @@ use std::ptr::NonNull;
 use ffi::{OrbError, OrbEventKind};
 
 /// Bumped on every incompatible change to the C ABI while it is 0.x.
-const ABI_VERSION: u32 = 9;
+const ABI_VERSION: u32 = 10;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -2251,25 +2217,10 @@ fn raw_target(
     let pointer = NonNull::new(address as *mut std::ffi::c_void)
         .ok_or_else(|| fail(orb_api::Error::InvalidArgument("null handle".into())))?;
     // SAFETY: the C ABI's contract is that the handle is a live object of
-    // this kind that outlives the target; on Compat, an `ANativeWindow*`
-    // is an EGL native window.
+    // this kind that outlives the target.
     let surface = runtime
         .0
-        .with_device(|device| match device {
-            orb_api::DeviceRef::Modern(gpu) => unsafe {
-                gpu.create_surface_raw(kind(pointer), width, height)
-                    .map(orb_api::Surface::Modern)
-            },
-            orb_api::DeviceRef::Compat(egl) => match kind(pointer) {
-                orb_api::RawSurface::AndroidWindow(window) => unsafe {
-                    egl.create_window(window.as_ptr())
-                        .map(orb_api::Surface::compat)
-                },
-                orb_api::RawSurface::MetalLayer(_) => {
-                    Err("Compat draws into Android windows, not Metal layers".into())
-                }
-            },
-        })
+        .with_device(|gpu| unsafe { gpu.create_surface_raw(kind(pointer), width, height) })
         .map_err(|e| fail(orb_api::Error::Unsupported(e)))?;
     Ok(Box::new(ffi::OrbTarget {
         target: orb_api::Target::surface(&runtime.0, surface, scale),
@@ -2365,7 +2316,7 @@ fn event_kind(event: &orb_api::Event) -> OrbEventKind {
         Event::Map(MapEvent::Idle) => OrbEventKind::Idle,
         Event::Map(MapEvent::Error { .. }) => OrbEventKind::Error,
         Event::Map(MapEvent::Warning { .. }) => OrbEventKind::Warning,
-        Event::Map(MapEvent::Capability { .. }) => OrbEventKind::Capability,
+        Event::Map(MapEvent::Restored) => OrbEventKind::Restored,
         Event::Map(MapEvent::StyleImageMissing { .. }) => OrbEventKind::StyleImageMissing,
         Event::Map(MapEvent::Video { request, .. }) => match request {
             orb_api::VideoRequest::Open { .. } => OrbEventKind::VideoOpen,

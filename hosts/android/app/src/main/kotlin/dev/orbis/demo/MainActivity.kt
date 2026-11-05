@@ -10,8 +10,6 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
-import android.os.Build
-import dev.orbis.OrbBackend
 import dev.orbis.OrbCameraTarget
 import dev.orbis.OrbPadding
 import dev.orbis.OrbEventKind
@@ -29,9 +27,8 @@ import java.io.File
  *
  * The web demo's live OpenFreeMap Liberty over Tokyo by default; the
  * committed extract with `adb -s "$(scripts/android-serial)" shell am start -n
- * dev.orbis.demo/.MainActivity --es style tokyo`. `--es backend compat` (or
- * `modern`) picks the GPU tier instead of the device policy; `--el lose <ms>`
- * loses the GPU that long after loading, to show recovery.
+ * dev.orbis.demo/.MainActivity --es style tokyo`. `--el lose <ms>` loses the
+ * GPU that long after loading, to show recovery.
  */
 class MainActivity : Activity() {
     private lateinit var runtime: OrbRuntime
@@ -68,15 +65,8 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         val started = SystemClock.elapsedRealtime()
         val data = unpackData()
-        val backend = when (intent.getStringExtra("backend")) {
-            "compat" -> OrbBackend.Compat
-            "modern" -> OrbBackend.Modern
-            else -> OrbBackend.Auto
-        }
-        runtime = OrbRuntime.createWith(
-            0u, backend, File(noBackupFilesDir, "orbis-state").path, Build.VERSION.SDK_INT.toUInt(),
-        )
-        Log.i("Orbis", runtime.stats().use { it.selection() })
+        runtime = OrbRuntime.createWith(0u, File(noBackupFilesDir, "orbis-state").path)
+        Log.i("Orbis", runtime.stats().use { it.adapter() })
         // `--ez leakcheck true`: maps made, drawn and dropped one after
         // another leave the device holding what one leaves (#79).
         if (intent.getBooleanExtra("leakcheck", false)) {

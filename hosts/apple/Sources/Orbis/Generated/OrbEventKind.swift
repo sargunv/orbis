@@ -35,9 +35,9 @@ public enum OrbEventKind: Int, Sendable, CaseIterable {
     /// succeeded, `text` the features as a JSON array of GeoJSON
     /// features, topmost first, or the error.
     case queryResult = 10
-    /// The map renders on a GPU tier: on its first frame and after a
-    /// device change; `text` is `modern` or `compat`.
-    case capability = 11
+    /// The map draws on a new GPU after a device loss: its first frame
+    /// there.
+    case restored = 11
     /// A tile's layers name an image the style doesn't have; `text` is
     /// its name. Once per name until the style gets it.
     case styleImageMissing = 12

@@ -173,7 +173,7 @@ impl Drop for Map {
         if let Some(renderer) = self.renderer.take()
             && self.device == self.shared.generation.get()
         {
-            renderer.destroy(self.shared.gpu.borrow_mut().gpu());
+            renderer.destroy(&mut *self.shared.gpu.borrow_mut());
         }
     }
 }
@@ -943,10 +943,7 @@ impl Map {
                 return Ok(None);
             };
             self.woken.store(false, Ordering::Release);
-            if self.shared.sentinel.borrow().is_some() {
-                crate::device::before_pipelines();
-            }
-            let gpu = device.gpu();
+            let gpu: &mut dyn orb_hal::Gpu = &mut *device;
             let map = &mut self.map;
             let renderer = self
                 .renderer
@@ -959,22 +956,17 @@ impl Map {
                 target.scale() as f32,
                 frame_time,
             );
-            target.end(&mut device)?;
+            target.end(&mut device);
             report
         };
         // The frame found the device lost (a compile the watchdog found
         // hung, a lost context): the next one makes another.
         let lost = self.runtime.lost();
-        // Every pipeline the map asked for compiled, and the driver
-        // survived them.
-        if report.frame.pipelines_pending == 0 {
-            self.runtime.pipelines_made();
-        }
         self.events
             .extend(self.map.take_events().into_iter().map(Event::Map));
         self.dirty = lost;
         // A map waiting only for pipelines draws again when one compiles.
-        let waiting = report.compiling && self.runtime.compile_wakes();
+        let waiting = report.compiling;
         // Waves move with time: a map showing them draws on.
         self.busy = (!report.idle && !waiting) || report.frame.animated;
         if report.idle {

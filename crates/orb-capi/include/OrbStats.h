@@ -15,9 +15,7 @@
 
 
 
-bool OrbStats_compat(const OrbStats* self);
-
-void OrbStats_selection(const OrbStats* self, DiplomatWrite* write);
+void OrbStats_adapter(const OrbStats* self, DiplomatWrite* write);
 
 uint32_t OrbStats_pipelines_created(const OrbStats* self);
 

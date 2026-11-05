@@ -46,12 +46,9 @@ pub enum MapEvent {
     Warning {
         message: String,
     },
-    /// The map renders at `tier`: on its first frame, and on its first
-    /// frame on a new GPU (after device loss, perhaps on another tier).
-    /// What the tier gives up arrives as warnings.
-    Capability {
-        tier: orb_hal::Tier,
-    },
+    /// The map draws on a new GPU after a device loss: its first frame
+    /// there.
+    Restored,
     /// What the host's player of a `video` source should do, on a host
     /// that plays video ([`Map::set_plays_video`](crate::Map::set_plays_video)).
     Video {

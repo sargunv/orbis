@@ -52,10 +52,10 @@ enum class OrbEventKind(val value: Int) {
      */
     QueryResult(10),
     /**
-     * The map renders on a GPU tier: on its first frame and after a
-     * device change; `text` is `modern` or `compat`.
+     * The map draws on a new GPU after a device loss: its first frame
+     * there.
      */
-    Capability(11),
+    Restored(11),
     /**
      * A tile's layers name an image the style doesn't have; `text` is
      * its name. Once per name until the style gets it.

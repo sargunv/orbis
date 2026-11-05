@@ -17,10 +17,6 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str) -> Result<(), Strin
         run_suite(root, filter, "lavapipe")?;
         return Ok(());
     }
-    if std::env::var_os("ORB_FIXTURES_LLVMPIPE").is_some() {
-        run_suite(root, filter, "llvmpipe")?;
-        return Ok(());
-    }
     std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
     let combined = output.join("summary.json");
     if combined.exists() {
@@ -35,19 +31,14 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str) -> Result<(), Strin
     if ["chrome", "all"].contains(&platform) {
         reports.insert("chrome", run_suite(root, filter, "chrome")?);
     }
-    if platform == "gl" {
-        reports.insert("gl", run_suite(root, filter, "gl")?);
-    }
-    for software in ["lavapipe", "llvmpipe"] {
-        if platform == software || (platform == "all" && software == "lavapipe") {
-            let start = Instant::now();
-            container(root, filter, software)?;
-            let path = output.join(software).join("summary.json");
-            let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-            let mut report: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-            report["container_seconds"] = json!(start.elapsed().as_secs_f64());
-            reports.insert(software, report);
-        }
+    if ["lavapipe", "all"].contains(&platform) {
+        let start = Instant::now();
+        container(root, filter)?;
+        let path = output.join("lavapipe/summary.json");
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let mut report: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        report["container_seconds"] = json!(start.elapsed().as_secs_f64());
+        reports.insert("lavapipe", report);
     }
     let identity =
         if let (Some(native), Some(chrome)) = (reports.get("native"), reports.get("chrome")) {
@@ -100,8 +91,9 @@ fn counts_from(v: &Value) -> Counts {
 }
 
 /// Runs the suite in the software-rendering container: Mesa's lavapipe
-/// (Vulkan, Modern) or llvmpipe (GLES 3 through EGL, Compat).
-fn container(root: &Path, filter: &str, software: &str) -> Result<(), String> {
+/// (Vulkan).
+fn container(root: &Path, filter: &str) -> Result<(), String> {
+    let software = "lavapipe";
     let dockerfile = root.join("crates/orb-fixtures/lavapipe/Dockerfile");
     run_command(
         Command::new("docker")
@@ -127,10 +119,7 @@ fn container(root: &Path, filter: &str, software: &str) -> Result<(), String> {
                 "type=bind,source={},target=/work/docs/scratch/rt/{software}",
                 output.display()
             ))
-            .args([
-                "--env",
-                &format!("ORB_FIXTURES_{}=1", software.to_uppercase()),
-            ])
+            .args(["--env", "ORB_FIXTURES_LAVAPIPE=1"])
             .args([
                 "--mount",
                 "type=volume,source=orbis-rt-target,target=/work/target",

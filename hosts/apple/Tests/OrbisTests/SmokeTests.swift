@@ -21,7 +21,7 @@ private let style = """
     """
 
 @Test func smoke() throws {
-    #expect(OrbRuntime.abiVersion() == 9)
+    #expect(OrbRuntime.abiVersion() == 10)
     let runtime = try OrbRuntime.create(jobThreads: 0)
     let target = OrbTarget.createTexture(runtime: runtime, width: 64, height: 64, scale: 1)
     let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
@@ -98,7 +98,6 @@ private let style = """
 @Test func metalLayerFrames() throws {
     #expect(!Thread.isMainThread)
     let runtime = try OrbRuntime.create(jobThreads: 0)
-    if runtime.stats().compat() { return } // Compat draws into EGL windows.
     let layer = CAMetalLayer()
     layer.drawableSize = CGSize(width: 64, height: 64)
     let address = UInt(bitPattern: Unmanaged.passUnretained(layer).toOpaque())

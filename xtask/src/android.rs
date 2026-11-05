@@ -5,8 +5,8 @@
 //! with Gradle. `--run` installs the app on
 //! the Android device `scripts/android-serial` names (this worktree's emulator
 //! from devices-cli, or `ANDROID_SERIAL`) and starts it. `--run --leakcheck`
-//! starts it on Compat to make, draw and drop 20 maps, and fails unless the
-//! device's live GPU resources stay flat (#79).
+//! starts it to make, draw and drop 20 maps, and fails unless the device's
+//! live GPU resources stay flat (#79).
 //!
 //! Needs `ANDROID_HOME` with an NDK (`mise x --` provides it here).
 
@@ -174,7 +174,7 @@ fn install(root: &Path, apk: &Path, leakcheck: bool) -> Result<(), String> {
         return check(&mut adb(&start));
     }
     check(&mut adb(&["logcat", "-c"]))?;
-    let extras = ["--es", "backend", "compat", "--ez", "leakcheck", "true"];
+    let extras = ["--ez", "leakcheck", "true"];
     check(adb(&start).args(extras))?;
     for _ in 0..120 {
         let log = adb(&["logcat", "-d", "-s", "Orbis"])

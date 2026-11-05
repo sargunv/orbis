@@ -47,16 +47,16 @@ fn run() -> Result<(), String> {
             "--platform" => {
                 platform = args
                     .next()
-                    .ok_or("--platform needs native|gl|chrome|lavapipe|llvmpipe|all")?
+                    .ok_or("--platform needs native|chrome|lavapipe|all")?
             }
             _ => {
                 return Err(format!(
-                    "unknown argument {arg}; usage: orb-fixtures [--suite render|query] [--filter <substring>] [--platform native|gl|chrome|lavapipe|llvmpipe|all]"
+                    "unknown argument {arg}; usage: orb-fixtures [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]"
                 ));
             }
         }
     }
-    if !["native", "gl", "chrome", "lavapipe", "llvmpipe", "all"].contains(&platform.as_str()) {
+    if !["native", "chrome", "lavapipe", "all"].contains(&platform.as_str()) {
         return Err(format!("unknown platform {platform}"));
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -81,23 +81,16 @@ fn run() -> Result<(), String> {
 }
 
 enum Backend {
-    /// `orb-api`'s runtime: Modern (`native`, `lavapipe`), or Compat on a
-    /// headless GLES 3 context (`gl`, `llvmpipe`) from `ORB_EGL_LIBRARY`
-    /// (such as ANGLE's libEGL) or the platform's libEGL.
+    /// `orb-api`'s runtime (`native`, `lavapipe`).
     Native(Runtime),
     Chrome(chrome::Chrome),
 }
 
-/// The runtime every native fixture's map is made from, on `backend`,
-/// fetching the mirror's assets for GL JS's test server.
-pub(crate) fn runtime(root: &Path, backend: orb_api::Backend) -> Result<Backend, String> {
+/// The runtime every native fixture's map is made from, fetching the
+/// mirror's assets for GL JS's test server.
+pub(crate) fn runtime(root: &Path) -> Result<Backend, String> {
     let assets = assets(root);
-    let runtime = Runtime::new(&RuntimeOptions {
-        backend,
-        egl_library: std::env::var("ORB_EGL_LIBRARY").ok(),
-        ..RuntimeOptions::default()
-    })
-    .map_err(|e| e.to_string())?;
+    let runtime = Runtime::new(&RuntimeOptions::default()).map_err(|e| e.to_string())?;
     runtime.set_request_transform(Some(Arc::new(move |url: &str| {
         let url = fetch::resolve(&assets, url)?;
         Some(orb_api::Request {
@@ -137,8 +130,7 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     let started = Instant::now();
     let mut backend = match name {
         "chrome" => Backend::Chrome(chrome::Chrome::new(root)?),
-        "gl" | "llvmpipe" => runtime(root, orb_api::Backend::Compat)?,
-        _ => runtime(root, orb_api::Backend::Modern)?,
+        _ => runtime(root)?,
     };
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;

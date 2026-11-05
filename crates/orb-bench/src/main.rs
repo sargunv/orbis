@@ -60,7 +60,7 @@ fn run() -> Result<(), String> {
     }
     let runtime = Runtime::new(&RuntimeOptions::default()).map_err(|e| e.to_string())?;
     let about = vec![
-        format!("device: {}", runtime.stats().selection),
+        format!("device: {}", runtime.stats().adapter),
         "native, orb-api".to_string(),
         format!("data: {data}"),
     ];

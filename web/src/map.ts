@@ -27,7 +27,7 @@ type CoreEvent =
   | { type: "sourcedata"; source: string; loaded: boolean }
   | { type: "error" | "warning"; message: string }
   | { type: "styleimagemissing"; id: string }
-  | { type: "capability" }
+  | { type: "restored" }
   | { type: "camera"; change: "move" | "zoom" | "rotate" | "pitch"; phase: "start" | "progress" | "end"; user: boolean }
   | { type: "animationend"; id: number; interrupted: boolean }
   | { type: "click"; x: number; y: number; button: number }
@@ -519,7 +519,7 @@ export class OrbisMap {
         case "warning": this.#events.emit("warning", { message: event.message }); break;
         case "video": this.#videos.request(event); break;
         case "styleimagemissing": this.#events.emit("styleimagemissing", { id: event.id }); break;
-        case "capability": {
+        case "restored": {
           if (this.#recovering === undefined) break;
           const recoveredMs = performance.now() - this.#recovering;
           this.#recovering = undefined;

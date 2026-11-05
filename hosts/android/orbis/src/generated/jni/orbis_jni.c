@@ -1090,13 +1090,13 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeCreate(JNIEnv* env,
     return (jlong)(intptr_t)(result.ok);
 }
 
-JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeCreateWith(JNIEnv* env, jclass cls, jint jobThreads, jint backend, jbyteArray stateDir, jint androidApiLevel) {
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeCreateWith(JNIEnv* env, jclass cls, jint jobThreads, jbyteArray stateDir) {
     (void)env;
     (void)cls;
     jbyte* stateDir_bytes = (*env)->GetByteArrayElements(env, stateDir, NULL);
     if (!stateDir_bytes) return 0;
     DiplomatStringView stateDir_view = { (const char*)stateDir_bytes, (size_t)(*env)->GetArrayLength(env, stateDir) };
-    OrbRuntime_create_with_result result = OrbRuntime_create_with((uint32_t)(jobThreads), (OrbBackend)(backend), stateDir_view, (uint32_t)(androidApiLevel));
+    OrbRuntime_create_with_result result = OrbRuntime_create_with((uint32_t)(jobThreads), stateDir_view);
     (*env)->ReleaseByteArrayElements(env, stateDir, stateDir_bytes, JNI_ABORT);
     if (!result.is_ok) {
         throw_OrbError(env, result.err);
@@ -1207,18 +1207,11 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeClearHttpCache(JNIEn
     OrbRuntime_clear_http_cache((OrbRuntime*)(intptr_t)self);
 }
 
-JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbStatsCompat(JNIEnv* env, jclass cls, jlong self) {
-    (void)env;
-    (void)cls;
-    bool result = OrbStats_compat((const OrbStats*)(intptr_t)self);
-    return (result) ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbStatsSelection(JNIEnv* env, jclass cls, jlong self) {
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbStatsAdapter(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
     DiplomatWrite* write = diplomat_buffer_write_create(0);
-    OrbStats_selection((const OrbStats*)(intptr_t)self, write);
+    OrbStats_adapter((const OrbStats*)(intptr_t)self, write);
     return write_to_bytes(env, write);
 }
 

@@ -165,14 +165,10 @@ fn platform_texture_usages() -> wgpu::TextureUsages {
     }
 }
 
-/// An adapter as the device policy sees it (`orb_hal::device`).
-pub fn device_adapter(
-    info: &wgpu::AdapterInfo,
-    platform: orb_hal::device::Platform,
-) -> orb_hal::device::Adapter<'_> {
+/// An adapter as the quirks table sees it (`orb_hal::device`).
+pub fn device_adapter(info: &wgpu::AdapterInfo) -> orb_hal::device::Adapter<'_> {
     use orb_hal::device::Api;
     orb_hal::device::Adapter {
-        platform,
         api: match info.backend {
             wgpu::Backend::Vulkan => Api::Vulkan,
             wgpu::Backend::Metal => Api::Metal,
@@ -183,24 +179,6 @@ pub fn device_adapter(
         vendor: info.vendor,
         name: &info.name,
         driver: &info.driver_info,
-    }
-}
-
-/// This build's platform; Android's API level comes from the host.
-pub fn platform(android_api_level: u32) -> orb_hal::device::Platform {
-    use orb_hal::device::Platform;
-    if cfg!(target_os = "android") {
-        Platform::Android {
-            api_level: android_api_level,
-        }
-    } else if cfg!(any(target_os = "macos", target_os = "ios")) {
-        Platform::Apple
-    } else if cfg!(windows) {
-        Platform::Windows
-    } else if cfg!(target_arch = "wasm32") {
-        Platform::Web
-    } else {
-        Platform::Linux
     }
 }
 
@@ -959,7 +937,7 @@ impl Gpu for WgpuGpu {
     fn create_shader_module(&mut self, desc: &ShaderModuleDesc<'_>) -> ShaderModuleId {
         let source = match &desc.source {
             ShaderSource::Wgsl(wgsl) => wgsl.to_string(),
-            ShaderSource::Glsl(_) => panic!("{}: GLSL is Compat's", desc.label),
+            ShaderSource::Glsl(_) => panic!("{}: GLSL is not WGSL", desc.label),
         };
         ShaderModuleId(
             self.shader_modules

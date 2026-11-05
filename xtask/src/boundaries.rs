@@ -19,7 +19,6 @@ const PLATFORM: &[&str] = &[
     "orb-host-native",
     "orb-host-web",
     "orb-hal-wgpu",
-    "orb-hal-gl",
     "orb-api",
     "orb-capi",
     "orb-cli",
@@ -39,7 +38,6 @@ const PLATFORM_DEPS: &[&str] = &[
     "wgpu",
     "wgpu-core",
     "wgpu-hal",
-    "glow",
     "winit",
     "ureq",
     "tokio",
@@ -52,7 +50,6 @@ const PLATFORM_DEPS: &[&str] = &[
 /// carry `#![forbid(unsafe_code)]`.
 const UNSAFE_ALLOWED: &[&str] = &[
     "orb-hal-wgpu",
-    "orb-hal-gl",
     "orb-capi",
     "orb-web",
     "orb-jobs",

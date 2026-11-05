@@ -42,22 +42,22 @@ impl WgpuGpu {
         // drivers that mishandle wgpu's validation of them it is skipped.
         let info = adapter.get_info();
         if orb_hal::device::needs(
-            &crate::device_adapter(&info, crate::platform(0)),
+            &crate::device_adapter(&info),
             orb_hal::device::Workaround::SkipIndirectValidation,
         ) {
             (instance, adapter) = self::adapter(true).await?;
         }
-        // The Modern tier draws indirectly from compute; devices
-        // without that (the iOS simulator's Metal) are Compat's, from M4.
+        // Orbis draws indirectly from compute; devices without that (the
+        // iOS simulator's Metal) can't draw it.
         let downlevel = adapter.get_downlevel_capabilities().flags;
-        let modern = wgpu::DownlevelFlags::COMPUTE_SHADERS
+        let needed = wgpu::DownlevelFlags::COMPUTE_SHADERS
             | wgpu::DownlevelFlags::INDIRECT_EXECUTION
             | wgpu::DownlevelFlags::VERTEX_STORAGE;
-        if !downlevel.contains(modern) {
+        if !downlevel.contains(needed) {
             return Err(format!(
-                "{} lacks {:?}, which the Modern tier needs",
+                "{} lacks {:?}, which Orbis needs",
                 adapter.get_info().name,
-                modern - downlevel
+                needed - downlevel
             ));
         }
         let (device, queue) = adapter

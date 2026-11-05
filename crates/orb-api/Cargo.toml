@@ -11,13 +11,12 @@ glam.workspace = true
 orb-camera.workspace = true
 orb-crs.workspace = true
 orb-hal.workspace = true
-orb-hal-gl = { workspace = true, features = ["egl"] }
 orb-hal-wgpu.workspace = true
 orb-host.workspace = true
 orb-host-native.workspace = true
 orb-interact.workspace = true
 orb-jobs.workspace = true
-orb-runtime = { workspace = true, features = ["compat"] }
+orb-runtime.workspace = true
 pollster.workspace = true
 
 [dev-dependencies]

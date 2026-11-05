@@ -53,17 +53,15 @@ public final class OrbRuntime {
         return OrbRuntime(handle: result.ok!)
     }
 
-    /// As `create`, on `backend`, keeping state between runs (the crash
-    /// sentinel, the HTTP cache) in the directory `state_dir` (none when
-    /// empty);
-    /// `android_api_level` is `Build.VERSION.SDK_INT` on Android, for
-    /// the allowlist, and 0 elsewhere.
+    /// As `create`, keeping state between runs (compiled pipelines,
+    /// the HTTP cache, offline regions) in the directory `state_dir`
+    /// (none when empty).
     ///
     /// Contract: `lifecycle`.
     ///
     /// - Throws: `OrbErrorFailure` when it fails.
-    public static func createWith(jobThreads: UInt32, backend: OrbBackend, stateDir: String, androidApiLevel: UInt32) throws -> OrbRuntime {
-        let result = withStringView(stateDir) { stateDirView in OrbRuntime_create_with(jobThreads, OrbisC.OrbBackend(rawValue: numericCast(backend.rawValue)), stateDirView, androidApiLevel) }
+    public static func createWith(jobThreads: UInt32, stateDir: String) throws -> OrbRuntime {
+        let result = withStringView(stateDir) { stateDirView in OrbRuntime_create_with(jobThreads, stateDirView) }
         guard result.is_ok else {
             throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
         }

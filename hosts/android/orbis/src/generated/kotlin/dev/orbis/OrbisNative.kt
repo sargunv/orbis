@@ -327,7 +327,7 @@ internal object OrbisNative {
     external fun orbRuntimeCreate(jobThreads: Int): Long
 
     @JvmStatic
-    external fun orbRuntimeCreateWith(jobThreads: Int, backend: Int, stateDir: ByteArray, androidApiLevel: Int): Long
+    external fun orbRuntimeCreateWith(jobThreads: Int, stateDir: ByteArray): Long
 
     @JvmStatic
     external fun orbRuntimeSetRequestRules(self: Long, rules: ByteArray): Unit
@@ -363,10 +363,7 @@ internal object OrbisNative {
     external fun orbRuntimeClearHttpCache(self: Long): Unit
 
     @JvmStatic
-    external fun orbStatsCompat(self: Long): Boolean
-
-    @JvmStatic
-    external fun orbStatsSelection(self: Long): ByteArray
+    external fun orbStatsAdapter(self: Long): ByteArray
 
     @JvmStatic
     external fun orbStatsPipelinesCreated(self: Long): Int
