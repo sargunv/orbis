@@ -278,6 +278,32 @@ impl<T> TilePyramid<T> {
             .collect()
     }
 
+    /// The ready tiles the last update didn't use, with how many updates
+    /// ago each was last used: comparable across pyramids updated together.
+    pub fn unused(&self) -> impl Iterator<Item = (TileIndex, u64, &T)> {
+        let frame = self.frame;
+        self.tiles
+            .iter()
+            .filter_map(move |(&tile, entry)| match &entry.state {
+                State::Ready(value) if entry.last_used != frame => {
+                    Some((tile, frame - entry.last_used, value))
+                }
+                _ => None,
+            })
+    }
+
+    /// Evicts `tile` if it's ready and the last update didn't use it.
+    pub fn evict_unused(&mut self, tile: TileIndex) -> Option<T> {
+        let entry = self.tiles.get(&tile)?;
+        if entry.last_used == self.frame || !matches!(entry.state, State::Ready(_)) {
+            return None;
+        }
+        match self.tiles.remove(&tile)?.state {
+            State::Ready(value) => Some(value),
+            _ => unreachable!("checked above"),
+        }
+    }
+
     /// Evicts the least recently used ready tile that the last update didn't
     /// use, to make room for a new one. Returns `None` when every ready tile
     /// is in use.

@@ -36,10 +36,18 @@ const STATS = [
   "paintsWritten", "uploadedFromWasm", "uploadedFromJs", "texelsFromWasm", "texelsFromJs",
   "headerBytes", "jobsDone", "lost",
 ] as const;
+/** `FrameInfo::stats`' memory words after the counters (orb-web's
+ * `memory_stats`), in bytes but `cachedTiles`. */
+const MEMORY = [
+  "budget", "allocated", "verticesUsed", "verticesAllocated", "verticesCeiling",
+  "verticesLargestFree", "indicesUsed", "indicesAllocated", "indicesCeiling", "compactedUsed",
+  "compactedAllocated", "propsUsed", "propsAllocated", "textures", "cachedTiles", "cached",
+  "cacheBudget",
+] as const;
 const GENERATION = 1;
 const IDLE = 2;
 const LOST = STATS.indexOf("lost");
-const CAMERA = STATS.length;
+const CAMERA = STATS.length + MEMORY.length;
 
 /** What crosses from the renderer to the page after a frame: small, its
  * counters packed in one transferable array. */
@@ -68,6 +76,9 @@ export const ackCamera = (ack: FrameAck) => ack.stats.subarray(CAMERA, CAMERA + 
 export function frameStats(ack: FrameAck): FrameStats {
   const stats = { ms: ack.ms, warnings: ack.warnings ?? [] } as Record<string, unknown>;
   STATS.forEach((name, i) => { stats[name] = ack.stats[i]; });
+  const memory = {} as Record<string, number>;
+  MEMORY.forEach((name, i) => { memory[name] = ack.stats[STATS.length + i] ?? 0; });
+  stats.memory = memory;
   stats.idle = ack.stats[IDLE] !== 0;
   stats.bundleRecorded = stats.bundleRecorded !== 0;
   delete stats.lost;

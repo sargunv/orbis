@@ -51,10 +51,13 @@ pub use jobs::{
     TileImage, TileRequest, TileResult, TileWorker, pack, unpack,
 };
 pub use loader::{LoadDone, TileLoader, TileLocation};
-pub use map::{FrameReport, Images, JobCounts, Map, Services};
+pub use map::{FrameReport, Images, JobCounts, Map, Memory, Services};
 pub use orb_camera::{CameraState, View, Viewport};
 pub use orb_layout::fill::Bend;
-pub use orb_render::{ARGS_WORDS, ImageMetadata, SceneCapacity, TargetFormat};
+pub use orb_render::{
+    ARGS_WORDS, DESKTOP_BUDGET, ImageMetadata, MOBILE_BUDGET, PoolMemory, SceneCapacity,
+    SceneMemory, TargetFormat,
+};
 pub use orb_style::{CostModel, FeatureTarget, Transaction};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};
 pub use placement_wire::{

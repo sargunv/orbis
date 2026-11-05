@@ -29,14 +29,9 @@ use crate::style::{PaintProperty, StylePlan};
 /// Logical pixel size of vector/background tiles and pattern origins.
 const TILE_PX: f64 = 512.0;
 
-/// Ready tiles kept per source beyond those in view.
-const TILE_CACHE: usize = 128;
 /// Milliseconds a frame spends applying arrived tiles before it leaves the
 /// rest for the next frame (plan §7.4's upload budget at 60 Hz).
 const TILE_APPLY_MS: f64 = 1.5;
-/// Ready image tiles kept per source beyond those in view: each holds a
-/// texture layer.
-const IMAGE_TILE_CACHE: usize = 32;
 
 /// GPU images shared by the maps in one Runtime / host-service set. The
 /// first render initializes them on that Runtime's device.
@@ -89,11 +84,47 @@ pub struct FrameReport {
     /// As `idle`, but fades may still run: labels are placed for this
     /// view and cross-fades need only time (GL JS `loaded()`).
     pub loaded: bool,
+    /// GPU memory by pool, and the tile cache (plan §8's budget).
+    pub memory: Memory,
     /// Microseconds this thread spent on placement: building the frame the
     /// placement lane places and applying its commits (plan §6.1 step 10),
     /// not the placement itself, which is the lane's (inline on a host
     /// without a placement thread or worker).
     pub placement_us: u32,
+}
+
+/// The map's memory against its budget (plan §8), in bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Memory {
+    /// The GPU memory budget the scene's pools are sized from.
+    pub budget: u64,
+    pub scene: orb_render::SceneMemory,
+    /// Raster and DEM tile pages, and glyph pages.
+    pub tile_textures: u64,
+    pub glyph_textures: u64,
+    /// Icons and patterns.
+    pub image_atlas: u64,
+    /// Tiles kept beyond those in view, and their cost: GPU memory and
+    /// picking data.
+    pub cached_tiles: u32,
+    pub cached: u64,
+    /// What the cache may hold: a quarter of the budget.
+    pub cache_budget: u64,
+}
+
+impl Memory {
+    /// GPU bytes allocated.
+    pub fn allocated(&self) -> u64 {
+        let s = &self.scene;
+        s.vertices.allocated
+            + s.indices.allocated
+            + s.compacted.allocated
+            + s.props.allocated
+            + s.tables
+            + self.tile_textures
+            + self.glyph_textures
+            + self.image_atlas
+    }
 }
 
 /// What the map's tile jobs and uploads have done since it was created,
@@ -180,6 +211,9 @@ pub(crate) struct ResidentTile {
     pub(crate) zoom: f64,
     /// Its symbol layers' buckets; their meshes are among `meshes`.
     pub(crate) symbols: Vec<crate::labels::ResidentSymbols>,
+    /// What it costs to keep: GPU bytes of its meshes and texture layer,
+    /// and its picking data (see [`tile_cost`]).
+    pub(crate) cost: u64,
 }
 
 /// One node's mesh of a resident tile.
@@ -346,6 +380,8 @@ struct WaitingTile {
     source: u32,
     tile: TileIndex,
     build: TileResult,
+    /// [`Map::room_state`] when it last failed to fit.
+    tried: Option<[u64; 6]>,
 }
 
 /// A map: a style, a camera and the tiles they need, drawn by
@@ -395,6 +431,8 @@ pub struct Map {
     /// The renderer's nodes are of a replaced style.
     nodes_stale: bool,
     capacity: SceneCapacity,
+    /// The GPU memory budget (plan §8).
+    budget: u64,
     /// The last style id given to the jobs.
     style_id: u64,
     /// Counts style revisions: every new style and every edit.
@@ -587,6 +625,7 @@ impl Map {
             cost: CostModel::DEFAULT,
             nodes_stale: false,
             capacity: SceneCapacity::default(),
+            budget: orb_render::DESKTOP_BUDGET,
             style_id: 0,
             version: 0,
             pending: BTreeMap::new(),
@@ -692,6 +731,16 @@ impl Map {
     pub fn set_scene_capacity(&mut self, capacity: SceneCapacity) {
         assert!(self.renderer.is_none(), "the scene is already allocated");
         self.capacity = capacity;
+    }
+
+    /// Sets the GPU memory the map aims to stay within (plan §8:
+    /// [`DESKTOP_BUDGET`](orb_render::DESKTOP_BUDGET), the default, or
+    /// [`MOBILE_BUDGET`](orb_render::MOBILE_BUDGET)). Tiles out of view stay
+    /// cached within a quarter of it and give way first: the scene's pools
+    /// and tile pages grow only as the tiles in view need, to the device's
+    /// limits, so a view that needs more than the budget still draws.
+    pub fn set_memory_budget(&mut self, bytes: u64) {
+        self.budget = bytes;
     }
 
     /// The last placement commit's semantic snapshot (plan §13): the
@@ -1284,6 +1333,7 @@ impl Map {
             for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
                 self.place_source(gpu, &view, index, drape.as_ref(), &mut report, &mut drawn);
             }
+            self.trim_cache();
         }
         let labels_settled = self.place_labels(gpu, &view, now);
         report.placement_us = (self.placement_ms * 1000.0).round() as u32;
@@ -1371,6 +1421,7 @@ impl Map {
         report.frame = renderer.render(gpu, &frame, target, clear);
         self.globe_warps.end_frame(renderer.scene());
         report.scene = renderer.scene().stats();
+        report.memory = self.memory();
         // Chunks the cull has no room for don't draw: say so when it starts.
         let dropped = report.scene.candidates_dropped;
         if dropped > 0 && self.candidates_dropped == 0 {
@@ -2032,9 +2083,73 @@ impl Map {
             renderer.scene().set_tile_order(&tiles);
             *placed = ordered;
         }
-        for resident in pyramid.evict() {
-            self.retired_ramps
-                .extend(remove_resident(renderer, resident, &mut style.states));
+    }
+
+    /// Keeps the tiles out of view within the cache budget, a quarter of the
+    /// memory budget: the least recently used go first, from any source.
+    /// The scene's pools then hold the tiles in view and what's left of the
+    /// cache, and arrivals that need room evict more (`evict_unused`).
+    fn trim_cache(&mut self) {
+        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+            return;
+        };
+        let budget = self.budget / 4;
+        // (age, source, tile, cost), oldest first.
+        let mut unused: Vec<(u64, usize, TileIndex, u64)> = Vec::new();
+        for (index, source) in style.sources.iter().enumerate() {
+            if let SourceState::Ready { pyramid, .. } = source {
+                unused.extend(
+                    pyramid
+                        .unused()
+                        .map(|(tile, age, r)| (age, index, tile, r.cost)),
+                );
+            }
+        }
+        let mut total: u64 = unused.iter().map(|u| u.3).sum();
+        if total <= budget {
+            return;
+        }
+        unused.sort_unstable_by_key(|u| std::cmp::Reverse(u.0));
+        for (_, index, tile, cost) in unused {
+            if total <= budget {
+                break;
+            }
+            let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
+                continue;
+            };
+            if let Some(resident) = pyramid.evict_unused(tile) {
+                total -= cost;
+                self.retired_ramps
+                    .extend(remove_resident(renderer, resident, &mut style.states));
+            }
+        }
+    }
+
+    /// The map's memory against its budget.
+    fn memory(&self) -> Memory {
+        let Some((renderer, _)) = &self.renderer else {
+            return Memory::default();
+        };
+        let (tile_textures, glyph_textures) = renderer.texture_bytes();
+        let (mut cached_tiles, mut cached) = (0, 0);
+        for source in self.style.iter().flat_map(|s| &s.sources) {
+            if let SourceState::Ready { pyramid, .. } = source {
+                for (_, _, r) in pyramid.unused() {
+                    cached_tiles += 1;
+                    cached += r.cost;
+                }
+            }
+        }
+        let images = self.services.images.0.lock().expect("images poisoned");
+        Memory {
+            budget: self.budget,
+            scene: renderer.scene_ref().memory(),
+            tile_textures,
+            glyph_textures,
+            image_atlas: images.atlas.as_ref().map_or(0, ImageAtlas::bytes),
+            cached_tiles,
+            cached,
+            cache_budget: self.budget / 4,
         }
     }
 
@@ -2539,33 +2654,6 @@ impl Map {
     fn apply_messages(&mut self, gpu: &mut dyn Gpu) {
         let started = self.services.clock.now();
         self.tiles_deferred = false;
-        for waiting in std::mem::take(&mut self.waiting) {
-            let (bytes, image) = host_data(&waiting.build);
-            let release = |gpu: &mut dyn Gpu| {
-                if let Some(bytes) = bytes {
-                    gpu.release_host_bytes(bytes);
-                }
-                if let Some(image) = image {
-                    gpu.release_host_image(image);
-                }
-            };
-            if self.tiles_deferred || waiting.generation != self.tile_generation {
-                if waiting.generation == self.tile_generation {
-                    self.waiting.push(waiting);
-                } else {
-                    release(gpu);
-                }
-                continue;
-            }
-            match self.apply_tile(gpu, waiting.source, waiting.tile, Ok(waiting.build), false) {
-                Some(build) => self.waiting.push(WaitingTile { build, ..waiting }),
-                None => release(gpu),
-            }
-            self.tiles_deferred = self.services.clock.now() - started > TILE_APPLY_MS;
-        }
-        if self.tiles_deferred {
-            return;
-        }
         while let Ok(message) = self.receiver.try_recv() {
             let new_tile = matches!(message, Message::Tile { edit: None, .. });
             match message {
@@ -2717,11 +2805,13 @@ impl Map {
                                     self.apply_tile(gpu, source, tile, result, true)
                                 {
                                     kept = true;
+                                    let tried = Some(self.room_state());
                                     self.waiting.push(WaitingTile {
                                         generation,
                                         source,
                                         tile,
                                         build,
+                                        tried,
                                     });
                                 }
                             }
@@ -2742,6 +2832,72 @@ impl Map {
                 break;
             }
         }
+        self.retry_waiting(gpu, started);
+    }
+
+    /// Tries the tiles waiting for room again, in the frame's budget left,
+    /// each only if room may have changed since it last failed: memory
+    /// freed or grown, or other tiles' jobs done.
+    fn retry_waiting(&mut self, gpu: &mut dyn Gpu, started: f64) {
+        let mut state = self.room_state();
+        for mut waiting in std::mem::take(&mut self.waiting) {
+            let (bytes, image) = host_data(&waiting.build);
+            let release = |gpu: &mut dyn Gpu| {
+                if let Some(bytes) = bytes {
+                    gpu.release_host_bytes(bytes);
+                }
+                if let Some(image) = image {
+                    gpu.release_host_image(image);
+                }
+            };
+            if waiting.generation != self.tile_generation {
+                release(gpu);
+                continue;
+            }
+            if self.tiles_deferred || waiting.tried == Some(state) {
+                self.waiting.push(waiting);
+                continue;
+            }
+            match self.apply_tile(gpu, waiting.source, waiting.tile, Ok(waiting.build), false) {
+                Some(build) => {
+                    state = self.room_state();
+                    waiting.build = build;
+                    waiting.tried = Some(state);
+                    self.waiting.push(waiting);
+                }
+                None => {
+                    release(gpu);
+                    state = self.room_state();
+                }
+            }
+            self.tiles_deferred = self.services.clock.now() - started > TILE_APPLY_MS;
+        }
+    }
+
+    /// What a waiting tile's room depends on: the scene's pools in use and
+    /// their buffers, tile page layers in use, and tile jobs in flight.
+    fn room_state(&self) -> [u64; 6] {
+        let Some((renderer, _)) = &self.renderer else {
+            return [0; 6];
+        };
+        let stats = renderer.scene_ref().stats();
+        let loading: u64 = self
+            .style
+            .iter()
+            .flat_map(|s| &s.sources)
+            .map(|s| match s {
+                SourceState::Ready { loading, .. } => u64::from(*loading),
+                _ => 0,
+            })
+            .sum();
+        [
+            u64::from(stats.vertex_words),
+            u64::from(stats.index_words),
+            u64::from(stats.prop_words),
+            renderer.scene_ref().buffers_revision(),
+            renderer.used_layers(),
+            loading,
+        ]
     }
 
     fn finish_job(&mut self, edit: u64) {
@@ -2868,26 +3024,36 @@ impl Map {
                 .sources
                 .iter()
                 .any(|s| matches!(s, SourceState::Ready { loading, .. } if *loading > 0));
+            // Layers the page has come first, then those of unused tiles;
+            // the page grows only when none are left.
+            let mut grow_page = false;
             let uploaded = loop {
                 let tried = renderer.scene().fits(sizes.iter().copied()).then(|| {
                     let SourceState::Ready { pyramid, page, .. } = &mut style.sources[source]
                     else {
                         unreachable!("checked above");
                     };
-                    image::upload(gpu, renderer, page, pyramid, &upload)
+                    image::upload(gpu, renderer, page, pyramid, &upload, grow_page)
                 });
-                match tried {
+                let layer = match tried {
                     Some(Ok(resident)) => break Ok(resident),
                     Some(Err(image::UploadError::Invalid(e))) => break Err(Some(e)),
-                    Some(Err(image::UploadError::NoRoom)) | None => {
-                        match evict_unused(&mut style.sources, source) {
-                            Some(victim) => self.retired_ramps.extend(remove_resident(
-                                renderer,
-                                victim,
-                                &mut style.states,
-                            )),
-                            None => break Err(None),
-                        }
+                    Some(Err(image::UploadError::NoLayer)) => true,
+                    Some(Err(image::UploadError::NoRoom)) | None => false,
+                };
+                if let Some(victim) = evict_unused(&mut style.sources, source) {
+                    self.retired_ramps
+                        .extend(remove_resident(renderer, victim, &mut style.states));
+                } else if layer && !grow_page {
+                    grow_page = true;
+                } else {
+                    // Retry only if the scene actually grew.
+                    let before = renderer.scene_ref().buffers_revision();
+                    let grew = !layer
+                        && renderer.scene().grow_for(gpu, &sizes)
+                        && renderer.scene_ref().buffers_revision() != before;
+                    if !grew {
+                        break Err(None);
                     }
                 }
             };
@@ -2908,6 +3074,7 @@ impl Map {
                         &mut resident,
                         &mut self.warnings,
                     );
+                    resident.cost = tile_cost(renderer, &resident);
                     if let Some(unwanted) = pyramid.insert(tile, resident) {
                         self.retired_ramps.extend(remove_resident(
                             renderer,
@@ -2964,6 +3131,10 @@ impl Map {
                 .extend(remove_resident(renderer, victim, &mut style.states));
             fits = renderer.scene().fits(sizes.iter().copied());
         }
+        // With nothing more to evict, the scene grows within its budget.
+        if !fits {
+            fits = renderer.scene().grow_for(gpu, &sizes);
+        }
         // Other tiles still loading will free the stand-ins they replace:
         // until they have, this one waits rather than give up its own, and
         // writes nothing meanwhile.
@@ -2998,6 +3169,10 @@ impl Map {
                 Ok(resident) => break Some(resident),
                 Err(OutOfSpace) => {
                     let unused = evict_unused(&mut style.sources, source);
+                    // Labels' sizes aren't known ahead: grow both pools.
+                    if unused.is_none() && renderer.scene().grow(gpu) {
+                        continue;
+                    }
                     let victim = unused.or_else(|| match &mut style.sources[source] {
                         SourceState::Ready { pyramid, .. } if !others_loading => {
                             pyramid.evict_within(tile)
@@ -3042,6 +3217,7 @@ impl Map {
         }
         self.counts.meshes_uploaded += build.meshes.len() as u32;
         record_maxima(&mut style.nodes, &build.meshes, &mut style.painted);
+        resident.cost = tile_cost(renderer, &resident);
         if let Some(unwanted) = pyramid.insert(tile, resident) {
             self.retired_ramps
                 .extend(remove_resident(renderer, unwanted, &mut style.states));
@@ -3168,7 +3344,8 @@ fn ready_source(
                 } else {
                     endpoint.cover_zoom()
                 },
-                if image { IMAGE_TILE_CACHE } else { TILE_CACHE },
+                // Map::trim_cache bounds the cache by memory.
+                usize::MAX,
             ),
             endpoint: Arc::new(endpoint),
             loading: 0,
@@ -3410,6 +3587,21 @@ fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize> {
             chunks: mesh.chunks.len() as u32,
         })
         .collect()
+}
+
+/// What a resident tile costs to keep: the GPU bytes of its meshes and its
+/// texture layer, and its picking data.
+pub(crate) fn tile_cost(renderer: &Renderer, resident: &ResidentTile) -> u64 {
+    let meshes: u64 = resident
+        .meshes
+        .iter()
+        .map(|m| renderer.scene_ref().mesh_bytes(m.mesh) + m.hits.bytes())
+        .sum();
+    meshes
+        + resident
+            .image
+            .as_ref()
+            .map_or(0, |i| renderer.layer_bytes(i.page))
 }
 
 /// Removes a tile from the scene. Returns the ramps its rows retained.

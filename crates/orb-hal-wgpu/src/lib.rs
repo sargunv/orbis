@@ -965,6 +965,19 @@ impl Gpu for WgpuGpu {
                 } => {
                     encoder.clear_buffer(&self.buffers[buffer.0], *offset, *size);
                 }
+                Pass::CopyBuffer {
+                    source,
+                    source_offset,
+                    destination,
+                    destination_offset,
+                    size,
+                } => encoder.copy_buffer_to_buffer(
+                    &self.buffers[source.0],
+                    *source_offset,
+                    &self.buffers[destination.0],
+                    *destination_offset,
+                    *size,
+                ),
                 Pass::ResolveQuerySet {
                     query_set,
                     queries,

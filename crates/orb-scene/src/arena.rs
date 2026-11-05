@@ -22,6 +22,19 @@ impl Arena {
         Self { free, used: 0 }
     }
 
+    /// Extends the arena from `old` to `new` words: a larger buffer took
+    /// its place, with its contents at the same offsets.
+    pub(crate) fn grow(&mut self, old: u32, new: u32) {
+        assert!(new > old, "arenas only grow");
+        self.used += new - old;
+        self.free(old..new);
+    }
+
+    /// The largest block one allocation can take.
+    pub(crate) fn largest_free(&self) -> u32 {
+        self.free.values().copied().max().unwrap_or(0)
+    }
+
     pub(crate) fn used(&self) -> u32 {
         self.used
     }
@@ -104,6 +117,7 @@ mod tests {
     fn allocates_first_fit_and_coalesces() {
         let mut arena = Arena::new(100);
         let a = arena.alloc(30).unwrap();
+        assert_eq!(arena.largest_free(), 70);
         let b = arena.alloc(30).unwrap();
         let c = arena.alloc(30).unwrap();
         assert_eq!((a.clone(), b.clone(), c.clone()), (0..30, 30..60, 60..90));
@@ -125,5 +139,18 @@ mod tests {
         assert_eq!(slots.alloc(), None);
         slots.free(a);
         assert_eq!(slots.alloc(), Some(a));
+    }
+
+    #[test]
+    fn grows_into_a_block_joined_with_the_free_tail() {
+        let mut arena = Arena::new(100);
+        let a = arena.alloc(90).unwrap();
+        assert!(arena.alloc(20).is_none());
+        arena.grow(100, 200);
+        assert_eq!(arena.used(), 90);
+        assert_eq!(arena.largest_free(), 110);
+        assert_eq!(arena.alloc(20), Some(90..110));
+        arena.free(a);
+        assert_eq!(arena.used(), 20);
     }
 }

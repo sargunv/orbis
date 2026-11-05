@@ -474,12 +474,37 @@ impl Images {
     }
 
     /// The size of a page's tiles.
+    /// Bytes one layer of a page takes.
+    pub(crate) fn layer_bytes(&self, id: PageId) -> u64 {
+        self.page(id).page.layer_bytes()
+    }
+
     pub(crate) fn page_size(&self, id: PageId) -> [u32; 2] {
         self.page(id).page.size(0)
     }
 
+    /// GPU bytes of the raster and DEM pages.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.pages.iter().flatten().map(|p| p.page.bytes()).sum()
+    }
+
+    /// A layer of the page, growing it if it's full.
     pub(crate) fn alloc_layer(&mut self, gpu: &mut dyn Gpu, id: PageId) -> Result<u32, OutOfSpace> {
         self.page_mut(id).page.alloc(gpu)
+    }
+
+    /// Layers in use across the pages.
+    pub(crate) fn used_layers(&self) -> u64 {
+        self.pages
+            .iter()
+            .flatten()
+            .map(|p| u64::from(p.page.used()))
+            .sum()
+    }
+
+    /// A layer the page already has, without growing it.
+    pub(crate) fn alloc_existing_layer(&mut self, id: PageId) -> Option<u32> {
+        self.page_mut(id).page.alloc_existing()
     }
 
     pub(crate) fn free_layer(&mut self, id: PageId, layer: u32) {

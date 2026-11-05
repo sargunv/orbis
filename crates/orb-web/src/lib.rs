@@ -89,7 +89,8 @@ pub struct FrameInfo {
     /// dispatches, candidates, tiles_drawn, tiles_loading, bundle_recorded,
     /// placements_written, paints_written, uploaded_from_wasm,
     /// uploaded_from_js, texels_from_wasm, texels_from_js, header_bytes,
-    /// jobs_done, lost`, then the frame's camera as [`UiRole::camera`]
+    /// jobs_done, lost`, then [`MEMORY`] words of memory (plan §8's budget:
+    /// see [`memory_stats`]), then the frame's camera as [`UiRole::camera`]
     /// gives it, so DOM overlays can follow the frame on screen
     /// (`web/src/frames.ts` reads them by name). Booleans are 0 or 1; byte
     /// counts are since the map was created: buffer bytes written from wasm
@@ -198,6 +199,9 @@ async fn create(
         wake: Arc::new(wake),
     };
     let mut map = Map::new(services, None);
+    if mobile() {
+        map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
+    }
     map.set_placement_lane(lane);
     map.load_style_url(style_url);
     Ok(OrbisMap {
@@ -534,6 +538,7 @@ impl OrbisMap {
             f64::from(jobs.done),
             0.0,
         ];
+        stats.extend(memory_stats(&report.memory));
         stats.extend(ui::camera_array(&camera, &self.map.projection()));
         Ok(FrameInfo {
             stats,
@@ -555,11 +560,42 @@ impl OrbisMap {
 /// [`FrameInfo::stats`]' counters before the camera, and where idleness is.
 const STATS: usize = 20;
 const IDLE: usize = 2;
+/// Words of memory after the counters.
+const MEMORY: usize = 17;
+
+/// A frame's memory for the page: `budget, allocated, vertices used,
+/// allocated, ceiling and largest free block, indices used, allocated and
+/// ceiling, compacted indices used and allocated, properties used and
+/// allocated, textures (tile pages, glyph pages and the image atlas),
+/// cached tiles, their bytes and the cache budget`, in bytes.
+fn memory_stats(m: &orb_runtime::Memory) -> [f64; MEMORY] {
+    let s = &m.scene;
+    [
+        m.budget,
+        m.allocated(),
+        s.vertices.used,
+        s.vertices.allocated,
+        s.vertices.ceiling,
+        s.vertices.largest_free,
+        s.indices.used,
+        s.indices.allocated,
+        s.indices.ceiling,
+        s.compacted.used,
+        s.compacted.allocated,
+        s.props.used,
+        s.props.allocated,
+        m.tile_textures + m.glyph_textures + m.image_atlas,
+        u64::from(m.cached_tiles),
+        m.cached,
+        m.cache_budget,
+    ]
+    .map(|v| v as f64)
+}
 
 impl FrameInfo {
     /// A frame not drawn: the GPU is gone. Idle, lost, no camera.
     fn lost() -> Self {
-        let mut stats = vec![0.0; STATS];
+        let mut stats = vec![0.0; STATS + MEMORY];
         stats[IDLE] = 1.0;
         stats[STATS - 1] = 1.0;
         Self {
@@ -578,6 +614,29 @@ const SETTLE_FRAMES: u32 = 3;
 /// How often, in frames, the elevation pyramid may publish while the camera
 /// moves: about twice a second.
 const PUBLISH_FRAMES: u32 = 30;
+
+/// Whether this browser is a phone's or a tablet's, for plan §8's mobile
+/// memory budget: `navigator.userAgentData.mobile` where there is one
+/// (Chromium, pages and workers), else the user agent string.
+fn mobile() -> bool {
+    let get = |object: &JsValue, key: &str| js_sys::Reflect::get(object, &key.into()).ok();
+    let Some(navigator) = get(&js_sys::global(), "navigator") else {
+        return false;
+    };
+    if let Some(mobile) = get(&navigator, "userAgentData")
+        .and_then(|d| get(&d, "mobile"))
+        .and_then(|m| m.as_bool())
+    {
+        return mobile;
+    }
+    get(&navigator, "userAgent")
+        .and_then(|ua| ua.as_string())
+        .is_some_and(|ua| {
+            ["Android", "iPhone", "iPad", "Mobile"]
+                .iter()
+                .any(|s| ua.contains(s))
+        })
+}
 
 /// A promise of a query's features as JSON text.
 fn features_promise(

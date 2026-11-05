@@ -101,6 +101,11 @@ pub struct ImageAtlas {
 }
 
 impl ImageAtlas {
+    /// GPU bytes of the icon and pattern pages.
+    pub fn bytes(&self) -> u64 {
+        u64::from(self.size) * u64::from(self.size) * 4 * self.pages.len() as u64
+    }
+
     pub fn new(gpu: &mut dyn Gpu, size: u32, pages: u32, capacity: u32) -> Self {
         assert!(size > 2 && pages > 0 && capacity > 0);
         let texture = gpu.create_texture(&TextureDesc {

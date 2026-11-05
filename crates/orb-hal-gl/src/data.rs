@@ -81,3 +81,62 @@ impl DataTexture {
         }
     }
 }
+
+/// Copies `size` bytes at byte `from` of data texture `source` to byte
+/// `to` of `destination`: the same columns, so whole rows and a partial
+/// first and last row, read through a framebuffer.
+pub(crate) fn copy(
+    gl: &glow::Context,
+    state: &mut State,
+    source: glow::Texture,
+    from: u64,
+    destination: glow::Texture,
+    to: u64,
+    size: u64,
+) {
+    let width = u64::from(DATA_WIDTH);
+    let (from, to, words) = (from / 4, to / 4, size / 4);
+    assert_eq!(
+        from % width,
+        to % width,
+        "data texture copies keep their columns"
+    );
+    // SAFETY: a temporary framebuffer over the source; spans inside both
+    // textures.
+    unsafe {
+        let fbo = gl.create_framebuffer().expect("framebuffer");
+        state.read_framebuffer(gl, Some(fbo));
+        gl.framebuffer_texture_2d(
+            glow::READ_FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(source),
+            0,
+        );
+        state.bind_texture(gl, 0, glow::TEXTURE_2D, Some(destination));
+        let span = |word: u64, n: u64, rows: u64| {
+            let (x, y) = ((word % width) as i32, (word / width) as i32);
+            let (dx, dy) = (
+                ((to + word - from) % width) as i32,
+                ((to + word - from) / width) as i32,
+            );
+            gl.copy_tex_sub_image_2d(glow::TEXTURE_2D, 0, dx, dy, x, y, n as i32, rows as i32);
+        };
+        let (mut word, end) = (from, from + words);
+        if word % width != 0 {
+            let n = (width - word % width).min(end - word);
+            span(word, n, 1);
+            word += n;
+        }
+        let rows = (end - word) / width;
+        if rows > 0 {
+            span(word, width, rows);
+            word += rows * width;
+        }
+        if word < end {
+            span(word, end - word, 1);
+        }
+        state.read_framebuffer(gl, None);
+        gl.delete_framebuffer(fbo);
+    }
+}

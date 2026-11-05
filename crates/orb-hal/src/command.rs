@@ -16,6 +16,18 @@ pub enum Pass {
         destination: TextureId,
         layers: u32,
     },
+    /// Copies `size` bytes of `source` from `source_offset` into
+    /// `destination` at `destination_offset`, another buffer: how a scene
+    /// pool moves into a larger buffer. Both offsets and the size are whole
+    /// words, the offsets at the same word of a 4,096-word row (Compat
+    /// stores storage buffers as rows of a texture).
+    CopyBuffer {
+        source: BufferId,
+        source_offset: u64,
+        destination: BufferId,
+        destination_offset: u64,
+        size: u64,
+    },
     /// Zeroes a buffer range; `size: None` clears to the end.
     ClearBuffer {
         buffer: BufferId,

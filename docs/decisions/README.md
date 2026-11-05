@@ -41,3 +41,4 @@ in code and commit messages.
 - [0034](0034-image-sources.md): Image sources: one tile, a warped grid, on every surface
 - [0035](0035-stars-and-backdrop.md): Stars and a backdrop in the atmosphere, and the scene document's `atmosphere`
 - [0036](0036-style-spec-proposals.md): Recent style-spec proposals: what the native model should take
+- [0037](0037-memory-budget.md): The memory budget: growable pools and a cache sized by memory

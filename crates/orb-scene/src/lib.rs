@@ -418,6 +418,8 @@ pub struct SceneCapacity {
     /// `(chunk, placement)` pairs the cull pass considers, over all nodes.
     pub candidates: u32,
     pub nodes: u32,
+    /// The vertex pool's first size; it doubles as meshes need, up to
+    /// `max_vertex_words`.
     pub vertex_words: u32,
     pub index_words: u32,
     /// Slots of indexed nodes' candidates in the compacted index buffer:
@@ -426,10 +428,33 @@ pub struct SceneCapacity {
     pub prop_words: u32,
     /// Rows of the glyph atlas's table, which follows the property arena.
     pub glyph_rows: u32,
+    /// Ceilings of the growable pools, which the device's buffer limits
+    /// lower further. Growth is for the tiles in view: the map evicts
+    /// tiles out of view first.
+    pub max_vertex_words: u32,
+    pub max_index_words: u32,
+    pub max_compacted_words: u32,
 }
 
-impl Default for SceneCapacity {
-    fn default() -> Self {
+impl SceneCapacity {
+    /// Pools that start at 16 MB and grow to the device's limits as the
+    /// tiles in view need.
+    pub fn growable() -> Self {
+        let start = 4 << 20;
+        Self {
+            vertex_words: start,
+            index_words: start,
+            compacted_words: start,
+            max_vertex_words: u32::MAX,
+            max_index_words: u32::MAX,
+            max_compacted_words: u32::MAX,
+            ..Self::fixed()
+        }
+    }
+
+    /// Fixed pools at the given sizes, as tests set them: the growable
+    /// pools don't grow past their first size.
+    pub fn fixed() -> Self {
         Self {
             placements: 1024,
             chunks: 1 << 17,
@@ -442,9 +467,47 @@ impl Default for SceneCapacity {
             compacted_words: 16 << 20,
             prop_words: 4 << 20,
             glyph_rows: 1 << 16,
+            max_vertex_words: 0,
+            max_index_words: 0,
+            max_compacted_words: 0,
         }
     }
 }
+
+/// One of the scene's pools, in bytes: in use, allocated, and the most it
+/// may grow to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PoolMemory {
+    pub used: u64,
+    pub allocated: u64,
+    pub ceiling: u64,
+    /// The largest free block: how fragmented the pool is.
+    pub largest_free: u64,
+}
+
+/// The scene's GPU memory by pool.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SceneMemory {
+    pub vertices: PoolMemory,
+    pub indices: PoolMemory,
+    pub compacted: PoolMemory,
+    pub props: PoolMemory,
+    /// The fixed tables: placements, chunks, candidates, visible lists,
+    /// node tables and draw arguments.
+    pub tables: u64,
+}
+
+impl Default for SceneCapacity {
+    /// [`growable`](Self::growable) pools.
+    fn default() -> Self {
+        Self::growable()
+    }
+}
+
+/// Plan §8's GPU memory budget on desktops, in bytes.
+pub const DESKTOP_BUDGET: u64 = 512 << 20;
+/// Plan §8's GPU memory budget on phones, in bytes.
+pub const MOBILE_BUDGET: u64 = 192 << 20;
 
 /// The scene's GPU buffers, for binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -754,6 +817,9 @@ pub struct Scene {
     /// On Compat, what the CPU cull reads.
     cull: Option<CullTables>,
     revision: u64,
+    /// Changes whenever a pool moves into a larger buffer: bind groups and
+    /// recorded commands over the old one must be made again.
+    buffers_revision: u64,
     /// Placement rows written since the last `take_placements_written`.
     placements_written: u32,
 }
@@ -775,6 +841,25 @@ pub struct SceneStats {
 
 impl Scene {
     pub fn new(gpu: &mut dyn Gpu, capacity: SceneCapacity) -> Self {
+        // The growable pools stay within one storage binding and buffer.
+        let limits = gpu.caps().limits;
+        let largest = (limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size)
+            / 4)
+        .min(u64::from(u32::MAX)) as u32;
+        let mut capacity = capacity;
+        for (start, max) in [
+            (&mut capacity.vertex_words, &mut capacity.max_vertex_words),
+            (&mut capacity.index_words, &mut capacity.max_index_words),
+            (
+                &mut capacity.compacted_words,
+                &mut capacity.max_compacted_words,
+            ),
+        ] {
+            *start = (*start).min(largest);
+            *max = (*max).min(largest).max(*start);
+        }
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
         // Compat culls on the CPU: only its outputs reach the GPU, so the
         // tables only the cull dispatch reads stay in core memory.
@@ -816,16 +901,12 @@ impl Scene {
                     | BufferUsages::COPY_DST
                     | BufferUsages::COPY_SRC,
             ),
-            vertices: buffer("vertices", u64::from(c.vertex_words), storage),
-            indices: buffer("indices", u64::from(c.index_words), storage),
+            vertices: buffer("vertices", u64::from(c.vertex_words), POOL_USAGE),
+            indices: buffer("indices", u64::from(c.index_words), POOL_USAGE),
             compacted: buffer(
                 "compacted indices",
                 u64::from(c.compacted_words),
-                if compat {
-                    BufferUsages::INDEX | BufferUsages::COPY_DST
-                } else {
-                    BufferUsages::STORAGE | BufferUsages::INDEX
-                },
+                compacted_usage(compat),
             ),
             props: buffer(
                 "props",
@@ -853,6 +934,7 @@ impl Scene {
             cull_batches: 1,
             cull: compat.then(CullTables::default),
             revision: 0,
+            buffers_revision: 0,
             placements_written: 0,
         }
     }
@@ -1418,7 +1500,12 @@ impl Scene {
     pub fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> u32 {
         if self.candidates_dirty {
             self.candidates_dirty = false;
-            self.rebuild_candidates(gpu);
+            let short = self.rebuild_candidates(gpu);
+            // The cull rewrites every compacted slot: a larger buffer needs
+            // no copy, only the candidates laid out again.
+            if short > 0 && self.grow_compacted(gpu, short) {
+                self.rebuild_candidates(gpu);
+            }
         }
 
         write_frame(gpu, self.buffers.frame, frame);
@@ -1430,8 +1517,11 @@ impl Scene {
     /// the draws follow. An indexed node's runs go to its slice of the
     /// visible list, and its candidates get consecutive slots of the
     /// compacted index buffer, to be written by the next cull.
-    fn rebuild_candidates(&mut self, gpu: &mut dyn Gpu) {
+    /// Returns the compacted index words the candidates left out for want
+    /// of room there.
+    fn rebuild_candidates(&mut self, gpu: &mut dyn Gpu) -> u64 {
         let limit = self.capacity.candidates as usize;
+        let mut compacted_short = 0u64;
         let mut rows: Vec<u32> = Vec::new();
         let mut runs: Vec<(u32, [u32; 2])> = Vec::new();
         let mut node_cull = Vec::with_capacity(self.nodes.len() * NODE_CULL_WORDS);
@@ -1490,12 +1580,16 @@ impl Scene {
             let mut renumbered = vec![u32::MAX; node_runs.len()];
             let mut used = 0u32;
             for (_, chunk, tile, index_count, run) in candidates {
+                let room = u64::from(compacted) + u64::from(index_count)
+                    <= u64::from(self.capacity.compacted_words);
                 let fits = (rows.len() / CANDIDATE_WORDS) < limit
                     && (!indexed
                         || ((renumbered[run as usize] != u32::MAX || u64::from(used) < max_runs)
-                            && u64::from(compacted) + u64::from(index_count)
-                                <= u64::from(self.capacity.compacted_words)));
+                            && room));
                 if !fits {
+                    if indexed && !room {
+                        compacted_short += u64::from(index_count);
+                    }
                     dropped += 1;
                     continue;
                 }
@@ -1568,6 +1662,186 @@ impl Scene {
             );
             at = end;
         }
+        compacted_short
+    }
+
+    /// Grows the vertex and index pools, each doubling to its ceiling (the
+    /// device's buffer limits), until `meshes` would insert.
+    /// Returns whether they would.
+    pub fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
+        loop {
+            if self.fits(meshes.iter().copied()) {
+                return true;
+            }
+            let short = |arena: &Arena, words: fn(&MeshSize) -> u32| {
+                let mut arena = arena.clone();
+                meshes.iter().any(|m| arena.alloc(words(m)).is_none())
+            };
+            let vertices = short(&self.vertex_arena, |m| m.vertices);
+            let indices = short(&self.index_arena, |m| m.indices);
+            let mut grew = false;
+            if vertices {
+                grew |= self.grow_pool(gpu, Pool::Vertices);
+            }
+            if indices {
+                grew |= self.grow_pool(gpu, Pool::Indices);
+            }
+            if !grew {
+                return false;
+            }
+        }
+    }
+
+    /// Doubles the vertex and index pools where their ceilings allow, for
+    /// an upload whose sizes aren't known ahead. Returns whether either
+    /// grew.
+    pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let vertices = self.grow_pool(gpu, Pool::Vertices);
+        self.grow_pool(gpu, Pool::Indices) || vertices
+    }
+
+    /// Moves a pool into a buffer twice its size (or its ceiling's): the
+    /// contents copy over on the GPU, at the same offsets.
+    fn grow_pool(&mut self, gpu: &mut dyn Gpu, pool: Pool) -> bool {
+        let c = &mut self.capacity;
+        let (words, max, buffer, arena, label) = match pool {
+            Pool::Vertices => (
+                &mut c.vertex_words,
+                c.max_vertex_words,
+                &mut self.buffers.vertices,
+                &mut self.vertex_arena,
+                "vertices",
+            ),
+            Pool::Indices => (
+                &mut c.index_words,
+                c.max_index_words,
+                &mut self.buffers.indices,
+                &mut self.index_arena,
+                "indices",
+            ),
+        };
+        let old = *words;
+        let new = old.saturating_mul(2).min(max);
+        if new <= old {
+            return false;
+        }
+        let grown = gpu.create_buffer(&BufferDesc {
+            label,
+            size: u64::from(new) * 4,
+            usage: POOL_USAGE,
+        });
+        gpu.submit(&[orb_hal::Pass::CopyBuffer {
+            source: *buffer,
+            source_offset: 0,
+            destination: grown,
+            destination_offset: 0,
+            size: u64::from(old) * 4,
+        }]);
+        gpu.destroy_buffer(*buffer);
+        *buffer = grown;
+        arena.grow(old, new);
+        *words = new;
+        self.buffers_revision += 1;
+        true
+    }
+
+    /// Grows the compacted index buffer by at least `short` words, to its
+    /// ceiling.
+    fn grow_compacted(&mut self, gpu: &mut dyn Gpu, short: u64) -> bool {
+        let old = self.capacity.compacted_words;
+        let need = u64::from(old) + short;
+        let mut new = u64::from(old);
+        while new < need {
+            new *= 2;
+        }
+        let new = new.min(u64::from(self.capacity.max_compacted_words)) as u32;
+        if new <= old {
+            return false;
+        }
+        let compat = self.cull.is_some();
+        let grown = gpu.create_buffer(&BufferDesc {
+            label: "compacted indices",
+            size: u64::from(new) * 4,
+            usage: compacted_usage(compat),
+        });
+        gpu.destroy_buffer(self.buffers.compacted);
+        self.buffers.compacted = grown;
+        self.capacity.compacted_words = new;
+        self.buffers_revision += 1;
+        true
+    }
+
+    /// GPU bytes a mesh takes in the pools.
+    pub fn mesh_bytes(&self, mesh: MeshId) -> u64 {
+        self.meshes[mesh.0 as usize].as_ref().map_or(0, |m| {
+            (m.vertices.len()
+                + m.indices.len()
+                + m.props.len()
+                + m.state.len()
+                + m.symbol_states.len()) as u64
+                * 4
+        })
+    }
+
+    /// Changes whenever a pool moved into a larger buffer.
+    pub fn buffers_revision(&self) -> u64 {
+        self.buffers_revision
+    }
+
+    /// The scene's GPU memory by pool.
+    pub fn memory(&self) -> SceneMemory {
+        let c = &self.capacity;
+        let bytes = |words: u32| u64::from(words) * 4;
+        let pool = |arena: &Arena, allocated: u32, ceiling: u32| PoolMemory {
+            used: bytes(arena.used()),
+            allocated: bytes(allocated),
+            ceiling: bytes(ceiling.max(allocated)),
+            largest_free: bytes(arena.largest_free()),
+        };
+        let props = bytes(c.prop_words) + u64::from(c.glyph_rows) * GLYPH_ROW_WORDS as u64 * 4;
+        SceneMemory {
+            vertices: pool(&self.vertex_arena, c.vertex_words, c.max_vertex_words),
+            indices: pool(&self.index_arena, c.index_words, c.max_index_words),
+            compacted: PoolMemory {
+                used: bytes(self.compacted_words),
+                allocated: bytes(c.compacted_words),
+                ceiling: bytes(c.max_compacted_words.max(c.compacted_words)),
+                largest_free: bytes(
+                    c.compacted_words - self.compacted_words.min(c.compacted_words),
+                ),
+            },
+            props: PoolMemory {
+                used: bytes(self.prop_arena.used()),
+                allocated: props,
+                ceiling: props,
+                largest_free: bytes(self.prop_arena.largest_free()),
+            },
+            tables: (u64::from(c.placements) * TILE_WORDS as u64
+                + u64::from(c.chunks) * CHUNK_WORDS as u64
+                + u64::from(c.candidates) * (CANDIDATE_WORDS + VISIBLE_WORDS) as u64
+                + u64::from(c.nodes) * (NODE_CULL_WORDS + ARGS_WORDS) as u64)
+                * 4,
+        }
+    }
+}
+
+/// The pools that grow by copying into a larger buffer.
+#[derive(Clone, Copy, Debug)]
+enum Pool {
+    Vertices,
+    Indices,
+}
+
+/// The vertex and index pools: storage that a larger buffer copies from.
+const POOL_USAGE: BufferUsages = BufferUsages::STORAGE
+    .union(BufferUsages::COPY_DST)
+    .union(BufferUsages::COPY_SRC);
+
+fn compacted_usage(compat: bool) -> BufferUsages {
+    if compat {
+        BufferUsages::INDEX | BufferUsages::COPY_DST
+    } else {
+        BufferUsages::STORAGE | BufferUsages::INDEX
     }
 }
 

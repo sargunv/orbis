@@ -523,20 +523,21 @@ impl Map {
                     continue;
                 }
                 for mesh in build.meshes.iter().filter(|m| m.node == key) {
-                    if upload_mesh(
-                        gpu,
-                        renderer,
-                        plan,
-                        &build,
-                        mesh,
-                        resident,
-                        atlas,
-                        namespace,
-                        &mut style.states,
-                        &mut self.warnings,
-                    )
-                    .is_err()
-                    {
+                    let mut upload = |gpu: &mut dyn Gpu,
+                                      renderer: &mut orb_render::Renderer,
+                                      states: &mut _,
+                                      warnings: &mut _| {
+                        upload_mesh(
+                            gpu, renderer, plan, &build, mesh, resident, atlas, namespace, states,
+                            warnings,
+                        )
+                    };
+                    let mut uploaded = upload(gpu, renderer, &mut style.states, &mut self.warnings);
+                    // The scene grows within its budget before a layer goes.
+                    if uploaded.is_err() && renderer.scene().grow(gpu) {
+                        uploaded = upload(gpu, renderer, &mut style.states, &mut self.warnings);
+                    }
+                    if uploaded.is_err() {
                         let message = format!(
                             "tile {tile:?} doesn't fit in scene memory; a layer is not drawn"
                         );
@@ -581,6 +582,7 @@ impl Map {
         // per feature, say), which culling pads by; results skipped as
         // stale can only pad more than needed.
         record_maxima(&mut style.nodes, &build.meshes, &mut style.painted);
+        resident.cost = crate::map::tile_cost(renderer, resident);
         drop(images);
         if !stale_rows.is_empty() {
             let version = self.version;

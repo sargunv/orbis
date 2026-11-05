@@ -46,6 +46,11 @@ pub struct GlyphAtlas {
 }
 
 impl GlyphAtlas {
+    /// GPU bytes of the glyph pages.
+    pub fn bytes(&self) -> u64 {
+        self.page.bytes()
+    }
+
     /// An atlas of at most `capacity` rows, its row table in `table` from
     /// word `base` (`capacity` × [`GLYPH_ROW_WORDS`] words).
     pub fn new(gpu: &mut dyn Gpu, capacity: u32, table: BufferId, base: u32) -> Self {

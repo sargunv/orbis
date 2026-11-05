@@ -56,6 +56,22 @@ pub struct TilePage {
 }
 
 impl TilePage {
+    /// GPU bytes of the page's textures at their current layer counts.
+    pub fn bytes(&self) -> u64 {
+        self.textures
+            .iter()
+            .map(|(desc, _)| texture_bytes(desc, self.capacity))
+            .sum()
+    }
+
+    /// Bytes one layer takes across the page's textures.
+    pub fn layer_bytes(&self) -> u64 {
+        self.textures
+            .iter()
+            .map(|(desc, _)| texture_bytes(desc, 1))
+            .sum()
+    }
+
     /// A page of texture arrays whose layers are allocated together.
     pub fn new(gpu: &mut dyn Gpu, textures: &[PageTexture]) -> Self {
         let max_layers = gpu.caps().limits.max_texture_array_layers;
@@ -109,14 +125,27 @@ impl TilePage {
 
     /// A free layer, growing the page if it is full.
     pub fn alloc(&mut self, gpu: &mut dyn Gpu) -> Result<u32, OutOfSpace> {
-        if let Some(layer) = self.free.pop() {
+        if let Some(layer) = self.alloc_existing() {
             return Ok(layer);
         }
-        if self.next == self.capacity {
-            self.grow(gpu)?;
+        self.grow(gpu)?;
+        Ok(self.alloc_existing().expect("grown"))
+    }
+
+    /// Layers handed out and not freed.
+    pub fn used(&self) -> u32 {
+        self.next - self.free.len() as u32
+    }
+
+    /// A layer the arrays already have, without growing them.
+    pub fn alloc_existing(&mut self) -> Option<u32> {
+        if let Some(layer) = self.free.pop() {
+            return Some(layer);
         }
-        self.next += 1;
-        Ok(self.next - 1)
+        (self.next < self.capacity).then(|| {
+            self.next += 1;
+            self.next - 1
+        })
     }
 
     pub fn free(&mut self, layer: u32) {
@@ -149,13 +178,16 @@ impl TilePage {
         }
     }
 
-    /// Doubles the arrays. The copy is submitted at once, so writes queued
-    /// before it land in the old arrays first and later ones after it.
-    fn grow(&mut self, gpu: &mut dyn Gpu) -> Result<(), OutOfSpace> {
+    /// Grows the arrays by half (at least 8 layers): pages of large tiles
+    /// overshoot less than by doubling. The copy is submitted at once, so
+    /// writes queued before it land in the old arrays first and later ones
+    /// after it.
+    pub fn grow(&mut self, gpu: &mut dyn Gpu) -> Result<(), OutOfSpace> {
         if self.capacity >= self.max_layers {
             return Err(OutOfSpace);
         }
-        let capacity = (self.capacity * 2).min(self.max_layers);
+        let capacity =
+            (self.capacity + (self.capacity / 2).max(INITIAL_LAYERS)).min(self.max_layers);
         let mut copies = Vec::with_capacity(self.textures.len());
         for (desc, texture) in &mut self.textures {
             let grown = create(gpu, desc, capacity);
@@ -176,6 +208,16 @@ impl TilePage {
         self.revision += 1;
         Ok(())
     }
+}
+
+/// Bytes of a page texture of `layers` layers, its mip levels included.
+fn texture_bytes(desc: &PageTexture, layers: u32) -> u64 {
+    let mut bytes = 0;
+    for level in 0..desc.mip_levels.max(1) {
+        let (w, h) = ((desc.width >> level).max(1), (desc.height >> level).max(1));
+        bytes += u64::from(w) * u64::from(h) * u64::from(desc.format.texel_bytes());
+    }
+    bytes * u64::from(layers)
 }
 
 fn create(gpu: &mut dyn Gpu, desc: &PageTexture, layers: u32) -> TextureId {

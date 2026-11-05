@@ -27,6 +27,25 @@ impl Harness {
     }
 
     fn with_atlas(size: u32, pages: u32, entries: u32) -> Self {
+        Self::with(size, pages, entries, Self::SMALL)
+    }
+
+    const SMALL: SceneCapacity = SceneCapacity {
+        placements: 4,
+        chunks: 64,
+        candidates: 128,
+        nodes: 4,
+        vertex_words: 4096,
+        index_words: 4096,
+        compacted_words: 4096,
+        prop_words: 64,
+        glyph_rows: 16,
+        max_vertex_words: 0,
+        max_index_words: 0,
+        max_compacted_words: 0,
+    };
+
+    fn with(size: u32, pages: u32, entries: u32, capacity: SceneCapacity) -> Self {
         let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
         let target = gpu.create_texture(&TextureDesc {
             label: "target",
@@ -39,17 +58,6 @@ impl Harness {
             sample_count: 1,
             mip_levels: 1,
         });
-        let capacity = SceneCapacity {
-            placements: 4,
-            chunks: 64,
-            candidates: 128,
-            nodes: 4,
-            vertex_words: 4096,
-            index_words: 4096,
-            compacted_words: 4096,
-            prop_words: 64,
-            glyph_rows: 16,
-        };
         let images = orb_render::ImageAtlas::new(&mut gpu, size, pages, entries);
         let renderer = Renderer::with_images(
             &mut gpu,
@@ -144,14 +152,79 @@ fn full_view_tile(offset_x: f32) -> TileRow {
 }
 
 fn left_half_square() -> orb_layout::Mesh {
+    half_square(0)
+}
+
+fn half_square(x: i32) -> orb_layout::Mesh {
     let mut b = LayerBuilder::new("water", 4096);
     b.begin_feature(None, GeometryType::Polygon);
     b.begin_part();
     b.begin_ring();
-    for v in [[0, 0], [2048, 0], [2048, 4096], [0, 4096]] {
+    for v in [[x, 0], [x + 2048, 0], [x + 2048, 4096], [x, 4096]] {
         b.push_vertex(v);
     }
     fill::layout(&b.finish(), &[0])
+}
+
+/// Plan §8: a pool that runs out moves into a buffer twice its size, its
+/// meshes copied over on the GPU, and the frame binds the new buffer.
+#[test]
+fn pools_grow_into_larger_buffers_keeping_their_meshes() {
+    let (left, right) = (half_square(0), half_square(2048));
+    let capacity = SceneCapacity {
+        vertex_words: left.vertices.len() as u32,
+        index_words: left.indices.len() as u32,
+        max_vertex_words: 1 << 12,
+        max_index_words: 1 << 12,
+        ..Harness::SMALL
+    };
+    let mut h = Harness::with(4, 2, 8, capacity);
+    red_fill(&mut h);
+    let tile = h.renderer.scene().insert_tile();
+    h.renderer
+        .scene()
+        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .unwrap();
+    h.renderer
+        .scene()
+        .insert_mesh(&mut h.gpu, tile, 0, &MeshData::new(&left, &[], 0))
+        .unwrap();
+    let pixels = h.render();
+    assert_eq!(pixel(&pixels, 36, 32), CLEAR);
+    let mesh = MeshData::new(&right, &[], 0);
+    assert!(
+        h.renderer
+            .scene()
+            .insert_mesh(&mut h.gpu, tile, 0, &mesh)
+            .is_err()
+    );
+    let size = orb_render::MeshSize {
+        vertices: right.vertices.len() as u32,
+        indices: right.indices.len() as u32,
+        props: 0,
+        chunks: right.chunks.len() as u32,
+    };
+    let revision = h.renderer.scene().buffers_revision();
+    assert!(h.renderer.scene().grow_for(&mut h.gpu, &[size]));
+    assert!(h.renderer.scene().buffers_revision() > revision);
+    h.renderer
+        .scene()
+        .insert_mesh(&mut h.gpu, tile, 0, &mesh)
+        .unwrap();
+    let pixels = h.render();
+    assert_eq!(pixel(&pixels, 4, 32), RED, "the first mesh copied over");
+    assert_eq!(pixel(&pixels, 36, 32), RED, "the second in the grown pool");
+    let memory = h.renderer.scene_ref().memory();
+    assert_eq!(
+        memory.vertices.allocated,
+        u64::from(capacity.vertex_words) * 8
+    );
+    // At its ceiling a pool doesn't grow.
+    let huge = orb_render::MeshSize {
+        vertices: 1 << 13,
+        ..size
+    };
+    assert!(!h.renderer.scene().grow_for(&mut h.gpu, &[huge]));
 }
 
 fn red_fill(h: &mut Harness) {

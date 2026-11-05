@@ -172,7 +172,72 @@ impl GlGpu {
                 let zeros = vec![0u8; (end - offset) as usize];
                 self.write_buffer(*buffer, *offset, &zeros);
             }
+            Pass::CopyBuffer {
+                source,
+                source_offset,
+                destination,
+                destination_offset,
+                size,
+            } => self.copy_buffer(
+                *source,
+                *source_offset,
+                *destination,
+                *destination_offset,
+                *size,
+            ),
             Pass::ResolveQuerySet { .. } => panic!("Compat has no timestamp queries"),
+        }
+    }
+
+    /// Copies between buffers in each form both hold: GL buffers, data
+    /// textures (row for row: the offsets share a column) and shadows.
+    fn copy_buffer(
+        &mut self,
+        from: BufferId,
+        from_offset: u64,
+        to: BufferId,
+        to_offset: u64,
+        size: u64,
+    ) {
+        assert_ne!(from, to, "a copy between two buffers");
+        let (source, destination) = (&self.buffers[from.0], &self.buffers[to.0]);
+        let (source_gl, destination_gl) = (source.gl, destination.gl);
+        let data = match (&source.data, &destination.data) {
+            (Some(a), Some(b)) => Some((a.texture, b.texture)),
+            _ => None,
+        };
+        if let (Some((a, _)), Some((b, _))) = (source_gl, destination_gl) {
+            // SAFETY: ranges inside both buffers, which differ.
+            unsafe {
+                // The copy targets aren't in the state cache.
+                self.gl.bind_buffer(glow::COPY_READ_BUFFER, Some(a));
+                self.gl.bind_buffer(glow::COPY_WRITE_BUFFER, Some(b));
+                self.gl.copy_buffer_sub_data(
+                    glow::COPY_READ_BUFFER,
+                    glow::COPY_WRITE_BUFFER,
+                    from_offset as i32,
+                    to_offset as i32,
+                    size as i32,
+                );
+            }
+        }
+        if let Some((a, b)) = data {
+            crate::data::copy(
+                &self.gl,
+                &mut self.state,
+                a,
+                from_offset,
+                b,
+                to_offset,
+                size,
+            );
+        }
+        let shadow = self.buffers[from.0]
+            .shadow
+            .as_ref()
+            .map(|s| s[from_offset as usize..(from_offset + size) as usize].to_vec());
+        if let (Some(bytes), Some(target)) = (shadow, self.buffers[to.0].shadow.as_mut()) {
+            target[to_offset as usize..(to_offset + size) as usize].copy_from_slice(&bytes);
         }
     }
 

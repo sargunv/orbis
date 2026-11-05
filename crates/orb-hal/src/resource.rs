@@ -98,6 +98,22 @@ pub enum TextureFormat {
     Depth32Float,
 }
 
+impl TextureFormat {
+    /// Bytes a texel takes.
+    pub fn texel_bytes(self) -> u32 {
+        match self {
+            Self::R8Unorm => 1,
+            Self::Rgba16Float => 8,
+            Self::R32Float
+            | Self::Rgba8Unorm
+            | Self::Rgba8UnormSrgb
+            | Self::Bgra8Unorm
+            | Self::Bgra8UnormSrgb
+            | Self::Depth32Float => 4,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextureDesc<'a> {
     pub label: &'a str,

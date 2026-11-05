@@ -585,10 +585,12 @@ impl Gpu for GlGpu {
                 (buffer, target)
             }
         });
-        let shadow = desc
-            .usage
-            .intersects(BufferUsages::INDIRECT | BufferUsages::COPY_SRC)
-            .then(|| vec![0; desc.size as usize]);
+        // Shadows serve indirect draws and readback; storage buffers copy
+        // texture to texture.
+        let shadow = (desc.usage.contains(BufferUsages::INDIRECT)
+            || desc.usage.contains(BufferUsages::COPY_SRC)
+                && !desc.usage.contains(BufferUsages::STORAGE))
+        .then(|| vec![0; desc.size as usize]);
         let data = desc
             .usage
             .contains(BufferUsages::STORAGE)

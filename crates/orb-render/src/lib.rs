@@ -40,6 +40,7 @@ pub use orb_scene::{
     MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, Scene,
     SceneCapacity, SceneStats, TileId, TileRow, TileWarp, WARP_PATCH_WORDS, Words,
 };
+pub use orb_scene::{DESKTOP_BUDGET, MOBILE_BUDGET, PoolMemory, SceneMemory};
 pub use orb_scene::{
     GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas, PLACED_WORDS, QUAD_WORDS, SYMBOL_HEADER_WORDS,
     SYMBOL_STATE_WORDS, SymbolMeshData, pack_image_rect, symbol_header,
@@ -219,6 +220,9 @@ pub struct Renderer {
     glyphs: GlyphAtlas,
     /// The glyph atlas revision the scene group binds.
     glyphs_bound: u32,
+    /// The scene's buffer revision its groups bind.
+    buffers_bound: u64,
+    cull_layout: BindGroupLayoutId,
     /// What the scene group binds besides the scene's buffers.
     image_bindings: ImageBindings,
     nearest: SamplerId,
@@ -344,17 +348,6 @@ impl Renderer {
             ],
         });
 
-        let whole = BindingResource::buffer;
-        let entries = |buffers: &[BufferId]| -> Vec<BindGroupEntry> {
-            buffers
-                .iter()
-                .enumerate()
-                .map(|(i, &buffer)| BindGroupEntry {
-                    binding: i as u32,
-                    resource: whole(buffer),
-                })
-                .collect()
-        };
         let glyphs = GlyphAtlas::new(gpu, capacity.glyph_rows, b.props, scene.glyph_table());
         let nearest = gpu.create_sampler(&SamplerDesc {
             label: "nearest",
@@ -396,23 +389,7 @@ impl Renderer {
             (glyphs.texture(), nearest, no_dem, no_occlusion),
         );
         let modern = gpu.caps().tier == Tier::Modern;
-        let cull_group = modern.then(|| {
-            gpu.create_bind_group(&BindGroupDesc {
-                label: "cull",
-                layout: cull_layout,
-                entries: &entries(&[
-                    b.frame,
-                    b.tiles,
-                    b.chunks,
-                    b.candidates,
-                    b.node_cull,
-                    b.visible,
-                    b.args,
-                    b.indices,
-                    b.compacted,
-                ]),
-            })
-        });
+        let cull_group = modern.then(|| cull_group(gpu, cull_layout, &b));
 
         let layouts = [draw_layout, node_layout];
         let paint = PaintPipelines::new(gpu, target, &layouts, false);
@@ -479,10 +456,17 @@ impl Renderer {
             no_occlusion,
             occlusion_bound: no_occlusion,
             glyphs_bound: glyphs.revision(),
+            buffers_bound: 0,
+            cull_layout,
             nearest,
             glyphs,
             image_bindings,
         }
+    }
+
+    /// The scene, to read.
+    pub fn scene_ref(&self) -> &Scene {
+        &self.scene
     }
 
     pub fn scene(&mut self) -> &mut Scene {
@@ -781,6 +765,11 @@ impl Renderer {
     }
 
     /// The size of a page's tiles in texels.
+    /// Bytes one layer of a page takes.
+    pub fn layer_bytes(&self, page: PageId) -> u64 {
+        self.images.layer_bytes(page)
+    }
+
     pub fn page_size(&self, page: PageId) -> [u32; 2] {
         self.images.page_size(page)
     }
@@ -795,8 +784,24 @@ impl Renderer {
     }
 
     /// A free layer of `page` for one tile, growing the page if needed.
+    /// GPU bytes of the raster and DEM pages and of the glyph pages.
+    pub fn texture_bytes(&self) -> (u64, u64) {
+        (self.images.bytes(), self.glyphs.bytes())
+    }
+
+    /// A layer of `page`, which grows to the device's layer limit.
     pub fn alloc_layer(&mut self, gpu: &mut dyn Gpu, page: PageId) -> Result<u32, OutOfSpace> {
         self.images.alloc_layer(gpu, page)
+    }
+
+    /// Tile page layers in use.
+    pub fn used_layers(&self) -> u64 {
+        self.images.used_layers()
+    }
+
+    /// A layer `page` already has, without growing it.
+    pub fn alloc_existing_layer(&mut self, page: PageId) -> Option<u32> {
+        self.images.alloc_existing_layer(page)
     }
 
     pub fn free_layer(&mut self, page: PageId, layer: u32) {
@@ -950,6 +955,16 @@ impl Renderer {
         target: TextureId,
         clear: [f64; 4],
     ) -> FrameStats {
+        self.bind_scene(gpu);
+        let mut stats = self.render_modern(gpu, frame, target, clear);
+        stats.draws += u32::from(self.atmosphere.enabled);
+        stats
+    }
+
+    /// Binds what the scene groups bind anew when it changed: the glyph
+    /// pages grew into new textures, the terrain changed, or a scene pool
+    /// moved into a larger buffer.
+    fn bind_scene(&mut self, gpu: &mut dyn Gpu) {
         let dem = self
             .terrain
             .as_ref()
@@ -960,11 +975,19 @@ impl Renderer {
             .as_ref()
             .and_then(terrain::Terrain::occlusion_texture)
             .unwrap_or(self.no_occlusion);
-        // The glyph pages grew into new textures, or the terrain changed.
+        let buffers = self.scene.buffers_revision();
         if self.glyphs.revision() != self.glyphs_bound
             || dem != self.dem_bound
             || occlusion != self.occlusion_bound
+            || buffers != self.buffers_bound
         {
+            if buffers != self.buffers_bound {
+                self.buffers_bound = buffers;
+                if let Some((_, group)) = &mut self.cull {
+                    gpu.destroy_bind_group(*group);
+                    *group = cull_group(gpu, self.cull_layout, self.scene.buffers());
+                }
+            }
             gpu.destroy_bind_group(self.draw_group);
             let b = *self.scene.buffers();
             self.draw_group = scene_group(
@@ -992,9 +1015,6 @@ impl Renderer {
                 }
             }
         }
-        let mut stats = self.render_modern(gpu, frame, target, clear);
-        stats.draws += u32::from(self.atmosphere.enabled);
-        stats
     }
 
     fn render_modern(
@@ -1005,6 +1025,8 @@ impl Renderer {
         clear: [f64; 4],
     ) -> FrameStats {
         let candidates = self.scene.prepare(gpu, frame);
+        // Preparing may have grown the compacted index buffer.
+        self.bind_scene(gpu);
         self.refresh_image_groups(gpu);
         let terrain_on = self.terrain.as_ref().is_some_and(terrain::Terrain::active);
         if let Some(terrain) = self.terrain.as_ref().filter(|_| terrain_on) {
@@ -1565,6 +1587,37 @@ fn draw_pipeline_blending(
         depth: None,
         topology,
         sample_count: target.sample_count,
+    })
+}
+
+/// The cull pass's group: the scene's tables and index buffers.
+fn cull_group(
+    gpu: &mut dyn Gpu,
+    layout: BindGroupLayoutId,
+    b: &orb_scene::SceneBuffers,
+) -> BindGroupId {
+    let entries: Vec<BindGroupEntry> = [
+        b.frame,
+        b.tiles,
+        b.chunks,
+        b.candidates,
+        b.node_cull,
+        b.visible,
+        b.args,
+        b.indices,
+        b.compacted,
+    ]
+    .iter()
+    .enumerate()
+    .map(|(i, &buffer)| BindGroupEntry {
+        binding: i as u32,
+        resource: BindingResource::buffer(buffer),
+    })
+    .collect();
+    gpu.create_bind_group(&BindGroupDesc {
+        label: "cull",
+        layout,
+        entries: &entries,
     })
 }
 

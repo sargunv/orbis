@@ -138,6 +138,13 @@ pub struct MeshHits {
     bounds: OnceLock<Vec<Bounds>>,
 }
 
+impl MeshHits {
+    /// Bytes its records take.
+    pub fn bytes(&self) -> u64 {
+        self.words.len() as u64 * 4
+    }
+}
+
 impl Default for MeshHits {
     fn default() -> Self {
         Self::new(&[])

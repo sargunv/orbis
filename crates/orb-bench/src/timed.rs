@@ -396,6 +396,7 @@ impl Gpu for TimedGpu {
                     }
                 }
                 Pass::ClearBuffer { .. }
+                | Pass::CopyBuffer { .. }
                 | Pass::CopyTextureLayers { .. }
                 | Pass::ResolveQuerySet { .. } => {}
             }

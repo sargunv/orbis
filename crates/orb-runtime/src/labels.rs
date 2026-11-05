@@ -1688,7 +1688,7 @@ mod tests {
     fn failed_uploads_release_their_glyph_rows() {
         let mut h = Harness::new(SceneCapacity {
             vertex_words: 64,
-            ..SceneCapacity::default()
+            ..SceneCapacity::fixed()
         });
         let mut resident = ResidentTile::default();
         assert!(h.upload(&mut resident).is_err());

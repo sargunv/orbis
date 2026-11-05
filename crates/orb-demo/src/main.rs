@@ -1271,7 +1271,7 @@ mod tests {
             vertex_words: used.vertex_words * 7 / 4,
             index_words: used.index_words * 2,
             prop_words: (used.prop_words.max(start.scene.prop_words) * 2).max(1024),
-            ..super::SceneCapacity::default()
+            ..super::SceneCapacity::fixed()
         };
         let zoom_out = |capacity| {
             let (mut offscreen, _, _) = super::Offscreen::load_with(&at(15.0), capacity).unwrap();
@@ -1315,7 +1315,7 @@ mod tests {
     fn tiles_that_cannot_fit_are_errors() {
         let capacity = super::SceneCapacity {
             vertex_words: 2048,
-            ..super::SceneCapacity::default()
+            ..super::SceneCapacity::fixed()
         };
         let (mut offscreen, _, _) = super::Offscreen::load_with(&tokyo(15.0), capacity).unwrap();
         let started = std::time::Instant::now();
@@ -1404,7 +1404,7 @@ mod tests {
         let capacity = super::SceneCapacity {
             vertex_words: low.scene.vertex_words,
             index_words: low.scene.index_words,
-            ..super::SceneCapacity::default()
+            ..super::SceneCapacity::fixed()
         };
         let (mut offscreen, _, _) =
             super::Offscreen::load_with(&options(0.0, 3.0), capacity).unwrap();
@@ -1419,6 +1419,32 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(report.tiles_drawn > 0);
+    }
+
+    /// Plan §8: tiles out of view stay cached by their memory, within a
+    /// quarter of the budget, the least recently used giving way first.
+    #[test]
+    fn tile_cache_stays_within_its_memory_budget() {
+        let (mut offscreen, _, _) = super::Offscreen::load(&tokyo(14.0)).unwrap();
+        offscreen.map.set_memory_budget(16 << 20);
+        let viewport = offscreen.viewport;
+        let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
+        let mut most = 0;
+        for step in 0..8 {
+            let angle = f64::from(step) * 0.8;
+            pan(
+                &mut offscreen.map,
+                viewport,
+                center,
+                center + glam::DVec2::new(angle.cos(), angle.sin()) * 600.0,
+            );
+            let report = settle(&mut offscreen);
+            let memory = report.memory;
+            assert_eq!(memory.cache_budget, 4 << 20);
+            assert!(memory.cached <= memory.cache_budget, "{memory:?}");
+            most = most.max(memory.cached_tiles);
+        }
+        assert!(most > 0, "tiles out of view are kept");
     }
 
     use std::sync::atomic::{AtomicUsize, Ordering};

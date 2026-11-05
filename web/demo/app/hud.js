@@ -4,6 +4,22 @@ import { h } from "./dom.js";
 
 const kib = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;
 const COMMIT = __ORBIS_COMMIT__;
+const mib = (bytes) => `${(bytes / 1048576).toFixed(1)} MiB`;
+
+/** Plan §8's budget: GPU memory allocated, the scene's growable pools
+ * (used / allocated / ceiling) and the tile cache. */
+function memoryRows(m) {
+  if (!m?.budget) return [];
+  const pool = (used, allocated, ceiling) => `${mib(used)} / ${mib(allocated)} / ${mib(ceiling)}`;
+  return [
+    ["GPU memory", `${mib(m.allocated)} of ${mib(m.budget)}`],
+    ["vertices", pool(m.verticesUsed, m.verticesAllocated, m.verticesCeiling)],
+    ["indices", pool(m.indicesUsed, m.indicesAllocated, m.indicesCeiling)],
+    ["compacted", `${mib(m.compactedUsed)} / ${mib(m.compactedAllocated)}`],
+    ["textures", mib(m.textures)],
+    ["cache", `${m.cachedTiles} tiles, ${mib(m.cached)} of ${mib(m.cacheBudget)}`],
+  ];
+}
 
 export function hud({ onThread }) {
   const root = document.getElementById("hud");
@@ -41,6 +57,7 @@ export function hud({ onThread }) {
       ...(ack.texelsFromJs || ack.texelsFromWasm
         ? [["texels JS", kib(ack.texelsFromJs)], ["texels wasm", kib(ack.texelsFromWasm)]] : []),
       ...(ack.jobsDone ? [["jobs", ack.jobsDone], ["headers", kib(ack.headerBytes)]] : []),
+      ...memoryRows(ack.memory),
       ["generation", ack.generation],
       ["state", ack.idle ? "idle" : "drawing"],
       ...(recovery ? [["recovered", recovery]] : []),

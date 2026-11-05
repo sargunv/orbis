@@ -170,6 +170,8 @@ export interface FrameStats {
   texelsFromJs: number;
   headerBytes: number;
   jobsDone: number;
+  /** GPU memory against plan §8's budget, in bytes but `cachedTiles`. */
+  memory: FrameMemory;
   warnings: string[];
 }
 
@@ -191,6 +193,20 @@ export interface StyleImageOptions {
   content?: [number, number, number, number];
   textFitWidth?: "stretchOrShrink" | "stretchOnly" | "proportional";
   textFitHeight?: "stretchOrShrink" | "stretchOnly" | "proportional";
+/** The map's GPU memory by pool: the scene's pools grow within ceilings
+ * the budget sets; tiles out of view stay cached within `cacheBudget`. */
+export interface FrameMemory {
+  budget: number;
+  allocated: number;
+  verticesUsed: number; verticesAllocated: number; verticesCeiling: number; verticesLargestFree: number;
+  indicesUsed: number; indicesAllocated: number; indicesCeiling: number;
+  compactedUsed: number; compactedAllocated: number;
+  propsUsed: number; propsAllocated: number;
+  /** Tile pages, glyph pages and the icon and pattern atlas. */
+  textures: number;
+  cachedTiles: number;
+  cached: number;
+  cacheBudget: number;
 }
 
 export interface CameraEventData { user: boolean }

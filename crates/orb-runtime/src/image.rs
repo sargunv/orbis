@@ -280,7 +280,10 @@ const QUAD_CHUNK: Chunk = Chunk {
 /// Why an image tile didn't upload.
 #[derive(Debug)]
 pub(crate) enum UploadError {
-    /// Out of texture layers or scene memory: evicting tiles may make room.
+    /// Out of layers in the page: evicting tiles, or growing the page, may
+    /// make room.
+    NoLayer,
+    /// Out of scene memory: evicting tiles may make room.
     NoRoom,
     /// The tile itself can't draw.
     Invalid(String),
@@ -321,6 +324,7 @@ pub(crate) fn upload(
     page: &mut Option<PageId>,
     pyramid: &TilePyramid<ResidentTile>,
     upload: &Upload<'_>,
+    grow_page: bool,
 ) -> Result<ResidentTile, UploadError> {
     let Upload {
         plan,
@@ -354,9 +358,12 @@ pub(crate) fn upload(
             size[0], size[1], expected[0], expected[1]
         )));
     }
-    let layer = renderer
-        .alloc_layer(gpu, page)
-        .map_err(|_| UploadError::NoRoom)?;
+    let layer = if grow_page {
+        renderer.alloc_layer(gpu, page).ok()
+    } else {
+        renderer.alloc_existing_layer(page)
+    }
+    .ok_or(UploadError::NoLayer)?;
     let pixels = match &image.pixels {
         ImagePixels::Core(bytes) => Pixels::Core(bytes),
         &ImagePixels::Host(image) => Pixels::Host {
@@ -384,6 +391,7 @@ pub(crate) fn upload(
             },
         }),
         symbols: Vec::new(),
+        cost: 0,
     };
     for (index, node) in plan.nodes.iter().enumerate() {
         if node.source == source

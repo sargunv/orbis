@@ -130,6 +130,10 @@ impl Map {
             })
         };
         let mut map = orb_runtime::Map::new(runtime.services(wake.clone()), options.camera);
+        // Plan §8's budgets: phones and tablets hold less than desktops.
+        if cfg!(any(target_os = "android", target_os = "ios")) {
+            map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
+        }
         map.set_clear_color(options.clear_color);
         let camera = Camera::new(
             *map.camera(),
