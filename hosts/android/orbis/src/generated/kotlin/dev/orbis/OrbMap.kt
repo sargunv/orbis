@@ -312,22 +312,22 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      *
      * Contract: `command`.
      */
-    fun pointerDown(id: UInt, kind: OrbPointerKind, button: OrbButton, x: Double, y: Double, modifiers: OrbModifiers): Boolean {
-        return OrbisNative.orbMapPointerDown(live(), id.toInt(), kind.value, button.value, x, y, modifiers.shift, modifiers.ctrl, modifiers.alt, modifiers.meta)
+    fun pointerDown(id: UInt, kind: OrbPointerKind, button: OrbButton, x: Double, y: Double, modifiers: OrbModifiers, timeMs: Double): Boolean {
+        return OrbisNative.orbMapPointerDown(live(), id.toInt(), kind.value, button.value, x, y, modifiers.shift, modifiers.ctrl, modifiers.alt, modifiers.meta, timeMs)
     }
 
     /**
      * Contract: `command`.
      */
-    fun pointerMove(id: UInt, x: Double, y: Double): Boolean {
-        return OrbisNative.orbMapPointerMove(live(), id.toInt(), x, y)
+    fun pointerMove(id: UInt, x: Double, y: Double, timeMs: Double): Boolean {
+        return OrbisNative.orbMapPointerMove(live(), id.toInt(), x, y, timeMs)
     }
 
     /**
      * Contract: `command`.
      */
-    fun pointerUp(id: UInt, x: Double, y: Double): Boolean {
-        return OrbisNative.orbMapPointerUp(live(), id.toInt(), x, y)
+    fun pointerUp(id: UInt, x: Double, y: Double, timeMs: Double): Boolean {
+        return OrbisNative.orbMapPointerUp(live(), id.toInt(), x, y, timeMs)
     }
 
     /**
@@ -335,8 +335,8 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      *
      * Contract: `command`.
      */
-    fun pointerCancel(id: UInt): Boolean {
-        return OrbisNative.orbMapPointerCancel(live(), id.toInt())
+    fun pointerCancel(id: UInt, timeMs: Double): Boolean {
+        return OrbisNative.orbMapPointerCancel(live(), id.toInt(), timeMs)
     }
 
     /**
@@ -344,15 +344,15 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      *
      * Contract: `command`.
      */
-    fun wheel(x: Double, y: Double, dx: Double, dy: Double, unit: OrbWheelUnit, modifiers: OrbModifiers): Boolean {
-        return OrbisNative.orbMapWheel(live(), x, y, dx, dy, unit.value, modifiers.shift, modifiers.ctrl, modifiers.alt, modifiers.meta)
+    fun wheel(x: Double, y: Double, dx: Double, dy: Double, unit: OrbWheelUnit, modifiers: OrbModifiers, timeMs: Double): Boolean {
+        return OrbisNative.orbMapWheel(live(), x, y, dx, dy, unit.value, modifiers.shift, modifiers.ctrl, modifiers.alt, modifiers.meta, timeMs)
     }
 
     /**
      * Contract: `command`.
      */
-    fun key(key: OrbKey, modifiers: OrbModifiers): Boolean {
-        return OrbisNative.orbMapKey(live(), key.value, modifiers.shift, modifiers.ctrl, modifiers.alt, modifiers.meta)
+    fun key(key: OrbKey, modifiers: OrbModifiers, timeMs: Double): Boolean {
+        return OrbisNative.orbMapKey(live(), key.value, modifiers.shift, modifiers.ctrl, modifiers.alt, modifiers.meta, timeMs)
     }
 
     /**
@@ -360,8 +360,8 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      *
      * Contract: `command`.
      */
-    fun blur(): Boolean {
-        return OrbisNative.orbMapBlur(live())
+    fun blur(timeMs: Double): Boolean {
+        return OrbisNative.orbMapBlur(live(), timeMs)
     }
 
     /**
@@ -434,16 +434,18 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * Draws a frame into `target`: advances gestures and animations,
-     * applies arrived data and renders. A map draws targets of one
-     * format: all texture targets, or all surfaces of a platform.
+     * Draws the frame shown at `frame_time_ms` (the display link's
+     * timestamp, on the clock input times use) into `target`: applies
+     * arrived data, advances gestures and animations to it and
+     * renders. A map draws targets of one format: all texture
+     * targets, or all surfaces of a platform.
      *
      * Contract: `render_driver`.
      *
      * @throws OrbErrorException when it fails.
      */
-    fun render(target: OrbTarget): OrbFrame {
-        return OrbisNative.orbMapRender(live(), target.live())
+    fun render(target: OrbTarget, frameTimeMs: Double): OrbFrame {
+        return OrbisNative.orbMapRender(live(), target.live(), frameTimeMs)
     }
 
     /**
@@ -453,15 +455,6 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      */
     fun pollEvent(): OrbEvent? {
         return OrbisNative.orbMapPollEvent(live()).let { if (it == 0L) null else OrbEvent(it) }
-    }
-
-    /**
-     * Warnings since the last call, one per line.
-     *
-     * Contract: `event_batch`.
-     */
-    fun takeWarnings(): String {
-        return OrbisNative.orbMapTakeWarnings(live()).decodeToString()
     }
 
     companion object {

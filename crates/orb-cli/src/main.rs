@@ -236,8 +236,13 @@ fn world_rect(tms: &TileMatrixSet, [w, s, e, n]: [f64; 4]) -> orb_crs::WorldRect
 }
 
 fn warn(map: &mut Map) {
-    for warning in map.take_warnings() {
-        eprintln!("orbis: {warning}");
+    while let Some(event) = map.poll_event() {
+        if let orb_api::Event::Map(
+            orb_api::MapEvent::Warning { message } | orb_api::MapEvent::Error { message },
+        ) = event
+        {
+            eprintln!("orbis: {message}");
+        }
     }
 }
 

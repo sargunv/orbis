@@ -449,7 +449,7 @@ mod tests {
                 duration: Some(4000.0),
                 ..crate::FlyOptions::default()
             },
-            now,
+            Some(now),
         );
         while store.is_animating() {
             now += 16.0;
@@ -473,7 +473,7 @@ mod tests {
                 duration: Some(2000.0),
                 ..crate::FlyOptions::default()
             },
-            0.0,
+            Some(0.0),
         );
         let (mut now, mut last, mut largest) = (0.0, 0.0, 0.0f64);
         while store.is_animating() {
@@ -550,7 +550,7 @@ mod tests {
                 ..CameraTarget::default()
             },
             crate::EaseOptions::default(),
-            now,
+            Some(now),
         );
         while store.is_animating() {
             now += 16.0;

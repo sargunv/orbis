@@ -67,3 +67,51 @@ Main mode before the deletion measured pan 38.8 / 55.6, pinch
 38.8 / 372.6 and rotate 39.1 / 48.8 ms; the pinch tail is gone. Idle
 draws nothing (no animation frames and no map frames in the quiet
 windows).
+
+## The map owns its camera
+
+`orb_runtime::Map` holds the `orb_camera::Camera` store and the
+`orb_interact::Interaction` recognizers. `Map::render` takes the frame's
+timestamp and, in order, applies the messages that arrived (a style, DEM
+tiles, a scene document's surface), brings the store onto that surface and
+terrain and the frame's viewport, advances gestures and animations to the
+timestamp, and draws with the camera that leaves. A style installed while
+nothing has moved the camera is adopted at install, before the frame that
+shows it. Input carries its event's timestamp (`Map::input(input, time)`),
+on the same clock as frame times: the display link's on each platform
+(`requestAnimationFrame` and `event.timeStamp`; Choreographer and
+`MotionEvent` uptime; `CADisplayLink` and `NSEvent`/`UITouch` uptime).
+Animations the app starts (`ease_to`, `fly_to`) begin at the next frame's
+time, so a call between frames, or after a long idle, starts from its first
+frame.
+
+`Idle` fires once per rest: a frame is idle when its data work is done and
+no animation or glide needs another frame, and the event waits until no
+gesture holds the camera either. A camera that moved since the last frame
+makes the next rest a new idle. `orb-api`'s test `idle_comes_once_after_an_ease`
+renders a 400 ms ease on a 60 Hz clock: 25 frames, one `Idle`, on the
+frame it arrives on (before, 37 of 38 frames emitted it).
+
+One event stream: `MapEvent` carries the camera's moves
+(`Camera(CameraEvent)`), clicks and double clicks, and warnings, which were
+a second channel (`take_warnings`). Deleted: `Map::camera_mut`,
+`set_camera`, `constrain_camera` and `StyleLoad { camera }`; hosts that
+need an exact camera (fixtures, benches) use `jump_to_state`, which keeps
+to the constraints and the terrain as every move does.
+
+On the web the page's camera copy (`UiRole`) merges into the wasm
+`OrbisMap`: one object per map takes input with its `timeStamp`, draws
+each animation frame at `requestAnimationFrame`'s timestamp, and returns
+typed `FrameStats` instead of a positional array. Camera targets and
+options cross as the package's objects, read by name. Edits and image
+calls are synchronous (they throw on a bad call); queries, snapshots and
+regions stay asynchronous. Each map has its own wake route, and `remove()`
+can be called twice and resolves running animations false. A job worker
+whose request throws answers it with the error, so the map's request
+completes.
+
+`orb-api`'s `Map::render_until_idle` is the one way tools and tests draw
+until the map is idle: a map waiting only on jobs needs no frame until
+their wake, so loops that stopped when `needs_frame` turned false stopped
+before the first tile.
+

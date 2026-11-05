@@ -2519,6 +2519,7 @@ dependencies = [
  "orb-hal-wgpu",
  "orb-host",
  "orb-host-native",
+ "orb-interact",
  "orb-jobs",
  "orb-layout",
  "orb-render",

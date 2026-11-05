@@ -77,7 +77,14 @@ fn a_downloaded_region_opens_offline() {
     );
     map.load_style_url(LIBERTY);
     let image = map.snapshot(256, 256, 1.0).unwrap();
-    let warnings = map.take_warnings();
+    let warnings: Vec<String> = std::iter::from_fn(|| map.poll_event())
+        .filter_map(|event| match event {
+            orb_api::Event::Map(
+                orb_api::MapEvent::Warning { message } | orb_api::MapEvent::Error { message },
+            ) => Some(message),
+            _ => None,
+        })
+        .collect();
     // Drawn: more than the background's one colour.
     let first = &image.pixels[..4];
     assert!(image.pixels.chunks(4).any(|p| p != first));

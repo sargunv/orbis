@@ -42,7 +42,7 @@ fn data_replaced_every_frame_never_blanks() {
     map.snapshot(256, 256, 1.0).unwrap();
     // A continuous frame or two after the snapshot, until the circle shows.
     for _ in 0..100 {
-        map.render(&mut target).unwrap();
+        map.render(&mut target, 0.0).unwrap();
         if circle(&target).0 > 0 {
             break;
         }
@@ -57,7 +57,7 @@ fn data_replaced_every_frame_never_blanks() {
             .unwrap();
         // A frame's time: the jobs lay the data out between frames.
         std::thread::sleep(std::time::Duration::from_millis(16));
-        map.render(&mut target).unwrap();
+        map.render(&mut target, 0.0).unwrap();
         let (count, _) = circle(&target);
         assert!(count > start / 2, "frame {frame}: {count} red pixels");
     }

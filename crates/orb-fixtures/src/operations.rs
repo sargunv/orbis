@@ -41,12 +41,21 @@ pub(crate) fn apply(map: &mut Map, op: &Value, assets: &Path) -> Result<Next, St
         "idle" => return Ok(Next::Idle),
         "setZoom" => {
             let (zoom, projection) = (number(1)?, map.projection());
-            map.camera_mut().set_zoom(&projection, zoom)
+            move_camera(map, |c| c.set_zoom(&projection, zoom));
         }
-        "setBearing" => map.camera_mut().bearing = number(1)?,
-        "setPitch" => map.camera_mut().pitch = number(1)?,
-        "setRoll" => map.camera_mut().roll = number(1)?,
-        "setCenterElevation" => map.camera_mut().elevation = number(1)?,
+        "setBearing" => {
+            let bearing = number(1)?;
+            move_camera(map, |c| c.bearing = bearing);
+        }
+        "setPitch" => {
+            let pitch = number(1)?;
+            move_camera(map, |c| c.pitch = pitch);
+        }
+        "setRoll" => {
+            let roll = number(1)?;
+            move_camera(map, |c| c.roll = roll);
+        }
+        "setCenterElevation" => map.set_center_elevation(number(1)?),
         "setCenterClampedToGround" => {
             let clamped = op
                 .get(1)
@@ -65,7 +74,8 @@ pub(crate) fn apply(map: &mut Map, op: &Value, assets: &Path) -> Result<Next, St
                     .and_then(Value::as_f64)
                     .ok_or("expected a number")
             };
-            map.camera_mut().target = orb_crs::Geodetic::new(at(0)?, at(1)?);
+            let target = orb_crs::Geodetic::new(at(0)?, at(1)?);
+            move_camera(map, |c| c.target = target);
         }
         // `["addImage", name, path, options?]`.
         "addImage" => {
@@ -87,4 +97,12 @@ pub(crate) fn apply(map: &mut Map, op: &Value, assets: &Path) -> Result<Next, St
         }
     }
     Ok(Next::Continue)
+}
+
+/// Jumps the camera to a changed copy of itself, as GL JS's harness's
+/// setters do.
+fn move_camera(map: &mut Map, change: impl FnOnce(&mut orb_runtime::CameraState)) {
+    let mut camera = *map.camera();
+    change(&mut camera);
+    map.jump_to_state(camera);
 }

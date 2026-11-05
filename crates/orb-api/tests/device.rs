@@ -30,14 +30,8 @@ fn options(state_dir: Option<std::path::PathBuf>) -> RuntimeOptions {
 /// Draws until idle; the time it took.
 fn settle(map: &mut Map, target: &mut Target) -> Result<Duration, Error> {
     let started = Instant::now();
-    loop {
-        let report = map.render(target)?;
-        if report.is_some_and(|r| r.idle) && !map.needs_frame() {
-            return Ok(started.elapsed());
-        }
-        assert!(started.elapsed().as_secs() < 30, "the map never idled");
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    map.render_until_idle(target, Duration::from_secs(30))?;
+    Ok(started.elapsed())
 }
 
 fn first_frame(runtime: &Runtime) -> Vec<u8> {
@@ -117,7 +111,7 @@ fn a_hung_compile_demotes_the_device() {
         let started = Instant::now();
         let mut frames = 0;
         let lost = loop {
-            match map.render(&mut target) {
+            match map.render(&mut target, 0.0) {
                 Err(Error::DeviceLost) => break started.elapsed(),
                 Err(e) => panic!("{e}"),
                 Ok(report) => assert!(report.is_none_or(|r| !r.idle), "nothing compiles"),
@@ -178,7 +172,10 @@ fn recovers(backend: Backend) {
 
     runtime.lose_device();
     let lost = Instant::now();
-    assert!(matches!(map.render(&mut target), Err(Error::DeviceLost)));
+    assert!(matches!(
+        map.render(&mut target, 0.0),
+        Err(Error::DeviceLost)
+    ));
     assert!(runtime.lost());
     runtime.recover().unwrap();
     let tier = runtime.tier();

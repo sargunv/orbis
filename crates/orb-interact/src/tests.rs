@@ -343,7 +343,7 @@ fn input_interrupts_animations() {
             ..Default::default()
         },
         orb_camera::EaseOptions::default(),
-        rig.now,
+        Some(rig.now),
     );
     rig.frame();
     rig.down(1, PointerKind::Mouse, 10.0, 10.0);

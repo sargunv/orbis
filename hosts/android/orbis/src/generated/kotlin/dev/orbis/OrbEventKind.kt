@@ -77,7 +77,12 @@ enum class OrbEventKind(val value: Int) {
     /**
      * The video source `text` is gone: stop and let go of its video.
      */
-    VideoClose(17);
+    VideoClose(17),
+    /**
+     * Something in the style or its data the map can't draw as
+     * written; `text` says what.
+     */
+    Warning(18);
 
     companion object {
         @JvmStatic

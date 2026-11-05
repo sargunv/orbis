@@ -21,12 +21,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use glam::DVec2;
-use orb_camera::{Camera, CameraTarget};
 use orb_crs::Geodetic;
 use orb_hal::Gpu;
 use orb_hal_wgpu::{WgpuGpu, from_texture_format};
 use orb_host_native::{NativeFetch, NativeImageDecode};
-use orb_interact::{Button, InteractEvent, Interaction, Key, Modifiers, PointerKind, WheelUnit};
+use orb_interact::{Button, Key, Modifiers, PointerKind, WheelUnit};
 use orb_jobs::ThreadPool;
 use orb_runtime::{
     CameraState, Map, MapEvent, PoolJobs, SceneCapacity, Services, TargetFormat, Viewport,
@@ -212,6 +211,8 @@ struct Offscreen {
     renderer: Option<orb_runtime::Renderer>,
     viewport: Viewport,
     map: Map,
+    /// The next frame's time: frames run at 60 Hz.
+    time: f64,
 }
 
 impl Offscreen {
@@ -246,8 +247,10 @@ impl Offscreen {
                 longest = longest.max(frame_started.elapsed().as_secs_f64() * 1000.0);
             }
             frames += 1;
-            for warning in this.map.take_warnings() {
-                eprintln!("orb-demo: {warning}");
+            for event in this.map.take_events() {
+                if let MapEvent::Warning { message } | MapEvent::Error { message } = event {
+                    eprintln!("orb-demo: {message}");
+                }
             }
             let ms = || started.elapsed().as_secs_f64() * 1000.0;
             if first_draw.is_none() && report.tiles_drawn > 0 && report.frame.draws > 0 {
@@ -331,24 +334,25 @@ impl Offscreen {
                 height: f64::from(Self::HEIGHT),
             },
             map,
+            time: 0.0,
         })
     }
 
     fn frame(&mut self) -> orb_runtime::FrameReport {
-        // The camera is written directly: keep it to the world and on the
-        // terrain, as a camera store would.
-        self.map.constrain_camera(self.viewport);
         self.frame_at(self.viewport)
     }
 
-    /// A frame of the camera as it is, in `viewport`.
+    /// The next frame of the camera as it is, in `viewport`: frames run at
+    /// 60 Hz.
     fn frame_at(&mut self, viewport: Viewport) -> orb_runtime::FrameReport {
+        self.time += 1000.0 / 60.0;
+        let time = self.time;
         let map = &mut self.map;
         let (gpu, format) = (&mut self.gpu, self.format);
         let renderer = self
             .renderer
             .get_or_insert_with(|| map.create_renderer(gpu, format));
-        map.render(gpu, renderer, self.target, viewport, 1.0)
+        map.render(gpu, renderer, self.target, viewport, 1.0, time)
     }
 
     fn pixels(&self) -> Vec<u8> {
@@ -400,13 +404,6 @@ struct State {
     format: TargetFormat,
     renderer: Option<orb_runtime::Renderer>,
     map: Map,
-    /// The camera's single writer; the map draws what it shows.
-    camera: Camera,
-    input: Interaction,
-    /// The camera revision last given to the map.
-    pushed: u64,
-    /// The map's terrain revision the camera stands on.
-    terrain: u64,
     started: Instant,
     /// Frames drawn, and when the map first went idle with the count then.
     frames: u32,
@@ -512,17 +509,10 @@ impl State {
             }),
             options.cache.as_deref(),
         );
-        let initial = camera(options);
-        let mut map = Map::new(services, initial);
+        let mut map = Map::new(services, camera(options));
         // The opaque swapchain has no page behind transparent style pixels.
         map.set_clear_color([1.0; 4]);
         load_style(&mut map, options).expect("demo style");
-        let scale = window.scale_factor();
-        let viewport = Viewport {
-            width: f64::from(config.width) / scale,
-            height: f64::from(config.height) / scale,
-        };
-        let camera = Camera::new(initial.unwrap_or(*map.camera()), map.surface(), viewport);
 
         Self {
             window,
@@ -535,10 +525,6 @@ impl State {
             },
             renderer: None,
             map,
-            camera,
-            input: Interaction::default(),
-            pushed: 0,
-            terrain: 0,
             started: Instant::now(),
             frames: 0,
             idle_at: None,
@@ -564,7 +550,6 @@ impl State {
         self.config.width = size.width.max(1);
         self.config.height = size.height.max(1);
         self.surface.configure(self.gpu.device(), &self.config);
-        self.camera.set_viewport(self.viewport());
         self.window.request_redraw();
     }
 
@@ -577,31 +562,28 @@ impl State {
         // The user takes the camera from a flight.
         self.flight = None;
         let now = self.now();
-        self.input.handle(&mut self.camera, input, now);
+        self.map.input(input, now);
         self.window.request_redraw();
     }
 
-    /// Advances gestures and animations and gives the map the camera.
-    fn move_camera(&mut self) -> bool {
-        let now = self.now();
+    /// Starts the flight's next leg when the last one ended.
+    fn fly(&mut self) {
         if let Some(flight) = &mut self.flight
-            && !self.camera.is_animating()
-            && !self.camera.is_held()
+            && !self.map.is_moving()
         {
             let (target, options) = &flight.legs[flight.next];
-            self.camera.fly_to(target, options, now);
+            self.map.fly_to(target, options);
             flight.next = (flight.next + 1) % flight.legs.len();
         }
-        let gesture = self.input.frame(&mut self.camera, now);
-        let animating = self.camera.frame(now);
-        self.camera.take_events();
-        for event in self.input.take_events() {
-            if let InteractEvent::Click {
-                position,
-                button: Button::Primary,
-            } = event
-            {
-                match self.map.hit_test(position) {
+    }
+
+    fn map_events(&mut self) {
+        for event in self.map.take_events() {
+            match event {
+                MapEvent::Click {
+                    position,
+                    button: orb_runtime::Button::Primary,
+                } => match self.map.hit_test(position) {
                     Some(hit) => println!(
                         "clicked {} ({}{}) id {}",
                         hit.layer,
@@ -612,38 +594,10 @@ impl State {
                         hit.id.as_deref().unwrap_or("none")
                     ),
                     None => println!("clicked nothing"),
+                },
+                MapEvent::Error { message } | MapEvent::Warning { message } => {
+                    eprintln!("orb-demo: {message}");
                 }
-            }
-        }
-        // Until the app or the user moves it, the map's camera follows the
-        // style.
-        if self.camera.modified() && self.camera.revision() != self.pushed {
-            self.pushed = self.camera.revision();
-            self.map.set_camera(*self.camera.state());
-        }
-        gesture || animating
-    }
-
-    fn map_events(&mut self) {
-        for event in self.map.take_events() {
-            // Loads and projection edits move the camera's surface.
-            if let MapEvent::StyleData { .. } | MapEvent::StyleLoad { .. } = event {
-                self.camera.set_surface(self.map.surface());
-            }
-            match event {
-                MapEvent::StyleLoad {
-                    camera: Some(style),
-                } if !self.camera.modified() => {
-                    self.camera.jump_to(&CameraTarget {
-                        center: Some(style.target),
-                        zoom: Some(style.zoom(self.camera.projection())),
-                        bearing: Some(style.bearing),
-                        pitch: Some(style.pitch),
-                        ..CameraTarget::default()
-                    });
-                    self.window.request_redraw();
-                }
-                MapEvent::Error { message } => eprintln!("orb-demo: {message}"),
                 _ => {}
             }
         }
@@ -664,12 +618,13 @@ impl State {
             }
         };
         let started = Instant::now();
-        let moving = self.move_camera();
+        self.fly();
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let target = self.gpu.register_view(view);
         let viewport = self.viewport();
+        let now = self.now();
         let (map, gpu, format) = (&mut self.map, &mut self.gpu, self.format);
         let renderer = self
             .renderer
@@ -680,25 +635,18 @@ impl State {
             target,
             viewport,
             self.window.scale_factor() as f32,
+            now,
         );
-        // The camera stands on the terrain the map has loaded.
-        if self.map.elevation_revision() != self.terrain {
-            self.terrain = self.map.elevation_revision();
-            self.camera.set_terrain(self.map.elevation());
-        }
         self.gpu.destroy_texture(target);
         self.window.pre_present_notify();
         self.gpu.queue().present(frame);
         self.map_events();
         self.frames += 1;
-        if report.idle && !moving && self.idle_at.is_none() {
+        if report.idle && self.idle_at.is_none() {
             self.idle_at = Some((Instant::now(), self.frames));
         }
-        if !report.idle || moving {
+        if !report.idle || self.flight.is_some() {
             self.window.request_redraw();
-        }
-        for warning in self.map.take_warnings() {
-            eprintln!("orb-demo: {warning}");
         }
 
         if self.last_title.elapsed().as_millis() > 200 {
@@ -879,6 +827,26 @@ fn write_png(path: &str, pixels: &[u8]) -> Result<(), String> {
 /// Pixels that differ by more than one level in a channel. Glyphs sit where
 /// the shared atlas packed them, which depends on the order they arrived,
 /// and filtering at another texel origin can round one level apart.
+/// Jumps the camera to a changed copy of itself.
+#[cfg(test)]
+fn move_camera(map: &mut Map, change: impl FnOnce(&mut CameraState)) {
+    let mut camera = *map.camera();
+    change(&mut camera);
+    map.jump_to_state(camera);
+}
+
+/// The warnings and errors since the last call.
+#[cfg(test)]
+fn take_warnings(map: &mut Map) -> Vec<String> {
+    map.take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            MapEvent::Warning { message } | MapEvent::Error { message } => Some(message),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 fn differing_pixels(a: &[u8], b: &[u8]) -> usize {
     a.as_chunks::<4>()
@@ -928,7 +896,7 @@ mod tests {
             settle(offscreen);
         };
         let set_bearing = |offscreen: &mut super::Offscreen, bearing: f64| {
-            offscreen.map.camera_mut().bearing = bearing;
+            super::move_camera(&mut offscreen.map, |c| c.bearing = bearing);
         };
         let (mut moved, _, _) = super::Offscreen::load(&at(-72.0)).unwrap();
         hide_labels(&mut moved);
@@ -957,7 +925,7 @@ mod tests {
         let pixels = moved.pixels();
         let (mut fresh, _, _) = super::Offscreen::load(&at(-32.0)).unwrap();
         hide_labels(&mut fresh);
-        *fresh.map.camera_mut() = *moved.map.camera();
+        fresh.map.jump_to_state(*moved.map.camera());
         settle(&mut fresh);
         let reference = fresh.pixels();
         let differing = super::differing_pixels(&pixels, &reference);
@@ -1018,28 +986,17 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
             let (viewport, surface) = (offscreen.viewport, offscreen.map.surface());
-            let mut camera = orb_camera::Camera::new(*offscreen.map.camera(), surface, viewport);
-            let mut published = 0;
-            let started = std::time::Instant::now();
             let (mut lowest, mut under, mut frames) = (f64::INFINITY, 0, 0);
             let (mut last, mut steps) = (None, Vec::new());
             for (target, fly) in &flight.legs {
-                let now = started.elapsed().as_secs_f64() * 1000.0;
-                camera.fly_to(target, fly, now);
-                while camera.is_animating() {
-                    let now = started.elapsed().as_secs_f64() * 1000.0;
-                    camera.frame(now);
-                    *offscreen.map.camera_mut() = *camera.state();
+                offscreen.map.fly_to(target, fly);
+                while offscreen.map.is_moving() {
                     offscreen.frame_at(viewport);
-                    let revision = offscreen.map.elevation_revision();
-                    if revision != published {
-                        published = revision;
-                        camera.set_terrain(offscreen.map.elevation());
-                    }
+                    let camera = *offscreen.map.camera();
                     let Some(full) = offscreen.map.elevation() else {
                         continue;
                     };
-                    let view = orb_camera::View::new(camera.state(), viewport, &surface);
+                    let view = orb_camera::View::new(&camera, viewport, &surface);
                     let Some(clearance) = view.clearance(&*full) else {
                         continue;
                     };
@@ -1048,7 +1005,7 @@ mod tests {
                     under += usize::from(clearance < 0.0);
                     // The camera's elevation step per frame, for jumps: the
                     // first DEM data under it moves it once.
-                    let elevation = camera.state().elevation;
+                    let elevation = camera.elevation;
                     if let Some(previous) = last.replace(elevation) {
                         steps.push((elevation - previous).abs());
                     }
@@ -1074,8 +1031,7 @@ mod tests {
     ) {
         let surface = map.surface();
         let zoom = map.zoom() + delta;
-        map.camera_mut().zoom_around(&surface, viewport, at, zoom);
-        map.constrain_camera(viewport);
+        super::move_camera(map, |c| c.zoom_around(&surface, viewport, at, zoom));
     }
 
     /// Pans the ground under `from` to `to`, as the gestures do.
@@ -1086,8 +1042,7 @@ mod tests {
         to: glam::DVec2,
     ) {
         let surface = map.surface();
-        map.camera_mut().pan(&surface, viewport, from, to);
-        map.constrain_camera(viewport);
+        super::move_camera(map, |c| c.pan(&surface, viewport, from, to));
     }
 
     /// Renders until two frames in a row are idle: the second draws what
@@ -1099,7 +1054,7 @@ mod tests {
         loop {
             let report = offscreen.frame();
             if report.idle && was_idle {
-                assert!(offscreen.map.take_warnings().is_empty());
+                assert!(super::take_warnings(&mut offscreen.map).is_empty());
                 return report;
             }
             was_idle = report.idle;
@@ -1121,7 +1076,7 @@ mod tests {
         };
         let (mut fresh, _, _) = super::Offscreen::load(&options).unwrap();
         // Use exactly the same camera, including its ground resolution.
-        *fresh.map.camera_mut() = camera;
+        fresh.map.jump_to_state(camera);
         let fresh_report = settle(&mut fresh);
         let report = settle(offscreen);
         let pixels = offscreen.pixels();
@@ -1205,7 +1160,7 @@ mod tests {
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let projection = offscreen.map.projection();
-        offscreen.map.camera_mut().set_zoom(&projection, -1e-9);
+        super::move_camera(&mut offscreen.map, |c| c.set_zoom(&projection, -1e-9));
         let mut report = offscreen.frame();
         while !report.idle {
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1260,7 +1215,7 @@ mod tests {
                     report = offscreen.frame();
                 }
                 report = offscreen.frame();
-                let warnings = offscreen.map.take_warnings();
+                let warnings = super::take_warnings(&mut offscreen.map);
                 assert!(
                     !warnings.iter().any(|w| w.contains("scene memory")),
                     "{warnings:?}"
@@ -1291,12 +1246,11 @@ mod tests {
             vertex_words: 2048,
             ..super::SceneCapacity::fixed()
         };
-        let (mut offscreen, _, _) = super::Offscreen::load_with(&tokyo(15.0), capacity).unwrap();
+        let mut offscreen = super::Offscreen::new(&tokyo(15.0), capacity).unwrap();
         let started = std::time::Instant::now();
         let mut errors = Vec::new();
         loop {
             let report = offscreen.frame();
-            offscreen.map.take_warnings();
             for event in offscreen.map.take_events() {
                 if let orb_runtime::MapEvent::Error { message } = event {
                     errors.push(message);
@@ -1365,7 +1319,7 @@ mod tests {
             let mut warnings = Vec::new();
             loop {
                 let report = offscreen.frame();
-                warnings.extend(offscreen.map.take_warnings());
+                warnings.extend(super::take_warnings(&mut offscreen.map));
                 if report.idle {
                     return (report, warnings);
                 }
@@ -1384,11 +1338,11 @@ mod tests {
             super::Offscreen::load_with(&options(0.0, 3.0), capacity).unwrap();
         let (_, warnings) = settle(&mut offscreen);
         assert!(warnings.is_empty(), "{warnings:?}");
-        *offscreen.map.camera_mut() = orb_runtime::CameraState::new(
+        offscreen.map.jump_to_state(orb_runtime::CameraState::new(
             orb_crs::Geodetic::new(150.0, 0.0),
             6.0,
             &offscreen.map.projection(),
-        );
+        ));
         let (report, warnings) = settle(&mut offscreen);
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -1449,26 +1403,30 @@ mod tests {
         offscreen.map = super::Map::new(services, super::camera(&tokyo(15.0)));
         offscreen.renderer = None;
         super::load_style(&mut offscreen.map, &tokyo(15.0)).unwrap();
-        let report = settle(&mut offscreen);
-        assert!(report.idle);
-        assert!(
-            offscreen
-                .map
-                .take_events()
-                .contains(&orb_runtime::MapEvent::Idle)
+        let started = std::time::Instant::now();
+        let mut events = Vec::new();
+        let mut was_idle = false;
+        loop {
+            let report = offscreen.frame();
+            events.extend(offscreen.map.take_events());
+            if report.idle && was_idle {
+                break;
+            }
+            was_idle = report.idle;
+            assert!(started.elapsed().as_secs() < 60, "tiles did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| **e == orb_runtime::MapEvent::Idle)
+                .count(),
+            1
         );
-        let mut camera = super::Camera::new(
-            *offscreen.map.camera(),
-            offscreen.map.surface(),
-            offscreen.viewport,
-        );
-        let mut input = super::Interaction::default();
         let before = wakes.load(Ordering::SeqCst);
         let started = std::time::Instant::now();
-        let mut now = 0.0;
         while started.elapsed() < std::time::Duration::from_secs(2) {
-            now += 16.0;
-            assert!(!input.frame(&mut camera, now) && !camera.frame(now));
+            assert!(!offscreen.map.is_moving());
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
         assert_eq!(
@@ -1476,7 +1434,6 @@ mod tests {
             before,
             "no wake-ups while idle"
         );
-        assert!(camera.take_events().is_empty());
         // The next frame, were one drawn, is still idle and reports nothing.
         assert!(offscreen.frame().idle);
         assert!(offscreen.map.take_events().is_empty());
@@ -1556,7 +1513,7 @@ mod tests {
             offscreen.frame();
             offscreen.pixels()
         });
-        assert!(offscreen.map.take_warnings().is_empty());
+        assert!(super::take_warnings(&mut offscreen.map).is_empty());
     }
 
     /// M0 exit criterion 4: a camera-only frame is one dispatch and one
@@ -1633,7 +1590,7 @@ mod tests {
         offscreen.frame();
         offscreen.frame();
         for pitch in [60.0, 80.0, 85.0] {
-            offscreen.map.camera_mut().pitch = pitch;
+            super::move_camera(&mut offscreen.map, |c| c.pitch = pitch);
             let report = offscreen.frame();
             assert_eq!(report.frame.dispatches, 1);
             assert!(!report.frame.bundle_recorded);
@@ -1660,9 +1617,10 @@ mod tests {
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         for (bearing, pitch) in [(31.0, 61.0), (10.0, 40.0)] {
-            let camera = offscreen.map.camera_mut();
-            camera.bearing = bearing;
-            camera.pitch = pitch;
+            super::move_camera(&mut offscreen.map, |c| {
+                c.bearing = bearing;
+                c.pitch = pitch;
+            });
             let report = offscreen.frame();
             assert_eq!(report.frame.dispatches, 1);
             assert!(!report.frame.bundle_recorded);
@@ -1682,9 +1640,7 @@ mod tests {
             assert_eq!(replay.frame.dispatches, 1);
         }
         assert!(
-            !offscreen
-                .map
-                .take_warnings()
+            !super::take_warnings(&mut offscreen.map)
                 .iter()
                 .any(|w| w.contains("fill-extrusion"))
         );
@@ -1724,11 +1680,11 @@ mod tests {
             );
             offscreen.map.set_style_json(&scene).unwrap();
             let projection = offscreen.map.projection();
-            *offscreen.map.camera_mut() = orb_runtime::CameraState::new(
+            offscreen.map.jump_to_state(orb_runtime::CameraState::new(
                 orb_crs::Geodetic::new(-0.00015, -0.00025),
                 19.0,
                 &projection,
-            );
+            ));
             settle(&mut offscreen);
             let pixels = offscreen.pixels();
             let at = (super::Offscreen::HEIGHT as usize / 2 * super::Offscreen::WIDTH as usize
@@ -1816,7 +1772,7 @@ mod tests {
             assert_eq!(report.frame.paints_written, 0);
             assert_eq!(report.frame.placements_written, 0);
             assert_eq!(report.tiles_loading, 0);
-            assert!(offscreen.map.take_warnings().is_empty());
+            assert!(super::take_warnings(&mut offscreen.map).is_empty());
         }
     }
 
@@ -1953,7 +1909,7 @@ mod tests {
             }
         }
         assert!(loaded);
-        let warnings = offscreen.map.take_warnings();
+        let warnings = super::take_warnings(&mut offscreen.map);
         assert!(
             warnings
                 .iter()

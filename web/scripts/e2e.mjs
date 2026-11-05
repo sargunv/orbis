@@ -123,7 +123,7 @@ async function scenario(browser, server, config) {
     const data = (rgb) => ({ ...image, data: new Uint8Array(image.data.map((v, i) => (i % 4 === 3 ? 255 : rgb[i % 4]))) });
     await s.map.addImage("dot", data([255, 255, 0]), { pixelRatio: 1 });
     const drawn = s.drawn();
-    const again = await s.map.addImage("dot", data([0, 0, 0])).then(() => null, (e) => String(e));
+    const again = (() => { try { s.map.addImage("dot", data([0, 0, 0])); return null; } catch (e) { return String(e); } })();
     await drawn;
     return { has: await s.map.hasImage("dot"), again };
   }, solid([0, 0, 0]));
@@ -139,7 +139,7 @@ async function scenario(browser, server, config) {
   assert.deepEqual(pixel(image, CENTER), [255, 0, 255], "the updated pattern");
   const removed = await scenario(async (s) => {
     await s.map.removeImage("dot");
-    const again = await s.map.removeImage("dot").then(() => null, (e) => String(e));
+    const again = (() => { try { s.map.removeImage("dot"); return null; } catch (e) { return String(e); } })();
     const generation = await s.map.edit((tx) => tx.setPaintProperty("box", "fill-pattern", null));
     await s.shows(generation);
     await s.idle();
@@ -189,7 +189,7 @@ async function scenario(browser, server, config) {
   assert.deepEqual(quiet, { rafs: 0, renders: 0 }, "idle draws nothing");
 
   // Errors: an edit of a layer that isn't there fails, and the map keeps its style.
-  const rejected = await scenario((s) => s.map.edit((tx) => tx.setPaintProperty("nope", "fill-color", "#000")).then(() => null, (e) => String(e)));
+  const rejected = await scenario((s) => { try { s.map.edit((tx) => tx.setPaintProperty("nope", "fill-color", "#000")); return null; } catch (e) { return String(e); } });
   assert.ok(rejected, "a bad edit rejects");
   const hit = await scenario((s) => s.map.hitTest(s.map.project([0, 0]))?.layer);
   assert.equal(hit, "box");
@@ -214,23 +214,29 @@ async function edits(browser, server) {
     await idle();
     console.log(`edits: ${name} → generation ${generation}, idle in ${Date.now() - started} ms`);
   }
-  const cost = await page.evaluate((writes) => {
-    const map = globalThis.orbis.core;
-    const write = (i) => JSON.stringify([["setFeatureState", { source: "grid", id: 123 }, { hover: i % 2 === 0 }]]);
-    for (let i = 0; i < 20; i++) { map.edit(write(i)); map.render().free(); }
+  const cost = await page.evaluate(async (writes) => {
+    const { map } = globalThis.orbis;
+    const write = (i) => map.setFeatureState({ source: "grid", id: 123 }, { hover: i % 2 === 0 });
+    // Frames' render times over `writes` frames, each asked for by `poke`.
+    const frames = async (poke) => {
+      let total = 0;
+      for (let i = 0; i < writes; i++) {
+        const drawn = map.once("render");
+        poke(i);
+        total += (await drawn).ms;
+      }
+      return total / writes;
+    };
+    await frames(write);
+    const still = await frames(() => map.camera.jumpTo({}));
+    const written = await frames(write);
     let t = performance.now();
-    for (let i = 0; i < writes; i++) map.render().free();
-    const frames = performance.now() - t;
-    t = performance.now();
-    for (let i = 0; i < writes; i++) { map.edit(write(i)); map.render().free(); }
-    const written = performance.now() - t;
-    t = performance.now();
-    for (let i = 0; i < writes; i++) map.edit(write(i));
+    for (let i = 0; i < writes; i++) write(i);
     const edits = performance.now() - t;
-    return { frame: frames / writes, write: (written - frames) / writes, edit: edits / writes };
+    return { still, written, edit: edits / writes };
   }, writes);
-  console.log(`edits: feature-state write ${cost.write.toFixed(4)} ms ` +
-    `(edit call ${cost.edit.toFixed(4)} ms; frame ${cost.frame.toFixed(3)} ms; ${writes} writes)`);
+  console.log(`edits: feature-state write: edit call ${cost.edit.toFixed(4)} ms; frame with a write ` +
+    `${cost.written.toFixed(3)} ms, without ${cost.still.toFixed(3)} ms (${writes} frames each)`);
   assert.deepEqual(errors, []);
   await page.close();
 }

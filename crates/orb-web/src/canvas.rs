@@ -123,12 +123,14 @@ pub(crate) struct Compat {
 }
 
 impl Canvas {
-    /// A device drawing into `canvas` (an `HTMLCanvasElement` or a
-    /// transferred `OffscreenCanvas`) of `size` physical pixels.
-    pub(crate) async fn new(canvas: JsValue, size: (u32, u32)) -> Result<Self, String> {
+    /// A device drawing into `canvas` (an `HTMLCanvasElement` or an
+    /// `OffscreenCanvas`) of `size` physical pixels, which wakes map `map`
+    /// when it's lost (Compat: the page hears `webglcontextlost` itself).
+    #[cfg_attr(not(feature = "modern"), allow(unused_variables))]
+    pub(crate) async fn new(canvas: JsValue, size: (u32, u32), map: u32) -> Result<Self, String> {
         let mut errors = Vec::new();
         #[cfg(feature = "modern")]
-        match Modern::new(&canvas, size).await {
+        match Modern::new(&canvas, size, map).await {
             Ok(modern) => return Ok(Self::Modern(Box::new(modern))),
             Err(e) => errors.push(e),
         }
@@ -276,7 +278,7 @@ impl Canvas {
 
 #[cfg(feature = "modern")]
 impl Modern {
-    async fn new(canvas: &JsValue, (width, height): (u32, u32)) -> Result<Self, String> {
+    async fn new(canvas: &JsValue, (width, height): (u32, u32), map: u32) -> Result<Self, String> {
         use orb_hal_wgpu::from_texture_format;
         use wasm_bindgen::JsCast;
 
@@ -307,7 +309,7 @@ impl Modern {
         device.set_device_lost_callback(move |_, _| {
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
             // The next frame sees the loss and the host recovers.
-            crate::wake();
+            crate::wake(map);
         });
         let caps = surface.get_capabilities(&adapter);
         let surface_format = caps

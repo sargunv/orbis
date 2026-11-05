@@ -1,9 +1,10 @@
-//! The runtime (plan §5.4, §7): a [`Map`] owns a style, a camera and the
-//! tiles they need, runs tile jobs on the host's executor, and draws frames
+//! The runtime (plan §5.4, §7): a [`Map`] owns a style, the camera and its
+//! gestures, and the tiles they need, runs tile jobs on the host's executor, and draws frames
 //! with `orb-render`.
 
 #![forbid(unsafe_code)]
 
+mod camera;
 mod edit;
 mod events;
 mod features;
@@ -53,7 +54,11 @@ pub use jobs::{
 };
 pub use loader::{LoadDone, TileLoader, TileLocation};
 pub use map::{FrameReport, GridTile, Images, JobCounts, Map, Memory, RenderMode, Services};
-pub use orb_camera::{CameraState, View, Viewport};
+pub use orb_camera::{
+    AnimationId, Bounds, CameraEvent, CameraState, CameraTarget, Constraints, EaseOptions,
+    FitOptions, FlyOptions, View, Viewport,
+};
+pub use orb_interact::{Button, Feel, Input};
 pub use orb_layout::fill::Bend;
 pub use orb_render::Renderer;
 pub use orb_render::{

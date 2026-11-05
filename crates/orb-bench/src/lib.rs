@@ -345,7 +345,7 @@ pub async fn run(
         let started = clock::now();
         let mut renderer = renderer.borrow_mut();
         let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
-        let report = map.render(gpu, renderer, target, viewport, settings.ratio);
+        let report = map.render(gpu, renderer, target, viewport, settings.ratio, 0.0);
         (report, started, clock::now() - started)
     };
 
@@ -362,7 +362,7 @@ pub async fn run(
         };
         let map = match &mut map {
             Some(map) => {
-                *map.camera_mut() = camera;
+                map.jump_to_state(camera);
                 map
             }
             None => map.insert(new_map(camera)?),
@@ -482,6 +482,18 @@ pub(crate) fn web_mercator() -> orb_crs::Projection {
         .projection()
 }
 
+/// The warnings and errors since the last frame.
+pub(crate) fn take_warnings(map: &mut Map) -> Vec<String> {
+    map.take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            orb_runtime::MapEvent::Warning { message }
+            | orb_runtime::MapEvent::Error { message } => Some(message),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Draws until the map is idle, then once more.
 pub(crate) async fn settle(
     gpu: &mut TimedGpu,
@@ -492,7 +504,7 @@ pub(crate) async fn settle(
     let started = clock::now();
     loop {
         let report = render(gpu, map);
-        warnings.extend(map.take_warnings());
+        warnings.extend(take_warnings(map));
         gpu.take_frames().await;
         if report.idle {
             render(gpu, map);

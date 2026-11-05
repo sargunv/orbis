@@ -3,8 +3,6 @@
 export function expose(map) {
   globalThis.orbis = {
     map,
-    // The wasm map in main-thread mode, for benches.
-    core: map.core,
     edit: (build) => map.edit(build),
     setFeatureState: (feature, state) => map.setFeatureState(feature, state),
     removeFeatureState: (feature, key) => map.removeFeatureState(feature, key),

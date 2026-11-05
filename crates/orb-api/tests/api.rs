@@ -2,6 +2,8 @@
 //! frame, a query, an edit, a style image, camera moves, a gesture and
 //! idle, into a texture target.
 
+use std::time::Duration;
+
 use orb_api::{
     Button, CameraTarget, EaseOptions, Error, Event, Input, Map, MapEvent, MapOptions, Modifiers,
     PointerKind, Runtime, RuntimeOptions, StyleImage, Target,
@@ -34,24 +36,25 @@ const STYLE: &str = r##"{
 
 const SIZE: u32 = 64;
 
+/// Milliseconds on the test's clock, which frames and input share.
+fn now() -> f64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+        * 1000.0
+}
+
 fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     let i = ((y * SIZE + x) * 4) as usize;
     pixels[i..i + 4].try_into().unwrap()
 }
 
-/// Draws frames until one is idle and the map needs no more, and returns
-/// the events. A map waiting only for pipelines to compile needs no frame
-/// until one compiles and wakes it, so that is no idle frame yet.
+/// Draws until the map is idle, and returns the events.
 fn settle(map: &mut Map, target: &mut Target) -> Vec<Event> {
-    let started = std::time::Instant::now();
-    let mut idle = false;
-    while !idle || map.needs_frame() {
-        if map.needs_frame() {
-            idle = map.render(target).expect("render").is_some_and(|r| r.idle);
-        }
-        assert!(started.elapsed().as_secs() < 30, "the map never idled");
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
+    map.render_until_idle(target, Duration::from_secs(30))
+        .expect("the map idles");
     std::iter::from_fn(|| map.poll_event()).collect()
 }
 
@@ -70,7 +73,7 @@ fn style_frame_query_edit_gesture_idle() {
             _ => None,
         })
         .collect();
-    assert!(matches!(maps[0], MapEvent::StyleLoad { .. }), "{maps:?}");
+    assert!(matches!(maps[0], MapEvent::StyleLoad), "{maps:?}");
     assert!(maps.contains(&&MapEvent::Load), "{maps:?}");
     assert_eq!(maps.last(), Some(&&MapEvent::Idle), "{maps:?}");
     assert!((map.zoom() - 0.0).abs() < 1e-9, "the style's camera");
@@ -110,12 +113,10 @@ fn style_frame_query_edit_gesture_idle() {
         .edit(r##"[["setPaintProperty", "box", "fill-color", "#00ff00"]]"##)
         .expect("edit");
     assert!(map.needs_frame());
-    let mut shown = 0;
-    while map.needs_frame() {
-        let report = map.render(&mut target).unwrap().unwrap();
-        shown = shown.max(report.generation);
-    }
-    assert!(shown >= generation);
+    let report = map
+        .render_until_idle(&mut target, Duration::from_secs(30))
+        .unwrap();
+    assert!(report.generation >= generation);
     let pixels = target.read_pixels().unwrap();
     assert_eq!(pixel(&pixels, SIZE / 2, SIZE / 2), [0, 255, 0, 255]);
 
@@ -184,26 +185,39 @@ fn style_frame_query_edit_gesture_idle() {
     // A drag moves the camera (and flings it: the moves arrive at once).
     let before = map.camera().target;
     let at = |x| glam::DVec2::new(x, 32.0);
-    map.input(Input::PointerDown {
-        id: 1,
-        kind: PointerKind::Mouse,
-        button: Button::Primary,
-        position: at(20.0),
-        modifiers: Modifiers::default(),
-    });
-    for x in [24.0, 30.0, 40.0] {
-        map.input(Input::PointerMove {
+    map.input(
+        Input::PointerDown {
             id: 1,
-            position: at(x),
-        });
+            kind: PointerKind::Mouse,
+            button: Button::Primary,
+            position: at(20.0),
+            modifiers: Modifiers::default(),
+        },
+        now(),
+    );
+    for x in [24.0, 30.0, 40.0] {
+        map.input(
+            Input::PointerMove {
+                id: 1,
+                position: at(x),
+            },
+            now(),
+        );
     }
-    map.input(Input::PointerUp {
-        id: 1,
-        position: at(40.0),
-    });
+    map.input(
+        Input::PointerUp {
+            id: 1,
+            position: at(40.0),
+        },
+        now(),
+    );
     let events = settle(&mut map, &mut target);
     assert!((map.camera().target.lon - before.lon).abs() > 1.0);
-    assert!(events.iter().any(|e| matches!(e, Event::Camera(_))));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Map(MapEvent::Camera(_))))
+    );
 
     // A click is reported, and an idle map draws nothing.
     for input in [
@@ -219,20 +233,58 @@ fn style_frame_query_edit_gesture_idle() {
             position: at(32.0),
         },
     ] {
-        map.input(input);
+        map.input(input, now());
     }
     let events = settle(&mut map, &mut target);
     assert!(
         events.iter().any(|e| matches!(
             e,
-            Event::Click {
+            Event::Map(MapEvent::Click {
                 button: Button::Primary,
                 ..
-            }
+            })
         )),
         "{events:?}"
     );
     assert!(!map.needs_frame());
+}
+
+/// An animation's frames aren't idle: the map is idle once, at the frame
+/// it arrives on, and draws nothing after.
+#[test]
+fn idle_comes_once_after_an_ease() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(STYLE).expect("style");
+    settle(&mut map, &mut target);
+    map.ease_to(
+        &CameraTarget {
+            zoom: Some(1.0),
+            ..CameraTarget::default()
+        },
+        &EaseOptions {
+            duration: 400.0,
+            ..EaseOptions::default()
+        },
+    );
+    // Frames on a display's 60 Hz clock, whatever the wall clock does.
+    let (mut frames, mut idles, mut time) = (0, 0, 1e6);
+    while map.needs_frame() {
+        let report = map.render(&mut target, time).unwrap().unwrap();
+        frames += 1;
+        time += 1000.0 / 60.0;
+        for event in std::iter::from_fn(|| map.poll_event()) {
+            if event == Event::Map(MapEvent::Idle) {
+                idles += 1;
+                assert!(report.idle, "idle on a frame with work left");
+            }
+        }
+        assert!(frames < 100, "the ease never ended");
+    }
+    assert!((24..=27).contains(&frames), "{frames} frames for 400 ms");
+    assert_eq!(idles, 1);
+    assert!((map.zoom() - 1.0).abs() < 1e-9);
 }
 
 #[test]

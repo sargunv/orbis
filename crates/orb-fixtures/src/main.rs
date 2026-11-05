@@ -314,6 +314,12 @@ impl Harness {
             wake: self.wake.clone(),
         };
         let mut map = Map::new(services, None);
+        // GL JS's transform keeps to the world and the test's pitch limit
+        // as the harness moves it.
+        map.set_constraints(orb_runtime::Constraints {
+            max_pitch: metadata.max_pitch,
+            ..orb_runtime::Constraints::WORLD
+        });
         map.set_antialias_3d(false);
         // GL JS's render tests run with `fadeDuration: 0` unless they say.
         map.set_fade_duration(metadata.fade_duration);
@@ -565,7 +571,14 @@ fn render_native(
     let render = |gpu: &mut dyn orb_hal::Gpu, map: &mut Map| {
         let mut renderer = renderer.borrow_mut();
         let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
-        map.render(gpu, renderer, target, viewport, metadata.pixel_ratio as f32)
+        map.render(
+            gpu,
+            renderer,
+            target,
+            viewport,
+            metadata.pixel_ratio as f32,
+            frame_time(render_started),
+        )
     };
     let mut settle = |map: &mut Map,
                       until: Next,
@@ -574,11 +587,6 @@ fn render_native(
                       frames: &mut u32| {
         let started = Instant::now();
         loop {
-            // GL JS's transform keeps to the world and its pitch limit as
-            // the harness moves it.
-            let camera = map.camera_mut();
-            camera.pitch = camera.pitch.min(metadata.max_pitch);
-            map.constrain_camera(viewport);
             let report = render(gpu, map);
             *frames += 1;
             record_warnings(map, reasons, diagnostics);
@@ -639,9 +647,19 @@ fn render_native(
     Some((image, report))
 }
 
+/// Milliseconds since `started`: frames' time, which nothing in a test
+/// animates by.
+fn frame_time(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
+
 fn record_warnings(map: &mut Map, reasons: &mut BTreeSet<String>, diagnostics: &mut Vec<String>) {
-    for warning in map.take_warnings() {
-        note_warning(warning, reasons, diagnostics);
+    for event in map.take_events() {
+        if let orb_runtime::MapEvent::Warning { message }
+        | orb_runtime::MapEvent::Error { message } = event
+        {
+            note_warning(message, reasons, diagnostics);
+        }
     }
 }
 

@@ -501,9 +501,13 @@ pub struct Map {
     candidates_dropped: u32,
     pub(crate) services: Services,
     videos: crate::video::Videos,
-    camera: CameraState,
-    /// The target stands on the terrain ([`Map::set_center_clamped_to_ground`]).
-    center_clamped: bool,
+    /// The camera's only writer: the app's moves, the style's camera and
+    /// gestures all go through it (decision 0042).
+    pub(crate) camera: orb_camera::Camera,
+    pub(crate) input: orb_interact::Interaction,
+    /// The camera and terrain revisions the last frame saw.
+    pub(crate) camera_seen: u64,
+    pub(crate) terrain_seen: u64,
     /// Terrain tiles hang skirts ([`Map::set_terrain_skirts`]).
     terrain_skirts: bool,
     antialias_3d: bool,
@@ -546,9 +550,6 @@ pub struct Map {
     /// Outstanding relayout and column jobs, per edit generation.
     pub(crate) pending: BTreeMap<u64, u32>,
     pub(crate) counts: JobCounts,
-    /// Take the camera from the first style's `center`, `zoom`, `bearing`
-    /// and `pitch`.
-    camera_from_style: bool,
     clear_color: [f64; 4],
     sender: Sender<Message>,
     receiver: Receiver<Message>,
@@ -572,7 +573,7 @@ pub struct Map {
 impl std::fmt::Debug for Map {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Map")
-            .field("camera", &self.camera)
+            .field("camera", self.camera.state())
             .finish_non_exhaustive()
     }
 }
@@ -718,11 +719,18 @@ impl Map {
     /// is used, as GL JS does when a map is created without one.
     pub fn new(services: Services, camera: Option<CameraState>) -> Self {
         let (sender, receiver) = channel();
-        let camera_from_style = camera.is_none();
-        let camera = camera.unwrap_or_else(|| {
-            let mercator = *Surface::default().projection();
-            CameraState::new(orb_crs::Geodetic::new(0.0, 0.0), 0.0, &mercator)
-        });
+        let surface = Surface::default();
+        let start = CameraState::new(orb_crs::Geodetic::new(0.0, 0.0), 0.0, surface.projection());
+        let viewport = Viewport {
+            width: 512.0,
+            height: 512.0,
+        };
+        let mut store = orb_camera::Camera::new(start, surface.view_surface(), viewport);
+        // A camera given is the app's: the style's doesn't replace it.
+        if let Some(camera) = camera {
+            store.jump_to_state(camera);
+            store.take_events();
+        }
         let born = services.clock.now();
         Self {
             mode: RenderMode::Continuous,
@@ -735,8 +743,11 @@ impl Map {
             candidates_dropped: 0,
             services,
             videos: Default::default(),
-            camera,
-            surface: Surface::default(),
+            camera: store,
+            input: orb_interact::Interaction::default(),
+            camera_seen: 0,
+            terrain_seen: 0,
+            surface,
             lights: None,
             atmosphere: None,
             scene: None,
@@ -747,7 +758,6 @@ impl Map {
             style: None,
             renderer: None,
             retired: Retired::default(),
-            center_clamped: true,
             terrain_skirts: true,
             antialias_3d: true,
             nodes_stale: false,
@@ -757,7 +767,6 @@ impl Map {
             version: 0,
             pending: BTreeMap::new(),
             counts: JobCounts::default(),
-            camera_from_style,
             clear_color: [0.0; 4],
             sender,
             receiver,
@@ -831,14 +840,6 @@ impl Map {
         self.terrain_skirts = skirts;
     }
 
-    /// Whether [`constrain_camera`](Self::constrain_camera) stands the
-    /// camera's target on the terrain (GL JS `centerClampedToGround`, on by
-    /// default). Off, the target keeps the elevation it is given (GL JS
-    /// `setCenterElevation`), and the camera orbits a point in the air.
-    pub fn set_center_clamped_to_ground(&mut self, clamped: bool) {
-        self.center_clamped = clamped;
-    }
-
     /// Enables 4× MSAA for 3D surfaces (the default). Disabling it uses
     /// single-sample rasterization, matching a GL JS map with antialias off.
     pub fn set_antialias_3d(&mut self, enabled: bool) {
@@ -884,7 +885,7 @@ impl Map {
     /// `None` before labels are first placed.
     pub fn semantic_snapshot(&self) -> Option<orb_a11y::Snapshot> {
         let style = self.style.as_ref()?;
-        let target = self.camera.target;
+        let target = self.camera.state().target;
         self.labels.semantic_snapshot(
             style.worker.plan(),
             [target.lon, target.lat],
@@ -899,28 +900,10 @@ impl Map {
         self.labels.shown(self.services.clock.now())
     }
 
-    pub fn camera(&self) -> &CameraState {
-        &self.camera
-    }
-
-    /// The camera, to move it. Moving it means the app owns the camera, so
-    /// a style that arrives later doesn't override it.
-    pub fn camera_mut(&mut self) -> &mut CameraState {
-        self.camera_from_style = false;
-        self.events.wake();
-        &mut self.camera
-    }
-
-    /// Sets the camera, as a host's camera store does each frame it moved;
-    /// a style that arrives later doesn't override it.
-    pub fn set_camera(&mut self, camera: CameraState) {
-        *self.camera_mut() = camera;
-    }
-
     /// The view's style zoom (decision 0022): GL JS's in Web Mercator,
     /// measured at the plane's reference latitude on other planes.
     pub fn zoom(&self) -> f64 {
-        self.camera.zoom(self.surface.projection())
+        self.camera.state().zoom(self.surface.projection())
     }
 
     /// The surface's projection, for camera moves. It changes when a scene
@@ -952,33 +935,12 @@ impl Map {
     pub fn view(&self, viewport: Viewport) -> View {
         match self.elevation() {
             Some(terrain) => View::over(
-                &self.camera,
+                self.camera.state(),
                 viewport,
                 &self.surface.view_surface(),
                 &*terrain,
             ),
-            None => View::new(&self.camera, viewport, &self.surface.view_surface()),
-        }
-    }
-
-    /// Keeps the camera to the world's edge, as GL JS's transform does
-    /// (`getConstrained`), and stands its target on the terrain, as a
-    /// camera store at rest does. Camera stores keep to these themselves;
-    /// hosts that write the camera directly call this, since rendering
-    /// never writes the camera.
-    pub fn constrain_camera(&mut self, viewport: Viewport) {
-        let surface = self.surface.view_surface();
-        self.camera
-            .constrain(&orb_camera::Constraints::WORLD, &surface, viewport);
-        match self.elevation() {
-            Some(terrain) => {
-                if self.center_clamped {
-                    self.camera.settle_on(&*terrain, &surface.projection);
-                }
-                self.camera.keep_above(&*terrain, &surface, viewport);
-            }
-            None if self.center_clamped => self.camera.elevation = 0.0,
-            None => {}
+            None => View::new(self.camera.state(), viewport, &self.surface.view_surface()),
         }
     }
 
@@ -987,18 +949,19 @@ impl Map {
         self.transitions.running()
     }
 
-    /// What the map did since the last call: style and source data, load,
-    /// idle and errors.
+    /// What the map did since the last call, in order: style and source
+    /// data, load, idle, errors, the camera's moves and clicks, then the
+    /// warnings since.
     pub fn take_events(&mut self) -> Vec<MapEvent> {
-        std::mem::take(&mut self.events.queue)
+        let warnings = self.warnings.drain(..);
+        let mut events = std::mem::take(&mut self.events.queue);
+        events.extend(warnings.map(|message| MapEvent::Warning { message }));
+        events
     }
 
-    /// Reports a failed load as a warning and an error event.
+    /// Reports a failed load as an error event.
     pub(crate) fn fail(&mut self, message: String) {
-        self.events.push(MapEvent::Error {
-            message: message.clone(),
-        });
-        self.warnings.push(message);
+        self.events.push(MapEvent::Error { message });
     }
 
     /// Sets the host's backing colour (premultiplied RGBA). Transparent by
@@ -1006,12 +969,6 @@ impl Map {
     /// background so transparent sky does not become black at presentation.
     pub fn set_clear_color(&mut self, color: [f64; 4]) {
         self.clear_color = color;
-    }
-
-    /// Diagnostics collected since the last call: style warnings, failed
-    /// loads.
-    pub fn take_warnings(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.warnings)
     }
 
     /// What the map's jobs and uploads have done so far.
@@ -1181,24 +1138,24 @@ impl Map {
         self.warnings
             .extend(plan.style.warnings.iter().map(ToString::to_string));
         self.warnings.extend(plan.warnings.iter().cloned());
-        let mut style_camera = None;
-        if previous.is_none() && std::mem::take(&mut self.camera_from_style) {
-            if let Some([lon, lat]) = plan.style.center {
-                self.camera.target = orb_crs::Geodetic::new(lon, lat);
-            }
-            if let Some(zoom) = plan.style.zoom {
-                self.camera.set_zoom(self.surface.projection(), zoom);
-            }
-            self.camera.bearing = plan.style.bearing;
-            self.camera.pitch = plan.style.pitch;
-            self.camera.roll = plan.style.roll;
-            style_camera = Some(self.camera);
+        // Until the app or the user moves the camera, it takes the style's.
+        self.camera.set_surface(self.surface.view_surface());
+        if previous.is_none() && !self.camera.modified() {
+            let style = &plan.style;
+            self.camera.jump_to(&orb_camera::CameraTarget {
+                center: style
+                    .center
+                    .map(|[lon, lat]| orb_crs::Geodetic::new(lon, lat)),
+                zoom: style.zoom,
+                bearing: Some(style.bearing),
+                pitch: Some(style.pitch),
+                roll: Some(style.roll),
+                ..Default::default()
+            });
         }
         self.events.wake();
         if previous.is_none() {
-            self.events.push(MapEvent::StyleLoad {
-                camera: style_camera,
-            });
+            self.events.push(MapEvent::StyleLoad);
         }
         self.events.push(MapEvent::StyleData {
             generation: self.version,
@@ -1313,7 +1270,7 @@ impl Map {
                         }),
                     &source.id,
                     plan.image_kind(index).is_some(),
-                    &mut self.warnings,
+                    &mut self.events,
                 ),
             },
             (SourceKind::Image(image), _) => ready_source(
@@ -1323,14 +1280,14 @@ impl Map {
                 )),
                 &source.id,
                 true,
-                &mut self.warnings,
+                &mut self.events,
             ),
             (SourceKind::GeoJson(geojson), _) => ready_source(
                 self.planned(&source.id, true, None)
                     .map(|(tms, warp)| (TileEndpoint::geojson(geojson, tms), warp)),
                 &source.id,
                 false,
-                &mut self.warnings,
+                &mut self.events,
             ),
             _ => unreachable!("plan sources are drawable"),
         }
@@ -1361,10 +1318,13 @@ impl Map {
         self.surface.plan(&tms, image).map(|plan| (tms, plan))
     }
 
-    /// Draws a frame into `target` with `renderer`: applies arrived data,
-    /// loads what the view needs and renders. A renderer the map hasn't
-    /// drawn with before (one on a new device, say) gets the map's tiles
-    /// laid out again; the map holds tiles of one renderer at a time.
+    /// Draws the frame shown at `frame_time` (the host's frame timestamp,
+    /// on the clock its input times use, in milliseconds) into `target`
+    /// with `renderer`: applies arrived data, takes the style's camera if
+    /// nothing moved it, advances gestures and animations to it, loads what
+    /// the view needs and renders. A renderer the map hasn't drawn with
+    /// before (one on a new device, say) gets the map's tiles laid out
+    /// again; the map holds tiles of one renderer at a time.
     pub fn render(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1372,6 +1332,7 @@ impl Map {
         target: TextureId,
         viewport: Viewport,
         pixel_ratio: f32,
+        frame_time: f64,
     ) -> FrameReport {
         if self.renderer != Some(renderer.id()) {
             if self.renderer.is_some() {
@@ -1395,6 +1356,8 @@ impl Map {
         self.start_sprites(gpu, pixel_ratio);
         self.sync_nodes(gpu, renderer);
         self.apply_videos(gpu, renderer);
+        // The camera moves for this frame on what has arrived.
+        let moving = self.advance_camera(viewport, frame_time);
 
         // Tiles' patches are on the low-zoom surface the style draws on.
         let plane = self.surface.globe().and_then(|g| g.plane);
@@ -1417,7 +1380,7 @@ impl Map {
         let globe = view
             .globe()
             .filter(|g| g.plane.is_none())
-            .map(|g| crate::lights::globe_sky(g, &view, &self.camera, lights, zoom));
+            .map(|g| crate::lights::globe_sky(g, &view, self.camera.state(), lights, zoom));
         renderer.set_atmosphere(
             gpu,
             self.atmosphere
@@ -1443,8 +1406,8 @@ impl Map {
                 horizon_normal: horizon_normal.as_vec2().to_array(),
                 height: viewport.height as f32,
                 fog_range: [fog_near as f32, fog_far as f32],
-                fog_opacity: fog_blend_opacity(self.camera.pitch),
-                ray_inverse: crate::lights::ray_inverse(&view, self.camera.target),
+                fog_opacity: fog_blend_opacity(self.camera.state().pitch),
+                ray_inverse: crate::lights::ray_inverse(&view, self.camera.state().target),
                 star_rotation: crate::lights::star_rotation(lights),
                 globe,
             },
@@ -1478,7 +1441,7 @@ impl Map {
                 gpu,
                 renderer,
                 (style, overlay.as_ref().unwrap_or(worker.plan())),
-                (zoom, self.camera.bearing),
+                (zoom, self.camera.state().bearing),
                 crossfade,
                 images.atlas.as_mut().expect("initialized"),
                 self.lights.as_ref(),
@@ -1540,7 +1503,7 @@ impl Map {
                 picking.layers = Arc::new(crate::query::HitLayers::of(style.worker.plan()));
                 picking.layers_version = Some(self.version);
             }
-            picking.drew(view.clone(), self.camera, drawn, report.generation);
+            picking.drew(view.clone(), *self.camera.state(), drawn, report.generation);
         }
         report.loaded = self.style.as_ref().is_some_and(|s| {
             s.sprites_loading == 0
@@ -1584,16 +1547,20 @@ impl Map {
             world_per_px: view.world_per_px() as f32,
             pixel_ratio,
             zoom,
-            bearing: self.camera.bearing.to_radians() as f32,
+            bearing: self.camera.state().bearing.to_radians() as f32,
             extrusion_scale: self.extrusion_scale() as f32,
             ground_horizon: view.ground_horizon() as f32,
             symbol_fade_change: self.labels.fade_change(now),
             time: (now - self.born) as f32,
-            pitch: self.camera.pitch.to_radians() as f32,
-            roll: self.camera.roll.to_radians() as f32,
+            pitch: self.camera.state().pitch.to_radians() as f32,
+            roll: self.camera.state().roll.to_radians() as f32,
             align: match globe {
                 Some(_) => [0.0; 2],
-                None => pixel_alignment(&view, self.surface.projection(), self.camera.bearing),
+                None => pixel_alignment(
+                    &view,
+                    self.surface.projection(),
+                    self.camera.state().bearing,
+                ),
             },
             terrain: self.frame_terrain,
             lights: self
@@ -1604,8 +1571,8 @@ impl Map {
                     crate::lights::frame_lights(
                         lights,
                         zoom,
-                        self.camera.bearing,
-                        self.camera.target,
+                        self.camera.state().bearing,
+                        self.camera.state().target,
                     )
                 }),
             lod: view
@@ -1625,7 +1592,11 @@ impl Map {
         report.compiling = report.idle && report.frame.waited;
         report.loaded &= !report.frame.waited;
         report.idle &= !report.frame.waited;
-        self.events.frame(report.loaded, report.idle);
+        // Idle once the camera rests too, and once per rest.
+        let held = self.camera.is_held() || self.input.is_active();
+        self.events
+            .frame(report.loaded, report.idle && !moving && !held);
+        report.idle &= !moving;
         self.globe_warps.end_frame();
         report.scene = renderer.stats();
         report.memory = self.memory(renderer);
@@ -1636,10 +1607,7 @@ impl Map {
                 "{dropped} chunks are not drawn: the scene's candidate or compacted-index \
                  memory is full"
             );
-            self.events.push(MapEvent::Error {
-                message: message.clone(),
-            });
-            self.warnings.push(message);
+            self.events.push(MapEvent::Error { message });
         }
         self.candidates_dropped = dropped;
         report
@@ -1833,7 +1801,7 @@ impl Map {
     fn extrusion_scale(&self) -> f64 {
         self.surface
             .projection()
-            .style_height_scale(self.camera.target)
+            .style_height_scale(self.camera.state().target)
     }
 
     /// Sends a tile job for source `index` of the current plan.
@@ -1970,8 +1938,8 @@ impl Map {
             view,
             view.camera_world(),
             self.surface.period(),
-            &self.camera,
-            self.camera.zoom(self.surface.projection()),
+            self.camera.state(),
+            self.camera.state().zoom(self.surface.projection()),
             extrusion_scale,
             now,
         );
@@ -2057,7 +2025,7 @@ impl Map {
             // A source only the terrain reads.
             return;
         }
-        let zoom = self.camera.zoom(self.surface.projection());
+        let zoom = self.camera.state().zoom(self.surface.projection());
         let plan = style.worker.plan();
         // Symbol layout needs the sprites' metadata, so a source with symbol
         // layers waits for them (GL JS's worker awaits `getImages` alike).
@@ -2285,7 +2253,7 @@ impl Map {
                 let at = Placement {
                     extent,
                     period,
-                    zoom: self.camera.zoom(self.surface.projection()),
+                    zoom: self.camera.state().zoom(self.surface.projection()),
                     frame,
                     series: series.as_deref(),
                     globe,
@@ -2503,7 +2471,7 @@ impl Map {
             }
         }
         let paint = terrain.page.map(|page| {
-            let zoom = self.camera.zoom(self.surface.projection());
+            let zoom = self.camera.state().zoom(self.surface.projection());
             let height_scale = view.height_scale();
             // GL JS's `getSkirtLength`: a fifth of a tile's width at the
             // camera's zoom, in metres at the equator.
@@ -2736,7 +2704,7 @@ impl Map {
             .collect();
         let worker = Arc::clone(&style.worker);
         let plan = worker.plan();
-        let bearing = self.camera.bearing;
+        let bearing = self.camera.state().bearing;
         let drape = &mut style.drape;
         if drape.generation != Some(layout.generation) {
             // A new atlas, or one whose slots all draw again.
@@ -2870,7 +2838,7 @@ impl Map {
         let Some(tile) = style.background else {
             return;
         };
-        let zoom = self.camera.zoom(self.surface.projection());
+        let zoom = self.camera.state().zoom(self.surface.projection());
         let tms = self.surface.tms();
         let cover = match view.low_plane() {
             Some(low) => low.cover_warped(tms, TILE_PX, 24, |tile| {
@@ -3017,10 +2985,7 @@ impl Map {
                         match result {
                             Err(e) => {
                                 let message = format!("sprite: {e}");
-                                self.events.push(MapEvent::Error {
-                                    message: message.clone(),
-                                });
-                                self.warnings.push(message);
+                                self.events.push(MapEvent::Error { message });
                             }
                             Ok(sprites) => {
                                 let mut atlas =
@@ -3096,12 +3061,7 @@ impl Map {
                             .map(|endpoint| (endpoint, warp)),
                     };
                     let image = plan.image_kind(index).is_some();
-                    style.sources[index] =
-                        ready_source(endpoint, &def.id, image, &mut self.warnings);
-                    if matches!(style.sources[index], SourceState::Failed) {
-                        let message = self.warnings.last().cloned().unwrap_or_default();
-                        self.events.push(MapEvent::Error { message });
-                    }
+                    style.sources[index] = ready_source(endpoint, &def.id, image, &mut self.events);
                     self.events.sources.insert(index);
                     // Color-relief ramps wait for their source's encoding.
                     style.painted = None;
@@ -3379,10 +3339,7 @@ impl Map {
             Ok(build) => build,
             Err(e) => {
                 let message = format!("tile {tile:?}: {e}");
-                self.events.push(MapEvent::Error {
-                    message: message.clone(),
-                });
-                self.warnings.push(message);
+                self.events.push(MapEvent::Error { message });
                 pyramid.insert_failed(tile, self.services.clock.now());
                 return None;
             }
@@ -3527,10 +3484,7 @@ impl Map {
                         "tile {tile:?} doesn't fit in scene memory with the tiles in view; \
                          a coarser tile stands in"
                     );
-                    self.events.push(MapEvent::Error {
-                        message: message.clone(),
-                    });
-                    self.warnings.push(message);
+                    self.events.push(MapEvent::Error { message });
                     pyramid.insert_missing(tile);
                 }
             }
@@ -3646,10 +3600,7 @@ impl Map {
                 "tile {tile:?} doesn't fit in scene memory with the tiles in view; \
                  a coarser tile stands in"
             );
-            self.events.push(MapEvent::Error {
-                message: message.clone(),
-            });
-            self.warnings.push(message);
+            self.events.push(MapEvent::Error { message });
             pyramid.insert_missing(tile);
             return None;
         };
@@ -3755,7 +3706,7 @@ fn ready_source(
     endpoint: Result<(TileEndpoint, Plan), String>,
     id: &str,
     image: bool,
-    warnings: &mut Vec<String>,
+    events: &mut crate::events::EventQueue,
 ) -> SourceState {
     match endpoint {
         Ok((endpoint, plan)) => SourceState::Ready {
@@ -3777,7 +3728,9 @@ fn ready_source(
             loading: 0,
         },
         Err(e) => {
-            warnings.push(format!("source {id}: {e}"));
+            events.push(MapEvent::Error {
+                message: format!("source {id}: {e}"),
+            });
             SourceState::Failed
         }
     }
@@ -4930,8 +4883,9 @@ mod tests {
             for delta in [-0.5; 6].into_iter().chain([0.5; 6]) {
                 let zoom = map.zoom() + delta;
                 let surface = map.surface();
-                map.camera_mut()
-                    .zoom_around(&surface, viewport, center, zoom);
+                let mut camera = *map.camera();
+                camera.zoom_around(&surface, viewport, center, zoom);
+                map.jump_to_state(camera);
                 let fresh = CameraState {
                     bearing,
                     pitch,
@@ -5171,7 +5125,7 @@ mod video_tests {
         let centre = |map: &mut Map, gpu: &mut WgpuGpu, renderer: &mut Renderer| {
             let mut idle = false;
             for _ in 0..200 {
-                idle = map.render(gpu, renderer, target, viewport, 1.0).idle;
+                idle = map.render(gpu, renderer, target, viewport, 1.0, 0.0).idle;
                 if idle {
                     break;
                 }
@@ -5184,7 +5138,7 @@ mod video_tests {
         // Without a frame, the tile loads; the host is asked to play.
         for _ in 0..3 {
             assert!(
-                !map.render(&mut gpu, &mut renderer, target, viewport, 1.0)
+                !map.render(&mut gpu, &mut renderer, target, viewport, 1.0, 0.0)
                     .idle
             );
         }

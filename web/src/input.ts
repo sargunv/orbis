@@ -1,14 +1,17 @@
-// DOM input to the ui role's gestures (orb-interact): pointer events for
+// DOM input to the map's gestures (orb-interact): pointer events for
 // mouse, pen and touch, wheel, keys and focus. Each call carries the
-// event's timestamp, which inertia and double taps measure.
+// event's timestamp, which inertia and double taps measure, on the clock
+// frames' timestamps use.
 
-import type { UiRole } from "../pkg/core.js";
+import type { Core } from "./hosts.ts";
 
 const modifiers = (e: KeyboardEvent | MouseEvent) =>
   (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
 
-/** Feeds `canvas`'s input to `ui`; `changed` asks for a frame. Returns a detach function. */
-export function attachInput(canvas: HTMLCanvasElement, ui: UiRole, changed: () => void): () => void {
+/** Feeds `canvas`'s input to the map `core()` gives, while it gives one
+ * (not while the map recovers its GPU); `changed` asks for a frame.
+ * Returns a detach function. */
+export function attachInput(canvas: HTMLCanvasElement, core: () => Core | undefined, changed: () => void): () => void {
   canvas.tabIndex = 0;
   canvas.style.touchAction = "none";
   // Where the canvas is while pointers are captured: `offsetX` would lay
@@ -24,7 +27,8 @@ export function attachInput(canvas: HTMLCanvasElement, ui: UiRole, changed: () =
     canvas.focus({ preventScroll: true });
     origin = null;
     const [x, y] = at(e);
-    if (ui.pointerDown(e.pointerId, e.pointerType, e.button, x, y, modifiers(e), e.timeStamp)) {
+    const ui = core();
+    if (ui?.pointerDown(e.pointerId, e.pointerType, e.button, x, y, modifiers(e), e.timeStamp)) {
       canvas.setPointerCapture(e.pointerId);
       captured++;
       changed();
@@ -32,32 +36,32 @@ export function attachInput(canvas: HTMLCanvasElement, ui: UiRole, changed: () =
   };
   const move = (e: PointerEvent) => {
     const [x, y] = at(e);
-    if (ui.pointerMove(e.pointerId, x, y, e.timeStamp)) changed();
+    if (core()?.pointerMove(e.pointerId, x, y, e.timeStamp)) changed();
   };
   const up = (e: PointerEvent) => {
     const [x, y] = at(e);
-    if (ui.pointerUp(e.pointerId, x, y, e.timeStamp)) changed();
+    if (core()?.pointerUp(e.pointerId, x, y, e.timeStamp)) changed();
   };
   const lost = () => {
     captured = Math.max(0, captured - 1);
     origin = null;
   };
   const cancel = (e: PointerEvent) => {
-    if (ui.pointerCancel(e.pointerId, e.timeStamp)) changed();
+    if (core()?.pointerCancel(e.pointerId, e.timeStamp)) changed();
   };
   const wheel = (e: WheelEvent) => {
-    if (ui.wheel(e.offsetX, e.offsetY, e.deltaX, e.deltaY, e.deltaMode, modifiers(e), e.timeStamp)) {
+    if (core()?.wheel(e.offsetX, e.offsetY, e.deltaX, e.deltaY, e.deltaMode, modifiers(e), e.timeStamp)) {
       e.preventDefault();
       changed();
     }
   };
   const key = (e: KeyboardEvent) => {
-    if (ui.key(e.key, modifiers(e), e.timeStamp)) {
+    if (core()?.key(e.key, modifiers(e), e.timeStamp)) {
       e.preventDefault();
       changed();
     }
   };
-  const blur = (e: FocusEvent) => { ui.blur(e.timeStamp); changed(); };
+  const blur = (e: FocusEvent) => { core()?.blur(e.timeStamp); changed(); };
   const menu = (e: Event) => e.preventDefault();
   const listeners: [string, EventListener, AddEventListenerOptions?][] = [
     ["pointerdown", down as EventListener],

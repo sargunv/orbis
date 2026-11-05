@@ -18,7 +18,7 @@ val STYLE = """
 """.trimIndent()
 
 fun main() {
-    check(OrbRuntime.abiVersion() == 3u)
+    check(OrbRuntime.abiVersion() == 4u)
     OrbRuntime.create(0u).use { runtime ->
         OrbTarget.createTexture(runtime, 64u, 64u, 1.0).use { target ->
             OrbMap.create(runtime, OrbFeel.Desktop, 0.0, 0.0, 0.0, 0.0).use { map ->
@@ -30,7 +30,7 @@ fun main() {
                 val started = System.nanoTime()
                 val i = (32 * 64 + 32) * 4
                 while (true) {
-                    map.render(target)
+                    map.render(target, 0.0)
                     target.readPixels()
                     val pixels = target.pixels()
                     if ((i until i + 4).map { pixels[it].toInt() and 0xff } == listOf(0, 0, 255, 255)) break

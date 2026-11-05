@@ -127,6 +127,8 @@ async function run(page, config, viewport) {
   await page.goto("about:blank");
   const before = await busy();
   await page.goto(`${server.url}measure.html?${query}`);
+  // measure.html imports measure.js, which sets `window.measure`, after load.
+  await page.waitForFunction(() => window.measure);
   const info = await page.evaluate(async () => {
     const m = await window.measure;
     return { engine: m.engine, loadMs: m.loadMs, timeOrigin: m.timeOrigin };

@@ -56,7 +56,8 @@ const CHANGES: [Change; 4] = [Change::Move, Change::Zoom, Change::Rotate, Change
 struct Running {
     id: AnimationId,
     motion: Motion,
-    started: f64,
+    /// When it started: `None` until the first frame after the call.
+    started: Option<f64>,
     /// Milliseconds in at the last frame.
     elapsed: f64,
     user: bool,
@@ -256,15 +257,25 @@ impl Camera {
         self.write(to);
     }
 
-    /// Animates to `target` (GL JS `easeTo`). `now` is the host clock in
-    /// milliseconds.
+    /// Moves to `state` at once, as [`jump_to`](Self::jump_to) does, for
+    /// hosts that hold exact cameras: fixtures, benches, still output.
+    pub fn jump_to_state(&mut self, state: CameraState) {
+        self.stop();
+        self.modified = true;
+        self.user = false;
+        self.write(state);
+    }
+
+    /// Animates to `target` (GL JS `easeTo`), starting at `start` on the
+    /// host clock in milliseconds, or with `None` at the next
+    /// [`frame`](Self::frame)'s time.
     pub fn ease_to(
         &mut self,
         target: &CameraTarget,
         options: EaseOptions,
-        now: f64,
+        start: Option<f64>,
     ) -> AnimationId {
-        self.ease(target, options, now, false)
+        self.ease(target, options, start, false)
     }
 
     /// [`ease_to`](Self::ease_to) for input handlers: its events say the
@@ -275,24 +286,30 @@ impl Camera {
         options: EaseOptions,
         now: f64,
     ) -> AnimationId {
-        self.ease(target, options, now, true)
+        self.ease(target, options, Some(now), true)
     }
 
     fn ease(
         &mut self,
         target: &CameraTarget,
         options: EaseOptions,
-        now: f64,
+        start: Option<f64>,
         user: bool,
     ) -> AnimationId {
         self.stop();
         let (to, around) = self.resolve(target);
         let motion = Motion::ease(self.state, to, around, options, &self.surface.projection);
-        self.start(motion, now, user, self.aims(target))
+        self.start(motion, start, user, self.aims(target))
     }
 
-    /// Flies to `target` along a zoom-out curve (GL JS `flyTo`).
-    pub fn fly_to(&mut self, target: &CameraTarget, options: &FlyOptions, now: f64) -> AnimationId {
+    /// Flies to `target` along a zoom-out curve (GL JS `flyTo`), starting
+    /// as [`ease_to`](Self::ease_to) does.
+    pub fn fly_to(
+        &mut self,
+        target: &CameraTarget,
+        options: &FlyOptions,
+        start: Option<f64>,
+    ) -> AnimationId {
         self.stop();
         let (to, _) = self.resolve(target);
         let motion = Motion::fly(
@@ -303,7 +320,7 @@ impl Camera {
             &self.surface.projection,
             self.viewport,
         );
-        self.start(motion, now, false, self.aims(target))
+        self.start(motion, start, false, self.aims(target))
     }
 
     /// The camera that shows `bounds` (GL JS `cameraForBounds`), for
@@ -343,7 +360,7 @@ impl Camera {
             merge(&mut glide.pan, rest.pan);
         }
         self.stop();
-        self.start(Motion::glide(glide), now, true, false)
+        self.start(Motion::glide(glide), Some(now), true, false)
     }
 
     /// Stops the running animation, if any, as interrupted.
@@ -426,7 +443,7 @@ impl Camera {
             running.motion.aim_elevation(ground, running.elapsed);
         }
         let mut next = self.state;
-        let elapsed = now - running.started;
+        let elapsed = now - *running.started.get_or_insert(now);
         running.elapsed = elapsed;
         running
             .motion
@@ -496,7 +513,7 @@ impl Camera {
         self.reported = self.state;
     }
 
-    fn start(&mut self, motion: Motion, now: f64, user: bool, aims: bool) -> AnimationId {
+    fn start(&mut self, motion: Motion, start: Option<f64>, user: bool, aims: bool) -> AnimationId {
         self.next_id += 1;
         let id = AnimationId(self.next_id);
         self.modified = true;
@@ -504,7 +521,7 @@ impl Camera {
         self.running = Some(Running {
             id,
             motion,
-            started: now,
+            started: start,
             elapsed: 0.0,
             user,
             aims,
@@ -711,7 +728,7 @@ mod tests {
                 duration: 100.0,
                 easing: Easing::Linear,
             },
-            0.0,
+            Some(0.0),
         );
         camera.frame(50.0);
         // Halfway across the seam, not back through 0°.
@@ -735,7 +752,7 @@ mod tests {
                 ..CameraTarget::default()
             },
             EaseOptions::default(),
-            1000.0,
+            Some(1000.0),
         );
         let mut frames = 0;
         let mut t = 1000.0;
@@ -762,6 +779,29 @@ mod tests {
     }
 
     #[test]
+    fn an_ease_without_a_start_starts_at_the_next_frame() {
+        let mut camera = camera();
+        let start = *camera.state();
+        let target = CameraTarget {
+            zoom: Some(11.0),
+            ..CameraTarget::default()
+        };
+        let options = EaseOptions {
+            duration: 100.0,
+            easing: crate::Easing::Linear,
+        };
+        camera.ease_to(&target, options, None);
+        // Called long after the last frame: the first frame is its start.
+        assert!(camera.frame(5000.0));
+        let zoom = camera.state().zoom(&mercator());
+        assert!((zoom - start.zoom(&mercator())).abs() < 1e-9, "{zoom}");
+        assert!(camera.frame(5050.0));
+        let halfway = camera.state().zoom(&mercator());
+        assert!((halfway - (start.zoom(&mercator()) + 11.0) / 2.0).abs() < 1e-9);
+        assert!(!camera.frame(5100.0));
+    }
+
+    #[test]
     fn user_input_interrupts_an_animation() {
         let mut camera = camera();
         let id = camera.fly_to(
@@ -771,7 +811,7 @@ mod tests {
                 ..CameraTarget::default()
             },
             &FlyOptions::default(),
-            0.0,
+            Some(0.0),
         );
         assert!(camera.frame(100.0));
         camera.hold();
@@ -803,7 +843,7 @@ mod tests {
                 ..CameraTarget::default()
             },
             &FlyOptions::default(),
-            0.0,
+            Some(0.0),
         );
         let mut lowest = f64::INFINITY;
         let mut t = 0.0;
@@ -862,7 +902,7 @@ mod tests {
                 ..CameraTarget::default()
             },
             EaseOptions::default(),
-            0.0,
+            Some(0.0),
         );
         let mut t = 0.0;
         while camera.frame(t) {

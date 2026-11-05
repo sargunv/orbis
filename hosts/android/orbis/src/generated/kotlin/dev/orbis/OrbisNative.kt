@@ -174,25 +174,25 @@ internal object OrbisNative {
     external fun orbMapStop(self: Long): Unit
 
     @JvmStatic
-    external fun orbMapPointerDown(self: Long, id: Int, kind: Int, button: Int, x: Double, y: Double, modifiers_shift: Boolean, modifiers_ctrl: Boolean, modifiers_alt: Boolean, modifiers_meta: Boolean): Boolean
+    external fun orbMapPointerDown(self: Long, id: Int, kind: Int, button: Int, x: Double, y: Double, modifiers_shift: Boolean, modifiers_ctrl: Boolean, modifiers_alt: Boolean, modifiers_meta: Boolean, timeMs: Double): Boolean
 
     @JvmStatic
-    external fun orbMapPointerMove(self: Long, id: Int, x: Double, y: Double): Boolean
+    external fun orbMapPointerMove(self: Long, id: Int, x: Double, y: Double, timeMs: Double): Boolean
 
     @JvmStatic
-    external fun orbMapPointerUp(self: Long, id: Int, x: Double, y: Double): Boolean
+    external fun orbMapPointerUp(self: Long, id: Int, x: Double, y: Double, timeMs: Double): Boolean
 
     @JvmStatic
-    external fun orbMapPointerCancel(self: Long, id: Int): Boolean
+    external fun orbMapPointerCancel(self: Long, id: Int, timeMs: Double): Boolean
 
     @JvmStatic
-    external fun orbMapWheel(self: Long, x: Double, y: Double, dx: Double, dy: Double, unit: Int, modifiers_shift: Boolean, modifiers_ctrl: Boolean, modifiers_alt: Boolean, modifiers_meta: Boolean): Boolean
+    external fun orbMapWheel(self: Long, x: Double, y: Double, dx: Double, dy: Double, unit: Int, modifiers_shift: Boolean, modifiers_ctrl: Boolean, modifiers_alt: Boolean, modifiers_meta: Boolean, timeMs: Double): Boolean
 
     @JvmStatic
-    external fun orbMapKey(self: Long, key: Int, modifiers_shift: Boolean, modifiers_ctrl: Boolean, modifiers_alt: Boolean, modifiers_meta: Boolean): Boolean
+    external fun orbMapKey(self: Long, key: Int, modifiers_shift: Boolean, modifiers_ctrl: Boolean, modifiers_alt: Boolean, modifiers_meta: Boolean, timeMs: Double): Boolean
 
     @JvmStatic
-    external fun orbMapBlur(self: Long): Boolean
+    external fun orbMapBlur(self: Long, timeMs: Double): Boolean
 
     @JvmStatic
     external fun orbMapHitTest(self: Long, x: Double, y: Double): Long
@@ -213,13 +213,10 @@ internal object OrbisNative {
     external fun orbMapRenderTile(self: Long, tileMatrixSet: ByteArray, z: Byte, col: Int, row: Int, size: Int, scale: Double): Long
 
     @JvmStatic
-    external fun orbMapRender(self: Long, target: Long): OrbFrame
+    external fun orbMapRender(self: Long, target: Long, frameTimeMs: Double): OrbFrame
 
     @JvmStatic
     external fun orbMapPollEvent(self: Long): Long
-
-    @JvmStatic
-    external fun orbMapTakeWarnings(self: Long): ByteArray
 
     @JvmStatic
     external fun orbRegionEventKind(self: Long): Int

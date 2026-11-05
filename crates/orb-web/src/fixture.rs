@@ -367,6 +367,12 @@ impl FixtureRenderer {
             },
             None,
         );
+        // GL JS's transform keeps to the world and the test's pitch limit
+        // as the harness moves it.
+        map.set_constraints(orb_runtime::Constraints {
+            max_pitch,
+            ..orb_runtime::Constraints::WORLD
+        });
         map.set_antialias_3d(false);
         map.set_plays_video(true);
         let assets = AssetFetch(self.assets_url.clone());
@@ -412,21 +418,17 @@ impl FixtureRenderer {
         let render = |gpu: &mut Owner, map: &mut Map| {
             let mut renderer = renderer.borrow_mut();
             let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu.gpu(), format));
-            map.render(gpu.gpu(), renderer, target, viewport, pixel_ratio)
+            let now = js_sys::Date::now() - started;
+            map.render(gpu.gpu(), renderer, target, viewport, pixel_ratio, now)
         };
         let settle =
             async |map: &mut Map, until: Next, gpu: &mut Owner, output: &mut FixturePixels| {
                 let step = js_sys::Date::now();
                 loop {
-                    // GL JS's transform keeps to the world and its pitch
-                    // limit as the harness moves it.
-                    let camera = map.camera_mut();
-                    camera.pitch = camera.pitch.min(max_pitch);
-                    map.constrain_camera(viewport);
                     let report = render(gpu, map);
                     play_first_frames(map, gpu, &assets)?;
                     output.frames += 1;
-                    output.warnings.extend(map.take_warnings());
+                    output.warnings.extend(warnings(map));
                     let done = match until {
                         Next::Continue => true,
                         Next::Loaded => report.loaded,
@@ -491,10 +493,30 @@ impl FixtureRenderer {
             let report = render(&mut gpu, &mut map);
             output.frames += 1;
             output.tiles_drawn = report.tiles_drawn;
-            output.warnings.extend(map.take_warnings());
+            output.warnings.extend(warnings(&mut map));
         }
         Ok((map, gpu, target, output))
     }
+}
+
+/// Jumps the camera to a changed copy of itself, as GL JS's harness's
+/// setters do.
+fn move_camera(map: &mut Map, change: impl FnOnce(&mut orb_runtime::CameraState)) {
+    let mut camera = *map.camera();
+    change(&mut camera);
+    map.jump_to_state(camera);
+}
+
+/// The warnings and errors since the last call.
+fn warnings(map: &mut Map) -> Vec<String> {
+    map.take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            orb_runtime::MapEvent::Warning { message }
+            | orb_runtime::MapEvent::Error { message } => Some(message),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What the runner does after an operation (as `orb-fixtures`' `Next`).
@@ -532,12 +554,21 @@ fn apply(map: &mut Map, op: &orb_expr::json::Json) -> Result<Next, String> {
         "idle" => return Ok(Next::Idle),
         "setZoom" => {
             let (zoom, projection) = (number(1)?, map.projection());
-            map.camera_mut().set_zoom(&projection, zoom)
+            move_camera(map, |c| c.set_zoom(&projection, zoom));
         }
-        "setBearing" => map.camera_mut().bearing = number(1)?,
-        "setPitch" => map.camera_mut().pitch = number(1)?,
-        "setRoll" => map.camera_mut().roll = number(1)?,
-        "setCenterElevation" => map.camera_mut().elevation = number(1)?,
+        "setBearing" => {
+            let bearing = number(1)?;
+            move_camera(map, |c| c.bearing = bearing);
+        }
+        "setPitch" => {
+            let pitch = number(1)?;
+            move_camera(map, |c| c.pitch = pitch);
+        }
+        "setRoll" => {
+            let roll = number(1)?;
+            move_camera(map, |c| c.roll = roll);
+        }
+        "setCenterElevation" => map.set_center_elevation(number(1)?),
         "setCenterClampedToGround" => {
             let clamped = items
                 .get(1)
@@ -553,7 +584,8 @@ fn apply(map: &mut Map, op: &orb_expr::json::Json) -> Result<Next, String> {
                     .and_then(|n| n.as_f64())
                     .ok_or("expected a number")
             };
-            map.camera_mut().target = orb_crs::Geodetic::new(at(0)?, at(1)?);
+            let target = orb_crs::Geodetic::new(at(0)?, at(1)?);
+            move_camera(map, |c| c.target = target);
         }
         "removeImage" => {
             let name = items

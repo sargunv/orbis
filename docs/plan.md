@@ -202,7 +202,7 @@ LOC are CI-enforced ceilings [inferred]; "From" is the milestone that introduces
 | `orb-hal-gl` | `glow` executor for WebGL2, GLES 3.0, GL 3.3; GL state cache | 5k | M4 |
 | `orb-shaders` | WGSL modules and composer, projection modules, `override` tables, naga build step, reflection | 8k WGSL + 1.5k | M0 |
 | `orb-jobs` | `Executor`, priorities, cancellation, web slicing, native pool, worker adaptor, inline | 3k | M0 |
-| `orb-runtime` | Runtime/Map/Renderer/Target, commands, generations, snapshots, events, idle | 6k | M0 |
+| `orb-runtime` | Runtime/Map/Renderer/Target, commands, generations, snapshots, events, idle; the `Map` owns its camera store and gestures (`orb-camera`, `orb-interact`) and advances them at each frame's timestamp (decision 0042) | 6k | M0 |
 | `orb-a11y` | semantic snapshot; AccessKit adapter | 2k | M2, M10 |
 | `orb-host` (+`-native`, `-web`) | service traits + conformance suites; ureq/image/fontdb natively; fetch/Cache API/`createImageBitmap` on the web | 7k | M0 |
 | `orb-plugin` | per-runtime registries; native plugin ABI | 3k | M1, M12 |
@@ -740,7 +740,7 @@ CRS/TMS and composition are the candidates for spec RFCs with fixtures. An offli
 
 ## 13. Interaction, queries, accessibility
 
-**Interaction (M3).** `orb-interact` turns pointer, touch, wheel and keyboard into camera intents with inertia and **feel profiles** (iOS-like, Android-like, desktop, custom). [built at M3, decision 0021] It drives `orb-camera`'s single-writer store, which holds constraints, `jumpTo`/`easeTo`/`flyTo`, glides and `cameraForBounds` and reports GL JS-style camera events; GL JS's handlers are the reference for each gesture's rates and thresholds. Bounds constraints hold the rotated viewport's extent, where GL JS ignores bearing, so a turned map never shows past them (pitch is ignored, as in GL JS). Independent property animations (removing FFI patch 0015, #4637); closed-form pitch-aware fitting (ffi#764) and horizon-aware visible regions (ffi#622) [verified]; globe-aware panning (versors near poles, GL JS #8154) and terrain constraints from M7. Input-owning hosts drive the camera directly.
+**Interaction (M3).** `orb-interact` turns pointer, touch, wheel and keyboard into camera intents with inertia and **feel profiles** (iOS-like, Android-like, desktop, custom). [built at M3, decision 0021] It drives `orb-camera`'s single-writer store, which holds constraints, `jumpTo`/`easeTo`/`flyTo`, glides and `cameraForBounds` and reports GL JS-style camera events; GL JS's handlers are the reference for each gesture's rates and thresholds. Bounds constraints hold the rotated viewport's extent, where GL JS ignores bearing, so a turned map never shows past them (pitch is ignored, as in GL JS). Independent property animations (removing FFI patch 0015, #4637); closed-form pitch-aware fitting (ffi#764) and horizon-aware visible regions (ffi#622) [verified]; globe-aware panning (versors near poles, GL JS #8154) and terrain constraints from M7. [built, decision 0042] The map owns the store and the recognizers: hosts hand it input with each event's timestamp and draw frames with the display's frame timestamp, on one clock, and the map applies arrived data, advances gestures and animations to that time, then draws. Animations the app starts begin at the next frame.
 
 **Queries.** `hitTest(point)` is synchronous on the hit index and symbol index. `project`/`unproject` are synchronous and exact, on the terrain when there is one. `queryRendered` is async in the tile's owner worker (features) and on the placement lane (symbols), with full properties from `TileFrame` (no whole-tile re-decode on main and no PBF re-encode, both done by GL JS today) [verified]. `querySource` is a column scan with the compiled filter. Queries go through the inverse DataToWorld plan and carry a snapshot generation. 3D picking (M8): CPU ray tests on terrain; an async id-buffer pass for models.
 
@@ -807,7 +807,8 @@ OrbRuntime_create_result rt = OrbRuntime_create();
 OrbMap* map = OrbMap_create(rt.ok);
 OrbMap_load_style_url(map, (DiplomatStringView){ url, strlen(url) });
 OrbTarget_create_metal_layer_result t = OrbTarget_create_metal_layer(rt.ok, (uintptr_t)layer, w, h, scale);
-OrbFrame f = OrbMap_render(map, t.ok);   // per display-link tick while OrbMap_needs_frame(map)
+OrbFrame f = OrbMap_render(map, t.ok, link_time_ms);   // per display-link tick while OrbMap_needs_frame(map)
+OrbMap_pointer_move(map, id, x, y, event_time_ms);   // input carries its event's time, on the display link's clock
 ```
 
 **Bindings:** Rust (`orb-api`, M0); TypeScript over `orb-web` (M0 low-level, M3 package); C (Diplomat's header, static library, pkg-config and CMake config, M3); Kotlin (classes over a generated JNI C shim; Android API 24+, also the desktop JVM, M3); Swift (classes over the C header through a module map, M3). The Kotlin and Swift emitters are `diplomat-swift-kotlin`: Rust, over `diplomat_core`'s HIR, no Orbis names, configured by the caller, with golden and compile-and-run tests, so they can be published or upstreamed. Diplomat's Kotlin backend (JNA: 369 ns per call vs 4.1 ns through JNI, `java.lang.ref.Cleaner` needs API 33) and its missing Swift backend are why (decision 0018). Diplomat's C++, Dart and .NET backends remain available. UniFFI is rejected (RustBuffer serialization on hot paths, weak C/Go/Zig/.NET). The full binding scenario (style, pixels, hit test, query, edit, style images, camera moves, gestures, idle, errors) runs in Rust (`orb-api`'s tests) and through the web package; C, Kotlin and Swift run smoke tests (link, draw a style into a texture, hit test, an error with its message), since the emitters' compile-and-run tests cover every API shape (`cargo xtask bindings --test`).
@@ -839,7 +840,7 @@ const map = await createMap({ container, style: "https://…/style.json",   // o
 map.capabilities;                                // tier, fast paths, declared gaps (+ "capabilities" event)
 map.camera.current; map.project(lngLat); map.unproject(px);   // sync
 await map.camera.flyTo({ center, zoom });        // resolves on arrival or interruption
-await map.edit(tx => tx.setPaint("roads", "line-color", ["get", "color"]));  // resolves at generation g
+map.edit(tx => tx.setPaint("roads", "line-color", ["get", "color"]));  // sync: frames show it from the generation it returns
 const hit = map.hitTest([x, y]);                 // sync
 const full = await map.queryRendered([x, y]);    // async, owner worker
 map.annotations.add({ image, lngLat });          // engine-drawn view annotation (default overlay)

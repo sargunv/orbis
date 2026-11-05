@@ -19,7 +19,7 @@ private let style = """
     """
 
 @Test func smoke() throws {
-    #expect(OrbRuntime.abiVersion() == 3)
+    #expect(OrbRuntime.abiVersion() == 4)
     let runtime = try OrbRuntime.create(jobThreads: 0)
     let target = OrbTarget.createTexture(runtime: runtime, width: 64, height: 64, scale: 1)
     let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
@@ -33,7 +33,7 @@ private let style = """
     let started = Date()
     let i = (32 * 64 + 32) * 4
     while true {
-        _ = try map.render(target: target)
+        _ = try map.render(target: target, frameTimeMs: 0)
         try target.readPixels()
         if Array(target.pixels()[i..<i + 4]) == [0, 0, 255, 255] { break }
         try #require(Date().timeIntervalSince(started) < 30, "the box never showed")

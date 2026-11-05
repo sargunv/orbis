@@ -141,7 +141,8 @@ open class MapView: PlatformView {
         guard let target else { return }
         videos.pump(map)
         do {
-            let frame = try map.render(target: target)
+            // Seconds of uptime, the clock input events' timestamps use.
+            let frame = try map.render(target: target, frameTimeMs: link.targetTimestamp * 1000)
             if frame.drawn {
                 framesDrawn += 1
                 onFrame?(frame)
@@ -182,17 +183,18 @@ open class MapView: PlatformView {
     private func down(_ event: NSEvent, _ button: OrbButton) {
         let p = point(event)
         used(map.pointerDown(
-            id: 0, kind: .mouse, button: button, x: p.x, y: p.y, modifiers: modifiers(event)))
+            id: 0, kind: .mouse, button: button, x: p.x, y: p.y, modifiers: modifiers(event),
+            timeMs: event.timestamp * 1000))
     }
 
     private func moved(_ event: NSEvent) {
         let p = point(event)
-        used(map.pointerMove(id: 0, x: p.x, y: p.y))
+        used(map.pointerMove(id: 0, x: p.x, y: p.y, timeMs: event.timestamp * 1000))
     }
 
     private func up(_ event: NSEvent) {
         let p = point(event)
-        used(map.pointerUp(id: 0, x: p.x, y: p.y))
+        used(map.pointerUp(id: 0, x: p.x, y: p.y, timeMs: event.timestamp * 1000))
     }
 
     override open func mouseDown(with event: NSEvent) { down(event, .primary) }
@@ -211,7 +213,7 @@ open class MapView: PlatformView {
         let unit: OrbWheelUnit = event.hasPreciseScrollingDeltas ? .pixel : .line
         used(map.wheel(
             x: p.x, y: p.y, dx: -event.scrollingDeltaX, dy: -event.scrollingDeltaY,
-            unit: unit, modifiers: modifiers(event)))
+            unit: unit, modifiers: modifiers(event), timeMs: event.timestamp * 1000))
     }
 
     override open func magnify(with event: NSEvent) {
@@ -220,7 +222,8 @@ open class MapView: PlatformView {
         var mods = modifiers(event)
         mods.ctrl = true
         used(map.wheel(
-            x: p.x, y: p.y, dx: 0, dy: -event.magnification * 100, unit: .pixel, modifiers: mods))
+            x: p.x, y: p.y, dx: 0, dy: -event.magnification * 100, unit: .pixel, modifiers: mods,
+            timeMs: event.timestamp * 1000))
     }
 
     override open func keyDown(with event: NSEvent) {
@@ -237,14 +240,14 @@ open class MapView: PlatformView {
             }
         }
         if let key {
-            used(map.key(key: key, modifiers: modifiers(event)))
+            used(map.key(key: key, modifiers: modifiers(event), timeMs: event.timestamp * 1000))
         } else {
             super.keyDown(with: event)
         }
     }
 
     override open func resignFirstResponder() -> Bool {
-        used(map.blur())
+        used(map.blur(timeMs: ProcessInfo.processInfo.systemUptime * 1000))
         return super.resignFirstResponder()
     }
     #else
@@ -266,28 +269,31 @@ open class MapView: PlatformView {
             let p = touch.location(in: self)
             used(map.pointerDown(
                 id: id(touch), kind: .touch, button: .primary, x: p.x, y: p.y,
-                modifiers: Self.noModifiers))
+                modifiers: Self.noModifiers, timeMs: touch.timestamp * 1000))
         }
     }
 
     override open func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
-            let p = touch.location(in: self)
-            used(map.pointerMove(id: id(touch), x: p.x, y: p.y))
+            // The samples coalesced since the last event, each at its time.
+            for sample in event?.coalescedTouches(for: touch) ?? [touch] {
+                let p = sample.location(in: self)
+                used(map.pointerMove(id: id(touch), x: p.x, y: p.y, timeMs: sample.timestamp * 1000))
+            }
         }
     }
 
     override open func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
             let p = touch.location(in: self)
-            used(map.pointerUp(id: id(touch), x: p.x, y: p.y))
+            used(map.pointerUp(id: id(touch), x: p.x, y: p.y, timeMs: touch.timestamp * 1000))
             touchIds[ObjectIdentifier(touch)] = nil
         }
     }
 
     override open func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches {
-            used(map.pointerCancel(id: id(touch)))
+            used(map.pointerCancel(id: id(touch), timeMs: touch.timestamp * 1000))
             touchIds[ObjectIdentifier(touch)] = nil
         }
     }

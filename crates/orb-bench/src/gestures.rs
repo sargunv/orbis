@@ -198,11 +198,11 @@ pub(crate) async fn run(
     };
     // The path's map's renderer: a new map gets a new one.
     let renderer = std::cell::RefCell::new(None);
-    let render = |gpu: &mut TimedGpu, map: &mut Map| -> (FrameReport, Duration) {
+    let render = |gpu: &mut TimedGpu, map: &mut Map, time: f64| -> (FrameReport, Duration) {
         let started = clock::now();
         let mut renderer = renderer.borrow_mut();
         let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
-        let report = map.render(gpu, renderer, target, viewport, settings.ratio);
+        let report = map.render(gpu, renderer, target, viewport, settings.ratio, time);
         (report, clock::now() - started)
     };
     let mut warnings = Vec::new();
@@ -217,11 +217,7 @@ pub(crate) async fn run(
         let start = (path.camera)(settings, 0.0);
         let mut map = new_map(start)?;
         *renderer.borrow_mut() = None;
-        settle(gpu, &mut map, &|g, m| render(g, m).0, &mut warnings).await?;
-        let mut revision = map.elevation_revision();
-        // A flight's camera stands on the terrain, as the demos' do.
-        let mut camera = orb_camera::Camera::new(start, map.surface(), viewport);
-        camera.set_terrain(map.elevation());
+        settle(gpu, &mut map, &|g, m| render(g, m, 0.0).0, &mut warnings).await?;
         let mut legs = if path.flight {
             flight_legs()
         } else {
@@ -235,26 +231,26 @@ pub(crate) async fn run(
         let (mut blinks, mut blink_frames) = (0, 0);
         let (mut rebuilds, mut rows) = (0, 0);
         let started = clock::now();
+        // Frames' times, at 60 Hz.
+        let mut now = 0.0;
         for f in 1.. {
-            let now = (FRAME * f).as_secs_f64() * 1000.0;
+            now = (FRAME * f).as_secs_f64() * 1000.0;
+            // A flight's camera stands on the terrain, as the demos' do.
             if path.flight {
-                if !camera.is_animating() {
+                if !map.is_moving() {
                     let Some((target, options)) = legs.pop() else {
                         break;
                     };
-                    camera.fly_to(&target, &options, now);
+                    map.fly_to(&target, &options);
                 }
-                camera.frame(now);
-                camera.take_events();
-                *map.camera_mut() = *camera.state();
             } else if f as usize > PATH_FRAMES {
                 break;
             } else {
-                *map.camera_mut() = (path.camera)(settings, f64::from(f) / PATH_FRAMES as f64);
+                map.jump_to_state((path.camera)(settings, f64::from(f) / PATH_FRAMES as f64));
             }
             let before = uploaded(gpu);
             let start = clock::now();
-            let (report, time) = render(gpu, &mut map);
+            let (report, time) = render(gpu, &mut map, now);
             match timing {
                 Timing::Timestamps => gpu.throttle().await,
                 Timing::WorkDone => {
@@ -268,10 +264,6 @@ pub(crate) async fn run(
                 gpu.take_frames().await;
             }
             cpu.push(time);
-            if map.elevation_revision() != revision {
-                revision = map.elevation_revision();
-                camera.set_terrain(map.elevation());
-            }
             peak_bytes = peak_bytes.max(uploaded(gpu) - before);
             loading += usize::from(report.tiles_loading > 0);
             rebuilds += usize::from(report.frame.candidates_rebuilt);
@@ -296,15 +288,16 @@ pub(crate) async fn run(
                     labels.entry(name).or_insert(None);
                 }
             }
-            warnings.extend(map.take_warnings());
+            warnings.extend(crate::take_warnings(&mut map));
             let next = started + FRAME * f;
             clock::sleep(next.saturating_sub(clock::now())).await;
         }
         let ended = clock::now();
         loop {
-            let (report, _) = render(gpu, &mut map);
+            now += FRAME.as_secs_f64() * 1000.0;
+            let (report, _) = render(gpu, &mut map, now);
             gpu.take_frames().await;
-            warnings.extend(map.take_warnings());
+            warnings.extend(crate::take_warnings(&mut map));
             if report.idle {
                 break;
             }

@@ -37,7 +37,7 @@ static DiplomatStringView view(const char* text) {
 }
 
 int main(void) {
-    CHECK(OrbRuntime_abi_version() == 3);
+    CHECK(OrbRuntime_abi_version() == 4);
     OrbRuntime_create_result rt = OrbRuntime_create(0);
     CHECK(rt.is_ok);
     OrbTarget* target = OrbTarget_create_texture(rt.ok, SIZE, SIZE, 1.0);
@@ -54,7 +54,7 @@ int main(void) {
     CHECK(OrbMap_set_style_json(map, view(STYLE)).is_ok);
     time_t start = time(NULL);
     for (;;) {
-        CHECK(OrbMap_render(map, target).is_ok);
+        CHECK(OrbMap_render(map, target, 0).is_ok);
         CHECK(OrbTarget_read_pixels(target).is_ok);
         DiplomatU8View pixels = OrbTarget_pixels(target);
         CHECK(pixels.len == SIZE * SIZE * 4);

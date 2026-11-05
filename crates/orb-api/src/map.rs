@@ -1,4 +1,5 @@
-//! A map with its camera store and gestures, driven one frame at a time.
+//! A map, driven one frame at a time: the runtime map with its wake,
+//! still output and the device it draws on.
 
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -8,11 +9,11 @@ use std::time::{Duration, Instant};
 
 use glam::DVec2;
 use orb_camera::{
-    AnimationId, Bounds, Camera, CameraEvent, CameraTarget, EaseOptions, FitOptions, FlyOptions,
+    AnimationId, Bounds, CameraTarget, Constraints, EaseOptions, FitOptions, FlyOptions,
 };
 use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
-use orb_interact::{Button, Feel, Input, InteractEvent, Interaction};
+use orb_interact::{Feel, Input};
 use orb_runtime::{
     CameraState, FrameReport, GridTile, Hit, MapEvent, RenderMode, StyleImage, Transaction,
     VideoRequest, Viewport,
@@ -46,15 +47,6 @@ impl Default for MapOptions {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Map(MapEvent),
-    Camera(CameraEvent),
-    /// A press and release that didn't move the map, in logical pixels.
-    Click {
-        position: DVec2,
-        button: Button,
-    },
-    DoubleClick {
-        position: DVec2,
-    },
     /// A query from [`Map::query_rendered`] finished: a JSON array of
     /// GeoJSON features, topmost first, or why it failed.
     Query {
@@ -91,18 +83,12 @@ pub struct TileRequest {
 }
 type Finished = Arc<Mutex<Vec<(u64, Result<String, String>)>>>;
 
-/// A map: style, camera store, gestures and events. Draw it with
+/// A map: style, camera, gestures and events. Draw it with
 /// [`render`](Self::render) whenever [`needs_frame`](Self::needs_frame).
 pub struct Map {
     shared: Rc<Shared>,
     runtime: Runtime,
     map: orb_runtime::Map,
-    camera: Camera,
-    input: Interaction,
-    /// The camera revision last given to the map.
-    pushed: u64,
-    /// The map's terrain revision the camera stands on.
-    terrain: u64,
     /// Set from any thread when data arrived.
     woken: Arc<AtomicBool>,
     /// Notified with `woken`, for still output to wait on.
@@ -133,7 +119,7 @@ pub struct Map {
 impl std::fmt::Debug for Map {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Map")
-            .field("camera", self.camera.state())
+            .field("camera", self.map.camera())
             .field("generation", &self.map.generation())
             .finish_non_exhaustive()
     }
@@ -181,22 +167,11 @@ impl Map {
             map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
         }
         map.set_clear_color(options.clear_color);
-        let camera = Camera::new(
-            *map.camera(),
-            map.surface(),
-            Viewport {
-                width: 512.0,
-                height: 512.0,
-            },
-        );
+        map.set_feel(options.feel);
         Self {
             shared: runtime.shared.clone(),
             runtime: runtime.clone(),
             map,
-            camera,
-            input: Interaction::new(options.feel),
-            pushed: 0,
-            terrain: 0,
             woken,
             signal,
             offscreen: None,
@@ -225,11 +200,7 @@ impl Map {
     /// camera moves, a gesture or animation runs, or loads and fades are
     /// under way. An idle map needs no frames.
     pub fn needs_frame(&self) -> bool {
-        self.dirty
-            || self.busy
-            || self.woken.load(Ordering::Acquire)
-            || self.camera.is_animating()
-            || self.input.is_active()
+        self.dirty || self.busy || self.woken.load(Ordering::Acquire) || self.map.is_moving()
     }
 
     /// Requests the tiles that failed again now: call it when the network
@@ -368,72 +339,79 @@ impl Map {
 
     /// The camera as it is now (it moves during gestures and animations).
     pub fn camera(&self) -> CameraState {
-        *self.camera.state()
+        *self.map.camera()
     }
 
     /// The view's style zoom on the map's surface (decision 0022).
     pub fn zoom(&self) -> f64 {
-        self.camera.zoom()
+        self.map.zoom()
     }
 
     /// The viewport the camera and gestures use: the last target's, in
     /// logical pixels.
     pub fn viewport(&self) -> Viewport {
-        self.camera.viewport()
+        self.map.viewport()
     }
 
     /// Moves the camera at once, ending any animation.
     pub fn jump_to(&mut self, target: &CameraTarget) {
-        self.camera.jump_to(target);
+        self.map.jump_to(target);
         self.dirty = true;
     }
 
+    /// Animates the camera from the next frame on (GL JS `easeTo`).
     pub fn ease_to(&mut self, target: &CameraTarget, options: &EaseOptions) -> AnimationId {
         self.dirty = true;
-        self.camera.ease_to(target, *options, self.runtime.now())
+        self.map.ease_to(target, *options)
     }
 
+    /// Flies along GL JS's zoom-out curve from the next frame on.
     pub fn fly_to(&mut self, target: &CameraTarget, options: &FlyOptions) -> AnimationId {
         self.dirty = true;
-        self.camera.fly_to(target, options, self.runtime.now())
+        self.map.fly_to(target, options)
     }
 
     /// Whether the camera's target stands on the terrain at rest (GL JS
     /// `centerClampedToGround`, on by default). Off, it keeps the
     /// elevation it is given, and the camera orbits a point in the air.
     pub fn set_center_clamped_to_ground(&mut self, clamped: bool) {
-        self.camera.set_center_clamped_to_ground(clamped);
         self.map.set_center_clamped_to_ground(clamped);
         self.dirty = true;
     }
 
     pub fn center_clamped_to_ground(&self) -> bool {
-        self.camera.center_clamped_to_ground()
+        self.map.center_clamped_to_ground()
     }
 
     /// Puts the target this many metres above sea level at once (GL JS
     /// `setCenterElevation`); while clamped, the terrain takes it back.
     pub fn set_center_elevation(&mut self, elevation: f64) {
-        self.camera.set_center_elevation(elevation);
+        self.map.set_center_elevation(elevation);
         self.dirty = true;
     }
 
     /// The camera that shows `bounds` in the current viewport.
     pub fn camera_for_bounds(&self, bounds: Bounds, options: &FitOptions) -> Option<CameraTarget> {
-        self.camera.camera_for_bounds(bounds, options)
+        self.map.camera_for_bounds(bounds, options)
     }
 
     /// Stops any camera animation where it is.
     pub fn stop(&mut self) {
-        self.camera.stop();
+        self.map.stop();
     }
 
-    /// Hands the map a pointer, wheel or key input, in logical pixels from
-    /// the target's top-left corner. Returns whether the map used it.
-    pub fn input(&mut self, input: Input) -> bool {
-        let used = self
-            .input
-            .handle(&mut self.camera, input, self.runtime.now());
+    /// Zoom and pitch ranges and bounds the camera keeps to.
+    pub fn set_constraints(&mut self, constraints: Constraints) {
+        self.map.set_constraints(constraints);
+        self.dirty = true;
+    }
+
+    /// Hands the map a pointer, wheel or key input at `time`, the event's
+    /// timestamp in milliseconds on the clock frame times use, in logical
+    /// pixels from the target's top-left corner. Returns whether the map
+    /// used it.
+    pub fn input(&mut self, input: Input, time: f64) -> bool {
+        let used = self.map.input(input, time);
         self.dirty |= used;
         used
     }
@@ -471,22 +449,43 @@ impl Map {
     /// Where a point is in the viewport, in logical pixels; `None` when
     /// it's behind the camera.
     pub fn project(&self, point: Geodetic) -> Option<DVec2> {
-        self.camera.project(point)
+        self.map.project(point)
     }
 
     /// The point under a viewport position in logical pixels; `None` above
     /// the horizon.
     pub fn unproject(&self, point: DVec2) -> Option<Geodetic> {
-        self.camera.unproject(point)
+        self.map.unproject(point)
     }
 
-    /// Draws a frame: advances gestures and animations, applies arrived
-    /// data and renders into `target`. Every frame of a map uses targets of
-    /// one format (all surfaces of a platform share one). Returns `None`
-    /// when the surface had nothing to draw into this time.
-    pub fn render(&mut self, target: &mut Target) -> Result<Option<FrameReport>, Error> {
+    /// Draws the frame shown at `frame_time` (milliseconds, on the clock
+    /// input times use: the display link's): applies arrived data,
+    /// advances gestures and animations to it and renders into `target`.
+    /// Every frame of a map uses targets of one format (all surfaces of a
+    /// platform share one). Returns `None` when the surface had nothing to
+    /// draw into this time.
+    pub fn render(
+        &mut self,
+        target: &mut Target,
+        frame_time: f64,
+    ) -> Result<Option<FrameReport>, Error> {
         self.set_mode(RenderMode::Continuous);
-        self.frame(target, true)
+        self.frame(target, frame_time)
+    }
+
+    /// Draws frames into `target` until the map is idle (its loads,
+    /// pipelines, fades and camera motion done, and a last frame drawing
+    /// what the one before brought), waiting for data between frames, and
+    /// returns the last frame's report. Frames are timed on the runtime's
+    /// clock. For tools and tests: hosts draw on their display link. An
+    /// error after `timeout`.
+    pub fn render_until_idle(
+        &mut self,
+        target: &mut Target,
+        timeout: Duration,
+    ) -> Result<FrameReport, Error> {
+        self.set_mode(RenderMode::Continuous);
+        self.settle(target, Instant::now() + timeout)
     }
 
     /// Draws what the camera shows in a `width × height` view (logical
@@ -501,7 +500,7 @@ impl Map {
         let mut target = self.offscreen(px(width), px(height), scale);
         self.set_mode(RenderMode::Still);
         let pixels = self
-            .settle(&mut target, true, deadline)
+            .settle(&mut target, deadline)
             .and_then(|_| target.read_pixels());
         let (width, height) = target.size();
         self.offscreen = Some(target);
@@ -576,7 +575,7 @@ impl Map {
         // The scene document sets the plane.
         self.set_mode(RenderMode::Still);
         while self.map.style_doc().is_none() {
-            self.frame(target, false)?;
+            self.frame(target, self.runtime.now())?;
             if self.map.style_doc().is_none() {
                 self.wait(deadline)?;
             }
@@ -625,12 +624,12 @@ impl Map {
             .filter_map(|(c, r)| grid(c, r))
             .collect();
         let camera = grid(col, row).expect("checked above").camera;
-        self.map.set_camera(camera);
-        // The camera store's camera goes back to the map with the next
-        // interactive frame.
-        self.pushed = u64::MAX;
+        let interactive = *self.map.camera();
+        self.map.jump_to_state(camera);
         self.set_mode(RenderMode::Tile(tiles));
-        self.settle(target, false, deadline).map(|_| ())
+        let drawn = self.settle(target, deadline).map(|_| ());
+        self.map.jump_to_state(interactive);
+        drawn
     }
 
     fn set_mode(&mut self, mode: RenderMode) {
@@ -643,15 +642,10 @@ impl Map {
 
     /// Renders until two frames in a row are idle, the second drawing what
     /// the first's messages brought, waiting for data between frames.
-    fn settle(
-        &mut self,
-        target: &mut Target,
-        camera: bool,
-        deadline: Instant,
-    ) -> Result<FrameReport, Error> {
+    fn settle(&mut self, target: &mut Target, deadline: Instant) -> Result<FrameReport, Error> {
         let mut was_idle = false;
         loop {
-            if let Some(report) = self.frame(target, camera)? {
+            if let Some(report) = self.frame(target, self.runtime.now())? {
                 if report.idle && was_idle {
                     return Ok(report);
                 }
@@ -683,9 +677,12 @@ impl Map {
         Ok(())
     }
 
-    /// One frame; with `camera`, gestures and animations advance and the
-    /// camera store's camera goes to the map.
-    fn frame(&mut self, target: &mut Target, camera: bool) -> Result<Option<FrameReport>, Error> {
+    /// One frame, shown at `frame_time`.
+    fn frame(
+        &mut self,
+        target: &mut Target,
+        frame_time: f64,
+    ) -> Result<Option<FrameReport>, Error> {
         if !target.same_runtime(&self.shared) {
             return Err(Error::InvalidArgument(
                 "the target belongs to another runtime".into(),
@@ -709,34 +706,6 @@ impl Map {
             )));
         }
         let viewport = target.viewport();
-        let (mut gesture, mut animating) = (false, false);
-        if camera {
-            if self.camera.viewport() != viewport {
-                self.camera.set_viewport(viewport);
-            }
-            let now = self.runtime.now();
-            gesture = self.input.frame(&mut self.camera, now);
-            animating = self.camera.frame(now);
-        }
-        self.events
-            .extend(self.camera.take_events().into_iter().map(Event::Camera));
-        self.events.extend(
-            self.input
-                .take_events()
-                .into_iter()
-                .map(|event| match event {
-                    InteractEvent::Click { position, button } => Event::Click { position, button },
-                    InteractEvent::DoubleClick { position } => Event::DoubleClick { position },
-                }),
-        );
-        // Until the app or the user moves it, the map's camera follows the
-        // style.
-        // After a tile, the camera store's camera goes back to the map.
-        let back = self.pushed == u64::MAX;
-        if camera && ((self.camera.modified() && self.camera.revision() != self.pushed) || back) {
-            self.pushed = self.camera.revision();
-            self.map.set_camera(*self.camera.state());
-        }
         let Some(texture) = target.begin()? else {
             return Ok(None);
         };
@@ -750,45 +719,26 @@ impl Map {
         let renderer = self
             .renderer
             .get_or_insert_with(|| map.create_renderer(gpu, format));
-        let report = map.render(gpu, renderer, texture, viewport, target.scale() as f32);
+        let report = map.render(
+            gpu,
+            renderer,
+            texture,
+            viewport,
+            target.scale() as f32,
+            frame_time,
+        );
         target.end();
         // Every pipeline the map asked for compiled, and the driver
         // survived them.
         if report.frame.pipelines_pending == 0 {
             self.runtime.pipelines_made();
         }
-        let mut jumped = false;
-        for event in self.map.take_events() {
-            // Loads and projection edits move the camera's surface.
-            if let MapEvent::StyleData { .. } | MapEvent::StyleLoad { .. } = event {
-                self.camera.set_surface(self.map.surface());
-            }
-            if let MapEvent::StyleLoad {
-                camera: Some(style),
-            } = &event
-                && !self.camera.modified()
-            {
-                self.camera.jump_to(&CameraTarget {
-                    center: Some(style.target),
-                    zoom: Some(style.zoom(self.camera.projection())),
-                    bearing: Some(style.bearing),
-                    pitch: Some(style.pitch),
-                    roll: Some(style.roll),
-                    ..CameraTarget::default()
-                });
-                jumped = true;
-            }
-            self.events.push_back(Event::Map(event));
-        }
-        // The camera stands on the terrain the map has loaded.
-        if self.map.elevation_revision() != self.terrain {
-            self.terrain = self.map.elevation_revision();
-            self.camera.set_terrain(self.map.elevation());
-        }
-        self.dirty = jumped;
+        self.events
+            .extend(self.map.take_events().into_iter().map(Event::Map));
+        self.dirty = false;
         // A map waiting only for pipelines draws again when one compiles.
         let waiting = report.compiling && self.runtime.compile_wakes();
-        self.busy = (!report.idle && !waiting) || gesture || animating;
+        self.busy = !report.idle && !waiting;
         if report.idle {
             // A failed write costs the next run its warm start, nothing else.
             let _ = self.runtime.save_pipeline_cache();
@@ -805,11 +755,6 @@ impl Map {
                 .map(|(id, result)| Event::Query { id, result }),
         );
         self.events.pop_front()
-    }
-
-    /// Warnings about the style and its data since the last call.
-    pub fn take_warnings(&mut self) -> Vec<String> {
-        self.map.take_warnings()
     }
 
     /// The Rust map underneath, for what this API doesn't cover yet.

@@ -23,15 +23,10 @@ fn tokyo() -> String {
         .replace("\"./", &format!("\"file://{}/", data.display()))
 }
 
-/// Draws until a frame is idle and no more are needed.
+/// Draws until the map is idle.
 fn settle(map: &mut Map, target: &mut Target) {
-    let started = Instant::now();
-    let mut idle = false;
-    while !idle || map.needs_frame() {
-        idle = map.render(target).unwrap().is_some_and(|r| r.idle);
-        assert!(started.elapsed() < Duration::from_secs(30), "never idle");
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    map.render_until_idle(target, Duration::from_secs(30))
+        .expect("the map idles");
 }
 
 fn query(map: &mut Map, at: DVec2) -> String {

@@ -30,6 +30,7 @@ typedef enum OrbEventKind {
   OrbEventKind_VideoPause = 15,
   OrbEventKind_VideoSeek = 16,
   OrbEventKind_VideoClose = 17,
+  OrbEventKind_Warning = 18,
 } OrbEventKind;
 
 typedef struct OrbEventKind_option {union { OrbEventKind ok; }; bool is_ok; } OrbEventKind_option;

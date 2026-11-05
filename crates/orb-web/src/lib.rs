@@ -1,9 +1,9 @@
 //! The browser build of Orbis: `core.wasm` and its wasm-bindgen surface.
 //!
 //! One module, two places (plan §7.1), chosen by the page's JS:
-//! - **the page** ([`create_map`] with its [`UiRole`]): the map draws into
-//!   a canvas on the page's thread, where the camera, gestures and
-//!   synchronous `project`, `unproject` and `hitTest` are.
+//! - **the page** ([`create_map`]): the map draws into a canvas on the
+//!   page's thread, with its camera, gestures and synchronous `project`,
+//!   `unproject` and `hitTest`.
 //! - **workers**: job workers ([`jobs::JobWorker`]) fetch and lay out
 //!   tiles; a placement worker ([`PlacementWorker`]) places labels.
 //!
@@ -16,6 +16,7 @@
 
 #[cfg(feature = "harness")]
 pub mod bench;
+mod camera;
 mod canvas;
 #[cfg(feature = "harness")]
 mod fixture;
@@ -23,15 +24,14 @@ mod jobs;
 mod placement;
 pub mod regions;
 mod snapshot;
-mod ui;
 
 #[cfg(feature = "harness")]
 pub use fixture::{FixturePixels, FixtureRenderer};
 pub use jobs::JobWorker;
 pub use placement::PlacementWorker;
-pub use ui::UiRole;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use glam::DVec2;
@@ -44,24 +44,27 @@ use crate::jobs::WorkerJobs;
 use crate::placement::WorkerPlacement;
 
 thread_local! {
-    /// The page's callback for "draw a frame soon". Wasm in a page or
-    /// worker is single-threaded, so the runtime's `Send` wake hook reaches
-    /// it here.
-    static WAKE: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
+    /// Each map's callback for "draw a frame soon", by map. Wasm in a page
+    /// is single-threaded, so the runtime's `Send` wake hook reaches it
+    /// here.
+    static WAKES: RefCell<HashMap<u32, js_sys::Function>> = RefCell::new(HashMap::new());
+    static NEXT_MAP: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-pub(crate) fn wake() {
-    WAKE.with(|wake| {
-        if let Some(f) = wake.borrow().as_ref() {
-            let _ = f.call0(&JsValue::NULL);
-        }
-    });
+/// Calls map `id`'s wake callback, if the map is alive.
+pub(crate) fn wake(id: u32) {
+    let wake = WAKES.with(|wakes| wakes.borrow().get(&id).cloned());
+    if let Some(f) = wake {
+        let _ = f.call0(&JsValue::NULL);
+    }
 }
 
 /// A map drawing into a canvas.
 #[wasm_bindgen]
 #[derive(Debug)]
 pub struct OrbisMap {
+    /// This map's key in [`WAKES`].
+    id: u32,
     map: Map,
     canvas: Canvas,
     /// What draws the map into the canvas; a new GPU gets a new one.
@@ -70,38 +73,147 @@ pub struct OrbisMap {
     images: orb_runtime::Images,
     pixel_ratio: f64,
     worker_jobs: Arc<WorkerJobs>,
-    /// The terrain revision last handed to the page's [`UiRole`].
-    elevation_revision: u64,
     /// A snapshot being drawn ([`snapshot`]).
     snapshot: Option<snapshot::Snapshot>,
 }
 
-/// What a frame tells the page: its counters packed in one array, and the terrain for the page's [`UiRole`] when it changed.
+impl Drop for OrbisMap {
+    fn drop(&mut self) {
+        WAKES.with(|wakes| wakes.borrow_mut().remove(&self.id));
+    }
+}
+
+/// A frame's counters. Byte counts are since the map was created: buffer
+/// bytes written from wasm memory and straight from JS `ArrayBuffer`s,
+/// texel bytes from wasm memory and from `ImageBitmap`s, packed tile
+/// headers copied into wasm memory.
 #[wasm_bindgen(getter_with_clone)]
-#[derive(Debug)]
-pub struct FrameInfo {
-    /// `zoom, generation, idle, meshes_uploaded, rows_uploaded, draws,
-    /// dispatches, candidates, tiles_drawn, tiles_loading, bundle_recorded,
-    /// placements_written, paints_written, uploaded_from_wasm,
-    /// uploaded_from_js, texels_from_wasm, texels_from_js, header_bytes,
-    /// jobs_done, pipelines_pending, layers_waiting, lost`, then [`MEMORY`]
-    /// words of memory (plan §8's budget: see [`memory_stats`])
-    /// (`web/src/frames.ts` reads them by name). Booleans are 0 or 1; byte
-    /// counts are since the map was created: buffer bytes written from wasm
-    /// memory and straight from JS `ArrayBuffer`s, texel bytes from wasm
-    /// memory and from `ImageBitmap`s, packed tile headers copied into wasm
-    /// memory; the generation is the style generation the frame shows in
-    /// full; `lost` means the GPU was lost, nothing was drawn and the map
-    /// draws again once [`OrbisMap::recover`] gives it another.
+#[derive(Clone, Debug, Default)]
+pub struct FrameStats {
+    /// CPU milliseconds the frame took.
     #[wasm_bindgen(readonly)]
-    pub stats: Vec<f64>,
-    /// The terrain's elevation pyramid for the page's [`UiRole`] when it
-    /// changed (empty: the terrain is gone), so its camera stands on the
-    /// terrain the map draws.
+    pub ms: f64,
     #[wasm_bindgen(readonly)]
-    pub elevation: Option<Vec<u8>>,
+    pub zoom: f64,
+    /// The style generation the frame shows in full.
     #[wasm_bindgen(readonly)]
-    pub warnings: Vec<String>,
+    pub generation: f64,
+    /// Nothing left to do: no loads, fades, placement or camera motion.
+    #[wasm_bindgen(readonly)]
+    pub idle: bool,
+    /// The GPU was lost and nothing was drawn; the map draws again once
+    /// [`OrbisMap::recover`] gives it another.
+    #[wasm_bindgen(readonly)]
+    pub lost: bool,
+    #[wasm_bindgen(readonly, js_name = meshesUploaded)]
+    pub meshes_uploaded: u32,
+    #[wasm_bindgen(readonly, js_name = rowsUploaded)]
+    pub rows_uploaded: u32,
+    #[wasm_bindgen(readonly)]
+    pub draws: u32,
+    #[wasm_bindgen(readonly)]
+    pub dispatches: u32,
+    #[wasm_bindgen(readonly)]
+    pub candidates: u32,
+    #[wasm_bindgen(readonly, js_name = tilesDrawn)]
+    pub tiles_drawn: u32,
+    #[wasm_bindgen(readonly, js_name = tilesLoading)]
+    pub tiles_loading: u32,
+    #[wasm_bindgen(readonly, js_name = bundleRecorded)]
+    pub bundle_recorded: bool,
+    #[wasm_bindgen(readonly, js_name = placementsWritten)]
+    pub placements_written: u32,
+    #[wasm_bindgen(readonly, js_name = paintsWritten)]
+    pub paints_written: u32,
+    #[wasm_bindgen(readonly, js_name = uploadedFromWasm)]
+    pub uploaded_from_wasm: f64,
+    #[wasm_bindgen(readonly, js_name = uploadedFromJs)]
+    pub uploaded_from_js: f64,
+    #[wasm_bindgen(readonly, js_name = texelsFromWasm)]
+    pub texels_from_wasm: f64,
+    #[wasm_bindgen(readonly, js_name = texelsFromJs)]
+    pub texels_from_js: f64,
+    #[wasm_bindgen(readonly, js_name = headerBytes)]
+    pub header_bytes: f64,
+    #[wasm_bindgen(readonly, js_name = jobsDone)]
+    pub jobs_done: u32,
+    /// Pipelines still compiling: layers that need them aren't drawn yet.
+    #[wasm_bindgen(readonly, js_name = pipelinesPending)]
+    pub pipelines_pending: u32,
+    /// Layers not drawn while their pipelines compile.
+    #[wasm_bindgen(readonly, js_name = layersWaiting)]
+    pub layers_waiting: u32,
+    /// GPU memory against plan §8's budget.
+    #[wasm_bindgen(readonly)]
+    pub memory: FrameMemory,
+}
+
+/// The map's GPU memory by pool, in bytes but `cached_tiles`: the scene's
+/// pools grow within ceilings the budget sets; tiles out of view stay
+/// cached within `cache_budget`.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameMemory {
+    #[wasm_bindgen(readonly)]
+    pub budget: f64,
+    #[wasm_bindgen(readonly)]
+    pub allocated: f64,
+    #[wasm_bindgen(readonly, js_name = verticesUsed)]
+    pub vertices_used: f64,
+    #[wasm_bindgen(readonly, js_name = verticesAllocated)]
+    pub vertices_allocated: f64,
+    #[wasm_bindgen(readonly, js_name = verticesCeiling)]
+    pub vertices_ceiling: f64,
+    #[wasm_bindgen(readonly, js_name = verticesLargestFree)]
+    pub vertices_largest_free: f64,
+    #[wasm_bindgen(readonly, js_name = indicesUsed)]
+    pub indices_used: f64,
+    #[wasm_bindgen(readonly, js_name = indicesAllocated)]
+    pub indices_allocated: f64,
+    #[wasm_bindgen(readonly, js_name = indicesCeiling)]
+    pub indices_ceiling: f64,
+    #[wasm_bindgen(readonly, js_name = compactedUsed)]
+    pub compacted_used: f64,
+    #[wasm_bindgen(readonly, js_name = compactedAllocated)]
+    pub compacted_allocated: f64,
+    #[wasm_bindgen(readonly, js_name = propsUsed)]
+    pub props_used: f64,
+    #[wasm_bindgen(readonly, js_name = propsAllocated)]
+    pub props_allocated: f64,
+    /// Tile pages, glyph pages and the icon and pattern atlas.
+    #[wasm_bindgen(readonly)]
+    pub textures: f64,
+    #[wasm_bindgen(readonly, js_name = cachedTiles)]
+    pub cached_tiles: u32,
+    #[wasm_bindgen(readonly)]
+    pub cached: f64,
+    #[wasm_bindgen(readonly, js_name = cacheBudget)]
+    pub cache_budget: f64,
+}
+
+impl From<&orb_runtime::Memory> for FrameMemory {
+    fn from(m: &orb_runtime::Memory) -> Self {
+        let s = &m.scene;
+        Self {
+            budget: m.budget as f64,
+            allocated: m.allocated() as f64,
+            vertices_used: s.vertices.used as f64,
+            vertices_allocated: s.vertices.allocated as f64,
+            vertices_ceiling: s.vertices.ceiling as f64,
+            vertices_largest_free: s.vertices.largest_free as f64,
+            indices_used: s.indices.used as f64,
+            indices_allocated: s.indices.allocated as f64,
+            indices_ceiling: s.indices.ceiling as f64,
+            compacted_used: s.compacted.used as f64,
+            compacted_allocated: s.compacted.allocated as f64,
+            props_used: s.props.used as f64,
+            props_allocated: s.props.allocated as f64,
+            textures: (m.tile_textures + m.glyph_textures + m.image_atlas) as f64,
+            cached_tiles: m.cached_tiles,
+            cached: m.cached as f64,
+            cache_budget: m.cache_budget as f64,
+        }
+    }
 }
 
 /// Creates a map in `canvas` showing the style at `style_url`, drawing on
@@ -111,9 +223,10 @@ pub struct FrameInfo {
 /// placement worker `place(message, transfer)` reaches, whose replies come
 /// back through [`receive_placement`](OrbisMap::receive_placement).
 /// `on_wake` is called when the map has new data to draw; the page should
-/// call `render` on its next animation frame. Video sources play on the
-/// page (`web/src/videos.ts`): see [`take_events`](OrbisMap::take_events)
-/// and [`video_frame`](OrbisMap::video_frame).
+/// call `render` on its next animation frame. The camera is the style's
+/// until it moves. Video sources play on the page (`web/src/videos.ts`):
+/// see [`take_events`](OrbisMap::take_events) and
+/// [`video_frame`](OrbisMap::video_frame).
 #[wasm_bindgen(js_name = createMap)]
 pub async fn create_map(
     canvas: HtmlCanvasElement,
@@ -128,8 +241,9 @@ pub async fn create_map(
     let worker_jobs = WorkerJobs::new(job_workers, post);
     let jobs: Arc<dyn Jobs> = worker_jobs.clone();
     let lane: Arc<dyn orb_runtime::PlacementLane> = WorkerPlacement::new(place);
-    WAKE.with(|w| *w.borrow_mut() = Some(on_wake));
-    let canvas = Canvas::new(canvas.into(), size)
+    let id = NEXT_MAP.with(|next| next.replace(next.get() + 1));
+    WAKES.with(|wakes| wakes.borrow_mut().insert(id, on_wake));
+    let canvas = Canvas::new(canvas.into(), size, id)
         .await
         .map_err(|e| JsError::new(&e))?;
     let images = orb_runtime::Images::default();
@@ -139,7 +253,7 @@ pub async fn create_map(
         images: images.clone(),
         jobs,
         fetch: regions::service(),
-        wake: Arc::new(wake),
+        wake: Arc::new(move || wake(id)),
     };
     let mut map = Map::new(services, None);
     if mobile() {
@@ -150,13 +264,13 @@ pub async fn create_map(
     map.set_plays_video(true);
     map.load_style_url(&style_url);
     Ok(OrbisMap {
+        id,
         map,
         canvas,
         renderer: None,
         images,
         pixel_ratio: 1.0,
         worker_jobs,
-        elevation_revision: 0,
         snapshot: None,
     })
 }
@@ -251,21 +365,15 @@ impl OrbisMap {
         self.canvas.resize(width, height);
     }
 
-    /// Sets the camera from the ui role: `[lon, lat, resolution, bearing,
-    /// pitch, fov, …]`. Until the first call the map takes its style's.
-    #[wasm_bindgen(js_name = setCamera)]
-    pub fn set_camera(&mut self, camera: &[f64]) -> Result<(), JsError> {
-        self.map.set_camera(ui::camera_from(camera)?);
-        Ok(())
-    }
-
-    /// What the map did since the last call, as plain objects: `{type:
-    /// "styleload", camera, projection}` (the style's camera if the map
-    /// took it, else null; the surface's projection as JSON), `{type: "styledata", generation}`, `{type: "sourcedata",
-    /// source, loaded}`, `{type: "load"}`, `{type: "idle"}`, `{type:
-    /// "error", message}`, and for the page's video player `{type: "video",
-    /// source, request}` (`open` with `urls`, `play`, `pause`, `seek` with
-    /// `seconds`, `close`).
+    /// What the map did since the last call, as plain objects by `type`:
+    /// `styleload`, `styledata` (`generation`), `sourcedata` (`source`,
+    /// `loaded`), `load`, `idle`, `error` and `warning` (`message`),
+    /// `styleimagemissing` (`id`), `capability` (`tier`), `camera`
+    /// (`change`: move, zoom, rotate or pitch; `phase`: start, progress or
+    /// end; `user`), `animationend` (`id`, `interrupted`), `click` (`x`,
+    /// `y`, `button`), `dblclick` (`x`, `y`), and for the page's video
+    /// player `video` (`source`, `request`: `open` with `urls`, `play`,
+    /// `pause`, `seek` with `seconds`, `close`).
     #[wasm_bindgen(js_name = takeEvents)]
     pub fn take_events(&mut self) -> js_sys::Array {
         let out = js_sys::Array::new();
@@ -275,21 +383,9 @@ impl OrbisMap {
         for event in self.map.take_events() {
             let object = js_sys::Object::new();
             let kind = match event {
-                MapEvent::StyleLoad { camera } => {
-                    let camera = camera.map_or(JsValue::NULL, |c| {
-                        js_sys::Float64Array::from(
-                            &ui::camera_array(&c, &self.map.projection())[..],
-                        )
-                        .into()
-                    });
-                    set(&object, "camera", camera);
-                    "styleload"
-                }
+                MapEvent::StyleLoad => "styleload",
                 MapEvent::StyleData { generation } => {
                     set(&object, "generation", (generation as f64).into());
-                    // Loads and projection edits move the camera's surface.
-                    let surface = orb_runtime::surface_to_json(&self.map.surface());
-                    set(&object, "surface", surface.into());
                     "styledata"
                 }
                 MapEvent::SourceData { source, loaded } => {
@@ -302,6 +398,10 @@ impl OrbisMap {
                 MapEvent::Error { message } => {
                     set(&object, "message", message.into());
                     "error"
+                }
+                MapEvent::Warning { message } => {
+                    set(&object, "message", message.into());
+                    "warning"
                 }
                 MapEvent::StyleImageMissing { name } => {
                     set(&object, "id", name.into());
@@ -333,6 +433,48 @@ impl OrbisMap {
                     };
                     set(&object, "tier", tier.into());
                     "capability"
+                }
+                MapEvent::Camera(orb_runtime::CameraEvent::Changed {
+                    change,
+                    phase,
+                    user,
+                }) => {
+                    let change = match change {
+                        orb_camera::Change::Move => "move",
+                        orb_camera::Change::Zoom => "zoom",
+                        orb_camera::Change::Rotate => "rotate",
+                        orb_camera::Change::Pitch => "pitch",
+                    };
+                    let phase = match phase {
+                        orb_camera::Phase::Start => "start",
+                        orb_camera::Phase::Progress => "progress",
+                        orb_camera::Phase::End => "end",
+                    };
+                    set(&object, "change", change.into());
+                    set(&object, "phase", phase.into());
+                    set(&object, "user", user.into());
+                    "camera"
+                }
+                MapEvent::Camera(orb_runtime::CameraEvent::AnimationEnd { id, interrupted }) => {
+                    set(&object, "id", (id.0 as f64).into());
+                    set(&object, "interrupted", interrupted.into());
+                    "animationend"
+                }
+                MapEvent::Click { position, button } => {
+                    set(&object, "x", position.x.into());
+                    set(&object, "y", position.y.into());
+                    let button = match button {
+                        orb_runtime::Button::Primary => 0,
+                        orb_runtime::Button::Middle => 1,
+                        orb_runtime::Button::Secondary => 2,
+                    };
+                    set(&object, "button", button.into());
+                    "click"
+                }
+                MapEvent::DoubleClick { position } => {
+                    set(&object, "x", position.x.into());
+                    set(&object, "y", position.y.into());
+                    "dblclick"
                 }
             };
             set(&object, "type", kind.into());
@@ -483,67 +625,64 @@ impl OrbisMap {
     /// Resolves to the new tier.
     pub async fn recover(&mut self, canvas: JsValue) -> Result<String, JsError> {
         let size = self.canvas.size();
-        self.canvas = Canvas::new(canvas, size)
+        self.canvas = Canvas::new(canvas, size, self.id)
             .await
             .map_err(|e| JsError::new(&e))?;
         self.renderer = None;
         self.images.reset();
-        wake();
+        wake(self.id);
         Ok(self.tier())
     }
 
-    /// Draws a frame.
-    pub fn render(&mut self) -> Result<FrameInfo, JsError> {
+    /// Draws the frame shown at `frame_time`, the animation frame's
+    /// timestamp (`requestAnimationFrame`'s, on the clock input events'
+    /// `timeStamp`s use).
+    pub fn render(&mut self, frame_time: f64) -> Result<FrameStats, JsError> {
         if self.canvas.lost() {
-            return Ok(FrameInfo::lost());
+            return Ok(FrameStats {
+                idle: true,
+                lost: true,
+                ..FrameStats::default()
+            });
         }
+        let started = orb_host::Clock::now(&orb_host_web::WebClock);
         let viewport = self.viewport();
         let (map, ratio, renderer) = (&mut self.map, self.pixel_ratio as f32, &mut self.renderer);
         let report = self
             .canvas
             .frame(|gpu, target, format| {
                 let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
-                map.render(gpu, renderer, target, viewport, ratio)
+                map.render(gpu, renderer, target, viewport, ratio, frame_time)
             })
             .map_err(|e| JsError::new(&e))?;
         let uploaded = self.canvas.gpu_ref().uploaded();
         let jobs = self.worker_jobs.stats();
-        // The page's camera stands on the terrain this frame drew.
-        let revision = self.map.elevation_revision();
-        let elevation = (revision != self.elevation_revision).then(|| {
-            self.elevation_revision = revision;
-            self.map.elevation_pyramid().to_vec()
-        });
         let counts = self.map.job_counts();
-        let mut stats = vec![
-            self.map.zoom(),
-            report.generation as f64,
-            f64::from(u8::from(report.idle)),
-            f64::from(counts.meshes_uploaded),
-            f64::from(counts.rows_uploaded),
-            f64::from(report.frame.draws),
-            f64::from(report.frame.dispatches),
-            f64::from(report.frame.candidates),
-            f64::from(report.tiles_drawn),
-            f64::from(report.tiles_loading),
-            f64::from(u8::from(report.frame.bundle_recorded)),
-            f64::from(report.frame.placements_written),
-            f64::from(report.frame.paints_written),
-            uploaded.from_core as f64,
-            uploaded.from_js as f64,
-            uploaded.texels_from_core as f64,
-            uploaded.texels_from_js as f64,
-            jobs.header_bytes as f64,
-            f64::from(jobs.done),
-            f64::from(report.frame.pipelines_pending),
-            f64::from(report.frame.nodes_waiting),
-            0.0,
-        ];
-        stats.extend(memory_stats(&report.memory));
-        Ok(FrameInfo {
-            stats,
-            elevation,
-            warnings: self.map.take_warnings(),
+        Ok(FrameStats {
+            ms: orb_host::Clock::now(&orb_host_web::WebClock) - started,
+            zoom: self.map.zoom(),
+            generation: report.generation as f64,
+            idle: report.idle,
+            lost: false,
+            meshes_uploaded: counts.meshes_uploaded,
+            rows_uploaded: counts.rows_uploaded,
+            draws: report.frame.draws,
+            dispatches: report.frame.dispatches,
+            candidates: report.frame.candidates,
+            tiles_drawn: report.tiles_drawn,
+            tiles_loading: report.tiles_loading,
+            bundle_recorded: report.frame.bundle_recorded,
+            placements_written: report.frame.placements_written,
+            paints_written: report.frame.paints_written,
+            uploaded_from_wasm: uploaded.from_core as f64,
+            uploaded_from_js: uploaded.from_js as f64,
+            texels_from_wasm: uploaded.texels_from_core as f64,
+            texels_from_js: uploaded.texels_from_js as f64,
+            header_bytes: jobs.header_bytes as f64,
+            jobs_done: jobs.done,
+            pipelines_pending: report.frame.pipelines_pending,
+            layers_waiting: report.frame.nodes_waiting,
+            memory: FrameMemory::from(&report.memory),
         })
     }
 
@@ -552,55 +691,6 @@ impl OrbisMap {
         Viewport {
             width: f64::from(width) / self.pixel_ratio,
             height: f64::from(height) / self.pixel_ratio,
-        }
-    }
-}
-
-/// [`FrameInfo::stats`]' counters before the memory words, and where idleness is.
-const STATS: usize = 22;
-const IDLE: usize = 2;
-/// Words of memory after the counters.
-const MEMORY: usize = 17;
-
-/// A frame's memory for the page: `budget, allocated, vertices used,
-/// allocated, ceiling and largest free block, indices used, allocated and
-/// ceiling, compacted indices used and allocated, properties used and
-/// allocated, textures (tile pages, glyph pages and the image atlas),
-/// cached tiles, their bytes and the cache budget`, in bytes.
-fn memory_stats(m: &orb_runtime::Memory) -> [f64; MEMORY] {
-    let s = &m.scene;
-    [
-        m.budget,
-        m.allocated(),
-        s.vertices.used,
-        s.vertices.allocated,
-        s.vertices.ceiling,
-        s.vertices.largest_free,
-        s.indices.used,
-        s.indices.allocated,
-        s.indices.ceiling,
-        s.compacted.used,
-        s.compacted.allocated,
-        s.props.used,
-        s.props.allocated,
-        m.tile_textures + m.glyph_textures + m.image_atlas,
-        u64::from(m.cached_tiles),
-        m.cached,
-        m.cache_budget,
-    ]
-    .map(|v| v as f64)
-}
-
-impl FrameInfo {
-    /// A frame not drawn: the GPU is gone. Idle and lost.
-    fn lost() -> Self {
-        let mut stats = vec![0.0; STATS + MEMORY];
-        stats[IDLE] = 1.0;
-        stats[STATS - 1] = 1.0;
-        Self {
-            stats,
-            elevation: None,
-            warnings: Vec::new(),
         }
     }
 }

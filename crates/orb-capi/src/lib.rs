@@ -567,6 +567,9 @@ mod ffi {
         VideoSeek = 16,
         /// The video source `text` is gone: stop and let go of its video.
         VideoClose = 17,
+        /// Something in the style or its data the map can't draw as
+        /// written; `text` says what.
+        Warning = 18,
     }
 
     /// For camera events: what changed.
@@ -701,7 +704,9 @@ mod ffi {
         #[diplomat::attr(contract, snapshot)]
         pub fn id(&self) -> u64 {
             match self.0 {
-                orb_api::Event::Camera(orb_api::CameraEvent::AnimationEnd { id, .. }) => id.0,
+                orb_api::Event::Map(orb_api::MapEvent::Camera(
+                    orb_api::CameraEvent::AnimationEnd { id, .. },
+                )) => id.0,
                 orb_api::Event::Query { id, .. } => id,
                 _ => 0,
             }
@@ -712,10 +717,13 @@ mod ffi {
         #[diplomat::attr(contract, snapshot)]
         pub fn flag(&self) -> bool {
             match self.0 {
-                orb_api::Event::Camera(orb_api::CameraEvent::Changed { user, .. }) => user,
-                orb_api::Event::Camera(orb_api::CameraEvent::AnimationEnd {
-                    interrupted, ..
-                }) => interrupted,
+                orb_api::Event::Map(orb_api::MapEvent::Camera(orb_api::CameraEvent::Changed {
+                    user,
+                    ..
+                })) => user,
+                orb_api::Event::Map(orb_api::MapEvent::Camera(
+                    orb_api::CameraEvent::AnimationEnd { interrupted, .. },
+                )) => interrupted,
                 orb_api::Event::Map(orb_api::MapEvent::SourceData { loaded, .. }) => loaded,
                 orb_api::Event::Query { ref result, .. } => result.is_ok(),
                 _ => false,
@@ -726,14 +734,15 @@ mod ffi {
         #[diplomat::attr(contract, snapshot)]
         pub fn change(&self) -> OrbChange {
             match self.0 {
-                orb_api::Event::Camera(orb_api::CameraEvent::Changed { change, .. }) => {
-                    match change {
-                        orb_api::Change::Move => OrbChange::Move,
-                        orb_api::Change::Zoom => OrbChange::Zoom,
-                        orb_api::Change::Rotate => OrbChange::Rotate,
-                        orb_api::Change::Pitch => OrbChange::Pitch,
-                    }
-                }
+                orb_api::Event::Map(orb_api::MapEvent::Camera(orb_api::CameraEvent::Changed {
+                    change,
+                    ..
+                })) => match change {
+                    orb_api::Change::Move => OrbChange::Move,
+                    orb_api::Change::Zoom => OrbChange::Zoom,
+                    orb_api::Change::Rotate => OrbChange::Rotate,
+                    orb_api::Change::Pitch => OrbChange::Pitch,
+                },
                 _ => OrbChange::Move,
             }
         }
@@ -742,13 +751,14 @@ mod ffi {
         #[diplomat::attr(contract, snapshot)]
         pub fn phase(&self) -> OrbPhase {
             match self.0 {
-                orb_api::Event::Camera(orb_api::CameraEvent::Changed { phase, .. }) => {
-                    match phase {
-                        orb_api::Phase::Start => OrbPhase::Start,
-                        orb_api::Phase::Progress => OrbPhase::Progress,
-                        orb_api::Phase::End => OrbPhase::End,
-                    }
-                }
+                orb_api::Event::Map(orb_api::MapEvent::Camera(orb_api::CameraEvent::Changed {
+                    phase,
+                    ..
+                })) => match phase {
+                    orb_api::Phase::Start => OrbPhase::Start,
+                    orb_api::Phase::Progress => OrbPhase::Progress,
+                    orb_api::Phase::End => OrbPhase::End,
+                },
                 _ => OrbPhase::End,
             }
         }
@@ -757,7 +767,7 @@ mod ffi {
         #[diplomat::attr(contract, snapshot)]
         pub fn button(&self) -> OrbButton {
             match self.0 {
-                orb_api::Event::Click { button, .. } => match button {
+                orb_api::Event::Map(orb_api::MapEvent::Click { button, .. }) => match button {
                     orb_api::Button::Primary => OrbButton::Primary,
                     orb_api::Button::Secondary => OrbButton::Secondary,
                     orb_api::Button::Middle => OrbButton::Middle,
@@ -804,7 +814,9 @@ mod ffi {
                     orb_api::MapEvent::SourceData { source, .. }
                     | orb_api::MapEvent::Video { source, .. },
                 ) => source,
-                orb_api::Event::Map(orb_api::MapEvent::Error { message }) => message,
+                orb_api::Event::Map(
+                    orb_api::MapEvent::Error { message } | orb_api::MapEvent::Warning { message },
+                ) => message,
                 orb_api::Event::Map(orb_api::MapEvent::StyleImageMissing { name }) => name,
                 orb_api::Event::Query {
                     result: Ok(text) | Err(text),
@@ -1174,6 +1186,7 @@ mod ffi {
         /// A pointer went down, in logical pixels. Returns whether the map
         /// used the input.
         #[diplomat::attr(contract, command)]
+        #[allow(clippy::too_many_arguments)]
         pub fn pointer_down(
             &mut self,
             id: u32,
@@ -1182,48 +1195,59 @@ mod ffi {
             x: f64,
             y: f64,
             modifiers: OrbModifiers,
+            time_ms: f64,
         ) -> bool {
-            self.0.input(orb_api::Input::PointerDown {
-                id,
-                kind: match kind {
-                    OrbPointerKind::Mouse => orb_api::PointerKind::Mouse,
-                    OrbPointerKind::Touch => orb_api::PointerKind::Touch,
-                    OrbPointerKind::Pen => orb_api::PointerKind::Pen,
+            self.0.input(
+                orb_api::Input::PointerDown {
+                    id,
+                    kind: match kind {
+                        OrbPointerKind::Mouse => orb_api::PointerKind::Mouse,
+                        OrbPointerKind::Touch => orb_api::PointerKind::Touch,
+                        OrbPointerKind::Pen => orb_api::PointerKind::Pen,
+                    },
+                    button: match button {
+                        OrbButton::Primary => orb_api::Button::Primary,
+                        OrbButton::Secondary => orb_api::Button::Secondary,
+                        OrbButton::Middle => orb_api::Button::Middle,
+                    },
+                    position: glam::DVec2::new(x, y),
+                    modifiers: crate::modifiers(modifiers),
                 },
-                button: match button {
-                    OrbButton::Primary => orb_api::Button::Primary,
-                    OrbButton::Secondary => orb_api::Button::Secondary,
-                    OrbButton::Middle => orb_api::Button::Middle,
-                },
-                position: glam::DVec2::new(x, y),
-                modifiers: crate::modifiers(modifiers),
-            })
+                time_ms,
+            )
         }
 
         #[diplomat::attr(contract, command)]
-        pub fn pointer_move(&mut self, id: u32, x: f64, y: f64) -> bool {
-            self.0.input(orb_api::Input::PointerMove {
-                id,
-                position: glam::DVec2::new(x, y),
-            })
+        pub fn pointer_move(&mut self, id: u32, x: f64, y: f64, time_ms: f64) -> bool {
+            self.0.input(
+                orb_api::Input::PointerMove {
+                    id,
+                    position: glam::DVec2::new(x, y),
+                },
+                time_ms,
+            )
         }
 
         #[diplomat::attr(contract, command)]
-        pub fn pointer_up(&mut self, id: u32, x: f64, y: f64) -> bool {
-            self.0.input(orb_api::Input::PointerUp {
-                id,
-                position: glam::DVec2::new(x, y),
-            })
+        pub fn pointer_up(&mut self, id: u32, x: f64, y: f64, time_ms: f64) -> bool {
+            self.0.input(
+                orb_api::Input::PointerUp {
+                    id,
+                    position: glam::DVec2::new(x, y),
+                },
+                time_ms,
+            )
         }
 
         /// The platform took the pointer away: no click, no inertia.
         #[diplomat::attr(contract, command)]
-        pub fn pointer_cancel(&mut self, id: u32) -> bool {
-            self.0.input(orb_api::Input::PointerCancel { id })
+        pub fn pointer_cancel(&mut self, id: u32, time_ms: f64) -> bool {
+            self.0.input(orb_api::Input::PointerCancel { id }, time_ms)
         }
 
         /// A wheel or trackpad scroll; positive `dy` zooms out.
         #[diplomat::attr(contract, command)]
+        #[allow(clippy::too_many_arguments)]
         pub fn wheel(
             &mut self,
             x: f64,
@@ -1232,38 +1256,45 @@ mod ffi {
             dy: f64,
             unit: OrbWheelUnit,
             modifiers: OrbModifiers,
+            time_ms: f64,
         ) -> bool {
-            self.0.input(orb_api::Input::Wheel {
-                position: glam::DVec2::new(x, y),
-                delta: glam::DVec2::new(dx, dy),
-                unit: match unit {
-                    OrbWheelUnit::Pixel => orb_api::WheelUnit::Pixel,
-                    OrbWheelUnit::Line => orb_api::WheelUnit::Line,
-                    OrbWheelUnit::Page => orb_api::WheelUnit::Page,
+            self.0.input(
+                orb_api::Input::Wheel {
+                    position: glam::DVec2::new(x, y),
+                    delta: glam::DVec2::new(dx, dy),
+                    unit: match unit {
+                        OrbWheelUnit::Pixel => orb_api::WheelUnit::Pixel,
+                        OrbWheelUnit::Line => orb_api::WheelUnit::Line,
+                        OrbWheelUnit::Page => orb_api::WheelUnit::Page,
+                    },
+                    modifiers: crate::modifiers(modifiers),
                 },
-                modifiers: crate::modifiers(modifiers),
-            })
+                time_ms,
+            )
         }
 
         #[diplomat::attr(contract, command)]
-        pub fn key(&mut self, key: OrbKey, modifiers: OrbModifiers) -> bool {
-            self.0.input(orb_api::Input::Key {
-                key: match key {
-                    OrbKey::Left => orb_api::Key::Left,
-                    OrbKey::Right => orb_api::Key::Right,
-                    OrbKey::Up => orb_api::Key::Up,
-                    OrbKey::Down => orb_api::Key::Down,
-                    OrbKey::ZoomIn => orb_api::Key::ZoomIn,
-                    OrbKey::ZoomOut => orb_api::Key::ZoomOut,
+        pub fn key(&mut self, key: OrbKey, modifiers: OrbModifiers, time_ms: f64) -> bool {
+            self.0.input(
+                orb_api::Input::Key {
+                    key: match key {
+                        OrbKey::Left => orb_api::Key::Left,
+                        OrbKey::Right => orb_api::Key::Right,
+                        OrbKey::Up => orb_api::Key::Up,
+                        OrbKey::Down => orb_api::Key::Down,
+                        OrbKey::ZoomIn => orb_api::Key::ZoomIn,
+                        OrbKey::ZoomOut => orb_api::Key::ZoomOut,
+                    },
+                    modifiers: crate::modifiers(modifiers),
                 },
-                modifiers: crate::modifiers(modifiers),
-            })
+                time_ms,
+            )
         }
 
         /// The view lost focus: every pointer is released.
         #[diplomat::attr(contract, command)]
-        pub fn blur(&mut self) -> bool {
-            self.0.input(orb_api::Input::Blur)
+        pub fn blur(&mut self, time_ms: f64) -> bool {
+            self.0.input(orb_api::Input::Blur, time_ms)
         }
 
         /// The topmost feature at a point in logical pixels, from the last
@@ -1371,40 +1402,44 @@ mod ffi {
                 .map_err(fail)
         }
 
-        /// Draws a frame into `target`: advances gestures and animations,
-        /// applies arrived data and renders. A map draws targets of one
-        /// format: all texture targets, or all surfaces of a platform.
+        /// Draws the frame shown at `frame_time_ms` (the display link's
+        /// timestamp, on the clock input times use) into `target`: applies
+        /// arrived data, advances gestures and animations to it and
+        /// renders. A map draws targets of one format: all texture
+        /// targets, or all surfaces of a platform.
         #[diplomat::attr(contract, render_driver)]
-        pub fn render(&mut self, target: &mut OrbTarget) -> Result<OrbFrame, OrbError> {
-            Ok(match self.0.render(&mut target.target).map_err(fail)? {
-                None => OrbFrame::default(),
-                Some(report) => OrbFrame {
-                    drawn: true,
-                    generation: report.generation,
-                    idle: report.idle,
-                    loaded: report.loaded,
-                    tiles_drawn: report.tiles_drawn,
-                    tiles_loading: report.tiles_loading,
-                    draws: report.frame.draws,
-                    dispatches: report.frame.dispatches,
-                    pipelines_pending: report.frame.pipelines_pending,
-                    layers_waiting: report.frame.nodes_waiting,
+        pub fn render(
+            &mut self,
+            target: &mut OrbTarget,
+            frame_time_ms: f64,
+        ) -> Result<OrbFrame, OrbError> {
+            Ok(
+                match self
+                    .0
+                    .render(&mut target.target, frame_time_ms)
+                    .map_err(fail)?
+                {
+                    None => OrbFrame::default(),
+                    Some(report) => OrbFrame {
+                        drawn: true,
+                        generation: report.generation,
+                        idle: report.idle,
+                        loaded: report.loaded,
+                        tiles_drawn: report.tiles_drawn,
+                        tiles_loading: report.tiles_loading,
+                        draws: report.frame.draws,
+                        dispatches: report.frame.dispatches,
+                        pipelines_pending: report.frame.pipelines_pending,
+                        layers_waiting: report.frame.nodes_waiting,
+                    },
                 },
-            })
+            )
         }
 
         /// The oldest event not yet taken.
         #[diplomat::attr(contract, event_batch)]
         pub fn poll_event(&mut self) -> Option<Box<OrbEvent>> {
             self.0.poll_event().map(|e| Box::new(OrbEvent(e)))
-        }
-
-        /// Warnings since the last call, one per line.
-        #[diplomat::attr(contract, event_batch)]
-        pub fn take_warnings(&mut self, out: &mut DiplomatWrite) {
-            for warning in self.0.take_warnings() {
-                writeln!(out, "{warning}").ok();
-            }
         }
     }
 }
@@ -1415,7 +1450,7 @@ use std::ptr::NonNull;
 use ffi::{OrbError, OrbEventKind};
 
 /// Bumped on every incompatible change to the C ABI while it is 0.x.
-const ABI_VERSION: u32 = 3;
+const ABI_VERSION: u32 = 4;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -1520,12 +1555,13 @@ fn modifiers(m: ffi::OrbModifiers) -> orb_api::Modifiers {
 fn event_kind(event: &orb_api::Event) -> OrbEventKind {
     use orb_api::{CameraEvent, Event, MapEvent};
     match event {
-        Event::Map(MapEvent::StyleLoad { .. }) => OrbEventKind::StyleLoad,
+        Event::Map(MapEvent::StyleLoad) => OrbEventKind::StyleLoad,
         Event::Map(MapEvent::StyleData { .. }) => OrbEventKind::StyleData,
         Event::Map(MapEvent::SourceData { .. }) => OrbEventKind::SourceData,
         Event::Map(MapEvent::Load) => OrbEventKind::Load,
         Event::Map(MapEvent::Idle) => OrbEventKind::Idle,
         Event::Map(MapEvent::Error { .. }) => OrbEventKind::Error,
+        Event::Map(MapEvent::Warning { .. }) => OrbEventKind::Warning,
         Event::Map(MapEvent::Capability { .. }) => OrbEventKind::Capability,
         Event::Map(MapEvent::StyleImageMissing { .. }) => OrbEventKind::StyleImageMissing,
         Event::Map(MapEvent::Video { request, .. }) => match request {
@@ -1535,19 +1571,21 @@ fn event_kind(event: &orb_api::Event) -> OrbEventKind {
             orb_api::VideoRequest::Seek(_) => OrbEventKind::VideoSeek,
             orb_api::VideoRequest::Close => OrbEventKind::VideoClose,
         },
-        Event::Camera(CameraEvent::Changed { .. }) => OrbEventKind::Camera,
-        Event::Camera(CameraEvent::AnimationEnd { .. }) => OrbEventKind::AnimationEnd,
-        Event::Click { .. } => OrbEventKind::Click,
-        Event::DoubleClick { .. } => OrbEventKind::DoubleClick,
+        Event::Map(MapEvent::Camera(CameraEvent::Changed { .. })) => OrbEventKind::Camera,
+        Event::Map(MapEvent::Camera(CameraEvent::AnimationEnd { .. })) => {
+            OrbEventKind::AnimationEnd
+        }
+        Event::Map(MapEvent::Click { .. }) => OrbEventKind::Click,
+        Event::Map(MapEvent::DoubleClick { .. }) => OrbEventKind::DoubleClick,
         Event::Query { .. } => OrbEventKind::QueryResult,
     }
 }
 
 fn event_position(event: &orb_api::Event) -> glam::DVec2 {
     match event {
-        orb_api::Event::Click { position, .. } | orb_api::Event::DoubleClick { position } => {
-            *position
-        }
+        orb_api::Event::Map(
+            orb_api::MapEvent::Click { position, .. } | orb_api::MapEvent::DoubleClick { position },
+        ) => *position,
         _ => glam::DVec2::NAN,
     }
 }

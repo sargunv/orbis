@@ -22,7 +22,9 @@ self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAs
       const reply = await jobs.receive(data);
       if (reply) port.postMessage(reply, [reply.buffer, reply.image, reply.pixels, reply.dem, reply.glyphs].filter(Boolean));
     } catch (e) {
-      console.error(e);
+      // Every request completes: a failure is its reply (`{id, error}`).
+      if (typeof data?.id === "number") port.postMessage({ id: data.id, error: String(e instanceof Error ? e.message : e) });
+      else console.error(e);
     }
   };
 };

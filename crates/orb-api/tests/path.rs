@@ -5,7 +5,7 @@
 //! may show.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use orb_api::{CameraTarget, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target};
 
@@ -49,24 +49,8 @@ fn camera((center, zoom, bearing, pitch): At) -> CameraTarget {
 
 /// Draws until loaded and idle.
 fn settle(map: &mut Map, target: &mut Target) {
-    let started = Instant::now();
-    let mut idle = 0;
-    loop {
-        let report = map.render(target).unwrap();
-        idle = if report.is_some_and(|r| r.idle) && !map.needs_frame() {
-            idle + 1
-        } else {
-            0
-        };
-        if idle == 2 {
-            return;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the map never idled"
-        );
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    map.render_until_idle(target, Duration::from_secs(60))
+        .expect("the map idles");
 }
 
 /// The pixels a map draws at `end` once settled, after moving there frame
@@ -90,7 +74,7 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
             lerp(start.2, end.2, t),
             lerp(start.3, end.3, t),
         )));
-        moved.render(&mut target).unwrap();
+        moved.render(&mut target, 0.0).unwrap();
         std::thread::sleep(Duration::from_millis(8));
     }
     settle(&mut moved, &mut target);
@@ -290,7 +274,7 @@ fn camera_only_frames_write_no_rows() {
         settle(&mut map, &mut target);
         for step in 1..=3 {
             map.jump_to(&camera(at(f64::from(step))));
-            let report = map.render(&mut target).unwrap().unwrap();
+            let report = map.render(&mut target, 0.0).unwrap().unwrap();
             assert_eq!(report.tiles_loading, 0, "the move loads nothing");
             assert_eq!(report.frame.placements_written, 0, "step {step}");
             assert!(!report.frame.candidates_rebuilt, "step {step}");

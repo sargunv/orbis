@@ -34,7 +34,7 @@ fn settle(offscreen: &mut Offscreen) -> (u32, FrameReport) {
     loop {
         let report = offscreen.frame();
         frames += 1;
-        let warnings = offscreen.map.take_warnings();
+        let warnings = super::take_warnings(&mut offscreen.map);
         assert!(warnings.is_empty(), "{warnings:?}");
         if report.idle && was_idle {
             return (frames, report);
@@ -101,7 +101,7 @@ fn assert_matches_fresh(offscreen: &mut Offscreen) {
     })
     .unwrap()
     .0;
-    *fresh.map.camera_mut() = camera;
+    fresh.map.jump_to_state(camera);
     fresh.map.set_style_json(&json).unwrap();
     settle(&mut fresh);
     settle(offscreen);
@@ -387,10 +387,10 @@ fn feature_state_write_cost() {
 #[test]
 fn extrusion_nodes_survive_renumbering() {
     let mut map = tokyo();
-    *map.map.camera_mut() = orb_runtime::CameraState {
+    map.map.jump_to_state(orb_runtime::CameraState {
         pitch: 45.0,
         ..*map.map.camera()
-    };
+    });
     settle(&mut map);
     let add = r##"[["addLayer", {"id": "buildings", "type": "fill-extrusion",
         "source": "openmaptiles", "source-layer": "building",
@@ -414,11 +414,11 @@ fn hits_follow_layer_order_visibility_and_camera() {
     map.map
         .set_style_json(include_str!("../../../web/demo/data/playground.json"))
         .unwrap();
-    *map.map.camera_mut() = orb_runtime::CameraState::new(
+    map.map.jump_to_state(orb_runtime::CameraState::new(
         orb_crs::Geodetic::new(139.7655, 35.6835),
         15.0,
         &super::web_mercator(),
-    );
+    ));
     settle(&mut map);
     let center = glam::DVec2::new(512., 384.);
     let hit = map.map.hit_test(center).expect("center station");
@@ -429,10 +429,10 @@ fn hits_follow_layer_order_visibility_and_camera() {
     assert_eq!(hit.source, "district");
     assert_eq!(hit.source_layer, None);
     // The last frame answers for its camera.
-    map.map.camera_mut().bearing = 30.0;
+    super::move_camera(&mut map.map, |c| c.bearing = 30.0);
     map.frame();
     assert!(map.map.hit_test(center).is_some());
-    map.map.camera_mut().bearing = 0.0;
+    super::move_camera(&mut map.map, |c| c.bearing = 0.0);
     settle(&mut map);
     let tx =
         Transaction::from_commands(r#"[["setLayoutProperty","stations","visibility","none"]]"#)
@@ -443,7 +443,7 @@ fn hits_follow_layer_order_visibility_and_camera() {
     let route = map.map.hit_test(center).expect("route under station");
     assert_eq!(route.layer, "route");
     assert_eq!(route.generation, frame.generation);
-    map.map.camera_mut().target = orb_crs::Geodetic::new(0., 0.);
+    super::move_camera(&mut map.map, |c| c.target = orb_crs::Geodetic::new(0., 0.));
     assert_eq!(map.map.hit_test(center), Some(route));
     settle(&mut map);
     assert_eq!(map.map.hit_test(center), None);
@@ -473,11 +473,11 @@ fn point_style(east: f64, circle_paint: &str) -> String {
 fn load_points(style: &str) -> Offscreen {
     let mut map = tokyo();
     map.map.set_style_json(style).unwrap();
-    *map.map.camera_mut() = orb_runtime::CameraState::new(
+    map.map.jump_to_state(orb_runtime::CameraState::new(
         orb_crs::Geodetic::new(139.74, 35.685),
         15.0,
         &super::web_mercator(),
-    );
+    ));
     settle(&mut map);
     map
 }
@@ -542,7 +542,7 @@ fn projection_switches_load_nothing() {
     let surface = map.map.surface();
     let mut camera = *map.map.camera();
     camera.set_zoom(&surface.projection, 9.0);
-    *map.map.camera_mut() = camera;
+    map.map.jump_to_state(camera);
     settle(&mut map);
     for (commands, globe) in [
         (r#"[["setProjection", {"type": "globe"}]]"#, true),

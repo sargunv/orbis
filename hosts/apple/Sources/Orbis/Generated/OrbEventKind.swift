@@ -52,4 +52,7 @@ public enum OrbEventKind: Int, Sendable, CaseIterable {
     case videoSeek = 16
     /// The video source `text` is gone: stop and let go of its video.
     case videoClose = 17
+    /// Something in the style or its data the map can't draw as
+    /// written; `text` says what.
+    case warning = 18
 }

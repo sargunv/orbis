@@ -102,19 +102,19 @@ uint64_t OrbMap_fit_bounds(OrbMap* self, OrbBounds bounds, double padding, doubl
 
 void OrbMap_stop(OrbMap* self);
 
-bool OrbMap_pointer_down(OrbMap* self, uint32_t id, OrbPointerKind kind, OrbButton button, double x, double y, OrbModifiers modifiers);
+bool OrbMap_pointer_down(OrbMap* self, uint32_t id, OrbPointerKind kind, OrbButton button, double x, double y, OrbModifiers modifiers, double time_ms);
 
-bool OrbMap_pointer_move(OrbMap* self, uint32_t id, double x, double y);
+bool OrbMap_pointer_move(OrbMap* self, uint32_t id, double x, double y, double time_ms);
 
-bool OrbMap_pointer_up(OrbMap* self, uint32_t id, double x, double y);
+bool OrbMap_pointer_up(OrbMap* self, uint32_t id, double x, double y, double time_ms);
 
-bool OrbMap_pointer_cancel(OrbMap* self, uint32_t id);
+bool OrbMap_pointer_cancel(OrbMap* self, uint32_t id, double time_ms);
 
-bool OrbMap_wheel(OrbMap* self, double x, double y, double dx, double dy, OrbWheelUnit unit, OrbModifiers modifiers);
+bool OrbMap_wheel(OrbMap* self, double x, double y, double dx, double dy, OrbWheelUnit unit, OrbModifiers modifiers, double time_ms);
 
-bool OrbMap_key(OrbMap* self, OrbKey key, OrbModifiers modifiers);
+bool OrbMap_key(OrbMap* self, OrbKey key, OrbModifiers modifiers, double time_ms);
 
-bool OrbMap_blur(OrbMap* self);
+bool OrbMap_blur(OrbMap* self, double time_ms);
 
 OrbFeature* OrbMap_hit_test(const OrbMap* self, double x, double y);
 
@@ -131,11 +131,9 @@ typedef struct OrbMap_render_tile_result {union {OrbImage* ok; OrbError err;}; b
 OrbMap_render_tile_result OrbMap_render_tile(OrbMap* self, DiplomatStringView tile_matrix_set, uint8_t z, uint32_t col, uint32_t row, uint32_t size, double scale);
 
 typedef struct OrbMap_render_result {union {OrbFrame ok; OrbError err;}; bool is_ok;} OrbMap_render_result;
-OrbMap_render_result OrbMap_render(OrbMap* self, OrbTarget* target);
+OrbMap_render_result OrbMap_render(OrbMap* self, OrbTarget* target, double frame_time_ms);
 
 OrbEvent* OrbMap_poll_event(OrbMap* self);
-
-void OrbMap_take_warnings(OrbMap* self, DiplomatWrite* write);
 
 void OrbMap_destroy(OrbMap* self);
 

@@ -594,52 +594,52 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapStop(JNIEnv* env, jclass
     OrbMap_stop((OrbMap*)(intptr_t)self);
 }
 
-JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapPointerDown(JNIEnv* env, jclass cls, jlong self, jint id, jint kind, jint button, jdouble x, jdouble y, jboolean modifiers_shift, jboolean modifiers_ctrl, jboolean modifiers_alt, jboolean modifiers_meta) {
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapPointerDown(JNIEnv* env, jclass cls, jlong self, jint id, jint kind, jint button, jdouble x, jdouble y, jboolean modifiers_shift, jboolean modifiers_ctrl, jboolean modifiers_alt, jboolean modifiers_meta, jdouble timeMs) {
     (void)env;
     (void)cls;
-    bool result = OrbMap_pointer_down((OrbMap*)(intptr_t)self, (uint32_t)(id), (OrbPointerKind)(kind), (OrbButton)(button), (double)(x), (double)(y), (OrbModifiers){ .shift = (bool)(modifiers_shift), .ctrl = (bool)(modifiers_ctrl), .alt = (bool)(modifiers_alt), .meta = (bool)(modifiers_meta) });
+    bool result = OrbMap_pointer_down((OrbMap*)(intptr_t)self, (uint32_t)(id), (OrbPointerKind)(kind), (OrbButton)(button), (double)(x), (double)(y), (OrbModifiers){ .shift = (bool)(modifiers_shift), .ctrl = (bool)(modifiers_ctrl), .alt = (bool)(modifiers_alt), .meta = (bool)(modifiers_meta) }, (double)(timeMs));
     return (result) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapPointerMove(JNIEnv* env, jclass cls, jlong self, jint id, jdouble x, jdouble y) {
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapPointerMove(JNIEnv* env, jclass cls, jlong self, jint id, jdouble x, jdouble y, jdouble timeMs) {
     (void)env;
     (void)cls;
-    bool result = OrbMap_pointer_move((OrbMap*)(intptr_t)self, (uint32_t)(id), (double)(x), (double)(y));
+    bool result = OrbMap_pointer_move((OrbMap*)(intptr_t)self, (uint32_t)(id), (double)(x), (double)(y), (double)(timeMs));
     return (result) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapPointerUp(JNIEnv* env, jclass cls, jlong self, jint id, jdouble x, jdouble y) {
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapPointerUp(JNIEnv* env, jclass cls, jlong self, jint id, jdouble x, jdouble y, jdouble timeMs) {
     (void)env;
     (void)cls;
-    bool result = OrbMap_pointer_up((OrbMap*)(intptr_t)self, (uint32_t)(id), (double)(x), (double)(y));
+    bool result = OrbMap_pointer_up((OrbMap*)(intptr_t)self, (uint32_t)(id), (double)(x), (double)(y), (double)(timeMs));
     return (result) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapPointerCancel(JNIEnv* env, jclass cls, jlong self, jint id) {
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapPointerCancel(JNIEnv* env, jclass cls, jlong self, jint id, jdouble timeMs) {
     (void)env;
     (void)cls;
-    bool result = OrbMap_pointer_cancel((OrbMap*)(intptr_t)self, (uint32_t)(id));
+    bool result = OrbMap_pointer_cancel((OrbMap*)(intptr_t)self, (uint32_t)(id), (double)(timeMs));
     return (result) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapWheel(JNIEnv* env, jclass cls, jlong self, jdouble x, jdouble y, jdouble dx, jdouble dy, jint unit, jboolean modifiers_shift, jboolean modifiers_ctrl, jboolean modifiers_alt, jboolean modifiers_meta) {
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapWheel(JNIEnv* env, jclass cls, jlong self, jdouble x, jdouble y, jdouble dx, jdouble dy, jint unit, jboolean modifiers_shift, jboolean modifiers_ctrl, jboolean modifiers_alt, jboolean modifiers_meta, jdouble timeMs) {
     (void)env;
     (void)cls;
-    bool result = OrbMap_wheel((OrbMap*)(intptr_t)self, (double)(x), (double)(y), (double)(dx), (double)(dy), (OrbWheelUnit)(unit), (OrbModifiers){ .shift = (bool)(modifiers_shift), .ctrl = (bool)(modifiers_ctrl), .alt = (bool)(modifiers_alt), .meta = (bool)(modifiers_meta) });
+    bool result = OrbMap_wheel((OrbMap*)(intptr_t)self, (double)(x), (double)(y), (double)(dx), (double)(dy), (OrbWheelUnit)(unit), (OrbModifiers){ .shift = (bool)(modifiers_shift), .ctrl = (bool)(modifiers_ctrl), .alt = (bool)(modifiers_alt), .meta = (bool)(modifiers_meta) }, (double)(timeMs));
     return (result) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapKey(JNIEnv* env, jclass cls, jlong self, jint key, jboolean modifiers_shift, jboolean modifiers_ctrl, jboolean modifiers_alt, jboolean modifiers_meta) {
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapKey(JNIEnv* env, jclass cls, jlong self, jint key, jboolean modifiers_shift, jboolean modifiers_ctrl, jboolean modifiers_alt, jboolean modifiers_meta, jdouble timeMs) {
     (void)env;
     (void)cls;
-    bool result = OrbMap_key((OrbMap*)(intptr_t)self, (OrbKey)(key), (OrbModifiers){ .shift = (bool)(modifiers_shift), .ctrl = (bool)(modifiers_ctrl), .alt = (bool)(modifiers_alt), .meta = (bool)(modifiers_meta) });
+    bool result = OrbMap_key((OrbMap*)(intptr_t)self, (OrbKey)(key), (OrbModifiers){ .shift = (bool)(modifiers_shift), .ctrl = (bool)(modifiers_ctrl), .alt = (bool)(modifiers_alt), .meta = (bool)(modifiers_meta) }, (double)(timeMs));
     return (result) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapBlur(JNIEnv* env, jclass cls, jlong self) {
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapBlur(JNIEnv* env, jclass cls, jlong self, jdouble timeMs) {
     (void)env;
     (void)cls;
-    bool result = OrbMap_blur((OrbMap*)(intptr_t)self);
+    bool result = OrbMap_blur((OrbMap*)(intptr_t)self, (double)(timeMs));
     return (result) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -697,10 +697,10 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapRenderTile(JNIEnv* env,
     return (jlong)(intptr_t)(result.ok);
 }
 
-JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapRender(JNIEnv* env, jclass cls, jlong self, jlong target) {
+JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapRender(JNIEnv* env, jclass cls, jlong self, jlong target, jdouble frameTimeMs) {
     (void)env;
     (void)cls;
-    OrbMap_render_result result = OrbMap_render((OrbMap*)(intptr_t)self, (OrbTarget*)(intptr_t)(target));
+    OrbMap_render_result result = OrbMap_render((OrbMap*)(intptr_t)self, (OrbTarget*)(intptr_t)(target), (double)(frameTimeMs));
     if (!result.is_ok) {
         throw_OrbError(env, result.err);
         return NULL;
@@ -713,14 +713,6 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapPollEvent(JNIEnv* env, 
     (void)cls;
     OrbEvent* result = OrbMap_poll_event((OrbMap*)(intptr_t)self);
     return (jlong)(intptr_t)(result);
-}
-
-JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbMapTakeWarnings(JNIEnv* env, jclass cls, jlong self) {
-    (void)env;
-    (void)cls;
-    DiplomatWrite* write = diplomat_buffer_write_create(0);
-    OrbMap_take_warnings((OrbMap*)(intptr_t)self, write);
-    return write_to_bytes(env, write);
 }
 
 JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRegionEventKind(JNIEnv* env, jclass cls, jlong self) {

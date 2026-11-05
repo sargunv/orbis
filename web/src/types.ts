@@ -1,6 +1,8 @@
 // The package's public types. Coordinates are [longitude, latitude] in
 // degrees; points are [x, y] in CSS pixels from the map's top-left corner.
 
+import type { FrameMemory, FrameStats } from "../pkg/core.js";
+
 export type LngLat = [number, number];
 export type Point = [number, number];
 /** [west, south, east, north] in degrees. */
@@ -149,37 +151,8 @@ export interface SourceQueryOptions {
   filter?: unknown;
 }
 
-/** A frame's counters. */
-export interface FrameStats {
-  /** CPU milliseconds the frame took. */
-  ms: number;
-  zoom: number;
-  generation: number;
-  draws: number;
-  dispatches: number;
-  candidates: number;
-  tilesDrawn: number;
-  tilesLoading: number;
-  bundleRecorded: boolean;
-  placementsWritten: number;
-  paintsWritten: number;
-  idle: boolean;
-  meshesUploaded: number;
-  rowsUploaded: number;
-  uploadedFromWasm: number;
-  uploadedFromJs: number;
-  texelsFromWasm: number;
-  texelsFromJs: number;
-  headerBytes: number;
-  jobsDone: number;
-  /** Pipelines still compiling: layers that need them aren't drawn yet. */
-  pipelinesPending: number;
-  /** Layers not drawn while their pipelines compile. */
-  layersWaiting: number;
-  /** GPU memory against plan §8's budget, in bytes but `cachedTiles`. */
-  memory: FrameMemory;
-  warnings: string[];
-}
+/** A frame's counters: orb-web's `FrameStats`, `memory` its `FrameMemory`. */
+export type { FrameStats, FrameMemory };
 
 /** An image for the style (`addImage`): `ImageData`, or straight
  * (not premultiplied) RGBA8 rows, top first. */
@@ -201,21 +174,6 @@ export interface StyleImageOptions {
   textFitHeight?: "stretchOrShrink" | "stretchOnly" | "proportional";
 }
 
-/** The map's GPU memory by pool: the scene's pools grow within ceilings
- * the budget sets; tiles out of view stay cached within `cacheBudget`. */
-export interface FrameMemory {
-  budget: number;
-  allocated: number;
-  verticesUsed: number; verticesAllocated: number; verticesCeiling: number; verticesLargestFree: number;
-  indicesUsed: number; indicesAllocated: number; indicesCeiling: number;
-  compactedUsed: number; compactedAllocated: number;
-  propsUsed: number; propsAllocated: number;
-  /** Tile pages, glyph pages and the icon and pattern atlas. */
-  textures: number;
-  cachedTiles: number;
-  cached: number;
-  cacheBudget: number;
-}
 
 export interface CameraEventData { user: boolean }
 export interface PointerEventData { point: Point; lngLat: LngLat | null; button?: number }
@@ -238,6 +196,8 @@ export interface MapEvents {
   /** No loads, fades, placement or camera motion: no more frames until something changes. */
   idle: Record<string, never>;
   error: { message: string };
+  /** Something in the style or its data the map can't draw as written. */
+  warning: { message: string };
   /** A tile's layers name an image the style doesn't have (GL JS
    * `styleimagemissing`); once per name until it's added with `addImage`. */
   styleimagemissing: { id: string };

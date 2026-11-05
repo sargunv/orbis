@@ -304,44 +304,44 @@ public final class OrbMap {
     /// used the input.
     ///
     /// Contract: `command`.
-    public func pointerDown(id: UInt32, kind: OrbPointerKind, button: OrbButton, x: Double, y: Double, modifiers: OrbModifiers) -> Bool {
-        return OrbMap_pointer_down(live(), id, OrbisC.OrbPointerKind(rawValue: numericCast(kind.rawValue)), OrbisC.OrbButton(rawValue: numericCast(button.rawValue)), x, y, modifiers.c)
+    public func pointerDown(id: UInt32, kind: OrbPointerKind, button: OrbButton, x: Double, y: Double, modifiers: OrbModifiers, timeMs: Double) -> Bool {
+        return OrbMap_pointer_down(live(), id, OrbisC.OrbPointerKind(rawValue: numericCast(kind.rawValue)), OrbisC.OrbButton(rawValue: numericCast(button.rawValue)), x, y, modifiers.c, timeMs)
     }
 
     /// Contract: `command`.
-    public func pointerMove(id: UInt32, x: Double, y: Double) -> Bool {
-        return OrbMap_pointer_move(live(), id, x, y)
+    public func pointerMove(id: UInt32, x: Double, y: Double, timeMs: Double) -> Bool {
+        return OrbMap_pointer_move(live(), id, x, y, timeMs)
     }
 
     /// Contract: `command`.
-    public func pointerUp(id: UInt32, x: Double, y: Double) -> Bool {
-        return OrbMap_pointer_up(live(), id, x, y)
+    public func pointerUp(id: UInt32, x: Double, y: Double, timeMs: Double) -> Bool {
+        return OrbMap_pointer_up(live(), id, x, y, timeMs)
     }
 
     /// The platform took the pointer away: no click, no inertia.
     ///
     /// Contract: `command`.
-    public func pointerCancel(id: UInt32) -> Bool {
-        return OrbMap_pointer_cancel(live(), id)
+    public func pointerCancel(id: UInt32, timeMs: Double) -> Bool {
+        return OrbMap_pointer_cancel(live(), id, timeMs)
     }
 
     /// A wheel or trackpad scroll; positive `dy` zooms out.
     ///
     /// Contract: `command`.
-    public func wheel(x: Double, y: Double, dx: Double, dy: Double, unit: OrbWheelUnit, modifiers: OrbModifiers) -> Bool {
-        return OrbMap_wheel(live(), x, y, dx, dy, OrbisC.OrbWheelUnit(rawValue: numericCast(unit.rawValue)), modifiers.c)
+    public func wheel(x: Double, y: Double, dx: Double, dy: Double, unit: OrbWheelUnit, modifiers: OrbModifiers, timeMs: Double) -> Bool {
+        return OrbMap_wheel(live(), x, y, dx, dy, OrbisC.OrbWheelUnit(rawValue: numericCast(unit.rawValue)), modifiers.c, timeMs)
     }
 
     /// Contract: `command`.
-    public func key(key: OrbKey, modifiers: OrbModifiers) -> Bool {
-        return OrbMap_key(live(), OrbisC.OrbKey(rawValue: numericCast(key.rawValue)), modifiers.c)
+    public func key(key: OrbKey, modifiers: OrbModifiers, timeMs: Double) -> Bool {
+        return OrbMap_key(live(), OrbisC.OrbKey(rawValue: numericCast(key.rawValue)), modifiers.c, timeMs)
     }
 
     /// The view lost focus: every pointer is released.
     ///
     /// Contract: `command`.
-    public func blur() -> Bool {
-        return OrbMap_blur(live())
+    public func blur(timeMs: Double) -> Bool {
+        return OrbMap_blur(live(), timeMs)
     }
 
     /// The topmost feature at a point in logical pixels, from the last
@@ -409,15 +409,17 @@ public final class OrbMap {
         return OrbImage(handle: result.ok!)
     }
 
-    /// Draws a frame into `target`: advances gestures and animations,
-    /// applies arrived data and renders. A map draws targets of one
-    /// format: all texture targets, or all surfaces of a platform.
+    /// Draws the frame shown at `frame_time_ms` (the display link's
+    /// timestamp, on the clock input times use) into `target`: applies
+    /// arrived data, advances gestures and animations to it and
+    /// renders. A map draws targets of one format: all texture
+    /// targets, or all surfaces of a platform.
     ///
     /// Contract: `render_driver`.
     ///
     /// - Throws: `OrbErrorFailure` when it fails.
-    public func render(target: OrbTarget) throws -> OrbFrame {
-        let result = OrbMap_render(live(), target.live())
+    public func render(target: OrbTarget, frameTimeMs: Double) throws -> OrbFrame {
+        let result = OrbMap_render(live(), target.live(), frameTimeMs)
         guard result.is_ok else {
             throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
         }
@@ -429,13 +431,6 @@ public final class OrbMap {
     /// Contract: `event_batch`.
     public func pollEvent() -> OrbEvent? {
         return OrbMap_poll_event(live()).map { OrbEvent(handle: $0) }
-    }
-
-    /// Warnings since the last call, one per line.
-    ///
-    /// Contract: `event_batch`.
-    public func takeWarnings() -> String {
-        return withWrite { write in OrbMap_take_warnings(live(), write) }.text
     }
 
 }

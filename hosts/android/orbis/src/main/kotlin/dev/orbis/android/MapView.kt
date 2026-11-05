@@ -21,7 +21,9 @@ import dev.orbis.OrbError
 /**
  * A view that draws an Orbis map into its surface (Vulkan, or GLES on the
  * Compat tier), paced by Choreographer, and hands touch and mouse input to
- * the map's gestures. It draws only while the map needs frames: an idle map
+ * the map's gestures with their event times (`MotionEvent` times and
+ * historical samples, on the clock Choreographer's frame times use). It
+ * draws only while the map needs frames: an idle map
  * costs no frames, and data arriving on Orbis's threads wakes it. The map
  * outlives the surface: leaving the screen drops the target and keeps the
  * map. A lost GPU is replaced, and the map drawn again on the new one.
@@ -100,7 +102,7 @@ class MapView(context: Context, val runtime: OrbRuntime) :
         scheduled = false
         val target = target ?: return
         try {
-            val frame = map.render(target)
+            val frame = map.render(target, frameTimeNanos / 1e6)
             if (frame.drawn) {
                 framesDrawn++
                 onFrame?.invoke(frame)
@@ -143,15 +145,31 @@ class MapView(context: Context, val runtime: OrbRuntime) :
         val id = event.getPointerId(index).toUInt()
         val x = event.getX(index) / density
         val y = event.getY(index) / density
+        // Milliseconds of uptime: Choreographer's frame times' clock.
+        val time = event.eventTime.toDouble()
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN ->
-                map.pointerDown(id, kind, OrbButton.Primary, x, y, NO_MODIFIERS)
-            MotionEvent.ACTION_MOVE -> for (i in 0 until event.pointerCount) {
-                map.pointerMove(event.getPointerId(i).toUInt(), event.getX(i) / density, event.getY(i) / density)
+                map.pointerDown(id, kind, OrbButton.Primary, x, y, NO_MODIFIERS, time)
+            MotionEvent.ACTION_MOVE -> {
+                // The samples batched since the last event, then its own.
+                for (h in 0 until event.historySize) {
+                    val at = event.getHistoricalEventTime(h).toDouble()
+                    for (i in 0 until event.pointerCount) {
+                        map.pointerMove(
+                            event.getPointerId(i).toUInt(),
+                            event.getHistoricalX(i, h) / density,
+                            event.getHistoricalY(i, h) / density,
+                            at,
+                        )
+                    }
+                }
+                for (i in 0 until event.pointerCount) {
+                    map.pointerMove(event.getPointerId(i).toUInt(), event.getX(i) / density, event.getY(i) / density, time)
+                }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> map.pointerUp(id, x, y)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> map.pointerUp(id, x, y, time)
             MotionEvent.ACTION_CANCEL -> for (i in 0 until event.pointerCount) {
-                map.pointerCancel(event.getPointerId(i).toUInt())
+                map.pointerCancel(event.getPointerId(i).toUInt(), time)
             }
             else -> return super.onTouchEvent(event)
         }

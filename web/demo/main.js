@@ -243,8 +243,8 @@ async function load(next, { camera }) {
     attributionControl.update(editor.style);
   });
   map.on("load", () => { if (!toast.classList.contains("error")) say(""); });
+  map.on("warning", ({ message }) => console.warn(message));
   map.on("render", (ack) => {
-    for (const warning of ack.warnings) console.warn(warning);
     app.dataset.map = ack.idle ? "idle" : "drawing";
     hudControl.frame(ack);
     editor.frame(ack);
