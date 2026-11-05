@@ -477,10 +477,10 @@ pub(crate) fn drape_rows(
             let corner = DVec2::new(f64::from(cx), -f64::from(cy));
             let o = corner + (origin - t_origin) * k;
             out.push(TileRow {
-                origin: [o.x as f32, o.y as f32],
+                origin: o.to_array(),
                 scale: (scale * k) as f32,
                 clips,
-                world_per_px: (f64::from(row.world_per_px) * k) as f32,
+                px_scale: (f64::from(row.px_scale) * k) as f32,
                 target: PlacementTarget::Drape(stack as u8),
                 ..row
             });
@@ -1043,7 +1043,7 @@ mod tests {
             pattern_origin: [0; 2],
             extent: 4096.0,
             wrap: 0,
-            world_per_px: 1.0,
+            px_scale: 1.0,
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,
@@ -1064,14 +1064,16 @@ mod tests {
         let slot = DRAPE_SLOT_PX as f32;
         // Slot 1, stack 0 is atlas slot 2: column 2. The tile's top-left
         // is the slot's centre; its 4096 units span half a slot.
-        assert_eq!(rows[0].origin, [2.5 * slot, -0.5 * slot]);
+        let px = f64::from(DRAPE_SLOT_PX);
+        let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() + (a[1] - b[1]).abs() < 1e-9;
+        assert!(near(rows[0].origin, [2.5 * px, -0.5 * px]));
         assert_eq!(rows[0].scale, slot / 2.0 / 4096.0);
         assert_eq!(
-            rows[0].world_per_px,
+            rows[0].px_scale,
             (f64::from(DRAPE_SLOT_PX) / tms.tile_span(3)) as f32
         );
         assert_eq!(rows[1].target, PlacementTarget::Drape(1));
-        assert_eq!(rows[1].origin[0], 3.5 * slot);
+        assert_eq!(rows[1].origin[0], 3.5 * px);
         // Clipped to the terrain tile: the whole vector tile is inside.
         assert_eq!(rows[0].clips[0], ClipRect::new([0, 0], [4096, 4096]));
         // A neighbour outside contributes nothing.

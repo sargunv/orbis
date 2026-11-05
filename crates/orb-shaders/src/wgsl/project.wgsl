@@ -53,7 +53,7 @@ fn tile_to_world(tile: Tile, p: vec2<f32>) -> vec2<f32> {
         return tile_affine(tile, p);
     }
     let w = warp_patch(tile, p);
-    return tile.origin + warp_sum(w.z, lagrange(w.x), lagrange(w.y));
+    return tile_origin(tile) + warp_sum(w.z, lagrange(w.x), lagrange(w.y));
 }
 
 // World units per data unit at `p`: the tile's scale, or a warp's local
@@ -159,8 +159,7 @@ fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
         g.flat = tile_to_world(tile, p);
     }
     if frame.globe_amount > 0.0 && tile.globe_cells > 0u {
-        let origin = vec3<f32>(tile.globe_origin[0], tile.globe_origin[1], tile.globe_origin[2]);
-        g.globe = sphere_at(tile.globe_base, tile.globe_cells, origin, p / tile.extent);
+        g.globe = sphere_at(tile.globe_base, tile.globe_cells, tile_globe_origin(tile), p / tile.extent);
     }
     return g;
 }

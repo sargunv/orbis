@@ -221,5 +221,5 @@ fn translate_world(px: vec2<f32>, viewport_anchor: u32, tile: Tile) -> vec2<f32>
         let c = cos(frame.bearing);
         t = vec2<f32>(t.x * c - t.y * s, t.x * s + t.y * c);
     }
-    return vec2<f32>(t.x, -t.y) * tile.world_per_px;
+    return vec2<f32>(t.x, -t.y) * tile_world_per_px(tile);
 }

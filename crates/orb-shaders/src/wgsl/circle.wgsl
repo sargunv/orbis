@@ -85,7 +85,7 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let camera_distance = frame.view_proj[3].w;
     let scale_map = (node.flags & 2u) != 0u;
     if (node.flags & 4u) != 0u {
-        var scale = total * tile.world_per_px;
+        var scale = total * tile_world_per_px(tile);
         if !scale_map { scale *= projected.w / camera_distance; }
         let offset = corner * vec2<f32>(1.0, -1.0) * scale;
         out.position = ground_clip(center, offset, z);

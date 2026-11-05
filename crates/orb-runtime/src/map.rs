@@ -1473,6 +1473,13 @@ impl Map {
 
         let globe = view.globe().map(|globe| frame_globe(globe, &view));
         let frame = FrameBlock {
+            camera: view.camera_world().to_array(),
+            world_span: self
+                .surface
+                .projection()
+                .world_bounds()
+                .size()
+                .max_element(),
             view_proj: view.view_proj().as_mat4().to_cols_array_2d(),
             viewport: [viewport.width as f32, viewport.height as f32],
             world_per_px: view.world_per_px() as f32,
@@ -2137,7 +2144,6 @@ impl Map {
                 ));
             }
         }
-        let camera_world = view.camera_world();
         let period = self.surface.period();
         let placed = &mut style.placed[index];
         for (&tile, draws) in &rows {
@@ -2178,10 +2184,10 @@ impl Map {
             let on_plane = source_warp.is_none() || series.is_some();
             // On a globe, a tile draws through its patches on the sphere.
             let globe = match view.globe() {
-                Some(globe) => self
+                Some(_) => self
                     .globe_warps
                     .warp(gpu, renderer.scene(), tms, tile)
-                    .map(|(warp, anchor)| Some((warp, anchor - globe.target))),
+                    .map(|(warp, anchor)| Some((warp, anchor))),
                 None => on_plane.then_some(None),
             };
             // Nowhere to draw it this frame: no placements.
@@ -2189,7 +2195,7 @@ impl Map {
                 for &(_, scene_tile) in &resident.parts {
                     renderer
                         .scene()
-                        .place_tile(gpu, scene_tile, &[])
+                        .place_tile(scene_tile, &[])
                         .expect("removing placements always fits");
                 }
                 continue;
@@ -2197,11 +2203,9 @@ impl Map {
             for &(extent, scene_tile) in &resident.parts {
                 let at = Placement {
                     extent,
-                    camera_world,
                     period,
                     zoom: self.camera.zoom(self.surface.projection()),
                     frame,
-                    world_per_px: view.world_per_px(),
                     series: series.as_deref(),
                     warp: resident.warp,
                     globe,
@@ -2239,7 +2243,7 @@ impl Map {
                     }
                 }
                 report.tiles_drawn += rows.len() as u32;
-                if renderer.scene().place_tile(gpu, scene_tile, &rows).is_err() {
+                if renderer.scene().place_tile(scene_tile, &rows).is_err() {
                     self.warnings
                         .push("out of tile placements; some tiles are not drawn".into());
                 }
@@ -2250,7 +2254,7 @@ impl Map {
                 for &(_, scene_tile) in &resident.parts {
                     renderer
                         .scene()
-                        .place_tile(gpu, scene_tile, &[])
+                        .place_tile(scene_tile, &[])
                         .expect("removing placements always fits");
                 }
             }
@@ -2750,11 +2754,9 @@ impl Map {
         let period = self.surface.period();
         let at = Placement {
             extent: 8192,
-            camera_world: view.camera_world(),
             period,
             zoom,
             frame: None,
-            world_per_px: view.world_per_px(),
             series: None,
             warp: TileWarp::NONE,
             globe: None,
@@ -2771,11 +2773,7 @@ impl Map {
                     regions: vec![covered.index],
                 };
                 let globe = match view.globe() {
-                    Some(globe) => {
-                        let (warp, anchor) =
-                            globe_warps.warp(gpu, renderer.scene(), tms, covered.index)?;
-                        Some((warp, anchor - globe.target))
-                    }
+                    Some(_) => Some(globe_warps.warp(gpu, renderer.scene(), tms, covered.index)?),
                     None => None,
                 };
                 let at = Placement {
@@ -2810,7 +2808,7 @@ impl Map {
                 );
             }
         }
-        if renderer.scene().place_tile(gpu, tile, &rows).is_err() {
+        if renderer.scene().place_tile(tile, &rows).is_err() {
             self.warnings
                 .push("out of tile placements; the background is not drawn".into());
         }
@@ -3862,7 +3860,6 @@ fn pixel_alignment(view: &View, projection: &orb_crs::Projection, bearing: f64) 
 struct Placement<'a> {
     /// Data units per tile side.
     extent: u32,
-    camera_world: DVec2,
     /// The surface's wrap period, 0 if it doesn't wrap.
     period: f64,
     /// The camera's style zoom.
@@ -3870,14 +3867,11 @@ struct Placement<'a> {
     /// A warped tile's frame on the surface, which its mesh spans `extent`
     /// of; tiles on the surface's plane span their own bounds.
     frame: Option<orb_crs::WorldRect>,
-    /// World units per logical pixel at the camera target.
-    world_per_px: f64,
     /// A vector tile drawn through a warp's patches, relative to its
     /// anchor, and the patches in the scene.
     series: Option<&'a orb_crs::Series>,
     warp: TileWarp,
-    /// On a globe: the tile's patches on the sphere, and their anchor's
-    /// camera-relative position.
+    /// On a globe: the tile's patches on the sphere, and their anchor.
     globe: Option<(TileWarp, glam::DVec3)>,
     /// Whether the tile has a place on the plane (on a globe, a warped
     /// tile without planar patches draws on the sphere alone).
@@ -3893,23 +3887,20 @@ fn placements<'a>(
 ) -> impl Iterator<Item = TileRow> + use<'a> {
     let Placement {
         extent,
-        camera_world,
         period,
         zoom,
         frame,
-        world_per_px,
         series,
         warp,
         globe,
         on_plane,
         tile_zoom,
     } = at;
-    let world_per_px = world_per_px as f32;
     let bounds = frame.unwrap_or_else(|| tms.tile_bounds(draw.tile));
     let wrap = DVec2::new(f64::from(draw.wrap) * period, 0.0);
     let origin = match series {
-        Some(series) => series.anchor + wrap - camera_world,
-        None => DVec2::new(bounds.min.x, bounds.max.y) + wrap - camera_world,
+        Some(series) => series.anchor + wrap,
+        None => DVec2::new(bounds.min.x, bounds.max.y) + wrap,
     };
     let tile = draw.tile;
     // On a globe, regions on the world's edge reach on to the poles the
@@ -3963,18 +3954,18 @@ fn placements<'a>(
             extent: extent as f32,
             wrap: draw.wrap,
             pattern_origin,
-            origin: [origin.x as f32, origin.y as f32],
+            origin: origin.to_array(),
             scale,
             zoom: tile_zoom as f32,
             clips,
-            world_per_px,
+            px_scale: 1.0,
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,
             warp,
             globe: globe.map(|(warp, origin)| orb_render::RowGlobe {
                 warp,
-                origin: origin.as_vec3().to_array(),
+                origin: origin.to_array(),
                 on_plane,
             }),
         }
@@ -4006,7 +3997,7 @@ fn frame_globe(globe: &orb_camera::GlobeView, view: &View) -> orb_render::FrameG
     };
     orb_render::FrameGlobe {
         view_proj: globe.view_proj.as_mat4().to_cols_array_2d(),
-        target: globe.target.as_vec3().to_array(),
+        target: globe.target.to_array(),
         amount: globe.amount as f32,
         horizon,
         metres_per_unit: (globe.metres_per_px / view.world_per_px()) as f32,
@@ -4668,11 +4659,9 @@ mod tests {
         };
         let at = Placement {
             extent: 4096,
-            camera_world: DVec2::ZERO,
             period: 100.0,
             zoom: 3.0,
             frame: None,
-            world_per_px: 1.0,
             series: None,
             warp: TileWarp::NONE,
             globe: None,

@@ -1572,8 +1572,8 @@ mod tests {
     }
 
     /// M0 exit criterion 4: a camera-only frame is one dispatch and one
-    /// bundle replay, records no commands, and touches only the placement
-    /// rows of the tiles in view.
+    /// bundle replay, records no commands, and writes no placement rows
+    /// (decision 0043).
     #[test]
     fn panning_frame_by_frame_matches_a_fresh_view() {
         // Compacted indices rewrite only the slots of chunks that enter or
@@ -1634,7 +1634,7 @@ mod tests {
             assert!(!report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
             assert!(report.tiles_drawn > 0);
-            assert_eq!(report.frame.placements_written, report.tiles_drawn);
+            assert_eq!(report.frame.placements_written, 0);
             assert_eq!(report.tiles_loading, 0);
         }
     }
@@ -1651,7 +1651,6 @@ mod tests {
             assert_eq!(report.frame.dispatches, 1);
             assert!(!report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
-            assert_eq!(report.frame.placements_written, report.tiles_drawn);
             assert_eq!(report.frame.draws, 2);
             assert!(report.idle);
         }
@@ -1682,7 +1681,7 @@ mod tests {
             assert_eq!(report.frame.dispatches, 1);
             assert!(!report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
-            assert_eq!(report.frame.placements_written, report.tiles_drawn);
+            assert!(report.frame.placements_written < report.tiles_drawn);
             assert!(report.tiles_drawn > 0);
         }
         // Switching 1×/4× rebuilds dependent targets and bundles once; the
@@ -1830,7 +1829,7 @@ mod tests {
             assert_eq!(report.frame.dispatches, 1);
             assert!(!report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
-            assert_eq!(report.frame.placements_written, report.tiles_drawn);
+            assert_eq!(report.frame.placements_written, 0);
             assert_eq!(report.tiles_loading, 0);
             assert!(offscreen.map.take_warnings().is_empty());
         }

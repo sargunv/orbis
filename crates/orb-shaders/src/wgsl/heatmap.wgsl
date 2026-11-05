@@ -35,7 +35,7 @@ fn vs_heatmap(@builtin(vertex_index) index: u32, @builtin(instance_index) instan
     if amplitude <= zero || radius <= 0.0 { return out; }
     let scale = sqrt(-2.0 * log(zero / amplitude)) / 3.0;
     out.extrude = point_corner(index) * scale;
-    let offset = out.extrude * vec2<f32>(1.0, -1.0) * radius * tile.world_per_px;
+    let offset = out.extrude * vec2<f32>(1.0, -1.0) * radius * tile_world_per_px(tile);
     let z = ground_elevation(tile, p) * frame.extrusion_scale;
     out.position = ground_clip(tile_ground(tile, p), offset, z);
     out.weight = weight;

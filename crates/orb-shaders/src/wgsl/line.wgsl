@@ -144,7 +144,7 @@ fn line_vertex(v: Pulled) -> LineOut {
     // is used only for patterned/dashed line atlas scaling). In our camera-
     // relative world space, its reciprocal is world_per_px over the tile's
     // scale (a warped tile's local scale at the vertex).
-    let px_to_data = tile.world_per_px / tile_scale_at(tile, pos);
+    let px_to_data = tile_world_per_px(tile) / tile_scale_at(tile, pos);
     let dist = outset * extrude * EXTRUDE_SCALE;
     let offset2 = offset * offset_normal * EXTRUDE_SCALE * normal.y;
 

@@ -105,6 +105,8 @@ impl Harness {
 
     fn frame(pixel_ratio: f32) -> FrameBlock {
         FrameBlock {
+            camera: [0.0; 2],
+            world_span: 2.0,
             view_proj: [
                 [1.0, 0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0, 0.0],
@@ -143,7 +145,7 @@ fn full_view_tile(offset_x: f32) -> TileRow {
         pattern_origin: [0; 2],
         extent: 4096.0,
         wrap: 0,
-        origin: [-1.0 + offset_x, 1.0],
+        origin: [f64::from(-1.0 + offset_x), 1.0],
         scale: 2.0 / 4096.0,
         zoom: 0.0,
         clips: [
@@ -152,7 +154,7 @@ fn full_view_tile(offset_x: f32) -> TileRow {
             ClipRect::EMPTY,
             ClipRect::EMPTY,
         ],
-        world_per_px: WORLD_PER_PX,
+        px_scale: 1.0,
         dem: DemRef::NONE,
         terrain_range: [0.0; 2],
         target: PlacementTarget::Map,
@@ -193,7 +195,7 @@ fn pools_grow_into_larger_buffers_keeping_their_meshes() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .scene()
@@ -261,7 +263,7 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .scene()
@@ -300,7 +302,7 @@ fn draws_a_fill() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .scene()
@@ -326,7 +328,7 @@ fn camera_moves_and_mesh_removal_take_effect() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     let mesh = h
         .renderer
@@ -344,7 +346,7 @@ fn camera_moves_and_mesh_removal_take_effect() {
     // middle.
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(1.0)])
+        .place_tile(tile, &[full_view_tile(1.0)])
         .unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 4, 32), CLEAR);
@@ -353,13 +355,13 @@ fn camera_moves_and_mesh_removal_take_effect() {
     // Entirely off screen: culled.
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(4.0)])
+        .place_tile(tile, &[full_view_tile(4.0)])
         .unwrap();
     assert!(h.render().as_chunks::<4>().0.iter().all(|p| *p == CLEAR));
 
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer.scene().remove_mesh(mesh);
     assert!(h.render().as_chunks::<4>().0.iter().all(|p| *p == CLEAR));
@@ -395,19 +397,13 @@ fn adjacent_clip_regions_do_not_double_blend_their_shared_edge() {
     // Put x=1024 exactly on a pixel centre, so both inclusive clips would
     // shade that column and blend the translucent fill twice.
     let whole = full_view_tile(1.0 / SIZE as f32);
-    h.renderer
-        .scene()
-        .place_tile(&mut h.gpu, tile, &[whole])
-        .unwrap();
+    h.renderer.scene().place_tile(tile, &[whole]).unwrap();
     let reference = h.render();
     let mut left = whole;
     left.clips[0] = ClipRect::new([0, 0], [1024, 4096]);
     let mut right = whole;
     right.clips[0] = ClipRect::new([1024, 0], [4096, 4096]);
-    h.renderer
-        .scene()
-        .place_tile(&mut h.gpu, tile, &[left, right])
-        .unwrap();
+    h.renderer.scene().place_tile(tile, &[left, right]).unwrap();
     assert_eq!(h.render(), reference);
 }
 
@@ -429,11 +425,7 @@ fn placements_repeat_and_clip_a_tile() {
     // Two copies three quarters of a view apart: 0..32 and 48..64 are red.
     h.renderer
         .scene()
-        .place_tile(
-            &mut h.gpu,
-            tile,
-            &[full_view_tile(0.0), full_view_tile(1.5)],
-        )
+        .place_tile(tile, &[full_view_tile(0.0), full_view_tile(1.5)])
         .unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 4, 32), RED);
@@ -443,10 +435,7 @@ fn placements_repeat_and_clip_a_tile() {
     // One copy clipped to its top-left quadrant.
     let mut row = full_view_tile(0.0);
     row.clips[0] = ClipRect::new([0, 0], [2048, 2048]);
-    h.renderer
-        .scene()
-        .place_tile(&mut h.gpu, tile, &[row])
-        .unwrap();
+    h.renderer.scene().place_tile(tile, &[row]).unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 4, 4), RED);
     assert_eq!(pixel(&pixels, 4, 60), CLEAR);
@@ -482,7 +471,7 @@ fn uploads_streams_from_host_bytes() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .scene()
@@ -518,7 +507,7 @@ fn translates_fills_and_clips_where_they_land() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .scene()
@@ -546,7 +535,7 @@ fn margins_and_visibility_change_without_laying_candidates_out() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .scene()
@@ -607,11 +596,7 @@ fn compacted_slots_follow_the_view_without_recording() {
     clipped.clips[0] = ClipRect::new([0, 0], [2048, 2048]);
     h.renderer
         .scene()
-        .place_tile(
-            &mut h.gpu,
-            tile,
-            &[full_view_tile(0.0), clipped, full_view_tile(4.0)],
-        )
+        .place_tile(tile, &[full_view_tile(0.0), clipped, full_view_tile(4.0)])
         .unwrap();
 
     let first = h.render_stats();
@@ -639,11 +624,7 @@ fn compacted_slots_follow_the_view_without_recording() {
     // are rewritten, without recording commands.
     h.renderer
         .scene()
-        .place_tile(
-            &mut h.gpu,
-            tile,
-            &[full_view_tile(4.0), clipped, full_view_tile(0.0)],
-        )
+        .place_tile(tile, &[full_view_tile(4.0), clipped, full_view_tile(0.0)])
         .unwrap();
     let swapped = h.render_stats();
     assert!(!swapped.bundle_recorded);
@@ -702,10 +683,7 @@ fn circles_clip_anchors_once_but_keep_their_whole_footprint() {
     left.clips[0] = ClipRect::new([0, 0], [2048, 4096]);
     let mut right = full_view_tile(0.0);
     right.clips[0] = ClipRect::new([2048, 0], [4096, 4096]);
-    h.renderer
-        .scene()
-        .place_tile(&mut h.gpu, tile, &[left, right])
-        .unwrap();
+    h.renderer.scene().place_tile(tile, &[left, right]).unwrap();
     let mesh = orb_layout::point::layout(&point_at([2048, 2048]), &[0]);
     h.renderer
         .scene()
@@ -742,7 +720,7 @@ fn circle_sort_keys_merge_across_tiles() {
         let tile = h.renderer.scene().insert_tile();
         h.renderer
             .scene()
-            .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+            .place_tile(tile, &[full_view_tile(0.0)])
             .unwrap();
         let mesh = orb_layout::point::layout_sorted(&point_at([2048, 2048]), &[0], |_| Some(key));
         let mut props = [0; orb_render::CIRCLE_ROW_WORDS];
@@ -796,7 +774,7 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     let mesh = orb_layout::point::layout(&point_at([2048, 2048]), &[0]);
     h.renderer
@@ -854,7 +832,7 @@ fn glyph_atlas_growth_rerecords_node_bundles() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     let mesh = orb_layout::point::layout(&point_at([2048, 2048]), &[0]);
     h.renderer
@@ -886,7 +864,7 @@ fn point_instances_address_points_after_the_first_chunk() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     let mut b = LayerBuilder::new("points", 4096);
     b.begin_feature(None, GeometryType::Point);
@@ -951,7 +929,7 @@ fn image_rows_fill_late_span_pages_and_recycle_without_recording_commands() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
         .scene()
@@ -1054,7 +1032,7 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     let mut props = [0; orb_render::LINE_ROW_WORDS];
     props[19] = ramp;
@@ -1155,10 +1133,7 @@ fn fading_raster(ancestor: bool) -> Harness {
         ],
         ..full_view_tile(0.0)
     };
-    h.renderer
-        .scene()
-        .place_tile(&mut h.gpu, tile, &[row])
-        .unwrap();
+    h.renderer.scene().place_tile(tile, &[row]).unwrap();
     // The runtime's image quad: f32 position, clip units, weight, image
     // units.
     let (e, one) = (8192u32, 1f32.to_bits());
@@ -1295,7 +1270,7 @@ fn blended_fills(modes: [Blend; 2]) -> Vec<u8> {
     let tile = h.renderer.scene().insert_tile();
     h.renderer
         .scene()
-        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .place_tile(tile, &[full_view_tile(0.0)])
         .unwrap();
     for (node, color) in colors.into_iter().enumerate() {
         h.renderer.set_paint(

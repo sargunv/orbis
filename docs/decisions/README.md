@@ -47,3 +47,4 @@ in code and commit messages.
 - [0040](0040-first-release-architecture.md): The first-release architecture
 - [0041](0041-adaptive-planes.md): Adaptive projections: low-zoom planes over Web Mercator
 - [0042](0042-hosts-one-camera-writer.md): Hosts: one map with one camera writer, a thin native API, and the web on one thread
+- [0043](0043-core-frame-and-gpu.md): The core chain: camera-independent GPU state and a narrow renderer

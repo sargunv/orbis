@@ -103,6 +103,12 @@ pub const VISIBLE_ROW_WORDS: usize = VISIBLE_WORDS;
 pub struct FrameBlock {
     /// Camera-relative world → clip, column-major.
     pub view_proj: [[f32; 4]; 4],
+    /// Where the camera is in the world: tile rows' origins less it are
+    /// camera-relative.
+    pub camera: [f64; 2],
+    /// How many world units the surface spans, which sets the precision
+    /// positions split at ([`quantum`]).
+    pub world_span: f64,
     /// Logical pixels.
     pub viewport: [f32; 2],
     /// World units per logical pixel at the camera target.
@@ -180,8 +186,9 @@ pub struct FrameLights {
 pub struct FrameGlobe {
     /// Camera-relative globe space → clip, column-major.
     pub view_proj: [[f32; 4]; 4],
-    /// The target's ECEF position, for directions on the sphere.
-    pub target: [f32; 3],
+    /// The target's ECEF position: rows' anchors less it are
+    /// camera-relative.
+    pub target: [f64; 3],
     /// How much of a globe the view is: clip positions mix the plane's
     /// (0) and the globe's (1).
     pub amount: f32,
@@ -209,10 +216,34 @@ pub struct FrameTerrain {
     pub dem_dim: f32,
 }
 
-const FRAME_WORDS: usize = 84;
+const FRAME_WORDS: usize = 96;
 
 /// Bytes of a frame block's uniform buffer.
 pub const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 4;
+
+/// The power of two positions on a surface `span` world units across
+/// split at: a whole number of quanta (an i32, room for 64 spans) and an
+/// f32 remainder under half a quantum. Shaders subtract the camera's whole
+/// quanta as integers, exactly whatever the compiler reorders, then the
+/// remainders, which keeps positions to the f64 camera at zoom 22.
+pub fn quantum(span: f64) -> f64 {
+    2f64.powi((span * 64.0 / 2f64.powi(31)).log2().ceil() as i32)
+}
+
+/// The sphere globe positions are on is this many metres across
+/// (`project.wgsl`'s `SPHERE_RADIUS`).
+const GLOBE_SPAN: f64 = 2.0 * 6_378_137.0;
+
+/// A position as whole quanta and remainders: the i32 words' bits, then
+/// the f32 words' (see [`quantum`]).
+fn split<const N: usize>(v: [f64; N], quantum: f64) -> [[u32; N]; 2] {
+    let whole = v.map(|x| (x / quantum).round());
+    let mut rest = [0u32; N];
+    for i in 0..N {
+        rest[i] = ((v[i] - whole[i] * quantum) as f32).to_bits();
+    }
+    [whole.map(|w| w as i64 as i32 as u32), rest]
+}
 
 /// Writes a frame block into a uniform buffer of [`FRAME_BYTES`]: the
 /// scene's own, or another view's of the same scene (the terrain drape's).
@@ -235,6 +266,12 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     words[27] = frame.symbol_fade_change.to_bits();
     words[28] = frame.pitch.to_bits();
     words[29] = frame.roll.to_bits();
+    let q = quantum(frame.world_span);
+    let [camera_hi, camera_lo] = split(frame.camera, q);
+    words[84..86].copy_from_slice(&camera_hi);
+    words[86..88].copy_from_slice(&camera_lo);
+    words[91] = (q as f32).to_bits();
+    words[95] = (quantum(GLOBE_SPAN) as f32).to_bits();
     words[30] = frame.zoom.to_bits() as u32;
     words[31] = (frame.zoom.to_bits() >> 32) as u32;
     if let Some(t) = frame.terrain {
@@ -274,8 +311,11 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
             *word = v.to_bits();
         }
         for (word, v) in words[72..75].iter_mut().zip(g.target) {
-            *word = v.to_bits();
+            *word = (v as f32).to_bits();
         }
+        let [target_hi, target_lo] = split(g.target, quantum(GLOBE_SPAN));
+        words[88..91].copy_from_slice(&target_hi);
+        words[92..95].copy_from_slice(&target_lo);
         words[75] = g.amount.to_bits();
         words[76] = g.metres_per_unit.to_bits();
         words[77] = u32::from(g.plane);
@@ -286,14 +326,16 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&words));
 }
 
-/// One placement of a tile's data: its transform into camera-relative world
-/// space, `origin + (x, -y) · scale` (or, with a planar warp, `origin` plus
-/// the warp's quadratic patches; `scale` is then its local scale at the
+/// One placement of a tile's data: its transform into the world,
+/// `origin + (x, -y) · scale` (or, with a planar warp, `origin` plus the
+/// warp's quadratic patches; `scale` is then its local scale at the
 /// centre), and where it may draw. On a globe, its position on the sphere
-/// is `globe_origin` plus its warp's patches in space.
+/// is `globe.origin` plus its warp's patches in space. Nothing in it
+/// depends on the camera but the pattern origin's integer zoom.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TileRow {
-    pub origin: [f32; 2],
+    /// In world units; rows hold it as hi/lo f32, less the frame's camera.
+    pub origin: [f64; 2],
     pub scale: f32,
     /// The tile's zoom level.
     pub zoom: f32,
@@ -305,11 +347,11 @@ pub struct TileRow {
     pub extent: f32,
     /// The world copy it draws; symbol meshes keep state words per copy.
     pub wrap: i32,
-    /// World units per logical pixel of the camera, at this placement's
-    /// scale: pixel sizes (line widths, translations) convert with it. A
-    /// map placement has the camera's; a drape placement scales it with
-    /// its slot.
-    pub world_per_px: f32,
+    /// World units per logical pixel at this placement's scale, as a
+    /// multiple of the frame's: pixel sizes (line widths, translations)
+    /// convert with it. 1 for a map placement; a drape placement scales it
+    /// with its slot.
+    pub px_scale: f32,
     /// The DEM tile elevated content of this placement stands on.
     pub dem: DemRef,
     /// The lowest and highest terrain elevation under the placement, in
@@ -323,14 +365,49 @@ pub struct TileRow {
     pub globe: Option<RowGlobe>,
 }
 
-/// A placement on a globe: its patches in space, their anchor less the
-/// camera target in metres, and whether it also has a position on the
+impl TileRow {
+    /// The row as `types.wgsl`'s `Tile`, its origins split at `quantum`
+    /// on the plane.
+    fn words(&self, quantum: f64) -> [u32; TILE_WORDS] {
+        let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
+        let mut words = [0u32; TILE_WORDS];
+        let [origin_hi, origin_lo] = split(self.origin, quantum);
+        words[0..2].copy_from_slice(&origin_hi);
+        words[2] = self.scale.to_bits();
+        words[3] = self.zoom.to_bits();
+        for (i, clip) in self.clips.iter().enumerate() {
+            words[4 + i * 2] = pack(clip.min);
+            words[5 + i * 2] = pack(clip.max);
+        }
+        words[12..14].copy_from_slice(&self.pattern_origin);
+        words[14] = self.extent.to_bits();
+        words[15] = self.wrap as u32;
+        words[16] = self.px_scale.to_bits();
+        words[17..19].copy_from_slice(&self.dem.words());
+        words[19] = pack_range(self.terrain_range);
+        words[20] = self.warp.base;
+        words[21] = self.warp.cells;
+        if let Some(globe) = self.globe {
+            let [hi, lo] = split(globe.origin, self::quantum(GLOBE_SPAN));
+            words[22..25].copy_from_slice(&hi);
+            words[25] = globe.warp.base;
+            words[26] = globe.warp.cells;
+            words[27] = u32::from(!globe.on_plane);
+            words[30..33].copy_from_slice(&lo);
+        }
+        words[28..30].copy_from_slice(&origin_lo);
+        words
+    }
+}
+
+/// A placement on a globe: its patches in space, their anchor in ECEF
+/// metres, and whether it also has a position on the
 /// plane (a tile the plane can't hold, such as one at a pole, draws only
 /// on the globe).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowGlobe {
     pub warp: TileWarp,
-    pub origin: [f32; 3],
+    pub origin: [f64; 3],
     pub on_plane: bool,
 }
 
@@ -423,7 +500,7 @@ impl ClipRect {
 }
 
 /// Words of a tile row (`types.wgsl`'s `Tile`, `TILE_WORDS` there).
-const TILE_WORDS: usize = 28;
+const TILE_WORDS: usize = 34;
 /// Words per biquadratic patch of a planar warp: nine nodes' positions
 /// (`project.wgsl`).
 pub const WARP_PATCH_WORDS: usize = 18;
@@ -876,8 +953,14 @@ pub struct Scene {
     /// Changes whenever a pool moves into a larger buffer: bind groups and
     /// recorded commands over the old one must be made again.
     buffers_revision: u64,
-    /// Placement rows written since the last `take_placements_written`.
+    /// Placement rows that changed since the last `take_placements_written`.
     placements_written: u32,
+    /// The tile table's rows as the GPU holds them, and rows changed since
+    /// the last [`prepare`](Self::prepare), which writes them.
+    tile_rows: Vec<u32>,
+    rows_dirty: Vec<(u32, TileRow)>,
+    /// The quantum rows' origins are split at ([`quantum`]).
+    quantum: f64,
 }
 
 /// Counts for the stats HUD and memory accounting.
@@ -994,6 +1077,9 @@ impl Scene {
             revision: 0,
             buffers_revision: 0,
             placements_written: 0,
+            tile_rows: Vec::new(),
+            rows_dirty: Vec::new(),
+            quantum: 0.0,
         }
     }
 
@@ -1232,15 +1318,13 @@ impl Scene {
         }
     }
 
-    /// Sets where a tile draws this frame: one row per placement, none to
-    /// hide it.
-    pub fn place_tile(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        tile: TileId,
-        rows: &[TileRow],
-    ) -> Result<(), OutOfSpace> {
+    /// Sets where a tile draws: one row per placement, none to hide it.
+    /// Rows are of the tile's place in the world, not of the camera, so
+    /// a frame that only moves the camera changes none; changed rows reach
+    /// the GPU together in the next [`prepare`](Self::prepare).
+    pub fn place_tile(&mut self, tile: TileId, rows: &[TileRow]) -> Result<(), OutOfSpace> {
         let entry = self.tiles[tile.0 as usize].as_mut().expect("unknown tile");
+        let added = rows.len().saturating_sub(entry.placements.len());
         if entry.placements.len() != rows.len() {
             let needed = rows.len().saturating_sub(entry.placements.len()) as u32;
             if needed > self.placement_slots.available() {
@@ -1259,48 +1343,58 @@ impl Scene {
             self.candidates_dirty = true;
             self.revision += 1;
         }
-        self.placements_written += rows.len() as u32;
-        for (placement, row) in entry.placements.iter_mut().zip(rows) {
-            placement.row = *row;
-            let slot = placement.slot;
-            let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
-            let mut words = [0u32; TILE_WORDS];
-            words[..4].copy_from_slice(&[
-                row.origin[0].to_bits(),
-                row.origin[1].to_bits(),
-                row.scale.to_bits(),
-                row.zoom.to_bits(),
-            ]);
-            words[12..14].copy_from_slice(&row.pattern_origin);
-            words[14] = row.extent.to_bits();
-            words[15] = row.wrap as u32;
-            words[16] = row.world_per_px.to_bits();
-            words[17..19].copy_from_slice(&row.dem.words());
-            words[19] = pack_range(row.terrain_range);
-            words[20] = row.warp.base;
-            words[21] = row.warp.cells;
-            if let Some(globe) = row.globe {
-                words[22..25].copy_from_slice(&globe.origin.map(f32::to_bits));
-                words[25] = globe.warp.base;
-                words[26] = globe.warp.cells;
-                words[27] = u32::from(!globe.on_plane);
+        let fresh = entry.placements.len() - added;
+        for (i, (placement, row)) in entry.placements.iter_mut().zip(rows).enumerate() {
+            if i >= fresh || placement.row != *row {
+                placement.row = *row;
+                self.rows_dirty.push((placement.slot, *row));
             }
-            for (i, clip) in row.clips.iter().enumerate() {
-                words[4 + i * 2] = pack(clip.min);
-                words[5 + i * 2] = pack(clip.max);
-            }
-            write_words(
-                gpu,
-                self.buffers.tiles,
-                self.cull.as_mut().map(|c| &mut c.tiles),
-                slot * TILE_WORDS as u32,
-                &words,
-            );
         }
         Ok(())
     }
 
-    /// Placement rows written since the last call.
+    /// Packs the rows that changed, or every row when the quantum did,
+    /// and writes them in one write.
+    fn write_rows(&mut self, gpu: &mut dyn Gpu, quantum: f64) {
+        if quantum != self.quantum {
+            self.quantum = quantum;
+            self.rows_dirty = self
+                .tiles
+                .iter()
+                .flatten()
+                .flat_map(|t| &t.placements)
+                .map(|p| (p.slot, p.row))
+                .collect();
+        }
+        let Some(first) = self.rows_dirty.iter().map(|d| d.0).min() else {
+            return;
+        };
+        let end = self
+            .rows_dirty
+            .iter()
+            .map(|d| d.0)
+            .max()
+            .expect("not empty")
+            + 1;
+        let words = |slot: u32| slot as usize * TILE_WORDS;
+        if self.tile_rows.len() < words(end) {
+            self.tile_rows.resize(words(end), 0);
+        }
+        self.placements_written += self.rows_dirty.len() as u32;
+        for (slot, row) in self.rows_dirty.drain(..) {
+            self.tile_rows[words(slot)..words(slot + 1)].copy_from_slice(&row.words(quantum));
+        }
+        write_words(
+            gpu,
+            self.buffers.tiles,
+            self.cull.as_mut().map(|c| &mut c.tiles),
+            words(first) as u32,
+            &self.tile_rows[words(first)..words(end)],
+        );
+    }
+
+    /// Placement rows that changed in the frames since the last call, which
+    /// each frame wrote in one write.
     pub fn take_placements_written(&mut self) -> u32 {
         std::mem::take(&mut self.placements_written)
     }
@@ -1580,6 +1674,7 @@ impl Scene {
     /// placements changed. Returns the number of candidates, and whether
     /// they were laid out again.
     pub fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> (u32, bool) {
+        self.write_rows(gpu, quantum(frame.world_span));
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
             self.candidates_dirty = false;

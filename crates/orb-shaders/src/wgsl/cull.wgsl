@@ -73,7 +73,7 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
     let chunk = chunks[candidate.chunk];
     let tile = tiles[candidate.tile];
 
-    let margin = margin_px * tile.world_per_px / tile.scale;
+    let margin = margin_px * tile_world_per_px(tile) / tile.scale;
     let before_clip = select(margin, 0.0, point_instances);
     var lo = unpack_i16x2(chunk.bounds_min) - vec2<f32>(before_clip);
     var hi = unpack_i16x2(chunk.bounds_max) + vec2<f32>(before_clip);

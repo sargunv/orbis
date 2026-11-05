@@ -241,7 +241,14 @@ fn candidate_visible(
     let c = &tables.chunks[chunk as usize * CHUNK_ROW_WORDS..][..CHUNK_ROW_WORDS];
     let t = &tables.tiles[tile as usize * TILE_ROW_WORDS..][..TILE_ROW_WORDS];
     let f = |i: usize| f32::from_bits(t[i]);
-    let (origin, scale, world_per_px) = ([f(0), f(1)], f(2), f(16));
+    // The row's origin less the camera, in f64 where the GPU subtracts
+    // whole quanta and remainders apart.
+    let quantum = orb_scene::quantum(frame.world_span);
+    let origin = [0, 1].map(|i| {
+        let world = f64::from(t[i] as i32) * quantum + f64::from(f(28 + i));
+        (world - frame.camera[i]) as f32
+    });
+    let (scale, world_per_px) = (f(2), frame.world_per_px * f(16));
     let points = node.draw == DRAW_POINTS;
     let margin = node.margin_px * world_per_px / scale;
     let before = if points { 0.0 } else { margin };

@@ -1044,6 +1044,8 @@ impl Terrain {
         ];
         orb_scene::FrameBlock {
             view_proj,
+            // Drape placements' origins are in drape space already.
+            camera: [0.0; 2],
             viewport: [w, h],
             pixel_ratio: 1.0,
             align: [0.0; 2],

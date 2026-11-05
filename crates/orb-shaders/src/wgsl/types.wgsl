@@ -60,13 +60,26 @@ struct Frame {
     // The eye, camera-relative ECEF metres.
     globe_eye: vec3<f32>,
     lod_height: f32,
+    // The camera's world position as whole quanta and a remainder (orb-
+    // scene's `quantum`): rows' origins less it are camera-relative
+    // (`tile_origin`).
+    camera_whole: vec2<i32>,
+    camera_rest: vec2<f32>,
+    // `globe_target` split alike, at `globe_quantum`.
+    globe_target_whole: vec3<i32>,
+    quantum: f32,
+    globe_target_rest: vec3<f32>,
+    globe_quantum: f32,
 };
 
-// One placement of a tile's data: data units → camera-relative world is
+// One placement of a tile's data: data units → world is
 // `origin + vec2(x, -y) * scale`, or `origin` plus the tile's warp (see
-// project.wgsl). The tile draws only inside its clip rectangles.
+// project.wgsl). The tile draws only inside its clip rectangles. Nothing
+// in it depends on the camera: its origins are absolute (`tile_origin`,
+// `tile_globe_origin`).
 struct Tile {
-    origin: vec2<f32>,
+    // In world units, as whole quanta and the remainder in `origin_rest`.
+    origin: vec2<i32>,
     scale: f32,
     // The tile's zoom level, for zoom-and-feature curves.
     zoom: f32,
@@ -77,8 +90,9 @@ struct Tile {
     extent: f32,
     // The world copy it draws.
     wrap: i32,
-    // World units per logical camera pixel at this placement's scale.
-    world_per_px: f32,
+    // World units per logical camera pixel at this placement's scale, as a
+    // multiple of the frame's (`tile_world_per_px`).
+    px_scale: f32,
     // The DEM elevated content stands on: page layer (low 16 bits, all
     // ones for none) and depth below the tile (bits 16–23), then the
     // tile's offset in the DEM tile as two u16s.
@@ -93,14 +107,18 @@ struct Tile {
     warp_cells: u32,
     // On a globe, its patches in space (27 words each) around
     // `globe_origin`, and flags: bit 0, no position on the plane.
-    globe_origin: array<f32, 3>,
+    globe_origin: array<i32, 3>,
     globe_base: u32,
     globe_cells: u32,
     globe_flags: u32,
+    // The remainders of `origin` and `globe_origin`.
+    origin_rest: vec2<f32>,
+    globe_origin_rest: array<f32, 3>,
+    _pad: u32,
 };
 
 // Words per tile row (orb-scene's `TILE_WORDS`).
-const TILE_WORDS: u32 = 28u;
+const TILE_WORDS: u32 = 34u;
 
 const TERRAIN_RANGE_UNIT: f32 = 4.0;
 
@@ -177,10 +195,31 @@ const HIDDEN_INDEX: u32 = 0xfffffffeu;
 // Every chunk is drawn as this many vertices; the excess is degenerate.
 const CHUNK_VERTICES: u32 = 768u;
 
+// The tile's origin, camera-relative: whole quanta subtract as integers,
+// exactly however the compiler reorders float arithmetic, then the
+// remainders, which keeps it to the camera's f64 position at any zoom.
+fn tile_origin(tile: Tile) -> vec2<f32> {
+    return vec2<f32>(tile.origin - frame.camera_whole) * frame.quantum
+        + (tile.origin_rest - frame.camera_rest);
+}
+
+// The anchor of the tile's patches in space, camera-relative.
+fn tile_globe_origin(tile: Tile) -> vec3<f32> {
+    let whole = vec3<i32>(tile.globe_origin[0], tile.globe_origin[1], tile.globe_origin[2]);
+    let rest = vec3<f32>(tile.globe_origin_rest[0], tile.globe_origin_rest[1], tile.globe_origin_rest[2]);
+    return vec3<f32>(whole - frame.globe_target_whole) * frame.globe_quantum
+        + (rest - frame.globe_target_rest);
+}
+
+// World units per logical pixel at the placement's scale.
+fn tile_world_per_px(tile: Tile) -> f32 {
+    return frame.world_per_px * tile.px_scale;
+}
+
 // An affine tile's data units → camera-relative world (project.wgsl
 // handles warped tiles too).
 fn tile_affine(tile: Tile, p: vec2<f32>) -> vec2<f32> {
-    return tile.origin + vec2<f32>(p.x, -p.y) * tile.scale;
+    return tile_origin(tile) + vec2<f32>(p.x, -p.y) * tile.scale;
 }
 
 fn unpack_i16x2(w: u32) -> vec2<f32> {

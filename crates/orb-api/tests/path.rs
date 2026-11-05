@@ -270,3 +270,78 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     let end = (STATION, 13.8, 40.0, 60.0);
     assert_same("terrain", both_ways(&style, start, end, 30));
 }
+
+/// A frame that only moves the camera, with nothing arriving or leaving
+/// the view, writes no tile rows and lays out no cull candidates: rows
+/// are of tiles' places in the world.
+#[test]
+fn camera_only_frames_write_no_rows() {
+    for style in [
+        tokyo("", ""),
+        tokyo(r#""projection": {"type": "globe"},"#, ""),
+    ] {
+        let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+        let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(&style).unwrap();
+        let at = |step: f64| (STATION, 14.2 + step * 0.01, step, 20.0);
+        map.jump_to(&camera(at(0.0)));
+        settle(&mut map, &mut target);
+        for step in 1..=3 {
+            map.jump_to(&camera(at(f64::from(step))));
+            let report = map.render(&mut target).unwrap().unwrap();
+            assert_eq!(report.tiles_loading, 0, "the move loads nothing");
+            assert_eq!(report.frame.placements_written, 0, "step {step}");
+            assert!(!report.frame.candidates_rebuilt, "step {step}");
+        }
+    }
+}
+
+/// At zoom 22 a square's corner draws where the CPU projects it, to a
+/// pixel: rows' origins and the camera subtract as hi and lo parts on the
+/// GPU.
+#[test]
+fn zoom_22_draws_to_the_pixel() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    // A square far from the world's origin, its south-west corner near
+    // the view's centre.
+    let (lon, lat) = (139.767_123_4, 35.681_234_5);
+    let style = format!(
+        r##"{{"version": 8, "sources": {{"square": {{"type": "geojson", "data":
+            {{"type": "Polygon", "coordinates": [[[{lon}, {lat}], [{e}, {lat}], [{e}, {n}],
+            [{lon}, {n}], [{lon}, {lat}]]]}}}}}},
+          "layers": [{{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+            {{"id": "square", "type": "fill", "source": "square",
+              "paint": {{"fill-color": "#000000", "fill-antialias": false}}}}]}}"##,
+        e = lon + 0.01,
+        n = lat + 0.01,
+    );
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    // A few metres apart: tens of pixels at zoom 22.
+    for (dlon, dlat) in [(0.0, 0.0), (2.37e-6, -1.13e-6), (-3.11e-6, 0.9e-6)] {
+        let center = Geodetic::new(lon + dlon, lat + dlat);
+        map.jump_to(&camera((center, 22.0, 0.0, 0.0)));
+        settle(&mut map, &mut target);
+        let pixels = target.read_pixels().unwrap();
+        let corner = map.project(Geodetic::new(lon, lat)).expect("in view");
+        let dark = |x: u32, y: u32| pixels[((y * WIDTH + x) * 4) as usize] < 128;
+        // A row just inside the square, and a column just inside it.
+        let row = (corner.y - 4.0) as u32;
+        let column = (corner.x + 4.0) as u32;
+        let left = (0..WIDTH)
+            .find(|&x| dark(x, row))
+            .expect("the square shows");
+        let bottom = (0..HEIGHT)
+            .rev()
+            .find(|&y| dark(column, y))
+            .expect("the square shows")
+            + 1;
+        assert!(
+            (f64::from(left) - corner.x).abs() <= 1.0
+                && (f64::from(bottom) - corner.y).abs() <= 1.0,
+            "the corner draws at ({left}, {bottom}), not at {corner}"
+        );
+    }
+}
