@@ -3,8 +3,9 @@
 use orb_crs::TileIndex;
 use orb_style::Encoding;
 
-use crate::jobs::{Built, TileRequest, TileResult, TileWorker};
+use crate::jobs::TileResult;
 use crate::loader::TileLocation;
+use crate::worker::{Built, TileRequest, TileWorker};
 
 /// The committed test data, served for `local://` URLs (`tests/data/README.md`).
 pub(crate) const ASSETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data");

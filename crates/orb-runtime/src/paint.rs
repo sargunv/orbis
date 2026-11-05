@@ -7,9 +7,13 @@ use std::sync::Arc;
 
 use orb_hal::Gpu;
 use orb_render::{
-    Curve, Family, FillPaint, ImageAtlas, LinePaint, NodePaint, PatternPaint, Renderer, Translate,
+    Curve, Family, FillPaint, ImageAtlas, ImageKey, LinePaint, NodePaint, PatternPaint, Renderer,
+    Translate,
 };
-use orb_style::{LayerType, TranslateAnchor};
+use orb_style::{
+    Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH, LayerType, LineCap,
+    TranslateAnchor,
+};
 
 use crate::image;
 use crate::map::LoadedStyle;
@@ -484,10 +488,10 @@ fn node_paint(
     for (slot, property) in properties.iter().enumerate() {
         if property.per_feature() {
             table_mask |= 1 << slot;
-            curves[slot] = property.curve();
+            curves[slot] = curve(property);
             numbers[slot] = maxima[slot];
         } else if property.is_state_lookup() {
-            curves[slot] = property.curve();
+            curves[slot] = curve(property);
             match property {
                 PaintProperty::Number(_) => numbers[slot] = property.default_number(zoom),
                 _ => color = property.default_color(zoom),
@@ -556,7 +560,7 @@ fn node_paint(
         }),
         image => unreachable!("{image:?} nodes are painted above"),
     };
-    let paint = crate::line::paint(
+    let paint = line_paint(
         gpu,
         paint,
         layer,
@@ -669,6 +673,93 @@ fn pattern_paint(
             )
         }
         _ => unreachable!("base paint"),
+    }
+}
+
+/// A line node's dash and gradient paint, its dashes resolved in `atlas`.
+fn line_paint(
+    gpu: &mut dyn Gpu,
+    paint: NodePaint,
+    line: &orb_style::Layer,
+    atlas: &mut ImageAtlas,
+    namespace: u64,
+    zoom: f64,
+    crossfade: Crossfade,
+) -> NodePaint {
+    let NodePaint::Line(mut paint) = paint else {
+        return paint;
+    };
+    if line.ty != LayerType::Line {
+        return NodePaint::Line(paint);
+    }
+    if line.get(LINE_PATTERN).constant() != Some(None) {
+        return NodePaint::Line(paint);
+    }
+    paint.gradient = line.ramp(LINE_GRADIENT).is_some();
+    let p = line.get(LINE_DASHARRAY);
+    if p.constant() != Some(None) {
+        // The pin only evaluates caps per feature for data-driven dashes.
+        // Constant dashes use the cap's constant fallback for their SDF.
+        let per_feature = matches!(p.kind(), Kind::Source | Kind::Composite);
+        if per_feature {
+            paint.table_mask |= 128;
+        }
+        let mut resolve = |z| {
+            p.evaluate(z)
+                .and_then(|array| {
+                    atlas
+                        .resolve_key(
+                            gpu,
+                            namespace,
+                            &ImageKey::Dash {
+                                array: array.iter().map(|v| v.to_bits()).collect(),
+                                round: line.get(LINE_CAP).evaluate(zoom) == LineCap::Round,
+                            },
+                        )
+                        .ok()
+                })
+                .unwrap_or(0)
+        };
+        paint.dash = Some(PatternPaint {
+            from: if per_feature {
+                0
+            } else {
+                resolve(
+                    zoom.floor()
+                        + if crossfade.from_scale > 1.0 {
+                            -1.0
+                        } else {
+                            1.0
+                        },
+                )
+            },
+            to: if per_feature {
+                0
+            } else {
+                resolve(zoom.floor())
+            },
+            from_scale: crossfade.from_scale,
+            to_scale: 1.0,
+            mix: crossfade.mix,
+            floor_width: line.get(LINE_WIDTH).evaluate(zoom.floor()),
+        });
+    }
+    NodePaint::Line(paint)
+}
+
+/// How a property's row values blend with zoom.
+pub(crate) fn curve(property: &PaintProperty<'_>) -> Curve {
+    use orb_expr::Interpolation;
+    let interpolation = property
+        .expression()
+        .filter(|e| e.kind() == Kind::Composite)
+        .and_then(|e| e.zoom_curve())
+        .and_then(|c| c.interpolation);
+    match interpolation {
+        None => Curve::Step,
+        Some(Interpolation::Linear) => Curve::Exponential(1.0),
+        Some(Interpolation::Exponential(base)) => Curve::Exponential(base as f32),
+        Some(Interpolation::CubicBezier(p)) => Curve::CubicBezier(p.map(|v| v as f32)),
     }
 }
 

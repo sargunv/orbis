@@ -11,9 +11,9 @@ use glam::DVec2;
 use orb_crs::TileIndex;
 
 use crate::features::{FeatureRequest, FeatureSelect, TileFeature, write_string};
-use crate::jobs::TileRequest;
 use crate::query::FeatureKey;
 use crate::resident::SourceState;
+use crate::worker::TileRequest;
 
 /// Called once with a query's features: a JSON array of GeoJSON features,
 /// topmost first for rendered queries (GL JS's `MapGeoJSONFeature`s), or

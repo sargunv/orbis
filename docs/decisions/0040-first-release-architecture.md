@@ -61,7 +61,15 @@ settled on. Each part's own record holds the details as it lands.
 
 **One wire codec and one job host.**
 - Worker messages use postcard; mesh streams stay raw and transferable.
-- Job code moves out of `orb-runtime` into a job crate free of the renderer.
+- Job code stays in `orb-runtime` but apart from the renderer: its modules
+  (the worker, tile, symbol and glyph jobs, features, GeoJSON, the job host)
+  name no renderer, scene or GPU type, which `cargo xtask check`'s boundary
+  rules enforce. Moving it to a crate of its own was dropped: job workers
+  load the same `core.wasm` as the page, so it saves no size; it adds lines
+  rather than removing them; and no existing crate may hold it under plan
+  §5.3 (`orb-layout` is job-side and may not read the style, and
+  `orb-jobs` would bring the style and text crates into the GPU HAL's
+  build).
 - Native `PoolJobs` and the browser's job workers share one job host.
 
 **Hosts.**

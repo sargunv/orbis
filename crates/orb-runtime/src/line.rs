@@ -1,15 +1,14 @@
-//! Line texture keys are job data. GPU allocation and stable ids belong to
-//! the shared scene atlas, just like named sprite dependencies.
+//! Line textures in the tile job: per feature, the keys of its dashes and
+//! gradient ramp. The scene's shared atlas allocates them, as it does
+//! named sprite images.
 
-use orb_hal::Gpu;
-use orb_render::{ImageAtlas, ImageKey, NodePaint, PatternPaint, pack_color};
+use orb_layout::{ImageKey, pack_color};
 use orb_shaders::layout;
 use orb_style::{
-    Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH, LayerType, LineCap,
+    LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH, LayerType, LineCap,
 };
 use orb_tile::Layer;
 
-use crate::paint::Crossfade;
 use crate::tile::ImageRef;
 
 /// Whether a line layer's property rows carry dash or gradient textures.
@@ -121,74 +120,4 @@ pub(crate) fn textures(
             });
         }
     }
-}
-
-pub(crate) fn paint(
-    gpu: &mut dyn Gpu,
-    paint: NodePaint,
-    line: &orb_style::Layer,
-    atlas: &mut ImageAtlas,
-    namespace: u64,
-    zoom: f64,
-    crossfade: Crossfade,
-) -> NodePaint {
-    let NodePaint::Line(mut paint) = paint else {
-        return paint;
-    };
-    if line.ty != LayerType::Line {
-        return NodePaint::Line(paint);
-    }
-    if line.get(LINE_PATTERN).constant() != Some(None) {
-        return NodePaint::Line(paint);
-    }
-    paint.gradient = line.ramp(LINE_GRADIENT).is_some();
-    let p = line.get(LINE_DASHARRAY);
-    if p.constant() != Some(None) {
-        // The pin only evaluates caps per feature for data-driven dashes.
-        // Constant dashes use the cap's constant fallback for their SDF.
-        let per_feature = matches!(p.kind(), Kind::Source | Kind::Composite);
-        if per_feature {
-            paint.table_mask |= 128;
-        }
-        let mut resolve = |z| {
-            p.evaluate(z)
-                .and_then(|array| {
-                    atlas
-                        .resolve_key(
-                            gpu,
-                            namespace,
-                            &ImageKey::Dash {
-                                array: array.iter().map(|v| v.to_bits()).collect(),
-                                round: line.get(LINE_CAP).evaluate(zoom) == LineCap::Round,
-                            },
-                        )
-                        .ok()
-                })
-                .unwrap_or(0)
-        };
-        paint.dash = Some(PatternPaint {
-            from: if per_feature {
-                0
-            } else {
-                resolve(
-                    zoom.floor()
-                        + if crossfade.from_scale > 1.0 {
-                            -1.0
-                        } else {
-                            1.0
-                        },
-                )
-            },
-            to: if per_feature {
-                0
-            } else {
-                resolve(zoom.floor())
-            },
-            from_scale: crossfade.from_scale,
-            to_scale: 1.0,
-            mix: crossfade.mix,
-            floor_width: line.get(LINE_WIDTH).evaluate(zoom.floor()),
-        });
-    }
-    NodePaint::Line(paint)
 }

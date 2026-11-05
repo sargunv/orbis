@@ -5,7 +5,7 @@
 use orb_style::{Encoding, SourceKind};
 use orb_tile::{GeometryType, Layer, ValueRef};
 
-use crate::jobs::{TileRequest, TileWorker};
+use crate::worker::{TileRequest, TileWorker};
 
 /// Which features of a tile a query wants.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -150,8 +150,7 @@ pub struct RasterPaint {
     pub fade_duration: f32,
 }
 
-/// The most light sources a hillshade node holds.
-pub const MAX_LIGHTS: usize = 4;
+pub use orb_shaders::layout::MAX_LIGHTS;
 
 /// Hillshade paint, after GL JS's `hillshadeUniformValues`.
 #[derive(Clone, Copy, Debug, PartialEq)]

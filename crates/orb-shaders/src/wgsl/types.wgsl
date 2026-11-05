@@ -23,6 +23,9 @@ const HEATMAP_ROW_WORDS: u32 = 4u;
 const SYMBOL_ROW_WORDS: u32 = 10u;
 const MODEL_ROW_WORDS: u32 = 24u;
 
+// The most light sources a hillshade node holds.
+const MAX_LIGHTS: u32 = 4u;
+
 struct Frame {
     // Camera-relative world → clip.
     view_proj: mat4x4<f32>,

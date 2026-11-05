@@ -25,9 +25,10 @@ use orb_hal::Gpu;
 use orb_style::{Binding, Change, Class, LayerKey, PropertyId};
 use orb_v8::Transaction;
 
-use crate::jobs::{StyleUpdate, TileResult};
+use crate::jobs::TileResult;
 use crate::map::{Map, NodeState, revise};
 use crate::resident::{SourceState, record_maxima, resolve_rows, upload_mesh, words};
+use crate::worker::StyleUpdate;
 
 /// The class a paint change costs this renderer for one node:
 /// `orb-style`'s, raised where property rows hold more than the property

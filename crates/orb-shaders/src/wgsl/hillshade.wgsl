@@ -6,8 +6,6 @@
 // around it, as 8-bit derivatives about 128/255.
 
 const PI: f32 = 3.141592653589793;
-// The most light sources a node holds.
-const MAX_LIGHTS: u32 = 4u;
 
 const STANDARD: u32 = 0u;
 const COMBINED: u32 = 1u;

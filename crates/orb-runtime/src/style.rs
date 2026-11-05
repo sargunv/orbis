@@ -8,8 +8,8 @@
 
 use std::sync::Arc;
 
-use orb_expr::{Interpolation, Kind};
-use orb_render::{Curve, Family};
+use orb_expr::Kind;
+use orb_layout::Family;
 use orb_shaders::layout;
 use orb_style::{Color, LayerType, PropertyRef, Scene, SourceKind, Value};
 
@@ -192,21 +192,6 @@ impl PaintProperty<'_> {
             Self::Number(_) | Self::Component(..) => unreachable!("not a colour"),
         }
     }
-
-    /// How the property's row values blend with zoom.
-    pub(crate) fn curve(&self) -> Curve {
-        let interpolation = self
-            .expression()
-            .filter(|e| e.kind() == Kind::Composite)
-            .and_then(|e| e.zoom_curve())
-            .and_then(|c| c.interpolation);
-        match interpolation {
-            None => Curve::Step,
-            Some(Interpolation::Linear) => Curve::Exponential(1.0),
-            Some(Interpolation::Exponential(base)) => Curve::Exponential(base as f32),
-            Some(Interpolation::CubicBezier(p)) => Curve::CubicBezier(p.map(|v| v as f32)),
-        }
-    }
 }
 
 impl StylePlan {
@@ -289,12 +274,12 @@ impl StylePlan {
                     orb_style::HILLSHADE_HIGHLIGHT_COLOR.id(),
                 ]
                 .map(|id| layer.slot(id).items().len());
-                if lights.into_iter().max().unwrap_or(1) > orb_render::MAX_LIGHTS {
+                if lights.into_iter().max().unwrap_or(1) > orb_shaders::layout::MAX_LIGHTS {
                     warn(
                         index,
                         &format!(
                             "hillshades draw at most {} light sources; the rest are ignored",
-                            orb_render::MAX_LIGHTS
+                            orb_shaders::layout::MAX_LIGHTS
                         ),
                     );
                 }

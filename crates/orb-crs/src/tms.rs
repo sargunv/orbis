@@ -63,7 +63,7 @@ pub struct TileMatrixSet {
 
 /// One matrix of a tile matrix set definition, as an OGC document writes
 /// it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TileMatrix {
     pub id: String,
     pub scale_denominator: f64,
@@ -82,7 +82,7 @@ pub struct TileMatrix {
 }
 
 /// A tile matrix set as an OGC 2D-TMS document defines it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TileMatrixSetDefinition {
     pub id: String,
     /// The CRS URI or `EPSG:n` code.

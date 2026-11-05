@@ -1691,12 +1691,12 @@ pub(crate) fn paint(
     for (slot, property) in plan.paint_properties(node).iter().enumerate() {
         if property.per_feature() {
             paint.table_mask |= 1 << slot;
-            paint.curves[slot] = property.curve();
+            paint.curves[slot] = crate::paint::curve(property);
         }
         // A state lookup's constant is its value with no state.
         let lookup = property.is_state_lookup();
         if lookup {
-            paint.curves[slot] = property.curve();
+            paint.curves[slot] = crate::paint::curve(property);
         }
         let number = |p: &crate::style::PaintProperty<'_>| match p {
             _ if lookup => p.default_number(zoom),
@@ -1742,7 +1742,7 @@ mod tests {
     use orb_symbol::{BucketStates, Camera, Frame, LayerFrame, PlacedTile, TileId, TileView};
 
     use super::*;
-    use crate::jobs::TileWorker;
+    use crate::worker::TileWorker;
 
     struct Harness {
         gpu: WgpuGpu,

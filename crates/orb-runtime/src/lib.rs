@@ -24,7 +24,7 @@ mod line;
 mod loader;
 mod map;
 mod meshes;
-pub mod model;
+mod model;
 pub mod offline;
 mod paint;
 mod placement;
@@ -45,6 +45,7 @@ mod tile;
 mod transitions;
 mod video;
 pub mod wire;
+mod worker;
 
 pub use events::MapEvent;
 pub use orb_a11y::Snapshot as SemanticSnapshot;
@@ -69,11 +70,10 @@ pub const COMPAT_UNLIT: &str = "a scene's lights shade the whole map on WebGPU a
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
-pub use job_host::{JobHost, Loaded, LoadedDone};
+pub use job_host::{JobHost, Loaded, LoadedDone, ModelDone};
 pub use jobs::{
-    Built, DemUnpack, ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, ResultMesh, Stream,
-    StyleUpdate, TileDone, TileImage, TileRequest, TileResult, TileWorker, pack, packed_header,
-    unpack,
+    ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, ResultMesh, Stream, TileDone, TileImage,
+    TileResult, pack, packed_header, unpack,
 };
 pub use loader::{LoadDone, TileLoader, TileLocation};
 pub use map::{FrameReport, GridTile, Images, JobCounts, Map, Memory, RenderMode, Services};
@@ -96,10 +96,8 @@ pub use queries::QueryDone;
 pub use query::{Hit, HitFeature, MeshHits};
 pub use style::ImageKind;
 pub use style_image::StyleImage;
-pub use surface::{
-    SurfaceTiles, projection_from_json, projection_to_json, surface_from_json, surface_to_json,
-    tms_from_json, tms_to_json,
-};
+pub use surface::SurfaceTiles;
 pub use symbol::{ResultSymbols, SYMBOL_TABLES, SpriteIcons, SymbolMeta, SymbolTable};
 pub use terrain::TerrainElevation;
 pub use tile::{ImageRef, TileBuild};
+pub use worker::{Built, DemUnpack, StyleUpdate, TileRequest, TileWorker};

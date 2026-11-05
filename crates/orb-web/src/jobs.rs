@@ -67,7 +67,7 @@ struct State {
     pending: HashMap<u32, TileDone>,
     rasters: HashMap<u32, RasterDone>,
     features: HashMap<u32, orb_runtime::FeaturesDone>,
-    models: HashMap<u32, orb_runtime::model::ModelDone>,
+    models: HashMap<u32, orb_runtime::ModelDone>,
     answers: HashMap<u32, orb_runtime::QueryDone>,
     /// The worker each request went to, until it answers.
     sent_to: HashMap<u32, u32>,
@@ -393,7 +393,7 @@ impl Jobs for WorkerJobs {
         );
     }
 
-    fn model(&self, url: String, done: orb_runtime::model::ModelDone) {
+    fn model(&self, url: String, done: orb_runtime::ModelDone) {
         let mut hasher = DefaultHasher::new();
         url.hash(&mut hasher);
         self.send(

@@ -1,10 +1,9 @@
 //! The surface a map draws on, from its scene document, and the planner
 //! (plan §9.2) that decides how each source's tiles reach it.
 
-use orb_crs::{Descriptor, Projection, TileMatrixSet, WorldRect};
+use orb_crs::{Descriptor, Projection, TileMatrixSet, TileMatrixSetDefinition, WorldRect};
 
 use crate::style::ImageKind;
-use orb_expr::json::{self, Json, JsonValue, Member};
 
 /// A plane, the tile matrix sets of the sources on it, and the one-tile
 /// quadtree over it that backgrounds and GeoJSON tile in.
@@ -31,22 +30,28 @@ pub struct SurfaceTiles {
     pub sources: Vec<(String, TileMatrixSet)>,
 }
 
-/// [`SurfaceTiles`] between workers: the plane's projection and the
-/// sources' tile matrix sets as their JSON.
+/// [`SurfaceTiles`] between workers: the plane's projection and extent,
+/// and the sources' tile matrix sets by their definitions.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SurfaceText {
-    plane: Option<String>,
-    sources: Vec<(String, String)>,
+    plane: Option<(Descriptor, [f64; 4])>,
+    sources: Vec<(String, TileMatrixSetDefinition)>,
 }
 
 impl From<SurfaceTiles> for SurfaceText {
     fn from(tiles: SurfaceTiles) -> Self {
         Self {
-            plane: tiles.plane.map(|tms| projection_to_json(tms.projection())),
+            plane: tiles.plane.map(|tms| {
+                let b = tms.projection().world_bounds();
+                (
+                    tms.projection().descriptor(),
+                    [b.min.x, b.min.y, b.max.x, b.max.y],
+                )
+            }),
             sources: tiles
                 .sources
                 .iter()
-                .filter_map(|(id, tms)| Some((id.clone(), tms_to_json(tms)?)))
+                .filter_map(|(id, tms)| Some((id.clone(), tms.definition()?)))
                 .collect(),
         }
     }
@@ -56,18 +61,23 @@ impl TryFrom<SurfaceText> for SurfaceTiles {
     type Error = String;
 
     fn try_from(text: SurfaceText) -> Result<Self, String> {
+        let plane = |(descriptor, [x0, y0, x1, y1]): (Descriptor, [f64; 4])| {
+            let projection = Projection::new(&descriptor).map_err(|e| e.to_string())?;
+            let projection = projection.with_extent(WorldRect {
+                min: glam::DVec2::new(x0, y0),
+                max: glam::DVec2::new(x1, y1),
+            });
+            Ok::<_, String>(TileMatrixSet::square(projection, projection.world_bounds()))
+        };
         Ok(Self {
-            plane: match text.plane {
-                Some(plane) => {
-                    let projection = projection_from_json(&plane)?;
-                    Some(TileMatrixSet::square(projection, projection.world_bounds()))
-                }
-                None => None,
-            },
+            plane: text.plane.map(plane).transpose()?,
             sources: text
                 .sources
                 .iter()
-                .map(|(id, tms)| Ok((id.clone(), tms_from_json(tms)?)))
+                .map(|(id, def)| {
+                    let tms = TileMatrixSet::from_definition(def).map_err(|e| e.to_string())?;
+                    Ok((id.clone(), tms))
+                })
                 .collect::<Result<_, String>>()?,
         })
     }
@@ -240,193 +250,12 @@ impl Surface {
     }
 }
 
-/// A projection and its world extent as JSON, for another thread or worker
-/// (the web ui role's camera, job workers' GeoJSON plane):
-/// `{"projection": {"type": …, <params>}, "extent": [x0, y0, x1, y1]}`.
-pub fn projection_to_json(projection: &Projection) -> String {
-    surface_to_json(&orb_crs::Surface::plane(*projection))
-}
-
-/// A surface as JSON, for the web ui role's camera: its projection as in
-/// [`projection_to_json`], and `"globe": [from, to]` (the zooms it hands
-/// over between) or `"globe": true` (at every zoom) if it has a low-zoom
-/// surface, with `"lowPlane"` its plane's descriptor if it isn't a sphere.
-pub fn surface_to_json(surface: &orb_crs::Surface) -> String {
-    let projection = &surface.projection;
-    let synthetic = |value| Json::new(value, Default::default());
-    let member = |key: &str, value: Json| Member {
-        key: key.into(),
-        key_span: Default::default(),
-        value,
-    };
-    let descriptor_json = |projection: &Projection| {
-        let descriptor = projection.descriptor();
-        let mut fields = vec![member(
-            "type",
-            synthetic(JsonValue::String(descriptor.kind)),
-        )];
-        fields.extend(
-            descriptor
-                .params
-                .into_iter()
-                .map(|(name, value)| member(&name, synthetic(JsonValue::Number(value)))),
-        );
-        synthetic(JsonValue::Object(fields))
-    };
-    let fields = descriptor_json(projection);
-    let b = projection.world_bounds();
-    let extent = [b.min.x, b.min.y, b.max.x, b.max.y].map(|v| synthetic(JsonValue::Number(v)));
-    let mut members = vec![
-        member("projection", fields),
-        member("extent", synthetic(JsonValue::Array(extent.to_vec()))),
-    ];
-    if let Some(globe) = surface.globe {
-        let value = match globe.handover {
-            Some(zooms) => {
-                JsonValue::Array(zooms.map(|z| synthetic(JsonValue::Number(z))).to_vec())
-            }
-            None => JsonValue::Bool(true),
-        };
-        members.push(member("globe", synthetic(value)));
-        if let Some(plane) = &globe.plane {
-            members.push(member("lowPlane", descriptor_json(plane)));
-        }
-    }
-    synthetic(JsonValue::Object(members)).to_string()
-}
-
-/// A tile matrix set as an OGC 2D-TMS document, for another thread or
-/// worker; `None` for a set whose projection has no CRS code.
-pub fn tms_to_json(tms: &TileMatrixSet) -> Option<String> {
-    let def = tms.definition()?;
-    let synthetic = |value| Json::new(value, Default::default());
-    let member = |key: &str, value: Json| Member {
-        key: key.into(),
-        key_span: Default::default(),
-        value,
-    };
-    let number = |v: f64| synthetic(JsonValue::Number(v));
-    let text = |v: &str| synthetic(JsonValue::String(v.to_string()));
-    let matrices = def
-        .matrices
-        .iter()
-        .map(|m| {
-            synthetic(JsonValue::Object(vec![
-                member("id", text(&m.id)),
-                member("scaleDenominator", number(m.scale_denominator)),
-                member(
-                    "cellSize",
-                    number(m.cell_size.expect("definitions give cells")),
-                ),
-                member(
-                    "pointOfOrigin",
-                    synthetic(JsonValue::Array(m.point_of_origin.map(number).to_vec())),
-                ),
-                member(
-                    "cornerOfOrigin",
-                    text(if m.bottom_left {
-                        "bottomLeft"
-                    } else {
-                        "topLeft"
-                    }),
-                ),
-                member("tileWidth", number(f64::from(m.tile_width))),
-                member("tileHeight", number(f64::from(m.tile_height))),
-                member("matrixWidth", number(f64::from(m.matrix_width))),
-                member("matrixHeight", number(f64::from(m.matrix_height))),
-            ]))
-        })
-        .collect();
-    Some(
-        synthetic(JsonValue::Object(vec![
-            member("id", text(&def.id)),
-            member("crs", text(&def.crs)),
-            member(
-                "orderedAxes",
-                synthetic(JsonValue::Array(vec![text("E"), text("N")])),
-            ),
-            member("tileMatrices", synthetic(JsonValue::Array(matrices))),
-        ]))
-        .to_string(),
-    )
-}
-
-/// Reads [`tms_to_json`]'s document (or any OGC 2D-TMS document).
-pub fn tms_from_json(text: &str) -> Result<TileMatrixSet, String> {
-    let doc = json::parse(text).map_err(|e| e.to_string())?;
-    let def = orb_v8::tms_definition(&doc)?;
-    TileMatrixSet::from_definition(&def).map_err(|e| e.to_string())
-}
-
-/// Reads [`projection_to_json`]'s document.
-pub fn projection_from_json(text: &str) -> Result<Projection, String> {
-    surface_from_json(text).map(|surface| surface.projection)
-}
-
-/// A surface from [`surface_to_json`].
-pub fn surface_from_json(text: &str) -> Result<orb_crs::Surface, String> {
-    let bad = || "malformed projection".to_string();
-    let doc = json::parse(text).map_err(|e| e.to_string())?;
-    let fields = doc
-        .get("projection")
-        .and_then(Json::as_object)
-        .ok_or_else(bad)?;
-    let descriptor = |fields: &[Member]| {
-        let mut descriptor = Descriptor::default();
-        for m in fields {
-            match (m.key.as_str(), &m.value.value) {
-                ("type", JsonValue::String(kind)) => descriptor.kind = kind.clone(),
-                (name, JsonValue::Number(value)) => {
-                    descriptor.params.push((name.to_string(), *value));
-                }
-                _ => return Err(bad()),
-            }
-        }
-        Projection::new(&descriptor).map_err(|e| e.to_string())
-    };
-    let extent = doc
-        .get("extent")
-        .and_then(Json::as_array)
-        .filter(|e| e.len() == 4)
-        .ok_or_else(bad)?
-        .iter()
-        .map(|v| v.as_f64().ok_or_else(bad))
-        .collect::<Result<Vec<_>, String>>()?;
-    let projection = descriptor(fields)?;
-    let plane = match doc.get("lowPlane") {
-        Some(low) => Some(descriptor(low.as_object().ok_or_else(bad)?)?),
-        None => None,
-    };
-    let globe = match doc.get("globe").map(|g| &g.value) {
-        None => None,
-        Some(JsonValue::Bool(true)) => Some(orb_crs::Globe {
-            handover: None,
-            plane,
-        }),
-        Some(JsonValue::Array(zooms)) if zooms.len() == 2 => Some(orb_crs::Globe {
-            handover: Some([
-                zooms[0].as_f64().ok_or_else(bad)?,
-                zooms[1].as_f64().ok_or_else(bad)?,
-            ]),
-            plane,
-        }),
-        Some(_) => return Err(bad()),
-    };
-    Ok(orb_crs::Surface {
-        projection: projection.with_extent(WorldRect {
-            min: glam::DVec2::new(extent[0], extent[1]),
-            max: glam::DVec2::new(extent[2], extent[3]),
-        }),
-        globe,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn projections_cross_as_json() {
+    fn surfaces_plan_and_cross_workers() {
         let nztm = TileMatrixSet::by_id("NZTM2000Quad").unwrap();
         let surface = Surface::new(
             Some(*nztm.projection()),
@@ -439,23 +268,6 @@ mod tests {
             surface.tms().tile_bounds(orb_crs::TileIndex::new(0, 0, 0)),
             nztm.tile_bounds(orb_crs::TileIndex::new(0, 0, 0))
         );
-        let json = projection_to_json(surface.projection());
-        assert_eq!(&projection_from_json(&json).unwrap(), surface.projection());
-        for globe in [
-            None,
-            Some(orb_crs::Globe::V8),
-            Some(orb_crs::Globe::SPHERE),
-            Some(orb_crs::Globe {
-                handover: Some([6.0, 7.0]),
-                plane: Some(Projection::from_descriptor("equal-earth").unwrap()),
-            }),
-        ] {
-            let mercator = orb_crs::Surface {
-                globe,
-                ..Surface::default().view_surface()
-            };
-            assert_eq!(surface_from_json(&surface_to_json(&mercator)), Ok(mercator));
-        }
         // A globe draws sources on other planes too: on the sphere, and
         // through their planar warp as it hands over.
         let globe = Surface::new(None, Vec::new(), Some(orb_crs::Globe::V8));
@@ -475,9 +287,12 @@ mod tests {
         assert_eq!(surface.source_tms("other", true), *surface.tms());
         assert_eq!(surface.plane().as_ref(), Some(surface.tms()));
         assert_eq!(Surface::default().plane(), None);
-        let back = tms_from_json(&tms_to_json(&nztm).unwrap()).unwrap();
+        // The job workers' share crosses as postcard.
+        let tiles: SurfaceTiles =
+            crate::wire::decode(&crate::wire::encode(&surface.tiles())).unwrap();
         let tile = orb_crs::TileIndex::new(6, 31, 33);
-        assert_eq!(back.tile_bounds(tile), nztm.tile_bounds(tile));
-        assert_eq!(surface.tiles().source("linz", false), Some(&nztm));
+        let linz = tiles.source("linz", false).unwrap();
+        assert_eq!(linz.tile_bounds(tile), nztm.tile_bounds(tile));
+        assert_eq!(tiles.plane.unwrap().projection(), surface.projection());
     }
 }

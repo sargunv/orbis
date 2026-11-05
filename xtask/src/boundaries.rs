@@ -72,6 +72,13 @@ const SCENE_SIDE: &[&str] = &[
     "orb-shaders",
 ];
 
+/// orb-runtime's tile-job modules, which name no scene-side crate, so the
+/// job side keeps apart within the crate (decision 0040).
+const JOB_MODULES: &[&str] = &[
+    "features", "geojson", "glyphs", "job_host", "line", "loader", "style", "symbol", "tile",
+    "wire", "worker",
+];
+
 /// Crates that don't build for wasm32.
 pub(crate) const NATIVE_ONLY: &[&str] = &[
     "orb-host-native",
@@ -120,6 +127,20 @@ pub(crate) fn check() -> Result<(), String> {
                         root.display()
                     ));
                 }
+            }
+        }
+    }
+
+    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/orb-runtime/src");
+    for module in JOB_MODULES {
+        let path = runtime.join(format!("{module}.rs"));
+        let source =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        for scene in SCENE_SIDE.iter().map(|c| c.replace('-', "_")) {
+            if scene != "orb_style" && scene != "orb_shaders" && source.contains(&scene) {
+                errors.push(format!(
+                    "orb-runtime's {module}.rs: job-side module names `{scene}`"
+                ));
             }
         }
     }

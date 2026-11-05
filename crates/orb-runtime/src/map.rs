@@ -20,11 +20,12 @@ use orb_v8::StyleDoc;
 
 use crate::MapEvent;
 use crate::frame::*;
-use crate::jobs::{Jobs, StyleUpdate, TileRequest, TileResult, TileWorker};
+use crate::jobs::{Jobs, TileResult};
 use crate::meshes::*;
 use crate::resident::*;
 use crate::state::FeatureStates;
 use crate::style::StylePlan;
+use crate::worker::{StyleUpdate, TileRequest, TileWorker};
 use orb_source::endpoint::TileEndpoint;
 
 /// Logical pixel size of vector/background tiles and pattern origins.
@@ -2519,7 +2520,7 @@ mod tests {
             images: Default::default(),
             jobs: PoolJobs::new(
                 fetch.clone(),
-                Arc::new(crate::jobs::tests::NoImages),
+                Arc::new(crate::worker::tests::NoImages),
                 Arc::new(Inline),
             ),
             fetch: fetch.clone(),
@@ -2552,7 +2553,7 @@ mod tests {
             images: Default::default(),
             jobs: PoolJobs::new(
                 fetch.clone(),
-                Arc::new(crate::jobs::tests::NoImages),
+                Arc::new(crate::worker::tests::NoImages),
                 Arc::new(Inline),
             ),
             fetch: fetch.clone(),
@@ -2661,7 +2662,7 @@ mod video_tests {
                 images: Default::default(),
                 jobs: PoolJobs::new(
                     fetch.clone(),
-                    Arc::new(crate::jobs::tests::NoImages),
+                    Arc::new(crate::worker::tests::NoImages),
                     Arc::new(Inline),
                 ),
                 fetch,

@@ -30,10 +30,10 @@ pub(crate) fn paint(
     for (slot, property) in plan.paint_properties(node).iter().enumerate() {
         if property.per_feature() {
             table_mask |= 1 << slot;
-            curves[slot] = property.curve();
+            curves[slot] = crate::paint::curve(property);
             numbers[slot] = maxima[slot];
         } else if property.is_state_lookup() {
-            curves[slot] = property.curve();
+            curves[slot] = crate::paint::curve(property);
             match property {
                 PaintProperty::Number(_) => numbers[slot] = property.default_number(zoom),
                 p => colors[slot] = p.default_color(zoom),
