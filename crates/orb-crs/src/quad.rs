@@ -58,12 +58,7 @@ impl ImageQuad {
 
     /// The rectangle holding the image.
     pub fn bounds(&self) -> WorldRect {
-        let (mut min, mut max) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
-        for c in self.corners {
-            min = min.min(c);
-            max = max.max(c);
-        }
-        WorldRect { min, max }
+        WorldRect::around(self.corners)
     }
 }
 

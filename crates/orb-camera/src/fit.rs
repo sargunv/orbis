@@ -6,7 +6,7 @@ use glam::DVec2;
 use crate::animate::CameraTarget;
 use crate::moves::Bounds;
 use crate::{CameraState, View, Viewport};
-use orb_crs::Surface;
+use orb_crs::{Surface, WorldRect};
 
 /// Space to leave at the viewport's edges, in logical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -72,14 +72,8 @@ impl CameraState {
         let outline = bounds.outline(projection);
         let angle = (-bearing).to_radians();
         let turn = DVec2::new(angle.cos(), angle.sin());
-        let mut min = DVec2::splat(f64::INFINITY);
-        let mut max = DVec2::splat(f64::NEG_INFINITY);
-        for point in &outline {
-            let p = DVec2::new(point.x, -point.y).rotate(turn);
-            min = min.min(p);
-            max = max.max(p);
-        }
-        let size = max - min;
+        let turned = WorldRect::around(outline.iter().map(|p| DVec2::new(p.x, -p.y).rotate(turn)));
+        let size = turned.size();
         if !size.is_finite() {
             return None;
         }
@@ -98,7 +92,9 @@ impl CameraState {
         let middle = if outline.len() == 4 {
             (outline[0] + outline[2]) / 2.0
         } else {
-            let m = ((min + max) / 2.0).rotate(DVec2::new(angle.cos(), -angle.sin()));
+            let m = turned
+                .center()
+                .rotate(DVec2::new(angle.cos(), -angle.sin()));
             DVec2::new(m.x, -m.y)
         };
         let center = middle - DVec2::new(shift.x, -shift.y) * final_world_per_px;
@@ -149,10 +145,9 @@ fn fit_pitched(
             camera.set_zoom(projection, camera.zoom(projection) - 1.0);
             continue;
         };
-        let min = points.iter().fold(DVec2::INFINITY, |a, p| a.min(*p));
-        let max = points.iter().fold(DVec2::NEG_INFINITY, |a, p| a.max(*p));
-        let scale = (available.x / (max.x - min.x)).min(available.y / (max.y - min.y));
-        let middle = (min + max) / 2.0;
+        let rect = WorldRect::around(points.iter().copied());
+        let (size, middle) = (rect.size(), rect.center());
+        let scale = (available.x / size.x).min(available.y / size.y);
         if scale.log2().abs() < 1e-4 && middle.distance(goal) < 0.05 {
             return;
         }
@@ -227,8 +222,7 @@ mod tests {
                 .iter()
                 .map(|c| view.project(projection.forward(*c)).unwrap())
                 .collect();
-            let min = points.iter().fold(DVec2::INFINITY, |a, p| a.min(*p));
-            let max = points.iter().fold(DVec2::NEG_INFINITY, |a, p| a.max(*p));
+            let WorldRect { min, max } = WorldRect::around(points.iter().copied());
             let tolerance = 0.5;
             assert!(
                 min.x >= padding.left - tolerance,

@@ -51,11 +51,7 @@ impl Bounds {
     }
 
     fn world(&self, projection: &Projection) -> WorldRect {
-        let outline = self.outline(projection);
-        WorldRect {
-            min: outline.iter().fold(DVec2::INFINITY, |a, p| a.min(*p)),
-            max: outline.iter().fold(DVec2::NEG_INFINITY, |a, p| a.max(*p)),
-        }
+        WorldRect::around(self.outline(projection))
     }
 }
 

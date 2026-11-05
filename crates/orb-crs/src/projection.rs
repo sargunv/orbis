@@ -176,12 +176,9 @@ impl Projection {
             if !descriptor.params.is_empty() {
                 return Err(UnknownProjection(format!("`{kind}` takes no parameters")));
             }
-            let entry = code
-                .parse()
-                .ok()
-                .and_then(crate::epsg::lookup)
-                .ok_or_else(|| UnknownProjection(format!("unknown projection `{kind}`")))?;
-            let code = code.parse().expect("parsed above");
+            let unknown = || UnknownProjection(format!("unknown projection `{kind}`"));
+            let code: u32 = code.parse().map_err(|_| unknown())?;
+            let entry = crate::epsg::lookup(code).ok_or_else(unknown)?;
             let family = family(entry.kind, &entry.params)?;
             return Ok(Self::with_family(
                 family,
@@ -502,23 +499,14 @@ fn default_extent(family: &Family) -> WorldRect {
             max: DVec2::splat(half),
         };
     }
-    let mut min = DVec2::splat(f64::INFINITY);
-    let mut max = DVec2::splat(f64::NEG_INFINITY);
-    for i in 0..=72 {
-        for j in 0..=36 {
-            let lon = (-180.0 + 5.0 * f64::from(i)).to_radians();
-            let lat = (-90.0 + 5.0 * f64::from(j)).to_radians();
-            if !family.contains(lon, lat) || !family.shows(lon, lat) {
-                continue;
-            }
-            let p = family.forward(lon, lat);
-            if p.is_finite() {
-                min = min.min(p);
-                max = max.max(p);
-            }
-        }
-    }
-    WorldRect { min, max }
+    let degrees = |n: u32, from: f64| (from + 5.0 * f64::from(n)).to_radians();
+    let grid =
+        (0..=72).flat_map(|i| (0..=36).map(move |j| (degrees(i, -180.0), degrees(j, -90.0))));
+    WorldRect::around(
+        grid.filter(|&(lon, lat)| family.contains(lon, lat) && family.shows(lon, lat))
+            .map(|(lon, lat)| family.forward(lon, lat))
+            .filter(|p| p.is_finite()),
+    )
 }
 
 /// Web Mercator's northing, written out for its tests.

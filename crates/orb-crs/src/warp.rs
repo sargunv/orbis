@@ -357,15 +357,11 @@ impl Warp {
         let reference = self
             .map(tile, DVec2::splat(0.5))
             .or(samples.first().copied())?;
-        let mut bounds = WorldRect {
-            min: DVec2::splat(f64::INFINITY),
-            max: DVec2::splat(f64::NEG_INFINITY),
-        };
-        for p in &samples {
-            let p = DVec2::new(self.unwrap(p.x, reference.x), p.y);
-            bounds.min = bounds.min.min(p);
-            bounds.max = bounds.max.max(p);
-        }
+        let mut bounds = WorldRect::around(
+            samples
+                .iter()
+                .map(|p| DVec2::new(self.unwrap(p.x, reference.x), p.y)),
+        );
         if self.spans_wrap(tile) {
             let period = self.to.wrap_period().expect("wraps");
             bounds.min.x = bounds.min.x.min(reference.x - period / 2.0);
@@ -433,6 +429,12 @@ impl Warp {
             max: world.max + world.size() * reach,
         };
         let limit = tolerance * footprint.span;
+        // A tile position on the target, near the footprint, if allowed.
+        let place = |uv: DVec2| {
+            self.map(tile, uv)
+                .map(|p| DVec2::new(self.unwrap(p.x, reference), p.y))
+                .filter(|p| p.cmpge(allowed.min).all() && p.cmple(allowed.max).all())
+        };
         let mut cells = 4;
         let grid = loop {
             let n = cells + 1;
@@ -440,14 +442,7 @@ impl Warp {
                 .flat_map(|j| (0..n).map(move |i| DVec2::new(f64::from(i), f64::from(j))))
                 .map(|p| p / f64::from(cells))
                 .collect();
-            let grid: Vec<Option<DVec2>> = uvs
-                .iter()
-                .map(|&uv| {
-                    self.map(tile, uv)
-                        .map(|p| DVec2::new(self.unwrap(p.x, reference), p.y))
-                        .filter(|p| p.cmpge(allowed.min).all() && p.cmple(allowed.max).all())
-                })
-                .collect();
+            let grid: Vec<Option<DVec2>> = uvs.iter().map(|&uv| place(uv)).collect();
             if cells >= MAX_CELLS {
                 break grid;
             }
@@ -501,9 +496,7 @@ impl Warp {
                 let p = if on_grid {
                     grid[((y / unit) * (cells + 1) + x / unit) as usize]
                 } else {
-                    self.map(tile, uv)
-                        .map(|p| DVec2::new(self.unwrap(p.x, reference), p.y))
-                        .filter(|p| p.cmpge(allowed.min).all() && p.cmple(allowed.max).all())
+                    place(uv)
                 };
                 p.map(|p| {
                     positions.push(p);
@@ -592,14 +585,7 @@ impl Warp {
         if triangles.is_empty() {
             return None;
         }
-        let mut frame = WorldRect {
-            min: DVec2::splat(f64::INFINITY),
-            max: DVec2::splat(f64::NEG_INFINITY),
-        };
-        for p in &positions {
-            frame.min = frame.min.min(*p);
-            frame.max = frame.max.max(*p);
-        }
+        let frame = WorldRect::around(positions.iter().copied());
         let side = frame.size().max_element().max(f64::MIN_POSITIVE);
         let frame = WorldRect {
             min: DVec2::new(frame.min.x, frame.max.y - side),

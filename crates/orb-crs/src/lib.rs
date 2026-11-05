@@ -39,6 +39,17 @@ pub struct WorldRect {
 }
 
 impl WorldRect {
+    /// The smallest rectangle holding `points`; inside out (`min` above
+    /// `max`) when there are none.
+    pub fn around(points: impl IntoIterator<Item = DVec2>) -> Self {
+        let (min, max) = points
+            .into_iter()
+            .fold((DVec2::INFINITY, DVec2::NEG_INFINITY), |(min, max), p| {
+                (min.min(p), max.max(p))
+            });
+        Self { min, max }
+    }
+
     pub fn size(&self) -> DVec2 {
         self.max - self.min
     }
