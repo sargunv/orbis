@@ -485,12 +485,7 @@ impl Map {
         let sources = &style.sources;
         let draws = &style.draws;
         let paint = &style.paint;
-        let revision = (
-            self.version,
-            style.states.writes(),
-            style.states.zoom_key(),
-            images_revision,
-        );
+        let revision = (self.version, style.states.writes(), images_revision);
         // A DEM tile's border comes from its drawn neighbours
         // (`Renderer::pad_dems`).
         let drawn_tiles: HashMap<usize, HashSet<TileIndex>> = (draped.iter())
@@ -536,7 +531,8 @@ impl Map {
                 }
             }
             let paint = paint.drape_key(zoom, bearing);
-            crate::terrain::hash((revision, parts, zoom, paint))
+            let states = style.states.zoom_key(zoom);
+            crate::terrain::hash((revision, parts, zoom, paint, states))
         };
         let globe_warps = &mut self.globe_warps;
         let mut globe = |tile: TileIndex| {

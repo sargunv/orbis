@@ -89,8 +89,8 @@ a state write never touches a mesh.
 
 The state table is a range of the property arena with a row layout compiled
 per style revision: per node that reads state, a block of one flag word (non
-zero once the feature has state) and two words per state-lookup property,
-its values at the table's zoom and the next. The shaders (fill, fill
+zero once the feature has state) and eight words per state-lookup property,
+its values at the table's integer zooms. The shaders (fill, fill
 outline, line, circle, fill-extrusion) read a feature's block through the
 remap when the node's `StateLookup` mask has the property's slot, else the
 node constant, the value with no state. **A write is one row**: the map
@@ -103,10 +103,10 @@ backend yet, and the fixtures' state values are colours
 (`["coalesce", ["feature-state", "color"], "black"]`), so the row holds the
 evaluated values instead: exact for any state type, at the cost of
 evaluating on write and a row size of the state-lookup properties rather
-than of the keys. Zoom-dependent values are evaluated at the floor of the
-camera zoom and the next, as tiles at the ideal zoom lay out, and rewritten
-(rows with state only) when that integer zoom changes; fallback tiles of
-other zooms use the same rows.
+than of the keys. Zoom-dependent values are evaluated at eight integer
+zooms, from five below the camera's floor to two above, so drape slots of
+other zooms read their own (#85), and rewritten (rows with state only) when
+that floor changes; fallback tiles of other zooms use the same rows.
 
 **Binding classes.** `StateLookup` is a value that reads `feature-state` but
 no feature properties, id or geometry (`Deps::PROPERTIES` in `orb-expr`).

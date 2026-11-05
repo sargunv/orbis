@@ -6,8 +6,10 @@
 //! counted by the meshes that refer to it, so a state write rewrites one
 //! table row and no mesh. A row holds, per node that reads state, a flag
 //! word (non-zero once the feature has state) and the node's properties
-//! that read state evaluated with the feature's state at the table's zoom
-//! and the next: the layout is compiled per style revision. Index 0 and
+//! that read state evaluated with the feature's state at [`STATE_ZOOMS`]
+//! integer zooms around the camera's, from five below its own to two
+//! above: drape slots read their own zoom's value, so they draw alike
+//! whatever the camera's (#85). The layout is compiled per style revision. Index 0 and
 //! rows with a zero flag draw the value with no state: the node's constant,
 //! or for paint that also reads feature data, the feature's property row.
 //! That paint evaluates here from the feature data its meshes captured, so
@@ -23,6 +25,12 @@ use orb_style::FeatureStateOp;
 use orb_style::Value;
 
 use crate::style::{PaintProperty, StylePlan};
+
+/// Integer zooms a state row holds each value at (`draw.wgsl`'s).
+const STATE_ZOOMS: u32 = 8;
+/// Zooms below the camera's (floored) that a state row starts at: drape
+/// slots of terrain tiles farther out draw a coarser zoom.
+const STATE_ZOOMS_BELOW: f64 = 5.0;
 
 /// A feature's state, and the data paint mixing state and data reads.
 pub(crate) type FeatureState<'a> =
@@ -70,7 +78,7 @@ pub(crate) struct FeatureStates {
     blocks: Vec<Option<Block>>,
     stride: u32,
     zoom_dependent: bool,
-    /// The zoom the rows hold values for.
+    /// The first of the zooms the rows hold values at.
     zoom: f64,
     table: Option<Range<u32>>,
     /// Rows written to the GPU, for counters.
@@ -187,10 +195,12 @@ impl FeatureStates {
         self.writes
     }
 
-    /// The zoom the rows hold values for, when any lookup's values depend
-    /// on the zoom: what they draw then changes with it.
-    pub(crate) fn zoom_key(&self) -> Option<u64> {
-        self.zoom_dependent.then(|| self.zoom.to_bits())
+    /// What a drape slot drawn at `zoom` takes from the rows' zooms, when
+    /// its state values depend on them: past the rows' zooms, it draws
+    /// their first or last, which changes as they move.
+    pub(crate) fn zoom_key(&self, zoom: u8) -> Option<u64> {
+        let held = self.zoom..self.zoom + f64::from(STATE_ZOOMS);
+        (self.zoom_dependent && !held.contains(&f64::from(zoom))).then(|| self.zoom.to_bits())
     }
 
     pub(crate) fn apply(&mut self, op: &FeatureStateOp) {
@@ -309,7 +319,7 @@ impl FeatureStates {
                 layer: plan.source_layer(node).map(str::to_string),
                 slots,
             };
-            offset += 1 + 2 * block.slots.len() as u32;
+            offset += 1 + STATE_ZOOMS * block.slots.len() as u32;
             self.blocks.push(Some(block));
         }
         self.stride = offset;
@@ -338,7 +348,7 @@ impl FeatureStates {
             }
             lookups_changed = true;
         }
-        let zoom = zoom.floor().max(0.0);
+        let zoom = (zoom.floor() - STATE_ZOOMS_BELOW).max(0.0);
         if zoom != self.zoom {
             lookups_changed = true;
             self.zoom = zoom;
@@ -399,8 +409,11 @@ impl FeatureStates {
                     for (i, &slot) in block.slots.iter().enumerate() {
                         let p: &PaintProperty = &properties[slot];
                         let data = entry.data.as_ref().filter(|_| p.mixes_state());
-                        row[at + 1 + 2 * i] = p.state_word(zoom, &entry.state, data);
-                        row[at + 2 + 2 * i] = p.state_word(zoom + 1.0, &entry.state, data);
+                        let words = at + 1 + STATE_ZOOMS as usize * i;
+                        for (j, word) in row[words..][..STATE_ZOOMS as usize].iter_mut().enumerate()
+                        {
+                            *word = p.state_word(zoom + j as f64, &entry.state, data);
+                        }
                     }
                 }
             }
@@ -435,6 +448,21 @@ impl FeatureStates {
 mod tests {
     use super::*;
     use orb_style::SourceKey;
+
+    /// Drape slots within the rows' zooms read their own zoom's values,
+    /// whatever the camera's; only those past them change with it (#85).
+    #[test]
+    fn drape_zooms_in_the_rows_need_no_camera_key() {
+        let states = FeatureStates {
+            zoom_dependent: true,
+            // A camera at zoom 12.4: values at zooms 7 to 14.
+            zoom: 7.0,
+            ..FeatureStates::default()
+        };
+        assert!((7..=14).all(|z| states.zoom_key(z).is_none()));
+        assert_eq!(states.zoom_key(6), Some(7f64.to_bits()));
+        assert_eq!(states.zoom_key(15), Some(7f64.to_bits()));
+    }
 
     #[test]
     fn indices_are_counted_and_states_survive_unloads() {

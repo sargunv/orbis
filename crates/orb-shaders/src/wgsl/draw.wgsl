@@ -130,8 +130,9 @@ fn prop_row(v: Pulled, slot: u32, stride: u32) -> u32 {
 // `mask` reads property slot i from the feature's state row when it has
 // one. Rows live in the property arena: the node's block of state row s
 // starts at `base + s * stride` with a word that is non-zero once the
-// feature has state, then two words (values at `zoom` and the next) per
-// masked slot.
+// feature has state, then per masked slot STATE_ZOOMS words: its values at
+// the integer zooms from `zoom` on, which a drape slot reads at its own
+// zoom and the camera between two (#85).
 struct StateLookup {
     mask: u32,
     base: u32,
@@ -166,12 +167,35 @@ fn state_slot(lookup: StateLookup, slot: u32) -> u32 {
     return count_bits(lookup.mask & ((1u << slot) - 1u));
 }
 
+const STATE_ZOOMS: u32 = 8u;
+
+// Where property `slot`'s values at the frame's zoom are: the word of the
+// integer zoom at or below it (the first or last past the row's zooms),
+// and how far toward the next to go, 0 past the last.
+fn state_at(block: u32, lookup: StateLookup, slot: u32, c: Curve) -> vec2<u32> {
+    let k = u32(clamp(floor(frame.zoom) - lookup.zoom, 0.0, f32(STATE_ZOOMS - 1u)));
+    let t = select(curve_t(c, lookup.zoom + f32(k)), 0.0, k + 1u == STATE_ZOOMS);
+    return vec2<u32>(block + state_slot(lookup, slot) * STATE_ZOOMS + k, bitcast<u32>(t));
+}
+
 fn state_number(block: u32, lookup: StateLookup, slot: u32, c: Curve) -> f32 {
-    return table_number(block, state_slot(lookup, slot), c, lookup.zoom);
+    let at = state_at(block, lookup, slot, c);
+    let t = bitcast<f32>(at.y);
+    let a = bitcast<f32>(prop_at(at.x));
+    if t == 0.0 {
+        return a;
+    }
+    return mix(a, bitcast<f32>(prop_at(at.x + 1u)), t);
 }
 
 fn state_color(block: u32, lookup: StateLookup, slot: u32, c: Curve) -> vec4<f32> {
-    return table_color(block, state_slot(lookup, slot), c, lookup.zoom);
+    let at = state_at(block, lookup, slot, c);
+    let t = bitcast<f32>(at.y);
+    let a = unpack4x8unorm(prop_at(at.x));
+    if t == 0.0 {
+        return a;
+    }
+    return mix(a, unpack4x8unorm(prop_at(at.x + 1u)), t);
 }
 
 // How a feature-dependent property interpolates between its values at the

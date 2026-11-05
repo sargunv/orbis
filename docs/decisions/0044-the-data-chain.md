@@ -23,8 +23,8 @@ Native follow on their render threads:
   key or `properties`).
 - Interning a mesh's features stores that data on the feature's
   state-table entry. When the feature has state, its row holds those paint
-  slots evaluated on the CPU with its state and data, at the integer camera
-  zoom and the next. The shader already prefers a feature's state block
+  slots evaluated on the CPU with its state and data, at the integer zooms
+  around the camera's (#85). The shader already prefers a feature's state block
   over its row, so a state write shows in the next frame with no job.
 - It works for every family that reads state: fill, fill outline,
   extrusion, line, circle and both symbol nodes. The warning "drawn without

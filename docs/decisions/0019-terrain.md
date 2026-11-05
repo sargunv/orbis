@@ -118,11 +118,12 @@ fill their borders), the style revision, feature-state writes, a revision
 per drape zoom that changes when the uniforms written there do, and the
 image atlas's pixel revision. Unchanged slots cost nothing per frame.
 
-Two exceptions follow the camera honestly. A viewport-anchored
+One exception follows the camera honestly. A viewport-anchored
 `*-translate` on a draped fill or line turns with the bearing, so its
 zoom's slots key on the bearing; that is rare. Feature-state rows hold
-values for the camera's integer zoom, so state paint that varies with zoom
-keys on that zoom (#85).
+each value at eight integer zooms, from five below the camera's to two
+above, so a slot reads its own zoom's state values (#85); only a slot past
+them, which takes their first or last, keys on where they start.
 
 ### Viewport-anchored hillshades are shaded, not draped
 
