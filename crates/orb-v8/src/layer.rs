@@ -521,9 +521,9 @@ pub(crate) fn property_at<T: PropertyValue>(
             cx.errors_at(&path, errors);
             Property::constant(default)
         }
-        Ok(parsed) if parsed.kind() == Kind::Constant => {
-            // Constants are folded to literals, except images, which GL JS
-            // leaves to resolve at evaluation.
+        // Constants are folded to literals, except images, which GL JS
+        // leaves to resolve at evaluation with the style's images.
+        Ok(parsed) if parsed.kind() == Kind::Constant && !parsed.expression().reads_images() => {
             let value = parsed
                 .expression()
                 .evaluate(0.0)

@@ -12,6 +12,8 @@ import init, { createWorkerMap, type OrbisMap } from "../pkg/core.js";
 import { ackIdle, frameLoop, renderFrame, type FrameAck, type Renderer } from "./frames.ts";
 import { spawnWorkers } from "./workers.ts";
 
+// Requests that change what the map draws.
+const CHANGES = new Set(["addImage", "updateImage", "removeImage"]);
 const fail = (e: unknown) => self.postMessage({ type: "error", message: String(e) });
 let map: OrbisMap | undefined;
 let ready: Promise<void> | undefined;
@@ -123,6 +125,7 @@ self.onmessage = async ({ data }: MessageEvent) => {
         const method = (map as unknown as Record<string, (...args: unknown[]) => unknown>)[data.method];
         const result = await method.apply(map, data.args);
         self.postMessage({ type: "reply", id: data.id, result });
+        if (CHANGES.has(data.method)) request();
       } catch (e) {
         self.postMessage({ type: "reply", id: data.id, error: String(e) });
       }

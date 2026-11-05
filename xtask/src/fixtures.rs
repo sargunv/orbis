@@ -22,7 +22,7 @@ const COMMIT: &str = "2b68611a4e2d4f7f076f6c6ebf758e2d53f91471";
 
 /// The mirror's [`content_hash`] at [`COMMIT`]. Changing the pin changes it:
 /// a fetch that doesn't match reports the hash it got, for review.
-const MIRROR_SHA256: &str = "659bd97130da7fd0a0d3dee71634554bb8249a38a0334a423431c7a4cf8a7d98";
+const MIRROR_SHA256: &str = "490ca5fe904f4cd58af1e9a9921806fc3be2144c2bfe38e2a1b8749f1f3feb4f";
 
 /// The test directory prefixes the mirrored milestones need, for the render and
 /// query suites alike. Matching is by prefix, so `fill-` already covers
@@ -291,7 +291,10 @@ fn scan(archive: &[u8]) -> Result<Scanned, String> {
             .read_to_string(&mut style)
             .map_err(|e| format!("{path}: {e}"))?;
         scanned.styles.push(Style {
-            refs: local_urls(&style).into_iter().collect(),
+            refs: local_urls(&style)
+                .into_iter()
+                .chain(operation_images(&style))
+                .collect(),
             stacks: fontstacks(&style).map_err(|e| format!("{path}: {e}"))?,
         });
         let counts = if query {
@@ -320,6 +323,24 @@ fn local_urls(style: &str) -> Vec<String> {
             let end = rest.find('"')?;
             Some(rest[..end].to_string())
         })
+        .collect()
+}
+
+/// The asset paths of a test's `addImage` operations, which GL JS's harness
+/// loads from the assets directory.
+fn operation_images(style: &str) -> Vec<String> {
+    let Ok(style) = serde_json::from_str::<Value>(style) else {
+        return Vec::new();
+    };
+    let operations = style
+        .pointer("/metadata/test/operations")
+        .and_then(Value::as_array);
+    operations
+        .into_iter()
+        .flatten()
+        .filter(|op| op.get(0).and_then(Value::as_str) == Some("addImage"))
+        .filter_map(|op| op.get(2).and_then(Value::as_str))
+        .map(|path| path.trim_start_matches("./").to_string())
         .collect()
 }
 

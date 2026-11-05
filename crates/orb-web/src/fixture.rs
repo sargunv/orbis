@@ -225,6 +225,31 @@ impl FixtureRenderer {
             .map_err(|e| JsError::new(&e))
     }
 
+    /// `["addImage", name, path, options?]`, from the assets, as the native
+    /// runner applies it.
+    async fn add_image(&self, map: &mut Map, op: &orb_expr::json::Json) -> Result<(), String> {
+        let items = op.as_array().unwrap_or_default();
+        let text = |i: usize| {
+            items
+                .get(i)
+                .and_then(|v| v.as_str())
+                .ok_or("expected a string")
+        };
+        let url = format!("{}{}", self.assets_url, text(2)?.trim_start_matches("./"));
+        let bytes = orb_host_web::fetch(&url).await.map_err(|e| e.to_string())?;
+        let image = orb_host_web::decode_image(&bytes)
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        let options = items.get(3).map_or_else(String::new, ToString::to_string);
+        let image = orb_runtime::StyleImage::with_options(
+            image.width,
+            image.height,
+            image.pixels,
+            &options,
+        )?;
+        map.add_image(text(1)?, image)
+    }
+
     /// Renders a fixture's map until it settles, as both runners do.
     #[allow(clippy::too_many_arguments)]
     async fn settle(
@@ -351,6 +376,18 @@ impl FixtureRenderer {
             if !settled {
                 break;
             }
+            if op
+                .as_array()
+                .unwrap_or_default()
+                .first()
+                .and_then(|n| n.as_str())
+                == Some("addImage")
+            {
+                if let Err(e) = self.add_image(&mut map, op).await {
+                    output.warnings.push(format!("operation {op}: {e}"));
+                }
+                continue;
+            }
             match apply(&mut map, op) {
                 Ok(Next::Continue) => {}
                 Ok(Next::Loaded) => {
@@ -427,6 +464,13 @@ fn apply(map: &mut Map, op: &orb_expr::json::Json) -> Result<Next, String> {
                     .ok_or("expected a number")
             };
             map.camera_mut().target = orb_geo::Geodetic::new(at(0)?, at(1)?);
+        }
+        "removeImage" => {
+            let name = items
+                .get(1)
+                .and_then(|n| n.as_str())
+                .ok_or("expected a name")?;
+            map.remove_image(name)?;
         }
         _ => {
             let tx = orb_runtime::Transaction::from_commands(&format!("[{op}]"))?;

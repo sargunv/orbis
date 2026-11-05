@@ -30,6 +30,8 @@ pub struct TileBuild {
     /// Per symbol layer laid out, by layer key: its bucket. Its icon and
     /// text nodes' meshes carry property rows only.
     pub(crate) symbols: Vec<(u32, SymbolBuild)>,
+    /// Images the symbol layers name that the style doesn't have.
+    pub(crate) missing_images: Vec<String>,
 }
 
 /// What symbol layout reads beyond the tile: the worker's glyph metrics
@@ -370,7 +372,8 @@ fn build_symbols(
             continue;
         }
         let ids = stable_ids(source_def, layer);
-        let p = crate::symbol::prepare(symbol, layer, &features, zoom, ids);
+        let images = symbols.icons.names();
+        let p = crate::symbol::prepare(symbol, layer, &features, zoom, ids, images);
         let faces = &plan.style.font_faces;
         for url in symbols.glyphs.missing(&p.requests, template, policy, faces) {
             if !missing.contains(&url) {
@@ -454,6 +457,13 @@ pub(crate) fn build(
         symbols,
         &mut build.warnings,
     )?;
+    for (_, symbols) in &mut build.symbols {
+        for name in symbols.missing_images.drain(..) {
+            if !build.missing_images.contains(&name) {
+                build.missing_images.push(name);
+            }
+        }
+    }
     let mut ids: HashMap<String, u32> = HashMap::new();
     let source_def = plan.source_def(source);
     for node in &plan.nodes {

@@ -24,6 +24,20 @@ resident image leaves. Pages do not move live rectangles. Exhaustion reports a
 warning and leaves the affected image transparent; camera changes allocate no
 image resources. Atlas sharing is scoped to maps using the same GPU device.
 
+Images a host adds at run time (`Map::add_image`, `update_image`,
+`remove_image` and `has_image`, GL JS's `addImage` family) join the sprites'
+images in the style's namespace. Removing or replacing an image empties its
+rows in place. The ids stay the same, so tiles holding them read the new
+pixels, or a transparent row, without new geometry, and pattern layers aren't
+laid out again. Symbol layout does read image sizes and metadata, so adding
+or removing an image makes a style revision with no document change, which
+lays the symbol layers out again from cached tiles. `image` expressions see
+the style's images as available, as GL JS's do. Constant expressions that read
+`image` are no longer folded at parse time, so `coalesce` picks the first
+image the style has. When a tile's layers ask for an image the style lacks,
+the map reports the name once as `MapEvent::StyleImageMissing` (GL JS
+`styleimagemissing`), and again only after it has been added and removed.
+
 The alternative of baking sprite coordinates into tile vertices would make
 layout depend on the atlas and require geometry rewrites when it changes.
 Per-tile textures would require per-tile binding changes. Both conflict with

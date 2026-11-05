@@ -26,6 +26,10 @@ pub enum MapEvent {
     /// fades or placement in flight. Hosts draw no more frames until
     /// something changes (GL JS `idle`).
     Idle,
+    /// A tile's layers name an image the style doesn't have (GL JS
+    /// `styleimagemissing`); once per name until it's added. A host may add
+    /// it with [`Map::add_image`](crate::Map::add_image).
+    StyleImageMissing { name: String },
     /// A style, source, tile or sprite failed to load (GL JS `error`).
     Error { message: String },
     /// The map renders at `tier`: on its first frame, and on its first

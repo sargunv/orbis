@@ -13,7 +13,7 @@ import { transaction, type FeatureTarget, type Transaction } from "./transaction
 import type {
   Bounds, Camera, CameraOptions, Constraints, EaseOptions, Easing, Feature, FitOptions, FlyOptions,
   FrameStats, Hit, LngLat, MapEvents, MapOptions, Point, QueryGeometry, QueryOptions,
-  SourceQueryOptions,
+  SourceQueryOptions, StyleImageData, StyleImageOptions,
 } from "./types.ts";
 
 const NAN2 = [NaN, NaN];
@@ -31,6 +31,9 @@ function targetFrom(a: ArrayLike<number>): CameraOptions {
   for (const key of Object.keys(target) as (keyof CameraOptions)[]) if (target[key] === undefined) delete target[key];
   return target;
 }
+/** An image's RGBA bytes, as the wasm map takes them. */
+const rgba = (image: StyleImageData) =>
+  new Uint8Array(image.data.buffer, image.data.byteOffset, image.data.byteLength);
 const easing = (e?: Easing) => (e === "linear" ? new Float64Array() : e ? new Float64Array(e) : undefined);
 
 /** The camera: its state, moves and limits. */
@@ -254,6 +257,32 @@ export class OrbisMap {
     return this.edit((tx) => tx.setGlobalStateProperty(name, value));
   }
 
+  /** Adds an image to the style (GL JS `addImage`) for icons, text and
+   * patterns; rejects when it has one by that name. */
+  async addImage(name: string, image: StyleImageData, options: StyleImageOptions = {}): Promise<void> {
+    await this.#host.request("addImage", name, image.width, image.height, rgba(image), JSON.stringify(options));
+    this.#changed();
+  }
+  /** Replaces an image's pixels, of the same size (GL JS `updateImage`). */
+  async updateImage(name: string, image: StyleImageData): Promise<void> {
+    await this.#host.request("updateImage", name, image.width, image.height, rgba(image));
+    this.#changed();
+  }
+  /** Removes an image from the style (GL JS `removeImage`). */
+  async removeImage(name: string): Promise<void> {
+    await this.#host.request("removeImage", name);
+    this.#changed();
+  }
+  /** Whether the style has an image by this name, from its sprites or added. */
+  async hasImage(name: string): Promise<boolean> {
+    return await this.#host.request("hasImage", name) as boolean;
+  }
+  #changed() {
+    this.#dirty = true;
+    this.#idle = false;
+    this.#loop.request();
+  }
+
   /** The style as edits have left it. */
   async getStyle(): Promise<object> {
     return JSON.parse(await this.#host.request("getStyle") as string);
@@ -377,6 +406,7 @@ export class OrbisMap {
           break;
         }
         case "error": this.#error(event.message); break;
+        case "styleimagemissing": this.#events.emit("styleimagemissing", { id: event.id }); break;
         // Idle needs the camera at rest too; see #maybeIdle.
         case "idle": break;
       }

@@ -65,7 +65,8 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     discover(&fixtures, &mut paths)?;
     paths.sort();
     paths.retain(|path| test_id(path, &fixtures).contains(filter));
-    let fetch = Arc::new(FixtureFetch::new(root.join("fixtures/gl-js/assets")));
+    let assets = root.join("fixtures/gl-js/assets");
+    let fetch = Arc::new(FixtureFetch::new(assets.clone()));
     let executor = Arc::new(ThreadPool::new("fixtures", ThreadPool::default_size()));
     let current = std::thread::current();
     let wake = Arc::new(move || current.unpark());
@@ -153,6 +154,7 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
                     &mut gpu,
                     &mut map,
                     &metadata,
+                    &assets,
                     &mut reasons,
                     &mut diagnostics,
                 );

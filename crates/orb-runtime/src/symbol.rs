@@ -26,7 +26,10 @@ use orb_v8::{Property, Symbol};
 pub struct SpriteIcons {
     /// The device pixel ratio images are drawn at.
     pub pixel_ratio: f64,
-    pub images: HashMap<String, IconImage>,
+    pub(crate) images: HashMap<String, IconImage>,
+    /// The images' names, sorted: the `image` expression's available
+    /// images.
+    names: Vec<String>,
 }
 
 impl SpriteIcons {
@@ -108,6 +111,7 @@ impl SpriteIcons {
         let mut icons = Self {
             pixel_ratio: num(ratio)?,
             images: HashMap::new(),
+            names: Vec::new(),
         };
         for image in images.as_array().ok_or_else(bad)? {
             let [name, w, h, r, sdf, sx, sy, content, fw, fh] = image.as_array().ok_or_else(bad)?
@@ -132,11 +136,33 @@ impl SpriteIcons {
                 },
             );
         }
+        icons.names = icons.images.keys().cloned().collect();
+        icons.names.sort_unstable();
         Ok(icons)
     }
 
-    /// The icons of loaded sprite images.
+    /// The images' names, sorted.
+    pub(crate) fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    pub(crate) fn contains(&self, name: &str) -> bool {
+        self.images.contains_key(name)
+    }
+
+    /// Forgets an image; whether there was one.
+    pub(crate) fn remove(&mut self, name: &str) -> bool {
+        if let Ok(i) = self.names.binary_search_by(|n| n.as_str().cmp(name)) {
+            self.names.remove(i);
+        }
+        self.images.remove(name).is_some()
+    }
+
+    /// Adds an image's icon, or replaces it.
     pub(crate) fn add(&mut self, name: &str, size: [u32; 2], m: &orb_render::ImageMetadata) {
+        if let Err(i) = self.names.binary_search_by(|n| n.as_str().cmp(name)) {
+            self.names.insert(i, name.to_owned());
+        }
         let fit = |f: &Option<String>| {
             f.as_deref().map(|f| match f {
                 "stretchOnly" => TextFit::StretchOnly,
@@ -194,6 +220,8 @@ pub(crate) struct SymbolBuild {
     /// Per symbol instance, the byte range of its name in `name_bytes`.
     pub(crate) name_ranges: Vec<u32>,
     pub(crate) name_bytes: Vec<u8>,
+    /// Images features name that the style doesn't have.
+    pub(crate) missing_images: Vec<String>,
 }
 
 fn anchor(a: orb_v8::Anchor) -> orb_text::Anchor {
@@ -350,23 +378,24 @@ pub(crate) fn prepare(
     features: &[u32],
     zoom: f64,
     ids: Option<&orb_tile::Column>,
+    images: &[String],
 ) -> Prepared {
     let style = layer_layout(symbol, zoom);
     let l = &symbol.layout;
     // GL JS `populate`'s hasText.
-    let has_text = (l.text_field.kind() != Kind::Constant
-        || l.text_field
-            .as_constant()
-            .is_some_and(|s| s.iter().any(|s| !s.text.is_empty() || s.image.is_some())))
+    let has_text = l
+        .text_field
+        .as_constant()
+        .is_none_or(|s| s.iter().any(|s| !s.text.is_empty() || s.image.is_some()))
         && (l.text_font.kind() != Kind::Constant
             || l.text_font.as_constant().is_some_and(|f| !f.is_empty()));
     let sort_by_key = l.z_order.evaluate(zoom) != orb_v8::SymbolZOrder::ViewportY
         && matches!(l.sort_key.kind(), Kind::Source | Kind::Composite);
 
-    let text_field = l.text_field.bind(layer);
+    let text_field = l.text_field.bind_with_images(layer, images);
     let text_transform = l.text_transform.bind(layer);
     let text_font = l.text_font.bind(layer);
-    let icon_image = l.icon_image.bind(layer);
+    let icon_image = l.icon_image.bind_with_images(layer, images);
     let sort_key = l.sort_key.bind(layer);
     let text_size = l.text_size.bind(layer);
     let icon_size = l.icon_size.bind(layer);
@@ -504,15 +533,21 @@ pub(crate) fn needs_word_breaks(prepared: &Prepared) -> bool {
     })
 }
 
-/// The images a layer's features name that the sprites have, numbered for
-/// layout.
-fn tile_images(features: &[SymbolFeature], icons: &SpriteIcons) -> TileImages {
+/// The images a layer's features name that the style has, numbered for
+/// layout, and those it hasn't.
+fn tile_images(features: &[SymbolFeature], icons: &SpriteIcons) -> (TileImages, Vec<String>) {
     let mut images = TileImages::default();
+    let mut missing = Vec::new();
     let mut add = |name: &str| {
-        if images.get(name).is_none()
-            && let Some(image) = icons.images.get(name)
-        {
-            images.insert(name, image.clone());
+        if images.get(name).is_some() || name.is_empty() {
+            return;
+        }
+        match icons.images.get(name) {
+            Some(image) => {
+                images.insert(name, image.clone());
+            }
+            None if !missing.iter().any(|m| m == name) => missing.push(name.to_owned()),
+            None => {}
         }
     };
     for feature in features {
@@ -525,7 +560,7 @@ fn tile_images(features: &[SymbolFeature], icons: &SpriteIcons) -> TileImages {
             }
         }
     }
-    images
+    (images, missing)
 }
 
 /// Lays out a prepared layer. `slots` maps a feature's tile index to its
@@ -539,7 +574,7 @@ pub(crate) fn layout(
     slots: &HashMap<u32, u32>,
     words: Option<&orb_text::WordBreaker>,
 ) -> SymbolBuild {
-    let images = tile_images(&prepared.features, icons);
+    let (images, missing_images) = tile_images(&prepared.features, icons);
     let mut bucket = orb_symbol::layout(
         layer,
         &prepared.features,
@@ -588,6 +623,7 @@ pub(crate) fn layout(
         name_ranges,
         name_bytes,
         bucket,
+        missing_images,
     }
 }
 
@@ -721,7 +757,7 @@ mod tests {
             let ids = case
                 .get("promoteId")
                 .and_then(|p| layer.property(p.as_str().unwrap()));
-            let prepared = prepare(symbol, layer, &features, zoom, ids);
+            let prepared = prepare(symbol, layer, &features, zoom, ids, &[]);
 
             let g = &golden["layer"];
             let s = &prepared.style;

@@ -40,6 +40,8 @@ fn operation_skip(op: &Value) -> Option<String> {
         "wait" => Some("operation:wait-for".into()),
         "idle" => None,
         "setZoom" | "setBearing" | "setPitch" | "setRoll" if number(1) => None,
+        "addImage" if op.get(2).is_some_and(Value::is_string) => None,
+        "removeImage" if op.get(1).is_some_and(Value::is_string) => None,
         "setCenter"
             if op
                 .get(1)
@@ -180,7 +182,7 @@ mod tests {
     fn options_we_cannot_honour_and_invalid_numbers_skip() {
         let m = Metadata::read(&json!({"metadata":{"test":{
             "operations":[["wait"], ["setZoom", 3], ["setPaintProperty", "l", "fill-color", "red"],
-                ["addImage", "x", "y.png"], ["wait", "render"], ["wait", 100]],
+                ["addImage", "x", 3], ["wait", "render"], ["wait", 100]],
             "reportWidth":12, "maxPitch":-1,
             "width":0, "pixelRatio":-1, "debug":true, "description":"informational"
         }}}));

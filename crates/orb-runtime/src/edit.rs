@@ -323,6 +323,59 @@ impl Map {
         Ok(self.version)
     }
 
+    /// Lays every symbol layer out again from the jobs' cached tiles, in a
+    /// revision with nothing new in the document: the style's images
+    /// changed. Results from before it are stale, as after an edit.
+    pub(crate) fn relayout_symbols(&mut self) {
+        let Some(mut style) = self.style.take() else {
+            return;
+        };
+        self.version += 1;
+        let version = self.version;
+        let worker = Arc::new(revise(
+            Some(&style.worker),
+            &style.doc,
+            version,
+            self.labels.ideographs.clone(),
+            self.surface.tiles(),
+        ));
+        let doc = &style.doc;
+        let update = StyleUpdate {
+            revision: version,
+            layers: doc.layer_keys().map(|k| k.0).collect(),
+            sources: doc.source_keys().map(|k| k.0).collect(),
+            state: doc.global_state(),
+            glyphs: doc.style().glyphs.clone(),
+            font_faces: doc.style().font_faces.clone(),
+            local_ideographs: self.labels.ideographs.clone(),
+            surface: self.surface.tiles(),
+            cost: doc.cost_model(),
+            ..StyleUpdate::default()
+        };
+        self.services.jobs.set_style(style.id, &update, &worker);
+        style.worker = Arc::clone(&worker);
+        let plan = worker.plan();
+        let mut relayout: BTreeMap<usize, Vec<u32>> = BTreeMap::new();
+        for node in plan.nodes.iter().filter(|n| n.family.is_symbol()) {
+            if let Some(state) = style.nodes.get_mut(&node.key) {
+                state.layout_epoch = version;
+                state.rows_epoch = version;
+                relayout.entry(node.source).or_default().push(node.key);
+            }
+        }
+        style.painted = None;
+        self.style = Some(style);
+        for (source, nodes) in relayout {
+            for tile in self.resident_tiles(source, None) {
+                self.send_job(source, tile, Some(nodes.clone()), false, Some(version));
+            }
+        }
+        self.events.wake();
+        self.events.push(crate::MapEvent::StyleData {
+            generation: self.version,
+        });
+    }
+
     /// The ready tiles of a source, or those with a mesh of one of `nodes`.
     fn resident_tiles(&self, source: usize, nodes: Option<&[u32]>) -> Vec<TileIndex> {
         let style = self.style.as_ref().expect("edits need a style");
@@ -361,6 +414,13 @@ impl Map {
             }
         };
         self.warnings.append(&mut build.warnings);
+        crate::style_image::report_missing(
+            &mut style.reported_missing,
+            &style.icons,
+            style.sprites_loading,
+            &build,
+            &mut self.events,
+        );
         let SourceState::Ready { pyramid, .. } = &mut style.sources[index] else {
             return;
         };

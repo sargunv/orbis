@@ -80,6 +80,7 @@ export type MapEventObject =
   | { type: "sourcedata"; source: string; loaded: boolean }
   | { type: "load" } | { type: "idle" }
   | { type: "error"; message: string }
+  | { type: "styleimagemissing"; id: string }
   | { type: "capability"; tier: "modern" | "compat" };
 
 /** The wasm map's per-frame surface. */

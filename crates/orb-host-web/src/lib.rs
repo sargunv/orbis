@@ -29,7 +29,8 @@ impl ImageDecode for WebImageDecode {
     }
 }
 
-async fn decode_image(bytes: &[u8]) -> Result<DecodedImage, JsValue> {
+/// Decodes an image to straight RGBA8 texels.
+pub async fn decode_image(bytes: &[u8]) -> Result<DecodedImage, JsValue> {
     let bitmap = decode_bitmap(bytes).await?;
     let image = read_bitmap(&bitmap);
     bitmap.close();

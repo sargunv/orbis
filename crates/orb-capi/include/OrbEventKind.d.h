@@ -24,6 +24,7 @@ typedef enum OrbEventKind {
   OrbEventKind_DoubleClick = 9,
   OrbEventKind_QueryResult = 10,
   OrbEventKind_Capability = 11,
+  OrbEventKind_StyleImageMissing = 12,
 } OrbEventKind;
 
 typedef struct OrbEventKind_option {union { OrbEventKind ok; }; bool is_ok; } OrbEventKind_option;

@@ -112,34 +112,7 @@ fn extract(id: &str, bytes: &[u8], image: DecodedImage) -> Result<Vec<SpriteImag
         {
             return Err(bad());
         }
-        let ratio = d.get("pixelRatio").and_then(Json::as_f64).unwrap_or(1.0) as f32;
-        if !ratio.is_finite() || ratio <= 0.0 {
-            return Err(bad());
-        }
-        let stretch = |key| -> Result<Vec<[f32; 2]>, String> {
-            d.get(key).map_or(Ok(Vec::new()), |j| {
-                j.as_array()
-                    .ok_or_else(bad)?
-                    .iter()
-                    .map(numbers::<2>)
-                    .collect()
-            })
-        };
-        let metadata = ImageMetadata {
-            pixel_ratio: ratio,
-            sdf: d.get("sdf").and_then(Json::as_bool).unwrap_or(false),
-            stretch_x: stretch("stretchX")?,
-            stretch_y: stretch("stretchY")?,
-            content: d.get("content").map(numbers::<4>).transpose()?,
-            text_fit_width: d
-                .get("textFitWidth")
-                .and_then(Json::as_str)
-                .map(str::to_owned),
-            text_fit_height: d
-                .get("textFitHeight")
-                .and_then(Json::as_str)
-                .map(str::to_owned),
-        };
+        let metadata = metadata(d).map_err(|_| bad())?;
         let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
         for row in y..y + height {
             let at = (u64::from(row) * u64::from(image.width) + u64::from(x)) as usize * 4;
@@ -159,6 +132,38 @@ fn extract(id: &str, bytes: &[u8], image: DecodedImage) -> Result<Vec<SpriteImag
         });
     }
     Ok(out)
+}
+
+/// An image's metadata as sprite JSON and GL JS `addImage` options spell
+/// it: `pixelRatio`, `sdf`, `stretchX`, `stretchY`, `content`,
+/// `textFitWidth`, `textFitHeight`.
+pub(crate) fn metadata(d: &Json) -> Result<ImageMetadata, String> {
+    let ratio = match d.get("pixelRatio") {
+        None => 1.0,
+        Some(r) => r.as_f64().ok_or("pixelRatio is not a number")? as f32,
+    };
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return Err(format!("pixelRatio {ratio} is not positive"));
+    }
+    let stretch = |key| -> Result<Vec<[f32; 2]>, String> {
+        d.get(key).map_or(Ok(Vec::new()), |j| {
+            j.as_array()
+                .ok_or_else(|| format!("{key} is not an array"))?
+                .iter()
+                .map(numbers::<2>)
+                .collect()
+        })
+    };
+    let text = |key| d.get(key).and_then(Json::as_str).map(str::to_owned);
+    Ok(ImageMetadata {
+        pixel_ratio: ratio,
+        sdf: d.get("sdf").and_then(Json::as_bool).unwrap_or(false),
+        stretch_x: stretch("stretchX")?,
+        stretch_y: stretch("stretchY")?,
+        content: d.get("content").map(numbers::<4>).transpose()?,
+        text_fit_width: text("textFitWidth"),
+        text_fit_height: text("textFitHeight"),
+    })
 }
 
 fn numbers<const N: usize>(j: &Json) -> Result<[f32; N], String> {

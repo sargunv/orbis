@@ -26,6 +26,7 @@ mod source;
 mod sprite;
 mod state;
 mod style;
+mod style_image;
 mod surface;
 mod symbol;
 mod terrain;
@@ -53,7 +54,7 @@ pub use loader::{LoadDone, TileLoader, TileLocation};
 pub use map::{FrameReport, Images, JobCounts, Map, Services};
 pub use orb_camera::{CameraState, View, Viewport};
 pub use orb_layout::fill::Bend;
-pub use orb_render::{ARGS_WORDS, SceneCapacity, TargetFormat};
+pub use orb_render::{ARGS_WORDS, ImageMetadata, SceneCapacity, TargetFormat};
 pub use orb_style::{CostModel, FeatureTarget, Transaction};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};
 pub use placement_wire::{
@@ -62,6 +63,7 @@ pub use placement_wire::{
 pub use queries::QueryDone;
 pub use query::{Hit, HitFeature, HitIndex, HitPublication, MeshHits};
 pub use style::ImageKind;
+pub use style_image::StyleImage;
 pub use surface::{
     SurfaceTiles, projection_from_json, projection_to_json, surface_from_json, surface_to_json,
     tms_from_json, tms_to_json,

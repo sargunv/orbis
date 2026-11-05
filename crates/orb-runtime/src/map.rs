@@ -296,10 +296,15 @@ pub(crate) struct LoadedStyle {
     zoom_history: ZoomHistory,
     pub(crate) image_namespace: Option<u64>,
     sprites_started: bool,
-    sprites_loading: u32,
-    /// Sprite metadata loaded so far; the jobs get it once every sprite has
-    /// resolved, before tiles with symbol layers are requested.
-    icons: crate::SpriteIcons,
+    pub(crate) sprites_loading: u32,
+    /// Sprite metadata loaded so far, and the images the host added; the
+    /// jobs get it once every sprite has resolved, before tiles with symbol
+    /// layers are requested.
+    pub(crate) icons: crate::SpriteIcons,
+    /// Image edits for the next frame's atlas.
+    pub(crate) image_edits: Vec<crate::style_image::AtlasEdit>,
+    /// Image names reported missing since they were last added.
+    pub(crate) reported_missing: std::collections::HashSet<String>,
     /// The scene tile of the background layers' quads.
     background: Option<TileId>,
     /// Tiles with placements in publication order, parallel to sources.
@@ -992,6 +997,8 @@ impl Map {
             sprites_started: false,
             sprites_loading: 0,
             icons: crate::SpriteIcons::default(),
+            image_edits: Vec::new(),
+            reported_missing: Default::default(),
             background: None,
             states: FeatureStates::default(),
             symbol_tiles: Vec::new(),
@@ -1136,6 +1143,7 @@ impl Map {
             .0
             .set_antialias_3d(gpu, self.antialias_3d);
         self.start_sprites(gpu, pixel_ratio);
+        self.apply_image_edits(gpu);
         // Bring the scene's nodes to the plan before results for it apply.
         self.sync_nodes(gpu);
         self.placement_ms = 0.0;
@@ -2756,6 +2764,13 @@ impl Map {
             }
         };
         self.warnings.append(&mut build.warnings);
+        crate::style_image::report_missing(
+            &mut style.reported_missing,
+            &style.icons,
+            style.sprites_loading,
+            &build,
+            &mut self.events,
+        );
         if build.missing {
             pyramid.insert_missing(tile);
             return None;

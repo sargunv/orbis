@@ -405,11 +405,18 @@ impl ImageAtlas {
     }
 
     fn erase(&mut self, gpu: &mut dyn Gpu, id: u32) {
+        self.vacate(gpu, id);
         let entry = self.entries[id as usize].take().unwrap();
         if let Some(rows) = entry.dash_rows {
             self.lines.release(rows);
         }
-        if let Some(page) = entry.page {
+        self.free.push(id);
+    }
+
+    /// Frees a row's texels and empties its table words; the id stays.
+    fn vacate(&mut self, gpu: &mut dyn Gpu, id: u32) {
+        let entry = self.entries[id as usize].as_mut().unwrap();
+        if let Some(page) = entry.page.take() {
             let p = &mut self.pages[page];
             p.live -= 1;
             let [w, h] = entry.size.unwrap();
@@ -422,8 +429,23 @@ impl ImageAtlas {
                 *p = Shelves::default();
             }
         }
+        entry.size = None;
+        entry.metadata = None;
         gpu.write_buffer(self.bindings.table, u64::from(id) * 32, &[0; 32]);
-        self.free.push(id);
+    }
+
+    /// Empties a style's named image, as a pattern and as an icon, for new
+    /// pixels or none: its rows keep their ids, which tiles hold, and read
+    /// as a missing image until uploaded again.
+    pub fn clear(&mut self, gpu: &mut dyn Gpu, namespace: u64, name: &str) {
+        for slot in [
+            Slot::Image(ImageKey::Name(name.into())),
+            Slot::Icon(name.into()),
+        ] {
+            if let Some(&id) = self.names.get(&(namespace, slot)) {
+                self.vacate(gpu, id);
+            }
+        }
     }
 
     pub fn release(&mut self, gpu: &mut dyn Gpu, namespace: u64) {

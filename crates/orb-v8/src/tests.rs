@@ -414,6 +414,32 @@ fn symbol(layout: &str, paint: &str) -> Symbol {
 }
 
 #[test]
+fn image_expressions_resolve_with_the_styles_images() {
+    let plain = symbol(r#"{"icon-image": "marker"}"#, "{}");
+    assert_eq!(
+        plain.layout.icon_image.as_constant(),
+        Some(&Some("marker".into()))
+    );
+    // GL JS evaluates constant image expressions with the available images.
+    let s = symbol(
+        r#"{"icon-image": ["coalesce", ["image", "a"], ["image", "b"], ["image", "c"]]}"#,
+        "{}",
+    );
+    let mut b = LayerBuilder::new("poi", 4096);
+    b.begin_feature(None, GeometryType::Point);
+    b.begin_part();
+    b.begin_ring();
+    b.push_vertex([0, 0]);
+    let tile = b.finish();
+    let icon = &s.layout.icon_image;
+    let images = ["c".to_string(), "b".to_string()];
+    let with = |images: &[String]| icon.bind_with_images(&tile, images).evaluate(0.0, 0);
+    assert_eq!(with(&images).as_deref(), Some("b"));
+    // None available: the first requested.
+    assert_eq!(with(&[]).as_deref(), Some("a"));
+}
+
+#[test]
 fn symbol_layers_are_typed() {
     let s = symbol("{}", "{}");
     let l = &s.layout;

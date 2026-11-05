@@ -1,9 +1,14 @@
-//! GL JS render-test `operations`: camera calls, `wait`/`idle`, and map
-//! calls applied as style transactions. `Metadata` skips what this can't
-//! apply; the Chrome runner applies the same calls in `orb-web`.
+//! GL JS render-test `operations`: camera calls, `wait`/`idle`, style
+//! images from the assets, and map calls applied as style transactions.
+//! `Metadata` skips what this can't apply; the Chrome runner applies the
+//! same calls in `orb-web`.
 
-use orb_runtime::{Map, Transaction};
+use std::path::Path;
+
+use orb_runtime::{Map, StyleImage, Transaction};
 use serde_json::Value;
+
+use crate::images::Image;
 
 /// What the runner does after an operation, as GL JS's harness does.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -19,7 +24,8 @@ pub(crate) enum Next {
 }
 
 /// Applies one operation and says what the runner does next.
-pub(crate) fn apply(map: &mut Map, op: &Value) -> Result<Next, String> {
+/// `assets` is the directory `addImage` paths are in.
+pub(crate) fn apply(map: &mut Map, op: &Value, assets: &Path) -> Result<Next, String> {
     let name = op
         .get(0)
         .and_then(Value::as_str)
@@ -52,6 +58,20 @@ pub(crate) fn apply(map: &mut Map, op: &Value) -> Result<Next, String> {
                     .ok_or("expected a number")
             };
             map.camera_mut().target = orb_geo::Geodetic::new(at(0)?, at(1)?);
+        }
+        // `["addImage", name, path, options?]`.
+        "addImage" => {
+            let text = |i: usize| op.get(i).and_then(Value::as_str).ok_or("expected a string");
+            let path = text(2)?;
+            let image = Image::read(&assets.join(path.trim_start_matches("./")))?;
+            let options = op.get(3).map_or_else(String::new, Value::to_string);
+            let image =
+                StyleImage::with_options(image.width, image.height, image.pixels, &options)?;
+            map.add_image(text(1)?, image)?;
+        }
+        "removeImage" => {
+            let name = op.get(1).and_then(Value::as_str).ok_or("expected a name")?;
+            map.remove_image(name)?;
         }
         _ => {
             let tx = Transaction::from_commands(&format!("[{op}]"))?;

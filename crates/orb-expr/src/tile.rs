@@ -15,12 +15,25 @@ pub struct Bound<'a> {
     ir: &'a Ir,
     layer: &'a Layer,
     columns: Vec<Option<&'a Column>>,
+    images: &'a [String],
 }
 
 impl<'a> Bound<'a> {
     pub(crate) fn new(ir: &'a Ir, layer: &'a Layer) -> Self {
         let columns = ir.keys.iter().map(|k| layer.property(k)).collect();
-        Self { ir, layer, columns }
+        Self {
+            ir,
+            layer,
+            columns,
+            images: &[],
+        }
+    }
+
+    /// The images `image` expressions find available when evaluated with
+    /// [`evaluate`](Self::evaluate); none by default.
+    pub fn with_images(mut self, images: &'a [String]) -> Self {
+        self.images = images;
+        self
     }
 
     /// Evaluates the expression for feature `row` at `zoom`.
@@ -28,6 +41,7 @@ impl<'a> Bound<'a> {
         self.evaluate_with(
             &crate::EvaluationContext {
                 zoom,
+                available_images: self.images,
                 ..crate::EvaluationContext::default()
             },
             row,

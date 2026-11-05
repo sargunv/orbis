@@ -352,6 +352,10 @@ impl OrbisMap {
                     set(&object, "message", message.into());
                     "error"
                 }
+                MapEvent::StyleImageMissing { name } => {
+                    set(&object, "id", name.into());
+                    "styleimagemissing"
+                }
                 MapEvent::Capability { tier } => {
                     let tier = match tier {
                         orb_hal::Tier::Modern => "modern",
@@ -377,6 +381,51 @@ impl OrbisMap {
         let tx = orb_runtime::Transaction::from_commands(commands).map_err(|e| JsError::new(&e))?;
         let generation = self.map.edit(&tx).map_err(|e| JsError::new(&e))?;
         Ok(generation as f64)
+    }
+
+    /// Adds an image to the style (GL JS `addImage`): straight RGBA8 rows,
+    /// and `options` as JSON (`pixelRatio`, `sdf`, `stretchX`, `stretchY`,
+    /// `content`, `textFitWidth`, `textFitHeight`), or empty.
+    #[wasm_bindgen(js_name = addImage)]
+    pub fn add_image(
+        &mut self,
+        name: &str,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        options: &str,
+    ) -> Result<(), JsError> {
+        let image = orb_runtime::StyleImage::with_options(width, height, pixels, options)
+            .map_err(|e| JsError::new(&e))?;
+        self.map
+            .add_image(name, image)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// Replaces an image's pixels, of the same size (GL JS `updateImage`).
+    #[wasm_bindgen(js_name = updateImage)]
+    pub fn update_image(
+        &mut self,
+        name: &str,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    ) -> Result<(), JsError> {
+        self.map
+            .update_image(name, width, height, pixels)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// Removes an image from the style (GL JS `removeImage`).
+    #[wasm_bindgen(js_name = removeImage)]
+    pub fn remove_image(&mut self, name: &str) -> Result<(), JsError> {
+        self.map.remove_image(name).map_err(|e| JsError::new(&e))
+    }
+
+    /// Whether the style has an image by this name (GL JS `hasImage`).
+    #[wasm_bindgen(js_name = hasImage)]
+    pub fn has_image(&self, name: &str) -> bool {
+        self.map.has_image(name)
     }
 
     /// Completes a tile job with a job worker's reply.

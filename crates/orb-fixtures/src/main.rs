@@ -159,7 +159,8 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     paths.sort();
     paths.retain(|path| test_id(path, &fixtures).contains(filter));
     let current = std::thread::current();
-    let fetch = Arc::new(FixtureFetch::new(root.join("fixtures/gl-js/assets")));
+    let assets = root.join("fixtures/gl-js/assets");
+    let fetch = Arc::new(FixtureFetch::new(assets.clone()));
     let executor = Arc::new(ThreadPool::new("fixtures", ThreadPool::default_size()));
     let wake = Arc::new(move || current.unpark());
     let mut results = Vec::new();
@@ -182,7 +183,7 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
             jobs,
             wake: wake.clone(),
         };
-        let result = run_test(&path, &id, &output, &mut backend, services)?;
+        let result = run_test(&path, &id, &output, &assets, &mut backend, services)?;
         let status = result["status"].as_str().expect("our status");
         prefixes.entry(prefix(&id).into()).or_default().add(status);
         if let Some(reasons) = result["skip_reasons"].as_array() {
@@ -300,6 +301,7 @@ fn run_test(
     path: &Path,
     id: &str,
     output: &Path,
+    assets: &Path,
     backend: &mut Backend,
     services: Services,
 ) -> Result<Value, String> {
@@ -368,6 +370,7 @@ fn run_test(
                 &mut gpu,
                 &mut map,
                 &metadata,
+                assets,
                 &mut reasons,
                 &mut diagnostics,
             )
@@ -384,6 +387,7 @@ fn run_test(
                 &mut gpu,
                 &mut map,
                 &metadata,
+                assets,
                 &mut reasons,
                 &mut diagnostics,
             )
@@ -511,6 +515,7 @@ fn render_native(
     gpu: &mut impl FixtureGpu,
     map: &mut Map,
     metadata: &Metadata,
+    assets: &Path,
     reasons: &mut BTreeSet<String>,
     diagnostics: &mut Vec<String>,
 ) -> (Image, Value) {
@@ -583,7 +588,7 @@ fn render_native(
         if !settled {
             break;
         }
-        match operations::apply(map, op) {
+        match operations::apply(map, op, assets) {
             Ok(Next::Continue) => {}
             Ok(Next::Loaded) => {
                 settled = settle(map, loaded, reasons, diagnostics, &mut frames).is_some();

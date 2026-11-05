@@ -1379,6 +1379,8 @@ fn premultiply(pixels: &mut [u8]) {
 #[derive(Debug, Default)]
 pub struct TileResult {
     pub warnings: Vec<String>,
+    /// Images the tile's symbol layers name that the style doesn't have.
+    pub missing_images: Vec<String>,
     /// The style revision the tile was laid out with.
     pub revision: u64,
     /// Keys of the nodes laid out; those without a mesh have no features.
@@ -1482,6 +1484,7 @@ impl From<TileBuild> for TileResult {
             ids: build.ids,
             host_bytes: None,
             warnings: build.warnings,
+            missing_images: build.missing_images,
             image: None,
             dem: None,
             missing: false,
@@ -1573,6 +1576,10 @@ pub fn pack(build: &TileBuild) -> Vec<u8> {
     header.push(build.warnings.len() as u32);
     for warning in &build.warnings {
         write_text(&mut header, warning);
+    }
+    header.push(build.missing_images.len() as u32);
+    for name in &build.missing_images {
+        write_text(&mut header, name);
     }
     header[0] = header.len() as u32;
     let mut words = header;
@@ -1724,6 +1731,11 @@ pub fn unpack(header: &[u32], bytes: HostBytesId) -> Result<TileResult, String> 
     for _ in 0..warning_count {
         warnings.push(read_text(&mut next)?);
     }
+    let missing_count = next()?;
+    let mut missing_images = Vec::new();
+    for _ in 0..missing_count {
+        missing_images.push(read_text(&mut next)?);
+    }
     if words.next().is_some() {
         return Err(bad());
     }
@@ -1736,6 +1748,7 @@ pub fn unpack(header: &[u32], bytes: HostBytesId) -> Result<TileResult, String> 
         symbols,
         host_bytes: Some(bytes),
         warnings,
+        missing_images,
         image: None,
         dem: None,
         missing: false,
@@ -2084,6 +2097,7 @@ pub(crate) mod tests {
             warnings: vec![
                 "source geo: nested object and array property values become strings (é)".into(),
             ],
+            missing_images: vec!["marker".into(), "ü".into()],
             meshes: vec![
                 NodeMesh {
                     hits: crate::MeshHits::new(&[crate::HitFeature {
@@ -2161,6 +2175,7 @@ pub(crate) mod tests {
         assert_eq!(result.host_bytes, Some(HostBytesId(7)));
         assert_eq!(*result.meshes[0].hits, build.meshes[0].hits);
         assert_eq!(result.warnings, build.warnings);
+        assert_eq!(result.missing_images, build.missing_images);
         assert_eq!(
             (result.revision, &result.nodes, &result.ids),
             (build.revision, &build.nodes, &build.ids)
@@ -2318,10 +2333,8 @@ pub(crate) mod tests {
 
     #[test]
     fn sprite_icons_cross_workers() {
-        let mut icons = SpriteIcons {
-            pixel_ratio: 2.0,
-            ..SpriteIcons::default()
-        };
+        let mut icons = SpriteIcons::default();
+        icons.pixel_ratio = 2.0;
         icons.add(
             "extra:pill",
             [40, 20],

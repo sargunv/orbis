@@ -55,7 +55,12 @@ enum class OrbEventKind(val value: Int) {
      * The map renders on a GPU tier: on its first frame and after a
      * device change; `text` is `modern` or `compat`.
      */
-    Capability(11);
+    Capability(11),
+    /**
+     * A tile's layers name an image the style doesn't have; `text` is
+     * its name. Once per name until the style gets it.
+     */
+    StyleImageMissing(12);
 
     companion object {
         @JvmStatic

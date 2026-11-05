@@ -173,6 +173,26 @@ export interface FrameStats {
   warnings: string[];
 }
 
+/** An image for the style (`addImage`): `ImageData`, or straight
+ * (not premultiplied) RGBA8 rows, top first. */
+export interface StyleImageData {
+  width: number;
+  height: number;
+  data: Uint8Array | Uint8ClampedArray;
+}
+
+/** How icons and patterns read an added image, as sprite metadata spells it. */
+export interface StyleImageOptions {
+  pixelRatio?: number;
+  /** A signed distance field, tinted by `icon-color`. */
+  sdf?: boolean;
+  stretchX?: [number, number][];
+  stretchY?: [number, number][];
+  content?: [number, number, number, number];
+  textFitWidth?: "stretchOrShrink" | "stretchOnly" | "proportional";
+  textFitHeight?: "stretchOrShrink" | "stretchOnly" | "proportional";
+}
+
 export interface CameraEventData { user: boolean }
 export interface PointerEventData { point: Point; lngLat: LngLat | null; button?: number }
 
@@ -194,6 +214,9 @@ export interface MapEvents {
   /** No loads, fades, placement or camera motion: no more frames until something changes. */
   idle: Record<string, never>;
   error: { message: string };
+  /** A tile's layers name an image the style doesn't have (GL JS
+   * `styleimagemissing`); once per name until it's added with `addImage`. */
+  styleimagemissing: { id: string };
   /**
    * The tier the map draws at: on its first frame, and after a device loss
    * on its first frame on the new device, with the milliseconds since the

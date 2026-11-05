@@ -359,9 +359,12 @@ impl<T: PropertyValue> Property<T> {
         }
     }
 
-    /// A property backed by a non-constant expression.
+    /// A property backed by an expression: one that isn't constant, or
+    /// one that reads `image`.
     pub(crate) fn expression(expression: PropertyExpression, default: T) -> Self {
-        debug_assert_ne!(expression.kind(), Kind::Constant);
+        debug_assert!(
+            expression.kind() != Kind::Constant || expression.expression().reads_images()
+        );
         Self {
             value: Inner::Expression {
                 expression: Box::new(expression),
@@ -450,6 +453,21 @@ impl<T: PropertyValue> Property<T> {
         BoundProperty {
             property: self,
             bound: self.as_expression().map(|e| e.expression().bind(layer)),
+        }
+    }
+
+    /// Binds the property to a tile layer with the style's images, which
+    /// `image` expressions find available.
+    pub fn bind_with_images<'a>(
+        &'a self,
+        layer: &'a orb_tile::Layer,
+        images: &'a [String],
+    ) -> BoundProperty<'a, T> {
+        BoundProperty {
+            property: self,
+            bound: self
+                .as_expression()
+                .map(|e| e.expression().bind(layer).with_images(images)),
         }
     }
 }
