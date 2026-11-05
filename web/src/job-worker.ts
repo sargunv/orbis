@@ -3,15 +3,13 @@
 // packed tile's buffer, image tile's ImageBitmap (with a terrain DEM
 // tile's elevations) or glyph bitmaps, transferred.
 //
-// Spawner → worker: {module, port, httpCache}. Port messages are Rust's (orb-web's
+// Spawner → worker: {module, port}. Port messages are Rust's (orb-web's
 // `jobs` module); this file only carries them.
-import init, { JobWorker, setHttpCache } from "../pkg/core.js";
+import init, { JobWorker } from "../pkg/core.js";
 import { loadShaper } from "./shaper.ts";
 
-self.onmessage = async ({ data: { module, port, httpCache } }:
-  MessageEvent<{ module: WebAssembly.Module; port: MessagePort; httpCache: number }>) => {
+self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAssembly.Module; port: MessagePort }>) => {
   await init({ module_or_path: module });
-  setHttpCache(httpCache);
   const jobs = new JobWorker();
   // Thai, Lao, Khmer and Burmese word breaks load when labels need them.
   jobs.setWordDataUrl(new URL("../pkg/seasia.bin", import.meta.url).href);

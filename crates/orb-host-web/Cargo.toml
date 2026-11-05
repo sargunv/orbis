@@ -11,7 +11,7 @@ js-sys.workspace = true
 orb-host.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys = { workspace = true, features = ["Performance", "Response", "Headers", "RequestInit", "ReadableStream", "ReadableStreamDefaultReader", "Blob", "ImageBitmap", "ImageData", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "TextMetrics", "Cache", "CacheStorage", "Request", "ResponseInit"] }
+web-sys = { workspace = true, features = ["Performance", "Response", "Headers", "RequestInit", "ReadableStream", "ReadableStreamDefaultReader", "Blob", "ImageBitmap", "ImageData", "OffscreenCanvas", "OffscreenCanvasRenderingContext2d", "TextMetrics", "StorageManager", "FileSystemDirectoryHandle", "FileSystemFileHandle", "FileSystemGetDirectoryOptions", "FileSystemGetFileOptions", "FileSystemRemoveOptions", "FileSystemWritableFileStream", "FileSystemCreateWritableOptions", "WritableStream", "File"] }
 
 [lints]
 workspace = true

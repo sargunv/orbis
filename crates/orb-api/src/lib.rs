@@ -88,9 +88,10 @@ pub struct RuntimeOptions {
     pub job_threads: Option<usize>,
     /// The GPU tier to draw at.
     pub backend: Backend,
-    /// Where the runtime keeps device state between runs: the crash
-    /// sentinel (plan §8.8). Without one, a device that crashed its driver
-    /// last time is tried on Modern again.
+    /// Where the runtime keeps state between runs: the crash sentinel
+    /// (plan §8.8) and the HTTP cache (`http/`, [`HTTP_CACHE_BYTES`]).
+    /// Without one, a device that crashed its driver last time is tried on
+    /// Modern again, and nothing fetched is kept.
     pub state_dir: Option<PathBuf>,
     /// Android's API level (`Build.VERSION.SDK_INT`), for the allowlist.
     pub android_api_level: u32,
@@ -127,9 +128,8 @@ struct Shared {
     generation: std::cell::Cell<u64>,
     /// The crash sentinel's marker while armed.
     sentinel: RefCell<Option<PathBuf>>,
-    /// Fetches for maps made from now on: through the HTTP cache once
-    /// [`Runtime::set_http_cache`] opens one.
-    fetch: RefCell<Arc<NativeFetch>>,
+    /// Fetches, through the HTTP cache with a state directory.
+    fetch: Arc<NativeFetch>,
     executor: Arc<ThreadPool>,
     images: orb_runtime::Images,
     /// The gesture and animation clock's origin.
@@ -182,7 +182,7 @@ impl Runtime {
                 selection: RefCell::new(selection),
                 generation: std::cell::Cell::new(0),
                 sentinel: RefCell::new(sentinel),
-                fetch: RefCell::new(NativeFetch::new()),
+                fetch: NativeFetch::with_cache(http_cache(options)?),
                 executor: Arc::new(ThreadPool::new("jobs", threads)),
                 images: Default::default(),
                 started: Instant::now(),
@@ -322,26 +322,14 @@ impl Runtime {
         Ok(())
     }
 
-    /// Keeps fetched styles, tiles, glyphs and sprites in `dir` between
-    /// runs, up to `max_bytes`, least recently used out first: fresh ones
-    /// load without the network, stale ones are revalidated, and either
-    /// loads when the network fails, so a map seen before opens offline.
-    /// Applies to maps made after the call.
-    pub fn set_http_cache(&self, dir: &Path, max_bytes: u64) -> Result<(), Error> {
-        let cache = HttpCache::open(dir, max_bytes)
-            .map_err(|e| Error::InvalidArgument(format!("{}: {e}", dir.display())))?;
-        *self.shared.fetch.borrow_mut() = NativeFetch::with_cache(Some(cache));
-        Ok(())
-    }
-
     /// What the HTTP cache holds, if there is one.
     pub fn http_cache_stats(&self) -> Option<CacheStats> {
-        self.shared.fetch.borrow().cache().map(|c| c.stats())
+        self.shared.fetch.cache().map(|c| c.stats())
     }
 
     /// Empties the HTTP cache.
     pub fn clear_http_cache(&self) {
-        if let Some(cache) = self.shared.fetch.borrow().cache() {
+        if let Some(cache) = self.shared.fetch.cache() {
             cache.clear();
         }
     }
@@ -404,7 +392,7 @@ impl Runtime {
     }
 
     fn services(&self, wake: Arc<dyn Fn() + Send + Sync>) -> orb_runtime::Services {
-        let fetch = self.shared.fetch.borrow().clone();
+        let fetch = self.shared.fetch.clone();
         let jobs = orb_runtime::PoolJobs::new(
             fetch.clone(),
             Arc::new(NativeImageDecode),
@@ -426,6 +414,22 @@ impl Runtime {
     fn now(&self) -> f64 {
         self.shared.started.elapsed().as_secs_f64() * 1000.0
     }
+}
+
+/// The most response bodies the HTTP cache keeps: fresh ones load without
+/// the network, stale ones are revalidated, and either loads when the
+/// network fails, so a map seen before opens offline.
+pub const HTTP_CACHE_BYTES: u64 = 100 << 20;
+
+/// The HTTP cache in the state directory, if there is one.
+fn http_cache(options: &RuntimeOptions) -> Result<Option<Arc<HttpCache>>, Error> {
+    let Some(dir) = &options.state_dir else {
+        return Ok(None);
+    };
+    let storage = Arc::new(orb_host_native::FileStorage::new(&dir.join("http")));
+    HttpCache::open(storage, HTTP_CACHE_BYTES)
+        .map(Some)
+        .map_err(|e| Error::InvalidArgument(format!("{}: {e}", dir.display())))
 }
 
 /// The device a raw surface is made with.

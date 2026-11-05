@@ -181,7 +181,8 @@ fn main() {
 /// tile jobs on a thread pool.
 fn native_services(wake: Arc<dyn Fn() + Send + Sync>, cache: Option<&str>) -> Services {
     let cache = cache.map(|dir| {
-        orb_host_native::HttpCache::open(std::path::Path::new(dir), 200 << 20)
+        let storage = orb_host_native::FileStorage::new(std::path::Path::new(dir));
+        orb_host_native::HttpCache::open(Arc::new(storage), 200 << 20)
             .unwrap_or_else(|e| panic!("--cache {dir}: {e}"))
     });
     let fetch = NativeFetch::with_cache(cache);

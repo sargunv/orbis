@@ -506,11 +506,6 @@ async function webgpuAdapter(): Promise<boolean> {
   }
 }
 
-/** Empties the HTTP cache maps with `httpCache` keep (`MapOptions.httpCache`). */
-export async function clearHttpCache(): Promise<void> {
-  await caches.delete("orbis-http");
-}
-
 /** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on. */
 export async function createMap(options: MapOptions): Promise<OrbisMap> {
   const renderer = options.renderer ?? "auto";
@@ -557,10 +552,9 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     error: (e: unknown) => map.fail(e),
   };
   const jobWorkers = options.jobWorkers ?? defaultJobWorkers();
-  const httpCache = options.httpCache?.maxBytes ?? 0;
   const host = thread === "worker"
-    ? startWorker(compiled, probed!.worker, canvas, style, jobWorkers, httpCache, callbacks)
-    : await startMain(compiled, canvas, style, jobWorkers, httpCache, callbacks, tier);
+    ? startWorker(compiled, probed!.worker, canvas, style, jobWorkers, callbacks)
+    : await startMain(compiled, canvas, style, jobWorkers, callbacks, tier);
   map.start(host, options.interactive ?? true);
   return map;
 }

@@ -93,20 +93,6 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * Keeps fetched styles, tiles, glyphs and sprites in the directory
-     * `dir` between runs, up to `max_bytes`: fresh ones load without
-     * the network and any loads when it fails, so a map seen before
-     * opens offline. Applies to maps made after the call.
-     *
-     * Contract: `command`.
-     *
-     * @throws OrbErrorException when it fails.
-     */
-    fun setHttpCache(dir: String, maxBytes: ULong) {
-        OrbisNative.orbRuntimeSetHttpCache(live(), dir.encodeToByteArray(), maxBytes.toLong())
-    }
-
-    /**
      * Bytes of response bodies the HTTP cache holds (0 without one).
      *
      * Contract: `snapshot`.
@@ -162,8 +148,9 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
         }
 
         /**
-         * As `create`, on `backend`, keeping device state (the crash
-         * sentinel) in the directory `state_dir` (none when empty);
+         * As `create`, on `backend`, keeping state between runs (the crash
+         * sentinel, the HTTP cache) in the directory `state_dir` (none when
+         * empty);
          * `android_api_level` is `Build.VERSION.SDK_INT` on Android, for
          * the allowlist, and 0 elsewhere.
          *

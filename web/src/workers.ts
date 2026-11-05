@@ -8,15 +8,14 @@ export function defaultJobWorkers(): number {
 }
 
 /** Spawns `count` job workers and the placement worker; the map talks to
- * them over `ports` and `placement`. Job workers fetch through the HTTP
- * cache when `httpCache` (its byte limit) isn't 0. */
-export function spawnWorkers(module: WebAssembly.Module, count: number, httpCache: number) {
+ * them over `ports` and `placement`. */
+export function spawnWorkers(module: WebAssembly.Module, count: number) {
   const workers: Worker[] = [];
   const ports: MessagePort[] = [];
   for (let i = 0; i < count; i++) {
     const channel = new MessageChannel();
     const job = new Worker(new URL("./job-worker.ts", import.meta.url), { type: "module" });
-    job.postMessage({ module, port: channel.port2, httpCache }, [channel.port2]);
+    job.postMessage({ module, port: channel.port2 }, [channel.port2]);
     ports.push(channel.port1);
     workers.push(job);
   }

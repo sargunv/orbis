@@ -4,12 +4,14 @@
 
 mod cache;
 mod fonts;
+mod storage;
 
 use std::sync::Arc;
 
 pub use cache::{CacheStats, HttpCache};
 pub use fonts::SystemFonts;
 pub use orb_host::FontFileFaces;
+pub use storage::FileStorage;
 
 use orb_host::{Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
 use orb_jobs::{Executor, ThreadPool};
@@ -528,7 +530,7 @@ mod cache_tests {
     fn revalidates_stale_entries_and_answers_offline() {
         let dir = std::env::temp_dir().join(format!("orb-fetch-cache-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let cache = HttpCache::open(&dir, 1 << 20).unwrap();
+        let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
         let agent = ureq::Agent::new_with_defaults();
         let close = "Connection: close\r\n";
         let (url, server) = serve(vec![

@@ -4,13 +4,12 @@
 //   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]] [--thread=main|worker]
 //     [--format=mvt|mlt] [--style=<key>|URL]
 //     [--size=WxH] [--compare=reference-map.png] [--renderer=webgpu|webgl2] [--lose=<ms> [--switch]]
-//     [--reopen[=offline]] [--cache=off]
+//     [--reopen[=offline]]
 //
 // `--reopen` loads the page again once it is idle, in the same browser
-// profile, and times the reopen from the HTTP cache (plan §18 row 15);
+// profile, and times the reopen from the browser's cache (plan §18 row 15);
 // `=offline` fails every request but the demo server's (the browser logs
 // the stale entries' failed revalidations; they aren't counted as errors).
-// `--cache=off` opens without the HTTP cache.
 //
 // `--lose` loses the GPU that long after the map loads and waits for it to
 // recover (plan §8.8); with `--switch`, onto WebGL2.
@@ -40,7 +39,6 @@ if (thread) params.set("thread", thread);
 if (renderer) params.set("renderer", renderer);
 if (lose) params.set("lose", lose);
 if (switchTier) params.set("switch", "");
-if (args.includes("--cache=off")) params.set("cache", "off");
 // Snapshots draw the committed extract unless told otherwise.
 if (style) params.set("style", style);
 else params.set("style", `tokyo-${format ?? "mvt"}`);

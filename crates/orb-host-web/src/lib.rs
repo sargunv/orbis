@@ -3,6 +3,10 @@
 #![forbid(unsafe_code)]
 #![cfg(target_arch = "wasm32")]
 
+mod storage;
+
+pub use storage::OpfsStorage;
+
 use js_sys::{Reflect, Uint8Array};
 use orb_host::{DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
 use wasm_bindgen::{JsCast, JsValue};
@@ -91,157 +95,7 @@ pub async fn fetch(url: &str) -> Result<Vec<u8>, FetchError> {
     fetch_body(url, None).await
 }
 
-thread_local! {
-    /// The HTTP cache's limit for this JS context's fetches; 0 for none.
-    static CACHE_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    /// Entries this context stored since it last evicted.
-    static CACHE_PUTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
-
-/// The Cache API cache the HTTP cache keeps entries in.
-pub const CACHE_NAME: &str = "orbis-http";
-/// How many stores a context makes between eviction passes.
-const EVICT_EVERY: u32 = 64;
-
-/// Sends this JS context's fetches through the HTTP cache, up to
-/// `max_bytes` of bodies (0 turns it off). Every context of a map (the
-/// page, the render and job workers) calls it: the Cache API is the
-/// origin's, so they share entries. Fresh entries load without the
-/// network; stale ones are fetched again (the browser's own cache
-/// revalidates them) and load as they are when the network fails. Entries
-/// beyond the limit go oldest first: the Cache API has no use times.
-pub fn set_http_cache(max_bytes: u64) {
-    CACHE_BYTES.set(max_bytes);
-}
-
-/// Seconds since the Unix epoch.
-fn now() -> u64 {
-    (js_sys::Date::now() / 1000.0) as u64
-}
-
-fn cache_storage() -> Option<web_sys::CacheStorage> {
-    Reflect::get(&js_sys::global(), &"caches".into())
-        .ok()?
-        .dyn_into()
-        .ok()
-}
-
-/// A Cache API key for a request: its URL, with a byte range as a query
-/// parameter (the Cache API matches URLs without fragments).
-fn cache_url(url: &str, range: Option<(u64, u64)>) -> String {
-    let url = url.split_once('#').map_or(url, |(u, _)| u);
-    match range {
-        Some((offset, length)) => {
-            let separator = if url.contains('?') { '&' } else { '?' };
-            format!(
-                "{url}{separator}orbis-bytes={offset}-{}",
-                offset + length - 1
-            )
-        }
-        None => url.to_string(),
-    }
-}
-
 async fn fetch_body(url: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
-    let max_bytes = CACHE_BYTES.get();
-    let storage = (max_bytes > 0 && orb_host::cache::cacheable(url))
-        .then(cache_storage)
-        .flatten();
-    let Some(storage) = storage else {
-        return network(url, range).await.map(|(bytes, _)| bytes);
-    };
-    let key = cache_url(url, range);
-    let cached = lookup(&storage, &key).await;
-    if let Some((bytes, true)) = cached {
-        return Ok(bytes);
-    }
-    match (network(url, range).await, cached) {
-        (Ok((bytes, fresh_until)), _) => {
-            if let Some(until) = fresh_until {
-                let body = bytes.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    let _ = store(&storage, &key, body, until, max_bytes).await;
-                });
-            }
-            Ok(bytes)
-        }
-        // Offline, or the server failing: the stale copy.
-        (Err(FetchError::Network(_) | FetchError::Status(500..)), Some((bytes, _))) => Ok(bytes),
-        (Err(error), _) => Err(error),
-    }
-}
-
-/// A cached body and whether it is fresh.
-async fn lookup(storage: &web_sys::CacheStorage, key: &str) -> Option<(Vec<u8>, bool)> {
-    let response = JsFuture::from(storage.match_with_str(key)).await.ok()?;
-    let response: web_sys::Response = response.dyn_into().ok()?;
-    let fresh_until = response
-        .headers()
-        .get("x-orbis-fresh-until")
-        .ok()??
-        .parse::<u64>()
-        .ok()?;
-    let body = JsFuture::from(response.array_buffer().ok()?).await.ok()?;
-    Some((Uint8Array::new(&body).to_vec(), fresh_until > now()))
-}
-
-async fn store(
-    storage: &web_sys::CacheStorage,
-    key: &str,
-    mut body: Vec<u8>,
-    fresh_until: u64,
-    max_bytes: u64,
-) -> Result<(), JsValue> {
-    if body.len() as u64 > max_bytes / 4 {
-        return Ok(());
-    }
-    let cache: web_sys::Cache = JsFuture::from(storage.open(CACHE_NAME)).await?.dyn_into()?;
-    let headers = web_sys::Headers::new()?;
-    headers.set("x-orbis-fresh-until", &fresh_until.to_string())?;
-    headers.set("x-orbis-size", &body.len().to_string())?;
-    let init = web_sys::ResponseInit::new();
-    init.set_headers_headers(&headers);
-    let response = web_sys::Response::new_with_opt_u8_array_and_init(Some(&mut body), &init)?;
-    JsFuture::from(cache.put_with_str(key, &response)).await?;
-    let puts = CACHE_PUTS.get() + 1;
-    CACHE_PUTS.set(puts % EVICT_EVERY);
-    if puts == EVICT_EVERY {
-        evict(&cache, max_bytes).await?;
-    }
-    Ok(())
-}
-
-/// Deletes the oldest entries until 90% of `max_bytes` remain.
-async fn evict(cache: &web_sys::Cache, max_bytes: u64) -> Result<(), JsValue> {
-    let keys: js_sys::Array = JsFuture::from(cache.keys()).await?.dyn_into()?;
-    let responses: js_sys::Array = JsFuture::from(cache.match_all()).await?.dyn_into()?;
-    let size = |r: JsValue| -> u64 {
-        r.dyn_into::<web_sys::Response>()
-            .ok()
-            .and_then(|r| r.headers().get("x-orbis-size").ok().flatten())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0)
-    };
-    let sizes: Vec<u64> = responses.iter().map(size).collect();
-    let mut total: u64 = sizes.iter().sum();
-    for (request, size) in keys.iter().zip(sizes) {
-        if total <= max_bytes / 10 * 9 {
-            break;
-        }
-        let request: web_sys::Request = request.dyn_into()?;
-        JsFuture::from(cache.delete_with_request(&request)).await?;
-        total -= size;
-    }
-    Ok(())
-}
-
-/// One fetch from the network, and until when its response is fresh
-/// (`None` when it may not be stored). Of the headers freshness reads, CORS
-/// lets a page see all but `Date`.
-async fn network(
-    url: &str,
-    range: Option<(u64, u64)>,
-) -> Result<(Vec<u8>, Option<u64>), FetchError> {
     let network = |e: JsValue| FetchError::Network(format!("{e:?}"));
     let global = js_sys::global();
     let fetch = Reflect::get(&global, &"fetch".into())
@@ -275,7 +129,7 @@ async fn network(
             if let Some(stream) = stream {
                 let _ = stream.cancel();
             }
-            return Ok((Vec::new(), None));
+            return Ok(Vec::new());
         }
         200..=299 => {
             if let Some((offset, length)) = range {
@@ -319,22 +173,7 @@ async fn network(
     if range.is_some() && bytes.len() != limit {
         return Err(FetchError::Range("short range body".into()));
     }
-    let header = |name: &str| response.headers().get(name).ok().flatten();
-    let (cache_control, expires, last_modified) = (
-        header("cache-control"),
-        header("expires"),
-        header("last-modified"),
-    );
-    let fresh_until = orb_host::cache::fresh_until(
-        orb_host::cache::Headers {
-            cache_control: cache_control.as_deref(),
-            expires: expires.as_deref(),
-            date: None,
-            last_modified: last_modified.as_deref(),
-        },
-        now(),
-    );
-    Ok((bytes, fresh_until))
+    Ok(bytes)
 }
 
 /// The browser's monotonic clock, available on the page and workers.

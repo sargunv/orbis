@@ -111,8 +111,9 @@ mod ffi {
             Self::create_with(job_threads, OrbBackend::Auto, "".as_bytes(), 0)
         }
 
-        /// As `create`, on `backend`, keeping device state (the crash
-        /// sentinel) in the directory `state_dir` (none when empty);
+        /// As `create`, on `backend`, keeping state between runs (the crash
+        /// sentinel, the HTTP cache) in the directory `state_dir` (none when
+        /// empty);
         /// `android_api_level` is `Build.VERSION.SDK_INT` on Android, for
         /// the allowlist, and 0 elsewhere.
         #[diplomat::attr(contract, lifecycle)]
@@ -185,21 +186,6 @@ mod ffi {
         pub fn set_pipeline_cache_dir(&mut self, dir: &DiplomatStr) -> Result<(), OrbError> {
             self.0
                 .set_pipeline_cache_dir(std::path::Path::new(&*text(dir)))
-                .map_err(fail)
-        }
-
-        /// Keeps fetched styles, tiles, glyphs and sprites in the directory
-        /// `dir` between runs, up to `max_bytes`: fresh ones load without
-        /// the network and any loads when it fails, so a map seen before
-        /// opens offline. Applies to maps made after the call.
-        #[diplomat::attr(contract, command)]
-        pub fn set_http_cache(
-            &mut self,
-            dir: &DiplomatStr,
-            max_bytes: u64,
-        ) -> Result<(), OrbError> {
-            self.0
-                .set_http_cache(std::path::Path::new(&*text(dir)), max_bytes)
                 .map_err(fail)
         }
 

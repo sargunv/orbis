@@ -140,14 +140,6 @@ pub async fn create_map(
     Ok(map)
 }
 
-/// Sends this JS context's fetches through the HTTP cache (the origin's
-/// Cache API), keeping up to `max_bytes` of bodies; 0 turns it off. The
-/// page and each worker that fetches call it.
-#[wasm_bindgen(js_name = setHttpCache)]
-pub fn set_http_cache(max_bytes: f64) {
-    orb_host_web::set_http_cache(max_bytes as u64);
-}
-
 /// Creates a map in a render worker, in a canvas transferred from the page.
 /// Tile jobs go to `job_workers` job workers through `post(worker,
 /// message)`; their replies come back through

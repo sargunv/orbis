@@ -86,6 +86,26 @@ pub fn check_range(
     Ok(())
 }
 
+/// Called once with a [`Storage`] operation's outcome, on any thread.
+pub type StorageDone<T> = Box<dyn FnOnce(Result<T, String>) + Send + 'static>;
+
+/// Keeps bytes by key between runs: the HTTP cache's entries and offline
+/// regions (plan D24). Files in a directory natively, the origin private
+/// file system on the web. Keys are `/`-separated relative paths.
+pub trait Storage: Send + Sync + fmt::Debug {
+    /// Reads `key` whole, or `length` bytes at `offset` of it; `None` when
+    /// it doesn't exist.
+    fn read(&self, key: &str, range: Option<(u64, u64)>, done: StorageDone<Option<Vec<u8>>>);
+    /// Writes `bytes` to `key`, replacing it whole (readers see the old
+    /// bytes or the new), or with `append` after what it holds.
+    fn write(&self, key: &str, bytes: Vec<u8>, append: bool, done: StorageDone<()>);
+    /// Removes `key` and every key under `key/`; absent keys are no error.
+    fn remove(&self, key: &str, done: StorageDone<()>);
+    /// The names directly under `prefix/` (`""` for the top), keys and
+    /// prefixes alike, in no particular order.
+    fn list(&self, prefix: &str, done: StorageDone<Vec<String>>);
+}
+
 /// An image decoded to straight (not premultiplied) RGBA8, rows top to
 /// bottom.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -8,7 +8,7 @@
 // {type: "request", id, method, args}. Worker → page: {type: "probe", ok, adapter | reason};
 // {type: "frame", ack}; {type: "edited", id, generation | error}; {type:
 // "reply", id, result | error}; {type: "error", message}.
-import init, { createWorkerMap, setHttpCache, type OrbisMap } from "../pkg/core.js";
+import init, { createWorkerMap, type OrbisMap } from "../pkg/core.js";
 import { ackIdle, frameLoop, renderFrame, type FrameAck, type Renderer } from "./frames.ts";
 import { spawnWorkers } from "./workers.ts";
 
@@ -147,12 +147,11 @@ async function probe() {
   }
 }
 
-async function start({ module, canvas, style, jobWorkers, httpCache }: {
-  module: WebAssembly.Module; canvas: OffscreenCanvas; style: string; jobWorkers: number; httpCache: number;
+async function start({ module, canvas, style, jobWorkers }: {
+  module: WebAssembly.Module; canvas: OffscreenCanvas; style: string; jobWorkers: number;
 }) {
-  const { ports, placement } = spawnWorkers(module, jobWorkers, httpCache);
+  const { ports, placement } = spawnWorkers(module, jobWorkers);
   await init({ module_or_path: module });
-  setHttpCache(httpCache);
   map = await createWorkerMap(canvas, style, request, ports.length,
     (worker: number, message: unknown) => ports[worker].postMessage(message),
     (message: unknown, transfer: Transferable[]) => placement.postMessage(message, transfer));

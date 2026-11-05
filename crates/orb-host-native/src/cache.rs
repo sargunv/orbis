@@ -1,5 +1,5 @@
-//! The native HTTP cache: each response body in a file of its own under
-//! `blobs/`, and one index of keys, freshness, validators and use times,
+//! The native HTTP cache, on a [`Storage`]: each response body under a key
+//! of its own in `blobs/`, and one index of keys, freshness, validators and use times,
 //! loaded once when the cache opens and rewritten whole, at most every
 //! [`FLUSH_EVERY`], by a thread of its own. Nothing is fsynced: a crash
 //! loses at most the last batch of index changes, and the blobs those
@@ -10,9 +10,12 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
+
+use orb_host::Storage;
+
+use crate::storage::wait;
 
 /// How often index changes are written.
 const FLUSH_EVERY: Duration = Duration::from_secs(2);
@@ -25,7 +28,7 @@ pub(crate) fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// An HTTP cache in a directory, shared by the fetches of a process.
+/// An HTTP cache in a storage of its own, shared by a process's fetches.
 #[derive(Debug)]
 pub struct HttpCache {
     inner: Arc<Inner>,
@@ -34,7 +37,7 @@ pub struct HttpCache {
 
 #[derive(Debug)]
 struct Inner {
-    dir: PathBuf,
+    storage: Arc<dyn Storage>,
     max_bytes: u64,
     state: Mutex<State>,
     changed: Condvar,
@@ -76,18 +79,18 @@ pub struct CacheStats {
 }
 
 impl HttpCache {
-    /// Opens (or creates) the cache in `dir`, keeping at most `max_bytes`
-    /// of response bodies.
-    pub fn open(dir: &Path, max_bytes: u64) -> std::io::Result<Arc<Self>> {
-        std::fs::create_dir_all(dir.join("blobs"))?;
-        let mut state = std::fs::read_to_string(dir.join("index"))
+    /// Opens (or creates) the cache in `storage`, which it has to itself,
+    /// keeping at most `max_bytes` of response bodies.
+    pub fn open(storage: Arc<dyn Storage>, max_bytes: u64) -> std::io::Result<Arc<Self>> {
+        let mut state = wait(|done| storage.read("index", None, done))
             .ok()
-            .and_then(|text| parse_index(&text))
+            .flatten()
+            .and_then(|bytes| parse_index(&String::from_utf8(bytes).ok()?))
             .unwrap_or_default();
         state.bytes = state.entries.values().map(|e| e.size).sum();
         let swept_below = state.next_id;
         let inner = Arc::new(Inner {
-            dir: dir.to_owned(),
+            storage,
             max_bytes,
             state: Mutex::new(state),
             changed: Condvar::new(),
@@ -117,7 +120,7 @@ impl HttpCache {
     }
 
     /// Writes pending index changes now.
-    pub fn flush(&self) -> std::io::Result<()> {
+    pub fn flush(&self) -> Result<(), String> {
         self.inner.write_index()
     }
 
@@ -141,8 +144,9 @@ impl HttpCache {
             entry.last_used = now;
             entry.clone()
         };
-        match std::fs::read(self.inner.blob(entry.id)) {
-            Ok(bytes) if bytes.len() as u64 == entry.size => Some(Cached {
+        let key_of_blob = blob(entry.id);
+        match wait(|done| self.inner.storage.read(&key_of_blob, None, done)) {
+            Ok(Some(bytes)) if bytes.len() as u64 == entry.size => Some(Cached {
                 bytes,
                 fresh: entry.fresh_until > now,
                 etag: entry.etag,
@@ -171,8 +175,12 @@ impl HttpCache {
             state.next_id += 1;
             state.next_id
         };
-        let path = self.inner.blob(id);
-        if crate::write_atomically(&path, bytes).is_err() {
+        let written = wait(|done| {
+            self.inner
+                .storage
+                .write(&blob(id), bytes.to_vec(), false, done)
+        });
+        if written.is_err() {
             return;
         }
         let header = |v: Option<&str>| v.filter(|v| !v.contains(['\t', '\n'])).map(str::to_owned);
@@ -274,27 +282,21 @@ impl Inner {
         self.state.lock().expect("cache poisoned")
     }
 
-    fn blob(&self, id: u64) -> PathBuf {
-        self.dir.join("blobs").join(id.to_string())
-    }
-
     fn remove_blobs(&self, ids: impl IntoIterator<Item = u64>) {
         for id in ids {
-            let _ = std::fs::remove_file(self.blob(id));
+            self.storage.remove(&blob(id), Box::new(drop));
         }
     }
 
     /// Deletes blobs older than this open that the index doesn't name: a
     /// crash's lost index changes, and partial writes.
     fn sweep(&self, below: u64) {
-        let Ok(files) = std::fs::read_dir(self.dir.join("blobs")) else {
+        let Ok(names) = wait(|done| self.storage.list("blobs", done)) else {
             return;
         };
         let live: std::collections::HashSet<u64> =
             self.lock().entries.values().map(|e| e.id).collect();
-        for file in files.flatten() {
-            let name = file.file_name();
-            let name = name.to_string_lossy();
+        for name in names {
             // A blob `<id>`, or `write_atomically`'s `<id>.<pid>.<n>.partial`;
             // newer ids are this open's own writes.
             let (id, partial) = name
@@ -304,7 +306,8 @@ impl Inner {
                 .parse::<u64>()
                 .is_ok_and(|id| id <= below && (partial || !live.contains(&id)))
             {
-                let _ = std::fs::remove_file(file.path());
+                self.storage
+                    .remove(&format!("blobs/{name}"), Box::new(drop));
             }
         }
     }
@@ -331,7 +334,7 @@ impl Inner {
         }
     }
 
-    fn write_index(&self) -> std::io::Result<()> {
+    fn write_index(&self) -> Result<(), String> {
         let text = {
             let mut state = self.lock();
             if !state.dirty {
@@ -340,8 +343,12 @@ impl Inner {
             state.dirty = false;
             index_text(&state)
         };
-        crate::write_atomically(&self.dir.join("index"), text.as_bytes())
+        wait(|done| self.storage.write("index", text.into_bytes(), false, done))
     }
+}
+
+fn blob(id: u64) -> String {
+    format!("blobs/{id}")
 }
 
 /// The index: a version line, the next blob id, then one line per entry of
@@ -398,7 +405,11 @@ fn parse_index(text: &str) -> Option<State> {
 mod tests {
     use super::*;
 
-    fn dir(name: &str) -> PathBuf {
+    fn open(dir: &std::path::Path, max_bytes: u64) -> Arc<HttpCache> {
+        HttpCache::open(Arc::new(crate::FileStorage::new(dir)), max_bytes).unwrap()
+    }
+
+    fn dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("orb-cache-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
@@ -409,7 +420,7 @@ mod tests {
         let dir = dir("reopen");
         let now = now();
         {
-            let cache = HttpCache::open(&dir, 1 << 20).unwrap();
+            let cache = open(&dir, 1 << 20);
             cache.store("https://a/fresh", b"one", now + 60, Some("\"e1\""), None);
             cache.store(
                 "https://a/stale",
@@ -426,7 +437,7 @@ mod tests {
                 }
             );
         }
-        let cache = HttpCache::open(&dir, 1 << 20).unwrap();
+        let cache = open(&dir, 1 << 20);
         let fresh = cache.lookup("https://a/fresh").unwrap();
         assert_eq!(
             (fresh.bytes.as_slice(), fresh.fresh, fresh.etag.as_deref()),
@@ -444,7 +455,7 @@ mod tests {
     fn evicts_least_recently_used_and_sweeps_orphans() {
         let dir = dir("evict");
         let now = now();
-        let cache = HttpCache::open(&dir, 400).unwrap();
+        let cache = open(&dir, 400);
         for i in 0..4 {
             cache.store(&format!("https://a/{i}"), &[i; 100], now + 60, None, None);
             // Use the first entry every time: it stays.
@@ -467,7 +478,7 @@ mod tests {
         // A blob the index lost in a crash goes on the next open.
         drop(cache);
         std::fs::write(dir.join("blobs/2"), b"orphan").unwrap();
-        let cache = HttpCache::open(&dir, 400).unwrap();
+        let cache = open(&dir, 400);
         cache.flush().unwrap();
         drop(cache);
         // The sweep runs on the cache thread, before the drop's join.

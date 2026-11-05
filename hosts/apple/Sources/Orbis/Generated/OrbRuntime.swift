@@ -50,8 +50,9 @@ public final class OrbRuntime {
         return OrbRuntime(handle: result.ok!)
     }
 
-    /// As `create`, on `backend`, keeping device state (the crash
-    /// sentinel) in the directory `state_dir` (none when empty);
+    /// As `create`, on `backend`, keeping state between runs (the crash
+    /// sentinel, the HTTP cache) in the directory `state_dir` (none when
+    /// empty);
     /// `android_api_level` is `Build.VERSION.SDK_INT` on Android, for
     /// the allowlist, and 0 elsewhere.
     ///
@@ -126,21 +127,6 @@ public final class OrbRuntime {
     /// - Throws: `OrbErrorFailure` when it fails.
     public func setPipelineCacheDir(dir: String) throws {
         let result = withStringView(dir) { dirView in OrbRuntime_set_pipeline_cache_dir(live(), dirView) }
-        guard result.is_ok else {
-            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
-        }
-    }
-
-    /// Keeps fetched styles, tiles, glyphs and sprites in the directory
-    /// `dir` between runs, up to `max_bytes`: fresh ones load without
-    /// the network and any loads when it fails, so a map seen before
-    /// opens offline. Applies to maps made after the call.
-    ///
-    /// Contract: `command`.
-    ///
-    /// - Throws: `OrbErrorFailure` when it fails.
-    public func setHttpCache(dir: String, maxBytes: UInt64) throws {
-        let result = withStringView(dir) { dirView in OrbRuntime_set_http_cache(live(), dirView, maxBytes) }
         guard result.is_ok else {
             throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
         }
