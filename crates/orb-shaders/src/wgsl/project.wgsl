@@ -272,10 +272,12 @@ fn ground_clip_depth(g: Ground, offset: vec2<f32>, z: f32, solid: bool) -> vec4<
     }
     var clip = frame.globe_view_proj * vec4<f32>(p, 1.0);
     if solid {
-        // Behind the sphere from the eye: past the far plane (extrusions
-        // draw with reversed depth, so beyond either end clips).
+        // Behind the sphere from the eye: past the far plane, before and
+        // after the 3D passes reverse the depth, so a triangle the sphere
+        // partly hides (a skirt hanging into it) runs away from the eye
+        // there rather than in front of the surface.
         if sphere_hides(p) {
-            clip.z = -clip.w;
+            clip.z = 2.0 * clip.w;
         }
         if !g.on_plane {
             return clip;

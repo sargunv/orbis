@@ -108,7 +108,7 @@ fn model_clip(g: Ground, o: vec3<f32>) -> vec4<f32> {
         }
         var globe = frame.globe_view_proj * vec4<f32>(p, 1.0);
         if frame.globe_plane == 0u && sphere_hides(p) {
-            globe.z = -globe.w;
+            globe.z = 2.0 * globe.w;
         }
         clip = select(mix(clip, globe, frame.globe_amount), globe, !g.on_plane);
     }
