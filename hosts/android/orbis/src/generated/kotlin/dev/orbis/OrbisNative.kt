@@ -201,6 +201,9 @@ internal object OrbisNative {
     external fun orbMapSetCenterElevation(self: Long, elevation: Double): Unit
 
     @JvmStatic
+    external fun orbMapSetViewport(self: Long, width: Double, height: Double): Unit
+
+    @JvmStatic
     external fun orbMapJumpTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, target_roll: Double, target_elevation: Double, target_fov: Double, target_padding_top: Double, target_padding_right: Double, target_padding_bottom: Double, target_padding_left: Double): Unit
 
     @JvmStatic
@@ -217,6 +220,21 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbMapSetConstraints(self: Long, constraints_min_zoom: Double, constraints_max_zoom: Double, constraints_min_pitch: Double, constraints_max_pitch: Double, constraints_bounded: Boolean, constraints_west: Double, constraints_south: Double, constraints_east: Double, constraints_north: Double): Unit
+
+    @JvmStatic
+    external fun orbMapStyleJson(self: Long): ByteArray
+
+    @JvmStatic
+    external fun orbMapLayerIds(self: Long): ByteArray
+
+    @JvmStatic
+    external fun orbMapSourceIds(self: Long): ByteArray
+
+    @JvmStatic
+    external fun orbMapLayer(self: Long, id: ByteArray): ByteArray
+
+    @JvmStatic
+    external fun orbMapSource(self: Long, id: ByteArray): ByteArray
 
     @JvmStatic
     external fun orbMapSemanticSnapshot(self: Long): ByteArray

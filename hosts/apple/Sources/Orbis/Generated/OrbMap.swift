@@ -380,6 +380,15 @@ public final class OrbMap {
         OrbMap_set_center_elevation(live(), elevation)
     }
 
+    /// Sets the viewport, in logical pixels, before a target draws:
+    /// fits and projections made before the first frame use it. Each
+    /// frame sets its target's.
+    ///
+    /// Contract: `command`.
+    public func setViewport(width: Double, height: Double) {
+        OrbMap_set_viewport(live(), width, height)
+    }
+
     /// Moves the camera at once.
     ///
     /// Contract: `command`.
@@ -424,6 +433,73 @@ public final class OrbMap {
     /// Contract: `command`.
     public func setConstraints(constraints: OrbConstraints) {
         OrbMap_set_constraints(live(), constraints.c)
+    }
+
+    /// The loaded style as v8 JSON, edits included; `InvalidState`
+    /// before one loads.
+    ///
+    /// Contract: `snapshot`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func styleJson() throws -> String {
+        let (result, text) = withWrite { write in OrbMap_style_json(live(), write) }.pair
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+        return text
+    }
+
+    /// The style's layers' ids in drawing order, as a JSON array.
+    ///
+    /// Contract: `snapshot`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func layerIds() throws -> String {
+        let (result, text) = withWrite { write in OrbMap_layer_ids(live(), write) }.pair
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+        return text
+    }
+
+    /// The style's sources' ids, as a JSON array.
+    ///
+    /// Contract: `snapshot`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func sourceIds() throws -> String {
+        let (result, text) = withWrite { write in OrbMap_source_ids(live(), write) }.pair
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+        return text
+    }
+
+    /// Layer `id`'s JSON, its paint and layout properties included;
+    /// `InvalidArgument` when there's none.
+    ///
+    /// Contract: `snapshot`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func layer(id: String) throws -> String {
+        let (result, text) = withStringView(id) { idView in withWrite { write in OrbMap_layer(live(), idView, write) } }.pair
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+        return text
+    }
+
+    /// Source `id`'s JSON; `InvalidArgument` when there's none.
+    ///
+    /// Contract: `snapshot`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func source(id: String) throws -> String {
+        let (result, text) = withStringView(id) { idView in withWrite { write in OrbMap_source(live(), idView, write) } }.pair
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+        return text
     }
 
     /// What the labels on screen say, for assistive technology (plan

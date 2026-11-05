@@ -1620,6 +1620,14 @@ mod ffi {
             self.0.set_center_elevation(elevation);
         }
 
+        /// Sets the viewport, in logical pixels, before a target draws:
+        /// fits and projections made before the first frame use it. Each
+        /// frame sets its target's.
+        #[diplomat::attr(contract, command)]
+        pub fn set_viewport(&mut self, width: f64, height: f64) {
+            self.0.set_viewport(width, height);
+        }
+
         /// Moves the camera at once.
         #[diplomat::attr(contract, command)]
         pub fn jump_to(&mut self, target: OrbCameraTarget) {
@@ -1708,6 +1716,53 @@ mod ffi {
                     north: c.north,
                 }),
             });
+        }
+
+        /// The loaded style as v8 JSON, edits included; `InvalidState`
+        /// before one loads.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn style_json(&self, out: &mut DiplomatWrite) -> Result<(), OrbError> {
+            out.write_str(&self.style()?.to_json()).ok();
+            Ok(())
+        }
+
+        /// The style's layers' ids in drawing order, as a JSON array.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn layer_ids(&self, out: &mut DiplomatWrite) -> Result<(), OrbError> {
+            crate::write_ids(out, self.style()?.layer_ids());
+            Ok(())
+        }
+
+        /// The style's sources' ids, as a JSON array.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn source_ids(&self, out: &mut DiplomatWrite) -> Result<(), OrbError> {
+            crate::write_ids(out, self.style()?.source_ids());
+            Ok(())
+        }
+
+        /// Layer `id`'s JSON, its paint and layout properties included;
+        /// `InvalidArgument` when there's none.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn layer(&self, id: &DiplomatStr, out: &mut DiplomatWrite) -> Result<(), OrbError> {
+            let id = text(id);
+            let json = self
+                .style()?
+                .layer(&id)
+                .ok_or_else(|| invalid(format!("no layer {id}")))?;
+            out.write_str(&json.to_string()).ok();
+            Ok(())
+        }
+
+        /// Source `id`'s JSON; `InvalidArgument` when there's none.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn source(&self, id: &DiplomatStr, out: &mut DiplomatWrite) -> Result<(), OrbError> {
+            let id = text(id);
+            let json = self
+                .style()?
+                .source(&id)
+                .ok_or_else(|| invalid(format!("no source {id}")))?;
+            out.write_str(&json.to_string()).ok();
+            Ok(())
         }
 
         /// What the labels on screen say, for assistive technology (plan
@@ -2102,6 +2157,30 @@ fn request_rules(
             .collect();
         Some(orb_api::Request { url, headers })
     })))
+}
+
+impl ffi::OrbMap {
+    fn style(&self) -> Result<&orb_api::StyleDoc, ffi::OrbError> {
+        self.0.style().ok_or_else(|| {
+            fail(orb_api::Error::InvalidState(
+                "no style is loaded yet".into(),
+            ))
+        })
+    }
+}
+
+/// Ids as a JSON array.
+fn write_ids<'a>(out: &mut diplomat_runtime::DiplomatWrite, ids: impl Iterator<Item = &'a str>) {
+    let ids: Vec<String> = ids
+        .map(|id| {
+            orb_api::json::Json::new(
+                orb_api::json::JsonValue::String(id.into()),
+                Default::default(),
+            )
+            .to_string()
+        })
+        .collect();
+    std::fmt::Write::write_str(out, &format!("[{}]", ids.join(","))).ok();
 }
 
 fn invalid(message: String) -> OrbError {

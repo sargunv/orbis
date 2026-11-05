@@ -383,6 +383,17 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Sets the viewport, in logical pixels, before a target draws:
+     * fits and projections made before the first frame use it. Each
+     * frame sets its target's.
+     *
+     * Contract: `command`.
+     */
+    fun setViewport(width: Double, height: Double) {
+        OrbisNative.orbMapSetViewport(live(), width, height)
+    }
+
+    /**
      * Moves the camera at once.
      *
      * Contract: `command`.
@@ -438,6 +449,63 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      */
     fun setConstraints(constraints: OrbConstraints) {
         OrbisNative.orbMapSetConstraints(live(), constraints.minZoom, constraints.maxZoom, constraints.minPitch, constraints.maxPitch, constraints.bounded, constraints.west, constraints.south, constraints.east, constraints.north)
+    }
+
+    /**
+     * The loaded style as v8 JSON, edits included; `InvalidState`
+     * before one loads.
+     *
+     * Contract: `snapshot`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun styleJson(): String {
+        return OrbisNative.orbMapStyleJson(live()).decodeToString()
+    }
+
+    /**
+     * The style's layers' ids in drawing order, as a JSON array.
+     *
+     * Contract: `snapshot`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun layerIds(): String {
+        return OrbisNative.orbMapLayerIds(live()).decodeToString()
+    }
+
+    /**
+     * The style's sources' ids, as a JSON array.
+     *
+     * Contract: `snapshot`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun sourceIds(): String {
+        return OrbisNative.orbMapSourceIds(live()).decodeToString()
+    }
+
+    /**
+     * Layer `id`'s JSON, its paint and layout properties included;
+     * `InvalidArgument` when there's none.
+     *
+     * Contract: `snapshot`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun layer(id: String): String {
+        return OrbisNative.orbMapLayer(live(), id.encodeToByteArray()).decodeToString()
+    }
+
+    /**
+     * Source `id`'s JSON; `InvalidArgument` when there's none.
+     *
+     * Contract: `snapshot`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun source(id: String): String {
+        return OrbisNative.orbMapSource(live(), id.encodeToByteArray()).decodeToString()
     }
 
     /**

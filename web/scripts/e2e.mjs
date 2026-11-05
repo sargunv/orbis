@@ -98,6 +98,10 @@ async function scenario(browser, server, config) {
   assert.equal(features.length, 1);
   assert.deepEqual([features[0].id, features[0].layer.id, features[0].geometry.type], [7, "box", "Polygon"]);
 
+  // Before the first frame, the map knew its size.
+  const unframed = await scenario((s) => s.firstProjection);
+  assert.deepEqual(unframed, CENTER, "projected before a frame");
+
   // Projection, synchronous in both modes.
   const projected = await scenario((s, c) => ({ p: s.map.project([0, 0]), g: s.map.unproject(c) }), CENTER);
   assert.ok(Math.hypot(projected.p[0] - CENTER[0], projected.p[1] - CENTER[1]) < 1e-6, String(projected.p));
@@ -259,6 +263,13 @@ async function scenario(browser, server, config) {
     return (await s.map.queryRenderedFeatures(c, { layers: ["box"] }))[0]?.properties;
   }, CENTER);
   assert.deepEqual(updated, { name: "seven" });
+
+  // The style reads back.
+  const readback = await scenario((s) => ({
+    order: s.map.getLayersOrder(), sources: s.map.getSourceIds(), box: s.map.getLayer("box"), none: s.map.getLayer("nope"),
+  }));
+  assert.deepEqual(readback.order.slice(0, 2), ["background", "box"]);
+  assert.ok(readback.sources.includes("box") && readback.box.type === "fill" && readback.none === undefined, JSON.stringify(readback));
 
   // A request transform rewrites what the job workers fetch.
   await scenario(async (s) => {

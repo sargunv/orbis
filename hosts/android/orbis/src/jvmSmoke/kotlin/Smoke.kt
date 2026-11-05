@@ -22,6 +22,9 @@ fun main() {
     OrbRuntime.create(0u).use { runtime ->
         OrbTarget.createTexture(runtime, 64u, 64u, 1.0).use { target ->
             OrbMap.create(runtime, OrbFeel.Desktop, 0.0, 0.0, 0.0, 0.0).use { map ->
+                // The viewport, before a target draws.
+                map.setViewport(64.0, 64.0)
+                check(map.project(0.0, 0.0).let { Math.abs(it.x - 32.0) < 1e-6 && Math.abs(it.y - 32.0) < 1e-6 })
                 val bad = runCatching { map.setStyleJson("{not json") }.exceptionOrNull()
                 check(bad is OrbErrorException && bad.error == OrbError.InvalidArgument && !bad.message.isNullOrEmpty())
 
@@ -45,6 +48,11 @@ fun main() {
                     Thread.sleep(2)
                 }
                 map.hitTest(32.0, 32.0)!!.use { hit -> check(hit.layer() == "box" && hit.id() == "7") }
+
+                // The style reads back.
+                check(map.layerIds() == """["background","box"]""") { map.layerIds() }
+                check(map.layer("box").contains("#0000ff"))
+                check(runCatching { map.layer("nope") }.isFailure)
 
                 // Edits built one by one apply as one generation; a value
                 // that isn't JSON throws at once.

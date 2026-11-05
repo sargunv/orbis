@@ -332,6 +332,38 @@ impl OrbisMap {
             .ok_or_else(|| JsError::new("no style is loaded"))
     }
 
+    /// Layer `id`'s JSON, its paint and layout properties included, or
+    /// none.
+    #[wasm_bindgen(js_name = getLayer)]
+    pub fn get_layer(&self, id: &str) -> Option<String> {
+        Some(self.map.style_doc()?.layer(id)?.to_string())
+    }
+
+    /// Source `id`'s JSON, or none.
+    #[wasm_bindgen(js_name = getSource)]
+    pub fn get_source(&self, id: &str) -> Option<String> {
+        Some(self.map.style_doc()?.source(id)?.to_string())
+    }
+
+    /// The layers' ids in drawing order (none before a style loads).
+    #[wasm_bindgen(js_name = layerIds)]
+    pub fn layer_ids(&self) -> Vec<String> {
+        let doc = self.map.style_doc();
+        doc.into_iter()
+            .flat_map(|d| d.layer_ids())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[wasm_bindgen(js_name = sourceIds)]
+    pub fn source_ids(&self) -> Vec<String> {
+        let doc = self.map.style_doc();
+        doc.into_iter()
+            .flat_map(|d| d.source_ids())
+            .map(str::to_string)
+            .collect()
+    }
+
     /// The last placement commit's semantic snapshot (plan §13) as JSON,
     /// or null before labels are first placed.
     #[wasm_bindgen(js_name = semanticSnapshot)]
@@ -439,6 +471,11 @@ impl OrbisMap {
     pub fn resize(&mut self, width: u32, height: u32, pixel_ratio: f64) {
         self.pixel_ratio = pixel_ratio;
         self.canvas.resize(width, height);
+        // Fits and projections before the next frame use the new size.
+        self.map.set_viewport(orb_runtime::Viewport {
+            width: f64::from(width) / pixel_ratio,
+            height: f64::from(height) / pixel_ratio,
+        });
     }
 
     /// What the map did since the last call, as plain objects by `type`:

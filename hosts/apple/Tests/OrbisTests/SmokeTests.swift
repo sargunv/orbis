@@ -25,6 +25,10 @@ private let style = """
     let runtime = try OrbRuntime.create(jobThreads: 0)
     let target = OrbTarget.createTexture(runtime: runtime, width: 64, height: 64, scale: 1)
     let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
+    // The viewport, before a target draws.
+    map.setViewport(width: 64, height: 64)
+    let middle = map.project(lon: 0, lat: 0)
+    #expect(abs(middle.x - 32) < 1e-6 && abs(middle.y - 32) < 1e-6)
 
     let bad = #expect(throws: OrbErrorFailure.self) { try map.setStyleJson(json: "{not json") }
     #expect(bad?.error == .invalidArgument)
@@ -52,6 +56,11 @@ private let style = """
     }
     let hit = try #require(map.hitTest(x: 32, y: 32))
     #expect(hit.layer() == "box" && hit.id() == "7")
+
+    // The style reads back.
+    #expect(try map.layerIds() == #"["background","box"]"#)
+    #expect(try map.layer(id: "box").contains("#0000ff"))
+    #expect(throws: OrbErrorFailure.self) { try map.layer(id: "nope") }
 
     // Edits built one by one apply as one generation; a value that isn't
     // JSON throws at once.

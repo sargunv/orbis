@@ -425,6 +425,18 @@ export class OrbisMap {
 
   /** The style as edits have left it. */
   getStyle(): object { return JSON.parse(this.#host.core.getStyle()); }
+  /** Layer `id` as the style has it, its paint and layout properties included. */
+  getLayer(id: string): Record<string, unknown> | undefined {
+    const json = this.#host.core.getLayer(id);
+    return json === undefined ? undefined : JSON.parse(json);
+  }
+  getSource(id: string): Record<string, unknown> | undefined {
+    const json = this.#host.core.getSource(id);
+    return json === undefined ? undefined : JSON.parse(json);
+  }
+  /** The layers' ids in drawing order. */
+  getLayersOrder(): string[] { return this.#host.core.layerIds(); }
+  getSourceIds(): string[] { return this.#host.core.sourceIds(); }
 
   /** What the labels on screen say, for assistive technology (plan §13); null before labels place. */
   semanticSnapshot(): object | null {

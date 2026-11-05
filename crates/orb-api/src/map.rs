@@ -459,6 +459,13 @@ impl Map {
         }
     }
 
+    /// The loaded style as it is now, edits included: its JSON, its
+    /// layers' and sources' ids and each one's JSON (GL JS `getStyle`,
+    /// `getLayer`, `getSource`); `None` before a style loads.
+    pub fn style(&self) -> Option<&orb_runtime::StyleDoc> {
+        self.map.style_doc()
+    }
+
     /// The style generation, counting loads and edits.
     pub fn generation(&self) -> u64 {
         self.map.generation()
@@ -478,6 +485,14 @@ impl Map {
     /// logical pixels.
     pub fn viewport(&self) -> Viewport {
         self.map.viewport()
+    }
+
+    /// Sets the viewport, in logical pixels, before a target draws (each
+    /// frame sets its target's): fits, projections and constraints made
+    /// before the first frame use the size the map will have.
+    pub fn set_viewport(&mut self, width: f64, height: f64) {
+        self.map.set_viewport(Viewport { width, height });
+        self.dirty = true;
     }
 
     /// Moves the camera at once, ending any animation.

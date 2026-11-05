@@ -44,6 +44,10 @@ int main(void) {
     CHECK(rt.is_ok);
     OrbTarget* target = OrbTarget_create_texture(rt.ok, SIZE, SIZE, 1.0);
     OrbMap* map = OrbMap_create(rt.ok, OrbFeel_Desktop, 0, 0, 0, 0);
+    /* The viewport, before a target draws. */
+    OrbMap_set_viewport(map, SIZE, SIZE);
+    OrbPoint middle = OrbMap_project(map, 0, 0);
+    CHECK(middle.valid && fabs(middle.x - SIZE / 2.0) < 1e-6 && fabs(middle.y - SIZE / 2.0) < 1e-6);
 
     OrbMap_set_style_json_result bad = OrbMap_set_style_json(map, view("{not json"));
     CHECK(!bad.is_ok && bad.err == OrbError_InvalidArgument);
@@ -78,6 +82,19 @@ int main(void) {
         struct timespec ms = {0, 2000000};
         nanosleep(&ms, NULL);
     }
+
+    /* The style reads back. */
+    DiplomatWrite* ids = diplomat_buffer_write_create(0);
+    CHECK(OrbMap_layer_ids(map, ids).is_ok);
+    CHECK(strncmp(diplomat_buffer_write_get_bytes(ids), "[\"background\",\"box\"]", diplomat_buffer_write_len(ids)) == 0);
+    diplomat_buffer_write_destroy(ids);
+    DiplomatWrite* box = diplomat_buffer_write_create(0);
+    CHECK(OrbMap_layer(map, view("box"), box).is_ok);
+    CHECK(strstr(diplomat_buffer_write_get_bytes(box), "#0000ff") != NULL);
+    diplomat_buffer_write_destroy(box);
+    DiplomatWrite* none = diplomat_buffer_write_create(0);
+    CHECK(!OrbMap_layer(map, view("nope"), none).is_ok);
+    diplomat_buffer_write_destroy(none);
 
     OrbFeature* hit = OrbMap_hit_test(map, SIZE / 2.0, SIZE / 2.0);
     CHECK(hit && OrbFeature_has_id(hit));

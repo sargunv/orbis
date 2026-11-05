@@ -139,6 +139,12 @@ impl Map {
         self.camera.viewport()
     }
 
+    /// Sets the viewport before a frame does (each frame sets its
+    /// target's): fits, projections and constraints use it at once.
+    pub fn set_viewport(&mut self, viewport: Viewport) {
+        self.camera.set_viewport(viewport);
+    }
+
     /// Brings the camera to this frame: it stands on the surface and
     /// terrain that have arrived and the frame's viewport, then gestures
     /// and animations advance to `time`. Returns whether it moves on.

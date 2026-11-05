@@ -35,7 +35,7 @@ pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUn
 pub use orb_runtime::batteries::{Location, Marker};
 pub use orb_runtime::{
     CameraState, ClusterQuery, FeatureTarget, FrameReport, HOST_TILES, Hit, HostTile, MapEvent, Op,
-    StyleImage, Transaction, VideoRequest, json,
+    StyleDoc, StyleImage, Transaction, VideoRequest, json,
 };
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Surface;

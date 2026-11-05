@@ -716,6 +716,12 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetCenterElevation(JNIEn
     OrbMap_set_center_elevation((OrbMap*)(intptr_t)self, (double)(elevation));
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetViewport(JNIEnv* env, jclass cls, jlong self, jdouble width, jdouble height) {
+    (void)env;
+    (void)cls;
+    OrbMap_set_viewport((OrbMap*)(intptr_t)self, (double)(width), (double)(height));
+}
+
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapJumpTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble target_roll, jdouble target_elevation, jdouble target_fov, jdouble target_padding_top, jdouble target_padding_right, jdouble target_padding_bottom, jdouble target_padding_left) {
     (void)env;
     (void)cls;
@@ -753,6 +759,79 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetConstraints(JNIEnv* e
     (void)env;
     (void)cls;
     OrbMap_set_constraints((OrbMap*)(intptr_t)self, (OrbConstraints){ .min_zoom = (double)(constraints_min_zoom), .max_zoom = (double)(constraints_max_zoom), .min_pitch = (double)(constraints_min_pitch), .max_pitch = (double)(constraints_max_pitch), .bounded = (bool)(constraints_bounded), .west = (double)(constraints_west), .south = (double)(constraints_south), .east = (double)(constraints_east), .north = (double)(constraints_north) });
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbMapStyleJson(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbMap_style_json_result result = OrbMap_style_json((const OrbMap*)(intptr_t)self, write);
+    if (!result.is_ok) {
+        diplomat_buffer_write_destroy(write);
+        throw_OrbError(env, result.err);
+        return NULL;
+    }
+    return write_to_bytes(env, write);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbMapLayerIds(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbMap_layer_ids_result result = OrbMap_layer_ids((const OrbMap*)(intptr_t)self, write);
+    if (!result.is_ok) {
+        diplomat_buffer_write_destroy(write);
+        throw_OrbError(env, result.err);
+        return NULL;
+    }
+    return write_to_bytes(env, write);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbMapSourceIds(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbMap_source_ids_result result = OrbMap_source_ids((const OrbMap*)(intptr_t)self, write);
+    if (!result.is_ok) {
+        diplomat_buffer_write_destroy(write);
+        throw_OrbError(env, result.err);
+        return NULL;
+    }
+    return write_to_bytes(env, write);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbMapLayer(JNIEnv* env, jclass cls, jlong self, jbyteArray id) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return NULL;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbMap_layer_result result = OrbMap_layer((const OrbMap*)(intptr_t)self, id_view, write);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        diplomat_buffer_write_destroy(write);
+        throw_OrbError(env, result.err);
+        return NULL;
+    }
+    return write_to_bytes(env, write);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbMapSource(JNIEnv* env, jclass cls, jlong self, jbyteArray id) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return NULL;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbMap_source_result result = OrbMap_source((const OrbMap*)(intptr_t)self, id_view, write);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        diplomat_buffer_write_destroy(write);
+        throw_OrbError(env, result.err);
+        return NULL;
+    }
+    return write_to_bytes(env, write);
 }
 
 JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbMapSemanticSnapshot(JNIEnv* env, jclass cls, jlong self) {

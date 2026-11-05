@@ -308,6 +308,29 @@ impl StyleDoc {
         &self.sources[index].json
     }
 
+    /// The layers' ids, in drawing order.
+    pub fn layer_ids(&self) -> impl Iterator<Item = &str> {
+        self.layers.iter().filter_map(|l| layer_id(&l.json))
+    }
+
+    pub fn source_ids(&self) -> impl Iterator<Item = &str> {
+        self.sources.iter().map(|s| s.id.as_str())
+    }
+
+    /// Layer `id` as the document has it, its paint and layout properties
+    /// included (GL JS `getLayer`).
+    pub fn layer(&self, id: &str) -> Option<&Json> {
+        self.layers
+            .iter()
+            .map(|l| &*l.json)
+            .find(|json| layer_id(json) == Some(id))
+    }
+
+    /// Source `id` as the document has it (GL JS `getSource`).
+    pub fn source(&self, id: &str) -> Option<&Json> {
+        self.sources.iter().find(|s| s.id == id).map(|s| &*s.json)
+    }
+
     /// The global state: root defaults with transactions' values over them.
     pub fn global_state(&self) -> Vec<(String, Value<'static>)> {
         crate::resolve_state(&self.style.state, &self.overrides)

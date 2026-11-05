@@ -36,6 +36,8 @@ window.scenario = (async () => {
     container: document.getElementById("map"), style: STYLE,
     renderer: params.get("renderer") ?? undefined,
   });
+  // Before a frame: the canvas's size, for fits and projections.
+  const firstProjection = map.project([0, 0]);
   const generations = [];
   for (const type of ["styleload", "load", "idle", "movestart", "moveend", "click", "error", "styleimagemissing"]) {
     map.on(type, (e) => events.push({ type, ...(type === "click" ? { point: e.point, lngLat: e.lngLat } : {}), ...(e.id ? { id: e.id } : {}) }));
@@ -45,6 +47,7 @@ window.scenario = (async () => {
   return {
     map,
     setRequestTransform,
+    firstProjection,
     /** The events since the last call. */
     events: () => events.splice(0),
     idle: () => (map.stats?.idle && !map.camera.moving ? Promise.resolve() : map.once("idle")),

@@ -124,6 +124,8 @@ bool OrbMap_center_clamped_to_ground(const OrbMap* self);
 
 void OrbMap_set_center_elevation(OrbMap* self, double elevation);
 
+void OrbMap_set_viewport(OrbMap* self, double width, double height);
+
 void OrbMap_jump_to(OrbMap* self, OrbCameraTarget target);
 
 uint64_t OrbMap_ease_to(OrbMap* self, OrbCameraTarget target, double duration_ms);
@@ -135,6 +137,21 @@ uint64_t OrbMap_fit_bounds(OrbMap* self, OrbBounds bounds, double padding, doubl
 void OrbMap_stop(OrbMap* self);
 
 void OrbMap_set_constraints(OrbMap* self, OrbConstraints constraints);
+
+typedef struct OrbMap_style_json_result {union { OrbError err;}; bool is_ok;} OrbMap_style_json_result;
+OrbMap_style_json_result OrbMap_style_json(const OrbMap* self, DiplomatWrite* write);
+
+typedef struct OrbMap_layer_ids_result {union { OrbError err;}; bool is_ok;} OrbMap_layer_ids_result;
+OrbMap_layer_ids_result OrbMap_layer_ids(const OrbMap* self, DiplomatWrite* write);
+
+typedef struct OrbMap_source_ids_result {union { OrbError err;}; bool is_ok;} OrbMap_source_ids_result;
+OrbMap_source_ids_result OrbMap_source_ids(const OrbMap* self, DiplomatWrite* write);
+
+typedef struct OrbMap_layer_result {union { OrbError err;}; bool is_ok;} OrbMap_layer_result;
+OrbMap_layer_result OrbMap_layer(const OrbMap* self, DiplomatStringView id, DiplomatWrite* write);
+
+typedef struct OrbMap_source_result {union { OrbError err;}; bool is_ok;} OrbMap_source_result;
+OrbMap_source_result OrbMap_source(const OrbMap* self, DiplomatStringView id, DiplomatWrite* write);
 
 void OrbMap_semantic_snapshot(const OrbMap* self, DiplomatWrite* write);
 

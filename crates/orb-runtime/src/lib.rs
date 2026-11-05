@@ -90,7 +90,7 @@ pub use orb_render::{
     SceneMemory, TargetFormat,
 };
 pub use orb_source::endpoint::{HOST_TILES, HostTile};
-pub use orb_v8::{FeatureTarget, Op, Transaction};
+pub use orb_v8::{FeatureTarget, Op, StyleDoc, Transaction};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};
 pub use queries::QueryDone;
 pub use query::{Hit, HitGeometry, MeshHits};

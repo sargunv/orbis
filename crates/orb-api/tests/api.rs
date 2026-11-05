@@ -914,3 +914,52 @@ fn lit_waves_keep_frames_coming() {
     settle(&mut map, &mut target);
     assert!(!map.needs_frame(), "waves out of view don't draw on");
 }
+
+#[test]
+fn the_style_reads_back_with_its_edits() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut map = Map::new(&runtime, MapOptions::default());
+    assert!(map.style().is_none());
+    map.set_style_json(STYLE).expect("style");
+    map.edit(&commands(
+        r##"[["setPaintProperty", "box", "fill-color", "#00ff00"]]"##,
+    ))
+    .expect("edit");
+    let style = map.style().expect("loaded");
+    assert_eq!(style.layer_ids().collect::<Vec<_>>(), ["background", "box"]);
+    assert_eq!(style.source_ids().collect::<Vec<_>>(), ["box"]);
+    let paint = style.layer("box").unwrap().get("paint").unwrap();
+    assert_eq!(paint.get("fill-color").unwrap().as_str(), Some("#00ff00"));
+    assert_eq!(
+        style.source("box").unwrap().get("type").unwrap().as_str(),
+        Some("geojson")
+    );
+    assert!(style.layer("nope").is_none());
+    assert!(style.to_json().contains("#00ff00"));
+}
+
+#[test]
+fn fits_before_the_first_frame_use_the_viewport_set() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut map = Map::new(&runtime, MapOptions::default());
+    let bounds = orb_api::Bounds {
+        west: -10.0,
+        south: -10.0,
+        east: 10.0,
+        north: 10.0,
+    };
+    let fit = |map: &Map| {
+        map.camera_for_bounds(bounds, &orb_api::FitOptions::default())
+            .and_then(|t| t.zoom)
+            .unwrap()
+    };
+    // 20 degrees span 2⁹ × 20 / 360 pixels at zoom 0: 64 pixels fit them
+    // at zoom log2(64 / 28.4) ≈ 1.17.
+    map.set_viewport(64.0, 64.0);
+    assert!(
+        (fit(&map) - (64.0f64 / (512.0 * 20.0 / 360.0)).log2()).abs() < 0.05,
+        "{}",
+        fit(&map)
+    );
+    assert_eq!(map.viewport().width, 64.0);
+}
