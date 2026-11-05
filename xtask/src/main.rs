@@ -13,6 +13,7 @@ mod fixtures;
 mod labels;
 mod models;
 mod pmtiles;
+mod sweep;
 mod unicode;
 mod web;
 
@@ -45,6 +46,8 @@ cargo xtask <task>
                the GL JS fixtures
   bench [args]  GPU/CPU frame timings, still or along gesture paths (release);
                web/demo/bench.html runs the same bench in a browser
+  sweep [--dry-run] [--target-dir <path>]  prune stale build artifacts, keeping
+               the 2 newest builds per crate, when the disk runs low
   fixtures [expressions]  fetch and verify the pinned GL JS fixture mirror
                (fixtures/gl-js, not committed); with `expressions`, bundle the
                pinned style-spec expression fixtures into orb-expr
@@ -70,6 +73,7 @@ fn main() -> ExitCode {
             command.extend(args.iter().skip(1).map(String::as_str));
             cargo(&command)
         }
+        Some("sweep") => sweep::run(&args[1..]),
         Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
             expression_fixtures::bundle()
         }
