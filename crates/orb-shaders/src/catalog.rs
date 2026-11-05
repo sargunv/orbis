@@ -141,12 +141,22 @@ pub const SKY_SHADER: Shader = Shader {
     paint: false,
 };
 
-/// A layer's composite at its layer opacity.
-pub const LAYER_OPACITY_SHADER: Shader = Shader {
-    label: "layer opacity",
-    parts: &[include_str!("wgsl/layer_opacity.wgsl")],
+/// A layer's composite at its layer opacity, blending normally.
+pub const LAYER_COMPOSITE_SHADER: Shader = Shader {
+    label: "layer composite",
+    parts: &[include_str!("wgsl/layer_composite.wgsl")],
     vertex: "vs_layer_composite",
     fragment: "fs_layer_composite",
+    compute: "",
+    paint: false,
+};
+
+/// A layer's composite in another blend mode, over the backdrop it reads.
+pub const LAYER_BLEND_SHADER: Shader = Shader {
+    label: "layer blend",
+    parts: &[include_str!("wgsl/layer_composite.wgsl")],
+    vertex: "vs_layer_composite",
+    fragment: "fs_layer_blend",
     compute: "",
     paint: false,
 };
@@ -354,7 +364,8 @@ pub const EXTRUSION_COMPOSITE_SHADER: Shader = Shader {
 /// drape's and compute. `PASS` overrides are specialized per value.
 pub const COMPAT_SHADERS: &[Shader] = &[
     SKY_SHADER,
-    LAYER_OPACITY_SHADER,
+    LAYER_COMPOSITE_SHADER,
+    LAYER_BLEND_SHADER,
     FILL_SHADER,
     FILL_OUTLINE_SHADER,
     LINE_SHADER,

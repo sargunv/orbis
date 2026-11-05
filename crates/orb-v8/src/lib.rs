@@ -42,9 +42,9 @@ pub use orb_expr::{Color, Diagnostic, Filter, Kind, PropertyExpression, Value};
 pub use paint::{PaintMut, PaintRef, PaintValue, Transition, TransitionOverride};
 pub use property::{
     Alignment, Anchor, AnchorOffsets, BoundProperty, DemEncoding, Encoding, Enum, HeightAnchor,
-    HillshadeMethod, IconTextFit, IlluminationAnchor, LineCap, LineJoin, Overlap, Padding,
-    Property, PropertyValue, Resampling, Scheme, SymbolPlacement, SymbolZOrder, TextJustify,
-    TextRotationAlignment, TextTransform, TranslateAnchor, Visibility, WritingMode,
+    HillshadeMethod, IconTextFit, IlluminationAnchor, LayerBlend, LineCap, LineJoin, Overlap,
+    Padding, Property, PropertyValue, Resampling, Scheme, SymbolPlacement, SymbolZOrder,
+    TextJustify, TextRotationAlignment, TextTransform, TranslateAnchor, Visibility, WritingMode,
 };
 pub use scene::{Scene, StyleRef, is_scene, parse_scene, tms_definition};
 pub use sky::Atmosphere;

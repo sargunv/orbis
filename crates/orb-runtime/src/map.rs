@@ -3698,15 +3698,37 @@ fn write_paint(
             paint
         };
         renderer.set_paint(gpu, index, &paint);
-        // A fill or line layer below layer opacity 1 composites once.
-        let layer_opacity = match &layer.kind {
-            LayerKind::Fill(f) => Some(f.paint.layer_opacity.evaluate(zoom)),
-            LayerKind::Line(l) => Some(l.paint.layer_opacity.evaluate(zoom)),
+        // A fill or line layer below layer opacity 1, or blending other
+        // than normally, composites once.
+        let composite = match &layer.kind {
+            LayerKind::Fill(f) => Some((&f.paint.layer_opacity, &f.paint.layer_blend)),
+            LayerKind::Line(l) => Some((&l.paint.layer_opacity, &l.paint.layer_blend)),
             _ => None,
         };
-        if let Some(opacity) = layer_opacity {
-            renderer.set_layer_opacity(gpu, index, node.layer as u32, opacity);
+        if let Some((opacity, blend)) = composite {
+            renderer.set_layer_composite(
+                gpu,
+                index,
+                node.layer as u32,
+                opacity.evaluate(zoom),
+                layer_blend(blend.evaluate(zoom)),
+            );
         }
+    }
+}
+
+/// The renderer's blend for a v8 layer blend.
+fn layer_blend(blend: orb_v8::LayerBlend) -> orb_render::Blend {
+    use orb_render::Blend;
+    use orb_v8::LayerBlend;
+    match blend {
+        LayerBlend::Normal => Blend::Normal,
+        LayerBlend::Multiply => Blend::Multiply,
+        LayerBlend::Screen => Blend::Screen,
+        LayerBlend::Overlay => Blend::Overlay,
+        LayerBlend::Color => Blend::Color,
+        LayerBlend::Luminosity => Blend::Luminosity,
+        LayerBlend::PlusLighter => Blend::PlusLighter,
     }
 }
 

@@ -98,7 +98,8 @@ mod tests {
         for shader in [
             SKY_SHADER,
             SCATTER_SHADER,
-            LAYER_OPACITY_SHADER,
+            LAYER_COMPOSITE_SHADER,
+            LAYER_BLEND_SHADER,
             TERRAIN_SHADER,
             DRAPE_SHADER,
             TERRAIN_STACK_SHADER,

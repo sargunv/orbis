@@ -56,13 +56,36 @@ const CITIES = {
  * rest open at their own. `swatch` is [land, water, line] for the picker's
  * chip; `dark` styles turn the app's chrome dark. `constraints` keep the
  * camera where a bounded dataset has data. `projection` is a v8 projection
- * the map switches to once the style loads.
+ * the map switches to once the style loads; `calls` are GL JS map calls
+ * (`[name, ...args]`) applied then too.
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
- *   projection?: object }} Scene
+ *   projection?: object, calls?: unknown[][] }} Scene
  */
+
+/** The world, for layers that cover everything. */
+const WORLD = { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "Polygon",
+  coordinates: [[[-180, -85.06], [180, -85.06], [180, 85.06], [-180, 85.06], [-180, -85.06]]] } } };
+
+/**
+ * Liberty at dusk, by layer blends (style-spec 26): a blue tint multiplies
+ * everything beneath the boundaries; major roads glow, added on top in
+ * `plus-lighter` at a layer opacity; water screens a cool sheen.
+ */
+const DUSK = [
+  ["addSource", "dusk", WORLD],
+  ["addLayer", { id: "dusk-tint", type: "fill", source: "dusk",
+    paint: { "fill-color": "#4d5894", "fill-layer-blend": "multiply" } }, "boundary_3"],
+  ["addLayer", { id: "dusk-glow", type: "line", source: "openmaptiles", "source-layer": "transportation",
+    filter: ["match", ["get", "class"], ["motorway", "trunk", "primary", "secondary"], true, false],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#ff9d4d", "line-blur": ["interpolate", ["linear"], ["zoom"], 8, 2, 16, 10],
+      "line-width": ["interpolate", ["exponential", 1.5], ["zoom"], 8, 2, 16, 18],
+      "line-layer-blend": "plus-lighter", "line-layer-opacity": 0.55 } }, "boundary_3"],
+  ["setPaintProperty", "water", "fill-layer-blend", "screen"],
+];
 
 /** @type {{ name: string, scenes: Scene[] }[]} */
 export const GROUPS = [
@@ -72,6 +95,9 @@ export const GROUPS = [
       { key: "globe", name: "Globe", detail: "Liberty on the v8 globe, Web Mercator from zoom 12", url: LIVE,
         projection: { type: "globe" }, camera: { center: [10, 30], zoom: 1.5 },
         swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
+      { key: "dusk", name: "Liberty at dusk", detail: "Layer blends: a multiplied tint, glowing roads",
+        url: LIVE, calls: DUSK, camera: { center: [139.767, 35.681], zoom: 12.5 }, dark: true,
+        swatch: ["#4c4f6e", "#6f86b8", "#ff9d4d"] },
       { key: "blue-marble", name: "Blue Marble globe", detail: "NASA imagery in EPSG:4326 tiles, to the poles",
         url: blueMarble, dark: true, swatch: ["#2f4a2a", "#0b2a5c", "#d8d0b8"] },
       { key: "alps", name: "Alps terrain flight", detail: "3D terrain, sky and a looping camera flight", url: alps,

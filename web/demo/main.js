@@ -162,7 +162,9 @@ function clearPopup() {
 function go(next) {
   const keep = current.scene.basemap && next.scene.basemap && map;
   const camera = keep ? map.camera.current : next.scene.camera ?? (next.scene.basemap ? LIVE_CAMERA : undefined);
-  if (map && sceneUrl(current.scene, current.format) === sceneUrl(next.scene, next.format) && !next.scene.flight) {
+  const sameCalls = JSON.stringify(current.scene.calls) === JSON.stringify(next.scene.calls);
+  if (map && sceneUrl(current.scene, current.format) === sceneUrl(next.scene, next.format) && sameCalls
+    && !next.scene.flight) {
     // The same style on another surface switches in place: no tile loads.
     const projection = (scene) => scene.projection ?? { type: "mercator" };
     if (JSON.stringify(projection(current.scene)) !== JSON.stringify(projection(next.scene))) {
@@ -210,6 +212,7 @@ async function load(next, { camera }) {
   });
   map.on("styleload", async () => {
     if (next.scene.projection) await map.edit((tx) => tx.setProjection(next.scene.projection));
+    if (next.scene.calls) await map.edit((tx) => { for (const [name, ...args] of next.scene.calls) tx[name](...args); });
     await editor.attach(map);
     attributionControl.update(editor.style);
   });

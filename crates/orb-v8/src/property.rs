@@ -221,6 +221,19 @@ v8_enum!(
     Visibility { Visible = "visible", None = "none" }
 );
 v8_enum!(
+    /// `fill-layer-blend`, `line-layer-blend`: how the layer, composited
+    /// once, combines with what is beneath it (W3C compositing modes).
+    LayerBlend {
+        Normal = "normal",
+        Multiply = "multiply",
+        Color = "color",
+        Luminosity = "luminosity",
+        PlusLighter = "plus-lighter",
+        Screen = "screen",
+        Overlay = "overlay"
+    }
+);
+v8_enum!(
     /// `*-translate-anchor`.
     TranslateAnchor { Map = "map", Viewport = "viewport" }
 );

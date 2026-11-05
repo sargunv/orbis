@@ -4,7 +4,7 @@ use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureId, TextureUsages};
 use orb_hal_wgpu::WgpuGpu;
 use orb_layout::fill;
 use orb_render::{
-    ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameStats, MeshData, NodePaint,
+    Blend, ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameStats, MeshData, NodePaint,
     PlacementTarget, Renderer, SceneCapacity, TargetFormat, TileRow, Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
@@ -935,6 +935,137 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
     assert!(!stats.bundle_recorded);
     assert_eq!(stats.paints_written, 0);
     assert_eq!(stats.placements_written, 0);
+}
+
+/// W3C Compositing 1: `source` (premultiplied) over `backdrop` in `mode`.
+fn w3c_composite(mode: Blend, s: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    if mode == Blend::PlusLighter {
+        return std::array::from_fn(|i| (s[i] + b[i]).min(1.0));
+    }
+    let unpremultiply = |c: [f32; 4]| -> [f32; 3] {
+        std::array::from_fn(|i| if c[3] > 0.0 { c[i] / c[3] } else { 0.0 })
+    };
+    let (cs, cb) = (unpremultiply(s), unpremultiply(b));
+    let lum = |c: [f32; 3]| 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+    let set_lum = |c: [f32; 3], l: f32| {
+        let d = l - lum(c);
+        let c = c.map(|v| v + d);
+        let (l, n, x) = (lum(c), c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
+        let c = if n < 0.0 {
+            c.map(|v| l + (v - l) * l / (l - n))
+        } else {
+            c
+        };
+        if x > 1.0 {
+            c.map(|v| l + (v - l) * (1.0 - l) / (x - l))
+        } else {
+            c
+        }
+    };
+    let mixed: [f32; 3] = match mode {
+        Blend::Normal => cs,
+        Blend::Multiply => std::array::from_fn(|i| cb[i] * cs[i]),
+        Blend::Screen => std::array::from_fn(|i| cb[i] + cs[i] - cb[i] * cs[i]),
+        Blend::Overlay => std::array::from_fn(|i| {
+            if cb[i] <= 0.5 {
+                cs[i] * 2.0 * cb[i]
+            } else {
+                let d = 2.0 * cb[i] - 1.0;
+                cs[i] + d - cs[i] * d
+            }
+        }),
+        Blend::Color => set_lum(cs, lum(cb)),
+        Blend::Luminosity => set_lum(cb, lum(cs)),
+        Blend::PlusLighter => unreachable!(),
+    };
+    let (a_s, a_b) = (s[3], b[3]);
+    let mut out: [f32; 4] = std::array::from_fn(|i| {
+        if i < 3 {
+            s[i] * (1.0 - a_b) + b[i] * (1.0 - a_s) + a_s * a_b * mixed[i]
+        } else {
+            0.0
+        }
+    });
+    out[3] = a_s + a_b * (1.0 - a_s);
+    out
+}
+
+/// Three fills of the left half: an opaque base, then two layers that
+/// composite once in `modes`, the second over the first's result.
+fn blended_fills(modes: [Blend; 2]) -> Vec<u8> {
+    let colors = [
+        [0.2, 0.6, 0.4, 1.0],
+        [0.9, 0.3, 0.5, 1.0],
+        [0.1, 0.4, 0.8, 1.0],
+    ];
+    let mut h = Harness::new();
+    h.renderer.set_nodes(&mut h.gpu, &[Family::Fill; 3]);
+    let tile = h.renderer.scene().insert_tile();
+    h.renderer
+        .scene()
+        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .unwrap();
+    for (node, color) in colors.into_iter().enumerate() {
+        h.renderer.set_paint(
+            &mut h.gpu,
+            node as u32,
+            &NodePaint::Fill(FillPaint {
+                color,
+                opacity: 1.0,
+                translate: Default::default(),
+                table_mask: 0,
+                curves: [Curve::Step; 2],
+                state: Default::default(),
+                gpu: Default::default(),
+            }),
+        );
+        let (opacity, blend) = match node {
+            0 => (1.0, Blend::Normal),
+            _ => (0.75, modes[node - 1]),
+        };
+        h.renderer
+            .set_layer_composite(&mut h.gpu, node as u32, node as u32, opacity, blend);
+        h.renderer
+            .scene()
+            .insert_mesh(
+                &mut h.gpu,
+                tile,
+                node as u32,
+                &MeshData::new(&left_half_square(), &[], 0),
+            )
+            .unwrap();
+    }
+    h.render()
+}
+
+#[test]
+fn layer_blends_follow_w3c_compositing() {
+    let modes = [
+        Blend::Normal,
+        Blend::Multiply,
+        Blend::Screen,
+        Blend::Overlay,
+        Blend::Color,
+        Blend::Luminosity,
+        Blend::PlusLighter,
+    ];
+    let base = [0.2, 0.6, 0.4, 1.0];
+    let layer = |c: [f32; 4]| c.map(|v| v * 0.75);
+    for (first, second) in modes.into_iter().zip(modes.into_iter().rev()) {
+        let pixels = blended_fills([first, second]);
+        let once = w3c_composite(first, layer([0.9, 0.3, 0.5, 1.0]), base);
+        let expected = w3c_composite(second, layer([0.1, 0.4, 0.8, 1.0]), once);
+        let actual = pixel(&pixels, 8, 32);
+        for (a, e) in actual.into_iter().zip(expected) {
+            assert!(
+                (f32::from(a) - e * 255.0).abs() <= 2.0,
+                "{first:?} then {second:?}: {actual:?}, expected {:?}",
+                expected.map(|v| v * 255.0)
+            );
+        }
+        // Where the layers draw nothing, the map beneath shows unchanged.
+        assert_eq!(pixel(&pixels, 48, 32), CLEAR, "{first:?} then {second:?}");
+    }
 }
 
 #[test]

@@ -5,7 +5,7 @@ use orb_expr::{PropertySpec, PropertyType, Type};
 
 use crate::property::{
     Alignment, Anchor, Enum, HeightAnchor, HillshadeMethod, IconTextFit, IlluminationAnchor,
-    LineCap, LineJoin, Overlap, Resampling, SymbolPlacement, SymbolZOrder, TextJustify,
+    LayerBlend, LineCap, LineJoin, Overlap, Resampling, SymbolPlacement, SymbolZOrder, TextJustify,
     TextRotationAlignment, TextTransform, TranslateAnchor, Visibility,
 };
 
@@ -117,6 +117,13 @@ pub(crate) const FILL_OPACITY: Prop = prop("fill-opacity", NUMBER, Some("1"))
 pub(crate) const FILL_LAYER_OPACITY: Prop = prop("fill-layer-opacity", NUMBER, Some("1"))
     .interpolated()
     .range(0.0, Some(1.0));
+/// How the layer composites with what is beneath it (style-spec 26).
+pub(crate) const FILL_LAYER_BLEND: Prop = prop(
+    "fill-layer-blend",
+    enumeration::<LayerBlend>(),
+    Some("\"normal\""),
+)
+.zoom_independent();
 pub(crate) const FILL_COLOR: Prop = prop("fill-color", COLOR, Some("\"#000000\""))
     .data_driven()
     .interpolated();
@@ -152,6 +159,13 @@ pub(crate) const LINE_OPACITY: Prop = prop("line-opacity", NUMBER, Some("1"))
 pub(crate) const LINE_LAYER_OPACITY: Prop = prop("line-layer-opacity", NUMBER, Some("1"))
     .interpolated()
     .range(0.0, Some(1.0));
+/// How the layer composites with what is beneath it (style-spec 26).
+pub(crate) const LINE_LAYER_BLEND: Prop = prop(
+    "line-layer-blend",
+    enumeration::<LayerBlend>(),
+    Some("\"normal\""),
+)
+.zoom_independent();
 pub(crate) const LINE_COLOR: Prop = prop("line-color", COLOR, Some("\"#000000\""))
     .data_driven()
     .interpolated();
@@ -269,6 +283,7 @@ pub(crate) const FILL_PAINT: &[&Prop] = &[
     &FILL_ANTIALIAS,
     &FILL_OPACITY,
     &FILL_LAYER_OPACITY,
+    &FILL_LAYER_BLEND,
     &FILL_COLOR,
     &FILL_OUTLINE_COLOR,
     &FILL_TRANSLATE,
@@ -286,6 +301,7 @@ pub(crate) const LINE_LAYOUT: &[&Prop] = &[
 pub(crate) const LINE_PAINT: &[&Prop] = &[
     &LINE_OPACITY,
     &LINE_LAYER_OPACITY,
+    &LINE_LAYER_BLEND,
     &LINE_COLOR,
     &LINE_TRANSLATE,
     &LINE_TRANSLATE_ANCHOR,

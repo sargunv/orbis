@@ -559,3 +559,57 @@ fn projections_read_the_global_state() {
     let json = orb_expr::json::parse(r#"{"type": ["global-state", "kind"]}"#).unwrap();
     assert_eq!(parse_projection(&json, &state).0, None);
 }
+
+/// style-spec's `layer-blend` validation test: every mode of both
+/// properties parses, with no warnings.
+#[test]
+fn layer_blends_parse() {
+    let modes = [
+        ("normal", LayerBlend::Normal),
+        ("multiply", LayerBlend::Multiply),
+        ("color", LayerBlend::Color),
+        ("luminosity", LayerBlend::Luminosity),
+        ("plus-lighter", LayerBlend::PlusLighter),
+        ("screen", LayerBlend::Screen),
+        ("overlay", LayerBlend::Overlay),
+    ];
+    let layers: Vec<String> = ["fill", "line"]
+        .iter()
+        .flat_map(|ty| {
+            modes.iter().map(move |(mode, _)| {
+                format!(
+                    r#"{{"id": "{ty}-{mode}", "type": "{ty}", "source": "geojson",
+                        "paint": {{"{ty}-layer-blend": "{mode}"}}}}"#
+                )
+            })
+        })
+        .collect();
+    let style = parse(&format!(
+        r#"{{"version": 8, "sources": {{"geojson": {{"type": "geojson",
+            "data": {{"type": "FeatureCollection", "features": []}}}}}},
+            "layers": [{}]}}"#,
+        layers.join(",")
+    ))
+    .unwrap();
+    assert!(style.warnings.is_empty(), "{:?}", style.warnings);
+    let blends: Vec<LayerBlend> = style
+        .layers
+        .iter()
+        .map(|l| match &l.kind {
+            LayerKind::Fill(f) => f.paint.layer_blend.evaluate(0.0),
+            LayerKind::Line(l) => l.paint.layer_blend.evaluate(0.0),
+            _ => unreachable!(),
+        })
+        .collect();
+    let expected: Vec<LayerBlend> = modes.iter().chain(&modes).map(|&(_, b)| b).collect();
+    assert_eq!(blends, expected);
+    // `erase` was dropped from the spec: not a mode.
+    let error = parse(
+        r#"{"version": 8, "sources": {"s": {"type": "geojson",
+            "data": {"type": "FeatureCollection", "features": []}}},
+            "layers": [{"id": "f", "type": "fill", "source": "s",
+            "paint": {"fill-layer-blend": "erase"}}]}"#,
+    )
+    .unwrap_err();
+    assert_eq!(error.errors[0].path, "layers[0].paint.fill-layer-blend");
+}

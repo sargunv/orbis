@@ -37,3 +37,4 @@ in code and commit messages.
 - [0030](0030-globe.md): The globe: v8 `projection` on a sphere, through patches in space
 - [0031](0031-paint-transitions.md): Paint transitions over by-name paint in the Style IR
 - [0032](0032-raster-tiles-make-room.md): Raster tiles make room like vector tiles
+- [0033](0033-layer-blend.md): Layer blends: one composite, backdrop reads by splitting the main pass

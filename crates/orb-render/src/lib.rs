@@ -22,10 +22,11 @@ mod compat;
 mod extrusion;
 mod heatmap;
 mod image;
-mod layer_opacity;
+mod layer_composite;
 mod paint;
 mod terrain;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
+pub use layer_composite::Blend;
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
     TerrainPaint, TerrainTile,
@@ -162,9 +163,10 @@ struct Node {
     separate_halo: bool,
     /// On terrain, the drape stack a draped node draws into.
     stack: Option<u8>,
-    /// Its style layer's key and layer opacity (`fill-layer-opacity`,
-    /// `line-layer-opacity`); below 1 the layer composites once.
-    layer_opacity: Option<(u32, f32)>,
+    /// Its style layer's key, layer opacity and blend mode
+    /// (`*-layer-opacity`, `*-layer-blend`): below opacity 1 or blending
+    /// other than normally, the layer composites once.
+    composite: Option<(u32, f32, Blend)>,
 }
 
 #[derive(Debug)]
@@ -188,14 +190,16 @@ pub struct Renderer {
     node_uniforms: BufferId,
     node_stride: u64,
     nodes: Vec<Node>,
-    bundle: Option<RenderBundleId>,
+    /// The main pass's bundles: one, or one more than the groups that
+    /// blend other than normally (empty until recorded).
+    bundles: Vec<RenderBundleId>,
     /// Node uniform writes since the last frame.
     paints_written: u32,
     images: image::Images,
     heatmaps: heatmap::Heatmaps,
     extrusions: extrusion::Extrusions,
     /// Layers drawn whole and composited at their layer opacity.
-    layer_opacities: layer_opacity::LayerOpacities,
+    composites: layer_composite::LayerComposites,
     /// Made for the first terrain.
     terrain: Option<terrain::Terrain>,
     /// The scene group over the drape frame, and the draped nodes' bundle.
@@ -434,7 +438,7 @@ impl Renderer {
         let image_bindings = images;
         let images = image::Images::new(gpu, target, draw_layout);
         let heatmaps = heatmap::Heatmaps::new(gpu, target, draw_layout, node_layout);
-        let layer_opacities = layer_opacity::LayerOpacities::new(gpu, target);
+        let composites = layer_composite::LayerComposites::new(gpu, target);
         let extrusions = extrusion::Extrusions::new(gpu, target, draw_layout, node_layout);
         let node_stride = NODE_UNIFORM_SIZE.max(u64::from(
             gpu.caps().limits.min_uniform_buffer_offset_alignment,
@@ -460,11 +464,11 @@ impl Renderer {
             node_uniforms,
             node_stride,
             nodes: Vec::new(),
-            bundle: None,
+            bundles: Vec::new(),
             paints_written: 0,
             images,
             heatmaps,
-            layer_opacities,
+            composites,
             extrusions,
             terrain: None,
             drape_group: None,
@@ -603,7 +607,7 @@ impl Renderer {
                 image,
                 separate_halo: false,
                 stack: None,
-                layer_opacity: None,
+                composite: None,
             });
         }
         self.assign_stacks();
@@ -718,26 +722,39 @@ impl Renderer {
         }
     }
 
-    /// Sets a fill or line node's layer opacity: its style layer `layer`
-    /// (nodes of one layer share it) draws whole and composites once at
-    /// `opacity` when that is below 1.
-    pub fn set_layer_opacity(&mut self, gpu: &mut dyn Gpu, node: u32, layer: u32, opacity: f32) {
+    /// Sets a node's layer composite: its style layer `layer` (nodes of
+    /// one layer share it) draws whole and composites once at `opacity`
+    /// in `blend` when the opacity is below 1 or the blend isn't normal.
+    pub fn set_layer_composite(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        node: u32,
+        layer: u32,
+        opacity: f32,
+        blend: Blend,
+    ) {
         let n = &mut self.nodes[node as usize];
-        let grouped = |o: Option<(u32, f32)>| o.filter(|&(_, o)| o < 1.0).map(|(l, _)| l);
-        let before = grouped(n.layer_opacity);
-        n.layer_opacity = Some((layer, opacity));
-        if grouped(n.layer_opacity) != before {
+        let grouped = |c: Option<(u32, f32, Blend)>| {
+            c.filter(|&(_, o, b)| o < 1.0 || b != Blend::Normal)
+                .map(|(l, _, b)| (l, b))
+        };
+        let before = grouped(n.composite);
+        n.composite = Some((layer, opacity, blend));
+        if grouped(n.composite) != before {
             self.invalidate_bundle(gpu);
         } else if before.is_some() {
-            self.layer_opacities
-                .set_opacity(gpu, node as usize, opacity);
+            self.composites.set_opacity(gpu, node as usize, opacity);
+        }
+    }
+
+    fn drop_bundles(&mut self, gpu: &mut dyn Gpu) {
+        for bundle in self.bundles.drain(..) {
+            gpu.destroy_render_bundle(bundle);
         }
     }
 
     fn invalidate_bundle(&mut self, gpu: &mut dyn Gpu) {
-        if let Some(bundle) = self.bundle.take() {
-            gpu.destroy_render_bundle(bundle);
-        }
+        self.drop_bundles(gpu);
         if let Some(bundle) = self.drape_bundle.take() {
             gpu.destroy_render_bundle(bundle);
         }
@@ -856,7 +873,7 @@ impl Renderer {
             words[18] = (self.image_bindings.size as f32).to_bits();
             if entry.separate_halo != p.separate_halo {
                 entry.separate_halo = p.separate_halo;
-                if let Some(bundle) = self.bundle.take() {
+                for bundle in self.bundles.drain(..) {
                     gpu.destroy_render_bundle(bundle);
                 }
             }
@@ -1029,50 +1046,52 @@ impl Renderer {
         if resized {
             self.invalidate_bundle(gpu);
         }
-        let bundle_recorded = self.bundle.is_none();
+        let bundle_recorded = self.bundles.is_empty();
         if bundle_recorded {
+            let indexed = self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed);
+            let index_buffer = RenderCommand::SetIndexBuffer {
+                buffer: self.scene.buffers().compacted,
+                format: IndexFormat::Uint32,
+                offset: 0,
+            };
             let mut commands = Vec::with_capacity(self.nodes.len() * 4 + 1);
-            if self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed) {
-                commands.push(RenderCommand::SetIndexBuffer {
-                    buffer: self.scene.buffers().compacted,
-                    format: IndexFormat::Uint32,
-                    offset: 0,
-                });
+            if indexed {
+                commands.push(index_buffer.clone());
             }
-            // Runs of one layer's nodes below layer opacity 1 draw into a
-            // texture of their own; draped nodes take the terrain's way.
-            let mut runs: Vec<(std::ops::Range<usize>, f32)> = Vec::new();
+            // Runs of one layer's nodes below layer opacity 1 or blending
+            // other than normally draw into a texture of their own; draped
+            // nodes take the terrain's way.
+            let mut runs: Vec<(std::ops::Range<usize>, f32, Blend)> = Vec::new();
             for (i, node) in self.nodes.iter().enumerate() {
-                let Some((layer, opacity)) = node
-                    .layer_opacity
-                    .filter(|&(_, o)| o < 1.0 && !(terrain_on && node.stack.is_some()))
-                else {
+                let Some((layer, opacity, blend)) = node.composite.filter(|&(_, o, b)| {
+                    (o < 1.0 || b != Blend::Normal) && !(terrain_on && node.stack.is_some())
+                }) else {
                     continue;
                 };
                 match runs.last_mut() {
-                    Some((nodes, _))
+                    Some((nodes, _, _))
                         if nodes.end == i
-                            && self.nodes[nodes.start].layer_opacity.map(|(l, _)| l)
+                            && self.nodes[nodes.start].composite.map(|(l, _, _)| l)
                                 == Some(layer) =>
                     {
                         nodes.end = i + 1;
                     }
-                    _ => runs.push((i..i + 1, opacity)),
+                    _ => runs.push((i..i + 1, opacity, blend)),
                 }
             }
-            self.layer_opacities.regroup(gpu, runs, size);
-            for g in 0..self.layer_opacities.groups.len() {
+            self.composites.regroup(gpu, runs, size);
+            for g in 0..self.composites.groups.len() {
                 let mut group = vec![RenderCommand::SetIndexBuffer {
                     buffer: self.scene.buffers().compacted,
                     format: IndexFormat::Uint32,
                     offset: 0,
                 }];
-                for i in self.layer_opacities.groups[g].nodes.clone() {
+                for i in self.composites.groups[g].nodes.clone() {
                     self.node_commands(i, self.draw_group, &mut group);
                 }
-                self.layer_opacities.groups[g].bundle = Some(gpu.create_render_bundle(
+                self.composites.groups[g].bundle = Some(gpu.create_render_bundle(
                     &RenderBundleDesc {
-                        label: "layer opacity",
+                        label: "layer composite",
                         color_formats: &[self.target.color],
                         depth_format: None,
                         sample_count: self.target.sample_count,
@@ -1080,18 +1099,33 @@ impl Renderer {
                     &group,
                 ));
             }
+            let layers = RenderBundleDesc {
+                label: "layers",
+                color_formats: &[self.target.color],
+                depth_format: None,
+                sample_count: self.target.sample_count,
+            };
             for i in 0..self.nodes.len() {
-                let (start, member) = self.layer_opacities.at(i);
-                if let Some(group) = start {
-                    commands.extend(self.layer_opacities.composite_commands(group));
-                    // The composite changed the pipeline and bindings.
-                    if self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed) {
-                        commands.push(RenderCommand::SetIndexBuffer {
-                            buffer: self.scene.buffers().compacted,
-                            format: IndexFormat::Uint32,
-                            offset: 0,
-                        });
+                let (start, member) = self.composites.at(i);
+                match start {
+                    // The main pass splits here: its blend draw opens the
+                    // next pass, before the next bundle.
+                    Some(group) if group.blend != Blend::Normal => {
+                        let segment = std::mem::take(&mut commands);
+                        self.bundles
+                            .push(gpu.create_render_bundle(&layers, &segment));
+                        if indexed {
+                            commands.push(index_buffer.clone());
+                        }
                     }
+                    Some(group) => {
+                        commands.extend(self.composites.composite_commands(group));
+                        // The composite changed the pipeline and bindings.
+                        if indexed {
+                            commands.push(index_buffer.clone());
+                        }
+                    }
+                    None => {}
                 }
                 if !member {
                     self.node_commands(i, self.draw_group, &mut commands);
@@ -1121,15 +1155,8 @@ impl Renderer {
                     &drape,
                 ));
             }
-            self.bundle = Some(gpu.create_render_bundle(
-                &RenderBundleDesc {
-                    label: "layers",
-                    color_formats: &[self.target.color],
-                    depth_format: None,
-                    sample_count: self.target.sample_count,
-                },
-                &commands,
-            ));
+            self.bundles
+                .push(gpu.create_render_bundle(&layers, &commands));
         }
 
         let mut passes = Vec::with_capacity(3);
@@ -1219,23 +1246,14 @@ impl Renderer {
                 stats.draws += 1;
             }
         }
-        let mut commands = self.sky_commands();
-        let bundle = self.bundle.expect("recorded above");
-        commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
-        commands.extend(self.atmosphere.commands_after());
-        passes.extend(self.layer_opacities.passes());
-        passes.push(Pass::Render(RenderPass {
-            label: "main".into(),
-            color: ColorAttachment {
-                store: StoreOp::Store,
-                target,
-                resolve: None,
-                load: LoadOp::Clear(clear),
-            },
-            depth: None,
-            timestamps: None,
-            commands,
-        }));
+        passes.extend(self.composites.passes());
+        passes.extend(self.composites.main_passes(
+            self.sky_commands(),
+            &self.bundles,
+            self.atmosphere.commands_after(),
+            target,
+            clear,
+        ));
         gpu.submit(&passes);
         stats
     }
@@ -1475,6 +1493,27 @@ fn draw_pipeline(
     target: TargetFormat,
     layouts: &[BindGroupLayoutId],
 ) -> RenderPipelineId {
+    draw_pipeline_blending(
+        gpu,
+        shader,
+        bytecode,
+        topology,
+        target,
+        layouts,
+        Some(BlendState::PremultipliedAlpha),
+    )
+}
+
+/// [`draw_pipeline`] with `blend` in place of premultiplied blending.
+fn draw_pipeline_blending(
+    gpu: &mut dyn Gpu,
+    shader: &Shader,
+    bytecode: bool,
+    topology: PrimitiveTopology,
+    target: TargetFormat,
+    layouts: &[BindGroupLayoutId],
+    blend: Option<BlendState>,
+) -> RenderPipelineId {
     let module = shader_module(gpu, shader, bytecode, 0);
     gpu.create_render_pipeline(&RenderPipelineDesc {
         cull_mode: None,
@@ -1492,7 +1531,7 @@ fn draw_pipeline(
         },
         targets: &[ColorTargetState {
             format: target.color,
-            blend: Some(BlendState::PremultipliedAlpha),
+            blend,
         }],
         depth: None,
         topology,

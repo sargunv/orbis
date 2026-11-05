@@ -8,8 +8,8 @@ use orb_expr::{Color, Filter, Kind, PropertyExpression, Value};
 use crate::Cx;
 use crate::property::{
     Alignment, Anchor, AnchorOffsets, HeightAnchor, HillshadeMethod, IconTextFit,
-    IlluminationAnchor, LineCap, LineJoin, Overlap, Padding, Property, PropertyValue, Resampling,
-    SymbolPlacement, SymbolZOrder, TextJustify, TextRotationAlignment, TextTransform,
+    IlluminationAnchor, LayerBlend, LineCap, LineJoin, Overlap, Padding, Property, PropertyValue,
+    Resampling, SymbolPlacement, SymbolZOrder, TextJustify, TextRotationAlignment, TextTransform,
     TranslateAnchor, Visibility, WritingMode,
 };
 use crate::source::{Source, SourceKind};
@@ -100,6 +100,8 @@ pub struct FillPaint {
     pub opacity: Property<f32>,
     /// Applied to the layer as a whole, once (`fill-layer-opacity`).
     pub layer_opacity: Property<f32>,
+    /// How the layer, as a whole, combines with what is beneath it.
+    pub layer_blend: Property<LayerBlend>,
     pub color: Property<Color>,
     /// `None` draws the outline in `color`.
     pub outline_color: Property<Option<Color>>,
@@ -151,6 +153,8 @@ pub struct LinePaint {
     pub opacity: Property<f32>,
     /// Applied to the layer as a whole, once (`line-layer-opacity`).
     pub layer_opacity: Property<f32>,
+    /// How the layer, as a whole, combines with what is beneath it.
+    pub layer_blend: Property<LayerBlend>,
     pub color: Property<Color>,
     pub translate: Property<[f32; 2]>,
     pub translate_anchor: Property<TranslateAnchor>,
@@ -796,6 +800,7 @@ pub(crate) fn parse_layer(
                     antialias: property(cx, &paint, &spec::FILL_ANTIALIAS),
                     opacity: property(cx, &paint, &spec::FILL_OPACITY),
                     layer_opacity: property(cx, &paint, &spec::FILL_LAYER_OPACITY),
+                    layer_blend: property(cx, &paint, &spec::FILL_LAYER_BLEND),
                     color: property(cx, &paint, &spec::FILL_COLOR),
                     outline_color: property(cx, &paint, &spec::FILL_OUTLINE_COLOR),
                     translate: property(cx, &paint, &spec::FILL_TRANSLATE),
@@ -832,6 +837,7 @@ pub(crate) fn parse_layer(
                 paint: LinePaint {
                     opacity: property(cx, &paint, &spec::LINE_OPACITY),
                     layer_opacity: property(cx, &paint, &spec::LINE_LAYER_OPACITY),
+                    layer_blend: property(cx, &paint, &spec::LINE_LAYER_BLEND),
                     color: property(cx, &paint, &spec::LINE_COLOR),
                     translate: property(cx, &paint, &spec::LINE_TRANSLATE),
                     translate_anchor: property(cx, &paint, &spec::LINE_TRANSLATE_ANCHOR),
