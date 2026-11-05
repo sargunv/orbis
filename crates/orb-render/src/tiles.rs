@@ -727,9 +727,21 @@ impl Renderer {
     }
 
     /// Words of the property buffer for a table outside any tile, such as
-    /// the feature-state table; not cleared.
-    pub fn alloc_table(&mut self, words: u32) -> Result<std::ops::Range<u32>, OutOfSpace> {
-        self.scene.alloc_table(words)
+    /// the feature-state table; not cleared. The pool grows, within its
+    /// limit, to make room.
+    pub fn alloc_table(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        words: u32,
+    ) -> Result<std::ops::Range<u32>, OutOfSpace> {
+        self.scene.alloc_table(words).or_else(|_| {
+            let table = MeshSize {
+                props: words,
+                ..MeshSize::default()
+            };
+            self.grow_for(gpu, &[table]);
+            self.scene.alloc_table(words)
+        })
     }
 
     pub fn free_table(&mut self, table: std::ops::Range<u32>) {

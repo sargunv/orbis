@@ -359,12 +359,13 @@ impl FeatureStates {
             if let Some(table) = self.table.take() {
                 renderer.free_table(table);
             }
-            match renderer.alloc_table(words) {
+            match renderer.alloc_table(gpu, words) {
                 Ok(range) => {
                     renderer.write_table(gpu, range.start, &vec![0; words as usize]);
                     self.table = Some(range);
                 }
-                // Out of property memory: features draw without state.
+                // Past the device's buffer limit: features draw without
+                // state, and the next frame asks again.
                 Err(_) => return true,
             }
             self.all_dirty = true;

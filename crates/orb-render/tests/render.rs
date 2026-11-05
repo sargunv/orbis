@@ -196,6 +196,23 @@ fn half_square(x: i32) -> orb_layout::Mesh {
     fill::layout(&b.finish(), &[0])
 }
 
+/// A table outside any tile (the feature-state table) grows the property
+/// pool to fit, within its limit, rather than failing (#79).
+#[test]
+fn tables_grow_the_property_pool() {
+    let capacity = SceneCapacity {
+        max_prop_words: 1 << 12,
+        ..Harness::SMALL
+    };
+    let mut h = Harness::with(4, 2, 8, capacity, None);
+    let table = h.renderer.alloc_table(&mut h.gpu, 1024).unwrap();
+    assert_eq!(table.len(), 1024);
+    assert!(
+        h.renderer.alloc_table(&mut h.gpu, 1 << 13).is_err(),
+        "past the limit"
+    );
+}
+
 /// Plan §8: a pool that runs out moves into a buffer twice its size, its
 /// meshes copied over on the GPU, and the frame binds the new buffer.
 #[test]
