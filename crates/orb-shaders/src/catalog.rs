@@ -24,6 +24,13 @@ pub const EXPRESSION_MODULE: &str = concat!(
     include_str!("wgsl/builtins.wgsl"),
     include_str!("wgsl/expr.wgsl")
 );
+/// glTF's metallic-roughness shading, functions without bindings (plan
+/// §9.4): for the model pipelines to compose.
+pub const PBR_MODULE: &str = include_str!("wgsl/pbr.wgsl");
+
+/// Cascaded shadows from the directional light, functions without
+/// bindings: for casters and receivers to compose.
+pub const SHADOW_MODULE: &str = include_str!("wgsl/shadow.wgsl");
 const PATTERN: &str = include_str!("wgsl/pattern.wgsl");
 const EXTRUSION: &str = include_str!("wgsl/extrusion.wgsl");
 const EXTRUSION_COMPOSITE: &str = include_str!("wgsl/extrusion_composite.wgsl");

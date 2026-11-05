@@ -50,6 +50,45 @@ mod tests {
         (module, info)
     }
 
+    /// The shading modules validate with a receiver that calls them over
+    /// bindings of its own.
+    #[test]
+    fn pbr_and_shadow_modules_validate() {
+        let receiver = r#"
+            @group(0) @binding(0) var<uniform> cascades: ShadowCascades;
+            @group(0) @binding(1) var shadow_map: texture_depth_2d_array;
+            @group(0) @binding(2) var shadow_cmp: sampler_comparison;
+            struct In {
+                @builtin(position) position: vec4<f32>,
+                @location(0) world: vec3<f32>,
+                @location(1) @interpolate(flat) normal: u32,
+                @location(2) uv: vec2<f32>,
+            };
+            @fragment
+            fn fs(in: In) -> @location(0) vec4<f32> {
+                let n = turn_enu(octahedral_normal(in.normal), vec3<f32>(0.0, 0.0, 30.0));
+                let p = perturb_normal(n, mat2x3<f32>(dpdx(in.world), dpdy(in.world)),
+                    mat2x2<f32>(dpdx(in.uv), dpdy(in.uv)), vec3<f32>(0.5, 0.5, 1.0), 1.0);
+                var lights: PbrLights;
+                lights.ambient = vec3<f32>(0.4);
+                lights.directional = vec3<f32>(1.0);
+                lights.toward_light = normalize(vec3<f32>(1.0, 1.0, 1.0));
+                lights.toward_eye = vec3<f32>(0.0, 0.0, 1.0);
+                lights.shadow = shadow_visibility(shadow_map, shadow_cmp, cascades, in.world, p, in.position.w);
+                let base = srgb_to_linear(vec3<f32>(wrap_uv(in.uv, 6u), 0.5));
+                return vec4<f32>(linear_to_srgb(pbr_shade(base, 0.5, 0.5, 1.0, p, lights)), 1.0);
+            }
+            @vertex
+            fn vs(@location(0) world: vec3<f32>) -> @builtin(position) vec4<f32> {
+                return shadow_clip(cascades, 0u, world);
+            }
+        "#;
+        parse(
+            "pbr and shadow",
+            &[PBR_MODULE, SHADOW_MODULE, receiver].concat(),
+        );
+    }
+
     /// The cull module's functions keep no function-scope arrays: neither
     /// array variables nor dynamic indexing into an array value, which
     /// compilers lower to the same. An Adreno 830's Vulkan driver (Chrome
