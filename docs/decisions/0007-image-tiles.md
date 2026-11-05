@@ -53,8 +53,18 @@ translation snaps the camera centre to a whole pixel. Without it, 20 raster
 and 17 hillshade fixtures that now pass failed on scattered edge pixels; the
 frame block carries the equivalent world offset (`align`).
 
+**Mipmaps.** Raster pages carry mip levels on Modern, as GL JS's
+`useMipmap` does. After uploads, one compute pass makes each level of the
+new layers from the one above with a 2×2 box filter; odd edges clamp. Page
+growth copies every level. Raster fragments sample with their uv gradients
+(taken in uniform control flow), blending levels with up to 16× anisotropy.
+GL JS samples `LINEAR_MIPMAP_NEAREST`, anisotropic above 20° of pitch.
+`raster-anisotropic-filtering/pitch-45` passes. `raster-npot-mipmap/pitch-60`
+goes from 19% to 1% of pixels off: the blended levels differ slightly from
+WebGL's `generateMipmap`. Compat keeps one level: WebGL2 has no storage
+textures for the pass.
+
 Deviations: tiles appear without fading (`raster-fade-duration` parses and
-validates; GL JS's fixtures run with it at 0; #4); there are no mipmaps or
-anisotropic filtering, so pitched rasters alias (two fixtures; #3); hillshades
+validates; GL JS's fixtures run with it at 0; #4); hillshades
 draw at most four light sources, with a warning; a 204 response is treated as
 a missing tile (parents show through) rather than a blank one.

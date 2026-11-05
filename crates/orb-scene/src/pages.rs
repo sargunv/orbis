@@ -27,6 +27,8 @@ pub struct PageTexture {
     pub format: TextureFormat,
     /// Beyond the copies a page makes when it grows.
     pub usage: TextureUsages,
+    /// Mip levels; a page's growth copies them all.
+    pub mip_levels: u32,
 }
 
 /// Pixels to write into a page layer.
@@ -83,6 +85,11 @@ impl TilePage {
     }
 
     /// Changes whenever the textures are replaced.
+    /// The `index`th array's mip levels.
+    pub fn mip_levels(&self, index: usize) -> u32 {
+        self.textures[index].0.mip_levels
+    }
+
     pub fn revision(&self) -> u32 {
         self.revision
     }
@@ -181,6 +188,6 @@ fn create(gpu: &mut dyn Gpu, desc: &PageTexture, layers: u32) -> TextureId {
         format: desc.format,
         usage: desc.usage | TextureUsages::COPY_SRC | TextureUsages::COPY_DST,
         sample_count: 1,
-        mip_levels: 1,
+        mip_levels: desc.mip_levels,
     })
 }

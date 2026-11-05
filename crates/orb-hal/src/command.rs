@@ -8,8 +8,9 @@ use crate::{
 pub enum Pass {
     Compute(ComputePass),
     Render(RenderPass),
-    /// Copies layers `0..layers` of `source` into the same layers of
-    /// `destination`, a texture of the same size and format.
+    /// Copies layers `0..layers` of `source`, every mip level, into the
+    /// same layers of `destination`, a texture of the same size, format and
+    /// levels.
     CopyTextureLayers {
         source: TextureId,
         destination: TextureId,

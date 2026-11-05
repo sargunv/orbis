@@ -124,6 +124,7 @@ impl ImageAtlas {
             filter: FilterMode::Linear,
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
+            anisotropy: 1,
         });
         let lines = crate::line::LineAtlas::new(gpu);
         Self {

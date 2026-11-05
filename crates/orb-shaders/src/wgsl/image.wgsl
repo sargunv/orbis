@@ -52,6 +52,16 @@ fn image_clipped(in: ImageOut) -> bool {
     return !inside_clips(tile_at(in.tile), p);
 }
 
+// The tile's texel at `uv` (0–1 over its layer) for a footprint of `ddx`
+// and `ddy` on screen: mipmapped and anisotropic where linear, as GL JS
+// samples raster tiles (#3); nearest from the full-size level.
+fn sample_image_grad(in: ImageOut, uv: vec2<f32>, nearest: u32, ddx: vec2<f32>, ddy: vec2<f32>) -> vec4<f32> {
+    if nearest != 0u {
+        return textureSampleLevel(images, nearest_sampler, uv, in.layer, 0.0);
+    }
+    return textureSampleGrad(images, linear_sampler, uv, in.layer, ddx, ddy);
+}
+
 // The tile's texel at `uv` (0–1 over its layer), filtered by nearest texel
 // or linearly.
 fn sample_image(in: ImageOut, uv: vec2<f32>, nearest: u32) -> vec4<f32> {

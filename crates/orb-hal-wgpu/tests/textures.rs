@@ -56,6 +56,7 @@ fn samples_written_layers_of_a_texture_array() {
         filter: FilterMode::Nearest,
         address: AddressMode::ClampToEdge,
         mipmap_filter: FilterMode::Nearest,
+        anisotropy: 1,
     });
     let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
         label: "pages",

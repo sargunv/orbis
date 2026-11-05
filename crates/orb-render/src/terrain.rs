@@ -331,6 +331,7 @@ impl Terrain {
             filter: FilterMode::Linear,
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Linear,
+            anisotropy: 1,
         });
         let drape_frame = gpu.create_buffer(&BufferDesc {
             label: "drape frame",

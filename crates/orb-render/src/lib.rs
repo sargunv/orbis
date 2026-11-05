@@ -351,6 +351,7 @@ impl Renderer {
             filter: FilterMode::Nearest,
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
+            anisotropy: 1,
         });
         let no_dem = gpu.create_texture(&TextureDesc {
             label: "no dem",
@@ -1065,6 +1066,10 @@ impl Renderer {
             stats.draws += prepared.draws;
             stats.prepared = prepared.tiles;
             passes.extend(prepare);
+        }
+        if let Some((mips, dispatches)) = self.images.mip_pass(gpu) {
+            stats.dispatches += dispatches;
+            passes.push(mips);
         }
         // The dispatch writes every node's arguments, zeros included, so it
         // runs even when nothing is resident. Indexed nodes' batches add to

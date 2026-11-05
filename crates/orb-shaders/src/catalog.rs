@@ -237,6 +237,16 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
 };
 
 /// The DEM prepare pass's border fill, from raw tiles into padded ones.
+/// A raster page's mip levels for its new layers (`downsample`).
+pub const IMAGE_MIPS_SHADER: Shader = Shader {
+    label: "image mips",
+    parts: &[include_str!("wgsl/image_mips.wgsl")],
+    vertex: "",
+    fragment: "",
+    compute: "downsample",
+    paint: false,
+};
+
 pub const PREPARE_PAD_SHADER: Shader = Shader {
     label: "prepare pad",
     parts: &[

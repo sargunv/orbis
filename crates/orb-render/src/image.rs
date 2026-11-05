@@ -16,8 +16,8 @@
 use orb_hal::*;
 use orb_scene::{PageTexture, Pixels, TilePage};
 use orb_shaders::{
-    COLOR_RELIEF_SHADER, HILLSHADE_SHADER, PREPARE_PAD_SHADER, PREPARE_SLOPE_SHADER, RASTER_SHADER,
-    Shader,
+    COLOR_RELIEF_SHADER, HILLSHADE_SHADER, IMAGE_MIPS_SHADER, PREPARE_PAD_SHADER,
+    PREPARE_SLOPE_SHADER, RASTER_SHADER, Shader,
 };
 
 use crate::{Family, OutOfSpace, TargetFormat};
@@ -85,6 +85,9 @@ struct Page {
     page: TilePage,
     pending: Vec<DemPrepare>,
     prepare: Option<Prepare>,
+    /// Raster layers uploaded since their mip levels were last made.
+    mip_layers: Vec<u32>,
+    mips: Option<Mips>,
     /// Compat's prepare targets.
     #[cfg(feature = "compat")]
     targets: Option<compat_prepare::Targets>,
@@ -98,6 +101,26 @@ struct Prepare {
     capacity: u32,
     pad: BindGroupId,
     slope: BindGroupId,
+}
+
+/// A raster page's mip bindings, for one revision of its texture: views of
+/// each level and a group per level that reads the one above.
+#[derive(Debug)]
+struct Mips {
+    revision: u32,
+    jobs: BufferId,
+    views: Vec<TextureId>,
+    groups: Vec<BindGroupId>,
+}
+
+fn destroy_mips(gpu: &mut dyn Gpu, mips: Mips) {
+    for group in mips.groups {
+        gpu.destroy_bind_group(group);
+    }
+    for view in mips.views {
+        gpu.destroy_texture(view);
+    }
+    gpu.destroy_buffer(mips.jobs);
 }
 
 /// What an image node's bind group holds.
@@ -124,6 +147,8 @@ struct PreparePipelines {
     slope_layout: BindGroupLayoutId,
     pad: ComputePipelineId,
     slope: ComputePipelineId,
+    mips_layout: BindGroupLayoutId,
+    mips: ComputePipelineId,
 }
 
 #[derive(Debug)]
@@ -194,16 +219,20 @@ impl Images {
         let [raster, hillshade, color_relief] =
             image_pipelines(gpu, target, draw_layout, image_layout, relief_layout);
 
-        let mut sampler = |label, filter| {
+        // Raster tiles are mipmapped (GL JS's `useMipmap`) and sampled
+        // anisotropically, as GL JS does above 20° of pitch; pages without
+        // mip levels sample their one level.
+        let mut sampler = |label, filter, anisotropy| {
             gpu.create_sampler(&SamplerDesc {
                 label,
                 filter,
                 address: AddressMode::ClampToEdge,
-                mipmap_filter: FilterMode::Nearest,
+                mipmap_filter: filter,
+                anisotropy,
             })
         };
-        let linear = sampler("linear", FilterMode::Linear);
-        let nearest = sampler("nearest", FilterMode::Nearest);
+        let linear = sampler("linear", FilterMode::Linear, 16);
+        let nearest = sampler("nearest", FilterMode::Nearest, 1);
         let mut placeholder = |label, height, layers, dimension| {
             gpu.create_texture(&TextureDesc {
                 label,
@@ -252,6 +281,7 @@ impl Images {
         let compute_tier = gpu.caps().tier == Tier::Modern;
         let pad_layout = prepare_layout(gpu, "prepare pad");
         let slope_layout = prepare_layout(gpu, "prepare slope");
+        let mips_layout = prepare_layout(gpu, "image mips");
         let mut compute = |shader: &Shader, layout| {
             let module = gpu.create_shader_module(&ShaderModuleDesc {
                 label: shader.label,
@@ -272,6 +302,8 @@ impl Images {
             slope_layout,
             pad: compute(&PREPARE_PAD_SHADER, pad_layout),
             slope: compute(&PREPARE_SLOPE_SHADER, slope_layout),
+            mips_layout,
+            mips: compute(&IMAGE_MIPS_SHADER, mips_layout),
         });
 
         Self {
@@ -333,8 +365,15 @@ impl Images {
             height: height + 2 * border,
             format: TextureFormat::Rgba8Unorm,
             usage,
+            mip_levels: 1,
         };
         let textures = match kind {
+            // Mipmapped on Modern (#3), whose compute pass makes the levels.
+            PageKind::Raster if self.prepare.is_some() => vec![PageTexture {
+                usage: uploaded | TextureUsages::STORAGE_BINDING,
+                mip_levels: 32 - width.max(height).max(1).leading_zeros(),
+                ..texture("raster tiles", 0, uploaded)
+            }],
             PageKind::Raster => vec![texture("raster tiles", 0, uploaded)],
             PageKind::Dem => vec![
                 texture("dem tiles", 0, uploaded),
@@ -347,6 +386,8 @@ impl Images {
             page: TilePage::new(gpu, &textures),
             pending: Vec::new(),
             prepare: None,
+            mip_layers: Vec::new(),
+            mips: None,
             #[cfg(feature = "compat")]
             targets: None,
         };
@@ -369,6 +410,9 @@ impl Images {
             .expect("page already removed");
         if let Some(prepare) = page.prepare {
             destroy_prepare(gpu, prepare);
+        }
+        if let Some(mips) = page.mips {
+            destroy_mips(gpu, mips);
         }
         #[cfg(feature = "compat")]
         if let Some(targets) = page.targets {
@@ -413,7 +457,94 @@ impl Images {
         layer: u32,
         pixels: Pixels<'_>,
     ) {
-        self.page(id).page.write(gpu, 0, layer, pixels);
+        let page = self.page_mut(id);
+        page.page.write(gpu, 0, layer, pixels);
+        if page.page.mip_levels(0) > 1 && !page.mip_layers.contains(&layer) {
+            page.mip_layers.push(layer);
+        }
+    }
+
+    /// The compute pass that makes mip levels for raster layers uploaded
+    /// since the last, if any, and its dispatches.
+    pub(crate) fn mip_pass(&mut self, gpu: &mut dyn Gpu) -> Option<(Pass, u32)> {
+        let pipelines = self.prepare.as_ref()?;
+        let mut commands = Vec::new();
+        let mut dispatches = 0;
+        for page in self.pages.iter_mut().flatten() {
+            if page.mip_layers.is_empty() {
+                continue;
+            }
+            let (revision, capacity) = (page.page.revision(), page.page.capacity());
+            if page.mips.as_ref().is_some_and(|m| m.revision != revision) {
+                destroy_mips(gpu, page.mips.take().expect("checked"));
+            }
+            let texture = page.page.texture(0);
+            let levels = page.page.mip_levels(0);
+            let mips = page.mips.get_or_insert_with(|| {
+                let jobs = gpu.create_buffer(&BufferDesc {
+                    label: "image mip layers",
+                    size: u64::from(capacity) * 4,
+                    usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                });
+                let views: Vec<TextureId> = (0..levels)
+                    .map(|level| gpu.create_texture_view(texture, level..level + 1))
+                    .collect();
+                let groups = (1..levels as usize)
+                    .map(|level| {
+                        let view = |binding, texture| BindGroupEntry {
+                            binding,
+                            resource: BindingResource::Texture {
+                                texture,
+                                dimension: TextureViewDimension::D2Array,
+                            },
+                        };
+                        gpu.create_bind_group(&BindGroupDesc {
+                            label: "image mips",
+                            layout: pipelines.mips_layout,
+                            entries: &[
+                                view(0, views[level - 1]),
+                                view(1, views[level]),
+                                BindGroupEntry {
+                                    binding: 2,
+                                    resource: BindingResource::buffer(jobs),
+                                },
+                            ],
+                        })
+                    })
+                    .collect();
+                Mips {
+                    revision,
+                    jobs,
+                    views,
+                    groups,
+                }
+            });
+            let layers = std::mem::take(&mut page.mip_layers);
+            gpu.write_buffer(mips.jobs, 0, bytemuck::cast_slice(&layers));
+            let [width, height] = page.page.size(0);
+            for (level, &group) in (1..levels).zip(&mips.groups) {
+                commands.extend([
+                    ComputeCommand::SetPipeline(pipelines.mips),
+                    ComputeCommand::SetBindGroup { index: 0, group },
+                    ComputeCommand::Dispatch {
+                        x: (width >> level).max(1).div_ceil(8),
+                        y: (height >> level).max(1).div_ceil(8),
+                        z: layers.len() as u32,
+                    },
+                ]);
+                dispatches += 1;
+            }
+        }
+        (!commands.is_empty()).then(|| {
+            (
+                Pass::Compute(ComputePass {
+                    label: "image mips".into(),
+                    timestamps: None,
+                    commands,
+                }),
+                dispatches,
+            )
+        })
     }
 
     pub(crate) fn prepare_dem(&mut self, id: PageId, job: DemPrepare) {

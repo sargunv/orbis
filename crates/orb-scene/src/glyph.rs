@@ -58,6 +58,7 @@ impl GlyphAtlas {
                 height: GLYPH_PAGE,
                 format: TextureFormat::R8Unorm,
                 usage: orb_hal::TextureUsages::TEXTURE_BINDING,
+                mip_levels: 1,
             }],
         );
         gpu.write_buffer(table, u64::from(base) * 4, &[0; GLYPH_ROW_WORDS * 4]);

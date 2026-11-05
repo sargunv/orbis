@@ -148,6 +148,9 @@ pub struct SamplerDesc<'a> {
     /// Between mip levels: `Nearest` samples one level (all a texture
     /// without mipmaps has), `Linear` blends the two nearest.
     pub mipmap_filter: FilterMode,
+    /// The most samples along a footprint's long axis: 1 is isotropic.
+    /// Above 1 every filter must be `Linear`. Compat ignores it.
+    pub anisotropy: u16,
 }
 
 #[derive(Clone, Debug, PartialEq)]

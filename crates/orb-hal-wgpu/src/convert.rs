@@ -186,6 +186,7 @@ pub(crate) fn sampler(desc: &SamplerDesc<'_>) -> wgpu::SamplerDescriptor<'static
         AddressMode::Repeat => wgpu::AddressMode::Repeat,
     };
     wgpu::SamplerDescriptor {
+        anisotropy_clamp: desc.anisotropy.max(1),
         address_mode_u: address,
         address_mode_v: address,
         mag_filter: filter,

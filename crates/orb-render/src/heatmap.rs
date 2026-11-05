@@ -108,6 +108,7 @@ impl Heatmaps {
             filter: FilterMode::Linear,
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
+            anisotropy: 1,
         });
         Self {
             density_pipeline,

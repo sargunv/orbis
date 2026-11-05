@@ -938,16 +938,25 @@ impl Gpu for WgpuGpu {
                     layers,
                 } => {
                     let source = self.texture(*source);
-                    let size = wgpu::Extent3d {
-                        width: source.width(),
-                        height: source.height(),
-                        depth_or_array_layers: *layers,
-                    };
-                    encoder.copy_texture_to_texture(
-                        source.as_image_copy(),
-                        self.texture(*destination).as_image_copy(),
-                        size,
-                    );
+                    let destination = self.texture(*destination);
+                    for level in 0..source.mip_level_count() {
+                        let size = wgpu::Extent3d {
+                            width: (source.width() >> level).max(1),
+                            height: (source.height() >> level).max(1),
+                            depth_or_array_layers: *layers,
+                        };
+                        encoder.copy_texture_to_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                mip_level: level,
+                                ..source.as_image_copy()
+                            },
+                            wgpu::TexelCopyTextureInfo {
+                                mip_level: level,
+                                ..destination.as_image_copy()
+                            },
+                            size,
+                        );
+                    }
                 }
                 Pass::ClearBuffer {
                     buffer,
