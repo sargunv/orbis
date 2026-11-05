@@ -212,8 +212,10 @@ impl CameraState {
     /// Keeps the camera to `constraints`: zoom and pitch within their
     /// ranges, and the viewport within the bounds or, without them, within
     /// the world's top and bottom edge, zooming in where the box is smaller
-    /// than the viewport (GL JS `getConstrained`; like it, ignoring pitch
-    /// and bearing). Leaves a camera that already complies untouched.
+    /// than the viewport (GL JS `getConstrained`; like it, ignoring pitch).
+    /// Unlike GL JS, bounds hold the rotated viewport's extent, so turning
+    /// the map never shows past them. Leaves a camera that already complies
+    /// untouched.
     pub fn constrain(
         &mut self,
         constraints: &Constraints,
@@ -225,25 +227,33 @@ impl CameraState {
             constraints.min_pitch,
             constraints.max_pitch.max(constraints.min_pitch),
         );
-        let (rect, both_axes) = match constraints.bounds {
-            Some(bounds) => (bounds.world(projection), true),
+        let (rect, both_axes, extent) = match constraints.bounds {
+            Some(bounds) => {
+                let (sin, cos) = self.bearing.to_radians().sin_cos();
+                let (sin, cos) = (sin.abs(), cos.abs());
+                let (w, h) = (viewport.width, viewport.height);
+                let extent = DVec2::new(w * cos + h * sin, w * sin + h * cos);
+                (bounds.world(projection), true, extent)
+            }
             None => (
                 projection.world_bounds(),
                 projection.wrap_period().is_none(),
+                DVec2::new(viewport.width, viewport.height),
             ),
         };
-        self.keep_within(projection, viewport, rect, both_axes);
+        self.keep_within(projection, extent, rect, both_axes);
     }
 
+    /// Keeps a viewport `size` pixels across, axis-aligned in world space,
+    /// inside `rect`.
     fn keep_within(
         &mut self,
         projection: &Projection,
-        viewport: Viewport,
+        size: DVec2,
         rect: WorldRect,
         both_axes: bool,
     ) {
         let world_per_px = self.world_per_px(projection);
-        let size = DVec2::new(viewport.width, viewport.height);
         let mut fit = size.y * world_per_px / rect.size().y;
         if both_axes {
             fit = fit.max(size.x * world_per_px / rect.size().x);
@@ -353,6 +363,27 @@ mod tests {
             let world = view.unproject(corner).unwrap();
             assert!(world.x >= rect.min.x - 1e-3 && world.x <= rect.max.x + 1e-3);
             assert!(world.y >= rect.min.y - 1e-3 && world.y <= rect.max.y + 1e-3);
+        }
+        // Turned, every corner of the viewport stays inside too.
+        let mut turned = CameraState::new(Geodetic::new(139.02, 35.02), 9.5, &mercator());
+        turned.bearing = 35.0;
+        turned.constrain(&constraints, &p, VIEWPORT);
+        let view = View::new(&turned, VIEWPORT, &p);
+        for (x, y) in [
+            (0.0, 0.0),
+            (VIEWPORT.width, 0.0),
+            (0.0, VIEWPORT.height),
+            (VIEWPORT.width, VIEWPORT.height),
+        ] {
+            let world = view.unproject(DVec2::new(x, y)).unwrap();
+            assert!(
+                world.x >= rect.min.x - 1e-3 && world.x <= rect.max.x + 1e-3,
+                "{world}"
+            );
+            assert!(
+                world.y >= rect.min.y - 1e-3 && world.y <= rect.max.y + 1e-3,
+                "{world}"
+            );
         }
         // A view inside is left alone.
         let mut inside = CameraState::new(Geodetic::new(139.5, 35.5), 12.0, &mercator());
