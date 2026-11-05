@@ -206,15 +206,56 @@ same picture: 6 runs each, 0.70–1.15 s before, 0.51–0.94 s after.
   covered tiles that aren't resident (background, terrain cover) need
   them too, so they stay out of the resident tile.
 
+## Teardown (#79)
+
+A dropped map frees what its renderer made: the HAL destroys every
+resource class (samplers, shader modules, bind group layouts and
+pipelines joined buffers and textures), and `Renderer::destroy` walks a
+small `Release` trait over what each piece owns. Ids a piece only binds
+stay with their owner. A create, draw and drop loop holds 5 live
+resources flat on Modern and 4 on Compat (the emulator, `cargo xtask
+android --run --leakcheck`).
+
+## The frame's plan
+
+`Map::plan_frame` is a function of the view and the resident set: per
+source, the cover and `TilePyramid::plan`, with no writes. `apply_source`
+commits it, sends the loads and keeps the draws for placement. Placement
+stays a step of its own. It uploads globe warps as tiles first need them,
+and a pure placement plan would split that out and add code.
+
+Warped raster tiles of different zooms used to leave sub-pixel cracks
+where they met (#32). A warp mesh's sides now take `2^d` times the edge
+steps when the finest drawn tile across them is `d` zooms finer (up to
+4), so both tiles share every vertex there. Each frame, `place_source`
+keeps every drawn image tile's mesh current for that frame's surface and
+neighbours, which also replaced the globe switch's separate rebuild.
+GIBS Web Mercator rasters on an EPSG:3413 plane at 1024×768 had 2, 12
+and 5 background pixels at seams in three views; they now have 0.
+
+## One downsampler
+
+Raster pages, DEM slopes and the drape atlas mip through one compute
+shader over regions (layer, corner, side). The drape atlas is a
+one-layer array. Native fixtures are identical per fixture and pixel.
+
+## Drape size classes, measured (#42)
+
+On the Alps gestures bench (1024×768 at pixel ratio 2, 4,695 frame
+plans), 99.86% of terrain tiles need the full 1024² slot by their
+longest on-screen edge. The terrain cover keeps tiles near 512 px on
+screen, and a foreshortened tile is still full width. Square size
+classes would save under 1% of atlas memory, so #42 is closed.
+
+## Map trims
+
+Terrain keeps itself (`Terrain::upkeep`, `arrive`, `release`), and the
+atmosphere is a function of the scene, view and camera. Warnings go out
+once per style revision, which replaces four warn-once flags. A dead
+cross-fade field, the `bend_of` adapter and the duplicated pixel and
+node-state conversions went. `map.rs` is 2,569 lines, from 2,775.
+
 ## Still to land
 
-- `plan_frame` as a pure function of the camera and the resident set,
-  with #32's T-junction snapping: a coarse tile's edge takes its finer
-  resident neighbour's samples.
-- One downsampler for drape slots and raster pages. One compute shader
-  over regions (layer, corner, side) would serve both, with the drape
-  atlas a one-layer array.
-- #42's drape size classes.
 - A Compat cull parity test: `compat::cull` as a pure function of the
   tables, compared with Modern's dispatch read back on the same scene.
-- The renderer's teardown (#79; proposal there).
