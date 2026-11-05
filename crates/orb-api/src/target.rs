@@ -128,16 +128,24 @@ impl Target {
             // the size on the next frame.
             (Kind::Surface(_), Device::Compat(_)) => {}
             (Kind::Texture(id), device) => {
-                device.gpu().destroy_texture(*id);
+                // A texture of a replaced device went with it.
+                if self.generation == self.shared.generation.get() {
+                    device.gpu().destroy_texture(*id);
+                }
                 *id = create_texture(device, width, height);
+                self.generation = self.shared.generation.get();
             }
         }
     }
 
     /// Copies a texture target's pixels out: RGBA8, rows top to bottom
-    /// without padding. Blocks until the GPU is done.
+    /// without padding. Blocks until the GPU is done. The pixels of a
+    /// replaced GPU went with it: draw a frame first.
     pub fn read_pixels(&self) -> Result<Vec<u8>, Error> {
         match self.kind {
+            Kind::Texture(_) if self.generation != self.shared.generation.get() => Err(
+                Error::InvalidState("the GPU was replaced since the last frame".into()),
+            ),
             Kind::Texture(id) => Ok(self.shared.gpu.borrow_mut().read_texture(id)),
             Kind::Surface(_) => Err(Error::Unsupported(
                 "surface targets can't be read back".into(),

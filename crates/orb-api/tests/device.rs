@@ -197,6 +197,12 @@ fn recovers(backend: Backend) {
     ));
     assert!(runtime.lost());
     runtime.recover().unwrap();
+    // The target's texture went with the old device: nothing to read, and
+    // a resize makes a texture on the new one without freeing the old id
+    // there.
+    assert!(target.read_pixels().is_err());
+    target.resize(SIZE / 2, SIZE / 2, 1.0);
+    target.resize(SIZE, SIZE, 1.0);
     let tier = runtime.stats().tier;
     let drawn = settle(&mut map, &mut target).unwrap();
     eprintln!(
