@@ -455,16 +455,23 @@ pub(crate) fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize>
         .collect()
 }
 
-/// Whether the scene's pools and tables hold less than `budget` bytes: the
+/// Whether the map's GPU memory (the scene's pools and tables, its
+/// textures, and the image atlas's `atlas` bytes) is under `budget`: the
 /// pools grow for arriving tiles before cached ones go, and the cache is
 /// held to its share of the budget by `trim_cache`.
-pub(crate) fn pools_under(renderer: &Renderer, budget: u64) -> bool {
+pub(crate) fn under_budget(renderer: &Renderer, atlas: u64, budget: u64) -> bool {
     let m = renderer.memory();
+    let (tiles, glyphs) = renderer.texture_bytes();
     let allocated = m.vertices.allocated
         + m.indices.allocated
         + m.compacted.allocated
         + m.props.allocated
-        + m.tables;
+        + m.tables
+        + tiles
+        + glyphs
+        + renderer.shadow_bytes()
+        + renderer.model_bytes()
+        + atlas;
     allocated < budget
 }
 

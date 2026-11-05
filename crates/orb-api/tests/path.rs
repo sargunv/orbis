@@ -530,3 +530,58 @@ fn zoom_22_draws_to_the_pixel() {
         );
     }
 }
+
+/// A dense view's memory comes back when nothing holds it: Tokyo at a few
+/// views, then open ocean (the extract has no tiles there), where the tile
+/// cache still holds the city, then an empty style.
+#[test]
+fn an_emptied_view_gives_its_memory_back() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&tokyo("", "")).expect("style");
+    let mut memory = |map: &mut Map, at: At| {
+        map.jump_to(&camera(at));
+        let report = map
+            .render_until_idle(&mut target, Duration::from_secs(60))
+            .expect("the map idles");
+        report.memory.allocated()
+    };
+    let mut dense = 0;
+    for (lon, lat, zoom) in [
+        (139.767, 35.681, 13.0),
+        (139.70, 35.66, 13.5),
+        (139.75, 35.70, 14.5),
+        (139.79, 35.67, 12.5),
+    ] {
+        dense = dense.max(memory(
+            &mut map,
+            (Geodetic::new(lon, lat), zoom, 30.0, 60.0),
+        ));
+    }
+    let ocean = memory(&mut map, (Geodetic::new(150.0, 30.0), 15.5, 30.0, 60.0));
+    // The cache keeps what it holds of the city (a quarter of the budget):
+    // the pools hold it too.
+    assert!(ocean <= dense);
+    // Nothing left to draw or keep: the pools go back to a fresh map's.
+    let empty = r#"{"version": 8, "sources": {}, "layers": []}"#;
+    map.set_style_json(empty).expect("style");
+    let emptied = memory(&mut map, (Geodetic::new(150.0, 30.0), 15.5, 30.0, 60.0));
+    let pools = |map: &mut Map, target: &mut Target| {
+        let report = map
+            .render_until_idle(target, Duration::from_secs(60))
+            .unwrap();
+        let s = report.memory.scene;
+        [s.vertices.allocated, s.indices.allocated, s.props.allocated]
+    };
+    let mut fresh = Map::new(&runtime, MapOptions::default());
+    fresh.set_style_json(empty).expect("style");
+    assert_eq!(
+        pools(&mut map, &mut target),
+        pools(&mut fresh, &mut target),
+        "dense {} MiB, ocean {} MiB, emptied {} MiB",
+        dense >> 20,
+        ocean >> 20,
+        emptied >> 20
+    );
+}

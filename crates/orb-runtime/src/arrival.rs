@@ -454,9 +454,9 @@ impl Map {
             .sources
             .iter()
             .any(|s| matches!(s, SourceState::Ready { loading, .. } if *loading > 0));
-        let mut grow = pools_under(renderer, self.budget);
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
+        let mut grow = under_budget(renderer, atlas.bytes(), self.budget);
         let uploaded = loop {
             atlas.release_ramps(gpu, self.retired_ramps.drain(..));
             use orb_render::UploadError::{Invalid, NoRoom};

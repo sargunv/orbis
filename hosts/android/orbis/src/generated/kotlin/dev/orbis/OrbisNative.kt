@@ -384,6 +384,9 @@ internal object OrbisNative {
     external fun orbStatsHttpCacheBytes(self: Long): Long
 
     @JvmStatic
+    external fun orbStatsRegionBytes(self: Long): Long
+
+    @JvmStatic
     external fun orbTargetCreateTexture(runtime: Long, width: Int, height: Int, scale: Double): Long
 
     @JvmStatic

@@ -107,4 +107,15 @@ class OrbStats internal constructor(handle: Long) : AutoCloseable {
         }
     }
 
+    /**
+     * Bytes the offline regions keep on disk.
+     *
+     * Contract: `snapshot`.
+     */
+    fun regionBytes(): ULong {
+        synchronized(this) {
+            return OrbisNative.orbStatsRegionBytes(live()).toULong()
+        }
+    }
+
 }

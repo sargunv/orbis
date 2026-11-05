@@ -73,4 +73,11 @@ public final class OrbStats: @unchecked Sendable {
         return OrbStats_http_cache_bytes(handle)
     }
 
+    /// Bytes the offline regions keep on disk.
+    ///
+    /// Contract: `snapshot`.
+    public func regionBytes() -> UInt64 {
+        return OrbStats_region_bytes(handle)
+    }
+
 }

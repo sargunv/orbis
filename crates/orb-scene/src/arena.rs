@@ -30,6 +30,26 @@ impl Arena {
         self.free(old..new);
     }
 
+    /// Where the free block reaching `capacity` starts: every word from
+    /// there to `capacity` is free, and none above is held.
+    pub(crate) fn free_from(&self, capacity: u32) -> u32 {
+        match self.free.range(..capacity).next_back() {
+            Some((&start, &len)) if start + len == capacity => start,
+            _ => capacity,
+        }
+    }
+
+    /// Gives back `new..old`, which must be free: a smaller buffer took
+    /// its place, with the contents below `new` at the same offsets.
+    pub(crate) fn shrink(&mut self, old: u32, new: u32) {
+        let start = self.free_from(old);
+        assert!(start <= new && new < old, "only a free tail goes");
+        self.free.remove(&start);
+        if start < new {
+            self.free.insert(start, new - start);
+        }
+    }
+
     /// The largest block one allocation can take.
     pub(crate) fn largest_free(&self) -> u32 {
         self.free.values().copied().max().unwrap_or(0)
@@ -138,6 +158,19 @@ mod tests {
         // c merged with the free tail into 60..100.
         assert_eq!(arena.alloc(41), None);
         arena.free(b);
+        // Freed down to nothing above 30: the tail from 30 can go.
+        let mut tail = Arena::new(100);
+        let low = tail.alloc(30).unwrap();
+        let high = tail.alloc(30).unwrap();
+        tail.free(high);
+        assert_eq!(tail.free_from(100), 30);
+        tail.shrink(100, 50);
+        assert_eq!(
+            (tail.free_from(50), tail.largest_free(), tail.used()),
+            (30, 20, 30)
+        );
+        assert_eq!(tail.alloc(21), None);
+        tail.free(low);
         assert_eq!(arena.used(), 0);
         assert_eq!(arena.alloc(100), Some(0..100));
     }

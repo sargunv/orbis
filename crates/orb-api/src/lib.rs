@@ -173,10 +173,12 @@ pub struct RuntimeStats {
     pub pipeline_timings: Vec<(String, std::time::Duration)>,
     /// The compile the watchdog found hung, or the pipeline the driver
     /// couldn't make, if one was (plan §8.8 3): a Modern GPU is then lost,
-    /// and [`Runtime::recover`] demotes it.
+    /// and the next frame demotes it.
     pub hung_compile: Option<String>,
     /// What the HTTP cache holds, if there is one.
     pub http_cache: Option<CacheStats>,
+    /// Bytes the offline regions keep on disk.
+    pub region_bytes: u64,
     /// The widest and tallest texture target the device makes, in pixels.
     pub max_texture_size: u32,
     /// Bytes written to the device's buffers and textures so far.
@@ -283,6 +285,9 @@ impl Runtime {
                 Device::Compat(c) => orb_hal::Gpu::live_resources(&c.gpu),
             },
             http_cache: self.shared.fetch.cache().map(|c| c.stats()),
+            region_bytes: self
+                .regions()
+                .map_or(0, |r| r.iter().map(|r| r.bytes).sum()),
             max_texture_size: match &*gpu {
                 Device::Modern(gpu) => orb_hal::Gpu::caps(gpu),
                 Device::Compat(c) => orb_hal::Gpu::caps(&c.gpu),

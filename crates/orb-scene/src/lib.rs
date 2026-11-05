@@ -969,6 +969,8 @@ pub struct Scene {
     vertex_arena: Arena,
     index_arena: Arena,
     prop_arena: Arena,
+    /// The growable pools' first sizes, which they don't shrink below.
+    first_words: [u32; 3],
     tiles: Vec<Option<TileEntry>>,
     free_tiles: Vec<u32>,
     meshes: Vec<Option<MeshEntry>>,
@@ -1131,6 +1133,7 @@ impl Scene {
             vertex_arena: Arena::new(c.vertex_words),
             index_arena: Arena::new(c.index_words),
             prop_arena,
+            first_words: [c.vertex_words, c.index_words, c.prop_words],
             tiles: Vec::new(),
             free_tiles: Vec::new(),
             meshes: Vec::new(),
@@ -2043,36 +2046,79 @@ impl Scene {
     /// Moves a pool into a buffer twice its size (or its ceiling's): the
     /// contents copy over on the GPU, at the same offsets.
     fn grow_pool(&mut self, gpu: &mut dyn Gpu, pool: Pool) -> bool {
+        let (old, max) = self.pool_words(pool);
+        let new = old.saturating_mul(2).min(max);
+        new > old && {
+            self.resize_pool(gpu, pool, new);
+            true
+        }
+    }
+
+    /// Halves the vertex, index and property pools while their allocations
+    /// all lie in their lowest quarter, down to their first sizes: a view
+    /// that emptied gives back what it grew them to, and each pool keeps
+    /// room to grow fourfold before it doubles again. Returns whether any
+    /// shrank.
+    pub fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let mut shrank = false;
+        for (pool, first) in [Pool::Vertices, Pool::Indices, Pool::Props]
+            .into_iter()
+            .zip(self.first_words)
+        {
+            let (old, _) = self.pool_words(pool);
+            let held = match pool {
+                Pool::Vertices => self.vertex_arena.free_from(old),
+                Pool::Indices => self.index_arena.free_from(old),
+                Pool::Props => self.prop_arena.free_from(old),
+            };
+            let mut new = old;
+            while new > first && held <= new / 4 {
+                new = (new / 2).max(first);
+            }
+            if new < old {
+                self.resize_pool(gpu, pool, new);
+                shrank = true;
+            }
+        }
+        shrank
+    }
+
+    /// A pool's size and ceiling, in words.
+    fn pool_words(&self, pool: Pool) -> (u32, u32) {
+        let c = &self.capacity;
+        match pool {
+            Pool::Vertices => (c.vertex_words, c.max_vertex_words),
+            Pool::Indices => (c.index_words, c.max_index_words),
+            Pool::Props => (c.prop_words, c.max_prop_words),
+        }
+    }
+
+    /// Moves a pool into a buffer of `new` words, its contents below both
+    /// sizes copied over on the GPU at the same offsets.
+    fn resize_pool(&mut self, gpu: &mut dyn Gpu, pool: Pool, new: u32) {
         let c = &mut self.capacity;
-        let (words, max, buffer, arena, label) = match pool {
+        let (words, buffer, arena, label) = match pool {
             Pool::Vertices => (
                 &mut c.vertex_words,
-                c.max_vertex_words,
                 &mut self.buffers.vertices,
                 &mut self.vertex_arena,
                 "vertices",
             ),
             Pool::Indices => (
                 &mut c.index_words,
-                c.max_index_words,
                 &mut self.buffers.indices,
                 &mut self.index_arena,
                 "indices",
             ),
             Pool::Props => (
                 &mut c.prop_words,
-                c.max_prop_words,
                 &mut self.buffers.props,
                 &mut self.prop_arena,
                 "props",
             ),
         };
         let old = *words;
-        let new = old.saturating_mul(2).min(max);
-        if new <= old {
-            return false;
-        }
-        let grown = gpu.create_buffer(&BufferDesc {
+        let resized = gpu.create_buffer(&BufferDesc {
             label,
             size: u64::from(new) * 4,
             usage: POOL_USAGE,
@@ -2080,16 +2126,19 @@ impl Scene {
         gpu.submit(&[orb_hal::Pass::CopyBuffer {
             source: *buffer,
             source_offset: 0,
-            destination: grown,
+            destination: resized,
             destination_offset: 0,
-            size: u64::from(old) * 4,
+            size: u64::from(old.min(new)) * 4,
         }]);
         gpu.destroy_buffer(*buffer);
-        *buffer = grown;
-        arena.grow(old, new);
+        *buffer = resized;
+        if new > old {
+            arena.grow(old, new);
+        } else {
+            arena.shrink(old, new);
+        }
         *words = new;
         self.buffers_revision += 1;
-        true
     }
 
     /// Moves the chunk table into a buffer twice its size, to its ceiling,

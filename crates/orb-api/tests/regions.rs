@@ -53,6 +53,8 @@ fn a_downloaded_region_opens_offline() {
     assert_eq!(failed, 0);
     let regions = runtime.regions().unwrap();
     assert!(regions.iter().any(|r| r.id == id && r.complete));
+    let kept: u64 = regions.iter().map(|r| r.bytes).sum();
+    assert_eq!(runtime.stats().region_bytes, kept);
     drop(runtime);
 
     // Only the region now: no HTTP cache, and no network.
@@ -94,6 +96,7 @@ fn a_downloaded_region_opens_offline() {
     );
     runtime.delete_region(id).unwrap();
     assert!(runtime.regions().unwrap().is_empty());
+    assert_eq!(runtime.stats().region_bytes, 0);
     drop(runtime);
     std::fs::remove_dir_all(dir).unwrap();
 }

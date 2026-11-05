@@ -582,6 +582,14 @@ impl Renderer {
         fits
     }
 
+    /// Halves the pools a view that emptied left mostly free; whether any
+    /// shrank.
+    pub fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let shrank = self.scene.shrink(gpu);
+        self.glyphs.set_table(self.scene.buffers().props);
+        shrank
+    }
+
     /// Grows the pools once, within their limits; whether they grew.
     pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
         let grew = self.scene.grow(gpu);

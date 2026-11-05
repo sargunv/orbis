@@ -1258,6 +1258,13 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbStatsHttpCacheBytes(JNIEnv
     return (jlong)(result);
 }
 
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbStatsRegionBytes(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint64_t result = OrbStats_region_bytes((const OrbStats*)(intptr_t)self);
+    return (jlong)(result);
+}
+
 JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbTargetCreateTexture(JNIEnv* env, jclass cls, jlong runtime, jint width, jint height, jdouble scale) {
     (void)env;
     (void)cls;

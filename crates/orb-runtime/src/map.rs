@@ -1327,6 +1327,7 @@ impl Map {
                 );
             }
             self.trim_cache(renderer);
+            renderer.shrink(gpu);
         }
         let labels_settled = self.place_labels(gpu, renderer, &view, now);
         report.placement_us = (self.placement_ms * 1000.0).round() as u32;

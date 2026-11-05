@@ -29,6 +29,8 @@ void OrbStats_pipeline_timings(const OrbStats* self, DiplomatWrite* write);
 
 uint64_t OrbStats_http_cache_bytes(const OrbStats* self);
 
+uint64_t OrbStats_region_bytes(const OrbStats* self);
+
 void OrbStats_destroy(OrbStats* self);
 
 

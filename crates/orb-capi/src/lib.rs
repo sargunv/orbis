@@ -306,6 +306,12 @@ mod ffi {
         pub fn http_cache_bytes(&self) -> u64 {
             self.0.http_cache.as_ref().map_or(0, |s| s.bytes)
         }
+
+        /// Bytes the offline regions keep on disk.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn region_bytes(&self) -> u64 {
+            self.0.region_bytes
+        }
     }
 
     /// What a map draws into: a window surface, or a texture the runtime
