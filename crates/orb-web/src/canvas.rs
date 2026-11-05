@@ -14,6 +14,12 @@ pub(crate) trait WebGpu: Gpu {
     fn register_image_bitmap(&mut self, bitmap: web_sys::ImageBitmap) -> HostImageId;
     /// Bytes uploaded since the device was made: from wasm memory, from JS.
     fn uploaded(&self) -> Uploaded;
+    /// A colour target's pixels, rows top to bottom in the target's own
+    /// byte order; the future holds no borrow of the device.
+    fn read_texture(
+        &mut self,
+        id: TextureId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<u8>>>>;
 }
 
 /// [`WebGpu::uploaded`]'s counts.
@@ -42,6 +48,12 @@ impl WebGpu for orb_hal_wgpu::WgpuGpu {
             texels_from_js: u.texels_from_js,
         }
     }
+    fn read_texture(
+        &mut self,
+        id: TextureId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<u8>>>> {
+        Box::pin(orb_hal_wgpu::WgpuGpu::read_texture(self, id))
+    }
 }
 
 #[cfg(feature = "compat")]
@@ -58,7 +70,21 @@ impl WebGpu for orb_hal_gl::GlGpu {
             ..Uploaded::default()
         }
     }
+    fn read_texture(
+        &mut self,
+        id: TextureId,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<u8>>>> {
+        let pixels = self.read_rgba8(id);
+        Box::pin(async move { pixels })
+    }
 }
+
+/// WebGL2 frames draw into an RGBA8 texture, presented to the canvas.
+#[cfg(feature = "compat")]
+const COMPAT_FORMAT: TargetFormat = TargetFormat {
+    color: orb_hal::TextureFormat::Rgba8Unorm,
+    sample_count: 1,
+};
 
 /// A canvas and the device drawing into it.
 #[derive(Debug)]
@@ -131,6 +157,17 @@ impl Canvas {
         }
     }
 
+    /// The format frames draw in: offscreen targets share it, and the
+    /// map's pipelines with it.
+    pub(crate) fn format(&self) -> TargetFormat {
+        match self {
+            #[cfg(feature = "modern")]
+            Self::Modern(m) => m.format,
+            #[cfg(feature = "compat")]
+            Self::Compat(_) => COMPAT_FORMAT,
+        }
+    }
+
     pub(crate) fn size(&self) -> (u32, u32) {
         match self {
             #[cfg(feature = "modern")]
@@ -200,10 +237,7 @@ impl Canvas {
             }
             #[cfg(feature = "compat")]
             Self::Compat(c) => {
-                let format = TargetFormat {
-                    color: orb_hal::TextureFormat::Rgba8Unorm,
-                    sample_count: 1,
-                };
+                let format = COMPAT_FORMAT;
                 let frame = match c.frame {
                     Some((frame, size)) if size == c.size => frame,
                     stale => {

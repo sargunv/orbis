@@ -22,6 +22,7 @@ mod fixture;
 mod jobs;
 mod placement;
 pub mod regions;
+mod snapshot;
 mod ui;
 
 #[cfg(feature = "harness")]
@@ -67,6 +68,8 @@ pub struct OrbisMap {
     worker_jobs: Arc<WorkerJobs>,
     /// The terrain revision last handed to the page's [`UiRole`].
     elevation_revision: u64,
+    /// A snapshot being drawn ([`snapshot`]).
+    snapshot: Option<snapshot::Snapshot>,
 }
 
 /// What a frame tells the page: its counters packed in one array, and the terrain for the page's [`UiRole`] when it changed.
@@ -143,6 +146,7 @@ pub async fn create_map(
         pixel_ratio: 1.0,
         worker_jobs,
         elevation_revision: 0,
+        snapshot: None,
     })
 }
 

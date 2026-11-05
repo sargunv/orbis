@@ -4,7 +4,7 @@
 //   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]]
 //     [--format=mvt|mlt] [--style=<key>|URL]
 //     [--size=WxH] [--compare=reference-map.png] [--renderer=webgpu|webgl2] [--lose=<ms> [--switch]]
-//     [--reopen[=offline]]
+//     [--reopen[=offline]] [--still]
 //
 // `--reopen` loads the page again once it is idle, in the same browser
 // profile, and times the reopen from the browser's cache (plan §18 row 15);
@@ -16,8 +16,9 @@
 //
 // The map app draws the Tokyo extract (MVT by default) unless `--style`
 // names another.
-// Besides <out.png>, it writes <out>-map.png without the app's chrome.
-import { readFile } from "node:fs/promises";
+// Besides <out.png>, it writes <out>-map.png without the app's chrome, and
+// with `--still` <out>-still.png: the map's own snapshot of the view.
+import { readFile, writeFile } from "node:fs/promises";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const args = process.argv.slice(2);
@@ -84,6 +85,18 @@ try {
     for (const element of elements) element.style.visibility = "hidden";
   });
   const pixels = await page.locator("#map").screenshot({ path: out.replace(/\.png$/, "-map.png") });
+  if (args.includes("--still")) {
+    const started = Date.now();
+    const png = await page.evaluate(async () => {
+      const image = await globalThis.orbis.map.snapshot();
+      const canvas = new OffscreenCanvas(image.width, image.height);
+      canvas.getContext("2d").putImageData(image, 0, 0);
+      const bytes = new Uint8Array(await (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer());
+      return btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(""));
+    });
+    await writeFile(out.replace(/\.png$/, "-still.png"), Buffer.from(png, "base64"));
+    console.log(`still: ${Date.now() - started} ms`);
+  }
   if (compare) {
     const reference = await readFile(compare);
     const differing = await page.evaluate(async ([a, b]) => {

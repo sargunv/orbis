@@ -110,8 +110,9 @@ impl WgpuGpu {
     }
 
     /// Copies the pixels of a 4-byte-per-texel texture out, row by row
-    /// without padding.
-    pub async fn read_texture(&self, id: TextureId) -> Vec<u8> {
+    /// without padding. The copy is submitted now; the future holds no
+    /// borrow of the device, so the texture may go before it resolves.
+    pub fn read_texture(&self, id: TextureId) -> impl Future<Output = Vec<u8>> + 'static {
         let texture = self.texture(id);
         let (width, height) = (texture.width(), texture.height());
         let row = width * 4;
@@ -138,13 +139,16 @@ impl WgpuGpu {
             texture.size(),
         );
         self.queue.submit([encoder.finish()]);
-        let mapped = self.map_read(&buffer).await;
-        let mut pixels = Vec::with_capacity((row * height) as usize);
-        for y in 0..height {
-            let start = (y * padded_row) as usize;
-            pixels.extend_from_slice(&mapped[start..start + row as usize]);
+        let device = self.device.clone();
+        async move {
+            let mapped = map_read(&device, &buffer).await;
+            let mut pixels = Vec::with_capacity((row * height) as usize);
+            for y in 0..height {
+                let start = (y * padded_row) as usize;
+                pixels.extend_from_slice(&mapped[start..start + row as usize]);
+            }
+            pixels
         }
-        pixels
     }
 
     /// Copies a buffer's bytes out. The buffer needs `COPY_SRC`.
@@ -161,26 +165,26 @@ impl WgpuGpu {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         encoder.copy_buffer_to_buffer(source, 0, &buffer, 0, source.size());
         self.queue.submit([encoder.finish()]);
-        self.map_read(&buffer).await.to_vec()
+        map_read(&self.device, &buffer).await.to_vec()
     }
+}
 
-    async fn map_read(&self, buffer: &wgpu::Buffer) -> wgpu::BufferView {
-        let (sender, receiver) = futures_channel::oneshot::channel();
-        buffer
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = sender.send(result);
-            });
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("device lost during readback");
-        receiver
-            .await
-            .expect("mapping callback dropped")
-            .expect("readback mapping failed");
-        buffer
-            .slice(..)
-            .get_mapped_range()
-            .expect("readback buffer is mapped")
-    }
+async fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> wgpu::BufferView {
+    let (sender, receiver) = futures_channel::oneshot::channel();
+    buffer
+        .slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+    device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("device lost during readback");
+    receiver
+        .await
+        .expect("mapping callback dropped")
+        .expect("readback mapping failed");
+    buffer
+        .slice(..)
+        .get_mapped_range()
+        .expect("readback buffer is mapped")
 }

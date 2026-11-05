@@ -127,6 +127,23 @@ const offlineAreas = createOffline({
   },
 });
 document.getElementById("offline-button").addEventListener("click", () => { menu.hidePopover(); offlineAreas.open(); });
+// A still of the view, once everything in it has loaded, as a PNG.
+document.getElementById("picture-button").addEventListener("click", async () => {
+  menu.hidePopover();
+  if (!map) return;
+  say("Drawing the picture…");
+  try {
+    const image = await map.snapshot();
+    const canvas = new OffscreenCanvas(image.width, image.height);
+    canvas.getContext("2d").putImageData(image, 0, 0);
+    const url = URL.createObjectURL(await canvas.convertToBlob({ type: "image/png" }));
+    Object.assign(document.createElement("a"), { href: url, download: `${current.scene.key}.png` }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    say("");
+  } catch (e) {
+    say(`The picture failed: ${e instanceof Error ? e.message : e}`, { error: true });
+  }
+});
 const about = document.getElementById("about");
 document.getElementById("about-button").addEventListener("click", () => { menu.hidePopover(); about.showModal(); });
 {

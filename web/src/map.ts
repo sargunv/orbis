@@ -143,6 +143,8 @@ export class OrbisMap {
   #host!: Host;
   #events = new Emitter<MapEvents>();
   #loop: ReturnType<typeof frameLoop>;
+  #snapshotting = false;
+  #snapshots: Promise<unknown> = Promise.resolve();
   #pushed = -1;
   #dirty = true;
   #latest: FrameAck | undefined;
@@ -190,6 +192,43 @@ export class OrbisMap {
   #attach(): void {
     if (this.#interactive) this.#detachInput = attachInput(this.#canvas, this.#ui, () => this.#loop.request());
     this.#observer?.observe(this.#canvas);
+  }
+
+  /**
+   * The camera's view, `width × height` CSS pixels (the canvas's by
+   * default) at `scale` device pixels each, drawn offscreen once everything
+   * in it has loaded and nothing fades: the same style, data and camera
+   * always draw the same pixels. The map draws no frames of its own
+   * meanwhile. Rejects after a minute.
+   */
+  snapshot(width = this.#canvas.clientWidth, height = this.#canvas.clientHeight,
+    scale = devicePixelRatio): Promise<ImageData> {
+    const run = async () => {
+      const core = this.#host.core;
+      this.#snapshotting = true;
+      core.beginSnapshot(width, height, scale);
+      try {
+        const deadline = performance.now() + 60_000;
+        while (!core.snapshotFrame()) {
+          if (performance.now() > deadline) throw new Error("the map didn't settle in a minute");
+          await new Promise((resolve) => setTimeout(resolve, 16));
+        }
+        const pixels: Uint8Array = await core.endSnapshot();
+        const px = (v: number) => Math.max(1, Math.round(v * scale));
+        return new ImageData(new Uint8ClampedArray(pixels.buffer as ArrayBuffer, pixels.byteOffset, pixels.length),
+          px(width), px(height));
+      } catch (e) {
+        core.cancelSnapshot();
+        throw e;
+      } finally {
+        this.#snapshotting = false;
+        this.#loop.request();
+      }
+    };
+    // One at a time.
+    const next = this.#snapshots.then(run, run);
+    this.#snapshots = next.catch(() => {});
+    return next;
   }
 
   /** Loses the GPU on purpose, to exercise recovery; with `switchTier`, a
@@ -325,8 +364,9 @@ export class OrbisMap {
   }
 
   #tick(now: number): boolean {
-    // Moves before the host starts reach it with the first frame.
-    if (!this.#host) return false;
+    // Moves before the host starts reach it with the first frame; a
+    // snapshot draws its own, and asks for one when it ends.
+    if (!this.#host || this.#snapshotting) return false;
     const moving = this.#ui.frame(now);
     this.#drainUi();
     // Until the app or the user moves it, the map's camera follows its style.
