@@ -302,3 +302,69 @@ fn promoted_string_ids_and_index_options() {
         .is_err()
     );
 }
+
+/// Polar data on a polar plane: a cap written the way world datasets write
+/// Antarctica (along the parallel, then down the antimeridian to the pole
+/// and back) tiles as a disc around the pole, not a sliver or a band.
+#[test]
+fn polar_caps_tile_as_discs_on_polar_planes() {
+    for (id, lat) in [
+        ("UPSAntarcticWGS84Quad", -70.0),
+        ("UPSArcticWGS84Quad", 70.0),
+    ] {
+        let tms = std::sync::Arc::new(orb_crs::TileMatrixSet::by_id(id).unwrap());
+        let pole_lat = 90f64.copysign(lat);
+        let mut ring: Vec<[f64; 2]> = (0..=8)
+            .map(|i| [-180.0 + 45.0 * f64::from(i), lat])
+            .collect();
+        ring.extend([[180.0, pole_lat], [-180.0, pole_lat], [-180.0, lat]]);
+        if lat < 0.0 {
+            ring.reverse();
+        }
+        let f = frame(
+            vec![feature(Geometry::Polygons(vec![vec![ring]]))],
+            Options {
+                plane: Some(tms.clone()),
+                ..options()
+            },
+            0,
+            0,
+            0,
+        );
+        let l = f.layer(LAYER_NAME).unwrap();
+        assert_eq!(l.len(), 1, "{id}");
+        let geometry = l.geometry(0);
+        let parts: Vec<_> = geometry.parts().collect();
+        assert_eq!(parts.len(), 1, "{id}");
+        let rings: Vec<_> = parts[0].rings().collect();
+        assert_eq!(rings.len(), 1, "{id}");
+        let ring = rings[0];
+
+        let unit = |lon: f64, lat: f64| {
+            tms.unit(tms.projection().forward(orb_geo::Geodetic::new(lon, lat))) * 8192.0
+        };
+        let pole = unit(0.0, pole_lat);
+        let radius = unit(0.0, lat).distance(pole);
+        assert!(radius < 4096.0, "{id}: the cap fits the tile");
+        // Every vertex lies within the parallel's circle (the run down the
+        // antimeridian and back is a spike of no area)...
+        for &[x, y] in ring {
+            let r = (f64::from(x) - pole.x).hypot(f64::from(y) - pole.y);
+            assert!(r < radius + 1.5, "{id}: vertex {x},{y} at {r}");
+        }
+        // ...and the ring encloses the disc once.
+        let area = (0..ring.len())
+            .map(|i| {
+                let [ax, ay] = ring[i].map(f64::from);
+                let [bx, by] = ring[(i + 1) % ring.len()].map(f64::from);
+                (ax * by - bx * ay) / 2.0
+            })
+            .sum::<f64>()
+            .abs();
+        let disc = std::f64::consts::PI * radius * radius;
+        assert!(
+            (area / disc - 1.0).abs() < 1e-3,
+            "{id}: area {area} vs {disc}"
+        );
+    }
+}

@@ -1,4 +1,4 @@
-# Cover reference vectors
+# Camera reference vectors
 
 `data/covers.json` contains 66 **tile sets returned by GL JS itself**, at the
 commit pinned in `xtask/src/fixtures.rs`. `generate-covers.mjs` constructs the
@@ -37,8 +37,26 @@ npm install --prefix "$TASK_GL" --ignore-scripts --save-exact \
 cargo test -p orb-camera
 ```
 
+`data/pins.json` is the 4,000-camera Web Mercator pin of M6's CRS suite
+(`pins.rs`), generated the same way by `generate-pins.mjs`: seeded random
+cameras (five viewport sizes, zoom 0–22, latitude ±84°, any bearing, pitch 0
+for every fourth camera and 0–85° otherwise), the location GL JS's
+`screenPointToLocation` gives for five screen points below any horizon, and
+every tenth camera's `coveringTiles` for 512 px tiles. Regenerate it with
+`"$TASK_GL/node_modules/.bin/tsx" crates/orb-camera/tests/generate-pins.mjs
+"$TASK_GL"` after the setup above. The test projects each location back to its
+screen point and unprojects the point to the location, both within 1/100 px,
+and compares covers exactly. At the pinned commit, the worst errors are
+3.2e-3 px (projected, at zoom 21.7) and 3.0e-4 px (unprojected), and all 400
+covers match.
+
+`polar.rs` has no reference data: cameras on and around both poles of the
+UPS sets and EPSG:3413, at four zooms, three bearings and three pitches,
+check that ground under a grid of screen points round-trips through the
+projection and lies in a covered tile.
+
 The generated types above are needed because upstream's transform imports its
-symbol projection helpers; those helpers are never used by the cover generator.
+symbol projection helpers; those helpers are never used by the generators.
 Upstream source is BSD-3-Clause. Only the generator and numeric outputs are
 committed here.
 
