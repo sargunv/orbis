@@ -130,6 +130,12 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbFeatureDestroy(JNIEnv* env,
     OrbFeature_destroy((OrbFeature*)(intptr_t)self);
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbImageDestroy(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbImage_destroy((OrbImage*)(intptr_t)self);
+}
+
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapDestroy(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
@@ -269,6 +275,27 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbFeatureGeneration(JNIEnv* 
     (void)cls;
     uint64_t result = OrbFeature_generation((const OrbFeature*)(intptr_t)self);
     return (jlong)(result);
+}
+
+JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbImageWidth(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint32_t result = OrbImage_width((const OrbImage*)(intptr_t)self);
+    return (jint)(result);
+}
+
+JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbImageHeight(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint32_t result = OrbImage_height((const OrbImage*)(intptr_t)self);
+    return (jint)(result);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbImagePixels(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    DiplomatU8View result = OrbImage_pixels((const OrbImage*)(intptr_t)self);
+    return new_U8_array(env, (result).data, (result).len);
 }
 
 JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapCreate(JNIEnv* env, jclass cls, jlong runtime, jint feel, jdouble clearR, jdouble clearG, jdouble clearB, jdouble clearA) {
@@ -543,6 +570,32 @@ JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapUnproject(JNIEnv* env
     (void)cls;
     OrbLngLat result = OrbMap_unproject((const OrbMap*)(intptr_t)self, (double)(x), (double)(y));
     return (*env)->CallStaticObjectMethod(env, g_native, g_new_OrbLngLat, (jdouble)((result).lon), (jdouble)((result).lat), ((result).valid) ? JNI_TRUE : JNI_FALSE);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapSnapshot(JNIEnv* env, jclass cls, jlong self, jint width, jint height, jdouble scale) {
+    (void)env;
+    (void)cls;
+    OrbMap_snapshot_result result = OrbMap_snapshot((OrbMap*)(intptr_t)self, (uint32_t)(width), (uint32_t)(height), (double)(scale));
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return 0;
+    }
+    return (jlong)(intptr_t)(result.ok);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapRenderTile(JNIEnv* env, jclass cls, jlong self, jbyteArray tileMatrixSet, jbyte z, jint col, jint row, jint size, jdouble scale) {
+    (void)env;
+    (void)cls;
+    jbyte* tileMatrixSet_bytes = (*env)->GetByteArrayElements(env, tileMatrixSet, NULL);
+    if (!tileMatrixSet_bytes) return 0;
+    DiplomatStringView tileMatrixSet_view = { (const char*)tileMatrixSet_bytes, (size_t)(*env)->GetArrayLength(env, tileMatrixSet) };
+    OrbMap_render_tile_result result = OrbMap_render_tile((OrbMap*)(intptr_t)self, tileMatrixSet_view, (uint8_t)(z), (uint32_t)(col), (uint32_t)(row), (uint32_t)(size), (double)(scale));
+    (*env)->ReleaseByteArrayElements(env, tileMatrixSet, tileMatrixSet_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return 0;
+    }
+    return (jlong)(intptr_t)(result.ok);
 }
 
 JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapRender(JNIEnv* env, jclass cls, jlong self, jlong target) {

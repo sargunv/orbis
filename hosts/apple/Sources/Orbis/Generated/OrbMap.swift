@@ -304,6 +304,39 @@ public final class OrbMap {
         return OrbLngLat(OrbMap_unproject(live(), x, y))
     }
 
+    /// Draws what the camera shows in a `width × height` view (logical
+    /// pixels, `scale` physical ones each) once everything in it has
+    /// loaded and nothing fades: the same style, data and camera always
+    /// draw the same bytes. Blocks until then; an error after a minute.
+    ///
+    /// Contract: `query`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func snapshot(width: UInt32, height: UInt32, scale: Double) throws -> OrbImage {
+        let result = OrbMap_snapshot(live(), width, height, scale)
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+        return OrbImage(handle: result.ok!)
+    }
+
+    /// Draws tile `z`/`col`/`row` of the tile matrix set
+    /// `tile_matrix_set` (an OGC identifier, such as `WebMercatorQuad`)
+    /// at `size` logical pixels as still output, labels placed so that
+    /// tiles drawn apart agree across their edges. The camera is left
+    /// as it was.
+    ///
+    /// Contract: `query`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func renderTile(tileMatrixSet: String, z: UInt8, col: UInt32, row: UInt32, size: UInt32, scale: Double) throws -> OrbImage {
+        let result = withStringView(tileMatrixSet) { tileMatrixSetView in OrbMap_render_tile(live(), tileMatrixSetView, z, col, row, size, scale) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+        return OrbImage(handle: result.ok!)
+    }
+
     /// Draws a frame into `target`: advances gestures and animations,
     /// applies arrived data and renders. A map draws targets of one
     /// format: all texture targets, or all surfaces of a platform.

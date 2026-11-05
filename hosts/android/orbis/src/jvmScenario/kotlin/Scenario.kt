@@ -28,8 +28,12 @@ fun pixel(target: OrbTarget, x: Int, y: Int): List<Int> {
 /** Draws until the map needs no frames; the events' kinds. */
 fun settle(map: OrbMap, target: OrbTarget): List<OrbEventKind> {
     val started = System.nanoTime()
-    while (map.needsFrame()) {
-        map.render(target)
+    // Between frames a map waiting for its jobs needs none: a host waits
+    // for its wake, and this polls until a frame is idle.
+    var idle = false
+    while (!idle || map.needsFrame()) {
+        val frame = map.render(target)
+        idle = frame.drawn && frame.idle
         check(System.nanoTime() - started < 30_000_000_000) { "never idle" }
         Thread.sleep(2)
     }
@@ -134,6 +138,17 @@ fun main() {
                 val p = map.project(5.0, 5.0)
                 val back = map.unproject(p.x, p.y)
                 check(p.valid && back.valid && kotlin.math.abs(back.lon - 5) < 1e-6 && kotlin.math.abs(back.lat - 5) < 1e-6)
+
+                // Still output: the camera's view drawn offscreen, at twice
+                // the pixels: the box green in the middle, red at the corner.
+                map.snapshot(32u, 32u, 2.0).use { image ->
+                    check(image.width() == 64u && image.height() == 64u)
+                    val pixels = image.pixels()
+                    val at = { x: Int, y: Int -> (0 until 4).map { pixels[(y * 64 + x) * 4 + it].toInt() and 0xff } }
+                    check(at(32, 32) == listOf(0, 255, 0, 255) && at(1, 1) == listOf(255, 0, 0, 255)) {
+                        "${at(32, 32)} ${at(1, 1)}"
+                    }
+                }
             }
         }
     }

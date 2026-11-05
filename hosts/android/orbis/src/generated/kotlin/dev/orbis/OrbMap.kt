@@ -336,6 +336,35 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Draws what the camera shows in a `width × height` view (logical
+     * pixels, `scale` physical ones each) once everything in it has
+     * loaded and nothing fades: the same style, data and camera always
+     * draw the same bytes. Blocks until then; an error after a minute.
+     *
+     * Contract: `query`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun snapshot(width: UInt, height: UInt, scale: Double): OrbImage {
+        return OrbImage(OrbisNative.orbMapSnapshot(live(), width.toInt(), height.toInt(), scale))
+    }
+
+    /**
+     * Draws tile `z`/`col`/`row` of the tile matrix set
+     * `tile_matrix_set` (an OGC identifier, such as `WebMercatorQuad`)
+     * at `size` logical pixels as still output, labels placed so that
+     * tiles drawn apart agree across their edges. The camera is left
+     * as it was.
+     *
+     * Contract: `query`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun renderTile(tileMatrixSet: String, z: UByte, col: UInt, row: UInt, size: UInt, scale: Double): OrbImage {
+        return OrbImage(OrbisNative.orbMapRenderTile(live(), tileMatrixSet.encodeToByteArray(), z.toByte(), col.toInt(), row.toInt(), size.toInt(), scale))
+    }
+
+    /**
      * Draws a frame into `target`: advances gestures and animations,
      * applies arrived data and renders. A map draws targets of one
      * format: all texture targets, or all surfaces of a platform.

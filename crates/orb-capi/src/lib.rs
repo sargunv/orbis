@@ -823,6 +823,30 @@ mod ffi {
         }
     }
 
+    /// A picture a map drew: premultiplied RGBA8, rows top to bottom.
+    #[diplomat::opaque]
+    #[diplomat::attr(contract, thread = "any")]
+    #[derive(Debug)]
+    pub struct OrbImage(pub(crate) orb_api::Image);
+
+    impl OrbImage {
+        #[diplomat::attr(contract, snapshot)]
+        pub fn width(&self) -> u32 {
+            self.0.width
+        }
+
+        #[diplomat::attr(contract, snapshot)]
+        pub fn height(&self) -> u32 {
+            self.0.height
+        }
+
+        #[diplomat::attr(contract, snapshot)]
+        #[allow(clippy::needless_lifetimes)] // Diplomat needs them named.
+        pub fn pixels<'a>(&'a self) -> &'a [u8] {
+            &self.0.pixels
+        }
+    }
+
     /// A map: style, camera store, gestures and events. Draw it with
     /// `render` whenever `needs_frame`.
     #[diplomat::opaque_mut]
@@ -1196,6 +1220,58 @@ mod ffi {
                     valid: false,
                 },
             }
+        }
+
+        /// Draws what the camera shows in a `width × height` view (logical
+        /// pixels, `scale` physical ones each) once everything in it has
+        /// loaded and nothing fades: the same style, data and camera always
+        /// draw the same bytes. Blocks until then; an error after a minute.
+        #[diplomat::attr(contract, query)]
+        pub fn snapshot(
+            &mut self,
+            width: u32,
+            height: u32,
+            scale: f64,
+        ) -> Result<Box<OrbImage>, OrbError> {
+            self.0
+                .snapshot(width, height, scale)
+                .map(|image| Box::new(OrbImage(image)))
+                .map_err(fail)
+        }
+
+        /// Draws tile `z`/`col`/`row` of the tile matrix set
+        /// `tile_matrix_set` (an OGC identifier, such as `WebMercatorQuad`)
+        /// at `size` logical pixels as still output, labels placed so that
+        /// tiles drawn apart agree across their edges. The camera is left
+        /// as it was.
+        #[diplomat::attr(contract, query)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn render_tile(
+            &mut self,
+            tile_matrix_set: &DiplomatStr,
+            z: u8,
+            col: u32,
+            row: u32,
+            size: u32,
+            scale: f64,
+        ) -> Result<Box<OrbImage>, OrbError> {
+            let id = text(tile_matrix_set);
+            let tile_matrix_set = orb_api::TileMatrixSet::by_id(&id).map_err(|_| {
+                fail(orb_api::Error::InvalidArgument(format!(
+                    "unknown tile matrix set {id}"
+                )))
+            })?;
+            self.0
+                .render_tile(&orb_api::TileRequest {
+                    tile_matrix_set,
+                    z,
+                    col,
+                    row,
+                    size,
+                    scale,
+                })
+                .map(|image| Box::new(OrbImage(image)))
+                .map_err(fail)
         }
 
         /// Draws a frame into `target`: advances gestures and animations,

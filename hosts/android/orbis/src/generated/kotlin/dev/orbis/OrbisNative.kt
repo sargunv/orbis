@@ -15,6 +15,9 @@ internal object OrbisNative {
     external fun orbFeatureDestroy(self: Long)
 
     @JvmStatic
+    external fun orbImageDestroy(self: Long)
+
+    @JvmStatic
     external fun orbMapDestroy(self: Long)
 
     @JvmStatic
@@ -73,6 +76,15 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbFeatureGeneration(self: Long): Long
+
+    @JvmStatic
+    external fun orbImageWidth(self: Long): Int
+
+    @JvmStatic
+    external fun orbImageHeight(self: Long): Int
+
+    @JvmStatic
+    external fun orbImagePixels(self: Long): ByteArray
 
     @JvmStatic
     external fun orbMapCreate(runtime: Long, feel: Int, clearR: Double, clearG: Double, clearB: Double, clearA: Double): Long
@@ -169,6 +181,12 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbMapUnproject(self: Long, x: Double, y: Double): OrbLngLat
+
+    @JvmStatic
+    external fun orbMapSnapshot(self: Long, width: Int, height: Int, scale: Double): Long
+
+    @JvmStatic
+    external fun orbMapRenderTile(self: Long, tileMatrixSet: ByteArray, z: Byte, col: Int, row: Int, size: Int, scale: Double): Long
 
     @JvmStatic
     external fun orbMapRender(self: Long, target: Long): OrbFrame

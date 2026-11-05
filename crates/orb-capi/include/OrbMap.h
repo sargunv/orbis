@@ -16,6 +16,7 @@
 #include "OrbFeature.d.h"
 #include "OrbFeel.d.h"
 #include "OrbFrame.d.h"
+#include "OrbImage.d.h"
 #include "OrbKey.d.h"
 #include "OrbLngLat.d.h"
 #include "OrbModifiers.d.h"
@@ -105,6 +106,12 @@ uint64_t OrbMap_query_rendered(OrbMap* self, double x0, double y0, double x1, do
 OrbPoint OrbMap_project(const OrbMap* self, double lon, double lat);
 
 OrbLngLat OrbMap_unproject(const OrbMap* self, double x, double y);
+
+typedef struct OrbMap_snapshot_result {union {OrbImage* ok; OrbError err;}; bool is_ok;} OrbMap_snapshot_result;
+OrbMap_snapshot_result OrbMap_snapshot(OrbMap* self, uint32_t width, uint32_t height, double scale);
+
+typedef struct OrbMap_render_tile_result {union {OrbImage* ok; OrbError err;}; bool is_ok;} OrbMap_render_tile_result;
+OrbMap_render_tile_result OrbMap_render_tile(OrbMap* self, DiplomatStringView tile_matrix_set, uint8_t z, uint32_t col, uint32_t row, uint32_t size, double scale);
 
 typedef struct OrbMap_render_result {union {OrbFrame ok; OrbError err;}; bool is_ok;} OrbMap_render_result;
 OrbMap_render_result OrbMap_render(OrbMap* self, OrbTarget* target);

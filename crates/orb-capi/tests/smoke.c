@@ -66,12 +66,16 @@ static void pixel(OrbTarget* target, int x, int y, unsigned char rgba[4]) {
     memcpy(rgba, pixels.data + (y * SIZE + x) * 4, 4);
 }
 
-/* Draws until the map needs no frames; counts the events of each kind. */
+/* Draws until a frame is idle and the map needs no more; counts the events
+ * of each kind. Between frames a map waiting for its jobs needs none: a
+ * host would wait for its wake, and this polls. */
 static void settle(OrbMap* map, OrbTarget* target, int counts[16]) {
     time_t start = time(NULL);
-    while (OrbMap_needs_frame(map)) {
+    int idle = 0;
+    while (!idle || OrbMap_needs_frame(map)) {
         OrbMap_render_result r = OrbMap_render(map, target);
         CHECK(r.is_ok);
+        idle = r.ok.drawn && r.ok.idle;
         CHECK(time(NULL) - start < 30);
         struct timespec ms = {0, 2000000};
         nanosleep(&ms, NULL);

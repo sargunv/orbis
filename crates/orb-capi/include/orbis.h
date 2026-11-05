@@ -18,6 +18,7 @@
 #include "OrbFeature.h"
 #include "OrbFeel.h"
 #include "OrbFrame.h"
+#include "OrbImage.h"
 #include "OrbKey.h"
 #include "OrbLngLat.h"
 #include "OrbMap.h"
