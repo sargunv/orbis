@@ -100,6 +100,30 @@ pub(crate) struct SurfaceWarps {
 /// Surface patches kept before those the last frame didn't place go.
 const SURFACE_WARPS: usize = 2048;
 
+/// A render node's share of a tile: its geometry in one layer extent and
+/// its property rows, which per-feature paint and per-instance data (a
+/// circle's radius, a model's scale and rotation) read. Fills, lines and
+/// extrusions are meshes; point families (circles, heatmaps, a model
+/// layer's instances) are their points.
+#[derive(Clone, Copy, Debug)]
+pub struct MeshBuild<'a> {
+    pub node: u32,
+    pub extent: u32,
+    pub data: MeshData<'a>,
+    pub rows: MeshRows<'a>,
+}
+
+/// A tile to upload, all of it or none: its meshes by node, and the
+/// planar patches it draws through on another plane (cells per side and
+/// their words). Symbol streams join with
+/// [`add_symbol_mesh`](Renderer::add_symbol_mesh).
+#[derive(Clone, Copy, Debug)]
+pub struct TileBuild<'a> {
+    pub key: TileKey,
+    pub meshes: &'a [MeshBuild<'a>],
+    pub patches: Option<(u32, &'a [f32])>,
+}
+
 /// Why an upload failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UploadError {
@@ -413,6 +437,35 @@ impl Renderer {
         }
         self.tiles.entries[tile.0 as usize] = Some(entry);
         result
+    }
+
+    /// Uploads a tile: all its meshes, in order, or none. Without `grow`,
+    /// only room already there is used; with it, the pools grow within
+    /// their limits. Returns the tile and its meshes' ids.
+    pub fn upload_tile(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        build: &TileBuild<'_>,
+        grow: bool,
+    ) -> Result<(GpuTile, Vec<MeshId>), UploadError> {
+        let sizes: Vec<MeshSize> = build.meshes.iter().map(|m| m.data.size()).collect();
+        if !(self.fits(&sizes) || (grow && self.grow_for(gpu, &sizes))) {
+            return Err(UploadError::NoRoom);
+        }
+        let tile = self
+            .add_tile(gpu, build.key, build.patches)
+            .map_err(|_| UploadError::NoRoom)?;
+        let mut ids = Vec::with_capacity(build.meshes.len());
+        for mesh in build.meshes {
+            match self.add_mesh(gpu, tile, (mesh.node, mesh.extent), &mesh.data, &mesh.rows) {
+                Ok(id) => ids.push(id),
+                Err(OutOfSpace) => {
+                    self.release_tile(tile);
+                    return Err(UploadError::NoRoom);
+                }
+            }
+        }
+        Ok((tile, ids))
     }
 
     /// A vector tile with no meshes yet, drawing through planar patches

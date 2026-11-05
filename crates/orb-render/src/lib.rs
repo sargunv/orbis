@@ -53,8 +53,8 @@ pub use paint::{
     StateLookup, SymbolPaint, SymbolSize, Translate, pack_color,
 };
 pub use tiles::{
-    GpuTile, ImageBuild, ImageMesh, MeshRows, TileKey, UploadError, WarpKey, dem_prepares,
-    resident_neighbours,
+    GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, TileBuild, TileKey, UploadError, WarpKey,
+    dem_prepares, resident_neighbours,
 };
 
 use std::collections::BTreeMap;

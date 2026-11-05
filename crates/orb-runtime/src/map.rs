@@ -3910,32 +3910,65 @@ fn upload(
     tile_zoom: f64,
     warnings: &mut Vec<String>,
 ) -> Result<ResidentTile, OutOfSpace> {
-    let handle = renderer.add_tile(gpu, key, patches)?;
+    // Symbol nodes' rows go up with their layer's bucket.
+    let meshes: Vec<&ResultMesh> = result
+        .meshes
+        .iter()
+        .filter(|m| {
+            !plan
+                .node(m.node)
+                .is_some_and(|i| plan.nodes[i].family.is_symbol())
+        })
+        .collect();
+    let rows: Vec<ResolvedRows> = meshes
+        .iter()
+        .map(|m| resolve_rows(gpu, plan, result, m, atlas, namespace, states, warnings))
+        .collect();
+    let builds: Vec<orb_render::MeshBuild> = meshes
+        .iter()
+        .zip(&rows)
+        .map(|(m, rows)| orb_render::MeshBuild {
+            node: plan.node(m.node).expect("meshes of planned nodes") as u32,
+            extent: m.extent,
+            data: MeshData {
+                vertices: words(&m.vertices, result.host_bytes),
+                indices: words(&m.indices, result.host_bytes),
+                props: words(&m.props, result.host_bytes),
+                row_words: m.row_words,
+                chunks: &m.chunks,
+            },
+            rows: rows.rows(),
+        })
+        .collect();
+    let build = orb_render::TileBuild {
+        key,
+        meshes: &builds,
+        patches,
+    };
+    let (handle, ids) = match renderer.upload_tile(gpu, &build, false) {
+        Ok(uploaded) => uploaded,
+        Err(_) => {
+            for rows in rows {
+                rows.release(gpu, atlas, states);
+            }
+            return Err(OutOfSpace);
+        }
+    };
     let mut resident = ResidentTile::new(handle, tile_zoom);
-    for mesh in &result.meshes {
-        // Symbol nodes' rows go up with their layer's bucket.
-        if plan
-            .node(mesh.node)
-            .is_some_and(|i| plan.nodes[i].family.is_symbol())
-        {
-            continue;
-        }
-        if let Err(e) = upload_mesh(
-            gpu,
-            renderer,
-            plan,
-            result,
+    resident.meshes = meshes
+        .iter()
+        .zip(rows)
+        .zip(ids)
+        .map(|((m, rows), mesh)| Resident {
+            hits: m.hits.clone(),
+            node: m.node,
             mesh,
-            &mut resident,
-            atlas,
-            namespace,
-            states,
-            warnings,
-        ) {
-            atlas.release_ramps(gpu, remove_resident(renderer, resident, states));
-            return Err(e);
-        }
-    }
+            layout_rev: result.revision,
+            rows_rev: result.revision,
+            ramps: rows.ramps,
+            states: rows.states,
+        })
+        .collect();
     if let Err(e) = labels.upload(
         gpu,
         renderer,

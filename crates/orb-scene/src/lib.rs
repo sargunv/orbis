@@ -723,6 +723,16 @@ impl<'a> MeshData<'a> {
             chunks: &mesh.chunks,
         }
     }
+
+    /// What it takes in the scene.
+    pub fn size(&self) -> MeshSize {
+        MeshSize {
+            vertices: self.vertices.len(),
+            indices: self.indices.len(),
+            props: self.props.len(),
+            chunks: self.chunks.len() as u32,
+        }
+    }
 }
 
 /// A tile's data in the scene: its meshes and placements.
