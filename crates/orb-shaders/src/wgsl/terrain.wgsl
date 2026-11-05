@@ -68,7 +68,7 @@ const GRID: u32 = 128u;
 // Grid vertices: x and y in cells (8 bits each), then a skirt bit.
 @group(0) @binding(2) var<storage, read> grid: array<u32>;
 @group(0) @binding(3) var dem: texture_2d_array<f32>;
-@group(0) @binding(4) var drape: texture_2d<f32>;
+@group(0) @binding(4) var drape: texture_2d_array<f32>;
 @group(0) @binding(5) var drape_sampler: sampler;
 @group(0) @binding(6) var<uniform> terrain: Terrain;
 @group(0) @binding(7) var<uniform> atmosphere: Atmosphere;
@@ -194,7 +194,7 @@ fn drape_color(in: TerrainOut, stack: u32) -> vec4<f32> {
     let room = min(p, vec2<f32>(terrain.slot_px) - p) - half;
     let need = 0.5 * max(abs(dx), abs(dy));
     let fit = min(1.0, min(room.x / max(need.x, 1e-6), room.y / max(need.y, 1e-6)));
-    return textureSampleGrad(drape, drape_sampler, (corner + p) / size, dx * fit / size, dy * fit / size);
+    return textureSampleGrad(drape, drape_sampler, (corner + p) / size, 0, dx * fit / size, dy * fit / size);
 }
 
 // `top` over `bottom`, premultiplied.

@@ -16,9 +16,7 @@
 use crate::release::Release;
 use orb_hal::*;
 use orb_scene::{PageTexture, Pixels, TilePage};
-use orb_shaders::{
-    COLOR_RELIEF_SHADER, HILLSHADE_SHADER, IMAGE_MIPS_SHADER, RASTER_SHADER, Shader,
-};
+use orb_shaders::{COLOR_RELIEF_SHADER, HILLSHADE_SHADER, RASTER_SHADER};
 
 use crate::{Family, OutOfSpace, TargetFormat};
 
@@ -123,18 +121,19 @@ struct Page {
     targets: Option<prepare::Targets>,
 }
 
-/// A raster page's or DEM slopes' mip bindings, for one revision of its texture: views of
-/// each level and a group per level that reads the one above.
+/// A raster page's or DEM slopes' mip bindings, for one revision of its
+/// texture: views of each level, the downsampler's group per level after
+/// the first, and the regions they read (whole layers).
 #[derive(Debug)]
 struct Mips {
     revision: u32,
-    jobs: BufferId,
+    regions: BufferId,
     views: Vec<TextureId>,
     groups: Vec<BindGroupId>,
 }
 
 fn destroy_mips(gpu: &mut dyn Gpu, mips: Mips) {
-    (mips.groups, mips.views, mips.jobs).release(gpu);
+    (mips.groups, mips.views, mips.regions).release(gpu);
 }
 
 /// What an image node's bind group holds.
@@ -187,12 +186,8 @@ pub(crate) struct Images {
     /// Bound by nodes whose source has no page yet.
     placeholder: TextureId,
     placeholder_ramp: TextureId,
-    mips_layout: BindGroupLayoutId,
     /// The prepare draws, made for the first DEM page.
     prepare: Option<prepare::Draws>,
-    /// The raster mip levels' pipeline, made for the first raster page on
-    /// Modern; Compat's raster tiles have one level.
-    mips: Option<ComputePipelineId>,
     pages: Vec<Option<Page>>,
 }
 
@@ -271,34 +266,6 @@ impl Images {
         let placeholder_array = placeholder("no tiles", 1, 1, TextureViewDimension::D2Array);
         let placeholder_ramp = placeholder("no ramp", 2, 1, TextureViewDimension::D2);
 
-        let cs = ShaderStages::COMPUTE;
-        let mips_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "image mips",
-            entries: &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: cs,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: false },
-                        dimension: TextureViewDimension::D2Array,
-                    },
-                },
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: cs,
-                    ty: BindingType::StorageTexture {
-                        format: TextureFormat::Rgba8Unorm,
-                        dimension: TextureViewDimension::D2Array,
-                    },
-                },
-                BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: cs,
-                    ty: BindingType::Storage { read_only: true },
-                },
-            ],
-        });
-
         Self {
             target,
             draw_layout,
@@ -309,9 +276,7 @@ impl Images {
             nearest,
             placeholder: placeholder_array,
             placeholder_ramp,
-            mips_layout,
             prepare: None,
-            mips: None,
             pages: Vec::new(),
         }
     }
@@ -375,18 +340,6 @@ impl Images {
         }
     }
 
-    /// Whether raster tiles and DEM slopes have their mip levels: the
-    /// pipeline that makes them compiled, or no page needs it. Raster nodes
-    /// and shaded hillshades wait for it.
-    pub(crate) fn mips_ready(&self, gpu: &mut dyn Gpu) -> bool {
-        self.mips.is_none_or(|p| gpu.pipeline_ready(p.into()))
-    }
-
-    /// The raster mip levels' pipeline, for the first-visible order.
-    pub(crate) fn mips_pipeline(&self) -> Option<PipelineId> {
-        self.mips.map(PipelineId::from)
-    }
-
     /// Whether DEM tiles can be prepared: their pipelines compiled, or no
     /// DEM page needs them. What reads prepared DEM tiles (hillshade,
     /// color relief, terrain) waits for it.
@@ -407,6 +360,7 @@ impl Images {
         gpu: &mut dyn Gpu,
         kind: PageKind,
         [width, height]: [u32; 2],
+        downsampler: &mut crate::downsample::Downsampler,
     ) -> PageId {
         let sampled = TextureUsages::TEXTURE_BINDING;
         // Host images are copied in as render targets, and the prepare
@@ -423,13 +377,14 @@ impl Images {
         if kind == PageKind::Dem {
             self.make_prepare(gpu);
         }
-        if gpu.caps().tier == Tier::Modern && self.mips.is_none() {
-            self.mips = Some(compute_pipeline(gpu, &IMAGE_MIPS_SHADER, self.mips_layout));
+        // Mipmapped on Modern (#3), whose compute pass makes the levels.
+        let mipmapped = gpu.caps().tier == Tier::Modern;
+        if mipmapped {
+            downsampler.make(gpu);
         }
         let levels = |border: u32| 32 - (width.max(height) + 2 * border).max(1).leading_zeros();
         let textures = match kind {
-            // Mipmapped on Modern (#3), whose compute pass makes the levels.
-            PageKind::Raster if self.mips.is_some() => vec![PageTexture {
+            PageKind::Raster if mipmapped => vec![PageTexture {
                 usage: uploaded | TextureUsages::STORAGE_BINDING,
                 mip_levels: levels(0),
                 ..texture("raster tiles", 0, uploaded)
@@ -440,13 +395,13 @@ impl Images {
             PageKind::Dem => vec![
                 texture("dem tiles", 0, uploaded),
                 texture("padded dem tiles", 2, uploaded),
-                match self.mips {
-                    Some(_) => PageTexture {
+                match mipmapped {
+                    true => PageTexture {
                         usage: uploaded | TextureUsages::STORAGE_BINDING,
                         mip_levels: levels(1),
                         ..texture("hillshade slopes", 1, uploaded)
                     },
-                    None => texture("hillshade slopes", 1, uploaded),
+                    false => texture("hillshade slopes", 1, uploaded),
                 },
             ],
         };
@@ -560,10 +515,15 @@ impl Images {
     /// The compute pass that makes mip levels for raster layers uploaded,
     /// and DEM slopes prepared, since the last, if any, and its
     /// dispatches.
-    pub(crate) fn mip_pass(&mut self, gpu: &mut dyn Gpu) -> Option<(Pass, u32)> {
+    pub(crate) fn mip_pass(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        downsampler: &crate::downsample::Downsampler,
+    ) -> Option<(Pass, u32)> {
         // Layers wait for the pipeline to compile.
-        let mips_pipeline = self.mips.filter(|&p| gpu.pipeline_ready(p.into()))?;
-        let mips_layout = self.mips_layout;
+        if !downsampler.ready(gpu) {
+            return None;
+        }
         let mut commands = Vec::new();
         let mut dispatches = 0;
         for page in self.pages.iter_mut().flatten() {
@@ -581,59 +541,29 @@ impl Images {
             let texture = page.page.texture(index);
             let levels = page.page.mip_levels(index);
             let mips = page.mips.get_or_insert_with(|| {
-                let jobs = gpu.create_buffer(&BufferDesc {
-                    label: "image mip layers",
-                    size: u64::from(capacity) * 4,
+                let regions = gpu.create_buffer(&BufferDesc {
+                    label: "image mip regions",
+                    size: u64::from(capacity) * 16,
                     usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
                 });
                 let views: Vec<TextureId> = (0..levels)
                     .map(|level| gpu.create_texture_view(texture, level..level + 1))
                     .collect();
-                let groups = (1..levels as usize)
-                    .map(|level| {
-                        let view = |binding, texture| BindGroupEntry {
-                            binding,
-                            resource: BindingResource::Texture {
-                                texture,
-                                dimension: TextureViewDimension::D2Array,
-                            },
-                        };
-                        gpu.create_bind_group(&BindGroupDesc {
-                            label: "image mips",
-                            layout: mips_layout,
-                            entries: &[
-                                view(0, views[level - 1]),
-                                view(1, views[level]),
-                                BindGroupEntry {
-                                    binding: 2,
-                                    resource: BindingResource::buffer(jobs),
-                                },
-                            ],
-                        })
-                    })
-                    .collect();
+                let groups = downsampler.groups(gpu, &views, regions);
                 Mips {
                     revision,
-                    jobs,
+                    regions,
                     views,
                     groups,
                 }
             });
+            let [side, _] = page.page.size(index);
             let layers = std::mem::take(&mut page.mip_layers);
-            gpu.write_buffer(mips.jobs, 0, bytemuck::cast_slice(&layers));
-            let [width, height] = page.page.size(index);
-            for (level, &group) in (1..levels).zip(&mips.groups) {
-                commands.extend([
-                    ComputeCommand::SetPipeline(mips_pipeline),
-                    ComputeCommand::SetBindGroup { index: 0, group },
-                    ComputeCommand::Dispatch {
-                        x: (width >> level).max(1).div_ceil(8),
-                        y: (height >> level).max(1).div_ceil(8),
-                        z: layers.len() as u32,
-                    },
-                ]);
-                dispatches += 1;
-            }
+            let regions: Vec<[u32; 4]> = layers.iter().map(|&layer| [layer, 0, 0, side]).collect();
+            gpu.write_buffer(mips.regions, 0, bytemuck::cast_slice(&regions));
+            let count = layers.len() as u32;
+            commands.extend(downsampler.dispatches(gpu, &mips.groups, side, count)?);
+            dispatches += mips.groups.len() as u32;
         }
         (!commands.is_empty()).then(|| {
             (
@@ -791,29 +721,6 @@ impl Images {
             entries: &entries,
         })
     }
-}
-
-/// A compute pipeline of `shader` over one group of `layout`.
-fn compute_pipeline(
-    gpu: &mut dyn Gpu,
-    shader: &Shader,
-    layout: BindGroupLayoutId,
-) -> ComputePipelineId {
-    let module = gpu.create_shader_module(&ShaderModuleDesc {
-        label: shader.label,
-        source: ShaderSource::Wgsl(shader.source().into()),
-    });
-    let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
-        label: shader.label,
-        bind_group_layouts: &[layout],
-        compute: ShaderStage {
-            module,
-            entry_point: shader.compute,
-            constants: &[],
-        },
-    });
-    gpu.destroy_shader_module(module);
-    pipeline
 }
 
 /// The prepare (plan §8.5's render-to-texture `Prepare`): for each pending
@@ -1034,13 +941,8 @@ impl crate::release::Release for Images {
             }
         }
         let draws = self.prepare.map(|d| (d.layout, d.pad, d.slope));
-        let fixed = (
-            self.image_layout,
-            self.relief_layout,
-            self.mips_layout,
-            self.mips,
-        );
-        (fixed, self.pipelines.0, self.linear, self.nearest).release(gpu);
+        let fixed = (self.image_layout, self.relief_layout, self.pipelines.0);
+        (fixed, self.linear, self.nearest).release(gpu);
         (self.placeholder, self.placeholder_ramp, draws).release(gpu);
     }
 }

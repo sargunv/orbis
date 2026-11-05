@@ -20,6 +20,7 @@
 mod atmosphere;
 #[cfg(feature = "compat")]
 mod compat;
+mod downsample;
 mod extrusion;
 mod heatmap;
 mod image;
@@ -247,6 +248,8 @@ pub struct Renderer {
     /// Node uniform writes since the last frame.
     paints_written: u32,
     images: image::Images,
+    /// Mip levels for raster pages, DEM slopes and the drape atlas.
+    downsampler: downsample::Downsampler,
     heatmaps: heatmap::Heatmaps,
     extrusions: extrusion::Extrusions,
     models: model::Models,
@@ -343,6 +346,7 @@ impl Renderer {
         (
             self.atmosphere,
             self.images,
+            self.downsampler,
             self.heatmaps,
             self.extrusions,
             self.models,
@@ -596,6 +600,7 @@ impl Renderer {
 
         let image_bindings = images;
         let images = image::Images::new(gpu, target, draw_layout);
+        let downsampler = downsample::Downsampler::new(gpu);
         let heatmaps = heatmap::Heatmaps::new(gpu, draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
         let extrusions = extrusion::Extrusions::new(draw_layout, node_layout);
@@ -642,6 +647,7 @@ impl Renderer {
             bundles: Vec::new(),
             paints_written: 0,
             images,
+            downsampler,
             heatmaps,
             layers: Default::default(),
             composites,
@@ -1020,7 +1026,7 @@ impl Renderer {
         let stacks = self.drape_stacks();
         let terrain = self.terrain.as_mut().expect("terrain is on");
         let before = terrain.layout().generation;
-        terrain.reserve(gpu, tile_slots, stacks)?;
+        terrain.reserve(gpu, tile_slots, stacks, &mut self.downsampler)?;
         let layout = terrain.layout();
         if layout.generation != before {
             // Stack layers and the main bundle's composites follow it.
@@ -1251,7 +1257,8 @@ impl Renderer {
     /// A page of tile textures, `size` texels per tile, for image nodes to
     /// bind with [`bind_page`](Self::bind_page).
     pub fn create_page(&mut self, gpu: &mut dyn Gpu, kind: PageKind, size: [u32; 2]) -> PageId {
-        self.images.create_page(gpu, kind, size)
+        self.images
+            .create_page(gpu, kind, size, &mut self.downsampler)
     }
 
     /// Destroys a page. Nodes that bind it must be rebound or replaced.
@@ -1579,7 +1586,7 @@ impl Renderer {
             family if family.is_image() => {
                 out.extend(self.images.pipeline(family).map(PipelineId::from));
                 if family == Family::Raster {
-                    out.extend(self.images.mips_pipeline());
+                    out.extend(self.downsampler.pipeline());
                 } else {
                     out.extend(self.images.prepare_pipelines());
                 }
@@ -1997,7 +2004,7 @@ impl Renderer {
             stats.prepared = prepared.tiles;
             passes.extend(prepare);
         }
-        if let Some((mips, dispatches)) = self.images.mip_pass(gpu) {
+        if let Some((mips, dispatches)) = self.images.mip_pass(gpu, &self.downsampler) {
             stats.dispatches += dispatches;
             passes.push(mips);
         }
@@ -2055,7 +2062,7 @@ impl Renderer {
             let b = self.scene.buffers();
             // Shaded hillshades draw once their slopes can be prepared,
             // with their mip levels.
-            let prepared = self.images.prepare_ready(gpu) && self.images.mips_ready(gpu);
+            let prepared = self.images.prepare_ready(gpu) && self.downsampler.ready(gpu);
             let shades: Vec<Option<BindGroupId>> = (self.terrain_layers.iter())
                 .map(|l| {
                     let node = &self.nodes[l.shade? as usize];
@@ -2067,6 +2074,7 @@ impl Renderer {
                 (b.frame, b.props),
                 (&drape, &shades),
                 depth,
+                &self.downsampler,
                 &mut passes,
             );
         }
@@ -2218,7 +2226,7 @@ impl Renderer {
                 .is_some_and(|t| t.ready(gpu))
                 && self.composites.ready(gpu, offscreen::Mode::Over),
             prepare: self.images.prepare_ready(gpu),
-            mips: self.images.mips_ready(gpu),
+            mips: self.downsampler.ready(gpu),
         }
     }
 

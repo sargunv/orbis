@@ -128,15 +128,19 @@ impl DrapeLayout {
 
 #[derive(Debug)]
 struct Atlas {
+    /// One layer, mipmapped.
     texture: TextureId,
     size: [u32; 2],
-    /// Per mip level, a view to draw into.
+    /// Per mip level, a view: level 0's is drawn into.
     levels: Vec<TextureId>,
-    /// Level 0's clear, then per mip level after it its downsample from
-    /// the level above.
-    groups: Vec<BindGroupId>,
-    slots: BufferId,
-    level_uniforms: BufferId,
+    /// The redrawn slots as the downsampler's regions, which the clear
+    /// reads too.
+    regions: BufferId,
+    /// The atlas's size, for the clear.
+    size_uniform: BufferId,
+    clear: BindGroupId,
+    /// The downsampler's group per level after the first.
+    mips: Vec<BindGroupId>,
 }
 
 #[derive(Debug)]
@@ -147,11 +151,9 @@ pub(crate) struct Terrain {
     /// A shaded hillshade's node group: its image node's.
     shade_layout: BindGroupLayoutId,
     clear_layout: BindGroupLayoutId,
-    mip_layout: BindGroupLayoutId,
     /// Draping and shading, each at one sample and at four.
     pipelines: [[Option<RenderPipelineId>; 2]; 2],
     clear: RenderPipelineId,
-    downsample: ComputePipelineId,
     grid: BufferId,
     grid_indices: BufferId,
     index_count: u32,
@@ -198,17 +200,6 @@ fn uniform(binding: u32, visibility: ShaderStages) -> BindGroupLayoutEntry {
     }
 }
 
-fn texture(binding: u32, visibility: ShaderStages, filterable: bool) -> BindGroupLayoutEntry {
-    BindGroupLayoutEntry {
-        binding,
-        visibility,
-        ty: BindingType::Texture {
-            sample: TextureSampleType::Float { filterable },
-            dimension: TextureViewDimension::D2,
-        },
-    }
-}
-
 impl Terrain {
     /// Terrain drawn into `target`, fogged by `atmosphere`, shading
     /// hillshades through image node groups of `shade_layout`.
@@ -240,7 +231,14 @@ impl Terrain {
                         dimension: TextureViewDimension::D2Array,
                     },
                 },
-                texture(4, fs, true),
+                BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: fs,
+                    ty: BindingType::Texture {
+                        sample: TextureSampleType::Float { filterable: true },
+                        dimension: TextureViewDimension::D2Array,
+                    },
+                },
                 BindGroupLayoutEntry {
                     binding: 5,
                     visibility: fs,
@@ -264,27 +262,6 @@ impl Terrain {
         let clear_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "drape clear",
             entries: &[uniform(0, vs), storage(1)],
-        });
-        let cs = ShaderStages::COMPUTE;
-        let mip_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "drape mip",
-            entries: &[
-                uniform(0, cs),
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: cs,
-                    ty: BindingType::Storage { read_only: true },
-                },
-                texture(2, cs, false),
-                BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: cs,
-                    ty: BindingType::StorageTexture {
-                        format: DRAPE_FORMAT,
-                        dimension: TextureViewDimension::D2,
-                    },
-                },
-            ],
         });
         let drape_module = gpu.create_shader_module(&ShaderModuleDesc {
             label: DRAPE_SHADER.label,
@@ -311,15 +288,6 @@ impl Terrain {
             topology: PrimitiveTopology::TriangleStrip,
             cull_mode: None,
             sample_count: 1,
-        });
-        let downsample = gpu.create_compute_pipeline(&ComputePipelineDesc {
-            label: DRAPE_SHADER.label,
-            bind_group_layouts: &[mip_layout],
-            compute: ShaderStage {
-                module: drape_module,
-                entry_point: DRAPE_SHADER.compute,
-                constants: &[],
-            },
         });
         gpu.destroy_shader_module(drape_module);
 
@@ -357,10 +325,8 @@ impl Terrain {
             stack_layout,
             shade_layout,
             clear_layout,
-            mip_layout,
             pipelines: [[None; 2]; 2],
             clear,
-            downsample,
             grid: grid_buffer,
             grid_indices,
             index_count: indices.len() as u32,
@@ -485,6 +451,7 @@ impl Terrain {
         gpu: &mut dyn Gpu,
         tile_slots: u32,
         stacks: u32,
+        downsampler: &mut crate::downsample::Downsampler,
     ) -> Result<(), crate::OutOfSpace> {
         let stacks = stacks.max(1);
         let state = self.layout_state;
@@ -508,7 +475,7 @@ impl Terrain {
             width: size[0],
             height: size[1],
             array_layers: 1,
-            dimension: TextureViewDimension::D2,
+            dimension: TextureViewDimension::D2Array,
             format: DRAPE_FORMAT,
             usage: TextureUsages::RENDER_ATTACHMENT
                 | TextureUsages::TEXTURE_BINDING
@@ -519,75 +486,42 @@ impl Terrain {
         let views: Vec<TextureId> = (0..levels)
             .map(|l| gpu.create_texture_view(texture, l..l + 1))
             .collect();
-        let slots = gpu.create_buffer(&BufferDesc {
+        let regions = gpu.create_buffer(&BufferDesc {
             label: "drape slots",
-            size: u64::from(columns * rows) * 4,
+            size: u64::from(columns * rows) * 16,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
         });
-        let level_uniforms = gpu.create_buffer(&BufferDesc {
-            label: "drape levels",
-            size: UNIFORM_STRIDE * u64::from(levels),
+        let size_uniform = gpu.create_buffer(&BufferDesc {
+            label: "drape atlas size",
+            size: 16,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        let mut groups = Vec::new();
-        for level in 0..levels {
-            let words: [u32; 4] = [
-                ((size[0] >> level) as f32).to_bits(),
-                ((size[1] >> level) as f32).to_bits(),
-                ((DRAPE_SLOT_PX >> level) as f32).to_bits(),
-                columns,
-            ];
-            gpu.write_buffer(
-                level_uniforms,
-                UNIFORM_STRIDE * u64::from(level),
-                bytemuck::cast_slice(&words),
-            );
-            let mut entries = vec![
+        let words = [size[0] as f32, size[1] as f32, 0.0, 0.0];
+        gpu.write_buffer(size_uniform, 0, bytemuck::cast_slice(&words));
+        let clear = gpu.create_bind_group(&BindGroupDesc {
+            label: "drape clear",
+            layout: self.clear_layout,
+            entries: &[
                 BindGroupEntry {
                     binding: 0,
-                    resource: BindingResource::Buffer {
-                        buffer: level_uniforms,
-                        offset: UNIFORM_STRIDE * u64::from(level),
-                        size: Some(16),
-                    },
+                    resource: BindingResource::buffer(size_uniform),
                 },
                 BindGroupEntry {
                     binding: 1,
-                    resource: BindingResource::buffer(slots),
+                    resource: BindingResource::buffer(regions),
                 },
-            ];
-            let layout = if level == 0 {
-                self.clear_layout
-            } else {
-                let view = |i: u32| BindingResource::Texture {
-                    texture: views[i as usize],
-                    dimension: TextureViewDimension::D2,
-                };
-                entries.extend([
-                    BindGroupEntry {
-                        binding: 2,
-                        resource: view(level - 1),
-                    },
-                    BindGroupEntry {
-                        binding: 3,
-                        resource: view(level),
-                    },
-                ]);
-                self.mip_layout
-            };
-            groups.push(gpu.create_bind_group(&BindGroupDesc {
-                label: "drape level",
-                layout,
-                entries: &entries,
-            }));
-        }
+            ],
+        });
+        downsampler.make(gpu);
+        let mips = downsampler.groups(gpu, &views, regions);
         self.atlas = Some(Atlas {
             texture,
             size,
             levels: views,
-            groups,
-            slots,
-            level_uniforms,
+            regions,
+            size_uniform,
+            clear,
+            mips,
         });
         self.layout_state = DrapeLayout {
             stacks,
@@ -603,7 +537,8 @@ impl Terrain {
 
     fn release_atlas(&mut self, gpu: &mut dyn Gpu) {
         if let Some(a) = self.atlas.take() {
-            (a.groups, a.levels, a.texture, a.slots, a.level_uniforms).release(gpu);
+            let buffers = (a.regions, a.size_uniform);
+            (a.clear, a.mips, a.levels, a.texture, buffers).release(gpu);
         }
     }
 
@@ -782,7 +717,7 @@ impl Terrain {
         let shaded = (self.layers.iter().any(|l| l.shade.is_some()))
             .then(|| self.pipeline(gpu, samples, true));
         let occlusion = self.occlusion.map(|_| self.occlusion_pipeline(gpu));
-        [pipeline.into(), self.clear.into(), self.downsample.into()]
+        [pipeline.into(), self.clear.into()]
             .into_iter()
             .chain(shaded.map(PipelineId::from))
             .chain(occlusion.map(PipelineId::from))
@@ -790,7 +725,7 @@ impl Terrain {
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        let mut out: Vec<PipelineId> = vec![self.clear.into(), self.downsample.into()];
+        let mut out: Vec<PipelineId> = vec![self.clear.into()];
         out.extend(
             self.pipelines
                 .iter()
@@ -869,10 +804,11 @@ impl Terrain {
         (frame, props): (BufferId, BufferId),
         (drape, shades): (&[RenderBundleId], &[Option<BindGroupId>]),
         (depth, depth_store): (TextureId, StoreOp),
+        downsampler: &crate::downsample::Downsampler,
         passes: &mut Vec<Pass>,
     ) -> u32 {
         let mut draws = 0;
-        if !self.ready(gpu) {
+        if !self.ready(gpu) || !downsampler.ready(gpu) {
             // The map placed this frame's drape for these slots only: it
             // draws them all again once terrain can.
             if !self.pending.is_empty() {
@@ -886,7 +822,18 @@ impl Terrain {
         if !self.pending.is_empty() {
             self.pending.sort_unstable();
             self.pending.dedup();
-            gpu.write_buffer(atlas.slots, 0, bytemuck::cast_slice(&self.pending));
+            let columns = self.layout_state.columns;
+            let regions: Vec<[u32; 4]> = (self.pending.iter())
+                .map(|&s| {
+                    [
+                        0,
+                        s % columns * DRAPE_SLOT_PX,
+                        s / columns * DRAPE_SLOT_PX,
+                        DRAPE_SLOT_PX,
+                    ]
+                })
+                .collect();
+            gpu.write_buffer(atlas.regions, 0, bytemuck::cast_slice(&regions));
             let count = self.pending.len() as u32;
             let quads = |pipeline, group| {
                 vec![
@@ -898,7 +845,7 @@ impl Terrain {
                     },
                 ]
             };
-            let mut commands = quads(self.clear, atlas.groups[0]);
+            let mut commands = quads(self.clear, atlas.clear);
             commands.push(RenderCommand::ExecuteBundles(drape.to_vec()));
             passes.push(Pass::Render(RenderPass {
                 label: "drape".into(),
@@ -912,25 +859,10 @@ impl Terrain {
                 commands,
             }));
             // Each level from the one above, one dispatch over the slots.
-            let mut mips = Vec::new();
-            for level in 1..atlas.levels.len() {
-                let side = (DRAPE_SLOT_PX >> level).div_ceil(8);
-                mips.extend([
-                    ComputeCommand::SetPipeline(self.downsample),
-                    ComputeCommand::SetBindGroup {
-                        index: 0,
-                        group: atlas.groups[level],
-                    },
-                    ComputeCommand::Dispatch {
-                        x: side,
-                        y: side,
-                        z: count,
-                    },
-                ]);
-            }
+            let mips = downsampler.dispatches(gpu, &atlas.mips, DRAPE_SLOT_PX, count);
             passes.push(Pass::Compute(ComputePass {
                 label: "drape mips".into(),
-                commands: mips,
+                commands: mips.expect("ready above"),
             }));
             draws += 1;
             self.pending.clear();
@@ -971,7 +903,7 @@ impl Terrain {
                             binding: 4,
                             resource: BindingResource::Texture {
                                 texture: atlas_texture,
-                                dimension: TextureViewDimension::D2,
+                                dimension: TextureViewDimension::D2Array,
                             },
                         },
                         BindGroupEntry {
@@ -1243,12 +1175,7 @@ impl crate::release::Release for Terrain {
         self.release_occlusion(gpu);
         self.forget_group(gpu);
         let layouts = (self.layout, self.stack_layout, self.clear_layout);
-        let pipelines = (
-            self.pipelines,
-            self.clear,
-            self.downsample,
-            self.occlusion_pipeline,
-        );
+        let pipelines = (self.pipelines, self.clear, self.occlusion_pipeline);
         let buffers = (
             self.grid,
             self.grid_indices,
@@ -1256,14 +1183,7 @@ impl crate::release::Release for Terrain {
             self.params,
             self.shade_tiles,
         );
-        (
-            layouts,
-            self.mip_layout,
-            pipelines,
-            buffers,
-            self.stack_uniforms,
-        )
-            .release(gpu);
+        (layouts, pipelines, buffers, self.stack_uniforms).release(gpu);
         (self.stack_groups, self.linear, self.targets).release(gpu);
     }
 }

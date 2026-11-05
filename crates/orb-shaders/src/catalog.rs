@@ -146,14 +146,13 @@ pub const TERRAIN_SHADE_SHADER: Shader = Shader {
     lit: false,
 };
 
-/// Clears drape slots (`vs_slot`, `fs_clear`) and builds their mip levels
-/// (`downsample`).
+/// Clears the drape slots a frame redraws.
 pub const DRAPE_SHADER: Shader = Shader {
     label: "drape",
     parts: &[include_str!("wgsl/drape.wgsl")],
     vertex: "vs_slot",
     fragment: "fs_clear",
-    compute: "downsample",
+    compute: "",
     lit: false,
 };
 
@@ -311,10 +310,10 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
     lit: false,
 };
 
-/// A raster page's mip levels for its new layers (`downsample`).
-pub const IMAGE_MIPS_SHADER: Shader = Shader {
-    label: "image mips",
-    parts: &[include_str!("wgsl/image_mips.wgsl")],
+/// Mip levels over regions of array layers: drape slots, raster pages.
+pub const DOWNSAMPLE_SHADER: Shader = Shader {
+    label: "downsample",
+    parts: &[include_str!("wgsl/downsample.wgsl")],
     vertex: "",
     fragment: "",
     compute: "downsample",
@@ -490,6 +489,6 @@ pub const SHADERS: &[Shader] = &[
     COLOR_RELIEF_SHADER,
     PREPARE_PAD_SHADER,
     PREPARE_SLOPE_SHADER,
-    IMAGE_MIPS_SHADER,
+    DOWNSAMPLE_SHADER,
     CULL_SHADER,
 ];

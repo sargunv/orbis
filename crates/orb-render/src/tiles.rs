@@ -291,7 +291,9 @@ impl Renderer {
         let page = match self.tiles.page(key.source) {
             Some(page) => page,
             None => {
-                let page = self.images.create_page(gpu, kind, size);
+                let page = self
+                    .images
+                    .create_page(gpu, kind, size, &mut self.downsampler);
                 for node in &mut self.nodes {
                     if node.source == Some(key.source)
                         && let Some(image) = &mut node.image
