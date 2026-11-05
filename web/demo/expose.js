@@ -1,5 +1,7 @@
 // The demo pages' console and test hooks: `globalThis.orbis` (the map's
 // edit and query API) and an `orbis-frame` window event per frame.
+import { setRequestTransform } from "orbis";
+
 export function expose(map) {
   globalThis.orbis = {
     map,
@@ -12,6 +14,7 @@ export function expose(map) {
     semanticSnapshot: () => map.semanticSnapshot(),
     loseDevice: (switchTier) => map.loseDevice(switchTier),
     trapPlacementWorker: () => map.trapPlacementWorker(),
+    setRequestTransform,
   };
   map.on("render", (ack) => window.dispatchEvent(new CustomEvent("orbis-frame", { detail: ack })));
 }

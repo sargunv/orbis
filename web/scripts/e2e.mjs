@@ -339,11 +339,33 @@ async function edits(browser, server) {
   console.log(`edits: placement worker trapped and replaced; commit ${before.commit} → ${after.commit}, ${after.shown} labels`);
 
   // A switch to WebGL2 after a loss keeps what the app set at run time:
-  // feature state (the grid's feature 7 above), images and markers.
+  // feature state (the grid's feature 7 above), images, markers, a
+  // GeoJSON source's diffed data and a transformed request.
   const switched = await page.evaluate(async () => {
-    const { map } = globalThis.orbis;
+    const { map, setRequestTransform } = globalThis.orbis;
+    map.camera.jumpTo({ center: [139.74, 35.688], zoom: 15, bearing: 0, pitch: 0 });
     map.addImage("e2e-dot", { width: 2, height: 2, data: new Uint8Array(16).fill(255) });
     const marker = map.addMarker({ lngLat: [139.74, 35.685], image: "e2e-dot" });
+    // Squares north of the grid, one per source.
+    const box = (x) => [[x, 35.691], [x + 0.002, 35.691], [x + 0.002, 35.693], [x, 35.693], [x, 35.691]];
+    const square = (x, properties = {}) => ({ type: "Feature", id: 1, properties, geometry: { type: "Polygon", coordinates: [box(x)] } });
+    const centre = (x) => [x + 0.001, 35.692];
+    const [geoX, remoteX] = [139.734, 139.744];
+    setRequestTransform((url) => (url.startsWith("app://")
+      ? { url: `data:application/json,${encodeURIComponent(JSON.stringify(square(remoteX)))}` } : undefined));
+    const fill = (id, color, extra = {}) => ({ id, type: "fill", source: id, paint: { "fill-color": color }, ...extra });
+    await map.edit((tx) => tx
+      .addSource("e2e-geo", { type: "geojson", data: { type: "FeatureCollection", features: [square(geoX, { name: "a" })] } })
+      .addLayer(fill("e2e-geo", "#ff0000"))
+      .addSource("e2e-remote", { type: "geojson", data: "app://square.json" })
+      .addLayer(fill("e2e-remote", "#00ffff")));
+    await map.edit((tx) => tx.updateSourceData("e2e-geo", { update: [{ id: 1, addOrUpdateProperties: [{ key: "name", value: "b" }] }] }));
+    await map.once("idle");
+    const shown = async () => {
+      const query = async (id, x) => (await map.queryRenderedFeatures(map.project(centre(x)), { layers: [id] }))[0]?.properties ?? null;
+      return { geo: await query("e2e-geo", geoX), remote: await query("e2e-remote", remoteX) };
+    };
+    const before = await shown();
     const capability = map.once("capability");
     map.loseDevice(true);
     const { tier } = await capability;
@@ -352,10 +374,16 @@ async function edits(browser, server) {
     const [feature] = await map.queryRenderedFeatures(at, { layers: ["grid"] });
     let moved = true;
     try { map.updateMarker(marker, { lngLat: [139.741, 35.685], image: "e2e-dot" }); } catch { moved = false; }
-    return { tier, image: await map.hasImage("e2e-dot"), state: feature?.state, moved };
+    const after = await shown();
+    map.edit((tx) => tx.removeLayer("e2e-geo").removeLayer("e2e-remote"));
+    setRequestTransform(undefined);
+    return { tier, image: await map.hasImage("e2e-dot"), state: feature?.state, moved, before, after };
   });
-  assert.deepEqual(switched, { tier: "compat", image: true, state: { hover: true }, moved: true }, JSON.stringify(switched));
-  console.log("edits: lost on WebGPU, recovered on WebGL2 with the app's state");
+  const sources = { geo: { name: "b" }, remote: {} };
+  assert.deepEqual(switched.before, sources, JSON.stringify(switched));
+  assert.deepEqual(switched, { tier: "compat", image: true, state: { hover: true }, moved: true, before: sources, after: sources },
+    JSON.stringify(switched));
+  console.log("edits: lost on WebGPU, recovered on WebGL2 with the app's state and sources");
 
   const cost = await page.evaluate(async (writes) => {
     const { map } = globalThis.orbis;
