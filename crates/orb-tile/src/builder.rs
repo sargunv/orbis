@@ -22,6 +22,7 @@ pub struct LayerBuilder {
     vertices: Vec<[i32; 2]>,
     keys: HashMap<String, usize>,
     columns: Vec<(String, Vec<Option<Value>>)>,
+    clip: Option<i32>,
 }
 
 impl LayerBuilder {
@@ -37,6 +38,7 @@ impl LayerBuilder {
             vertices: Vec::new(),
             keys: HashMap::new(),
             columns: Vec::new(),
+            clip: None,
         }
     }
 
@@ -109,6 +111,13 @@ impl LayerBuilder {
         }
     }
 
+    /// The layer's geometry was clipped `buffer` data units past the tile
+    /// square ([`Layer::clip_buffer`]).
+    pub fn clipped_at(&mut self, buffer: i32) -> &mut Self {
+        self.clip = Some(buffer);
+        self
+    }
+
     pub fn finish(mut self) -> Layer {
         let len = self.types.len();
         self.feature_parts.push(len_u32(self.part_rings.len()));
@@ -135,6 +144,7 @@ impl LayerBuilder {
             ring_vertices: self.ring_vertices,
             vertices: self.vertices,
             properties,
+            clip: self.clip,
         }
     }
 }

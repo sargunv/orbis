@@ -29,6 +29,9 @@ struct ExtrusionOut {
     @location(3) pattern_pos: vec2<f32>,
     @location(4) @interpolate(flat) images: vec2<u32>,
     @location(5) ground: vec2<f32>,
+    // A building cut at the source's buffer, clipped per fragment to the
+    // placement; whole ones draw entire from the placement that owns them.
+    @location(6) @interpolate(flat) cut: u32,
 };
 @vertex
 fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
@@ -61,7 +64,16 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     // so buildings don't hang over slopes (GL JS's `a_centroid`).
     let gradient_base = max(0.0, base);
     let gradient_height = max(0.0, height);
-    let raise = ground_elevation(tile, unpack_i16x2(prop_at(row + 9u)));
+    let centroid = unpack_i16x2(prop_at(row + 9u));
+    // A whole building belongs to the one placement holding its centroid
+    // (half open, as points are owned), which draws all of it, past its
+    // clip rectangles: its walls and their pattern run on unbroken.
+    out.cut = 1u - prop_at(row + 10u);
+    if out.cut == 0u && !inside_clips(tile, centroid) {
+        out.position = discarded_vertex();
+        return out;
+    }
+    let raise = ground_elevation(tile, centroid);
     let basement = select(0.0, 10.0, base <= 0.0 && frame.dem_dim > 0.0);
     height = gradient_height + raise;
     base = gradient_base + raise - basement;
@@ -103,15 +115,15 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
 }
 @fragment
 fn fs_extrusion(in: ExtrusionOut) -> @location(0) vec4<f32> {
-    // Shared tile edges can contain real vertical walls. They have zero
-    // ground area, and depth selects their nearest surface without blending
-    // twice, so include both bounds for 3D clipping.
+    // A cut building clips to the placement. Shared tile edges can contain
+    // real vertical walls: they have zero ground area, and depth selects
+    // their nearest surface without blending twice, so both bounds count.
     let tile = tile_at(in.tile);
-    var inside = false;
-    for (var i = 0u; i < 4u; i++) {
+    var inside = in.cut == 0u;
+    for (var i = 0u; i < 4u && !inside; i++) {
         let lo = unpack_i16x2(tile.clips[i].x);
         let hi = unpack_i16x2(tile.clips[i].y);
-        inside = inside || (all(in.tile_pos >= lo) && all(in.tile_pos <= hi));
+        inside = all(in.tile_pos >= lo) && all(in.tile_pos <= hi);
     }
     if !inside { discard; }
     // The cover's tiles here, as zoom levels past the centre's: from below

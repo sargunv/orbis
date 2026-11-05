@@ -58,9 +58,29 @@ pub struct Layer {
     ring_vertices: Vec<u32>,
     vertices: Vec<[i32; 2]>,
     properties: Vec<(String, Column)>,
+    /// How far past the tile square its producer clipped geometry, in data
+    /// units, when known (GeoJSON tiling, overzoom slices).
+    clip: Option<i32>,
 }
 
 impl Layer {
+    /// How far past the tile square geometry was clipped: as its producer
+    /// says, else the farthest any vertex lies past the square (a source
+    /// clips the same distance on every side, and clipped vertices land on
+    /// that line). 0 when nothing reaches past it.
+    pub fn clip_buffer(&self) -> i32 {
+        self.clip.unwrap_or_else(|| {
+            let extent = self.extent as i32;
+            self.vertices
+                .iter()
+                .flatten()
+                .map(|&v| (-v).max(v - extent))
+                .max()
+                .unwrap_or(0)
+                .max(0)
+        })
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

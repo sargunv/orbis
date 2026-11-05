@@ -40,6 +40,17 @@ pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
 /// rings), and the vertices on the tile's edges are its neighbours'. Edges
 /// on a pole's side extend to it.
 pub fn layout_subdivided(layer: &Layer, features: &[u32], bend: Option<Bend>) -> Mesh {
+    layout_clipped(layer, features, bend, &|_| true)
+}
+
+/// [`layout_subdivided`], clipping to the tile square only the features
+/// (by slot) `clip` says: the rest keep the source's buffer around it.
+pub(crate) fn layout_clipped(
+    layer: &Layer,
+    features: &[u32],
+    bend: Option<Bend>,
+    clip: &dyn Fn(u32) -> bool,
+) -> Mesh {
     let extent = i32::try_from(layer.extent()).expect("extent fits i32");
     assert!(
         extent <= i32::from(i16::MAX),
@@ -65,7 +76,13 @@ pub fn layout_subdivided(layer: &Layer, features: &[u32], bend: Option<Bend>) ->
             points.clear();
             holes.clear();
             for (r, source) in part.rings().enumerate() {
-                clip_ring(source, 0, extent, &mut ring);
+                if clip(slot) {
+                    clip_ring(source, 0, extent, &mut ring);
+                } else {
+                    ring.clear();
+                    let closing = source.len() > 1 && source.first() == source.last();
+                    ring.extend_from_slice(&source[..source.len() - usize::from(closing)]);
+                }
                 if ring.is_empty() {
                     if r == 0 {
                         break;

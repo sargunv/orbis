@@ -16,6 +16,7 @@ pub(super) fn create(features: &[Projected], (z, x, y): Key, options: &Options) 
         ]
     };
     let mut b = LayerBuilder::new(LAYER_NAME, options.extent);
+    b.clipped_at(options.buffer.round() as i32);
     for f in features {
         let ty = match f.shape {
             Shape::Points(_) => GeometryType::Point,

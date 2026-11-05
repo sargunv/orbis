@@ -201,3 +201,32 @@ terrain unchanged but for two fixtures moving a pixel or two).
 The cover over terrain also now raises each tile's culling volume by its
 elevated content's height, as the flat cover does, so tall buildings on
 hills aren't culled before their roofs enter the view.
+
+## Whole buildings belong to one tile
+
+Extrusions were clipped per fragment to their placement's clip rectangles,
+so a building across a tile edge drew as two halves: each tile's wall
+pattern started its own phase at the edge (#71), and where an ancestor
+stood in for a loading tile its buildings were cut along the child's edge,
+showing their interiors.
+
+A building whole in a tile's data (none of its edges on the line the
+source clipped along, `orb_tile::Layer::clip_buffer`: GeoJSON's `buffer`,
+overzoom's slice buffer, else the farthest any vertex reaches past the
+square) is laid out entire, roof and walls past the square, and belongs to
+the one placement whose clip rectangles hold its centroid, half open as
+points are owned (extrusion row word 10). That placement draws all of it;
+the others draw none, with no fragment clip. A building the source cut at
+its buffer is clipped as before, and so is every building of a tile bent
+onto a curved surface (globe, curved warps), whose patches end at the
+square.
+
+Walls now run their pattern on from the ring's first vertex all the way
+round. GL JS draws each tile's whole copy under the depth test, each with
+its tile's pattern origin, and which copy wins a pixel is draw order: its
+expected images keep seams there. So `fill-extrusion-pattern/global-state`,
+`2x-on-1x-add-image-dds` and `terrain/fill-extrusion-vertical-gradient-
+pattern` differ from it by phase (8.6%, 2.0% and 3.5% of pixels); the rest
+of the directory is unchanged (fill-extrusion 50 pass, 13 fail, 1 skip
+natively), and Manhattan under Liberty draws as before with 0.5% more
+vertex words.

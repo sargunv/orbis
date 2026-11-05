@@ -30,6 +30,7 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
         * 8192.0
         / f64::from(layer.extent());
     let mut builder = LayerBuilder::new(layer.name(), 8192);
+    builder.clipped_at(buffer.round() as i32);
     for feature in 0..layer.len() {
         let kind = layer.geometry_type(feature);
         let mut parts = Vec::new();

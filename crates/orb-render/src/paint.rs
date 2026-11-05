@@ -211,7 +211,10 @@ pub struct ColorReliefPaint {
     pub nearest: bool,
 }
 
-pub const EXTRUSION_ROW_WORDS: usize = 10;
+/// Colour, height and base (pairs), three pattern ids, the feature's
+/// centroid (two i16s), and 1 when the building is whole in the tile's
+/// data, which only the placement holding its centroid draws.
+pub const EXTRUSION_ROW_WORDS: usize = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExtrusionPaint {

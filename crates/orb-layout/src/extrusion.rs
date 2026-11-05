@@ -1,8 +1,12 @@
 //! Flat extrusions, following GL JS's pinned `fill_extrusion_bucket.ts`.
 //! Four words: i16 position, feature slot, i16 normal.xy (scale 16384,
 //! bottom/top in x's low bit), then i16 normal.z and u16 edge distance.
-//! Roofs reuse fill triangulation. Walls clip original segments independently,
-//! so clipping never introduces a wall across the tile square.
+//! Roofs reuse fill triangulation. A building whole in the tile's data (no
+//! edge on the source's buffer clip) keeps its roof and walls past the tile
+//! square: the one placement holding its centroid draws it all (`whole`).
+//! A building the source cut at its buffer is clipped to the square, roof
+//! and walls; walls clip original segments independently, so clipping never
+//! introduces a wall across the tile square.
 use crate::round_corners::{round_ring, wall_normals};
 use crate::{Mesh, MeshBuilder, clip::clip_segment, fill};
 use orb_tile::{GeometryType, Layer, LayerBuilder};
@@ -33,8 +37,11 @@ pub fn layout_in_extent(
         ..b
     });
     let rounded = rounding > 0.0;
+    // From the source's rings, as the property rows take it.
+    let cuts = Whole::of(layer, bend.is_some());
+    let whole: Vec<bool> = features.iter().map(|&f| cuts.is_whole(layer, f)).collect();
     if output_extent == layer.extent() && !rounded {
-        return layout_normalized(layer, features, false, bend);
+        return layout_normalized(layer, features, &whole, false, bend);
     }
     let extent = output_extent as i32;
     let mut normalized = LayerBuilder::new("extrusion", output_extent);
@@ -70,6 +77,7 @@ pub fn layout_in_extent(
     layout_normalized(
         &normalized.finish(),
         &(0..features.len() as u32).collect::<Vec<_>>(),
+        &whole,
         rounded,
         bend,
     )
@@ -103,14 +111,54 @@ pub fn centroid(layer: &Layer, feature: u32, output_extent: u32) -> [i16; 2] {
     [clamp(mean(x)), clamp(mean(y))]
 }
 
-/// `rounded`: polygon walls take normals that blend across rounded corners.
+/// Which buildings are whole in a tile's data: none of their edges lies on
+/// the line the source clipped along, its buffer past the tile square
+/// ([`Layer::clip_buffer`]). A whole building can be drawn entire by the
+/// tile owning its centroid, where its placement maps past the square:
+/// not for a tile `bent` onto a curved surface, whose patches end there.
+#[derive(Clone, Copy, Debug)]
+pub struct Whole {
+    buffer: i32,
+    extent: i32,
+    bent: bool,
+}
+
+impl Whole {
+    pub fn of(layer: &Layer, bent: bool) -> Self {
+        Self {
+            buffer: layer.clip_buffer(),
+            extent: layer.extent() as i32,
+            bent,
+        }
+    }
+
+    pub fn is_whole(&self, layer: &Layer, feature: u32) -> bool {
+        !self.bent
+            && layer.geometry(feature as usize).parts().all(|part| {
+                part.rings().all(|ring| {
+                    let n = ring.len();
+                    (0..n).all(|i| !self.cut(ring[i], ring[(i + 1) % n]))
+                })
+            })
+    }
+
+    /// An edge along the clip line.
+    fn cut(&self, a: [i32; 2], b: [i32; 2]) -> bool {
+        let (lo, hi) = (-self.buffer, self.extent + self.buffer);
+        self.buffer > 0 && (0..2).any(|axis| a[axis] == b[axis] && (a[axis] == lo || a[axis] == hi))
+    }
+}
+
+/// `whole`, per slot: the building keeps its roof and walls past the
+/// tile square.
 fn layout_normalized(
     layer: &Layer,
     features: &[u32],
+    whole: &[bool],
     rounded: bool,
     bend: Option<fill::Bend>,
 ) -> Mesh {
-    let roof = fill::layout_subdivided(layer, features, bend);
+    let roof = fill::layout_clipped(layer, features, bend, &|slot| !whole[slot as usize]);
     let mut builder = MeshBuilder::new(STRIDE);
     // Preserve roof chunks by feeding their triangles through the builder.
     for v in roof.vertices.as_chunks::<2>().0 {
@@ -144,12 +192,10 @@ fn layout_normalized(
                     }
                     let a = ring[i];
                     let b = ring[(i + 1) % n];
-                    // The reference's synthetic clip lines are on the source
-                    // buffer, outside the tile square. Real edges on 0/extent
-                    // remain walls. Clip original edges, not a clipped polygon.
-                    if (0..2).any(|axis| a[axis] == b[axis] && (a[axis] < 0 || a[axis] > extent)) {
-                        continue;
-                    }
+                    // A cut building's walls clip to the square, which drops
+                    // the source's clip lines (outside it); real edges on
+                    // 0/extent remain walls. Original edges clip, not a
+                    // clipped polygon. A whole building has no clip lines.
                     let dx = b[0] as f32 - a[0] as f32;
                     let dy = b[1] as f32 - a[1] as f32;
                     let length = dx.hypot(dy);
@@ -159,7 +205,12 @@ fn layout_normalized(
                     if distance + length > 32768.0 {
                         distance = 0.0;
                     }
-                    if let Some((ca, cb, _, _)) = clip_segment(a, b, 0, extent) {
+                    let clipped = if whole[slot] {
+                        Some((a, b))
+                    } else {
+                        clip_segment(a, b, 0, extent).map(|(ca, cb, _, _)| (ca, cb))
+                    };
+                    if let Some((ca, cb)) = clipped {
                         let flat = [f64::from(-dy / length), f64::from(dx / length)];
                         // The wall's normals at its end and its start.
                         let (start_normal, end_normal) =
@@ -219,6 +270,31 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_building_keeps_its_walls_past_the_tile_edge() {
+        let mut b = LayerBuilder::new("building", 100);
+        b.begin_feature(None, GeometryType::Polygon);
+        b.begin_part();
+        b.begin_ring();
+        // Across x = 0, no edge on a buffer line: whole.
+        for p in [[-10, 20], [50, 20], [50, 80], [-5, 80]] {
+            b.push_vertex(p);
+        }
+        let layer = b.finish();
+        assert!(Whole::of(&layer, false).is_whole(&layer, 0));
+        let mesh = layout(&layer, &[0]);
+        // Two roof triangles and four whole walls, reaching x = −10.
+        assert_eq!(mesh.indices.len(), 6 + 4 * 6);
+        let min_x = mesh
+            .vertices
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|v| v[0] as i16)
+            .min();
+        assert_eq!(min_x, Some(-10));
+    }
+
+    #[test]
     fn clipped_roof_has_no_synthetic_walls() {
         let mut b = LayerBuilder::new("building", 100);
         b.begin_feature(None, GeometryType::Polygon);
@@ -227,7 +303,12 @@ mod tests {
         for p in [[-10, 20], [50, 20], [50, 80], [-10, 80]] {
             b.push_vertex(p);
         }
-        let mesh = layout(&b.finish(), &[0]);
+        let layer = b.finish();
+        assert!(
+            !Whole::of(&layer, false).is_whole(&layer, 0),
+            "cut along the buffer at x = −10"
+        );
+        let mesh = layout(&layer, &[0]);
         // Two roof triangles, three walls; no wall on x = 0.
         assert_eq!(mesh.indices.len(), 6 + 3 * 6);
         for v in mesh.vertices.as_chunks::<4>().0 {
