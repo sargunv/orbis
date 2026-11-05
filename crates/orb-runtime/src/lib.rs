@@ -66,6 +66,7 @@ pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraState, CameraTarget, Constraints, EaseOptions,
     FitOptions, FlyOptions, View, Viewport,
 };
+pub use orb_expr::json;
 pub use orb_interact::{Button, Feel, Input};
 pub use orb_layout::fill::Bend;
 pub use orb_render::Renderer;
@@ -73,7 +74,7 @@ pub use orb_render::{
     ARGS_WORDS, DESKTOP_BUDGET, ImageMetadata, MOBILE_BUDGET, PoolMemory, SceneCapacity,
     SceneMemory, TargetFormat,
 };
-pub use orb_v8::{FeatureTarget, Transaction};
+pub use orb_v8::{FeatureTarget, Op, Transaction};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};
 pub use queries::QueryDone;
 pub use query::{Hit, HitFeature, MeshHits};

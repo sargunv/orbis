@@ -38,7 +38,7 @@ static DiplomatStringView view(const char* text) {
 }
 
 int main(void) {
-    CHECK(OrbRuntime_abi_version() == 6);
+    CHECK(OrbRuntime_abi_version() == 7);
     OrbRuntime_create_result rt = OrbRuntime_create(0);
     CHECK(rt.is_ok);
     OrbTarget* target = OrbTarget_create_texture(rt.ok, SIZE, SIZE, 1.0);
@@ -69,6 +69,17 @@ int main(void) {
     OrbFeature* hit = OrbMap_hit_test(map, SIZE / 2.0, SIZE / 2.0);
     CHECK(hit && OrbFeature_has_id(hit));
     OrbFeature_destroy(hit);
+
+    /* Edits built one by one apply as one generation; a value that isn't
+     * JSON fails at once. */
+    OrbTransaction* tx = OrbTransaction_create();
+    CHECK(OrbTransaction_set_paint_property(tx, view("box"), view("fill-color"), view("\"#00ff00\"")).is_ok);
+    CHECK(OrbTransaction_set_paint_property(tx, view("box"), view("fill-opacity"), view("1")).is_ok);
+    CHECK(!OrbTransaction_set_filter(tx, view("box"), view("[==")).is_ok);
+    uint64_t before = OrbMap_generation(map);
+    OrbMap_edit_result edited = OrbMap_edit(map, tx);
+    CHECK(edited.is_ok && edited.ok == before + 1);
+    OrbTransaction_destroy(tx);
 
     /* Padding moves the centre down; a camera's projection answers before
      * any move; the eye round-trips. */

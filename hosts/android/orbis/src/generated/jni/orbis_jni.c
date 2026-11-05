@@ -172,6 +172,12 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTargetDestroy(JNIEnv* env, 
     OrbTarget_destroy((OrbTarget*)(intptr_t)self);
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionDestroy(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbTransaction_destroy((OrbTransaction*)(intptr_t)self);
+}
+
 JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbEventKind(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
@@ -431,14 +437,10 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetStyleJson(JNIEnv* env
     }
 }
 
-JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapEdit(JNIEnv* env, jclass cls, jlong self, jbyteArray commands) {
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapEdit(JNIEnv* env, jclass cls, jlong self, jlong transaction) {
     (void)env;
     (void)cls;
-    jbyte* commands_bytes = (*env)->GetByteArrayElements(env, commands, NULL);
-    if (!commands_bytes) return 0;
-    DiplomatStringView commands_view = { (const char*)commands_bytes, (size_t)(*env)->GetArrayLength(env, commands) };
-    OrbMap_edit_result result = OrbMap_edit((OrbMap*)(intptr_t)self, commands_view);
-    (*env)->ReleaseByteArrayElements(env, commands, commands_bytes, JNI_ABORT);
+    OrbMap_edit_result result = OrbMap_edit((OrbMap*)(intptr_t)self, (const OrbTransaction*)(intptr_t)(transaction));
     if (!result.is_ok) {
         throw_OrbError(env, result.err);
         return 0;
@@ -1092,6 +1094,286 @@ JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbTargetPixels(JNIEnv* 
     (void)cls;
     DiplomatU8View result = OrbTarget_pixels((const OrbTarget*)(intptr_t)self);
     return new_U8_array(env, (result).data, (result).len);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbTransactionCreate(JNIEnv* env, jclass cls) {
+    (void)env;
+    (void)cls;
+    OrbTransaction* result = OrbTransaction_create();
+    return (jlong)(intptr_t)(result);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbTransactionFromCommands(JNIEnv* env, jclass cls, jbyteArray commands) {
+    (void)env;
+    (void)cls;
+    jbyte* commands_bytes = (*env)->GetByteArrayElements(env, commands, NULL);
+    if (!commands_bytes) return 0;
+    DiplomatStringView commands_view = { (const char*)commands_bytes, (size_t)(*env)->GetArrayLength(env, commands) };
+    OrbTransaction_from_commands_result result = OrbTransaction_from_commands(commands_view);
+    (*env)->ReleaseByteArrayElements(env, commands, commands_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return 0;
+    }
+    return (jlong)(intptr_t)(result.ok);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetPaintProperty(JNIEnv* env, jclass cls, jlong self, jbyteArray layer, jbyteArray name, jbyteArray value) {
+    (void)env;
+    (void)cls;
+    jbyte* layer_bytes = (*env)->GetByteArrayElements(env, layer, NULL);
+    if (!layer_bytes) return;
+    DiplomatStringView layer_view = { (const char*)layer_bytes, (size_t)(*env)->GetArrayLength(env, layer) };
+    jbyte* name_bytes = (*env)->GetByteArrayElements(env, name, NULL);
+    if (!name_bytes) return;
+    DiplomatStringView name_view = { (const char*)name_bytes, (size_t)(*env)->GetArrayLength(env, name) };
+    jbyte* value_bytes = (*env)->GetByteArrayElements(env, value, NULL);
+    if (!value_bytes) return;
+    DiplomatStringView value_view = { (const char*)value_bytes, (size_t)(*env)->GetArrayLength(env, value) };
+    OrbTransaction_set_paint_property_result result = OrbTransaction_set_paint_property((OrbTransaction*)(intptr_t)self, layer_view, name_view, value_view);
+    (*env)->ReleaseByteArrayElements(env, layer, layer_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, name, name_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, value, value_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetLayoutProperty(JNIEnv* env, jclass cls, jlong self, jbyteArray layer, jbyteArray name, jbyteArray value) {
+    (void)env;
+    (void)cls;
+    jbyte* layer_bytes = (*env)->GetByteArrayElements(env, layer, NULL);
+    if (!layer_bytes) return;
+    DiplomatStringView layer_view = { (const char*)layer_bytes, (size_t)(*env)->GetArrayLength(env, layer) };
+    jbyte* name_bytes = (*env)->GetByteArrayElements(env, name, NULL);
+    if (!name_bytes) return;
+    DiplomatStringView name_view = { (const char*)name_bytes, (size_t)(*env)->GetArrayLength(env, name) };
+    jbyte* value_bytes = (*env)->GetByteArrayElements(env, value, NULL);
+    if (!value_bytes) return;
+    DiplomatStringView value_view = { (const char*)value_bytes, (size_t)(*env)->GetArrayLength(env, value) };
+    OrbTransaction_set_layout_property_result result = OrbTransaction_set_layout_property((OrbTransaction*)(intptr_t)self, layer_view, name_view, value_view);
+    (*env)->ReleaseByteArrayElements(env, layer, layer_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, name, name_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, value, value_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetFilter(JNIEnv* env, jclass cls, jlong self, jbyteArray layer, jbyteArray filter) {
+    (void)env;
+    (void)cls;
+    jbyte* layer_bytes = (*env)->GetByteArrayElements(env, layer, NULL);
+    if (!layer_bytes) return;
+    DiplomatStringView layer_view = { (const char*)layer_bytes, (size_t)(*env)->GetArrayLength(env, layer) };
+    jbyte* filter_bytes = (*env)->GetByteArrayElements(env, filter, NULL);
+    if (!filter_bytes) return;
+    DiplomatStringView filter_view = { (const char*)filter_bytes, (size_t)(*env)->GetArrayLength(env, filter) };
+    OrbTransaction_set_filter_result result = OrbTransaction_set_filter((OrbTransaction*)(intptr_t)self, layer_view, filter_view);
+    (*env)->ReleaseByteArrayElements(env, layer, layer_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, filter, filter_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetLayerZoomRange(JNIEnv* env, jclass cls, jlong self, jbyteArray layer, jdouble min, jdouble max) {
+    (void)env;
+    (void)cls;
+    jbyte* layer_bytes = (*env)->GetByteArrayElements(env, layer, NULL);
+    if (!layer_bytes) return;
+    DiplomatStringView layer_view = { (const char*)layer_bytes, (size_t)(*env)->GetArrayLength(env, layer) };
+    OrbTransaction_set_layer_zoom_range((OrbTransaction*)(intptr_t)self, layer_view, (double)(min), (double)(max));
+    (*env)->ReleaseByteArrayElements(env, layer, layer_bytes, JNI_ABORT);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionAddLayer(JNIEnv* env, jclass cls, jlong self, jbyteArray layer, jbyteArray before) {
+    (void)env;
+    (void)cls;
+    jbyte* layer_bytes = (*env)->GetByteArrayElements(env, layer, NULL);
+    if (!layer_bytes) return;
+    DiplomatStringView layer_view = { (const char*)layer_bytes, (size_t)(*env)->GetArrayLength(env, layer) };
+    jbyte* before_bytes = (*env)->GetByteArrayElements(env, before, NULL);
+    if (!before_bytes) return;
+    DiplomatStringView before_view = { (const char*)before_bytes, (size_t)(*env)->GetArrayLength(env, before) };
+    OrbTransaction_add_layer_result result = OrbTransaction_add_layer((OrbTransaction*)(intptr_t)self, layer_view, before_view);
+    (*env)->ReleaseByteArrayElements(env, layer, layer_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, before, before_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionRemoveLayer(JNIEnv* env, jclass cls, jlong self, jbyteArray id) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    OrbTransaction_remove_layer((OrbTransaction*)(intptr_t)self, id_view);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionMoveLayer(JNIEnv* env, jclass cls, jlong self, jbyteArray id, jbyteArray before) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    jbyte* before_bytes = (*env)->GetByteArrayElements(env, before, NULL);
+    if (!before_bytes) return;
+    DiplomatStringView before_view = { (const char*)before_bytes, (size_t)(*env)->GetArrayLength(env, before) };
+    OrbTransaction_move_layer((OrbTransaction*)(intptr_t)self, id_view, before_view);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, before, before_bytes, JNI_ABORT);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionAddSource(JNIEnv* env, jclass cls, jlong self, jbyteArray id, jbyteArray source) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    OrbTransaction_add_source_result result = OrbTransaction_add_source((OrbTransaction*)(intptr_t)self, id_view, source_view);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionRemoveSource(JNIEnv* env, jclass cls, jlong self, jbyteArray id) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    OrbTransaction_remove_source((OrbTransaction*)(intptr_t)self, id_view);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetSourceData(JNIEnv* env, jclass cls, jlong self, jbyteArray id, jbyteArray data) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    jbyte* data_bytes = (*env)->GetByteArrayElements(env, data, NULL);
+    if (!data_bytes) return;
+    DiplomatStringView data_view = { (const char*)data_bytes, (size_t)(*env)->GetArrayLength(env, data) };
+    OrbTransaction_set_source_data_result result = OrbTransaction_set_source_data((OrbTransaction*)(intptr_t)self, id_view, data_view);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, data, data_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetGlobalStateProperty(JNIEnv* env, jclass cls, jlong self, jbyteArray name, jbyteArray value) {
+    (void)env;
+    (void)cls;
+    jbyte* name_bytes = (*env)->GetByteArrayElements(env, name, NULL);
+    if (!name_bytes) return;
+    DiplomatStringView name_view = { (const char*)name_bytes, (size_t)(*env)->GetArrayLength(env, name) };
+    jbyte* value_bytes = (*env)->GetByteArrayElements(env, value, NULL);
+    if (!value_bytes) return;
+    DiplomatStringView value_view = { (const char*)value_bytes, (size_t)(*env)->GetArrayLength(env, value) };
+    OrbTransaction_set_global_state_property_result result = OrbTransaction_set_global_state_property((OrbTransaction*)(intptr_t)self, name_view, value_view);
+    (*env)->ReleaseByteArrayElements(env, name, name_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, value, value_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetFeatureState(JNIEnv* env, jclass cls, jlong self, jbyteArray source, jbyteArray sourceLayer, jbyteArray id, jbyteArray state) {
+    (void)env;
+    (void)cls;
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    jbyte* sourceLayer_bytes = (*env)->GetByteArrayElements(env, sourceLayer, NULL);
+    if (!sourceLayer_bytes) return;
+    DiplomatStringView sourceLayer_view = { (const char*)sourceLayer_bytes, (size_t)(*env)->GetArrayLength(env, sourceLayer) };
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    jbyte* state_bytes = (*env)->GetByteArrayElements(env, state, NULL);
+    if (!state_bytes) return;
+    DiplomatStringView state_view = { (const char*)state_bytes, (size_t)(*env)->GetArrayLength(env, state) };
+    OrbTransaction_set_feature_state_result result = OrbTransaction_set_feature_state((OrbTransaction*)(intptr_t)self, source_view, sourceLayer_view, id_view, state_view);
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, sourceLayer, sourceLayer_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, state, state_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionRemoveFeatureState(JNIEnv* env, jclass cls, jlong self, jbyteArray source, jbyteArray sourceLayer, jbyteArray id, jbyteArray key) {
+    (void)env;
+    (void)cls;
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    jbyte* sourceLayer_bytes = (*env)->GetByteArrayElements(env, sourceLayer, NULL);
+    if (!sourceLayer_bytes) return;
+    DiplomatStringView sourceLayer_view = { (const char*)sourceLayer_bytes, (size_t)(*env)->GetArrayLength(env, sourceLayer) };
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    jbyte* key_bytes = (*env)->GetByteArrayElements(env, key, NULL);
+    if (!key_bytes) return;
+    DiplomatStringView key_view = { (const char*)key_bytes, (size_t)(*env)->GetArrayLength(env, key) };
+    OrbTransaction_remove_feature_state((OrbTransaction*)(intptr_t)self, source_view, sourceLayer_view, id_view, key_view);
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, sourceLayer, sourceLayer_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, key, key_bytes, JNI_ABORT);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetStyle(JNIEnv* env, jclass cls, jlong self, jbyteArray style) {
+    (void)env;
+    (void)cls;
+    jbyte* style_bytes = (*env)->GetByteArrayElements(env, style, NULL);
+    if (!style_bytes) return;
+    DiplomatStringView style_view = { (const char*)style_bytes, (size_t)(*env)->GetArrayLength(env, style) };
+    OrbTransaction_set_style_result result = OrbTransaction_set_style((OrbTransaction*)(intptr_t)self, style_view);
+    (*env)->ReleaseByteArrayElements(env, style, style_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetStyleProperty(JNIEnv* env, jclass cls, jlong self, jbyteArray property, jbyteArray value) {
+    (void)env;
+    (void)cls;
+    jbyte* property_bytes = (*env)->GetByteArrayElements(env, property, NULL);
+    if (!property_bytes) return;
+    DiplomatStringView property_view = { (const char*)property_bytes, (size_t)(*env)->GetArrayLength(env, property) };
+    jbyte* value_bytes = (*env)->GetByteArrayElements(env, value, NULL);
+    if (!value_bytes) return;
+    DiplomatStringView value_view = { (const char*)value_bytes, (size_t)(*env)->GetArrayLength(env, value) };
+    OrbTransaction_set_style_property_result result = OrbTransaction_set_style_property((OrbTransaction*)(intptr_t)self, property_view, value_view);
+    (*env)->ReleaseByteArrayElements(env, property, property_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, value, value_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
 }
 
 JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbErrorLastMessage(JNIEnv* env, jclass cls) {

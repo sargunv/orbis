@@ -139,14 +139,14 @@ public final class OrbMap {
         }
     }
 
-    /// Applies a transaction of GL JS map calls as JSON, all at once;
-    /// returns the generation from which frames show it.
+    /// Applies a transaction's edits all at once, or none if one
+    /// fails; returns the generation from which frames show them.
     ///
     /// Contract: `command`.
     ///
     /// - Throws: `OrbErrorFailure` when it fails.
-    public func edit(commands: String) throws -> UInt64 {
-        let result = withStringView(commands) { commandsView in OrbMap_edit(live(), commandsView) }
+    public func edit(transaction: OrbTransaction) throws -> UInt64 {
+        let result = OrbMap_edit(live(), transaction.handle)
         guard result.is_ok else {
             throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
         }

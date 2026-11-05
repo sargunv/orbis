@@ -136,15 +136,17 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * Applies a transaction of GL JS map calls as JSON, all at once;
-     * returns the generation from which frames show it.
+     * Applies a transaction's edits all at once, or none if one
+     * fails; returns the generation from which frames show them.
      *
      * Contract: `command`.
      *
      * @throws OrbErrorException when it fails.
      */
-    fun edit(commands: String): ULong {
-        return OrbisNative.orbMapEdit(live(), commands.encodeToByteArray()).toULong()
+    fun edit(transaction: OrbTransaction): ULong {
+        synchronized(transaction) {
+            return OrbisNative.orbMapEdit(live(), transaction.live()).toULong()
+        }
     }
 
     /**

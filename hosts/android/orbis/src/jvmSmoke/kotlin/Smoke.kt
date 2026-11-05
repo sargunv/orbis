@@ -18,7 +18,7 @@ val STYLE = """
 """.trimIndent()
 
 fun main() {
-    check(OrbRuntime.abiVersion() == 6u)
+    check(OrbRuntime.abiVersion() == 7u)
     OrbRuntime.create(0u).use { runtime ->
         OrbTarget.createTexture(runtime, 64u, 64u, 1.0).use { target ->
             OrbMap.create(runtime, OrbFeel.Desktop, 0.0, 0.0, 0.0, 0.0).use { map ->
@@ -38,6 +38,16 @@ fun main() {
                     Thread.sleep(2)
                 }
                 map.hitTest(32.0, 32.0)!!.use { hit -> check(hit.layer() == "box" && hit.id() == "7") }
+
+                // Edits built one by one apply as one generation; a value
+                // that isn't JSON throws at once.
+                OrbTransaction.create().use { tx ->
+                    tx.setPaintProperty("box", "fill-color", "\"#00ff00\"")
+                    tx.setPaintProperty("box", "fill-opacity", "1")
+                    check(runCatching { tx.setFilter("box", "[==") }.isFailure)
+                    val before = map.generation()
+                    check(map.edit(tx) == before + 1u)
+                }
 
                 // Padding moves the centre down; a camera's projection
                 // answers before any move; the eye round-trips.

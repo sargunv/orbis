@@ -51,7 +51,7 @@ mod ffi {
 
     use diplomat_runtime::{DiplomatStr, DiplomatWrite};
 
-    use crate::{fail, text};
+    use crate::{fail, feature, invalid, json, name, text};
 
     /// Why a call failed; the message is [`OrbError::last_message`].
     #[diplomat::attr(auto, error)]
@@ -947,6 +947,231 @@ mod ffi {
         }
     }
 
+    /// Style edits a map applies as one (`OrbMap::edit`): all of them in
+    /// one generation, or none if one fails. Values are JSON text; an
+    /// empty value unsets or resets, an empty `before` means on top, an
+    /// empty source layer none. A value that isn't JSON fails at once.
+    #[diplomat::opaque_mut]
+    #[diplomat::attr(contract, thread = "any")]
+    #[derive(Debug, Default)]
+    pub struct OrbTransaction(pub(crate) orb_api::Transaction);
+
+    impl OrbTransaction {
+        #[diplomat::attr(contract, lifecycle)]
+        pub fn create() -> Box<OrbTransaction> {
+            Box::default()
+        }
+
+        /// GL JS map calls as JSON: `[["setPaintProperty", "water",
+        /// "fill-color", "red"], …]`.
+        #[diplomat::attr(contract, lifecycle)]
+        pub fn from_commands(commands: &DiplomatStr) -> Result<Box<OrbTransaction>, OrbError> {
+            orb_api::Transaction::from_commands(&text(commands))
+                .map(|tx| Box::new(OrbTransaction(tx)))
+                .map_err(invalid)
+        }
+
+        #[diplomat::attr(contract, immediate)]
+        pub fn set_paint_property(
+            &mut self,
+            layer: &DiplomatStr,
+            name: &DiplomatStr,
+            value: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let op = orb_api::Op::SetPaint {
+                layer: text(layer).into(),
+                name: text(name).into(),
+                value: json(value)?,
+            };
+            self.0.push(op);
+            Ok(())
+        }
+
+        #[diplomat::attr(contract, immediate)]
+        pub fn set_layout_property(
+            &mut self,
+            layer: &DiplomatStr,
+            name: &DiplomatStr,
+            value: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let op = orb_api::Op::SetLayout {
+                layer: text(layer).into(),
+                name: text(name).into(),
+                value: json(value)?,
+            };
+            self.0.push(op);
+            Ok(())
+        }
+
+        #[diplomat::attr(contract, immediate)]
+        pub fn set_filter(
+            &mut self,
+            layer: &DiplomatStr,
+            filter: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let op = orb_api::Op::SetFilter {
+                layer: text(layer).into(),
+                filter: json(filter)?,
+            };
+            self.0.push(op);
+            Ok(())
+        }
+
+        /// NaN leaves a bound out.
+        #[diplomat::attr(contract, immediate)]
+        pub fn set_layer_zoom_range(&mut self, layer: &DiplomatStr, min: f64, max: f64) {
+            let some = |v: f64| (!v.is_nan()).then_some(v);
+            self.0.push(orb_api::Op::SetZoomRange {
+                layer: text(layer).into(),
+                min: some(min),
+                max: some(max),
+            });
+        }
+
+        #[diplomat::attr(contract, immediate)]
+        pub fn add_layer(
+            &mut self,
+            layer: &DiplomatStr,
+            before: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let op = orb_api::Op::AddLayer {
+                layer: json(layer)?.ok_or_else(|| invalid("addLayer: no layer".into()))?,
+                before: name(before),
+            };
+            self.0.push(op);
+            Ok(())
+        }
+
+        #[diplomat::attr(contract, immediate)]
+        pub fn remove_layer(&mut self, id: &DiplomatStr) {
+            self.0.push(orb_api::Op::RemoveLayer {
+                id: text(id).into(),
+            });
+        }
+
+        #[diplomat::attr(contract, immediate)]
+        pub fn move_layer(&mut self, id: &DiplomatStr, before: &DiplomatStr) {
+            self.0.push(orb_api::Op::MoveLayer {
+                id: text(id).into(),
+                before: name(before),
+            });
+        }
+
+        #[diplomat::attr(contract, immediate)]
+        pub fn add_source(
+            &mut self,
+            id: &DiplomatStr,
+            source: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let op = orb_api::Op::AddSource {
+                id: text(id).into(),
+                source: json(source)?.ok_or_else(|| invalid("addSource: no source".into()))?,
+            };
+            self.0.push(op);
+            Ok(())
+        }
+
+        #[diplomat::attr(contract, immediate)]
+        pub fn remove_source(&mut self, id: &DiplomatStr) {
+            self.0.push(orb_api::Op::RemoveSource {
+                id: text(id).into(),
+            });
+        }
+
+        /// A GeoJSON source's new data (GL JS `setData`): its drawn tiles
+        /// stay until the new data's replace them.
+        #[diplomat::attr(contract, immediate)]
+        pub fn set_source_data(
+            &mut self,
+            id: &DiplomatStr,
+            data: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let op = orb_api::Op::SetSourceData {
+                id: text(id).into(),
+                data: json(data)?.ok_or_else(|| invalid("setSourceData: no data".into()))?,
+            };
+            self.0.push(op);
+            Ok(())
+        }
+
+        #[diplomat::attr(contract, immediate)]
+        pub fn set_global_state_property(
+            &mut self,
+            name: &DiplomatStr,
+            value: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let op = orb_api::Op::set_global_state(text(name).into(), json(value)?.as_ref());
+            self.0.push(op);
+            Ok(())
+        }
+
+        /// `state` is a JSON object.
+        #[diplomat::attr(contract, immediate)]
+        pub fn set_feature_state(
+            &mut self,
+            source: &DiplomatStr,
+            source_layer: &DiplomatStr,
+            id: &DiplomatStr,
+            state: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let target = feature(source, source_layer, id);
+            let op =
+                orb_api::Op::set_feature_state(target, json(state)?.as_ref()).map_err(invalid)?;
+            self.0.push(op);
+            Ok(())
+        }
+
+        /// Removes `key` of a feature's state, or (an empty key) its whole
+        /// state, or (an empty id) the state of every feature of the
+        /// source or source layer.
+        #[diplomat::attr(contract, immediate)]
+        pub fn remove_feature_state(
+            &mut self,
+            source: &DiplomatStr,
+            source_layer: &DiplomatStr,
+            id: &DiplomatStr,
+            key: &DiplomatStr,
+        ) {
+            self.0.push(orb_api::Op::RemoveFeatureState {
+                target: feature(source, source_layer, id),
+                key: name(key),
+            });
+        }
+
+        /// Replaces the whole style, applied as the difference to the new.
+        #[diplomat::attr(contract, immediate)]
+        pub fn set_style(&mut self, style: &DiplomatStr) -> Result<(), OrbError> {
+            let op = orb_api::Op::SetStyle {
+                style: json(style)?.ok_or_else(|| invalid("setStyle: no style".into()))?,
+            };
+            self.0.push(op);
+            Ok(())
+        }
+
+        /// Sets or (an empty value) removes the style's `terrain`, `sky`,
+        /// `light`, `projection` or `transition` (GL JS `setTerrain` and
+        /// the like).
+        #[diplomat::attr(contract, immediate)]
+        pub fn set_style_property(
+            &mut self,
+            property: &DiplomatStr,
+            value: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let key = text(property);
+            if !["terrain", "sky", "light", "projection", "transition"].contains(&&*key) {
+                return Err(invalid(format!(
+                    "{key} isn't terrain, sky, light, projection or transition"
+                )));
+            }
+            let op = orb_api::Op::SetRoot {
+                key: key.into(),
+                value: json(value)?,
+            };
+            self.0.push(op);
+            Ok(())
+        }
+    }
+
     /// A map: style, camera store, gestures and events. Draw it with
     /// `render` whenever `needs_frame`.
     #[diplomat::opaque_mut]
@@ -1072,11 +1297,11 @@ mod ffi {
             self.0.set_style_json(&text(json)).map_err(fail)
         }
 
-        /// Applies a transaction of GL JS map calls as JSON, all at once;
-        /// returns the generation from which frames show it.
+        /// Applies a transaction's edits all at once, or none if one
+        /// fails; returns the generation from which frames show them.
         #[diplomat::attr(contract, command)]
-        pub fn edit(&mut self, commands: &DiplomatStr) -> Result<u64, OrbError> {
-            self.0.edit(&text(commands)).map_err(fail)
+        pub fn edit(&mut self, transaction: &OrbTransaction) -> Result<u64, OrbError> {
+            self.0.edit(&transaction.0).map_err(fail)
         }
 
         /// Whether this host plays `video` sources: it then gets `Video*`
@@ -1628,7 +1853,7 @@ use std::ptr::NonNull;
 use ffi::{OrbError, OrbEventKind};
 
 /// Bumped on every incompatible change to the C ABI while it is 0.x.
-const ABI_VERSION: u32 = 6;
+const ABI_VERSION: u32 = 7;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -1647,6 +1872,35 @@ fn fail(error: orb_api::Error) -> OrbError {
     };
     LAST_ERROR.with(|e| *e.borrow_mut() = error.message().to_owned());
     status
+}
+
+fn invalid(message: String) -> OrbError {
+    fail(orb_api::Error::InvalidArgument(message))
+}
+
+/// JSON text from the caller; empty is none.
+fn json(text: &[u8]) -> Result<Option<orb_api::json::Json>, OrbError> {
+    let text = self::text(text);
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    orb_api::json::parse(&text)
+        .map(Some)
+        .map_err(|e| invalid(e.to_string()))
+}
+
+/// A name from the caller; empty is none.
+fn name(text: &[u8]) -> Option<String> {
+    (!text.is_empty()).then(|| self::text(text).into_owned())
+}
+
+/// A feature-state edit's target; empty source layer and id are none.
+fn feature(source: &[u8], source_layer: &[u8], id: &[u8]) -> orb_api::FeatureTarget {
+    orb_api::FeatureTarget {
+        source: text(source).into_owned(),
+        source_layer: name(source_layer),
+        id: name(id),
+    }
 }
 
 /// UTF-8 from the caller, with invalid sequences replaced.

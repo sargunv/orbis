@@ -141,6 +141,31 @@ impl Transaction {
 }
 
 impl Op {
+    /// Sets global state property `key` to a JSON value, or resets it.
+    pub fn set_global_state(key: String, value: Option<&Json>) -> Self {
+        Op::SetGlobalState {
+            key,
+            value: value.map(Value::from_json),
+        }
+    }
+
+    /// Sets a feature's state from a JSON object; the target needs an id.
+    pub fn set_feature_state(target: FeatureTarget, state: Option<&Json>) -> Result<Self, String> {
+        if target.id.is_none() {
+            return Err("setFeatureState: the feature id is required".into());
+        }
+        let state = state
+            .and_then(Json::as_object)
+            .ok_or("setFeatureState: the state must be an object")?;
+        Ok(Op::SetFeatureState {
+            target,
+            state: state
+                .iter()
+                .map(|m| (m.key.clone(), Value::from_json(&m.value)))
+                .collect(),
+        })
+    }
+
     /// One GL JS map call as JSON: `[name, ...args]`.
     pub fn from_command(call: &Json) -> Result<Self, String> {
         let items = call.as_array().ok_or("a command must be an array")?;
@@ -204,26 +229,8 @@ impl Op {
                 id: string(1, "the source id")?,
                 data: arg(2).cloned().ok_or("setSourceData: no data")?,
             },
-            "setGlobalStateProperty" => Op::SetGlobalState {
-                key: string(1, "the property")?,
-                value: arg(2).map(Value::from_json),
-            },
-            "setFeatureState" => {
-                let target = target(arg(1), name)?;
-                if target.id.is_none() {
-                    return Err(format!("{name}: the feature id is required"));
-                }
-                let state = arg(2)
-                    .and_then(Json::as_object)
-                    .ok_or_else(|| format!("{name}: the state must be an object"))?;
-                Op::SetFeatureState {
-                    target,
-                    state: state
-                        .iter()
-                        .map(|m| (m.key.clone(), Value::from_json(&m.value)))
-                        .collect(),
-                }
-            }
+            "setGlobalStateProperty" => Op::set_global_state(string(1, "the property")?, arg(2)),
+            "setFeatureState" => Op::set_feature_state(target(arg(1), name)?, arg(2))?,
             "removeFeatureState" => Op::RemoveFeatureState {
                 target: target(arg(1), name)?,
                 key: arg(2).and_then(Json::as_str).map(str::to_string),

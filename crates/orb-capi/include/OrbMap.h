@@ -26,6 +26,7 @@
 #include "OrbPointerKind.d.h"
 #include "OrbRuntime.d.h"
 #include "OrbTarget.d.h"
+#include "OrbTransaction.d.h"
 #include "OrbWheelUnit.d.h"
 
 #include "OrbMap.d.h"
@@ -66,7 +67,7 @@ typedef struct OrbMap_set_style_json_result {union { OrbError err;}; bool is_ok;
 OrbMap_set_style_json_result OrbMap_set_style_json(OrbMap* self, DiplomatStringView json);
 
 typedef struct OrbMap_edit_result {union {uint64_t ok; OrbError err;}; bool is_ok;} OrbMap_edit_result;
-OrbMap_edit_result OrbMap_edit(OrbMap* self, DiplomatStringView commands);
+OrbMap_edit_result OrbMap_edit(OrbMap* self, const OrbTransaction* transaction);
 
 void OrbMap_set_plays_video(OrbMap* self, bool plays);
 

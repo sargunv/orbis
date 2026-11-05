@@ -2,7 +2,17 @@
 //! `setData`) never leaves a frame without its features: the drawn tiles
 //! stay until the new data's replace them.
 
-use orb_api::{Map, MapOptions, Runtime, RuntimeOptions, Target};
+use orb_api::{Map, MapOptions, Op, Runtime, RuntimeOptions, Target, Transaction, json};
+
+/// GL JS `setData` on source `p`.
+fn source_data(data: &str) -> Transaction {
+    let mut tx = Transaction::new();
+    tx.push(Op::SetSourceData {
+        id: "p".into(),
+        data: json::parse(data).expect("data"),
+    });
+    tx
+}
 
 fn point(lon: f64) -> String {
     format!(
@@ -53,8 +63,7 @@ fn data_replaced_every_frame_never_blanks() {
     let mut last = 0.0;
     for frame in 1..=60 {
         last = f64::from(frame) * 0.25;
-        map.edit(&format!(r#"[["setSourceData", "p", {}]]"#, point(last)))
-            .unwrap();
+        map.edit(&source_data(&point(last))).unwrap();
         // A frame's time: the jobs lay the data out between frames.
         std::thread::sleep(std::time::Duration::from_millis(16));
         map.render(&mut target, 0.0).unwrap();
@@ -106,11 +115,7 @@ fn queries_answer_from_the_drawn_data() {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    map.edit(&format!(
-        r#"[["setSourceData", "p", {}]]"#,
-        feature(40.0, "b")
-    ))
-    .unwrap();
+    map.edit(&source_data(&feature(40.0, "b"))).unwrap();
     // The jobs have the new data; the frame still draws the old.
     std::thread::sleep(std::time::Duration::from_millis(50));
     let centre = glam::DVec2::splat(128.0);

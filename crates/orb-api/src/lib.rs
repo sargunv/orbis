@@ -33,7 +33,10 @@ pub use orb_hal_gl::egl::EglWindow;
 pub use orb_hal_wgpu::RawSurface;
 pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_runtime::batteries::{Location, Marker};
-pub use orb_runtime::{CameraState, FrameReport, Hit, MapEvent, StyleImage, VideoRequest};
+pub use orb_runtime::{
+    CameraState, FeatureTarget, FrameReport, Hit, MapEvent, Op, StyleImage, Transaction,
+    VideoRequest, json,
+};
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Surface;
 pub use target::Target;

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use orb_api::{
     Button, CameraEvent, CameraTarget, EaseOptions, Error, Event, Input, Map, MapEvent, MapOptions,
-    Modifiers, PointerKind, Runtime, RuntimeOptions, StyleImage, Target,
+    Modifiers, Op, PointerKind, Runtime, RuntimeOptions, StyleImage, Target, Transaction, json,
 };
 
 /// A red background and a blue box around the origin, with feature ids.
@@ -49,6 +49,10 @@ fn now() -> f64 {
 fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     let i = ((y * SIZE + x) * 4) as usize;
     pixels[i..i + 4].try_into().unwrap()
+}
+
+fn commands(json: &str) -> Transaction {
+    Transaction::from_commands(json).expect("commands")
 }
 
 /// Draws until the map is idle, and returns the events.
@@ -109,9 +113,18 @@ fn style_frame_query_edit_gesture_idle() {
     assert!(map.needs_frame(), "the result woke the map");
     settle(&mut map, &mut target);
 
-    let generation = map
-        .edit(r##"[["setPaintProperty", "box", "fill-color", "#00ff00"]]"##)
-        .expect("edit");
+    // Edits built op by op apply as one: one generation.
+    let before = map.generation();
+    let paint = |name: &str, value: &str| Op::SetPaint {
+        layer: "box".into(),
+        name: name.into(),
+        value: Some(json::parse(value).unwrap()),
+    };
+    let mut tx = Transaction::new();
+    tx.push(paint("fill-color", "\"#00ff00\""))
+        .push(paint("fill-opacity", "1"));
+    let generation = map.edit(&tx).expect("edit");
+    assert_eq!(generation, before + 1);
     assert!(map.needs_frame());
     let report = map
         .render_until_idle(&mut target, Duration::from_secs(30))
@@ -122,8 +135,10 @@ fn style_frame_query_edit_gesture_idle() {
 
     // A pattern the style lacks is reported; once added, it draws, and
     // new pixels replace it in place.
-    map.edit(r#"[["setPaintProperty", "box", "fill-pattern", "dot"]]"#)
-        .expect("edit");
+    map.edit(&commands(
+        r#"[["setPaintProperty", "box", "fill-pattern", "dot"]]"#,
+    ))
+    .expect("edit");
     let events = settle(&mut map, &mut target);
     assert!(
         events.contains(&Event::Map(MapEvent::StyleImageMissing {
@@ -152,8 +167,10 @@ fn style_frame_query_edit_gesture_idle() {
     map.remove_image("dot").expect("remove");
     assert!(!map.has_image("dot"));
     assert!(map.remove_image("dot").is_err());
-    map.edit(r##"[["setPaintProperty", "box", "fill-pattern", null]]"##)
-        .expect("edit");
+    map.edit(&commands(
+        r#"[["setPaintProperty", "box", "fill-pattern", null]]"#,
+    ))
+    .expect("edit");
     settle(&mut map, &mut target);
 
     // Camera moves carry a roll and an elevation; unclamped, the centre

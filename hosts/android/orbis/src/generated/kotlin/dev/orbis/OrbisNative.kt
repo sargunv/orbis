@@ -33,6 +33,9 @@ internal object OrbisNative {
     external fun orbTargetDestroy(self: Long)
 
     @JvmStatic
+    external fun orbTransactionDestroy(self: Long)
+
+    @JvmStatic
     external fun orbEventKind(self: Long): Int
 
     @JvmStatic
@@ -129,7 +132,7 @@ internal object OrbisNative {
     external fun orbMapSetStyleJson(self: Long, json: ByteArray): Unit
 
     @JvmStatic
-    external fun orbMapEdit(self: Long, commands: ByteArray): Long
+    external fun orbMapEdit(self: Long, transaction: Long): Long
 
     @JvmStatic
     external fun orbMapSetPlaysVideo(self: Long, plays: Boolean): Unit
@@ -349,6 +352,57 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbTargetPixels(self: Long): ByteArray
+
+    @JvmStatic
+    external fun orbTransactionCreate(): Long
+
+    @JvmStatic
+    external fun orbTransactionFromCommands(commands: ByteArray): Long
+
+    @JvmStatic
+    external fun orbTransactionSetPaintProperty(self: Long, layer: ByteArray, name: ByteArray, value: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionSetLayoutProperty(self: Long, layer: ByteArray, name: ByteArray, value: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionSetFilter(self: Long, layer: ByteArray, filter: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionSetLayerZoomRange(self: Long, layer: ByteArray, min: Double, max: Double): Unit
+
+    @JvmStatic
+    external fun orbTransactionAddLayer(self: Long, layer: ByteArray, before: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionRemoveLayer(self: Long, id: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionMoveLayer(self: Long, id: ByteArray, before: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionAddSource(self: Long, id: ByteArray, source: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionRemoveSource(self: Long, id: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionSetSourceData(self: Long, id: ByteArray, data: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionSetGlobalStateProperty(self: Long, name: ByteArray, value: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionSetFeatureState(self: Long, source: ByteArray, sourceLayer: ByteArray, id: ByteArray, state: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionRemoveFeatureState(self: Long, source: ByteArray, sourceLayer: ByteArray, id: ByteArray, key: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionSetStyle(self: Long, style: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbTransactionSetStyleProperty(self: Long, property: ByteArray, value: ByteArray): Unit
 
     @JvmStatic
     external fun orbErrorLastMessage(): ByteArray

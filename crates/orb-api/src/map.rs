@@ -272,14 +272,15 @@ impl Map {
             .map_err(Error::InvalidArgument)
     }
 
-    /// Applies a transaction of GL JS map calls as JSON (`[["setPaintProperty",
-    /// "water", "fill-color", "red"], …]`) all at once, and returns the
-    /// generation from which frames show it.
-    pub fn edit(&mut self, commands: &str) -> Result<u64, Error> {
-        let tx = Transaction::from_commands(commands).map_err(Error::InvalidArgument)?;
+    /// Applies a transaction's edits all at once, or none if one fails,
+    /// and returns the generation from which frames show them. Build it op
+    /// by op, or from GL JS map calls as JSON with
+    /// [`Transaction::from_commands`] (`[["setPaintProperty", "water",
+    /// "fill-color", "red"], …]`).
+    pub fn edit(&mut self, tx: &Transaction) -> Result<u64, Error> {
         self.styled()?;
         self.dirty = true;
-        self.map.edit(&tx).map_err(Error::InvalidArgument)
+        self.map.edit(tx).map_err(Error::InvalidArgument)
     }
 
     /// Adds an image to the style for icons, text and patterns (GL JS

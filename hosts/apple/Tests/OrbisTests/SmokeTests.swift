@@ -21,7 +21,7 @@ private let style = """
     """
 
 @Test func smoke() throws {
-    #expect(OrbRuntime.abiVersion() == 6)
+    #expect(OrbRuntime.abiVersion() == 7)
     let runtime = try OrbRuntime.create(jobThreads: 0)
     let target = OrbTarget.createTexture(runtime: runtime, width: 64, height: 64, scale: 1)
     let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
@@ -43,6 +43,15 @@ private let style = """
     }
     let hit = try #require(map.hitTest(x: 32, y: 32))
     #expect(hit.layer() == "box" && hit.id() == "7")
+
+    // Edits built one by one apply as one generation; a value that isn't
+    // JSON throws at once.
+    let tx = OrbTransaction.create()
+    try tx.setPaintProperty(layer: "box", name: "fill-color", value: "\"#00ff00\"")
+    try tx.setPaintProperty(layer: "box", name: "fill-opacity", value: "1")
+    #expect(throws: OrbErrorFailure.self) { try tx.setFilter(layer: "box", filter: "[==") }
+    let before = map.generation()
+    #expect(try map.edit(transaction: tx) == before + 1)
 
     // Padding moves the centre down; a camera's projection answers before
     // any move; the eye round-trips.
