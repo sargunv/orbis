@@ -1,8 +1,9 @@
 //! The scene document, v0 (plan §11.4): what v8 can't say about a map,
 //! next to an unmodified v8 style. v0 carries the CRS/TMS module (a
-//! projection for the surface and a tile matrix set per source) and the
+//! projection for the surface and a tile matrix set per source), the
 //! lighting module (`lights` and per-layer `emissive-strength`; see
-//! [`crate::lights`]).
+//! [`crate::lights`]) and the `atmosphere` (v8 `sky`'s properties with
+//! `star-intensity` and `backdrop-color`; see [`crate::Atmosphere`]).
 //!
 //! ```json
 //! {
@@ -34,6 +35,8 @@ pub struct Scene {
     /// The scene's lights and emissive layers, which replace the style's
     /// lowered `light`.
     pub lights: Option<crate::Lights>,
+    /// The scene's atmosphere, which replaces the style's lowered `sky`.
+    pub atmosphere: Option<crate::Atmosphere>,
     pub warnings: Vec<crate::Diagnostic>,
 }
 
@@ -72,6 +75,7 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
     let mut projection = None;
     let mut sources = Vec::new();
     let (mut lights, mut emissive) = (None, Vec::new());
+    let mut atmosphere = None;
     for m in root {
         match m.key.as_str() {
             "$schema" => {}
@@ -123,6 +127,13 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
             }
             "lights" => lights = Some(crate::lights::parse_lights(&mut cx, &m.value)),
             "layers" => emissive = crate::lights::parse_layers(&mut cx, &m.value),
+            "atmosphere" => {
+                atmosphere = Some(crate::sky::parse(
+                    &mut cx,
+                    &m.value,
+                    crate::sky::Declared::Scene,
+                ));
+            }
             key => cx.warn(key, m.key_span, format!("unknown property \"{key}\"")),
         }
     }
@@ -147,6 +158,7 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
         projection,
         sources,
         lights,
+        atmosphere,
         warnings: cx.diagnostics.warnings,
     })
 }

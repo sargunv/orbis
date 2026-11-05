@@ -28,10 +28,10 @@ struct Atmosphere {
     fog_far: f32,
     _pad0: f32,
     _pad1: f32,
-    // The globe, mixed in by `globe_amount` (0 on a flat surface): clip →
-    // camera-relative globe space (metres), for view rays; the eye from the
-    // globe's centre with the radius in w; toward the sun, unit.
-    globe_inverse: mat4x4<f32>,
+    // Clip → camera-relative space on Earth-fixed axes, for view rays.
+    ray_inverse: mat4x4<f32>,
+    // The globe, mixed in by `globe_amount` (0 on a flat surface): the eye
+    // from the globe's centre with the radius in w; toward the sun, unit.
     globe_eye: vec4<f32>,
     globe_sun: vec4<f32>,
     globe_amount: f32,
@@ -41,6 +41,13 @@ struct Atmosphere {
     // scattering pass's (also by `globe_amount`).
     sky_atmosphere_blend: f32,
     scatter_blend: f32,
+    // Premultiplied; behind the stars and the sky.
+    backdrop: vec4<f32>,
+    // The stars' brightness, and their turn about the pole (radians).
+    stars: f32,
+    star_rotation: f32,
+    _pad2: f32,
+    _pad3: f32,
 };
 
 // The atmosphere's shell above the globe, as a share of its radius.
@@ -50,8 +57,8 @@ const ATMOSPHERE_PI: f32 = 3.141592653589793;
 // The view ray through a logical pixel, camera-relative globe axes.
 fn atmosphere_ray(a: Atmosphere, px: vec2<f32>, viewport: vec2<f32>) -> vec3<f32> {
     let ndc = vec2<f32>(px.x / viewport.x * 2.0 - 1.0, 1.0 - px.y / viewport.y * 2.0);
-    let near = a.globe_inverse * vec4<f32>(ndc, 0.0, 1.0);
-    let far = a.globe_inverse * vec4<f32>(ndc, 1.0, 1.0);
+    let near = a.ray_inverse * vec4<f32>(ndc, 0.0, 1.0);
+    let far = a.ray_inverse * vec4<f32>(ndc, 1.0, 1.0);
     return normalize(far.xyz / far.w - near.xyz / near.w);
 }
 
@@ -85,6 +92,111 @@ fn atmosphere_sky(a: Atmosphere, px: vec2<f32>, viewport: vec2<f32>) -> vec4<f32
         color = mix(a.sky_color, a.horizon_color, pow(1.0 - distance / a.sky_horizon_blend, 2.0));
     }
     return color * opacity;
+}
+
+// Four uniform hashes of a cell (PCG4D, Jarzynski and Olano 2020).
+fn atmosphere_hash(cell: vec4<u32>) -> vec4<f32> {
+    var v = cell * 1664525u + 1013904223u;
+    v.x += v.y * v.w;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v.w += v.y * v.z;
+    v ^= v >> vec4<u32>(16u);
+    v.x += v.y * v.w;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v.w += v.y * v.z;
+    return vec4<f32>(v) / 4294967296.0;
+}
+
+// A direction's cube face and its equal-angle position on it, in [-1, 1]:
+// cells of the face grid then span nearly equal solid angles.
+fn atmosphere_face(d: vec3<f32>) -> vec3<f32> {
+    let m = abs(d);
+    var face = 0.0;
+    var uv = vec2<f32>(0.0);
+    if m.x >= m.y && m.x >= m.z {
+        face = select(1.0, 0.0, d.x > 0.0);
+        uv = d.yz / m.x;
+    } else if m.y >= m.z {
+        face = select(3.0, 2.0, d.y > 0.0);
+        uv = d.xz / m.y;
+    } else {
+        face = select(5.0, 4.0, d.z > 0.0);
+        uv = d.xy / m.z;
+    }
+    return vec3<f32>(atan(uv) * (4.0 / ATMOSPHERE_PI), face);
+}
+
+// The unit direction at an equal-angle position on a cube face.
+fn atmosphere_unface(w: vec2<f32>, face: f32) -> vec3<f32> {
+    let uv = tan(w * (ATMOSPHERE_PI / 4.0));
+    let s = select(-1.0, 1.0, (u32(face) & 1u) == 0u);
+    var d = vec3<f32>(s, uv);
+    if face >= 4.0 {
+        d = vec3<f32>(uv, s);
+    } else if face >= 2.0 {
+        d = vec3<f32>(uv.x, s, uv.y);
+    }
+    return normalize(d);
+}
+
+// The starfield along a celestial direction, premultiplied: a fixed
+// decorative pattern of point stars, a constant number per steradian (two
+// layers of hashed cells on an equal-angle cube, at most one star a cell,
+// kept off the cell's edges), each a point spread `pixel` radians wide so
+// it stays a sharp dot at any zoom and resolution.
+fn atmosphere_starfield(d: vec3<f32>, pixel: f32) -> vec3<f32> {
+    let at = atmosphere_face(d);
+    // Many faint stars, and fewer, brighter ones.
+    return atmosphere_stars(d, at, pixel, 0u, vec3<f32>(64.0, 0.35, 0.55))
+        + atmosphere_stars(d, at, pixel, 1u, vec3<f32>(20.0, 0.3, 1.0));
+}
+
+// One layer of the starfield: `layer` is its cells per face edge, the share
+// of them holding a star, and its brightest star.
+fn atmosphere_stars(d: vec3<f32>, at: vec3<f32>, pixel: f32, index: u32, layer: vec3<f32>) -> vec3<f32> {
+    let cell = floor((at.xy * 0.5 + 0.5) * layer.x);
+    let h = atmosphere_hash(vec4<u32>(vec2<u32>(cell), u32(at.z), index));
+    if h.x >= layer.y {
+        return vec3<f32>(0.0);
+    }
+    let star = atmosphere_unface((cell + 0.2 + 0.6 * h.yz) / layer.x * 2.0 - 1.0, at.z);
+    // Few bright stars, many faint.
+    let brightness = layer.z * (0.15 + 0.85 * pow(h.w, 4.0));
+    let sigma = pixel * (0.55 + 0.5 * brightness);
+    let distance = length(d - star) / sigma;
+    // Blue-white to orange, as stars' temperatures run.
+    let tint = mix(vec3<f32>(0.78, 0.86, 1.0), vec3<f32>(1.0, 0.86, 0.68), fract(h.w * 37.0));
+    return tint * brightness * exp(-0.5 * distance * distance);
+}
+
+// What lies behind the sky at a logical pixel, premultiplied: the
+// backdrop, and the stars over it where the view ray leaves the surface
+// (past a globe's limb, above a flat surface's horizon). They turn with
+// the Earth, by the sidereal angle when the scene has a time. `step` is a
+// device pixel in logical pixels.
+fn atmosphere_space(a: Atmosphere, px: vec2<f32>, viewport: vec2<f32>, step: f32) -> vec4<f32> {
+    if a.stars <= 0.0 {
+        return a.backdrop;
+    }
+    let ray = atmosphere_ray(a, px, viewport);
+    var seen = dot(px - a.horizon, a.horizon_normal) > 0.0;
+    if a.globe_amount > 0.0 {
+        let center = -a.globe_eye.xyz / a.globe_eye.w;
+        let closest = dot(ray, center);
+        seen = closest <= 0.0 || dot(center, center) - closest * closest > 1.0;
+    }
+    if !seen {
+        return a.backdrop;
+    }
+    let pixel = length(atmosphere_ray(a, px + vec2<f32>(step, 0.0), viewport) - ray);
+    let c = cos(a.star_rotation);
+    let s = sin(a.star_rotation);
+    let celestial = vec3<f32>(c * ray.x - s * ray.y, s * ray.x + c * ray.y, ray.z);
+    let light = atmosphere_starfield(celestial, pixel) * a.stars;
+    let alpha = min(max(max(light.r, light.g), light.b), 1.0);
+    return vec4<f32>(min(light, vec3<f32>(1.0)), alpha) + a.backdrop * (1.0 - alpha);
 }
 
 // A ray's intersections with a sphere about the origin: (near, far), near

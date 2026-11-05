@@ -1,0 +1,14 @@
+{
+  "style": "https://tiles.openfreemap.org/styles/liberty",
+  "atmosphere": {
+    "sky-color": "#4f8fd9",
+    "horizon-color": "#d6e8fb",
+    "fog-color": "#e4eef8",
+    "sky-horizon-blend": 0.7,
+    "horizon-fog-blend": 0.6,
+    "fog-ground-blend": 0.7,
+    "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 1, 2, 0.8, 4, 0.45, 8, 0],
+    "star-intensity": ["interpolate", ["linear"], ["zoom"], 3, 1, 7, 0],
+    "backdrop-color": "#02040b"
+  }
+}

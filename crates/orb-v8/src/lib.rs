@@ -271,7 +271,9 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         lights: light::parse(cx, doc.get("light")).lower(),
         globe: doc.get("projection").and_then(|p| parse_globe(cx, p)),
         state,
-        atmosphere: doc.get("sky").map(|json| sky::parse(cx, json)),
+        atmosphere: doc
+            .get("sky")
+            .map(|json| sky::parse(cx, json, sky::Declared::Sky)),
         terrain: doc
             .get("terrain")
             .and_then(|json| terrain::parse(cx, json, &sources)),
@@ -370,7 +372,7 @@ pub fn parse_sky(
         state: state.to_vec(),
         ..Cx::default()
     };
-    let sky = sky::parse(&mut cx, json);
+    let sky = sky::parse(&mut cx, json, sky::Declared::Sky);
     if cx.diagnostics.errors.is_empty() {
         Ok((sky, cx.diagnostics.warnings))
     } else {

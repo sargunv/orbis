@@ -715,7 +715,7 @@ It references or embeds an unchanged v8 style; it may decorate sources (TMS) and
 |---|---|---|
 | CRS/TMS | `tileMatrixSet`, descriptor `projection` (#1866 shape), `surface`; demand #168, discussion #163, GL JS #8723 [verified] | M6–M7 |
 | Composition, groups | `imports`, `slot`s, namespaced state (style-spec#591); `blend-mode`, z-groups (gl-js #48) | M5 |
-| Lighting, atmosphere | `lights`, `atmosphere` (unifies `sky`/`fog`), `*-emissive-strength` (style-spec#1797) | M7–M8 |
+| Lighting, atmosphere | `lights`, `atmosphere` (unifies `sky`/`fog`: v8 `sky`'s properties plus `star-intensity` and `backdrop-color`, [decision 0035](decisions/0035-stars-and-backdrop.md)), `*-emissive-strength` (style-spec#1797) | M7–M8 |
 | 3D content | `model`, `clip`, `3d-tiles` | M8 |
 | Data | `columnar` source | M11 |
 | Accessibility | layer `a11y` (`role`, `label`, `importance`) | M10 |

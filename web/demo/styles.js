@@ -14,6 +14,7 @@ import alps from "./data/alps.json?url";
 import alpsSunlitScene from "./data/alps-sunlit.json";
 import osmCarto from "./data/osm-carto.json?url";
 import alpsFlight from "./data/alps-flight.json";
+import globe from "./data/globe.json?url";
 
 // The sunlit Alps scene names its style relatively, which the bundle's
 // hashed asset names break: point it at the bundled style.
@@ -92,9 +93,9 @@ export const GROUPS = [
   {
     name: "Orbis showcases",
     scenes: [
-      { key: "globe", name: "Globe", detail: "Liberty on the v8 globe, Web Mercator from zoom 12", url: LIVE,
-        projection: { type: "globe" }, camera: { center: [10, 30], zoom: 1.5 },
-        swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
+      { key: "globe", name: "Globe", detail: "Liberty on the v8 globe in space, Web Mercator from zoom 12",
+        url: globe, projection: { type: "globe" }, camera: { center: [10, 30], zoom: 1.5 }, dark: true,
+        swatch: ["#f8f4f0", "#a0c8f0", "#02040b"] },
       { key: "dusk", name: "Liberty at dusk", detail: "Layer blends: a multiplied tint, glowing roads",
         url: LIVE, calls: DUSK, camera: { center: [139.767, 35.681], zoom: 12.5 }, dark: true,
         swatch: ["#4c4f6e", "#6f86b8", "#ff9d4d"] },

@@ -39,3 +39,4 @@ in code and commit messages.
 - [0032](0032-raster-tiles-make-room.md): Raster tiles make room like vector tiles
 - [0033](0033-layer-blend.md): Layer blends: one composite, backdrop reads by splitting the main pass
 - [0034](0034-image-sources.md): Image sources: one tile, a warped grid, on every surface
+- [0035](0035-stars-and-backdrop.md): Stars and a backdrop in the atmosphere, and the scene document's `atmosphere`

@@ -369,6 +369,8 @@ pub struct Map {
     pub(crate) surface: Surface,
     /// The scene document's lights, which replace the style's.
     lights: Option<orb_v8::Lights>,
+    /// A scene document's atmosphere, which replaces the style's `sky`.
+    atmosphere: Option<orb_v8::Atmosphere>,
     /// Paint edits easing in (decision 0031).
     pub(crate) transitions: crate::transitions::Transitions,
     /// The latest `load_style_url` request; earlier ones are ignored.
@@ -556,6 +558,7 @@ impl Map {
             camera,
             surface: Surface::default(),
             lights: None,
+            atmosphere: None,
             transitions: Default::default(),
             style_request: 0,
             generation: 0,
@@ -840,6 +843,7 @@ impl Map {
                 .extend(parsed.warnings.iter().map(ToString::to_string));
             self.surface = Surface::new(parsed.projection, parsed.sources);
             self.lights = parsed.lights;
+            self.atmosphere = parsed.atmosphere;
             return match parsed.style {
                 orb_v8::StyleRef::Inline(style) => self.set_document(&style, base, true),
                 orb_v8::StyleRef::Url(url) => {
@@ -856,6 +860,7 @@ impl Map {
         if !scene {
             self.surface = Surface::default();
             self.lights = None;
+            self.atmosphere = None;
         }
         // A style URL still loading is superseded.
         self.style_request += 1;
@@ -1155,9 +1160,13 @@ impl Map {
             .0
             .set_atmosphere(
                 gpu,
-                self.style
+                self.atmosphere
                     .as_ref()
-                    .and_then(|style| style.worker.plan().style.atmosphere.as_ref())
+                    .or_else(|| {
+                        self.style
+                            .as_ref()
+                            .and_then(|style| style.worker.plan().style.atmosphere.as_ref())
+                    })
                     .map(|atmosphere| orb_render::AtmospherePaint {
                         sky_color: atmosphere.sky_color.evaluate(zoom).premultiplied(),
                         horizon_color: atmosphere.horizon_color.evaluate(zoom).premultiplied(),
@@ -1166,6 +1175,8 @@ impl Map {
                         horizon_fog_blend: atmosphere.horizon_fog_blend.evaluate(zoom),
                         fog_ground_blend: atmosphere.fog_ground_blend.evaluate(zoom),
                         atmosphere_blend: atmosphere.atmosphere_blend.evaluate(zoom),
+                        backdrop: atmosphere.backdrop.evaluate(zoom).premultiplied(),
+                        stars: atmosphere.stars.evaluate(zoom),
                     }),
                 orb_render::AtmosphereView {
                     horizon: horizon.as_vec2().to_array(),
@@ -1173,6 +1184,8 @@ impl Map {
                     height: viewport.height as f32,
                     fog_range: [fog_near as f32, fog_far as f32],
                     fog_opacity: fog_blend_opacity(self.camera.pitch),
+                    ray_inverse: crate::lights::ray_inverse(&view, self.camera.target),
+                    star_rotation: crate::lights::star_rotation(lights),
                     globe,
                 },
             );

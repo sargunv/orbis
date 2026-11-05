@@ -1,6 +1,7 @@
 //! v8's `sky`, lowered into the style's [`Atmosphere`] (decision 0025):
-//! one sky and fog model, which the scene document's atmosphere extends
-//! (the globe's `atmosphere-blend` is already here).
+//! one sky and fog model, which the scene document's `atmosphere` sets
+//! with the same names and two of its own, `star-intensity` and
+//! `backdrop-color` (decision 0035).
 use crate::{Color, Cx, Property, layer::property_at, spec::Prop};
 use orb_expr::{PropertyType, json::Json};
 
@@ -15,9 +16,22 @@ pub struct Atmosphere {
     pub horizon_fog_blend: Property<f32>,
     pub sky_horizon_blend: Property<f32>,
     pub atmosphere_blend: Property<f32>,
+    /// The stars' brightness, 0 (none) to 1, behind the sky.
+    pub stars: Property<f32>,
+    /// The colour behind everything, stars before it: where neither the
+    /// map nor the sky covers it. Transparent shows the host's backing.
+    pub backdrop: Property<Color>,
 }
 
-pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
+/// Where an atmosphere is declared: v8's `sky`, or the scene document's
+/// `atmosphere`, which adds the stars and the backdrop.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Declared {
+    Sky,
+    Scene,
+}
+
+pub(crate) fn parse(cx: &mut Cx, json: &Json, declared: Declared) -> Atmosphere {
     const NAMES: &[&str] = &[
         "sky-color",
         "horizon-color",
@@ -27,12 +41,19 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
         "sky-horizon-blend",
         "atmosphere-blend",
     ];
-    for m in cx.object(json, "sky").unwrap_or_default() {
-        if !NAMES.contains(&m.key.as_str()) && !m.key.ends_with("-transition") {
+    const SCENE: &[&str] = &["star-intensity", "backdrop-color"];
+    let root = match declared {
+        Declared::Sky => "sky",
+        Declared::Scene => "atmosphere",
+    };
+    for m in cx.object(json, root).unwrap_or_default() {
+        let known = NAMES.contains(&m.key.as_str())
+            || (declared == Declared::Scene && SCENE.contains(&m.key.as_str()));
+        if !known && !m.key.ends_with("-transition") {
             cx.warn(
-                format!("sky.{}", m.key),
+                format!("{root}.{}", m.key),
                 m.key_span,
-                format!("unknown sky property \"{}\"", m.key),
+                format!("unknown {root} property \"{}\"", m.key),
             );
         }
     }
@@ -54,7 +75,7 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
         property_at(
             cx,
             json.get(name),
-            &format!("sky.{name}"),
+            &format!("{root}.{name}"),
             &prop(name, PropertyType::Color, default),
         )
     };
@@ -62,7 +83,7 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
         property_at(
             cx,
             json.get(name),
-            &format!("sky.{name}"),
+            &format!("{root}.{name}"),
             &prop(name, PropertyType::Number, default),
         )
     };
@@ -74,6 +95,16 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
         horizon_fog_blend: number(cx, "horizon-fog-blend", "0.8"),
         sky_horizon_blend: number(cx, "sky-horizon-blend", "0.8"),
         atmosphere_blend: number(cx, "atmosphere-blend", "0.8"),
+        // In v8's sky (style-spec#1889's `star-opacity`, `backdrop-color`,
+        // once adopted, lower here) they keep their defaults.
+        stars: match declared {
+            Declared::Scene => number(cx, "star-intensity", "0"),
+            Declared::Sky => Property::constant(0.0),
+        },
+        backdrop: match declared {
+            Declared::Scene => color(cx, "backdrop-color", "\"transparent\""),
+            Declared::Sky => Property::constant(Color::TRANSPARENT),
+        },
     }
 }
 
@@ -103,5 +134,27 @@ mod tests {
             crate::parse(r#"{"version":8,"sky":{"sky-horizon-blend":2},"sources":{},"layers":[]}"#)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn scenes_add_stars_and_a_backdrop_which_v8_sky_lacks() {
+        let scene = crate::parse_scene(
+            r##"{"style": "s.json", "atmosphere": {"sky-color": "#000010",
+                "star-intensity": 0.8, "backdrop-color": "#020308"}}"##,
+        )
+        .unwrap();
+        assert!(scene.warnings.is_empty(), "{:?}", scene.warnings);
+        let a = scene.atmosphere.unwrap();
+        assert_eq!(a.stars.evaluate(0.0), 0.8);
+        assert_eq!(
+            a.backdrop.evaluate(0.0).straight(),
+            [2.0 / 255.0, 3.0 / 255.0, 8.0 / 255.0, 1.0]
+        );
+        // Not (yet) v8: warned, and the stars stay off.
+        let style =
+            crate::parse(r#"{"version":8,"sky":{"star-intensity":1},"sources":{},"layers":[]}"#)
+                .unwrap();
+        assert_eq!(style.warnings.len(), 1);
+        assert_eq!(style.atmosphere.unwrap().stars.evaluate(0.0), 0.0);
     }
 }

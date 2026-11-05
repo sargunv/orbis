@@ -102,13 +102,42 @@ pub(crate) fn globe_sky(
     };
     let eye = globe.target + globe.eye;
     orb_render::GlobeSky {
-        inverse_view_proj: globe.view_proj.inverse().as_mat4().to_cols_array_2d(),
         eye: eye.as_vec3().to_array(),
         radius: orb_crs::sphere::RADIUS as f32,
         amount: globe.amount as f32,
         eye_distance_px: view.eye_distance_px() as f32,
         sun: sun.normalize().as_vec3().to_array(),
     }
+}
+
+/// The view ray's matrix for the atmosphere: clip → camera-relative space
+/// on Earth-fixed axes. On a flat surface, camera-relative world space is
+/// east, north and up at the target (projected coordinates are eastings
+/// and northings), turned onto the Earth's axes there.
+pub(crate) fn ray_inverse(view: &orb_camera::View, target: Geodetic) -> [[f32; 4]; 4] {
+    let inverse = match view.globe() {
+        Some(globe) => globe.view_proj.inverse(),
+        None => glam::DMat4::from_mat3(orb_crs::sphere::frame(target)) * view.view_proj().inverse(),
+    };
+    inverse.as_mat4().to_cols_array_2d()
+}
+
+/// The stars' turn about the pole: the Greenwich sidereal angle in radians
+/// at the scene's sun time, so the sky turns with the sun; 0 without one.
+pub(crate) fn star_rotation(lights: Option<&Lights>) -> f32 {
+    match lights
+        .and_then(|l| l.directional.as_ref())
+        .map(|d| &d.direction)
+    {
+        Some(Direction::Sun { time }) => sidereal_degrees(*time).to_radians() as f32,
+        _ => 0.0,
+    }
+}
+
+/// Greenwich mean sidereal time at `time` (Unix seconds), in degrees.
+fn sidereal_degrees(time: f64) -> f64 {
+    let n = time / 86_400.0 + 2_440_587.5 - 2_451_545.0;
+    (280.460_618_37 + 360.985_647_366_29 * n).rem_euclid(360.0)
 }
 
 /// Where the sun stands at `time` (Unix seconds) over `at`: azimuth in
@@ -125,7 +154,7 @@ pub(crate) fn sun_position(time: f64, at: Geodetic) -> (f64, f64) {
     let obliquity = (23.439 - 0.000_000_4 * n).to_radians();
     let right_ascension = (obliquity.cos() * ecliptic.sin()).atan2(ecliptic.cos());
     let declination = (obliquity.sin() * ecliptic.sin()).asin();
-    let sidereal = (280.460_618_37 + 360.985_647_366_29 * n).rem_euclid(360.0);
+    let sidereal = sidereal_degrees(time);
     let hour = (sidereal + at.lon).to_radians() - right_ascension;
     let lat = at.lat.to_radians();
     let altitude =
@@ -140,6 +169,16 @@ pub(crate) fn sun_position(time: f64, at: Geodetic) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stars_turn_by_the_sidereal_time() {
+        // GMST at J2000.0 (2000-01-01T12:00Z) is 280.46°; a sidereal day
+        // later the sky has turned once.
+        let j2000 = orb_v8::parse_time("2000-01-01T12:00:00Z").unwrap();
+        assert!((sidereal_degrees(j2000) - 280.460_618_37).abs() < 1e-6);
+        let turned = sidereal_degrees(j2000 + 86_164.090_5);
+        assert!((turned - 280.460_618_37).abs() < 1e-3, "{turned}");
+    }
 
     fn at(time: &str, lon: f64, lat: f64) -> (f64, f64) {
         sun_position(orb_v8::parse_time(time).unwrap(), Geodetic::new(lon, lat))

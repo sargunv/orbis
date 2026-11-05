@@ -22,13 +22,15 @@ pub struct AtmospherePaint {
     pub fog_ground_blend: f32,
     /// How much the globe's atmosphere shows: 0 none, 1 GL JS's full halo.
     pub atmosphere_blend: f32,
+    /// Premultiplied colour behind the stars and the sky.
+    pub backdrop: [f32; 4],
+    /// The stars' brightness, 0 to 1.
+    pub stars: f32,
 }
 
 /// A globe view's sphere, for its sky and scattering.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlobeSky {
-    /// Clip → camera-relative globe space (metres), column-major.
-    pub inverse_view_proj: [[f32; 4]; 4],
     /// The eye from the globe's centre, metres.
     pub eye: [f32; 3],
     pub radius: f32,
@@ -53,11 +55,19 @@ pub struct AtmosphereView {
     pub fog_range: [f32; 2],
     /// GL JS's fog fade with pitch, 0 to 1.
     pub fog_opacity: f32,
+    /// Clip → camera-relative space with Earth-fixed (ECEF) axes,
+    /// column-major, for the view ray through a pixel: on a globe its
+    /// inverse view-projection, on a flat surface turned from east, north
+    /// and up at the target.
+    pub ray_inverse: [[f32; 4]; 4],
+    /// The stars' turn about the pole, radians: the Greenwich sidereal
+    /// angle at the scene's sun time, 0 without one.
+    pub star_rotation: f32,
     /// The globe, when the view is one.
     pub globe: Option<GlobeSky>,
 }
 
-const WORDS: usize = 52;
+const WORDS: usize = 60;
 
 #[derive(Debug)]
 pub(crate) struct Atmosphere {
@@ -124,16 +134,19 @@ impl Atmosphere {
             words[17] = p.horizon_fog_blend;
             words[18] = p.fog_ground_blend;
             words[19] = view.fog_opacity;
+            words[52..56].copy_from_slice(&p.backdrop);
+            words[56] = p.stars;
         }
+        for (i, v) in view.ray_inverse.iter().flatten().enumerate() {
+            words[24 + i] = *v;
+        }
+        words[57] = view.star_rotation;
         words[12..14].copy_from_slice(&view.horizon);
         words[14..16].copy_from_slice(&view.horizon_normal);
         words[20] = view.fog_range[0];
         words[21] = view.fog_range[1];
         self.scatter_blend = 0.0;
         if let Some(g) = view.globe {
-            for (i, v) in g.inverse_view_proj.iter().flatten().enumerate() {
-                words[24 + i] = *v;
-            }
             words[40..43].copy_from_slice(&g.eye);
             words[43] = g.radius;
             words[44..47].copy_from_slice(&g.sun);

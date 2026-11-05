@@ -1079,15 +1079,10 @@ fn sky_gradient_composites_over_the_host_backing() {
         horizon_fog_blend: 0.5,
         fog_ground_blend: 0.5,
         atmosphere_blend: 0.8,
+        backdrop: [0.0; 4],
+        stars: 0.0,
     };
-    let view = orb_render::AtmosphereView {
-        horizon: [0.0, 32.0],
-        horizon_normal: [0.0, -1.0],
-        height: SIZE as f32,
-        fog_range: [1.0, 2.0],
-        fog_opacity: 0.0,
-        globe: None,
-    };
+    let view = sky_view();
     h.renderer.set_atmosphere(&mut h.gpu, Some(sky), view);
     let frame = Harness::frame(1.0);
     let clear = [0.0, 0.0, 1.0, 1.0];
@@ -1112,6 +1107,71 @@ fn sky_gradient_composites_over_the_host_backing() {
     h.renderer.render(&mut h.gpu, &frame, h.target, clear);
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
     assert_eq!(pixel(&pixels, 32, 15), CLEAR);
+}
+
+/// A flat view whose horizon is row 32, looking along +z with a 60° field
+/// of view: its rays leave the target toward the north pole.
+fn sky_view() -> orb_render::AtmosphereView {
+    let k = (30f32).to_radians().tan();
+    orb_render::AtmosphereView {
+        horizon: [0.0, 32.0],
+        horizon_normal: [0.0, -1.0],
+        height: SIZE as f32,
+        fog_range: [1.0, 2.0],
+        fog_opacity: 0.0,
+        // Clip (x, y, z) → (xk, yk, 1) / (1 − z/2): the ray (xk, yk, 1).
+        ray_inverse: [
+            [k, 0.0, 0.0, 0.0],
+            [0.0, k, 0.0, 0.0],
+            [0.0, 0.0, 0.0, -0.5],
+            [0.0, 0.0, 1.0, 1.0],
+        ],
+        star_rotation: 0.0,
+        globe: None,
+    }
+}
+
+#[test]
+fn stars_and_backdrop_show_behind_a_clear_sky() {
+    let mut h = Harness::new();
+    let night = orb_render::AtmospherePaint {
+        sky_color: [0.0; 4],
+        horizon_color: [0.0; 4],
+        fog_color: [0.0; 4],
+        sky_horizon_blend: 0.5,
+        horizon_fog_blend: 0.5,
+        fog_ground_blend: 0.5,
+        atmosphere_blend: 0.0,
+        backdrop: [0.0, 0.0, 0.0, 0.0],
+        stars: 1.0,
+    };
+    let frame = Harness::frame(1.0);
+    let clear = [0.0, 0.0, 1.0, 1.0];
+    h.renderer
+        .set_atmosphere(&mut h.gpu, Some(night), sky_view());
+    h.renderer.render(&mut h.gpu, &frame, h.target, clear);
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    let lit = |rows: std::ops::Range<u32>| {
+        rows.flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixel(&pixels, x, y)[0] > 16)
+            .count()
+    };
+    // Stars over the host's backing above the horizon, none below it.
+    assert!(lit(0..31) > 20, "{} stars", lit(0..31));
+    assert_eq!(lit(33..SIZE), 0);
+    // An opaque backdrop replaces the backing wherever nothing draws.
+    let dusk = orb_render::AtmospherePaint {
+        backdrop: [0.0, 0.5, 0.0, 1.0],
+        stars: 0.0,
+        ..night
+    };
+    h.renderer
+        .set_atmosphere(&mut h.gpu, Some(dusk), sky_view());
+    h.renderer.render(&mut h.gpu, &frame, h.target, clear);
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    for (x, y) in [(32, 10), (32, 50)] {
+        assert_eq!(pixel(&pixels, x, y), [0, 128, 0, 255]);
+    }
 }
 
 /// Real basemaps have hundreds of render nodes (Americana about 400).

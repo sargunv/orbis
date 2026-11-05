@@ -1,5 +1,6 @@
 // The atmosphere's sky, drawn before the map layers: pinned GL JS's
-// `sky.fragment.glsl` over a flat surface's horizon.
+// `sky.fragment.glsl` over a flat surface's horizon, over the backdrop and
+// stars behind it.
 @group(0) @binding(0) var<uniform> sky_frame: Frame;
 @group(0) @binding(1) var<uniform> atmosphere: Atmosphere;
 
@@ -11,7 +12,11 @@ fn vs_sky(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_sky(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let color = atmosphere_sky(atmosphere, position.xy / sky_frame.pixel_ratio, sky_frame.viewport);
+    let px = position.xy / sky_frame.pixel_ratio;
+    let sky = atmosphere_sky(atmosphere, px, sky_frame.viewport);
+    // The backdrop and the stars behind the sky.
+    let behind = atmosphere_space(atmosphere, px, sky_frame.viewport, 1.0 / sky_frame.pixel_ratio);
+    let color = sky + behind * (1.0 - sky.a);
     if color.a <= 0.0 && all(color.rgb <= vec3<f32>(0.0)) {
         discard;
     }
