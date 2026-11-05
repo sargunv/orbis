@@ -1,4 +1,5 @@
-// Local development bridge smoke test through native offscreen rendering.
+// The style editor's native viewer bridge, smoke-tested through native
+// offscreen rendering.
 // Build orb-demo --release; ORB_PLAYGROUND_STYLE is a mktemp file.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -23,21 +24,37 @@ const render = async () => {
 const browser = await launchChromium();
 try {
   const page = await browser.newPage({viewport:{width:1280,height:800}});
-  await page.goto(`http://127.0.0.1:${port}/orbis/playground.html?thread=main`);
-  await page.waitForFunction(() => window.playground);
-  const style = JSON.parse(await page.locator("#style").inputValue());
-  style.layers[0].paint["background-color"] = "#aabbcc";
-  await page.locator("#style").fill(JSON.stringify(style));
-  await page.waitForFunction(() => document.querySelector("#edit-status").textContent.startsWith("Applied in"));
-  await page.waitForFunction(() => document.querySelector("#native").textContent.startsWith("Style and hover sent"));
-  let commands = JSON.parse(await readFile(process.env.ORB_PLAYGROUND_STYLE,"utf8"));
+  await page.goto(`http://127.0.0.1:${port}/orbis/?style=playground&edit&thread=main`);
+  await page.waitForFunction(() => window.app?.editor.style && document.querySelector("#app").dataset.map === "idle",
+    null,{timeout:60000});
+  const sent = () => page.locator(".native").evaluate(e => Number(e.dataset.sent ?? 0));
+  let last = await sent();
+  await page.locator(".layer-name", {hasText:"paper"}).click();
+  await page.locator(".layer.open .prop-control input.field").first().fill("#aabbcc");
+  await page.locator(".layer.open .prop-control input.field").first().press("Enter");
+  await page.waitForFunction(() => document.querySelector(".applied").textContent.startsWith("Applied in"));
+  await page.waitForFunction(([l]) => Number(document.querySelector(".native").dataset.sent ?? 0) > l
+    && app.editor.style.layers[0].paint["background-color"] === "#aabbcc", [last]);
+  await page.waitForFunction(() => document.querySelector(".native").textContent.startsWith("Native viewer linked"));
+  // The bridge debounces; wait for the write that carries the edit.
+  const read = async () => JSON.parse(await readFile(process.env.ORB_PLAYGROUND_STYLE,"utf8"));
+  let commands = await read();
+  for (let i = 0; commands[0][1].layers[0].paint["background-color"] !== "#aabbcc" && i < 50; i++) {
+    await page.waitForTimeout(100);
+    commands = await read();
+  }
   assert.equal(commands[0][1].layers[0].paint["background-color"],"#aabbcc");
   console.log(`native paint: ${await render()}`);
   const bounds=await page.locator("#map").boundingBox();
+  last = await sent();
   await page.mouse.move(bounds.x+bounds.width/2,bounds.y+bounds.height/2);
-  await page.waitForFunction(() => document.querySelector("#hover").textContent === "stations / 31");
-  // The file write completes before the hover label updates.
-  commands = JSON.parse(await readFile(process.env.ORB_PLAYGROUND_STYLE,"utf8"));
+  await page.waitForFunction(() => document.querySelector(".inspect").textContent === "stations #31");
+  await page.waitForFunction(([l]) => Number(document.querySelector(".native").dataset.sent ?? 0) > l, [last]);
+  commands = await read();
+  for (let i = 0; commands.at(-1)[0] !== "setFeatureState" && i < 50; i++) {
+    await page.waitForTimeout(100);
+    commands = await read();
+  }
   assert.equal(commands.at(-1)[0],"setFeatureState");
   assert.equal(commands.at(-1)[1].id,"31");
   console.log(`native hover: ${await render()}`);

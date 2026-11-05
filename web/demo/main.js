@@ -1,130 +1,318 @@
-// The web demo: OpenFreeMap's live Liberty map (the committed Tokyo extract
-// with `?style=tokyo-mvt|tokyo-mlt`), drawing through WebGPU with the
-// `orbis` package: on this thread by default (decision 0021), or with
-// `?thread=worker` as the ui role, owning the camera and input while a
-// render worker draws (plan §7.1).
+// The map app: Orbis drawing a picked style full-bleed through the
+// `orbis` package, with a style editor, feature popups and highlights
+// through feature state, and a debug overlay.
 //
-// Tap or click a feature to see its properties in a popup; hovering names
-// the feature under the pointer; a pin marks Tokyo Station.
+// URL: `?style=<key|url>` (styles.js), `&flight` (the Alps), `&thread=
+// main|worker` and `&renderer=webgpu|webgl2` (the package's defaults
+// otherwise), `&debug`, `&edit`, `&lose=<ms>[&switch]` (lose the GPU that
+// long after loading, to show recovery, plan §8.8; `switch` onto WebGL2),
+// and the camera as `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
-import { LIVE_CAMERA, demoFlight, demoStyle, isLive } from "./styles.js";
+import { GROUPS, LIVE_CAMERA, sceneFor, sceneUrl } from "./styles.js";
 import { expose, feel, hashCamera } from "./expose.js";
+import { attribution } from "./app/attribution.js";
+import { editor as createEditor } from "./app/editor.js";
+import { Highlighter, targetOf } from "./app/highlight.js";
+import { hud as createHud } from "./app/hud.js";
+import { picker as createPicker } from "./app/picker.js";
+import { featurePopup } from "./app/popup.js";
 
-const params = new URLSearchParams(location.search);
-const hud = document.getElementById("hud");
-let status = "";
-let hovered = "";
+const app = document.getElementById("app");
+const container = document.getElementById("map");
+const toast = document.getElementById("toast");
+const params = () => new URLSearchParams(location.search);
 
-const kib = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;
-function showFrame(ack) {
-  for (const warning of ack.warnings) console.warn(warning);
-  const jobs = ack.jobsDone ? ` · ${ack.jobsDone} jobs · ${kib(ack.headerBytes)} headers into wasm` : "";
-  hud.textContent = `${status}${hovered ? ` · ${hovered}` : ""}\n` +
-    `z${ack.zoom.toFixed(2)} · ${ack.ms.toFixed(1)} ms CPU · ${ack.draws} draws · ` +
-    `${ack.dispatches} dispatch · ${ack.candidates} candidates · ${ack.tilesDrawn} tiles · ` +
-    `${ack.tilesLoading} loading · bundle ${ack.bundleRecorded ? "recorded" : "replayed"} · ` +
-    `wrote ${ack.placementsWritten} placements, ${ack.paintsWritten} paints\n` +
-    `uploaded ${kib(ack.uploadedFromJs)} from JS buffers, ${kib(ack.uploadedFromWasm)} from wasm` +
-    (ack.texelsFromJs || ack.texelsFromWasm ? ` · texels ${kib(ack.texelsFromJs)} from ` +
-      `JS images, ${kib(ack.texelsFromWasm)} from wasm` : "") +
-    jobs + (ack.idle ? " · idle" : "");
+let map;
+let current;
+let popup;
+let highlighter;
+
+// Chrome tone: dark maps and a dark system preference turn it dark.
+const prefersDark = matchMedia("(prefers-color-scheme: dark)");
+function tone() {
+  document.documentElement.dataset.tone = current?.scene.dark || prefersDark.matches ? "dark" : "light";
+}
+prefersDark.addEventListener("change", tone);
+
+function say(text, { error = false } = {}) {
+  toast.textContent = text;
+  toast.classList.toggle("error", error);
 }
 
-function fail(e) {
-  hud.textContent = String(e);
-  console.error(e);
+// URL state.
+function styleParam({ scene, format }) {
+  if (scene.formats) return `${scene.key}-${format}`;
+  return scene.key === "liberty" ? null : scene.key;
+}
+const searchOf = (query) => {
+  const search = query.toString().replace(/=(?=&|$)/g, "");
+  return search ? `?${search}` : "";
+};
+/** The app's URL for `next` with `camera` as its hash. */
+function urlFor(next, camera) {
+  const query = params();
+  query.delete("format");
+  query.delete("flight");
+  const style = styleParam(next);
+  if (style) query.set("style", style); else query.delete("style");
+  if (next.scene.flight) query.set("flight", "");
+  return `${location.pathname}${searchOf(query)}${camera ? hashOf(camera) : ""}`;
+}
+function hashOf({ center: [lon, lat], zoom, bearing = 0, pitch = 0 }) {
+  const parts = [zoom.toFixed(2), lat.toFixed(5), lon.toFixed(5)];
+  if (Math.abs(bearing) > 0.05 || pitch > 0.05) parts.push(bearing.toFixed(1), pitch.toFixed(0));
+  return `#${parts.join("/")}`;
+}
+function writeHash() {
+  if (map) history.replaceState(history.state, "", `${location.pathname}${location.search}${hashOf(map.camera.current)}`);
+}
+function setFlag(name, on) {
+  const query = params();
+  if (on) query.set(name, ""); else query.delete(name);
+  history.replaceState(history.state, "", `${location.pathname}${searchOf(query)}${location.hash}`);
 }
 
-function popupElement(feature) {
-  const element = document.createElement("div");
-  element.className = "popup demo-annotation";
-  const title = document.createElement("strong");
-  title.textContent = `${feature.layer?.id ?? feature.source}${feature.id !== undefined ? ` #${feature.id}` : ""}`;
-  const list = document.createElement("dl");
-  for (const [key, value] of Object.entries(feature.properties).slice(0, 8)) {
-    const dt = document.createElement("dt");
-    dt.textContent = key;
-    const dd = document.createElement("dd");
-    dd.textContent = typeof value === "object" ? JSON.stringify(value) : String(value);
-    list.append(dt, dd);
+// The chrome.
+const attributionControl = attribution();
+const picker = createPicker(GROUPS, { onPick: (scene, format) => go({ scene, format }) });
+const hudControl = createHud({
+  onThread: (thread) => {
+    const query = params();
+    query.set("thread", thread);
+    location.assign(`${location.pathname}${searchOf(query)}${map ? hashOf(map.camera.current) : location.hash}`);
+  },
+});
+const editor = createEditor({
+  onClose: () => setEditing(false),
+  onReplaced: () => { highlighter?.reset(); clearPopup(); },
+  onTall: () => {},
+});
+
+function setEditing(on) {
+  app.classList.toggle("editing", on);
+  editor.show(on);
+  document.getElementById("edit-toggle").setAttribute("aria-pressed", String(on));
+  setFlag("edit", on);
+  if (!on) {
+    void highlighter?.set("hover", null);
+    editor.inspect(null);
+    document.getElementById("edit-toggle").focus({ preventScroll: true });
   }
-  element.append(title, list);
-  return element;
+}
+document.getElementById("edit-toggle").addEventListener("click", () => setEditing(!editor.open));
+
+const debugToggle = document.getElementById("debug-toggle");
+function setDebug(on) {
+  hudControl.visible = on;
+  debugToggle.setAttribute("aria-checked", String(on));
+  setFlag("debug", on);
+}
+debugToggle.addEventListener("click", () => setDebug(debugToggle.getAttribute("aria-checked") !== "true"));
+
+const menu = document.getElementById("menu");
+menu.addEventListener("beforetoggle", (e) => {
+  if (e.newState !== "open") return;
+  const rect = document.getElementById("menu-button").getBoundingClientRect();
+  menu.style.setProperty("--menu-top", `${rect.bottom + 8}px`);
+  menu.style.setProperty("--menu-right", `${innerWidth - rect.right}px`);
+});
+const about = document.getElementById("about");
+document.getElementById("about-button").addEventListener("click", () => { menu.hidePopover(); about.showModal(); });
+{
+  const commit = __ORBIS_COMMIT__;
+  const link = document.createElement("a");
+  link.href = `https://github.com/sargunv/orbis/commit/${commit.sha}`;
+  link.textContent = `${commit.short}${commit.dirty ? "-dirty" : ""}`;
+  document.getElementById("build").append("This build: ", link);
 }
 
-async function main() {
-  const map = await createMap({
-    container: document.getElementById("map"),
-    style: demoStyle(params),
-    thread: params.get("thread") ?? undefined,
-    renderer: params.get("renderer") ?? undefined,
-    camera: hashCamera() ?? (isLive(params) ? LIVE_CAMERA : undefined),
-    feel: feel(),
+// The map's focus ring shows for keyboard users only: the canvas takes
+// focus on every pointer press too.
+addEventListener("keydown", (e) => { if (e.key === "Tab") app.classList.add("keyboard"); }, true);
+addEventListener("pointerdown", () => app.classList.remove("keyboard"), true);
+
+// Camera controls.
+const compass = document.getElementById("compass");
+document.getElementById("zoom-in").addEventListener("click", () => {
+  map?.camera.easeTo({ zoom: map.camera.current.zoom + 1, duration: reducedMotion() ? 0 : 300 });
+});
+document.getElementById("zoom-out").addEventListener("click", () => {
+  map?.camera.easeTo({ zoom: map.camera.current.zoom - 1, duration: reducedMotion() ? 0 : 300 });
+});
+compass.addEventListener("click", () => map?.camera.easeTo({ bearing: 0, pitch: 0, duration: reducedMotion() ? 0 : 400 }));
+const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+function showCompass() {
+  const { bearing, pitch } = map.camera.current;
+  compass.style.setProperty("--bearing", `${-bearing}deg`);
+  compass.style.setProperty("--pitch", `${pitch * 0.7}deg`);
+}
+
+function clearPopup() {
+  popup?.remove();
+  popup = undefined;
+  void highlighter?.set("selected", null);
+}
+
+/**
+ * Moves to `next`: flies there when only the camera differs, else loads
+ * its style in a new page. (A page draws one map: on Android Chrome a
+ * second map in the same page doesn't present yet.) Basemaps keep the
+ * camera between them.
+ */
+function go(next) {
+  const keep = current.scene.basemap && next.scene.basemap && map;
+  const camera = keep ? map.camera.current : next.scene.camera ?? (next.scene.basemap ? LIVE_CAMERA : undefined);
+  if (map && sceneUrl(current.scene, current.format) === sceneUrl(next.scene, next.format) && !next.scene.flight) {
+    current = next;
+    picker.show(next.scene, next.format);
+    history.replaceState(history.state, "", urlFor(next, camera ?? map.camera.current));
+    if (camera) map.camera.flyTo({ ...camera, bearing: 0, pitch: 0, duration: reducedMotion() ? 0 : undefined });
+    return;
+  }
+  location.assign(urlFor(next, camera));
+}
+
+async function load(next, { camera }) {
+  current = next;
+  tone();
+  picker.show(next.scene, next.format);
+  app.dataset.map = "loading";
+  say(`Loading ${next.scene.name}…`);
+  let created;
+  try {
+    created = await createMap({
+      container,
+      style: sceneUrl(next.scene, next.format),
+      thread: params().get("thread") ?? undefined,
+      renderer: params().get("renderer") ?? undefined,
+      camera,
+      constraints: next.scene.constraints,
+      feel: feel(),
+    });
+  } catch (e) {
+    app.dataset.map = "error";
+    say(`The map couldn't start: ${e instanceof Error ? e.message : e}`, { error: true });
+    console.error(e);
+    return;
+  }
+  map = created;
+  expose(map);
+  hudControl.thread(map.thread);
+  highlighter = new Highlighter(map, () => editor.style);
+  map.on("error", ({ message }) => {
+    console.error(message);
+    if (app.dataset.map === "loading") say(message, { error: true });
   });
-  status = `${map.thread} thread`;
+  map.on("styleload", async () => {
+    await editor.attach(map);
+    attributionControl.update(editor.style);
+  });
+  map.on("load", () => { if (!toast.classList.contains("error")) say(""); });
+  map.on("render", (ack) => {
+    for (const warning of ack.warnings) console.warn(warning);
+    app.dataset.map = ack.idle ? "idle" : "drawing";
+    hudControl.frame(ack);
+    editor.frame(ack);
+    showCompass();
+  });
+  map.on("moveend", writeHash);
   // The tier the map draws at, and how long a device loss took to recover:
   // to the first frame on the new device, and to the next complete one.
   let lostAt;
   map.on("capability", ({ tier, recoveredMs }) => {
-    status = `${map.thread} thread · ${tier === "modern" ? "WebGPU" : "WebGL2"}`;
-    console.info(`orbis: ${status}`);
+    app.dataset.renderer = tier === "modern" ? "WebGPU" : "WebGL2";
+    hudControl.renderer(app.dataset.renderer);
     if (recoveredMs === undefined) return;
-    const first = Math.round(recoveredMs);
     const idle = map.on("idle", () => {
       idle();
-      status += ` · recovered from device loss: first frame ${first} ms, complete ${Math.round(performance.now() - lostAt)} ms`;
-      console.info(`orbis: ${status}`);
-      if (map.stats) showFrame(map.stats);
+      const recovered = `first frame ${Math.round(recoveredMs)} ms` +
+        (lostAt === undefined ? "" : `, complete ${Math.round(performance.now() - lostAt)} ms`);
+      hudControl.recovered(recovered);
+      console.info(`orbis: recovered from device loss: ${recovered}`);
+      app.dataset.recovered = "true";
     });
   });
-  // `?lose=<ms>` loses the GPU that long after loading, to show recovery
-  // (plan §8.8); with `&switch`, WebGPU's loss switches to WebGL2.
-  // `orbis.loseDevice(switchTier)` any time.
-  if (params.has("lose")) {
+  const query = params();
+  if (query.has("lose")) {
     const loaded = map.on("load", () => {
       loaded();
-      setTimeout(() => { lostAt = performance.now(); map.loseDevice(params.has("switch")); }, Number(params.get("lose")) || 0);
+      setTimeout(() => { lostAt = performance.now(); map.loseDevice(query.has("switch")); },
+        Number(query.get("lose")) || 0);
     });
   }
-  hud.textContent = `${status}\nloading…`;
-  expose(map);
-  map.on("render", showFrame);
-  map.on("error", ({ message }) => console.error(message));
+  wireFeatures(map);
 
-  // `?style=alps&flight` flies a loop over the Alps until the user takes
-  // the camera.
-  const flight = demoFlight(params);
-  if (flight) {
+  if (next.scene.flight) {
+    // From the style's own camera, which it adopts as it loads.
     (async () => {
-      for (let leg = 0; ; leg = (leg + 1) % flight.length) {
-        const arrived = await map.camera.flyTo(flight[leg]);
-        if (!arrived) return;
+      await created.once("styleload");
+      for (let leg = 0; ; leg = (leg + 1) % next.scene.flight.length) {
+        if (!await created.camera.flyTo(next.scene.flight[leg])) return;
       }
     })();
   }
-
-  if (!["scripts", "alps"].includes(params.get("style"))) {
+  if (next.scene.basemap || next.scene.key === "tokyo" || next.scene.key === "playground") {
     const pin = document.createElement("div");
     pin.className = "pin demo-annotation";
     pin.title = "Tokyo Station";
     map.annotations.add({ element: pin, lngLat: [139.7671, 35.6812] });
   }
-
-  let popup;
-  map.on("click", async ({ point, lngLat }) => {
-    popup?.remove();
-    popup = undefined;
-    const [feature] = await map.queryRenderedFeatures(point);
-    if (!feature || !lngLat) return;
-    popup = map.annotations.add({ element: popupElement(feature), lngLat, anchor: "bottom", offset: [0, -8] });
-  });
-  map.canvas.addEventListener("pointermove", (e) => {
-    if (e.buttons) return;
-    const hit = map.hitTest([e.offsetX, e.offsetY]);
-    hovered = hit ? `${hit.layer}${hit.id !== null ? ` #${hit.id}` : ""}` : "";
-    map.canvas.style.cursor = hit ? "pointer" : "";
-  });
-  return map;
 }
 
-export const whenReady = main().catch((e) => { fail(e); throw e; });
+/** Popups on click, hover state while editing, a pointer cursor over features. */
+function wireFeatures(target) {
+  target.on("click", async ({ point, lngLat }) => {
+    clearPopup();
+    const [feature] = await target.queryRenderedFeatures(point);
+    if (!feature || !lngLat) return;
+    const element = featurePopup(feature, {
+      onClose: clearPopup,
+      onEdit: (layer) => { setEditing(true); editor.reveal(layer); },
+    });
+    popup = target.annotations.add({ element, lngLat, anchor: "bottom", offset: [0, -14] });
+    const selected = feature.id !== undefined && targetOf({ ...feature, sourceLayer: feature.sourceLayer ?? null }, editor.style);
+    await highlighter?.set("selected", selected || null);
+    editor.states(highlighter?.targets ?? {});
+  });
+  let pointer;
+  let busy = false;
+  const hover = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      while (pointer !== undefined) {
+        const point = pointer;
+        pointer = undefined;
+        const hit = point && target.hitTest(point);
+        target.canvas.style.cursor = hit ? "pointer" : "";
+        hudControl.hover(hit ? `${hit.layer}${hit.id !== null ? ` #${hit.id}` : ""}` : "");
+        if (!editor.open) continue;
+        editor.inspect(hit);
+        await highlighter.set("hover", targetOf(hit, editor.style));
+        editor.states(highlighter.targets);
+      }
+    } finally { busy = false; }
+  };
+  target.canvas.addEventListener("pointermove", (e) => {
+    if (e.buttons || e.pointerType === "touch") return;
+    pointer = [e.offsetX, e.offsetY];
+    void hover();
+  });
+  target.canvas.addEventListener("pointerleave", () => { pointer = null; void hover(); });
+}
+
+// Hooks for the headless checks and the console.
+window.app = { get map() { return map; }, editor, get scene() { return current?.scene.key; } };
+
+// Start.
+const start = params();
+setDebug(start.has("debug"));
+if (start.has("edit")) setEditing(true);
+{
+  const camera = hashCamera();
+  let first;
+  try { first = sceneFor(start, camera); } catch (e) { say(String(e.message), { error: true }); throw e; }
+  history.replaceState(history.state, "", urlFor(first, camera));
+  await load(first, { camera: camera ?? first.scene.camera ?? (first.scene.basemap ? LIVE_CAMERA : undefined) });
+}
+

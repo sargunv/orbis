@@ -1,4 +1,4 @@
-// Drives the demo's edit API (web/demo/edit.js) in headless Chromium, in
+// Drives the map app's edit API (`globalThis.orbis`, web/demo/expose.js) in headless Chromium, in
 // both thread modes: each edit class must resolve and settle. In main-thread
 // mode it also times a feature-state write on the scene thread: the edit
 // call, plus a frame's extra time over a frame without one, as totals over
@@ -43,7 +43,7 @@ try {
     page.on("pageerror", (e) => { errors++; console.error(`page: ${e.message}`); });
     await page.goto(`${server.url}?thread=${thread}&style=tokyo-mvt#15/35.685/139.74`);
     const idle = () => page.waitForFunction(() =>
-      document.getElementById("hud").textContent.endsWith(" · idle"), null, { timeout: 60_000 });
+      document.getElementById("app").dataset.map === "idle", null, { timeout: 60_000 });
     await idle();
     for (const [name, commands] of EDITS) {
       const started = Date.now();

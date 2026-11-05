@@ -2,23 +2,67 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Orbis: a GPU-driven map renderer drawing MapLibre styles with WebGPU">
 <title>Orbis</title>
-<style>
-  html, body { margin: 0; height: 100%; background: #f8f4f0; font: 12px ui-monospace, monospace; }
-  #map { position: fixed; inset: 0; }
-  .pin { width: 14px; height: 14px; border-radius: 50%; background: #d0342c; border: 2px solid white; box-shadow: 0 1px 3px #0006; }
-  .popup { pointer-events: auto; max-width: 260px; padding: 6px 8px; background: #fffe; border-radius: 4px; box-shadow: 0 1px 4px #0005; font-size: 11px; }
-  .popup dl { display: grid; grid-template-columns: auto 1fr; gap: 0 8px; margin: 4px 0 0; }
-  .popup dt { color: #666; } .popup dd { margin: 0; overflow-wrap: anywhere; }
-  #about { position: fixed; left: 8px; top: 8px; padding: 4px 8px; background: #fffd; border-radius: 4px; }
-  #hud { position: fixed; left: 8px; bottom: 8px; padding: 4px 8px; background: #fffd; border-radius: 4px; white-space: pre; }
-</style>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='9' fill='%23b3195f'/%3E%3Cellipse cx='16' cy='16' rx='15' ry='6' fill='none' stroke='%2317202a' stroke-width='2' transform='rotate(-28 16 16)'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="./app/app.css">
 </head>
 <body>
-<div id="map"></div>
-<div id="hud">loading…</div>
-<div id="about">Orbis preview %ORBIS_COMMIT% · <a href="./playground.html">style playground</a> · <a href="./cities.html">Cairo, Delhi and Bangkok</a> · drag to pan, scroll, pinch or double-click to zoom, right-drag or Ctrl+drag (two fingers on touch) to rotate and tilt, arrows and +/− keys; click a feature for its properties · data: the live planet in <a href="./">Liberty</a> or <a href="?style=https://americanamap.org/style.json#13/38.897/-77.036">Americana</a> (its route shields are drawn by its own page and not shown), or the committed Tokyo extract as <a href="?style=tokyo-mvt">MVT</a> or <a href="?style=tokyo-mlt">MLT</a> · terrain: <a href="?style=alps&flight">a flight over the Alps</a> (elevation <a href="https://mapterhorn.com/attribution">Mapterhorn</a>: Copernicus GLO-30, swisstopo and others) · other projections: <a href="?style=arctic">the Arctic on EPSG:3413</a>, <a href="?style=nz">New Zealand on NZTM2000</a>, <a href="?style=greenland">Greenland's ice warped onto Web Mercator</a> (imagery <a href="https://earthdata.nasa.gov/gibs">NASA EOSDIS GIBS</a>) · tiles <a href="https://openfreemap.org/">OpenFreeMap</a>, <a href="https://tiles.openstreetmap.us/">OpenStreetMap US</a> · <a href="https://github.com/osm-americana/openstreetmap-americana">OSM Americana</a> · <a href="https://openmaptiles.org/">© OpenMapTiles</a> · <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors (ODbL)</a></div>
+<div class="app" id="app" data-map="loading">
+  <aside class="editor" id="editor" aria-label="Style editor" hidden></aside>
+  <main class="stage" id="stage">
+    <div class="map" id="map"></div>
+    <div class="corner top-left">
+      <button class="scene-button" id="scene-button" type="button" popovertarget="scenes" aria-haspopup="dialog">
+        <span class="mark" aria-hidden="true"></span>
+        <span class="scene-text"><span class="scene-name" id="scene-name">Orbis</span><span class="scene-provider" id="scene-provider">Loading</span></span>
+        <span class="chevron" aria-hidden="true"></span>
+      </button>
+      <section class="hud" id="hud" aria-label="Debug overlay" hidden></section>
+    </div>
+    <div class="corner top-right">
+      <button class="tool" id="edit-toggle" type="button" aria-pressed="false" aria-controls="editor" title="Edit style"><span class="icon icon-brush" aria-hidden="true"></span><span class="visually-hidden">Edit style</span></button>
+      <button class="tool" id="menu-button" type="button" popovertarget="menu" title="More"><span class="icon icon-more" aria-hidden="true"></span><span class="visually-hidden">More</span></button>
+    </div>
+    <div class="corner bottom-right">
+      <div class="tool-stack" role="group" aria-label="Zoom">
+        <button class="tool" id="zoom-in" type="button" title="Zoom in"><span class="icon icon-plus" aria-hidden="true"></span><span class="visually-hidden">Zoom in</span></button>
+        <button class="tool" id="zoom-out" type="button" title="Zoom out"><span class="icon icon-minus" aria-hidden="true"></span><span class="visually-hidden">Zoom out</span></button>
+      </div>
+      <button class="tool compass" id="compass" type="button" title="Reset north and tilt"><span class="needle" aria-hidden="true"></span><span class="visually-hidden">Reset north and tilt</span></button>
+    </div>
+    <div class="attribution" id="attribution"></div>
+    <p class="toast" id="toast" role="status" aria-live="polite"></p>
+  </main>
+</div>
+
+<div class="sheet scenes" id="scenes" popover aria-label="Choose a map">
+  <header class="sheet-head"><h2>Choose a map</h2><button class="tool quiet" type="button" popovertarget="scenes" popovertargetaction="hide" title="Close"><span class="icon icon-close" aria-hidden="true"></span><span class="visually-hidden">Close</span></button></header>
+  <div class="scene-groups" id="scene-groups"></div>
+</div>
+
+<div class="menu" id="menu" popover>
+  <button type="button" class="menu-item" id="debug-toggle" role="switch" aria-checked="false"><span>Debug overlay</span><span class="switch" aria-hidden="true"></span></button>
+  <button type="button" class="menu-item" id="about-button"><span>About Orbis</span></button>
+</div>
+
+<dialog class="about" id="about" aria-labelledby="about-title">
+  <form method="dialog" class="about-close"><button class="tool quiet" title="Close"><span class="icon icon-close" aria-hidden="true"></span><span class="visually-hidden">Close</span></button></form>
+  <h2 id="about-title"><span class="mark" aria-hidden="true"></span>Orbis</h2>
+  <p>A map renderer that draws MapLibre styles on the GPU. One Rust core runs here through WebAssembly and WebGPU, and natively through Vulkan, Metal and Direct3D&nbsp;12.</p>
+  <p>Orbis is a working name, and the engine is early: some styles still draw incompletely.</p>
+  <h3>Getting around</h3>
+  <ul class="gestures">
+    <li><span>Pan</span><span>Drag, or the arrow keys</span></li>
+    <li><span>Zoom</span><span>Scroll, pinch, double-click, or + and −</span></li>
+    <li><span>Rotate and tilt</span><span>Right-drag, Ctrl-drag, or two fingers</span></li>
+    <li><span>Inspect</span><span>Click or tap a feature</span></li>
+  </ul>
+  <p class="about-links"><a href="https://github.com/sargunv/orbis">Source code on GitHub</a><a href="https://github.com/sargunv/orbis/blob/main/docs/plan.md">Technical plan</a></p>
+  <p class="build" id="build"></p>
+</dialog>
 <script type="module" src="./main.js"></script>
 </body>
 </html>

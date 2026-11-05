@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
@@ -8,14 +9,36 @@ const demo = fileURLToPath(new URL("./demo/", import.meta.url));
 const web = fileURLToPath(new URL("./", import.meta.url));
 const base = "/orbis/";
 
-// Replaces %ORBIS_COMMIT% in the pages with the build's commit, linked on
-// GitHub, so it's clear which version a browser loaded.
+// The build's commit, for the app's About sheet and debug overlay, so it's
+// clear which version a browser loaded.
 function commit() {
   const git = (...args) => execFileSync("git", args, { cwd: demo, encoding: "utf8" }).trim();
   const sha = git("rev-parse", "HEAD");
-  const dirty = git("status", "--porcelain") ? "-dirty" : "";
-  const link = `<a href="https://github.com/sargunv/orbis/commit/${sha}">${git("rev-parse", "--short", sha)}${dirty}</a>`;
-  return { name: "commit", transformIndexHtml: (html) => html.replaceAll("%ORBIS_COMMIT%", link) };
+  return { sha, short: git("rev-parse", "--short", sha), dirty: git("status", "--porcelain") !== "" };
+}
+
+// `virtual:paint-spec`: each layer type's paint properties from the v8
+// spec (the style editor's controls), as [name, type, default, minimum,
+// maximum, units, enum values].
+function paintSpec() {
+  const id = "virtual:paint-spec";
+  return {
+    name: "paint-spec",
+    resolveId: (source) => (source === id ? `\0${id}` : undefined),
+    async load(source) {
+      if (source !== `\0${id}`) return;
+      const require = createRequire(import.meta.url);
+      const spec = require("@maplibre/maplibre-gl-style-spec/dist/latest.json");
+      const types = {};
+      for (const [key, props] of Object.entries(spec)) {
+        if (!key.startsWith("paint_")) continue;
+        types[key.slice("paint_".length)] = Object.entries(props).map(([name, p]) =>
+          [name, p.type, p.default ?? null, p.minimum ?? null, p.maximum ?? null, p.units ?? null,
+            p.type === "enum" ? Object.keys(p.values) : null]);
+      }
+      return `export default ${JSON.stringify(types)};`;
+    },
+  };
 }
 
 // Vite handles JS, workers and wasm. JSON's pmtiles:// strings aren't JS
@@ -74,7 +97,8 @@ export default defineConfig({
   // The demo consumes the package by name.
   resolve: { alias: { orbis: fileURLToPath(new URL("./src/index.ts", import.meta.url)) } },
   server: { fs: { allow: [web] } },
-  plugins: [extractStyles(), commit(), {
+  define: { __ORBIS_COMMIT__: JSON.stringify(commit()) },
+  plugins: [extractStyles(), paintSpec(), {
     name: "playground-native",
     configureServer(server) {
       const path = process.env.ORB_PLAYGROUND_STYLE;

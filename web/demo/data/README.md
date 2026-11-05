@@ -38,12 +38,18 @@ sprites once served.
   in [Mapterhorn's attribution list](https://mapterhorn.com/attribution).
   The flight's legs are `flyTo` options looped until the user takes the
   camera.
-- `scripts.json`: the Cairo, Delhi and Bangkok page's style (`cities.html`,
-  `?style=scripts`), written for this repository. It draws OpenFreeMap's
+- `scripts.json`: the Cairo, Delhi and Bangkok entries' style
+  (`?style=cairo|delhi|bangkok`, or `scripts`), written for this repository. It draws OpenFreeMap's
   planet tiles with labels in Arabic, Devanagari, Thai and Latin from
   `font-faces` files: Noto Sans subsets from `@fontsource` 5.3.0 on
   jsDelivr (© Google, [SIL Open Font License 1.1](https://openfontlicense.org/)),
   fetched at run time and not committed.
+- `osm-carto.json`: OpenStreetMap's standard raster tiles from
+  `tile.openstreetmap.org`, under its [tile usage policy](https://operations.osmfoundation.org/policies/tiles/):
+  attributed, fetched only as the map shows them, with the browser's
+  referrer. Written for this repository.
+- `playground.json`: the style editor's sample, a made-up Tokyo district
+  drawn with hover state (`?style=playground`); written for this repository.
 - Labels: `sprites/` is OpenFreeMap's Liberty sprite (`ofm_f384/ofm`, 1× and
   2×; icons as in [STYLE-LICENSE.md](STYLE-LICENSE.md)). `glyphs/` holds
   OpenFreeMap's Noto Sans Regular, Bold and Italic glyph PBFs, cut to the

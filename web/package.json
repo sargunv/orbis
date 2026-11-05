@@ -16,6 +16,8 @@
     "measure": "node scripts/measure.mjs"
   },
   "devDependencies": {
+    "@fontsource-variable/atkinson-hyperlegible-next": "5.3.0",
+    "@maplibre/maplibre-gl-style-spec": "26.5.1",
     "@webgpu/types": "0.1.74",
     "maplibre-gl": "6.16.0",
     "playwright": "1.64.1",

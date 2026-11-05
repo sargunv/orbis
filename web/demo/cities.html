@@ -2,38 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Orbis · Cairo, Delhi, Bangkok</title>
-<style>
-  html, body { margin: 0; height: 100%; background: #f6f3ee; font: 12px ui-monospace, monospace; }
-  body { display: flex; flex-direction: column; }
-  header { padding: 6px 8px; }
-  main { flex: 1; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 4px; padding: 0 4px 4px; }
-  figure { margin: 0; display: flex; flex-direction: column; min-height: 360px; }
-  figcaption { padding: 2px 4px; }
-  iframe { flex: 1; border: 0; width: 100%; }
-</style>
+<title>Orbis</title>
+<!-- Cairo, Delhi and Bangkok are now entries in the map app's picker. -->
+<script>location.replace(`./?style=cairo${location.hash}`);</script>
 </head>
-<body>
-<header>Orbis preview %ORBIS_COMMIT% · <a href="./">Tokyo demo</a> · labels in Arabic, Devanagari and Thai from
-the style's <code>font-faces</code> (Noto Sans from <a href="https://fontsource.org/">Fontsource</a>, SIL OFL 1.1),
-shaped by HarfRust in <code>shaper.wasm</code>: the same layout as the native viewer · tiles
-<a href="https://openfreemap.org/">OpenFreeMap</a> · <a href="https://openmaptiles.org/">© OpenMapTiles</a> ·
-<a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors (ODbL)</a></header>
-<main></main>
-<script type="module">
-const cities = [["Cairo", "13/30.0444/31.2357"], ["Delhi", "13/28.6139/77.2090"], ["Bangkok", "13/13.7563/100.5018"]];
-const main = document.querySelector("main");
-for (const [name, view] of cities) {
-  const figure = document.createElement("figure");
-  const caption = document.createElement("figcaption");
-  caption.textContent = name;
-  const frame = document.createElement("iframe");
-  frame.title = `${name} map`;
-  frame.src = `./?style=scripts#${view}`;
-  figure.append(caption, frame);
-  main.append(figure);
-}
-</script>
-</body>
+<body><p>Cairo, Delhi and Bangkok moved into <a href="./?style=cairo">the map's style picker</a>.</p></body>
 </html>

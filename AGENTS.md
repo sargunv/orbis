@@ -42,12 +42,12 @@ Playwright.
 | `… -p orb-demo -- --snapshot out.png` | render offscreen until idle, write a PNG |
 | `… -p orb-demo -- file://$PWD/web/demo/data/alps.json --flight web/demo/data/alps-flight.json` | the terrain flight over the Alps (web: `?style=alps&flight`) |
 | `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/pkg` |
-| `pnpm -C web snapshot out.png '#z/lat/lon' [--thread=main\|worker]` | web demo on the Tokyo extract (the site defaults to the live map) in headless Chromium, screenshot |
-| `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web dev` | playground at `/orbis/playground.html`; write accepted style and hover snapshots to that file (dev only) |
-| `cargo run --release -p orb-demo -- file://$PWD/web/demo/data/playground.json --watch-style <same path>` | native viewer beside the playground; follows that file as diffed transactions; logs generation, frames and edit ms |
-| `pnpm -C web playground` | headless playground checks in main and worker modes |
+| `pnpm -C web snapshot out.png '#z/lat/lon' [--thread=main\|worker] [--style=<key>\|URL] [--size=WxH]` | the map app on the Tokyo extract (the site defaults to the live map) in headless Chromium, screenshot; `--page=playground.html\|cities.html` follows an old page's redirect |
+| `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web dev` | the map app with its style editor at `/orbis/?style=playground&edit`; writes accepted styles and hover state to that file (dev only) |
+| `cargo run --release -p orb-demo -- file://$PWD/web/demo/data/playground.json --watch-style <same path>` | native viewer beside the style editor; follows that file as diffed transactions; logs generation, frames and edit ms |
+| `pnpm -C web playground` | headless style editor checks (controls, JSON, hover, frames per edit) in main and worker modes |
 | `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web playground:native` | dev bridge smoke test (build `orb-demo --release` first) |
-| `pnpm -C web snapshot out.png --page=playground.html` | headless playground screenshot |
+| `pnpm -C web edits` | every edit class through `globalThis.orbis.edit` in both thread modes, and the cost of a feature-state write |
 | `cargo xtask fixtures` | fetch and verify the pinned GL JS fixture mirror into `fixtures/gl-js` (gitignored; no work when it matches; `fixtures/README.md`) |
 | `cargo xtask rt [--suite render\|query] [--filter <substring>] [--platform native\|chrome\|lavapipe\|all]` | run the GL JS render fixtures, or with `--suite query` the query fixtures (native and Chrome); fetches the mirror first; report in `docs/scratch/rt` |
 | `cargo xtask pages` | `cargo xtask web`, then the Vite build into `web/dist`: the site `.github/workflows/pages.yml` deploys on every push to `main` |

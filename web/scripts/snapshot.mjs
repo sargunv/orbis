@@ -2,14 +2,15 @@
 // map to go idle and writes a screenshot.
 //
 //   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]] [--thread=main|worker]
-//     [--format=mvt|mlt] [--style=URL|scripts] [--compare=reference-map.png]
-//     [--renderer=webgpu|webgl2] [--lose=<ms> [--switch]]
+//     [--format=mvt|mlt] [--style=<key>|URL] [--page=playground.html|cities.html]
+//     [--size=WxH] [--compare=reference-map.png] [--renderer=webgpu|webgl2] [--lose=<ms> [--switch]]
 //
 // `--lose` loses the GPU that long after the map loads and waits for it to
 // recover (plan §8.8); with `--switch`, onto WebGL2.
 //
-// The map viewer draws the Tokyo extract (MVT by default) unless `--style`
-// names another.
+// The map app draws the Tokyo extract (MVT by default) unless `--style`
+// names another; `--page` follows an old page's redirect into the app.
+// Besides <out.png>, it writes <out>-map.png without the app's chrome.
 import { readFile } from "node:fs/promises";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
@@ -23,6 +24,7 @@ const style = args.find((a) => a.startsWith("--style="))?.slice("--style=".lengt
 const renderer = args.find((a) => a.startsWith("--renderer="))?.slice("--renderer=".length);
 const lose = args.find((a) => a.startsWith("--lose="))?.slice("--lose=".length);
 const switchTier = args.includes("--switch");
+const [width, height] = (args.find((a) => a.startsWith("--size="))?.slice(7) ?? "1024x768").split("x").map(Number);
 const [out = "snapshot.png", hash = ""] = args.filter((a) => !a.startsWith("--"));
 
 const server = await serveDemo();
@@ -39,7 +41,7 @@ const url = `${server.url}${entry}${query}${hash}`;
 
 const browser = await launchChromium();
 try {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({ viewport: { width, height } });
   let warnings = 0;
   page.on("console", (m) => {
     if (["error", "warning"].includes(m.type())) { warnings++; console.error(`page: ${m.text()}`); }
@@ -49,14 +51,19 @@ try {
   await page.goto(url);
   const started = Date.now();
   await page.waitForFunction(() => {
-    const text = document.getElementById("hud").textContent;
-    return (text.endsWith(" · idle") || text.startsWith("WebGPU") || text.includes("Error"))
-      && (!new URLSearchParams(location.search).has("lose") || text.includes("recovered"));
+    const app = document.getElementById("app")?.dataset;
+    return app?.map === "error" || (app?.map === "idle"
+      && (!new URLSearchParams(location.search).has("lose") || app.recovered === "true"));
   }, null, { timeout: 60_000 });
   await page.waitForTimeout(250);
-  console.log(`${await page.locator("#hud").textContent()} (${Date.now() - started} ms)`);
+  const stats = await page.evaluate(() => {
+    const s = globalThis.app.map?.stats;
+    return s ? `${app.map.thread} thread, ${document.getElementById("app").dataset.renderer}, z${s.zoom.toFixed(2)}, ${s.ms.toFixed(1)} ms CPU, ${s.draws} draws, ` +
+      `${s.tilesDrawn} tiles` : document.getElementById("toast").textContent;
+  });
+  console.log(`${stats} (${Date.now() - started} ms)`);
   await page.screenshot({ path: out });
-  await page.locator("#hud, #about, .demo-annotation").evaluateAll((elements) => {
+  await page.locator(".corner, .attribution, .toast, .demo-annotation").evaluateAll((elements) => {
     for (const element of elements) element.style.visibility = "hidden";
   });
   const pixels = await page.locator("#map").screenshot({ path: out.replace(/\.png$/, "-map.png") });

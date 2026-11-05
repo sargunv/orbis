@@ -8,6 +8,12 @@ importers:
 
   .:
     devDependencies:
+      '@fontsource-variable/atkinson-hyperlegible-next':
+        specifier: 5.3.0
+        version: 5.3.0
+      '@maplibre/maplibre-gl-style-spec':
+        specifier: 26.5.1
+        version: 26.5.1
       '@webgpu/types':
         specifier: 0.1.74
         version: 0.1.74
@@ -28,6 +34,9 @@ importers:
         version: 8.3.5
 
 packages:
+
+  '@fontsource-variable/atkinson-hyperlegible-next@5.3.0':
+    resolution: {integrity: sha512-UnLzNUy1RWoLDfydAatP4NaRm99X/WbQEph7q/PymJnCFIOOwKOx3pBmp5ys8trO0dM+CKGuJgeZP9fAR4mQpA==}
 
   '@mapbox/jsonlint-lines-primitives@2.0.3':
     resolution: {integrity: sha512-0SElaV0uMxEnxzBhhX9WTuPyUeMsAN/SS0i16tjuba4/mio63MG9khjC1a0JAiPGXAwvwm4UfHJURCN7nyudQg==}
@@ -520,6 +529,8 @@ packages:
         optional: true
 
 snapshots:
+
+  '@fontsource-variable/atkinson-hyperlegible-next@5.3.0': {}
 
   '@mapbox/jsonlint-lines-primitives@2.0.3': {}
 
