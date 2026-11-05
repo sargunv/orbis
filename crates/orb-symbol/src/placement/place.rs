@@ -1181,7 +1181,9 @@ fn commit(now: &mut Decisions, prev: Option<&Decisions>, time: f64, fade_duratio
                 JointOpacity::new(Some(prev), increment, placement.text, placement.icon, false)
             }
             None => {
-                changed |= placement.text || placement.icon;
+                // A label of a tile just loaded shows at once (skip fade):
+                // nothing animates, so nothing keeps frames coming.
+                changed |= (placement.text || placement.icon) && !placement.skip_fade;
                 JointOpacity::new(
                     None,
                     increment,
