@@ -136,6 +136,12 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapDestroy(JNIEnv* env, jcl
     OrbMap_destroy((OrbMap*)(intptr_t)self);
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRegionEventDestroy(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbRegionEvent_destroy((OrbRegionEvent*)(intptr_t)self);
+}
+
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeDestroy(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
@@ -565,6 +571,56 @@ JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbMapTakeWarnings(JNIEn
     return write_to_bytes(env, write);
 }
 
+JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRegionEventKind(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbRegionEventKind result = OrbRegionEvent_kind((const OrbRegionEvent*)(intptr_t)self);
+    return (jint)(result);
+}
+
+JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRegionEventRegion(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint32_t result = OrbRegionEvent_region((const OrbRegionEvent*)(intptr_t)self);
+    return (jint)(result);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRegionEventDone(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint64_t result = OrbRegionEvent_done((const OrbRegionEvent*)(intptr_t)self);
+    return (jlong)(result);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRegionEventTotal(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint64_t result = OrbRegionEvent_total((const OrbRegionEvent*)(intptr_t)self);
+    return (jlong)(result);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRegionEventBytes(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint64_t result = OrbRegionEvent_bytes((const OrbRegionEvent*)(intptr_t)self);
+    return (jlong)(result);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRegionEventFailed(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint64_t result = OrbRegionEvent_failed((const OrbRegionEvent*)(intptr_t)self);
+    return (jlong)(result);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbRegionEventMessage(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbRegionEvent_message((const OrbRegionEvent*)(intptr_t)self, write);
+    return write_to_bytes(env, write);
+}
+
 JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeCreate(JNIEnv* env, jclass cls, jint jobThreads) {
     (void)env;
     (void)cls;
@@ -648,6 +704,55 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeSetPipelineCacheDir(
         throw_OrbError(env, result.err);
         return;
     }
+}
+
+JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRuntimeDownloadRegion(JNIEnv* env, jclass cls, jlong self, jbyteArray name, jbyteArray styleUrl, jdouble west, jdouble south, jdouble east, jdouble north, jdouble minZoom, jdouble maxZoom) {
+    (void)env;
+    (void)cls;
+    jbyte* name_bytes = (*env)->GetByteArrayElements(env, name, NULL);
+    if (!name_bytes) return 0;
+    DiplomatStringView name_view = { (const char*)name_bytes, (size_t)(*env)->GetArrayLength(env, name) };
+    jbyte* styleUrl_bytes = (*env)->GetByteArrayElements(env, styleUrl, NULL);
+    if (!styleUrl_bytes) return 0;
+    DiplomatStringView styleUrl_view = { (const char*)styleUrl_bytes, (size_t)(*env)->GetArrayLength(env, styleUrl) };
+    OrbRuntime_download_region_result result = OrbRuntime_download_region((OrbRuntime*)(intptr_t)self, name_view, styleUrl_view, (double)(west), (double)(south), (double)(east), (double)(north), (double)(minZoom), (double)(maxZoom));
+    (*env)->ReleaseByteArrayElements(env, name, name_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, styleUrl, styleUrl_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return 0;
+    }
+    return (jint)(result.ok);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeDeleteRegion(JNIEnv* env, jclass cls, jlong self, jint id) {
+    (void)env;
+    (void)cls;
+    OrbRuntime_delete_region_result result = OrbRuntime_delete_region((OrbRuntime*)(intptr_t)self, (uint32_t)(id));
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbRuntimeRegions(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbRuntime_regions_result result = OrbRuntime_regions((const OrbRuntime*)(intptr_t)self, write);
+    if (!result.is_ok) {
+        diplomat_buffer_write_destroy(write);
+        throw_OrbError(env, result.err);
+        return NULL;
+    }
+    return write_to_bytes(env, write);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimePollRegionEvent(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbRegionEvent* result = OrbRuntime_poll_region_event((OrbRuntime*)(intptr_t)self);
+    return (jlong)(intptr_t)(result);
 }
 
 JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeHttpCacheBytes(JNIEnv* env, jclass cls, jlong self) {

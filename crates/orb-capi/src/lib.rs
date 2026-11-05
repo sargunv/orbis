@@ -189,6 +189,63 @@ mod ffi {
                 .map_err(fail)
         }
 
+        /// Downloads `style_url`'s map of the area west, south, east,
+        /// north (degrees) between map zooms `min_zoom` and `max_zoom` into
+        /// the state directory, for maps to open with no network. Events
+        /// arrive from `poll_region_event`, with the maps' wakes. Returns
+        /// the region's id.
+        #[diplomat::attr(contract, command)]
+        #[allow(clippy::too_many_arguments)]
+        pub fn download_region(
+            &mut self,
+            name: &DiplomatStr,
+            style_url: &DiplomatStr,
+            west: f64,
+            south: f64,
+            east: f64,
+            north: f64,
+            min_zoom: f64,
+            max_zoom: f64,
+        ) -> Result<u32, OrbError> {
+            self.0
+                .download_region(orb_api::RegionDefinition {
+                    name: text(name).into_owned(),
+                    style_url: text(style_url).into_owned(),
+                    bounds: [west, south, east, north],
+                    zooms: [min_zoom, max_zoom],
+                })
+                .map_err(fail)
+        }
+
+        /// Deletes a region, stopping its download.
+        #[diplomat::attr(contract, command)]
+        pub fn delete_region(&mut self, id: u32) -> Result<(), OrbError> {
+            self.0.delete_region(id).map_err(fail)
+        }
+
+        /// The regions' ids and whether each is complete, one per line:
+        /// `id complete bytes name`.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn regions(&self, out: &mut DiplomatWrite) -> Result<(), OrbError> {
+            for region in self.0.regions().map_err(fail)? {
+                writeln!(
+                    out,
+                    "{} {} {} {}",
+                    region.id, region.complete, region.bytes, region.definition.name
+                )
+                .ok();
+            }
+            Ok(())
+        }
+
+        /// The oldest region download event not yet taken.
+        #[diplomat::attr(contract, event_batch)]
+        pub fn poll_region_event(&mut self) -> Option<Box<OrbRegionEvent>> {
+            self.0
+                .poll_region_event()
+                .map(|e| Box::new(OrbRegionEvent(e)))
+        }
+
         /// Bytes of response bodies the HTTP cache holds (0 without one).
         #[diplomat::attr(contract, snapshot)]
         pub fn http_cache_bytes(&self) -> u64 {
@@ -517,6 +574,83 @@ mod ffi {
         Start = 0,
         Progress = 1,
         End = 2,
+    }
+
+    /// What an offline region's download did.
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum OrbRegionEventKind {
+        /// `done` of `total` requests so far, `bytes` kept.
+        Progress = 0,
+        /// Stored and served; `failed` requests are missing from it.
+        Complete = 1,
+        /// Stopped; see `message`.
+        Failed = 2,
+    }
+
+    /// An offline region download's progress, completion or failure.
+    #[diplomat::opaque]
+    #[diplomat::attr(contract, thread = "any")]
+    #[derive(Debug)]
+    pub struct OrbRegionEvent(pub(crate) orb_api::RegionEvent);
+
+    impl OrbRegionEvent {
+        #[diplomat::attr(contract, snapshot)]
+        pub fn kind(&self) -> OrbRegionEventKind {
+            match self.0 {
+                orb_api::RegionEvent::Progress { .. } => OrbRegionEventKind::Progress,
+                orb_api::RegionEvent::Complete { .. } => OrbRegionEventKind::Complete,
+                orb_api::RegionEvent::Failed { .. } => OrbRegionEventKind::Failed,
+            }
+        }
+
+        #[diplomat::attr(contract, snapshot)]
+        pub fn region(&self) -> u32 {
+            match self.0 {
+                orb_api::RegionEvent::Progress { id, .. }
+                | orb_api::RegionEvent::Complete { id, .. }
+                | orb_api::RegionEvent::Failed { id, .. } => id,
+            }
+        }
+
+        #[diplomat::attr(contract, snapshot)]
+        pub fn done(&self) -> u64 {
+            match self.0 {
+                orb_api::RegionEvent::Progress { done, .. } => done,
+                _ => 0,
+            }
+        }
+
+        #[diplomat::attr(contract, snapshot)]
+        pub fn total(&self) -> u64 {
+            match self.0 {
+                orb_api::RegionEvent::Progress { total, .. } => total,
+                _ => 0,
+            }
+        }
+
+        #[diplomat::attr(contract, snapshot)]
+        pub fn bytes(&self) -> u64 {
+            match self.0 {
+                orb_api::RegionEvent::Progress { bytes, .. }
+                | orb_api::RegionEvent::Complete { bytes, .. } => bytes,
+                orb_api::RegionEvent::Failed { .. } => 0,
+            }
+        }
+
+        #[diplomat::attr(contract, snapshot)]
+        pub fn failed(&self) -> u64 {
+            match self.0 {
+                orb_api::RegionEvent::Complete { failed, .. } => failed,
+                _ => 0,
+            }
+        }
+
+        #[diplomat::attr(contract, snapshot)]
+        pub fn message(&self, out: &mut DiplomatWrite) {
+            if let orb_api::RegionEvent::Failed { message, .. } = &self.0 {
+                out.write_str(message).ok();
+            }
+        }
     }
 
     /// Something a map, its camera or a gesture did.

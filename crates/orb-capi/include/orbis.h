@@ -25,6 +25,8 @@
 #include "OrbPhase.h"
 #include "OrbPoint.h"
 #include "OrbPointerKind.h"
+#include "OrbRegionEvent.h"
+#include "OrbRegionEventKind.h"
 #include "OrbRuntime.h"
 #include "OrbTarget.h"
 #include "OrbWheelUnit.h"

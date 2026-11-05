@@ -477,7 +477,7 @@ impl JobWorker {
             glyph_fetches: Rc::default(),
             word_data_url: None,
             words: Rc::default(),
-            loader: TileLoader::new(Arc::new(orb_host_web::WebFetch)),
+            loader: TileLoader::new(crate::regions::service()),
         }
     }
 
@@ -615,7 +615,7 @@ impl JobWorker {
             let promise = fetches.entry((style, source)).or_insert_with(|| {
                 let url = url.clone();
                 wasm_bindgen_futures::future_to_promise(async move {
-                    match orb_host_web::fetch(&url).await {
+                    match crate::regions::fetch(&url).await {
                         Ok(bytes) => Ok(js_sys::Uint8Array::from(bytes.as_slice()).into()),
                         Err(e) => Err(JsValue::from_str(&e.to_string())),
                     }
@@ -715,7 +715,7 @@ impl JobWorker {
                         .or_insert_with(|| {
                             let url = url.clone();
                             wasm_bindgen_futures::future_to_promise(async move {
-                                match orb_host_web::fetch(&url).await {
+                                match crate::regions::fetch(&url).await {
                                     Ok(bytes) => {
                                         Ok(js_sys::Uint8Array::from(bytes.as_slice()).into())
                                     }
@@ -867,7 +867,7 @@ fn raster(message: &JsValue) -> Result<js_sys::Promise, JsError> {
     };
     Ok(wasm_bindgen_futures::future_to_promise(async move {
         let bitmaps = match &request {
-            GlyphRaster::Pbf { url, .. } => match orb_host_web::fetch(url).await {
+            GlyphRaster::Pbf { url, .. } => match crate::regions::fetch(url).await {
                 Ok(bytes) => request.run(&bytes),
                 Err(e) => Err(format!("glyphs {url}: {e}")),
             },
@@ -882,7 +882,7 @@ fn raster(message: &JsValue) -> Result<js_sys::Promise, JsError> {
                     Ok(()) if orb_host_web::ShaperFiles::is_open(url) => {
                         request.draw_file(&files, None)
                     }
-                    Ok(()) => match orb_host_web::fetch(url).await {
+                    Ok(()) => match crate::regions::fetch(url).await {
                         Ok(bytes) => request.draw_file(&files, Some(&bytes)),
                         Err(e) => Err(format!("font face {url}: {e}")),
                     },

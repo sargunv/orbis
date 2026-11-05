@@ -254,6 +254,17 @@ h2, h3 { margin: 0; }
 .gestures li span:first-child { font-weight: 600; }
 .about-links { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); margin-top: var(--space-4) !important; }
 .build { font-size: var(--text-sm); color: var(--ink-muted); }
+.primary {
+  min-height: var(--target); padding: 0 var(--space-4); border: 0; border-radius: 99px;
+  background: var(--accent); color: white; font-weight: 600;
+}
+.primary:disabled { opacity: 0.5; }
+.offline-status { font-size: var(--text-sm); color: var(--ink-muted); min-height: 1.5em; }
+.regions { list-style: none; padding: 0; margin: var(--space-2) 0 0; display: grid; gap: var(--space-1); }
+.regions li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.region-text { display: flex; flex-direction: column; min-width: 0; }
+.region-name { font-weight: 600; }
+.region-detail, .region-empty { font-size: var(--text-sm); color: var(--ink-muted); }
 
 /* Attribution: one line, expandable to every source. */
 .attribution {

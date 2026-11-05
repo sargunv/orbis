@@ -93,6 +93,53 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Downloads `style_url`'s map of the area west, south, east,
+     * north (degrees) between map zooms `min_zoom` and `max_zoom` into
+     * the state directory, for maps to open with no network. Events
+     * arrive from `poll_region_event`, with the maps' wakes. Returns
+     * the region's id.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun downloadRegion(name: String, styleUrl: String, west: Double, south: Double, east: Double, north: Double, minZoom: Double, maxZoom: Double): UInt {
+        return OrbisNative.orbRuntimeDownloadRegion(live(), name.encodeToByteArray(), styleUrl.encodeToByteArray(), west, south, east, north, minZoom, maxZoom).toUInt()
+    }
+
+    /**
+     * Deletes a region, stopping its download.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun deleteRegion(id: UInt) {
+        OrbisNative.orbRuntimeDeleteRegion(live(), id.toInt())
+    }
+
+    /**
+     * The regions' ids and whether each is complete, one per line:
+     * `id complete bytes name`.
+     *
+     * Contract: `snapshot`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun regions(): String {
+        return OrbisNative.orbRuntimeRegions(live()).decodeToString()
+    }
+
+    /**
+     * The oldest region download event not yet taken.
+     *
+     * Contract: `event_batch`.
+     */
+    fun pollRegionEvent(): OrbRegionEvent? {
+        return OrbisNative.orbRuntimePollRegionEvent(live()).let { if (it == 0L) null else OrbRegionEvent(it) }
+    }
+
+    /**
      * Bytes of response bodies the HTTP cache holds (0 without one).
      *
      * Contract: `snapshot`.

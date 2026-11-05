@@ -9,6 +9,7 @@
     "playground:native": "node scripts/playground-native.mjs",
     "playground": "node scripts/playground.mjs",
     "snapshot": "node scripts/snapshot.mjs",
+    "offline": "node scripts/offline.mjs",
     "bench": "node scripts/bench.mjs",
     "edits": "node scripts/edits.mjs",
     "test": "node --test src/*.test.ts scripts/*.test.mjs",

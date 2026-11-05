@@ -14,6 +14,7 @@ import { editor as createEditor } from "./app/editor.js";
 import { Highlighter, targetOf } from "./app/highlight.js";
 import { hud as createHud } from "./app/hud.js";
 import { picker as createPicker } from "./app/picker.js";
+import { offline as createOffline } from "./app/offline.js";
 import { featurePopup } from "./app/popup.js";
 
 const app = document.getElementById("app");
@@ -108,6 +109,24 @@ menu.addEventListener("beforetoggle", (e) => {
   menu.style.setProperty("--menu-top", `${rect.bottom + 8}px`);
   menu.style.setProperty("--menu-right", `${innerWidth - rect.right}px`);
 });
+const offlineAreas = createOffline({
+  view() {
+    if (!map) return null;
+    const { width, height } = map.canvas.getBoundingClientRect();
+    const corners = [[0, 0], [width, 0], [width, height], [0, height]].map((p) => map.unproject(p));
+    if (corners.some((c) => !c)) return null;
+    const lons = corners.map((c) => c[0]);
+    const lats = corners.map((c) => c[1]);
+    const zoom = Math.floor(map.camera.current.zoom);
+    return {
+      name: `${current.scene.name} near ${map.camera.current.center.map((v) => v.toFixed(3)).reverse().join(", ")}`,
+      style: sceneUrl(current.scene, current.format),
+      bounds: [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)],
+      zooms: [zoom, Math.min(zoom + 3, 16)],
+    };
+  },
+});
+document.getElementById("offline-button").addEventListener("click", () => { menu.hidePopover(); offlineAreas.open(); });
 const about = document.getElementById("about");
 document.getElementById("about-button").addEventListener("click", () => { menu.hidePopover(); about.showModal(); });
 {

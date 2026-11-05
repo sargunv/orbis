@@ -9,6 +9,7 @@
 
 #include "OrbBackend.d.h"
 #include "OrbError.d.h"
+#include "OrbRegionEvent.d.h"
 
 #include "OrbRuntime.d.h"
 
@@ -38,6 +39,17 @@ uint32_t OrbRuntime_pipelines_created(const OrbRuntime* self);
 
 typedef struct OrbRuntime_set_pipeline_cache_dir_result {union { OrbError err;}; bool is_ok;} OrbRuntime_set_pipeline_cache_dir_result;
 OrbRuntime_set_pipeline_cache_dir_result OrbRuntime_set_pipeline_cache_dir(OrbRuntime* self, DiplomatStringView dir);
+
+typedef struct OrbRuntime_download_region_result {union {uint32_t ok; OrbError err;}; bool is_ok;} OrbRuntime_download_region_result;
+OrbRuntime_download_region_result OrbRuntime_download_region(OrbRuntime* self, DiplomatStringView name, DiplomatStringView style_url, double west, double south, double east, double north, double min_zoom, double max_zoom);
+
+typedef struct OrbRuntime_delete_region_result {union { OrbError err;}; bool is_ok;} OrbRuntime_delete_region_result;
+OrbRuntime_delete_region_result OrbRuntime_delete_region(OrbRuntime* self, uint32_t id);
+
+typedef struct OrbRuntime_regions_result {union { OrbError err;}; bool is_ok;} OrbRuntime_regions_result;
+OrbRuntime_regions_result OrbRuntime_regions(const OrbRuntime* self, DiplomatWrite* write);
+
+OrbRegionEvent* OrbRuntime_poll_region_event(OrbRuntime* self);
 
 uint64_t OrbRuntime_http_cache_bytes(const OrbRuntime* self);
 

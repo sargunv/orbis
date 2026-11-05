@@ -132,6 +132,56 @@ public final class OrbRuntime {
         }
     }
 
+    /// Downloads `style_url`'s map of the area west, south, east,
+    /// north (degrees) between map zooms `min_zoom` and `max_zoom` into
+    /// the state directory, for maps to open with no network. Events
+    /// arrive from `poll_region_event`, with the maps' wakes. Returns
+    /// the region's id.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func downloadRegion(name: String, styleUrl: String, west: Double, south: Double, east: Double, north: Double, minZoom: Double, maxZoom: Double) throws -> UInt32 {
+        let result = withStringView(name) { nameView in withStringView(styleUrl) { styleUrlView in OrbRuntime_download_region(live(), nameView, styleUrlView, west, south, east, north, minZoom, maxZoom) } }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+        return result.ok
+    }
+
+    /// Deletes a region, stopping its download.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func deleteRegion(id: UInt32) throws {
+        let result = OrbRuntime_delete_region(live(), id)
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// The regions' ids and whether each is complete, one per line:
+    /// `id complete bytes name`.
+    ///
+    /// Contract: `snapshot`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func regions() throws -> String {
+        let (result, text) = withWrite { write in OrbRuntime_regions(live(), write) }.pair
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+        return text
+    }
+
+    /// The oldest region download event not yet taken.
+    ///
+    /// Contract: `event_batch`.
+    public func pollRegionEvent() -> OrbRegionEvent? {
+        return OrbRuntime_poll_region_event(live()).map { OrbRegionEvent(handle: $0) }
+    }
+
     /// Bytes of response bodies the HTTP cache holds (0 without one).
     ///
     /// Contract: `snapshot`.

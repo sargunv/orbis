@@ -17,6 +17,7 @@ mod lights;
 mod line;
 mod loader;
 mod map;
+pub mod offline;
 mod placement;
 mod placement_wire;
 mod point;

@@ -5,12 +5,14 @@
 //
 // Spawner → worker: {module, port}. Port messages are Rust's (orb-web's
 // `jobs` module); this file only carries them.
-import init, { JobWorker } from "../pkg/core.js";
+import init, { JobWorker, reloadRegions } from "../pkg/core.js";
+import { onRegionsChanged } from "./regions.ts";
 import { loadShaper } from "./shaper.ts";
 
 self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAssembly.Module; port: MessagePort }>) => {
   await init({ module_or_path: module });
   const jobs = new JobWorker();
+  onRegionsChanged(reloadRegions);
   // Thai, Lao, Khmer and Burmese word breaks load when labels need them.
   jobs.setWordDataUrl(new URL("../pkg/seasia.bin", import.meta.url).href);
   // Styles with `font-faces` draw their files with shaper.wasm.

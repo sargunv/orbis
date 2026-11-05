@@ -1,7 +1,8 @@
 // The wasm map on the page's thread (plan §7.2). Its tile jobs and labels
 // go to job workers and a placement worker (plan §7.1, workers.ts).
 
-import init, { createMap as createCoreMap, type OrbisMap as CoreMap } from "../pkg/core.js";
+import init, { createMap as createCoreMap, reloadRegions, type OrbisMap as CoreMap } from "../pkg/core.js";
+import { onRegionsChanged } from "./regions.ts";
 
 const COMPAT = new URL("../pkg/compat_bg.wasm", import.meta.url);
 
@@ -11,10 +12,12 @@ const COMPAT = new URL("../pkg/compat_bg.wasm", import.meta.url);
 async function rendererModule(tier: "modern" | "compat", module: WebAssembly.Module) {
   if (tier === "modern") {
     await init({ module_or_path: module });
+    onRegionsChanged(reloadRegions);
     return createCoreMap;
   }
   const compat = await import("../pkg/compat.js");
   await compat.default({ module_or_path: COMPAT });
+  onRegionsChanged(compat.reloadRegions);
   return compat.createMap as unknown as typeof createCoreMap;
 }
 import { renderFrame, type FrameAck, type Renderer } from "./frames.ts";

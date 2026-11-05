@@ -13,6 +13,7 @@
 
 mod device;
 mod map;
+mod regions;
 mod target;
 
 use std::cell::RefCell;
@@ -33,6 +34,7 @@ pub use orb_hal_gl::egl::EglWindow;
 pub use orb_hal_wgpu::RawSurface;
 pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_runtime::{CameraState, FrameReport, Hit, MapEvent, StyleImage};
+pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Surface;
 pub use target::Target;
 
@@ -130,6 +132,8 @@ struct Shared {
     sentinel: RefCell<Option<PathBuf>>,
     /// Fetches, through the HTTP cache with a state directory.
     fetch: Arc<NativeFetch>,
+    /// Offline regions, with a state directory.
+    regions: Option<regions::Regions>,
     executor: Arc<ThreadPool>,
     images: orb_runtime::Images,
     /// The gesture and animation clock's origin.
@@ -175,6 +179,7 @@ impl Runtime {
             .job_threads
             .unwrap_or_else(ThreadPool::default_size)
             .max(1);
+        let fetch = NativeFetch::with_cache(http_cache(options)?);
         Ok(Self {
             shared: Rc::new(Shared {
                 gpu: RefCell::new(gpu),
@@ -182,7 +187,11 @@ impl Runtime {
                 selection: RefCell::new(selection),
                 generation: std::cell::Cell::new(0),
                 sentinel: RefCell::new(sentinel),
-                fetch: NativeFetch::with_cache(http_cache(options)?),
+                fetch: fetch.clone(),
+                regions: options
+                    .state_dir
+                    .as_ref()
+                    .map(|dir| regions::Regions::new(dir, fetch)),
                 executor: Arc::new(ThreadPool::new("jobs", threads)),
                 images: Default::default(),
                 started: Instant::now(),
@@ -322,6 +331,38 @@ impl Runtime {
         Ok(())
     }
 
+    /// Downloads a style's map of an area between two zooms into the state
+    /// directory, for maps to open with no network: its style, sources'
+    /// tiles, glyphs and sprites. Progress, completion and failure arrive
+    /// from [`poll_region_event`](Self::poll_region_event), with every
+    /// map's wake. Returns the region's id.
+    pub fn download_region(&self, definition: RegionDefinition) -> Result<u32, Error> {
+        self.region_store()?
+            .download(definition, wake_all(&self.shared.wakes))
+    }
+
+    /// Deletes a region, stopping its download.
+    pub fn delete_region(&self, id: u32) -> Result<(), Error> {
+        self.region_store()?.delete(id)
+    }
+
+    /// The regions in the state directory.
+    pub fn regions(&self) -> Result<Vec<RegionInfo>, Error> {
+        self.region_store()?.list()
+    }
+
+    /// The oldest region download event not yet taken.
+    pub fn poll_region_event(&self) -> Option<RegionEvent> {
+        self.shared.regions.as_ref()?.poll_event()
+    }
+
+    fn region_store(&self) -> Result<&regions::Regions, Error> {
+        self.shared
+            .regions
+            .as_ref()
+            .ok_or_else(|| Error::InvalidState("offline regions need a state directory".into()))
+    }
+
     /// What the HTTP cache holds, if there is one.
     pub fn http_cache_stats(&self) -> Option<CacheStats> {
         self.shared.fetch.cache().map(|c| c.stats())
@@ -392,7 +433,10 @@ impl Runtime {
     }
 
     fn services(&self, wake: Arc<dyn Fn() + Send + Sync>) -> orb_runtime::Services {
-        let fetch = self.shared.fetch.clone();
+        let fetch: Arc<dyn orb_host::Fetch> = match &self.shared.regions {
+            Some(regions) => regions.fetch.clone(),
+            None => self.shared.fetch.clone(),
+        };
         let jobs = orb_runtime::PoolJobs::new(
             fetch.clone(),
             Arc::new(NativeImageDecode),

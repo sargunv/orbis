@@ -18,6 +18,9 @@ internal object OrbisNative {
     external fun orbMapDestroy(self: Long)
 
     @JvmStatic
+    external fun orbRegionEventDestroy(self: Long)
+
+    @JvmStatic
     external fun orbRuntimeDestroy(self: Long)
 
     @JvmStatic
@@ -177,6 +180,27 @@ internal object OrbisNative {
     external fun orbMapTakeWarnings(self: Long): ByteArray
 
     @JvmStatic
+    external fun orbRegionEventKind(self: Long): Int
+
+    @JvmStatic
+    external fun orbRegionEventRegion(self: Long): Int
+
+    @JvmStatic
+    external fun orbRegionEventDone(self: Long): Long
+
+    @JvmStatic
+    external fun orbRegionEventTotal(self: Long): Long
+
+    @JvmStatic
+    external fun orbRegionEventBytes(self: Long): Long
+
+    @JvmStatic
+    external fun orbRegionEventFailed(self: Long): Long
+
+    @JvmStatic
+    external fun orbRegionEventMessage(self: Long): ByteArray
+
+    @JvmStatic
     external fun orbRuntimeCreate(jobThreads: Int): Long
 
     @JvmStatic
@@ -202,6 +226,18 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbRuntimeSetPipelineCacheDir(self: Long, dir: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbRuntimeDownloadRegion(self: Long, name: ByteArray, styleUrl: ByteArray, west: Double, south: Double, east: Double, north: Double, minZoom: Double, maxZoom: Double): Int
+
+    @JvmStatic
+    external fun orbRuntimeDeleteRegion(self: Long, id: Int): Unit
+
+    @JvmStatic
+    external fun orbRuntimeRegions(self: Long): ByteArray
+
+    @JvmStatic
+    external fun orbRuntimePollRegionEvent(self: Long): Long
 
     @JvmStatic
     external fun orbRuntimeHttpCacheBytes(self: Long): Long

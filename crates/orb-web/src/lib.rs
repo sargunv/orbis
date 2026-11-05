@@ -21,6 +21,7 @@ mod canvas;
 mod fixture;
 mod jobs;
 mod placement;
+pub mod regions;
 mod ui;
 
 #[cfg(feature = "harness")]
@@ -33,7 +34,6 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use glam::DVec2;
-use orb_host_web::WebFetch;
 use orb_runtime::{Jobs, Map, MapEvent, Services, Viewport};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -128,7 +128,7 @@ pub async fn create_map(
         image_decode: Arc::new(orb_host_web::WebImageDecode),
         images: Default::default(),
         jobs,
-        fetch: Arc::new(WebFetch),
+        fetch: regions::service(),
         wake: Arc::new(wake),
     };
     let mut map = Map::new(services, None);
