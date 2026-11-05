@@ -1,7 +1,7 @@
 //! The native bench: `cargo xtask bench [style URL | alps] [--format mvt|mlt]
 //! [--frames N] [--warmup N] [--rounds N] [--size WxH] [--ratio R]
 //! [--at lon,lat] [--timing timestamps|work-done]
-//! [--experiment frames|paint|labels|gestures]
+//! [--experiment frames|labels|gestures]
 //! [--labels on|off] [--paths city|alps]`.
 //!
 //! Without a style URL it loads the committed Tokyo extract, as the browser

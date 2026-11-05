@@ -43,7 +43,6 @@ cargo xtask <task>
   unicode      regenerate orb-text's character tables from the UCD
   web          build core.wasm and harness.wasm into web/pkg, report sizes
   extract      reproduce the committed Tokyo MVT/MLT PMTiles archives
-  tile-parity  compare every extract tile and measure decode times
   demo-labels  add Liberty's labels, its sprite and glyph subsets to the Tokyo demo
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
@@ -66,8 +65,6 @@ fn main() -> ExitCode {
         }
         Some("fixtures") => fixtures::ensure(),
         Some("extract") => pmtiles::extract(),
-        Some("transcode") => pmtiles::transcode(),
-        Some("tile-parity") => pmtiles::verify(),
         Some("unicode") => unicode::generate(),
         Some("demo-labels") => labels::generate(),
         Some("web") => web::build(),

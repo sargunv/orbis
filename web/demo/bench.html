@@ -18,8 +18,7 @@
 <h1>Frame bench</h1>
 <p>Decision 0002's bench: five views of the committed Tokyo extract, still
 and with the camera panning, timed on the GPU and CPU; the same loop as
-<code>cargo xtask bench</code>. <code>?experiment=paint</code> runs decision
-0017's paint bench instead, <code>?experiment=labels</code> the labels bench,
+<code>cargo xtask bench</code>. <code>?experiment=labels</code> runs the labels bench instead,
 <code>?experiment=gestures</code> rotate, tilt and zoom paths through the
 <code>orbis</code> package in each thread mode (<code>&amp;thread=main|worker</code>
 for one). It takes several minutes on a phone. Keep the phone
@@ -35,7 +34,7 @@ issue.</p>
 <script type="module">
 // Query: format=mvt|mlt or style=<url> (the Tokyo extract by default); orb-bench settings frames, warmup,
 // rounds, size=WxH, ratio, at=lon,lat, timing=timestamps|work-done,
-// experiment=frames|paint|labels|gestures, labels=on|off; for gestures,
+// experiment=frames|labels|gestures, labels=on|off; for gestures,
 // thread=main|worker, workers=<job workers> and paths=city|alps (alps by default with style=alps,
 // at the terrain demo's view).
 import init, { runBench } from "../pkg/harness.js";

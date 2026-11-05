@@ -11,7 +11,7 @@
 //!   either map; a placement worker ([`PlacementWorker`]) places its labels.
 //!
 //! Both maps draw through WebGPU. With the `harness` feature the module also
-//! exports the frame and paint benches (`runBench`) and the render fixture
+//! exports the benches (`runBench`) and the render fixture
 //! driver (`FixtureRenderer`); `cargo xtask web` builds that into
 //! `harness.wasm`, apart from `core.wasm`.
 

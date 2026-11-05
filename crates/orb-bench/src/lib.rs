@@ -1,5 +1,5 @@
-//! GPU and CPU frame timings of the default render path (decision 0002)
-//! and of paint bindings (decision 0017): natively (`cargo xtask bench`)
+//! GPU and CPU frame timings of the default render path (decision 0002):
+//! natively (`cargo xtask bench`)
 //! and in the browser (`orb-web`'s `harness` feature, `web/demo/bench.html`),
 //! through the same loop.
 //!
@@ -18,7 +18,6 @@
 mod clock;
 mod gestures;
 mod labels;
-mod paint;
 mod report;
 mod timed;
 
@@ -30,7 +29,6 @@ use orb_geo::Geodetic;
 use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureUsages};
 use orb_hal_wgpu::WgpuGpu;
 use orb_runtime::{CameraState, FrameReport, Map, TargetFormat, Transaction, Viewport};
-pub use paint::PaintReport;
 use report::{FramesReport, Moving, Summary, ViewResult};
 use timed::TimedGpu;
 
@@ -69,8 +67,6 @@ pub enum Experiment {
     /// The default path's frames, still and moving (decision 0002).
     #[default]
     Frames,
-    /// Decision 0017's paint bindings: property rows against GPU bytecode.
-    Paint,
     /// M2's label exits: placement time while turning, hidden symbols' GPU
     /// cost.
     Labels,
@@ -94,7 +90,6 @@ pub enum GesturePaths {
 #[derive(Debug)]
 pub enum Report {
     Frames(FramesReport),
-    Paint(PaintReport),
     Labels(LabelsReport),
     Gestures(GesturesReport),
 }
@@ -105,7 +100,6 @@ impl Report {
         let mut out = String::new();
         match self {
             Self::Frames(r) => r.write(&mut out),
-            Self::Paint(r) => r.write(&mut out),
             Self::Labels(r) => r.write(&mut out),
             Self::Gestures(r) => r.write(&mut out),
         }
@@ -170,8 +164,7 @@ impl Settings {
     /// Sets one option by name, as the native tool's `--name value` and the
     /// page's `?name=value` give it: `frames`, `warmup`, `rounds`, `size`
     /// (`WxH`), `ratio`, `at` (`lon,lat`), `timing` (`timestamps` or
-    /// `work-done`), `experiment` (`frames`, `paint`, `labels` or
-    /// `gestures`), `labels` (`on` or `off`) or `paths` (`city` or `alps`,
+    /// `work-done`), `experiment` (`frames`, `labels` or `gestures`), `labels` (`on` or `off`) or `paths` (`city` or `alps`,
     /// the gestures bench's).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let number = |value: &str| {
@@ -217,12 +210,9 @@ impl Settings {
             "experiment" => {
                 self.experiment = match value {
                     "frames" => Experiment::Frames,
-                    "paint" => Experiment::Paint,
                     "labels" => Experiment::Labels,
                     "gestures" => Experiment::Gestures,
-                    _ => {
-                        return Err("experiment needs frames, paint, labels or gestures".into());
-                    }
+                    _ => return Err("experiment needs frames, labels or gestures".into()),
                 }
             }
             "paths" => {
@@ -357,50 +347,35 @@ pub async fn run(
         width: f64::from(settings.width),
         height: f64::from(settings.height),
     };
-    if settings.experiment == Experiment::Paint {
-        let size = (width, height);
-        return paint::run(
-            &mut gpu,
-            timing,
-            (target, size),
-            format,
-            settings,
-            about,
-            new_map,
-            progress,
-        )
-        .await
-        .map(Report::Paint);
-    }
-    if settings.experiment == Experiment::Labels {
-        let size = (width, height);
-        return labels::run(
-            &mut gpu,
-            timing,
-            (target, size),
-            format,
-            settings,
-            about,
-            new_map,
-            progress,
-        )
-        .await
-        .map(Report::Labels);
-    }
-    if settings.experiment == Experiment::Gestures {
-        let size = (width, height);
-        return gestures::run(
-            &mut gpu,
-            timing,
-            (target, size),
-            format,
-            settings,
-            about,
-            new_map,
-            progress,
-        )
-        .await
-        .map(Report::Gestures);
+    let size = (width, height);
+    match settings.experiment {
+        Experiment::Labels => {
+            let run = labels::run(
+                &mut gpu,
+                timing,
+                (target, size),
+                format,
+                settings,
+                about,
+                new_map,
+                progress,
+            );
+            return run.await.map(Report::Labels);
+        }
+        Experiment::Gestures => {
+            let run = gestures::run(
+                &mut gpu,
+                timing,
+                (target, size),
+                format,
+                settings,
+                about,
+                new_map,
+                progress,
+            );
+            return run.await.map(Report::Gestures);
+        }
+        Experiment::Frames => {}
     }
     let render = |gpu: &mut TimedGpu, map: &mut Map| {
         let started = clock::now();
@@ -524,7 +499,7 @@ pub async fn run(
             render(&mut gpu, map);
             gpu.throttle().await;
         }
-        settle(&mut gpu, map, &render, name).await?;
+        settle(&mut gpu, map, &|g, m| render(g, m).0, &mut warnings).await?;
         let mut moving = Moving::default();
         for round in 0..settings.rounds {
             progress(&format!(
@@ -580,27 +555,6 @@ impl Path {
         let surface = map.surface();
         map.camera_mut()
             .pan(&surface, self.viewport, self.point(f), self.point(f + 1));
-    }
-}
-
-/// Renders until the map is idle.
-async fn settle(
-    gpu: &mut TimedGpu,
-    map: &mut Map,
-    render: &impl Fn(&mut TimedGpu, &mut Map) -> (FrameReport, Duration, Duration),
-    name: &str,
-) -> Result<(), String> {
-    let started = clock::now();
-    loop {
-        let (report, _, _) = render(gpu, map);
-        gpu.take_frames().await;
-        if report.idle {
-            return Ok(());
-        }
-        if clock::now() - started > LOAD_TIMEOUT {
-            return Err(format!("{name}: timed out loading the path"));
-        }
-        clock::sleep(Duration::from_millis(5)).await;
     }
 }
 
@@ -949,4 +903,28 @@ pub(crate) fn web_mercator() -> orb_crs::Projection {
     *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
         .expect("built-in tile matrix set")
         .projection()
+}
+
+/// Draws until the map is idle, then once more.
+pub(crate) async fn settle(
+    gpu: &mut TimedGpu,
+    map: &mut Map,
+    render: &impl Fn(&mut TimedGpu, &mut Map) -> FrameReport,
+    warnings: &mut Vec<String>,
+) -> Result<(), String> {
+    let started = clock::now();
+    loop {
+        let report = render(gpu, map);
+        warnings.extend(map.take_warnings());
+        gpu.take_frames().await;
+        if report.idle {
+            render(gpu, map);
+            gpu.take_frames().await;
+            return Ok(());
+        }
+        if clock::now() - started > LOAD_TIMEOUT {
+            return Err("timed out waiting for tiles".into());
+        }
+        clock::sleep(Duration::from_millis(5)).await;
+    }
 }

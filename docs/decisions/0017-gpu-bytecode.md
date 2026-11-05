@@ -159,7 +159,8 @@ fixture interprets.
 
 ## Cost and the threshold
 
-**Method.** `cargo xtask bench --experiment paint` (and
+**Method.** `cargo xtask bench --experiment paint` (removed once the
+threshold was set; and
 `bench.html?experiment=paint` in a browser, the same loop): decision 0002's
 Tokyo extract (its style before Liberty's labels were added to it),
 2048×1536, two views, two maps per view: `CostModel::ROWS`

@@ -18,7 +18,7 @@ use orb_runtime::{CameraState, FrameReport, Map, TargetFormat, Viewport};
 
 use crate::report::{ms, resolution};
 use crate::timed::TimedGpu;
-use crate::{GesturePaths, Settings, Timing, clock, paint::settle};
+use crate::{GesturePaths, Settings, Timing, clock, settle};
 
 /// A 60 Hz display's frame.
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -275,7 +275,7 @@ pub(crate) async fn run(
         progress(&format!("{}: loading its first view", path.name));
         let start = (path.camera)(settings, 0.0);
         let mut map = new_map(start)?;
-        settle(gpu, &mut map, &render, &mut warnings).await?;
+        settle(gpu, &mut map, &|g, m| render(g, m).0, &mut warnings).await?;
         let mut to = orb_runtime::HitPublication::default();
         let mut index = orb_runtime::HitIndex::default();
         let mut picking = Picking::default();

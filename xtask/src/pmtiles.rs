@@ -1,7 +1,6 @@
 //! Reproducible Tokyo demo extracts from OpenFreeMap's OpenMapTiles planet.
 
 use std::io::Write;
-use std::time::{Duration, Instant};
 
 use orb_crs::TileIndex;
 use orb_source::pmtiles::{HEADER_LEN, Lookup, Range, Reader, tile_id};
@@ -74,7 +73,7 @@ pub(crate) fn extract() -> Result<(), String> {
     transcode()
 }
 
-pub(crate) fn transcode() -> Result<(), String> {
+fn transcode() -> Result<(), String> {
     use mlt_core::encoder::{
         Codecs, Encoder, EncoderConfig, Network, Profile, SortStrategy, StagedLayer,
         StagedProperty, Tessellation, stage_tile,
@@ -174,8 +173,7 @@ pub(crate) fn transcode() -> Result<(), String> {
         }
         tiles.push((entry.id, encoded));
     }
-    write_archive(&tiles, 6, &format!("{OUT}/tokyo-mlt.pmtiles"))?;
-    verify()
+    write_archive(&tiles, 6, &format!("{OUT}/tokyo-mlt.pmtiles"))
 }
 
 fn remote(agent: &ureq::Agent, range: Range) -> Result<Vec<u8>, String> {
@@ -287,70 +285,6 @@ fn write_archive(tiles: &[(u64, Vec<u8>)], kind: u8, path: &str) -> Result<(), S
     Ok(())
 }
 
-pub(crate) fn verify() -> Result<(), String> {
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(format!("{OUT}/manifest.json")).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    let mvt = std::fs::read(format!("{OUT}/tokyo-mvt.pmtiles")).map_err(|e| e.to_string())?;
-    let mlt = std::fs::read(format!("{OUT}/tokyo-mlt.pmtiles")).map_err(|e| e.to_string())?;
-    let (mut a, mut b) = (Reader::default(), Reader::default());
-    let (mut time_a, mut time_b) = (Duration::ZERO, Duration::ZERO);
-    let mut count = 0;
-    for coordinate in manifest["tiles"].as_array().ok_or("manifest tiles")? {
-        let tile = TileIndex::new(
-            coordinate[0].as_u64().unwrap() as u8,
-            coordinate[1].as_u64().unwrap() as u32,
-            coordinate[2].as_u64().unwrap() as u32,
-        );
-        let x = local_tile(&mut a, &mvt, tile)?;
-        let y = local_tile(&mut b, &mlt, tile)?;
-        let start = Instant::now();
-        let x = orb_tile::mvt::decode(&x).map_err(|e| e.to_string())?;
-        time_a += start.elapsed();
-        let start = Instant::now();
-        let y = orb_tile::mlt::decode(&y).map_err(|e| e.to_string())?;
-        time_b += start.elapsed();
-        if x != y {
-            for (x, y) in x.layers.iter().zip(&y.layers) {
-                if x != y {
-                    eprintln!(
-                        "mismatch {tile:?} layer {}: features {} vs {}, vertices {} vs {}",
-                        x.name(),
-                        x.len(),
-                        y.len(),
-                        x.vertices().len(),
-                        y.vertices().len()
-                    );
-                    for ((key, a), (_, b)) in x.properties().zip(y.properties()) {
-                        if a != b {
-                            let row = (0..a.len().min(b.len()))
-                                .find(|&i| a.get(i) != b.get(i))
-                                .unwrap_or(0);
-                            eprintln!(
-                                "property {key} row {row}: {:?} vs {:?}",
-                                a.get(row),
-                                b.get(row)
-                            );
-                        }
-                    }
-                    break;
-                }
-            }
-            return Err(format!("column mismatch at {tile:?}"));
-        }
-        count += 1;
-    }
-    eprintln!(
-        "{count} tiles: identical columns; decode MVT {:.3} ms, MLT {:.3} ms; archives {} vs {} bytes",
-        time_a.as_secs_f64() * 1000.0,
-        time_b.as_secs_f64() * 1000.0,
-        mvt.len(),
-        mlt.len()
-    );
-    Ok(())
-}
-
 pub(crate) fn local_tile(
     reader: &mut Reader,
     archive: &[u8],
@@ -376,8 +310,24 @@ pub(crate) fn local_tile(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The MLT archive decodes to the same columns as the MVT one.
     #[test]
     fn extract_columns_match() {
-        super::verify().unwrap();
+        let read = |name: &str| std::fs::read(format!("{OUT}/{name}")).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&read("manifest.json")).unwrap();
+        let (mvt, mlt) = (read("tokyo-mvt.pmtiles"), read("tokyo-mlt.pmtiles"));
+        let (mut a, mut b) = (Reader::default(), Reader::default());
+        for c in manifest["tiles"].as_array().unwrap() {
+            let at = |i: usize| c[i].as_u64().unwrap() as u32;
+            let tile = TileIndex::new(at(0) as u8, at(1), at(2));
+            let x = orb_tile::mvt::decode(&local_tile(&mut a, &mvt, tile).unwrap()).unwrap();
+            let y = orb_tile::mlt::decode(&local_tile(&mut b, &mlt, tile).unwrap()).unwrap();
+            for (x, y) in x.layers.iter().zip(&y.layers) {
+                assert!(x == y, "{tile:?} layer {} differs", x.name());
+            }
+            assert_eq!(x.layers.len(), y.layers.len(), "{tile:?}");
+        }
     }
 }

@@ -22,7 +22,7 @@ use orb_v8::LayerKind;
 
 use crate::report::{Stat, Summary, ms};
 use crate::timed::TimedGpu;
-use crate::{Settings, Timing, clock, paint::settle};
+use crate::{Settings, Timing, clock, settle};
 
 /// Name, zoom and pitch.
 const VIEWS: &[(&str, f64, f64)] = &[("z15", 15.0, 0.0), ("z15 pitch 60", 15.0, 60.0)];
@@ -147,7 +147,7 @@ pub(crate) async fn run(
         };
         progress(&format!("{view}: loading"));
         let mut map = new_map(camera)?;
-        settle(gpu, &mut map, &render, &mut warnings).await?;
+        settle(gpu, &mut map, &|g, m| render(g, m).0, &mut warnings).await?;
 
         progress(&format!("{view}: turning"));
         let count = settings.warmup + settings.frames;
@@ -189,9 +189,9 @@ pub(crate) async fn run(
         for &(variant, layout) in VARIANTS {
             progress(&format!("{view}: {variant}"));
             let mut map = new_map(camera)?;
-            settle(gpu, &mut map, &render, &mut warnings).await?;
+            settle(gpu, &mut map, &|g, m| render(g, m).0, &mut warnings).await?;
             edit_symbols(&mut map, layout)?;
-            settle(gpu, &mut map, &render, &mut warnings).await?;
+            settle(gpu, &mut map, &|g, m| render(g, m).0, &mut warnings).await?;
             let (mut gpu_times, mut main) = (Vec::new(), Vec::new());
             for _ in 0..settings.rounds {
                 let mut wall = Vec::new();

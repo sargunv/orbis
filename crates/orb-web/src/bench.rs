@@ -1,4 +1,4 @@
-//! The frame and paint benches (decisions 0002, 0017) in the browser, for
+//! The frame, labels and gestures benches in the browser, for
 //! `web/demo/bench.html`. Built into `harness.wasm` with the `harness`
 //! feature, never into `core.wasm`. The measurement is `orb-bench`'s, shared with the
 //! native tool; this module only wires the page's options, the map's
