@@ -4,12 +4,15 @@
 // native bench times `Map::render` alone, this times what a user sees: the
 // interval between frames reaching the page, the render CPU time of each,
 // main-thread long tasks, and how long the map takes to reach `idle` after
-// the path ends (a backlog of frames shows there).
+// the path ends (a backlog of frames shows there). `paths=alps` runs the
+// terrain demo's view instead: rotate and pan at z11.6, pitch 72, and its
+// 60 s flight (`data/alps-flight.json`), flown as the demo flies it.
 import { createMap } from "orbis";
+import alpsFlight from "./data/alps-flight.json";
 
 /** Frames per path: 6 s at 60 Hz. */
 const PATH_FRAMES = 360;
-const PATHS = [
+const CITY_PATHS = [
   {
     name: "rotate and tilt at z14",
     camera: (center, f) => ({ center, zoom: 14, bearing: 360 * f, pitch: 30 - 30 * Math.cos(f * 2 * Math.PI) }),
@@ -19,6 +22,14 @@ const PATHS = [
     camera: (center, f) => ({ center, zoom: 14 - 2 * Math.cos(f * 2 * Math.PI), bearing: 0, pitch: 0 }),
   },
 ];
+/** The terrain demo's view: z11.6, bearing −32, pitch 72. */
+const alpsView = (center, lon, bearing) => ({ center: [center[0] + lon, center[1]], zoom: 11.6, bearing, pitch: 72 });
+const ALPS_PATHS = [
+  { name: "rotate at z11.6, pitch 72", camera: (center, f) => alpsView(center, 0, -32 + 360 * f) },
+  { name: "pan at z11.6, pitch 72", camera: (center, f) => alpsView(center, 0.15 * Math.sin(f * 2 * Math.PI), -32) },
+  { name: "Alps flight (60 s)", camera: (center) => alpsView(center, 0, -32), flight: alpsFlight.legs },
+];
+const PATH_SETS = { city: CITY_PATHS, alps: ALPS_PATHS };
 const LOAD_TIMEOUT = 120_000;
 
 const percentile = (xs, p) => {
@@ -52,9 +63,13 @@ async function runPath(container, style, thread, center, path, show) {
       : null;
     observer?.observe({ type: "longtask" });
     const started = await nextFrame();
-    for (let f = 1; f <= PATH_FRAMES; f++) {
-      map.camera.jumpTo(path.camera(center, f / PATH_FRAMES));
-      await nextFrame();
+    if (path.flight) {
+      for (const leg of path.flight) await map.camera.flyTo(leg);
+    } else {
+      for (let f = 1; f <= PATH_FRAMES; f++) {
+        map.camera.jumpTo(path.camera(center, f / PATH_FRAMES));
+        await nextFrame();
+      }
     }
     const ended = performance.now();
     await idle(map, label);
@@ -79,15 +94,17 @@ async function runPath(container, style, thread, center, path, show) {
   }
 }
 
-/** Runs every path in each of `threads`; resolves to the Markdown report. */
-export async function runGestures({ style, center, threads, size, about, show }) {
+/** Runs every path of `paths` (`city` or `alps`) in each of `threads`; resolves to the Markdown report. */
+export async function runGestures({ style, center, paths, threads, size, about, show }) {
+  const run = PATH_SETS[paths];
+  if (!run) throw new Error("paths must be city or alps");
   const container = document.createElement("div");
   Object.assign(container.style, { width: `${size[0]}px`, height: `${size[1]}px`, position: "relative" });
   document.body.append(container);
   const rows = [];
   try {
     for (const thread of threads) {
-      for (const path of PATHS) rows.push(await runPath(container, style, thread, center, path, show));
+      for (const path of run) rows.push(await runPath(container, style, thread, center, path, show));
     }
   } finally {
     container.remove();
@@ -96,7 +113,7 @@ export async function runGestures({ style, center, threads, size, about, show })
     "### Gestures bench (page)", "",
     ...about.map((line) => `- ${line}`),
     `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${PATH_FRAMES} frames a path, ` +
-      "the camera moved once a display frame (`jumpTo`), each path from a fresh map at rest",
+      "the camera moved once a display frame (`jumpTo`; a flight's legs through `flyTo`), each path from a fresh map at rest",
     "",
     "| thread | path | frames | interval p50 | p95 | p99 | max | gaps > 50 ms | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max |",
     "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",

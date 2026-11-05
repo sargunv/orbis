@@ -7,6 +7,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+orb-camera.workspace = true
 orb-crs.workspace = true
 glam.workspace = true
 orb-geo.workspace = true
@@ -14,6 +15,7 @@ orb-hal.workspace = true
 orb-hal-wgpu.workspace = true
 orb-runtime.workspace = true
 orb-v8.workspace = true
+serde_json.workspace = true
 wgpu.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

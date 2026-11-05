@@ -459,7 +459,7 @@ impl OrbisMap {
         let elevation = (due && revision != self.elevation_revision).then(|| {
             self.elevation_revision = revision;
             self.elevation_age = 0;
-            self.map.elevation_pyramid()
+            self.map.elevation_pyramid().to_vec()
         });
         let counts = self.map.job_counts();
         let mut stats = vec![

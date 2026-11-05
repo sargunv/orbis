@@ -129,8 +129,9 @@ pub trait Ground: Send + Sync + std::fmt::Debug {
     fn elevation(&self, tile: TileId, x: f64, y: f64) -> f64;
 
     /// A compact copy of these elevations as bytes, for placement on
-    /// another thread (the web's placement worker).
-    fn pyramid(&self) -> Vec<u8>;
+    /// another thread (the web's placement worker); shared by every reader
+    /// of the same elevations.
+    fn pyramid(&self) -> std::sync::Arc<[u8]>;
 }
 
 /// A symbol's elevation in metres (GL JS `getSymbolElevation`): its height

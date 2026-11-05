@@ -110,8 +110,8 @@ impl PlacementLane for WorkerPlacement {
             let bytes = frame
                 .ground
                 .as_ref()
-                .map_or_else(Vec::new, |g| g.0.pyramid());
-            let buffer = Uint8Array::from(bytes.as_slice());
+                .map_or_else(Default::default, |g| g.0.pyramid());
+            let buffer = Uint8Array::from(&bytes[..]);
             post(&object(&[("ground", buffer.clone().into())]), Some(&buffer));
         }
         let buffer = Uint8Array::from(pack_frame(&frame).as_slice());

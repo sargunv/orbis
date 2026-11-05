@@ -37,6 +37,9 @@ use timed::TimedGpu;
 /// The committed Tokyo extract's view, by the Imperial Palace
 /// (`web/demo/data/README.md`).
 pub const TOKYO: (f64, f64) = (139.74, 35.685);
+/// The terrain demo's view over the Valais Alps: Zermatt and the
+/// Matterhorn, as `web/demo/data/alps-flight.json` ends.
+pub const ALPS: (f64, f64) = (7.7491, 46.0207);
 /// Name, zoom, pitch, and whether the style gains [`BUILDINGS_3D`].
 const VIEWS: &[(&str, f64, f64, bool)] = &[
     ("z12", 12.0, 0.0, false),
@@ -74,6 +77,17 @@ pub enum Experiment {
     /// Rotate, tilt and zoom paths at a 60 Hz pace with tiles arriving:
     /// frame-time distributions.
     Gestures,
+}
+
+/// The gestures bench's camera paths.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GesturePaths {
+    /// Rotate and tilt at z14, zoom z12 → z16 → z12: a city's streets.
+    #[default]
+    City,
+    /// The terrain demo's view over the Alps (`web/demo/data/alps.json`):
+    /// rotate and pan at z11.6, pitch 72, and its 60 s flight.
+    Alps,
 }
 
 /// A bench's results.
@@ -131,6 +145,7 @@ pub struct Settings {
     pub experiment: Experiment,
     /// Keeps the style's symbol layers.
     pub labels: bool,
+    pub paths: GesturePaths,
 }
 
 impl Default for Settings {
@@ -146,6 +161,7 @@ impl Default for Settings {
             timing: None,
             experiment: Experiment::Frames,
             labels: true,
+            paths: GesturePaths::City,
         }
     }
 }
@@ -155,8 +171,8 @@ impl Settings {
     /// page's `?name=value` give it: `frames`, `warmup`, `rounds`, `size`
     /// (`WxH`), `ratio`, `at` (`lon,lat`), `timing` (`timestamps` or
     /// `work-done`), `experiment` (`frames`, `paint`, `labels` or
-    /// `gestures`) or
-    /// `labels` (`on` or `off`).
+    /// `gestures`), `labels` (`on` or `off`) or `paths` (`city` or `alps`,
+    /// the gestures bench's).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let number = |value: &str| {
             value
@@ -207,6 +223,13 @@ impl Settings {
                     _ => {
                         return Err("experiment needs frames, paint, labels or gestures".into());
                     }
+                }
+            }
+            "paths" => {
+                self.paths = match value {
+                    "city" => GesturePaths::City,
+                    "alps" => GesturePaths::Alps,
+                    _ => return Err("paths needs city or alps".into()),
                 }
             }
             _ => return Err(format!("unknown option {name}")),

@@ -1,11 +1,13 @@
-//! The native bench: `cargo xtask bench [style URL] [--format mvt|mlt]
+//! The native bench: `cargo xtask bench [style URL | alps] [--format mvt|mlt]
 //! [--frames N] [--warmup N] [--rounds N] [--size WxH] [--ratio R]
 //! [--at lon,lat] [--timing timestamps|work-done]
 //! [--experiment frames|paint|labels|gestures]
-//! [--labels on|off]`.
+//! [--labels on|off] [--paths city|alps]`.
 //!
 //! Without a style URL it loads the committed Tokyo extract, as the browser
-//! bench (`web/demo/bench.html`) does. Prints the Markdown report.
+//! bench (`web/demo/bench.html`) does; `alps` is the terrain demo's style
+//! (live tiles), at its view and with the gestures bench's Alps paths.
+//! Prints the Markdown report.
 
 #![forbid(unsafe_code)]
 
@@ -41,7 +43,13 @@ mod native {
     pub(super) fn run() -> Result<(), String> {
         let mut settings = Settings::default();
         let mut style = Style::Tokyo("mvt".into());
-        let mut args = std::env::args().skip(1);
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.iter().any(|a| a == "alps") {
+            // The Alps' view and paths, unless the options say otherwise.
+            settings.center = orb_geo::Geodetic::new(orb_bench::ALPS.0, orb_bench::ALPS.1);
+            settings.paths = orb_bench::GesturePaths::Alps;
+        }
+        let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             if let Some(name) = arg.strip_prefix("--") {
                 let value = args.next().ok_or(format!("{arg} needs a value"))?;
@@ -53,6 +61,12 @@ mod native {
                 } else {
                     settings.set(name, &value)?;
                 }
+            } else if arg == "alps" {
+                let path = std::path::Path::new(DEMO_DATA)
+                    .join("alps.json")
+                    .canonicalize()
+                    .map_err(|e| e.to_string())?;
+                style = Style::Url(format!("file://{}", path.display()));
             } else {
                 style = Style::Url(arg);
             }

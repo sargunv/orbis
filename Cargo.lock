@@ -2289,6 +2289,7 @@ version = "0.0.0"
 dependencies = [
  "glam",
  "js-sys",
+ "orb-camera",
  "orb-crs",
  "orb-geo",
  "orb-hal",
@@ -2298,6 +2299,7 @@ dependencies = [
  "orb-runtime",
  "orb-v8",
  "pollster",
+ "serde_json",
  "wasm-bindgen-futures",
  "web-sys",
  "wgpu",

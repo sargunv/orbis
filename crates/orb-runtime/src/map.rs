@@ -1959,11 +1959,11 @@ impl Map {
     /// camera on another thread (plan §7.1's elevation pyramid; read with
     /// [`TerrainElevation::from_pyramid`](crate::TerrainElevation::from_pyramid));
     /// empty without terrain.
-    pub fn elevation_pyramid(&self) -> Vec<u8> {
+    pub fn elevation_pyramid(&self) -> Arc<[u8]> {
         self.style
             .as_ref()
             .and_then(|s| s.terrain.as_ref())
-            .map_or_else(Vec::new, |t| t.snapshot().pyramid())
+            .map_or_else(Default::default, |t| t.snapshot().pyramid())
     }
 
     /// Changes whenever [`elevation`](Self::elevation) has new data.
@@ -2050,7 +2050,13 @@ impl Map {
         for job in image::dem_prepares(tile, layer, unpack, &layer_of) {
             renderer.prepare_dem(page, job);
         }
-        if let Some(old) = terrain.insert(tile, crate::terrain::DemTile { layer, grid }) {
+        if let Some(old) = terrain.insert(
+            tile,
+            crate::terrain::DemTile {
+                layer,
+                dem: Arc::new(crate::terrain::Dem::new(grid)),
+            },
+        ) {
             renderer.free_layer(page, old.layer);
         }
     }

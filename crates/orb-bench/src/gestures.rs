@@ -18,7 +18,7 @@ use orb_runtime::{CameraState, FrameReport, Map, TargetFormat, Viewport};
 
 use crate::report::{ms, resolution};
 use crate::timed::TimedGpu;
-use crate::{Settings, Timing, clock, paint::settle};
+use crate::{GesturePaths, Settings, Timing, clock, paint::settle};
 
 /// A 60 Hz display's frame.
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -27,13 +27,16 @@ const PATH_FRAMES: usize = 360;
 /// How long the map may take to settle after a path.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// A camera path: its name and the camera at `f` in `0..=1`.
+/// A camera path: its name, the camera at `f` in `0..=1` (moved once a
+/// frame for [`PATH_FRAMES`]), or, for a flight, its first camera.
 struct Path {
     name: &'static str,
     camera: fn(&Settings, f64) -> CameraState,
+    /// Flies the terrain demo's flight from the first camera instead.
+    flight: bool,
 }
 
-const PATHS: &[Path] = &[
+const CITY_PATHS: &[Path] = &[
     Path {
         name: "rotate and tilt at z14",
         camera: |s, f| CameraState {
@@ -41,6 +44,7 @@ const PATHS: &[Path] = &[
             pitch: 30.0 - 30.0 * (f * std::f64::consts::TAU).cos(),
             ..CameraState::new(s.center, 14.0, &crate::web_mercator())
         },
+        flight: false,
     },
     Path {
         name: "zoom z12 → z16 → z12",
@@ -48,8 +52,70 @@ const PATHS: &[Path] = &[
             let zoom = 14.0 - 2.0 * (f * std::f64::consts::TAU).cos();
             CameraState::new(s.center, zoom, &crate::web_mercator())
         },
+        flight: false,
     },
 ];
+
+/// The terrain demo's view: z11.6, bearing −32, pitch 72.
+fn alps_view(s: &Settings, lon: f64, bearing: f64) -> CameraState {
+    let center = orb_geo::Geodetic::new(s.center.lon + lon, s.center.lat);
+    CameraState {
+        bearing,
+        pitch: 72.0,
+        ..CameraState::new(center, 11.6, &crate::web_mercator())
+    }
+}
+
+const ALPS_PATHS: &[Path] = &[
+    Path {
+        name: "rotate at z11.6, pitch 72",
+        camera: |s, f| alps_view(s, 0.0, -32.0 + 360.0 * f),
+        flight: false,
+    },
+    Path {
+        name: "pan at z11.6, pitch 72",
+        camera: |s, f| alps_view(s, 0.15 * (f * std::f64::consts::TAU).sin(), -32.0),
+        flight: false,
+    },
+    Path {
+        name: "Alps flight (60 s)",
+        camera: |s, _| alps_view(s, 0.0, -32.0),
+        flight: true,
+    },
+];
+
+/// The terrain demo's flight (`web/demo/data/alps-flight.json`): `flyTo`
+/// legs, as the demos fly them.
+fn flight_legs() -> Vec<(orb_camera::CameraTarget, orb_camera::FlyOptions)> {
+    let json: serde_json::Value =
+        serde_json::from_str(include_str!("../../../web/demo/data/alps-flight.json"))
+            .expect("the flight parses");
+    json["legs"]
+        .as_array()
+        .expect("the flight's legs")
+        .iter()
+        .map(|leg| {
+            let number = |key: &str| leg[key].as_f64();
+            let center = &leg["center"];
+            (
+                orb_camera::CameraTarget {
+                    center: Some(orb_geo::Geodetic::new(
+                        center[0].as_f64().expect("lon"),
+                        center[1].as_f64().expect("lat"),
+                    )),
+                    zoom: number("zoom"),
+                    bearing: number("bearing"),
+                    pitch: number("pitch"),
+                    ..Default::default()
+                },
+                orb_camera::FlyOptions {
+                    duration: number("duration"),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect()
+}
 
 #[derive(Debug)]
 struct PathResult {
@@ -63,6 +129,10 @@ struct PathResult {
     /// From the path's end until the map is idle.
     settle: Duration,
     picking: Picking,
+    /// The terrain's elevation pyramid, published to a UI thread's camera
+    /// whenever it changed over the path (the web's ui role and placement
+    /// worker take it, decision 0019).
+    elevation: Publishes,
 }
 
 /// What publishing picking to a UI thread's index costs (decision 0024):
@@ -113,6 +183,43 @@ impl Publishes {
     }
 }
 
+impl Publishes {
+    /// Encodes the elevation pyramid on the render thread and decodes it as
+    /// a UI thread does, when its revision moved past `seen`.
+    fn publish_elevation(&mut self, map: &Map, seen: &mut u64) {
+        let revision = map.elevation_revision();
+        if revision == std::mem::replace(seen, revision) {
+            return;
+        }
+        let started = clock::now();
+        let bytes = map.elevation_pyramid();
+        let published = clock::now();
+        if !bytes.is_empty() {
+            orb_runtime::TerrainElevation::from_pyramid(&bytes).expect("a pyramid decodes");
+        }
+        let applied = clock::now();
+        self.count += 1;
+        self.publish += published - started;
+        self.publish_max = self.publish_max.max(published - started);
+        self.apply += applied - published;
+        self.apply_max = self.apply_max.max(applied - published);
+        self.bytes += bytes.len();
+    }
+
+    /// The row's cells: count, publish total / max, apply total / max, MiB.
+    fn cells(&self) -> String {
+        format!(
+            "{} | {} / {} | {} / {} | {:.2}",
+            self.count,
+            ms(self.publish),
+            ms(self.publish_max),
+            ms(self.apply),
+            ms(self.apply_max),
+            self.bytes as f64 / (1024.0 * 1024.0)
+        )
+    }
+}
+
 impl PathResult {
     fn at(&self, p: f64) -> Duration {
         let i = ((self.cpu.len() as f64 - 1.0) * p).round() as usize;
@@ -159,32 +266,73 @@ pub(crate) async fn run(
     };
     let mut warnings = Vec::new();
     let mut paths = Vec::new();
-    for path in PATHS {
+    let paths_run = match settings.paths {
+        GesturePaths::City => CITY_PATHS,
+        GesturePaths::Alps => ALPS_PATHS,
+    };
+    let projection = crate::web_mercator();
+    for path in paths_run {
         // A map per path, so each starts cold.
         progress(&format!("{}: loading its first view", path.name));
-        let mut map = new_map((path.camera)(settings, 0.0))?;
+        let start = (path.camera)(settings, 0.0);
+        let mut map = new_map(start)?;
         settle(gpu, &mut map, &render, &mut warnings).await?;
         let mut to = orb_runtime::HitPublication::default();
         let mut index = orb_runtime::HitIndex::default();
         let mut picking = Picking::default();
+        let mut elevation = Publishes::default();
+        let mut revision = map.elevation_revision();
         Publishes::default().publish(&map, &mut to, &mut index);
+        // A flight's camera stands on the terrain, as the demos' do.
+        let mut camera = orb_camera::Camera::new(start, projection, viewport);
+        camera.set_terrain(map.elevation());
+        let mut legs = if path.flight {
+            flight_legs()
+        } else {
+            Vec::new()
+        };
+        legs.reverse();
         progress(&format!("{}: moving", path.name));
         let (mut cpu, mut peak_bytes, mut loading) = (Vec::new(), 0, 0);
         let started = clock::now();
-        for f in 1..=PATH_FRAMES {
-            *map.camera_mut() = (path.camera)(settings, f as f64 / PATH_FRAMES as f64);
+        for f in 1.. {
+            let now = (FRAME * f).as_secs_f64() * 1000.0;
+            if path.flight {
+                if !camera.is_animating() {
+                    let Some((target, options)) = legs.pop() else {
+                        break;
+                    };
+                    camera.fly_to(&target, &options, now);
+                }
+                camera.frame(now);
+                camera.take_events();
+                *map.camera_mut() = *camera.state();
+            } else if f as usize > PATH_FRAMES {
+                break;
+            } else {
+                *map.camera_mut() = (path.camera)(settings, f64::from(f) / PATH_FRAMES as f64);
+            }
             let before = uploaded(gpu);
             let (report, time) = render(gpu, &mut map);
             match timing {
                 Timing::Timestamps => gpu.throttle().await,
                 Timing::WorkDone => gpu.finish().await,
             }
+            // A flight's thousands of frames outrun the timestamp queries;
+            // this bench reads CPU times only.
+            if f % 64 == 0 {
+                gpu.take_frames().await;
+            }
             cpu.push(time);
             picking.moving.publish(&map, &mut to, &mut index);
+            if map.elevation_revision() != revision {
+                camera.set_terrain(map.elevation());
+            }
+            elevation.publish_elevation(&map, &mut revision);
             peak_bytes = peak_bytes.max(uploaded(gpu) - before);
             loading += usize::from(report.tiles_loading > 0);
             warnings.extend(map.take_warnings());
-            let next = started + FRAME * f as u32;
+            let next = started + FRAME * f;
             clock::sleep(next.saturating_sub(clock::now())).await;
         }
         let ended = clock::now();
@@ -217,6 +365,7 @@ pub(crate) async fn run(
             loading,
             settle: clock::now() - ended,
             picking,
+            elevation,
         });
     }
     warnings.sort();
@@ -241,8 +390,8 @@ impl GesturesReport {
         }
         writeln!(
             out,
-            "- {}×{} px offscreen at {:.4}, {:.4}; {PATH_FRAMES} frames a path at 60 Hz, \
-             each path from a cold map at rest; CPU clock resolution {}",
+            "- {}×{} px offscreen at {:.4}, {:.4}; {PATH_FRAMES} frames a path (a flight: its \
+             legs) at 60 Hz, each path from a cold map at rest; CPU clock resolution {}",
             self.size.0,
             self.size.1,
             s.center.lon,
@@ -284,23 +433,12 @@ impl GesturesReport {
         )?;
         writeln!(out, "|---|---|---|---|---|---|---|---|---|---|")?;
         for p in &self.paths {
-            let row = |p: &Publishes| {
-                format!(
-                    "{} | {} / {} | {} / {} | {:.2}",
-                    p.count,
-                    ms(p.publish),
-                    ms(p.publish_max),
-                    ms(p.apply),
-                    ms(p.apply_max),
-                    p.bytes as f64 / (1024.0 * 1024.0)
-                )
-            };
             writeln!(
                 out,
                 "| {} | {} | {} | {} / {} |",
                 p.name,
-                row(&p.picking.moving),
-                row(&p.picking.settling),
+                p.picking.moving.cells(),
+                p.picking.settling.cells(),
                 ms(p.picking.hit_test),
                 ms(p.picking.hit_test_again)
             )?;
@@ -311,6 +449,24 @@ impl GesturesReport {
             "Picking: `Map::publish_hits` on the render thread and `HitIndex::apply` on the UI's after each \
              frame (a publication carries what changed: tiles, the drawn list, labels, the layer table)."
         )?;
+        if self.paths.iter().any(|p| p.elevation.count > 0) {
+            writeln!(out)?;
+            writeln!(
+                out,
+                "| path | elevation pyramid while moving: publications | encode total / max | decode total / max | MiB |"
+            )?;
+            writeln!(out, "|---|---|---|---|---|")?;
+            for p in &self.paths {
+                writeln!(out, "| {} | {} |", p.name, p.elevation.cells())?;
+            }
+            writeln!(out)?;
+            writeln!(
+                out,
+                "Elevation: `Map::elevation_pyramid` on the render thread and `TerrainElevation::from_pyramid` \
+                 on the UI's, at every revision (the web publishes at most every 30 frames while moving; \
+                 its placement worker takes one at each new snapshot)."
+            )?;
+        }
         for warning in &self.warnings {
             writeln!(out, "- warning: {warning}")?;
         }
