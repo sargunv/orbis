@@ -49,7 +49,9 @@ Labels place through each tile's patches (`orb_symbol::TileGlobe`), exactly
 at their anchors, and are hidden past the horizon. The cover keeps tiles
 whose bounding caps reach the eye's side of the horizon and whose bounding
 boxes meet the frustum, each at the zoom whose tiles span 512 pixels at its
-distance.
+distance: the eye's exact distance to the tile's cap, with GL JS's pitch
+terms past its pitch threshold, the tile's pitch taken at its nearest
+point. A tile on the world's edge counts the pole it caps as part of it.
 
 A projection edit (`setProjection`) changes the surface at once; vector
 tiles lay out again from the jobs' cached data for the new curvature, and
@@ -61,9 +63,10 @@ loads again.
 On an Apple M-series laptop, native:
 
 - Projection switch at zoom 9 on the Tokyo extract: the first frame draws
-  the new surface; 0 tile loads, 7 relayouts, idle after about 300 ms
-  (label fades included); pixels equal the style loaded with the new
-  projection (`projection_switches_load_nothing`).
+  the new surface; no tile loads again (to the globe: 7 relayouts and 1
+  load, a tile only the globe's cover wants; back: 8 relayouts, 0 loads);
+  idle after 300–600 ms, label fades included
+  (`projection_switches_load_nothing`).
 - Cover, 15 cameras from zoom 1 to 11 at pitch 0–70°
   (`globe_cover_cost`): 4–45 globe tiles against Mercator's 6–18, in
   0.005–0.065 ms against 0.001–0.002 ms. GL JS's ratio (50.7 Hz against
@@ -108,10 +111,21 @@ on the plane: it draws on the globe alone and drops out when the globe
 hands over. The demo's Blue Marble globe draws GIBS's EPSG:4326 tiles this
 way, to the poles.
 
+## Fixtures
+
+GL JS's pinned commit has 135 render tests under `projection/` (130 of them
+`projection/globe/*`, 45 of those on terrain). The mirror now takes the
+`projection` prefix whole, rather than a subset or goldens of our own: they
+are GL JS's own reference for the globe and the transform, and their
+pixels are reviewed upstream. On native, at this commit: 33 pass, 69 fail,
+33 skip. Outside globe terrain, 21 of 68 run pass, and 27 of the failures
+differ by under 0.3% of pixels, almost all at the globe's limb: the
+silhouette is the horizon plane cutting a tessellated sphere, so it lands
+within a pixel of GL JS's, whose tessellation differs. That is a principled
+difference, not one to chase. The rest are listed in #62.
+
 ## Left for later
 - Terrain on the globe, and extrusions' depth (the horizon plane's depth is
   GL JS's, not perspective depth).
 - Globe gestures: panning drags plane coordinates, which behaves near the
   target but not as GL JS's rotation near the poles.
-- The mirror has no `projection/globe` fixtures yet; GL JS's directory
-  needs a prefix in `xtask/src/fixtures.rs`.

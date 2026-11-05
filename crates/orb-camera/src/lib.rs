@@ -537,7 +537,7 @@ impl View {
         terrain: Option<&dyn Elevation>,
     ) -> Vec<CoveredTile> {
         if let Some(globe) = &self.globe {
-            return Self::cover_globe(globe, tms, tile_px, max_zoom);
+            return self.cover_globe(globe, tms, tile_px, max_zoom);
         }
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
         self.cover_tiles(tms, max_zoom, height, terrain, |index, offset| {
@@ -557,7 +557,7 @@ impl View {
     ) -> Vec<CoveredTile> {
         // Any set's tiles wrap the globe directly.
         if let Some(globe) = &self.globe {
-            return Self::cover_globe(globe, tms, tile_px, max_zoom);
+            return self.cover_globe(globe, tms, tile_px, max_zoom);
         }
         let scale = self.world_per_px * tile_px;
         self.cover_tiles(tms, max_zoom, 0.0, None, |index, offset| {
@@ -592,37 +592,7 @@ impl View {
         let copies = self
             .wrap_period
             .map_or(0, |period| ((reach / period).ceil() as i32).min(3));
-        // GL JS holds a constant zoom through 60 degrees (or the
-        // FOV-dependent threshold) without terrain. Above it, and on
-        // terrain, use its default tile LOD.
-        // A rolled view's vertical extent spans some of its width.
-        let (sin, cos) = self.roll.to_radians().sin_cos();
-        let zfov = self.fov * (cos.abs() * self.viewport.height + sin.abs() * self.viewport.width)
-            / self.viewport.height;
-        let threshold = (78.5 - zfov / 2.0).clamp(0.0, 60.0);
-        let lod = (terrain.is_some() || self.pitch > threshold).then(|| {
-            let horizon = MAX_HORIZON_PITCH.to_radians();
-            let fov = self.fov.to_radians();
-            let behavior =
-                2.0 * ((9.314 - 1.0) / ((horizon - fov).cos() / horizon.cos()).log2() - 1.0);
-            let integral = |lo: f64, hi: f64| {
-                (0..10)
-                    .map(|i| {
-                        let x = lo + (f64::from(i) + 0.5) / 10.0 * (hi - lo);
-                        (hi - lo) / 10.0 * x.cos().powf(behavior - 1.0)
-                    })
-                    .sum::<f64>()
-            };
-            let pitch = self.pitch.to_radians();
-            let hi = horizon.min(pitch + fov / 2.0);
-            let count = integral(hi.min(pitch - fov / 2.0), hi);
-            let count0 = 2.0 * integral(0.0, fov / 2.0);
-            (
-                behavior,
-                (fov / 2.0).cos().max(0.5),
-                (count / count0 / 3.0).max(1.0).log2() / 2.0,
-            )
-        });
+        let lod = self.pitched_lod(terrain.is_some());
         // The eye's height above the target, GL JS's `distanceToTileZ`.
         let eye_height = (self.eye.z - self.target_z).abs();
         tms.cover_with(
@@ -663,11 +633,47 @@ impl View {
         )
     }
 
+    /// GL JS's default tile LOD terms where it applies them: past 60° of
+    /// pitch (or the FOV-dependent threshold), or on terrain. Below it,
+    /// GL JS holds a constant zoom. Returns its distance behaviour, FOV
+    /// scale and tile-count penalty.
+    fn pitched_lod(&self, terrain: bool) -> Option<(f64, f64, f64)> {
+        // A rolled view's vertical extent spans some of its width.
+        let (sin, cos) = self.roll.to_radians().sin_cos();
+        let zfov = self.fov * (cos.abs() * self.viewport.height + sin.abs() * self.viewport.width)
+            / self.viewport.height;
+        let threshold = (78.5 - zfov / 2.0).clamp(0.0, 60.0);
+        (terrain || self.pitch > threshold).then(|| {
+            let horizon = MAX_HORIZON_PITCH.to_radians();
+            let fov = self.fov.to_radians();
+            let behavior =
+                2.0 * ((9.314 - 1.0) / ((horizon - fov).cos() / horizon.cos()).log2() - 1.0);
+            let integral = |lo: f64, hi: f64| {
+                (0..10)
+                    .map(|i| {
+                        let x = lo + (f64::from(i) + 0.5) / 10.0 * (hi - lo);
+                        (hi - lo) / 10.0 * x.cos().powf(behavior - 1.0)
+                    })
+                    .sum::<f64>()
+            };
+            let pitch = self.pitch.to_radians();
+            let hi = horizon.min(pitch + fov / 2.0);
+            let count = integral(hi.min(pitch - fov / 2.0), hi);
+            let count0 = 2.0 * integral(0.0, fov / 2.0);
+            (
+                behavior,
+                (fov / 2.0).cos().max(0.5),
+                (count / count0 / 3.0).max(1.0).log2() / 2.0,
+            )
+        })
+    }
+
     /// The tiles of `tms` that cover a globe view: those on the eye's side
     /// of the horizon and in the frustum, each at the zoom whose tiles span
     /// `tile_px` pixels at its distance (so tiles coarsen toward the
     /// horizon and, being smaller on the sphere, toward the poles).
     fn cover_globe(
+        &self,
         globe: &GlobeView,
         tms: &TileMatrixSet,
         tile_px: f64,
@@ -679,13 +685,14 @@ impl View {
         let scale = globe.metres_per_px * tile_px;
         let center_distance = globe.eye.length();
         let projection = tms.projection();
+        let lod = self.pitched_lod(false);
         tms.cover_with(0..=0, None, max_zoom, |index, _| {
             let b = tms.tile_bounds(index);
             // A grid of the tile's points on the sphere, row by row: 5×5
             // for the widest tiles, 3×3 below.
             let steps = if index.z < 3 { 4 } else { 2 };
             let n = steps + 1;
-            let mut points = [DVec3::NAN; 25];
+            let mut points = [DVec3::NAN; 27];
             for (k, point) in points.iter_mut().enumerate().take(n * n) {
                 let uv = DVec2::new((k % n) as f64, (k / n) as f64) / steps as f64;
                 let world = DVec2::new(b.min.x + uv.x * b.size().x, b.max.y - uv.y * b.size().y);
@@ -694,24 +701,34 @@ impl View {
                     *point = sphere::ecef(g, 0.0);
                 }
             }
-            let points = &points[..n * n];
-            let center = points[points.len() / 2];
+            let center = points[n * n / 2];
             if !center.is_finite() {
                 return CoverDecision::Skip;
             }
+            // A tile on the world's edge also draws the cap out to the
+            // pole past it.
+            let mut count = n * n;
+            for (reaches, z) in sphere::poles(tms, index).into_iter().zip([1.0, -1.0]) {
+                if reaches {
+                    points[count] = DVec3::new(0.0, 0.0, z * sphere::RADIUS);
+                    count += 1;
+                }
+            }
+            let grid = &points[..n * n];
+            let points = &points[..count];
             // Its cap: the widest angle from its centre to a point, plus
             // the widest gap between neighbouring points.
             let finite = || points.iter().copied().filter(|p| p.is_finite());
             let pair = |a: usize, b: usize| {
-                let (a, b) = (points[a], points[b]);
+                let (a, b) = (grid[a], grid[b]);
                 (a.is_finite() && b.is_finite()).then(|| a.angle_between(b))
             };
             let mut gap: f64 = 0.0;
-            for k in 0..points.len() {
+            for k in 0..grid.len() {
                 if k % n != steps {
                     gap = gap.max(pair(k, k + 1).unwrap_or(0.0));
                 }
-                if k + n < points.len() {
+                if k + n < grid.len() {
                     gap = gap.max(pair(k, k + n).unwrap_or(0.0));
                 }
             }
@@ -725,11 +742,9 @@ impl View {
             // Its box, bulged by the sagitta between points.
             let bulge = sphere::RADIUS * (1.0 - (gap / 2.0).min(FRAC_PI_2).cos());
             let (mut lo, mut hi) = (DVec3::INFINITY, DVec3::NEG_INFINITY);
-            let mut nearest = f64::INFINITY;
             for p in finite() {
                 lo = lo.min(p - globe.target);
                 hi = hi.max(p - globe.target);
-                nearest = nearest.min(p.distance(eye));
             }
             if !box_in_frustum(&globe.view_proj, lo - bulge, hi + bulge) {
                 return CoverDecision::Skip;
@@ -738,16 +753,37 @@ impl View {
             let mid = steps / 2;
             let length = |at: &dyn Fn(usize) -> usize| {
                 (0..steps)
-                    .map(|i| (points[at(i)], points[at(i + 1)]))
+                    .map(|i| (grid[at(i)], grid[at(i + 1)]))
                     .filter(|(a, b)| a.is_finite() && b.is_finite())
                     .map(|(a, b)| a.distance(b))
                     .sum::<f64>()
             };
             let side = length(&|i| mid * n + i).max(length(&|j| j * n + mid));
-            // The nearest point lies within half a gap of a sample.
-            let distance = (nearest - sphere::RADIUS * gap / 2.0).max(center_distance * 1e-3);
-            let desired =
+            // The eye's distance to the nearest point of the cap: straight
+            // down when it is over the cap, else to the cap's rim.
+            let off = (center.angle_between(eye_dir) - radius).max(0.0);
+            let height = eye.length();
+            let distance = (height * height + sphere::RADIUS * sphere::RADIUS
+                - 2.0 * height * sphere::RADIUS * off.cos())
+            .max(0.0)
+            .sqrt()
+            .max(center_distance * 1e-3);
+            let mut desired =
                 f64::from(index.z) + (side / scale).log2() + (center_distance / distance).log2();
+            // Past GL JS's pitch threshold, its LOD terms, with the tile's
+            // pitch measured from the sphere's up at its nearest point: the
+            // cap's rim toward the eye, or under the eye.
+            if let Some((behavior, fov_scale, penalty)) = lod {
+                let toward = center - eye_dir * center.dot(eye_dir);
+                let nearest = if off > 0.0 && toward.length() > 0.0 {
+                    eye_dir * off.cos() + toward.normalize() * off.sin()
+                } else {
+                    eye_dir
+                } * sphere::RADIUS;
+                let tile_pitch = (eye - nearest).angle_between(nearest);
+                desired +=
+                    behavior * tile_pitch.cos().max(1e-6).log2() / 2.0 - fov_scale.log2() - penalty;
+            }
             if f64::from(index.z) < desired.floor().max(0.0) {
                 CoverDecision::Refine
             } else {

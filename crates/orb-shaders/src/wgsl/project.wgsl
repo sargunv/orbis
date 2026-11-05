@@ -156,11 +156,23 @@ fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
         g.flat = tile_to_world(tile, p);
     }
     if frame.globe_amount > 0.0 && tile.globe_cells > 0u {
-        let w = globe_patch(tile, p);
         let origin = vec3<f32>(tile.globe_origin[0], tile.globe_origin[1], tile.globe_origin[2]);
-        g.globe = origin + globe_sum(w.z, lagrange(w.x), lagrange(w.y));
+        g.globe = sphere_at(tile.globe_base, tile.globe_cells, origin, p / tile.extent);
     }
     return g;
+}
+
+// A tile's point on the sphere, camera-relative, from its patches in space
+// (first word `base` in `props`, `cells` per side) around `origin`, at `uv`
+// (fractions of the tile, y down). Other tile tables (terrain's) call it
+// with their own rows' terms.
+fn sphere_at(base: u32, cells: u32, origin: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let count = f32(cells);
+    let u = uv * count;
+    let cell = clamp(floor(u), vec2<f32>(0.0), vec2<f32>(count - 1.0));
+    let st = (u - cell) * 2.0 - 1.0;
+    let at = f32(base + (u32(cell.y) * cells + u32(cell.x)) * 27u);
+    return origin + globe_sum(at, lagrange(st.x), lagrange(st.y));
 }
 
 // Clip position of a ground point moved by `offset` world units along the
