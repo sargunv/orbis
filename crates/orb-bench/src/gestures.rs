@@ -24,6 +24,9 @@ use crate::{GesturePaths, Settings, Timing, clock, settle};
 const FRAME: Duration = Duration::from_micros(16_667);
 /// Frames per path: 6 s at 60 Hz.
 const PATH_FRAMES: usize = 360;
+/// A label that all but vanishes (opacity under 0.1) and is back in full
+/// (0.9) within this many frames blinked: no fade is that quick (300 ms).
+const FLASH_FRAMES: usize = 10;
 /// How long the map may take to settle after a path.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -129,6 +132,10 @@ struct PathResult {
     peak_bytes: u64,
     /// Frames that drew with tiles still loading.
     loading: usize,
+    /// Labels shown in full that all but vanished and were back in full
+    /// within [`FLASH_FRAMES`] (#55), and the frames between.
+    blinks: usize,
+    blink_frames: usize,
     /// From the path's end until the map is idle.
     settle: Duration,
     picking: Picking,
@@ -309,6 +316,9 @@ pub(crate) async fn run(
         legs.reverse();
         progress(&format!("{}: moving", path.name));
         let (mut cpu, mut done, mut peak_bytes, mut loading) = (Vec::new(), Vec::new(), 0, 0);
+        // Per label text: shown in full, and since which frame it is gone.
+        let mut labels: std::collections::HashMap<Box<str>, Option<usize>> = Default::default();
+        let (mut blinks, mut blink_frames) = (0, 0);
         let started = clock::now();
         for f in 1.. {
             let now = (FRAME * f).as_secs_f64() * 1000.0;
@@ -350,6 +360,26 @@ pub(crate) async fn run(
             elevation.publish_elevation(&map, &mut revision);
             peak_bytes = peak_bytes.max(uploaded(gpu) - before);
             loading += usize::from(report.tiles_loading > 0);
+            let shown = map.shown_labels();
+            for (name, dim) in &mut labels {
+                let opacity = shown.get(name).copied().unwrap_or(0.0);
+                match *dim {
+                    None if opacity < 0.1 => *dim = Some(f as usize),
+                    Some(since) if opacity >= 0.9 => {
+                        if f as usize - since <= FLASH_FRAMES {
+                            blinks += 1;
+                            blink_frames += f as usize - since;
+                        }
+                        *dim = None;
+                    }
+                    _ => {}
+                }
+            }
+            for (name, opacity) in shown {
+                if opacity >= 0.9 {
+                    labels.entry(name).or_insert(None);
+                }
+            }
             warnings.extend(map.take_warnings());
             let next = started + FRAME * f;
             clock::sleep(next.saturating_sub(clock::now())).await;
@@ -384,6 +414,8 @@ pub(crate) async fn run(
             cpu,
             peak_bytes,
             loading,
+            blinks,
+            blink_frames,
             settle: clock::now() - ended,
             picking,
             elevation,
@@ -422,13 +454,13 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | to GPU done p50 | p95 | frames > 16.7 ms | frames loading | peak MiB/frame | settle ms |"
+            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | to GPU done p50 | p95 | frames > 16.7 ms | frames loading | peak MiB/frame | settle ms | label blinks (frames) |"
         )?;
-        writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|---|")?;
+        writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|---|---|")?;
         for p in &self.paths {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.0} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.0} | {} ({}) |",
                 p.name,
                 ms(p.at(0.5)),
                 ms(p.at(0.95)),
@@ -445,6 +477,8 @@ impl GesturesReport {
                 p.loading,
                 p.peak_bytes as f64 / (1024.0 * 1024.0),
                 p.settle.as_secs_f64() * 1000.0,
+                p.blinks,
+                p.blink_frames,
             )?;
         }
         writeln!(out)?;
@@ -452,7 +486,9 @@ impl GesturesReport {
             out,
             "Times in ms of `Map::render` (applying arrived tiles, uploads, placement, encoding), \
              and with `--timing work-done` until the GPU finished the frame; settle: from the \
-             path's end until the map is idle."
+             path's end until the map is idle; label blinks: labels shown in full that all but \
+             vanished (opacity under 0.1) and were back in full within {FLASH_FRAMES} frames (no \
+             fade is that quick), and the frames they were gone."
         )?;
         writeln!(out)?;
         writeln!(

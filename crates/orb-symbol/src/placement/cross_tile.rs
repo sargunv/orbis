@@ -226,6 +226,40 @@ impl CrossTileIndex {
     }
 }
 
+/// For a bucket no placement has seen yet, the label each of its
+/// `instances` in `tile` shows, as an index into one of the `shown`
+/// buckets of its ancestor and descendant tiles, matched as the
+/// cross-tile index matches: GL JS `updateLayerOpacities`, which gives a
+/// new bucket the last placement's opacities, without waiting for the
+/// next placement.
+pub fn matching_labels(
+    tile: TileId,
+    instances: &[SymbolInstance],
+    shown: &[(TileId, &[SymbolInstance])],
+) -> Vec<Option<(usize, usize)>> {
+    // Ids number the shown buckets' instances in order, from 1.
+    let mut ids = vec![0; instances.len()];
+    let mut used = HashSet::new();
+    let mut first = 1;
+    let mut starts = Vec::with_capacity(shown.len());
+    for (other, others) in shown {
+        starts.push(first);
+        let related = other.is_child_of(tile) || tile.is_child_of(*other);
+        if related {
+            let numbered: Vec<u32> = (first..first + others.len() as u32).collect();
+            TileLayerIndex::new(*other, others, &numbered, 0)
+                .find_matches(instances, &mut ids, tile, &mut used);
+        }
+        first += others.len() as u32;
+    }
+    ids.into_iter()
+        .map(|id| {
+            let k = starts.partition_point(|&s| s <= id).checked_sub(1)?;
+            (id != 0).then(|| (k, (id - starts[k]) as usize))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +325,10 @@ mod tests {
             0.0,
         );
         assert_eq!(child_ids, [1, 3]);
+        assert_eq!(
+            matching_labels(child, &child_instances, &[(parent, &parent_instances)]),
+            [Some((0, 0)), None]
+        );
         // Unchanged buckets keep their ids and report no change.
         let mut ids = Vec::new();
         assert!(!index.add_layer(

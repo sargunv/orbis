@@ -154,6 +154,16 @@ impl GlyphRows {
     }
 }
 
+/// Whether two placement frames place the same, clock aside: the camera,
+/// the drawn buckets, the settings and the terrain the labels stand on.
+fn same_inputs(a: &orb_symbol::Frame, b: &orb_symbol::Frame) -> bool {
+    a.camera == b.camera
+        && a.layers == b.layers
+        && a.cross_source_collisions == b.cross_source_collisions
+        && a.ground == b.ground
+        && a.scope == b.scope
+}
+
 /// Per bucket, the world copies a placement draws.
 type WorldCopies = HashMap<u64, Vec<i32>>;
 
@@ -409,6 +419,8 @@ pub(crate) struct Labels {
     /// The frame of the last commit applied, and how many have been.
     placed: Option<Arc<orb_symbol::Frame>>,
     commits: u64,
+    /// The layers, buckets and tiles the last frame drew.
+    drawn: Vec<(u32, u64, orb_symbol::TileId)>,
     /// Milliseconds labels fade over (GL JS `fadeDuration`).
     pub(crate) fade_duration: f64,
     /// Whether labels of different sources collide (GL JS
@@ -530,6 +542,7 @@ impl Labels {
             last_frame: None,
             placed: None,
             commits: 0,
+            drawn: Vec::new(),
             fade_duration: 300.0,
             cross_source_collisions: true,
             ideographs: Some("sans-serif".into()),
@@ -933,31 +946,20 @@ impl Labels {
         if self.in_flight.is_some() {
             return false;
         }
-        let same = self.last_frame.as_ref().is_some_and(|last| {
-            last.camera == frame.camera
-                && last.layers == frame.layers
-                && last.cross_source_collisions == frame.cross_source_collisions
-                && last.scope == frame.scope
-        });
-        if same {
-            return false;
-        }
-        // GL JS `stillRecent`: let a fade run before placing again.
-        self.committed
+        !self
+            .last_frame
             .as_ref()
-            .is_none_or(|c| c.fade_duration == 0.0 || frame.now >= c.commit_time + c.fade_duration)
+            .is_some_and(|last| same_inputs(last, frame))
     }
 
     /// Whether the last placement asked was of `frame`'s inputs, and has
     /// committed.
     pub(crate) fn is_placed(&self, frame: &orb_symbol::Frame) -> bool {
         self.in_flight.is_none()
-            && self.last_frame.as_ref().is_some_and(|last| {
-                last.camera == frame.camera
-                    && last.layers == frame.layers
-                    && last.cross_source_collisions == frame.cross_source_collisions
-                    && last.scope == frame.scope
-            })
+            && self
+                .last_frame
+                .as_ref()
+                .is_some_and(|last| same_inputs(last, frame))
     }
 
     /// Records a placement asked of the lane.
@@ -1032,6 +1034,111 @@ impl Labels {
         self.committed
             .as_ref()
             .map_or(1.0, |c| c.fade_change(now) as f32)
+    }
+
+    /// Gives buckets drawn for the first time the state words of the
+    /// labels they show from the buckets the last frame drew (GL JS
+    /// `updateLayerOpacities`): a tile that replaces its parent or its
+    /// children shows their labels as they were, rather than nothing until
+    /// its placement commits.
+    pub(crate) fn inherit(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        frame: &orb_symbol::Frame,
+    ) {
+        use orb_symbol::{NONE, state::WORDS};
+        let previous = std::mem::take(&mut self.drawn);
+        let mut inherited = Vec::new();
+        for layer in &frame.layers {
+            let key = layer.params.layer;
+            for tile in &layer.tiles {
+                let id = tile.view.id;
+                self.drawn.push((key, tile.bucket, id));
+                let Some(meshes) = self.buckets.get(&tile.bucket) else {
+                    continue;
+                };
+                if meshes.written.contains_key(&id.wrap) {
+                    continue;
+                }
+                let shown: Vec<(orb_symbol::TileId, &BucketMeshes)> = previous
+                    .iter()
+                    .filter(|&&(l, b, t)| l == key && b != tile.bucket && t.wrap == id.wrap)
+                    .filter_map(|&(_, b, t)| Some((t, self.buckets.get(&b)?)))
+                    .filter(|(_, m)| m.written.contains_key(&id.wrap))
+                    .collect();
+                let instances: Vec<_> = shown
+                    .iter()
+                    .map(|(t, m)| (*t, &m.tables.instances[..]))
+                    .collect();
+                let matches = orb_symbol::matching_labels(id, &meshes.tables.instances, &instances);
+                if matches.iter().all(Option::is_none) {
+                    continue;
+                }
+                let tables = &meshes.tables;
+                let mut states = orb_symbol::BucketStates {
+                    text: vec![0; tables.text_placed.len() * WORDS],
+                    icon: vec![0; tables.icon_placed.len() * WORDS],
+                    ..Default::default()
+                };
+                let copy =
+                    |to: &mut [u32], to_placed: &[u32], from: &[u32], from_placed: &[u32]| {
+                        for (&t, &f) in to_placed.iter().zip(from_placed) {
+                            if t != NONE && f != NONE {
+                                let (t, f) = (t as usize * WORDS, f as usize * WORDS);
+                                to[t..t + WORDS].copy_from_slice(&from[f..f + WORDS]);
+                            }
+                        }
+                    };
+                for (instance, matched) in tables.instances.iter().zip(matches) {
+                    let Some((k, j)) = matched else { continue };
+                    let other = shown[k].1;
+                    let (from, words) = (&other.tables.instances[j], &other.written[&id.wrap]);
+                    copy(&mut states.text, &instance.text, &words.text, &from.text);
+                    copy(&mut states.icon, &instance.icon, &words.icon, &from.icon);
+                }
+                inherited.push((tile.bucket, id.wrap, states));
+            }
+        }
+        for (bucket, wrap, states) in inherited {
+            let meshes = self.buckets.get_mut(&bucket).expect("checked above");
+            meshes.written.insert(wrap, states);
+            meshes.write(gpu, renderer, wrap);
+        }
+    }
+
+    /// Per text, the greatest opacity a label of it drew with in the last
+    /// frame at `now`: what the symbol shader computes, for benches.
+    pub(crate) fn shown(&self, now: f64) -> HashMap<Box<str>, f32> {
+        use orb_symbol::state;
+        let change = self.fade_change(now);
+        let mut shown: HashMap<Box<str>, f32> = HashMap::new();
+        for &(_, bucket, tile) in &self.drawn {
+            let wrap = tile.wrap;
+            let Some(meshes) = self.buckets.get(&bucket) else {
+                continue;
+            };
+            let states = meshes.written.get(&wrap);
+            for (instance, name) in meshes.tables.instances.iter().zip(&meshes.names) {
+                if name.is_empty() {
+                    continue;
+                }
+                let opacity = instance
+                    .text
+                    .iter()
+                    .filter_map(|&p| states?.text.get(p as usize * state::WORDS).copied())
+                    .filter(|w| w & state::HIDDEN == 0)
+                    .map(|w| {
+                        let from = (w & state::OPACITY) as f32 / 127.0;
+                        let sign = if w & state::PLACED != 0 { 1.0 } else { -1.0 };
+                        (from + sign * change).clamp(0.0, 1.0)
+                    })
+                    .fold(0.0, f32::max);
+                let best = shown.entry(name.clone()).or_default();
+                *best = best.max(opacity);
+            }
+        }
+        shown
     }
 
     /// A placement is out or glyphs are still on their way.

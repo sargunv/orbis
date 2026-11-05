@@ -150,10 +150,15 @@ pub struct JobCounts {
 }
 
 enum Message {
-    /// A placement committed.
-    Placed(orb_symbol::Committed),
-    /// A glyph raster job finished, for these code points and rows.
+    /// A placement committed, for the labels of `epoch`.
+    Placed {
+        epoch: u64,
+        committed: orb_symbol::Committed,
+    },
+    /// A glyph raster job finished, for these code points and rows of the
+    /// labels of `epoch`.
     Raster {
+        epoch: u64,
         rows: Vec<crate::labels::RasterRow>,
         result: Result<Vec<crate::GlyphBitmap>, String>,
     },
@@ -427,6 +432,8 @@ pub struct Map {
     mode: RenderMode,
     /// Placement and the scene side of labels.
     pub(crate) labels: crate::labels::Labels,
+    /// Counts the [`Labels`](crate::labels::Labels) a GPU reset replaced.
+    label_epoch: u64,
     /// The last frame's picking state; queries project from it.
     pub(crate) picking: std::cell::RefCell<crate::query::Picking>,
     /// This frame's placement time so far, in milliseconds.
@@ -686,6 +693,7 @@ impl Map {
             globe_warps: Default::default(),
             terrains: 0,
             labels: crate::labels::Labels::new(default_lane()),
+            label_epoch: 0,
         }
     }
 
@@ -819,6 +827,12 @@ impl Map {
             self.zoom(),
             &self.bucket_planes(style),
         )
+    }
+
+    /// Per label text, the greatest opacity it drew with in the last
+    /// frame, now: for benches that watch labels across gestures.
+    pub fn shown_labels(&self) -> HashMap<Box<str>, f32> {
+        self.labels.shown(self.services.clock.now())
     }
 
     pub fn camera(&self) -> &CameraState {
@@ -1036,6 +1050,7 @@ impl Map {
         labels.cross_source_collisions = old.cross_source_collisions;
         labels.ideographs = old.ideographs.clone();
         self.labels = labels;
+        self.label_epoch += 1;
         *self.picking.get_mut() = Default::default();
         if let Some(style) = self.style.take() {
             self.generation += 1;
@@ -1811,10 +1826,15 @@ impl Map {
             return true;
         };
         let (sender, wake) = (self.sender.clone(), Arc::clone(&self.services.wake));
+        let epoch = self.label_epoch;
         let raster_done = move |rows: Vec<crate::labels::RasterRow>| -> crate::RasterDone {
             let (sender, wake) = (sender.clone(), Arc::clone(&wake));
             Box::new(move |result| {
-                let _ = sender.send(Message::Raster { rows, result });
+                let _ = sender.send(Message::Raster {
+                    epoch,
+                    rows,
+                    result,
+                });
                 wake();
             })
         };
@@ -1870,6 +1890,7 @@ impl Map {
                     .collect(),
             ),
         };
+        self.labels.inherit(gpu, renderer, &frame);
         // Symbols stand on the terrain as drawn.
         frame.ground = style
             .terrain
@@ -1888,7 +1909,7 @@ impl Map {
             self.labels.lane.place(
                 frame,
                 Box::new(move |committed| {
-                    let _ = sender.send(Message::Placed(committed));
+                    let _ = sender.send(Message::Placed { epoch, committed });
                     wake();
                 }),
             );
@@ -2760,15 +2781,24 @@ impl Map {
         while let Ok(message) = self.receiver.try_recv() {
             let new_tile = matches!(message, Message::Tile { edit: None, .. });
             match message {
-                Message::Placed(committed) => {
-                    if let Some((renderer, _)) = &mut self.renderer {
+                // Replies to the labels a GPU reset replaced are dropped.
+                Message::Placed { epoch, committed } => {
+                    if let Some((renderer, _)) =
+                        self.renderer.as_mut().filter(|_| epoch == self.label_epoch)
+                    {
                         let started = self.services.clock.now();
                         self.labels.committed(gpu, renderer, committed);
                         self.placement_ms += self.services.clock.now() - started;
                     }
                 }
-                Message::Raster { rows, result } => {
-                    if let Some((renderer, _)) = &mut self.renderer {
+                Message::Raster {
+                    epoch,
+                    rows,
+                    result,
+                } => {
+                    if let Some((renderer, _)) =
+                        self.renderer.as_mut().filter(|_| epoch == self.label_epoch)
+                    {
                         self.labels.rastered(
                             gpu,
                             renderer.glyphs(),
