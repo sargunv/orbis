@@ -1,8 +1,8 @@
 # 0046: Shadows from the directional light
 
 Plan §8.5's `Shadow` node and decision 0036's reading of style-spec#1797:
-real shadows from the lights model (decision 0026), cast by extrusions onto
-extrusions and the ground.
+real shadows from the lights model (decision 0026), cast by extrusions and
+glTF models onto extrusions, models and the ground.
 
 ## Style
 
@@ -39,14 +39,18 @@ freed when they aren't. Each frame fits them on the CPU (`orb-render`'s
 
 Nothing depends on earlier frames or on whether the camera moves.
 
-The casters are the extrusion nodes' meshes with the cull's indirect
-arguments, drawn depth-only from the light (`extrusion_caster.wgsl`, no
-face culling: walls alone leave a box's middle lit from a high sun), one
-bundle per cascade, recorded with the main bundle and replayed. The
+The casters are the extrusion nodes' meshes and the model nodes' instances
+with the cull's indirect arguments, drawn depth-only from the light
+(`extrusion_caster.wgsl`, `model_caster.wgsl`; no face culling: walls alone
+leave a box's middle lit from a high sun), one bundle per cascade, recorded
+with the main bundle and replayed. Models cast with their solid and masked
+materials (masked texels below the cutoff cast nothing); blended ones cast
+nothing. A model caster shares `model.wgsl`'s placement with the lit draw,
+and binds the cascade in group 3, after the model's own group. The
 casters' scene group binds a 1×1 stand-in where the map goes, as a pass
 can't sample what it draws into.
 
-The cull keeps an extrusion chunk whose shadow falls in the view even when
+The cull keeps an extrusion chunk or model instance whose shadow falls in the view even when
 the chunk itself is outside: the frame carries the shadow's reach per unit
 of height (`shadow_reach`), and the cull also tests the chunk's corners
 moved by it. Camera-only frames keep one dispatch and replay the bundles.
@@ -61,6 +65,9 @@ The scene group binds the shadow uniform, the map and a comparison sampler
   the directional light. The fragment mixes the two by `shadow_at`, a 3×3
   comparison filter after a normal and light offset of about a texel. Lit,
   the colour is exactly what it was, so extrusion fixtures are unchanged.
+- **Models:** `shadow_at` at the geometric normal is `PbrLights.shadow`, which
+  scales `pbr_light`'s directional term: the lighting path the whole map's
+  materials take (#91), not a separate one.
 - **The ground:** one full-screen draw in the main pass at the first 3D
   layer's place, blended multiplicatively (`BlendState::Multiply`). It
   rebuilds each pixel's ground point from the terrain's depth, or the view
@@ -94,7 +101,5 @@ the camera's culled chunks.
 
 - Casters in tiles the view's cover leaves out cast nothing: the cull widens
   only within resident tiles (#92).
-- glTF models cast and receive through the same passes once their layer
-  draws; the caster pass takes their nodes like extrusions'.
 - Per-cascade culling or a lighter caster vertex path, which would cut the
   casters' cost (#93).

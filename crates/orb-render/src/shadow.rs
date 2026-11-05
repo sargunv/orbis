@@ -2,17 +2,18 @@
 //! 0046).
 //!
 //! Each frame fits two cascades of a depth map to slices of the view, as
-//! orthographic views along the light. The extrusions draw into them from
-//! the light with the cull's arguments, recorded once as a bundle per
-//! cascade. Receivers read the cascades and maps in the scene group
-//! (`shadow_receive.wgsl`): extrusions per fragment, and the ground in one
+//! orthographic views along the light. The extrusions and models draw into
+//! them from the light with the cull's arguments, recorded once as a bundle
+//! per cascade. Receivers read the cascades and maps in the scene group
+//! (`shadow_receive.wgsl`): extrusions and models per fragment (models in
+//! `pbr_light`'s directional term), and the ground in one
 //! full-screen multiply at the first 3D layer's place. Planes only, and
 //! Modern only (plan §8.7).
 
 use glam::{DMat4, DVec3};
 use orb_hal::*;
 use orb_scene::{FrameBlock, FrameShadow, SceneBuffers};
-use orb_shaders::{EXTRUSION_CASTER_SHADER, SHADOW_GROUND_SHADER};
+use orb_shaders::{EXTRUSION_CASTER_SHADER, MODEL_CASTER_SHADER, SHADOW_GROUND_SHADER, Shader};
 
 use crate::{TargetFormat, draw_pipeline_blending, shader_module};
 
@@ -38,8 +39,9 @@ pub(crate) struct Shadows {
     pass_layout: BindGroupLayoutId,
     /// Each cascade's caster group: which cascade it draws.
     passes: [BindGroupId; CASCADES],
+    /// Made when extrusions, then models, first cast.
+    casters: [Option<RenderPipelineId>; 2],
     /// Made when shadows are first cast.
-    caster: Option<RenderPipelineId>,
     ground: Option<RenderPipelineId>,
     /// The caster passes' bundles, recorded with the main pass's.
     bundles: Vec<RenderBundleId>,
@@ -113,7 +115,7 @@ impl Shadows {
             compare,
             pass_layout,
             passes,
-            caster: None,
+            casters: [None; 2],
             ground: None,
             bundles: Vec::new(),
         }
@@ -133,42 +135,35 @@ impl Shadows {
     }
 
     /// Makes or frees the map, and makes the pipelines the first time,
-    /// as shadows are cast or not. The scene group binds the map: it must
-    /// be bound again when [`bindings`](Self::bindings) change.
+    /// as extrusions and models cast or not. The scene group binds the
+    /// map: it must be bound again when [`bindings`](Self::bindings)
+    /// change. Models' casters bind their model group (`model`) in group
+    /// 2 and the cascade in group 3.
     pub(crate) fn set_casting(
         &mut self,
         gpu: &mut dyn Gpu,
-        casting: bool,
+        casters: [bool; 2],
         target: TargetFormat,
-        [scene, node]: [BindGroupLayoutId; 2],
+        [scene, node, model]: [BindGroupLayoutId; 3],
     ) {
-        if casting && self.caster.is_none() {
-            let module = shader_module(gpu, &EXTRUSION_CASTER_SHADER);
-            self.caster = Some(gpu.create_render_pipeline(&RenderPipelineDesc {
-                label: EXTRUSION_CASTER_SHADER.label,
-                bind_group_layouts: &[scene, node, self.pass_layout],
-                vertex: ShaderStage {
-                    module,
-                    entry_point: EXTRUSION_CASTER_SHADER.vertex,
-                    constants: &[],
-                },
-                fragment: ShaderStage {
-                    module,
-                    entry_point: EXTRUSION_CASTER_SHADER.fragment,
-                    constants: &[],
-                },
-                targets: &[],
-                depth: Some(DepthState {
-                    format: TextureFormat::Depth32Float,
-                    write: true,
-                    compare: CompareFunction::Less,
-                }),
-                topology: PrimitiveTopology::TriangleList,
-                // Roofs and every wall: walls alone leave a box's middle
-                // unshadowed from a high light.
-                cull_mode: None,
-                sample_count: 1,
-            }));
+        let casting = casters.contains(&true);
+        let shaders = [
+            (
+                &EXTRUSION_CASTER_SHADER,
+                vec![scene, node, self.pass_layout],
+            ),
+            (
+                &MODEL_CASTER_SHADER,
+                vec![scene, node, model, self.pass_layout],
+            ),
+        ];
+        for ((made, casts), (shader, layouts)) in self.casters.iter_mut().zip(casters).zip(shaders)
+        {
+            if casts && made.is_none() {
+                *made = Some(caster_pipeline(gpu, shader, &layouts));
+            }
+        }
+        if casting && self.ground.is_none() {
             self.ground = Some(draw_pipeline_blending(
                 gpu,
                 &SHADOW_GROUND_SHADER,
@@ -208,19 +203,20 @@ impl Shadows {
 
     /// The pipelines shadows draw with, once made.
     pub(crate) fn pipelines(&self) -> impl Iterator<Item = PipelineId> + '_ {
-        self.caster
-            .map(PipelineId::from)
-            .into_iter()
-            .chain(self.ground.map(PipelineId::from))
+        (self.casters.iter().chain([&self.ground]))
+            .flatten()
+            .map(|&p| PipelineId::from(p))
     }
 
-    /// Whether the map exists and both pipelines compiled.
-    pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
+    /// Whether the map exists and the pipelines `casters` (extrusions',
+    /// models') need compiled.
+    pub(crate) fn ready(&self, gpu: &mut dyn Gpu, casters: [bool; 2]) -> bool {
         self.map.is_some()
-            && self
-                .caster
-                .zip(self.ground)
-                .is_some_and(|(c, g)| gpu.pipeline_ready(c.into()) && gpu.pipeline_ready(g.into()))
+            && (self.casters.iter().zip(casters))
+                .filter(|&(_, casts)| casts)
+                .map(|(&p, _)| p)
+                .chain([self.ground])
+                .all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
     }
 
     /// GPU bytes of the map.
@@ -272,34 +268,41 @@ impl Shadows {
         }
     }
 
-    /// The caster passes, one per cascade, recording their bundles of the
-    /// `casters`' draws (node index and group) if they aren't.
+    /// The caster passes, one per cascade, recording their bundles if
+    /// they aren't: the `extrusions`' draws (node index and group), then
+    /// the `models`' (their groups, index buffers and draws, as
+    /// [`Models::caster_commands`](crate::model::Models::caster_commands)
+    /// records them).
     pub(crate) fn passes(
         &mut self,
         gpu: &mut dyn Gpu,
         scene: BindGroupId,
-        casters: &[(u32, BindGroupId)],
+        extrusions: &[(u32, BindGroupId)],
+        models: &[RenderCommand],
         buffers: &SceneBuffers,
     ) -> Vec<Pass> {
-        let (Some((_, layers)), Some(caster)) = (self.map, self.caster) else {
+        let Some((_, layers)) = self.map else {
             return Vec::new();
         };
         if self.bundles.is_empty() {
             for &group in &self.passes {
-                let mut commands = vec![
-                    RenderCommand::SetPipeline(caster),
-                    RenderCommand::SetBindGroup {
-                        index: 0,
-                        group: scene,
-                    },
-                    RenderCommand::SetBindGroup { index: 2, group },
-                    RenderCommand::SetIndexBuffer {
-                        buffer: buffers.compacted,
-                        format: IndexFormat::Uint32,
-                        offset: 0,
-                    },
-                ];
-                for &(index, node) in casters {
+                let mut commands = Vec::new();
+                if let Some(caster) = self.casters[0].filter(|_| !extrusions.is_empty()) {
+                    commands.extend([
+                        RenderCommand::SetPipeline(caster),
+                        RenderCommand::SetBindGroup {
+                            index: 0,
+                            group: scene,
+                        },
+                        RenderCommand::SetBindGroup { index: 2, group },
+                        RenderCommand::SetIndexBuffer {
+                            buffer: buffers.compacted,
+                            format: IndexFormat::Uint32,
+                            offset: 0,
+                        },
+                    ]);
+                }
+                for &(index, node) in extrusions {
                     commands.extend([
                         RenderCommand::SetBindGroup {
                             index: 1,
@@ -310,6 +313,17 @@ impl Shadows {
                             offset: crate::args_offset(index),
                         },
                     ]);
+                }
+                if let Some(caster) = self.casters[1].filter(|_| !models.is_empty()) {
+                    commands.extend([
+                        RenderCommand::SetPipeline(caster),
+                        RenderCommand::SetBindGroup {
+                            index: 0,
+                            group: scene,
+                        },
+                        RenderCommand::SetBindGroup { index: 3, group },
+                    ]);
+                    commands.extend_from_slice(models);
                 }
                 self.bundles.push(gpu.create_render_bundle(
                     &RenderBundleDesc {
@@ -359,6 +373,39 @@ impl Shadows {
             },
         ])
     }
+}
+
+/// A caster pipeline: depth only, from the light, both faces (walls
+/// alone leave a box's middle unshadowed from a high light).
+fn caster_pipeline(
+    gpu: &mut dyn Gpu,
+    shader: &Shader,
+    layouts: &[BindGroupLayoutId],
+) -> RenderPipelineId {
+    let module = shader_module(gpu, shader);
+    gpu.create_render_pipeline(&RenderPipelineDesc {
+        label: shader.label,
+        bind_group_layouts: layouts,
+        vertex: ShaderStage {
+            module,
+            entry_point: shader.vertex,
+            constants: &[],
+        },
+        fragment: ShaderStage {
+            module,
+            entry_point: shader.fragment,
+            constants: &[],
+        },
+        targets: &[],
+        depth: Some(DepthState {
+            format: TextureFormat::Depth32Float,
+            write: true,
+            compare: CompareFunction::Less,
+        }),
+        topology: PrimitiveTopology::TriangleList,
+        cull_mode: None,
+        sample_count: 1,
+    })
 }
 
 /// One cascade as fitted: camera-relative world → the light's clip

@@ -187,7 +187,7 @@ pub const CIRCLE_SHADER: Shader = Shader {
 /// Modern only: Compat warns for the gap.
 pub const MODEL_SHADER: Shader = Shader {
     label: "model",
-    parts: &[TYPES, DRAW, POINT, PBR_MODULE, MODEL],
+    parts: &[TYPES, DRAW, POINT, PBR_MODULE, SHADOW_RECEIVE, MODEL],
     vertex: "vs_model",
     fragment: "fs_model",
     compute: "",
@@ -315,6 +315,22 @@ pub const EXTRUSION_CASTER_SHADER: Shader = Shader {
     ],
     vertex: "vs_caster",
     fragment: "fs_caster",
+    compute: "",
+};
+/// Models' depth from the light, into a shadow cascade. Modern only.
+pub const MODEL_CASTER_SHADER: Shader = Shader {
+    label: "model caster",
+    parts: &[
+        TYPES,
+        DRAW,
+        POINT,
+        PBR_MODULE,
+        SHADOW_RECEIVE,
+        MODEL,
+        include_str!("wgsl/model_caster.wgsl"),
+    ],
+    vertex: "vs_model_caster",
+    fragment: "fs_model_caster",
     compute: "",
 };
 /// Shadows on the ground, multiplied over the main pass. Modern only.

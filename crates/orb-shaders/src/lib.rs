@@ -115,6 +115,7 @@ mod tests {
             LINE_SHADER,
             CIRCLE_SHADER,
             MODEL_SHADER,
+            MODEL_CASTER_SHADER,
             SYMBOL_SHADER,
             HEATMAP_SHADER,
             RASTER_SHADER,

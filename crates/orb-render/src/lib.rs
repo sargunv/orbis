@@ -1069,6 +1069,7 @@ impl Renderer {
             if let Some(target) = &mut self.nodes[first].extrusion {
                 target.forget_bundle(gpu);
             }
+            self.shadows.forget_bundles(gpu);
         }
     }
 
@@ -1414,7 +1415,10 @@ impl Renderer {
                 out.extend(self.extrusions.pipelines());
                 out.extend(self.shadows.pipelines());
             }
-            Family::Model => out.extend(self.models.pipelines(self.extrusions.samples)),
+            Family::Model => {
+                out.extend(self.models.pipelines(self.extrusions.samples));
+                out.extend(self.shadows.pipelines());
+            }
             Family::SymbolIcon | Family::SymbolText => {
                 out.extend(self.symbol_pipeline.map(PipelineId::from));
             }
@@ -1467,9 +1471,9 @@ impl Renderer {
         let cast = self.casting(gpu, frame);
         self.shadows.set_casting(
             gpu,
-            cast.is_some(),
+            cast.map_or([false; 2], |_| self.casters()),
             self.target,
-            [self.draw_layout, self.node_layout],
+            [self.draw_layout, self.node_layout, self.models.layout()],
         );
         self.bind_scene(gpu);
         if let Some(nodes) = self.nodes_dirty.take() {
@@ -1585,10 +1589,14 @@ impl Renderer {
     /// The shadows this frame casts: from the frame's light, onto a
     /// plane, on Modern, with extrusions to cast them.
     fn casting(&self, gpu: &dyn Gpu, frame: &FrameBlock) -> Option<(FrameShadow, [f32; 3])> {
-        frame.shadow().filter(|_| {
-            gpu.caps().tier == Tier::Modern
-                && self.nodes.iter().any(|n| n.family == Family::FillExtrusion)
-        })
+        frame
+            .shadow()
+            .filter(|_| gpu.caps().tier == Tier::Modern && self.casters().contains(&true))
+    }
+
+    /// Whether extrusions, and models, are in the style to cast shadows.
+    fn casters(&self) -> [bool; 2] {
+        [Family::FillExtrusion, Family::Model].map(|f| self.nodes.iter().any(|n| n.family == f))
     }
 
     fn render_modern(
@@ -1751,9 +1759,8 @@ impl Renderer {
             };
             // The ground's shadows go under the first 3D layer.
             let first_extrusion = cast.and_then(|_| {
-                self.nodes
-                    .iter()
-                    .position(|n| n.family == Family::FillExtrusion)
+                (self.nodes.iter())
+                    .position(|n| matches!(n.family, Family::FillExtrusion | Family::Model))
             });
             self.ground_waiting = false;
             for i in 0..self.nodes.len() {
@@ -1878,14 +1885,31 @@ impl Renderer {
         }
         let mut first = !terrain_on;
         let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
-        let shadowed = cast.filter(|_| extrusions_ready && self.shadows.ready(gpu));
+        let samples = self.extrusions.samples;
+        let models_ready = cull_ready
+            && self.models.ready(gpu, samples)
+            && self.composites.ready(gpu, offscreen::Mode::Over);
+        // Shadows show with all that casts them.
+        let casters = self.casters();
+        let shadowed = cast.filter(|_| {
+            (!casters[0] || extrusions_ready)
+                && (!casters[1] || models_ready)
+                && self.shadows.ready(gpu, casters)
+        });
         self.shadows.write(gpu, frame, shadowed);
         if shadowed.is_some() {
-            let casters: Vec<(u32, BindGroupId)> = (self.nodes.iter().enumerate())
+            let b = *self.scene.buffers();
+            let extrusions: Vec<(u32, BindGroupId)> = (self.nodes.iter().enumerate())
                 .filter(|(_, n)| n.family == Family::FillExtrusion)
                 .map(|(i, n)| (i as u32, n.group))
                 .collect();
-            let b = *self.scene.buffers();
+            let models: Vec<RenderCommand> = (self.nodes.iter().enumerate())
+                .filter(|(_, n)| n.family == Family::Model)
+                .flat_map(|(i, n)| {
+                    self.models
+                        .caster_commands(n.group, &b, i as u32, n.model.map(|m| m.0))
+                })
+                .collect();
             let scene = *self.caster_group.get_or_insert_with(|| {
                 scene_group(
                     gpu,
@@ -1902,14 +1926,10 @@ impl Renderer {
                     self.shadows.caster_bindings(),
                 )
             });
-            let shadow_passes = self.shadows.passes(gpu, scene, &casters, &b);
+            let shadow_passes = self.shadows.passes(gpu, scene, &extrusions, &models, &b);
             stats.draws += shadow_passes.len() as u32;
             passes.extend(shadow_passes);
         }
-        let samples = self.extrusions.samples;
-        let models_ready = cull_ready
-            && self.models.ready(gpu, samples)
-            && self.composites.ready(gpu, offscreen::Mode::Over);
         for index in 0..self.nodes.len() {
             // A model layer's nodes after its first draw in its pass.
             let layer: Vec<(u32, BindGroupId, Option<u32>)> = match self.nodes[index].family {

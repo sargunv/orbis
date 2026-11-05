@@ -3,7 +3,8 @@
 // model's, in metres east, north and up of the point, scaled, turned and
 // moved by the layer's paint. A fragment fills a `Material` from glTF's
 // metallic-roughness material and the paint, and lights it under the
-// style's lights (pbr.wgsl, decision 0026). Model words are
+// style's lights (pbr.wgsl, decision 0026), with the shadows it receives
+// (decision 0046) in the directional term. Model words are
 // `orb_3d::gpu`'s. Both faces draw; a single-sided material's back faces
 // are discarded.
 
@@ -63,6 +64,9 @@ struct ModelOut {
     // strength.
     @location(5) @interpolate(flat) paint: vec4<f32>,
     @location(6) @interpolate(flat) mix_emissive: vec2<f32>,
+    // Camera-relative world and view depth, for shadows.
+    @location(7) world: vec3<f32>,
+    @location(8) depth: f32,
 };
 
 fn model_word_f(i: u32) -> f32 { return bitcast<f32>(model_words[i]); }
@@ -112,39 +116,69 @@ fn model_clip(g: Ground, o: vec3<f32>) -> vec4<f32> {
     return clip;
 }
 
-@vertex
-fn vs_model(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> ModelOut {
-    var out: ModelOut;
-    out.position = discarded_vertex();
+// A model vertex at its instance: the instance's tile, ground point,
+// property row and feature-state block, and the vertex's word, its place in metres east, north
+// and up of the point after the paint, and that on the ground under it.
+struct ModelPlaced {
+    tile: Tile,
+    ground: Ground,
+    row: u32,
+    state: u32,
+    w: u32,
+    local: vec3<f32>,
+    rotation: vec3<f32>,
+    scale: vec3<f32>,
+    standing: vec3<f32>,
+};
+
+fn model_placed(vertex: u32, instance: u32, out: ptr<function, ModelPlaced>) -> bool {
     var v: Pulled;
-    if !pull_instance(node.index, instance, &v) { return out; }
+    if !pull_instance(node.index, instance, &v) { return false; }
     let tile = tile_at(v.tile);
     let anchor = unpack_i16x2(vertex_at(v.vertex));
-    if !point_owned(tile, anchor) { return out; }
+    if !point_owned(tile, anchor) { return false; }
     let feature = vertex_at(v.vertex + 1u);
     let row = prop_row(v, feature, v.row_words);
     let state = state_block(v, feature, node.state);
-    var color = node.color;
-    if (node.table_mask & 1u) != 0u { color = table_color(row, 0u, node.curves[0], tile.zoom); }
-    if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0]); }
-    let color_mix = model_number(row, state, 1u, node.color_mix, tile.zoom);
-    let emissive = model_number(row, state, 2u, node.emissive, tile.zoom);
     let scale = model_vec3(row, state, 3u, node.scale, tile.zoom);
     let rotation = model_vec3(row, state, 6u, node.rotation, tile.zoom);
     let translation = model_vec3(row, state, 9u, node.translation, tile.zoom);
-
     let w = model_draw.vertex_base + vertex * MODEL_VERTEX_WORDS;
     let position = vec3<f32>(model_word_f(w), model_word_f(w + 1u), model_word_f(w + 2u));
     let local = turn_enu(position * scale, rotation) + translation;
     // On terrain, the model stands on the ground under its point.
     let ground = ground_elevation(tile, anchor);
-    out.position = model_clip(tile_ground(tile, anchor), local + vec3<f32>(0.0, 0.0, ground));
-    out.local = local;
+    *out = ModelPlaced(tile, tile_ground(tile, anchor), row, state, w, local, rotation, scale, local + vec3<f32>(0.0, 0.0, ground));
+    return true;
+}
+
+// Camera-relative world (x east, y north, z up) of a placed vertex, on
+// the plane, where shadows fall (decision 0046).
+fn model_world(p: ModelPlaced) -> vec3<f32> {
+    let s = frame.extrusion_scale;
+    return vec3<f32>(p.ground.flat + p.standing.xy * s, p.standing.z * s);
+}
+
+@vertex
+fn vs_model(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> ModelOut {
+    var out: ModelOut;
+    out.position = discarded_vertex();
+    var p: ModelPlaced;
+    if !model_placed(vertex, instance, &p) { return out; }
+    var color = node.color;
+    if (node.table_mask & 1u) != 0u { color = table_color(p.row, 0u, node.curves[0], p.tile.zoom); }
+    if from_state(p.state, node.state, 0u) { color = state_color(p.state, node.state, 0u, node.curves[0]); }
+    let color_mix = model_number(p.row, p.state, 1u, node.color_mix, p.tile.zoom);
+    let emissive = model_number(p.row, p.state, 2u, node.emissive, p.tile.zoom);
+    out.position = model_clip(p.ground, p.standing);
+    out.local = p.local;
+    out.world = model_world(p);
+    out.depth = out.position.w;
     // Normals scale inversely, then turn with the model.
-    out.normal = turn_enu(octahedral_normal(model_words[w + 3u]) / scale, rotation);
-    out.uv = vec2<f32>(model_word_f(w + 4u), model_word_f(w + 5u));
-    out.color = unpack4x8unorm(model_words[w + 6u]);
-    out.material = model_words[w + 7u];
+    out.normal = turn_enu(octahedral_normal(model_words[p.w + 3u]) / p.scale, p.rotation);
+    out.uv = vec2<f32>(model_word_f(p.w + 4u), model_word_f(p.w + 5u));
+    out.color = unpack4x8unorm(model_words[p.w + 6u]);
+    out.material = model_words[p.w + 7u];
     let straight = select(color.rgb / color.a, vec3<f32>(0.0), color.a == 0.0);
     out.paint = vec4<f32>(srgb_to_linear(straight), color.a);
     out.mix_emissive = vec2<f32>(color_mix, emissive);
@@ -170,16 +204,26 @@ fn model_texel(m: u32, layer: u32, slot: u32, uv: ModelUv, fallback: vec4<f32>) 
     return textureSampleGrad(model_textures, model_sampler, wrap_uv(uv.uv, wrap), layer, uv.dx, uv.dy);
 }
 
+// Material `m`'s base colour (linear, straight alpha) at `uv`, times the
+// vertex colour.
+fn model_base(m: u32, uv: ModelUv, color: vec4<f32>) -> vec4<f32> {
+    let factor = vec4<f32>(model_word_f(m), model_word_f(m + 1u), model_word_f(m + 2u), model_word_f(m + 3u));
+    let texel = model_texel(m, model_words[m + 12u] & 255u, 0u, uv, vec4<f32>(1.0));
+    return factor * vec4<f32>(srgb_to_linear(texel.rgb), texel.a) * color;
+}
+
 // The style's lights in east, north and up, and the direction toward the
 // eye. lighting.wgsl keeps GL JS's extrusion axes: x and y negated, y
 // south.
-fn model_lights() -> PbrLights {
+// The shadow it receives is the directional light's, at the surface's
+// geometric normal `n`.
+fn model_lights(world: vec3<f32>, n: vec3<f32>, depth: f32) -> PbrLights {
     var lights: PbrLights;
     lights.ambient = srgb_to_linear(frame.light_ambient.rgb) * frame.light_ambient.w;
     lights.directional = srgb_to_linear(frame.light_color.rgb) * frame.light_color.w;
     lights.toward_light = normalize(vec3<f32>(-frame.light_position.x, frame.light_position.y, frame.light_position.z));
     lights.toward_eye = normalize(vec3<f32>(-sin(frame.bearing) * sin(frame.pitch), -cos(frame.bearing) * sin(frame.pitch), cos(frame.pitch)));
-    lights.shadow = 1.0;
+    lights.shadow = shadow_at(world, n, depth);
     return lights;
 }
 
@@ -193,9 +237,7 @@ fn fs_model(in: ModelOut, @builtin(front_facing) front: bool) -> @location(0) ve
     if !front && (flags & MODEL_DOUBLE_SIDED) == 0u {
         discard;
     }
-    let factor = vec4<f32>(model_word_f(m), model_word_f(m + 1u), model_word_f(m + 2u), model_word_f(m + 3u));
-    let texel = model_texel(m, layers & 255u, 0u, uv, vec4<f32>(1.0));
-    let base = factor * vec4<f32>(srgb_to_linear(texel.rgb), texel.a) * in.color;
+    let base = model_base(m, uv, in.color);
     if (flags & MODEL_MASK) != 0u && base.a < model_word_f(m + 7u) {
         discard;
     }
@@ -209,6 +251,7 @@ fn fs_model(in: ModelOut, @builtin(front_facing) front: bool) -> @location(0) ve
     if !front {
         n = -n;
     }
+    let geometric = n;
     let normal_layer = (layers >> 16u) & 255u;
     if normal_layer != MODEL_NO_LAYER {
         let sampled = model_texel(m, normal_layer, 2u, uv, vec4<f32>(0.5, 0.5, 1.0, 1.0)).xyz;
@@ -219,6 +262,6 @@ fn fs_model(in: ModelOut, @builtin(front_facing) front: bool) -> @location(0) ve
     material.self_lit = select(in.mix_emissive.y, 1.0, (flags & MODEL_UNLIT) != 0u);
     material.emitted = vec3<f32>(model_word_f(m + 4u), model_word_f(m + 5u), model_word_f(m + 6u))
         * srgb_to_linear(model_texel(m, flags & 255u, 4u, uv, vec4<f32>(1.0)).rgb);
-    let color = pbr_light(material, model_lights());
+    let color = pbr_light(material, model_lights(in.world, geometric, in.depth));
     return vec4<f32>(linear_to_srgb(color) * material.alpha, material.alpha);
 }

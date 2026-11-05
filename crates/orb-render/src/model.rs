@@ -308,6 +308,46 @@ impl Models {
                 .all(|p| gpu.pipeline_ready(p))
     }
 
+    /// Group 2's layout: a model's words, textures, sampler and draw.
+    pub(crate) fn layout(&self) -> BindGroupLayoutId {
+        self.layout
+    }
+
+    /// Model node `index`'s draws of model `model` (node group `group`)
+    /// into a shadow cascade, after the caster's pipeline and scene and
+    /// pass groups: its solid and masked materials, none while the model
+    /// isn't resident.
+    pub(crate) fn caster_commands(
+        &self,
+        group: BindGroupId,
+        buffers: &SceneBuffers,
+        index: u32,
+        model: Option<u32>,
+    ) -> Vec<RenderCommand> {
+        let Some(r) = model
+            .and_then(|m| self.resident.get(&m))
+            .filter(|r| r.draws[1] > 0)
+        else {
+            return Vec::new();
+        };
+        vec![
+            RenderCommand::SetBindGroup { index: 1, group },
+            RenderCommand::SetBindGroup {
+                index: 2,
+                group: r.group,
+            },
+            RenderCommand::SetIndexBuffer {
+                buffer: r.indices,
+                format: IndexFormat::Uint32,
+                offset: 0,
+            },
+            RenderCommand::DrawIndexedIndirect {
+                buffer: buffers.args,
+                offset: crate::args_offset(index),
+            },
+        ]
+    }
+
     /// Model node `index`'s draws of model `model`, as its 3D pass records
     /// them: none while the model isn't resident.
     pub(crate) fn commands(
