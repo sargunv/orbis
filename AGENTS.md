@@ -56,6 +56,7 @@ Playwright.
 | `cargo xtask bench` | GPU/CPU frame timings, still and with the camera moving (decision 0002); `--experiment paint` for decision 0017; `--experiment gestures` for rotate, tilt and zoom frame times with tiles arriving (decision 0023) |
 | `pnpm -C web bench [--precise] [--android[=serial]]` | the same bench in headless Chromium, or in an adb-connected Android device's Chrome (`web/demo/bench.html`; keep its screen on); `--experiment=gestures` drives the `orbis` package in both thread modes |
 | `pnpm -C web measure [--android[=serial]] [--runs=3]` | plan §7.2's measurements in Chrome: input-to-photon latency (pan, pinch, rotate), DOM overlay skew, main-thread busy time and idle frames, for Orbis worker and main-thread mode and the pinned GL JS (`web/demo/measure.html`) |
+| `pnpm -C web scenario [--configs=main,worker,webgl2]` | the binding scenario through the `orbis` package in headless Chromium (`web/demo/scenario.html`) |
 
 ## How we work
 

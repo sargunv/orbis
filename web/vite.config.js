@@ -128,7 +128,7 @@ export default defineConfig({
     emptyOutDir: true,
     assetsInlineLimit: 0,
     rolldownOptions: {
-      input: Object.fromEntries(["index", "probe", "bench", "playground", "cities", "measure"].map((name) => [name, `${demo}${name}.html`])),
+      input: Object.fromEntries(["index", "probe", "bench", "playground", "cities", "measure", "scenario"].map((name) => [name, `${demo}${name}.html`])),
     },
   },
   worker: { format: "es" },
