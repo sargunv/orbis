@@ -1,8 +1,8 @@
 // The binding scenario (plan §14.1, decision 0018) through the orbis
 // package in headless Chromium, as Rust, C, Kotlin and Swift run it: an
 // inline style, pixels, a hit test, a rendered-features query, an edit's
-// generation, project and unproject, a drag, a click event, idle drawing
-// nothing, and an error. On web/dist/scenario.html, in each thread mode,
+// generation, a style image, camera moves with roll and elevation, project
+// and unproject, a drag, a click event, idle drawing nothing, and an error. On web/dist/scenario.html, in each thread mode,
 // and on WebGL2.
 //
 //   pnpm scenario [--configs=main,worker,webgl2]
@@ -68,6 +68,62 @@ try {
       assert.ok(generation > 0);
       image = await pixels();
       assert.deepEqual(pixel(image, CENTER), [0, 255, 0], "the edited box");
+
+      // A pattern the style lacks is reported; added, it draws, and new
+      // pixels replace it in place.
+      const solid = (rgb) => ({ width: 8, height: 8, data: Array.from({ length: 64 }, () => [...rgb, 255]).flat() });
+      const missing = await scenario(async (s) => {
+        s.events();
+        await s.shows(await s.map.edit((tx) => tx.setPaintProperty("box", "fill-pattern", "dot")));
+        await s.idle();
+        return { events: s.events(), has: await s.map.hasImage("dot") };
+      });
+      assert.ok(missing.events.some((e) => e.type === "styleimagemissing" && e.id === "dot"), JSON.stringify(missing.events));
+      assert.equal(missing.has, false);
+      const added = await scenario(async (s, image) => {
+        const data = (rgb) => ({ ...image, data: new Uint8Array(image.data.map((v, i) => (i % 4 === 3 ? 255 : rgb[i % 4]))) });
+        await s.map.addImage("dot", data([255, 255, 0]), { pixelRatio: 1 });
+        const drawn = s.drawn();
+        const again = await s.map.addImage("dot", data([0, 0, 0])).then(() => null, (e) => String(e));
+        await drawn;
+        return { has: await s.map.hasImage("dot"), again };
+      }, solid([0, 0, 0]));
+      assert.ok(added.has && added.again, JSON.stringify(added));
+      image = await pixels();
+      assert.deepEqual(pixel(image, CENTER), [255, 255, 0], "the added pattern");
+      await scenario(async (s, image) => {
+        const drawn = s.drawn();
+        await s.map.updateImage("dot", { ...image, data: new Uint8Array(image.data) });
+        await drawn;
+      }, solid([255, 0, 255]));
+      image = await pixels();
+      assert.deepEqual(pixel(image, CENTER), [255, 0, 255], "the updated pattern");
+      const removed = await scenario(async (s) => {
+        await s.map.removeImage("dot");
+        const again = await s.map.removeImage("dot").then(() => null, (e) => String(e));
+        const generation = await s.map.edit((tx) => tx.setPaintProperty("box", "fill-pattern", null));
+        await s.shows(generation);
+        await s.idle();
+        return { has: await s.map.hasImage("dot"), again };
+      });
+      assert.ok(!removed.has && removed.again, JSON.stringify(removed));
+
+      // Camera moves carry a roll and an elevation; unclamped, the center
+      // keeps the elevation it is given.
+      const moved = await scenario(async (s) => {
+        const c = s.map.camera;
+        c.jumpTo({ roll: 30 });
+        const rolled = c.current.roll;
+        c.centerClampedToGround = false;
+        c.setCenterElevation(120);
+        const raised = c.current.elevation;
+        const arrived = await c.easeTo({ roll: 0, elevation: 0, duration: 50 });
+        const { roll, elevation } = c.current;
+        c.centerClampedToGround = true;
+        await s.idle();
+        return { rolled, raised, arrived, roll, elevation };
+      });
+      assert.deepEqual(moved, { rolled: 30, raised: 120, arrived: true, roll: 0, elevation: 0 });
 
       // A drag moves the camera, with move events.
       await scenario((s) => s.events());

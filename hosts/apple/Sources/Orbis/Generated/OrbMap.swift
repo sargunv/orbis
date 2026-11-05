@@ -95,6 +95,55 @@ public final class OrbMap {
         return result.ok
     }
 
+    /// Adds an image to the style for icons, text and patterns (GL JS
+    /// `addImage`): straight (not premultiplied) RGBA8 rows, top first,
+    /// and GL JS's options as JSON in sprite metadata's spelling
+    /// (`{"pixelRatio": 2, "sdf": true}`), empty for the defaults. An
+    /// error when the style has an image by that name.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func addImage(name: String, width: UInt32, height: UInt32, pixels: [UInt8], options: String) throws {
+        let result = withStringView(name) { nameView in withSliceView(pixels) { pixelsView in withStringView(options) { optionsView in OrbMap_add_image(live(), nameView, width, height, pixelsView, optionsView) } } }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Replaces an image's pixels, of the same size (GL JS
+    /// `updateImage`); its options stay.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func updateImage(name: String, width: UInt32, height: UInt32, pixels: [UInt8]) throws {
+        let result = withStringView(name) { nameView in withSliceView(pixels) { pixelsView in OrbMap_update_image(live(), nameView, width, height, pixelsView) } }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Removes an image from the style (GL JS `removeImage`).
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func removeImage(name: String) throws {
+        let result = withStringView(name) { nameView in OrbMap_remove_image(live(), nameView) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Whether the style has an image by this name, from its sprites
+    /// or added (GL JS `hasImage`).
+    ///
+    /// Contract: `snapshot`.
+    public func hasImage(name: String) -> Bool {
+        return withStringView(name) { nameView in OrbMap_has_image(live(), nameView) }
+    }
+
     /// The style generation, counting loads and edits.
     ///
     /// Contract: `snapshot`.
@@ -107,6 +156,28 @@ public final class OrbMap {
     /// Contract: `snapshot`.
     public func camera() -> OrbCamera {
         return OrbCamera(OrbMap_camera(live()))
+    }
+
+    /// Whether the centre stands on the terrain at rest (GL JS
+    /// `centerClampedToGround`, on by default). Off, it keeps the
+    /// elevation it is given and the camera orbits a point in the air.
+    ///
+    /// Contract: `command`.
+    public func setCenterClampedToGround(clamped: Bool) {
+        OrbMap_set_center_clamped_to_ground(live(), clamped)
+    }
+
+    /// Contract: `snapshot`.
+    public func centerClampedToGround() -> Bool {
+        return OrbMap_center_clamped_to_ground(live())
+    }
+
+    /// Puts the centre this many metres above sea level at once (GL JS
+    /// `setCenterElevation`); while clamped, the terrain takes it back.
+    ///
+    /// Contract: `command`.
+    public func setCenterElevation(elevation: Double) {
+        OrbMap_set_center_elevation(live(), elevation)
     }
 
     /// Moves the camera at once.

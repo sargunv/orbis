@@ -541,6 +541,22 @@ mod tests {
             ..CameraTarget::default()
         });
         assert_eq!(store.state().elevation, ground + 500.0);
+        // A move with an elevation of its own keeps it, unclamped.
+        let mut now = 0.0;
+        store.ease_to(
+            &CameraTarget {
+                center: Some(Geodetic::new(5.0, 0.0)),
+                elevation: Some(ground + 800.0),
+                ..CameraTarget::default()
+            },
+            crate::EaseOptions::default(),
+            now,
+        );
+        while store.is_animating() {
+            now += 16.0;
+            store.frame(now);
+        }
+        assert_eq!(store.state().elevation, ground + 800.0);
         // Clamped again, it stands on the ground under it.
         store.set_center_clamped_to_ground(true);
         assert_ne!(store.state().elevation, ground + 500.0);

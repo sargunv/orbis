@@ -1,9 +1,10 @@
 //! The binding scenario (plan §14.1) through the Rust API: a style, a
-//! frame, a query, an edit, a gesture and idle, into a texture target.
+//! frame, a query, an edit, a style image, camera moves, a gesture and
+//! idle, into a texture target.
 
 use orb_api::{
-    Button, Event, Input, Map, MapEvent, MapOptions, Modifiers, PointerKind, Runtime,
-    RuntimeOptions, Target,
+    Button, CameraTarget, EaseOptions, Error, Event, Input, Map, MapEvent, MapOptions, Modifiers,
+    PointerKind, Runtime, RuntimeOptions, StyleImage, Target,
 };
 
 /// A red background and a blue box around the origin, with feature ids.
@@ -112,6 +113,68 @@ fn style_frame_query_edit_gesture_idle() {
     assert!(shown >= generation);
     let pixels = target.read_pixels().unwrap();
     assert_eq!(pixel(&pixels, SIZE / 2, SIZE / 2), [0, 255, 0, 255]);
+
+    // A pattern the style lacks is reported; once added, it draws, and
+    // new pixels replace it in place.
+    map.edit(r#"[["setPaintProperty", "box", "fill-pattern", "dot"]]"#)
+        .expect("edit");
+    let events = settle(&mut map, &mut target);
+    assert!(
+        events.contains(&Event::Map(MapEvent::StyleImageMissing {
+            name: "dot".into()
+        })),
+        "{events:?}"
+    );
+    assert!(!map.has_image("dot"));
+    let solid = |rgba: [u8; 4]| rgba.repeat(8 * 8);
+    let image = StyleImage::with_options(8, 8, solid([255, 255, 0, 255]), r#"{"pixelRatio": 1}"#)
+        .expect("image");
+    map.add_image("dot", image.clone()).expect("add");
+    assert!(map.has_image("dot"));
+    assert!(matches!(
+        map.add_image("dot", image),
+        Err(Error::InvalidArgument(_))
+    ));
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    assert_eq!(pixel(&pixels, SIZE / 2, SIZE / 2), [255, 255, 0, 255]);
+    map.update_image("dot", 8, 8, solid([255, 0, 255, 255]))
+        .expect("update");
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    assert_eq!(pixel(&pixels, SIZE / 2, SIZE / 2), [255, 0, 255, 255]);
+    map.remove_image("dot").expect("remove");
+    assert!(!map.has_image("dot"));
+    assert!(map.remove_image("dot").is_err());
+    map.edit(r##"[["setPaintProperty", "box", "fill-pattern", null]]"##)
+        .expect("edit");
+    settle(&mut map, &mut target);
+
+    // Camera moves carry a roll and an elevation; unclamped, the centre
+    // keeps the elevation it is given.
+    map.jump_to(&CameraTarget {
+        roll: Some(30.0),
+        ..CameraTarget::default()
+    });
+    assert_eq!(map.camera().roll, 30.0);
+    map.set_center_clamped_to_ground(false);
+    assert!(!map.center_clamped_to_ground());
+    map.set_center_elevation(120.0);
+    assert_eq!(map.camera().elevation, 120.0);
+    map.ease_to(
+        &CameraTarget {
+            roll: Some(0.0),
+            elevation: Some(0.0),
+            ..CameraTarget::default()
+        },
+        &EaseOptions {
+            duration: 50.0,
+            ..EaseOptions::default()
+        },
+    );
+    settle(&mut map, &mut target);
+    assert_eq!((map.camera().roll, map.camera().elevation), (0.0, 0.0));
+    map.set_center_clamped_to_ground(true);
 
     // A drag moves the camera (and flings it: the moves arrive at once).
     let before = map.camera().target;

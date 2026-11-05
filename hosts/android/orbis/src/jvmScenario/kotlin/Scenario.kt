@@ -1,6 +1,6 @@
 // The binding scenario (plan §14.1) through the generated Kotlin, on the
 // host's JVM: a style into a texture target, a hit test, a query, an edit,
-// a click, events, idle and errors, as crates/orb-api/tests/api.rs, the C
+// a style image, camera moves, a click, events, idle and errors, as crates/orb-api/tests/api.rs, the C
 // smoke test and the Swift scenario do. `cargo xtask capi --test` runs it.
 
 import dev.orbis.*
@@ -41,8 +41,13 @@ fun settle(map: OrbMap, target: OrbTarget): List<OrbEventKind> {
     return kinds
 }
 
+/** An 8×8 image of one opaque colour. */
+fun solid(r: Int, g: Int, b: Int) = ByteArray(8 * 8 * 4) { i ->
+    when (i % 4) { 0 -> r; 1 -> g; 2 -> b; else -> 255 }.toByte()
+}
+
 fun main() {
-    check(OrbRuntime.abiVersion() == 2u)
+    check(OrbRuntime.abiVersion() == 3u)
     OrbRuntime.create(0u).use { runtime ->
         OrbTarget.createTexture(runtime, SIZE, SIZE, 1.0).use { target ->
             OrbMap.create(runtime, OrbFeel.Desktop, 0.0, 0.0, 0.0, 0.0).use { map ->
@@ -85,6 +90,40 @@ fun main() {
                 while (map.needsFrame()) shown = maxOf(shown, map.render(target).generation)
                 check(shown >= generation)
                 check(pixel(target, 32, 32) == listOf(0, 255, 0, 255))
+
+                // A pattern the style lacks is reported; added, it draws, and
+                // new pixels replace it in place.
+                map.edit("""[["setPaintProperty", "box", "fill-pattern", "dot"]]""")
+                check(OrbEventKind.StyleImageMissing in settle(map, target))
+                check(!map.hasImage("dot"))
+                map.addImage("dot", 8u, 8u, solid(255, 255, 0), """{"pixelRatio": 1}""")
+                check(map.hasImage("dot"))
+                val again = runCatching { map.addImage("dot", 8u, 8u, solid(0, 0, 0), "") }.exceptionOrNull()
+                check(again is OrbErrorException && again.error == OrbError.InvalidArgument)
+                settle(map, target)
+                check(pixel(target, 32, 32) == listOf(255, 255, 0, 255))
+                map.updateImage("dot", 8u, 8u, solid(255, 0, 255))
+                settle(map, target)
+                check(pixel(target, 32, 32) == listOf(255, 0, 255, 255))
+                map.removeImage("dot")
+                check(!map.hasImage("dot"))
+                check(runCatching { map.removeImage("dot") }.isFailure)
+                map.edit("""[["setPaintProperty", "box", "fill-pattern", null]]""")
+                settle(map, target)
+
+                // Camera moves carry a roll and an elevation; unclamped, the
+                // centre keeps the elevation it is given.
+                val nan = Double.NaN
+                map.jumpTo(OrbCameraTarget(nan, nan, nan, nan, nan, 30.0, nan))
+                check(map.camera().roll == 30.0)
+                map.setCenterClampedToGround(false)
+                check(!map.centerClampedToGround())
+                map.setCenterElevation(120.0)
+                check(map.camera().elevation == 120.0)
+                map.easeTo(OrbCameraTarget(nan, nan, nan, nan, nan, 0.0, 0.0), 50.0)
+                settle(map, target)
+                check(map.camera().roll == 0.0 && map.camera().elevation == 0.0)
+                map.setCenterClampedToGround(true)
 
                 val none = OrbModifiers(false, false, false, false)
                 map.pointerDown(1u, OrbPointerKind.Mouse, OrbButton.Primary, 10.0, 20.0, none)

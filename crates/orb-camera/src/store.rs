@@ -60,6 +60,9 @@ struct Running {
     /// Milliseconds in at the last frame.
     elapsed: f64,
     user: bool,
+    /// The move ends on the terrain under its destination: it wasn't
+    /// given an elevation of its own, or the target is clamped.
+    aims: bool,
 }
 
 /// A map's camera, its limits and its animations.
@@ -276,7 +279,7 @@ impl Camera {
         self.stop();
         let (to, around) = self.resolve(target);
         let motion = Motion::ease(self.state, to, around, options, &self.surface.projection);
-        self.start(motion, now, false)
+        self.start(motion, now, false, self.aims(target))
     }
 
     /// [`ease_to`](Self::ease_to) for input handlers: its events say the
@@ -290,7 +293,7 @@ impl Camera {
         self.stop();
         let (to, around) = self.resolve(target);
         let motion = Motion::ease(self.state, to, around, options, &self.surface.projection);
-        self.start(motion, now, true)
+        self.start(motion, now, true, self.aims(target))
     }
 
     /// Flies to `target` along a zoom-out curve (GL JS `flyTo`).
@@ -305,7 +308,7 @@ impl Camera {
             &self.surface.projection,
             self.viewport,
         );
-        self.start(motion, now, false)
+        self.start(motion, now, false, self.aims(target))
     }
 
     /// The camera that shows `bounds` (GL JS `cameraForBounds`), for
@@ -353,7 +356,7 @@ impl Camera {
             }
         }
         self.stop();
-        self.start(Motion::glide(glide), now, true)
+        self.start(Motion::glide(glide), now, true, false)
     }
 
     /// Stops the running animation, if any, as interrupted.
@@ -427,7 +430,10 @@ impl Camera {
         };
         // An app's move ends on the terrain under its destination, known
         // once its DEM data lands; a gesture holds the elevation.
-        if let Some(terrain) = self.terrain.as_deref().filter(|_| !running.user)
+        if let Some(terrain) = self
+            .terrain
+            .as_deref()
+            .filter(|_| !running.user && running.aims)
             && let Some(ground) = running.motion.destination().and_then(|w| terrain.at(w))
         {
             running.motion.aim_elevation(ground, running.elapsed);
@@ -503,7 +509,7 @@ impl Camera {
         self.reported = self.state;
     }
 
-    fn start(&mut self, motion: Motion, now: f64, user: bool) -> AnimationId {
+    fn start(&mut self, motion: Motion, now: f64, user: bool, aims: bool) -> AnimationId {
         self.next_id += 1;
         let id = AnimationId(self.next_id);
         self.modified = true;
@@ -514,6 +520,7 @@ impl Camera {
             started: now,
             elapsed: 0.0,
             user,
+            aims,
         });
         id
     }
@@ -550,6 +557,11 @@ impl Camera {
             self.state = next;
             self.revision += 1;
         }
+    }
+
+    /// Whether a move to `target` ends on the terrain under it.
+    fn aims(&self, target: &CameraTarget) -> bool {
+        self.clamped || target.elevation.is_none()
     }
 
     /// The end state of a move to `target`, and the pixel and ground point
@@ -608,6 +620,12 @@ impl Camera {
         }
         if let Some(pitch) = target.pitch {
             to.pitch = pitch;
+        }
+        if let Some(roll) = target.roll {
+            to.roll = wrap_bearing(roll);
+        }
+        if let Some(elevation) = target.elevation {
+            to.elevation = elevation;
         }
         if target.offset != DVec2::ZERO {
             to.pan(surface, viewport, center, center + target.offset);
@@ -679,6 +697,36 @@ mod tests {
         // Nothing changes, nothing is reported.
         assert!(!camera.frame(16.0));
         assert!(camera.take_events().is_empty());
+    }
+
+    #[test]
+    fn eases_roll_the_short_way_and_take_an_elevation() {
+        let mut camera = camera();
+        camera.jump_to(&CameraTarget {
+            roll: Some(170.0),
+            ..CameraTarget::default()
+        });
+        assert_eq!(camera.state().roll, 170.0);
+        camera.ease_to(
+            &CameraTarget {
+                roll: Some(-170.0),
+                elevation: Some(300.0),
+                ..CameraTarget::default()
+            },
+            EaseOptions {
+                duration: 100.0,
+                easing: Easing::Linear,
+            },
+            0.0,
+        );
+        camera.frame(50.0);
+        // Halfway across the seam, not back through 0°.
+        assert!((camera.state().roll.abs() - 180.0).abs() < 1e-9);
+        assert!((camera.state().elevation - 150.0).abs() < 1e-9);
+        camera.frame(100.0);
+        assert_eq!(camera.state().roll, -170.0);
+        // Without terrain nothing takes the elevation back.
+        assert_eq!(camera.state().elevation, 300.0);
     }
 
     #[test]

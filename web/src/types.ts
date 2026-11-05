@@ -14,6 +14,11 @@ export interface Camera {
   bearing: number;
   /** Degrees from looking straight down. */
   pitch: number;
+  /** Degrees the view turns about its axis, clockwise. */
+  roll: number;
+  /** Metres the center stands above sea level: the terrain's, unless
+   * the center isn't clamped to the ground. */
+  elevation: number;
 }
 
 /** Where a camera move ends; what is left out stays. */
@@ -22,6 +27,10 @@ export interface CameraOptions {
   zoom?: number;
   bearing?: number;
   pitch?: number;
+  roll?: number;
+  /** Metres the center stands above sea level (GL JS `elevation`); the
+   * terrain takes it while the center is clamped to the ground. */
+  elevation?: number;
   /** Without `center`: the point a zoom or rotation keeps in place. */
   around?: LngLat;
   /** Pixels the center ends up from the viewport's middle. */

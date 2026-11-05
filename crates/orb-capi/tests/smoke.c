@@ -1,6 +1,7 @@
 #define _GNU_SOURCE /* memmem */
 /* The binding scenario through the C ABI (plan §14.1): a style into a
- * texture target, a hit test, an edit, a click, events, idle and errors.
+ * texture target, a hit test, an edit, a style image, camera moves, a
+ * click, events, idle and errors.
  * `cargo xtask capi --test` builds it against the installed library. */
 
 #include <math.h>
@@ -48,6 +49,16 @@ static void text_of(void (*f)(const OrbFeature*, DiplomatWrite*), const OrbFeatu
     diplomat_buffer_write_destroy(w);
 }
 
+/* Every pixel of an 8×8 image one colour. */
+static void fill(unsigned char image[8 * 8 * 4], unsigned char r, unsigned char g, unsigned char b) {
+    for (int i = 0; i < 8 * 8; i++) {
+        image[i * 4] = r;
+        image[i * 4 + 1] = g;
+        image[i * 4 + 2] = b;
+        image[i * 4 + 3] = 255;
+    }
+}
+
 static void pixel(OrbTarget* target, int x, int y, unsigned char rgba[4]) {
     CHECK(OrbTarget_read_pixels(target).is_ok);
     DiplomatU8View pixels = OrbTarget_pixels(target);
@@ -73,7 +84,7 @@ static void settle(OrbMap* map, OrbTarget* target, int counts[16]) {
 }
 
 int main(void) {
-    CHECK(OrbRuntime_abi_version() == 2);
+    CHECK(OrbRuntime_abi_version() == 3);
     OrbRuntime_create_result rt = OrbRuntime_create(0);
     CHECK(rt.is_ok);
     OrbTarget* target = OrbTarget_create_texture(rt.ok, SIZE, SIZE, 1.0);
@@ -153,6 +164,50 @@ int main(void) {
     CHECK(shown >= edit.ok);
     pixel(target, SIZE / 2, SIZE / 2, rgba);
     CHECK(rgba[0] == 0 && rgba[1] == 255 && rgba[2] == 0);
+
+    /* A pattern the style lacks is reported; added, it draws, and new
+     * pixels replace it in place. */
+    CHECK(OrbMap_edit(map, view("[[\"setPaintProperty\", \"box\", \"fill-pattern\", \"dot\"]]")).is_ok);
+    memset(counts, 0, sizeof counts);
+    settle(map, target, counts);
+    CHECK(counts[OrbEventKind_StyleImageMissing] == 1);
+    CHECK(!OrbMap_has_image(map, view("dot")));
+    unsigned char image[8 * 8 * 4];
+    fill(image, 255, 255, 0);
+    DiplomatU8View pixels = {image, sizeof image};
+    CHECK(OrbMap_add_image(map, view("dot"), 8, 8, pixels, view("{\"pixelRatio\": 1}")).is_ok);
+    CHECK(OrbMap_has_image(map, view("dot")));
+    OrbMap_add_image_result again = OrbMap_add_image(map, view("dot"), 8, 8, pixels, view(""));
+    CHECK(!again.is_ok && again.err == OrbError_InvalidArgument);
+    settle(map, target, counts);
+    pixel(target, SIZE / 2, SIZE / 2, rgba);
+    CHECK(rgba[0] == 255 && rgba[1] == 255 && rgba[2] == 0);
+    fill(image, 255, 0, 255);
+    CHECK(OrbMap_update_image(map, view("dot"), 8, 8, pixels).is_ok);
+    settle(map, target, counts);
+    pixel(target, SIZE / 2, SIZE / 2, rgba);
+    CHECK(rgba[0] == 255 && rgba[1] == 0 && rgba[2] == 255);
+    CHECK(OrbMap_remove_image(map, view("dot")).is_ok);
+    CHECK(!OrbMap_has_image(map, view("dot")));
+    CHECK(!OrbMap_remove_image(map, view("dot")).is_ok);
+    CHECK(OrbMap_edit(map, view("[[\"setPaintProperty\", \"box\", \"fill-pattern\", null]]")).is_ok);
+    settle(map, target, counts);
+
+    /* Camera moves carry a roll and an elevation; unclamped, the centre
+     * keeps the elevation it is given. */
+    OrbCameraTarget rolled = {NAN, NAN, NAN, NAN, NAN, 30, NAN};
+    OrbMap_jump_to(map, rolled);
+    CHECK(OrbMap_camera(map).roll == 30);
+    OrbMap_set_center_clamped_to_ground(map, false);
+    CHECK(!OrbMap_center_clamped_to_ground(map));
+    OrbMap_set_center_elevation(map, 120);
+    CHECK(OrbMap_camera(map).elevation == 120);
+    OrbCameraTarget level = {NAN, NAN, NAN, NAN, NAN, 0, 0};
+    OrbMap_ease_to(map, level, 50);
+    settle(map, target, counts);
+    camera = OrbMap_camera(map);
+    CHECK(camera.roll == 0 && camera.elevation == 0);
+    OrbMap_set_center_clamped_to_ground(map, true);
 
     /* A click comes back as an event at its position. */
     OrbModifiers none = {false, false, false, false};

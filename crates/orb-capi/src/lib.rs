@@ -310,8 +310,9 @@ mod ffi {
     }
 
     /// The camera: the point at the viewport's centre, the style zoom, the
-    /// bearing (degrees clockwise from north) and the pitch (degrees from
-    /// looking straight down).
+    /// bearing (degrees clockwise from north), the pitch (degrees from
+    /// looking straight down), the roll (degrees about the view axis) and
+    /// the centre's elevation (metres above sea level).
     #[diplomat::attr(contract, thread = "any")]
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub struct OrbCamera {
@@ -320,9 +321,12 @@ mod ffi {
         pub zoom: f64,
         pub bearing: f64,
         pub pitch: f64,
+        pub roll: f64,
+        pub elevation: f64,
     }
 
-    /// Where a camera move ends; NaN keeps a value as it is.
+    /// Where a camera move ends; NaN keeps a value as it is. While the
+    /// centre is clamped to the ground, the terrain takes the elevation.
     #[diplomat::attr(contract, thread = "any")]
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub struct OrbCameraTarget {
@@ -331,6 +335,8 @@ mod ffi {
         pub zoom: f64,
         pub bearing: f64,
         pub pitch: f64,
+        pub roll: f64,
+        pub elevation: f64,
     }
 
     /// A geographic box, degrees.
@@ -722,6 +728,54 @@ mod ffi {
             self.0.edit(&text(commands)).map_err(fail)
         }
 
+        /// Adds an image to the style for icons, text and patterns (GL JS
+        /// `addImage`): straight (not premultiplied) RGBA8 rows, top first,
+        /// and GL JS's options as JSON in sprite metadata's spelling
+        /// (`{"pixelRatio": 2, "sdf": true}`), empty for the defaults. An
+        /// error when the style has an image by that name.
+        #[diplomat::attr(contract, command)]
+        pub fn add_image(
+            &mut self,
+            name: &DiplomatStr,
+            width: u32,
+            height: u32,
+            pixels: &[u8],
+            options: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let image =
+                orb_api::StyleImage::with_options(width, height, pixels.to_vec(), &text(options))
+                    .map_err(|e| fail(orb_api::Error::InvalidArgument(e)))?;
+            self.0.add_image(&text(name), image).map_err(fail)
+        }
+
+        /// Replaces an image's pixels, of the same size (GL JS
+        /// `updateImage`); its options stay.
+        #[diplomat::attr(contract, command)]
+        pub fn update_image(
+            &mut self,
+            name: &DiplomatStr,
+            width: u32,
+            height: u32,
+            pixels: &[u8],
+        ) -> Result<(), OrbError> {
+            self.0
+                .update_image(&text(name), width, height, pixels.to_vec())
+                .map_err(fail)
+        }
+
+        /// Removes an image from the style (GL JS `removeImage`).
+        #[diplomat::attr(contract, command)]
+        pub fn remove_image(&mut self, name: &DiplomatStr) -> Result<(), OrbError> {
+            self.0.remove_image(&text(name)).map_err(fail)
+        }
+
+        /// Whether the style has an image by this name, from its sprites
+        /// or added (GL JS `hasImage`).
+        #[diplomat::attr(contract, snapshot)]
+        pub fn has_image(&self, name: &DiplomatStr) -> bool {
+            self.0.has_image(&text(name))
+        }
+
         /// The style generation, counting loads and edits.
         #[diplomat::attr(contract, snapshot)]
         pub fn generation(&self) -> u64 {
@@ -738,7 +792,29 @@ mod ffi {
                 zoom: self.0.zoom(),
                 bearing: c.bearing,
                 pitch: c.pitch,
+                roll: c.roll,
+                elevation: c.elevation,
             }
+        }
+
+        /// Whether the centre stands on the terrain at rest (GL JS
+        /// `centerClampedToGround`, on by default). Off, it keeps the
+        /// elevation it is given and the camera orbits a point in the air.
+        #[diplomat::attr(contract, command)]
+        pub fn set_center_clamped_to_ground(&mut self, clamped: bool) {
+            self.0.set_center_clamped_to_ground(clamped);
+        }
+
+        #[diplomat::attr(contract, snapshot)]
+        pub fn center_clamped_to_ground(&self) -> bool {
+            self.0.center_clamped_to_ground()
+        }
+
+        /// Puts the centre this many metres above sea level at once (GL JS
+        /// `setCenterElevation`); while clamped, the terrain takes it back.
+        #[diplomat::attr(contract, command)]
+        pub fn set_center_elevation(&mut self, elevation: f64) {
+            self.0.set_center_elevation(elevation);
         }
 
         /// Moves the camera at once.
@@ -992,7 +1068,7 @@ use std::ptr::NonNull;
 use ffi::{OrbError, OrbEventKind};
 
 /// Bumped on every incompatible change to the C ABI while it is 0.x.
-const ABI_VERSION: u32 = 2;
+const ABI_VERSION: u32 = 3;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -1079,6 +1155,8 @@ fn camera_target(t: ffi::OrbCameraTarget) -> orb_api::CameraTarget {
         zoom: some(t.zoom),
         bearing: some(t.bearing),
         pitch: some(t.pitch),
+        roll: some(t.roll),
+        elevation: some(t.elevation),
         ..Default::default()
     }
 }

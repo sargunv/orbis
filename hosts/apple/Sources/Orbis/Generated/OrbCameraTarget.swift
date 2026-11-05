@@ -7,20 +7,25 @@ import Glibc
 #endif
 import OrbisC
 
-/// Where a camera move ends; NaN keeps a value as it is.
+/// Where a camera move ends; NaN keeps a value as it is. While the
+/// centre is clamped to the ground, the terrain takes the elevation.
 public struct OrbCameraTarget: Equatable, Sendable {
     public var lon: Double
     public var lat: Double
     public var zoom: Double
     public var bearing: Double
     public var pitch: Double
+    public var roll: Double
+    public var elevation: Double
 
-    public init(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double) {
+    public init(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double) {
         self.lon = lon
         self.lat = lat
         self.zoom = zoom
         self.bearing = bearing
         self.pitch = pitch
+        self.roll = roll
+        self.elevation = elevation
     }
 
     init(_ c: OrbisC.OrbCameraTarget) {
@@ -29,9 +34,11 @@ public struct OrbCameraTarget: Equatable, Sendable {
         self.zoom = c.zoom
         self.bearing = c.bearing
         self.pitch = c.pitch
+        self.roll = c.roll
+        self.elevation = c.elevation
     }
 
     var c: OrbisC.OrbCameraTarget {
-        OrbisC.OrbCameraTarget(lon: self.lon, lat: self.lat, zoom: self.zoom, bearing: self.bearing, pitch: self.pitch)
+        OrbisC.OrbCameraTarget(lon: self.lon, lat: self.lat, zoom: self.zoom, bearing: self.bearing, pitch: self.pitch, roll: self.roll, elevation: self.elevation)
     }
 }

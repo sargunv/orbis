@@ -26,7 +26,7 @@ let liveStyle = "https://tiles.openfreemap.org/styles/liberty"
 func loadStyle(_ argument: String?, into map: OrbMap) throws {
     switch argument {
     case nil:
-        map.jumpTo(target: OrbCameraTarget(lon: 139.767, lat: 35.681, zoom: 13, bearing: .nan, pitch: .nan))
+        map.jumpTo(target: OrbCameraTarget(lon: 139.767, lat: 35.681, zoom: 13, bearing: .nan, pitch: .nan, roll: .nan, elevation: .nan))
         map.loadStyleUrl(url: liveStyle)
     case "tokyo":
         try map.setStyleJson(json: try tokyoStyle())

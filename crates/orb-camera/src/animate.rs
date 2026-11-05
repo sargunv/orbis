@@ -91,6 +91,11 @@ pub struct CameraTarget {
     pub zoom: Option<f64>,
     pub bearing: Option<f64>,
     pub pitch: Option<f64>,
+    /// Degrees about the view axis (GL JS `roll`).
+    pub roll: Option<f64>,
+    /// Metres the target stands above the surface (GL JS `elevation`).
+    /// While the target is clamped to the ground, the terrain takes it.
+    pub elevation: Option<f64>,
     /// Without a `center`: the point zoom and rotation keep in place.
     pub around: Option<Geodetic>,
     /// Where the center ends up, in pixels from the viewport's middle.
@@ -476,6 +481,7 @@ impl Motion {
                     k,
                 ));
                 next.pitch = lerp(from.pitch, to.pitch, k);
+                next.roll = wrap_bearing(lerp(from.roll, nearest_bearing(from.roll, to.roll), k));
                 next.elevation = lerp(from.elevation, to.elevation, k);
                 match around {
                     Some((ground, at)) => {
@@ -517,6 +523,7 @@ impl Motion {
                     k,
                 ));
                 next.pitch = lerp(from.pitch, to.pitch, k);
+                next.roll = wrap_bearing(lerp(from.roll, nearest_bearing(from.roll, to.roll), k));
                 next.elevation = lerp(from.elevation, to.elevation, k);
                 let start = from.target_world(projection);
                 let world_per_px = next.world_per_px(projection);

@@ -52,6 +52,12 @@ final class CallbackBox {
     }
 }
 
+func withSliceView<R>(_ items: [UInt8], _ body: (OrbisC.DiplomatU8View) -> R) -> R {
+    items.withUnsafeBufferPointer { buffer in
+        body(OrbisC.DiplomatU8View(data: buffer.baseAddress, len: buffer.count))
+    }
+}
+
 func copySlice(_ view: OrbisC.DiplomatU8View) -> [UInt8] {
     guard let data = view.data, view.len > 0 else { return [] }
     return UnsafeBufferPointer(start: data, count: view.len).map { $0 }

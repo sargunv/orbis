@@ -11,7 +11,9 @@ use orb_camera::{
 };
 use orb_geo::Geodetic;
 use orb_interact::{Button, Feel, Input, InteractEvent, Interaction};
-use orb_runtime::{CameraState, FrameReport, Hit, MapEvent, TargetFormat, Transaction, Viewport};
+use orb_runtime::{
+    CameraState, FrameReport, Hit, MapEvent, StyleImage, TargetFormat, Transaction, Viewport,
+};
 
 use crate::{Error, Runtime, Shared, Target};
 
@@ -202,11 +204,55 @@ impl Map {
     /// generation from which frames show it.
     pub fn edit(&mut self, commands: &str) -> Result<u64, Error> {
         let tx = Transaction::from_commands(commands).map_err(Error::InvalidArgument)?;
-        if self.map.style_doc().is_none() {
-            return Err(Error::InvalidState("no style is loaded yet".into()));
-        }
+        self.styled()?;
         self.dirty = true;
         self.map.edit(&tx).map_err(Error::InvalidArgument)
+    }
+
+    /// Adds an image to the style for icons, text and patterns (GL JS
+    /// `addImage`); an error when it has one by that name.
+    pub fn add_image(&mut self, name: &str, image: StyleImage) -> Result<(), Error> {
+        self.styled()?;
+        self.dirty = true;
+        self.map
+            .add_image(name, image)
+            .map_err(Error::InvalidArgument)
+    }
+
+    /// Replaces an image's straight RGBA8 pixels, of the same size (GL JS
+    /// `updateImage`).
+    pub fn update_image(
+        &mut self,
+        name: &str,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    ) -> Result<(), Error> {
+        self.styled()?;
+        self.dirty = true;
+        self.map
+            .update_image(name, width, height, pixels)
+            .map_err(Error::InvalidArgument)
+    }
+
+    /// Removes an image from the style (GL JS `removeImage`).
+    pub fn remove_image(&mut self, name: &str) -> Result<(), Error> {
+        self.styled()?;
+        self.dirty = true;
+        self.map.remove_image(name).map_err(Error::InvalidArgument)
+    }
+
+    /// Whether the style has an image by this name, from its sprites or
+    /// added (GL JS `hasImage`).
+    pub fn has_image(&self, name: &str) -> bool {
+        self.map.has_image(name)
+    }
+
+    fn styled(&self) -> Result<(), Error> {
+        match self.map.style_doc() {
+            Some(_) => Ok(()),
+            None => Err(Error::InvalidState("no style is loaded yet".into())),
+        }
     }
 
     /// The style generation, counting loads and edits.
@@ -244,6 +290,26 @@ impl Map {
     pub fn fly_to(&mut self, target: &CameraTarget, options: &FlyOptions) -> AnimationId {
         self.dirty = true;
         self.camera.fly_to(target, options, self.runtime.now())
+    }
+
+    /// Whether the camera's target stands on the terrain at rest (GL JS
+    /// `centerClampedToGround`, on by default). Off, it keeps the
+    /// elevation it is given, and the camera orbits a point in the air.
+    pub fn set_center_clamped_to_ground(&mut self, clamped: bool) {
+        self.camera.set_center_clamped_to_ground(clamped);
+        self.map.set_center_clamped_to_ground(clamped);
+        self.dirty = true;
+    }
+
+    pub fn center_clamped_to_ground(&self) -> bool {
+        self.camera.center_clamped_to_ground()
+    }
+
+    /// Puts the target this many metres above sea level at once (GL JS
+    /// `setCenterElevation`); while clamped, the terrain takes it back.
+    pub fn set_center_elevation(&mut self, elevation: f64) {
+        self.camera.set_center_elevation(elevation);
+        self.dirty = true;
     }
 
     /// The camera that shows `bounds` in the current viewport.
@@ -392,6 +458,7 @@ impl Map {
                     zoom: Some(style.zoom(self.camera.projection())),
                     bearing: Some(style.bearing),
                     pitch: Some(style.pitch),
+                    roll: Some(style.roll),
                     ..CameraTarget::default()
                 });
                 jumped = true;

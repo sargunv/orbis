@@ -22,12 +22,15 @@ const PHASES = ["start", "", "end"];
 function targetArray(o: CameraOptions): Float64Array {
   return new Float64Array([
     ...(o.center ?? NAN2), o.zoom ?? NaN, o.bearing ?? NaN, o.pitch ?? NaN,
-    ...(o.around ?? NAN2), ...(o.offset ?? [0, 0]),
+    ...(o.around ?? NAN2), ...(o.offset ?? [0, 0]), o.roll ?? NaN, o.elevation ?? NaN,
   ]);
 }
 function targetFrom(a: ArrayLike<number>): CameraOptions {
   const known = (v: number) => (Number.isNaN(v) ? undefined : v);
-  const target: CameraOptions = { center: [a[0], a[1]], zoom: known(a[2]), bearing: known(a[3]), pitch: known(a[4]) };
+  const target: CameraOptions = {
+    center: [a[0], a[1]], zoom: known(a[2]), bearing: known(a[3]), pitch: known(a[4]),
+    roll: known(a[9]), elevation: known(a[10]),
+  };
   for (const key of Object.keys(target) as (keyof CameraOptions)[]) if (target[key] === undefined) delete target[key];
   return target;
 }
@@ -51,8 +54,24 @@ export class CameraControl {
 
   /** The camera now: synchronous, on this thread, wherever the map draws. */
   get current(): Camera {
-    const [lon, lat, , bearing, pitch, , zoom] = this.#ui.camera();
-    return { center: [lon, lat], zoom, bearing, pitch };
+    const [lon, lat, , bearing, pitch, , zoom, elevation, roll] = this.#ui.camera();
+    return { center: [lon, lat], zoom, bearing, pitch, roll, elevation };
+  }
+
+  /** Whether the center stands on the terrain at rest (GL JS
+   * `centerClampedToGround`, true by default). Off, it keeps the elevation
+   * it is given, and the camera orbits a point in the air. */
+  get centerClampedToGround(): boolean { return this.#ui.centerClampedToGround(); }
+  set centerClampedToGround(clamped: boolean) {
+    this.#ui.setCenterClampedToGround(clamped);
+    this.#changed();
+  }
+
+  /** Puts the center this many metres above sea level at once (GL JS
+   * `setCenterElevation`); while clamped to the ground, the terrain takes it back. */
+  setCenterElevation(elevation: number): void {
+    this.#ui.setCenterElevation(elevation);
+    this.#changed();
   }
 
   /** Whether an animation or a gesture is moving the camera. */

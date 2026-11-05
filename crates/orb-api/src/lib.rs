@@ -31,7 +31,7 @@ pub use orb_hal::Tier;
 pub use orb_hal_gl::egl::EglWindow;
 pub use orb_hal_wgpu::RawSurface;
 pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
-pub use orb_runtime::{CameraState, FrameReport, Hit, MapEvent};
+pub use orb_runtime::{CameraState, FrameReport, Hit, MapEvent, StyleImage};
 pub use target::Surface;
 pub use target::Target;
 

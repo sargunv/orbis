@@ -3,8 +3,9 @@ package dev.orbis
 
 /**
  * The camera: the point at the viewport's centre, the style zoom, the
- * bearing (degrees clockwise from north) and the pitch (degrees from
- * looking straight down).
+ * bearing (degrees clockwise from north), the pitch (degrees from
+ * looking straight down), the roll (degrees about the view axis) and
+ * the centre's elevation (metres above sea level).
  */
 data class OrbCamera(
     val lon: Double,
@@ -12,4 +13,6 @@ data class OrbCamera(
     val zoom: Double,
     val bearing: Double,
     val pitch: Double,
+    val roll: Double,
+    val elevation: Double,
 )

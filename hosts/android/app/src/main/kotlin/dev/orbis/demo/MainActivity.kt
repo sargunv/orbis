@@ -94,7 +94,7 @@ class MainActivity : Activity() {
                 .replace("\"./data/", "\"file://${data.path}/")
             view.map.setStyleJson(style)
         } else {
-            view.map.jumpTo(OrbCameraTarget(139.767, 35.681, 13.0, Double.NaN, Double.NaN))
+            view.map.jumpTo(OrbCameraTarget(139.767, 35.681, 13.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN))
             view.map.loadStyleUrl("https://tiles.openfreemap.org/styles/liberty")
         }
 

@@ -1,6 +1,6 @@
 // The binding scenario (plan §14.1) through the generated Swift: a style
-// into a texture target, a hit test, a query, an edit, a click, events,
-// idle and errors, as crates/orb-api/tests/api.rs and the C smoke test do.
+// into a texture target, a hit test, a query, an edit, a style image,
+// camera moves, a click, events, idle and errors, as crates/orb-api/tests/api.rs and the C smoke test do.
 
 import Foundation
 import Orbis
@@ -41,8 +41,13 @@ private func settle(_ map: OrbMap, _ target: OrbTarget) throws -> [OrbEvent] {
     return events
 }
 
+/// An 8×8 image of one opaque colour.
+private func solid(_ r: UInt8, _ g: UInt8, _ b: UInt8) -> [UInt8] {
+    Array(repeating: [r, g, b, 255], count: 8 * 8).flatMap { $0 }
+}
+
 @Test func scenario() throws {
-    #expect(OrbRuntime.abiVersion() == 2)
+    #expect(OrbRuntime.abiVersion() == 3)
     let runtime = try OrbRuntime.create(jobThreads: 0)
     let target = OrbTarget.createTexture(runtime: runtime, width: size, height: size, scale: 1)
     let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
@@ -87,6 +92,41 @@ private func settle(_ map: OrbMap, _ target: OrbTarget) throws -> [OrbEvent] {
     }
     #expect(shown >= generation)
     #expect(try pixel(target, 32, 32) == [0, 255, 0, 255])
+
+    // A pattern the style lacks is reported; added, it draws, and new
+    // pixels replace it in place.
+    _ = try map.edit(commands: #"[["setPaintProperty", "box", "fill-pattern", "dot"]]"#)
+    #expect(try settle(map, target).contains { $0.kind() == .styleImageMissing && $0.text() == "dot" })
+    #expect(!map.hasImage(name: "dot"))
+    try map.addImage(name: "dot", width: 8, height: 8, pixels: solid(255, 255, 0), options: #"{"pixelRatio": 1}"#)
+    #expect(map.hasImage(name: "dot"))
+    let again = #expect(throws: OrbErrorFailure.self) {
+        try map.addImage(name: "dot", width: 8, height: 8, pixels: solid(0, 0, 0), options: "")
+    }
+    #expect(again?.error == .invalidArgument)
+    _ = try settle(map, target)
+    #expect(try pixel(target, 32, 32) == [255, 255, 0, 255])
+    try map.updateImage(name: "dot", width: 8, height: 8, pixels: solid(255, 0, 255))
+    _ = try settle(map, target)
+    #expect(try pixel(target, 32, 32) == [255, 0, 255, 255])
+    try map.removeImage(name: "dot")
+    #expect(!map.hasImage(name: "dot"))
+    #expect(throws: OrbErrorFailure.self) { try map.removeImage(name: "dot") }
+    _ = try map.edit(commands: #"[["setPaintProperty", "box", "fill-pattern", null]]"#)
+    _ = try settle(map, target)
+
+    // Camera moves carry a roll and an elevation; unclamped, the centre
+    // keeps the elevation it is given.
+    map.jumpTo(target: OrbCameraTarget(lon: .nan, lat: .nan, zoom: .nan, bearing: .nan, pitch: .nan, roll: 30, elevation: .nan))
+    #expect(map.camera().roll == 30)
+    map.setCenterClampedToGround(clamped: false)
+    #expect(!map.centerClampedToGround())
+    map.setCenterElevation(elevation: 120)
+    #expect(map.camera().elevation == 120)
+    _ = map.easeTo(target: OrbCameraTarget(lon: .nan, lat: .nan, zoom: .nan, bearing: .nan, pitch: .nan, roll: 0, elevation: 0), durationMs: 50)
+    _ = try settle(map, target)
+    #expect(map.camera().roll == 0 && map.camera().elevation == 0)
+    map.setCenterClampedToGround(clamped: true)
 
     let none = OrbModifiers(shift: false, ctrl: false, alt: false, meta: false)
     _ = map.pointerDown(id: 1, kind: .mouse, button: .primary, x: 10, y: 20, modifiers: none)

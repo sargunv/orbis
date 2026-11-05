@@ -84,6 +84,54 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Adds an image to the style for icons, text and patterns (GL JS
+     * `addImage`): straight (not premultiplied) RGBA8 rows, top first,
+     * and GL JS's options as JSON in sprite metadata's spelling
+     * (`{"pixelRatio": 2, "sdf": true}`), empty for the defaults. An
+     * error when the style has an image by that name.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun addImage(name: String, width: UInt, height: UInt, pixels: ByteArray, options: String) {
+        OrbisNative.orbMapAddImage(live(), name.encodeToByteArray(), width.toInt(), height.toInt(), pixels, options.encodeToByteArray())
+    }
+
+    /**
+     * Replaces an image's pixels, of the same size (GL JS
+     * `updateImage`); its options stay.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun updateImage(name: String, width: UInt, height: UInt, pixels: ByteArray) {
+        OrbisNative.orbMapUpdateImage(live(), name.encodeToByteArray(), width.toInt(), height.toInt(), pixels)
+    }
+
+    /**
+     * Removes an image from the style (GL JS `removeImage`).
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun removeImage(name: String) {
+        OrbisNative.orbMapRemoveImage(live(), name.encodeToByteArray())
+    }
+
+    /**
+     * Whether the style has an image by this name, from its sprites
+     * or added (GL JS `hasImage`).
+     *
+     * Contract: `snapshot`.
+     */
+    fun hasImage(name: String): Boolean {
+        return OrbisNative.orbMapHasImage(live(), name.encodeToByteArray())
+    }
+
+    /**
      * The style generation, counting loads and edits.
      *
      * Contract: `snapshot`.
@@ -102,12 +150,40 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Whether the centre stands on the terrain at rest (GL JS
+     * `centerClampedToGround`, on by default). Off, it keeps the
+     * elevation it is given and the camera orbits a point in the air.
+     *
+     * Contract: `command`.
+     */
+    fun setCenterClampedToGround(clamped: Boolean) {
+        OrbisNative.orbMapSetCenterClampedToGround(live(), clamped)
+    }
+
+    /**
+     * Contract: `snapshot`.
+     */
+    fun centerClampedToGround(): Boolean {
+        return OrbisNative.orbMapCenterClampedToGround(live())
+    }
+
+    /**
+     * Puts the centre this many metres above sea level at once (GL JS
+     * `setCenterElevation`); while clamped, the terrain takes it back.
+     *
+     * Contract: `command`.
+     */
+    fun setCenterElevation(elevation: Double) {
+        OrbisNative.orbMapSetCenterElevation(live(), elevation)
+    }
+
+    /**
      * Moves the camera at once.
      *
      * Contract: `command`.
      */
     fun jumpTo(target: OrbCameraTarget) {
-        OrbisNative.orbMapJumpTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch)
+        OrbisNative.orbMapJumpTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, target.roll, target.elevation)
     }
 
     /**
@@ -117,7 +193,7 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      * Contract: `command`.
      */
     fun easeTo(target: OrbCameraTarget, durationMs: Double): ULong {
-        return OrbisNative.orbMapEaseTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, durationMs).toULong()
+        return OrbisNative.orbMapEaseTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, target.roll, target.elevation, durationMs).toULong()
     }
 
     /**
@@ -127,7 +203,7 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      * Contract: `command`.
      */
     fun flyTo(target: OrbCameraTarget, durationMs: Double): ULong {
-        return OrbisNative.orbMapFlyTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, durationMs).toULong()
+        return OrbisNative.orbMapFlyTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, target.roll, target.elevation, durationMs).toULong()
     }
 
     /**

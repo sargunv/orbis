@@ -2,7 +2,8 @@
 package dev.orbis
 
 /**
- * Where a camera move ends; NaN keeps a value as it is.
+ * Where a camera move ends; NaN keeps a value as it is. While the
+ * centre is clamped to the ground, the terrain takes the elevation.
  */
 data class OrbCameraTarget(
     val lon: Double,
@@ -10,4 +11,6 @@ data class OrbCameraTarget(
     val zoom: Double,
     val bearing: Double,
     val pitch: Double,
+    val roll: Double,
+    val elevation: Double,
 )

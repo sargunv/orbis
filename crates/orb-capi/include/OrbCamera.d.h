@@ -17,6 +17,8 @@ typedef struct OrbCamera {
   double zoom;
   double bearing;
   double pitch;
+  double roll;
+  double elevation;
 } OrbCamera;
 
 typedef struct OrbCamera_option {union { OrbCamera ok; }; bool is_ok; } OrbCamera_option;

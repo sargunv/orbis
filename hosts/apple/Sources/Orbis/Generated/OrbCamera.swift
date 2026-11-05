@@ -8,21 +8,26 @@ import Glibc
 import OrbisC
 
 /// The camera: the point at the viewport's centre, the style zoom, the
-/// bearing (degrees clockwise from north) and the pitch (degrees from
-/// looking straight down).
+/// bearing (degrees clockwise from north), the pitch (degrees from
+/// looking straight down), the roll (degrees about the view axis) and
+/// the centre's elevation (metres above sea level).
 public struct OrbCamera: Equatable, Sendable {
     public var lon: Double
     public var lat: Double
     public var zoom: Double
     public var bearing: Double
     public var pitch: Double
+    public var roll: Double
+    public var elevation: Double
 
-    public init(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double) {
+    public init(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double) {
         self.lon = lon
         self.lat = lat
         self.zoom = zoom
         self.bearing = bearing
         self.pitch = pitch
+        self.roll = roll
+        self.elevation = elevation
     }
 
     init(_ c: OrbisC.OrbCamera) {
@@ -31,9 +36,11 @@ public struct OrbCamera: Equatable, Sendable {
         self.zoom = c.zoom
         self.bearing = c.bearing
         self.pitch = c.pitch
+        self.roll = c.roll
+        self.elevation = c.elevation
     }
 
     var c: OrbisC.OrbCamera {
-        OrbisC.OrbCamera(lon: self.lon, lat: self.lat, zoom: self.zoom, bearing: self.bearing, pitch: self.pitch)
+        OrbisC.OrbCamera(lon: self.lon, lat: self.lat, zoom: self.zoom, bearing: self.bearing, pitch: self.pitch, roll: self.roll, elevation: self.elevation)
     }
 }

@@ -37,8 +37,8 @@ window.scenario = (async () => {
     thread: params.get("thread") ?? undefined, renderer: params.get("renderer") ?? undefined,
   });
   const generations = [];
-  for (const type of ["styleload", "load", "idle", "movestart", "moveend", "click", "error"]) {
-    map.on(type, (e) => events.push({ type, ...(type === "click" ? { point: e.point, lngLat: e.lngLat } : {}) }));
+  for (const type of ["styleload", "load", "idle", "movestart", "moveend", "click", "error", "styleimagemissing"]) {
+    map.on(type, (e) => events.push({ type, ...(type === "click" ? { point: e.point, lngLat: e.lngLat } : {}), ...(e.id ? { id: e.id } : {}) }));
   }
   map.on("render", (stats) => { renders++; generations.push(stats.generation); });
   await map.once("idle");
@@ -48,6 +48,8 @@ window.scenario = (async () => {
     /** The events since the last call. */
     events: () => events.splice(0),
     idle: () => (map.stats?.idle && !map.camera.moving ? Promise.resolve() : map.once("idle")),
+    /** Resolves once the next frame draws and the map idles again. */
+    drawn: () => map.once("render").then(() => (map.stats?.idle ? undefined : map.once("idle"))),
     /** Resolves once a frame shows `generation`. */
     shows: (generation) => new Promise((resolve) => {
       const check = () => (generations.some((g) => g >= generation) ? resolve() : setTimeout(check, 10));

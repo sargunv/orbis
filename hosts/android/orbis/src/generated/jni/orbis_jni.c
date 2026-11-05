@@ -107,8 +107,8 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     if (!function0) return JNI_ERR;
     g_function0_invoke = (*env)->GetMethodID(env, function0, "invoke", "()Ljava/lang/Object;");
     g_new_OrbBounds = (*env)->GetStaticMethodID(env, g_native, "newOrbBounds", "(DDDD)Ldev/orbis/OrbBounds;");
-    g_new_OrbCamera = (*env)->GetStaticMethodID(env, g_native, "newOrbCamera", "(DDDDD)Ldev/orbis/OrbCamera;");
-    g_new_OrbCameraTarget = (*env)->GetStaticMethodID(env, g_native, "newOrbCameraTarget", "(DDDDD)Ldev/orbis/OrbCameraTarget;");
+    g_new_OrbCamera = (*env)->GetStaticMethodID(env, g_native, "newOrbCamera", "(DDDDDDD)Ldev/orbis/OrbCamera;");
+    g_new_OrbCameraTarget = (*env)->GetStaticMethodID(env, g_native, "newOrbCameraTarget", "(DDDDDDD)Ldev/orbis/OrbCameraTarget;");
     g_new_OrbFrame = (*env)->GetStaticMethodID(env, g_native, "newOrbFrame", "(ZJZZIIII)Ldev/orbis/OrbFrame;");
     g_new_OrbLngLat = (*env)->GetStaticMethodID(env, g_native, "newOrbLngLat", "(DDZ)Ldev/orbis/OrbLngLat;");
     g_new_OrbModifiers = (*env)->GetStaticMethodID(env, g_native, "newOrbModifiers", "(ZZZZ)Ldev/orbis/OrbModifiers;");
@@ -325,6 +325,71 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapEdit(JNIEnv* env, jclas
     return (jlong)(result.ok);
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapAddImage(JNIEnv* env, jclass cls, jlong self, jbyteArray name, jint width, jint height, jbyteArray pixels, jbyteArray options) {
+    (void)env;
+    (void)cls;
+    jbyte* name_bytes = (*env)->GetByteArrayElements(env, name, NULL);
+    if (!name_bytes) return;
+    DiplomatStringView name_view = { (const char*)name_bytes, (size_t)(*env)->GetArrayLength(env, name) };
+    jbyte* pixels_items = (*env)->GetByteArrayElements(env, pixels, NULL);
+    if (!pixels_items) return;
+    DiplomatU8View pixels_view = { (const uint8_t*)pixels_items, (size_t)(*env)->GetArrayLength(env, pixels) };
+    jbyte* options_bytes = (*env)->GetByteArrayElements(env, options, NULL);
+    if (!options_bytes) return;
+    DiplomatStringView options_view = { (const char*)options_bytes, (size_t)(*env)->GetArrayLength(env, options) };
+    OrbMap_add_image_result result = OrbMap_add_image((OrbMap*)(intptr_t)self, name_view, (uint32_t)(width), (uint32_t)(height), pixels_view, options_view);
+    (*env)->ReleaseByteArrayElements(env, name, name_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, pixels, pixels_items, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, options, options_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapUpdateImage(JNIEnv* env, jclass cls, jlong self, jbyteArray name, jint width, jint height, jbyteArray pixels) {
+    (void)env;
+    (void)cls;
+    jbyte* name_bytes = (*env)->GetByteArrayElements(env, name, NULL);
+    if (!name_bytes) return;
+    DiplomatStringView name_view = { (const char*)name_bytes, (size_t)(*env)->GetArrayLength(env, name) };
+    jbyte* pixels_items = (*env)->GetByteArrayElements(env, pixels, NULL);
+    if (!pixels_items) return;
+    DiplomatU8View pixels_view = { (const uint8_t*)pixels_items, (size_t)(*env)->GetArrayLength(env, pixels) };
+    OrbMap_update_image_result result = OrbMap_update_image((OrbMap*)(intptr_t)self, name_view, (uint32_t)(width), (uint32_t)(height), pixels_view);
+    (*env)->ReleaseByteArrayElements(env, name, name_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, pixels, pixels_items, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapRemoveImage(JNIEnv* env, jclass cls, jlong self, jbyteArray name) {
+    (void)env;
+    (void)cls;
+    jbyte* name_bytes = (*env)->GetByteArrayElements(env, name, NULL);
+    if (!name_bytes) return;
+    DiplomatStringView name_view = { (const char*)name_bytes, (size_t)(*env)->GetArrayLength(env, name) };
+    OrbMap_remove_image_result result = OrbMap_remove_image((OrbMap*)(intptr_t)self, name_view);
+    (*env)->ReleaseByteArrayElements(env, name, name_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapHasImage(JNIEnv* env, jclass cls, jlong self, jbyteArray name) {
+    (void)env;
+    (void)cls;
+    jbyte* name_bytes = (*env)->GetByteArrayElements(env, name, NULL);
+    if (!name_bytes) return 0;
+    DiplomatStringView name_view = { (const char*)name_bytes, (size_t)(*env)->GetArrayLength(env, name) };
+    bool result = OrbMap_has_image((const OrbMap*)(intptr_t)self, name_view);
+    (*env)->ReleaseByteArrayElements(env, name, name_bytes, JNI_ABORT);
+    return (result) ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapGeneration(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
@@ -336,26 +401,45 @@ JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapCamera(JNIEnv* env, j
     (void)env;
     (void)cls;
     OrbCamera result = OrbMap_camera((const OrbMap*)(intptr_t)self);
-    return (*env)->CallStaticObjectMethod(env, g_native, g_new_OrbCamera, (jdouble)((result).lon), (jdouble)((result).lat), (jdouble)((result).zoom), (jdouble)((result).bearing), (jdouble)((result).pitch));
+    return (*env)->CallStaticObjectMethod(env, g_native, g_new_OrbCamera, (jdouble)((result).lon), (jdouble)((result).lat), (jdouble)((result).zoom), (jdouble)((result).bearing), (jdouble)((result).pitch), (jdouble)((result).roll), (jdouble)((result).elevation));
 }
 
-JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapJumpTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch) {
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetCenterClampedToGround(JNIEnv* env, jclass cls, jlong self, jboolean clamped) {
     (void)env;
     (void)cls;
-    OrbMap_jump_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch) });
+    OrbMap_set_center_clamped_to_ground((OrbMap*)(intptr_t)self, (bool)(clamped));
 }
 
-JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapEaseTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble durationMs) {
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapCenterClampedToGround(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
-    uint64_t result = OrbMap_ease_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch) }, (double)(durationMs));
+    bool result = OrbMap_center_clamped_to_ground((const OrbMap*)(intptr_t)self);
+    return (result) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetCenterElevation(JNIEnv* env, jclass cls, jlong self, jdouble elevation) {
+    (void)env;
+    (void)cls;
+    OrbMap_set_center_elevation((OrbMap*)(intptr_t)self, (double)(elevation));
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapJumpTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble target_roll, jdouble target_elevation) {
+    (void)env;
+    (void)cls;
+    OrbMap_jump_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch), .roll = (double)(target_roll), .elevation = (double)(target_elevation) });
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapEaseTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble target_roll, jdouble target_elevation, jdouble durationMs) {
+    (void)env;
+    (void)cls;
+    uint64_t result = OrbMap_ease_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch), .roll = (double)(target_roll), .elevation = (double)(target_elevation) }, (double)(durationMs));
     return (jlong)(result);
 }
 
-JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapFlyTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble durationMs) {
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapFlyTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble target_roll, jdouble target_elevation, jdouble durationMs) {
     (void)env;
     (void)cls;
-    uint64_t result = OrbMap_fly_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch) }, (double)(durationMs));
+    uint64_t result = OrbMap_fly_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch), .roll = (double)(target_roll), .elevation = (double)(target_elevation) }, (double)(durationMs));
     return (jlong)(result);
 }
 

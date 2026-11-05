@@ -70,7 +70,7 @@ export const ackIdle = (ack: FrameAck) => ack.stats[IDLE] !== 0;
 export const ackLost = (ack: FrameAck) => ack.stats[LOST] !== 0;
 export const ackGeneration = (ack: FrameAck) => ack.stats[GENERATION];
 /** The frame's camera: [lon, lat, resolution, bearing, pitch, fov, zoom, elevation, roll]. */
-export const ackCamera = (ack: FrameAck) => ack.stats.subarray(CAMERA, CAMERA + 8);
+export const ackCamera = (ack: FrameAck) => ack.stats.subarray(CAMERA, CAMERA + 9);
 
 /** A frame's counters as the package reports them. */
 export function frameStats(ack: FrameAck): FrameStats {

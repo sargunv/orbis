@@ -1301,7 +1301,7 @@ impl Map {
                 style.painted = None;
             }
             let mut images = self.services.images.0.lock().expect("images poisoned");
-            write_paint(
+            let missing = write_paint(
                 gpu,
                 renderer,
                 (style, overlay.as_ref().unwrap_or(worker.plan())),
@@ -1311,6 +1311,9 @@ impl Map {
                 self.lights.as_ref(),
             );
             drop(images);
+            for name in missing {
+                self.events.push(MapEvent::StyleImageMissing { name });
+            }
             style.symbol_tiles.clear();
             self.crossfade = crossfade;
         }
@@ -3825,9 +3828,10 @@ fn write_paint(
     crossfade: Crossfade,
     atlas: &mut ImageAtlas,
     lights: Option<&orb_v8::Lights>,
-) {
+) -> Vec<String> {
+    let mut missing = Vec::new();
     if style.painted == Some((zoom, bearing)) && style.painted_fade == Some(crossfade) {
-        return;
+        return missing;
     }
     style.painted = Some((zoom, bearing));
     style.painted_fade = Some(crossfade);
@@ -3984,6 +3988,20 @@ fn write_paint(
             zoom,
             crossfade,
         );
+        // A pattern the same for every feature is the node's paint: the
+        // style lacking it is reported here, as tiles report theirs.
+        if let Some(pattern) = plan
+            .pattern(node)
+            .filter(|p| !matches!(p.kind(), orb_expr::Kind::Source | orb_expr::Kind::Composite))
+            && visible
+            && style.sprites_loading == 0
+            && let Some(name) = pattern.evaluate(zoom.floor())
+            && !name.is_empty()
+            && !style.icons.contains(&name)
+            && style.reported_missing.insert(name.clone())
+        {
+            missing.push(name);
+        }
         let paint = pattern_paint(
             paint,
             plan.pattern(node),
@@ -4024,6 +4042,7 @@ fn write_paint(
             );
         }
     }
+    missing
 }
 
 /// The renderer's blend for a v8 layer blend.

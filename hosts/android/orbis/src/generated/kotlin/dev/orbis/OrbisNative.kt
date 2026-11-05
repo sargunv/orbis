@@ -90,19 +90,40 @@ internal object OrbisNative {
     external fun orbMapEdit(self: Long, commands: ByteArray): Long
 
     @JvmStatic
+    external fun orbMapAddImage(self: Long, name: ByteArray, width: Int, height: Int, pixels: ByteArray, options: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapUpdateImage(self: Long, name: ByteArray, width: Int, height: Int, pixels: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapRemoveImage(self: Long, name: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapHasImage(self: Long, name: ByteArray): Boolean
+
+    @JvmStatic
     external fun orbMapGeneration(self: Long): Long
 
     @JvmStatic
     external fun orbMapCamera(self: Long): OrbCamera
 
     @JvmStatic
-    external fun orbMapJumpTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double): Unit
+    external fun orbMapSetCenterClampedToGround(self: Long, clamped: Boolean): Unit
 
     @JvmStatic
-    external fun orbMapEaseTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, durationMs: Double): Long
+    external fun orbMapCenterClampedToGround(self: Long): Boolean
 
     @JvmStatic
-    external fun orbMapFlyTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, durationMs: Double): Long
+    external fun orbMapSetCenterElevation(self: Long, elevation: Double): Unit
+
+    @JvmStatic
+    external fun orbMapJumpTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, target_roll: Double, target_elevation: Double): Unit
+
+    @JvmStatic
+    external fun orbMapEaseTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, target_roll: Double, target_elevation: Double, durationMs: Double): Long
+
+    @JvmStatic
+    external fun orbMapFlyTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, target_roll: Double, target_elevation: Double, durationMs: Double): Long
 
     @JvmStatic
     external fun orbMapFitBounds(self: Long, bounds_west: Double, bounds_south: Double, bounds_east: Double, bounds_north: Double, padding: Double, durationMs: Double): Long
@@ -213,10 +234,10 @@ internal object OrbisNative {
     fun newOrbBounds(west: Double, south: Double, east: Double, north: Double): OrbBounds = OrbBounds(west, south, east, north)
 
     @JvmStatic
-    fun newOrbCamera(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double): OrbCamera = OrbCamera(lon, lat, zoom, bearing, pitch)
+    fun newOrbCamera(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double): OrbCamera = OrbCamera(lon, lat, zoom, bearing, pitch, roll, elevation)
 
     @JvmStatic
-    fun newOrbCameraTarget(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double): OrbCameraTarget = OrbCameraTarget(lon, lat, zoom, bearing, pitch)
+    fun newOrbCameraTarget(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double): OrbCameraTarget = OrbCameraTarget(lon, lat, zoom, bearing, pitch, roll, elevation)
 
     @JvmStatic
     fun newOrbFrame(drawn: Boolean, generation: Long, idle: Boolean, loaded: Boolean, tiles_drawn: Int, tiles_loading: Int, draws: Int, dispatches: Int): OrbFrame = OrbFrame(drawn, generation.toULong(), idle, loaded, tiles_drawn.toUInt(), tiles_loading.toUInt(), draws.toUInt(), dispatches.toUInt())

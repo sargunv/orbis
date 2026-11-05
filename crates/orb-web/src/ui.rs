@@ -4,9 +4,9 @@
 //! on this thread or in the render worker.
 //!
 //! Cameras cross as `[lon, lat, resolution, bearing, pitch, fov, zoom,
-//! elevation]`, elevation optional;
+//! elevation, roll]`, elevation and roll optional;
 //! camera targets as `[lon, lat, zoom, bearing, pitch, aroundLon,
-//! aroundLat, offsetX, offsetY]` with NaN for what stays.
+//! aroundLat, offsetX, offsetY, roll, elevation]` with NaN for what stays.
 
 use glam::DVec2;
 use orb_camera::{
@@ -21,7 +21,7 @@ use orb_runtime::{HitIndex, Viewport};
 use wasm_bindgen::prelude::*;
 
 /// A camera as `[lon, lat, resolution, bearing, pitch, fov, zoom,
-/// elevation]`, its style zoom on `projection`'s plane.
+/// elevation, roll]`, its style zoom on `projection`'s plane.
 pub(crate) fn camera_array(camera: &CameraState, projection: &orb_crs::Projection) -> Vec<f64> {
     vec![
         camera.target.lon,
@@ -66,9 +66,11 @@ fn target_from(words: &[f64]) -> Result<CameraTarget, JsError> {
         around_lat,
         offset_x,
         offset_y,
+        roll,
+        elevation,
     ] = *words
     else {
-        return Err(JsError::new("a camera target has 9 numbers"));
+        return Err(JsError::new("a camera target has 11 numbers"));
     };
     let point = |lon: f64, lat: f64| {
         known(lon)
@@ -80,6 +82,8 @@ fn target_from(words: &[f64]) -> Result<CameraTarget, JsError> {
         zoom: known(zoom),
         bearing: known(bearing),
         pitch: known(pitch),
+        roll: known(roll),
+        elevation: known(elevation),
         around: point(around_lon, around_lat),
         offset: DVec2::new(
             known(offset_x).unwrap_or(0.0),
@@ -105,6 +109,8 @@ fn target_array(target: &CameraTarget) -> Vec<f64> {
         alat,
         target.offset.x,
         target.offset.y,
+        target.roll.unwrap_or(f64::NAN),
+        target.elevation.unwrap_or(f64::NAN),
     ]
 }
 
@@ -372,7 +378,8 @@ impl UiRole {
         out
     }
 
-    /// The camera: `[lon, lat, resolution, bearing, pitch, fov, zoom]`.
+    /// The camera: `[lon, lat, resolution, bearing, pitch, fov, zoom,
+    /// elevation, roll]`.
     pub fn camera(&self) -> Vec<f64> {
         camera_array(self.camera.state(), self.camera.projection())
     }
@@ -409,9 +416,29 @@ impl UiRole {
             zoom: Some(style.zoom(self.camera.projection())),
             bearing: Some(style.bearing),
             pitch: Some(style.pitch),
+            roll: Some(style.roll),
             ..CameraTarget::default()
         });
         Ok(true)
+    }
+
+    /// Whether the target stands on the terrain at rest (GL JS
+    /// `setCenterClampedToGround`, on by default).
+    #[wasm_bindgen(js_name = setCenterClampedToGround)]
+    pub fn set_center_clamped_to_ground(&mut self, clamped: bool) {
+        self.camera.set_center_clamped_to_ground(clamped);
+    }
+
+    #[wasm_bindgen(js_name = centerClampedToGround)]
+    pub fn center_clamped_to_ground(&self) -> bool {
+        self.camera.center_clamped_to_ground()
+    }
+
+    /// Puts the target this many metres above the surface at once (GL JS
+    /// `setCenterElevation`); while clamped, the terrain takes it back.
+    #[wasm_bindgen(js_name = setCenterElevation)]
+    pub fn set_center_elevation(&mut self, elevation: f64) {
+        self.camera.set_center_elevation(elevation);
     }
 
     #[wasm_bindgen(js_name = jumpTo)]
