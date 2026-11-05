@@ -148,6 +148,9 @@ const DRAW_INDEXED: u32 = 2u;
 // On a node's draw word: its candidates are drape placements, kept by
 // their clip rectangles alone.
 const DRAPED: u32 = 256u;
+// A node's draw word flag: hidden, it draws nothing and keeps its
+// candidates.
+const HIDDEN: u32 = 512u;
 
 // A render node's slice of the candidate and visible lists.
 struct NodeCull {

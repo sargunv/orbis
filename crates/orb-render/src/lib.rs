@@ -138,6 +138,9 @@ pub struct FrameStats {
     /// Whether the bundle was re-recorded this frame.
     pub bundle_recorded: bool,
     pub candidates: u32,
+    /// The cull's candidates were laid out again: tiles or placements came
+    /// or went, or nodes changed how they draw.
+    pub candidates_rebuilt: bool,
     /// Objects the CPU wrote since the last frame (plan §16): tile
     /// placement rows and node uniforms. A camera-only frame rewrites only
     /// the placements in view.
@@ -963,17 +966,17 @@ impl Renderer {
         if margin != entry.cull.margin_px || elevation != entry.cull.elevation {
             entry.cull.margin_px = margin;
             entry.cull.elevation = elevation;
-            self.sync_cull();
+            self.scene.set_node(node, entry.cull);
         }
     }
 
-    /// Shows or hides a node without re-recording the bundle: hidden nodes
-    /// contribute no cull candidates.
+    /// Shows or hides a node without re-recording the bundle or laying the
+    /// cull's candidates out again.
     pub fn set_visible(&mut self, node: u32, visible: bool) {
         let entry = &mut self.nodes[node as usize];
         if entry.cull.visible != visible {
             entry.cull.visible = visible;
-            self.sync_cull();
+            self.scene.set_node(node, entry.cull);
         }
     }
 
@@ -1225,7 +1228,7 @@ impl Renderer {
         target: TextureId,
         clear: [f64; 4],
     ) -> FrameStats {
-        let candidates = self.scene.prepare(gpu, frame);
+        let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame);
         // Preparing may have grown the compacted index buffer.
         self.bind_scene(gpu);
         self.refresh_image_groups(gpu);
@@ -1447,6 +1450,7 @@ impl Renderer {
             draws: self.nodes.len() as u32,
             bundle_recorded,
             candidates,
+            candidates_rebuilt,
             placements_written: self.scene.take_placements_written(),
             paints_written: std::mem::take(&mut self.paints_written),
             pipelines_pending: compiling.pending,

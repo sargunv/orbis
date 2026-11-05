@@ -397,7 +397,7 @@ Everything a frame needs lives in persistent buffers; a camera-only frame change
 | Frame block (uniform) | per view: camera-relative view-projection, camera ECEF as hi/lo f32, time, `fade_t`, viewport | every frame |
 | Tile table | **row, 112 B** for the plane and the globe alike: 2×3 data → camera-relative-world affine, world units per pixel, elevation ref (DEM tile and range), packed clip rect, fade, flags, extent/scale, its planar patches (biquadratic patches in the property arena, written once per tile: planar `GpuPerVertex`, decision 0020) and on a globe its patches in space and their anchor less the camera (decision 0030). The planned 128 B non-affine row (`C − camera`, Jacobian, Hessian) became the patches. A flat view writes 1–4 KB, a pitched globe 19–38 KB | changed rows on camera change |
 | Chunk table | per chunk (≤256 triangles, ≤256 instances or one line run): `{arena_page, first_index, index_count, tile_slot, bbox_tile[4], feature_slot_base, flags, lod}`, 24–32 B | tile arrival/eviction |
-| Node candidate lists | per render node: chunk ids of resident tiles | tile arrival; style edits |
+| Node candidate lists | per render node: chunk ids of resident tiles, and a node row of cull parameters (margin, elevation, visibility) | lists: tile arrival and eviction, placements coming or going, a node changing how it draws; parameters: in place, without laying the lists out again |
 | Visible lists + indirect args | per node, GPU-written | every frame, by compute |
 | Arenas | per (source, family, stream kind): vertex and u32 index pages of 16–64 MB, segregated-fit suballocator | upload |
 | Property tables | per (tile, layer) columns by `feature_slot`; f16 with `shader-f16` | upload; paint edits |

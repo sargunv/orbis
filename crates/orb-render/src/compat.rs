@@ -16,6 +16,7 @@ const DRAW_IMAGES: u32 = 0;
 const DRAW_POINTS: u32 = 1;
 const DRAW_INDEXED: u32 = 2;
 const DRAPED: u32 = 256;
+const HIDDEN: u32 = 512;
 /// `fetch_compat.wgsl`'s `HIDDEN_DRAW_INDEX`: WebGL rejects indices from
 /// 2^31.
 const HIDDEN_INDEX: u32 = 0x7fff_fffe;
@@ -49,6 +50,9 @@ pub(crate) fn cull(gpu: &mut dyn Gpu, scene: &mut Scene, frame: &FrameBlock) -> 
         let n = &tables.node_cull[node * NODE_CULL_ROW_WORDS..][..NODE_CULL_ROW_WORDS];
         let node_args = &mut args[node * ARGS_WORDS..][..ARGS_WORDS];
         let draw = n[3] & 255;
+        if n[3] & HIDDEN != 0 {
+            continue;
+        }
         let cull = NodeCull {
             base: n[0],
             margin_px: f32::from_bits(n[1]),

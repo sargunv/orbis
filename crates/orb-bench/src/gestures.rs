@@ -132,6 +132,10 @@ struct PathResult {
     peak_bytes: u64,
     /// Frames that drew with tiles still loading.
     loading: usize,
+    /// Frames that laid the cull's candidates out again, and tile rows
+    /// written over the path.
+    rebuilds: usize,
+    rows: u64,
     /// Labels shown in full that all but vanished and were back in full
     /// within [`FLASH_FRAMES`] (#55), and the frames between.
     blinks: usize,
@@ -319,6 +323,7 @@ pub(crate) async fn run(
         // Per label text: shown in full, and since which frame it is gone.
         let mut labels: std::collections::HashMap<Box<str>, Option<usize>> = Default::default();
         let (mut blinks, mut blink_frames) = (0, 0);
+        let (mut rebuilds, mut rows) = (0, 0);
         let started = clock::now();
         for f in 1.. {
             let now = (FRAME * f).as_secs_f64() * 1000.0;
@@ -360,6 +365,8 @@ pub(crate) async fn run(
             elevation.publish_elevation(&map, &mut revision);
             peak_bytes = peak_bytes.max(uploaded(gpu) - before);
             loading += usize::from(report.tiles_loading > 0);
+            rebuilds += usize::from(report.frame.candidates_rebuilt);
+            rows += u64::from(report.frame.placements_written);
             let shown = map.shown_labels();
             for (name, dim) in &mut labels {
                 let opacity = shown.get(name).copied().unwrap_or(0.0);
@@ -414,6 +421,8 @@ pub(crate) async fn run(
             cpu,
             peak_bytes,
             loading,
+            rebuilds,
+            rows,
             blinks,
             blink_frames,
             settle: clock::now() - ended,
@@ -454,13 +463,16 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | to GPU done p50 | p95 | frames > 16.7 ms | frames loading | peak MiB/frame | settle ms | label blinks (frames) |"
+            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | to GPU done p50 | p95 | frames > 16.7 ms | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | settle ms | label blinks (frames) |"
         )?;
-        writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|---|---|")?;
+        writeln!(
+            out,
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+        )?;
         for p in &self.paths {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.0} | {} ({}) |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} | {} ({}) |",
                 p.name,
                 ms(p.at(0.5)),
                 ms(p.at(0.95)),
@@ -475,6 +487,8 @@ impl GesturesReport {
                     .count()
                     .to_string()),
                 p.loading,
+                p.rebuilds,
+                p.rows as f64 / p.cpu.len().max(1) as f64,
                 p.peak_bytes as f64 / (1024.0 * 1024.0),
                 p.settle.as_secs_f64() * 1000.0,
                 p.blinks,
@@ -486,7 +500,8 @@ impl GesturesReport {
             out,
             "Times in ms of `Map::render` (applying arrived tiles, uploads, placement, encoding), \
              and with `--timing work-done` until the GPU finished the frame; settle: from the \
-             path's end until the map is idle; label blinks: labels shown in full that all but \
+             path's end until the map is idle; candidate rebuilds: frames that laid the cull's \
+             candidates out again; label blinks: labels shown in full that all but \
              vanished (opacity under 0.1) and were back in full within {FLASH_FRAMES} frames (no \
              fade is that quick), and the frames they were gone."
         )?;

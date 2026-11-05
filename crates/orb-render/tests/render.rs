@@ -536,6 +536,57 @@ fn translates_fills_and_clips_where_they_land() {
     assert_eq!(pixel(&pixels, 52, 32), CLEAR);
 }
 
+/// Paint that moves the cull's margin, and hiding and showing a node,
+/// change parameters the cull reads: the candidates stay laid out.
+#[test]
+fn margins_and_visibility_change_without_laying_candidates_out() {
+    let mut h = Harness::new();
+    red_fill(&mut h);
+    let tile = h.renderer.scene().insert_tile();
+    h.renderer
+        .scene()
+        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .unwrap();
+    h.renderer
+        .scene()
+        .insert_mesh(
+            &mut h.gpu,
+            tile,
+            0,
+            &MeshData::new(&left_half_square(), &[], 0),
+        )
+        .unwrap();
+    assert!(h.render_stats().candidates_rebuilt);
+    assert!(!h.render_stats().candidates_rebuilt);
+    let translated = |px: f32| {
+        NodePaint::Fill(FillPaint {
+            color: [1.0, 0.0, 0.0, 1.0],
+            opacity: 1.0,
+            translate: orb_render::Translate {
+                px: [px, 0.0],
+                viewport: false,
+            },
+            table_mask: 0,
+            curves: [Curve::Step; 2],
+            state: Default::default(),
+            gpu: Default::default(),
+        })
+    };
+    h.renderer.set_paint(&mut h.gpu, 0, &translated(16.0));
+    assert!(!h.render_stats().candidates_rebuilt);
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    assert_eq!(pixel(&pixels, 8, 32), CLEAR);
+    assert_eq!(pixel(&pixels, 44, 32), RED);
+    h.renderer.set_visible(0, false);
+    assert!(!h.render_stats().candidates_rebuilt);
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    assert_eq!(pixel(&pixels, 44, 32), CLEAR);
+    h.renderer.set_visible(0, true);
+    assert!(!h.render_stats().candidates_rebuilt);
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    assert_eq!(pixel(&pixels, 44, 32), RED);
+}
+
 #[test]
 fn compacted_slots_follow_the_view_without_recording() {
     let mut h = Harness::new();

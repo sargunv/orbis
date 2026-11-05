@@ -757,7 +757,7 @@ pub struct NodeCull {
     /// Maximum nonnegative elevation in metres (base and roof).
     pub elevation: f32,
     pub draw: NodeDraw,
-    /// Hidden nodes contribute no candidates and draw nothing.
+    /// Hidden nodes keep their candidates and draw nothing.
     pub visible: bool,
     /// The placements it draws: on the map, or those of its drape stack,
     /// which the cull keeps by their clip rectangles alone.
@@ -784,6 +784,19 @@ pub enum NodeDraw {
     Indexed,
 }
 
+impl NodeCull {
+    /// The node row's draw word: how it draws, and its flags.
+    fn draw_word(&self) -> u32 {
+        self.draw.word()
+            | if self.target == PlacementTarget::Map {
+                0
+            } else {
+                DRAPED
+            }
+            | if self.visible { 0 } else { HIDDEN }
+    }
+}
+
 impl NodeDraw {
     fn word(self) -> u32 {
         match self {
@@ -797,6 +810,9 @@ impl NodeDraw {
 /// The cull's flag on a node's draw word: its candidates are drape
 /// placements (`cull.wgsl`'s `DRAPED`).
 const DRAPED: u32 = 1 << 8;
+/// The cull's flag on a node's draw word: the node draws nothing
+/// (`cull.wgsl`'s `HIDDEN`).
+const HIDDEN: u32 = 1 << 9;
 
 #[derive(Debug)]
 pub struct Scene {
@@ -812,7 +828,15 @@ pub struct Scene {
     meshes: Vec<Option<MeshEntry>>,
     free_meshes: Vec<u32>,
     nodes: Vec<NodeEntry>,
+    /// Node rows' layout (slices of the candidate lists and compacted
+    /// buffer) is stale: tiles or placements came or went, or nodes changed
+    /// how they draw.
     candidates_dirty: bool,
+    /// The node rows as the last rebuild laid them out, with their cull
+    /// parameters (margin, elevation, visibility) patched since.
+    node_rows: Vec<u32>,
+    /// Cull parameters changed since the node rows were last written.
+    params_dirty: bool,
     candidate_count: u32,
     candidates_dropped: u32,
     compacted_words: u32,
@@ -932,6 +956,8 @@ impl Scene {
             free_meshes: Vec::new(),
             nodes: Vec::new(),
             candidates_dirty: true,
+            node_rows: Vec::new(),
+            params_dirty: false,
             candidate_count: 0,
             candidates_dropped: 0,
             compacted_words: 0,
@@ -1066,7 +1092,9 @@ impl Scene {
     }
 
     /// Sets how each render node is culled. Changing the number of nodes
-    /// requires the scene to hold no meshes.
+    /// requires the scene to hold no meshes. Margins, elevations and
+    /// visibility are parameters the cull reads from the node rows: they
+    /// change without laying the candidates out again.
     pub fn set_nodes(&mut self, nodes: &[NodeCull]) {
         if nodes.len() != self.nodes.len() {
             assert!(
@@ -1084,12 +1112,33 @@ impl Scene {
                     cull,
                 })
                 .collect();
-        } else {
-            for (node, &cull) in self.nodes.iter_mut().zip(nodes) {
-                node.cull = cull;
-            }
+            self.candidates_dirty = true;
+            return;
         }
-        self.candidates_dirty = true;
+        for (i, &cull) in nodes.iter().enumerate() {
+            self.set_node(i as u32, cull);
+        }
+    }
+
+    /// Sets how one render node is culled; see [`set_nodes`](Self::set_nodes).
+    pub fn set_node(&mut self, node: u32, cull: NodeCull) {
+        let i = node as usize;
+        let entry = &mut self.nodes[i];
+        if entry.cull == cull {
+            return;
+        }
+        if (entry.cull.draw, entry.cull.target) != (cull.draw, cull.target) {
+            self.candidates_dirty = true;
+        } else if let Some(row) = self
+            .node_rows
+            .get_mut(i * NODE_CULL_WORDS..(i + 1) * NODE_CULL_WORDS)
+        {
+            row[1] = cull.margin_px.to_bits();
+            row[3] = cull.draw_word();
+            row[4] = cull.elevation.to_bits();
+            self.params_dirty = true;
+        }
+        entry.cull = cull;
     }
 
     /// A new tile with no meshes and no placements.
@@ -1500,8 +1549,10 @@ impl Scene {
     }
 
     /// Writes the frame block, and the candidate lists if meshes or
-    /// placements changed. Returns the number of candidates.
-    pub fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> u32 {
+    /// placements changed. Returns the number of candidates, and whether
+    /// they were laid out again.
+    pub fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> (u32, bool) {
+        let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
             self.candidates_dirty = false;
             let short = self.rebuild_candidates(gpu);
@@ -1510,10 +1561,18 @@ impl Scene {
             if short > 0 && self.grow_compacted(gpu, short) {
                 self.rebuild_candidates(gpu);
             }
+        } else if std::mem::take(&mut self.params_dirty) && !self.node_rows.is_empty() {
+            write_words(
+                gpu,
+                self.buffers.node_cull,
+                self.cull.as_mut().map(|c| &mut c.node_cull),
+                0,
+                &self.node_rows,
+            );
         }
 
         write_frame(gpu, self.buffers.frame, frame);
-        self.candidate_count
+        (self.candidate_count, rebuilt)
     }
 
     /// Lays out every node's candidates contiguously, in mesh, placement
@@ -1539,33 +1598,31 @@ impl Scene {
             let mut candidates = Vec::new();
             let mut node_runs: Vec<[u32; 2]> = Vec::new();
             let mut vertex_words = 1u32;
-            if node.cull.visible {
-                for mesh in &node.meshes {
-                    let mesh = self.meshes[mesh.0 as usize]
-                        .as_ref()
-                        .expect("node lists live meshes");
-                    let tile = self.tiles[mesh.tile.0 as usize]
-                        .as_ref()
-                        .expect("meshes have tiles");
-                    let Some(&first) = mesh.chunk_slots.first() else {
+            for mesh in &node.meshes {
+                let mesh = self.meshes[mesh.0 as usize]
+                    .as_ref()
+                    .expect("node lists live meshes");
+                let tile = self.tiles[mesh.tile.0 as usize]
+                    .as_ref()
+                    .expect("meshes have tiles");
+                let Some(&first) = mesh.chunk_slots.first() else {
+                    continue;
+                };
+                vertex_words = vertex_words.max(mesh.vertices.len() as u32);
+                for placement in &tile.placements {
+                    if placement.row.target != node.cull.target {
                         continue;
-                    };
-                    vertex_words = vertex_words.max(mesh.vertices.len() as u32);
-                    for placement in &tile.placements {
-                        if placement.row.target != node.cull.target {
-                            continue;
-                        }
-                        let run = node_runs.len() as u32;
-                        node_runs.push([first, placement.slot]);
-                        for (&chunk, record) in mesh.chunk_slots.iter().zip(&mesh.chunks) {
-                            candidates.push((
-                                record.sort_key,
-                                chunk,
-                                placement.slot,
-                                record.index_count,
-                                run,
-                            ));
-                        }
+                    }
+                    let run = node_runs.len() as u32;
+                    node_runs.push([first, placement.slot]);
+                    for (&chunk, record) in mesh.chunk_slots.iter().zip(&mesh.chunks) {
+                        candidates.push((
+                            record.sort_key,
+                            chunk,
+                            placement.slot,
+                            record.index_count,
+                            run,
+                        ));
                     }
                 }
             }
@@ -1624,12 +1681,7 @@ impl Scene {
                 base,
                 node.cull.margin_px.to_bits(),
                 count,
-                node.cull.draw.word()
-                    | if node.cull.target == PlacementTarget::Map {
-                        0
-                    } else {
-                        DRAPED
-                    },
+                node.cull.draw_word(),
                 node.cull.elevation.to_bits(),
                 index_base,
                 compacted - index_base,
@@ -1648,8 +1700,10 @@ impl Scene {
         }
         if let Some(cull) = &mut self.cull {
             cull.candidates = rows;
-            cull.node_cull = node_cull;
+            cull.node_cull = node_cull.clone();
         }
+        self.node_rows = node_cull;
+        self.params_dirty = false;
         // Each node's runs are contiguous in its slice.
         let mut at = 0;
         while at < runs.len() {

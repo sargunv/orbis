@@ -146,9 +146,21 @@ fn cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
     let node = node_cull[group.x];
     if lane == 0u {
         node_count = node.candidate_count;
-        node_draw = node.draw & 255u;
+        node_draw = node.draw;
     }
-    let draw = workgroupUniformLoad(&node_draw);
+    let word = workgroupUniformLoad(&node_draw);
+    let draw = word & 255u;
+    // A hidden node draws nothing, and an indexed node's slots stay as
+    // they are for when it shows.
+    if (word & HIDDEN) != 0u {
+        if lane == 0u && group.y == 0u {
+            let at = group.x * ARGS_WORDS;
+            for (var w = 0u; w < ARGS_WORDS; w++) {
+                atomicStore(&args[at + w], 0u);
+            }
+        }
+        return;
+    }
     if draw == DRAW_INDEXED {
         cull_indexed(group.x, group.y, lane, node);
     } else if group.y == 0u {
