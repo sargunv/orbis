@@ -1,11 +1,11 @@
 //! Pipelines compile off the thread that draws (plan §8.4, decision 0038).
 //!
 //! A pipeline request becomes a [`Job`] that owns everything it needs.
-//! Natively, a few worker threads take jobs from a queue, front first, and
-//! make the pipelines with wgpu, whose device is shared between threads; a
-//! request the view needs moves to the front. Each worker notes when it
-//! started its job, so a compile that never returns (a driver hung in its
-//! compiler) shows as [`Compiler::hung`]. In the browser, jobs compile with
+//! Natively, the host's job executor takes jobs from a queue, front first,
+//! and makes the pipelines with wgpu, whose device is shared between
+//! threads; a request the view needs moves to the front. Each task notes
+//! when it started its job, so a compile that never returns (a driver hung
+//! in its compiler) shows as [`Compiler::hung`]. In the browser, jobs compile with
 //! `createRenderPipelineAsync` / `createComputePipelineAsync`; once the
 //! promise resolves, wgpu makes the same pipeline, which the browser's
 //! pipeline cache (Dawn's, keyed by content) returns without compiling it
@@ -269,86 +269,80 @@ mod native {
     use std::time::{Duration, Instant};
 
     use orb_hal::PipelineId;
+    use orb_jobs::Executor;
 
     use super::{Done, Job};
 
-    /// Compiles on worker threads, front of the queue first.
-    #[derive(Debug)]
+    /// Compiles on the host's job executor, front of the queue first: each
+    /// request spawns one task, which compiles the job at the front when
+    /// it runs.
     pub(crate) struct Compiler {
         shared: Arc<Shared>,
         done_tx: mpsc::Sender<Done>,
         done: mpsc::Receiver<Done>,
-        threads: usize,
-        started: usize,
-        /// Run each job on the calling thread instead (tools that want
-        /// every pipeline ready when it is asked for).
-        inline: bool,
+        /// Without one, each job compiles on the calling thread (tools
+        /// that want every pipeline ready when it is asked for).
+        executor: Option<Arc<dyn Executor>>,
         finished: VecDeque<Done>,
+        watched: bool,
     }
 
+    impl std::fmt::Debug for Compiler {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Compiler").finish_non_exhaustive()
+        }
+    }
+
+    #[derive(Default)]
     struct Shared {
         queue: Mutex<Queue>,
-        wake: Condvar,
-        /// Fault injection: workers stall in their next job, as in a
-        /// driver hung in its compiler.
+        /// Fault injection: tasks stall in their job until the compiler
+        /// closes, as in a driver hung in its compiler.
         hang: std::sync::atomic::AtomicBool,
-        /// Called from a worker when a compile finishes.
+        /// Called from a task when a compile finishes.
         compiled: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-        /// Per worker, the job it compiles and since when.
-        busy: Mutex<Vec<Option<(String, Instant)>>>,
-        /// Signalled when a worker takes a job, and when the compiler
-        /// closes: the watchdog thread waits on it.
-        started: Condvar,
+        /// The jobs compiling and since when, by task.
+        busy: Mutex<Vec<(u64, String, Instant)>>,
+        /// Signalled when a task takes a job, and when the compiler
+        /// closes: the watchdog and injected hangs wait on it.
+        changed: Condvar,
         /// How long a compile may run before its driver is taken to have
         /// hung.
         limit: Mutex<Duration>,
     }
 
-    impl std::fmt::Debug for Shared {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("Shared").finish_non_exhaustive()
-        }
-    }
-
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     struct Queue {
         jobs: VecDeque<Job>,
+        next_task: u64,
         closed: bool,
     }
 
     impl Compiler {
         pub(crate) fn new() -> Self {
             let (done_tx, done) = mpsc::channel();
+            let shared = Shared {
+                limit: Mutex::new(orb_hal::device::COMPILE_WATCHDOG),
+                ..Default::default()
+            };
             Self {
-                shared: Arc::new(Shared {
-                    queue: Mutex::default(),
-                    wake: Condvar::new(),
-                    hang: Default::default(),
-                    compiled: Mutex::default(),
-                    busy: Mutex::default(),
-                    started: Condvar::new(),
-                    limit: Mutex::new(orb_hal::device::COMPILE_WATCHDOG),
-                }),
+                shared: Arc::new(shared),
                 done_tx,
                 done,
-                threads: default_threads(),
-                started: 0,
-                inline: false,
+                executor: None,
                 finished: VecDeque::new(),
+                watched: false,
             }
         }
 
-        /// Compiles every later request on the calling thread, before
-        /// `create_*_pipeline` returns, or on `threads` workers again.
-        pub(crate) fn set_threads(&mut self, threads: Option<usize>) {
-            self.inline = threads.is_none();
-            if let Some(threads) = threads {
-                self.threads = threads.max(1);
-            }
+        /// Compiles every later request on `executor`, or on the calling
+        /// thread, before `create_*_pipeline` returns.
+        pub(crate) fn set_executor(&mut self, executor: Option<Arc<dyn Executor>>) {
+            self.executor = executor;
         }
 
         pub(crate) fn submit(&mut self, device: &wgpu::Device, job: Job) {
-            if self.inline {
+            let Some(executor) = &self.executor else {
                 let started = Instant::now();
                 let built = job.compile(device);
                 self.finished.push_back(Done {
@@ -357,41 +351,26 @@ mod native {
                     took: started.elapsed(),
                 });
                 return;
-            }
-            self.shared
-                .queue
-                .lock()
-                .expect("compile queue poisoned")
-                .jobs
-                .push_back(job);
-            self.shared.wake.notify_one();
-            if self.started < self.threads {
-                self.spawn(device);
-            }
-        }
-
-        fn spawn(&mut self, device: &wgpu::Device) {
-            if self.started == 0 {
+            };
+            let task = {
+                let mut queue = self.shared.queue.lock().expect("compile queue poisoned");
+                queue.jobs.push_back(job);
+                queue.next_task += 1;
+                queue.next_task
+            };
+            if !self.watched {
+                self.watched = true;
                 let shared = self.shared.clone();
                 std::thread::Builder::new()
                     .name("orbis pipeline watchdog".into())
                     .spawn(move || watchdog(&shared))
                     .expect("spawn the pipeline watchdog");
             }
-            let index = self.started;
-            self.started += 1;
-            self.shared
-                .busy
-                .lock()
-                .expect("compile watch poisoned")
-                .push(None);
-            let shared = self.shared.clone();
-            let device = device.clone();
-            let done = self.done_tx.clone();
-            std::thread::Builder::new()
-                .name(format!("orbis pipelines {index}"))
-                .spawn(move || worker(&shared, &device, index, &done))
-                .expect("spawn a pipeline thread");
+            let (shared, device, done) =
+                (self.shared.clone(), device.clone(), self.done_tx.clone());
+            executor.spawn(Box::new(move || {
+                compile_front(&shared, &device, task, &done)
+            }));
         }
 
         /// How long a compile may run before its driver is taken to have
@@ -400,14 +379,14 @@ mod native {
             *self.shared.limit.lock().expect("compile watch poisoned") = limit;
         }
 
-        /// Calls `wake` from a worker whenever a compile finishes, and from
+        /// Calls `wake` from a task whenever a compile finishes, and from
         /// the watchdog when one runs past its limit.
         pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
             *self.shared.compiled.lock().expect("compile wake poisoned") = Some(wake);
         }
 
-        /// Makes workers stall in their next job forever (fault injection
-        /// for the watchdog's tests).
+        /// Makes tasks stall in their next job (fault injection for the
+        /// watchdog's tests).
         pub(crate) fn inject_hang(&self) {
             self.shared
                 .hang
@@ -444,18 +423,19 @@ mod native {
 
         /// A compile that has run past the watchdog's limit: its label.
         pub(crate) fn hung(&self) -> Option<String> {
-            self.shared.hung()
+            let limit = *self.shared.limit.lock().expect("compile watch poisoned");
+            let busy = self.shared.busy.lock().expect("compile watch poisoned");
+            busy.iter()
+                .find(|(.., since)| since.elapsed() > limit)
+                .map(|(_, label, since)| {
+                    format!("{label} ({:.1} s)", since.elapsed().as_secs_f64())
+                })
         }
     }
 
     impl Shared {
-        fn hung(&self) -> Option<String> {
-            let limit = *self.limit.lock().expect("compile watch poisoned");
-            let busy = self.busy.lock().expect("compile watch poisoned");
-            busy.iter()
-                .flatten()
-                .find(|(_, since)| since.elapsed() > limit)
-                .map(|(label, since)| format!("{label} ({:.1} s)", since.elapsed().as_secs_f64()))
+        fn closed(&self) -> bool {
+            self.queue.lock().expect("compile queue poisoned").closed
         }
 
         fn wake(&self) {
@@ -467,16 +447,50 @@ mod native {
     }
 
     impl Drop for Compiler {
-        /// Drops queued jobs; workers finish their current one and exit.
-        /// A worker stuck in a driver stays stuck: it is never joined.
+        /// Drops queued jobs: their tasks find none. A task stuck in a
+        /// driver stays stuck.
         fn drop(&mut self) {
             let mut queue = self.shared.queue.lock().expect("compile queue poisoned");
             queue.closed = true;
             queue.jobs.clear();
             drop(queue);
-            self.shared.wake.notify_all();
             let _busy = self.shared.busy.lock().expect("compile watch poisoned");
-            self.shared.started.notify_all();
+            self.shared.changed.notify_all();
+        }
+    }
+
+    /// One request's task: compiles the job at the front of the queue.
+    fn compile_front(shared: &Shared, device: &wgpu::Device, task: u64, done: &mpsc::Sender<Done>) {
+        let Some(job) = shared
+            .queue
+            .lock()
+            .expect("compile queue poisoned")
+            .jobs
+            .pop_front()
+        else {
+            return;
+        };
+        let started = Instant::now();
+        let mut busy = shared.busy.lock().expect("compile watch poisoned");
+        busy.push((task, job.label().to_owned(), started));
+        shared.changed.notify_all();
+        while shared.hang.load(std::sync::atomic::Ordering::Relaxed) && !shared.closed() {
+            busy = shared.changed.wait(busy).expect("compile watch poisoned");
+        }
+        drop(busy);
+        let built = job.compile(device);
+        shared
+            .busy
+            .lock()
+            .expect("compile watch poisoned")
+            .retain(|(t, ..)| *t != task);
+        let finished = Done {
+            built,
+            label: job.label().to_owned(),
+            took: started.elapsed(),
+        };
+        if done.send(finished).is_ok() {
+            shared.wake();
         }
     }
 
@@ -487,12 +501,12 @@ mod native {
     fn watchdog(shared: &Shared) {
         let mut busy = shared.busy.lock().expect("compile watch poisoned");
         loop {
-            if shared.queue.lock().expect("compile queue poisoned").closed {
+            if shared.closed() {
                 return;
             }
             let limit = *shared.limit.lock().expect("compile watch poisoned");
-            let Some(since) = busy.iter().flatten().map(|(_, since)| *since).min() else {
-                busy = shared.started.wait(busy).expect("compile watch poisoned");
+            let Some(since) = busy.iter().map(|(.., since)| *since).min() else {
+                busy = shared.changed.wait(busy).expect("compile watch poisoned");
                 continue;
             };
             let left = limit.saturating_sub(since.elapsed());
@@ -502,50 +516,10 @@ mod native {
                 return;
             }
             busy = shared
-                .started
+                .changed
                 .wait_timeout(busy, left)
                 .expect("compile watch poisoned")
                 .0;
-        }
-    }
-
-    /// Up to half the cores, at most four: tile jobs load at the same time.
-    fn default_threads() -> usize {
-        std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 4))
-    }
-
-    fn worker(shared: &Shared, device: &wgpu::Device, index: usize, done: &mpsc::Sender<Done>) {
-        loop {
-            let job = {
-                let mut queue = shared.queue.lock().expect("compile queue poisoned");
-                loop {
-                    if queue.closed {
-                        return;
-                    }
-                    if let Some(job) = queue.jobs.pop_front() {
-                        break job;
-                    }
-                    queue = shared.wake.wait(queue).expect("compile queue poisoned");
-                }
-            };
-            let started = Instant::now();
-            shared.busy.lock().expect("compile watch poisoned")[index] =
-                Some((job.label().to_owned(), started));
-            shared.started.notify_all();
-            while shared.hang.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::park();
-            }
-            let built = job.compile(device);
-            shared.busy.lock().expect("compile watch poisoned")[index] = None;
-            let finished = Done {
-                built,
-                label: job.label().to_owned(),
-                took: started.elapsed(),
-            };
-            if done.send(finished).is_err() {
-                return;
-            }
-            shared.wake();
         }
     }
 }

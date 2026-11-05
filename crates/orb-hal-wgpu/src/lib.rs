@@ -286,13 +286,15 @@ impl WgpuGpu {
         &self.compiled
     }
 
-    /// Compiles every later pipeline on the calling thread, so it is ready
-    /// when [`Gpu::create_render_pipeline`] returns (`None`), or on
-    /// `threads` worker threads (the default: half the cores, at most
-    /// four).
+    /// Compiles every later pipeline on `executor`, the host's job threads,
+    /// or (`None`, the default) on the calling thread, so it is ready when
+    /// [`Gpu::create_render_pipeline`] returns.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_compile_threads(&mut self, threads: Option<usize>) {
-        self.compiler.set_threads(threads);
+    pub fn set_compile_executor(
+        &mut self,
+        executor: Option<std::sync::Arc<dyn orb_jobs::Executor>>,
+    ) {
+        self.compiler.set_executor(executor);
     }
 
     /// Blocks until every pipeline asked for so far compiled: for tools

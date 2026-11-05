@@ -133,11 +133,9 @@ impl Offscreen {
 
     /// The map with its style set, before anything has loaded.
     pub(crate) fn new(options: &Options, capacity: SceneCapacity) -> Result<Self, String> {
+        // Tests count frames: with no executor, pipelines compile when
+        // asked for.
         let mut gpu = pollster::block_on(WgpuGpu::offscreen())?;
-        // Tests count frames: their pipelines compile when asked for.
-        if cfg!(test) {
-            gpu.set_compile_threads(None);
-        }
         let format = TargetFormat {
             color: orb_hal::TextureFormat::Rgba8Unorm,
             sample_count: 1,

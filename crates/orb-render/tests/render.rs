@@ -50,7 +50,7 @@ impl Harness {
         max_candidates: 0,
     };
 
-    /// Pipelines compile on `threads` workers, or (`None`) before their
+    /// Pipelines compile on a pool of `threads` workers, or (`None`) before their
     /// request returns, so every frame below draws in full.
     fn with(
         size: u32,
@@ -60,7 +60,9 @@ impl Harness {
         threads: Option<usize>,
     ) -> Self {
         let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
-        gpu.set_compile_threads(threads);
+        gpu.set_compile_executor(
+            threads.map(|n| std::sync::Arc::new(orb_jobs::ThreadPool::new("pipelines", n)) as _),
+        );
         let target = gpu.create_texture(&TextureDesc {
             label: "target",
             width: SIZE,

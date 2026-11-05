@@ -148,11 +148,18 @@ impl Device {
         }
     }
 
-    /// Calls `wake` whenever a pipeline compiles; `false` when the device
-    /// can't (Compat without its compile thread), so frames poll for them.
-    pub(crate) fn set_compile_wake(&self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> bool {
+    /// Compiles pipelines on `executor` (Modern; Compat has its compile
+    /// thread) and calls `wake` whenever one compiles; `false` when the
+    /// device can't (Compat without its compile thread), so frames poll
+    /// for them.
+    pub(crate) fn set_compiler(
+        &mut self,
+        executor: std::sync::Arc<dyn orb_jobs::Executor>,
+        wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+    ) -> bool {
         match self {
             Self::Modern(gpu) => {
+                gpu.set_compile_executor(Some(executor));
                 gpu.set_compile_wake(wake);
                 true
             }

@@ -8,7 +8,6 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 
 /// A unit of work.
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
@@ -27,11 +26,12 @@ impl Executor for Inline {
     }
 }
 
-/// A fixed set of worker threads taking jobs first in, first out.
+/// A fixed set of worker threads taking jobs first in, first out. Dropped,
+/// its workers finish the jobs queued and exit; they aren't joined, since a
+/// job stuck in a driver (a hung pipeline compile) would hold the drop.
 #[derive(Debug)]
 pub struct ThreadPool {
-    sender: Option<Sender<Job>>,
-    workers: Vec<JoinHandle<()>>,
+    sender: Sender<Job>,
 }
 
 impl ThreadPool {
@@ -39,19 +39,14 @@ impl ThreadPool {
     pub fn new(name: &str, threads: usize) -> Self {
         let (sender, receiver) = channel::<Job>();
         let receiver = Arc::new(Mutex::new(receiver));
-        let workers = (0..threads.max(1))
-            .map(|i| {
-                let receiver = Arc::clone(&receiver);
-                std::thread::Builder::new()
-                    .name(format!("{name}-{i}"))
-                    .spawn(move || worker(&receiver))
-                    .expect("failed to spawn a worker thread")
-            })
-            .collect();
-        Self {
-            sender: Some(sender),
-            workers,
+        for i in 0..threads.max(1) {
+            let receiver = Arc::clone(&receiver);
+            std::thread::Builder::new()
+                .name(format!("{name}-{i}"))
+                .spawn(move || worker(&receiver))
+                .expect("failed to spawn a worker thread");
         }
+        Self { sender }
     }
 
     /// The plan's native default: one worker per core but one, at most six.
@@ -73,20 +68,7 @@ fn worker(receiver: &Mutex<Receiver<Job>>) {
 
 impl Executor for ThreadPool {
     fn spawn(&self, job: Job) {
-        self.sender
-            .as_ref()
-            .expect("pool is running")
-            .send(job)
-            .expect("workers exited early");
-    }
-}
-
-impl Drop for ThreadPool {
-    fn drop(&mut self) {
-        self.sender.take();
-        for worker in self.workers.drain(..) {
-            let _ = worker.join();
-        }
+        self.sender.send(job).expect("workers exited early");
     }
 }
 
@@ -104,7 +86,8 @@ mod tests {
                 pool.spawn(Box::new(move || tx.send(i).unwrap()));
             }
         }
-        let mut got: Vec<i32> = rx.try_iter().collect();
+        drop(tx);
+        let mut got: Vec<i32> = rx.iter().collect();
         got.sort();
         assert_eq!(got, (0..100).collect::<Vec<_>>());
     }

@@ -136,6 +136,7 @@ struct Shared {
     fetch: Arc<NativeFetch>,
     /// Offline regions, with a state directory.
     regions: Option<regions::Regions>,
+    /// Tile jobs and pipeline compiles.
     executor: Arc<ThreadPool>,
     images: orb_runtime::Images,
     /// Where the pipeline cache is kept, and the pipeline count it was
@@ -192,13 +193,14 @@ impl Runtime {
     /// Makes a device on the default adapter and starts the job and fetch
     /// pools. Blocks while the device is made.
     pub fn new(options: &RuntimeOptions) -> Result<Self, Error> {
-        let (gpu, selection, sentinel) = Device::choose(options)?;
+        let (mut gpu, selection, sentinel) = Device::choose(options)?;
         let wakes = Arc::default();
-        let compile_wakes = gpu.set_compile_wake(wake_all(&wakes));
         let threads = options
             .job_threads
             .unwrap_or_else(ThreadPool::default_size)
             .max(1);
+        let executor = Arc::new(ThreadPool::new("jobs", threads));
+        let compile_wakes = gpu.set_compiler(executor.clone(), wake_all(&wakes));
         let fetch = NativeFetch::with_cache(http_cache(options)?);
         let runtime = Self {
             shared: Rc::new(Shared {
@@ -212,7 +214,7 @@ impl Runtime {
                     .state_dir
                     .as_ref()
                     .map(|dir| regions::Regions::new(dir, fetch)),
-                executor: Arc::new(ThreadPool::new("jobs", threads)),
+                executor,
                 images: Default::default(),
                 cache: RefCell::new(None),
                 wakes,
@@ -267,10 +269,10 @@ impl Runtime {
         {
             device::disarm(&marker);
         }
-        let (gpu, selection, sentinel) = Device::choose(&self.shared.options)?;
+        let (mut gpu, selection, sentinel) = Device::choose(&self.shared.options)?;
         self.shared
             .compile_wakes
-            .set(gpu.set_compile_wake(wake_all(&self.shared.wakes)));
+            .set(gpu.set_compiler(self.shared.executor.clone(), wake_all(&self.shared.wakes)));
         drop(std::mem::replace(&mut *self.shared.gpu.borrow_mut(), gpu));
         self.shared.gpu.borrow().make_current();
         *self.shared.selection.borrow_mut() = selection;

@@ -160,9 +160,27 @@ device lost reports it rather than the frame after, which no host draws.
 With a 300 ms limit the test map draws 2 frames, idles, and is lost after
 314 ms.
 
+## One native thread pool
+
+Pipelines compiled on worker threads of their own, up to four beside the
+six of the jobs pool: ten threads on an eight-core phone. They now compile
+on the runtime's jobs pool. A request queues its job and spawns one task,
+which compiles whatever job is at the front of the queue when it runs, so a
+pipeline the view needs still moves ahead. Without an executor a pipeline
+compiles on the calling thread, as tools and tests want. The jobs pool
+no longer joins its workers when dropped: a compile stuck in a driver would
+hold the host's shutdown. Fetches (blocking I/O), placement (a latency lane
+of its own), the HTTP cache's flusher and GL's compile thread (a current
+context) keep their threads. On the Tokyo snapshot to idle, interleaved, 10
+runs each: median 267 ms before, 251 ms after.
+
+The browser's double creation (`create*PipelineAsync`, then wgpu's own
+pipeline from Dawn's cache) stays until wgpu has async creation
+(gfx-rs/wgpu#10438, on #35): wgpu 30 can't wrap a browser pipeline.
+
 ## Still to land
 
 `plan_frame` as a pure function of the camera and the resident set (with
 one warp per tile made at arrival, and #32's T-junction snapping), one DEM
-prepare path and one downsampler, one slot allocator and one native thread
-pool. Each step updates this record.
+prepare path and one downsampler, and one slot allocator. Each step updates
+this record.
