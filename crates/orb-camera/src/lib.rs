@@ -715,7 +715,7 @@ impl View {
             // tiles' pixels here.
             let data = desired - floor >= (DATA_TILE_PX / TILE_SIZE_PX).log2();
             let z = f64::from(index.z);
-            if z < desired.floor().max(0.0) || (z < floor && data) {
+            if z < tile_zoom(desired) || (z < floor && data) {
                 CoverDecision::Refine
             } else {
                 CoverDecision::Accept
@@ -909,9 +909,7 @@ impl View {
                         - fov_scale.log2()
                         - penalty);
             }
-            // A whole zoom computed through the sphere's trigonometry can
-            // land an ulp short of itself; it means that zoom.
-            if f64::from(index.z) < (desired + 1e-9).floor().max(0.0) {
+            if f64::from(index.z) < tile_zoom(desired) {
                 CoverDecision::Refine
             } else {
                 CoverDecision::Accept
@@ -998,6 +996,14 @@ fn box_in_frustum(view_proj: &DMat4, lo: DVec3, hi: DVec3, margin: DVec2) -> boo
 /// the tile's content (a building is about a 60th of a z14 tile) is a
 /// pixel or less.
 pub const DATA_TILE_PX: f64 = 64.0;
+
+/// The whole tile zoom a cover's desired zoom asks for. A whole zoom
+/// computed through scales and trigonometry can land an ulp short of
+/// itself (1.9999999999999998 at zoom 2, latitude 57°); it means that zoom.
+fn tile_zoom(desired: f64) -> f64 {
+    (desired + 1e-9).floor().max(0.0)
+}
+
 /// The source tile size the cover's desired zoom refers to.
 const TILE_SIZE_PX: f64 = 512.0;
 /// Pitch, degrees, over which the distance LOD eases in past GL JS's
@@ -1030,6 +1036,29 @@ impl CoverLod {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn whole_zooms_cover_with_their_own_tiles_at_any_latitude() {
+        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        for lat in [0.0, 57.0, 80.0] {
+            let camera = CameraState::new(Geodetic::new(0.0, lat), 2.0, &mercator());
+            let surface = Surface {
+                projection: mercator(),
+                globe: None,
+            };
+            let viewport = Viewport {
+                width: 900.0,
+                height: 512.0,
+            };
+            let view = View::new(&camera, viewport, &surface);
+            let zooms: Vec<u8> = view
+                .cover(&tms, 512.0, 18)
+                .iter()
+                .map(|c| c.index.z)
+                .collect();
+            assert!(zooms.iter().all(|&z| z == 2), "latitude {lat}: {zooms:?}");
+        }
+    }
+
     use super::*;
     use orb_crs::Globe;
 
