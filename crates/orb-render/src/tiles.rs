@@ -637,6 +637,15 @@ impl Renderer {
         self.scene.place_tile(part, &rows)
     }
 
+    /// Keeps only a tile's labels drawing, where it was last placed: a
+    /// tile that left the draw list, until a placement covers what
+    /// replaced it.
+    pub fn hold_symbols(&mut self, tile: GpuTile) {
+        for &(_, part) in &self.tiles.entry(tile).parts {
+            self.scene.hold_symbols(part);
+        }
+    }
+
     /// Hides a tile: no placements.
     pub fn unplace(&mut self, tile: GpuTile) {
         for &(_, part) in &self.tiles.entry(tile).parts {

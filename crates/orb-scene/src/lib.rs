@@ -418,6 +418,10 @@ pub enum PlacementTarget {
     #[default]
     Map,
     Drape(u8),
+    /// Symbol nodes only: a tile that left the draw list keeps drawing its
+    /// labels until a placement covers what replaced it (GL JS
+    /// `holdingForFade`).
+    Labels,
 }
 
 /// A placement's DEM: tile data unit `p` reads the DEM page's `layer` at
@@ -830,6 +834,9 @@ pub struct NodeCull {
     /// The placements it draws: on the map, or those of its drape stack,
     /// which the cull keeps by their clip rectangles alone.
     pub target: PlacementTarget,
+    /// It draws symbols: held tiles' [`PlacementTarget::Labels`]
+    /// placements too.
+    pub labels: bool,
 }
 
 /// How a render node draws its visible chunks, which the cull pass
@@ -853,6 +860,11 @@ pub enum NodeDraw {
 }
 
 impl NodeCull {
+    /// Whether it draws placements of `target`.
+    fn draws(&self, target: PlacementTarget) -> bool {
+        target == self.target || (self.labels && target == PlacementTarget::Labels)
+    }
+
     /// The node row's draw word: how it draws, and its flags.
     fn draw_word(&self) -> u32 {
         self.draw.word()
@@ -1204,7 +1216,8 @@ impl Scene {
         if entry.cull == cull {
             return;
         }
-        if (entry.cull.draw, entry.cull.target) != (cull.draw, cull.target) {
+        let shape = |c: &NodeCull| (c.draw, c.target, c.labels);
+        if shape(&entry.cull) != shape(&cull) {
             self.candidates_dirty = true;
         } else if let Some(row) = self
             .node_rows
@@ -1310,6 +1323,8 @@ impl Scene {
         let fresh = entry.placements.len() - added;
         for (i, (placement, row)) in entry.placements.iter_mut().zip(rows).enumerate() {
             if i >= fresh || placement.row != *row {
+                // Which nodes draw it decides the candidates.
+                self.candidates_dirty |= placement.row.target != row.target;
                 placement.row = *row;
                 self.rows_dirty.push((placement.slot, *row));
             }
@@ -1361,6 +1376,24 @@ impl Scene {
     /// each frame wrote in one write.
     pub fn take_placements_written(&mut self) -> u32 {
         std::mem::take(&mut self.placements_written)
+    }
+
+    /// Keeps only a tile's labels drawing: its map placements become
+    /// [`PlacementTarget::Labels`] ones, and its drape placements go.
+    pub fn hold_symbols(&mut self, tile: TileId) {
+        let rows: Vec<TileRow> = self.tiles[tile.0 as usize]
+            .as_ref()
+            .expect("unknown tile")
+            .placements
+            .iter()
+            .filter(|p| matches!(p.row.target, PlacementTarget::Map | PlacementTarget::Labels))
+            .map(|p| TileRow {
+                target: PlacementTarget::Labels,
+                ..p.row
+            })
+            .collect();
+        self.place_tile(tile, &rows)
+            .expect("fewer placements always fit");
     }
 
     /// Uploads a mesh of `tile` for render `node`, with its property rows.
@@ -1697,7 +1730,7 @@ impl Scene {
                 };
                 vertex_words = vertex_words.max(mesh.vertices.len() as u32);
                 for placement in &tile.placements {
-                    if placement.row.target != node.cull.target {
+                    if !node.cull.draws(placement.row.target) {
                         continue;
                     }
                     let run = node_runs.len() as u32;

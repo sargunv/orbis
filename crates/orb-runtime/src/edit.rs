@@ -183,6 +183,7 @@ impl Map {
         let mut old_sources: Vec<Option<_>> = std::mem::take(&mut style.sources)
             .into_iter()
             .zip(std::mem::take(&mut style.placed))
+            .zip(std::mem::take(&mut style.held))
             .map(Some)
             .collect();
         let mut added = Vec::new();
@@ -192,20 +193,25 @@ impl Map {
                 .position(|k| *k == source.key)
                 .and_then(|i| old_sources[i].take())
             {
-                Some((state, placed)) => {
+                Some(((state, placed), held)) => {
                     style.sources.push(state);
                     style.placed.push(placed);
+                    style.held.push(held);
                 }
                 None => {
                     style.sources.push(SourceState::Failed);
                     style.placed.push(Vec::new());
+                    style.held.push(Vec::new());
                     added.push(index);
                 }
             }
         }
-        style
-            .retired
-            .extend(old_sources.into_iter().flatten().map(|(state, _)| state));
+        style.retired.extend(
+            old_sources
+                .into_iter()
+                .flatten()
+                .map(|((state, _), _)| state),
+        );
 
         // Nodes, by key: new nodes are stale everywhere.
         let mut relayout: BTreeMap<usize, Vec<u32>> = BTreeMap::new();

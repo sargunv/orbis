@@ -682,6 +682,7 @@ impl Renderer {
                         draw: family.draw(),
                         visible: true,
                         target: PlacementTarget::Map,
+                        labels: family.is_symbol(),
                     },
                 ),
             };

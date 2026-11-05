@@ -58,6 +58,15 @@ type LeaseKey = (Option<String>, GlyphKey);
 /// again before the bitmap arrives.
 pub(crate) type RasterRow = (u32, u32, u64);
 
+/// A held bucket (see [`Labels::hold`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Held {
+    /// Drawn as last placed until the commit of a request after this many.
+    Waiting { requests: u64 },
+    /// Fading out since the last commit.
+    Fading,
+}
+
 /// Glyph atlas rows leased by glyph key, and the rasterization they wait
 /// for.
 #[derive(Debug, Default)]
@@ -430,6 +439,13 @@ pub(crate) struct Labels {
     /// The frame of the last commit applied, and how many have been.
     placed: Option<Arc<orb_symbol::Frame>>,
     commits: u64,
+    /// Placements asked for so far: commit `n` is of request `n`.
+    requests: u64,
+    /// Buckets of tiles that left the draw list, still drawn with their
+    /// last words until a placement asked for since commits, then fading
+    /// out from there (GL JS `holdingForFade`): what replaced them shows
+    /// its labels by then.
+    held: HashMap<u64, Held>,
     /// The layers, buckets and tiles the last frame drew.
     drawn: Vec<(u32, u64, orb_symbol::TileId)>,
     /// Milliseconds labels fade over (GL JS `fadeDuration`).
@@ -553,6 +569,8 @@ impl Labels {
             last_frame: None,
             placed: None,
             commits: 0,
+            requests: 0,
+            held: HashMap::new(),
             drawn: Vec::new(),
             fade_duration: 300.0,
             cross_source_collisions: true,
@@ -924,6 +942,7 @@ impl Labels {
             if self.buckets.remove(&bucket).is_some() {
                 self.lane.remove(bucket);
             }
+            self.held.remove(&bucket);
             self.last_frame = None;
         }
     }
@@ -977,6 +996,7 @@ impl Labels {
         let frame = Arc::new(frame.clone());
         self.in_flight = Some((Arc::clone(&frame), drawn));
         self.last_frame = Some(frame);
+        self.requests += 1;
     }
 
     /// Applies a commit: changed state words go to their meshes.
@@ -1029,7 +1049,53 @@ impl Labels {
                 }
             }
         }
+        // Held buckets a placement since covers fade out from where they
+        // are, measured from this commit as every label's fade is.
+        let change = self.committed.as_ref().map_or(1.0, |c| {
+            c.fade_change(committed.commit_time).clamp(0.0, 1.0) as f32
+        });
+        let commits = self.commits;
+        for (&bucket, held) in &mut self.held {
+            match *held {
+                Held::Waiting { requests } if commits > requests => *held = Held::Fading,
+                Held::Waiting { .. } => continue,
+                Held::Fading => {}
+            }
+            let Some(meshes) = self.buckets.get_mut(&bucket) else {
+                continue;
+            };
+            for states in meshes.written.values_mut() {
+                fade_out(&mut states.text, change);
+                fade_out(&mut states.icon, change);
+            }
+            for wrap in meshes.written.keys().copied().collect::<Vec<_>>() {
+                meshes.write(gpu, renderer, wrap);
+            }
+        }
         self.committed = Some(committed);
+    }
+
+    /// Keeps a bucket drawn, as it was last placed, after its tile left
+    /// the draw list: until a placement asked for from now commits, then
+    /// while its labels fade out.
+    pub(crate) fn hold(&mut self, bucket: u64) {
+        self.held.entry(bucket).or_insert(Held::Waiting {
+            requests: self.requests,
+        });
+    }
+
+    /// Its tile draws again, or left: placement has it as any bucket.
+    pub(crate) fn unhold(&mut self, bucket: u64) {
+        self.held.remove(&bucket);
+    }
+
+    /// Whether a held bucket is done: faded out, or gone.
+    pub(crate) fn released(&self, bucket: u64, now: f64) -> bool {
+        match self.held.get(&bucket) {
+            Some(Held::Waiting { .. }) => !self.buckets.contains_key(&bucket),
+            Some(Held::Fading) => self.fade_change(now) >= 1.0,
+            None => true,
+        }
     }
 
     /// How far fades have run at `now`.
@@ -1116,8 +1182,15 @@ impl Labels {
         use orb_symbol::state;
         let change = self.fade_change(now);
         let mut shown: HashMap<Box<str>, f32> = HashMap::new();
-        for &(_, bucket, tile) in &self.drawn {
-            let wrap = tile.wrap;
+        let held = self.held.keys().flat_map(|&bucket| {
+            let wraps = self.buckets.get(&bucket).map(|m| m.written.keys().copied());
+            wraps.into_iter().flatten().map(move |wrap| (bucket, wrap))
+        });
+        let drawn = self
+            .drawn
+            .iter()
+            .map(|&(_, bucket, tile)| (bucket, tile.wrap));
+        for (bucket, wrap) in drawn.chain(held) {
             let Some(meshes) = self.buckets.get(&bucket) else {
                 continue;
             };
@@ -1155,9 +1228,10 @@ impl Labels {
 
     /// The last commit's fades are still running.
     pub(crate) fn fading(&self, now: f64) -> bool {
+        let held = self.held.values().any(|h| *h == Held::Fading);
         self.committed
             .as_ref()
-            .is_some_and(|c| c.placement_changed && c.fade_change(now) < 1.0)
+            .is_some_and(|c| (c.placement_changed || held) && c.fade_change(now) < 1.0)
     }
 
     /// This frame's placement inputs: every symbol layer in style order
@@ -1462,6 +1536,26 @@ impl Labels {
     /// Forgets the placement inputs, so the next frame places again.
     pub(crate) fn invalidate(&mut self) {
         self.last_frame = None;
+    }
+}
+
+/// Rewrites state words to fade out from where they are `change` into
+/// their fade: each shown symbol's opacity now, no longer placed.
+fn fade_out(words: &mut [u32], change: f32) {
+    use orb_symbol::state;
+    for w in words.chunks_mut(state::WORDS) {
+        let flags = w[0];
+        if flags & state::HIDDEN != 0 {
+            continue;
+        }
+        let from = (flags & state::OPACITY) as f32 / 127.0;
+        let sign = if flags & state::PLACED != 0 {
+            1.0
+        } else {
+            -1.0
+        };
+        let now = (from + sign * change).clamp(0.0, 1.0);
+        w[0] = flags & !(state::OPACITY | state::PLACED) | (now * 127.0).round() as u32;
     }
 }
 
@@ -1818,6 +1912,49 @@ mod tests {
         h.labels.committed(&mut h.gpu, &mut h.renderer, commit);
         let mesh = h.labels.buckets[&bucket].text.expect("a text mesh");
         assert_eq!(h.renderer.symbol_copies(mesh), 2);
+    }
+
+    /// #55: a bucket whose tile left the draw list keeps its labels as
+    /// placed until a placement asked for since commits, then fades them
+    /// out from there and is released once they have.
+    #[test]
+    fn held_buckets_wait_for_a_covering_commit_then_fade_out() {
+        use orb_symbol::state;
+        let mut h = Harness::new(SceneCapacity::default());
+        let mut resident = h.tile();
+        h.upload(&mut resident).unwrap();
+        let bucket = resident.symbols[0].bucket;
+        let fade = |c: Committed| Committed {
+            fade_duration: 300.0,
+            ..c
+        };
+        h.placing(bucket, &[0]);
+        let commit = fade(h.commit(bucket, &[0]));
+        h.labels.committed(&mut h.gpu, &mut h.renderer, commit);
+        // The tile leaves while the next placement is already out: that
+        // one doesn't cover its replacement.
+        h.placing(bucket, &[0]);
+        h.labels.hold(bucket);
+        let early = Committed {
+            commit_time: 1000.0,
+            ..fade(h.commit(bucket, &[0]))
+        };
+        h.labels.committed(&mut h.gpu, &mut h.renderer, early);
+        assert!(!h.labels.released(bucket, 5000.0), "still waiting");
+        let shown = |h: &Harness| h.labels.buckets[&bucket].written[&0].text[0];
+        assert_eq!(shown(&h) & state::PLACED, state::PLACED);
+        // The next one does: the labels fade out from full.
+        h.placing(bucket, &[]);
+        let covering = Committed {
+            changed: Vec::new(),
+            commit_time: 2000.0,
+            ..fade(h.commit(bucket, &[]))
+        };
+        h.labels.committed(&mut h.gpu, &mut h.renderer, covering);
+        assert_eq!(shown(&h) & (state::PLACED | state::OPACITY), 127);
+        assert!(h.labels.fading(2100.0));
+        assert!(!h.labels.released(bucket, 2100.0));
+        assert!(h.labels.released(bucket, 2300.0));
     }
 
     /// S6: a failed upload hands its glyph leases back.

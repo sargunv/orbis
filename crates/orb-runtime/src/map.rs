@@ -378,6 +378,10 @@ pub(crate) struct LoadedStyle {
     background: Option<GpuTile>,
     /// Tiles with placements in publication order, parallel to sources.
     pub(crate) placed: Vec<Vec<TileIndex>>,
+    /// Tiles that left the draw list but whose labels still draw until a
+    /// placement covers what replaced them (`Labels::hold`), parallel to
+    /// sources.
+    pub(crate) held: Vec<Vec<TileIndex>>,
     pub(crate) states: FeatureStates,
     /// This frame's drawn symbol buckets, for placement.
     pub(crate) symbol_tiles: Vec<crate::labels::SymbolTile>,
@@ -1170,6 +1174,7 @@ impl Map {
                 .collect(),
             drawn: Vec::new(),
             placed: vec![Vec::new(); plan.sources.len()],
+            held: vec![Vec::new(); plan.sources.len()],
             id: self.style_id,
             doc,
             worker: Arc::clone(&worker),
@@ -2265,9 +2270,45 @@ impl Map {
                 }
             }
         }
+        // Tiles held for their labels: drawn again, gone, or done.
+        let held = &mut style.held[index];
+        let now = self.services.clock.now();
+        held.retain(|tile| {
+            let resident = pyramid.get(*tile);
+            let buckets = || {
+                resident
+                    .into_iter()
+                    .flat_map(|r| &r.symbols)
+                    .map(|s| s.bucket)
+            };
+            let done = rows.contains_key(tile)
+                || resident.is_none()
+                || buckets().all(|b| self.labels.released(b, now));
+            if done {
+                for bucket in buckets() {
+                    self.labels.unhold(bucket);
+                }
+                if let Some(r) = resident.filter(|_| !rows.contains_key(tile)) {
+                    renderer.unplace(r.gpu);
+                }
+            }
+            !done
+        });
+        // Tiles leaving the draw list: those with labels keep drawing them
+        // until a placement covers what replaced them. Still output waits
+        // for placement anyway, and fades nothing.
+        let holds = self.mode == RenderMode::Continuous;
         for tile in placed.iter().filter(|t| !rows.contains_key(t)) {
             if let Some(resident) = pyramid.get(*tile) {
-                renderer.unplace(resident.gpu);
+                if resident.symbols.is_empty() || !holds {
+                    renderer.unplace(resident.gpu);
+                } else {
+                    renderer.hold_symbols(resident.gpu);
+                    for s in &resident.symbols {
+                        self.labels.hold(s.bucket);
+                    }
+                    held.push(*tile);
+                }
             }
         }
         let mut ordered = Vec::new();
@@ -3631,7 +3672,7 @@ impl Map {
                 }
             }
         }
-        for placed in &mut style.placed {
+        for placed in style.placed.iter_mut().chain(&mut style.held) {
             placed.clear();
         }
         if let Some(terrain) = style.terrain.take() {

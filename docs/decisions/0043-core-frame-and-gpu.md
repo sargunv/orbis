@@ -97,6 +97,14 @@ otherwise lets a coarser tile stand in.
   series and footprints. `Scene` isn't re-exported: nothing outside
   `orb-render` reaches it, its tests included.
 
+- **Replaced tiles keep their labels until a placement covers them**
+  (#55, GL JS `holdingForFade`). A tile that leaves the draw list with
+  symbol buckets keeps drawing them, as last placed, through placements
+  only symbol nodes cull (`PlacementTarget::Labels`). Once a placement
+  asked for after it left commits, its labels fade out from where they
+  are, and the tile is released when they have. Still output holds
+  nothing. Zoom z12 → z16 → z12 on Tokyo: label blinks 42–64 → 0 a run.
+
 ## Still to land
 
 The Map/Renderer split (`plan_frame`, a narrow `Renderer` that owns all
