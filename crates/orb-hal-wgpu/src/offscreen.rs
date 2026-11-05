@@ -12,9 +12,6 @@ use orb_hal::{BufferId, TextureId};
 
 use crate::WgpuGpu;
 
-/// Qualcomm's PCI vendor id, as Vulkan reports it.
-const QUALCOMM: u32 = 0x5143;
-
 /// An instance, configured from the environment, and its default adapter.
 async fn adapter(
     skip_indirect_validation: bool,
@@ -40,14 +37,14 @@ impl WgpuGpu {
     /// also draw to window surfaces.
     pub async fn offscreen() -> Result<Self, String> {
         let (mut instance, mut adapter) = adapter(false).await?;
-        // Quirk (plan §8.8): after wgpu's indirect-call validation pass,
-        // Qualcomm's Vulkan driver draws nothing from drawIndexedIndirect
-        // (Adreno 619 measured; gfx-rs/wgpu#8801 on the 650 and 740), while
-        // direct draws and drawIndirect work. Orbis's indirect arguments
+        // The quirks table (orb_hal::device): Orbis's indirect arguments
         // are its cull shader's, bounded by the scene's own buffers, so on
-        // those drivers the device skips that validation.
+        // drivers that mishandle wgpu's validation of them it is skipped.
         let info = adapter.get_info();
-        if info.backend == wgpu::Backend::Vulkan && info.vendor == QUALCOMM {
+        if orb_hal::device::needs(
+            &crate::device_adapter(&info, crate::platform(0)),
+            orb_hal::device::Workaround::SkipIndirectValidation,
+        ) {
             (instance, adapter) = self::adapter(true).await?;
         }
         // The Modern tier draws indirectly from compute (plan §4.2); devices
@@ -77,6 +74,13 @@ impl WgpuGpu {
             .map_err(|e| format!("no device: {e}"))?;
         #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
         let mut gpu = Self::new(device, queue);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let lost = std::sync::Arc::clone(&gpu.lost);
+            gpu.device.set_device_lost_callback(move |_, _| {
+                lost.store(true, std::sync::atomic::Ordering::Relaxed)
+            });
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             gpu.native = Some((instance, adapter));

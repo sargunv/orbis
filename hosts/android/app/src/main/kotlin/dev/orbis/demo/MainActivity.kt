@@ -10,6 +10,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.os.Build
+import dev.orbis.OrbBackend
 import dev.orbis.OrbCameraTarget
 import dev.orbis.OrbEventKind
 import dev.orbis.OrbMap
@@ -25,7 +27,9 @@ import java.io.File
  *
  * The web demo's live OpenFreeMap Liberty over Tokyo by default; the
  * committed extract with `adb shell am start -n dev.orbis.demo/.MainActivity
- * --es style tokyo`.
+ * --es style tokyo`. `--es backend compat` (or `modern`) picks the GPU tier
+ * instead of the device policy; `--el lose <ms>` loses the GPU that long
+ * after loading, to show recovery.
  */
 class MainActivity : Activity() {
     private lateinit var runtime: OrbRuntime
@@ -35,6 +39,8 @@ class MainActivity : Activity() {
     private var popup: Pin? = null
     private var pendingQuery: Triple<ULong, Double, Double>? = null
     private var loadLogged = false
+    /** When the GPU was lost on purpose, until a complete frame. */
+    private var lostAt: Long? = null
 
     /** A label pinned to a place on the map. */
     private inner class Pin(text: String, val lon: Double, val lat: Double, background: Int) {
@@ -58,7 +64,15 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         val started = SystemClock.elapsedRealtime()
         val data = unpackData()
-        runtime = OrbRuntime.create(0u)
+        val backend = when (intent.getStringExtra("backend")) {
+            "compat" -> OrbBackend.Compat
+            "modern" -> OrbBackend.Modern
+            else -> OrbBackend.Auto
+        }
+        runtime = OrbRuntime.createWith(
+            0u, backend, File(noBackupFilesDir, "orbis-state").path, Build.VERSION.SDK_INT.toUInt(),
+        )
+        Log.i("Orbis", runtime.selection())
         runtime.setPipelineCacheDir(File(cacheDir, "orbis-pipelines").path)
         val deviceMs = SystemClock.elapsedRealtime() - started
         view = MapView(this, runtime)
@@ -91,8 +105,23 @@ class MainActivity : Activity() {
                 c.zoom, frame.tilesDrawn.toInt(), frame.draws.toInt(),
                 if (frame.idle) "idle" else "loading", view.framesDrawn,
             )
+            lostAt?.let { at ->
+                if (frame.idle) {
+                    lostAt = null
+                    Log.i("Orbis", "recovered from device loss: complete frame %d ms after it".format(
+                        SystemClock.elapsedRealtime() - at))
+                }
+            }
             if (frame.idle && !loadLogged) {
                 loadLogged = true
+                val lose = intent.getLongExtra("lose", -1)
+                if (lose >= 0) {
+                    view.postDelayed({
+                        lostAt = SystemClock.elapsedRealtime()
+                        runtime.loseDevice()
+                        view.setNeedsFrame()
+                    }, lose)
+                }
                 Log.i(
                     "Orbis",
                     "loaded in %d ms (device %d ms) after %d frames; %d pipelines in %.0f ms; %d tiles, %d draws".format(
@@ -103,6 +132,7 @@ class MainActivity : Activity() {
                 )
             }
         }
+        view.onRecovered = { ms -> Log.i("Orbis", "new device in %d ms: %s".format(ms, runtime.selection())) }
         view.onEvent = { event ->
             when (event.kind()) {
                 OrbEventKind.Click -> {

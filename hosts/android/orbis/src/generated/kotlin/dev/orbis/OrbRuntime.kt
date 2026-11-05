@@ -30,6 +30,46 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Whether the runtime draws at the Compat tier (GLES 3.0).
+     *
+     * Contract: `snapshot`.
+     */
+    fun compat(): Boolean {
+        return OrbisNative.orbRuntimeCompat(live())
+    }
+
+    /**
+     * Why the device is the tier it is: "Modern: …" or "Compat: …".
+     *
+     * Contract: `snapshot`.
+     */
+    fun selection(): String {
+        return OrbisNative.orbRuntimeSelection(live()).decodeToString()
+    }
+
+    /**
+     * Loses the GPU on purpose, to exercise recovery: frames fail
+     * with `DeviceLost` until `recover`.
+     *
+     * Contract: `command`.
+     */
+    fun loseDevice() {
+        OrbisNative.orbRuntimeLoseDevice(live())
+    }
+
+    /**
+     * Makes a new device after a loss; maps lay their tiles out again
+     * and window targets report `TargetLost` to be made again.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun recover() {
+        OrbisNative.orbRuntimeRecover(live())
+    }
+
+    /**
      * Render and compute pipelines the device has made so far.
      *
      * Contract: `snapshot`.
@@ -76,6 +116,21 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
         @JvmStatic
         fun create(jobThreads: UInt): OrbRuntime {
             return OrbRuntime(OrbisNative.orbRuntimeCreate(jobThreads.toInt()))
+        }
+
+        /**
+         * As `create`, on `backend`, keeping device state (the crash
+         * sentinel) in the directory `state_dir` (none when empty);
+         * `android_api_level` is `Build.VERSION.SDK_INT` on Android, for
+         * the allowlist, and 0 elsewhere.
+         *
+         * Contract: `lifecycle`.
+         *
+         * @throws OrbErrorException when it fails.
+         */
+        @JvmStatic
+        fun createWith(jobThreads: UInt, backend: OrbBackend, stateDir: String, androidApiLevel: UInt): OrbRuntime {
+            return OrbRuntime(OrbisNative.orbRuntimeCreateWith(jobThreads.toInt(), backend.value, stateDir.encodeToByteArray(), androidApiLevel.toInt()))
         }
 
         /**

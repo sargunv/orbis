@@ -64,6 +64,9 @@ pub struct WgpuGpu {
     /// process, out of sight.
     #[cfg(not(target_arch = "wasm32"))]
     pipeline_time: std::time::Duration,
+    /// Set when the device made by `offscreen` is lost.
+    #[cfg(not(target_arch = "wasm32"))]
+    lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Bytes written to buffers and textures since the device was created, by
@@ -121,6 +124,45 @@ fn platform_texture_usages() -> wgpu::TextureUsages {
     }
 }
 
+/// An adapter as the device policy sees it (`orb_hal::device`).
+pub fn device_adapter(
+    info: &wgpu::AdapterInfo,
+    platform: orb_hal::device::Platform,
+) -> orb_hal::device::Adapter<'_> {
+    use orb_hal::device::Api;
+    orb_hal::device::Adapter {
+        platform,
+        api: match info.backend {
+            wgpu::Backend::Vulkan => Api::Vulkan,
+            wgpu::Backend::Metal => Api::Metal,
+            wgpu::Backend::Dx12 => Api::Dx12,
+            wgpu::Backend::BrowserWebGpu => Api::WebGpu,
+            _ => Api::Gl,
+        },
+        vendor: info.vendor,
+        name: &info.name,
+        driver: &info.driver_info,
+    }
+}
+
+/// This build's platform; Android's API level comes from the host.
+pub fn platform(android_api_level: u32) -> orb_hal::device::Platform {
+    use orb_hal::device::Platform;
+    if cfg!(target_os = "android") {
+        Platform::Android {
+            api_level: android_api_level,
+        }
+    } else if cfg!(any(target_os = "macos", target_os = "ios")) {
+        Platform::Apple
+    } else if cfg!(windows) {
+        Platform::Windows
+    } else if cfg!(target_arch = "wasm32") {
+        Platform::Web
+    } else {
+        Platform::Linux
+    }
+}
+
 impl WgpuGpu {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let limits = device.limits();
@@ -173,6 +215,8 @@ impl WgpuGpu {
             pipelines_created: 0,
             #[cfg(not(target_arch = "wasm32"))]
             pipeline_time: std::time::Duration::ZERO,
+            #[cfg(not(target_arch = "wasm32"))]
+            lost: Default::default(),
         }
     }
 
@@ -198,6 +242,25 @@ impl WgpuGpu {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn pipeline_time(&self) -> std::time::Duration {
         self.pipeline_time
+    }
+
+    /// Whether the device `offscreen` made was lost.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn lost(&self) -> bool {
+        self.lost.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Loses the device on purpose (`destroy`), to exercise recovery.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn lose(&self) {
+        self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.device.destroy();
+    }
+
+    /// The adapter behind a device `offscreen` made.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn adapter_info(&self) -> Option<wgpu::AdapterInfo> {
+        self.native.as_ref().map(|(_, adapter)| adapter.get_info())
     }
 
     /// Registers bytes in Rust memory for [`Gpu::write_buffer_from_host`].

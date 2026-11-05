@@ -83,6 +83,8 @@ pub struct Map {
     finished: Finished,
     next_query: u64,
     format: Option<TargetFormat>,
+    /// The runtime's device generation the map's GPU state is of.
+    device: u64,
     /// The last frame left work: loads, fades or placement.
     busy: bool,
     /// A command or input since the last frame changed what it shows.
@@ -152,6 +154,7 @@ impl Map {
             finished: Arc::default(),
             next_query: 0,
             format: None,
+            device: runtime.shared.generation.get(),
             busy: true,
             dirty: true,
         }
@@ -311,6 +314,14 @@ impl Map {
                 "the target belongs to another runtime".into(),
             ));
         }
+        // The runtime replaced its device: draw on the new one, laying the
+        // tiles out again (plan §8.8).
+        if self.device != self.shared.generation.get() {
+            self.device = self.shared.generation.get();
+            self.map.reset_gpu();
+            self.format = None;
+            self.dirty = true;
+        }
         let format = target.format();
         if *self.format.get_or_insert(format) != format {
             return Err(Error::InvalidArgument(format!(
@@ -347,14 +358,20 @@ impl Map {
             return Ok(None);
         };
         self.woken.store(false, Ordering::Release);
+        if self.shared.sentinel.borrow().is_some() {
+            crate::device::before_pipelines();
+        }
         let report = self.map.render(
-            &mut *self.shared.gpu.borrow_mut(),
+            self.shared.gpu.borrow_mut().gpu(),
             texture,
             format,
             viewport,
             target.scale() as f32,
         );
         target.end();
+        // A frame drew: its renderer's pipelines were made, and the driver
+        // survived them.
+        self.runtime.pipelines_made();
         let mut jumped = false;
         for event in self.map.take_events() {
             if let MapEvent::StyleLoad { .. } = event {

@@ -10,7 +10,8 @@ use khronos_egl as egl;
 
 type Instance = egl::DynamicInstance<egl::EGL1_4>;
 
-/// An EGL display, a GLES 3 context on it and the surface it draws to.
+/// An EGL display, a GLES 3 context on it and the surface it draws to
+/// when no window is current (a pbuffer, or the window it was made for).
 pub struct EglContext {
     egl: Instance,
     display: egl::Display,
@@ -153,29 +154,68 @@ impl EglContext {
         }
     }
 
-    /// The window surface's size in pixels.
-    pub fn size(&self) -> (u32, u32) {
+    /// A surface on another native window, drawn to by this context
+    /// while [`make_current`](Self::make_current) has it current.
+    ///
+    /// # Safety
+    ///
+    /// As for [`window`](Self::window).
+    pub unsafe fn create_window(&self, window: *mut c_void) -> Result<EglWindow, String> {
+        // SAFETY: the caller's live native window.
+        let surface = unsafe {
+            self.egl.create_window_surface(
+                self.display,
+                self.config,
+                window as egl::NativeWindowType,
+                None,
+            )
+        }
+        .map_err(|e| format!("EGL window surface: {e}"))?;
+        Ok(EglWindow { surface })
+    }
+
+    /// Makes the context draw to `window`, or to its own surface.
+    pub fn make_current(&self, window: Option<&EglWindow>) -> Result<(), String> {
+        let surface = window.map_or(self.surface, |w| w.surface);
+        self.egl
+            .make_current(
+                self.display,
+                Some(surface),
+                Some(surface),
+                Some(self.context),
+            )
+            .map_err(|e| format!("EGL make current: {e}"))
+    }
+
+    /// A window's size in pixels.
+    pub fn window_size(&self, window: &EglWindow) -> (u32, u32) {
         let query = |attribute| {
             self.egl
-                .query_surface(self.display, self.surface, attribute)
+                .query_surface(self.display, window.surface, attribute)
                 .unwrap_or(0)
                 .max(1) as u32
         };
         (query(egl::WIDTH), query(egl::HEIGHT))
     }
 
-    /// Presents the window surface's frame.
-    pub fn swap(&self) -> Result<(), String> {
+    /// Presents a window's frame.
+    pub fn swap(&self, window: &EglWindow) -> Result<(), String> {
         self.egl
-            .swap_buffers(self.display, self.surface)
+            .swap_buffers(self.display, window.surface)
             .map_err(|e| format!("EGL swap: {e}"))
     }
 
-    /// Whether this context's config is the one made, for hosts that
-    /// recreate window surfaces.
-    pub fn config(&self) -> egl::Config {
-        self.config
+    /// Destroys a window surface, drawing to the context's own again.
+    pub fn destroy_window(&self, window: EglWindow) {
+        let _ = self.make_current(None);
+        let _ = self.egl.destroy_surface(self.display, window.surface);
     }
+}
+
+/// A native window's EGL surface, from [`EglContext::create_window`].
+#[derive(Debug)]
+pub struct EglWindow {
+    surface: egl::Surface,
 }
 
 impl Drop for EglContext {

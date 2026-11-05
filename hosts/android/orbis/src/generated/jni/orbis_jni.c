@@ -486,6 +486,52 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeCreate(JNIEnv* env,
     return (jlong)(intptr_t)(result.ok);
 }
 
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeCreateWith(JNIEnv* env, jclass cls, jint jobThreads, jint backend, jbyteArray stateDir, jint androidApiLevel) {
+    (void)env;
+    (void)cls;
+    jbyte* stateDir_bytes = (*env)->GetByteArrayElements(env, stateDir, NULL);
+    if (!stateDir_bytes) return 0;
+    DiplomatStringView stateDir_view = { (const char*)stateDir_bytes, (size_t)(*env)->GetArrayLength(env, stateDir) };
+    OrbRuntime_create_with_result result = OrbRuntime_create_with((uint32_t)(jobThreads), (OrbBackend)(backend), stateDir_view, (uint32_t)(androidApiLevel));
+    (*env)->ReleaseByteArrayElements(env, stateDir, stateDir_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return 0;
+    }
+    return (jlong)(intptr_t)(result.ok);
+}
+
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbRuntimeCompat(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    bool result = OrbRuntime_compat((const OrbRuntime*)(intptr_t)self);
+    return (result) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbRuntimeSelection(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbRuntime_selection((const OrbRuntime*)(intptr_t)self, write);
+    return write_to_bytes(env, write);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeLoseDevice(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbRuntime_lose_device((OrbRuntime*)(intptr_t)self);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeRecover(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbRuntime_recover_result result = OrbRuntime_recover((OrbRuntime*)(intptr_t)self);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
 JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRuntimeAbiVersion(JNIEnv* env, jclass cls) {
     (void)env;
     (void)cls;

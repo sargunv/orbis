@@ -19,11 +19,12 @@ import dev.orbis.OrbErrorException
 import dev.orbis.OrbError
 
 /**
- * A view that draws an Orbis map into its surface (Vulkan), paced by
- * Choreographer, and hands touch and mouse input to the map's gestures. It
- * draws only while the map needs frames: an idle map costs no frames, and
- * data arriving on Orbis's threads wakes it. The map outlives the surface:
- * leaving the screen drops the target and keeps the map.
+ * A view that draws an Orbis map into its surface (Vulkan, or GLES on the
+ * Compat tier), paced by Choreographer, and hands touch and mouse input to
+ * the map's gestures. It draws only while the map needs frames: an idle map
+ * costs no frames, and data arriving on Orbis's threads wakes it. The map
+ * outlives the surface: leaving the screen drops the target and keeps the
+ * map. A lost GPU is replaced, and the map drawn again on the new one.
  *
  * Use it on the main thread; [close] it with the runtime's other objects.
  */
@@ -38,6 +39,9 @@ class MapView(context: Context, val runtime: OrbRuntime) :
 
     /** Called with each event; the event is closed after the call. */
     var onEvent: ((OrbEvent) -> Unit)? = null
+
+    /** Called after a lost GPU was replaced, with the milliseconds it took. */
+    var onRecovered: ((Long) -> Unit)? = null
 
     /** Frames drawn since the view was made. */
     var framesDrawn = 0
@@ -99,11 +103,20 @@ class MapView(context: Context, val runtime: OrbRuntime) :
                 onFrame?.invoke(frame)
             }
         } catch (e: OrbErrorException) {
-            if (e.error == OrbError.TargetLost) {
-                dropTarget()
-                holder.surface?.let { surfaceChanged(holder, 0, width, height) }
-            } else {
-                throw e
+            when (e.error) {
+                OrbError.TargetLost -> {
+                    dropTarget()
+                    holder.surface?.let { surfaceChanged(holder, 0, width, height) }
+                }
+                OrbError.DeviceLost -> {
+                    val started = android.os.SystemClock.elapsedRealtime()
+                    // The window's surface goes with the old device.
+                    dropTarget()
+                    runtime.recover()
+                    holder.surface?.let { surfaceChanged(holder, 0, width, height) }
+                    onRecovered?.invoke(android.os.SystemClock.elapsedRealtime() - started)
+                }
+                else -> throw e
             }
         }
         while (true) {

@@ -17,6 +17,7 @@ typedef enum OrbError {
   OrbError_Unsupported = 3,
   OrbError_Native = 4,
   OrbError_TargetLost = 5,
+  OrbError_DeviceLost = 6,
 } OrbError;
 
 typedef struct OrbError_option {union { OrbError ok; }; bool is_ok; } OrbError_option;

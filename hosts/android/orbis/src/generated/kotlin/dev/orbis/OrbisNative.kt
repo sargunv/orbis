@@ -156,6 +156,21 @@ internal object OrbisNative {
     external fun orbRuntimeCreate(jobThreads: Int): Long
 
     @JvmStatic
+    external fun orbRuntimeCreateWith(jobThreads: Int, backend: Int, stateDir: ByteArray, androidApiLevel: Int): Long
+
+    @JvmStatic
+    external fun orbRuntimeCompat(self: Long): Boolean
+
+    @JvmStatic
+    external fun orbRuntimeSelection(self: Long): ByteArray
+
+    @JvmStatic
+    external fun orbRuntimeLoseDevice(self: Long): Unit
+
+    @JvmStatic
+    external fun orbRuntimeRecover(self: Long): Unit
+
+    @JvmStatic
     external fun orbRuntimeAbiVersion(): Int
 
     @JvmStatic

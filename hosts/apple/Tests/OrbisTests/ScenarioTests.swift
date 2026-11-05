@@ -42,7 +42,7 @@ private func settle(_ map: OrbMap, _ target: OrbTarget) throws -> [OrbEvent] {
 }
 
 @Test func scenario() throws {
-    #expect(OrbRuntime.abiVersion() == 1)
+    #expect(OrbRuntime.abiVersion() == 2)
     let runtime = try OrbRuntime.create(jobThreads: 0)
     let target = OrbTarget.createTexture(runtime: runtime, width: size, height: size, scale: 1)
     let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)

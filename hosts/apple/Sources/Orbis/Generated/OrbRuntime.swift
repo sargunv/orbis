@@ -50,6 +50,57 @@ public final class OrbRuntime {
         return OrbRuntime(handle: result.ok!)
     }
 
+    /// As `create`, on `backend`, keeping device state (the crash
+    /// sentinel) in the directory `state_dir` (none when empty);
+    /// `android_api_level` is `Build.VERSION.SDK_INT` on Android, for
+    /// the allowlist, and 0 elsewhere.
+    ///
+    /// Contract: `lifecycle`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public static func createWith(jobThreads: UInt32, backend: OrbBackend, stateDir: String, androidApiLevel: UInt32) throws -> OrbRuntime {
+        let result = withStringView(stateDir) { stateDirView in OrbRuntime_create_with(jobThreads, OrbisC.OrbBackend(rawValue: numericCast(backend.rawValue)), stateDirView, androidApiLevel) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+        return OrbRuntime(handle: result.ok!)
+    }
+
+    /// Whether the runtime draws at the Compat tier (GLES 3.0).
+    ///
+    /// Contract: `snapshot`.
+    public func compat() -> Bool {
+        return OrbRuntime_compat(live())
+    }
+
+    /// Why the device is the tier it is: "Modern: …" or "Compat: …".
+    ///
+    /// Contract: `snapshot`.
+    public func selection() -> String {
+        return withWrite { write in OrbRuntime_selection(live(), write) }.text
+    }
+
+    /// Loses the GPU on purpose, to exercise recovery: frames fail
+    /// with `DeviceLost` until `recover`.
+    ///
+    /// Contract: `command`.
+    public func loseDevice() {
+        OrbRuntime_lose_device(live())
+    }
+
+    /// Makes a new device after a loss; maps lay their tiles out again
+    /// and window targets report `TargetLost` to be made again.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func recover() throws {
+        let result = OrbRuntime_recover(live())
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
     /// The C ABI's version: bumped on every incompatible change while
     /// it is 0.x.
     ///

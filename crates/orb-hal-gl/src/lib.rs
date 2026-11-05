@@ -22,6 +22,7 @@
 // the executor owns and the objects it created on it.
 #![allow(unsafe_code)]
 
+mod cache;
 mod data;
 #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
 pub mod egl;
@@ -65,6 +66,16 @@ pub struct GlGpu {
     framebuffers: exec::Framebuffers,
     uploaded: u64,
     pipelines_created: u32,
+    /// Lost on purpose ([`GlGpu::mark_lost`]).
+    marked_lost: bool,
+    /// Linked programs from earlier runs, once started.
+    programs: Option<cache::ProgramCache>,
+    /// Compiled stages by kind and source: programs that share a stage
+    /// (the symbol passes' vertex shader) compile it once.
+    stages: std::collections::HashMap<(u32, u64), glow::Shader>,
+    /// Time spent compiling and linking (natively).
+    #[cfg(not(target_arch = "wasm32"))]
+    pipeline_time: std::time::Duration,
 }
 
 impl std::fmt::Debug for GlGpu {
@@ -138,8 +149,11 @@ impl Texture {
 type TextureBinding = ((u32, u32), Option<(u32, u32)>);
 
 struct Module {
-    vertex: glow::Shader,
-    fragment: glow::Shader,
+    vertex_source: String,
+    fragment_source: String,
+    /// Compiled on first use: a cached program needs no shaders.
+    shaders: Option<(glow::Shader, glow::Shader)>,
+    label: String,
     blocks: Vec<(String, u32, u32)>,
     textures: Vec<(String, TextureBinding)>,
 }
@@ -277,6 +291,11 @@ impl GlGpu {
             framebuffers: exec::Framebuffers::default(),
             uploaded: 0,
             pipelines_created: 0,
+            marked_lost: false,
+            programs: None,
+            stages: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            pipeline_time: std::time::Duration::ZERO,
         })
     }
 
@@ -306,6 +325,9 @@ impl GlGpu {
     /// Whether the context was lost: everything made on it is gone. Takes
     /// the context's error flag.
     pub fn lost(&self) -> bool {
+        if self.marked_lost {
+            return true;
+        }
         #[cfg(target_arch = "wasm32")]
         if let Some(webgl) = &self.webgl {
             return webgl.is_context_lost();
@@ -315,6 +337,12 @@ impl GlGpu {
         // SAFETY: a query on the current context.
         let error = unsafe { self.gl.get_error() };
         matches!(error, glow::CONTEXT_LOST | CONTEXT_LOST_WEBGL)
+    }
+
+    /// Reports the context lost from now on, to exercise recovery where GL
+    /// can't lose a context on demand.
+    pub fn mark_lost(&mut self) {
+        self.marked_lost = true;
     }
 
     /// Reads a colour target's level 0 back as tightly packed RGBA8 rows,
@@ -384,6 +412,99 @@ impl GlGpu {
             .expect("buffers with COPY_SRC or INDIRECT use keep a CPU copy")
     }
 
+    /// A module's program: from the program cache, or compiled and linked
+    /// (and then cached).
+    fn link(&mut self, module: ShaderModuleId) -> glow::Program {
+        let key = {
+            let m = &self.modules[module.0];
+            cache::key(&m.vertex_source, &m.fragment_source)
+        };
+        // SAFETY: program objects of this context.
+        unsafe {
+            let program = self.gl.create_program().expect("program object");
+            if let Some(binary) = self.programs.as_ref().and_then(|c| c.get(key)) {
+                self.gl.program_binary(program, &binary);
+                if self.gl.get_program_link_status(program) {
+                    return program;
+                }
+                // The driver turned it down (it changed): compile.
+            }
+            if self.modules[module.0].shaders.is_none() {
+                let m = &self.modules[module.0];
+                let (vertex, fragment, label) = (
+                    m.vertex_source.clone(),
+                    m.fragment_source.clone(),
+                    m.label.clone(),
+                );
+                let shaders = (
+                    self.stage(glow::VERTEX_SHADER, &vertex, &label),
+                    self.stage(glow::FRAGMENT_SHADER, &fragment, &label),
+                );
+                self.modules[module.0].shaders = Some(shaders);
+            }
+            let m = &self.modules[module.0];
+            let (vertex, fragment) = m.shaders.expect("compiled above");
+            self.gl.attach_shader(program, vertex);
+            self.gl.attach_shader(program, fragment);
+            if self.programs.is_some() {
+                self.gl.program_binary_retrievable_hint(program, true);
+            }
+            self.gl.link_program(program);
+            if !self.gl.get_program_link_status(program) {
+                panic!(
+                    "{}: GLSL link failed: {}",
+                    m.label,
+                    self.gl.get_program_info_log(program)
+                );
+            }
+            if let Some(cache) = &mut self.programs
+                && let Some(binary) = self.gl.get_program_binary(program)
+            {
+                cache.insert(key, binary);
+            }
+            program
+        }
+    }
+
+    /// The program cache's key for this driver: data from another driver
+    /// (or version of it) is never offered to this one.
+    pub fn program_cache_key(&self) -> String {
+        cache::driver_key(&self.info)
+    }
+
+    /// Starts the program cache (GLES 3.0 program binaries, the GL analog
+    /// of a pipeline cache), from data an earlier run's
+    /// [`program_cache_data`](Self::program_cache_data) gave on this
+    /// driver. Damaged data starts it empty.
+    pub fn start_program_cache(&mut self, data: Option<&[u8]>) {
+        if self.programs.is_none() {
+            self.programs = Some(cache::ProgramCache::open(data));
+        }
+    }
+
+    /// The program cache's data, when programs were added since it was
+    /// started or last taken.
+    pub fn program_cache_data(&mut self) -> Option<Vec<u8>> {
+        self.programs.as_mut()?.take_data()
+    }
+
+    /// Time spent compiling and linking programs.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn pipeline_time(&self) -> std::time::Duration {
+        self.pipeline_time
+    }
+
+    /// A compiled stage: one compile per distinct source.
+    fn stage(&mut self, kind: u32, source: &str, label: &str) -> glow::Shader {
+        let key = (kind, cache::key(source, ""));
+        if let Some(&shader) = self.stages.get(&key) {
+            return shader;
+        }
+        let shader = self.compile(kind, source, label);
+        self.stages.insert(key, shader);
+        shader
+    }
+
     fn compile(&self, kind: u32, source: &str, label: &str) -> glow::Shader {
         // SAFETY: shader creation and compilation on the current context.
         unsafe {
@@ -424,9 +545,8 @@ impl Drop for GlGpu {
             for sampler in self.samplers.drain() {
                 gl.delete_sampler(sampler);
             }
-            for module in self.modules.drain() {
-                gl.delete_shader(module.vertex);
-                gl.delete_shader(module.fragment);
+            for (_, shader) in self.stages.drain() {
+                gl.delete_shader(shader);
             }
             for pipeline in self.pipelines.drain() {
                 gl.delete_program(pipeline.program);
@@ -761,8 +881,10 @@ impl Gpu for GlGpu {
             panic!("{}: Compat draws offline GLSL, not WGSL", desc.label);
         };
         let module = Module {
-            vertex: self.compile(glow::VERTEX_SHADER, program.vertex, desc.label),
-            fragment: self.compile(glow::FRAGMENT_SHADER, program.fragment, desc.label),
+            vertex_source: program.vertex.to_string(),
+            fragment_source: program.fragment.to_string(),
+            shaders: None,
+            label: desc.label.to_string(),
             blocks: program
                 .blocks
                 .iter()
@@ -794,22 +916,17 @@ impl Gpu for GlGpu {
             desc.vertex.module, desc.fragment.module,
             "a Compat program is one module"
         );
+        #[cfg(not(target_arch = "wasm32"))]
+        let started = std::time::Instant::now();
+        let program = self.link(desc.vertex.module);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.pipeline_time += started.elapsed();
+        }
         let module = &self.modules[desc.vertex.module.0];
         let gl = &self.gl;
-        // SAFETY: links shaders of this context into a new program and
-        // queries it.
+        // SAFETY: sets up a linked program of this context and queries it.
         let pipeline = unsafe {
-            let program = gl.create_program().expect("program object");
-            gl.attach_shader(program, module.vertex);
-            gl.attach_shader(program, module.fragment);
-            gl.link_program(program);
-            if !gl.get_program_link_status(program) {
-                panic!(
-                    "{}: GLSL link failed: {}",
-                    desc.label,
-                    gl.get_program_info_log(program)
-                );
-            }
             gl.use_program(Some(program));
             self.state.forget_program();
             let mut blocks = Vec::new();

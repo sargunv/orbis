@@ -69,6 +69,21 @@ mod ffi {
         Native = 4,
         /// The target can't be drawn to again; make a new one.
         TargetLost = 5,
+        /// The GPU was lost; `OrbRuntime::recover` makes another.
+        DeviceLost = 6,
+    }
+
+    /// The GPU tier a runtime draws at (plan §4.2).
+    #[diplomat::attr(contract, thread = "any")]
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum OrbBackend {
+        /// Modern where the device policy allows it (the Android
+        /// allowlist, the crash sentinel), else Compat.
+        Auto = 0,
+        /// Vulkan, Metal or D3D12 through wgpu.
+        Modern = 1,
+        /// GLES 3.0 through EGL.
+        Compat = 2,
     }
 
     impl OrbError {
@@ -93,11 +108,60 @@ mod ffi {
         /// and everything made from it.
         #[diplomat::attr(contract, lifecycle)]
         pub fn create(job_threads: u32) -> Result<Box<OrbRuntime>, OrbError> {
+            Self::create_with(job_threads, OrbBackend::Auto, "".as_bytes(), 0)
+        }
+
+        /// As `create`, on `backend`, keeping device state (the crash
+        /// sentinel) in the directory `state_dir` (none when empty);
+        /// `android_api_level` is `Build.VERSION.SDK_INT` on Android, for
+        /// the allowlist, and 0 elsewhere.
+        #[diplomat::attr(contract, lifecycle)]
+        pub fn create_with(
+            job_threads: u32,
+            backend: OrbBackend,
+            state_dir: &DiplomatStr,
+            android_api_level: u32,
+        ) -> Result<Box<OrbRuntime>, OrbError> {
+            let state_dir = text(state_dir);
             orb_api::Runtime::new(&orb_api::RuntimeOptions {
                 job_threads: (job_threads > 0).then_some(job_threads as usize),
+                backend: match backend {
+                    OrbBackend::Auto => orb_api::Backend::Auto,
+                    OrbBackend::Modern => orb_api::Backend::Modern,
+                    OrbBackend::Compat => orb_api::Backend::Compat,
+                },
+                state_dir: (!state_dir.is_empty()).then(|| state_dir.as_ref().into()),
+                android_api_level,
+                egl_library: None,
             })
             .map(|r| Box::new(OrbRuntime(r)))
             .map_err(fail)
+        }
+
+        /// Whether the runtime draws at the Compat tier (GLES 3.0).
+        #[diplomat::attr(contract, snapshot)]
+        pub fn compat(&self) -> bool {
+            self.0.tier() == orb_api::Tier::Compat
+        }
+
+        /// Why the device is the tier it is: "Modern: …" or "Compat: …".
+        #[diplomat::attr(contract, snapshot)]
+        pub fn selection(&self, out: &mut DiplomatWrite) {
+            out.write_str(&self.0.selection()).ok();
+        }
+
+        /// Loses the GPU on purpose, to exercise recovery: frames fail
+        /// with `DeviceLost` until `recover`.
+        #[diplomat::attr(contract, command)]
+        pub fn lose_device(&mut self) {
+            self.0.lose_device();
+        }
+
+        /// Makes a new device after a loss; maps lay their tiles out again
+        /// and window targets report `TargetLost` to be made again.
+        #[diplomat::attr(contract, command)]
+        pub fn recover(&mut self) -> Result<(), OrbError> {
+            self.0.recover().map(|_| ()).map_err(fail)
         }
 
         /// The C ABI's version: bumped on every incompatible change while
@@ -923,7 +987,7 @@ use std::ptr::NonNull;
 use ffi::{OrbError, OrbEventKind};
 
 /// Bumped on every incompatible change to the C ABI while it is 0.x.
-const ABI_VERSION: u32 = 1;
+const ABI_VERSION: u32 = 2;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -938,6 +1002,7 @@ fn fail(error: orb_api::Error) -> OrbError {
         orb_api::Error::Unsupported(_) => OrbError::Unsupported,
         orb_api::Error::Native(_) => OrbError::Native,
         orb_api::Error::TargetLost(_) => OrbError::TargetLost,
+        orb_api::Error::DeviceLost => OrbError::DeviceLost,
     };
     LAST_ERROR.with(|e| *e.borrow_mut() = error.message().to_owned());
     status
@@ -976,10 +1041,25 @@ fn raw_target(
     let pointer = NonNull::new(address as *mut std::ffi::c_void)
         .ok_or_else(|| fail(orb_api::Error::InvalidArgument("null handle".into())))?;
     // SAFETY: the C ABI's contract is that the handle is a live object of
-    // this kind that outlives the target.
+    // this kind that outlives the target; on Compat, an `ANativeWindow*`
+    // is an EGL native window.
     let surface = runtime
         .0
-        .with_gpu(|gpu| unsafe { gpu.create_surface_raw(kind(pointer), width, height) })
+        .with_device(|device| match device {
+            orb_api::DeviceRef::Modern(gpu) => unsafe {
+                gpu.create_surface_raw(kind(pointer), width, height)
+                    .map(orb_api::Surface::Modern)
+            },
+            orb_api::DeviceRef::Compat(egl) => match kind(pointer) {
+                orb_api::RawSurface::AndroidWindow(window) => unsafe {
+                    egl.create_window(window.as_ptr())
+                        .map(orb_api::Surface::compat)
+                },
+                orb_api::RawSurface::MetalLayer(_) => {
+                    Err("Compat draws into Android windows, not Metal layers".into())
+                }
+            },
+        })
         .map_err(|e| fail(orb_api::Error::Unsupported(e)))?;
     Ok(Box::new(ffi::OrbTarget {
         target: orb_api::Target::surface(&runtime.0, surface, scale),

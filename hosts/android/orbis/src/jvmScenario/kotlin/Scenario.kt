@@ -42,7 +42,7 @@ fun settle(map: OrbMap, target: OrbTarget): List<OrbEventKind> {
 }
 
 fun main() {
-    check(OrbRuntime.abiVersion() == 1u)
+    check(OrbRuntime.abiVersion() == 2u)
     OrbRuntime.create(0u).use { runtime ->
         OrbTarget.createTexture(runtime, SIZE, SIZE, 1.0).use { target ->
             OrbMap.create(runtime, OrbFeel.Desktop, 0.0, 0.0, 0.0, 0.0).use { map ->

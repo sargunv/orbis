@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+mod device;
 mod map;
 mod target;
 
@@ -27,11 +28,14 @@ pub use orb_camera::{
 };
 pub use orb_geo::Geodetic;
 pub use orb_hal::Tier;
-pub use orb_hal_wgpu::{RawSurface, Surface};
+pub use orb_hal_gl::egl::EglWindow;
+pub use orb_hal_wgpu::RawSurface;
 pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_runtime::{CameraState, FrameReport, Hit, MapEvent};
+pub use target::Surface;
 pub use target::Target;
 
+use device::Device;
 use orb_hal_wgpu::WgpuGpu;
 use orb_host_native::{NativeFetch, NativeImageDecode};
 use orb_jobs::ThreadPool;
@@ -50,6 +54,8 @@ pub enum Error {
     Native(String),
     /// The target can't be drawn to again.
     TargetLost(String),
+    /// The GPU was lost: [`Runtime::recover`] makes another.
+    DeviceLost,
 }
 
 impl Error {
@@ -60,6 +66,7 @@ impl Error {
             | Self::Unsupported(m)
             | Self::Native(m)
             | Self::TargetLost(m) => m,
+            Self::DeviceLost => "the GPU was lost",
         }
     }
 }
@@ -77,6 +84,29 @@ impl std::error::Error for Error {}
 pub struct RuntimeOptions {
     /// Tile job threads; the platform default when `None`.
     pub job_threads: Option<usize>,
+    /// The GPU tier to draw at.
+    pub backend: Backend,
+    /// Where the runtime keeps device state between runs: the crash
+    /// sentinel (plan §8.8). Without one, a device that crashed its driver
+    /// last time is tried on Modern again.
+    pub state_dir: Option<PathBuf>,
+    /// Android's API level (`Build.VERSION.SDK_INT`), for the allowlist.
+    pub android_api_level: u32,
+    /// The libEGL Compat loads (ANGLE's, say); the platform's by default.
+    pub egl_library: Option<String>,
+}
+
+/// Which GPU tier a runtime draws at (plan §4.2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backend {
+    /// Modern where the device policy allows it (the Android allowlist,
+    /// the crash sentinel) and a Modern adapter exists, else Compat.
+    #[default]
+    Auto,
+    /// WebGPU-class (wgpu: Vulkan, Metal, D3D12).
+    Modern,
+    /// GLES 3.0 through EGL.
+    Compat,
 }
 
 /// A GPU device and host services, shared by the maps made from it.
@@ -87,7 +117,14 @@ pub struct Runtime {
 
 #[derive(Debug)]
 struct Shared {
-    gpu: RefCell<WgpuGpu>,
+    gpu: RefCell<Device>,
+    options: RuntimeOptions,
+    /// Why the device is the tier it is.
+    selection: RefCell<String>,
+    /// Counts devices made: maps and targets of an older one rebuild.
+    generation: std::cell::Cell<u64>,
+    /// The crash sentinel's marker while armed.
+    sentinel: RefCell<Option<PathBuf>>,
     fetch: Arc<NativeFetch>,
     executor: Arc<ThreadPool>,
     images: orb_runtime::Images,
@@ -96,13 +133,15 @@ struct Shared {
     /// Where the pipeline cache is kept, and the pipeline count it was
     /// last saved at.
     cache: RefCell<Option<(PathBuf, u32)>>,
+    /// The directory the host asked to keep pipeline caches in.
+    cache_dir: RefCell<Option<PathBuf>>,
 }
 
 impl Runtime {
     /// Makes a device on the default adapter and starts the job and fetch
     /// pools. Blocks while the device is made.
     pub fn new(options: &RuntimeOptions) -> Result<Self, Error> {
-        let gpu = pollster::block_on(WgpuGpu::offscreen()).map_err(Error::Native)?;
+        let (gpu, selection, sentinel) = Device::choose(options)?;
         let threads = options
             .job_threads
             .unwrap_or_else(ThreadPool::default_size)
@@ -110,11 +149,16 @@ impl Runtime {
         Ok(Self {
             shared: Rc::new(Shared {
                 gpu: RefCell::new(gpu),
+                options: options.clone(),
+                selection: RefCell::new(selection),
+                generation: std::cell::Cell::new(0),
+                sentinel: RefCell::new(sentinel),
                 fetch: NativeFetch::new(),
                 executor: Arc::new(ThreadPool::new("jobs", threads)),
                 images: Default::default(),
                 started: Instant::now(),
                 cache: RefCell::new(None),
+                cache_dir: RefCell::new(None),
             }),
         })
     }
@@ -126,24 +170,78 @@ impl Runtime {
 
     /// Time spent making shader modules and pipelines so far.
     pub fn pipeline_time(&self) -> std::time::Duration {
-        self.shared.gpu.borrow().pipeline_time()
+        match &*self.shared.gpu.borrow() {
+            Device::Modern(gpu) => gpu.pipeline_time(),
+            Device::Compat(c) => c.gpu.pipeline_time(),
+        }
+    }
+
+    /// The tier the runtime draws at.
+    pub fn tier(&self) -> Tier {
+        self.shared.gpu.borrow().tier()
+    }
+
+    /// Why the device is the tier it is, for diagnostics: "Modern: …" or
+    /// "Compat: …".
+    pub fn selection(&self) -> String {
+        self.shared.selection.borrow().clone()
+    }
+
+    /// Whether the GPU was lost; [`recover`](Self::recover) makes another.
+    pub fn lost(&self) -> bool {
+        self.shared.gpu.borrow().lost()
+    }
+
+    /// Loses the GPU on purpose, to exercise recovery.
+    pub fn lose_device(&self) {
+        self.shared.gpu.borrow_mut().lose();
+    }
+
+    /// Makes a new device after a loss (plan §8.8), on the tier the
+    /// policy chooses again, with the pipeline cache started again. Maps
+    /// lay their tiles out again on their next frame from cached data;
+    /// texture targets are made again. Drop window targets first (their
+    /// surfaces hold their windows) and make them again after.
+    pub fn recover(&self) -> Result<Tier, Error> {
+        let (gpu, selection, sentinel) = Device::choose(&self.shared.options)?;
+        drop(std::mem::replace(&mut *self.shared.gpu.borrow_mut(), gpu));
+        self.shared.gpu.borrow().make_current();
+        *self.shared.selection.borrow_mut() = selection;
+        *self.shared.sentinel.borrow_mut() = sentinel;
+        self.shared.generation.set(self.shared.generation.get() + 1);
+        *self.shared.cache.borrow_mut() = None;
+        let dir = self.shared.cache_dir.borrow().clone();
+        if let Some(dir) = dir {
+            self.set_pipeline_cache_dir(&dir)?;
+        }
+        Ok(self.tier())
     }
 
     /// Keeps the driver's compiled pipelines in `dir` between runs, so
-    /// warm starts skip compiling them (Vulkan; elsewhere the platform
-    /// caches and this does nothing). Call before the first frame; maps
+    /// warm starts skip compiling them (Vulkan's pipeline cache, GLES's
+    /// program binaries; elsewhere the platform caches and this does
+    /// nothing). Call before the first frame; maps
     /// save the cache when they go idle with new pipelines.
     pub fn set_pipeline_cache_dir(&self, dir: &Path) -> Result<(), Error> {
-        let mut gpu = self.shared.gpu.borrow_mut();
-        let Some(key) = gpu.pipeline_cache_key() else {
+        *self.shared.cache_dir.borrow_mut() = Some(dir.to_owned());
+        let mut device = self.shared.gpu.borrow_mut();
+        let key = match &*device {
+            Device::Modern(gpu) => gpu.pipeline_cache_key(),
+            // Compat keeps program binaries (GLES 3.0) the same way.
+            Device::Compat(c) => Some(c.gpu.program_cache_key()),
+        };
+        let Some(key) = key else {
             return Ok(());
         };
         std::fs::create_dir_all(dir)
             .map_err(|e| Error::InvalidArgument(format!("{}: {e}", dir.display())))?;
         let file = dir.join(key);
         let data = std::fs::read(&file).ok();
-        gpu.start_pipeline_cache(data.as_deref());
-        *self.shared.cache.borrow_mut() = Some((file, gpu.pipelines_created()));
+        match &mut *device {
+            Device::Modern(gpu) => gpu.start_pipeline_cache(data.as_deref()),
+            Device::Compat(c) => c.gpu.start_program_cache(data.as_deref()),
+        }
+        *self.shared.cache.borrow_mut() = Some((file, device.pipelines_created()));
         Ok(())
     }
 
@@ -154,12 +252,16 @@ impl Runtime {
         let Some((file, saved)) = cache.as_mut() else {
             return Ok(());
         };
-        let gpu = self.shared.gpu.borrow();
-        let made = gpu.pipelines_created();
+        let mut device = self.shared.gpu.borrow_mut();
+        let made = device.pipelines_created();
         if made == *saved {
             return Ok(());
         }
-        let Some(data) = gpu.pipeline_cache_data() else {
+        let data = match &mut *device {
+            Device::Modern(gpu) => gpu.pipeline_cache_data(),
+            Device::Compat(c) => c.gpu.program_cache_data(),
+        };
+        let Some(data) = data else {
             return Ok(());
         };
         write_atomically(file, &data)
@@ -176,17 +278,32 @@ impl Runtime {
         width: u32,
         height: u32,
     ) -> Result<Surface, Error> {
-        self.shared
-            .gpu
-            .borrow()
-            .create_surface(window, width, height)
-            .map_err(Error::Unsupported)
+        match &*self.shared.gpu.borrow() {
+            Device::Modern(gpu) => gpu
+                .create_surface(window, width, height)
+                .map(Surface::Modern)
+                .map_err(Error::Unsupported),
+            Device::Compat(_) => Err(Error::Unsupported(
+                "Compat draws into raw native windows only".into(),
+            )),
+        }
     }
 
     /// Lets `f` make a surface from a raw platform handle with the device;
-    /// `orb-capi` does so for `CAMetalLayer`s and `ANativeWindow`s.
-    pub fn with_gpu<R>(&self, f: impl FnOnce(&WgpuGpu) -> R) -> R {
-        f(&self.shared.gpu.borrow())
+    /// `orb-capi` does so for `CAMetalLayer`s and `ANativeWindow`s: with
+    /// wgpu on Modern, through EGL on Compat.
+    pub fn with_device<R>(&self, f: impl FnOnce(DeviceRef<'_>) -> R) -> R {
+        match &*self.shared.gpu.borrow() {
+            Device::Modern(gpu) => f(DeviceRef::Modern(gpu)),
+            Device::Compat(c) => f(DeviceRef::Compat(&c.egl)),
+        }
+    }
+
+    /// Clears the crash sentinel once the first pipelines are made.
+    fn pipelines_made(&self) {
+        if let Some(marker) = self.shared.sentinel.borrow_mut().take() {
+            device::disarm(&marker);
+        }
     }
 
     fn services(&self, wake: Arc<dyn Fn() + Send + Sync>) -> orb_runtime::Services {
@@ -211,6 +328,13 @@ impl Runtime {
     fn now(&self) -> f64 {
         self.shared.started.elapsed().as_secs_f64() * 1000.0
     }
+}
+
+/// The device a raw surface is made with.
+#[derive(Debug)]
+pub enum DeviceRef<'a> {
+    Modern(&'a WgpuGpu),
+    Compat(&'a orb_hal_gl::egl::EglContext),
 }
 
 /// Writes `data` to a file of its own beside `path`, then renames it over

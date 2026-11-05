@@ -73,7 +73,7 @@ static void settle(OrbMap* map, OrbTarget* target, int counts[16]) {
 }
 
 int main(void) {
-    CHECK(OrbRuntime_abi_version() == 1);
+    CHECK(OrbRuntime_abi_version() == 2);
     OrbRuntime_create_result rt = OrbRuntime_create(0);
     CHECK(rt.is_ok);
     OrbTarget* target = OrbTarget_create_texture(rt.ok, SIZE, SIZE, 1.0);

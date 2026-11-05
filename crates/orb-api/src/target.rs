@@ -3,11 +3,36 @@
 
 use std::rc::Rc;
 
-use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureId, TextureUsages};
-use orb_hal_wgpu::{Surface, SurfaceError};
+use orb_hal::{TextureDesc, TextureFormat, TextureId, TextureUsages};
+use orb_hal_gl::egl::EglWindow;
+use orb_hal_wgpu::SurfaceError;
 use orb_runtime::{TargetFormat, Viewport};
 
+use crate::device::Device;
 use crate::{Error, Runtime, Shared};
+
+/// A window surface: wgpu's on Modern, an EGL window on Compat.
+// One per window target: the variants' sizes don't matter.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum Surface {
+    Modern(orb_hal_wgpu::Surface),
+    /// A native window's EGL surface, and the frame drawn for it.
+    Compat {
+        window: EglWindow,
+        frame: Option<(TextureId, (u32, u32))>,
+    },
+}
+
+impl Surface {
+    /// An EGL window made with [`Runtime::with_device`]'s Compat context.
+    pub fn compat(window: EglWindow) -> Self {
+        Self::Compat {
+            window,
+            frame: None,
+        }
+    }
+}
 
 /// A render target with its size in physical pixels and its scale
 /// (physical pixels per logical pixel).
@@ -18,6 +43,8 @@ pub struct Target {
     width: u32,
     height: u32,
     scale: f64,
+    /// The runtime's device generation the target's resources are of.
+    generation: u64,
 }
 
 #[derive(Debug)]
@@ -26,19 +53,26 @@ enum Kind {
     Texture(TextureId),
 }
 
-/// The format of texture targets.
+/// The format of texture targets and Compat frames.
 const TEXTURE_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 
 impl Target {
     /// Draws into a window surface made with the same runtime.
     pub fn surface(runtime: &Runtime, surface: Surface, scale: f64) -> Self {
-        let (width, height) = surface.size();
+        let (width, height) = match &surface {
+            Surface::Modern(s) => s.size(),
+            Surface::Compat { window, .. } => match &*runtime.shared.gpu.borrow() {
+                Device::Compat(c) => c.egl.window_size(window),
+                Device::Modern(_) => (1, 1),
+            },
+        };
         Self {
             shared: runtime.shared.clone(),
             kind: Kind::Surface(Box::new(surface)),
             width,
             height,
             scale: sane_scale(scale),
+            generation: runtime.shared.generation.get(),
         }
     }
 
@@ -52,6 +86,7 @@ impl Target {
             width,
             height,
             scale: sane_scale(scale),
+            generation: runtime.shared.generation.get(),
         }
     }
 
@@ -82,12 +117,19 @@ impl Target {
         }
         self.width = width;
         self.height = height;
-        let mut gpu = self.shared.gpu.borrow_mut();
-        match &mut self.kind {
-            Kind::Surface(surface) => gpu.resize_surface(surface, width, height),
-            Kind::Texture(id) => {
-                gpu.destroy_texture(*id);
-                *id = create_texture(&mut gpu, width, height);
+        let mut device = self.shared.gpu.borrow_mut();
+        match (&mut self.kind, &mut *device) {
+            (Kind::Surface(surface), Device::Modern(gpu)) => {
+                if let Surface::Modern(surface) = &mut **surface {
+                    gpu.resize_surface(surface, width, height);
+                }
+            }
+            // An EGL window follows its native window; its frame follows
+            // the size on the next frame.
+            (Kind::Surface(_), Device::Compat(_)) => {}
+            (Kind::Texture(id), device) => {
+                device.gpu().destroy_texture(*id);
+                *id = create_texture(device, width, height);
             }
         }
     }
@@ -96,9 +138,7 @@ impl Target {
     /// without padding. Blocks until the GPU is done.
     pub fn read_pixels(&self) -> Result<Vec<u8>, Error> {
         match self.kind {
-            Kind::Texture(id) => Ok(pollster::block_on(
-                self.shared.gpu.borrow().read_texture(id),
-            )),
+            Kind::Texture(id) => Ok(self.shared.gpu.borrow_mut().read_texture(id)),
             Kind::Surface(_) => Err(Error::Unsupported(
                 "surface targets can't be read back".into(),
             )),
@@ -108,7 +148,10 @@ impl Target {
     pub(crate) fn format(&self) -> TargetFormat {
         TargetFormat {
             color: match &self.kind {
-                Kind::Surface(surface) => surface.format(),
+                Kind::Surface(surface) => match &**surface {
+                    Surface::Modern(s) => s.format(),
+                    Surface::Compat { .. } => TEXTURE_FORMAT,
+                },
                 Kind::Texture(_) => TEXTURE_FORMAT,
             },
             sample_count: 1,
@@ -121,36 +164,106 @@ impl Target {
 
     /// Starts a frame: the texture to draw it into, or `None` to skip it.
     pub(crate) fn begin(&mut self) -> Result<Option<TextureId>, Error> {
-        match &mut self.kind {
-            Kind::Texture(id) => Ok(Some(*id)),
-            Kind::Surface(surface) => match self.shared.gpu.borrow_mut().acquire(surface) {
-                Ok(id) => Ok(Some(id)),
-                Err(SurfaceError::Skip) => Ok(None),
-                Err(SurfaceError::Lost(message)) => Err(Error::TargetLost(message)),
+        let mut device = self.shared.gpu.borrow_mut();
+        if device.lost() {
+            return Err(Error::DeviceLost);
+        }
+        // Made before the device was replaced: textures are made again;
+        // windows need the host.
+        if self.generation != self.shared.generation.get() {
+            match &mut self.kind {
+                Kind::Texture(id) => {
+                    *id = create_texture(&mut device, self.width, self.height);
+                    self.generation = self.shared.generation.get();
+                }
+                Kind::Surface(_) => {
+                    return Err(Error::TargetLost("the GPU was replaced".into()));
+                }
+            }
+        }
+        match (&mut self.kind, &mut *device) {
+            (Kind::Texture(id), _) => Ok(Some(*id)),
+            (Kind::Surface(surface), Device::Modern(gpu)) => match &mut **surface {
+                Surface::Modern(surface) => match gpu.acquire(surface) {
+                    Ok(id) => Ok(Some(id)),
+                    Err(SurfaceError::Skip) => Ok(None),
+                    Err(SurfaceError::Lost(message)) => Err(Error::TargetLost(message)),
+                },
+                Surface::Compat { .. } => Err(Error::TargetLost("an EGL window on Modern".into())),
             },
+            (Kind::Surface(surface), Device::Compat(c)) => {
+                let Surface::Compat { window, frame } = &mut **surface else {
+                    return Err(Error::TargetLost("a wgpu surface on Compat".into()));
+                };
+                c.egl
+                    .make_current(Some(window))
+                    .map_err(Error::TargetLost)?;
+                let size = c.egl.window_size(window);
+                (self.width, self.height) = size;
+                let id = match *frame {
+                    Some((id, made)) if made == size => id,
+                    stale => {
+                        if let Some((id, _)) = stale {
+                            orb_hal::Gpu::destroy_texture(&mut c.gpu, id);
+                        }
+                        let id = frame_texture(&mut c.gpu, size);
+                        *frame = Some((id, size));
+                        id
+                    }
+                };
+                Ok(Some(id))
+            }
         }
     }
 
     /// Shows the frame on a surface.
     pub(crate) fn end(&mut self) {
-        if let Kind::Surface(surface) = &mut self.kind {
-            self.shared.gpu.borrow_mut().present(surface);
+        let Kind::Surface(surface) = &mut self.kind else {
+            return;
+        };
+        match (&mut **surface, &mut *self.shared.gpu.borrow_mut()) {
+            (Surface::Modern(surface), Device::Modern(gpu)) => gpu.present(surface),
+            (Surface::Compat { window, frame }, Device::Compat(c)) => {
+                if let Some((id, (w, h))) = *frame {
+                    c.gpu.present(id, w, h);
+                }
+                // A failed swap shows as a lost window next frame.
+                let _ = c.egl.swap(window);
+            }
+            _ => {}
         }
     }
 }
 
 impl Drop for Target {
     fn drop(&mut self) {
-        let mut gpu = self.shared.gpu.borrow_mut();
-        match &mut self.kind {
-            Kind::Texture(id) => gpu.destroy_texture(*id),
-            Kind::Surface(surface) => gpu.retire_surface(surface),
+        let mut device = self.shared.gpu.borrow_mut();
+        if self.generation != self.shared.generation.get() {
+            // Its resources went with the old device.
+            return;
+        }
+        let kind = std::mem::replace(&mut self.kind, Kind::Texture(TextureId(u32::MAX)));
+        match (kind, &mut *device) {
+            (Kind::Texture(id), device) => device.gpu().destroy_texture(id),
+            (Kind::Surface(surface), Device::Modern(gpu)) => {
+                if let Surface::Modern(mut surface) = *surface {
+                    gpu.retire_surface(&mut surface);
+                }
+            }
+            (Kind::Surface(surface), Device::Compat(c)) => {
+                if let Surface::Compat { window, frame } = *surface {
+                    if let Some((id, _)) = frame {
+                        orb_hal::Gpu::destroy_texture(&mut c.gpu, id);
+                    }
+                    c.egl.destroy_window(window);
+                }
+            }
         }
     }
 }
 
-fn create_texture(gpu: &mut orb_hal_wgpu::WgpuGpu, width: u32, height: u32) -> TextureId {
-    gpu.create_texture(&TextureDesc {
+fn texture_desc(width: u32, height: u32) -> TextureDesc<'static> {
+    TextureDesc {
         label: "target",
         width,
         height,
@@ -162,7 +275,15 @@ fn create_texture(gpu: &mut orb_hal_wgpu::WgpuGpu, width: u32, height: u32) -> T
             | TextureUsages::TEXTURE_BINDING,
         sample_count: 1,
         mip_levels: 1,
-    })
+    }
+}
+
+fn create_texture(device: &mut Device, width: u32, height: u32) -> TextureId {
+    device.gpu().create_texture(&texture_desc(width, height))
+}
+
+fn frame_texture(gpu: &mut orb_hal_gl::GlGpu, (width, height): (u32, u32)) -> TextureId {
+    orb_hal::Gpu::create_texture(gpu, &texture_desc(width, height))
 }
 
 fn sane_scale(scale: f64) -> f64 {
