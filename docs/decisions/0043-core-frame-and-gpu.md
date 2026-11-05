@@ -189,9 +189,32 @@ hillshade, color-relief, terrain and raster match main (27/0/1, 9/0/0,
 44/30/14, 56/2/1), and Chrome's hillshade too. The Alps still renders the
 same picture: 6 runs each, 0.70–1.15 s before, 0.51–0.94 s after.
 
+## Smaller steps
+
+- **The web's compile wake (#70).** Each `create*PipelineAsync` promise
+  wakes the map, and a web map waiting only for compiles asks for no
+  frames. WebGL2 has no callback and still polls.
+- **One resource table.** The two HALs' copies of the id-keyed table are
+  `orb_hal::slots::Slots`. Texture pages hand out layers through the
+  scene's `Slots`.
+- **Terrain before its DEM.** Terrain paint no longer waits for a DEM
+  page: tiles draw flat until their DEM arrives, as GL JS's do.
+  `terrain/pitched-world` passes. Globe drapes this exposed are #98.
+- **Warps per tile.** The low-zoom surface's patches are keyed by tile
+  and made when the tile is first requested (its grid is needed then),
+  then uploaded once. That is the "one warp per tile" B10 asked for;
+  covered tiles that aren't resident (background, terrain cover) need
+  them too, so they stay out of the resident tile.
+
 ## Still to land
 
-`plan_frame` as a pure function of the camera and the resident set (with
-one warp per tile made at arrival, and #32's T-junction snapping), one DEM
-prepare path and one downsampler, and one slot allocator. Each step updates
-this record.
+- `plan_frame` as a pure function of the camera and the resident set,
+  with #32's T-junction snapping: a coarse tile's edge takes its finer
+  resident neighbour's samples.
+- One downsampler for drape slots and raster pages. One compute shader
+  over regions (layer, corner, side) would serve both, with the drape
+  atlas a one-layer array.
+- #42's drape size classes.
+- A Compat cull parity test: `compat::cull` as a pure function of the
+  tables, compared with Modern's dispatch read back on the same scene.
+- The renderer's teardown (#79; proposal there).
