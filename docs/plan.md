@@ -959,6 +959,8 @@ After M2 the path splits into two lanes that run in parallel, each with one or t
 - **Rendering lane** (style spec → rendering breadth): M6 any CRS and servers → M7 globe, ellipsoid, terrain, atmosphere → M8 3D content and lighting; M11 data layers.
 - **Platform lane** (bindings → platforms): M3 interactive hosts → M4 Compat and device robustness → M5 hardening and batteries; M9 guest embedding, M10 accessibility host mappings.
 
+**Current priority:** finish the core feature set and make it fast, simple and correct. That means rendering fidelity across the v8 spec, globe, terrain and 3D content; offline regions, the HTTP cache and snapshots; performance; cleanup; and bug fixes. Fuzzing, the generated support matrix and docs site, composition, the `wasm32-wasip2` kernel component, M9 guest embedding, M10 accessibility, M11 data layers and M12 stable contracts are deferred. They remain the long-term design, but no lane works on them now.
+
 Rendering-lane milestones do not wait for M3–M5. Where an exit criterion needs the other lane's work (Compat coverage in M6–M8 and M11 needs M4; any-CRS gestures and queries in M6, and M11's phone demo, need M3), whichever of the two milestones finishes second carries it.
 
 > **As tracked:** the GitHub milestones M0–M8 carry working versions of these exit criteria, used as goals reported at each milestone's end rather than hard gates (emulators, simulators and one phone instead of a device farm; no Windows in M0–M8). The GitHub milestones follow the same two lanes. The architecture is unchanged.
