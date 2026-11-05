@@ -1,5 +1,5 @@
 // The binding scenario (plan §14.1, decision 0018) through the orbis
-// package; `web/scripts/scenario.mjs` drives it in each thread mode. The
+// package; `web/scripts/scenario.mjs` drives it on each renderer. The
 // page makes the map and records its events and frames; the driver reads
 // pixels off screenshots and moves the pointer.
 import { createMap } from "orbis";
@@ -34,7 +34,7 @@ window.requestAnimationFrame = (callback) => raf((t) => { rafs++; callback(t); }
 window.scenario = (async () => {
   const map = await createMap({
     container: document.getElementById("map"), style: STYLE,
-    thread: params.get("thread") ?? undefined, renderer: params.get("renderer") ?? undefined,
+    renderer: params.get("renderer") ?? undefined,
   });
   const generations = [];
   for (const type of ["styleload", "load", "idle", "movestart", "moveend", "click", "error", "styleimagemissing"]) {
@@ -44,7 +44,6 @@ window.scenario = (async () => {
   await map.once("idle");
   return {
     map,
-    thread: map.thread,
     /** The events since the last call. */
     events: () => events.splice(0),
     idle: () => (map.stats?.idle && !map.camera.moving ? Promise.resolve() : map.once("idle")),

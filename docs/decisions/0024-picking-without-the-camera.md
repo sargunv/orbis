@@ -83,3 +83,9 @@ The page keeps every resident tile's picking geometry, not only the drawn
 tiles' projected features, so its memory follows the render worker's tile
 cache (tens of MiB for a city view on live Liberty); the render worker's
 copy shrinks, from nested vectors to packed words.
+
+## Since
+
+Decision 0042 deleted the render worker, and with it the publication
+(`Map::publish_hits`, `HitPublication`, `HitIndex`): the map answers
+`hitTest` on the thread that draws, from the parts above.

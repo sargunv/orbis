@@ -142,96 +142,6 @@ struct PathResult {
     blink_frames: usize,
     /// From the path's end until the map is idle.
     settle: Duration,
-    picking: Picking,
-    /// The terrain's elevation pyramid, published to a UI thread's camera
-    /// whenever it changed over the path (the web's ui role and placement
-    /// worker take it, decision 0019).
-    elevation: Publishes,
-}
-
-/// What publishing picking to a UI thread's index costs (decision 0024):
-/// the render thread's `Map::publish_hits` and the UI's `HitIndex::apply`
-/// after each frame, and a first hit test at rest.
-#[derive(Debug, Default)]
-struct Picking {
-    /// Over the path: publications, their total and largest time and bytes.
-    moving: Publishes,
-    /// From the path's end until idle.
-    settling: Publishes,
-    /// Hit tests at the centre at rest, through the UI's index: the first
-    /// and the next.
-    hit_test: Duration,
-    hit_test_again: Duration,
-}
-
-#[derive(Debug, Default)]
-struct Publishes {
-    count: usize,
-    publish: Duration,
-    publish_max: Duration,
-    apply: Duration,
-    apply_max: Duration,
-    bytes: usize,
-}
-
-impl Publishes {
-    fn publish(
-        &mut self,
-        map: &Map,
-        to: &mut orb_runtime::HitPublication,
-        index: &mut orb_runtime::HitIndex,
-    ) {
-        let started = clock::now();
-        let Some(bytes) = map.publish_hits(to) else {
-            return;
-        };
-        let published = clock::now();
-        index.apply(&bytes).expect("a publication applies");
-        let applied = clock::now();
-        self.count += 1;
-        self.publish += published - started;
-        self.publish_max = self.publish_max.max(published - started);
-        self.apply += applied - published;
-        self.apply_max = self.apply_max.max(applied - published);
-        self.bytes += bytes.len();
-    }
-}
-
-impl Publishes {
-    /// Encodes the elevation pyramid on the render thread and decodes it as
-    /// a UI thread does, when its revision moved past `seen`.
-    fn publish_elevation(&mut self, map: &Map, seen: &mut u64) {
-        let revision = map.elevation_revision();
-        if revision == std::mem::replace(seen, revision) {
-            return;
-        }
-        let started = clock::now();
-        let bytes = map.elevation_pyramid();
-        let published = clock::now();
-        if !bytes.is_empty() {
-            orb_runtime::TerrainElevation::from_pyramid(&bytes).expect("a pyramid decodes");
-        }
-        let applied = clock::now();
-        self.count += 1;
-        self.publish += published - started;
-        self.publish_max = self.publish_max.max(published - started);
-        self.apply += applied - published;
-        self.apply_max = self.apply_max.max(applied - published);
-        self.bytes += bytes.len();
-    }
-
-    /// The row's cells: count, publish total / max, apply total / max, MiB.
-    fn cells(&self) -> String {
-        format!(
-            "{} | {} / {} | {} / {} | {:.2}",
-            self.count,
-            ms(self.publish),
-            ms(self.publish_max),
-            ms(self.apply),
-            ms(self.apply_max),
-            self.bytes as f64 / (1024.0 * 1024.0)
-        )
-    }
 }
 
 impl PathResult {
@@ -303,12 +213,7 @@ pub(crate) async fn run(
         let start = (path.camera)(settings, 0.0);
         let mut map = new_map(start)?;
         settle(gpu, &mut map, &|g, m| render(g, m).0, &mut warnings).await?;
-        let mut to = orb_runtime::HitPublication::default();
-        let mut index = orb_runtime::HitIndex::default();
-        let mut picking = Picking::default();
-        let mut elevation = Publishes::default();
         let mut revision = map.elevation_revision();
-        Publishes::default().publish(&map, &mut to, &mut index);
         // A flight's camera stands on the terrain, as the demos' do.
         let mut camera = orb_camera::Camera::new(start, map.surface(), viewport);
         camera.set_terrain(map.elevation());
@@ -358,11 +263,10 @@ pub(crate) async fn run(
                 gpu.take_frames().await;
             }
             cpu.push(time);
-            picking.moving.publish(&map, &mut to, &mut index);
             if map.elevation_revision() != revision {
+                revision = map.elevation_revision();
                 camera.set_terrain(map.elevation());
             }
-            elevation.publish_elevation(&map, &mut revision);
             peak_bytes = peak_bytes.max(uploaded(gpu) - before);
             loading += usize::from(report.tiles_loading > 0);
             rebuilds += usize::from(report.frame.candidates_rebuilt);
@@ -394,7 +298,6 @@ pub(crate) async fn run(
         let ended = clock::now();
         loop {
             let (report, _) = render(gpu, &mut map);
-            picking.settling.publish(&map, &mut to, &mut index);
             gpu.take_frames().await;
             warnings.extend(map.take_warnings());
             if report.idle {
@@ -406,13 +309,6 @@ pub(crate) async fn run(
             clock::sleep(FRAME).await;
         }
         gpu.take_frames().await;
-        let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
-        let started = clock::now();
-        let _ = index.hit_test(center, map.camera(), viewport, &map.surface());
-        picking.hit_test = clock::now() - started;
-        let started = clock::now();
-        let _ = index.hit_test(center, map.camera(), viewport, &map.surface());
-        picking.hit_test_again = clock::now() - started;
         cpu.sort_unstable();
         done.sort_unstable();
         paths.push(PathResult {
@@ -426,8 +322,6 @@ pub(crate) async fn run(
             blinks,
             blink_frames,
             settle: clock::now() - ended,
-            picking,
-            elevation,
         });
     }
     warnings.sort();
@@ -505,48 +399,6 @@ impl GesturesReport {
              vanished (opacity under 0.1) and were back in full within {FLASH_FRAMES} frames (no \
              fade is that quick), and the frames they were gone."
         )?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "| path | picking while moving: publications | publish total / max | apply total / max | MiB | \
-             while settling: publications | publish total / max | apply total / max | MiB | hit tests at rest: first / next |"
-        )?;
-        writeln!(out, "|---|---|---|---|---|---|---|---|---|---|")?;
-        for p in &self.paths {
-            writeln!(
-                out,
-                "| {} | {} | {} | {} / {} |",
-                p.name,
-                p.picking.moving.cells(),
-                p.picking.settling.cells(),
-                ms(p.picking.hit_test),
-                ms(p.picking.hit_test_again)
-            )?;
-        }
-        writeln!(out)?;
-        writeln!(
-            out,
-            "Picking: `Map::publish_hits` on the render thread and `HitIndex::apply` on the UI's after each \
-             frame (a publication carries what changed: tiles, the drawn list, labels, the layer table)."
-        )?;
-        if self.paths.iter().any(|p| p.elevation.count > 0) {
-            writeln!(out)?;
-            writeln!(
-                out,
-                "| path | elevation pyramid while moving: publications | encode total / max | decode total / max | MiB |"
-            )?;
-            writeln!(out, "|---|---|---|---|---|")?;
-            for p in &self.paths {
-                writeln!(out, "| {} | {} |", p.name, p.elevation.cells())?;
-            }
-            writeln!(out)?;
-            writeln!(
-                out,
-                "Elevation: `Map::elevation_pyramid` on the render thread and `TerrainElevation::from_pyramid` \
-                 on the UI's, at every revision, which follows DEM arrival and eviction (the web publishes \
-                 each; its placement worker takes one at each new snapshot)."
-            )?;
-        }
         for warning in &self.warnings {
             writeln!(out, "- warning: {warning}")?;
         }

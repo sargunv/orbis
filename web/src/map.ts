@@ -1,12 +1,11 @@
-// The map: one API over both thread modes (plan §14.3). The camera, its
-// gestures and synchronous queries live on this thread in the ui role;
-// drawing happens here or in a render worker.
+// The map (plan §14.3): the camera, its gestures, drawing and synchronous
+// queries on the page's thread; tile jobs and labels in workers.
 
 import init, { UiRole } from "../pkg/core.js";
 import { Annotations } from "./annotations.ts";
 import { Emitter, type Listener } from "./events.ts";
-import { ackCamera, ackGeneration, ackIdle, ackLost, frameLoop, frameStats, type FrameAck } from "./frames.ts";
-import { probeWorker, startMain, startWorker, type Host } from "./hosts.ts";
+import { ackIdle, ackLost, frameLoop, frameStats, type FrameAck } from "./frames.ts";
+import { startMain, type Host } from "./hosts.ts";
 import { attachInput } from "./input.ts";
 import { defaultJobWorkers } from "./workers.ts";
 import { transaction, type FeatureTarget, type Transaction } from "./transaction.ts";
@@ -52,7 +51,7 @@ export class CameraControl {
     this.#animations = animations;
   }
 
-  /** The camera now: synchronous, on this thread, wherever the map draws. */
+  /** The camera now. */
   get current(): Camera {
     const [lon, lat, , bearing, pitch, , zoom, elevation, roll] = this.#ui.camera();
     return { center: [lon, lat], zoom, bearing, pitch, roll, elevation };
@@ -142,14 +141,12 @@ export class OrbisMap {
   readonly annotations: Annotations;
   #ui: UiRole;
   #host!: Host;
-  #events = new Emitter<MapEvents>(() => this.#wantFrames());
+  #events = new Emitter<MapEvents>();
   #loop: ReturnType<typeof frameLoop>;
   #pushed = -1;
   #dirty = true;
   #latest: FrameAck | undefined;
   #latestStats: FrameStats | undefined;
-  /** Whether the page wants every frame acknowledged: annotations or `render` listeners. */
-  #everyFrame = false;
   #idle = false;
   #animations = new Map<number, (arrived: boolean) => void>();
   #detach: (() => void)[] = [];
@@ -170,16 +167,12 @@ export class OrbisMap {
     this.#loop = frameLoop((now) => this.#tick(now), (e) => this.#error(e));
     const request = () => this.#loop.request();
     this.camera = new CameraControl(ui, request, this.#animations);
-    this.annotations = new Annotations(overlay, () => {
-      this.#wantFrames();
-      this.#placeAnnotations();
-    });
+    this.annotations = new Annotations(overlay, () => this.#placeAnnotations());
   }
 
   /** @internal */
   start(host: Host, interactive: boolean): void {
     this.#host = host;
-    if (this.#everyFrame) host.acknowledge?.(true);
     this.#interactive = interactive;
     this.#observer = new ResizeObserver(() => this.#resize());
     this.#attach();
@@ -199,21 +192,17 @@ export class OrbisMap {
     this.#observer?.observe(this.#canvas);
   }
 
-  /** Loses the GPU on purpose, to exercise recovery (main-thread maps);
-   * with `switchTier`, a WebGPU map recovers on WebGL2. */
-  loseDevice(switchTier = false): void { this.#host.loseDevice?.(switchTier); }
+  /** Loses the GPU on purpose, to exercise recovery; with `switchTier`, a
+   * WebGPU map recovers on WebGL2. */
+  loseDevice(switchTier = false): void { this.#host.loseDevice(switchTier); }
 
-  /** Where the map draws: "worker" (a render worker) or "main". */
-  get thread(): "main" | "worker" { return this.#host.thread; }
-
-  /** The last acknowledged frame's counters. A render worker acknowledges
-   * frames the page needs (with annotations or `render` listeners, every one). */
+  /** The last frame's counters. */
   get stats(): FrameStats | undefined {
     if (this.#latest && !this.#latestStats) this.#latestStats = frameStats(this.#latest);
     return this.#latestStats;
   }
 
-  /** The wasm map in main-thread mode, for benches and tests; unstable. */
+  /** The wasm map, for benches and tests; unstable. */
   get core() { return this.#host.core; }
 
   on<K extends keyof MapEvents>(type: K, listener: Listener<MapEvents[K]>): () => void {
@@ -226,7 +215,7 @@ export class OrbisMap {
   /** `for await (const e of map.events("idle"))`. */
   events<K extends keyof MapEvents>(type: K): AsyncGenerator<MapEvents[K]> { return this.#events.events(type); }
 
-  /** The pixel showing a point now, or null behind the eye. Synchronous in both thread modes. */
+  /** The pixel showing a point now, or null behind the eye. */
   project(lngLat: LngLat): Point | null {
     const p = this.#ui.project(lngLat[0], lngLat[1]);
     return p ? [p[0], p[1]] : null;
@@ -238,9 +227,9 @@ export class OrbisMap {
     return g ? [g[0], g[1]] : null;
   }
 
-  /** The topmost feature under a pixel, synchronously, from the last published frame. */
+  /** The topmost feature under a pixel, synchronously, from the last frame. */
   hitTest(point: Point): Hit | null {
-    return (this.#host.hitTest ?? ((x, y) => this.#ui.hitTest(x, y) as Hit | null))(point[0], point[1]);
+    return this.#host.hitTest(point[0], point[1]);
   }
 
   /** Every feature drawn under a point or box (all on screen without one), topmost first. */
@@ -328,10 +317,8 @@ export class OrbisMap {
     const ratio = devicePixelRatio;
     const [w, h] = [this.canvas.clientWidth, this.canvas.clientHeight];
     this.#ui.resize(w, h);
-    if (this.#host.thread === "main") {
-      this.canvas.width = Math.round(w * ratio);
-      this.canvas.height = Math.round(h * ratio);
-    }
+    this.canvas.width = Math.round(w * ratio);
+    this.canvas.height = Math.round(h * ratio);
     this.#host.resize(Math.round(w * ratio), Math.round(h * ratio), ratio);
     this.#dirty = true;
     this.#loop.request();
@@ -351,7 +338,7 @@ export class OrbisMap {
       this.#idle = false;
     }
     let more = moving;
-    if (this.#host.render && this.#dirty && this.#lostAt === undefined) {
+    if (this.#dirty && this.#lostAt === undefined) {
       const ack = this.#host.render();
       if (ackLost(ack)) {
         this.#recover();
@@ -368,7 +355,7 @@ export class OrbisMap {
 
   /** Gets a new GPU after a loss (plan §8.8) and draws on. */
   #recover(): void {
-    if (this.#lostAt !== undefined || !this.#host.recover) return;
+    if (this.#lostAt !== undefined) return;
     this.#lostAt = performance.now();
     const replace = (canvas: HTMLCanvasElement) => {
       this.#detachInput?.();
@@ -386,13 +373,10 @@ export class OrbisMap {
     }, (e) => this.#error(`the GPU was lost and no other could be made: ${e}`));
   }
 
-  /** @internal A frame drawn here or acknowledged by the render worker. */
-  frame(ack: FrameAck): void { this.#frame(ack); this.#maybeIdle(); }
-
   /** @internal A failure where the map draws. */
   fail(e: unknown): void { this.#error(e); }
 
-  /** @internal The core has new data to draw (main-thread mode). */
+  /** @internal The core has new data to draw. */
   wake(): void {
     this.#dirty = true;
     this.#loop.request();
@@ -401,13 +385,11 @@ export class OrbisMap {
   #frame(ack: FrameAck): void {
     this.#latest = ack;
     this.#latestStats = undefined;
-    if (ack.hits) this.#ui.updateHits(ack.hits);
     if (ack.elevation) {
       // The camera stands on the new terrain: send it with the next tick.
       this.#ui.updateElevation(ack.elevation);
       this.#loop.request();
     }
-    this.#ui.advanceHits(ackGeneration(ack));
     if (!ackIdle(ack)) this.#idle = false;
     // Loads and projection edits move the camera's surface, before a
     // style's camera is adopted on it.
@@ -438,33 +420,17 @@ export class OrbisMap {
     this.#placeAnnotations();
   }
 
-  /** Tells a render worker whether to acknowledge every frame. */
-  #wantFrames(): void {
-    const every = (this.annotations?.size ?? 0) > 0 || this.#events.has("render");
-    if (every === this.#everyFrame) return;
-    this.#everyFrame = every;
-    this.#host?.acknowledge?.(every);
-  }
-
   /** GL JS's `idle`: the last frame drawn is idle and the camera is at rest. */
   #maybeIdle(): void {
     const latest = this.#latest;
-    if (this.#idle || !latest || !ackIdle(latest) || this.#ui.isMoving() || (this.#host.render && this.#dirty)) return;
-    // The frame must show the camera as it is now: a worker's frame for an
-    // older camera can arrive after this one was sent.
-    if (this.#ui.modified()) {
-      const camera = this.#ui.camera();
-      const shown = ackCamera(latest);
-      for (let i = 0; i < 6; i++) if (camera[i] !== shown[i]) return;
-    }
+    if (this.#idle || !latest || !ackIdle(latest) || this.#ui.isMoving() || this.#dirty) return;
     this.#idle = true;
     this.#events.emit("idle", {});
   }
 
   #placeAnnotations(): void {
     if (!this.#latest || !this.annotations.size) return;
-    const camera = ackCamera(this.#latest);
-    this.annotations.place((points) => this.#ui.projectWith(camera, points));
+    this.annotations.place((points) => new Float64Array(this.#ui.projectPoints(points)));
   }
 
   /** The ui role's events, packed four numbers each (`UiRole::take_events`). */
@@ -523,19 +489,6 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   canvas.width = Math.round(canvas.clientWidth * ratio);
   canvas.height = Math.round(canvas.clientHeight * ratio);
 
-  // WebGL2 draws on this thread (its module is the renderer role's alone).
-  let thread = tier === "compat" ? "main" : options.thread ?? "main";
-  let probed: Awaited<ReturnType<typeof probeWorker>> | undefined;
-  const offscreen = typeof OffscreenCanvas !== "undefined" && "transferControlToOffscreen" in canvas;
-  if (thread !== "main") {
-    probed = offscreen ? await probeWorker() : undefined;
-    const works = offscreen && probed?.ok;
-    if (thread === "worker" && !works) {
-      throw new Error(`worker mode needs OffscreenCanvas and WebGPU in workers (${probed?.reason ?? "no OffscreenCanvas"})`);
-    }
-    thread = works ? "worker" : "main";
-    if (thread === "main") probed?.worker.terminate();
-  }
   const compiled = await module;
   await init({ module_or_path: compiled });
   const ui = new UiRole(canvas.clientWidth, canvas.clientHeight);
@@ -546,15 +499,9 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   const style = typeof options.style === "string"
     ? options.style
     : `data:application/json,${encodeURIComponent(JSON.stringify(options.style))}`;
-  const callbacks = {
-    frame: (ack: FrameAck) => map.frame(ack),
-    wake: () => map.wake(),
-    error: (e: unknown) => map.fail(e),
-  };
+  const callbacks = { wake: () => map.wake(), error: (e: unknown) => map.fail(e) };
   const jobWorkers = options.jobWorkers ?? defaultJobWorkers();
-  const host = thread === "worker"
-    ? startWorker(compiled, probed!.worker, canvas, style, jobWorkers, callbacks)
-    : await startMain(compiled, canvas, style, jobWorkers, callbacks, tier);
+  const host = await startMain(compiled, canvas, style, jobWorkers, callbacks, tier);
   map.start(host, options.interactive ?? true);
   return map;
 }

@@ -1,5 +1,5 @@
 // A job worker: fetches and lays out tiles, rasterizes glyphs and answers
-// feature queries for the render worker, replying on its port with each
+// feature queries for the map, replying on its port with each
 // packed tile's buffer, image tile's ImageBitmap (with a terrain DEM
 // tile's elevations) or glyph bitmaps, transferred.
 //

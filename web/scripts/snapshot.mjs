@@ -1,7 +1,7 @@
 // Builds and serves web/dist, opens it in headless Chromium with WebGPU, waits for the
 // map to go idle and writes a screenshot.
 //
-//   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]] [--thread=main|worker]
+//   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]]
 //     [--format=mvt|mlt] [--style=<key>|URL]
 //     [--size=WxH] [--compare=reference-map.png] [--renderer=webgpu|webgl2] [--lose=<ms> [--switch]]
 //     [--reopen[=offline]]
@@ -21,7 +21,6 @@ import { readFile } from "node:fs/promises";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const args = process.argv.slice(2);
-const thread = args.find((a) => a.startsWith("--thread="))?.slice("--thread=".length);
 const format = args.find((a) => a.startsWith("--format="))?.slice("--format=".length);
 const compare = args.find((a) => a.startsWith("--compare="))?.slice("--compare=".length);
 const style = args.find((a) => a.startsWith("--style="))?.slice("--style=".length);
@@ -35,7 +34,6 @@ const [out = "snapshot.png", hash = ""] = args.filter((a) => !a.startsWith("--")
 
 const server = await serveDemo();
 const params = new URLSearchParams();
-if (thread) params.set("thread", thread);
 if (renderer) params.set("renderer", renderer);
 if (lose) params.set("lose", lose);
 if (switchTier) params.set("switch", "");
@@ -77,7 +75,7 @@ try {
   await page.waitForTimeout(250);
   const stats = await page.evaluate(() => {
     const s = globalThis.app.map?.stats;
-    return s ? `${app.map.thread} thread, ${document.getElementById("app").dataset.renderer}, z${s.zoom.toFixed(2)}, ${s.ms.toFixed(1)} ms CPU, ${s.draws} draws, ` +
+    return s ? `${document.getElementById("app").dataset.renderer}, z${s.zoom.toFixed(2)}, ${s.ms.toFixed(1)} ms CPU, ${s.draws} draws, ` +
       `${s.tilesDrawn} tiles` : document.getElementById("toast").textContent;
   });
   console.log(`${stats} (${Date.now() - started} ms)`);

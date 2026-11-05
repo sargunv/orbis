@@ -990,77 +990,11 @@ mod tests {
         }
     }
 
-    /// The web ui role's approximate terrain (decision 0019): how far the
-    /// elevation pyramid's elevations and terrain unprojections are from
-    /// the map's over the Alps demo. Needs the network (Mapterhorn and
-    /// OpenFreeMap tiles): `cargo test --release -p orb-demo -- --ignored
-    /// pyramid`.
-    #[test]
-    #[ignore = "fetches tiles over the network"]
-    fn pyramid_error_over_the_alps() {
-        use orb_camera::Elevation;
-        let style = format!(
-            "file://{}/../../web/demo/data/alps.json",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let options = super::Options {
-            style: Some(style),
-            at: None,
-            ..tokyo(0.0)
-        };
-        let (offscreen, _, _) = super::Offscreen::load(&options).unwrap();
-        let full = offscreen.map.elevation().unwrap();
-        let pyramid =
-            orb_runtime::TerrainElevation::from_pyramid(&offscreen.map.elevation_pyramid())
-                .unwrap();
-        let viewport = offscreen.viewport;
-        let surface = offscreen.map.surface();
-        let view = orb_camera::View::over(offscreen.map.camera(), viewport, &surface, &*full);
-        let (mut metres, mut pixels) = (Vec::new(), Vec::new());
-        for i in 0..40 {
-            for j in 0..30 {
-                let px = glam::DVec2::new(
-                    (f64::from(i) + 0.5) / 40.0 * viewport.width,
-                    (f64::from(j) + 0.5) / 30.0 * viewport.height,
-                );
-                let Some((approx, _)) = view.unproject_terrain(px, &pyramid) else {
-                    continue;
-                };
-                let (Some(true_m), Some(approx_m)) = (full.at(approx), pyramid.at(approx)) else {
-                    continue;
-                };
-                metres.push((true_m - approx_m).abs());
-                // Where the approximate point really draws.
-                if let Some(drawn) = view.project_3d(approx, true_m * view.height_scale()) {
-                    pixels.push(drawn.distance(px));
-                }
-            }
-        }
-        let stats = |v: &mut Vec<f64>| {
-            v.sort_by(f64::total_cmp);
-            (v[v.len() / 2], v[v.len() * 95 / 100], v[v.len() - 1])
-        };
-        let (m, p) = (stats(&mut metres), stats(&mut pixels));
-        println!(
-            "pyramid over the Alps, {} pixels: elevation error median {:.1} m, p95 {:.1} m, max {:.1} m; unproject error median {:.2} px, p95 {:.2} px, max {:.2} px; {} bytes",
-            metres.len(),
-            m.0,
-            m.1,
-            m.2,
-            p.0,
-            p.1,
-            p.2,
-            offscreen.map.elevation_pyramid().len()
-        );
-        assert!(p.1 < 8.0, "p95 {} px", p.1);
-    }
-
     /// The Alps flight through a camera store, as the demos
     /// fly them from the moment the style loads, with tiles loading in wall
     /// time: how far the eye and its near plane stay above the map's
-    /// full-resolution terrain. The store takes the terrain as the native
-    /// demo does (each revision) and as the web ui role does (the pyramid,
-    /// at once and then every 30 frames). Needs the network: `cargo test
+    /// full-resolution terrain, taking the terrain at each revision. Needs
+    /// the network: `cargo test
     /// --release -p orb-demo -- --ignored flight`.
     #[test]
     #[ignore = "fetches tiles over the network"]
@@ -1073,7 +1007,7 @@ mod tests {
         };
         let flight =
             super::Flight::read(&format!("{root}/web/demo/data/alps-flight.json")).unwrap();
-        for web in [false, true] {
+        {
             let mut offscreen =
                 super::Offscreen::new(&options, orb_runtime::SceneCapacity::default()).unwrap();
             // The style's camera.
@@ -1083,7 +1017,7 @@ mod tests {
             }
             let (viewport, surface) = (offscreen.viewport, offscreen.map.surface());
             let mut camera = orb_camera::Camera::new(*offscreen.map.camera(), surface, viewport);
-            let (mut published, mut age) = (0, 0);
+            let mut published = 0;
             let started = std::time::Instant::now();
             let (mut lowest, mut under, mut frames) = (f64::INFINITY, 0, 0);
             let (mut last, mut steps) = (None, Vec::new());
@@ -1101,19 +1035,10 @@ mod tests {
                         viewport,
                         1.0,
                     );
-                    age += 1;
                     let revision = offscreen.map.elevation_revision();
-                    if revision != published && (!web || published == 0 || age >= 30) {
-                        (published, age) = (revision, 0);
-                        camera.set_terrain(if web {
-                            orb_runtime::TerrainElevation::from_pyramid(
-                                &offscreen.map.elevation_pyramid(),
-                            )
-                            .ok()
-                            .map(|t| Arc::new(t) as _)
-                        } else {
-                            offscreen.map.elevation().map(|t| t as _)
-                        });
+                    if revision != published {
+                        published = revision;
+                        camera.set_terrain(offscreen.map.elevation());
                     }
                     let Some(full) = offscreen.map.elevation() else {
                         continue;
@@ -1135,8 +1060,7 @@ mod tests {
             }
             steps.sort_by(f64::total_cmp);
             println!(
-                "{} store: {frames} frames, lowest clearance {lowest:.1} m, {under} frames cut into the terrain; elevation steps per frame: p99 {:.1} m, largest {:.1} m, second {:.1} m",
-                if web { "web" } else { "native" },
+                "{frames} frames, lowest clearance {lowest:.1} m, {under} frames cut into the terrain; elevation steps per frame: p99 {:.1} m, largest {:.1} m, second {:.1} m",
                 steps[steps.len() * 99 / 100],
                 steps[steps.len() - 1],
                 steps[steps.len() - 2],

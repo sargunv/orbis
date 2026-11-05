@@ -1,11 +1,11 @@
 // Plan §7.2's measurements in Chrome: input-to-photon latency for pan,
 // pinch and rotate, DOM overlay skew, main-thread busy time and frames when
-// idle, for Orbis in worker and main-thread mode and the pinned GL JS, on
+// idle, for Orbis and the pinned GL JS, on
 // web/dist/measure.html. In headless Chromium, or in Chrome on Android (keep
 // its screen on).
 //
 //   pnpm measure [--android [--physical] | --headed] [--runs=3]
-//     [--configs=orbis-worker,orbis-main,gljs] [--no-capture] [--no-annotation]
+//     [--configs=orbis,gljs] [--no-capture] [--no-annotation]
 //
 // `--android` runs on this worktree's Android emulator (`scripts/android-serial`;
 // `ANDROID_SERIAL` overrides); `--physical` on a phone that the caller assigned
@@ -31,7 +31,7 @@ const option = (name, fallback) => args.find((a) => a.startsWith(`--${name}=`))?
 const physical = args.includes("--physical");
 const android = physical || args.includes("--android");
 const runs = Number(option("runs", "3"));
-const configs = option("configs", "orbis-worker,orbis-main,gljs").split(",");
+const configs = option("configs", "orbis,gljs").split(",");
 // Busy time and idle frames only, without frame capture (whose PNG encoding
 // also loads the device).
 const capture = !args.includes("--no-capture");
@@ -102,7 +102,7 @@ function inputTime(log, value) {
 }
 
 async function run(page, config, viewport) {
-  const [engine, thread] = config.split("-");
+  const engine = config;
   // A session per page: Android's Chrome delivers synthetic touches only to
   // the first page a session navigates.
   const cdp = await page.context().newCDPSession(page);
@@ -111,20 +111,20 @@ async function run(page, config, viewport) {
   await cdp.send("Performance.enable");
   const busy = async () => (await cdp.send("Performance.getMetrics")).metrics
     .find((m) => m.name === "TaskDuration").value * 1000;
-  const query = new URLSearchParams({ engine, ...(thread ? { thread } : {}), ...(annotation ? {} : { annotation: "0" }) });
+  const query = new URLSearchParams({ engine, ...(annotation ? {} : { annotation: "0" }) });
   await page.goto("about:blank");
   const before = await busy();
   await page.goto(`${server.url}measure.html?${query}`);
   const info = await page.evaluate(async () => {
     const m = await window.measure;
-    return { engine: m.engine, thread: m.thread, loadMs: m.loadMs, timeOrigin: m.timeOrigin };
+    return { engine: m.engine, loadMs: m.loadMs, timeOrigin: m.timeOrigin };
   });
   const loadBusy = (await busy()) - before;
   const idleQuiet = await page.evaluate(() => window.measure.then((m) => m.quiet(2000)));
   // The page's own viewport: a blank page's can differ on phones.
   Object.assign(viewport, await page.evaluate(() => ({ width: innerWidth, height: innerHeight })));
   const center = [viewport.width / 2, viewport.height / 2];
-  const result = { config, thread: info.thread, loadMs: info.loadMs, loadBusyMs: loadBusy, idle: idleQuiet, gestures: {} };
+  const result = { config, loadMs: info.loadMs, loadBusyMs: loadBusy, idle: idleQuiet, gestures: {} };
   for (const kind of GESTURES) {
     await page.evaluate(() => window.measure.then(async (m) => { await m.home(); await new Promise((r) => setTimeout(r, 300)); m.reset(); }));
     const frames = [];
@@ -233,7 +233,6 @@ try {
     const g = (kind, key) => median(mine.map((r) => r.gestures[kind][key]));
     rows.push({
       config,
-      thread: mine[0].thread,
       loadBusy: median(mine.map((r) => r.loadBusyMs)),
       gestureBusy: median(mine.map((r) => GESTURES.reduce((s, k) => s + r.gestures[k].busyMs, 0))),
       idle: mine.map((r) => `${r.idle.rafs}/${r.idle.renders}, ${r.afterQuiet.rafs}/${r.afterQuiet.renders}`).join("; "),
@@ -247,7 +246,7 @@ try {
   console.log("| config | pan p50/p95 ms | pinch p50/p95 ms | rotate p50/p95 ms | skew p95 ms (pan/pinch/rotate) | main busy: load / gestures ms | idle frames (main rAF / map), before and after gestures |");
   console.log("|---|---|---|---|---|---|---|");
   for (const r of rows) {
-    console.log(`| ${r.config} (${r.thread}) | ${fmt(r.panP50)} / ${fmt(r.panP95)} | ${fmt(r.pinchP50)} / ${fmt(r.pinchP95)} | ` +
+    console.log(`| ${r.config} | ${fmt(r.panP50)} / ${fmt(r.panP95)} | ${fmt(r.pinchP50)} / ${fmt(r.pinchP95)} | ` +
       `${fmt(r.rotateP50)} / ${fmt(r.rotateP95)} | ${fmt(r.panSkew)} / ${fmt(r.pinchSkew)} / ${fmt(r.rotateSkew)} | ` +
       `${fmt(r.loadBusy)} / ${fmt(r.gestureBusy)} | ${r.idle} |`);
   }

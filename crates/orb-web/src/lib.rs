@@ -1,16 +1,13 @@
 //! The browser build of Orbis: `core.wasm` and its wasm-bindgen surface.
 //!
-//! One module, three roles (plan §7.1), chosen by the page's JS:
-//! - **ui** ([`UiRole`]), always on the page's thread: the camera, gestures
-//!   and synchronous `project`, `unproject` and `hitTest`.
-//! - **main thread** ([`create_map`], plan §7.2's `thread: "main"`): the
-//!   map draws into a canvas on the page's thread.
-//! - **render worker** ([`create_worker_map`]): the map draws into a
-//!   transferred `OffscreenCanvas`.
-//! - **job worker** ([`jobs::JobWorker`]): fetches and lays out tiles for
-//!   either map; a placement worker ([`PlacementWorker`]) places its labels.
+//! One module, two places (plan §7.1), chosen by the page's JS:
+//! - **the page** ([`create_map`] with its [`UiRole`]): the map draws into
+//!   a canvas on the page's thread, where the camera, gestures and
+//!   synchronous `project`, `unproject` and `hitTest` are.
+//! - **workers**: job workers ([`jobs::JobWorker`]) fetch and lay out
+//!   tiles; a placement worker ([`PlacementWorker`]) places labels.
 //!
-//! Both maps draw through WebGPU. With the `harness` feature the module also
+//! The map draws through WebGPU (`compat.wasm`: WebGL2). With the `harness` feature the module also
 //! exports the benches (`runBench`) and the render fixture
 //! driver (`FixtureRenderer`); `cargo xtask web` builds that into
 //! `harness.wasm`, apart from `core.wasm`.
@@ -39,7 +36,7 @@ use glam::DVec2;
 use orb_host_web::WebFetch;
 use orb_runtime::{Jobs, Map, MapEvent, Services, Viewport};
 use wasm_bindgen::prelude::*;
-use web_sys::{HtmlCanvasElement, OffscreenCanvas};
+use web_sys::HtmlCanvasElement;
 
 use crate::canvas::Canvas;
 use crate::jobs::WorkerJobs;
@@ -68,15 +65,11 @@ pub struct OrbisMap {
     canvas: Canvas,
     pixel_ratio: f64,
     worker_jobs: Arc<WorkerJobs>,
-    /// What picking the page's ui role has: in the render worker; on the
-    /// page the map answers hit tests itself.
-    hits: Option<orb_runtime::HitPublication>,
-    /// The terrain revision last published to the ui role.
+    /// The terrain revision last handed to the page's [`UiRole`].
     elevation_revision: u64,
 }
 
-/// What a frame tells the page: its counters and camera packed in one
-/// array, and what changed for the page's [`UiRole`].
+/// What a frame tells the page: its counters packed in one array, and the terrain for the page's [`UiRole`] when it changed.
 #[wasm_bindgen(getter_with_clone)]
 #[derive(Debug)]
 pub struct FrameInfo {
@@ -85,9 +78,7 @@ pub struct FrameInfo {
     /// placements_written, paints_written, uploaded_from_wasm,
     /// uploaded_from_js, texels_from_wasm, texels_from_js, header_bytes,
     /// jobs_done, pipelines_pending, layers_waiting, lost`, then [`MEMORY`]
-    /// words of memory (plan §8's budget: see [`memory_stats`]), then the
-    /// frame's camera as [`UiRole::camera`]
-    /// gives it, so DOM overlays can follow the frame on screen
+    /// words of memory (plan §8's budget: see [`memory_stats`])
     /// (`web/src/frames.ts` reads them by name). Booleans are 0 or 1; byte
     /// counts are since the map was created: buffer bytes written from wasm
     /// memory and straight from JS `ArrayBuffer`s, texel bytes from wasm
@@ -97,13 +88,9 @@ pub struct FrameInfo {
     /// draws again once [`OrbisMap::recover`] gives it another.
     #[wasm_bindgen(readonly)]
     pub stats: Vec<f64>,
-    /// Picking's changes for the page's [`UiRole`], in the render worker
-    /// (`orb_runtime::Map::publish_hits`).
-    #[wasm_bindgen(readonly)]
-    pub hits: Option<Vec<u8>>,
     /// The terrain's elevation pyramid for the page's [`UiRole`] when it
     /// changed (empty: the terrain is gone), so its camera stands on the
-    /// terrain (plan §7.1).
+    /// terrain the map draws.
     #[wasm_bindgen(readonly)]
     pub elevation: Option<Vec<u8>>,
     #[wasm_bindgen(readonly)]
@@ -111,11 +98,13 @@ pub struct FrameInfo {
 }
 
 /// Creates a map in `canvas` showing the style at `style_url`, drawing on
-/// this thread. Its tile jobs and labels go to job workers and a placement
-/// worker as [`create_worker_map`]'s do (plan §7.1: the page draws in
-/// `thread: "main"`, but jobs stay off it). `on_wake` is called when the
-/// map has new data to draw; the page should call `render` on its next
-/// animation frame.
+/// this thread. Its tile jobs go to `job_workers` job workers through
+/// `post(worker, message)`, whose replies come back through
+/// [`receive_job`](OrbisMap::receive_job); labels are placed by the
+/// placement worker `place(message, transfer)` reaches, whose replies come
+/// back through [`receive_placement`](OrbisMap::receive_placement).
+/// `on_wake` is called when the map has new data to draw; the page should
+/// call `render` on its next animation frame.
 #[wasm_bindgen(js_name = createMap)]
 pub async fn create_map(
     canvas: HtmlCanvasElement,
@@ -126,66 +115,14 @@ pub async fn create_map(
     place: js_sys::Function,
 ) -> Result<OrbisMap, JsError> {
     let size = (canvas.width(), canvas.height());
-    let mut map = create(
-        canvas.into(),
-        size,
-        &style_url,
-        on_wake,
-        job_workers,
-        post,
-        place,
-    )
-    .await?;
-    map.hits = None;
-    Ok(map)
-}
 
-/// Creates a map in a render worker, in a canvas transferred from the page.
-/// Tile jobs go to `job_workers` job workers through `post(worker,
-/// message)`; their replies come back through
-/// [`receive_job`](OrbisMap::receive_job). Labels are placed by the
-/// placement worker `place(message, transfer)` reaches, whose replies come
-/// back through [`receive_placement`](OrbisMap::receive_placement).
-/// `on_wake` is as for [`create_map`].
-#[wasm_bindgen(js_name = createWorkerMap)]
-pub async fn create_worker_map(
-    canvas: OffscreenCanvas,
-    style_url: String,
-    on_wake: js_sys::Function,
-    job_workers: u32,
-    post: js_sys::Function,
-    place: js_sys::Function,
-) -> Result<OrbisMap, JsError> {
-    let size = (canvas.width(), canvas.height());
-    create(
-        canvas.into(),
-        size,
-        &style_url,
-        on_wake,
-        job_workers,
-        post,
-        place,
-    )
-    .await
-}
-
-async fn create(
-    canvas: JsValue,
-    size: (u32, u32),
-    style_url: &str,
-    on_wake: js_sys::Function,
-    job_workers: u32,
-    post: js_sys::Function,
-    place: js_sys::Function,
-) -> Result<OrbisMap, JsError> {
     let worker_jobs = WorkerJobs::new(job_workers, post);
     let jobs: Arc<dyn Jobs> = worker_jobs.clone();
     let lane: Arc<dyn orb_runtime::PlacementLane> = WorkerPlacement::new(place);
     WAKE.with(|w| *w.borrow_mut() = Some(on_wake));
-    let canvas = Canvas::new(canvas, size)
+    let canvas = Canvas::new(canvas.into(), size)
         .await
         .map_err(|e| JsError::new(&e))?;
-
     let services = Services {
         clock: Arc::new(orb_host_web::WebClock),
         image_decode: Arc::new(orb_host_web::WebImageDecode),
@@ -199,13 +136,12 @@ async fn create(
         map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
     }
     map.set_placement_lane(lane);
-    map.load_style_url(style_url);
+    map.load_style_url(&style_url);
     Ok(OrbisMap {
         map,
         canvas,
         pixel_ratio: 1.0,
         worker_jobs,
-        hits: Some(Default::default()),
         elevation_revision: 0,
     })
 }
@@ -472,10 +408,6 @@ impl OrbisMap {
             .await
             .map_err(|e| JsError::new(&e))?;
         self.map.reset_gpu();
-        // The ui role's picking is published afresh.
-        if let Some(hits) = &mut self.hits {
-            *hits = orb_runtime::HitPublication::default();
-        }
         wake();
         Ok(self.tier())
     }
@@ -493,12 +425,7 @@ impl OrbisMap {
             .map_err(|e| JsError::new(&e))?;
         let uploaded = self.canvas.gpu_ref().uploaded();
         let jobs = self.worker_jobs.stats();
-        // Picking publishes what changed: tiles, the drawn list, labels and
-        // the layer table; camera moves alone publish nothing.
-        let hits = self.hits.as_mut().and_then(|to| self.map.publish_hits(to));
-        // The ui role's camera keeps above the terrain the pyramid shows,
-        // and an animation ends on it: it publishes whenever DEM tiles
-        // arrived or left.
+        // The page's camera stands on the terrain this frame drew.
         let revision = self.map.elevation_revision();
         let elevation = (revision != self.elevation_revision).then(|| {
             self.elevation_revision = revision;
@@ -530,10 +457,8 @@ impl OrbisMap {
             0.0,
         ];
         stats.extend(memory_stats(&report.memory));
-        stats.extend(ui::camera_array(self.map.camera(), &self.map.projection()));
         Ok(FrameInfo {
             stats,
-            hits,
             elevation,
             warnings: self.map.take_warnings(),
         })
@@ -548,7 +473,7 @@ impl OrbisMap {
     }
 }
 
-/// [`FrameInfo::stats`]' counters before the camera, and where idleness is.
+/// [`FrameInfo::stats`]' counters before the memory words, and where idleness is.
 const STATS: usize = 22;
 const IDLE: usize = 2;
 /// Words of memory after the counters.
@@ -584,14 +509,13 @@ fn memory_stats(m: &orb_runtime::Memory) -> [f64; MEMORY] {
 }
 
 impl FrameInfo {
-    /// A frame not drawn: the GPU is gone. Idle, lost, no camera.
+    /// A frame not drawn: the GPU is gone. Idle and lost.
     fn lost() -> Self {
         let mut stats = vec![0.0; STATS + MEMORY];
         stats[IDLE] = 1.0;
         stats[STATS - 1] = 1.0;
         Self {
             stats,
-            hits: None,
             elevation: None,
             warnings: Vec::new(),
         }

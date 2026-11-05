@@ -71,14 +71,14 @@ cargo run --release -p xtask -- tile-parity
 cargo run --release -p orb-demo -- --format mvt --snapshot /tmp/tokyo-mvt.png
 cargo run --release -p orb-demo -- --format mlt --snapshot /tmp/tokyo-mlt.png
 cargo xtask web
-pnpm -C web snapshot /tmp/tokyo-web-mvt.png --thread=main --format=mvt
-pnpm -C web snapshot /tmp/tokyo-web-mlt.png --thread=worker --format=mlt \
+pnpm -C web snapshot /tmp/tokyo-web-mvt.png --format=mvt
+pnpm -C web snapshot /tmp/tokyo-web-mlt.png --format=mlt \
   --compare=/tmp/tokyo-web-mvt-map.png
 ```
 
 The native demo defaults to this MVT extract; `--format mlt` selects MLT.
 An explicit style URL still loads that style. The web demo accepts
-`?format=mvt|mlt` alongside `?thread=main|worker` and an optional `style` URL.
+`?format=mvt|mlt` alongside an optional `style` URL.
 Run `pnpm -C web dev` after `cargo xtask web` for local work at `/orbis/`.
 `pnpm -C web build` writes the production site to `web/dist/`; its styles
 reference content-hashed archives, so new and cached styles cannot select

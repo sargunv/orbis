@@ -2,15 +2,15 @@
 // package in headless Chromium, as Rust, C, Kotlin and Swift run it: an
 // inline style, pixels, a hit test, a rendered-features query, an edit's
 // generation, a style image, camera moves with roll and elevation, project
-// and unproject, a drag, a click event, idle drawing nothing, and an error. On web/dist/scenario.html, in each thread mode,
-// and on WebGL2.
+// and unproject, a drag, a click event, idle drawing nothing, and an error,
+// on web/dist/scenario.html, on WebGPU and on WebGL2.
 //
-//   pnpm scenario [--configs=main,worker,webgl2]
+//   pnpm scenario [--configs=webgpu,webgl2]
 import assert from "node:assert/strict";
 import { decodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
-const configs = (process.argv.slice(2).find((a) => a.startsWith("--configs="))?.slice(10) ?? "main,worker,webgl2").split(",");
+const configs = (process.argv.slice(2).find((a) => a.startsWith("--configs="))?.slice(10) ?? "webgpu,webgl2").split(",");
 const SIZE = 200;
 const CENTER = [SIZE / 2, SIZE / 2];
 
@@ -23,7 +23,7 @@ try {
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
-    const query = config === "webgl2" ? "thread=main&renderer=webgl2" : `thread=${config}&renderer=webgpu`;
+    const query = `renderer=${config}`;
     try {
       await page.goto(`${server.url}scenario.html?${query}`);
       const scenario = (fn, arg) => page.evaluate(([fn, arg]) => window.scenario.then((s) => new Function("s", "arg", `return (${fn})(s, arg)`)(s, arg)), [fn.toString(), arg]);
@@ -34,8 +34,7 @@ try {
       };
 
       // The style loads, draws and idles: styleload, load, then idle.
-      const first = await scenario((s) => ({ thread: s.thread, events: s.events().map((e) => e.type) }));
-      assert.equal(first.thread, config === "worker" ? "worker" : "main");
+      const first = await scenario((s) => ({ events: s.events().map((e) => e.type) }));
       assert.equal(first.events[0], "styleload", first.events.join());
       assert.ok(first.events.includes("load"), first.events.join());
       assert.equal(first.events.at(-1), "idle", first.events.join());

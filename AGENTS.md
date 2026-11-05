@@ -43,12 +43,12 @@ node, pnpm, a JDK, Gradle, kotlinc, CMake, Go and devices-cli); run
 | `… -p orb-demo -- --snapshot out.png` | render offscreen until idle, write a PNG |
 | `… -p orb-demo -- file://$PWD/web/demo/data/alps.json --flight web/demo/data/alps-flight.json` | the terrain flight over the Alps (web: `?style=alps&flight`) |
 | `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/pkg` |
-| `pnpm -C web snapshot out.png '#z/lat/lon' [--thread=main\|worker] [--style=<key>\|URL] [--size=WxH] [--reopen[=offline]]` | the map app on the Tokyo extract (the site defaults to the live map) in headless Chromium, screenshot; `--reopen` times a reload from the browser's cache, `=offline` with the network cut |
+| `pnpm -C web snapshot out.png '#z/lat/lon' [--style=<key>\|URL] [--size=WxH] [--reopen[=offline]]` | the map app on the Tokyo extract (the site defaults to the live map) in headless Chromium, screenshot; `--reopen` times a reload from the browser's cache, `=offline` with the network cut |
 | `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web dev` | the map app with its style editor at `/orbis/?style=playground&edit`; writes accepted styles and hover state to that file (dev only) |
 | `cargo run --release -p orb-demo -- file://$PWD/web/demo/data/playground.json --watch-style <same path>` | native viewer beside the style editor; follows that file as diffed transactions; logs generation, frames and edit ms |
-| `pnpm -C web playground` | headless style editor checks (controls, JSON, hover, frames per edit) in main and worker modes |
+| `pnpm -C web playground` | headless style editor checks (controls, JSON, hover, frames per edit) |
 | `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web playground:native` | dev bridge smoke test (build `orb-demo --release` first) |
-| `pnpm -C web edits` | every edit class through `globalThis.orbis.edit` in both thread modes, and the cost of a feature-state write |
+| `pnpm -C web edits` | every edit class through `globalThis.orbis.edit`, and the cost of a feature-state write |
 | `cargo run --release -p orb-cli -- render <style> -o out.png [--at lon,lat,z[,bearing,pitch]] [--size WxH]` | `orbis`: a still picture of a style or scene document (Still mode) |
 | `… -p orb-cli -- tiles <style> -o dir --tms <id\|tms.json> --zoom z[-z] [--bbox w,s,e,n]` | a tile pyramid on the scene's plane (Tile mode), `dir/z/col/row.png` |
 | `cargo xtask fixtures` | fetch and verify the pinned GL JS fixture mirror into `fixtures/gl-js` (gitignored; no work when it matches; `fixtures/README.md`) |
@@ -57,11 +57,11 @@ node, pnpm, a JDK, Gradle, kotlinc, CMake, Go and devices-cli); run
 | `pnpm -C web dev` | Vite dev server at `/orbis/` (run `cargo xtask web` first) |
 | `pnpm -C web typecheck` / `pnpm -C web test` | type-check the `orbis` package (`web/src`); its unit tests and the build test |
 | `cargo xtask bench` | GPU/CPU frame timings, still and with the camera moving (decision 0002); `--experiment gestures` for rotate, tilt and zoom frame times with tiles arriving (decision 0023); `alps --experiment gestures` for the terrain demo's rotate, pan and flight |
-| `pnpm -C web bench [--precise] [--android [--physical]] [--experiment=gestures [--workers=N]]` | the same bench in headless Chromium, or in this worktree's Android emulator's Chrome (`web/demo/bench.html`; keep its screen on; `--physical` for an assigned phone, below); `--experiment=gestures` drives the `orbis` package in both thread modes (`--style=alps` for the terrain paths) |
-| `pnpm -C web measure [--android [--physical] \| --headed] [--runs=3]` | plan §7.2's measurements in Chrome: input-to-photon latency (pan, pinch, rotate), DOM overlay skew, main-thread busy time and idle frames, for Orbis worker and main-thread mode and the pinned GL JS (`web/demo/measure.html`); `--headed` in a window on the display |
+| `pnpm -C web bench [--precise] [--android [--physical]] [--experiment=gestures [--workers=N]]` | the same bench in headless Chromium, or in this worktree's Android emulator's Chrome (`web/demo/bench.html`; keep its screen on; `--physical` for an assigned phone, below); `--experiment=gestures` drives the `orbis` package (`--style=alps` for the terrain paths) |
+| `pnpm -C web measure [--android [--physical] \| --headed] [--runs=3]` | plan §7.2's measurements in Chrome: input-to-photon latency (pan, pinch, rotate), DOM overlay skew, main-thread busy time and idle frames, for Orbis and the pinned GL JS (`web/demo/measure.html`); `--headed` in a window on the display |
 | `pnpm -C web pipelines [--runs=3] [--android [--physical]]` | pipeline creation (#26): shaders and pipelines made, first draw, last pipeline and idle (plan §18 row 10), GPU queue wait from `createMap` to idle, cold (fresh profile, or after `chrome://gpuclean` on Android) and warm |
 | `node web/scripts/open.mjs <app> pipelines.html` | a page in a browser no driver controls (Firefox, Safari), its result posted back |
-| `pnpm -C web scenario [--configs=main,worker,webgl2]` | the binding scenario through the `orbis` package in headless Chromium (`web/demo/scenario.html`) |
+| `pnpm -C web scenario [--configs=webgpu,webgl2]` | the binding scenario through the `orbis` package in headless Chromium (`web/demo/scenario.html`) |
 
 ## How we work
 

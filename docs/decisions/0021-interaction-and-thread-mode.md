@@ -162,3 +162,9 @@ numbers above are decision 0021's (#37).
 Open: Chrome on Windows, Safari on macOS and iOS, Firefox latency and
 Android latency (a capture that keeps up: a high-speed camera or
 `screenrecord` with visible touches); the worker's latency tail.
+
+## Since
+
+Decision 0042 deleted the render-worker mode and its ui role: the camera,
+gestures and drawing share one `Map` on the page, and hosts no longer push
+the camera to the map or adopt the style's.

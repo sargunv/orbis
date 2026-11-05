@@ -5,23 +5,16 @@ export type Listener<T> = (event: T) => void;
 
 export class Emitter<Events> {
   #listeners = new Map<keyof Events, Set<Listener<never>>>();
-  #changed: () => void;
-
-  /** `changed` runs whenever a listener is added or removed. */
-  constructor(changed: () => void = () => {}) {
-    this.#changed = changed;
-  }
 
   on<K extends keyof Events>(type: K, listener: Listener<Events[K]>): () => void {
     let set = this.#listeners.get(type);
     if (!set) this.#listeners.set(type, (set = new Set()));
     set.add(listener as Listener<never>);
-    this.#changed();
     return () => this.off(type, listener);
   }
 
   off<K extends keyof Events>(type: K, listener: Listener<Events[K]>): void {
-    if (this.#listeners.get(type)?.delete(listener as Listener<never>)) this.#changed();
+    this.#listeners.get(type)?.delete(listener as Listener<never>);
   }
 
   once<K extends keyof Events>(type: K): Promise<Events[K]> {

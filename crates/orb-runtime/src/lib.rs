@@ -63,7 +63,7 @@ pub use placement_wire::{
     pack_committed, pack_frame, pack_tables, unpack_committed, unpack_frame, unpack_tables,
 };
 pub use queries::QueryDone;
-pub use query::{Hit, HitFeature, HitIndex, HitPublication, MeshHits};
+pub use query::{Hit, HitFeature, MeshHits};
 pub use style::ImageKind;
 pub use style_image::StyleImage;
 pub use surface::{

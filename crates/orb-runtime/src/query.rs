@@ -7,19 +7,14 @@
 //! its point or box with the camera it is asked with, culls features by
 //! their world bounds, and projects only the candidates into pixels for
 //! the exact test, so a camera change costs nothing until something picks.
-//!
-//! A host's UI thread keeps a [`HitIndex`] of the same parts, which
-//! [`Map::publish_hits`](crate::Map::publish_hits) sends as they change:
-//! tiles when they load, change or go, the drawn list when the cover
-//! changes, labels with placement commits and the layer table with the
-//! style. The UI never waits for a worker or decodes a vector tile to pick.
+
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use glam::{DVec2, DVec3, DVec4, Vec2};
-use orb_camera::{CameraState, View, Viewport};
+use orb_camera::{CameraState, View};
 use orb_crs::{TileIndex, TileMatrixSet};
-use orb_v8::{Kind, LayerKind, Property, TranslateAnchor, Value};
+use orb_v8::{Kind, LayerKind, Property, TranslateAnchor};
 
 use crate::jobs::{read_text, write_text};
 
@@ -88,36 +83,12 @@ impl<'a> Reader<'a> {
     fn f32(&mut self) -> Result<f32, String> {
         self.next().map(f32::from_bits)
     }
-    fn f64(&mut self) -> Result<f64, String> {
-        let lo = u64::from(self.next()?);
-        let hi = u64::from(self.next()?);
-        Ok(f64::from_bits(lo | hi << 32))
-    }
-    fn vec2(&mut self) -> Result<DVec2, String> {
-        Ok(DVec2::new(self.f64()?, self.f64()?))
-    }
     fn text(&mut self) -> Result<String, String> {
         read_text(&mut || self.next())
-    }
-    fn tile(&mut self) -> Result<TileIndex, String> {
-        let z = u8::try_from(self.next()?).map_err(|_| MALFORMED)?;
-        Ok(TileIndex::new(z, self.next()?, self.next()?))
     }
     fn done(&self) -> bool {
         self.at == self.words.len()
     }
-}
-
-fn push_f64(words: &mut Vec<u32>, value: f64) {
-    let bits = value.to_bits();
-    words.extend([bits as u32, (bits >> 32) as u32]);
-}
-fn push_vec2(words: &mut Vec<u32>, v: DVec2) {
-    push_f64(words, v.x);
-    push_f64(words, v.y);
-}
-fn push_tile(words: &mut Vec<u32>, tile: TileIndex) {
-    words.extend([u32::from(tile.z), tile.col, tile.row]);
 }
 
 /// One render node's hit-testable features in one tile, packed in
@@ -501,66 +472,6 @@ impl TileMapping {
             (None, Self::Affine { .. }) => unreachable!("affine mappings have their transform"),
         }
     }
-
-    fn write(&self, words: &mut Vec<u32>) {
-        match self {
-            &Self::Affine { left, top, span } => {
-                words.push(0);
-                for v in [left, top, span] {
-                    push_f64(words, v);
-                }
-            }
-            Self::Warped(s) => {
-                words.push(1);
-                push_vec2(words, s.anchor);
-                words.push(s.cells);
-                push_f64(words, s.max_segment);
-                push_f64(words, s.scale);
-                words.push(s.patches.len() as u32);
-                for p in &s.patches {
-                    for q in p.points {
-                        push_vec2(words, q);
-                    }
-                }
-            }
-        }
-    }
-
-    fn read(r: &mut Reader<'_>) -> Result<Self, String> {
-        Ok(match r.next()? {
-            0 => Self::Affine {
-                left: r.f64()?,
-                top: r.f64()?,
-                span: r.f64()?,
-            },
-            1 => {
-                let anchor = r.vec2()?;
-                let cells = r.next()?;
-                let max_segment = r.f64()?;
-                let scale = r.f64()?;
-                let n = r.next()?;
-                if u64::from(n) != u64::from(cells) * u64::from(cells) {
-                    return Err(MALFORMED.into());
-                }
-                let mut patches = Vec::with_capacity(n as usize);
-                for _ in 0..n {
-                    let mut points = [DVec2::ZERO; 9];
-                    for p in &mut points {
-                        *p = r.vec2()?;
-                    }
-                    patches.push(orb_crs::Patch { points });
-                }
-                Self::Warped(Arc::new(orb_crs::Series {
-                    anchor,
-                    cells,
-                    patches,
-                    max_segment,
-                    scale,
-                }))
-            }
-            _ => return Err(MALFORMED.into()),
-        })
-    }
 }
 
 /// A tile's nodes' features, by node key.
@@ -674,28 +585,6 @@ enum HitPaint {
     Other,
 }
 
-/// The paint each layer type picks with, by v8 name, in [`HitPaint`]'s
-/// order.
-fn paint_names(layer_type: &str) -> &'static [&'static str] {
-    match layer_type {
-        "fill" => &["fill-translate", "fill-translate-anchor"],
-        "line" => &["line-width", "line-translate", "line-translate-anchor"],
-        "circle" => &[
-            "circle-radius",
-            "circle-stroke-width",
-            "circle-translate",
-            "circle-translate-anchor",
-        ],
-        "fill-extrusion" => &[
-            "fill-extrusion-base",
-            "fill-extrusion-height",
-            "fill-extrusion-translate",
-            "fill-extrusion-translate-anchor",
-        ],
-        _ => &[],
-    }
-}
-
 /// Bound per feature: the value is the feature's, laid out with the tile.
 fn per_feature(kind: Kind) -> bool {
     matches!(kind, Kind::Source | Kind::Composite)
@@ -727,55 +616,6 @@ impl HitPaint {
             },
             _ => Self::Other,
         }
-    }
-
-    /// From each of [`paint_names`]' values, as JSON (`None`: unset).
-    fn parse(
-        layer_type: &str,
-        values: &[Option<orb_expr::json::Json>],
-        state: &[(String, Value<'static>)],
-    ) -> Result<Self, String> {
-        let names = paint_names(layer_type);
-        if values.len() != names.len() {
-            return Err(MALFORMED.into());
-        }
-        fn get<T: orb_v8::PropertyValue>(
-            ty: &str,
-            names: &[&str],
-            values: &[Option<orb_expr::json::Json>],
-            state: &[(String, Value<'static>)],
-            i: usize,
-        ) -> Result<Property<T>, String> {
-            orb_v8::parse_paint(ty, names[i], values[i].as_ref(), state)
-                .ok_or_else(|| format!("{} is not modelled", names[i]))
-        }
-        let p = |i| get::<f32>(layer_type, names, values, state, i);
-        let t = |i| get::<[f32; 2]>(layer_type, names, values, state, i);
-        let a = |i| get::<TranslateAnchor>(layer_type, names, values, state, i);
-        Ok(match layer_type {
-            "fill" => Self::Fill {
-                translate: t(0)?,
-                anchor: a(1)?,
-            },
-            "line" => Self::Line {
-                width: p(0)?,
-                translate: t(1)?,
-                anchor: a(2)?,
-            },
-            "circle" => Self::Circle {
-                radius: p(0)?,
-                stroke: p(1)?,
-                translate: t(2)?,
-                anchor: a(3)?,
-            },
-            "fill-extrusion" => Self::Extrusion {
-                base: p(0)?,
-                height: p(1)?,
-                translate: t(2)?,
-                anchor: a(3)?,
-            },
-            _ => Self::Other,
-        })
     }
 
     fn translate(&self) -> Option<(&Property<[f32; 2]>, &Property<TranslateAnchor>)> {
@@ -860,112 +700,6 @@ impl HitLayers {
             })
             .collect();
         Self { nodes }
-    }
-
-    /// The table for a host: each node's layer with its picking paint as
-    /// the document's JSON, and the global state it reads.
-    pub(crate) fn write(
-        words: &mut Vec<u32>,
-        plan: &crate::style::StylePlan,
-        doc: &orb_style::StyleDoc,
-    ) {
-        words.push(picked(plan).count() as u32);
-        for node in picked(plan) {
-            let layer = &plan.style.layers[node.layer];
-            let ty = crate::queries::layer_type(&layer.kind);
-            words.extend([node.key, node.layer as u32]);
-            write_text(words, &layer.id);
-            write_text(words, &plan.sources[node.source].id);
-            let source_layer = plan.source_layer(node);
-            words.push(u32::from(source_layer.is_some()));
-            if let Some(source_layer) = source_layer {
-                write_text(words, source_layer);
-            }
-            write_text(words, ty);
-            push_f64(words, layer.minzoom);
-            push_f64(words, layer.maxzoom);
-            words.push(u32::from(layer.visibility == orb_v8::Visibility::Visible));
-            let json = plan
-                .layer_keys
-                .get(node.layer)
-                .and_then(|&key| doc.layer_index(orb_style::LayerKey(key)))
-                .map(|i| doc.layer_json(i));
-            let paint = json.and_then(|j| j.get("paint"));
-            for name in paint_names(ty) {
-                match paint.and_then(|p| p.get(name)) {
-                    Some(value) => {
-                        words.push(1);
-                        write_text(words, &value.to_string());
-                    }
-                    None => words.push(0),
-                }
-            }
-        }
-        let state = doc.global_state();
-        words.push(state.len() as u32);
-        for (name, value) in &state {
-            write_text(words, name);
-            write_text(words, &value.to_json_string());
-        }
-    }
-
-    fn read(r: &mut Reader<'_>) -> Result<Self, String> {
-        struct Raw {
-            key: u32,
-            layer: HitLayer,
-            ty: String,
-            paint: Vec<Option<orb_expr::json::Json>>,
-        }
-        let json = |text: &str| orb_expr::json::parse(text).map_err(|e| e.to_string());
-        let mut raws = Vec::new();
-        for _ in 0..r.next()? {
-            let key = r.next()?;
-            let order = r.next()? as usize;
-            let id = r.text()?;
-            let source = r.text()?;
-            let source_layer = if r.next()? != 0 {
-                Some(r.text()?)
-            } else {
-                None
-            };
-            let ty = r.text()?;
-            let (minzoom, maxzoom) = (r.f64()?, r.f64()?);
-            let visible = r.next()? != 0;
-            let mut paint = Vec::new();
-            for _ in paint_names(&ty) {
-                paint.push(if r.next()? != 0 {
-                    Some(json(&r.text()?)?)
-                } else {
-                    None
-                });
-            }
-            raws.push(Raw {
-                key,
-                layer: HitLayer {
-                    order,
-                    id,
-                    source,
-                    source_layer,
-                    minzoom,
-                    maxzoom,
-                    visible,
-                    paint: HitPaint::Other,
-                },
-                ty,
-                paint,
-            });
-        }
-        let mut state = Vec::new();
-        for _ in 0..r.next()? {
-            let name = r.text()?;
-            state.push((name, Value::from_json(&json(&r.text()?)?)));
-        }
-        let mut nodes = HashMap::new();
-        for mut raw in raws {
-            raw.layer.paint = HitPaint::parse(&raw.ty, &raw.paint, &state)?;
-            nodes.insert(raw.key, raw.layer);
-        }
-        Ok(Self { nodes })
     }
 }
 
@@ -1736,295 +1470,6 @@ impl crate::Map {
         self.picking.borrow_mut().labels = Some((key, Arc::clone(&labels)));
         labels
     }
-
-    /// What has changed in picking since `to` was last brought up to date,
-    /// for a [`HitIndex`] on another thread, or `None` if nothing has: the
-    /// layer table with the style, tiles as they load, change or go, the
-    /// drawn tiles as the cover changes and labels with placement commits.
-    /// Camera moves alone publish nothing.
-    pub fn publish_hits(&self, to: &mut HitPublication) -> Option<Vec<u8>> {
-        let style = self.style.as_ref()?;
-        let plan = style.worker.plan();
-        let picking = self.picking.borrow();
-        let mut words = vec![0];
-        let mut flags = 0;
-        if to.layers != picking.layers_version {
-            to.layers = picking.layers_version;
-            flags |= 1;
-            HitLayers::write(&mut words, plan, &style.doc);
-        }
-        // Tiles: compared mesh by mesh once uploads or the style changed.
-        let stamp = (self.counts, self.version);
-        let (mut removed, mut added) = (Vec::new(), Vec::new());
-        if to.stamp != Some(stamp) {
-            to.stamp = Some(stamp);
-            let mut resident = HashMap::new();
-            for (index, source) in style.sources.iter().enumerate() {
-                let crate::map::SourceState::Ready { pyramid, .. } = source else {
-                    continue;
-                };
-                let key = plan.sources.get(index).map_or(u32::MAX, |s| s.key);
-                for (tile, r) in pyramid.ready() {
-                    let meshes: Vec<_> = r
-                        .meshes
-                        .iter()
-                        .filter(|m| !m.hits.is_empty())
-                        .map(|m| (m.node, Arc::clone(&m.hits)))
-                        .collect();
-                    if !meshes.is_empty() {
-                        resident.insert((key, tile), meshes);
-                    }
-                }
-            }
-            to.tiles.retain(|k, _| {
-                let keep = resident.contains_key(k);
-                if !keep {
-                    removed.push(*k);
-                }
-                keep
-            });
-            for (k, meshes) in resident {
-                let same = to.tiles.get(&k).is_some_and(|old| {
-                    old.len() == meshes.len()
-                        && old
-                            .iter()
-                            .zip(&meshes)
-                            .all(|(a, b)| a.0 == b.0 && Arc::ptr_eq(&a.1, &b.1))
-                });
-                if !same {
-                    if let Some(hits) = self.tile_hits(k.0, k.1) {
-                        added.push((k, hits));
-                    }
-                    to.tiles.insert(k, meshes);
-                }
-            }
-        }
-        words.push(removed.len() as u32);
-        for (source, tile) in &removed {
-            words.push(*source);
-            push_tile(&mut words, *tile);
-        }
-        words.push(added.len() as u32);
-        for ((source, tile), hits) in &added {
-            words.push(*source);
-            push_tile(&mut words, *tile);
-            hits.mapping.write(&mut words);
-            words.push(hits.meshes.len() as u32);
-            for (node, mesh) in &hits.meshes {
-                words.extend([*node, mesh.words().len() as u32]);
-                words.extend_from_slice(mesh.words());
-            }
-        }
-        if to.drawn != Some(picking.drawn_rev) {
-            to.drawn = Some(picking.drawn_rev);
-            flags |= 2;
-            push_f64(&mut words, self.surface.period());
-            words.push(picking.drawn.len() as u32);
-            for d in &picking.drawn {
-                words.push(d.source);
-                push_tile(&mut words, d.tile);
-                words.push(d.copies.len() as u32);
-                for c in &d.copies {
-                    words.extend([c.wrap as u32, c.clips.len() as u32]);
-                    for clip in &c.clips {
-                        for p in clip {
-                            push_vec2(&mut words, *p);
-                        }
-                    }
-                }
-            }
-        }
-        drop(picking);
-        let commit = (self.labels.commits(), self.version);
-        if to.labels != Some(commit) {
-            to.labels = Some(commit);
-            flags |= 4;
-            let labels = self.label_hits();
-            words.push(labels.len() as u32);
-            for l in labels.iter() {
-                words.extend([l.node, l.key.source]);
-                push_tile(&mut words, l.key.tile);
-                words.push(l.key.feature);
-                push_vec2(&mut words, l.anchor);
-                words.push(l.boxes.len() as u32);
-                for b in &l.boxes {
-                    for v in b {
-                        push_f64(&mut words, *v);
-                    }
-                }
-                words.push(u32::from(l.circle.is_some()));
-                push_f64(&mut words, l.circle.unwrap_or(0.0));
-            }
-        }
-        words[0] = flags;
-        (flags != 0 || !removed.is_empty() || !added.is_empty())
-            .then(|| words.into_iter().flat_map(u32::to_le_bytes).collect())
-    }
-}
-
-/// What a host has published of a map's picking, for
-/// [`Map::publish_hits`](crate::Map::publish_hits).
-#[derive(Debug, Default)]
-pub struct HitPublication {
-    layers: Option<u64>,
-    stamp: Option<(crate::map::JobCounts, u64)>,
-    tiles: HashMap<(u32, TileIndex), Meshes>,
-    drawn: Option<u64>,
-    labels: Option<(u64, u64)>,
-}
-
-/// A host UI thread's picking index, kept up to date from
-/// [`Map::publish_hits`](crate::Map::publish_hits). It answers for any
-/// camera: the drawn tiles' features where the camera puts them, and
-/// labels where the last commit placed them, at their anchors.
-#[derive(Debug, Default)]
-pub struct HitIndex {
-    layers: HitLayers,
-    tiles: HashMap<(u32, TileIndex), TileHits>,
-    drawn: Vec<DrawnTile>,
-    period: f64,
-    labels: Vec<LabelHit>,
-    generation: u64,
-}
-
-impl HitIndex {
-    /// The topmost feature under a CSS pixel of a view with `camera`.
-    pub fn hit_test(
-        &self,
-        point: DVec2,
-        camera: &CameraState,
-        viewport: Viewport,
-        surface: &orb_crs::Surface,
-    ) -> Option<Hit> {
-        let view = View::new(camera, viewport, surface);
-        let scene = Scene {
-            layers: &self.layers,
-            drawn: &self.drawn,
-            tiles: self
-                .drawn
-                .iter()
-                .map(|d| self.tiles.get(&(d.source, d.tile)))
-                .collect(),
-            labels: &self.labels,
-            period: self.period,
-            generation: self.generation,
-        };
-        scene.hit_test(&view, camera, camera.zoom(&surface.projection), point)
-    }
-
-    pub fn set_generation(&mut self, generation: u64) {
-        self.generation = generation;
-    }
-
-    /// Applies a publication, atomically: all of it or, if it is
-    /// malformed, none.
-    pub fn apply(&mut self, bytes: &[u8]) -> Result<(), String> {
-        if !bytes.len().is_multiple_of(4) {
-            return Err(MALFORMED.into());
-        }
-        let words: Vec<u32> = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|b| u32::from_le_bytes(*b))
-            .collect();
-        let mut r = Reader::new(&words);
-        let flags = r.next()?;
-        let layers = if flags & 1 != 0 {
-            Some(HitLayers::read(&mut r)?)
-        } else {
-            None
-        };
-        let mut removed = Vec::new();
-        for _ in 0..r.next()? {
-            removed.push((r.next()?, r.tile()?));
-        }
-        let mut added = Vec::new();
-        for _ in 0..r.next()? {
-            let key = (r.next()?, r.tile()?);
-            let mapping = TileMapping::read(&mut r)?;
-            let mut meshes = Vec::new();
-            for _ in 0..r.next()? {
-                let node = r.next()?;
-                let n = r.next()? as usize;
-                meshes.push((node, Arc::new(MeshHits::from_words(r.take(n)?.to_vec())?)));
-            }
-            added.push((key, TileHits { mapping, meshes }));
-        }
-        let drawn = if flags & 2 != 0 {
-            let period = r.f64()?;
-            let mut drawn = Vec::new();
-            for _ in 0..r.next()? {
-                let source = r.next()?;
-                let tile = r.tile()?;
-                let mut copies = Vec::new();
-                for _ in 0..r.next()? {
-                    let wrap = r.next()? as i32;
-                    let mut clips = Vec::new();
-                    for _ in 0..r.next()? {
-                        clips.push([r.vec2()?, r.vec2()?, r.vec2()?, r.vec2()?]);
-                    }
-                    copies.push(DrawnCopy { wrap, clips });
-                }
-                drawn.push(DrawnTile {
-                    source,
-                    tile,
-                    copies,
-                });
-            }
-            Some((period, drawn))
-        } else {
-            None
-        };
-        let labels = if flags & 4 != 0 {
-            let mut labels = Vec::new();
-            for _ in 0..r.next()? {
-                let node = r.next()?;
-                let source = r.next()?;
-                let tile = r.tile()?;
-                let feature = r.next()?;
-                let anchor = r.vec2()?;
-                let mut boxes = Vec::new();
-                for _ in 0..r.next()? {
-                    boxes.push([r.f64()?, r.f64()?, r.f64()?, r.f64()?]);
-                }
-                let has_circle = r.next()? != 0;
-                let circle = r.f64()?;
-                labels.push(LabelHit {
-                    node,
-                    key: FeatureKey {
-                        source,
-                        tile,
-                        feature,
-                    },
-                    anchor,
-                    boxes,
-                    circle: has_circle.then_some(circle),
-                });
-            }
-            Some(labels)
-        } else {
-            None
-        };
-        if !r.done() {
-            return Err(MALFORMED.into());
-        }
-        if let Some(layers) = layers {
-            self.layers = layers;
-        }
-        for key in removed {
-            self.tiles.remove(&key);
-        }
-        self.tiles.extend(added);
-        if let Some((period, drawn)) = drawn {
-            self.period = period;
-            self.drawn = drawn;
-        }
-        if let Some(labels) = labels {
-            self.labels = labels;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -2080,6 +1525,5 @@ mod tests {
         let mut words = hits.words().to_vec();
         words.pop();
         assert!(MeshHits::from_words(words).is_err());
-        assert!(HitIndex::default().apply(&[1, 2, 3]).is_err());
     }
 }

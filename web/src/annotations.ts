@@ -1,7 +1,5 @@
 // View annotations as DOM elements anchored to the map (plan §7.2): markers
-// and popups. On the main thread they move in the frame the canvas draws;
-// with a render worker, on each frame acknowledgement with that frame's
-// camera, so they stay with what is on screen (±1 frame, measured in M3).
+// and popups. They move in the frame the canvas draws, on the terrain.
 
 import type { LngLat, Point } from "./types.ts";
 

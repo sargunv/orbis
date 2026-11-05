@@ -89,16 +89,9 @@ export interface MapOptions {
   /** A v8 style URL, or a style object. */
   style: string | object;
   /**
-   * Where the map draws: all on this thread ("main", the default by plan
-   * §7.2's rule, decision 0021), or in a render worker with the camera on
-   * this thread ("worker"). "auto" takes the worker where OffscreenCanvas
-   * and WebGPU in workers work, else this thread.
-   */
-  thread?: "auto" | "worker" | "main";
-  /**
    * What draws the map: "webgpu" (the Modern tier), "webgl2" (Compat, plan
    * §8.7, from the lazily loaded compat.wasm), or "auto" (the default):
-   * WebGPU where it works, else WebGL2 on this thread. A lost device is
+   * WebGPU where it works, else WebGL2. A lost device is
    * replaced on the same tier where possible, else on WebGL2.
    */
   renderer?: "auto" | "webgpu" | "webgl2";
@@ -114,7 +107,7 @@ export interface MapOptions {
   jobWorkers?: number;
 }
 
-/** The topmost feature under a point, from the published picking index. */
+/** The topmost feature under a point, from the last frame. */
 export interface Hit {
   layer: string;
   source: string;
@@ -158,7 +151,7 @@ export interface SourceQueryOptions {
 
 /** A frame's counters. */
 export interface FrameStats {
-  /** CPU milliseconds the frame took where it rendered. */
+  /** CPU milliseconds the frame took. */
   ms: number;
   zoom: number;
   generation: number;

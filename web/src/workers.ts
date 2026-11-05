@@ -1,6 +1,4 @@
-// The job workers and the placement worker (plan §7.1), spawned by the
-// thread that draws: the page in main-thread mode, the render worker in
-// worker mode, so the page creates no workers it never talks to.
+// The job workers and the placement worker (plan §7.1), spawned by the map.
 
 /** Plan §7.1's default: `clamp(hardwareConcurrency − 2, 1, 4)`. */
 export function defaultJobWorkers(): number {

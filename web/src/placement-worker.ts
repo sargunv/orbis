@@ -1,4 +1,4 @@
-// The placement worker: places the render worker's labels (decision 0009),
+// The placement worker: places the map's labels (decision 0009),
 // answering each frame with its commit, transferred.
 //
 // Spawner → worker: {module, port}. Port messages are Rust's (orb-web's

@@ -417,7 +417,7 @@ fn extrusion_nodes_survive_renumbering() {
 }
 
 #[test]
-fn published_hits_follow_layer_order_visibility_and_camera() {
+fn hits_follow_layer_order_visibility_and_camera() {
     let mut map = tokyo();
     map.map
         .set_style_json(include_str!("../../../web/demo/data/playground.json"))
@@ -436,33 +436,10 @@ fn published_hits_follow_layer_order_visibility_and_camera() {
     );
     assert_eq!(hit.source, "district");
     assert_eq!(hit.source_layer, None);
-    // A UI thread's index answers as the map does, for any camera, and
-    // camera moves alone publish nothing.
-    let mut publication = orb_runtime::HitPublication::default();
-    let mut published = orb_runtime::HitIndex::default();
-    published
-        .apply(
-            &map.map
-                .publish_hits(&mut publication)
-                .expect("first publication"),
-        )
-        .unwrap();
-    published.set_generation(hit.generation);
-    let viewport = map.viewport;
-    let ui_hit = |index: &orb_runtime::HitIndex, map: &Offscreen, point| {
-        index.hit_test(point, map.map.camera(), viewport, &map.map.surface())
-    };
-    assert_eq!(ui_hit(&published, &map, center), Some(hit.clone()));
+    // The last frame answers for its camera.
     map.map.camera_mut().bearing = 30.0;
     map.frame();
-    assert!(map.map.publish_hits(&mut publication).is_none());
-    let turned = map.map.hit_test(center);
-    assert_eq!(ui_hit(&published, &map, center), turned);
-    for point in [glam::DVec2::new(300., 200.), glam::DVec2::new(700., 500.)] {
-        assert_eq!(ui_hit(&published, &map, point), map.map.hit_test(point));
-    }
-    assert!(published.apply(&[1, 2, 3]).is_err());
-    assert_eq!(ui_hit(&published, &map, center), turned);
+    assert!(map.map.hit_test(center).is_some());
     map.map.camera_mut().bearing = 0.0;
     settle(&mut map);
     let tx =

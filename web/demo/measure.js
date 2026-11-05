@@ -1,7 +1,7 @@
 // The plan §7.2 measurement page (`web/scripts/measure.mjs` drives it): the
 // demo's Tokyo map with a blue circle drawn by the map and a cyan DOM
-// annotation at the same point, in Orbis (`?engine=orbis&thread=main|worker`)
-// or the pinned GL JS (`?engine=gljs`). It logs, for every input, where the
+// annotation at the same point, in Orbis (`?engine=orbis`) or the
+// pinned GL JS (`?engine=gljs`). It logs, for every input, where the
 // circle should then be drawn and when the input arrived, so the driver can
 // read input-to-photon latency and overlay skew off composited frames.
 import { demoStyle } from "./styles.js";
@@ -35,7 +35,7 @@ const circleLngLat = (project, unproject) => {
 
 async function startOrbis() {
   const { createMap } = await import("orbis");
-  const map = await createMap({ container, style: demoStyle(params, "tokyo"), thread: params.get("thread") ?? undefined,
+  const map = await createMap({ container, style: demoStyle(params, "tokyo"),
     renderer: params.get("renderer") ?? undefined,
     camera: { center: CENTER, zoom: ZOOM } });
   await map.once("idle");
@@ -46,8 +46,8 @@ async function startOrbis() {
   const element = document.createElement("div");
   element.className = "mark";
   if (params.get("annotation") !== "0") map.annotations.add({ element, lngLat: at });
-  // After the map's own listeners: the ui role has applied the input, so
-  // its camera says where the circle should be drawn for it.
+  // After the map's own listeners: the map has applied the input, so its
+  // camera says where the circle should be drawn for it.
   const record = (e) => {
     const p = map.project(at);
     if (p) log.push({ t: e.timeStamp, x: p[0], y: p[1] });
@@ -58,7 +58,7 @@ async function startOrbis() {
   // Resolves once idle, at once if it is.
   const idle = () => (map.stats?.idle && !map.camera.moving ? Promise.resolve() : map.once("idle"));
   const home = () => { map.camera.jumpTo({ center: CENTER, zoom: ZOOM, bearing: 0, pitch: 0 }); return idle(); };
-  return { thread: map.thread, idle, home, stats: () => map.stats };
+  return { idle, home, stats: () => map.stats };
 }
 
 async function startGlJs() {
@@ -95,23 +95,22 @@ async function startGlJs() {
   await map.once("idle");
   const idle = () => (map.loaded() && !map.isMoving() ? Promise.resolve() : map.once("idle"));
   const home = () => { map.jumpTo({ center: CENTER, zoom: ZOOM, bearing: 0, pitch: 0 }); return idle(); };
-  return { thread: "main", idle, home, stats: () => null };
+  return { idle, home, stats: () => null };
 }
 
 // No map: what receiving the driver's input costs the page by itself.
 async function startNone() {
   container.style.touchAction = "none";
   container.addEventListener("pointermove", (e) => log.push({ t: e.timeStamp, x: e.offsetX, y: e.offsetY }));
-  return { thread: "none", idle: async () => {}, home: async () => {}, stats: () => null };
+  return { idle: async () => {}, home: async () => {}, stats: () => null };
 }
 
 window.measure = (async () => {
   const started = performance.now();
   const map = engine === "gljs" ? await startGlJs() : engine === "none" ? await startNone() : await startOrbis();
-  status.textContent = `${engine} ${map.thread} · ready in ${(performance.now() - started).toFixed(0)} ms`;
+  status.textContent = `${engine} · ready in ${(performance.now() - started).toFixed(0)} ms`;
   return {
     engine,
-    thread: map.thread,
     loadMs: performance.now() - started,
     timeOrigin: performance.timeOrigin,
     /** Clears the input log. */

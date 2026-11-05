@@ -2,9 +2,8 @@
 // `orbis` package, with a style editor, feature popups and highlights
 // through feature state, and a debug overlay.
 //
-// URL: `?style=<key|url>` (styles.js), `&flight` (the Alps), `&thread=
-// main|worker` and `&renderer=webgpu|webgl2` (the package's defaults
-// otherwise), `&debug`, `&edit`, `&lose=<ms>[&switch]` (lose the GPU that
+// URL: `?style=<key|url>` (styles.js), `&flight` (the Alps),
+// `&renderer=webgpu|webgl2` (the package's default otherwise), `&debug`, `&edit`, `&lose=<ms>[&switch]` (lose the GPU that
 // long after loading, to show recovery, plan §8.8; `switch` onto WebGL2),
 // and the camera as `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
@@ -75,13 +74,7 @@ function setFlag(name, on) {
 // The chrome.
 const attributionControl = attribution();
 const picker = createPicker(GROUPS, { onPick: (scene, format) => go({ scene, format }) });
-const hudControl = createHud({
-  onThread: (thread) => {
-    const query = params();
-    query.set("thread", thread);
-    location.assign(`${location.pathname}${searchOf(query)}${map ? hashOf(map.camera.current) : location.hash}`);
-  },
-});
+const hudControl = createHud();
 const editor = createEditor({
   onClose: () => setEditing(false),
   onReplaced: () => { highlighter?.reset(); clearPopup(); },
@@ -189,7 +182,6 @@ async function load(next, { camera }) {
     created = await createMap({
       container,
       style: sceneUrl(next.scene, next.format),
-      thread: params().get("thread") ?? undefined,
       renderer: params().get("renderer") ?? undefined,
       camera,
       constraints: next.scene.constraints,
@@ -203,7 +195,6 @@ async function load(next, { camera }) {
   }
   map = created;
   expose(map);
-  hudControl.thread(map.thread);
   highlighter = new Highlighter(map, () => editor.style);
   map.on("error", ({ message }) => {
     console.error(message);

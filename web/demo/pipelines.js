@@ -1,5 +1,4 @@
-// Pipeline creation in the browser (#26), on the main thread so the page
-// sees the device: the Tokyo extract from `createMap` to `idle`, counting
+// Pipeline creation in the browser (#26): the Tokyo extract from `createMap` to `idle`, counting
 // the shader modules and pipelines made and timing each queue submission
 // to its `onSubmittedWorkDone`. Browsers compile pipelines in the GPU
 // process when they are made or first used, so the queue's wait during
@@ -43,7 +42,7 @@ window.pipelines = (async () => {
   try {
     const started = performance.now();
     const map = await createMap({ container: document.getElementById("map"), style: demoStyle(new URLSearchParams(location.search), "tokyo"),
-      thread: "main", renderer: "webgpu", camera: { center: [139.74, 35.685], zoom: 15 } });
+      renderer: "webgpu", camera: { center: [139.74, 35.685], zoom: 15 } });
     // The first frame that draws a layer, and the first with no pipeline
     // compiling (plan §18 row 10).
     let firstDrawMs, compiledMs;

@@ -1,5 +1,4 @@
-// The debug overlay: the last frame's counters, the thread mode switch and
-// the build. Off by default; `?debug` or the menu turns it on.
+// The debug overlay: the last frame's counters and the build. Off by default; `?debug` or the menu turns it on.
 import { h } from "./dom.js";
 
 const kib = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;
@@ -21,16 +20,12 @@ function memoryRows(m) {
   ];
 }
 
-export function hud({ onThread }) {
+export function hud() {
   const root = document.getElementById("hud");
   const list = h("dl");
-  const threads = h("span", { class: "segmented", role: "group", "aria-label": "Where the map draws" },
-    ["main", "worker"].map((thread) => h("button", {
-      type: "button", "data-thread": thread, "aria-pressed": "false", onclick: () => onThread(thread),
-    }, thread === "main" ? "Main thread" : "Worker")));
   const commit = h("a", { href: `https://github.com/sargunv/orbis/commit/${COMMIT.sha}` },
     `${COMMIT.short}${COMMIT.dirty ? "-dirty" : ""}`);
-  root.replaceChildren(list, h("div", { class: "hud-foot" }, threads, h("span", {}, "Build ", commit)));
+  root.replaceChildren(list, h("div", { class: "hud-foot" }, h("span", {}, "Build ", commit)));
   let latest;
   let hovered = "";
   let tier = "";
@@ -71,9 +66,6 @@ export function hud({ onThread }) {
 
   return {
     set visible(on) { root.hidden = !on; request(); },
-    thread(thread) {
-      for (const button of threads.children) button.setAttribute("aria-pressed", String(button.dataset.thread === thread));
-    },
     frame(ack) { latest = ack; request(); },
     hover(text) { hovered = text; request(); },
     renderer(text) { tier = text; request(); },

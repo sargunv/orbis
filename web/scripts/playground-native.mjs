@@ -24,7 +24,7 @@ const render = async () => {
 const browser = await launchChromium();
 try {
   const page = await browser.newPage({viewport:{width:1280,height:800}});
-  await page.goto(`http://127.0.0.1:${port}/orbis/?style=playground&edit&thread=main`);
+  await page.goto(`http://127.0.0.1:${port}/orbis/?style=playground&edit`);
   await page.waitForFunction(() => window.app?.editor.style && document.querySelector("#app").dataset.map === "idle",
     null,{timeout:60000});
   const sent = () => page.locator(".native").evaluate(e => Number(e.dataset.sent ?? 0));

@@ -1,7 +1,6 @@
 //! The ui role (plan §7.1): the page's camera authority. It takes input,
-//! runs gestures and camera animations, answers `project`, `unproject` and
-//! `hitTest` synchronously, and hands the camera to the map once a frame,
-//! on this thread or in the render worker.
+//! runs gestures and camera animations, answers `project` and `unproject`
+//! synchronously, and hands the camera to the map once a frame.
 //!
 //! Cameras cross as `[lon, lat, resolution, bearing, pitch, fov, zoom,
 //! elevation, roll]`, elevation and roll optional;
@@ -17,7 +16,7 @@ use orb_crs::Geodetic;
 use orb_interact::{
     Button, Feel, InteractEvent, Interaction, Key, Modifiers, PointerKind, WheelUnit,
 };
-use orb_runtime::{HitIndex, Viewport};
+use orb_runtime::Viewport;
 use wasm_bindgen::prelude::*;
 
 /// A camera as `[lon, lat, resolution, bearing, pitch, fov, zoom,
@@ -131,13 +130,12 @@ fn easing(words: Option<Vec<f64>>) -> Easing {
     }
 }
 
-/// The page's camera, gestures and published picking index.
+/// The page's camera and gestures.
 #[wasm_bindgen]
 #[derive(Debug)]
 pub struct UiRole {
     camera: Camera,
     input: Interaction,
-    hits: HitIndex,
 }
 
 #[wasm_bindgen]
@@ -154,7 +152,6 @@ impl UiRole {
                 Viewport { width, height },
             ),
             input: Interaction::default(),
-            hits: HitIndex::default(),
         }
     }
 
@@ -545,31 +542,23 @@ impl UiRole {
             .map(|g| vec![g.lon, g.lat])
     }
 
-    /// Projects `[lon, lat, …]` pairs with a given camera (a frame ack's,
-    /// so DOM overlays move with the frame on screen) into `[x, y, …]`, NaN
-    /// behind the eye.
-    #[wasm_bindgen(js_name = projectWith)]
-    pub fn project_with(&self, camera: &[f64], points: &[f64]) -> Result<Vec<f64>, JsError> {
-        let state = camera_from(camera)?;
-        let projection = *self.camera.projection();
-        let view = orb_camera::View::new(&state, self.camera.viewport(), self.camera.surface());
-        let near = view.camera_world();
-        let period = projection.wrap_period();
+    /// Projects `[lon, lat, …]` pairs, on the terrain, into `[x, y, …]`
+    /// CSS pixels, NaN behind the eye: DOM overlays at the points.
+    #[wasm_bindgen(js_name = projectPoints)]
+    pub fn project_points(&self, points: &[f64]) -> Vec<f64> {
         let mut out = Vec::with_capacity(points.len());
         for &[lon, lat] in points.as_chunks::<2>().0 {
-            let mut world = projection.forward(Geodetic::new(lon, lat));
-            if let Some(period) = period {
-                world.x -= ((world.x - near.x) / period).round() * period;
-            }
-            let p = view.project(world).unwrap_or(DVec2::NAN);
+            let p = self
+                .camera
+                .project(Geodetic::new(lon, lat))
+                .unwrap_or(DVec2::NAN);
             out.extend([p.x, p.y]);
         }
-        Ok(out)
+        out
     }
 
-    /// Stands the camera on the terrain of a frame acknowledgement's
-    /// elevation pyramid (empty: no terrain). Projections then go through
-    /// the pyramid, approximately (decision 0019).
+    /// Stands the camera on the terrain of a frame's elevation pyramid
+    /// (empty: no terrain).
     #[wasm_bindgen(js_name = updateElevation)]
     pub fn update_elevation(&mut self, bytes: &[u8]) -> Result<(), JsError> {
         let terrain = if bytes.is_empty() {
@@ -581,29 +570,5 @@ impl UiRole {
         };
         self.camera.set_terrain(terrain);
         Ok(())
-    }
-
-    /// Applies picking's changes from a frame acknowledgement.
-    #[wasm_bindgen(js_name = updateHits)]
-    pub fn update_hits(&mut self, bytes: &[u8]) -> Result<(), JsError> {
-        self.hits.apply(bytes).map_err(|e| JsError::new(&e))
-    }
-
-    #[wasm_bindgen(js_name = advanceHits)]
-    pub fn advance_hits(&mut self, generation: f64) {
-        self.hits.set_generation(generation as u64);
-    }
-
-    /// The topmost feature under a CSS pixel with the camera now: the
-    /// drawn tiles' features where it puts them, labels as the last
-    /// placement commit shows them.
-    #[wasm_bindgen(js_name = hitTest)]
-    pub fn hit_test(&self, x: f64, y: f64) -> JsValue {
-        crate::hit_object(self.hits.hit_test(
-            DVec2::new(x, y),
-            self.camera.state(),
-            self.camera.viewport(),
-            self.camera.surface(),
-        ))
     }
 }

@@ -1,12 +1,8 @@
 // Frame scheduling (plan §7.5): frames run on the display's refresh
-// (requestAnimationFrame, or a timer in workers without it) and only while
-// something asks for them: no frames when idle.
+// (requestAnimationFrame) and only while something asks for them: no
+// frames when idle.
 
 import type { FrameStats } from "./types.ts";
-
-const nextFrame: (draw: (now: number) => void) => unknown =
-  globalThis.requestAnimationFrame?.bind(globalThis) ??
-  ((draw) => setTimeout(() => draw(performance.now()), 16));
 
 /**
  * Runs `frame` on the next display frame after each `request()`, and again
@@ -17,7 +13,7 @@ export function frameLoop(frame: (now: number) => boolean, onError: (e: unknown)
   const request = () => {
     if (scheduled) return;
     scheduled = true;
-    nextFrame(() => {
+    requestAnimationFrame(() => {
       scheduled = false;
       try {
         if (frame(performance.now())) request();
@@ -29,7 +25,7 @@ export function frameLoop(frame: (now: number) => boolean, onError: (e: unknown)
   return { request, get scheduled() { return scheduled; } };
 }
 
-/** `FrameInfo::stats`' counters, in order (orb-web); the camera follows. */
+/** `FrameInfo::stats`' counters, in order (orb-web); the memory follows. */
 const STATS = [
   "zoom", "generation", "idle", "meshesUploaded", "rowsUploaded", "draws", "dispatches",
   "candidates", "tilesDrawn", "tilesLoading", "bundleRecorded", "placementsWritten",
@@ -47,17 +43,12 @@ const MEMORY = [
 const GENERATION = 1;
 const IDLE = 2;
 const LOST = STATS.indexOf("lost");
-const CAMERA = STATS.length + MEMORY.length;
 
-/** What crosses from the renderer to the page after a frame: small, its
- * counters packed in one transferable array. */
+/** What a frame reports: its counters packed in one array. */
 export interface FrameAck {
-  /** CPU milliseconds the frame took where it rendered. */
+  /** CPU milliseconds the frame took. */
   ms: number;
-  /** Counters, then the frame's camera ([`ackCamera`]). */
   stats: Float64Array;
-  /** Picking's changes for the ui role (render worker). */
-  hits?: Uint8Array;
   /** The terrain's elevation pyramid when it changed; empty when it's gone. */
   elevation?: Uint8Array;
   /** The map's events since the last frame, if any. */
@@ -69,8 +60,6 @@ export const ackIdle = (ack: FrameAck) => ack.stats[IDLE] !== 0;
 /** The GPU was lost and nothing was drawn; the host recovers. */
 export const ackLost = (ack: FrameAck) => ack.stats[LOST] !== 0;
 export const ackGeneration = (ack: FrameAck) => ack.stats[GENERATION];
-/** The frame's camera: [lon, lat, resolution, bearing, pitch, fov, zoom, elevation, roll]. */
-export const ackCamera = (ack: FrameAck) => ack.stats.subarray(CAMERA, CAMERA + 9);
 
 /** A frame's counters as the package reports them. */
 export function frameStats(ack: FrameAck): FrameStats {
@@ -102,17 +91,16 @@ export interface Renderer {
 
 /** The fields of core.wasm's `FrameInfo`. */
 export interface RenderInfo {
-  stats: Float64Array; hits?: Uint8Array; elevation?: Uint8Array; warnings: string[];
+  stats: Float64Array; elevation?: Uint8Array; warnings: string[];
   free(): void;
 }
 
-/** Draws one frame and reports it as plain data that can cross to the page. */
+/** Draws one frame and reports it as plain data. */
 export function renderFrame(map: Renderer): FrameAck {
   const started = performance.now();
   const info = map.render();
   const ms = performance.now() - started;
   const ack: FrameAck = { ms, stats: info.stats };
-  if (info.hits) ack.hits = info.hits;
   if (info.elevation) ack.elevation = info.elevation;
   const events = map.takeEvents();
   if (events.length) ack.events = events;

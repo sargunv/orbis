@@ -1,7 +1,5 @@
-// The two places a map can draw (plan §7.2), behind one interface: on the
-// page's thread, or in a render worker. Either way its tile jobs and labels
-// go to job workers and a placement worker (plan §7.1), which the drawing
-// thread spawns (workers.ts).
+// The wasm map on the page's thread (plan §7.2). Its tile jobs and labels
+// go to job workers and a placement worker (plan §7.1, workers.ts).
 
 import init, { createMap as createCoreMap, type OrbisMap as CoreMap } from "../pkg/core.js";
 
@@ -24,9 +22,7 @@ import type { Hit } from "./types.ts";
 import { spawnWorkers } from "./workers.ts";
 
 export interface HostCallbacks {
-  /** A frame the worker drew (worker hosts; the page draws main hosts' itself). */
-  frame(ack: FrameAck): void;
-  /** The map has new data to draw (main hosts). */
+  /** The map has new data to draw. */
   wake(): void;
   error(e: unknown): void;
 }
@@ -36,39 +32,23 @@ export type RequestMethod = "getStyle" | "semanticSnapshot" | "queryRendered" | 
   | "addImage" | "updateImage" | "removeImage" | "hasImage" | "retryFailedTiles";
 
 export interface Host {
-  readonly thread: "main" | "worker";
   setCamera(camera: Float64Array): void;
   resize(width: number, height: number, ratio: number): void;
   edit(commands: string): Promise<number>;
   request(method: RequestMethod, ...args: unknown[]): Promise<unknown>;
-  /** Main hosts answer hit tests from the last frame; worker hosts leave it to the ui role. */
-  hitTest?(x: number, y: number): Hit | null;
-  /** Main hosts draw on the page's frames. */
-  render?(): FrameAck;
-  /** Worker hosts acknowledge every frame, or only those the page needs
-   * (with events, picking or terrain changes, or the last before a pause). */
-  acknowledge?(every: boolean): void;
-  /** The wasm map, in main-thread mode: for benches and tests. */
-  readonly core?: CoreMap;
-  /** Loses the GPU on purpose, to exercise recovery (main hosts); with
-   * `switchTier`, recovery skips the same tier. */
-  loseDevice?(switchTier: boolean): void;
+  /** The topmost feature under a CSS pixel, from the last frame. */
+  hitTest(x: number, y: number): Hit | null;
+  render(): FrameAck;
+  /** The wasm map: for benches and tests. */
+  readonly core: CoreMap;
+  /** Loses the GPU on purpose, to exercise recovery; with `switchTier`,
+   * recovery skips the same tier. */
+  loseDevice(switchTier: boolean): void;
   /** Draws on a new GPU after a loss: the same tier on the same canvas
    * where it works, else WebGL2 in a fresh canvas `replace` puts in the
-   * old one's place (main hosts). Resolves to the new tier. */
-  recover?(replace: (canvas: HTMLCanvasElement) => void, camera: Float64Array): Promise<"modern" | "compat">;
+   * old one's place. Resolves to the new tier. */
+  recover(replace: (canvas: HTMLCanvasElement) => void, camera: Float64Array): Promise<"modern" | "compat">;
   destroy(): void;
-}
-
-/** Spawns a render worker and asks whether WebGPU works there. */
-export async function probeWorker(): Promise<{ worker: Worker; ok: boolean; adapter?: string; reason?: string }> {
-  const worker = new Worker(new URL("./render-worker.ts", import.meta.url), { type: "module" });
-  const probe = await new Promise<{ ok: boolean; adapter?: string; reason?: string }>((resolve) => {
-    worker.onmessage = ({ data }) => resolve(data);
-    worker.onerror = (e) => resolve({ ok: false, reason: e.message ?? "worker failed" });
-    worker.postMessage({ type: "probe" });
-  });
-  return { worker, ...probe };
 }
 
 /** The map on this thread, drawing into `canvas` at `tier`. */
@@ -107,7 +87,6 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
     core.free();
   };
   return {
-    thread: "main",
     get core() { return core; },
     setCamera: (camera) => { if (recovering) heldCamera = camera; else core.setCamera(camera); },
     resize: (width, height, ratio) => {
@@ -154,43 +133,5 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
       }
     },
     destroy: stop,
-  };
-}
-
-/** Hands `canvas` to the probed render worker, which spawns the job
- * workers and the placement worker. */
-export function startWorker(module: WebAssembly.Module, worker: Worker, canvas: HTMLCanvasElement,
-  style: string, jobWorkers: number, callbacks: HostCallbacks): Host {
-  const offscreen = canvas.transferControlToOffscreen();
-  // Calls in flight, by id, until the render worker answers.
-  const pending = new Map<number, { resolve(value: unknown): void; reject(e: Error): void }>();
-  let next = 0;
-  const call = (message: object, transfer: Transferable[] = []) => new Promise<unknown>((resolve, reject) => {
-    const id = next++;
-    pending.set(id, { resolve, reject });
-    worker.postMessage({ ...message, id }, transfer);
-  });
-  worker.onmessage = ({ data }) => {
-    if (data.type === "frame") callbacks.frame(data.ack);
-    else if (data.type === "error") callbacks.error(data.message);
-    else if (data.type === "reply" || data.type === "edited") {
-      const call = pending.get(data.id);
-      if (!call) return;
-      pending.delete(data.id);
-      if (data.error !== undefined) call.reject(new Error(data.error));
-      else call.resolve(data.type === "edited" ? data.generation : data.result);
-    }
-  };
-  worker.onerror = (e) => callbacks.error(e.message);
-  worker.postMessage({ type: "init", module, canvas: offscreen, style, jobWorkers }, [offscreen]);
-  return {
-    thread: "worker",
-    setCamera: (camera) => worker.postMessage({ type: "camera", camera }),
-    resize: (width, height, ratio) => worker.postMessage({ type: "resize", width, height, ratio }),
-    acknowledge: (every) => worker.postMessage({ type: "acks", every }),
-    edit: (commands) => call({ type: "edit", commands }) as Promise<number>,
-    request: (method, ...args) => call({ type: "request", method, args }),
-    // Its own workers end with it.
-    destroy: () => worker.terminate(),
   };
 }
