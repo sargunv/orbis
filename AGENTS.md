@@ -86,7 +86,11 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
   at milestone ends.
   Run long commands (checks, benches, fixture runs) in the foreground and
   wait for them: an agent that ends its turn while a background command runs
-  is not woken when it finishes, and stalls.
+  is not woken when it finishes, and stalls. Shell tools move a command to the
+  background when it outlives the call's timeout (two minutes by default), so
+  give long commands the longest timeout the tool allows. If one still ends up
+  in the background, wait for it before ending your turn (the host's
+  background-wait tool, or poll its output file until it exits).
 - **Commit and push straight to `main`.** No PRs, no CI; the one workflow
   only publishes the demo.
 - **GL JS is a reference, not a pixel target.** What matters is that the map
