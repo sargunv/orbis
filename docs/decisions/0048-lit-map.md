@@ -52,8 +52,10 @@ their v8 colours. Decision 0043 left room for a material buffer.
   alone. A wave shorter than a few pixels fades out and its slope widens
   the glint (GGX's α² takes twice the variance), so far water glitters
   rather than aliases. A map showing waves draws frames continuously:
-  the frame report's `animated` keeps `needs_frame` set, while `idle`
-  still means loaded, so snapshots settle.
+  the frame report's `animated` keeps `needs_frame` set while a layer
+  with waves has a mesh in a tile placed that frame, so water out of
+  view, or a style without waves, idles; `idle` still means loaded, so
+  snapshots settle.
 - **Every material mirrors the sky.** `pbr_light` adds the ambient light
   mirrored by Schlick's Fresnel with roughness, for dielectrics as for
   metals: smooth water takes the sky's colour toward grazing angles,
@@ -61,7 +63,15 @@ their v8 colours. Decision 0043 left room for a material buffer.
 - 3D layers, heatmaps and layers composited once arrive shaded and
   composite as they do unlit; draped layers on terrain draw into the drape
   unlit, which the terrain's own lighting shades. Compat draws unlit and
-  warns.
+  warns. A translucent 3D layer keeps its nearest faces and lays them over
+  the map at its opacity (decision 0043), lit or not: the map beneath,
+  ground shadows included, shows through, never its own far walls.
+- **A scene paints the style it extends.** A style layer's entry in the
+  scene's `layers` takes a `paint` object, set over the layer's own paint
+  when the scene extends its style, so a scene can make a style it doesn't
+  own fit its lights: Lit Tokyo makes Liberty's buildings (0.8 opaque,
+  85% light) solid and a warmer mid-tone, whose shaded faces then read
+  clearly darker than sunlit ones.
 
 ## The material buffer, tried first
 

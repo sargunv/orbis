@@ -15,7 +15,8 @@
 //! 1, matte paint by default), `emissive-strength` (how much of it shows
 //! unlit), for extrusions `windows` (the share of their windows that glow)
 //! and for fills and lines `waves` (water's slope, animated) complete its
-//! material.
+//! material. A layer's `paint` sets v8 paint properties over the style's,
+//! so a scene can repaint a style it doesn't own (solid buildings, say).
 //!
 //! A `directional` light takes `direction`, `[azimuth, polar]` in degrees
 //! (clockwise from north, from the zenith); a `sun` takes a UTC `time`
@@ -154,15 +155,29 @@ pub(crate) fn parse_lights(cx: &mut Cx, json: &Json) -> Lights {
     lights
 }
 
-/// `layers`: per layer id, its material: `emissive-strength`,
+/// A scene's `layers`: materials and paint by layer id.
+#[derive(Default)]
+pub(crate) struct SceneLayers {
+    pub(crate) materials: Vec<(String, LayerMaterial)>,
+    pub(crate) paint: Vec<(String, Json)>,
+}
+
+/// `layers`: per layer id, its material (`emissive-strength`,
 /// `roughness`, `metalness`, an extrusion's lit `windows` and a fill's or
-/// line's `waves`, each 0 to 1.
-pub(crate) fn parse_layers(cx: &mut Cx, json: &Json) -> Vec<(String, LayerMaterial)> {
-    let mut materials = Vec::new();
+/// line's `waves`, each 0 to 1) and the `paint` the scene sets on it.
+pub(crate) fn parse_layers(cx: &mut Cx, json: &Json) -> SceneLayers {
+    let mut layers = SceneLayers::default();
     for layer in cx.object(json, "layers").unwrap_or(&[]) {
         let path = format!("layers.{}", layer.key);
-        let mut material = LayerMaterial::default();
+        let mut material = None;
         for m in cx.object(&layer.value, &path).unwrap_or(&[]) {
+            if m.key == "paint" {
+                if cx.object(&m.value, &format!("{path}.paint")).is_some() {
+                    layers.paint.push((layer.key.clone(), m.value.clone()));
+                }
+                continue;
+            }
+            let material = material.get_or_insert_with(LayerMaterial::default);
             let field = match m.key.as_str() {
                 "emissive-strength" => &mut material.emissive,
                 "roughness" => &mut material.roughness,
@@ -183,9 +198,11 @@ pub(crate) fn parse_layers(cx: &mut Cx, json: &Json) -> Vec<(String, LayerMateri
                 ),
             }
         }
-        materials.push((layer.key.clone(), material));
+        if let Some(material) = material {
+            layers.materials.push((layer.key.clone(), material));
+        }
     }
-    materials
+    layers
 }
 
 /// Seconds since the Unix epoch of an RFC 3339 date-time:

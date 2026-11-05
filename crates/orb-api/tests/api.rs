@@ -876,7 +876,8 @@ fn request_transforms_rewrite_what_the_map_fetches() {
 
 /// Lit water's waves move with time (decision 0048): settled, a map
 /// showing them still needs frames, and frames half a second apart differ;
-/// the same lit water without waves settles.
+/// the same lit water without waves settles, as does a view without the
+/// water.
 #[test]
 fn lit_waves_keep_frames_coming() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
@@ -904,4 +905,12 @@ fn lit_waves_keep_frames_coming() {
     let before = target.read_pixels().unwrap();
     map.render(&mut target, 1e6 + 500.0).unwrap();
     assert_ne!(before, target.read_pixels().unwrap(), "the waves moved");
+    // Far from the box, its waves are in no tile drawn.
+    map.jump_to(&CameraTarget {
+        center: Some(orb_api::Geodetic::new(100.0, 50.0)),
+        zoom: Some(10.0),
+        ..CameraTarget::default()
+    });
+    settle(&mut map, &mut target);
+    assert!(!map.needs_frame(), "waves out of view don't draw on");
 }

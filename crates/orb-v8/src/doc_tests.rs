@@ -356,6 +356,27 @@ fn a_scene_extends_its_style_in_the_scene_dialect() {
     assert!(plain.apply(&tx).is_err());
 }
 
+/// A scene's `layers` entry sets paint over its style's layer, keeping
+/// the rest of the layer's paint; a layer the style lacks fails the scene.
+#[test]
+fn a_scene_paints_its_styles_layers() {
+    let scene = crate::parse_scene(
+        r#"{"style": "s.json", "layers": {"water": {"paint": {"fill-opacity": 0.5}}}}"#,
+    )
+    .unwrap();
+    let doc = StyleDoc::parse_extended(STYLE, &scene).unwrap();
+    let json = json::parse(&doc.to_json()).unwrap();
+    let water = &json.get("layers").unwrap().as_array().unwrap()[1];
+    let paint = water.get("paint").unwrap();
+    assert_eq!(paint.get("fill-opacity").unwrap().as_f64(), Some(0.5));
+    assert_eq!(paint.get("fill-color").unwrap().as_str(), Some("blue"));
+    // Paint alone is not a material: no warning that lights are missing.
+    assert!(scene.warnings.is_empty(), "{:?}", scene.warnings);
+    let missing =
+        crate::parse_scene(r#"{"style": "s.json", "layers": {"nope": {"paint": {}}}}"#).unwrap();
+    assert!(StyleDoc::parse_extended(STYLE, &missing).is_err());
+}
+
 #[test]
 fn source_data_is_a_new_revision_of_the_same_source() {
     let mut doc = doc();

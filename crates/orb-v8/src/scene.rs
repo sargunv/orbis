@@ -1,8 +1,8 @@
 //! The scene document, v0 (plan §11.4): what v8 can't say about a map,
 //! next to an unmodified v8 style. v0 carries the CRS/TMS module (a
 //! projection for the surface and a tile matrix set per source), the
-//! lighting module (`lights` and per-layer `emissive-strength`; see
-//! [`crate::lights`]) and the `atmosphere` (v8 `sky`'s properties with
+//! lighting module (`lights`, and per layer its material and the `paint`
+//! the scene sets on it; see [`crate::lights`]) and the `atmosphere` (v8 `sky`'s properties with
 //! `star-intensity` and `backdrop-color`; see [`crate::Atmosphere`]).
 //!
 //! ```json
@@ -47,6 +47,9 @@ pub struct SceneDocument {
     /// scene dialect with the style ([`crate::Dialect::Scene`]).
     pub models: Vec<(String, String)>,
     pub layers: Vec<AddedLayer>,
+    /// Paint the scene sets on its style's layers, by layer id: each
+    /// object's properties replace the layer's own.
+    pub paint: Vec<(String, Json)>,
     /// Symbols and circles are hidden by 3D layers as well as by the
     /// terrain (`symbol-occlusion`).
     pub symbol_occlusion: bool,
@@ -96,7 +99,7 @@ pub fn parse_scene(text: &str) -> Result<SceneDocument, Diagnostics> {
     let mut style = None;
     let mut projection = None;
     let mut sources = Vec::new();
-    let (mut lights, mut materials) = (None, Vec::new());
+    let (mut lights, mut materials, mut paint) = (None, Vec::new(), Vec::new());
     let mut atmosphere = None;
     let mut models = Vec::new();
     let mut added = Vec::new();
@@ -151,7 +154,10 @@ pub fn parse_scene(text: &str) -> Result<SceneDocument, Diagnostics> {
                 }
             }
             "lights" => lights = Some(crate::lights::parse_lights(&mut cx, &m.value)),
-            "layers" => materials = crate::lights::parse_layers(&mut cx, &m.value),
+            "layers" => {
+                let layers = crate::lights::parse_layers(&mut cx, &m.value);
+                (materials, paint) = (layers.materials, layers.paint);
+            }
             "symbol-occlusion" => match m.value.as_bool() {
                 Some(b) => symbol_occlusion = b,
                 None => cx.error("symbol-occlusion", m.value.span, "expected a boolean"),
@@ -249,6 +255,7 @@ pub fn parse_scene(text: &str) -> Result<SceneDocument, Diagnostics> {
         atmosphere,
         models,
         layers: added,
+        paint,
         symbol_occlusion,
         warnings: cx.diagnostics.warnings,
     })

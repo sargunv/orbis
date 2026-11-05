@@ -7,7 +7,7 @@
    "type": "ambient",
    "properties": {
     "color": "#e6ecff",
-    "intensity": 0.38
+    "intensity": 0.3
    }
   },
   {
@@ -16,7 +16,7 @@
    "properties": {
     "time": "2024-11-05T03:00:00Z",
     "color": "#fff6e8",
-    "intensity": 0.95,
+    "intensity": 1,
     "cast-shadows": true
    }
   }
@@ -32,6 +32,12 @@
   },
   "waterway_other": {
    "roughness": 0.15
+  },
+  "building-3d": {
+   "paint": {
+    "fill-extrusion-opacity": 1,
+    "fill-extrusion-color": "hsl(30, 22%, 72%)"
+   }
   }
  },
  "atmosphere": {

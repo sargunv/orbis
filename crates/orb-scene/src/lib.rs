@@ -1230,6 +1230,12 @@ impl Scene {
         })
     }
 
+    /// Whether render `node` has a mesh in a tile placed this frame: it
+    /// draws in view, to the tile.
+    pub fn node_placed(&self, node: u32) -> bool {
+        self.node_meshes(node).any(|m| !m.placements.is_empty())
+    }
+
     pub fn stats(&self) -> SceneStats {
         SceneStats {
             meshes: (self.meshes.len() - self.free_meshes.len()) as u32,

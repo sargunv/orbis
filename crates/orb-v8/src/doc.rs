@@ -138,7 +138,8 @@ impl StyleDoc {
     }
 
     /// A v8 document as a scene document extends it (plan §11.1, S0):
-    /// with the scene's `models` (resolved URLs) and its added layers, in
+    /// with the scene's `models` (resolved URLs), the paint it sets on
+    /// the style's layers and its added layers, in
     /// the scene dialect, under the scene's projection, tile matrix sets,
     /// low-zoom surface, lights and atmosphere.
     pub fn parse_extended(text: &str, scene: &crate::SceneDocument) -> Result<Self, Diagnostics> {
@@ -165,6 +166,26 @@ impl StyleDoc {
                 _ => layers.len(),
             };
             layers.insert(index, layer.json.clone());
+        }
+        for (id, paint) in &scene.paint {
+            let layer = layers
+                .iter_mut()
+                .find(|l| layer_id(l) == Some(id))
+                .ok_or_else(|| error(format!("layers.{id}: the layer \"{id}\" does not exist")))?;
+            let mut members = layer.as_object().unwrap_or_default().to_vec();
+            let mut own = member(&members, "paint")
+                .and_then(Json::as_object)
+                .unwrap_or_default()
+                .to_vec();
+            for m in paint.as_object().unwrap_or_default() {
+                set_member(&mut own, &m.key, Some(m.value.clone()));
+            }
+            set_member(
+                &mut members,
+                "paint",
+                Some(synthetic(JsonValue::Object(own))),
+            );
+            *layer = synthetic(JsonValue::Object(members));
         }
         set_member(
             &mut members,
