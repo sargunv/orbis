@@ -482,7 +482,7 @@ impl<T: PropertyValue> Property<T> {
 
 /// GL JS's fallback: `null`, `NaN`, an evaluation error or a value of the
 /// wrong shape yields the default.
-fn fit<T: PropertyValue>(value: Option<Value<'_>>, default: &T) -> T {
+pub(crate) fn fit<T: PropertyValue>(value: Option<Value<'_>>, default: &T) -> T {
     match value {
         None | Some(Value::Null) => default.clone(),
         Some(Value::Number(n)) if n.is_nan() => default.clone(),

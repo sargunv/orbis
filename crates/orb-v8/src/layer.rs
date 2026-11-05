@@ -559,7 +559,8 @@ pub(crate) fn property_at<T: PropertyValue>(
                 .map(Value::into_owned)
                 .unwrap_or(Value::Null);
             check_constant(cx, prop, json, &value, &path);
-            Property::constant(T::from_value(&value).unwrap_or(default))
+            // Folded or not, `NaN` and `null` fall back to the default.
+            Property::constant(crate::property::fit(Some(value), &default))
         }
         Ok(parsed) => Property::expression(parsed, default),
     }
