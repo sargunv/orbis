@@ -313,7 +313,10 @@ impl<'a> Reader<'a> {
         }
         let tag = self.varint()?;
         let field = tag >> 3;
-        if field == 0 || field > 0x1fff_ffff {
+        // Field 0, which protobuf reserves, reads as an unknown field to
+        // skip, as GL JS's `pbf` reads it: tiles padded with zero bytes
+        // decode.
+        if field > 0x1fff_ffff {
             return Err(DecodeError::InvalidProtobuf("invalid field number"));
         }
         Ok(Some((field as u32, (tag & 7) as u8)))

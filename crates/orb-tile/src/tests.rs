@@ -122,6 +122,18 @@ fn geometry_fixture() -> Vec<u8> {
     )
 }
 
+/// Zero bytes after a tile read as fields numbered 0 and are skipped, as
+/// GL JS's `pbf` skips them (`filter/modulo`'s tile is padded so).
+#[test]
+fn zero_padding_is_skipped() {
+    let mut padded = geometry_fixture();
+    padded.extend([0; 16]);
+    assert_eq!(
+        mvt::decode(&padded).unwrap().layers[0].geometry_types(),
+        mvt::decode(&geometry_fixture()).unwrap().layers[0].geometry_types()
+    );
+}
+
 #[test]
 fn all_geometry_types_and_ids() {
     let frame = mvt::decode(&geometry_fixture()).unwrap();
