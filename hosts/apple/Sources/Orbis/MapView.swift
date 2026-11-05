@@ -148,18 +148,9 @@ open class MapView: PlatformView {
                 onFrame?(frame)
             }
         } catch let failure as OrbErrorFailure where failure.error == .targetLost {
+            // A new GPU, or the layer's surface went: a surface on it.
             self.target = nil
             resizeTarget()
-        } catch let failure as OrbErrorFailure where failure.error == .deviceLost {
-            // The layer's surface goes with the old device: a new device,
-            // then a new surface on it, and the map draws on.
-            self.target = nil
-            do {
-                try runtime.recover()
-                resizeTarget()
-            } catch {
-                print("Orbis: the GPU was lost and no other could be made: \(error)")
-            }
         } catch {
             print("Orbis: \(error)")
         }

@@ -58,10 +58,9 @@ pub enum Error {
     Unsupported(String),
     /// The GPU or the platform failed.
     Native(String),
-    /// The target can't be drawn to again.
+    /// The target can't be drawn to again: make another, as after the
+    /// GPU was replaced.
     TargetLost(String),
-    /// The GPU was lost: [`Runtime::recover`] makes another.
-    DeviceLost,
 }
 
 impl Error {
@@ -72,7 +71,6 @@ impl Error {
             | Self::Unsupported(m)
             | Self::Native(m)
             | Self::TargetLost(m) => m,
-            Self::DeviceLost => "the GPU was lost",
         }
     }
 }
@@ -348,7 +346,7 @@ impl Runtime {
         }
     }
 
-    /// Whether the GPU was lost; [`recover`](Self::recover) makes another.
+    /// Whether the GPU was lost; the next frame drawn makes another.
     pub fn lost(&self) -> bool {
         self.shared.gpu.borrow().lost()
     }
@@ -361,9 +359,9 @@ impl Runtime {
     /// Makes a new device after a loss (plan §8.8), on the tier the
     /// policy chooses again, with the pipeline cache started again. Maps
     /// lay their tiles out again on their next frame from cached data;
-    /// texture targets are made again. Drop window targets first (their
-    /// surfaces hold their windows) and make them again after.
-    pub fn recover(&self) -> Result<Tier, Error> {
+    /// texture targets are made again, window targets fail with
+    /// [`Error::TargetLost`].
+    pub(crate) fn recover(&self) -> Result<Tier, Error> {
         // A loss mid-compile isn't a crash in it: only a compile the
         // watchdog found hung keeps the sentinel armed, so the device
         // chosen now demotes as at the next start (plan §8.8 3).

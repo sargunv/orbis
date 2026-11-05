@@ -148,7 +148,6 @@ class MainActivity : Activity() {
                 }
             }
         }
-        view.onRecovered = { ms -> Log.i("Orbis", "new device in %d ms: %s".format(ms, runtime.stats().use { it.selection() })) }
         view.onEvent = { event ->
             when (event.kind()) {
                 OrbEventKind.Click -> {

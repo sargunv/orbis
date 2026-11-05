@@ -347,16 +347,9 @@ impl State {
         };
         let report = match self.map.render(target, now) {
             Ok(report) => report,
+            // A new GPU, or the surface went: the old surface goes first.
             Err(Error::TargetLost(_)) => {
-                self.make_target();
-                self.window.request_redraw();
-                return;
-            }
-            Err(Error::DeviceLost) => {
-                // The surface goes with the old device (plan §8.8).
                 self.target = None;
-                let tier = self.runtime.recover().expect("a new device");
-                eprintln!("orb-demo: the GPU was lost; drawing on a new one ({tier:?})");
                 self.make_target();
                 self.window.request_redraw();
                 return;

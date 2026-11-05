@@ -29,9 +29,6 @@ OrbStats* OrbRuntime_stats(const OrbRuntime* self);
 
 void OrbRuntime_lose_device(OrbRuntime* self);
 
-typedef struct OrbRuntime_recover_result {union { OrbError err;}; bool is_ok;} OrbRuntime_recover_result;
-OrbRuntime_recover_result OrbRuntime_recover(OrbRuntime* self);
-
 uint32_t OrbRuntime_abi_version(void);
 
 typedef struct OrbRuntime_download_region_result {union {uint32_t ok; OrbError err;}; bool is_ok;} OrbRuntime_download_region_result;

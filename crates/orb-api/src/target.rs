@@ -51,6 +51,8 @@ pub struct Target {
 enum Kind {
     Surface(Box<Surface>),
     Texture(TextureId),
+    /// Its resources are gone ([`Target::release`]).
+    Released,
 }
 
 /// The format of texture targets and Compat frames.
@@ -127,7 +129,7 @@ impl Target {
             }
             // An EGL window follows its native window; its frame follows
             // the size on the next frame.
-            (Kind::Surface(_), Device::Compat(_)) => {}
+            (Kind::Surface(_), Device::Compat(_)) | (Kind::Released, _) => {}
             (Kind::Texture(id), device) => {
                 // A texture of a replaced device went with it.
                 if self.generation == self.shared.generation.get() {
@@ -151,6 +153,7 @@ impl Target {
             Kind::Surface(_) => Err(Error::Unsupported(
                 "surface targets can't be read back".into(),
             )),
+            Kind::Released => Err(Error::TargetLost("the GPU was replaced".into())),
         }
     }
 
@@ -161,10 +164,14 @@ impl Target {
                     Surface::Modern(s) => s.format(),
                     Surface::Compat { .. } => TEXTURE_FORMAT,
                 },
-                Kind::Texture(_) => TEXTURE_FORMAT,
+                Kind::Texture(_) | Kind::Released => TEXTURE_FORMAT,
             },
             sample_count: 1,
         }
+    }
+
+    pub(crate) fn is_window(&self) -> bool {
+        matches!(self.kind, Kind::Surface(_))
     }
 
     pub(crate) fn same_runtime(&self, shared: &Rc<Shared>) -> bool {
@@ -174,9 +181,6 @@ impl Target {
     /// Starts a frame on `device`, the runtime's, which the frame holds:
     /// the texture to draw it into, or `None` to skip it.
     pub(crate) fn begin(&mut self, device: &mut Device) -> Result<Option<TextureId>, Error> {
-        if device.lost() {
-            return Err(Error::DeviceLost);
-        }
         // Made before the device was replaced: textures are made again;
         // windows need the host.
         if self.generation != self.shared.generation.get() {
@@ -185,13 +189,14 @@ impl Target {
                     *id = create_texture(device, self.width, self.height);
                     self.generation = self.shared.generation.get();
                 }
-                Kind::Surface(_) => {
+                Kind::Surface(_) | Kind::Released => {
                     return Err(Error::TargetLost("the GPU was replaced".into()));
                 }
             }
         }
         match (&mut self.kind, device) {
             (Kind::Texture(id), _) => Ok(Some(*id)),
+            (Kind::Released, _) => Err(Error::TargetLost("the GPU was replaced".into())),
             (Kind::Surface(surface), Device::Modern(gpu)) => match &mut **surface {
                 Surface::Modern(surface) => match gpu.acquire(surface) {
                     Ok(id) => Ok(Some(id)),
@@ -236,10 +241,17 @@ impl Target {
                 if let Some((id, (w, h))) = *frame {
                     c.gpu.present(id, w, h);
                 }
-                return c.egl.swap(window).map_err(|e| match e {
-                    orb_hal_gl::egl::SwapError::ContextLost => Error::DeviceLost,
-                    orb_hal_gl::egl::SwapError::Surface(message) => Error::TargetLost(message),
-                });
+                return match c.egl.swap(window) {
+                    // The next frame makes another device.
+                    Err(orb_hal_gl::egl::SwapError::ContextLost) => {
+                        c.gpu.mark_lost();
+                        Ok(())
+                    }
+                    Err(orb_hal_gl::egl::SwapError::Surface(message)) => {
+                        Err(Error::TargetLost(message))
+                    }
+                    Ok(()) => Ok(()),
+                };
             }
             _ => {}
         }
@@ -247,15 +259,20 @@ impl Target {
     }
 }
 
-impl Drop for Target {
-    fn drop(&mut self) {
+impl Target {
+    /// Frees a window target's surface while its device is current: a
+    /// window takes no new surface while it holds another (EGL), so a lost
+    /// device's go before the new device's come. The target then reports
+    /// [`Error::TargetLost`].
+    pub(crate) fn release(&mut self) {
         let mut device = self.shared.gpu.borrow_mut();
+        let kind = std::mem::replace(&mut self.kind, Kind::Released);
         if self.generation != self.shared.generation.get() {
             // Its resources went with the old device.
             return;
         }
-        let kind = std::mem::replace(&mut self.kind, Kind::Texture(TextureId(u32::MAX)));
         match (kind, &mut *device) {
+            (Kind::Released, _) => {}
             (Kind::Texture(id), device) => device.gpu().destroy_texture(id),
             (Kind::Surface(surface), Device::Modern(gpu)) => {
                 if let Surface::Modern(mut surface) = *surface {
@@ -271,6 +288,12 @@ impl Drop for Target {
                 }
             }
         }
+    }
+}
+
+impl Drop for Target {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 

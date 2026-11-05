@@ -67,10 +67,9 @@ mod ffi {
         Unsupported = 3,
         /// The GPU or the platform failed.
         Native = 4,
-        /// The target can't be drawn to again; make a new one.
+        /// The target can't be drawn to again (the GPU was replaced);
+        /// make a new one.
         TargetLost = 5,
-        /// The GPU was lost; `OrbRuntime::recover` makes another.
-        DeviceLost = 6,
     }
 
     /// The GPU tier a runtime draws at (plan §4.2).
@@ -148,18 +147,11 @@ mod ffi {
             Box::new(OrbStats(self.0.stats()))
         }
 
-        /// Loses the GPU on purpose, to exercise recovery: frames fail
-        /// with `DeviceLost` until `recover`.
+        /// Loses the GPU on purpose, to exercise recovery: the next frame
+        /// makes another, and window targets report `TargetLost`.
         #[diplomat::attr(contract, command)]
         pub fn lose_device(&mut self) {
             self.0.lose_device();
-        }
-
-        /// Makes a new device after a loss; maps lay their tiles out again
-        /// and window targets report `TargetLost` to be made again.
-        #[diplomat::attr(contract, command)]
-        pub fn recover(&mut self) -> Result<(), OrbError> {
-            self.0.recover().map(|_| ()).map_err(fail)
         }
 
         /// The C ABI's version: bumped on every incompatible change while
@@ -2032,7 +2024,6 @@ fn fail(error: orb_api::Error) -> OrbError {
         orb_api::Error::Unsupported(_) => OrbError::Unsupported,
         orb_api::Error::Native(_) => OrbError::Native,
         orb_api::Error::TargetLost(_) => OrbError::TargetLost,
-        orb_api::Error::DeviceLost => OrbError::DeviceLost,
     };
     LAST_ERROR.with(|e| *e.borrow_mut() = error.message().to_owned());
     status

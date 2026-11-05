@@ -18,10 +18,9 @@ public enum OrbError: Int, Sendable, CaseIterable {
     case unsupported = 3
     /// The GPU or the platform failed.
     case native = 4
-    /// The target can't be drawn to again; make a new one.
+    /// The target can't be drawn to again (the GPU was replaced);
+    /// make a new one.
     case targetLost = 5
-    /// The GPU was lost; `OrbRuntime::recover` makes another.
-    case deviceLost = 6
 
     /// Writes the message of the last error on the calling thread.
     ///

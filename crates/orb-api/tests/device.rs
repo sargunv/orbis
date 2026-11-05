@@ -103,7 +103,7 @@ const HANG_CHILD: &str = "ORB_TEST_HANG_CHILD";
 /// on; a map waiting only for the compile asks for none, and the watchdog
 /// wakes it when the compile runs past its limit. The next frame finds the
 /// compile hung, the device is lost, the sentinel stays armed, and the
-/// device made next, now and at the next start, is Compat. In a child
+/// device the frame after makes, and the next start, is Compat. In a child
 /// process: the fault is set from the environment.
 #[test]
 fn a_hung_compile_demotes_the_device() {
@@ -125,11 +125,11 @@ fn a_hung_compile_demotes_the_device() {
                 std::thread::sleep(Duration::from_millis(5));
                 continue;
             }
-            match map.render(&mut target, 0.0) {
-                Err(Error::DeviceLost) => break started.elapsed(),
-                Err(e) => panic!("{e}"),
-                Ok(report) => assert!(report.is_none_or(|r| !r.idle), "nothing compiles"),
+            let report = map.render(&mut target, 0.0).unwrap();
+            if runtime.lost() {
+                break started.elapsed();
             }
+            assert!(report.is_none_or(|r| !r.idle), "nothing compiles");
             frames += 1;
         };
         let hung = runtime
@@ -144,7 +144,7 @@ fn a_hung_compile_demotes_the_device() {
         // frame until the watchdog fired.
         assert!(frames > 0, "frames go on while a compile hangs");
         assert!(idle > 0, "the map waits for the watchdog's wake");
-        runtime.recover().unwrap();
+        map.render(&mut target, 0.0).unwrap();
         let selection = runtime.stats().selection;
         assert!(selection.contains("crash sentinel"), "{selection}");
         return;
@@ -191,18 +191,6 @@ fn recovers(backend: Backend) {
 
     runtime.lose_device();
     let lost = Instant::now();
-    assert!(matches!(
-        map.render(&mut target, 0.0),
-        Err(Error::DeviceLost)
-    ));
-    assert!(runtime.lost());
-    runtime.recover().unwrap();
-    // The target's texture went with the old device: nothing to read, and
-    // a resize makes a texture on the new one without freeing the old id
-    // there.
-    assert!(target.read_pixels().is_err());
-    target.resize(SIZE / 2, SIZE / 2, 1.0);
-    target.resize(SIZE, SIZE, 1.0);
     let tier = runtime.stats().tier;
     let drawn = settle(&mut map, &mut target).unwrap();
     eprintln!(

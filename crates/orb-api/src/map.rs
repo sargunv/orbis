@@ -884,6 +884,15 @@ impl Map {
                 "the target belongs to another runtime".into(),
             ));
         }
+        // A lost GPU is replaced before the frame (plan §8.8): texture
+        // targets are made again, and window targets fail with
+        // `TargetLost` for the host to make on the new one.
+        if self.runtime.lost() {
+            if target.is_window() {
+                target.release();
+            }
+            self.runtime.recover()?;
+        }
         // The runtime replaced its device: draw on the new one, laying the
         // tiles out again (plan §8.8).
         if self.device != self.shared.generation.get() {
@@ -929,13 +938,11 @@ impl Map {
                 frame_time,
             );
             target.end(&mut device)?;
-            // The frame found the device lost (a compile the watchdog found
-            // hung): no frame follows to say so.
-            if device.lost() {
-                return Err(Error::DeviceLost);
-            }
             report
         };
+        // The frame found the device lost (a compile the watchdog found
+        // hung, a lost context): the next one makes another.
+        let lost = self.runtime.lost();
         // Every pipeline the map asked for compiled, and the driver
         // survived them.
         if report.frame.pipelines_pending == 0 {
@@ -943,7 +950,7 @@ impl Map {
         }
         self.events
             .extend(self.map.take_events().into_iter().map(Event::Map));
-        self.dirty = false;
+        self.dirty = lost;
         // A map waiting only for pipelines draws again when one compiles.
         let waiting = report.compiling && self.runtime.compile_wakes();
         self.busy = !report.idle && !waiting;

@@ -1039,16 +1039,6 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeLoseDevice(JNIEnv* e
     OrbRuntime_lose_device((OrbRuntime*)(intptr_t)self);
 }
 
-JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeRecover(JNIEnv* env, jclass cls, jlong self) {
-    (void)env;
-    (void)cls;
-    OrbRuntime_recover_result result = OrbRuntime_recover((OrbRuntime*)(intptr_t)self);
-    if (!result.is_ok) {
-        throw_OrbError(env, result.err);
-        return;
-    }
-}
-
 JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRuntimeAbiVersion(JNIEnv* env, jclass cls) {
     (void)env;
     (void)cls;

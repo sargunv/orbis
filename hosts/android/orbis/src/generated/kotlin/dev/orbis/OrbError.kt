@@ -23,13 +23,10 @@ enum class OrbError(val value: Int) {
      */
     Native(4),
     /**
-     * The target can't be drawn to again; make a new one.
+     * The target can't be drawn to again (the GPU was replaced);
+     * make a new one.
      */
-    TargetLost(5),
-    /**
-     * The GPU was lost; `OrbRuntime::recover` makes another.
-     */
-    DeviceLost(6);
+    TargetLost(5);
 
     companion object {
         @JvmStatic

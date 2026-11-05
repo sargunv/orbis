@@ -42,25 +42,13 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * Loses the GPU on purpose, to exercise recovery: frames fail
-     * with `DeviceLost` until `recover`.
+     * Loses the GPU on purpose, to exercise recovery: the next frame
+     * makes another, and window targets report `TargetLost`.
      *
      * Contract: `command`.
      */
     fun loseDevice() {
         OrbisNative.orbRuntimeLoseDevice(live())
-    }
-
-    /**
-     * Makes a new device after a loss; maps lay their tiles out again
-     * and window targets report `TargetLost` to be made again.
-     *
-     * Contract: `command`.
-     *
-     * @throws OrbErrorException when it fails.
-     */
-    fun recover() {
-        OrbisNative.orbRuntimeRecover(live())
     }
 
     /**

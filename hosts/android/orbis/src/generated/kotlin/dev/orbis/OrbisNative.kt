@@ -318,9 +318,6 @@ internal object OrbisNative {
     external fun orbRuntimeLoseDevice(self: Long): Unit
 
     @JvmStatic
-    external fun orbRuntimeRecover(self: Long): Unit
-
-    @JvmStatic
     external fun orbRuntimeAbiVersion(): Int
 
     @JvmStatic

@@ -42,9 +42,6 @@ class MapView(context: Context, val runtime: OrbRuntime) :
     /** Called with each event; the event is closed after the call. */
     var onEvent: ((OrbEvent) -> Unit)? = null
 
-    /** Called after a lost GPU was replaced, with the milliseconds it took. */
-    var onRecovered: ((Long) -> Unit)? = null
-
     /** Frames drawn since the view was made. */
     var framesDrawn = 0
         private set
@@ -109,17 +106,10 @@ class MapView(context: Context, val runtime: OrbRuntime) :
             }
         } catch (e: OrbErrorException) {
             when (e.error) {
+                // A new GPU, or the surface went: a surface on it.
                 OrbError.TargetLost -> {
                     dropTarget()
                     holder.surface?.let { surfaceChanged(holder, 0, width, height) }
-                }
-                OrbError.DeviceLost -> {
-                    val started = android.os.SystemClock.elapsedRealtime()
-                    // The window's surface goes with the old device.
-                    dropTarget()
-                    runtime.recover()
-                    holder.surface?.let { surfaceChanged(holder, 0, width, height) }
-                    onRecovered?.invoke(android.os.SystemClock.elapsedRealtime() - started)
                 }
                 else -> throw e
             }

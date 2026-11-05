@@ -188,3 +188,16 @@ native pass against Chrome's picture covers what the digest did. Chrome
 passes 1208 against 1206 before (88 fail, 49 skip), every one of the 1206
 native passes identical; the query suite passes 71 of 83 in both. The run
 takes 118 s, from 71 s: frames go through the package's animation frames.
+
+## `render` recovers from device loss
+
+A frame that finds the GPU lost (a hung compile, a lost EGL context, a
+destroyed device) asks for another, and that frame makes the new device
+(plan §8.8): `orb-api` releases a window target's surface on the old device
+first, since a window takes no second EGL surface, then texture targets are
+made again and window targets fail with `TargetLost`, which hosts already
+answer by making another surface. `Error::DeviceLost`, the public
+`Runtime::recover` and the C API's `recover` (ABI version 8) are gone, as are
+the device-loss branches of the Android and Apple views and `orb-demo`. On
+the Android emulator (Compat) a forced loss shows a complete frame again
+1.9 s later; natively a texture target redraws in 10 ms.

@@ -77,25 +77,12 @@ public final class OrbRuntime {
         return OrbStats(handle: OrbRuntime_stats(live())!)
     }
 
-    /// Loses the GPU on purpose, to exercise recovery: frames fail
-    /// with `DeviceLost` until `recover`.
+    /// Loses the GPU on purpose, to exercise recovery: the next frame
+    /// makes another, and window targets report `TargetLost`.
     ///
     /// Contract: `command`.
     public func loseDevice() {
         OrbRuntime_lose_device(live())
-    }
-
-    /// Makes a new device after a loss; maps lay their tiles out again
-    /// and window targets report `TargetLost` to be made again.
-    ///
-    /// Contract: `command`.
-    ///
-    /// - Throws: `OrbErrorFailure` when it fails.
-    public func recover() throws {
-        let result = OrbRuntime_recover(live())
-        guard result.is_ok else {
-            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
-        }
     }
 
     /// The C ABI's version: bumped on every incompatible change while
