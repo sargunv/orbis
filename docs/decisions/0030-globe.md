@@ -136,10 +136,25 @@ Of the 28 failures outside terrain, 14 differ by under 0.1% of pixels
 (at most 150): glyph rasterization, coastline and limb edges, texture
 sampling at the poles, all understood and not chased. Four are the
 atmosphere's and one extrusion lighting (R2); one asks for a pitch past
-90°. Open: `heatmap` (kernels drift toward the globe's centre near the
-limb), circles near the limb, `line-gradient-dasharray` and
-`fill-planet-pole-top`. Skips: `image` sources, custom layers, collision
-debug boxes, the identity projection and an operation the harness lacks.
+90°. Since then, image sources and the image operations run (decision
+0034). Left open, with what is known of each:
+
+- `circle-planet` (1.46%): only the circles at the limb differ. Their
+  strokes are foreshortened below a pixel there, and GL JS's antialiasing,
+  which works from the circle's radius, fades them where ours keeps about
+  a pixel. Understood, not chased.
+- `heatmap` (25%): GL JS's kernel peaks sit up to 14 px further toward the
+  limb than the points' true positions, where ours stay on them. Corner
+  rotation (`globeRotateVector`), the angle scale and the chord quads match
+  GL JS's; the drift may come from how the large overlapping kernels sum
+  near the limb. Not understood.
+- `fill-planet-pole-top` (0.58%) and `line-gradient-dasharray` (0.23%):
+  the dash phase differs along every dashed line. GL JS sizes dashes by
+  the tile ratio at `transform.tileZoom`, and line widths by
+  `getPixelScale` at the camera centre's latitude; ours by the tile's own
+  scale. Not yet traced to one of the two.
+
+Skips: custom layers, collision debug boxes and the identity projection.
 Terrain's 45 wait for terrain on the globe (#61).
 
 ## Left for later
