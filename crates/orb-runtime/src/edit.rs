@@ -371,11 +371,12 @@ impl Map {
     pub(crate) fn apply_edit(
         &mut self,
         gpu: &mut dyn Gpu,
+        renderer: &mut orb_render::Renderer,
         source: u32,
         tile: TileIndex,
         result: Result<TileResult, String>,
     ) {
-        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+        let Some(style) = &mut self.style else {
             return;
         };
         let plan = style.worker.plan();

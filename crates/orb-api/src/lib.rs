@@ -270,6 +270,8 @@ impl Runtime {
         *self.shared.selection.borrow_mut() = selection;
         *self.shared.sentinel.borrow_mut() = sentinel;
         self.shared.generation.set(self.shared.generation.get() + 1);
+        // The maps' images were on the old device.
+        self.shared.images.reset();
         *self.shared.cache.borrow_mut() = None;
         let dir = self.shared.cache_dir.borrow().clone();
         if let Some(dir) = dir {

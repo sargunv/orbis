@@ -208,6 +208,8 @@ struct Offscreen {
     gpu: WgpuGpu,
     target: orb_hal::TextureId,
     format: TargetFormat,
+    /// The map's renderer, made for its first frame.
+    renderer: Option<orb_runtime::Renderer>,
     viewport: Viewport,
     map: Map,
 }
@@ -323,6 +325,7 @@ impl Offscreen {
             gpu,
             target,
             format,
+            renderer: None,
             viewport: Viewport {
                 width: f64::from(Self::WIDTH),
                 height: f64::from(Self::HEIGHT),
@@ -335,8 +338,17 @@ impl Offscreen {
         // The camera is written directly: keep it to the world and on the
         // terrain, as a camera store would.
         self.map.constrain_camera(self.viewport);
-        self.map
-            .render(&mut self.gpu, self.target, self.format, self.viewport, 1.0)
+        self.frame_at(self.viewport)
+    }
+
+    /// A frame of the camera as it is, in `viewport`.
+    fn frame_at(&mut self, viewport: Viewport) -> orb_runtime::FrameReport {
+        let map = &mut self.map;
+        let (gpu, format) = (&mut self.gpu, self.format);
+        let renderer = self
+            .renderer
+            .get_or_insert_with(|| map.create_renderer(gpu, format));
+        map.render(gpu, renderer, self.target, viewport, 1.0)
     }
 
     fn pixels(&self) -> Vec<u8> {
@@ -386,6 +398,7 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     gpu: WgpuGpu,
     format: TargetFormat,
+    renderer: Option<orb_runtime::Renderer>,
     map: Map,
     /// The camera's single writer; the map draws what it shows.
     camera: Camera,
@@ -520,6 +533,7 @@ impl State {
                 color: from_texture_format(surface_format).expect("checked above"),
                 sample_count: 1,
             },
+            renderer: None,
             map,
             camera,
             input: Interaction::default(),
@@ -656,10 +670,14 @@ impl State {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let target = self.gpu.register_view(view);
         let viewport = self.viewport();
-        let report = self.map.render(
-            &mut self.gpu,
+        let (map, gpu, format) = (&mut self.map, &mut self.gpu, self.format);
+        let renderer = self
+            .renderer
+            .get_or_insert_with(|| map.create_renderer(gpu, format));
+        let report = map.render(
+            gpu,
+            renderer,
             target,
-            self.format,
             viewport,
             self.window.scale_factor() as f32,
         );
@@ -924,13 +942,7 @@ mod tests {
                     let now = started.elapsed().as_secs_f64() * 1000.0;
                     camera.frame(now);
                     *offscreen.map.camera_mut() = *camera.state();
-                    offscreen.map.render(
-                        &mut offscreen.gpu,
-                        offscreen.target,
-                        offscreen.format,
-                        viewport,
-                        1.0,
-                    );
+                    offscreen.frame_at(viewport);
                     let revision = offscreen.map.elevation_revision();
                     if revision != published {
                         published = revision;
@@ -1354,6 +1366,7 @@ mod tests {
         );
         let mut offscreen = super::Offscreen::load(&tokyo(15.0)).unwrap().0;
         offscreen.map = super::Map::new(services, super::camera(&tokyo(15.0)));
+        offscreen.renderer = None;
         super::load_style(&mut offscreen.map, &tokyo(15.0)).unwrap();
         let report = settle(&mut offscreen);
         assert!(report.idle);
@@ -1425,6 +1438,7 @@ mod tests {
             &super::web_mercator(),
         );
         offscreen.map = super::Map::new(services, Some(camera));
+        offscreen.renderer = None;
         offscreen
             .map
             .set_style_json(
@@ -1697,6 +1711,7 @@ mod tests {
                 &super::web_mercator(),
             );
             offscreen.map = super::Map::new(services, Some(camera));
+            offscreen.renderer = None;
             offscreen.map.set_style_json(style).unwrap();
             // Inline jobs publish their completion on the following frame.
             let mut loaded = false;
@@ -1762,6 +1777,7 @@ mod tests {
             &super::web_mercator(),
         );
         offscreen.map = super::Map::new(services, Some(camera));
+        offscreen.renderer = None;
         offscreen
             .map
             .set_style_json(
@@ -1835,6 +1851,7 @@ mod tests {
             &super::web_mercator(),
         );
         offscreen.map = super::Map::new(services, Some(camera));
+        offscreen.renderer = None;
         offscreen
             .map
             .set_style_json(

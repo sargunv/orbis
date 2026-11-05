@@ -196,9 +196,13 @@ pub(crate) async fn run(
         width: f64::from(settings.width),
         height: f64::from(settings.height),
     };
+    // The path's map's renderer: a new map gets a new one.
+    let renderer = std::cell::RefCell::new(None);
     let render = |gpu: &mut TimedGpu, map: &mut Map| -> (FrameReport, Duration) {
         let started = clock::now();
-        let report = map.render(gpu, target, format, viewport, settings.ratio);
+        let mut renderer = renderer.borrow_mut();
+        let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
+        let report = map.render(gpu, renderer, target, viewport, settings.ratio);
         (report, clock::now() - started)
     };
     let mut warnings = Vec::new();
@@ -212,6 +216,7 @@ pub(crate) async fn run(
         progress(&format!("{}: loading its first view", path.name));
         let start = (path.camera)(settings, 0.0);
         let mut map = new_map(start)?;
+        *renderer.borrow_mut() = None;
         settle(gpu, &mut map, &|g, m| render(g, m).0, &mut warnings).await?;
         let mut revision = map.elevation_revision();
         // A flight's camera stands on the terrain, as the demos' do.

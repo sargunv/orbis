@@ -407,6 +407,13 @@ impl FixtureRenderer {
         let loaded = if fades { Next::Loaded } else { Next::Idle };
         // Renders until `until`, or for a wait's wall time; false on the
         // timeout.
+        // The fixture map's renderer, made for its first frame.
+        let renderer = std::cell::RefCell::new(None);
+        let render = |gpu: &mut Owner, map: &mut Map| {
+            let mut renderer = renderer.borrow_mut();
+            let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu.gpu(), format));
+            map.render(gpu.gpu(), renderer, target, viewport, pixel_ratio)
+        };
         let settle =
             async |map: &mut Map, until: Next, gpu: &mut Owner, output: &mut FixturePixels| {
                 let step = js_sys::Date::now();
@@ -416,7 +423,7 @@ impl FixtureRenderer {
                     let camera = map.camera_mut();
                     camera.pitch = camera.pitch.min(max_pitch);
                     map.constrain_camera(viewport);
-                    let report = map.render(gpu.gpu(), target, format, viewport, pixel_ratio);
+                    let report = render(gpu, map);
                     play_first_frames(map, gpu, &assets)?;
                     output.frames += 1;
                     output.warnings.extend(map.take_warnings());
@@ -481,7 +488,7 @@ impl FixtureRenderer {
         };
         if settled && settle(&mut map, last, &mut gpu, &mut output).await? {
             // Draw the state installed by the last frame's messages.
-            let report = map.render(gpu.gpu(), target, format, viewport, pixel_ratio);
+            let report = render(&mut gpu, &mut map);
             output.frames += 1;
             output.tiles_drawn = report.tiles_drawn;
             output.warnings.extend(map.take_warnings());

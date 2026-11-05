@@ -339,9 +339,13 @@ pub async fn run(
         }
         Experiment::Frames => {}
     }
+    // The one map's renderer.
+    let renderer = std::cell::RefCell::new(None);
     let render = |gpu: &mut TimedGpu, map: &mut Map| {
         let started = clock::now();
-        let report = map.render(gpu, target, format, viewport, settings.ratio);
+        let mut renderer = renderer.borrow_mut();
+        let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
+        let report = map.render(gpu, renderer, target, viewport, settings.ratio);
         (report, started, clock::now() - started)
     };
 
@@ -419,7 +423,11 @@ pub async fn run(
                 s.submit_cpu.push(times[f].submit_cpu);
             }
         }
-        let (args, nodes) = map.draw_args().ok_or("no renderer")?;
+        let (args, nodes) = renderer
+            .borrow()
+            .as_ref()
+            .map(|r| r.draw_args())
+            .ok_or("no renderer")?;
         s.counters = counters(&words(&gpu.inner().read_buffer(args).await), nodes);
 
         views.push(view_result(name, s));

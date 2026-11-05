@@ -193,6 +193,7 @@ struct Node {
 
 #[derive(Debug)]
 pub struct Renderer {
+    id: u64,
     target: TargetFormat,
     atmosphere: atmosphere::Atmosphere,
     scene: Scene,
@@ -488,7 +489,9 @@ impl Renderer {
         });
 
         let atmosphere = atmosphere::Atmosphere::new(gpu);
+        static RENDERERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         Self {
+            id: RENDERERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             target,
             atmosphere,
             scene,
@@ -529,6 +532,17 @@ impl Renderer {
             glyphs,
             image_bindings,
         }
+    }
+
+    /// The format of the targets it draws into.
+    pub fn format(&self) -> TargetFormat {
+        self.target
+    }
+
+    /// Identifies the renderer among those of the process: a map holds
+    /// the tiles of one renderer, and forgets them for another.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// The scene, to read.

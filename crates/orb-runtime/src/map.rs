@@ -40,6 +40,15 @@ const TILE_APPLY_MS: f64 = 1.5;
 #[derive(Clone, Debug, Default)]
 pub struct Images(pub(crate) Arc<Mutex<ImageState>>);
 
+impl Images {
+    /// Forgets the atlas with its device: call when the device is replaced,
+    /// before maps draw with renderers on the new one. Each map adds its
+    /// images again as it lays its style out again.
+    pub fn reset(&self) {
+        *self.0.lock().expect("images poisoned") = ImageState::default();
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ImageState {
     pub(crate) atlas: Option<ImageAtlas>,
@@ -402,6 +411,31 @@ fn host_data(result: &TileResult) -> (Option<HostBytesId>, Option<orb_hal::HostI
     (result.host_bytes, image)
 }
 
+/// What tiles and styles let go of between frames, released from the
+/// renderer at the next.
+#[derive(Debug, Default)]
+struct Retired {
+    tiles: Vec<GpuTile>,
+    /// Scene tiles of a replaced style's background.
+    scene_tiles: Vec<TileId>,
+    /// A replaced style's feature-state table.
+    tables: Vec<std::ops::Range<u32>>,
+}
+
+impl Retired {
+    fn release(&mut self, renderer: &mut Renderer) {
+        for tile in self.tiles.drain(..) {
+            renderer.release_tile(tile);
+        }
+        for tile in self.scene_tiles.drain(..) {
+            renderer.scene().remove_tile(tile);
+        }
+        for table in self.tables.drain(..) {
+            renderer.scene().free_table(table);
+        }
+    }
+}
+
 /// A tile result waiting for room in the scene (`Map::apply_tile`).
 #[derive(Debug)]
 struct WaitingTile {
@@ -496,7 +530,12 @@ pub struct Map {
     generation: u64,
     tile_generation: u64,
     pub(crate) style: Option<LoadedStyle>,
-    pub(crate) renderer: Option<(Renderer, TargetFormat)>,
+    /// The renderer whose tiles the map holds, by its id: a frame with
+    /// another one forgets them.
+    renderer: Option<u64>,
+    /// What tiles and styles let go of between frames, for the next frame
+    /// to release from the renderer.
+    retired: Retired,
     /// The renderer's nodes are of a replaced style.
     nodes_stale: bool,
     capacity: SceneCapacity,
@@ -691,6 +730,7 @@ impl Map {
             tile_generation: 0,
             style: None,
             renderer: None,
+            retired: Retired::default(),
             center_clamped: true,
             terrain_skirts: true,
             antialias_3d: true,
@@ -720,15 +760,6 @@ impl Map {
             labels: crate::labels::Labels::new(default_lane()),
             label_epoch: 0,
         }
-    }
-
-    /// The renderer's per-node draw arguments and cull counters, and its
-    /// node count, once it exists: for diagnostics (see
-    /// [`Renderer::draw_args`]).
-    pub fn draw_args(&self) -> Option<(orb_hal::BufferId, u32)> {
-        self.renderer
-            .as_ref()
-            .map(|(renderer, _)| renderer.draw_args())
     }
 
     /// Sets how the map renders. `Still` and `Tile` frames wait for nothing
@@ -791,10 +822,9 @@ impl Map {
         self.antialias_3d = enabled;
     }
 
-    /// Sets how much the GPU scene holds. It's allocated on the first frame,
-    /// so this has effect only before then.
+    /// Sets how much the GPU scene holds, for renderers made after
+    /// ([`Map::create_renderer`]).
     pub fn set_scene_capacity(&mut self, capacity: SceneCapacity) {
-        assert!(self.renderer.is_none(), "the scene is already allocated");
         self.capacity = capacity;
     }
 
@@ -1068,15 +1098,23 @@ impl Map {
         Ok(())
     }
 
-    /// Forgets the GPU: after a device loss, or to draw on another device
-    /// (plan §8.8). The next frame makes a renderer on its GPU and lays the
-    /// style's tiles out again, from the jobs' cached tile frames where
-    /// they have them (refetched where not); labels place afresh, and
-    /// sprites and glyphs load again.
-    pub fn reset_gpu(&mut self) {
-        self.renderer = None;
+    /// A renderer for this map's frames into targets of `format`, on the
+    /// images its runtime shares.
+    pub fn create_renderer(&self, gpu: &mut dyn Gpu, format: TargetFormat) -> Renderer {
+        let mut images = self.services.images.0.lock().expect("images poisoned");
+        let images = images
+            .atlas
+            .get_or_insert_with(|| ImageAtlas::new(gpu, 1024, 8, 8192));
+        Renderer::with_images(gpu, format, self.capacity, images.bindings())
+    }
+
+    /// Forgets the GPU state of another renderer: after a device loss, or
+    /// to draw on another device (plan §8.8). This frame lays the style's
+    /// tiles out again, from the jobs' cached tile frames where they have
+    /// them (refetched where not); labels place afresh, and sprites and
+    /// glyphs load again.
+    fn forget_gpu(&mut self) {
         self.globe_warps = Default::default();
-        *self.services.images.0.lock().expect("images poisoned") = ImageState::default();
         self.retired_pages.clear();
         self.retired_images.clear();
         self.retired_ramps.clear();
@@ -1092,6 +1130,8 @@ impl Map {
             self.generation += 1;
             self.install_revision(style.doc, Some((style.id, &style.worker)));
         }
+        // What the old renderer held went with it.
+        self.retired = Retired::default();
     }
 
     /// Replaces the style with a document, every tile loaded fresh.
@@ -1296,53 +1336,43 @@ impl Map {
         self.surface.plan(&tms, image).map(|plan| (tms, plan))
     }
 
-    /// Draws a frame into `target`: applies arrived data, loads what the
-    /// view needs and renders. Every frame of a map uses the same `format`.
+    /// Draws a frame into `target` with `renderer`: applies arrived data,
+    /// loads what the view needs and renders. A renderer the map hasn't
+    /// drawn with before (one on a new device, say) gets the map's tiles
+    /// laid out again; the map holds tiles of one renderer at a time.
     pub fn render(
         &mut self,
         gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
         target: TextureId,
-        format: TargetFormat,
         viewport: Viewport,
         pixel_ratio: f32,
     ) -> FrameReport {
-        match &self.renderer {
-            // The renderer's pipelines are built for one target format.
-            Some((_, current)) => {
-                assert_eq!(*current, format, "a map renders to one target format")
+        if self.renderer != Some(renderer.id()) {
+            if self.renderer.is_some() {
+                self.forget_gpu();
             }
-            None => {
-                let mut images = self.services.images.0.lock().expect("images poisoned");
-                let images = images
-                    .atlas
-                    .get_or_insert_with(|| ImageAtlas::new(gpu, 1024, 8, 8192));
-                let renderer = Renderer::with_images(gpu, format, self.capacity, images.bindings());
-                self.renderer = Some((renderer, format));
-                self.nodes_stale = true;
-                self.events.push(MapEvent::Capability {
-                    tier: gpu.caps().tier,
-                });
-            }
+            self.renderer = Some(renderer.id());
+            self.nodes_stale = true;
+            self.events.push(MapEvent::Capability {
+                tier: gpu.caps().tier,
+            });
         }
-        self.renderer
-            .as_mut()
-            .expect("created above")
-            .0
-            .set_antialias_3d(gpu, self.antialias_3d);
+        self.retired.release(renderer);
+        renderer.set_antialias_3d(gpu, self.antialias_3d);
         self.start_sprites(gpu, pixel_ratio);
         self.apply_image_edits(gpu);
         // Bring the scene's nodes to the plan before results for it apply.
-        self.sync_nodes(gpu);
+        self.sync_nodes(gpu, renderer);
         self.placement_ms = 0.0;
-        self.apply_messages(gpu);
+        self.apply_messages(gpu, renderer);
         // A URL style may have arrived while applying messages.
         self.start_sprites(gpu, pixel_ratio);
-        self.sync_nodes(gpu);
-        self.apply_videos(gpu);
+        self.sync_nodes(gpu, renderer);
+        self.apply_videos(gpu, renderer);
 
         // Tiles' patches are on the low-zoom surface the style draws on.
         let plane = self.surface.globe().and_then(|g| g.plane);
-        let (renderer, _) = self.renderer.as_mut().expect("created above");
         self.globe_warps.set_plane(renderer.scene(), plane);
         let view = self.view(viewport);
         // What this frame draws, for picking.
@@ -1363,45 +1393,40 @@ impl Map {
             .globe()
             .filter(|g| g.plane.is_none())
             .map(|g| crate::lights::globe_sky(g, &view, &self.camera, lights, zoom));
-        self.renderer
-            .as_mut()
-            .expect("created above")
-            .0
-            .set_atmosphere(
-                gpu,
-                self.atmosphere
-                    .as_ref()
-                    .or_else(|| {
-                        self.style
-                            .as_ref()
-                            .and_then(|style| style.worker.plan().style.atmosphere.as_ref())
-                    })
-                    .map(|atmosphere| orb_render::AtmospherePaint {
-                        sky_color: atmosphere.sky_color.evaluate(zoom).premultiplied(),
-                        horizon_color: atmosphere.horizon_color.evaluate(zoom).premultiplied(),
-                        fog_color: atmosphere.fog_color.evaluate(zoom).premultiplied(),
-                        sky_horizon_blend: atmosphere.sky_horizon_blend.evaluate(zoom),
-                        horizon_fog_blend: atmosphere.horizon_fog_blend.evaluate(zoom),
-                        fog_ground_blend: atmosphere.fog_ground_blend.evaluate(zoom),
-                        atmosphere_blend: atmosphere.atmosphere_blend.evaluate(zoom),
-                        backdrop: atmosphere.backdrop.evaluate(zoom).premultiplied(),
-                        stars: atmosphere.stars.evaluate(zoom),
-                    }),
-                orb_render::AtmosphereView {
-                    horizon: horizon.as_vec2().to_array(),
-                    horizon_normal: horizon_normal.as_vec2().to_array(),
-                    height: viewport.height as f32,
-                    fog_range: [fog_near as f32, fog_far as f32],
-                    fog_opacity: fog_blend_opacity(self.camera.pitch),
-                    ray_inverse: crate::lights::ray_inverse(&view, self.camera.target),
-                    star_rotation: crate::lights::star_rotation(lights),
-                    globe,
-                },
-            );
+        renderer.set_atmosphere(
+            gpu,
+            self.atmosphere
+                .as_ref()
+                .or_else(|| {
+                    self.style
+                        .as_ref()
+                        .and_then(|style| style.worker.plan().style.atmosphere.as_ref())
+                })
+                .map(|atmosphere| orb_render::AtmospherePaint {
+                    sky_color: atmosphere.sky_color.evaluate(zoom).premultiplied(),
+                    horizon_color: atmosphere.horizon_color.evaluate(zoom).premultiplied(),
+                    fog_color: atmosphere.fog_color.evaluate(zoom).premultiplied(),
+                    sky_horizon_blend: atmosphere.sky_horizon_blend.evaluate(zoom),
+                    horizon_fog_blend: atmosphere.horizon_fog_blend.evaluate(zoom),
+                    fog_ground_blend: atmosphere.fog_ground_blend.evaluate(zoom),
+                    atmosphere_blend: atmosphere.atmosphere_blend.evaluate(zoom),
+                    backdrop: atmosphere.backdrop.evaluate(zoom).premultiplied(),
+                    stars: atmosphere.stars.evaluate(zoom),
+                }),
+            orb_render::AtmosphereView {
+                horizon: horizon.as_vec2().to_array(),
+                horizon_normal: horizon_normal.as_vec2().to_array(),
+                height: viewport.height as f32,
+                fog_range: [fog_near as f32, fog_far as f32],
+                fog_opacity: fog_blend_opacity(self.camera.pitch),
+                ray_inverse: crate::lights::ray_inverse(&view, self.camera.target),
+                star_rotation: crate::lights::star_rotation(lights),
+                globe,
+            },
+        );
 
         let now = self.services.clock.now();
         let mut fading = false;
-        let (renderer, _) = self.renderer.as_mut().expect("created above");
         if let Some(style) = &mut self.style {
             let plan = style.worker.plan();
             if style.states.prepare(gpu, renderer, plan, zoom) {
@@ -1440,25 +1465,34 @@ impl Map {
         if self.style.is_some() {
             // Terrain's DEM and cover first: the sources cover over its
             // elevations, and drape over its tiles.
-            self.update_terrain(gpu, &view, &mut report);
+            self.update_terrain(gpu, renderer, &view, &mut report);
             let elevation = self.terrain_elevation();
             for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
-                self.update_source(&view, index, elevation.as_deref(), &mut report);
+                self.update_source(renderer, &view, index, elevation.as_deref(), &mut report);
             }
-            let drape = self.plan_drape(gpu, &view);
+            let drape = self.plan_drape(gpu, renderer, &view);
             self.place_background(
                 gpu,
+                renderer,
                 &view,
                 elevation.as_deref(),
                 drape.as_ref(),
                 &mut report,
             );
             for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
-                self.place_source(gpu, &view, index, drape.as_ref(), &mut report, &mut drawn);
+                self.place_source(
+                    gpu,
+                    renderer,
+                    &view,
+                    index,
+                    drape.as_ref(),
+                    &mut report,
+                    &mut drawn,
+                );
             }
-            self.trim_cache();
+            self.trim_cache(renderer);
         }
-        let labels_settled = self.place_labels(gpu, &view, now);
+        let labels_settled = self.place_labels(gpu, renderer, &view, now);
         report.placement_us = (self.placement_ms * 1000.0).round() as u32;
 
         if !self.retired_ramps.is_empty() {
@@ -1555,7 +1589,6 @@ impl Map {
                 }),
             globe,
         };
-        let (renderer, _) = self.renderer.as_mut().expect("created above");
         report.frame = renderer.render(gpu, &frame, target, clear);
         // A frame that left something out for a compiling pipeline isn't
         // complete (plan §8.4).
@@ -1565,7 +1598,7 @@ impl Map {
         self.events.frame(report.loaded, report.idle);
         self.globe_warps.end_frame(renderer.scene());
         report.scene = renderer.scene().stats();
-        report.memory = self.memory();
+        report.memory = self.memory(renderer);
         // Chunks the cull has no room for don't draw: say so when it starts.
         let dropped = report.scene.candidates_dropped;
         if dropped > 0 && self.candidates_dropped == 0 {
@@ -1585,8 +1618,8 @@ impl Map {
     /// Makes the renderer's nodes the plan's: removes the meshes of nodes
     /// edits removed and the tiles of removed sources, keeps the others'
     /// meshes in their new places, and gives new image nodes their quads.
-    fn sync_nodes(&mut self, gpu: &mut dyn Gpu) {
-        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+    fn sync_nodes(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
+        let Some(style) = &mut self.style else {
             return;
         };
         for source in style.retired.drain(..) {
@@ -1868,9 +1901,15 @@ impl Map {
     /// Retires dropped buckets, rasterizes new glyphs and asks the lane to
     /// place when the drawn buckets or the camera changed. Returns whether
     /// labels have settled.
-    fn place_labels(&mut self, gpu: &mut dyn Gpu, view: &View, now: f64) -> bool {
+    fn place_labels(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        view: &View,
+        now: f64,
+    ) -> bool {
         let extrusion_scale = self.extrusion_scale();
-        let (Some(style), Some((renderer, _))) = (&self.style, &mut self.renderer) else {
+        let Some(style) = &self.style else {
             return true;
         };
         let (sender, wake) = (self.sender.clone(), Arc::clone(&self.services.wake));
@@ -1974,6 +2013,7 @@ impl Map {
     /// [`place_source`](Self::place_source).
     fn update_source(
         &mut self,
+        renderer: &Renderer,
         view: &View,
         index: usize,
         elevation: Option<&crate::terrain::TerrainElevation>,
@@ -2021,16 +2061,15 @@ impl Map {
         // where GL JS draws the copies in its neighbours' buffers too: a
         // neighbour out of view still reaches into it by their reach.
         // Labels, as in GL JS, show from their anchor's tile only.
-        let reach = self.renderer.as_ref().map_or(0.0, |(renderer, _)| {
-            plan.nodes
-                .iter()
-                .enumerate()
-                .filter(|(_, n)| {
-                    n.source == index && matches!(n.family, Family::Circle | Family::Heatmap)
-                })
-                .map(|(i, _)| renderer.cull_margin_px(i as u32))
-                .fold(0.0f32, f32::max)
-        });
+        let reach = plan
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                n.source == index && matches!(n.family, Family::Circle | Family::Heatmap)
+            })
+            .map(|(i, _)| renderer.cull_margin_px(i as u32))
+            .fold(0.0f32, f32::max);
         let SourceState::Ready {
             endpoint,
             pyramid,
@@ -2093,9 +2132,11 @@ impl Map {
     /// Places source `index`'s tiles for this frame: map placements
     /// standing on the terrain, and drape placements into the drape slots
     /// being redrawn.
+    #[allow(clippy::too_many_arguments)]
     fn place_source(
         &mut self,
         gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
         view: &View,
         index: usize,
         drape: Option<&DrapePlan>,
@@ -2125,7 +2166,6 @@ impl Map {
         };
         let endpoint = Arc::clone(endpoint);
         let tms = &endpoint.tms;
-        let (renderer, _) = self.renderer.as_mut().expect("created before placing");
         // Extrusions fade out where the cover's tiles turn coarser than
         // their layer's minzoom, which have no buckets for it.
         let plan = style.worker.plan();
@@ -2304,8 +2344,8 @@ impl Map {
     /// memory budget: the least recently used go first, from any source.
     /// The scene's pools then hold the tiles in view and what's left of the
     /// cache, and arrivals that need room evict more (`evict_unused`).
-    fn trim_cache(&mut self) {
-        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+    fn trim_cache(&mut self, renderer: &mut Renderer) {
+        let Some(style) = &mut self.style else {
             return;
         };
         let budget = self.budget / 4;
@@ -2341,10 +2381,7 @@ impl Map {
     }
 
     /// The map's memory against its budget.
-    fn memory(&self) -> Memory {
-        let Some((renderer, _)) = &self.renderer else {
-            return Memory::default();
-        };
+    fn memory(&self, renderer: &Renderer) -> Memory {
         let (tile_textures, glyph_textures) = renderer.texture_bytes();
         let (mut cached_tiles, mut cached) = (0, 0);
         for source in self.style.iter().flat_map(|s| &s.sources) {
@@ -2371,8 +2408,14 @@ impl Map {
     /// Keeps the terrain to the style's `terrain`: made once its DEM
     /// source is ready, its DEM tiles requested for this view, and the
     /// renderer told, once a DEM tile has arrived.
-    fn update_terrain(&mut self, gpu: &mut dyn Gpu, view: &View, report: &mut FrameReport) {
-        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+    fn update_terrain(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        view: &View,
+        report: &mut FrameReport,
+    ) {
+        let Some(style) = &mut self.style else {
             return;
         };
         let plan = style.worker.plan();
@@ -2556,11 +2599,12 @@ impl Map {
     fn apply_terrain_tile(
         &mut self,
         gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
         source: u32,
         tile: TileIndex,
         result: Result<TileResult, String>,
     ) {
-        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+        let Some(style) = &mut self.style else {
             return;
         };
         let Some(terrain) = style.terrain.as_mut().filter(|t| t.key == source) else {
@@ -2643,8 +2687,13 @@ impl Map {
     /// Plans this frame's drape: makes room for the terrain tiles' slots
     /// and picks those to redraw, by what is draped under each tile and
     /// the zoom it was drawn at.
-    fn plan_drape(&mut self, gpu: &mut dyn Gpu, view: &View) -> Option<DrapePlan> {
-        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+    fn plan_drape(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        view: &View,
+    ) -> Option<DrapePlan> {
+        let Some(style) = &mut self.style else {
             return None;
         };
         let terrain = style.terrain.as_mut()?;
@@ -2748,12 +2797,13 @@ impl Map {
     fn place_background(
         &mut self,
         gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
         view: &View,
         elevation: Option<&crate::terrain::TerrainElevation>,
         drape: Option<&DrapePlan>,
         report: &mut FrameReport,
     ) {
-        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+        let Some(style) = &mut self.style else {
             return;
         };
         // Backgrounds draw on every covered tile, as GL JS's do: never
@@ -2863,7 +2913,7 @@ impl Map {
     /// [`TILE_APPLY_MS`], at least one a frame: tiles that arrive together
     /// spread their uploads over frames rather than stalling one. Edits'
     /// results apply whole.
-    fn apply_messages(&mut self, gpu: &mut dyn Gpu) {
+    fn apply_messages(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
         let started = self.services.clock.now();
         self.tiles_deferred = false;
         while let Ok(message) = self.receiver.try_recv() {
@@ -2871,9 +2921,7 @@ impl Map {
             match message {
                 // Replies to the labels a GPU reset replaced are dropped.
                 Message::Placed { epoch, committed } => {
-                    if let Some((renderer, _)) =
-                        self.renderer.as_mut().filter(|_| epoch == self.label_epoch)
-                    {
+                    if epoch == self.label_epoch {
                         let started = self.services.clock.now();
                         self.labels.committed(gpu, renderer, committed);
                         self.placement_ms += self.services.clock.now() - started;
@@ -2884,9 +2932,7 @@ impl Map {
                     rows,
                     result,
                 } => {
-                    if let Some((renderer, _)) =
-                        self.renderer.as_mut().filter(|_| epoch == self.label_epoch)
-                    {
+                    if epoch == self.label_epoch {
                         self.labels.rastered(
                             gpu,
                             renderer.glyphs(),
@@ -3020,13 +3066,15 @@ impl Map {
                     let mut kept = false;
                     if generation == self.tile_generation {
                         match edit {
-                            None if terrain => self.apply_terrain_tile(gpu, source, tile, result),
+                            None if terrain => {
+                                self.apply_terrain_tile(gpu, renderer, source, tile, result)
+                            }
                             None => {
                                 if let Some(build) =
-                                    self.apply_tile(gpu, source, tile, result, true)
+                                    self.apply_tile(gpu, renderer, source, tile, result, true)
                                 {
                                     kept = true;
-                                    let tried = Some(self.room_state());
+                                    let tried = Some(self.room_state(renderer));
                                     self.waiting.push(WaitingTile {
                                         generation,
                                         source,
@@ -3036,7 +3084,7 @@ impl Map {
                                     });
                                 }
                             }
-                            Some(_) => self.apply_edit(gpu, source, tile, result),
+                            Some(_) => self.apply_edit(gpu, renderer, source, tile, result),
                         }
                     }
                     // Uploaded or dropped, the result's host data is done.
@@ -3053,14 +3101,14 @@ impl Map {
                 break;
             }
         }
-        self.retry_waiting(gpu, started);
+        self.retry_waiting(gpu, renderer, started);
     }
 
     /// Tries the tiles waiting for room again, in the frame's budget left,
     /// each only if room may have changed since it last failed: memory
     /// freed or grown, or other tiles' jobs done.
-    fn retry_waiting(&mut self, gpu: &mut dyn Gpu, started: f64) {
-        let mut state = self.room_state();
+    fn retry_waiting(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, started: f64) {
+        let mut state = self.room_state(renderer);
         for mut waiting in std::mem::take(&mut self.waiting) {
             let (bytes, image) = host_data(&waiting.build);
             let release = |gpu: &mut dyn Gpu| {
@@ -3079,16 +3127,23 @@ impl Map {
                 self.waiting.push(waiting);
                 continue;
             }
-            match self.apply_tile(gpu, waiting.source, waiting.tile, Ok(waiting.build), false) {
+            match self.apply_tile(
+                gpu,
+                renderer,
+                waiting.source,
+                waiting.tile,
+                Ok(waiting.build),
+                false,
+            ) {
                 Some(build) => {
-                    state = self.room_state();
+                    state = self.room_state(renderer);
                     waiting.build = build;
                     waiting.tried = Some(state);
                     self.waiting.push(waiting);
                 }
                 None => {
                     release(gpu);
-                    state = self.room_state();
+                    state = self.room_state(renderer);
                 }
             }
             self.tiles_deferred = self.services.clock.now() - started > TILE_APPLY_MS;
@@ -3097,10 +3152,7 @@ impl Map {
 
     /// What a waiting tile's room depends on: the scene's pools in use and
     /// their buffers, tile page layers in use, and tile jobs in flight.
-    fn room_state(&self) -> [u64; 6] {
-        let Some((renderer, _)) = &self.renderer else {
-            return [0; 6];
-        };
+    fn room_state(&self, renderer: &Renderer) -> [u64; 6] {
         let stats = renderer.scene_ref().stats();
         let loading: u64 = self
             .style
@@ -3132,7 +3184,7 @@ impl Map {
 
     /// Asks the host to open and close video sources' players, and puts
     /// their frames in their tiles.
-    fn apply_videos(&mut self, gpu: &mut dyn Gpu) {
+    fn apply_videos(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
         let mut videos = std::mem::take(&mut self.videos);
         let plan = self.style.as_ref().map(|s| s.worker.plan());
         videos.sync(plan, &mut self.events.queue);
@@ -3142,7 +3194,7 @@ impl Map {
         let mut retries = Vec::new();
         for work in videos.work() {
             if let Some(frame) = work.fresh {
-                self.write_video_frame(gpu, work.key, frame);
+                self.write_video_frame(gpu, renderer, work.key, frame);
             }
             for (tile, counted) in work.wanted {
                 let result = match (work.failed, work.frame) {
@@ -3155,7 +3207,7 @@ impl Map {
                 // The frame stays the source's: a tile without room drops
                 // it and tries again.
                 if self
-                    .apply_tile(gpu, work.key, tile, result, !counted)
+                    .apply_tile(gpu, renderer, work.key, tile, result, !counted)
                     .is_some()
                 {
                     retries.push((work.key, tile));
@@ -3170,8 +3222,14 @@ impl Map {
 
     /// Writes a video's new frame over its resident tile's layer; a frame
     /// of another size waits for the tile to load again.
-    fn write_video_frame(&mut self, gpu: &mut dyn Gpu, key: u32, frame: &crate::TileImage) {
-        let (Some(style), Some((renderer, _))) = (&self.style, &mut self.renderer) else {
+    fn write_video_frame(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        key: u32,
+        frame: &crate::TileImage,
+    ) {
+        let Some(style) = &self.style else {
             return;
         };
         let Some(index) = style.worker.plan().source(key) else {
@@ -3233,12 +3291,13 @@ impl Map {
     fn apply_tile(
         &mut self,
         gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
         source: u32,
         tile: TileIndex,
         result: Result<TileResult, String>,
         arrived: bool,
     ) -> Option<TileResult> {
-        let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
+        let Some(style) = &mut self.style else {
             return None;
         };
         let plan = style.worker.plan();
@@ -3579,11 +3638,9 @@ impl Map {
         }
         self.generation += 1;
         self.clear_style_tiles();
-        if let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) {
-            if let Some(tile) = style.background.take() {
-                renderer.scene().remove_tile(tile);
-            }
-            style.states.release_table(renderer);
+        if let Some(style) = &mut self.style {
+            self.retired.scene_tiles.extend(style.background.take());
+            self.retired.tables.extend(style.states.take_table());
         }
         self.style = None;
     }
@@ -3596,16 +3653,11 @@ impl Map {
                 pyramid, loading, ..
             } = source
             {
-                let tiles = pyramid.drain();
                 *loading = 0;
-                if let Some((renderer, _)) = &mut self.renderer {
-                    for tile in tiles {
-                        self.retired_ramps.extend(remove_resident(
-                            renderer,
-                            tile,
-                            &mut style.states,
-                        ));
-                    }
+                for tile in pyramid.drain() {
+                    self.retired.tiles.push(tile.gpu);
+                    self.retired_ramps
+                        .extend(release_resident(tile, &mut style.states));
                 }
             }
         }
@@ -3937,6 +3989,12 @@ pub(crate) fn remove_resident(
     states: &mut FeatureStates,
 ) -> Vec<u32> {
     renderer.release_tile(tile.gpu);
+    release_resident(tile, states)
+}
+
+/// Releases what a tile holds on the CPU, the feature states its features
+/// refer to; returns the ramps its rows retained.
+fn release_resident(tile: ResidentTile, states: &mut FeatureStates) -> Vec<u32> {
     let mut ramps = Vec::new();
     for mut mesh in tile.meshes {
         for index in mesh.states {
@@ -4942,10 +5000,11 @@ mod video_tests {
             width: 64.0,
             height: 64.0,
         };
-        let centre = |map: &mut Map, gpu: &mut WgpuGpu| {
+        let mut renderer = map.create_renderer(&mut gpu, format);
+        let centre = |map: &mut Map, gpu: &mut WgpuGpu, renderer: &mut Renderer| {
             let mut idle = false;
             for _ in 0..200 {
-                idle = map.render(gpu, target, format, viewport, 1.0).idle;
+                idle = map.render(gpu, renderer, target, viewport, 1.0).idle;
                 if idle {
                     break;
                 }
@@ -4957,7 +5016,10 @@ mod video_tests {
         };
         // Without a frame, the tile loads; the host is asked to play.
         for _ in 0..3 {
-            assert!(!map.render(&mut gpu, target, format, viewport, 1.0).idle);
+            assert!(
+                !map.render(&mut gpu, &mut renderer, target, viewport, 1.0)
+                    .idle
+            );
         }
         let urls = vec!["a.mp4".to_string(), "a.webm".to_string()];
         assert_eq!(
@@ -4965,9 +5027,15 @@ mod video_tests {
             [("v".into(), VideoRequest::Open { urls })]
         );
         map.video_frame("v", frame([255, 0, 0, 255])).unwrap();
-        assert_eq!(centre(&mut map, &mut gpu), (true, [255, 0, 0]));
+        assert_eq!(
+            centre(&mut map, &mut gpu, &mut renderer),
+            (true, [255, 0, 0])
+        );
         map.video_frame("v", frame([0, 0, 255, 255])).unwrap();
-        assert_eq!(centre(&mut map, &mut gpu), (true, [0, 0, 255]));
+        assert_eq!(
+            centre(&mut map, &mut gpu, &mut renderer),
+            (true, [0, 0, 255])
+        );
         map.control_video("v", VideoRequest::Pause).unwrap();
         assert!(map.control_video("w", VideoRequest::Play).is_err());
         assert!(map.video_frame("w", frame([0; 4])).is_err());
@@ -4976,7 +5044,7 @@ mod video_tests {
         let remove = r#"[["removeLayer", "v"], ["removeSource", "v"]]"#;
         map.edit(&crate::Transaction::from_commands(remove).unwrap())
             .unwrap();
-        centre(&mut map, &mut gpu);
+        centre(&mut map, &mut gpu, &mut renderer);
         assert_eq!(requests(&mut map), [("v".into(), VideoRequest::Close)]);
     }
 

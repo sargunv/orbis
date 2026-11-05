@@ -64,6 +64,10 @@ pub(crate) fn wake() {
 pub struct OrbisMap {
     map: Map,
     canvas: Canvas,
+    /// What draws the map into the canvas; a new GPU gets a new one.
+    renderer: Option<orb_runtime::Renderer>,
+    /// The map's images, on the canvas's GPU.
+    images: orb_runtime::Images,
     pixel_ratio: f64,
     worker_jobs: Arc<WorkerJobs>,
     /// The terrain revision last handed to the page's [`UiRole`].
@@ -128,10 +132,11 @@ pub async fn create_map(
     let canvas = Canvas::new(canvas.into(), size)
         .await
         .map_err(|e| JsError::new(&e))?;
+    let images = orb_runtime::Images::default();
     let services = Services {
         clock: Arc::new(orb_host_web::WebClock),
         image_decode: Arc::new(orb_host_web::WebImageDecode),
-        images: Default::default(),
+        images: images.clone(),
         jobs,
         fetch: regions::service(),
         wake: Arc::new(wake),
@@ -147,6 +152,8 @@ pub async fn create_map(
     Ok(OrbisMap {
         map,
         canvas,
+        renderer: None,
+        images,
         pixel_ratio: 1.0,
         worker_jobs,
         elevation_revision: 0,
@@ -479,7 +486,8 @@ impl OrbisMap {
         self.canvas = Canvas::new(canvas, size)
             .await
             .map_err(|e| JsError::new(&e))?;
-        self.map.reset_gpu();
+        self.renderer = None;
+        self.images.reset();
         wake();
         Ok(self.tier())
     }
@@ -490,10 +498,13 @@ impl OrbisMap {
             return Ok(FrameInfo::lost());
         }
         let viewport = self.viewport();
-        let (map, ratio) = (&mut self.map, self.pixel_ratio as f32);
+        let (map, ratio, renderer) = (&mut self.map, self.pixel_ratio as f32, &mut self.renderer);
         let report = self
             .canvas
-            .frame(|gpu, target, format| map.render(gpu, target, format, viewport, ratio))
+            .frame(|gpu, target, format| {
+                let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
+                map.render(gpu, renderer, target, viewport, ratio)
+            })
             .map_err(|e| JsError::new(&e))?;
         let uploaded = self.canvas.gpu_ref().uploaded();
         let jobs = self.worker_jobs.stats();

@@ -55,6 +55,7 @@ pub use loader::{LoadDone, TileLoader, TileLocation};
 pub use map::{FrameReport, GridTile, Images, JobCounts, Map, Memory, RenderMode, Services};
 pub use orb_camera::{CameraState, View, Viewport};
 pub use orb_layout::fill::Bend;
+pub use orb_render::Renderer;
 pub use orb_render::{
     ARGS_WORDS, DESKTOP_BUDGET, ImageMetadata, MOBILE_BUDGET, PoolMemory, SceneCapacity,
     SceneMemory, TargetFormat,

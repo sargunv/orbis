@@ -68,10 +68,14 @@ impl OrbisMap {
             return Err(JsError::new("the GPU was lost"));
         }
         let format = self.canvas.format();
-        let report = self.map.render(
-            self.canvas.gpu(),
+        let (map, gpu) = (&mut self.map, self.canvas.gpu());
+        let renderer = self
+            .renderer
+            .get_or_insert_with(|| map.create_renderer(gpu, format));
+        let report = map.render(
+            gpu,
+            renderer,
             snapshot.texture,
-            format,
             snapshot.viewport,
             snapshot.scale,
         );

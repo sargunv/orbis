@@ -14,8 +14,8 @@ use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_interact::{Button, Feel, Input, InteractEvent, Interaction};
 use orb_runtime::{
-    CameraState, FrameReport, GridTile, Hit, MapEvent, RenderMode, StyleImage, TargetFormat,
-    Transaction, VideoRequest, Viewport,
+    CameraState, FrameReport, GridTile, Hit, MapEvent, RenderMode, StyleImage, Transaction,
+    VideoRequest, Viewport,
 };
 
 use crate::{Error, Runtime, Shared, Target};
@@ -117,7 +117,9 @@ pub struct Map {
     /// Queries finished on worker threads, not yet events.
     finished: Finished,
     next_query: u64,
-    format: Option<TargetFormat>,
+    /// What draws the map, beside its targets: it outlives surfaces, and
+    /// a new device gets a new one.
+    renderer: Option<orb_runtime::Renderer>,
     /// The runtime's device generation the map's GPU state is of.
     device: u64,
     /// The last frame left work: loads, fades or placement.
@@ -203,7 +205,7 @@ impl Map {
             events: VecDeque::new(),
             finished: Arc::default(),
             next_query: 0,
-            format: None,
+            renderer: None,
             device: runtime.shared.generation.get(),
             busy: true,
             dirty: true,
@@ -693,15 +695,16 @@ impl Map {
         // tiles out again (plan §8.8).
         if self.device != self.shared.generation.get() {
             self.device = self.shared.generation.get();
-            self.map.reset_gpu();
-            self.format = None;
+            self.renderer = None;
             self.dirty = true;
         }
         let format = target.format();
-        if *self.format.get_or_insert(format) != format {
+        if let Some(renderer) = &self.renderer
+            && renderer.format() != format
+        {
             return Err(Error::InvalidArgument(format!(
                 "this map draws {:?} targets, not {:?}",
-                self.format.expect("set above").color,
+                renderer.format().color,
                 format.color
             )));
         }
@@ -741,13 +744,13 @@ impl Map {
         if self.shared.sentinel.borrow().is_some() {
             crate::device::before_pipelines();
         }
-        let report = self.map.render(
-            self.shared.gpu.borrow_mut().gpu(),
-            texture,
-            format,
-            viewport,
-            target.scale() as f32,
-        );
+        let mut gpu = self.shared.gpu.borrow_mut();
+        let gpu = gpu.gpu();
+        let map = &mut self.map;
+        let renderer = self
+            .renderer
+            .get_or_insert_with(|| map.create_renderer(gpu, format));
+        let report = map.render(gpu, renderer, texture, viewport, target.scale() as f32);
         target.end();
         // Every pipeline the map asked for compiled, and the driver
         // survived them.

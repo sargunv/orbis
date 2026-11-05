@@ -560,6 +560,13 @@ fn render_native(
     let loaded = if fades { Next::Loaded } else { Next::Idle };
     // Renders until `until`, or for a wait's wall time; false when the run
     // stops (a skip reason or the timeout).
+    // The fixture map's renderer, made for its first frame.
+    let renderer = std::cell::RefCell::new(None);
+    let render = |gpu: &mut dyn orb_hal::Gpu, map: &mut Map| {
+        let mut renderer = renderer.borrow_mut();
+        let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
+        map.render(gpu, renderer, target, viewport, metadata.pixel_ratio as f32)
+    };
     let mut settle = |map: &mut Map,
                       until: Next,
                       reasons: &mut BTreeSet<String>,
@@ -572,7 +579,7 @@ fn render_native(
             let camera = map.camera_mut();
             camera.pitch = camera.pitch.min(metadata.max_pitch);
             map.constrain_camera(viewport);
-            let report = map.render(gpu, target, format, viewport, metadata.pixel_ratio as f32);
+            let report = render(gpu, map);
             *frames += 1;
             record_warnings(map, reasons, diagnostics);
             if !reasons.is_empty() {
@@ -618,7 +625,7 @@ fn render_native(
     };
     if settled && settle(map, last, reasons, diagnostics, &mut frames).is_some() {
         // Draw the state installed by the last frame's messages.
-        let final_report = map.render(gpu, target, format, viewport, metadata.pixel_ratio as f32);
+        let final_report = render(gpu, map);
         frames += 1;
         record_warnings(map, reasons, diagnostics);
         tiles_drawn = final_report.tiles_drawn;

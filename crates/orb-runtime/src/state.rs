@@ -406,11 +406,9 @@ impl FeatureStates {
         }
     }
 
-    /// Frees the GPU table.
-    pub(crate) fn release_table(&mut self, renderer: &mut Renderer) {
-        if let Some(table) = self.table.take() {
-            renderer.scene().free_table(table);
-        }
+    /// Lets go of the GPU table, for its owner to free.
+    pub(crate) fn take_table(&mut self) -> Option<std::ops::Range<u32>> {
+        self.table.take()
     }
 }
 

@@ -80,6 +80,15 @@ otherwise lets a coarser tile stand in.
   every tile. Image keys and feature-state indices are still resolved on
   the CPU and passed in as `MeshRows`.
 
+- **The map borrows its renderer.** `Map::render(gpu, &mut Renderer, …)`
+  draws with a renderer its host keeps: `orb-api` keeps it beside its
+  targets, the web beside its canvas. A renderer has an id. A map that
+  meets a new one (on a new device, say) forgets the old one's tiles and
+  lays its style out again, so device recovery is: drop the renderer,
+  reset the runtime's shared images once (`Images::reset`), and draw.
+  What a style lets go of between frames (its tiles, background, state
+  table) waits in a queue for the next frame's renderer.
+
 ## Still to land
 
 The Map/Renderer split (`plan_frame`, a narrow `Renderer` that owns all
