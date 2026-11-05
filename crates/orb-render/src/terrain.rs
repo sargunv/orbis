@@ -24,6 +24,16 @@ use crate::offscreen::{Composite, Composites, Mode, Offscreen};
 /// Drape texels per terrain tile side: twice the 512 logical pixels a
 /// terrain tile covers at its zoom, GL JS's quality factor.
 pub const DRAPE_SLOT_PX: u32 = 1024;
+
+/// Slots per side of the largest drape atlas the device makes.
+fn atlas_side(gpu: &dyn Gpu) -> u32 {
+    gpu.caps().limits.max_texture_dimension_2d / DRAPE_SLOT_PX
+}
+
+/// The terrain tiles the largest drape atlas holds, `stacks` slots each.
+pub(crate) fn room(gpu: &dyn Gpu, stacks: u32) -> u32 {
+    atlas_side(gpu).pow(2) / stacks.max(1)
+}
 /// The drape atlas's format: draped layers draw into it with pipelines of
 /// their own when the target's differs; mip levels are written as storage.
 pub const DRAPE_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
@@ -460,7 +470,8 @@ impl Terrain {
     /// into a new atlas, those past its end moved to free slots; returns
     /// the moves (from, to), or `None` when the atlas stays. A change of
     /// stacks blanks every slot (a new [`DrapeLayout::generation`]).
-    /// Fails when the slots exceed the device's texture size.
+    /// Fails when the slots exceed the device's texture size
+    /// ([`room`]).
     pub(crate) fn reserve(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -470,11 +481,11 @@ impl Terrain {
     ) -> Result<Option<Vec<(u32, u32)>>, crate::OutOfSpace> {
         let stacks = stacks.max(1);
         let state = self.layout_state;
-        let side = gpu.caps().limits.max_texture_dimension_2d / DRAPE_SLOT_PX;
-        if tile_slots * stacks > side * side {
+        let side = atlas_side(gpu);
+        if tile_slots > room(gpu, stacks) {
             return Err(crate::OutOfSpace);
         }
-        let want = (tile_slots + tile_slots.div_ceil(4)).clamp(1, side * side / stacks);
+        let want = (tile_slots + tile_slots.div_ceil(4)).clamp(1, room(gpu, stacks));
         let same = self.atlas.is_some() && state.stacks == stacks;
         if same && tile_slots <= state.tile_slots && tile_slots * 2 >= state.tile_slots {
             return Ok(None);

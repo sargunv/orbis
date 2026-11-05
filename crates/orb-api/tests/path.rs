@@ -445,6 +445,40 @@ fn an_alpine_gesture_draws_what_a_fresh_map_does() {
     assert_same("alps", both_ways(&alps, start, end, 30));
 }
 
+/// The terrain's cover fits its drape atlas in any view: at a pitch of 85°
+/// over the Alps, and at zoom 22 straight down onto a crest, where slopes
+/// fall away a kilometre and more past the screen's edges, the cover
+/// coarsens its farthest tiles until it fits, rather than draw the terrain
+/// flat. The hillshade covers the terrain tiles' quarters, coarser or not,
+/// so a gesture down onto the crest draws what a fresh map does.
+#[test]
+fn every_terrain_view_fits_the_drape_atlas() {
+    let (alps, _dem) = alps();
+    let crest = Geodetic::new(7.552, 45.897);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, 1920, 1080, 1.0);
+    for at in [
+        (Geodetic::new(7.57349, 45.87721), 14.58, 43.5, 85.0),
+        (crest, 22.0, -167.1, 0.0),
+    ] {
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(&alps).unwrap();
+        map.jump_to(&camera(at));
+        settle(&mut map, &mut target);
+        let warnings: Vec<String> = std::iter::from_fn(|| map.poll_event())
+            .filter_map(|event| match event {
+                orb_api::Event::Map(orb_api::MapEvent::Warning { message }) => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert!(warnings.is_empty(), "at {at:?}: {warnings:?}");
+    }
+    // Detail enough to compare: the DEM's 11 zooms overzoomed by 8.
+    let start = (crest, 16.0, -120.0, 30.0);
+    let end = (crest, 19.0, -167.1, 0.0);
+    assert_same("crest", both_ways(&alps, start, end, 20));
+}
+
 /// The terrain demo's Alps (live tiles), turned at a pitch of 72° with the
 /// camera never stopping: once loaded, a frame mid-turn draws what a fresh
 /// map at rest at its camera draws, ridges against the sky and every drape

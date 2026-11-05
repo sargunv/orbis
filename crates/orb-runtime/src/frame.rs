@@ -87,6 +87,27 @@ impl Map {
         else {
             return None;
         };
+        // A hillshade the terrain shades reads the slopes over each terrain
+        // tile's quarters (`terrain::slopes`): its source covers those,
+        // whatever detail the terrain's cover keeps, as its other layers,
+        // all draped, draw into the terrain tiles' slots from any cover.
+        let nodes = || (plan.nodes.iter().enumerate()).filter(|(_, n)| n.source == index);
+        let shaded = nodes().any(|(i, _)| renderer.shades_on_terrain(i as u32))
+            && nodes().all(|(_, n)| n.family.is_draped());
+        if let Some(terrain) = style.terrain.as_ref().filter(|_| shaded) {
+            let max = pyramid.max_zoom();
+            let mut cover: Vec<orb_crs::CoveredTile> = (terrain.tiles.iter())
+                .flat_map(|t| {
+                    (t.index.children()).map(|q| orb_crs::CoveredTile {
+                        index: crate::terrain::scaled(q, q.z.min(max)),
+                        wrap: t.wrap,
+                    })
+                })
+                .collect();
+            cover.sort();
+            cover.dedup();
+            return Some(pyramid.plan(&cover));
+        }
         let tms = &endpoint.tms;
         // Where the source's visible layers are shown, their tiles hold
         // their data: the cover keeps to the least zoom all of them have
@@ -495,28 +516,15 @@ impl Map {
         }
         let worker = Arc::clone(&style.worker);
         let plan = worker.plan();
-        let zoom = self.camera.state().zoom(self.surface.projection());
-        for (index, node) in plan.nodes.iter().enumerate() {
-            if node.family != Family::Hillshade {
-                continue;
-            }
-            let layer = &plan.style.layers[node.layer];
-            let viewport = layer
-                .get(orb_style::HILLSHADE_ILLUMINATION_ANCHOR)
-                .evaluate(zoom)
-                == orb_style::IlluminationAnchor::Viewport;
-            // Shading reads its tiles as the surface's.
-            let on_surface = matches!(&style.sources[node.source],
-                SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms());
-            renderer.set_shaded_on_terrain(gpu, index as u32, viewport && on_surface);
-        }
         let kept = terrain.kept_slots();
         let slots = (terrain.tiles.len() as u32, &kept[..]);
         let (layout, moves) = match renderer.reserve_drape(gpu, slots) {
             Ok(reserved) => reserved,
             Err(_) => {
+                // The cover fits the atlas's room (`Terrain::update`)
+                // unless its stacks leave none for the view's tiles.
                 self.warnings
-                    .push("too many terrain tiles for the drape atlas; terrain is flat".into());
+                    .push("too many drape stacks for the drape atlas; terrain is flat".into());
                 renderer.set_terrain(gpu, None);
                 return None;
             }

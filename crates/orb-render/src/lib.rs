@@ -1024,10 +1024,17 @@ impl Renderer {
         self.terrain.as_ref().is_some_and(|t| t.paint.is_some())
     }
 
+    /// How many terrain tiles the drape atlas can hold with this style's
+    /// stacks: the most a terrain cover may have.
+    pub fn drape_room(&self, gpu: &dyn Gpu) -> u32 {
+        terrain::room(gpu, self.drape_stacks())
+    }
+
     /// Makes room for `tile_slots` terrain tiles' drape slots, one per
     /// drape stack, keeping the texels of the tile slots in `kept`. Returns
     /// the layout and the kept slots that moved (from, to). A new layout
-    /// generation means every slot is blank.
+    /// generation means every slot is blank. Fails past the
+    /// [`drape_room`](Self::drape_room).
     pub fn reserve_drape(
         &mut self,
         gpu: &mut dyn Gpu,

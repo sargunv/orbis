@@ -1981,6 +1981,22 @@ impl Map {
             true => 2.0 * std::f64::consts::PI * 6_371_008.8 / zoom.max(0.0).exp2() / 5.0,
             false => 0.0,
         };
+        // Viewport-anchored hillshades turn with the map: the terrain pass
+        // shades them between drape stacks, which the cover's room counts.
+        for (index, node) in plan.nodes.iter().enumerate() {
+            if node.family != Family::Hillshade {
+                continue;
+            }
+            let layer = &plan.style.layers[node.layer];
+            let viewport = layer
+                .get(orb_style::HILLSHADE_ILLUMINATION_ANCHOR)
+                .evaluate(zoom)
+                == orb_style::IlluminationAnchor::Viewport;
+            // Shading reads its tiles as the surface's.
+            let on_surface = matches!(&style.sources[node.source],
+                SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms());
+            renderer.set_shaded_on_terrain(gpu, index as u32, viewport && on_surface);
+        }
         let at = (view, self.surface.tms());
         let (frame, requests) =
             terrain.upkeep(gpu, renderer, at, unpack, skirt * view.height_scale());

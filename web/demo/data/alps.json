@@ -182,7 +182,7 @@
       "source-layer": "mountain_peak",
       "filter": ["has", "name"],
       "layout": {
-        "text-field": ["concat", ["get", "name"], "\n", ["to-string", ["get", "ele"]], " m"],
+        "text-field": ["case", ["has", "ele"], ["concat", ["get", "name"], "\n", ["to-string", ["get", "ele"]], " m"], ["get", "name"]],
         "text-font": ["Noto Sans Italic"],
         "text-size": 12,
         "text-offset": [0, 0.8],

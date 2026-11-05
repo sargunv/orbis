@@ -211,10 +211,11 @@ impl Terrain {
         }
     }
 
-    /// Covers the view, asks for the DEM tiles missing and returns the
-    /// tiles to request.
-    fn update(&mut self, view: &View, tms: &TileMatrixSet) -> Vec<TileIndex> {
-        let tiles = view.cover_volume(
+    /// Covers the view with at most `budget` tiles, the drape atlas's
+    /// room, asks for the DEM tiles missing and returns the tiles to
+    /// request.
+    fn update(&mut self, view: &View, tms: &TileMatrixSet, budget: usize) -> Vec<TileIndex> {
+        let mut tiles = view.cover_volume(
             tms,
             TERRAIN_TILE_PX,
             0..=TERRAIN_MAX_ZOOM,
@@ -222,6 +223,13 @@ impl Terrain {
             Some(&*self.elevation),
             0.0,
         );
+        let period = tms.projection().wrap_period().unwrap_or(0.0);
+        let eye = view.eye().truncate();
+        coarsen(&mut tiles, budget, |t| {
+            let offset = DVec2::new(f64::from(t.wrap) * period, 0.0) - view.camera_world();
+            let rel = tms.tile_bounds(t.index).translated(offset);
+            rel.clamp(eye).distance(eye)
+        });
         self.tiles = tiles;
         let mut wanted: Vec<CoveredTile> = self
             .tiles
@@ -310,17 +318,6 @@ impl Terrain {
         unpack: [f32; 4],
         skirt: f64,
     ) -> (orb_render::FrameTerrain, Vec<TileIndex>) {
-        let requests = self.update(view, tms);
-        let evicted = self.pyramid.evict();
-        self.stale |= !evicted.is_empty();
-        if let Some(page) = self.page {
-            for retired in evicted {
-                renderer.free_layer(page, retired.layer);
-            }
-            for job in self.pads(unpack) {
-                renderer.prepare_dem(page, job);
-            }
-        }
         // The terrain draws before its DEM tiles arrive, and where its
         // source has none: flat, skirts and all, as GL JS draws it.
         let exaggeration = self.exaggeration as f32;
@@ -331,6 +328,17 @@ impl Terrain {
             skirt,
         };
         renderer.set_terrain(gpu, Some((self.page, paint)));
+        let requests = self.update(view, tms, renderer.drape_room(gpu) as usize);
+        let evicted = self.pyramid.evict();
+        self.stale |= !evicted.is_empty();
+        if let Some(page) = self.page {
+            for retired in evicted {
+                renderer.free_layer(page, retired.layer);
+            }
+            for job in self.pads(unpack) {
+                renderer.prepare_dem(page, job);
+            }
+        }
         let dem_dim = self.page.map_or(1, |page| renderer.page_size(page)[0]) as f32;
         let frame = orb_render::FrameTerrain {
             unpack,
@@ -576,8 +584,44 @@ pub(crate) fn slopes<T>(
     })
 }
 
+/// Coarsens a cover until it has at most `budget` tiles (or no tiles
+/// share an ancestor): the tiles under the farthest ancestor of two or
+/// more, by `distance` from the eye, become that ancestor, as distance
+/// already coarsens the cover.
+fn coarsen(tiles: &mut Vec<CoveredTile>, budget: usize, distance: impl Fn(CoveredTile) -> f64) {
+    while tiles.len() > budget {
+        let mut under: HashMap<CoveredTile, usize> = HashMap::new();
+        for t in tiles.iter() {
+            let mut at = t.index;
+            while let Some(parent) = at.parent() {
+                let wrap = t.wrap;
+                *under
+                    .entry(CoveredTile {
+                        index: parent,
+                        wrap,
+                    })
+                    .or_default() += 1;
+                at = parent;
+            }
+        }
+        let farthest = (under.into_iter())
+            .filter(|&(_, n)| n > 1)
+            .map(|(t, _)| (distance(t), t))
+            .max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+        let Some((_, merged)) = farthest else {
+            break;
+        };
+        tiles.retain(|t| {
+            t.wrap != merged.wrap
+                || t.index.z < merged.index.z
+                || scaled(t.index, merged.index.z) != merged.index
+        });
+        tiles.push(merged);
+    }
+}
+
 /// `tile`'s ancestor (or itself) at zoom `z ≤ tile.z`.
-fn scaled(tile: TileIndex, z: u8) -> TileIndex {
+pub(crate) fn scaled(tile: TileIndex, z: u8) -> TileIndex {
     let d = tile.z - z;
     TileIndex::new(z, tile.col >> d, tile.row >> d)
 }
@@ -1087,6 +1131,32 @@ mod tests {
             assert!(terrain.pyramid.insert(*tile, tile_dem).is_none());
         }
         terrain.stale = true;
+    }
+
+    #[test]
+    fn covers_coarsen_their_farthest_tiles_to_fit() {
+        let at = |z, col, row| CoveredTile {
+            index: TileIndex::new(z, col, row),
+            wrap: 0,
+        };
+        // Four tiles near the eye at (0, 0), four farther, and one alone.
+        let near = [at(4, 0, 0), at(4, 1, 0), at(4, 0, 1), at(4, 1, 1)];
+        let far = [at(4, 2, 2), at(4, 3, 2), at(4, 2, 3), at(4, 3, 3)];
+        let mut tiles: Vec<_> = near.into_iter().chain(far).chain([at(3, 3, 0)]).collect();
+        let distance = |t: CoveredTile| {
+            let s = f64::from(1u32 << (8 - t.index.z));
+            f64::from(t.index.col).hypot(f64::from(t.index.row)) * s
+        };
+        coarsen(&mut tiles, 6, distance);
+        let want: Vec<_> = near.into_iter().chain([at(3, 3, 0), at(3, 1, 1)]).collect();
+        assert_eq!(tiles, want, "the far four become their parent");
+        // Under budget: as covered.
+        let before = tiles.clone();
+        coarsen(&mut tiles, 6, distance);
+        assert_eq!(tiles, before);
+        // Down to what no two tiles share: the root.
+        coarsen(&mut tiles, 1, distance);
+        assert_eq!(tiles, [at(0, 0, 0)]);
     }
 
     #[test]
