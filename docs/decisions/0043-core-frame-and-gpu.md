@@ -89,6 +89,14 @@ otherwise lets a coarser tile stand in.
   What a style lets go of between frames (its tiles, background, state
   table) waits in a queue for the next frame's renderer.
 
+- **The scene is the renderer's.** Placement goes through the renderer
+  (`place(tile, extent, rows)`, `unplace`, `set_tile_order`), which fills
+  in a tile's own patches. The background is a tile like any other.
+  Low-zoom surface patches are a renderer store keyed by tile matrix set
+  and tile (`surface_warp`), and the map's globe cache keeps only CPU
+  series and footprints. `Scene` isn't re-exported: nothing outside
+  `orb-render` reaches it, its tests included.
+
 ## Still to land
 
 The Map/Renderer split (`plan_frame`, a narrow `Renderer` that owns all

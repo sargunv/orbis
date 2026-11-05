@@ -20,7 +20,8 @@ use orb_crs::TileIndex;
 use orb_hal::Gpu;
 use orb_layout::{Chunk, TileBox};
 use orb_scene::{
-    MeshData, MeshId, MeshSize, OutOfSpace, Pixels, SymbolMeshData, TileId, TileWarp, Words,
+    MeshData, MeshId, MeshSize, OutOfSpace, Pixels, SymbolMeshData, TileId, TileRow, TileWarp,
+    Words,
 };
 
 use crate::Renderer;
@@ -78,6 +79,26 @@ pub struct MeshRows<'a> {
     /// state.
     pub states: &'a [u32],
 }
+
+/// A tile's patches on the low-zoom surface (a sphere, or a low-zoom
+/// plane), by its tile matrix set (`set`, any number that names it) and
+/// index: they're shared by every placement of that tile, of any source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct WarpKey {
+    pub set: u64,
+    pub tile: TileIndex,
+}
+
+/// Low-zoom surface patches the renderer holds, by key, and the frame each
+/// was last placed in.
+#[derive(Debug, Default)]
+pub(crate) struct SurfaceWarps {
+    warps: HashMap<WarpKey, (TileWarp, u64)>,
+    frame: u64,
+}
+
+/// Surface patches kept before those the last frame didn't place go.
+const SURFACE_WARPS: usize = 2048;
 
 /// Why an upload failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -550,14 +571,110 @@ impl Renderer {
         id
     }
 
-    /// The scene tiles a tile places, one per layer extent.
-    pub fn tile_parts(&self, tile: GpuTile) -> &[(u32, TileId)] {
-        &self.tiles.entry(tile).parts
+    /// A tile's patches on the low-zoom surface, uploaded the first time a
+    /// placement needs them: `cells` per side, their words from `patches`
+    /// (`orb_scene::GLOBE_PATCH_WORDS` each). `None` when the property
+    /// memory has no room.
+    pub fn surface_warp(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        key: WarpKey,
+        cells: u32,
+        patches: impl FnOnce() -> Vec<f32>,
+    ) -> Option<TileWarp> {
+        let frame = self.surface_warps.frame;
+        if let Some((warp, used)) = self.surface_warps.warps.get_mut(&key) {
+            *used = frame;
+            return Some(*warp);
+        }
+        let warp = self.scene.add_warp(gpu, cells, &patches()).ok()?;
+        self.surface_warps.warps.insert(key, (warp, frame));
+        Some(warp)
     }
 
-    /// The planar patches a tile draws through, or [`TileWarp::NONE`].
-    pub fn tile_warp(&self, tile: GpuTile) -> TileWarp {
-        self.tiles.entry(tile).warp
+    /// Forgets every low-zoom surface patch: the surface changed.
+    pub fn clear_surface_warps(&mut self) {
+        for (_, (warp, _)) in self.surface_warps.warps.drain() {
+            self.scene.remove_warp(warp);
+        }
+    }
+
+    /// Ends a frame's surface patches: past the cache's size, those it
+    /// didn't place go.
+    pub(crate) fn end_surface_warps(&mut self) {
+        let warps = &mut self.surface_warps;
+        if warps.warps.len() > SURFACE_WARPS {
+            let frame = warps.frame;
+            let scene = &mut self.scene;
+            warps.warps.retain(|_, &mut (warp, used)| {
+                let kept = used == frame;
+                if !kept {
+                    scene.remove_warp(warp);
+                }
+                kept
+            });
+        }
+        warps.frame += 1;
+    }
+
+    /// The layer extents a tile holds meshes at: each places apart.
+    pub fn tile_extents(&self, tile: GpuTile) -> Vec<u32> {
+        self.tiles.entry(tile).parts.iter().map(|p| p.0).collect()
+    }
+
+    /// Places a tile's meshes of layer extent `extent`, those it has and
+    /// those added later: one row per placement, none to hide them. Rows
+    /// draw through the tile's own planar patches.
+    pub fn place(
+        &mut self,
+        tile: GpuTile,
+        extent: u32,
+        rows: &[TileRow],
+    ) -> Result<(), OutOfSpace> {
+        let part = self.part(tile, extent);
+        let warp = self.tiles.entry(tile).warp;
+        let rows: Vec<TileRow> = rows.iter().map(|&row| TileRow { warp, ..row }).collect();
+        self.scene.place_tile(part, &rows)
+    }
+
+    /// Hides a tile: no placements.
+    pub fn unplace(&mut self, tile: GpuTile) {
+        for &(_, part) in &self.tiles.entry(tile).parts {
+            self.scene
+                .place_tile(part, &[])
+                .expect("removing placements always fits");
+        }
+    }
+
+    /// Orders tiles within each render node, in drawing order; tiles not
+    /// listed follow.
+    pub fn set_tile_order(&mut self, tiles: &[GpuTile]) {
+        let parts: Vec<TileId> = tiles
+            .iter()
+            .flat_map(|&t| self.tiles.entry(t).parts.iter().map(|p| p.1))
+            .collect();
+        self.scene.set_tile_order(&parts);
+    }
+
+    /// GPU bytes a mesh holds.
+    pub fn mesh_bytes(&self, mesh: MeshId) -> u64 {
+        self.scene.mesh_bytes(mesh)
+    }
+
+    /// Words of the property buffer for a table outside any tile, such as
+    /// the feature-state table; not cleared.
+    pub fn alloc_table(&mut self, words: u32) -> Result<std::ops::Range<u32>, OutOfSpace> {
+        self.scene.alloc_table(words)
+    }
+
+    pub fn free_table(&mut self, table: std::ops::Range<u32>) {
+        self.scene.free_table(table);
+    }
+
+    /// Writes words of a table from [`alloc_table`](Self::alloc_table),
+    /// from word `at` of the property buffer.
+    pub fn write_table(&mut self, gpu: &mut dyn Gpu, at: u32, words: &[u32]) {
+        self.scene.write_table(gpu, at, words);
     }
 
     /// GPU bytes a tile holds: its meshes and texture layer.

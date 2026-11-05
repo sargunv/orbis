@@ -38,8 +38,8 @@ pub use orb_scene::Pixels;
 pub use orb_scene::{
     ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLights, FrameLod, FrameTerrain,
     GLOBE_PATCH_WORDS, ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData,
-    MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, Scene,
-    SceneCapacity, SceneStats, TileId, TileRow, TileWarp, WARP_PATCH_WORDS, Words,
+    MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity,
+    SceneStats, TileId, TileRow, TileWarp, WARP_PATCH_WORDS, Words,
 };
 pub use orb_scene::{DESKTOP_BUDGET, MOBILE_BUDGET, PoolMemory, SceneMemory};
 pub use orb_scene::{
@@ -53,13 +53,14 @@ pub use paint::{
     StateLookup, SymbolPaint, SymbolSize, Translate, pack_color,
 };
 pub use tiles::{
-    GpuTile, ImageBuild, ImageMesh, MeshRows, TileKey, UploadError, dem_prepares,
+    GpuTile, ImageBuild, ImageMesh, MeshRows, TileKey, UploadError, WarpKey, dem_prepares,
     resident_neighbours,
 };
 
 use std::collections::BTreeMap;
 
 use orb_hal::*;
+use orb_scene::Scene;
 use orb_shaders::{
     CIRCLE_SHADER, CULL_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, SYMBOL_SHADER,
     Shader,
@@ -229,6 +230,7 @@ pub struct Renderer {
     node_stride: u64,
     nodes: Vec<Node>,
     tiles: tiles::Tiles,
+    surface_warps: tiles::SurfaceWarps,
     /// The main pass's bundles: one, or one more than the groups that
     /// blend other than normally (empty until recorded).
     bundles: Vec<RenderBundleId>,
@@ -515,6 +517,7 @@ impl Renderer {
             node_stride,
             nodes: Vec::new(),
             tiles: Default::default(),
+            surface_warps: Default::default(),
             bundles: Vec::new(),
             paints_written: 0,
             images,
@@ -548,13 +551,20 @@ impl Renderer {
         self.id
     }
 
-    /// The scene, to read.
-    pub fn scene_ref(&self) -> &Scene {
-        &self.scene
+    /// The scene's counts, for the stats HUD and memory accounting.
+    pub fn stats(&self) -> SceneStats {
+        self.scene.stats()
     }
 
-    pub fn scene(&mut self) -> &mut Scene {
-        &mut self.scene
+    /// The scene's GPU memory.
+    pub fn memory(&self) -> orb_scene::SceneMemory {
+        self.scene.memory()
+    }
+
+    /// Changes when a pool moves into a larger buffer: room may have
+    /// changed for tiles that didn't fit.
+    pub fn pools_revision(&self) -> u64 {
+        self.scene.buffers_revision()
     }
 
     /// The glyph atlas symbol quads sample.
@@ -1269,6 +1279,7 @@ impl Renderer {
         let mut stats = self.render_modern(gpu, frame, target, clear);
         stats.draws += u32::from(self.atmosphere.enabled);
         stats.draws -= stats.nodes_waiting;
+        self.end_surface_warps();
         stats
     }
 

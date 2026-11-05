@@ -12,6 +12,8 @@ use orb_tile::{GeometryType, LayerBuilder};
 const SIZE: u32 = 64;
 const WORLD_PER_PX: f32 = 2.0 / SIZE as f32;
 const RED: [u8; 4] = [255, 0, 0, 255];
+/// The layer extent the tests' meshes and placements are in.
+const EXTENT: u32 = 4096;
 const CLEAR: [u8; 4] = [0, 0, 255, 255];
 
 struct Harness {
@@ -83,6 +85,15 @@ impl Harness {
             renderer,
             images,
         }
+    }
+
+    /// An empty tile to add meshes to and place.
+    fn tile(&mut self) -> orb_render::GpuTile {
+        let key = orb_render::TileKey {
+            source: 0,
+            tile: orb_crs::TileIndex::new(0, 0, 0),
+        };
+        self.renderer.add_tile(&mut self.gpu, key, None).unwrap()
     }
 
     /// Renders with world space = clip space, so a tile with
@@ -193,22 +204,25 @@ fn pools_grow_into_larger_buffers_keeping_their_meshes() {
     };
     let mut h = Harness::with(4, 2, 8, capacity, None);
     red_fill(&mut h);
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
-        .scene()
-        .insert_mesh(&mut h.gpu, tile, 0, &MeshData::new(&left, &[], 0))
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (0, EXTENT),
+            &MeshData::new(&left, &[], 0),
+            &Default::default(),
+        )
         .unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 36, 32), CLEAR);
     let mesh = MeshData::new(&right, &[], 0);
     assert!(
         h.renderer
-            .scene()
-            .insert_mesh(&mut h.gpu, tile, 0, &mesh)
+            .add_mesh(&mut h.gpu, tile, (0, EXTENT), &mesh, &Default::default())
             .is_err()
     );
     let size = orb_render::MeshSize {
@@ -217,17 +231,16 @@ fn pools_grow_into_larger_buffers_keeping_their_meshes() {
         props: 0,
         chunks: right.chunks.len() as u32,
     };
-    let revision = h.renderer.scene().buffers_revision();
-    assert!(h.renderer.scene().grow_for(&mut h.gpu, &[size]));
-    assert!(h.renderer.scene().buffers_revision() > revision);
+    let revision = h.renderer.pools_revision();
+    assert!(h.renderer.grow_for(&mut h.gpu, &[size]));
+    assert!(h.renderer.pools_revision() > revision);
     h.renderer
-        .scene()
-        .insert_mesh(&mut h.gpu, tile, 0, &mesh)
+        .add_mesh(&mut h.gpu, tile, (0, EXTENT), &mesh, &Default::default())
         .unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 4, 32), RED, "the first mesh copied over");
     assert_eq!(pixel(&pixels, 36, 32), RED, "the second in the grown pool");
-    let memory = h.renderer.scene_ref().memory();
+    let memory = h.renderer.memory();
     assert_eq!(
         memory.vertices.allocated,
         u64::from(capacity.vertex_words) * 8
@@ -237,7 +250,7 @@ fn pools_grow_into_larger_buffers_keeping_their_meshes() {
         vertices: 1 << 13,
         ..size
     };
-    assert!(!h.renderer.scene().grow_for(&mut h.gpu, &[huge]));
+    assert!(!h.renderer.grow_for(&mut h.gpu, &[huge]));
 }
 
 fn red_fill(h: &mut Harness) {
@@ -260,18 +273,17 @@ fn red_fill(h: &mut Harness) {
 fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     let mut h = Harness::with(4, 2, 8, Harness::SMALL, Some(1));
     red_fill(&mut h);
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            0,
+            (0, EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
         )
         .unwrap();
     // Only what the nodes use is made: the cull and the fill.
@@ -299,18 +311,17 @@ fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
 fn draws_a_fill() {
     let mut h = Harness::new();
     red_fill(&mut h);
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            0,
+            (0, EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
         )
         .unwrap();
 
@@ -325,19 +336,18 @@ fn draws_a_fill() {
 fn camera_moves_and_mesh_removal_take_effect() {
     let mut h = Harness::new();
     red_fill(&mut h);
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let mesh = h
         .renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            0,
+            (0, EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
         )
         .unwrap();
     assert_eq!(pixel(&h.render(), 4, 32), RED);
@@ -345,8 +355,7 @@ fn camera_moves_and_mesh_removal_take_effect() {
     // Shift the tile right by half the view: the fill now covers the
     // middle.
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(1.0)])
+        .place(tile, EXTENT, &[full_view_tile(1.0)])
         .unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 4, 32), CLEAR);
@@ -354,16 +363,14 @@ fn camera_moves_and_mesh_removal_take_effect() {
 
     // Entirely off screen: culled.
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(4.0)])
+        .place(tile, EXTENT, &[full_view_tile(4.0)])
         .unwrap();
     assert!(h.render().as_chunks::<4>().0.iter().all(|p| *p == CLEAR));
 
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
-    h.renderer.scene().remove_mesh(mesh);
+    h.renderer.remove_mesh(tile, mesh);
     assert!(h.render().as_chunks::<4>().0.iter().all(|p| *p == CLEAR));
 }
 
@@ -383,26 +390,26 @@ fn adjacent_clip_regions_do_not_double_blend_their_shared_edge() {
             state: Default::default(),
         }),
     );
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            0,
+            (0, EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
         )
         .unwrap();
     // Put x=1024 exactly on a pixel centre, so both inclusive clips would
     // shade that column and blend the translucent fill twice.
     let whole = full_view_tile(1.0 / SIZE as f32);
-    h.renderer.scene().place_tile(tile, &[whole]).unwrap();
+    h.renderer.place(tile, EXTENT, &[whole]).unwrap();
     let reference = h.render();
     let mut left = whole;
     left.clips[0] = ClipRect::new([0, 0], [1024, 4096]);
     let mut right = whole;
     right.clips[0] = ClipRect::new([1024, 0], [4096, 4096]);
-    h.renderer.scene().place_tile(tile, &[left, right]).unwrap();
+    h.renderer.place(tile, EXTENT, &[left, right]).unwrap();
     assert_eq!(h.render(), reference);
 }
 
@@ -410,21 +417,20 @@ fn adjacent_clip_regions_do_not_double_blend_their_shared_edge() {
 fn placements_repeat_and_clip_a_tile() {
     let mut h = Harness::new();
     red_fill(&mut h);
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            0,
+            (0, EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
         )
         .unwrap();
 
     // Two copies three quarters of a view apart: 0..32 and 48..64 are red.
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0), full_view_tile(1.5)])
+        .place(tile, EXTENT, &[full_view_tile(0.0), full_view_tile(1.5)])
         .unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 4, 32), RED);
@@ -434,7 +440,7 @@ fn placements_repeat_and_clip_a_tile() {
     // One copy clipped to its top-left quadrant.
     let mut row = full_view_tile(0.0);
     row.clips[0] = ClipRect::new([0, 0], [2048, 2048]);
-    h.renderer.scene().place_tile(tile, &[row]).unwrap();
+    h.renderer.place(tile, EXTENT, &[row]).unwrap();
     let pixels = h.render();
     assert_eq!(pixel(&pixels, 4, 4), RED);
     assert_eq!(pixel(&pixels, 4, 60), CLEAR);
@@ -467,14 +473,12 @@ fn uploads_streams_from_host_bytes() {
         row_words: 0,
         chunks: &mesh.chunks,
     };
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
-        .scene()
-        .insert_mesh(&mut h.gpu, tile, 0, &data)
+        .add_mesh(&mut h.gpu, tile, (0, EXTENT), &data, &Default::default())
         .unwrap();
     h.gpu.release_host_bytes(host);
 
@@ -502,18 +506,17 @@ fn translates_fills_and_clips_where_they_land() {
             state: Default::default(),
         }),
     );
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            0,
+            (0, EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
         )
         .unwrap();
     let pixels = h.render();
@@ -530,18 +533,17 @@ fn translates_fills_and_clips_where_they_land() {
 fn margins_and_visibility_change_without_laying_candidates_out() {
     let mut h = Harness::new();
     red_fill(&mut h);
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            0,
+            (0, EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
         )
         .unwrap();
     assert!(h.render_stats().candidates_rebuilt);
@@ -578,22 +580,25 @@ fn margins_and_visibility_change_without_laying_candidates_out() {
 fn compacted_slots_follow_the_view_without_recording() {
     let mut h = Harness::new();
     red_fill(&mut h);
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            0,
+            (0, EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
         )
         .unwrap();
     // Two copies, one clipped, and one off screen.
     let mut clipped = full_view_tile(1.5);
     clipped.clips[0] = ClipRect::new([0, 0], [2048, 2048]);
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0), clipped, full_view_tile(4.0)])
+        .place(
+            tile,
+            EXTENT,
+            &[full_view_tile(0.0), clipped, full_view_tile(4.0)],
+        )
         .unwrap();
 
     let first = h.render_stats();
@@ -620,8 +625,11 @@ fn compacted_slots_follow_the_view_without_recording() {
     // The first copy leaves the view and the third enters it: their slots
     // are rewritten, without recording commands.
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(4.0), clipped, full_view_tile(0.0)])
+        .place(
+            tile,
+            EXTENT,
+            &[full_view_tile(4.0), clipped, full_view_tile(0.0)],
+        )
         .unwrap();
     let swapped = h.render_stats();
     assert!(!swapped.bundle_recorded);
@@ -674,16 +682,21 @@ fn circles_clip_anchors_once_but_keep_their_whole_footprint() {
     h.renderer.set_nodes(&mut h.gpu, &[Family::Circle]);
     h.renderer
         .set_paint(&mut h.gpu, 0, &circle_paint([0.5, 0.0, 0.0, 0.5]));
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     let mut left = full_view_tile(0.0);
     left.clips[0] = ClipRect::new([0, 0], [2048, 4096]);
     let mut right = full_view_tile(0.0);
     right.clips[0] = ClipRect::new([2048, 0], [4096, 4096]);
-    h.renderer.scene().place_tile(tile, &[left, right]).unwrap();
+    h.renderer.place(tile, EXTENT, &[left, right]).unwrap();
     let mesh = orb_layout::point::layout(&point_at([2048, 2048]), &[0]);
     h.renderer
-        .scene()
-        .insert_mesh(&mut h.gpu, tile, 0, &MeshData::new(&mesh, &[], 0))
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (0, EXTENT),
+            &MeshData::new(&mesh, &[], 0),
+            &Default::default(),
+        )
         .unwrap();
     let pixels = h.render();
     for x in [28, 32, 36] {
@@ -713,22 +726,21 @@ fn circle_sort_keys_merge_across_tiles() {
     // Insert the high-key green run first. It must draw above the later
     // low-key red run, even though they arrive as different scene tiles.
     for (key, color) in [(2.0, [0.0, 1.0, 0.0, 1.0]), (1.0, [1.0, 0.0, 0.0, 1.0])] {
-        let tile = h.renderer.scene().insert_tile();
+        let tile = h.tile();
         h.renderer
-            .scene()
-            .place_tile(tile, &[full_view_tile(0.0)])
+            .place(tile, EXTENT, &[full_view_tile(0.0)])
             .unwrap();
         let mesh = orb_layout::point::layout_sorted(&point_at([2048, 2048]), &[0], |_| Some(key));
         let mut props = [0; orb_render::CIRCLE_ROW_WORDS];
         props[0] = orb_render::pack_color(color);
         props[1] = props[0];
         h.renderer
-            .scene()
-            .insert_mesh(
+            .add_mesh(
                 &mut h.gpu,
                 tile,
-                0,
+                (0, EXTENT),
                 &MeshData::new(&mesh, &props, orb_render::CIRCLE_ROW_WORDS as u32),
+                &Default::default(),
             )
             .unwrap();
     }
@@ -766,23 +778,27 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
             state: Default::default(),
         }),
     );
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let mesh = orb_layout::point::layout(&point_at([2048, 2048]), &[0]);
     h.renderer
-        .scene()
-        .insert_mesh(&mut h.gpu, tile, 0, &MeshData::new(&mesh, &[], 0))
-        .unwrap();
-    h.renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            1,
+            (0, EXTENT),
+            &MeshData::new(&mesh, &[], 0),
+            &Default::default(),
+        )
+        .unwrap();
+    h.renderer
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (1, EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
         )
         .unwrap();
     let pixels = h.render();
@@ -798,7 +814,7 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
     assert_eq!(pixel(&pixels, 48, 32), CLEAR);
     // Replacing nodes after offscreen work releases the density bindings;
     // the next frame can reuse the scene safely.
-    h.renderer.scene().remove_tile(tile);
+    h.renderer.release_tile(tile);
     h.renderer.set_nodes(&mut h.gpu, &[]);
     h.render_stats();
 }
@@ -824,15 +840,19 @@ fn glyph_atlas_growth_rerecords_node_bundles() {
     );
     let green = orb_render::pack_color([0.0, 1.0, 0.0, 1.0]);
     h.renderer.set_heatmap_ramp(&mut h.gpu, 0, &[green; 256]);
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let mesh = orb_layout::point::layout(&point_at([2048, 2048]), &[0]);
     h.renderer
-        .scene()
-        .insert_mesh(&mut h.gpu, tile, 0, &MeshData::new(&mesh, &[], 0))
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (0, EXTENT),
+            &MeshData::new(&mesh, &[], 0),
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!(pixel(&h.render(), 48, 32), [0, 255, 0, 255]);
     // A page-sized bitmap per row: the ninth outgrows the first 8 layers.
@@ -856,10 +876,9 @@ fn point_instances_address_points_after_the_first_chunk() {
     h.renderer.set_nodes(&mut h.gpu, &[Family::Circle]);
     h.renderer
         .set_paint(&mut h.gpu, 0, &circle_paint([1.0, 0.0, 0.0, 1.0]));
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let mut b = LayerBuilder::new("points", 4096);
     b.begin_feature(None, GeometryType::Point);
@@ -871,8 +890,13 @@ fn point_instances_address_points_after_the_first_chunk() {
     b.push_vertex([2048, 2048]);
     let mesh = orb_layout::point::layout(&b.finish(), &[0]);
     h.renderer
-        .scene()
-        .insert_mesh(&mut h.gpu, tile, 0, &MeshData::new(&mesh, &[], 0))
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (0, EXTENT),
+            &MeshData::new(&mesh, &[], 0),
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!(pixel(&h.render(), 32, 32), RED);
 }
@@ -920,18 +944,17 @@ fn image_rows_fill_late_span_pages_and_recycle_without_recording_commands() {
             },
         ),
     );
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     h.renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            0,
+            (0, EXTENT),
             &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
         )
         .unwrap();
     assert_eq!(pixel(&h.render(), 4, 32), CLEAR);
@@ -1022,20 +1045,19 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
         miter_limit: 2.0,
         round_limit: 1.05,
     });
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     let mut props = [0; orb_render::LINE_ROW_WORDS];
     props[19] = ramp;
     h.renderer
-        .scene()
-        .insert_mesh(
+        .add_mesh(
             &mut h.gpu,
             tile,
-            0,
+            (0, EXTENT),
             &MeshData::new(&mesh, &props, orb_render::LINE_ROW_WORDS as u32),
+            &Default::default(),
         )
         .unwrap();
     let pixels = h.render();
@@ -1142,8 +1164,7 @@ fn fading_raster(ancestor: bool) -> Harness {
         ],
         ..full_view_tile(0.0)
     };
-    let part = h.renderer.tile_parts(child)[0].1;
-    h.renderer.scene().place_tile(part, &[row]).unwrap();
+    h.renderer.place(child, 8192, &[row]).unwrap();
     h
 }
 
@@ -1234,10 +1255,9 @@ fn blended_fills(modes: [Blend; 2]) -> Vec<u8> {
     ];
     let mut h = Harness::new();
     h.renderer.set_nodes(&mut h.gpu, &[Family::Fill; 3]);
-    let tile = h.renderer.scene().insert_tile();
+    let tile = h.tile();
     h.renderer
-        .scene()
-        .place_tile(tile, &[full_view_tile(0.0)])
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
     for (node, color) in colors.into_iter().enumerate() {
         h.renderer.set_paint(
@@ -1259,12 +1279,12 @@ fn blended_fills(modes: [Blend; 2]) -> Vec<u8> {
         h.renderer
             .set_layer_composite(&mut h.gpu, node as u32, node as u32, opacity, blend);
         h.renderer
-            .scene()
-            .insert_mesh(
+            .add_mesh(
                 &mut h.gpu,
                 tile,
-                node as u32,
+                (node as u32, EXTENT),
                 &MeshData::new(&left_half_square(), &[], 0),
+                &Default::default(),
             )
             .unwrap();
     }

@@ -318,7 +318,7 @@ impl FeatureStates {
             if self.stride != stride
                 && let Some(table) = self.table.take()
             {
-                renderer.scene().free_table(table);
+                renderer.free_table(table);
             }
             lookups_changed = true;
         }
@@ -341,13 +341,11 @@ impl FeatureStates {
             let rows = rows.next_power_of_two().max(64);
             let words = rows * self.stride;
             if let Some(table) = self.table.take() {
-                renderer.scene().free_table(table);
+                renderer.free_table(table);
             }
-            match renderer.scene().alloc_table(words) {
+            match renderer.alloc_table(words) {
                 Ok(range) => {
-                    renderer
-                        .scene()
-                        .write_table(gpu, range.start, &vec![0; words as usize]);
+                    renderer.write_table(gpu, range.start, &vec![0; words as usize]);
                     self.table = Some(range);
                 }
                 // Out of property memory: features draw without state.
@@ -389,9 +387,7 @@ impl FeatureStates {
                     }
                 }
             }
-            renderer
-                .scene()
-                .write_table(gpu, base + index * self.stride, &row);
+            renderer.write_table(gpu, base + index * self.stride, &row);
             self.rows_written += 1;
             self.collect(index);
         }

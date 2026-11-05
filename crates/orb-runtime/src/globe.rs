@@ -1,6 +1,7 @@
 //! Tiles on the low-zoom surface (plan §9.2's `GpuPerVertex` on a sphere
 //! or on a low-zoom plane): each tile's quadratic patches there, kept by
-//! tile matrix set and tile and uploaded when a placement first needs them.
+//! tile matrix set and tile; the renderer uploads them when a placement
+//! first needs them.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,7 +9,7 @@ use std::sync::Arc;
 use glam::DVec3;
 use orb_crs::{Footprint, Projection, Series, TileIndex, TileMatrixSet, Warp};
 use orb_hal::Gpu;
-use orb_render::{Scene, TileWarp};
+use orb_render::{Renderer, TileWarp, WarpKey};
 
 /// A sixteenth of a pixel at 512 pixels per tile side on the sphere, and a
 /// quarter of one on a plane, as the plane's own warps hold.
@@ -33,17 +34,17 @@ struct GlobeTile {
     series: Option<Arc<Series<DVec3>>>,
     /// Where the tile lands on a low-zoom plane, for the cover.
     footprint: Option<Footprint>,
-    warp: Option<TileWarp>,
     used: u64,
 }
 
 impl GlobeWarps {
     /// Puts the tiles on a low-zoom plane, or on the sphere (`None`),
     /// freeing the patches of another.
-    pub(crate) fn set_plane(&mut self, scene: &mut Scene, plane: Option<Projection>) {
+    pub(crate) fn set_plane(&mut self, renderer: &mut Renderer, plane: Option<Projection>) {
         if self.plane != plane {
             self.frame += 1;
-            self.retain(scene, |_| false);
+            self.tiles.clear();
+            renderer.clear_surface_warps();
             self.warps.clear();
             self.plane = plane;
         }
@@ -71,7 +72,6 @@ impl GlobeWarps {
                 GlobeTile {
                     series: series.map(Arc::new),
                     footprint,
-                    warp: None,
                     used: frame,
                 },
             );
@@ -102,45 +102,37 @@ impl GlobeWarps {
     }
 
     /// The tile's patches in the scene and their anchor's ECEF position,
-    /// uploading them the first time.
+    /// uploaded the first time.
     pub(crate) fn warp(
         &mut self,
         gpu: &mut dyn Gpu,
-        scene: &mut Scene,
+        renderer: &mut Renderer,
         tms: &TileMatrixSet,
         tile: TileIndex,
     ) -> Option<(TileWarp, DVec3)> {
-        let entry = self.entry(tms, tile);
-        let series = entry.series.clone()?;
-        if entry.warp.is_none() {
-            let patches: Vec<f32> = series
+        let series = self.entry(tms, tile).series.clone()?;
+        let key = WarpKey {
+            set: crate::terrain::hash(tms.id()),
+            tile,
+        };
+        let warp = renderer.surface_warp(gpu, key, series.cells, || {
+            series
                 .patches
                 .iter()
                 .flat_map(|p| p.points.iter().flat_map(|v| v.as_vec3().to_array()))
-                .collect();
-            entry.warp = Some(scene.add_warp(gpu, series.cells, &patches).ok()?);
-        }
-        Some((entry.warp?, series.anchor))
+                .collect()
+        })?;
+        Some((warp, series.anchor))
     }
 
     /// Ends a frame: past the cache's size, tiles this frame didn't place
-    /// are dropped and their patches freed.
-    pub(crate) fn end_frame(&mut self, scene: &mut Scene) {
+    /// are dropped.
+    pub(crate) fn end_frame(&mut self) {
         if self.tiles.len() > CACHED {
             let frame = self.frame;
-            self.retain(scene, |t| t.used == frame);
+            self.tiles.retain(|_, t| t.used == frame);
         }
         self.frame += 1;
-    }
-
-    fn retain(&mut self, scene: &mut Scene, keep: impl Fn(&GlobeTile) -> bool) {
-        self.tiles.retain(|_, t| {
-            let kept = keep(t);
-            if !kept && let Some(warp) = t.warp {
-                scene.remove_warp(warp);
-            }
-            kept
-        });
     }
 }
 

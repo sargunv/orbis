@@ -13,8 +13,8 @@ use orb_render::GpuTile;
 use orb_render::{
     ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameStats, LinePaint, MeshData,
     MeshId, MeshSize, NodePaint, OutOfSpace, PageId, PatternPaint, PlacementTarget, RenderNode,
-    Renderer, SceneCapacity, SceneStats, TargetFormat, TileId, TileKey, TileRow, TileWarp,
-    Translate, Words,
+    Renderer, SceneCapacity, SceneStats, TargetFormat, TileKey, TileRow, TileWarp, Translate,
+    Words,
 };
 use orb_render::{ImageAtlas, ImageUpload};
 use orb_source::{Draw, TilePyramid};
@@ -382,7 +382,7 @@ pub(crate) struct LoadedStyle {
     /// Image names reported missing since they were last added.
     pub(crate) reported_missing: std::collections::HashSet<String>,
     /// The scene tile of the background layers' quads.
-    background: Option<TileId>,
+    background: Option<GpuTile>,
     /// Tiles with placements in publication order, parallel to sources.
     pub(crate) placed: Vec<Vec<TileIndex>>,
     pub(crate) states: FeatureStates,
@@ -417,9 +417,8 @@ fn host_data(result: &TileResult) -> (Option<HostBytesId>, Option<orb_hal::HostI
 /// renderer at the next.
 #[derive(Debug, Default)]
 struct Retired {
+    /// Tiles of sources and the background.
     tiles: Vec<GpuTile>,
-    /// Scene tiles of a replaced style's background.
-    scene_tiles: Vec<TileId>,
     /// A replaced style's feature-state table.
     tables: Vec<std::ops::Range<u32>>,
 }
@@ -429,11 +428,8 @@ impl Retired {
         for tile in self.tiles.drain(..) {
             renderer.release_tile(tile);
         }
-        for tile in self.scene_tiles.drain(..) {
-            renderer.scene().remove_tile(tile);
-        }
         for table in self.tables.drain(..) {
-            renderer.scene().free_table(table);
+            renderer.free_table(table);
         }
     }
 }
@@ -1402,7 +1398,7 @@ impl Map {
 
         // Tiles' patches are on the low-zoom surface the style draws on.
         let plane = self.surface.globe().and_then(|g| g.plane);
-        self.globe_warps.set_plane(renderer.scene(), plane);
+        self.globe_warps.set_plane(renderer, plane);
         let view = self.view(viewport);
         // What this frame draws, for picking.
         let mut drawn = Vec::new();
@@ -1627,8 +1623,8 @@ impl Map {
         report.loaded &= !report.frame.waited;
         report.idle &= !report.frame.waited;
         self.events.frame(report.loaded, report.idle);
-        self.globe_warps.end_frame(renderer.scene());
-        report.scene = renderer.scene().stats();
+        self.globe_warps.end_frame();
+        report.scene = renderer.stats();
         report.memory = self.memory(renderer);
         // Chunks the cull has no room for don't draw: say so when it starts.
         let dropped = report.scene.candidates_dropped;
@@ -1668,7 +1664,7 @@ impl Map {
         if style.globe_meshes != globe {
             style.globe_meshes = globe;
             if let Some(tile) = style.background.take() {
-                renderer.scene().remove_tile(tile);
+                renderer.release_tile(tile);
                 style.background = make_background(gpu, renderer, plan, globe);
             }
             for source in &mut style.sources {
@@ -1722,7 +1718,7 @@ impl Map {
             return;
         }
         if let Some(tile) = style.background.take() {
-            renderer.scene().remove_tile(tile);
+            renderer.release_tile(tile);
         }
         for source in &mut style.sources {
             let SourceState::Ready { pyramid, .. } = source else {
@@ -2276,30 +2272,22 @@ impl Map {
             let globe = match view.globe() {
                 Some(_) => self
                     .globe_warps
-                    .warp(gpu, renderer.scene(), tms, tile)
+                    .warp(gpu, renderer, tms, tile)
                     .map(|(warp, anchor)| Some((warp, anchor))),
                 None => on_plane.then_some(None),
             };
             // Nowhere to draw it this frame: no placements.
             let Some(globe) = globe else {
-                for (_, scene_tile) in renderer.tile_parts(resident.gpu).to_vec() {
-                    renderer
-                        .scene()
-                        .place_tile(scene_tile, &[])
-                        .expect("removing placements always fits");
-                }
+                renderer.unplace(resident.gpu);
                 continue;
             };
-            let tile_warp = renderer.tile_warp(resident.gpu);
-            let parts = renderer.tile_parts(resident.gpu).to_vec();
-            for (extent, scene_tile) in parts {
+            for extent in renderer.tile_extents(resident.gpu) {
                 let at = Placement {
                     extent,
                     period,
                     zoom: self.camera.zoom(self.surface.projection()),
                     frame,
                     series: series.as_deref(),
-                    warp: tile_warp,
                     globe,
                     on_plane,
                     tile_zoom: resident.zoom,
@@ -2341,7 +2329,7 @@ impl Map {
                     }
                 }
                 report.tiles_drawn += rows.len() as u32;
-                if renderer.scene().place_tile(scene_tile, &rows).is_err() {
+                if renderer.place(resident.gpu, extent, &rows).is_err() {
                     self.warnings
                         .push("out of tile placements; some tiles are not drawn".into());
                 }
@@ -2349,12 +2337,7 @@ impl Map {
         }
         for tile in placed.iter().filter(|t| !rows.contains_key(t)) {
             if let Some(resident) = pyramid.get(*tile) {
-                for (_, scene_tile) in renderer.tile_parts(resident.gpu).to_vec() {
-                    renderer
-                        .scene()
-                        .place_tile(scene_tile, &[])
-                        .expect("removing placements always fits");
-                }
+                renderer.unplace(resident.gpu);
             }
         }
         let mut ordered = Vec::new();
@@ -2367,12 +2350,9 @@ impl Map {
         if *placed != ordered {
             let tiles: Vec<_> = ordered
                 .iter()
-                .flat_map(|tile| {
-                    renderer.tile_parts(pyramid.get(*tile).expect("drawn tiles are ready").gpu)
-                })
-                .map(|&(_, tile)| tile)
+                .map(|tile| pyramid.get(*tile).expect("drawn tiles are ready").gpu)
                 .collect();
-            renderer.scene().set_tile_order(&tiles);
+            renderer.set_tile_order(&tiles);
             *placed = ordered;
         }
     }
@@ -2432,7 +2412,7 @@ impl Map {
         let images = self.services.images.0.lock().expect("images poisoned");
         Memory {
             budget: self.budget,
-            scene: renderer.scene_ref().memory(),
+            scene: renderer.memory(),
             tile_textures,
             glyph_textures,
             image_atlas: images.atlas.as_ref().map_or(0, ImageAtlas::bytes),
@@ -2849,7 +2829,7 @@ impl Map {
         let globe_warps = &mut self.globe_warps;
         let mut globe = |tile: TileIndex| {
             let target = view.globe()?.target;
-            let (warp, anchor) = globe_warps.warp(gpu, renderer.scene(), &surface, tile)?;
+            let (warp, anchor) = globe_warps.warp(gpu, renderer, &surface, tile)?;
             Some(orb_render::TerrainGlobe {
                 warp,
                 origin: (anchor - target).as_vec3().to_array(),
@@ -2912,7 +2892,6 @@ impl Map {
             zoom,
             frame: None,
             series: None,
-            warp: TileWarp::NONE,
             globe: None,
             on_plane: true,
             tile_zoom: 0.0,
@@ -2927,7 +2906,7 @@ impl Map {
                     regions: vec![covered.index],
                 };
                 let globe = match view.globe() {
-                    Some(_) => Some(globe_warps.warp(gpu, renderer.scene(), tms, covered.index)?),
+                    Some(_) => Some(globe_warps.warp(gpu, renderer, tms, covered.index)?),
                     None => None,
                 };
                 let at = Placement {
@@ -2963,7 +2942,7 @@ impl Map {
                 );
             }
         }
-        if renderer.scene().place_tile(tile, &rows).is_err() {
+        if renderer.place(tile, 8192, &rows).is_err() {
             self.warnings
                 .push("out of tile placements; the background is not drawn".into());
         }
@@ -3233,7 +3212,7 @@ impl Map {
     /// What a waiting tile's room depends on: the scene's pools in use and
     /// their buffers, tile page layers in use, and tile jobs in flight.
     fn room_state(&self, renderer: &Renderer) -> [u64; 6] {
-        let stats = renderer.scene_ref().stats();
+        let stats = renderer.stats();
         let loading: u64 = self
             .style
             .iter()
@@ -3247,7 +3226,7 @@ impl Map {
             u64::from(stats.vertex_words),
             u64::from(stats.index_words),
             u64::from(stats.prop_words),
-            renderer.scene_ref().buffers_revision(),
+            renderer.pools_revision(),
             renderer.used_layers(),
             loading,
         ]
@@ -3719,7 +3698,7 @@ impl Map {
         self.generation += 1;
         self.clear_style_tiles();
         if let Some(style) = &mut self.style {
-            self.retired.scene_tiles.extend(style.background.take());
+            self.retired.tiles.extend(style.background.take());
             self.retired.tables.extend(style.states.take_table());
         }
         self.style = None;
@@ -4057,7 +4036,7 @@ pub(crate) fn tile_cost(renderer: &Renderer, resident: &ResidentTile) -> u64 {
     let meshes: u64 = resident
         .meshes
         .iter()
-        .map(|m| renderer.scene_ref().mesh_bytes(m.mesh) + m.hits.bytes())
+        .map(|m| renderer.mesh_bytes(m.mesh) + m.hits.bytes())
         .sum();
     meshes + renderer.tile_bytes(resident.gpu)
 }
@@ -4124,9 +4103,8 @@ struct Placement<'a> {
     /// of; tiles on the surface's plane span their own bounds.
     frame: Option<orb_crs::WorldRect>,
     /// A vector tile drawn through a warp's patches, relative to its
-    /// anchor, and the patches in the scene.
+    /// anchor (the renderer has the patches).
     series: Option<&'a orb_crs::Series>,
-    warp: TileWarp,
     /// On a globe: the tile's patches on the sphere, and their anchor.
     globe: Option<(TileWarp, glam::DVec3)>,
     /// Whether the tile has a place on the plane (on a globe, a warped
@@ -4147,7 +4125,6 @@ fn placements<'a>(
         zoom,
         frame,
         series,
-        warp,
         globe,
         on_plane,
         tile_zoom,
@@ -4219,7 +4196,7 @@ fn placements<'a>(
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,
-            warp,
+            warp: TileWarp::NONE,
             globe: globe.map(|(warp, origin)| orb_render::RowGlobe {
                 warp,
                 origin: origin.to_array(),
@@ -4715,8 +4692,14 @@ fn make_background(
     renderer: &mut Renderer,
     plan: &crate::style::StylePlan,
     globe: bool,
-) -> Option<TileId> {
-    let mut tile = None;
+) -> Option<GpuTile> {
+    let nodes: Vec<u32> = (plan.nodes.iter().enumerate())
+        .filter(|(_, n)| n.source == usize::MAX)
+        .map(|(i, _)| i as u32)
+        .collect();
+    if nodes.is_empty() {
+        return None;
+    }
     let cells = if globe { BACKGROUND_GLOBE_CELLS } else { 1 };
     let n = cells + 1;
     let step = 8192 / cells;
@@ -4771,19 +4754,21 @@ fn make_background(
         indices: triangles.into_iter().flatten().collect(),
         chunks,
     };
-    for (i, _) in plan
-        .nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| n.source == usize::MAX)
-    {
-        let id = *tile.get_or_insert_with(|| renderer.scene().insert_tile());
+    // One quad (or grid) for every covered tile: no source's tile.
+    let key = TileKey {
+        source: u32::MAX,
+        tile: TileIndex::new(0, 0, 0),
+    };
+    let tile = renderer
+        .add_tile(gpu, key, None)
+        .expect("a tile without patches fits");
+    let data = MeshData::new(&mesh, &[], 0);
+    for node in nodes {
         renderer
-            .scene()
-            .insert_mesh(gpu, id, i as u32, &MeshData::new(&mesh, &[], 0))
+            .add_mesh(gpu, tile, (node, 8192), &data, &Default::default())
             .expect("background mesh fits");
     }
-    tile
+    Some(tile)
 }
 
 fn pattern_paint(
@@ -4995,7 +4980,6 @@ mod tests {
             zoom: 3.0,
             frame: None,
             series: None,
-            warp: TileWarp::NONE,
             globe: None,
             on_plane: true,
             tile_zoom: 0.0,
