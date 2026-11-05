@@ -19,6 +19,29 @@ pub mod layout {
     include!(concat!(env!("OUT_DIR"), "/layout.rs"));
 }
 
+/// A uniform's words, written at its struct's members as the shaders
+/// declare them (`orb_shaders::layout`).
+#[derive(Debug)]
+pub struct Block(pub Vec<u32>);
+
+impl Block {
+    pub fn new(words: usize) -> Self {
+        Self(vec![0; words])
+    }
+
+    pub fn u(&mut self, at: usize, values: &[u32]) -> &mut Self {
+        self.0[at..at + values.len()].copy_from_slice(values);
+        self
+    }
+
+    pub fn f(&mut self, at: usize, values: &[f32]) -> &mut Self {
+        for (word, v) in self.0[at..at + values.len()].iter_mut().zip(values) {
+            *word = v.to_bits();
+        }
+        self
+    }
+}
+
 #[cfg(feature = "glsl")]
 mod glsl {
     include!(concat!(env!("OUT_DIR"), "/glsl.rs"));
@@ -98,36 +121,7 @@ mod tests {
 
     #[test]
     fn shaders_validate() {
-        for shader in [
-            SKY_SHADER,
-            SCATTER_SHADER,
-            COMPOSITE_OVER_SHADER,
-            COMPOSITE_REPLACE_SHADER,
-            TERRAIN_SHADER,
-            TERRAIN_SHADE_SHADER,
-            DRAPE_SHADER,
-            EXTRUSION_SHADER,
-            EXTRUSION_CASTER_SHADER,
-            SHADOW_GROUND_SHADER,
-            OCCLUSION_SHADERS[0],
-            OCCLUSION_SHADERS[1],
-            FILL_SHADER,
-            FILL_OUTLINE_SHADER,
-            LINE_SHADER,
-            CIRCLE_SHADER,
-            MODEL_SHADER,
-            MODEL_CASTER_SHADER,
-            SYMBOL_SHADERS[0],
-            SYMBOL_SHADERS[1],
-            HEATMAP_SHADER,
-            RASTER_SHADER,
-            HILLSHADE_SHADER,
-            COLOR_RELIEF_SHADER,
-            PREPARE_PAD_SHADER,
-            PREPARE_SLOPE_SHADER,
-            IMAGE_MIPS_SHADER,
-            CULL_SHADER,
-        ] {
+        for &shader in SHADERS {
             let module = validate(&shader);
             for entry in [shader.vertex, shader.fragment, shader.compute] {
                 if !entry.is_empty() {

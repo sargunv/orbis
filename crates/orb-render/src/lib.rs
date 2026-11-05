@@ -1270,9 +1270,10 @@ impl Renderer {
         );
         let mut words = paint.uniform_words(node);
         if let NodePaint::Symbol(p) = paint {
-            words[14] = self.glyphs.table_base();
-            words[15] = (GLYPH_PAGE as f32).to_bits();
-            words[18] = (self.image_bindings.size as f32).to_bits();
+            use orb_shaders::layout::symbol_node as n;
+            words[n::GLYPH_TABLE] = self.glyphs.table_base();
+            words[n::GLYPH_PAGE] = (GLYPH_PAGE as f32).to_bits();
+            words[n::IMAGE_PAGE] = (self.image_bindings.size as f32).to_bits();
             if entry.separate_halo != p.separate_halo || entry.along_line != p.along_line {
                 if entry.along_line != p.along_line {
                     self.pipelines_stale = true;

@@ -7,6 +7,8 @@
 //! and the next, blended by the property's [`Curve`]. Its constant field then
 //! holds the maximum over the rows, which culling uses for margins.
 
+use orb_shaders::Block;
+
 use crate::Family;
 
 /// A model node's paint (`model.wgsl`'s `ModelNode`). Slots: colour,
@@ -62,12 +64,6 @@ pub struct StateLookup {
     pub zoom: f32,
 }
 
-impl StateLookup {
-    fn words(self) -> [u32; 4] {
-        [self.mask, self.base, self.stride, self.zoom.to_bits()]
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeatmapPaint {
     pub radius: f32,
@@ -90,18 +86,6 @@ pub enum Curve {
     CubicBezier([f32; 4]),
 }
 
-impl Curve {
-    fn words(self) -> [u32; 8] {
-        let (kind, params) = match self {
-            Self::Step => (0, [0.0; 4]),
-            Self::Exponential(base) => (1, [base, 0.0, 0.0, 0.0]),
-            Self::CubicBezier(p) => (2, p),
-        };
-        let [a, b, c, d] = params.map(f32::to_bits);
-        [a, b, c, d, kind, 0, 0, 0]
-    }
-}
-
 /// A `*-translate` offset in pixels and its anchor.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Translate {
@@ -111,16 +95,6 @@ pub struct Translate {
 }
 
 impl Translate {
-    fn words(self) -> [u32; 5] {
-        [
-            u32::from(self.viewport),
-            self.px[0].to_bits(),
-            self.px[1].to_bits(),
-            0,
-            0,
-        ]
-    }
-
     fn length(self) -> f32 {
         self.px[0].hypot(self.px[1])
     }
@@ -280,8 +254,8 @@ impl SymbolSize {
     /// At most this many camera stops are kept; GL JS has no limit.
     pub const MAX_STOPS: usize = 8;
 
-    fn words(&self) -> Vec<u32> {
-        let f = f32::to_bits;
+    fn put(&self, b: &mut Block, at: usize) {
+        use orb_shaders::layout::symbol_size as n;
         let (kind, size, curve, stops) = match self {
             Self::Constant(size) => (0, *size, Curve::Step, &[][..]),
             Self::Source => (1, 0.0, Curve::Step, &[][..]),
@@ -292,15 +266,11 @@ impl SymbolSize {
             } => (2, 0.0, *curve, &stops[..(*count).min(Self::MAX_STOPS)]),
             Self::Composite { curve } => (3, 0.0, *curve, &[][..]),
         };
-        let mut words = vec![kind, f(size), stops.len() as u32, 0];
-        words.extend(curve.words());
-        let mut table = [0u32; 16];
-        for (i, &[zoom, size]) in stops.iter().enumerate() {
-            table[i * 2] = f(zoom);
-            table[i * 2 + 1] = f(size);
-        }
-        words.extend(table);
-        words
+        b.u(at + n::KIND, &[kind])
+            .f(at + n::SIZE, &[size])
+            .u(at + n::STOP_COUNT, &[stops.len() as u32]);
+        b.curves(at + n::CURVE, &[curve])
+            .f(at + n::STOPS, stops.as_flattened());
     }
 }
 
@@ -377,102 +347,117 @@ impl NodePaint {
         )
     }
 
+    /// The node's uniform, its struct in the family's shader.
     pub(crate) fn uniform_words(&self, node: u32) -> Vec<u32> {
-        let f = f32::to_bits;
-        let (mut words, curves): (Vec<u32>, &[Curve]) = match self {
+        use orb_shaders::layout::*;
+        let pattern = match self {
+            Self::FillPattern(_, p) | Self::LinePattern(_, p) | Self::ExtrusionPattern(_, p) => {
+                Some(p)
+            }
+            _ => None,
+        };
+        let mut b;
+        match self {
             Self::Fill(p) | Self::Background(p) | Self::FillPattern(p, _) => {
-                let [r, g, b, a] = p.color.map(f);
-                let mut words = vec![r, g, b, a, f(p.opacity), node, p.table_mask];
-                words.extend(p.translate.words());
-                (words, &p.curves)
+                use fill_node as n;
+                b = Block::new(n::WORDS);
+                b.f(n::COLOR, &p.color).f(n::OPACITY, &[p.opacity]);
+                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[p.table_mask]);
+                b.translate(n::TRANSLATE_ANCHOR, n::TRANSLATE, p.translate);
+                b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
+                b.pattern([n::IMAGE_FROM, n::IMAGE_TO, n::PATTERN], pattern);
             }
             Self::Extrusion(p) | Self::ExtrusionPattern(p, _) => {
-                let mut words = p.color.map(f).to_vec();
-                words.extend([f(p.height), f(p.base), node, p.table_mask]);
-                words.extend([
-                    f(p.translate.px[0]),
-                    f(p.translate.px[1]),
-                    u32::from(p.translate.viewport),
-                    u32::from(p.vertical_gradient),
-                ]);
-                words.extend([f(p.opacity), 0, 0, f(p.emissive)]);
-                (words, &p.curves)
+                use extrusion_node as n;
+                b = Block::new(n::WORDS);
+                b.f(n::COLOR, &p.color)
+                    .f(n::HEIGHT, &[p.height])
+                    .f(n::BASE, &[p.base]);
+                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[p.table_mask]);
+                b.translate(n::TRANSLATE_ANCHOR, n::TRANSLATE, p.translate);
+                b.u(n::VERTICAL_GRADIENT, &[u32::from(p.vertical_gradient)]);
+                b.f(n::OPACITY, &[p.opacity]).f(n::EMISSIVE, &[p.emissive]);
+                b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
+                b.pattern([n::IMAGE_FROM, n::IMAGE_TO, n::PATTERN], pattern);
             }
             Self::Line(p) | Self::LinePattern(p, _) => {
-                let [r, g, b, a] = p.color.map(f);
-                let mut words = vec![
-                    r,
-                    g,
-                    b,
-                    a,
-                    f(p.opacity),
-                    f(p.width),
-                    f(p.gap_width),
-                    f(p.offset),
-                    f(p.blur),
-                    node,
-                    p.table_mask,
-                ];
-                words.extend(p.translate.words());
-                (words, &p.curves)
+                use line_node as n;
+                b = Block::new(n::WORDS);
+                b.f(n::COLOR, &p.color)
+                    .f(n::OPACITY, &[p.opacity])
+                    .f(n::WIDTH, &[p.width]);
+                b.f(n::GAP_WIDTH, &[p.gap_width])
+                    .f(n::OFFSET, &[p.offset])
+                    .f(n::BLUR, &[p.blur]);
+                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[p.table_mask]);
+                b.translate(n::TRANSLATE_ANCHOR, n::TRANSLATE, p.translate);
+                b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
+                b.pattern([n::IMAGE_FROM, n::IMAGE_TO, n::PATTERN], pattern);
+                let dash = p.dash.unwrap_or(PatternPaint {
+                    from: 0,
+                    to: 0,
+                    from_scale: 1.0,
+                    to_scale: 1.0,
+                    mix: 1.0,
+                    floor_width: 1.0,
+                });
+                b.u(n::DASH_FROM, &[dash.from]).u(n::DASH_TO, &[dash.to]);
+                b.f(n::DASH_FROM_SCALE, &[dash.from_scale])
+                    .f(n::DASH_FADE, &[dash.mix]);
+                b.f(n::DASH_FLOOR_WIDTH, &[dash.floor_width]);
+                b.u(n::DASHED, &[u32::from(p.dash.is_some())])
+                    .u(n::GRADIENT, &[u32::from(p.gradient)]);
             }
             Self::Circle(p) => {
-                let mut words = p.color.map(f).to_vec();
-                words.extend(p.stroke_color.map(f));
-                words.extend([
-                    f(p.radius),
-                    f(p.blur),
-                    f(p.opacity),
-                    f(p.stroke_width),
-                    f(p.stroke_opacity),
-                    node,
-                    p.table_mask,
-                    u32::from(p.translate.viewport)
-                        | u32::from(p.pitch_scale_map) << 1
-                        | u32::from(p.pitch_alignment_map) << 2,
-                    f(p.translate.px[0]),
-                    f(p.translate.px[1]),
-                    0,
-                    0,
-                ]);
-                (words, &p.curves)
+                use circle_node as n;
+                b = Block::new(n::WORDS);
+                b.f(n::COLOR, &p.color).f(n::STROKE_COLOR, &p.stroke_color);
+                b.f(n::RADIUS, &[p.radius])
+                    .f(n::BLUR, &[p.blur])
+                    .f(n::OPACITY, &[p.opacity]);
+                b.f(n::STROKE_WIDTH, &[p.stroke_width])
+                    .f(n::STROKE_OPACITY, &[p.stroke_opacity]);
+                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[p.table_mask]);
+                let flags = [
+                    p.translate.viewport,
+                    p.pitch_scale_map,
+                    p.pitch_alignment_map,
+                ];
+                b.u(n::FLAGS, &[bits(&flags)])
+                    .f(n::TRANSLATE, &p.translate.px);
+                b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
             }
             Self::Model(p) => {
-                let mut words = p.color.map(f).to_vec();
-                words.extend([f(p.color_mix), f(p.emissive), node, p.table_mask]);
-                words.extend(p.scale.map(f));
-                words.push(f(p.opacity));
-                words.extend(p.rotation.map(f));
-                words.push(0);
-                words.extend(p.translation.map(f));
-                words.push(0);
-                (words, &p.curves)
+                use model_node as n;
+                b = Block::new(n::WORDS);
+                b.f(n::COLOR, &p.color)
+                    .f(n::COLOR_MIX, &[p.color_mix])
+                    .f(n::EMISSIVE, &[p.emissive]);
+                b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[p.table_mask]);
+                b.f(n::SCALE, &p.scale)
+                    .f(n::OPACITY, &[p.opacity])
+                    .f(n::ROTATION, &p.rotation);
+                b.f(n::TRANSLATION, &p.translation);
+                b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
             }
-            Self::Heatmap(p) => (
-                vec![
-                    f(p.radius),
-                    f(p.weight),
-                    f(p.intensity),
-                    f(p.opacity),
-                    node,
-                    p.table_mask,
-                    0,
-                    0,
-                ],
-                &p.curves,
-            ),
+            Self::Heatmap(p) => {
+                use heatmap_node as n;
+                b = Block::new(n::WORDS);
+                b.f(n::RADIUS, &[p.radius]).f(n::WEIGHT, &[p.weight]);
+                b.f(n::INTENSITY, &[p.intensity])
+                    .f(n::OPACITY, &[p.opacity]);
+                b.u(n::INDEX, &[node])
+                    .u(n::TABLE_MASK, &[p.table_mask])
+                    .curves(n::CURVES, &p.curves);
+            }
             Self::Raster(p) => {
+                use raster_node as n;
                 // GL JS's `spinWeights`, `saturationFactor` and
                 // `contrastFactor`.
-                let angle = p.hue_rotate.to_radians();
-                let (s, c) = angle.sin_cos();
+                let (s, c) = p.hue_rotate.to_radians().sin_cos();
                 let root3 = 3f32.sqrt();
-                let spin = [
-                    (2.0 * c + 1.0) / 3.0,
-                    (-root3 * s - c + 1.0) / 3.0,
-                    (root3 * s - c + 1.0) / 3.0,
-                    0.0,
-                ];
+                let spin =
+                    [2.0 * c + 1.0, -root3 * s - c + 1.0, root3 * s - c + 1.0].map(|w| w / 3.0);
                 let saturation = if p.saturation > 0.0 {
                     1.0 - 1.0 / (1.001 - p.saturation)
                 } else {
@@ -483,44 +468,41 @@ impl NodePaint {
                 } else {
                     1.0 + p.contrast
                 };
-                let mut words: Vec<u32> = spin.map(f).to_vec();
-                words.extend([
-                    f(p.opacity),
-                    f(p.brightness_min),
-                    f(p.brightness_max),
-                    f(saturation),
-                    f(contrast),
-                    node,
-                    u32::from(p.nearest),
-                    u32::from(!p.mipmapped),
-                    f(p.fade_duration),
-                ]);
-                (words, &[][..])
+                b = Block::new(n::WORDS);
+                b.f(n::SPIN_WEIGHTS, &spin).f(n::OPACITY, &[p.opacity]);
+                b.f(n::BRIGHTNESS_LOW, &[p.brightness_min])
+                    .f(n::BRIGHTNESS_HIGH, &[p.brightness_max]);
+                b.f(n::SATURATION_FACTOR, &[saturation])
+                    .f(n::CONTRAST_FACTOR, &[contrast]);
+                b.u(n::INDEX, &[node])
+                    .u(n::NEAREST, &[u32::from(p.nearest)]);
+                b.u(n::LEVEL0, &[u32::from(!p.mipmapped)])
+                    .f(n::FADE_DURATION, &[p.fade_duration]);
             }
             Self::Hillshade(p) => {
-                let mut words: Vec<u32> = p.accent.map(f).to_vec();
-                words.extend(p.shadows.iter().flatten().map(|&v| f(v)));
-                words.extend(p.highlights.iter().flatten().map(|&v| f(v)));
-                words.extend(p.altitudes.map(f));
-                words.extend(p.azimuths.map(f));
-                words.extend([
-                    f(p.exaggeration),
-                    p.method as u32,
-                    p.lights,
-                    node,
-                    u32::from(p.nearest),
-                    0,
-                    0,
-                    0,
-                ]);
-                (words, &[][..])
+                use hillshade_node as n;
+                b = Block::new(n::WORDS);
+                b.f(n::ACCENT, &p.accent)
+                    .f(n::SHADOWS, p.shadows.as_flattened());
+                b.f(n::HIGHLIGHTS, p.highlights.as_flattened());
+                b.f(n::ALTITUDES, &p.altitudes).f(n::AZIMUTHS, &p.azimuths);
+                b.f(n::EXAGGERATION, &[p.exaggeration])
+                    .u(n::METHOD, &[p.method as u32]);
+                b.u(n::LIGHTS, &[p.lights])
+                    .u(n::INDEX, &[node])
+                    .u(n::NEAREST, &[u32::from(p.nearest)]);
             }
             Self::ColorRelief(p) => {
-                let mut words: Vec<u32> = p.unpack.map(f).to_vec();
-                words.extend([f(p.opacity), p.ramp_size, node, u32::from(p.nearest)]);
-                (words, &[][..])
+                use color_relief_node as n;
+                b = Block::new(n::WORDS);
+                b.f(n::UNPACK, &p.unpack)
+                    .f(n::OPACITY, &[p.opacity])
+                    .u(n::RAMP_SIZE, &[p.ramp_size]);
+                b.u(n::INDEX, &[node])
+                    .u(n::NEAREST, &[u32::from(p.nearest)]);
             }
             Self::Symbol(p) => {
+                use symbol_node as n;
                 let flags = [
                     p.is_text,
                     p.linear_icons,
@@ -532,112 +514,24 @@ impl NodePaint {
                     p.is_offset,
                     p.keep_upright,
                     p.translate.viewport,
-                ]
-                .iter()
-                .enumerate()
-                .fold(0u32, |w, (i, &b)| w | u32::from(b) << i)
-                    | u32::from(p.height_anchor_ground) << 11;
-                let mut words = p.color.map(f).to_vec();
-                words.extend(p.halo_color.map(f));
-                words.extend([
-                    f(p.opacity),
-                    f(p.halo_width),
-                    f(p.halo_blur),
-                    node,
-                    p.table_mask,
-                    flags,
-                    // Glyph table, page sizes: the renderer fills these.
-                    0,
-                    0,
-                    f(p.translate.px[0]),
-                    f(p.translate.px[1]),
-                    0,
-                    0,
-                ]);
-                words.extend(p.size.words());
-                words.extend(p.text_size.words());
-                (words, &p.curves)
+                    false,
+                    p.height_anchor_ground,
+                ];
+                b = Block::new(n::WORDS);
+                b.f(n::FILL_COLOR, &p.color).f(n::HALO_COLOR, &p.halo_color);
+                b.f(n::OPACITY, &[p.opacity])
+                    .f(n::HALO_WIDTH, &[p.halo_width]);
+                b.f(n::HALO_BLUR, &[p.halo_blur]).u(n::INDEX, &[node]);
+                b.u(n::TABLE_MASK, &[p.table_mask])
+                    .u(n::FLAGS, &[bits(&flags)]);
+                // The glyph table and page sizes are the renderer's.
+                b.f(n::TRANSLATE, &p.translate.px);
+                p.size.put(&mut b, n::SIZE);
+                p.text_size.put(&mut b, n::TEXT_SIZE);
+                b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
             }
-        };
-        for curve in curves {
-            words.extend(curve.words());
         }
-        if let Self::Circle(p) = self {
-            words.extend(p.state.words());
-        }
-        if let Self::Model(p) = self {
-            words.extend(p.state.words());
-        }
-        if let Self::Symbol(p) = self {
-            words.extend(p.state.words());
-        }
-        if !matches!(
-            self,
-            Self::Fill(_)
-                | Self::Background(_)
-                | Self::Line(_)
-                | Self::FillPattern(..)
-                | Self::LinePattern(..)
-                | Self::Extrusion(_)
-                | Self::ExtrusionPattern(..)
-        ) {
-            return words;
-        }
-        let pattern = match self {
-            Self::FillPattern(_, p) | Self::LinePattern(_, p) | Self::ExtrusionPattern(_, p) => {
-                Some(p)
-            }
-            _ => None,
-        };
-        let at = match self {
-            Self::Fill(_) | Self::Background(_) | Self::FillPattern(..) => 10,
-            Self::Extrusion(_) | Self::ExtrusionPattern(..) => 13,
-            _ => 14,
-        };
-        if let Some(p) = pattern {
-            words[at] = p.from;
-            words[at + 1] = p.to;
-            words.extend([
-                f(p.from_scale),
-                f(p.to_scale),
-                f(p.mix),
-                1,
-                f(p.floor_width),
-                0,
-                0,
-                0,
-            ]);
-        } else {
-            words.extend([f(1.0), f(1.0), f(1.0), 0, 0, 0, 0, 0]);
-        }
-        if let Self::Line(p) | Self::LinePattern(p, _) = self {
-            let dash = p.dash.unwrap_or(PatternPaint {
-                from: 0,
-                to: 0,
-                from_scale: 1.0,
-                to_scale: 1.0,
-                mix: 1.0,
-                floor_width: 1.0,
-            });
-            words.extend([
-                dash.from,
-                dash.to,
-                f(dash.from_scale),
-                f(dash.mix),
-                f(dash.floor_width),
-                u32::from(p.dash.is_some()),
-                u32::from(p.gradient),
-                0,
-            ]);
-        }
-        let state = match self {
-            Self::Fill(p) | Self::Background(p) | Self::FillPattern(p, _) => p.state,
-            Self::Line(p) | Self::LinePattern(p, _) => p.state,
-            Self::Extrusion(p) | Self::ExtrusionPattern(p, _) => p.state,
-            _ => unreachable!("returned above"),
-        };
-        words.extend(state.words());
-        words
+        b.0
     }
 
     /// How far drawn pixels can reach past a chunk's bounds.
@@ -670,48 +564,95 @@ impl NodePaint {
     }
 }
 
+/// Bit `i` set for each `flags[i]` that is.
+fn bits(flags: &[bool]) -> u32 {
+    flags
+        .iter()
+        .enumerate()
+        .fold(0, |w, (i, &b)| w | u32::from(b) << i)
+}
+
+/// What node paint writes beside plain members.
+trait PaintBlock {
+    fn curves(&mut self, at: usize, curves: &[Curve]) -> &mut Self;
+    fn state(&mut self, at: usize, s: StateLookup) -> &mut Self;
+    fn translate(&mut self, anchor: usize, at: usize, t: Translate) -> &mut Self;
+    fn pattern(&mut self, at: [usize; 3], p: Option<&PatternPaint>) -> &mut Self;
+}
+
+impl PaintBlock for Block {
+    fn curves(&mut self, at: usize, curves: &[Curve]) -> &mut Self {
+        use orb_shaders::layout::curve as n;
+        for (i, curve) in curves.iter().enumerate() {
+            let (kind, params) = match *curve {
+                Curve::Step => (0, [0.0; 4]),
+                Curve::Exponential(base) => (1, [base, 0.0, 0.0, 0.0]),
+                Curve::CubicBezier(p) => (2, p),
+            };
+            let at = at + i * n::WORDS;
+            self.f(at + n::PARAMS, &params).u(at + n::KIND, &[kind]);
+        }
+        self
+    }
+
+    fn state(&mut self, at: usize, s: StateLookup) -> &mut Self {
+        use orb_shaders::layout::state_lookup as n;
+        self.u(at + n::MASK, &[s.mask])
+            .u(at + n::BASE, &[s.base])
+            .u(at + n::STRIDE, &[s.stride])
+            .f(at + n::ZOOM, &[s.zoom])
+    }
+
+    fn translate(&mut self, anchor: usize, at: usize, t: Translate) -> &mut Self {
+        self.u(anchor, &[u32::from(t.viewport)]).f(at, &t.px)
+    }
+
+    /// A pattern's image ids and cross-fade, or none: scale 1, off.
+    fn pattern(&mut self, [from, to, at]: [usize; 3], p: Option<&PatternPaint>) -> &mut Self {
+        use orb_shaders::layout::pattern as n;
+        let enabled = u32::from(p.is_some());
+        let p = p.copied().unwrap_or(PatternPaint {
+            from: 0,
+            to: 0,
+            from_scale: 1.0,
+            to_scale: 1.0,
+            mix: 1.0,
+            floor_width: 0.0,
+        });
+        self.u(from, &[p.from]).u(to, &[p.to]);
+        self.f(at + n::FROM_SCALE, &[p.from_scale])
+            .f(at + n::TO_SCALE, &[p.to_scale]);
+        self.f(at + n::FADE, &[p.mix])
+            .u(at + n::ENABLED, &[enabled]);
+        self.f(at + n::FLOOR_WIDTH, &[p.floor_width])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn uniforms_fit_their_slot() {
-        let line = NodePaint::Line(LinePaint {
-            color: [0.0; 4],
-            opacity: 1.0,
-            translate: Translate::default(),
-            width: 1.0,
-            gap_width: 0.0,
-            offset: 0.0,
-            blur: 0.0,
-            table_mask: 0,
-            curves: [Curve::Step; 6],
-            dash: None,
-            gradient: false,
-            state: StateLookup::default(),
-        });
-        // color, 8 scalars, anchor, translate and padding, then 32-byte
-        // curves, pattern, dash and state lookup, as `LineNode`.
-        assert_eq!(line.uniform_words(0).len() * 4, 64 + 6 * 32 + 32 + 32 + 16);
-        assert!(line.uniform_words(0).len() * 4 <= crate::NODE_UNIFORM_SIZE as usize);
+        use orb_shaders::layout::*;
+        for words in [
+            fill_node::WORDS,
+            line_node::WORDS,
+            extrusion_node::WORDS,
+            circle_node::WORDS,
+            heatmap_node::WORDS,
+            model_node::WORDS,
+            raster_node::WORDS,
+            hillshade_node::WORDS,
+            color_relief_node::WORDS,
+            symbol_node::WORDS,
+        ] {
+            assert!(words * 4 <= crate::NODE_UNIFORM_SIZE as usize);
+        }
     }
 
     #[test]
-    fn image_uniforms_match_their_structs() {
-        let hillshade = NodePaint::Hillshade(HillshadePaint {
-            accent: [0.0; 4],
-            shadows: [[0.0; 4]; MAX_LIGHTS],
-            highlights: [[0.0; 4]; MAX_LIGHTS],
-            altitudes: [0.0; MAX_LIGHTS],
-            azimuths: [0.0; MAX_LIGHTS],
-            exaggeration: 0.5,
-            method: HillshadeMethod::Standard,
-            lights: 1,
-            nearest: false,
-        });
-        // `HillshadeNode`: accent, 4 shadows, 4 highlights, altitudes,
-        // azimuths, then 8 scalars.
-        assert_eq!(hillshade.uniform_words(0).len() * 4, 208);
+    fn no_hue_rotation_is_the_identity() {
         let raster = NodePaint::Raster(RasterPaint {
             opacity: 1.0,
             hue_rotate: 0.0,
@@ -723,35 +664,12 @@ mod tests {
             mipmapped: true,
             fade_duration: 300.0,
         });
-        assert_eq!(raster.uniform_words(0).len() * 4, 52);
-        // No hue rotation is the identity.
         let words = raster.uniform_words(0);
-        let spin: Vec<f32> = words[..3].iter().map(|&w| f32::from_bits(w)).collect();
-        assert!((spin[0] - 1.0).abs() < 1e-6 && spin[1].abs() < 1e-6 && spin[2].abs() < 1e-6);
-    }
-
-    #[test]
-    fn model_uniform_matches_its_struct() {
-        let model = NodePaint::Model(ModelPaint {
-            color: [1.0; 4],
-            color_mix: 0.0,
-            emissive: 0.0,
-            scale: [1.0; 3],
-            rotation: [0.0; 3],
-            translation: [0.0; 3],
-            opacity: 1.0,
-            table_mask: 0,
-            curves: [Curve::Step; 12],
-            reach_px: 0.0,
-            height: 0.0,
-            state: StateLookup::default(),
-        });
-        // `ModelNode`: colour, four scalars, three vec3s each padded to 16
-        // bytes (the scale's padding is the opacity), 12 curves, the state
-        // lookup.
-        let words = model.uniform_words(7);
-        assert_eq!(words.len() * 4, 80 + 12 * 32 + 16);
-        assert_eq!(words[6], 7);
-        assert_eq!(f32::from_bits(words[11]), 1.0);
+        let at = orb_shaders::layout::raster_node::SPIN_WEIGHTS;
+        let spin: Vec<f32> = words[at..at + 3]
+            .iter()
+            .map(|&w| f32::from_bits(w))
+            .collect();
+        assert_eq!(spin, [1.0, 0.0, 0.0]);
     }
 }

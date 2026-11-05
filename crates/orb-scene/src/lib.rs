@@ -88,17 +88,6 @@ pub struct CullTables {
     pub indices: Vec<u32>,
 }
 
-/// Words of a [`CullTables::tiles`] row.
-pub const TILE_ROW_WORDS: usize = TILE_WORDS;
-/// Words of a [`CullTables::chunks`] row.
-pub const CHUNK_ROW_WORDS: usize = CHUNK_WORDS;
-/// Words of a [`CullTables::candidates`] row.
-pub const CANDIDATE_ROW_WORDS: usize = CANDIDATE_WORDS;
-/// Words of a [`CullTables::node_cull`] row.
-pub const NODE_CULL_ROW_WORDS: usize = NODE_CULL_WORDS;
-/// Words of a visible-list entry: chunk and placement.
-pub const VISIBLE_ROW_WORDS: usize = VISIBLE_WORDS;
-
 /// Per-frame values every pipeline reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameBlock {
@@ -266,37 +255,32 @@ fn split<const N: usize>(v: [f64; N], quantum: f64) -> [[u32; N]; 2] {
 /// scene's own, or another view's of the same scene (the terrain drape's).
 pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     use layout::frame as f;
-    let mut words = [0u32; FRAME_WORDS];
-    let mut put = |at: usize, values: &[f32]| {
-        for (word, v) in words[at..].iter_mut().zip(values) {
-            *word = v.to_bits();
-        }
-    };
-    put(f::VIEW_PROJ, frame.view_proj.as_flattened());
-    put(f::VIEWPORT, &frame.viewport);
-    put(f::WORLD_PER_PX, &[frame.world_per_px, frame.pixel_ratio]);
-    put(f::ZOOM, &[frame.zoom as f32, frame.bearing]);
-    put(f::ALIGN, &frame.align);
-    put(f::EXTRUSION_SCALE, &[frame.extrusion_scale]);
-    put(f::GROUND_HORIZON, &[frame.ground_horizon]);
-    put(f::TIME, &[frame.time]);
-    put(f::SYMBOL_FADE_CHANGE, &[frame.symbol_fade_change]);
-    put(f::PITCH, &[frame.pitch]);
-    put(f::ROLL, &[frame.roll]);
-    put(f::CAMERA_TO_CENTER, &[frame.camera_to_center]);
+    let mut b = orb_shaders::Block::new(f::WORDS);
+    b.f(f::VIEW_PROJ, frame.view_proj.as_flattened());
+    b.f(f::VIEWPORT, &frame.viewport);
+    b.f(f::WORLD_PER_PX, &[frame.world_per_px, frame.pixel_ratio]);
+    b.f(f::ZOOM, &[frame.zoom as f32, frame.bearing]);
+    b.f(f::ALIGN, &frame.align);
+    b.f(f::EXTRUSION_SCALE, &[frame.extrusion_scale]);
+    b.f(f::GROUND_HORIZON, &[frame.ground_horizon]);
+    b.f(f::TIME, &[frame.time]);
+    b.f(f::SYMBOL_FADE_CHANGE, &[frame.symbol_fade_change]);
+    b.f(f::PITCH, &[frame.pitch]);
+    b.f(f::ROLL, &[frame.roll]);
+    b.f(f::CAMERA_TO_CENTER, &[frame.camera_to_center]);
     let q = quantum(frame.world_span);
-    put(f::QUANTUM, &[q as f32]);
-    put(f::GLOBE_QUANTUM, &[quantum(GLOBE_SPAN) as f32]);
+    b.f(f::QUANTUM, &[q as f32]);
+    b.f(f::GLOBE_QUANTUM, &[quantum(GLOBE_SPAN) as f32]);
     if let Some(t) = frame.terrain {
-        put(f::DEM_UNPACK, &t.unpack);
-        put(f::TERRAIN_EXAGGERATION, &[t.exaggeration]);
-        put(f::DEM_DIM, &[t.dem_dim]);
+        b.f(f::DEM_UNPACK, &t.unpack);
+        b.f(f::TERRAIN_EXAGGERATION, &[t.exaggeration]);
+        b.f(f::DEM_DIM, &[t.dem_dim]);
     }
     if let Some(l) = frame.lights {
         let [a, d, p] = [l.ambient, l.directional, l.position];
-        put(f::LIGHT_AMBIENT, &[a[0], a[1], a[2], l.ambient_level]);
-        put(f::LIGHT_COLOR, &[d[0], d[1], d[2], l.directional_level]);
-        put(
+        b.f(f::LIGHT_AMBIENT, &[a[0], a[1], a[2], l.ambient_level]);
+        b.f(f::LIGHT_COLOR, &[d[0], d[1], d[2], l.directional_level]);
+        b.f(
             f::LIGHT_POSITION,
             &[p[0], p[1], p[2], f32::from(u8::from(l.terrain))],
         );
@@ -304,26 +288,26 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     // Where a casting chunk's shadow reaches, per world unit of height,
     // for the cull.
     if let Some((_, [x, y, z])) = frame.shadow() {
-        put(f::SHADOW_REACH, &[-x / z, -y / z]);
+        b.f(f::SHADOW_REACH, &[-x / z, -y / z]);
     }
     let globe = frame.globe.map(|g| {
-        put(f::GLOBE_VIEW_PROJ, g.view_proj.as_flattened());
-        put(f::GLOBE_HORIZON, &g.horizon);
-        put(f::GLOBE_TARGET, &g.target.map(|v| v as f32));
-        put(f::GLOBE_AMOUNT, &[g.amount, g.metres_per_unit]);
-        put(f::GLOBE_EYE, &g.eye);
+        b.f(f::GLOBE_VIEW_PROJ, g.view_proj.as_flattened());
+        b.f(f::GLOBE_HORIZON, &g.horizon);
+        b.f(f::GLOBE_TARGET, &g.target.map(|v| v as f32));
+        b.f(f::GLOBE_AMOUNT, &[g.amount, g.metres_per_unit]);
+        b.f(f::GLOBE_EYE, &g.eye);
         (g.target, g.plane)
     });
     let [camera_whole, camera_rest] = split(frame.camera, q);
-    words[f::CAMERA_WHOLE..][..2].copy_from_slice(&camera_whole);
-    words[f::CAMERA_REST..][..2].copy_from_slice(&camera_rest);
+    b.u(f::CAMERA_WHOLE, &camera_whole)
+        .u(f::CAMERA_REST, &camera_rest);
     if let Some((target, plane)) = globe {
         let [whole, rest] = split(target, quantum(GLOBE_SPAN));
-        words[f::GLOBE_TARGET_WHOLE..][..3].copy_from_slice(&whole);
-        words[f::GLOBE_TARGET_REST..][..3].copy_from_slice(&rest);
-        words[f::GLOBE_PLANE] = u32::from(plane);
+        b.u(f::GLOBE_TARGET_WHOLE, &whole)
+            .u(f::GLOBE_TARGET_REST, &rest);
+        b.u(f::GLOBE_PLANE, &[u32::from(plane)]);
     }
-    gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&words));
+    gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&b.0));
 }
 
 /// One placement of a tile's data: its transform into the world,
@@ -514,7 +498,7 @@ pub const WARP_PATCH_WORDS: usize = 18;
 /// Words per biquadratic patch on a globe: nine nodes' positions in space.
 pub const GLOBE_PATCH_WORDS: usize = 27;
 const CHUNK_WORDS: usize = layout::chunk::WORDS;
-const CANDIDATE_WORDS: usize = 5;
+const CANDIDATE_WORDS: usize = layout::candidate::WORDS;
 const VISIBLE_WORDS: usize = layout::visible::WORDS;
 const NODE_CULL_WORDS: usize = layout::node_cull::WORDS;
 /// Words per node of [`SceneBuffers::args`]: a draw's indirect arguments,

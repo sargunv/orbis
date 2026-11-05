@@ -91,22 +91,17 @@ pub struct DemPrepare {
     pub unpack: [f32; 4],
 }
 
-const JOB_WORDS: usize = 16;
-const NO_TILE: u32 = u32::MAX;
+use orb_shaders::layout::prepare_job;
 
 impl DemPrepare {
-    /// `prepare.wgsl`'s `Job`: unpack, neighbours, layer, zoom.
-    fn words(&self) -> [u32; JOB_WORDS] {
-        let mut words = [0; JOB_WORDS];
-        for (word, v) in words.iter_mut().zip(self.unpack) {
-            *word = v.to_bits();
-        }
-        for (word, n) in words[4..12].iter_mut().zip(self.neighbours) {
-            *word = n.unwrap_or(NO_TILE);
-        }
-        words[12] = self.layer;
-        words[13] = self.zoom.to_bits();
-        words
+    /// `prepare.wgsl`'s `Job`.
+    fn words(&self) -> Vec<u32> {
+        use prepare_job as n;
+        let neighbours = self.neighbours.map(|n| n.unwrap_or(u32::MAX));
+        let mut b = orb_shaders::Block::new(n::WORDS);
+        b.f(n::UNPACK, &self.unpack).u(n::NEIGHBOURS, &neighbours);
+        b.u(n::LAYER, &[self.layer]).f(n::ZOOM, &[self.zoom]);
+        b.0
     }
 }
 
@@ -831,7 +826,7 @@ mod prepare {
     use orb_hal::*;
     use orb_shaders::{PREPARE_PAD_SHADER, PREPARE_SLOPE_SHADER, Shader};
 
-    use super::{DEM_PADDED, DEM_RAW, DEM_SLOPES, JOB_WORDS, Page};
+    use super::{DEM_PADDED, DEM_RAW, DEM_SLOPES, Page, prepare_job};
 
     /// A job slot's bytes; jobs are 64 bytes.
     const SLOT: u64 = 256;
@@ -990,7 +985,7 @@ mod prepare {
                                     resource: BindingResource::Buffer {
                                         buffer: targets.jobs,
                                         offset: at,
-                                        size: Some(JOB_WORDS as u64 * 4),
+                                        size: Some(prepare_job::WORDS as u64 * 4),
                                     },
                                 },
                             ],

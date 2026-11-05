@@ -32,11 +32,7 @@ pub const TERRAIN_GRID: u32 = 128;
 pub const TERRAIN_EXTENT: f32 = 8192.0;
 const NO_DEM: u32 = u32::MAX;
 const NONE: u32 = u32::MAX;
-const TILE_WORDS: usize = 14;
-const PARAM_WORDS: usize = 12;
-/// Words per terrain tile of a shaded hillshade (`terrain_shade.wgsl`'s
-/// `ShadeTile`).
-pub(crate) const SHADE_WORDS: usize = 6;
+use orb_shaders::layout::{shade_tile, terrain as params, terrain_tile};
 /// Uniform slices are 256-byte aligned on every backend.
 const UNIFORM_STRIDE: u64 = 256;
 
@@ -346,7 +342,7 @@ impl Terrain {
         gpu.write_buffer(grid_indices, 0, bytemuck::cast_slice(&indices));
         let params = gpu.create_buffer(&BufferDesc {
             label: "terrain",
-            size: PARAM_WORDS as u64 * 4,
+            size: params::WORDS as u64 * 4,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
         // Trilinear and anisotropic, as GL JS samples its render-to-texture
@@ -374,7 +370,7 @@ impl Terrain {
             index_count: indices.len() as u32,
             tiles: gpu.create_buffer(&BufferDesc {
                 label: "terrain tiles",
-                size: 64 * TILE_WORDS as u64 * 4,
+                size: 64 * terrain_tile::WORDS as u64 * 4,
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             }),
             tile_capacity: 64,
@@ -382,7 +378,7 @@ impl Terrain {
             params,
             shade_tiles: gpu.create_buffer(&BufferDesc {
                 label: "terrain shade tiles",
-                size: 64 * SHADE_WORDS as u64 * 4,
+                size: 64 * shade_tile::WORDS as u64 * 4,
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             }),
             shade_capacity: 64,
@@ -470,16 +466,16 @@ impl Terrain {
         self.layers = layers.to_vec();
     }
 
-    /// The shaded hillshades' slope tiles: [`SHADE_WORDS`] per quarter of
+    /// The shaded hillshades' slope tiles: a `ShadeTile` per quarter of
     /// a terrain tile, each hillshade's after the one before.
     pub(crate) fn set_shade_tiles(&mut self, gpu: &mut dyn Gpu, words: &[u32]) {
-        let entries = (words.len() / SHADE_WORDS) as u64;
+        let entries = (words.len() / shade_tile::WORDS) as u64;
         if entries > self.shade_capacity {
             gpu.destroy_buffer(self.shade_tiles);
             self.shade_capacity = entries.next_power_of_two();
             self.shade_tiles = gpu.create_buffer(&BufferDesc {
                 label: "terrain shade tiles",
-                size: self.shade_capacity * SHADE_WORDS as u64 * 4,
+                size: self.shade_capacity * shade_tile::WORDS as u64 * 4,
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             });
             self.forget_group(gpu);
@@ -655,7 +651,7 @@ impl Terrain {
             self.tile_capacity = (tiles.len() as u32).next_power_of_two();
             self.tiles = gpu.create_buffer(&BufferDesc {
                 label: "terrain tiles",
-                size: u64::from(self.tile_capacity) * TILE_WORDS as u64 * 4,
+                size: u64::from(self.tile_capacity) * terrain_tile::WORDS as u64 * 4,
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             });
             self.forget_group(gpu);
@@ -663,42 +659,33 @@ impl Terrain {
         let words: Vec<u32> = tiles
             .iter()
             .flat_map(|t| {
+                use terrain_tile as n;
+                let mut b = orb_shaders::Block::new(n::WORDS);
                 let (layer, offset, scale) = match t.dem {
                     Some(d) => (d.layer, d.offset, d.scale),
                     None => (NO_DEM, [0.0; 2], 1.0),
                 };
-                let (origin, base, cells, poles) = match t.globe {
-                    Some(g) => (
-                        g.origin,
-                        g.warp.base(),
-                        g.warp.cells(),
-                        u32::from(g.poles[0]) | u32::from(g.poles[1]) << 1,
-                    ),
-                    None => ([0.0; 3], 0, 0, 0),
-                };
-                [
-                    t.origin[0].to_bits(),
-                    t.origin[1].to_bits(),
-                    t.scale.to_bits(),
-                    layer,
-                    offset[0].to_bits(),
-                    offset[1].to_bits(),
-                    scale.to_bits(),
-                    t.slot,
-                    origin[0].to_bits(),
-                    origin[1].to_bits(),
-                    origin[2].to_bits(),
-                    base,
-                    cells,
-                    poles,
-                ]
+                b.f(n::ORIGIN, &t.origin)
+                    .f(n::SCALE, &[t.scale])
+                    .u(n::DEM_LAYER, &[layer]);
+                b.f(n::DEM_OFFSET, &offset)
+                    .f(n::DEM_SCALE, &[scale])
+                    .u(n::SLOT, &[t.slot]);
+                if let Some(g) = t.globe {
+                    let poles = u32::from(g.poles[0]) | u32::from(g.poles[1]) << 1;
+                    b.f(n::GLOBE_ORIGIN, &g.origin)
+                        .u(n::GLOBE_BASE, &[g.warp.base()]);
+                    b.u(n::GLOBE_CELLS, &[g.warp.cells()]).u(n::POLES, &[poles]);
+                }
+                b.0
             })
             .collect();
         if !words.is_empty() {
             gpu.write_buffer(self.tiles, 0, bytemuck::cast_slice(&words));
         }
         self.tile_count = tiles.len() as u32;
-        gpu.write_buffer(self.params, 40, bytemuck::bytes_of(&self.tile_count));
+        let at = params::TILES as u64 * 4;
+        gpu.write_buffer(self.params, at, bytemuck::bytes_of(&self.tile_count));
     }
 
     /// Writes the frame's terrain values for a DEM page of `dim`-texel
@@ -715,17 +702,16 @@ impl Terrain {
             self.dem = Some(dem);
         }
         let state = self.layout_state;
-        let mut words = [0u32; PARAM_WORDS];
-        let f = |v: f32| v.to_bits();
-        words[..4].copy_from_slice(&paint.unpack.map(f));
-        words[4] = f(paint.exaggeration);
-        words[5] = f(dim as f32);
-        words[6] = f(paint.skirt);
-        words[7] = state.stacks;
-        words[8] = state.columns;
-        words[9] = f(DRAPE_SLOT_PX as f32);
-        words[10] = self.tile_count;
-        gpu.write_buffer(self.params, 0, bytemuck::cast_slice(&words));
+        let mut b = orb_shaders::Block::new(params::WORDS);
+        b.f(params::UNPACK, &paint.unpack)
+            .f(params::EXAGGERATION, &[paint.exaggeration]);
+        b.f(params::DEM_DIM, &[dim as f32])
+            .f(params::SKIRT, &[paint.skirt]);
+        b.u(params::STACKS, &[state.stacks])
+            .u(params::COLUMNS, &[state.columns]);
+        b.f(params::SLOT_PX, &[DRAPE_SLOT_PX as f32])
+            .u(params::TILES, &[self.tile_count]);
+        gpu.write_buffer(self.params, 0, bytemuck::cast_slice(&b.0));
         self.paint = Some(paint);
     }
 

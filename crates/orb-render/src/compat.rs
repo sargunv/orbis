@@ -6,10 +6,8 @@
 //! `orb-hal-gl`, so Compat records the same bundle.
 
 use orb_hal::{BufferId, Gpu};
-use orb_scene::{
-    ARGS_WORDS, CANDIDATE_ROW_WORDS, CHUNK_ROW_WORDS, CullTables, FrameBlock, NODE_CULL_ROW_WORDS,
-    Scene, TILE_ROW_WORDS, VISIBLE_ROW_WORDS,
-};
+use orb_scene::{ARGS_WORDS, CullTables, FrameBlock, Scene};
+use orb_shaders::layout::{candidate as cd, chunk as ck, node_cull as nc, tile as t, visible};
 
 // `types.wgsl`'s draw words.
 const DRAW_IMAGES: u32 = 0;
@@ -42,28 +40,28 @@ fn unpack(w: u32) -> [f32; 2] {
 pub(crate) fn cull(gpu: &mut dyn Gpu, scene: &mut Scene, frame: &FrameBlock) -> Culled {
     let b = *scene.buffers();
     let tables = scene.cull_tables().expect("Compat scenes keep CPU tables");
-    let nodes = tables.node_cull.len() / NODE_CULL_ROW_WORDS;
+    let nodes = tables.node_cull.len() / nc::WORDS;
     let mut args = vec![0u32; nodes * ARGS_WORDS];
     let mut culled = Culled::default();
     let mut visible = Vec::new();
     let mut slots = Vec::new();
     for node in 0..nodes {
-        let n = &tables.node_cull[node * NODE_CULL_ROW_WORDS..][..NODE_CULL_ROW_WORDS];
+        let n = &tables.node_cull[node * nc::WORDS..][..nc::WORDS];
         let node_args = &mut args[node * ARGS_WORDS..][..ARGS_WORDS];
-        let draw = n[3] & 255;
+        let draw = n[nc::DRAW] & 255;
         // Compat draws no models (plan §8.7).
-        if n[3] & HIDDEN != 0 || draw == DRAW_INSTANCES {
+        if n[nc::DRAW] & HIDDEN != 0 || draw == DRAW_INSTANCES {
             continue;
         }
         let cull = NodeCull {
-            base: n[0],
-            margin_px: f32::from_bits(n[1]),
-            count: n[2],
+            base: n[nc::VISIBLE_BASE],
+            margin_px: f32::from_bits(n[nc::MARGIN_PX]),
+            count: n[nc::CANDIDATE_COUNT],
             draw,
-            draped: n[3] & DRAPED != 0,
-            elevation: f32::from_bits(n[4]),
-            index_base: n[5],
-            run_shift: n[7],
+            draped: n[nc::DRAW] & DRAPED != 0,
+            elevation: f32::from_bits(n[nc::ELEVATION]),
+            index_base: n[nc::INDEX_BASE],
+            run_shift: n[nc::RUN_SHIFT],
         };
         if draw == DRAW_INDEXED {
             cull_indexed(tables, frame, &cull, node_args, &mut slots);
@@ -75,7 +73,7 @@ pub(crate) fn cull(gpu: &mut dyn Gpu, scene: &mut Scene, frame: &FrameBlock) -> 
             if !visible.is_empty() {
                 gpu.write_buffer(
                     b.visible,
-                    u64::from(cull.base) * VISIBLE_ROW_WORDS as u64 * 4,
+                    u64::from(cull.base) * visible::WORDS as u64 * 4,
                     bytemuck::cast_slice(&visible),
                 );
             }
@@ -109,12 +107,13 @@ fn cull_listed(
 ) {
     let points = node.draw == DRAW_POINTS;
     for i in 0..node.count {
-        let c = &tables.candidates[(node.base + i) as usize * CANDIDATE_ROW_WORDS..];
-        if candidate_visible(tables, frame, c[0], c[1], node) {
-            visible.extend([c[0], c[1]]);
+        let c = &tables.candidates[(node.base + i) as usize * cd::WORDS..];
+        let (chunk, tile) = (c[cd::CHUNK], c[cd::TILE]);
+        if candidate_visible(tables, frame, chunk, tile, node) {
+            visible.extend([chunk, tile]);
         }
     }
-    let written = (visible.len() / VISIBLE_ROW_WORDS) as u32;
+    let written = (visible.len() / visible::WORDS) as u32;
     let vertices = match (written, points) {
         (0, _) => 0,
         (_, true) => 6,
@@ -147,13 +146,18 @@ fn cull_indexed(
 ) {
     let (mut extent, mut kept, mut written, mut drawn) = (0u32, 0u32, 0u32, 0u32);
     for i in 0..node.count {
-        let at = (node.base + i) as usize * CANDIDATE_ROW_WORDS;
-        let [chunk, tile, slot, run, was] = tables.candidates[at..at + 5] else {
-            unreachable!("five words");
-        };
+        let at = (node.base + i) as usize * cd::WORDS;
+        let c = &tables.candidates[at..at + cd::WORDS];
+        let (chunk, tile, slot, run, was) = (
+            c[cd::CHUNK],
+            c[cd::TILE],
+            c[cd::SLOT],
+            c[cd::RUN],
+            c[cd::DRAWN],
+        );
         let keep = candidate_visible(tables, frame, chunk, tile, node);
-        let row = &tables.chunks[chunk as usize * CHUNK_ROW_WORDS..];
-        let (first, count) = (row[0], row[1]);
+        let row = &tables.chunks[chunk as usize * ck::WORDS..];
+        let (first, count) = (row[ck::FIRST_INDEX], row[ck::INDEX_COUNT]);
         if keep {
             extent = extent.max(slot + count - node.index_base);
             kept += 1;
@@ -170,7 +174,7 @@ fn cull_indexed(
                 vec![HIDDEN_INDEX; count as usize]
             };
             slots.push((slot, words));
-            tables.candidates[at + 4] = u32::from(keep);
+            tables.candidates[at + cd::DRAWN] = u32::from(keep);
             written += count;
         }
     }
@@ -242,9 +246,8 @@ fn candidate_visible(
     tile: u32,
     node: &NodeCull,
 ) -> bool {
-    let c = &tables.chunks[chunk as usize * CHUNK_ROW_WORDS..][..CHUNK_ROW_WORDS];
-    use orb_shaders::layout::{chunk as k, tile as t};
-    let row = &tables.tiles[tile as usize * TILE_ROW_WORDS..][..TILE_ROW_WORDS];
+    let c = &tables.chunks[chunk as usize * ck::WORDS..][..ck::WORDS];
+    let row = &tables.tiles[tile as usize * t::WORDS..][..t::WORDS];
     let f = |i: usize| f32::from_bits(row[i]);
     // The row's origin less the camera, in f64 where the GPU subtracts
     // whole quanta and remainders apart.
@@ -258,7 +261,7 @@ fn candidate_visible(
     let points = node.draw == DRAW_POINTS;
     let margin = node.margin_px * world_per_px / scale;
     let before = if points { 0.0 } else { margin };
-    let (bmin, bmax) = (unpack(c[k::BOUNDS_MIN]), unpack(c[k::BOUNDS_MAX]));
+    let (bmin, bmax) = (unpack(c[ck::BOUNDS_MIN]), unpack(c[ck::BOUNDS_MAX]));
     let mut lo = [bmin[0] - before, bmin[1] - before];
     let mut hi = [bmax[0] + before, bmax[1] + before];
     let (mut clip_lo, mut clip_hi) = if node.draw == DRAW_IMAGES {

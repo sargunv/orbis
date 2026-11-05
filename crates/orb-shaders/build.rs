@@ -18,6 +18,33 @@ mod reflect {
 
     use naga::{Module, ScalarKind, TypeInner};
 
+    /// The structs Rust writes that the shaders declare, by module name:
+    /// each shader's uniforms and the types they hold.
+    const STRUCTS: &[(&str, &str)] = &[
+        ("FillNode", "fill_node"),
+        ("LineNode", "line_node"),
+        ("ExtrusionNode", "extrusion_node"),
+        ("CircleNode", "circle_node"),
+        ("HeatmapNode", "heatmap_node"),
+        ("ModelNode", "model_node"),
+        ("RasterNode", "raster_node"),
+        ("HillshadeNode", "hillshade_node"),
+        ("ColorReliefNode", "color_relief_node"),
+        ("SymbolNode", "symbol_node"),
+        ("SymbolSize", "symbol_size"),
+        ("Curve", "curve"),
+        ("Pattern", "pattern"),
+        ("StateLookup", "state_lookup"),
+        ("Atmosphere", "atmosphere"),
+        ("Terrain", "terrain"),
+        ("TerrainTile", "terrain_tile"),
+        ("ShadeTile", "shade_tile"),
+        ("Job", "prepare_job"),
+        ("Shadow", "shadow"),
+        ("ShadowCascades", "shadow_cascades"),
+        ("Candidate", "candidate"),
+    ];
+
     /// The tables Rust writes and Compat reads row by row, and the
     /// function that reads one there (`None`: a uniform, read whole).
     const TABLES: &[(&str, &str, Option<&str>)] = &[
@@ -97,10 +124,55 @@ mod reflect {
             }
             wgsl.push_str("    return r;\n}\n");
         }
+        ROWS.set(wgsl.clone()).expect("reflected once");
+        let mut done = std::collections::HashSet::new();
+        for shader in crate::catalog::SHADERS {
+            let source = shader.source();
+            let module = naga::front::wgsl::parse_str(&source)
+                .unwrap_or_else(|e| panic!("{}: {}", shader.label, e.emit_to_string(&source)));
+            let mut layouter = naga::proc::Layouter::default();
+            layouter
+                .update(module.to_ctx())
+                .expect("lays out the shader");
+            for (_, ty) in module.types.iter() {
+                let Some(&(name, module_name)) =
+                    STRUCTS.iter().find(|(n, _)| ty.name.as_deref() == Some(n))
+                else {
+                    continue;
+                };
+                let TypeInner::Struct { members, span } = &ty.inner else {
+                    continue;
+                };
+                if !done.insert(name) {
+                    continue;
+                }
+                writeln!(
+                    rust,
+                    "/// `{}`'s `{name}`: its words, and each member's first.\n\
+                     pub mod {module_name} {{\n    pub const WORDS: usize = {};",
+                    shader.label,
+                    span / 4
+                )
+                .unwrap();
+                for m in members {
+                    let member = m.name.as_deref().expect("named members");
+                    writeln!(
+                        rust,
+                        "    pub const {}: usize = {};",
+                        member.to_uppercase(),
+                        m.offset / 4
+                    )
+                    .unwrap();
+                }
+                rust.push_str("}\n");
+            }
+        }
+        if let Some(missing) = STRUCTS.iter().find(|(n, _)| !done.contains(n)) {
+            panic!("no shader declares {}", missing.0);
+        }
         let dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
         std::fs::write(format!("{dir}/layout.rs"), rust).expect("writes OUT_DIR");
         std::fs::write(format!("{dir}/rows_compat.wgsl"), &wgsl).expect("writes OUT_DIR");
-        ROWS.set(wgsl).expect("reflected once");
     }
 
     /// Compat's row reads, for the GLSL translation below.
@@ -164,13 +236,11 @@ mod reflect {
     }
 }
 
-#[cfg(feature = "glsl")]
 #[allow(dead_code, unreachable_pub)]
 #[path = "src/catalog.rs"]
 mod catalog;
 
 /// What `catalog.rs` composes Compat sources with.
-#[cfg(feature = "glsl")]
 fn rows_compat() -> &'static str {
     reflect::ROWS.get().expect("reflected first")
 }

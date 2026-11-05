@@ -67,8 +67,6 @@ pub struct AtmosphereView {
     pub globe: Option<GlobeSky>,
 }
 
-const WORDS: usize = 60;
-
 #[derive(Debug)]
 pub(crate) struct Atmosphere {
     pub(crate) uniform: BufferId,
@@ -85,7 +83,7 @@ impl Atmosphere {
     pub(crate) fn new(gpu: &mut dyn Gpu) -> Self {
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "atmosphere",
-            size: WORDS as u64 * 4,
+            size: orb_shaders::layout::atmosphere::WORDS as u64 * 4,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
         Self {
@@ -134,44 +132,46 @@ impl Atmosphere {
         if self.written == Some((paint, view)) {
             return;
         }
-        let mut words = [0.0f32; WORDS];
+        use orb_shaders::layout::atmosphere as n;
+        let mut b = orb_shaders::Block::new(n::WORDS);
         if let Some(p) = paint {
-            words[0..4].copy_from_slice(&p.sky_color);
-            words[4..8].copy_from_slice(&p.horizon_color);
-            words[8..12].copy_from_slice(&p.fog_color);
-            words[16] = p.sky_horizon_blend * view.height / 2.0;
-            words[17] = p.horizon_fog_blend;
-            words[18] = p.fog_ground_blend;
-            words[19] = view.fog_opacity;
-            words[52..56].copy_from_slice(&p.backdrop);
-            words[56] = p.stars;
+            b.f(n::SKY_COLOR, &p.sky_color)
+                .f(n::HORIZON_COLOR, &p.horizon_color);
+            b.f(n::FOG_COLOR, &p.fog_color)
+                .f(n::BACKDROP, &p.backdrop)
+                .f(n::STARS, &[p.stars]);
+            b.f(
+                n::SKY_HORIZON_BLEND,
+                &[p.sky_horizon_blend * view.height / 2.0],
+            );
+            b.f(n::HORIZON_FOG_BLEND, &[p.horizon_fog_blend]);
+            b.f(n::FOG_GROUND_BLEND, &[p.fog_ground_blend])
+                .f(n::FOG_OPACITY, &[view.fog_opacity]);
         }
-        for (i, v) in view.ray_inverse.iter().flatten().enumerate() {
-            words[24 + i] = *v;
-        }
-        words[57] = view.star_rotation;
-        words[12..14].copy_from_slice(&view.horizon);
-        words[14..16].copy_from_slice(&view.horizon_normal);
-        words[20] = view.fog_range[0];
-        words[21] = view.fog_range[1];
+        b.f(n::RAY_INVERSE, view.ray_inverse.as_flattened())
+            .f(n::STAR_ROTATION, &[view.star_rotation]);
+        b.f(n::HORIZON, &view.horizon)
+            .f(n::HORIZON_NORMAL, &view.horizon_normal);
+        b.f(n::FOG_NEAR, &[view.fog_range[0]])
+            .f(n::FOG_FAR, &[view.fog_range[1]]);
         self.scatter_blend = 0.0;
         if let Some(g) = view.globe {
-            words[40..43].copy_from_slice(&g.eye);
-            words[43] = g.radius;
-            words[44..47].copy_from_slice(&g.sun);
-            words[48] = g.amount;
-            words[49] = g.eye_distance_px;
+            let [x, y, z] = g.eye;
+            b.f(n::GLOBE_EYE, &[x, y, z, g.radius])
+                .f(n::GLOBE_SUN, &g.sun);
+            b.f(n::GLOBE_AMOUNT, &[g.amount])
+                .f(n::GLOBE_EYE_DISTANCE_PX, &[g.eye_distance_px]);
             // GL JS's `getAtmosphereAltitudeBlend`: the atmosphere shows
             // from orbit, fading in over nine shell heights above it.
             let shell = g.radius * 100_000.0 / 6_371_000.0;
             let altitude = g.eye.iter().map(|v| v * v).sum::<f32>().sqrt() - g.radius;
             let x = ((altitude - shell) / (9.0 * shell)).clamp(0.0, 1.0);
             let blend = paint.map_or(0.0, |p| p.atmosphere_blend) * x * x * (3.0 - 2.0 * x);
-            words[50] = blend;
-            words[51] = blend * g.amount;
+            b.f(n::SKY_ATMOSPHERE_BLEND, &[blend])
+                .f(n::SCATTER_BLEND, &[blend * g.amount]);
             self.scatter_blend = blend * g.amount;
         }
-        gpu.write_buffer(self.uniform, 0, bytemuck::cast_slice(&words));
+        gpu.write_buffer(self.uniform, 0, bytemuck::cast_slice(&b.0));
         self.written = Some((paint, view));
     }
 

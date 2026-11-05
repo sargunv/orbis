@@ -22,8 +22,6 @@ const MAP_PX: u32 = 2048;
 const CASCADES: usize = 2;
 /// Where each cascade ends, in view depths of the camera's target.
 const SPLITS: [f64; CASCADES] = [1.5, 4.0];
-/// Bytes of `shadow_receive.wgsl`'s `Shadow`.
-const UNIFORM_BYTES: u64 = 256;
 
 #[derive(Debug)]
 pub(crate) struct Shadows {
@@ -51,7 +49,7 @@ impl Shadows {
     pub(crate) fn new(gpu: &mut dyn Gpu) -> Self {
         let uniform = gpu.create_buffer(&BufferDesc {
             label: "shadow",
-            size: UNIFORM_BYTES,
+            size: orb_shaders::layout::shadow::WORDS as u64 * 4,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
         let no_map = gpu.create_texture(&TextureDesc {
@@ -239,29 +237,30 @@ impl Shadows {
         frame: &FrameBlock,
         cast: Option<(FrameShadow, [f32; 3])>,
     ) {
-        let mut words = vec![0u32; UNIFORM_BYTES as usize / 4];
+        use orb_shaders::layout::{shadow as n, shadow_cascades as c};
+        let mut b = orb_shaders::Block::new(n::WORDS);
         let view_proj = DMat4::from_cols_array_2d(&frame.view_proj.map(|c| c.map(f64::from)));
         if let Some((shadow, light)) = cast {
             let light = DVec3::from(light.map(f64::from));
-            let cascades = fit(frame, view_proj, shadow.heights, light);
-            let mut put = |at: usize, values: &[f32]| {
-                for (word, v) in words[at..].iter_mut().zip(values) {
-                    *word = v.to_bits();
-                }
-            };
-            for (i, c) in cascades.iter().enumerate() {
-                put(i * 16, &c.view_proj.as_mat4().to_cols_array());
-                put(32 + i, &[c.end as f32]);
-                put(36 + i, &[c.texel as f32]);
+            let at = n::CASCADES;
+            for (i, cascade) in fit(frame, view_proj, shadow.heights, light)
+                .iter()
+                .enumerate()
+            {
+                b.f(
+                    at + c::VIEW_PROJ + i * 16,
+                    &cascade.view_proj.as_mat4().to_cols_array(),
+                );
+                b.f(at + c::SPLITS + i, &[cascade.end as f32])
+                    .f(at + c::TEXEL + i, &[cascade.texel as f32]);
             }
-            put(40, &light.as_vec3().to_array());
-            put(44, &[shadow.intensity, ground_share(frame)]);
-            words[43] = CASCADES as u32;
+            b.f(at + c::LIGHT, &light.as_vec3().to_array())
+                .u(at + c::COUNT, &[CASCADES as u32]);
+            b.f(at + c::STRENGTH, &[shadow.intensity])
+                .f(at + c::GROUND, &[ground_share(frame)]);
         }
-        let inverse = view_proj.inverse().as_mat4().to_cols_array();
-        for (word, v) in words[48..].iter_mut().zip(inverse) {
-            *word = v.to_bits();
-        }
+        b.f(n::INVERSE, &view_proj.inverse().as_mat4().to_cols_array());
+        let words = b.0;
         if words != self.written {
             gpu.write_buffer(self.uniform, 0, bytemuck::cast_slice(&words));
             self.written = words;
