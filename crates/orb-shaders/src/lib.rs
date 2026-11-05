@@ -8,6 +8,17 @@
 mod catalog;
 pub use catalog::*;
 
+/// Compat's reads of the scene tables' rows, reflected from `types.wgsl`.
+fn rows_compat() -> &'static str {
+    include_str!(concat!(env!("OUT_DIR"), "/rows_compat.wgsl"))
+}
+
+/// The scene tables' layouts, reflected from `types.wgsl`: each struct's
+/// words and each member's first word.
+pub mod layout {
+    include!(concat!(env!("OUT_DIR"), "/layout.rs"));
+}
+
 #[cfg(feature = "glsl")]
 mod glsl {
     include!(concat!(env!("OUT_DIR"), "/glsl.rs"));

@@ -2543,6 +2543,7 @@ dependencies = [
  "bytemuck",
  "orb-hal",
  "orb-layout",
+ "orb-shaders",
 ]
 
 [[package]]

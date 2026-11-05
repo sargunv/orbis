@@ -33,55 +33,8 @@ fn vertex_at(i: u32) -> u32 { return textureLoad(vertices, data_texel(i), 0).x; 
 fn index_at(i: u32) -> u32 { return textureLoad(indices, data_texel(i), 0).x; }
 fn prop_at(i: u32) -> u32 { return textureLoad(props, data_texel(i), 0).x; }
 
-// Rows as orb-scene writes them (`types.wgsl` documents the fields).
-fn tile_at(i: u32) -> Tile {
-    let b = i * TILE_WORDS;
-    var t: Tile;
-    t.origin = vec2<i32>(bitcast<i32>(tile_word(b)), bitcast<i32>(tile_word(b + 1u)));
-    t.scale = bitcast<f32>(tile_word(b + 2u));
-    t.zoom = bitcast<f32>(tile_word(b + 3u));
-    t.clips[0] = vec2<u32>(tile_word(b + 4u), tile_word(b + 5u));
-    t.clips[1] = vec2<u32>(tile_word(b + 6u), tile_word(b + 7u));
-    t.clips[2] = vec2<u32>(tile_word(b + 8u), tile_word(b + 9u));
-    t.clips[3] = vec2<u32>(tile_word(b + 10u), tile_word(b + 11u));
-    t.pattern_origin = vec2<u32>(tile_word(b + 12u), tile_word(b + 13u));
-    t.extent = bitcast<f32>(tile_word(b + 14u));
-    t.wrap = bitcast<i32>(tile_word(b + 15u));
-    t.px_scale = bitcast<f32>(tile_word(b + 16u));
-    t.dem = tile_word(b + 17u);
-    t.dem_offset = tile_word(b + 18u);
-    t.terrain_range = tile_word(b + 19u);
-    t.warp_base = tile_word(b + 20u);
-    t.warp_cells = tile_word(b + 21u);
-    t.globe_origin[0] = bitcast<i32>(tile_word(b + 22u));
-    t.globe_origin[1] = bitcast<i32>(tile_word(b + 23u));
-    t.globe_origin[2] = bitcast<i32>(tile_word(b + 24u));
-    t.globe_base = tile_word(b + 25u);
-    t.globe_cells = tile_word(b + 26u);
-    t.globe_flags = tile_word(b + 27u);
-    t.origin_rest = vec2<f32>(bitcast<f32>(tile_word(b + 28u)), bitcast<f32>(tile_word(b + 29u)));
-    t.globe_origin_rest[0] = bitcast<f32>(tile_word(b + 30u));
-    t.globe_origin_rest[1] = bitcast<f32>(tile_word(b + 31u));
-    t.globe_origin_rest[2] = bitcast<f32>(tile_word(b + 32u));
-    return t;
-}
-
-fn chunk_at(i: u32) -> Chunk {
-    let b = i * 8u;
-    return Chunk(chunk_word(b), chunk_word(b + 1u), chunk_word(b + 2u), chunk_word(b + 3u),
-        chunk_word(b + 4u), chunk_word(b + 5u), chunk_word(b + 6u), chunk_word(b + 7u));
-}
-
-fn visible_at(i: u32) -> Visible {
-    return Visible(visible_word(2u * i), visible_word(2u * i + 1u));
-}
-
-fn node_cull_at(i: u32) -> NodeCull {
-    let b = i * 8u;
-    return NodeCull(node_cull_word(b), bitcast<f32>(node_cull_word(b + 1u)), node_cull_word(b + 2u),
-        node_cull_word(b + 3u), bitcast<f32>(node_cull_word(b + 4u)), node_cull_word(b + 5u),
-        node_cull_word(b + 6u), node_cull_word(b + 7u));
-}
+// Tile, chunk, visible and node-cull rows are read by functions orb-shaders'
+// build script reflects from `types.wgsl`.
 
 fn image_at(i: u32) -> ImageRect {
     let b = i * 8u;

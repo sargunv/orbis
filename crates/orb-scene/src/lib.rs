@@ -23,6 +23,7 @@ use arena::{Arena, Slots};
 use orb_hal::{BufferDesc, BufferId, BufferUsages, Gpu, HostBytesId};
 use orb_layout::Mesh;
 pub use orb_layout::{Chunk, TileBox};
+use orb_shaders::layout;
 pub use pages::{PageTexture, Pixels, TilePage};
 pub use symbol::{
     PLACED_WORDS, QUAD_WORDS, SYMBOL_HEADER_WORDS, SYMBOL_STATE_WORDS, SymbolMeshData,
@@ -199,7 +200,7 @@ pub struct FrameTerrain {
     pub dem_dim: f32,
 }
 
-const FRAME_WORDS: usize = 96;
+const FRAME_WORDS: usize = layout::frame::WORDS;
 
 /// Bytes of a frame block's uniform buffer.
 pub const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 4;
@@ -231,66 +232,57 @@ fn split<const N: usize>(v: [f64; N], quantum: f64) -> [[u32; N]; 2] {
 /// Writes a frame block into a uniform buffer of [`FRAME_BYTES`]: the
 /// scene's own, or another view's of the same scene (the terrain drape's).
 pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
+    use layout::frame as f;
     let mut words = [0u32; FRAME_WORDS];
-    for (i, v) in frame.view_proj.iter().flatten().enumerate() {
-        words[i] = v.to_bits();
-    }
-    words[16] = frame.viewport[0].to_bits();
-    words[17] = frame.viewport[1].to_bits();
-    words[18] = frame.world_per_px.to_bits();
-    words[19] = frame.pixel_ratio.to_bits();
-    words[20] = (frame.zoom as f32).to_bits();
-    words[21] = frame.bearing.to_bits();
-    words[22] = frame.align[0].to_bits();
-    words[23] = frame.align[1].to_bits();
-    words[24] = frame.extrusion_scale.to_bits();
-    words[25] = frame.ground_horizon.to_bits();
-    words[26] = frame.time.to_bits();
-    words[27] = frame.symbol_fade_change.to_bits();
-    words[28] = frame.pitch.to_bits();
-    words[29] = frame.roll.to_bits();
-    let q = quantum(frame.world_span);
-    let [camera_hi, camera_lo] = split(frame.camera, q);
-    words[84..86].copy_from_slice(&camera_hi);
-    words[86..88].copy_from_slice(&camera_lo);
-    words[91] = (q as f32).to_bits();
-    words[95] = (quantum(GLOBE_SPAN) as f32).to_bits();
-    if let Some(t) = frame.terrain {
-        for (word, v) in words[32..36].iter_mut().zip(t.unpack) {
+    let mut put = |at: usize, values: &[f32]| {
+        for (word, v) in words[at..].iter_mut().zip(values) {
             *word = v.to_bits();
         }
-        words[36] = t.exaggeration.to_bits();
-        words[37] = t.dem_dim.to_bits();
+    };
+    put(f::VIEW_PROJ, frame.view_proj.as_flattened());
+    put(f::VIEWPORT, &frame.viewport);
+    put(f::WORLD_PER_PX, &[frame.world_per_px, frame.pixel_ratio]);
+    put(f::ZOOM, &[frame.zoom as f32, frame.bearing]);
+    put(f::ALIGN, &frame.align);
+    put(f::EXTRUSION_SCALE, &[frame.extrusion_scale]);
+    put(f::GROUND_HORIZON, &[frame.ground_horizon]);
+    put(f::TIME, &[frame.time]);
+    put(f::SYMBOL_FADE_CHANGE, &[frame.symbol_fade_change]);
+    put(f::PITCH, &[frame.pitch]);
+    put(f::ROLL, &[frame.roll]);
+    let q = quantum(frame.world_span);
+    put(f::QUANTUM, &[q as f32]);
+    put(f::GLOBE_QUANTUM, &[quantum(GLOBE_SPAN) as f32]);
+    if let Some(t) = frame.terrain {
+        put(f::DEM_UNPACK, &t.unpack);
+        put(f::TERRAIN_EXAGGERATION, &[t.exaggeration]);
+        put(f::DEM_DIM, &[t.dem_dim]);
     }
     if let Some(l) = frame.lights {
-        let mut put = |at: usize, v: [f32; 3], w: f32| {
-            for (word, v) in words[at..at + 4].iter_mut().zip([v[0], v[1], v[2], w]) {
-                *word = v.to_bits();
-            }
-        };
-        put(40, l.ambient, l.ambient_level);
-        put(44, l.directional, l.directional_level);
-        put(48, l.position, if l.terrain { 1.0 } else { 0.0 });
+        let [a, d, p] = [l.ambient, l.directional, l.position];
+        put(f::LIGHT_AMBIENT, &[a[0], a[1], a[2], l.ambient_level]);
+        put(f::LIGHT_COLOR, &[d[0], d[1], d[2], l.directional_level]);
+        put(
+            f::LIGHT_POSITION,
+            &[p[0], p[1], p[2], f32::from(u8::from(l.terrain))],
+        );
     }
-    if let Some(g) = frame.globe {
-        for (i, v) in g.view_proj.iter().flatten().enumerate() {
-            words[52 + i] = v.to_bits();
-        }
-        for (word, v) in words[68..72].iter_mut().zip(g.horizon) {
-            *word = v.to_bits();
-        }
-        for (word, v) in words[72..75].iter_mut().zip(g.target) {
-            *word = (v as f32).to_bits();
-        }
-        let [target_hi, target_lo] = split(g.target, quantum(GLOBE_SPAN));
-        words[88..91].copy_from_slice(&target_hi);
-        words[92..95].copy_from_slice(&target_lo);
-        words[75] = g.amount.to_bits();
-        words[76] = g.metres_per_unit.to_bits();
-        words[77] = u32::from(g.plane);
-        for (word, v) in words[80..83].iter_mut().zip(g.eye) {
-            *word = v.to_bits();
-        }
+    let globe = frame.globe.map(|g| {
+        put(f::GLOBE_VIEW_PROJ, g.view_proj.as_flattened());
+        put(f::GLOBE_HORIZON, &g.horizon);
+        put(f::GLOBE_TARGET, &g.target.map(|v| v as f32));
+        put(f::GLOBE_AMOUNT, &[g.amount, g.metres_per_unit]);
+        put(f::GLOBE_EYE, &g.eye);
+        (g.target, g.plane)
+    });
+    let [camera_whole, camera_rest] = split(frame.camera, q);
+    words[f::CAMERA_WHOLE..][..2].copy_from_slice(&camera_whole);
+    words[f::CAMERA_REST..][..2].copy_from_slice(&camera_rest);
+    if let Some((target, plane)) = globe {
+        let [whole, rest] = split(target, quantum(GLOBE_SPAN));
+        words[f::GLOBE_TARGET_WHOLE..][..3].copy_from_slice(&whole);
+        words[f::GLOBE_TARGET_REST..][..3].copy_from_slice(&rest);
+        words[f::GLOBE_PLANE] = u32::from(plane);
     }
     gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&words));
 }
@@ -342,34 +334,32 @@ impl TileRow {
     /// The row as `types.wgsl`'s `Tile`, its origins split at `quantum`
     /// on the plane.
     fn words(&self, quantum: f64) -> [u32; TILE_WORDS] {
+        use layout::tile as t;
         let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
         let mut words = [0u32; TILE_WORDS];
-        let [origin_hi, origin_lo] = split(self.origin, quantum);
-        words[0..2].copy_from_slice(&origin_hi);
-        words[2] = self.scale.to_bits();
-        words[3] = self.zoom.to_bits();
+        let mut put =
+            |at: usize, values: &[u32]| words[at..][..values.len()].copy_from_slice(values);
+        let [origin_whole, origin_rest] = split(self.origin, quantum);
+        put(t::ORIGIN, &origin_whole);
+        put(t::ORIGIN_REST, &origin_rest);
+        put(t::SCALE, &[self.scale.to_bits(), self.zoom.to_bits()]);
         for (i, clip) in self.clips.iter().enumerate() {
-            words[4 + i * 2] = pack(clip.min);
-            words[5 + i * 2] = pack(clip.max);
+            put(t::CLIPS + 2 * i, &[pack(clip.min), pack(clip.max)]);
         }
-        words[12..14].copy_from_slice(&self.pattern_origin);
-        words[14] = self.extent.to_bits();
-        words[15] = self.wrap as u32;
-        words[16] = self.px_scale.to_bits();
-        words[17..19].copy_from_slice(&self.dem.words());
-        words[19] = pack_range(self.terrain_range);
-        words[20] = self.warp.base;
-        words[21] = self.warp.cells;
+        put(t::PATTERN_ORIGIN, &self.pattern_origin);
+        put(t::EXTENT, &[self.extent.to_bits(), self.wrap as u32]);
+        put(t::PX_SCALE, &[self.px_scale.to_bits()]);
+        put(t::DEM, &self.dem.words());
+        put(t::TERRAIN_RANGE, &[pack_range(self.terrain_range)]);
+        put(t::WARP_BASE, &[self.warp.base, self.warp.cells]);
         if let Some(globe) = self.globe {
-            let [hi, lo] = split(globe.origin, self::quantum(GLOBE_SPAN));
-            words[22..25].copy_from_slice(&hi);
-            words[25] = globe.warp.base;
-            words[26] = globe.warp.cells;
-            words[27] = u32::from(!globe.on_plane);
-            words[30..33].copy_from_slice(&lo);
+            let [whole, rest] = split(globe.origin, self::quantum(GLOBE_SPAN));
+            put(t::GLOBE_ORIGIN, &whole);
+            put(t::GLOBE_ORIGIN_REST, &rest);
+            put(t::GLOBE_BASE, &[globe.warp.base, globe.warp.cells]);
+            put(t::GLOBE_FLAGS, &[u32::from(!globe.on_plane)]);
         }
-        words[28..30].copy_from_slice(&origin_lo);
-        words[33] = self.drape_zoom.to_bits();
+        put(t::DRAPE_ZOOM, &[self.drape_zoom.to_bits()]);
         words
     }
 }
@@ -474,16 +464,16 @@ impl ClipRect {
 }
 
 /// Words of a tile row (`types.wgsl`'s `Tile`, `TILE_WORDS` there).
-const TILE_WORDS: usize = 34;
+const TILE_WORDS: usize = layout::tile::WORDS;
 /// Words per biquadratic patch of a planar warp: nine nodes' positions
 /// (`project.wgsl`).
 pub const WARP_PATCH_WORDS: usize = 18;
 /// Words per biquadratic patch on a globe: nine nodes' positions in space.
 pub const GLOBE_PATCH_WORDS: usize = 27;
-const CHUNK_WORDS: usize = 8;
+const CHUNK_WORDS: usize = layout::chunk::WORDS;
 const CANDIDATE_WORDS: usize = 5;
-const VISIBLE_WORDS: usize = 2;
-const NODE_CULL_WORDS: usize = 8;
+const VISIBLE_WORDS: usize = layout::visible::WORDS;
+const NODE_CULL_WORDS: usize = layout::node_cull::WORDS;
 /// Words per node of [`SceneBuffers::args`].
 pub const ARGS_WORDS: usize = 8;
 /// Candidates per cull workgroup of an indexed node (`cull.wgsl`).
@@ -792,9 +782,9 @@ struct MeshEntry {
 
 /// Chunk word that holds the first word of the mesh's feature-state
 /// remap, or [`NO_STATE`].
-const CHUNK_STATE_WORD: u64 = 6;
-const CHUNK_PROPS_WORD: u64 = 3;
-const CHUNK_ROW_WORDS_WORD: u64 = 7;
+const CHUNK_STATE_WORD: u64 = layout::chunk::STATE_BASE as u64;
+const CHUNK_PROPS_WORD: u64 = layout::chunk::PROP_BASE as u64;
+const CHUNK_ROW_WORDS_WORD: u64 = layout::chunk::ROW_WORDS as u64;
 
 /// No feature-state remap: every feature has the default state.
 pub const NO_STATE: u32 = u32::MAX;
@@ -1220,9 +1210,10 @@ impl Scene {
             .node_rows
             .get_mut(i * NODE_CULL_WORDS..(i + 1) * NODE_CULL_WORDS)
         {
-            row[1] = cull.margin_px.to_bits();
-            row[3] = cull.draw_word();
-            row[4] = cull.elevation.to_bits();
+            use layout::node_cull as n;
+            row[n::MARGIN_PX] = cull.margin_px.to_bits();
+            row[n::DRAW] = cull.draw_word();
+            row[n::ELEVATION] = cull.elevation.to_bits();
             self.params_dirty = true;
         }
         entry.cull = cull;
@@ -1996,19 +1987,5 @@ fn compacted_usage(compat: bool) -> BufferUsages {
         BufferUsages::INDEX | BufferUsages::COPY_DST
     } else {
         BufferUsages::STORAGE | BufferUsages::INDEX
-    }
-}
-
-#[cfg(test)]
-mod row_layout {
-    /// `types.wgsl` reads tile rows with orb-scene's stride.
-    #[test]
-    fn shaders_share_the_tile_row_stride() {
-        let types = include_str!("../../orb-shaders/src/wgsl/types.wgsl");
-        let declared = format!("const TILE_WORDS: u32 = {}u;", super::TILE_WORDS);
-        assert!(
-            types.contains(&declared),
-            "types.wgsl must declare {declared}"
-        );
     }
 }

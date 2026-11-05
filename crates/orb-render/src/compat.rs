@@ -239,20 +239,22 @@ fn candidate_visible(
     node: &NodeCull,
 ) -> bool {
     let c = &tables.chunks[chunk as usize * CHUNK_ROW_WORDS..][..CHUNK_ROW_WORDS];
-    let t = &tables.tiles[tile as usize * TILE_ROW_WORDS..][..TILE_ROW_WORDS];
-    let f = |i: usize| f32::from_bits(t[i]);
+    use orb_shaders::layout::{chunk as k, tile as t};
+    let row = &tables.tiles[tile as usize * TILE_ROW_WORDS..][..TILE_ROW_WORDS];
+    let f = |i: usize| f32::from_bits(row[i]);
     // The row's origin less the camera, in f64 where the GPU subtracts
     // whole quanta and remainders apart.
     let quantum = orb_scene::quantum(frame.world_span);
     let origin = [0, 1].map(|i| {
-        let world = f64::from(t[i] as i32) * quantum + f64::from(f(28 + i));
+        let world =
+            f64::from(row[t::ORIGIN + i] as i32) * quantum + f64::from(f(t::ORIGIN_REST + i));
         (world - frame.camera[i]) as f32
     });
-    let (scale, world_per_px) = (f(2), frame.world_per_px * f(16));
+    let (scale, world_per_px) = (f(t::SCALE), frame.world_per_px * f(t::PX_SCALE));
     let points = node.draw == DRAW_POINTS;
     let margin = node.margin_px * world_per_px / scale;
     let before = if points { 0.0 } else { margin };
-    let (bmin, bmax) = (unpack(c[4]), unpack(c[5]));
+    let (bmin, bmax) = (unpack(c[k::BOUNDS_MIN]), unpack(c[k::BOUNDS_MAX]));
     let mut lo = [bmin[0] - before, bmin[1] - before];
     let mut hi = [bmax[0] + before, bmax[1] + before];
     let (mut clip_lo, mut clip_hi) = if node.draw == DRAW_IMAGES {
@@ -262,7 +264,8 @@ fn candidate_visible(
     };
     if node.draw != DRAW_IMAGES {
         for i in 0..4 {
-            let (r_lo, r_hi) = (unpack(t[4 + 2 * i]), unpack(t[5 + 2 * i]));
+            let clip = t::CLIPS + 2 * i;
+            let (r_lo, r_hi) = (unpack(row[clip]), unpack(row[clip + 1]));
             let c_lo = [lo[0].max(r_lo[0]), lo[1].max(r_lo[1])];
             let c_hi = [hi[0].min(r_hi[0]), hi[1].min(r_hi[1])];
             if c_lo[0] <= c_hi[0] && c_lo[1] <= c_hi[1] {
@@ -276,13 +279,13 @@ fn candidate_visible(
     }
     // As on Modern, warped tiles' chunks pass: cover kept only tiles whose
     // footprints meet the view.
-    if node.draped || t[21] != 0 || t[26] != 0 {
+    if node.draped || row[t::WARP_CELLS] != 0 || row[t::GLOBE_CELLS] != 0 {
         return true;
     }
     let after = if points { margin } else { 0.0 };
     lo = [clip_lo[0] - after, clip_lo[1] - after];
     hi = [clip_hi[0] + after, clip_hi[1] + after];
-    let range = unpack(t[19]);
+    let range = unpack(row[t::TERRAIN_RANGE]);
     let ground = [
         range[0] * TERRAIN_RANGE_UNIT * frame.extrusion_scale,
         range[1] * TERRAIN_RANGE_UNIT * frame.extrusion_scale,

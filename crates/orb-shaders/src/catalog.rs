@@ -72,6 +72,9 @@ impl Shader {
         let mut source = self.parts.concat();
         if self.parts.contains(&DRAW) {
             source.push_str(if compat { FETCH_COMPAT } else { FETCH });
+            if compat {
+                source.push_str(crate::rows_compat());
+            }
             source.push_str(if compat { BUILTINS_COMPAT } else { BUILTINS });
         }
         source

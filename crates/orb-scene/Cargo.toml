@@ -10,6 +10,7 @@ version.workspace = true
 bytemuck.workspace = true
 orb-hal.workspace = true
 orb-layout.workspace = true
+orb-shaders.workspace = true
 
 [lints]
 workspace = true

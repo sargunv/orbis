@@ -115,8 +115,6 @@ struct Tile {
     drape_zoom: f32,
 };
 
-// Words per tile row (orb-scene's `TILE_WORDS`).
-const TILE_WORDS: u32 = 34u;
 
 const TERRAIN_RANGE_UNIT: f32 = 4.0;
 
