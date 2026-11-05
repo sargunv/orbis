@@ -806,13 +806,16 @@ impl View {
             if !box_in_frustum(&globe.view_proj, lo - bulge, hi + bulge, DVec2::ZERO) {
                 return CoverDecision::Skip;
             }
-            // Its side at the centre, along its middle row and column.
+            // Its side at the centre, along its middle row and column, on
+            // the sphere: chords between the grid's points fall short of
+            // the arc by 3% on a hemisphere-wide tile, which is enough to
+            // floor the zoom a level too coarse.
             let mid = steps / 2;
             let length = |at: &dyn Fn(usize) -> usize| {
                 (0..steps)
                     .map(|i| (grid[at(i)], grid[at(i + 1)]))
                     .filter(|(a, b)| a.is_finite() && b.is_finite())
-                    .map(|(a, b)| a.distance(b))
+                    .map(|(a, b)| a.angle_between(b) * sphere::RADIUS)
                     .sum::<f64>()
             };
             let side = length(&|i| mid * n + i).max(length(&|j| j * n + mid));
@@ -841,7 +844,9 @@ impl View {
                 desired +=
                     behavior * tile_pitch.cos().max(1e-6).log2() / 2.0 - fov_scale.log2() - penalty;
             }
-            if f64::from(index.z) < desired.floor().max(0.0) {
+            // A whole zoom computed through the sphere's trigonometry can
+            // land an ulp short of itself; it means that zoom.
+            if f64::from(index.z) < (desired + 1e-9).floor().max(0.0) {
                 CoverDecision::Refine
             } else {
                 CoverDecision::Accept
