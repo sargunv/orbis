@@ -132,7 +132,9 @@ unlit and 3.5 to 3.6 ms lit at z1.6, 4.3 to 4.4 ms either way at z3.2
 pitched 40°. The shadows are noon's largest share (decision 0046); the
 per-point sun costs the flat layers about 0.45 ms more per main pass at
 z14 than the lit map before it (1.26 → 1.72 ms), which #107 tracks. A
-mid-range phone at 1080p should see roughly a third of these.
+mid-range phone's GPU is several times slower than the M6 for under half
+the pixels, so expect these differences a few times larger there,
+unmeasured.
 
 ## Next
 
