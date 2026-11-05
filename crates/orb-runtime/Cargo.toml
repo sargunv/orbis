@@ -40,6 +40,7 @@ orb-text = { workspace = true, features = ["sea-dictionaries"] }
 orb-host-native.workspace = true
 orb-text = { workspace = true, features = ["sea-export"] }
 orb-hal-wgpu.workspace = true
+png.workspace = true
 pollster.workspace = true
 # GL JS golden vectors hold shortest round-trip doubles; parse them exactly.
 serde_json = { workspace = true, features = ["float_roundtrip"] }

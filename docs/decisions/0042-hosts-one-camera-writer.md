@@ -132,3 +132,13 @@ The page builds an object per event for the package (camera progress
 events come every frame); their keys and names are interned, so the page
 decodes each string once rather than per event (14 ms of `TextDecoder`
 over a three-gesture profile before).
+
+## The native demo is a host like the others
+
+`orb-demo` draws through `orb-api` as C, Kotlin and Swift hosts do: a
+`Runtime`, a `Map` and a window surface `Target`; winit input goes to
+`Map::input` with its time; the flight loop is `fly_to` legs. Its own
+device, frame loop and camera handoff are gone (about 1,500 lines). Still
+pictures, its old `--snapshot` and `--a11y`, are `orbis render` (`--a11y`
+writes the semantic snapshot); its tests, which drive the runtime directly,
+moved to `orb-runtime/tests` (`frames`, `edits`).

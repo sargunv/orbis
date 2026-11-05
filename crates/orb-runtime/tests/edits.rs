@@ -2,22 +2,19 @@
 //! criterion 3): per S6 class, what an edit costs in frames, jobs and
 //! uploads, and that its pixels equal a fresh load of the edited style.
 
+mod common;
+
 use std::time::{Duration, Instant};
 
 use orb_runtime::{FrameReport, JobCounts, Transaction};
 
-use super::{Offscreen, Options};
+use crate::common::{Offscreen, Options};
 
 fn tokyo() -> Offscreen {
     let options = Options {
         style: None,
         encoding: "mvt".into(),
         at: Some((orb_crs::Geodetic::new(139.74, 35.685), 15.0, 0.0, 0.0)),
-        snapshot: None,
-        a11y: None,
-        count_frames: None,
-        flight: None,
-        cache: None,
     };
     let (mut offscreen, _, _) = Offscreen::load(&options).unwrap();
     settle(&mut offscreen);
@@ -34,7 +31,7 @@ fn settle(offscreen: &mut Offscreen) -> (u32, FrameReport) {
     loop {
         let report = offscreen.frame();
         frames += 1;
-        let warnings = super::take_warnings(&mut offscreen.map);
+        let warnings = crate::common::take_warnings(&mut offscreen.map);
         assert!(warnings.is_empty(), "{warnings:?}");
         if report.idle && was_idle {
             return (frames, report);
@@ -80,8 +77,7 @@ fn measure(offscreen: &mut Offscreen, commands: &str) -> (u32, FrameReport, JobC
 }
 
 /// The edited map's pixels equal those of its style loaded fresh, with the
-/// same camera, drawn as still pictures: continuous placement depends on
-/// the frames tiles arrived in, a still one only on the camera and data.
+/// same camera.
 fn assert_matches_fresh(offscreen: &mut Offscreen) {
     let json = offscreen.map.style_doc().unwrap().to_json();
     let camera = *offscreen.map.camera();
@@ -94,24 +90,15 @@ fn assert_matches_fresh(offscreen: &mut Offscreen) {
             camera.bearing,
             camera.pitch,
         )),
-        snapshot: None,
-        a11y: None,
-        count_frames: None,
-        flight: None,
-        cache: None,
     })
     .unwrap()
     .0;
     fresh.map.jump_to_state(camera);
     fresh.map.set_style_json(&json).unwrap();
-    for map in [&mut fresh, &mut *offscreen] {
-        map.map.set_mode(orb_runtime::RenderMode::Still);
-        settle(map);
-    }
-    let (a, b) = (offscreen.pixels(), fresh.pixels());
-    offscreen.map.set_mode(orb_runtime::RenderMode::Continuous);
+    settle(&mut fresh);
     settle(offscreen);
-    let differing = crate::differing_pixels(&a, &b);
+    let (a, b) = (offscreen.pixels(), fresh.pixels());
+    let differing = crate::common::differing_pixels(&a, &b);
     assert_eq!(differing, 0, "edited and fresh pixels differ");
 }
 
@@ -422,7 +409,7 @@ fn hits_follow_layer_order_visibility_and_camera() {
     map.map.jump_to_state(orb_runtime::CameraState::new(
         orb_crs::Geodetic::new(139.7655, 35.6835),
         15.0,
-        &super::web_mercator(),
+        &crate::common::web_mercator(),
     ));
     settle(&mut map);
     let center = glam::DVec2::new(512., 384.);
@@ -434,10 +421,10 @@ fn hits_follow_layer_order_visibility_and_camera() {
     assert_eq!(hit.source, "district");
     assert_eq!(hit.source_layer, None);
     // The last frame answers for its camera.
-    super::move_camera(&mut map.map, |c| c.bearing = 30.0);
+    crate::common::move_camera(&mut map.map, |c| c.bearing = 30.0);
     map.frame();
     assert!(map.map.hit_test(center).is_some());
-    super::move_camera(&mut map.map, |c| c.bearing = 0.0);
+    crate::common::move_camera(&mut map.map, |c| c.bearing = 0.0);
     settle(&mut map);
     let tx =
         Transaction::from_commands(r#"[["setLayoutProperty","stations","visibility","none"]]"#)
@@ -448,7 +435,7 @@ fn hits_follow_layer_order_visibility_and_camera() {
     let route = map.map.hit_test(center).expect("route under station");
     assert_eq!(route.layer, "route");
     assert_eq!(route.generation, frame.generation);
-    super::move_camera(&mut map.map, |c| c.target = orb_crs::Geodetic::new(0., 0.));
+    crate::common::move_camera(&mut map.map, |c| c.target = orb_crs::Geodetic::new(0., 0.));
     assert_eq!(map.map.hit_test(center), Some(route));
     settle(&mut map);
     assert_eq!(map.map.hit_test(center), None);
@@ -481,7 +468,7 @@ fn load_points(style: &str) -> Offscreen {
     map.map.jump_to_state(orb_runtime::CameraState::new(
         orb_crs::Geodetic::new(139.74, 35.685),
         15.0,
-        &super::web_mercator(),
+        &crate::common::web_mercator(),
     ));
     settle(&mut map);
     map

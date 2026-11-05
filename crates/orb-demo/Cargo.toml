@@ -1,29 +1,16 @@
 [package]
 name = "orb-demo"
-description = "The native demo: a v8 style in a window"
+description = "The native demo: a v8 style in a window, through orb-api"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 version.workspace = true
 
 [dependencies]
-orb-crs.workspace = true
 glam.workspace = true
-orb-camera.workspace = true
-orb-interact.workspace = true
-orb-hal.workspace = true
-orb-hal-wgpu.workspace = true
-orb-host-native.workspace = true
-orb-jobs.workspace = true
-orb-runtime.workspace = true
+orb-api.workspace = true
 serde_json.workspace = true
-png.workspace = true
-pollster.workspace = true
-wgpu.workspace = true
 winit.workspace = true
-
-[dev-dependencies]
-orb-a11y.workspace = true
 
 [lints]
 workspace = true

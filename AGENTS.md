@@ -38,10 +38,9 @@ node, pnpm, a JDK, Gradle, kotlinc, CMake, Go and devices-cli); run
 | `cargo xtask capi` | the C library in `target/capi`: static lib, headers, pkg-config and CMake files |
 | `mise x -- cargo xtask android [--run]` | `liborbis.so` (arm64-v8a, NDK), the AAR and the Android reference app; `--run` installs it on this worktree's emulator and starts it (logcat tag `Orbis`) |
 | `cargo xtask apple [--test] [--ios-sim[=name]]` | `hosts/apple/OrbisC.xcframework` (macOS, iOS, iOS simulator) and the Swift package; `--test` runs the Swift smoke test; `--ios-sim` builds the iOS app and runs it on a simulator (whose Metal lacks indirect draws: it reports that, M4's Compat tier is its path) |
-| `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]] [--cache <dir>]` | native demo window; `--cache` keeps fetches in an HTTP cache there |
-| `… -p orb-demo -- --snapshot out.png` | render offscreen until idle, write a PNG |
+| `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]] [--cache <dir>]` | native demo window through `orb-api`; `--cache` keeps state there (the HTTP cache, pipelines) |
 | `… -p orb-demo -- file://$PWD/web/demo/data/alps.json --flight web/demo/data/alps-flight.json` | the terrain flight over the Alps (web: `?style=alps&flight`) |
-| `cargo run --release -p orb-cli -- render <style> -o out.png [--at lon,lat,z[,bearing,pitch]] [--size WxH]` | `orbis`: a still picture of a style or scene document (Still mode) |
+| `cargo run --release -p orb-cli -- render <style> -o out.png [--at lon,lat,z[,bearing,pitch]] [--size WxH] [--a11y out.json]` | `orbis`: a still picture of a style or scene document (Still mode); `--a11y` also writes its semantic snapshot |
 | `… -p orb-cli -- tiles <style> -o dir --tms <id\|tms.json> --zoom z[-z] [--bbox w,s,e,n]` | a tile pyramid on the scene's plane (Tile mode), `dir/z/col/row.png` |
 | `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/pkg` |
 | `cargo xtask pages` | `cargo xtask web`, then the Vite build into `web/dist`: the site `.github/workflows/pages.yml` deploys on every push to `main` |

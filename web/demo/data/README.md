@@ -70,8 +70,8 @@ Reproduce from the repository root:
 ```sh
 cargo xtask demo-data   # HTTP ranges → both archives and manifest; Liberty's labels, sprite and glyph subsets
 cargo test -p xtask     # the MLT archive decodes to the same columns as the MVT one
-cargo run --release -p orb-demo -- --format mvt --snapshot /tmp/tokyo-mvt.png
-cargo run --release -p orb-demo -- --format mlt --snapshot /tmp/tokyo-mlt.png
+cargo run --release -p orb-cli -- render web/demo/data/tokyo-mvt.json -o /tmp/tokyo-mvt.png --at 139.74,35.685,15
+cargo run --release -p orb-cli -- render web/demo/data/tokyo-mlt.json -o /tmp/tokyo-mlt.png --at 139.74,35.685,15
 cargo xtask web
 pnpm -C web snapshot /tmp/tokyo-web-mvt.png --format=mvt
 pnpm -C web snapshot /tmp/tokyo-web-mlt.png --format=mlt \

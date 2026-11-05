@@ -138,7 +138,7 @@ time over a frame without a write, a 1600-point GeoJSON grid over the
 
 | Host | Edit call | Write total | Target |
 | --- | --- | --- | --- |
-| native (`cargo test --release -p orb-demo feature_state_write_cost -- --ignored`), medians of 400, four runs | 0.0005–0.0019 ms | 0.0027–0.0097 ms | ≤0.05 ms |
+| native (`cargo test --release -p orb-runtime --test edits feature_state_write_cost -- --ignored`), medians of 400, four runs | 0.0005–0.0019 ms | 0.0027–0.0097 ms | ≤0.05 ms |
 | Chrome main thread (`pnpm -C web edits`), means of 500, three runs | 0.0020–0.0026 ms | 0.003–0.004 ms; the frame part is within the ±0.01 ms run-to-run noise of a 0.03–0.05 ms frame | ≤0.05 ms |
 
 For comparison a uniform paint edit (`water` `fill-color`) costs 0.12–0.21 ms

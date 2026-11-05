@@ -12,3 +12,6 @@
   `https://tiles.openfreemap.org/fonts/Noto Sans Regular/0-255.pbf`. Noto Sans
   is © The Noto Project Authors, under the SIL Open Font License 1.1
   (`crates/orb-text/tests/data/fonts/OFL.txt`).
+- `extrusion.json`: a style of three GeoJSON blocks around the origin with
+  `fill-extrusion` heights, for the frame tests' camera-only uploads and
+  scene lights (`tests/frames.rs`).

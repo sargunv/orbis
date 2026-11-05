@@ -2366,19 +2366,8 @@ name = "orb-demo"
 version = "0.0.0"
 dependencies = [
  "glam",
- "orb-a11y",
- "orb-camera",
- "orb-crs",
- "orb-hal",
- "orb-hal-wgpu",
- "orb-host-native",
- "orb-interact",
- "orb-jobs",
- "orb-runtime",
- "png",
- "pollster",
+ "orb-api",
  "serde_json",
- "wgpu",
  "winit",
 ]
 
@@ -2539,6 +2528,7 @@ dependencies = [
  "orb-text",
  "orb-tile",
  "orb-v8",
+ "png",
  "pollster",
  "postcard",
  "serde",
