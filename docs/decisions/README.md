@@ -32,3 +32,4 @@ in code and commit messages.
 - [0025](0025-atmosphere.md): The atmosphere: one sky and fog model for every surface
 - [0026](0026-lighting.md): Lighting: one model, v8's light lowered onto it
 - [0027](0027-dense-tiles-in-a-full-scene.md): Dense tiles in a full scene
+- [0028](0028-compat.md): The Compat tier: Modern's commands beneath the HAL, a whole compat.wasm, and the device policy
