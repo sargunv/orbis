@@ -145,6 +145,13 @@ pub struct FrameStats {
     pub paints_written: u32,
     /// DEM tiles the prepare pass processed.
     pub prepared: u32,
+    /// Pipelines the device is still compiling (plan §8.4).
+    pub pipelines_pending: u32,
+    /// Nodes not drawn because a pipeline they need is still compiling.
+    pub nodes_waiting: u32,
+    /// Something in the frame waited for a pipeline (nodes, terrain, the
+    /// DEM prepare, the sky): the frame isn't complete.
+    pub waited: bool,
 }
 
 #[derive(Debug)]
@@ -181,13 +188,26 @@ pub struct Renderer {
     cull: Option<(ComputePipelineId, BindGroupId)>,
     draw_layout: BindGroupLayoutId,
     node_layout: BindGroupLayoutId,
-    /// The vector families' table-class pipelines.
-    paint: PaintPipelines,
-    /// Their bytecode class, created for the first node that interprets
+    /// The vector families' table-class pipelines, each made for the
+    /// family's first node.
+    paint: PaintClass,
+    /// Their bytecode class, made for the first node that interprets
     /// paint (plan §8.4: only it compiles the interpreter).
-    bytecode: Option<PaintPipelines>,
-    /// Symbols with halo and fill together, halo only, fill only.
-    symbol_pipelines: [RenderPipelineId; 3],
+    bytecode: PaintClass,
+    /// Symbols, made for the first symbol node.
+    symbol_pipeline: Option<RenderPipelineId>,
+    /// The symbol shader's pass (group 2): halo and fill together, halo
+    /// only, fill only.
+    symbol_passes: [BindGroupId; 3],
+    symbol_pass_layout: BindGroupLayoutId,
+    /// Nodes changed since pipelines were last made for them.
+    pipelines_stale: bool,
+    /// Pipelines the device had compiled when the bundles were recorded.
+    made_seen: u32,
+    /// Nodes the main bundle left out, waiting for a pipeline, and draped
+    /// nodes the drape bundle left out.
+    waiting: u32,
+    drape_waiting: u32,
     node_uniforms: BufferId,
     node_stride: u64,
     nodes: Vec<Node>,
@@ -391,10 +411,36 @@ impl Renderer {
         let modern = gpu.caps().tier == Tier::Modern;
         let cull_group = modern.then(|| cull_group(gpu, cull_layout, &b));
 
-        let layouts = [draw_layout, node_layout];
-        let paint = PaintPipelines::new(gpu, target, &layouts, false);
-        let symbol_pipelines =
-            [0.0, 1.0, 2.0].map(|pass| symbol_pipeline(gpu, target, &layouts, pass));
+        let symbol_pass_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: "symbol pass",
+            entries: &[uniform(0, ShaderStages::FRAGMENT)],
+        });
+        let pass_stride = u64::from(gpu.caps().limits.min_uniform_buffer_offset_alignment).max(16);
+        let pass_buffer = gpu.create_buffer(&BufferDesc {
+            label: "symbol passes",
+            size: 3 * pass_stride,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+        let symbol_passes = [0u32, 1, 2].map(|pass| {
+            gpu.write_buffer(
+                pass_buffer,
+                u64::from(pass) * pass_stride,
+                bytemuck::cast_slice(&[pass, 0, 0, 0]),
+            );
+            gpu.create_bind_group(&BindGroupDesc {
+                label: "symbol pass",
+                layout: symbol_pass_layout,
+                entries: &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::Buffer {
+                        buffer: pass_buffer,
+                        offset: u64::from(pass) * pass_stride,
+                        size: Some(16),
+                    },
+                }],
+            })
+        });
+        // The cull pipeline first: nothing draws without it (plan §8.4).
         let cull = cull_group.map(|group| {
             let module = gpu.create_shader_module(&ShaderModuleDesc {
                 label: CULL_SHADER.label,
@@ -435,9 +481,15 @@ impl Renderer {
             cull,
             draw_layout,
             node_layout,
-            paint,
-            bytecode: None,
-            symbol_pipelines,
+            paint: PaintClass::new(false),
+            bytecode: PaintClass::new(true),
+            symbol_pipeline: None,
+            symbol_passes,
+            symbol_pass_layout,
+            pipelines_stale: false,
+            made_seen: 0,
+            waiting: 0,
+            drape_waiting: 0,
             node_uniforms,
             node_stride,
             nodes: Vec::new(),
@@ -482,6 +534,7 @@ impl Renderer {
     /// explicitly disables antialiasing (e.g. reference image comparisons).
     pub fn set_antialias_3d(&mut self, gpu: &mut dyn Gpu, enabled: bool) {
         if self.extrusions.set_antialias(enabled) {
+            self.pipelines_stale = true;
             self.invalidate_bundle(gpu);
         }
     }
@@ -597,6 +650,7 @@ impl Renderer {
         self.assign_stacks();
         let cull: Vec<NodeCull> = self.nodes.iter().map(|n| n.cull).collect();
         self.scene.remap_nodes(&map, &cull);
+        self.pipelines_stale = true;
         self.invalidate_bundle(gpu);
     }
 
@@ -659,6 +713,7 @@ impl Renderer {
         if was != self.terrain.as_ref().is_some_and(|t| t.paint.is_some()) {
             self.assign_stacks();
             self.sync_cull();
+            self.pipelines_stale = true;
             self.invalidate_bundle(gpu);
         }
     }
@@ -868,11 +923,8 @@ impl Renderer {
     pub fn set_paint(&mut self, gpu: &mut dyn Gpu, node: u32, paint: &NodePaint) {
         let bytecode = paint.gpu().is_some_and(|g| g.mask != 0);
         if bytecode != self.nodes[node as usize].bytecode {
-            if bytecode && self.bytecode.is_none() {
-                let layouts = [self.draw_layout, self.node_layout];
-                self.bytecode = Some(PaintPipelines::new(gpu, self.target, &layouts, true));
-            }
             self.nodes[node as usize].bytecode = bytecode;
+            self.pipelines_stale = true;
             self.invalidate_bundle(gpu);
         }
         let entry = &mut self.nodes[node as usize];
@@ -943,8 +995,156 @@ impl Renderer {
         self.atmosphere.set(gpu, self.target, frame, paint, view);
     }
 
-    fn sky_commands(&self) -> Vec<RenderCommand> {
-        self.atmosphere.commands()
+    /// Asks for the pipelines the nodes need and counts those compiling:
+    /// a frame is complete only once none are (plan §8.4).
+    pub fn pipelines(&mut self, gpu: &mut dyn Gpu) -> PipelineCounts {
+        if std::mem::take(&mut self.pipelines_stale) {
+            self.make_pipelines(gpu);
+        }
+        gpu.poll_pipelines()
+    }
+
+    /// Makes the pipelines the nodes draw with that aren't made yet, in
+    /// draw order: the device compiles them in the order they are asked
+    /// for (the cull's was first), and [`prioritize`](Self::prioritize)
+    /// moves what the view shows ahead.
+    fn make_pipelines(&mut self, gpu: &mut dyn Gpu) {
+        let layouts = [self.draw_layout, self.node_layout];
+        let drape_target = TargetFormat {
+            color: DRAPE_FORMAT,
+            sample_count: 1,
+        };
+        let own_drape = self.target.color != DRAPE_FORMAT;
+        for i in 0..self.nodes.len() {
+            let node = &self.nodes[i];
+            let (family, bytecode) = (node.family, node.bytecode);
+            if node.stack.is_some() {
+                // Into the drape atlas, with its format's pipelines if
+                // the target's differs.
+                if !own_drape {
+                    self.make_node_pipeline(gpu, family, bytecode);
+                    continue;
+                }
+                let drape = self
+                    .drape_pipelines
+                    .get_or_insert_with(DrapePipelines::default);
+                if family.is_image() {
+                    self.images.make_for(
+                        gpu,
+                        &mut drape.images,
+                        drape_target,
+                        self.draw_layout,
+                        family,
+                    );
+                } else {
+                    let class = if bytecode {
+                        &mut drape.bytecode
+                    } else {
+                        &mut drape.paint
+                    };
+                    class.make(gpu, drape_target, &layouts, family);
+                }
+                continue;
+            }
+            self.make_node_pipeline(gpu, family, bytecode);
+        }
+    }
+
+    fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, family: Family, bytecode: bool) {
+        let layouts = [self.draw_layout, self.node_layout];
+        match family {
+            Family::Fill | Family::FillOutline | Family::Line | Family::Circle => {
+                let class = if bytecode {
+                    &mut self.bytecode
+                } else {
+                    &mut self.paint
+                };
+                class.make(gpu, self.target, &layouts, family);
+            }
+            Family::SymbolIcon | Family::SymbolText => {
+                let layouts = [self.draw_layout, self.node_layout, self.symbol_pass_layout];
+                if self.symbol_pipeline.is_none() {
+                    self.symbol_pipeline = Some(symbol_pipeline(gpu, self.target, &layouts));
+                }
+            }
+            Family::Raster | Family::Hillshade | Family::ColorRelief => {
+                self.images.make(gpu, family);
+            }
+            Family::Heatmap => self.heatmaps.make(gpu),
+            Family::FillExtrusion => self.extrusions.make(gpu),
+        }
+    }
+
+    /// The pipelines node `i` draws with, made or not.
+    fn node_pipelines(&self, i: usize, out: &mut Vec<PipelineId>) {
+        let node = &self.nodes[i];
+        if node.stack.is_some() {
+            if let Some(terrain) = &self.terrain {
+                out.extend(terrain.pipelines());
+            }
+            if let Some(d) = self.drape_pipelines.as_ref() {
+                let class = if node.bytecode { &d.bytecode } else { &d.paint };
+                out.extend(
+                    class
+                        .get(node.family)
+                        .or_else(|| {
+                            node.family
+                                .is_image()
+                                .then(|| d.images.get(node.family))
+                                .flatten()
+                        })
+                        .map(PipelineId::from),
+                );
+            }
+        }
+        match node.family {
+            Family::Heatmap => out.extend(self.heatmaps.pipelines()),
+            Family::FillExtrusion => out.extend(self.extrusions.pipelines()),
+            Family::SymbolIcon | Family::SymbolText => {
+                out.extend(self.symbol_pipeline.map(PipelineId::from));
+            }
+            family if family.is_image() => {
+                out.extend(self.images.pipeline(family).map(PipelineId::from));
+                if family == Family::Raster {
+                    out.extend(self.images.mips_pipeline());
+                } else {
+                    out.extend(self.images.prepare_pipelines());
+                }
+            }
+            family => {
+                let class = if node.bytecode {
+                    &self.bytecode
+                } else {
+                    &self.paint
+                };
+                out.extend(class.get(family).map(PipelineId::from));
+            }
+        }
+    }
+
+    /// Moves the pipelines of nodes with meshes in the scene ahead of the
+    /// others still compiling: what the current view needs first. Nodes
+    /// earlier in draw order go first (the bottom layers cover most of
+    /// the view), the cull before everything.
+    fn prioritize(&self, gpu: &mut dyn Gpu) {
+        let mut wanted = Vec::new();
+        if let Some((cull, _)) = self.cull {
+            wanted.push(cull.into());
+        }
+        for i in 0..self.nodes.len() {
+            if self.scene.node_meshes(i as u32).next().is_some() {
+                self.node_pipelines(i, &mut wanted);
+            }
+        }
+        if self.atmosphere.enabled {
+            wanted.extend(self.atmosphere.pipelines());
+        }
+        // Each moves to the front: the last asked for compiles first.
+        let mut seen = std::collections::HashSet::new();
+        wanted.retain(|&id| seen.insert(id) && !gpu.pipeline_ready(id));
+        for &id in wanted.iter().rev() {
+            gpu.prioritize_pipeline(id);
+        }
     }
 
     /// Draws a frame into `target`, cleared to `clear` (premultiplied RGBA).
@@ -958,6 +1158,7 @@ impl Renderer {
         self.bind_scene(gpu);
         let mut stats = self.render_modern(gpu, frame, target, clear);
         stats.draws += u32::from(self.atmosphere.enabled);
+        stats.draws -= stats.nodes_waiting;
         stats
     }
 
@@ -1028,6 +1229,18 @@ impl Renderer {
         // Preparing may have grown the compacted index buffer.
         self.bind_scene(gpu);
         self.refresh_image_groups(gpu);
+        let compiling = self.pipelines(gpu);
+        let made = compiling.made;
+        if compiling.made != self.made_seen {
+            // Pipelines arrived: record again what waited for them.
+            self.made_seen = compiling.made;
+            if self.waiting > 0 || self.drape_waiting > 0 {
+                self.invalidate_bundle(gpu);
+            }
+        }
+        if compiling.pending > 0 {
+            self.prioritize(gpu);
+        }
         let terrain_on = self.terrain.as_ref().is_some_and(terrain::Terrain::active);
         if let Some(terrain) = self.terrain.as_ref().filter(|_| terrain_on) {
             orb_scene::write_frame(gpu, terrain.drape_frame, &terrain.drape_frame(frame));
@@ -1085,6 +1298,18 @@ impl Renderer {
                 format: IndexFormat::Uint32,
                 offset: 0,
             };
+            let mut ready = Ready {
+                cull: self
+                    .cull
+                    .is_none_or(|(cull, _)| gpu.pipeline_ready(cull.into())),
+                terrain: self
+                    .terrain
+                    .as_mut()
+                    .filter(|_| terrain_on)
+                    .is_some_and(|t| t.ready(gpu)),
+                prepare: self.images.prepare_ready(gpu),
+                mips: self.images.mips_ready(gpu),
+            };
             let mut commands = Vec::with_capacity(self.nodes.len() * 4 + 1);
             if indexed {
                 commands.push(index_buffer.clone());
@@ -1119,6 +1344,13 @@ impl Renderer {
                 }
             }
             self.composites.regroup(gpu, runs, size);
+            // Until the composites compile, nothing draws: a split main
+            // pass needs its blend draw.
+            if !self.composites.ready(gpu) {
+                self.composites.clear(gpu);
+                ready.cull = false;
+            }
+            self.waiting = 0;
             for g in 0..self.composites.groups.len() {
                 if self.composites.groups[g].drawn_elsewhere() {
                     continue;
@@ -1129,7 +1361,9 @@ impl Renderer {
                     offset: 0,
                 }];
                 for i in self.composites.groups[g].nodes.clone() {
-                    self.node_commands(i, self.draw_group, &mut group);
+                    if !self.node_commands(gpu, &ready, i, self.draw_group, &mut group) {
+                        self.waiting += 1;
+                    }
                 }
                 self.composites.groups[g].bundle = Some(gpu.create_render_bundle(
                     &RenderBundleDesc {
@@ -1169,12 +1403,9 @@ impl Renderer {
                     }
                     None => {}
                 }
-                if !member {
-                    self.node_commands(i, self.draw_group, &mut commands);
+                if !member && !self.node_commands(gpu, &ready, i, self.draw_group, &mut commands) {
+                    self.waiting += 1;
                 }
-            }
-            if terrain_on && self.target.color != DRAPE_FORMAT {
-                self.make_drape_pipelines(gpu);
             }
             if let Some(drape_group) = self.drape_group.filter(|_| terrain_on) {
                 let mut drape = vec![RenderCommand::SetIndexBuffer {
@@ -1182,10 +1413,20 @@ impl Renderer {
                     format: IndexFormat::Uint32,
                     offset: 0,
                 }];
+                let before = self.drape_waiting;
+                self.drape_waiting = 0;
                 for i in 0..self.nodes.len() {
-                    if self.nodes[i].stack.is_some() {
-                        self.node_commands(i, drape_group, &mut drape);
+                    if self.nodes[i].stack.is_some()
+                        && !self.node_commands(gpu, &ready, i, drape_group, &mut drape)
+                    {
+                        self.drape_waiting += 1;
                     }
+                }
+                if self.drape_waiting < before
+                    && let Some(terrain) = &mut self.terrain
+                {
+                    // Slots drawn without them lack those layers.
+                    terrain.redraw_all();
                 }
                 self.drape_bundle = Some(gpu.create_render_bundle(
                     &RenderBundleDesc {
@@ -1208,6 +1449,8 @@ impl Renderer {
             candidates,
             placements_written: self.scene.take_placements_written(),
             paints_written: std::mem::take(&mut self.paints_written),
+            pipelines_pending: compiling.pending,
+            nodes_waiting: self.waiting,
             ..FrameStats::default()
         };
         if let Some((prepare, prepared)) = self.images.prepare_pass(gpu) {
@@ -1227,7 +1470,10 @@ impl Renderer {
         if self.cull.is_none() {
             compat::cull(gpu, &mut self.scene, frame);
         }
-        if let Some((pipeline, group)) = self.cull.filter(|_| !self.nodes.is_empty()) {
+        if let Some((pipeline, group)) = self
+            .cull
+            .filter(|&(cull, _)| !self.nodes.is_empty() && gpu.pipeline_ready(cull.into()))
+        {
             if self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed) {
                 passes.push(Pass::ClearBuffer {
                     buffer: self.scene.buffers().args,
@@ -1247,8 +1493,12 @@ impl Renderer {
                 ],
             }));
         }
+        let cull_ready = self
+            .cull
+            .is_none_or(|(cull, _)| gpu.pipeline_ready(cull.into()));
         for (index, node) in self.nodes.iter_mut().enumerate() {
             if let Some(heatmap) = &mut node.heatmap
+                && cull_ready
                 && let Some(pass) = self.heatmaps.prepare(
                     gpu,
                     heatmap,
@@ -1274,8 +1524,9 @@ impl Renderer {
             );
         }
         let mut first = !terrain_on;
+        let extrusions_ready = cull_ready && self.extrusions.composite(gpu).is_some();
         for (index, node) in self.nodes.iter_mut().enumerate() {
-            if let Some(extrusion) = &mut node.extrusion {
+            if let Some(extrusion) = node.extrusion.as_mut().filter(|_| extrusions_ready) {
                 passes.push(Pass::Render(self.extrusions.prepare(
                     gpu,
                     extrusion,
@@ -1291,34 +1542,57 @@ impl Renderer {
         }
         passes.extend(self.composites.passes());
         passes.extend(self.composites.main_passes(
-            self.sky_commands(),
+            self.atmosphere.commands(gpu),
             &self.bundles,
-            self.atmosphere.commands_after(),
+            self.atmosphere.commands_after(gpu),
             target,
             clear,
         ));
         gpu.submit(&passes);
+        // Every check passed only if nothing was compiling or compiled
+        // during the frame.
+        let end = gpu.poll_pipelines();
+        stats.pipelines_pending = end.pending;
+        stats.waited =
+            compiling.pending > 0 || end.pending > 0 || end.made != made || self.waiting > 0;
         stats
     }
 
     /// Node `i`'s commands as a bundle records them, over the scene group
     /// `scene`: the map's, or the drape's for draped nodes on terrain. In
     /// the map, a drape stack draws its terrain layer in its first node's
-    /// place.
-    fn node_commands(&self, i: usize, scene: BindGroupId, commands: &mut Vec<RenderCommand>) {
+    /// place. `false` when the node waits for a pipeline and records
+    /// nothing.
+    fn node_commands(
+        &self,
+        gpu: &mut dyn Gpu,
+        ready: &Ready,
+        i: usize,
+        scene: BindGroupId,
+        commands: &mut Vec<RenderCommand>,
+    ) -> bool {
+        if !ready.cull {
+            return false;
+        }
         let node = &self.nodes[i];
         let args = args_offset(i as u32);
         if let (Some(stack), true) = (node.stack, scene == self.draw_group) {
             let first = i == 0 || self.nodes[i - 1].stack != Some(stack);
+            if !ready.terrain {
+                return false;
+            }
             if let Some(terrain) = self.terrain.as_ref().filter(|_| first) {
                 commands.extend(terrain.composite_commands(u32::from(stack)));
             }
-            return;
+            return true;
         }
         if let Some(extrusion) = &node.extrusion {
+            let Some(composite) = self.extrusions.composite(gpu) else {
+                return false;
+            };
             if let Some(group) = extrusion.group {
                 commands.extend([
-                    RenderCommand::SetPipeline(self.extrusions.composite),
+                    RenderCommand::SetPipeline(composite),
                     RenderCommand::SetBindGroup {
                         index: 0,
                         group: scene,
@@ -1330,12 +1604,15 @@ impl Renderer {
                     },
                 ]);
             }
-            return;
+            return true;
         }
         if node.family == Family::Heatmap {
+            let Some(color) = self.heatmaps.color_pipeline(gpu) else {
+                return false;
+            };
             if let Some(group) = node.heatmap.as_ref().and_then(|h| h.group) {
                 commands.extend([
-                    RenderCommand::SetPipeline(self.heatmaps.color_pipeline),
+                    RenderCommand::SetPipeline(color),
                     RenderCommand::SetBindGroup {
                         index: 0,
                         group: scene,
@@ -1347,15 +1624,22 @@ impl Renderer {
                     },
                 ]);
             }
-            return;
+            return true;
         }
         if node.family.is_symbol() {
-            let passes: &[RenderPipelineId] = if node.separate_halo {
-                &self.symbol_pipelines[1..]
+            let Some(pipeline) = self
+                .symbol_pipeline
+                .filter(|&p| gpu.pipeline_ready(p.into()))
+            else {
+                return false;
+            };
+            let passes = if node.separate_halo {
+                &self.symbol_passes[1..]
             } else {
-                &self.symbol_pipelines[..1]
+                &self.symbol_passes[..1]
             };
             commands.extend([
+                RenderCommand::SetPipeline(pipeline),
                 RenderCommand::SetBindGroup {
                     index: 0,
                     group: scene,
@@ -1365,38 +1649,43 @@ impl Renderer {
                     group: node.group,
                 },
             ]);
-            for &pipeline in passes {
+            for &group in passes {
                 commands.extend([
-                    RenderCommand::SetPipeline(pipeline),
+                    RenderCommand::SetBindGroup { index: 2, group },
                     RenderCommand::DrawIndirect {
                         buffer: self.scene.buffers().args,
                         offset: args,
                     },
                 ]);
             }
-            return;
+            return true;
+        }
+        if matches!(node.family, Family::Hillshade | Family::ColorRelief) && !ready.prepare {
+            return false;
+        }
+        if node.family == Family::Raster && !ready.mips {
+            return false;
         }
         // Into the drape atlas, with its format's pipelines if the
         // target's differs.
         let drape = self
             .drape_pipelines
             .as_ref()
-            .filter(|_| scene != self.draw_group);
-        let (paint, bytecode) = match drape {
-            Some(d) => (&d.paint, d.bytecode.as_ref()),
-            None => (&self.paint, self.bytecode.as_ref()),
+            .filter(|_| scene != self.draw_group && self.target.color != DRAPE_FORMAT);
+        let pipeline = match (drape, node.family.is_image()) {
+            (Some(d), true) => d.images.get(node.family),
+            (Some(d), false) => if node.bytecode { &d.bytecode } else { &d.paint }.get(node.family),
+            (None, true) => self.images.pipeline(node.family),
+            (None, false) => if node.bytecode {
+                &self.bytecode
+            } else {
+                &self.paint
+            }
+            .get(node.family),
         };
-        let paint = match (node.bytecode, bytecode) {
-            (true, Some(bytecode)) => bytecode,
-            _ => paint,
+        let Some(pipeline) = pipeline.filter(|&p| gpu.pipeline_ready(p.into())) else {
+            return false;
         };
-        let pipeline = paint.get(node.family).unwrap_or_else(|| match drape {
-            Some(d) => d.image(node.family),
-            None => self
-                .images
-                .pipeline(node.family)
-                .expect("image families have pipelines"),
-        });
         commands.extend([
             RenderCommand::SetPipeline(pipeline),
             RenderCommand::SetBindGroup {
@@ -1419,6 +1708,7 @@ impl Renderer {
                 }
             },
         ]);
+        true
     }
 }
 
@@ -1430,61 +1720,36 @@ fn composite_group(composite: Option<(u32, f32, Blend)>) -> Option<u32> {
         .map(|(l, _, _)| l)
 }
 
-/// Draped families' pipelines for the drape atlas's format.
-#[derive(Debug)]
+/// What one bundle record found compiled besides the nodes' own
+/// pipelines.
+struct Ready {
+    cull: bool,
+    terrain: bool,
+    /// The DEM prepare's, which hillshade and color relief wait for.
+    prepare: bool,
+    /// The raster mip levels', which raster nodes wait for.
+    mips: bool,
+}
+
+/// Draped families' pipelines for the drape atlas's format, each made for
+/// its family's first draped node.
+#[derive(Debug, Default)]
 struct DrapePipelines {
-    paint: PaintPipelines,
-    bytecode: Option<PaintPipelines>,
-    /// Raster, hillshade, color relief.
-    images: [RenderPipelineId; 3],
-}
-
-impl DrapePipelines {
-    fn image(&self, family: Family) -> RenderPipelineId {
-        match family {
-            Family::Raster => self.images[0],
-            Family::Hillshade => self.images[1],
-            Family::ColorRelief => self.images[2],
-            _ => unreachable!("not an image family"),
-        }
-    }
-}
-
-impl Renderer {
-    /// Makes the drape atlas's pipelines, and its bytecode class once the
-    /// map's has one.
-    fn make_drape_pipelines(&mut self, gpu: &mut dyn Gpu) {
-        let format = TargetFormat {
-            color: DRAPE_FORMAT,
-            sample_count: 1,
-        };
-        let layouts = [self.draw_layout, self.node_layout];
-        if self.drape_pipelines.is_none() {
-            self.drape_pipelines = Some(DrapePipelines {
-                paint: PaintPipelines::new(gpu, format, &layouts, false),
-                bytecode: None,
-                images: self.images.pipelines_for(gpu, format, self.draw_layout),
-            });
-        }
-        let pipelines = self.drape_pipelines.as_mut().expect("made above");
-        if self.bytecode.is_some() && pipelines.bytecode.is_none() {
-            pipelines.bytecode = Some(PaintPipelines::new(gpu, format, &layouts, true));
-        }
-    }
+    paint: PaintClass,
+    bytecode: PaintClass,
+    images: image::ImagePipelines,
 }
 
 /// A module of `shader` for the device's tier: its WGSL on Modern, or on
-/// Compat its offline GLSL (the bytecode class with `bytecode`, the
-/// symbol shader specialized for `pass`).
-fn shader_module(gpu: &mut dyn Gpu, shader: &Shader, bytecode: bool, pass: u32) -> ShaderModuleId {
+/// Compat its offline GLSL (the bytecode class with `bytecode`).
+fn shader_module(gpu: &mut dyn Gpu, shader: &Shader, bytecode: bool) -> ShaderModuleId {
     #[cfg(feature = "compat")]
     if gpu.caps().tier == Tier::Compat {
         return gpu.create_shader_module(&ShaderModuleDesc {
             label: shader.label,
-            source: ShaderSource::Glsl(orb_shaders::glsl(shader, bytecode, pass)),
+            source: ShaderSource::Glsl(orb_shaders::glsl(shader, bytecode)),
         });
     }
-    let _ = pass;
     let wgsl = if bytecode {
         shader.bytecode_source()
     } else {
@@ -1496,41 +1761,55 @@ fn shader_module(gpu: &mut dyn Gpu, shader: &Shader, bytecode: bool, pass: u32) 
     })
 }
 
-/// The vector families' pipelines of one paint class.
-#[derive(Clone, Copy, Debug)]
-struct PaintPipelines {
-    fill: RenderPipelineId,
-    fill_outline: RenderPipelineId,
-    line: RenderPipelineId,
-    circle: RenderPipelineId,
+/// The vector families' pipelines of one paint class (fill, fill outline,
+/// line, circle), each made for the family's first node.
+#[derive(Clone, Copy, Debug, Default)]
+struct PaintClass {
+    bytecode: bool,
+    pipelines: [Option<RenderPipelineId>; 4],
 }
 
-impl PaintPipelines {
-    fn new(
-        gpu: &mut dyn Gpu,
-        target: TargetFormat,
-        layouts: &[BindGroupLayoutId],
-        bytecode: bool,
-    ) -> Self {
-        let mut pipeline = |shader: &Shader, topology| {
-            draw_pipeline(gpu, shader, bytecode, topology, target, layouts)
-        };
+impl PaintClass {
+    fn new(bytecode: bool) -> Self {
         Self {
-            fill: pipeline(&FILL_SHADER, PrimitiveTopology::TriangleList),
-            fill_outline: pipeline(&FILL_OUTLINE_SHADER, PrimitiveTopology::LineList),
-            line: pipeline(&LINE_SHADER, PrimitiveTopology::TriangleList),
-            circle: pipeline(&CIRCLE_SHADER, PrimitiveTopology::TriangleList),
+            bytecode,
+            pipelines: [None; 4],
         }
     }
 
-    fn get(&self, family: Family) -> Option<RenderPipelineId> {
+    fn index(family: Family) -> Option<usize> {
         Some(match family {
-            Family::Fill => self.fill,
-            Family::FillOutline => self.fill_outline,
-            Family::Line => self.line,
-            Family::Circle => self.circle,
+            Family::Fill => 0,
+            Family::FillOutline => 1,
+            Family::Line => 2,
+            Family::Circle => 3,
             _ => return None,
         })
+    }
+
+    fn get(&self, family: Family) -> Option<RenderPipelineId> {
+        self.pipelines[Self::index(family)?]
+    }
+
+    fn make(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        target: TargetFormat,
+        layouts: &[BindGroupLayoutId],
+        family: Family,
+    ) {
+        let Some(index) = Self::index(family) else {
+            return;
+        };
+        let (shader, topology) = match family {
+            Family::Fill => (&FILL_SHADER, PrimitiveTopology::TriangleList),
+            Family::FillOutline => (&FILL_OUTLINE_SHADER, PrimitiveTopology::LineList),
+            Family::Line => (&LINE_SHADER, PrimitiveTopology::TriangleList),
+            _ => (&CIRCLE_SHADER, PrimitiveTopology::TriangleList),
+        };
+        let bytecode = self.bytecode;
+        self.pipelines[index]
+            .get_or_insert_with(|| draw_pipeline(gpu, shader, bytecode, topology, target, layouts));
     }
 }
 
@@ -1565,7 +1844,7 @@ fn draw_pipeline_blending(
     layouts: &[BindGroupLayoutId],
     blend: Option<BlendState>,
 ) -> RenderPipelineId {
-    let module = shader_module(gpu, shader, bytecode, 0);
+    let module = shader_module(gpu, shader, bytecode);
     gpu.create_render_pipeline(&RenderPipelineDesc {
         cull_mode: None,
         label: shader.label,
@@ -1675,16 +1954,13 @@ fn scene_group(
     })
 }
 
-/// A symbol pipeline drawing halo and fill together (`pass` 0), or the
-/// halo (1) or the fill (2) alone.
+/// The symbol pipeline: over the scene, node and pass groups.
 fn symbol_pipeline(
     gpu: &mut dyn Gpu,
     target: TargetFormat,
     layouts: &[BindGroupLayoutId],
-    pass: f64,
 ) -> RenderPipelineId {
-    let module = shader_module(gpu, &SYMBOL_SHADER, false, pass as u32);
-    let constants = [("PASS", pass)];
+    let module = shader_module(gpu, &SYMBOL_SHADER, false);
     gpu.create_render_pipeline(&RenderPipelineDesc {
         cull_mode: None,
         label: SYMBOL_SHADER.label,
@@ -1692,12 +1968,12 @@ fn symbol_pipeline(
         vertex: ShaderStage {
             module,
             entry_point: SYMBOL_SHADER.vertex,
-            constants: &constants,
+            constants: &[],
         },
         fragment: ShaderStage {
             module,
             entry_point: SYMBOL_SHADER.fragment,
-            constants: &constants,
+            constants: &[],
         },
         targets: &[ColorTargetState {
             format: target.color,

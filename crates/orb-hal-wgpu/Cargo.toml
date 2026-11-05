@@ -14,12 +14,15 @@ wgpu.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
+wasm-bindgen.workspace = true
 web-sys = { workspace = true, features = ["ImageBitmap"] }
 wgpu = { workspace = true, features = ["webgpu"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Pipeline cache files carry a checksum (src/cache.rs).
 sha2.workspace = true
+# Compile threads pop wgpu's (immediately ready) error scopes.
+pollster.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 wgpu = { workspace = true, features = ["metal"] }

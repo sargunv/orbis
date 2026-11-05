@@ -16,8 +16,9 @@ use crate::{Backend, Error, RuntimeOptions};
 /// The marker file the crash sentinel keeps in a runtime's state directory.
 const SENTINEL: &str = "gpu-sentinel";
 
-/// The process aborts once the sentinel is armed: the fault the sentinel
-/// exists for (a driver crashing in its compiler), injected by tests.
+/// Faults the sentinel exists for, injected by tests: `pipelines`, the
+/// process aborts once the sentinel is armed (a driver crashing in its
+/// compiler); `hang`, compiles never finish (a driver hung in it).
 const FAULT: &str = "ORB_FAULT_INJECTION";
 
 // One per runtime: the variants' sizes don't matter.
@@ -49,8 +50,9 @@ impl Device {
     pub(crate) fn choose(
         options: &RuntimeOptions,
     ) -> Result<(Self, String, Option<PathBuf>), Error> {
-        let compat =
-            |why: String| make_compat(options).map(|d| (d, format!("Compat: {why}"), None));
+        let compat = |why: String| {
+            make_compat(options).map(|(d, note)| (d, format!("Compat: {why}{note}"), None))
+        };
         if options.backend == Backend::Compat {
             return compat("asked for".into());
         }
@@ -78,14 +80,14 @@ impl Device {
                 .and_then(|m| std::fs::read_to_string(m).ok());
             if Sentinel::read(found.as_deref(), &key) == Sentinel::Tripped {
                 demote = Some(format!(
-                    "{} crashed making pipelines last time (crash sentinel)",
+                    "{} crashed or hung making pipelines (crash sentinel)",
                     info.name
                 ));
             }
             if let Some(why) = demote {
                 drop(modern);
                 return match make_compat(options) {
-                    Ok(device) => Ok((device, format!("Compat: {why}"), None)),
+                    Ok((device, note)) => Ok((device, format!("Compat: {why}{note}"), None)),
                     Err(e) => {
                         // Better a map on Modern than none.
                         let modern =
@@ -102,6 +104,16 @@ impl Device {
             .as_deref()
             .map(|dir| arm(dir, &key))
             .transpose()?;
+        let mut modern = modern;
+        if std::env::var_os(FAULT).is_some_and(|f| f == "hang") {
+            modern.inject_compile_hang();
+            if let Some(ms) = std::env::var("ORB_COMPILE_WATCHDOG_MS")
+                .ok()
+                .and_then(|ms| ms.parse().ok())
+            {
+                modern.set_compile_watchdog(std::time::Duration::from_millis(ms));
+            }
+        }
         Ok((
             Self::Modern(modern),
             format!("Modern: {} ({:?})", info.name, info.backend),
@@ -137,6 +149,27 @@ impl Device {
         }
     }
 
+    /// Calls `wake` whenever a pipeline compiles; `false` when the device
+    /// can't (Compat without its compile thread), so frames poll for them.
+    pub(crate) fn set_compile_wake(&self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> bool {
+        match self {
+            Self::Modern(gpu) => {
+                gpu.set_compile_wake(wake);
+                true
+            }
+            Self::Compat(c) => c.gpu.set_compile_wake(wake),
+        }
+    }
+
+    /// The compile the watchdog found hung, if one was: the device is
+    /// lost, and the sentinel stays armed so the next device demotes.
+    pub(crate) fn hung(&self) -> Option<String> {
+        match self {
+            Self::Modern(gpu) => gpu.hung().map(str::to_owned),
+            Self::Compat(c) => c.gpu.hung().map(str::to_owned),
+        }
+    }
+
     pub(crate) fn lost(&self) -> bool {
         match self {
             Self::Modern(gpu) => gpu.lost(),
@@ -162,11 +195,22 @@ impl Device {
     }
 }
 
-fn make_compat(options: &RuntimeOptions) -> Result<Device, Error> {
+/// A Compat device, and a note for the selection when its programs link
+/// on the drawing thread.
+fn make_compat(options: &RuntimeOptions) -> Result<(Device, String), Error> {
     let (egl, gl) =
         EglContext::headless(options.egl_library.as_deref()).map_err(Error::Unsupported)?;
-    let gpu = GlGpu::new(gl).map_err(Error::Unsupported)?;
-    Ok(Device::Compat(Box::new(Compat { gpu, egl })))
+    let mut gpu = GlGpu::new(gl).map_err(Error::Unsupported)?;
+    // Programs link on a thread of their own (plan §8.4); without one,
+    // one links per frame.
+    let note = match egl.compile_thread() {
+        Ok(thread) => {
+            gpu.set_compile_thread(thread);
+            String::new()
+        }
+        Err(e) => format!("; programs link on the drawing thread ({e})"),
+    };
+    Ok((Device::Compat(Box::new(Compat { gpu, egl })), note))
 }
 
 /// Writes the sentinel's marker before any pipeline is made.
@@ -188,7 +232,8 @@ pub(crate) fn before_pipelines() {
     }
 }
 
-/// Clears an armed sentinel: the pipelines were made.
+/// Clears an armed sentinel: the pipelines were made, or the device was
+/// lost for another reason than its compiler.
 pub(crate) fn disarm(marker: &Path) {
     let _ = std::fs::remove_file(marker);
 }

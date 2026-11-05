@@ -8,8 +8,13 @@ use orb_shaders::{HEATMAP_COLOR_SHADER, HEATMAP_SHADER};
 
 #[derive(Debug)]
 pub(crate) struct Heatmaps {
-    pub(crate) density_pipeline: Option<RenderPipelineId>,
-    pub(crate) color_pipeline: RenderPipelineId,
+    /// Density and colour, made for the first heatmap node; no density
+    /// without blendable half-float targets.
+    pipelines: Option<(Option<RenderPipelineId>, RenderPipelineId)>,
+    target: TargetFormat,
+    /// Density targets are half-float and blended: Compat may lack them.
+    density: bool,
+    layouts: [BindGroupLayoutId; 2],
     layout: BindGroupLayoutId,
     sampler: SamplerId,
 }
@@ -67,9 +72,32 @@ impl Heatmaps {
                 },
             ],
         });
-        let density_pipeline = if gpu.caps().rgba16float_blendable {
+        let sampler = gpu.create_sampler(&SamplerDesc {
+            label: "heatmap linear",
+            filter: FilterMode::Linear,
+            address: AddressMode::ClampToEdge,
+            mipmap_filter: FilterMode::Nearest,
+            anisotropy: 1,
+        });
+        Self {
+            pipelines: None,
+            target,
+            density: gpu.caps().rgba16float_blendable,
+            layouts: [scene, node],
+            layout,
+            sampler,
+        }
+    }
+
+    /// Makes the pipelines, for the first heatmap node.
+    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu) {
+        if self.pipelines.is_some() {
+            return;
+        }
+        let ([scene, node], layout, target) = (self.layouts, self.layout, self.target);
+        let density_pipeline = if self.density {
             let shader = HEATMAP_SHADER;
-            let module = crate::shader_module(gpu, &shader, false, 0);
+            let module = crate::shader_module(gpu, &shader, false);
             Some(gpu.create_render_pipeline(&RenderPipelineDesc {
                 cull_mode: None,
                 label: shader.label,
@@ -103,19 +131,22 @@ impl Heatmaps {
             target,
             &[scene, layout],
         );
-        let sampler = gpu.create_sampler(&SamplerDesc {
-            label: "heatmap linear",
-            filter: FilterMode::Linear,
-            address: AddressMode::ClampToEdge,
-            mipmap_filter: FilterMode::Nearest,
-            anisotropy: 1,
-        });
-        Self {
-            density_pipeline,
-            color_pipeline,
-            layout,
-            sampler,
-        }
+        self.pipelines = Some((density_pipeline, color_pipeline));
+    }
+
+    /// The colour pipeline, once made and compiled with the density's.
+    pub(crate) fn color_pipeline(&self, gpu: &mut dyn Gpu) -> Option<RenderPipelineId> {
+        let (density, color) = self.pipelines?;
+        let ready = density.is_none_or(|d| gpu.pipeline_ready(d.into()))
+            && gpu.pipeline_ready(color.into());
+        ready.then_some(color)
+    }
+
+    pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
+        self.pipelines
+            .iter()
+            .flat_map(|(d, c)| d.iter().chain([c]).map(|&p| p.into()))
+            .collect()
     }
 
     pub(crate) fn node(gpu: &mut dyn Gpu) -> NodeHeatmap {
@@ -180,7 +211,7 @@ impl Heatmaps {
         uniform: BindingResource,
         size: [u32; 2],
     ) -> bool {
-        if self.density_pipeline.is_none() || node.size == size {
+        if !self.density || node.size == size {
             return false;
         }
         if let Some(group) = node.group.take() {
@@ -240,7 +271,8 @@ impl Heatmaps {
         args: BufferId,
         index: u32,
     ) -> Option<RenderPass> {
-        let pipeline = self.density_pipeline?;
+        self.color_pipeline(gpu)?;
+        let pipeline = self.pipelines?.0?;
         let target = node.target?;
         let bundle = *node.bundle.get_or_insert_with(|| {
             gpu.create_render_bundle(

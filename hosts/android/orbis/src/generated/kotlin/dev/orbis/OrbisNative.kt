@@ -204,6 +204,9 @@ internal object OrbisNative {
     external fun orbRuntimePipelineMs(self: Long): Double
 
     @JvmStatic
+    external fun orbRuntimePipelineTimings(self: Long): ByteArray
+
+    @JvmStatic
     external fun orbTargetCreateTexture(runtime: Long, width: Int, height: Int, scale: Double): Long
 
     @JvmStatic
@@ -240,7 +243,7 @@ internal object OrbisNative {
     fun newOrbCameraTarget(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double): OrbCameraTarget = OrbCameraTarget(lon, lat, zoom, bearing, pitch, roll, elevation)
 
     @JvmStatic
-    fun newOrbFrame(drawn: Boolean, generation: Long, idle: Boolean, loaded: Boolean, tiles_drawn: Int, tiles_loading: Int, draws: Int, dispatches: Int): OrbFrame = OrbFrame(drawn, generation.toULong(), idle, loaded, tiles_drawn.toUInt(), tiles_loading.toUInt(), draws.toUInt(), dispatches.toUInt())
+    fun newOrbFrame(drawn: Boolean, generation: Long, idle: Boolean, loaded: Boolean, tiles_drawn: Int, tiles_loading: Int, draws: Int, dispatches: Int, pipelines_pending: Int, layers_waiting: Int): OrbFrame = OrbFrame(drawn, generation.toULong(), idle, loaded, tiles_drawn.toUInt(), tiles_loading.toUInt(), draws.toUInt(), dispatches.toUInt(), pipelines_pending.toUInt(), layers_waiting.toUInt())
 
     @JvmStatic
     fun newOrbLngLat(lon: Double, lat: Double, valid: Boolean): OrbLngLat = OrbLngLat(lon, lat, valid)

@@ -89,8 +89,9 @@ pub struct FrameInfo {
     /// dispatches, candidates, tiles_drawn, tiles_loading, bundle_recorded,
     /// placements_written, paints_written, uploaded_from_wasm,
     /// uploaded_from_js, texels_from_wasm, texels_from_js, header_bytes,
-    /// jobs_done, lost`, then [`MEMORY`] words of memory (plan §8's budget:
-    /// see [`memory_stats`]), then the frame's camera as [`UiRole::camera`]
+    /// jobs_done, pipelines_pending, layers_waiting, lost`, then [`MEMORY`]
+    /// words of memory (plan §8's budget: see [`memory_stats`]), then the
+    /// frame's camera as [`UiRole::camera`]
     /// gives it, so DOM overlays can follow the frame on screen
     /// (`web/src/frames.ts` reads them by name). Booleans are 0 or 1; byte
     /// counts are since the map was created: buffer bytes written from wasm
@@ -536,6 +537,8 @@ impl OrbisMap {
             uploaded.texels_from_js as f64,
             jobs.header_bytes as f64,
             f64::from(jobs.done),
+            f64::from(report.frame.pipelines_pending),
+            f64::from(report.frame.nodes_waiting),
             0.0,
         ];
         stats.extend(memory_stats(&report.memory));
@@ -558,7 +561,7 @@ impl OrbisMap {
 }
 
 /// [`FrameInfo::stats`]' counters before the camera, and where idleness is.
-const STATS: usize = 20;
+const STATS: usize = 22;
 const IDLE: usize = 2;
 /// Words of memory after the counters.
 const MEMORY: usize = 17;

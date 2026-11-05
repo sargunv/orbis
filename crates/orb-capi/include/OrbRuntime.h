@@ -41,6 +41,8 @@ OrbRuntime_set_pipeline_cache_dir_result OrbRuntime_set_pipeline_cache_dir(OrbRu
 
 double OrbRuntime_pipeline_ms(const OrbRuntime* self);
 
+void OrbRuntime_pipeline_timings(const OrbRuntime* self, DiplomatWrite* write);
+
 void OrbRuntime_destroy(OrbRuntime* self);
 
 

@@ -21,8 +21,13 @@ public struct OrbFrame: Equatable, Sendable {
     public var tilesLoading: UInt32
     public var draws: UInt32
     public var dispatches: UInt32
+    /// Pipelines still compiling: layers that need them aren't drawn
+    /// yet.
+    public var pipelinesPending: UInt32
+    /// Layers not drawn while their pipelines compile.
+    public var layersWaiting: UInt32
 
-    public init(drawn: Bool, generation: UInt64, idle: Bool, loaded: Bool, tilesDrawn: UInt32, tilesLoading: UInt32, draws: UInt32, dispatches: UInt32) {
+    public init(drawn: Bool, generation: UInt64, idle: Bool, loaded: Bool, tilesDrawn: UInt32, tilesLoading: UInt32, draws: UInt32, dispatches: UInt32, pipelinesPending: UInt32, layersWaiting: UInt32) {
         self.drawn = drawn
         self.generation = generation
         self.idle = idle
@@ -31,6 +36,8 @@ public struct OrbFrame: Equatable, Sendable {
         self.tilesLoading = tilesLoading
         self.draws = draws
         self.dispatches = dispatches
+        self.pipelinesPending = pipelinesPending
+        self.layersWaiting = layersWaiting
     }
 
     init(_ c: OrbisC.OrbFrame) {
@@ -42,9 +49,11 @@ public struct OrbFrame: Equatable, Sendable {
         self.tilesLoading = c.tiles_loading
         self.draws = c.draws
         self.dispatches = c.dispatches
+        self.pipelinesPending = c.pipelines_pending
+        self.layersWaiting = c.layers_waiting
     }
 
     var c: OrbisC.OrbFrame {
-        OrbisC.OrbFrame(drawn: self.drawn, generation: self.generation, idle: self.idle, loaded: self.loaded, tiles_drawn: self.tilesDrawn, tiles_loading: self.tilesLoading, draws: self.draws, dispatches: self.dispatches)
+        OrbisC.OrbFrame(drawn: self.drawn, generation: self.generation, idle: self.idle, loaded: self.loaded, tiles_drawn: self.tilesDrawn, tiles_loading: self.tilesLoading, draws: self.draws, dispatches: self.dispatches, pipelines_pending: self.pipelinesPending, layers_waiting: self.layersWaiting)
     }
 }

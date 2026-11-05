@@ -179,30 +179,53 @@ pub(crate) struct Prepared {
 
 #[derive(Debug)]
 struct PreparePipelines {
-    pad_layout: BindGroupLayoutId,
-    slope_layout: BindGroupLayoutId,
     pad: ComputePipelineId,
     slope: ComputePipelineId,
-    mips_layout: BindGroupLayoutId,
-    mips: ComputePipelineId,
+}
+
+/// One target format's raster, hillshade and color-relief pipelines, each
+/// made for the first node of its family.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ImagePipelines([Option<RenderPipelineId>; 3]);
+
+fn image_index(family: Family) -> usize {
+    match family {
+        Family::Raster => 0,
+        Family::Hillshade => 1,
+        Family::ColorRelief => 2,
+        _ => unreachable!("not an image family"),
+    }
+}
+
+impl ImagePipelines {
+    pub(crate) fn get(&self, family: Family) -> Option<RenderPipelineId> {
+        self.0[image_index(family)]
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct Images {
+    target: TargetFormat,
+    draw_layout: BindGroupLayoutId,
     image_layout: BindGroupLayoutId,
     relief_layout: BindGroupLayoutId,
-    raster: RenderPipelineId,
-    hillshade: RenderPipelineId,
-    color_relief: RenderPipelineId,
+    /// Raster, hillshade and color relief, made for their first node.
+    pipelines: ImagePipelines,
     linear: SamplerId,
     nearest: SamplerId,
     /// Bound by nodes whose source has no page yet.
     placeholder: TextureId,
     placeholder_ramp: TextureId,
-    /// The prepare dispatch's layouts and pipelines (pad, slope); none on
-    /// Compat, which has no compute.
+    pad_layout: BindGroupLayoutId,
+    slope_layout: BindGroupLayoutId,
+    mips_layout: BindGroupLayoutId,
+    /// The prepare dispatch's pipelines (pad, slope), made for the first
+    /// DEM page; none on Compat, which has no compute.
     prepare: Option<PreparePipelines>,
-    /// Compat's prepare draws.
+    /// The raster mip levels' pipeline, made for the first raster page on
+    /// Modern; Compat's raster tiles have one level.
+    mips: Option<ComputePipelineId>,
+    /// Compat's prepare draws, made for the first DEM page.
     #[cfg(feature = "compat")]
     draws: Option<compat_prepare::Draws>,
     pages: Vec<Option<Page>>,
@@ -252,9 +275,6 @@ impl Images {
             label: "color relief node",
             entries: &relief_entries,
         });
-        let [raster, hillshade, color_relief] =
-            image_pipelines(gpu, target, draw_layout, image_layout, relief_layout);
-
         // Raster tiles are mipmapped (GL JS's `useMipmap`) and sampled
         // anisotropically, as GL JS does above 20° of pitch; pages without
         // mip levels sample their one level.
@@ -314,75 +334,123 @@ impl Images {
                 ],
             })
         };
-        let compute_tier = gpu.caps().tier == Tier::Modern;
         let pad_layout = prepare_layout(gpu, "prepare pad");
         let slope_layout = prepare_layout(gpu, "prepare slope");
         let mips_layout = prepare_layout(gpu, "image mips");
-        let mut compute = |shader: &Shader, layout| {
-            let module = gpu.create_shader_module(&ShaderModuleDesc {
-                label: shader.label,
-                source: ShaderSource::Wgsl(shader.source().into()),
-            });
-            gpu.create_compute_pipeline(&ComputePipelineDesc {
-                label: shader.label,
-                bind_group_layouts: &[layout],
-                compute: ShaderStage {
-                    module,
-                    entry_point: shader.compute,
-                    constants: &[],
-                },
-            })
-        };
-        let prepare = compute_tier.then(|| PreparePipelines {
-            pad_layout,
-            slope_layout,
-            pad: compute(&PREPARE_PAD_SHADER, pad_layout),
-            slope: compute(&PREPARE_SLOPE_SHADER, slope_layout),
-            mips_layout,
-            mips: compute(&IMAGE_MIPS_SHADER, mips_layout),
-        });
 
         Self {
+            target,
+            draw_layout,
             image_layout,
             relief_layout,
-            raster,
-            hillshade,
-            color_relief,
+            pipelines: ImagePipelines::default(),
             linear,
             nearest,
             placeholder: placeholder_array,
             placeholder_ramp,
-            prepare,
+            pad_layout,
+            slope_layout,
+            mips_layout,
+            prepare: None,
+            mips: None,
             #[cfg(feature = "compat")]
-            draws: (!compute_tier).then(|| compat_prepare::Draws::new(gpu)),
+            draws: None,
             pages: Vec::new(),
         }
     }
 
-    /// Raster, hillshade and color-relief pipelines for another target
-    /// (the drape atlas's format).
-    pub(crate) fn pipelines_for(
+    /// Makes `family`'s pipeline for the map's target if it isn't made.
+    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, family: Family) -> RenderPipelineId {
+        let (target, draw_layout) = (self.target, self.draw_layout);
+        let mut pipelines = self.pipelines;
+        let id = self.make_for(gpu, &mut pipelines, target, draw_layout, family);
+        self.pipelines = pipelines;
+        id
+    }
+
+    /// Makes `family`'s pipeline in `pipelines`, for another target (the
+    /// drape atlas's format), if it isn't made.
+    pub(crate) fn make_for(
         &self,
         gpu: &mut dyn Gpu,
+        pipelines: &mut ImagePipelines,
         target: TargetFormat,
         draw_layout: BindGroupLayoutId,
-    ) -> [RenderPipelineId; 3] {
-        image_pipelines(
-            gpu,
-            target,
-            draw_layout,
-            self.image_layout,
-            self.relief_layout,
-        )
+        family: Family,
+    ) -> RenderPipelineId {
+        *pipelines.0[image_index(family)].get_or_insert_with(|| {
+            let (shader, layout) = match family {
+                Family::Raster => (&RASTER_SHADER, self.image_layout),
+                Family::Hillshade => (&HILLSHADE_SHADER, self.image_layout),
+                _ => (&COLOR_RELIEF_SHADER, self.relief_layout),
+            };
+            crate::draw_pipeline(
+                gpu,
+                shader,
+                false,
+                PrimitiveTopology::TriangleList,
+                target,
+                &[draw_layout, layout],
+            )
+        })
     }
 
     pub(crate) fn pipeline(&self, family: Family) -> Option<RenderPipelineId> {
-        match family {
-            Family::Raster => Some(self.raster),
-            Family::Hillshade => Some(self.hillshade),
-            Family::ColorRelief => Some(self.color_relief),
-            _ => None,
+        self.pipelines.get(family)
+    }
+
+    /// Makes the DEM prepare pipelines, for the first DEM page.
+    fn make_prepare(&mut self, gpu: &mut dyn Gpu) {
+        #[cfg(feature = "compat")]
+        if gpu.caps().tier == Tier::Compat {
+            if self.draws.is_none() {
+                self.draws = Some(compat_prepare::Draws::new(gpu));
+            }
+            return;
         }
+        if self.prepare.is_some() {
+            return;
+        }
+        self.prepare = Some(PreparePipelines {
+            pad: compute_pipeline(gpu, &PREPARE_PAD_SHADER, self.pad_layout),
+            slope: compute_pipeline(gpu, &PREPARE_SLOPE_SHADER, self.slope_layout),
+        });
+    }
+
+    /// Whether raster tiles have their mip levels: the pipeline that makes
+    /// them compiled, or no raster page needs it. Raster nodes wait for it.
+    pub(crate) fn mips_ready(&self, gpu: &mut dyn Gpu) -> bool {
+        self.mips.is_none_or(|p| gpu.pipeline_ready(p.into()))
+    }
+
+    /// The raster mip levels' pipeline, for the first-visible order.
+    pub(crate) fn mips_pipeline(&self) -> Option<PipelineId> {
+        self.mips.map(PipelineId::from)
+    }
+
+    /// Whether DEM tiles can be prepared: their pipelines compiled, or no
+    /// DEM page needs them. What reads prepared DEM tiles (hillshade,
+    /// color relief, terrain) waits for it.
+    pub(crate) fn prepare_ready(&self, gpu: &mut dyn Gpu) -> bool {
+        #[cfg(feature = "compat")]
+        if let Some(draws) = &self.draws {
+            return draws.ready(gpu);
+        }
+        self.prepare
+            .as_ref()
+            .is_none_or(|p| gpu.pipeline_ready(p.pad.into()) && gpu.pipeline_ready(p.slope.into()))
+    }
+
+    /// The prepare pipelines, for the first-visible order.
+    pub(crate) fn prepare_pipelines(&self) -> Vec<PipelineId> {
+        #[cfg(feature = "compat")]
+        if let Some(draws) = &self.draws {
+            return draws.pipelines();
+        }
+        self.prepare
+            .iter()
+            .flat_map(|p| [p.pad.into(), p.slope.into()])
+            .collect()
     }
 
     pub(crate) fn create_page(
@@ -403,9 +471,15 @@ impl Images {
             usage,
             mip_levels: 1,
         };
+        if kind == PageKind::Dem {
+            self.make_prepare(gpu);
+        }
+        if kind == PageKind::Raster && gpu.caps().tier == Tier::Modern && self.mips.is_none() {
+            self.mips = Some(compute_pipeline(gpu, &IMAGE_MIPS_SHADER, self.mips_layout));
+        }
         let textures = match kind {
             // Mipmapped on Modern (#3), whose compute pass makes the levels.
-            PageKind::Raster if self.prepare.is_some() => vec![PageTexture {
+            PageKind::Raster if self.mips.is_some() => vec![PageTexture {
                 usage: uploaded | TextureUsages::STORAGE_BINDING,
                 mip_levels: 32 - width.max(height).max(1).leading_zeros(),
                 ..texture("raster tiles", 0, uploaded)
@@ -528,7 +602,9 @@ impl Images {
     /// The compute pass that makes mip levels for raster layers uploaded
     /// since the last, if any, and its dispatches.
     pub(crate) fn mip_pass(&mut self, gpu: &mut dyn Gpu) -> Option<(Pass, u32)> {
-        let pipelines = self.prepare.as_ref()?;
+        // Layers wait for the pipeline to compile.
+        let mips_pipeline = self.mips.filter(|&p| gpu.pipeline_ready(p.into()))?;
+        let mips_layout = self.mips_layout;
         let mut commands = Vec::new();
         let mut dispatches = 0;
         for page in self.pages.iter_mut().flatten() {
@@ -561,7 +637,7 @@ impl Images {
                         };
                         gpu.create_bind_group(&BindGroupDesc {
                             label: "image mips",
-                            layout: pipelines.mips_layout,
+                            layout: mips_layout,
                             entries: &[
                                 view(0, views[level - 1]),
                                 view(1, views[level]),
@@ -585,7 +661,7 @@ impl Images {
             let [width, height] = page.page.size(0);
             for (level, &group) in (1..levels).zip(&mips.groups) {
                 commands.extend([
-                    ComputeCommand::SetPipeline(pipelines.mips),
+                    ComputeCommand::SetPipeline(mips_pipeline),
                     ComputeCommand::SetBindGroup { index: 0, group },
                     ComputeCommand::Dispatch {
                         x: (width >> level).max(1).div_ceil(8),
@@ -616,8 +692,11 @@ impl Images {
     }
 
     /// The compute pass that prepares pending DEM tiles, if any, and how
-    /// many tiles it prepares.
+    /// many tiles it prepares. Jobs wait while the pipelines compile.
     pub(crate) fn prepare_pass(&mut self, gpu: &mut dyn Gpu) -> Option<(Vec<Pass>, Prepared)> {
+        if !self.prepare_ready(gpu) {
+            return None;
+        }
         #[cfg(feature = "compat")]
         if let Some(draws) = &self.draws {
             let mut passes = Vec::new();
@@ -638,6 +717,7 @@ impl Images {
             });
         }
         let pipelines = self.prepare.as_ref()?;
+        let (pad_layout, slope_layout) = (self.pad_layout, self.slope_layout);
         let mut commands = Vec::new();
         let mut prepared = 0;
         for page in self.pages.iter_mut().flatten() {
@@ -689,13 +769,8 @@ impl Images {
                     revision,
                     jobs,
                     capacity,
-                    pad: group("prepare pad", pipelines.pad_layout, DEM_RAW, DEM_PADDED),
-                    slope: group(
-                        "prepare slope",
-                        pipelines.slope_layout,
-                        DEM_PADDED,
-                        DEM_SLOPES,
-                    ),
+                    pad: group("prepare pad", pad_layout, DEM_RAW, DEM_PADDED),
+                    slope: group("prepare slope", slope_layout, DEM_PADDED, DEM_SLOPES),
                 }
             });
             let jobs: Vec<u32> = page.pending.drain(..).flat_map(|j| j.words()).collect();
@@ -855,29 +930,25 @@ impl Images {
     }
 }
 
-/// The raster, hillshade and color-relief pipelines for `target`.
-fn image_pipelines(
+/// A compute pipeline of `shader` over one group of `layout`.
+fn compute_pipeline(
     gpu: &mut dyn Gpu,
-    target: TargetFormat,
-    draw_layout: BindGroupLayoutId,
-    image_layout: BindGroupLayoutId,
-    relief_layout: BindGroupLayoutId,
-) -> [RenderPipelineId; 3] {
-    let mut pipeline = |shader: &Shader, layout| {
-        crate::draw_pipeline(
-            gpu,
-            shader,
-            false,
-            PrimitiveTopology::TriangleList,
-            target,
-            &[draw_layout, layout],
-        )
-    };
-    [
-        pipeline(&RASTER_SHADER, image_layout),
-        pipeline(&HILLSHADE_SHADER, image_layout),
-        pipeline(&COLOR_RELIEF_SHADER, relief_layout),
-    ]
+    shader: &Shader,
+    layout: BindGroupLayoutId,
+) -> ComputePipelineId {
+    let module = gpu.create_shader_module(&ShaderModuleDesc {
+        label: shader.label,
+        source: ShaderSource::Wgsl(shader.source().into()),
+    });
+    gpu.create_compute_pipeline(&ComputePipelineDesc {
+        label: shader.label,
+        bind_group_layouts: &[layout],
+        compute: ShaderStage {
+            module,
+            entry_point: shader.compute,
+            constants: &[],
+        },
+    })
 }
 
 fn destroy_prepare(gpu: &mut dyn Gpu, prepare: Prepare) {
@@ -952,7 +1023,7 @@ mod compat_prepare {
                 ],
             });
             let mut pipeline = |shader: &Shader| {
-                let module = crate::shader_module(gpu, shader, false, 0);
+                let module = crate::shader_module(gpu, shader, false);
                 gpu.create_render_pipeline(&RenderPipelineDesc {
                     label: shader.label,
                     bind_group_layouts: &[layout],
@@ -981,6 +1052,14 @@ mod compat_prepare {
                 slope: pipeline(&PREPARE_SLOPE_DRAW_SHADER),
                 layout,
             }
+        }
+
+        pub(super) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
+            gpu.pipeline_ready(self.pad.into()) && gpu.pipeline_ready(self.slope.into())
+        }
+
+        pub(super) fn pipelines(&self) -> Vec<PipelineId> {
+            vec![self.pad.into(), self.slope.into()]
         }
 
         /// Appends a page's pending jobs' passes; returns the jobs.

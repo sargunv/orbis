@@ -15,10 +15,13 @@ const report = (result) => {
   const to = new URLSearchParams(location.search).get("report");
   if (to) fetch(to, { method: "POST", mode: "no-cors", body: JSON.stringify(result) });
 };
-const counts = { shaders: 0, render: 0, compute: 0, createMs: 0 };
+// Async compiles count apart: wgpu makes each such pipeline again once
+// compiled, which the browser's cache returns (decision 0038).
+const counts = { shaders: 0, render: 0, compute: 0, renderAsync: 0, computeAsync: 0, createMs: 0 };
 const waits = [];
 for (const [method, key] of [["createShaderModule", "shaders"], ["createRenderPipeline", "render"],
-  ["createComputePipeline", "compute"], ["createRenderPipelineAsync", "render"], ["createComputePipelineAsync", "compute"]]) {
+  ["createComputePipeline", "compute"], ["createRenderPipelineAsync", "renderAsync"],
+  ["createComputePipelineAsync", "computeAsync"]]) {
   const original = GPUDevice.prototype[method];
   GPUDevice.prototype[method] = function (...args) {
     counts[key]++;
@@ -41,11 +44,19 @@ window.pipelines = (async () => {
     const started = performance.now();
     const map = await createMap({ container: document.getElementById("map"), style: demoStyle(new URLSearchParams(location.search), "tokyo"),
       thread: "main", renderer: "webgpu", camera: { center: [139.74, 35.685], zoom: 15 } });
+    // The first frame that draws a layer, and the first with no pipeline
+    // compiling (plan §18 row 10).
+    let firstDrawMs, compiledMs;
+    map.on("render", (s) => {
+      const at = performance.now() - started;
+      if (firstDrawMs === undefined && s.draws > 0 && s.tilesDrawn > 0) firstDrawMs = at;
+      if (compiledMs === undefined && s.tilesDrawn > 0 && s.pipelinesPending === 0) compiledMs = at;
+    });
     await map.once("idle");
     const idleMs = performance.now() - started;
     const done = await Promise.all(waits);
     const result = {
-      ...counts, idleMs, submissions: done.length,
+      ...counts, firstDrawMs, compiledMs, idleMs, submissions: done.length,
       waitTotalMs: done.reduce((a, b) => a + b, 0), waitMaxMs: Math.max(...done),
       firstWaitMs: done[0],
       adapter: await navigator.gpu.requestAdapter().then((a) => [a?.info?.vendor, a?.info?.architecture].filter(Boolean).join(" ")),

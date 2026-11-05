@@ -26,6 +26,15 @@ impl<T> Slots<T> {
         id
     }
 
+    /// Replaces a live entry.
+    pub(crate) fn set(&mut self, id: u32, item: T) {
+        let slot = self
+            .items
+            .get_mut(&id)
+            .unwrap_or_else(|| panic!("resource {id} was destroyed or never created"));
+        *slot = item;
+    }
+
     pub(crate) fn remove(&mut self, id: u32) -> T {
         self.items
             .remove(&id)

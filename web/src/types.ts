@@ -179,6 +179,10 @@ export interface FrameStats {
   texelsFromJs: number;
   headerBytes: number;
   jobsDone: number;
+  /** Pipelines still compiling: layers that need them aren't drawn yet. */
+  pipelinesPending: number;
+  /** Layers not drawn while their pipelines compile. */
+  layersWaiting: number;
   /** GPU memory against plan §8's budget, in bytes but `cachedTiles`. */
   memory: FrameMemory;
   warnings: string[];

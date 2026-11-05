@@ -1,6 +1,6 @@
 //! With the `glsl` feature, translates every Compat composition to GLSL ES
-//! 3.00 (plan §8.4): one program per shader, paint class and `PASS` value,
-//! with the uniforms naga named for each WGSL binding.
+//! 3.00 (plan §8.4): one program per shader and paint class, with the
+//! uniforms naga named for each WGSL binding.
 
 fn main() {
     println!("cargo::rerun-if-changed=src/catalog.rs");
@@ -22,33 +22,28 @@ mod translate;
 mod glsl {
     use std::fmt::Write;
 
-    use crate::catalog::{COMPAT_SHADERS, SYMBOL_PASSES, SYMBOL_SHADER};
+    use crate::catalog::COMPAT_SHADERS;
 
     pub(crate) fn write() {
         let mut out = String::from(
-            "/// (shader label, bytecode class, pass, program)\n\
-             pub(crate) static PROGRAMS: &[(&str, bool, u32, orb_hal::GlslProgram<'static>)] = &[\n",
+            "/// (shader label, bytecode class, program)\n\
+             pub(crate) static PROGRAMS: &[(&str, bool, orb_hal::GlslProgram<'static>)] = &[\n",
         );
         for shader in COMPAT_SHADERS {
-            let passes = if shader.label == SYMBOL_SHADER.label {
-                SYMBOL_PASSES
-            } else {
-                1
-            };
             for bytecode in [false, true].into_iter().filter(|&b| !b || shader.paint) {
                 let source = shader.compat_source(bytecode);
-                for pass in 0..passes {
+                {
                     let program = crate::translate::glsl(
                         shader.label,
                         &source,
                         shader.vertex,
                         shader.fragment,
-                        &[("PASS", f64::from(pass))][..usize::from(passes > 1)],
+                        &[],
                     )
                     .unwrap_or_else(|e| panic!("{e}"));
                     writeln!(
                         out,
-                        "({:?}, {bytecode}, {pass}, orb_hal::GlslProgram {{ vertex: {:?}, fragment: {:?}, blocks: &{:?}, textures: &[{}] }}),",
+                        "({:?}, {bytecode}, orb_hal::GlslProgram {{ vertex: {:?}, fragment: {:?}, blocks: &{:?}, textures: &[{}] }}),",
                         shader.label,
                         program.vertex,
                         program.fragment,

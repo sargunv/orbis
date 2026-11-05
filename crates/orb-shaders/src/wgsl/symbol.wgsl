@@ -112,8 +112,9 @@ const PI: f32 = 3.14159265358979;
 const CHUNK_QUADS: u32 = 256u;
 
 // 0: halo and fill in one pass; 1: halo only; 2: fill only (GL JS draws
-// them apart when glyphs overlap).
-override PASS: u32 = 0u;
+// them apart when glyphs overlap). A uniform rather than an override: one
+// pipeline draws all three, so the largest shader compiles once.
+@group(2) @binding(0) var<uniform> symbol_pass: vec4<u32>;
 
 struct Placed {
     anchor: vec2<f32>,
@@ -403,14 +404,14 @@ fn line_intersection(a1: vec2<f32>, a2: vec2<f32>, b1: vec2<f32>, b2: vec2<f32>)
 }
 
 // GL JS `findOffsetIntersectionPoint`: where the offset segment into vertex
-// `i` meets the offset segment out of it (a miter join).
-fn offset_intersection(tile: Tile, base: u32, placed: Placed, i: i32, normal: vec2<f32>, current: vec2<f32>, offset_previous: vec2<f32>, offset_y: f32, direction: f32, next_previous_tile: vec2<f32>, previous: vec2<f32>, needed: f32) -> vec2<f32> {
+// `i` meets the offset segment out of it (a miter join); `next` is vertex
+// `i + direction` in the label plane, when the line has it.
+fn offset_intersection(base: u32, placed: Placed, i: i32, normal: vec2<f32>, current: vec2<f32>, offset_previous: vec2<f32>, offset_y: f32, direction: f32, next: vec2<f32>) -> vec2<f32> {
     let offset_current = current + normal;
     let n = i + i32(direction);
     if n < 0 || n >= i32(placed.line_count) || doubles_back(base, placed, i, i32(direction)) {
         return offset_current;
     }
-    let next = project_line_vertex(tile, base, placed, u32(n), next_previous_tile, previous, needed);
     if all(next == current) {
         return offset_current;
     }
@@ -464,17 +465,19 @@ fn place_glyph(tile: Tile, base: u32, placed: Placed, anchor: vec2<f32>, offset_
         } else {
             // As GL JS's synthetic vertex: the anchor before the first step.
             let next_previous_tile = select(previous_tile, placed.anchor, first);
+            // The vertex after this one, projected once for both uses
+            // below (Adreno compilers inline every call).
+            let n = clamp(index + i32(direction), 0, i32(placed.line_count) - 1);
+            let next = project_line_vertex(tile, base, placed, u32(n), next_previous_tile, previous, needed);
             var normal: vec2<f32>;
             if all(current == previous) {
                 // The anchor sits on the vertex: look one vertex ahead.
-                let n = clamp(index + i32(direction), 0, i32(placed.line_count) - 1);
-                let next = project_line_vertex(tile, base, placed, u32(n), next_previous_tile, previous, needed);
                 normal = select(perp_normal(next - current, line_offset.y, direction), vec2<f32>(0.0), all(next == current));
             } else {
                 normal = perp_normal(current - previous, line_offset.y, direction);
             }
             start = select(previous + normal, offset_point, have_offset_point);
-            offset_point = offset_intersection(tile, base, placed, index, normal, current, start, line_offset.y, direction, next_previous_tile, previous, needed);
+            offset_point = offset_intersection(base, placed, index, normal, current, start, line_offset.y, direction, next);
             have_offset_point = true;
             segment = offset_point - start;
         }
@@ -494,7 +497,10 @@ fn glyph_offset(base: u32, quad: u32) -> f32 {
 
 // A line label's glyph in the label plane: GL JS `placeGlyphsAlongLine`
 // with its keep-upright flip and vertical switch, decided per vertex from
-// the first and last glyphs.
+// the first and last glyphs. `place_glyph` has one call site, in a loop over
+// the placements asked for: first and last glyph, again flipped, then this
+// glyph. Adreno compilers inline every call, and five copies of its loop
+// made the symbol pipeline take 28 s to compile on an Adreno 619.
 fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32) -> LineGlyph {
     var fail: LineGlyph;
     fail.ok = false;
@@ -503,44 +509,61 @@ fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32)
     let own = glyph_offset(base, quad) * font_scale;
     let keep_upright = (node.flags & KEEP_UPRIGHT) != 0u;
     let aspect = frame.viewport.x / frame.viewport.y;
+    let several = placed.quad_count > 1u;
+    let first_offset = glyph_offset(base, placed.quad_start) * font_scale;
+    let last_offset = glyph_offset(base, placed.quad_start + max(placed.quad_count, 1u) - 1u) * font_scale;
     var flip = false;
-    if placed.quad_count > 1u {
-        let first_offset = glyph_offset(base, placed.quad_start) * font_scale;
-        let last_offset = glyph_offset(base, placed.quad_start + placed.quad_count - 1u) * font_scale;
-        let first = place_glyph(tile, base, placed, anchor, first_offset, line_offset, false);
-        let last = place_glyph(tile, base, placed, anchor, last_offset, line_offset, false);
-        if !first.ok || !last.ok {
-            return fail;
-        }
-        if keep_upright {
-            let a = label_plane_to_clip(tile, first.p);
-            let b = label_plane_to_clip(tile, last.p);
-            // A horizontal label with a vertical alternative steeper than
-            // flat gives way to it; the vertical one shows only then.
-            let steep = abs(b.y - a.y) > abs(b.x - a.x) * aspect;
-            if placed.writing_mode == 1u && steep {
-                return fail;
-            }
-            if placed.writing_mode == 2u && !steep {
-                return fail;
-            }
-            if select(a.x > b.x, a.y < b.y, placed.writing_mode == 2u) {
-                flip = true;
-                let ff = place_glyph(tile, base, placed, anchor, first_offset, line_offset, true);
-                let lf = place_glyph(tile, base, placed, anchor, last_offset, line_offset, true);
-                if !ff.ok || !lf.ok {
-                    return fail;
-                }
-            }
-        }
-    } else if keep_upright {
+    if !several && keep_upright {
         let segment_end = line_vertex(base, placed, placed.segment + 1u);
         let b = to_label_plane(tile, segment_end);
         let ca = label_plane_to_clip(tile, anchor);
         let cb = label_plane_to_clip(tile, select(anchor + (anchor - to_label_plane(tile, placed.anchor + normalize(placed.anchor - segment_end)).p), b.p, b.w > 0.0));
         flip = select(ca.x > cb.x, ca.y < cb.y, placed.writing_mode == 2u);
     }
-    return place_glyph(tile, base, placed, anchor, own, line_offset, flip);
+    // 0, 1: the first and last glyph; 2, 3: both flipped; 4: this glyph.
+    var step = select(4u, 0u, several);
+    var first = vec2<f32>(0.0);
+    loop {
+        let offset = select(select(last_offset, first_offset, step % 2u == 0u), own, step == 4u);
+        let flipped = select(step >= 2u, flip, step == 4u);
+        let glyph = place_glyph(tile, base, placed, anchor, offset, line_offset, flipped);
+        if step == 4u {
+            return glyph;
+        }
+        if !glyph.ok {
+            return fail;
+        }
+        if step == 0u {
+            first = glyph.p;
+            step = 1u;
+            continue;
+        }
+        if step == 1u {
+            step = 4u;
+            if keep_upright {
+                let a = label_plane_to_clip(tile, first);
+                let b = label_plane_to_clip(tile, glyph.p);
+                // A horizontal label with a vertical alternative steeper
+                // than flat gives way to it; the vertical one shows only
+                // then.
+                let steep = abs(b.y - a.y) > abs(b.x - a.x) * aspect;
+                if placed.writing_mode == 1u && steep {
+                    return fail;
+                }
+                if placed.writing_mode == 2u && !steep {
+                    return fail;
+                }
+                if select(a.x > b.x, a.y < b.y, placed.writing_mode == 2u) {
+                    flip = true;
+                    step = 2u;
+                }
+            }
+            continue;
+        }
+        step += 1u;
+    }
+    // Unreachable: step 4 returns.
+    return fail;
 }
 
 struct SymbolOut {
@@ -795,12 +818,12 @@ fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
     var halo = vec4<f32>(0.0);
     let halo_width = in.halo_params.x;
     let halo_blur = in.halo_params.y;
-    if PASS != 1u {
+    if symbol_pass.x != 1u {
         let g = gamma * gamma_scale;
         text = total_opacity * smoothstep(inner_edge - g, inner_edge + g, dist) * in.fill;
     }
     let has_halo = halo_width != 0.0 && any(in.halo != vec4<f32>(0.0));
-    if PASS != 2u && has_halo {
+    if symbol_pass.x != 2u && has_halo {
         let gamma_halo = (halo_blur * 1.19 / SDF_PX + edge_gamma) / (font_scale * u_gamma_scale);
         let inner_edge_halo = inner_edge + gamma_halo * gamma_scale;
         let g = gamma_halo * gamma_scale;

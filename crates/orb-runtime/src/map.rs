@@ -91,6 +91,10 @@ pub struct FrameReport {
     /// not the placement itself, which is the lane's (inline on a host
     /// without a placement thread or worker).
     pub placement_us: u32,
+    /// Only compiling pipelines keep the frame from being complete: a
+    /// host whose GPU wakes it when a pipeline compiles needs no frames
+    /// until then (plan §8.4).
+    pub compiling: bool,
 }
 
 /// The map's memory against its budget (plan §8), in bytes.
@@ -1385,7 +1389,6 @@ impl Map {
                 self.events.push(MapEvent::SourceData { source, loaded });
             }
         }
-        self.events.frame(report.loaded, report.idle);
 
         let globe = view.globe().map(|globe| frame_globe(globe, &view));
         let frame = FrameBlock {
@@ -1422,6 +1425,12 @@ impl Map {
         };
         let (renderer, _) = self.renderer.as_mut().expect("created above");
         report.frame = renderer.render(gpu, &frame, target, clear);
+        // A frame that left something out for a compiling pipeline isn't
+        // complete (plan §8.4).
+        report.compiling = report.idle && report.frame.waited;
+        report.loaded &= !report.frame.waited;
+        report.idle &= !report.frame.waited;
+        self.events.frame(report.loaded, report.idle);
         self.globe_warps.end_frame(renderer.scene());
         report.scene = renderer.scene().stats();
         report.memory = self.memory();

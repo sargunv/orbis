@@ -34,7 +34,7 @@ const STATS = [
   "zoom", "generation", "idle", "meshesUploaded", "rowsUploaded", "draws", "dispatches",
   "candidates", "tilesDrawn", "tilesLoading", "bundleRecorded", "placementsWritten",
   "paintsWritten", "uploadedFromWasm", "uploadedFromJs", "texelsFromWasm", "texelsFromJs",
-  "headerBytes", "jobsDone", "lost",
+  "headerBytes", "jobsDone", "pipelinesPending", "layersWaiting", "lost",
 ] as const;
 /** `FrameInfo::stats`' memory words after the counters (orb-web's
  * `memory_stats`), in bytes but `cachedTiles`. */

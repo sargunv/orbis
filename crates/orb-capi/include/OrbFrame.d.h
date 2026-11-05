@@ -20,6 +20,8 @@ typedef struct OrbFrame {
   uint32_t tiles_loading;
   uint32_t draws;
   uint32_t dispatches;
+  uint32_t pipelines_pending;
+  uint32_t layers_waiting;
 } OrbFrame;
 
 typedef struct OrbFrame_option {union { OrbFrame ok; }; bool is_ok; } OrbFrame_option;

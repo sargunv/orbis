@@ -131,12 +131,21 @@ public final class OrbRuntime {
         }
     }
 
-    /// Milliseconds spent making shader modules and pipelines so far:
-    /// translation and the driver's compiles.
+    /// Milliseconds spent compiling pipelines so far, summed over the
+    /// threads that compiled them: translation and the driver's
+    /// compiles.
     ///
     /// Contract: `snapshot`.
     public func pipelineMs() -> Double {
         return OrbRuntime_pipeline_ms(live())
+    }
+
+    /// Each pipeline compiled so far, slowest first: one line each,
+    /// milliseconds then its label.
+    ///
+    /// Contract: `snapshot`.
+    public func pipelineTimings() -> String {
+        return withWrite { write in OrbRuntime_pipeline_timings(live(), write) }.text
     }
 
 }

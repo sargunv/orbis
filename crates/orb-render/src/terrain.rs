@@ -741,6 +741,45 @@ impl Terrain {
         ]
     }
 
+    /// Whether every terrain pipeline at the current sample count
+    /// compiled, making the one for it if needed. Until then terrain draws
+    /// nothing.
+    pub(crate) fn ready(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let pipeline = self.pipeline(gpu, self.target_samples.max(1));
+        let occlusion = self.occlusion.map(|_| self.occlusion_pipeline(gpu));
+        [
+            pipeline.into(),
+            self.clear.into(),
+            self.downsample.into(),
+            self.composite.into(),
+        ]
+        .into_iter()
+        .chain(occlusion.map(PipelineId::from))
+        .all(|p| gpu.pipeline_ready(p))
+    }
+
+    pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
+        let mut out: Vec<PipelineId> = vec![
+            self.clear.into(),
+            self.downsample.into(),
+            self.composite.into(),
+        ];
+        out.extend(
+            self.pipelines
+                .iter()
+                .flatten()
+                .map(|&p| PipelineId::from(p)),
+        );
+        out
+    }
+
+    /// Makes every drape slot blank, as a new atlas does: the map draws
+    /// them all again (draped layers whose pipelines arrived since).
+    pub(crate) fn redraw_all(&mut self) {
+        self.layout_state.generation += 1;
+        self.pending.clear();
+    }
+
     fn pipeline(&mut self, gpu: &mut dyn Gpu, samples: u32) -> RenderPipelineId {
         let slot = usize::from(samples > 1);
         if let Some(pipeline) = self.pipelines[slot] {
@@ -792,6 +831,14 @@ impl Terrain {
         passes: &mut Vec<Pass>,
     ) -> u32 {
         let mut draws = 0;
+        if !self.ready(gpu) {
+            // The map placed this frame's drape for these slots only: it
+            // draws them all again once terrain can.
+            if !self.pending.is_empty() {
+                self.redraw_all();
+            }
+            return 0;
+        }
         let (Some(atlas), Some(dem)) = (&self.atlas, self.dem) else {
             return 0;
         };

@@ -33,7 +33,7 @@ GLES 3.0 lack is emulated inside `orb-hal-gl`, under the WebGPU-shaped
 
 WGSL becomes GLSL ES 3.00 offline. With `orb-shaders`' `glsl` feature, a
 build script translates each Compat composition with naga, one program per
-shader, paint class and `PASS` value. A naga IR pass gives a texture
+shader and paint class (and, until decision 0038, symbol `PASS` value). A naga IR pass gives a texture
 sampled with two samplers one alias per extra sampler, since GLSL ES has
 only combined samplers. ES 3.00 lacks `bitCount`, `findLSB` and `ldexp`, so
 the shaders call them through `builtins.wgsl`, which Compat replaces with

@@ -11,7 +11,9 @@ pub(crate) struct Extrusions {
     pipelines: [Option<RenderPipelineId>; 2],
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,
-    pub(crate) composite: RenderPipelineId,
+    /// Made for the first extrusion node.
+    composite: Option<RenderPipelineId>,
+    target: TargetFormat,
     layout: BindGroupLayoutId,
     depth: Option<TextureId>,
     size: [u32; 2],
@@ -61,32 +63,58 @@ impl Extrusions {
                 },
             ],
         });
-        let composite = draw_pipeline(
-            gpu,
-            &EXTRUSION_COMPOSITE_SHADER,
-            false,
-            PrimitiveTopology::TriangleList,
-            target,
-            &[scene, layout],
-        );
         Self {
             pipelines: [None; 2],
             layouts: [scene, node],
             samples: 4,
-            composite,
+            composite: None,
+            target,
             layout,
             depth: None,
             size: [0; 2],
             single_layer: false,
         }
     }
+    /// Makes the composite and the pipeline at the current sample count,
+    /// for the first extrusion node.
+    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu) {
+        if self.composite.is_none() {
+            self.composite = Some(draw_pipeline(
+                gpu,
+                &EXTRUSION_COMPOSITE_SHADER,
+                false,
+                PrimitiveTopology::TriangleList,
+                self.target,
+                &[self.layouts[0], self.layout],
+            ));
+        }
+        self.pipeline(gpu);
+    }
+
+    /// The composite, once it and the pipeline at the current sample count
+    /// compiled.
+    pub(crate) fn composite(&self, gpu: &mut dyn Gpu) -> Option<RenderPipelineId> {
+        let pipeline = self.pipelines[usize::from(self.samples == 4)]?;
+        let composite = self.composite?;
+        (gpu.pipeline_ready(pipeline.into()) && gpu.pipeline_ready(composite.into()))
+            .then_some(composite)
+    }
+
+    pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
+        self.composite
+            .iter()
+            .chain(&self.pipelines[usize::from(self.samples == 4)])
+            .map(|&p| p.into())
+            .collect()
+    }
+
     fn pipeline(&mut self, gpu: &mut dyn Gpu) {
         let slot = usize::from(self.samples == 4);
         if self.pipelines[slot].is_some() {
             return;
         }
         let shader = EXTRUSION_SHADER;
-        let module = crate::shader_module(gpu, &shader, false, 0);
+        let module = crate::shader_module(gpu, &shader, false);
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
             cull_mode: Some(Face::Back),
             label: shader.label,
@@ -141,7 +169,6 @@ impl Extrusions {
         if count == 0 || (self.size == size && self.single_layer == (count == 1)) {
             return false;
         }
-        self.pipeline(gpu);
         if let Some(depth) = self.depth.take() {
             gpu.destroy_texture(depth);
         }
@@ -258,7 +285,7 @@ impl Extrusions {
         let bundle = *node.bundle.get_or_insert_with(|| {
             let pipeline = self.pipelines[usize::from(self.samples == 4)];
             let commands = [
-                RenderCommand::SetPipeline(pipeline.expect("created by resize")),
+                RenderCommand::SetPipeline(pipeline.expect("made before its nodes prepare")),
                 RenderCommand::SetBindGroup {
                     index: 0,
                     group: scene,

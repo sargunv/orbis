@@ -188,11 +188,23 @@ mod ffi {
                 .map_err(fail)
         }
 
-        /// Milliseconds spent making shader modules and pipelines so far:
-        /// translation and the driver's compiles.
+        /// Milliseconds spent compiling pipelines so far, summed over the
+        /// threads that compiled them: translation and the driver's
+        /// compiles.
         #[diplomat::attr(contract, snapshot)]
         pub fn pipeline_ms(&self) -> f64 {
             self.0.pipeline_time().as_secs_f64() * 1000.0
+        }
+
+        /// Each pipeline compiled so far, slowest first: one line each,
+        /// milliseconds then its label.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn pipeline_timings(&self, out: &mut DiplomatWrite) {
+            let mut timings = self.0.pipeline_timings();
+            timings.sort_by_key(|t| std::cmp::Reverse(t.1));
+            for (label, took) in timings {
+                let _ = writeln!(out, "{:.1} {label}", took.as_secs_f64() * 1000.0);
+            }
         }
     }
 
@@ -431,6 +443,11 @@ mod ffi {
         pub tiles_loading: u32,
         pub draws: u32,
         pub dispatches: u32,
+        /// Pipelines still compiling: layers that need them aren't drawn
+        /// yet.
+        pub pipelines_pending: u32,
+        /// Layers not drawn while their pipelines compile.
+        pub layers_waiting: u32,
     }
 
     /// What an event is about.
@@ -1042,6 +1059,8 @@ mod ffi {
                     tiles_loading: report.tiles_loading,
                     draws: report.frame.draws,
                     dispatches: report.frame.dispatches,
+                    pipelines_pending: report.frame.pipelines_pending,
+                    layers_waiting: report.frame.nodes_waiting,
                 },
             })
         }

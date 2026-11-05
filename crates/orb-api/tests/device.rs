@@ -96,6 +96,71 @@ fn sentinel_demotes_after_a_crash_in_pipelines() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// The child's role in [`a_hung_compile_demotes_the_device`].
+const HANG_CHILD: &str = "ORB_TEST_HANG_CHILD";
+
+/// Plan §8.8 3: a driver that hangs in its compiler, rather than crashing,
+/// demotes the device too. Compiles run off the drawing thread, so frames go
+/// on; the watchdog finds the compile hung, the device is lost, the sentinel
+/// stays armed, and the device made next, now and at the next start, is
+/// Compat. In a child process: the fault is set from the environment.
+#[test]
+fn a_hung_compile_demotes_the_device() {
+    if let Some(dir) = std::env::var_os(HANG_CHILD) {
+        let runtime = Runtime::new(&options(Some(dir.into()))).unwrap();
+        if runtime.tier() != Tier::Modern {
+            return; // No Modern adapter here: nothing to demote.
+        }
+        let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(STYLE).unwrap();
+        let started = Instant::now();
+        let mut frames = 0;
+        let lost = loop {
+            match map.render(&mut target) {
+                Err(Error::DeviceLost) => break started.elapsed(),
+                Err(e) => panic!("{e}"),
+                Ok(report) => assert!(report.is_none_or(|r| !r.idle), "nothing compiles"),
+            }
+            frames += 1;
+            assert!(started.elapsed().as_secs() < 20, "the watchdog never fired");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let hung = runtime
+            .hung_compile()
+            .expect("the watchdog names the compile");
+        eprintln!("{frames} frames drawn while {hung} compiled; lost after {lost:?}");
+        assert!(frames > 10, "frames go on while a compile hangs");
+        runtime.recover().unwrap();
+        let selection = runtime.selection();
+        assert!(selection.contains("crash sentinel"), "{selection}");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("orb-hang-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "a_hung_compile_demotes_the_device",
+            "--nocapture",
+        ])
+        .env(HANG_CHILD, &dir)
+        .env("ORB_FAULT_INJECTION", "hang")
+        .env("ORB_COMPILE_WATCHDOG_MS", "300")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&child.stderr);
+    assert!(child.status.success(), "{stderr}");
+    if !dir.join("gpu-sentinel").exists() {
+        return; // The child had no Modern adapter.
+    }
+    // The next start demotes too.
+    let demoted = Runtime::new(&options(Some(dir.clone()))).unwrap();
+    let selection = demoted.selection();
+    assert!(selection.contains("crash sentinel"), "{selection}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 fn recovers(backend: Backend) {
     let runtime = match Runtime::new(&RuntimeOptions {
         backend,

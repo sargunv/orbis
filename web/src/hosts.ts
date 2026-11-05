@@ -95,6 +95,10 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   let { core, workers } = await start(tier, canvas, style);
   let size: [number, number, number] | undefined;
   let skipTier = false;
+  // `core.recover` holds the map across its await: calls in between wait
+  // for it (wasm-bindgen refuses them), as the latest size and camera.
+  let recovering = false;
+  let heldCamera: Float64Array | undefined;
   // A lost WebGL context is seen by the next frame, which this asks for.
   const lost = (e: Event) => { e.preventDefault(); callbacks.wake(); };
   canvas.addEventListener("webglcontextlost", lost);
@@ -105,8 +109,11 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   return {
     thread: "main",
     get core() { return core; },
-    setCamera: (camera) => core.setCamera(camera),
-    resize: (width, height, ratio) => { size = [width, height, ratio]; core.resize(width, height, ratio); },
+    setCamera: (camera) => { if (recovering) heldCamera = camera; else core.setCamera(camera); },
+    resize: (width, height, ratio) => {
+      size = [width, height, ratio];
+      if (!recovering) core.resize(width, height, ratio);
+    },
     edit: async (commands) => core.edit(commands),
     request: async (method, ...args) =>
       (core as unknown as Record<string, (...a: unknown[]) => unknown>)[method](...args),
@@ -116,7 +123,15 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
     async recover(replace, camera) {
       try {
         if (skipTier) throw new Error("switching tiers");
-        return await core.recover(canvas) as "modern" | "compat";
+        recovering = true;
+        try {
+          return await core.recover(canvas) as "modern" | "compat";
+        } finally {
+          recovering = false;
+          if (size) core.resize(...size);
+          if (heldCamera) core.setCamera(heldCamera);
+          heldCamera = undefined;
+        }
       } catch {
         skipTier = false;
         // The canvas keeps its old context; WebGL2 needs another, and the

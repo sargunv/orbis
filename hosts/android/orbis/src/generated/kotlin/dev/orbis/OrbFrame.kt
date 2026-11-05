@@ -25,4 +25,13 @@ data class OrbFrame(
     val tilesLoading: UInt,
     val draws: UInt,
     val dispatches: UInt,
+    /**
+     * Pipelines still compiling: layers that need them aren't drawn
+     * yet.
+     */
+    val pipelinesPending: UInt,
+    /**
+     * Layers not drawn while their pipelines compile.
+     */
+    val layersWaiting: UInt,
 )

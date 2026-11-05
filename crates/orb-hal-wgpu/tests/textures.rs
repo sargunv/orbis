@@ -127,6 +127,9 @@ fn samples_written_layers_of_a_texture_array() {
         sample_count: 1,
         mip_levels: 1,
     });
+    // Pipelines compile off this thread; commands use them once compiled.
+    gpu.finish_pipelines();
+    assert!(gpu.pipeline_ready(pipeline.into()));
     gpu.submit(&[Pass::Render(RenderPass {
         label: "sample".into(),
         color: ColorAttachment {

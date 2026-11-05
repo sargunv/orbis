@@ -74,12 +74,13 @@ try {
 }
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 const f = (x) => x.toFixed(0);
-const { ua, adapter, shaders, render, compute } = rows[0].cold;
+const { ua, adapter, shaders, render, compute, renderAsync, computeAsync } = rows[0].cold;
 console.log(`\n${ua}; ${adapter}; medians of ${runs} ${androidArg ? "runs" : "fresh profiles"}\n`);
-console.log(`${shaders} shader modules, ${render} render and ${compute} compute pipelines\n`);
-console.log("| | map to idle ms | GPU queue wait during load: total / largest / first submission ms | pipeline calls on the page ms |");
+console.log(`${shaders} shader modules, ${render} render and ${compute} compute pipelines ` +
+  `(${renderAsync} and ${computeAsync} compiled asynchronously first)\n`);
+console.log("| | first draw / last pipeline / idle ms | GPU queue wait during load: total / largest / first submission ms | pipeline calls on the page ms |");
 console.log("|---|---|---|---|");
 for (const key of ["cold", "warm"]) {
   const m = (k) => median(rows.map((r) => r[key][k]));
-  console.log(`| ${key} | ${f(m("idleMs"))} | ${f(m("waitTotalMs"))} / ${f(m("waitMaxMs"))} / ${f(m("firstWaitMs"))} | ${m("createMs").toFixed(1)} |`);
+  console.log(`| ${key} | ${f(m("firstDrawMs"))} / ${f(m("compiledMs"))} / ${f(m("idleMs"))} | ${f(m("waitTotalMs"))} / ${f(m("waitMaxMs"))} / ${f(m("firstWaitMs"))} | ${m("createMs").toFixed(1)} |`);
 }

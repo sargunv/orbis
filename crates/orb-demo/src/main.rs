@@ -260,13 +260,48 @@ impl Offscreen {
         // Two idle frames in a row: the second draws what the first's
         // messages installed.
         let mut was_idle = false;
+        let (mut first_draw, mut compiled) = (None, None);
+        // The longest frame while pipelines compiled: compiles never block
+        // one (plan §8.4).
+        let mut longest = 0.0f64;
         loop {
+            let frame_started = Instant::now();
             let report = this.frame();
+            if report.frame.pipelines_pending > 0 {
+                longest = longest.max(frame_started.elapsed().as_secs_f64() * 1000.0);
+            }
             frames += 1;
             for warning in this.map.take_warnings() {
                 eprintln!("orb-demo: {warning}");
             }
+            let ms = || started.elapsed().as_secs_f64() * 1000.0;
+            if first_draw.is_none() && report.tiles_drawn > 0 && report.frame.draws > 0 {
+                first_draw = Some(ms());
+            }
+            if compiled.is_none() && report.frame.pipelines_pending == 0 && report.tiles_drawn > 0 {
+                compiled = Some(ms());
+            }
             if report.idle && was_idle {
+                // Load to the first frame that draws a layer, to the last
+                // pipeline, and to idle (plan §18's pipeline-load gate).
+                eprintln!(
+                    "orb-demo: load: first draw {:.0} ms, pipelines {:.0} ms, idle {:.0} ms; \
+                     longest frame while compiling {longest:.1} ms; \
+                     {} pipelines in {:.0} ms of compile threads",
+                    first_draw.unwrap_or(f64::NAN),
+                    compiled.unwrap_or(f64::NAN),
+                    ms(),
+                    this.gpu.pipelines_created(),
+                    this.gpu.pipeline_time().as_secs_f64() * 1000.0,
+                );
+                let mut timings = this.gpu.pipeline_timings().to_vec();
+                timings.sort_by_key(|t| std::cmp::Reverse(t.1));
+                for (label, took) in timings {
+                    eprintln!(
+                        "orb-demo:   {:>8.1} ms  {label}",
+                        took.as_secs_f64() * 1000.0
+                    );
+                }
                 return Ok((this, report, frames));
             }
             was_idle = report.idle;
@@ -280,6 +315,10 @@ impl Offscreen {
     /// The map with its style set, before anything has loaded.
     fn new(options: &Options, capacity: SceneCapacity) -> Result<Self, String> {
         let mut gpu = pollster::block_on(WgpuGpu::offscreen())?;
+        // Tests count frames: their pipelines compile when asked for.
+        if cfg!(test) {
+            gpu.set_compile_threads(None);
+        }
         let format = TargetFormat {
             color: orb_hal::TextureFormat::Rgba8Unorm,
             sample_count: 1,

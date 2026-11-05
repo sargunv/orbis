@@ -93,13 +93,24 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * Milliseconds spent making shader modules and pipelines so far:
-     * translation and the driver's compiles.
+     * Milliseconds spent compiling pipelines so far, summed over the
+     * threads that compiled them: translation and the driver's
+     * compiles.
      *
      * Contract: `snapshot`.
      */
     fun pipelineMs(): Double {
         return OrbisNative.orbRuntimePipelineMs(live())
+    }
+
+    /**
+     * Each pipeline compiled so far, slowest first: one line each,
+     * milliseconds then its label.
+     *
+     * Contract: `snapshot`.
+     */
+    fun pipelineTimings(): String {
+        return OrbisNative.orbRuntimePipelineTimings(live()).decodeToString()
     }
 
     companion object {

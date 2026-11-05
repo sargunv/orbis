@@ -141,6 +141,12 @@ impl Sentinel {
     }
 }
 
+/// How long one pipeline may compile before its driver is taken to have
+/// hung in its compiler (plan §8.8 3): the sentinel then trips as for a
+/// crash, and the device is lost. Set from M4's slowest cold compile on an
+/// Adreno 619 (decision 0038) with a wide margin.
+pub const COMPILE_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// A sentinel key for a device: its identity and driver.
 pub fn sentinel_key(adapter: &Adapter<'_>) -> String {
     format!(

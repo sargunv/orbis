@@ -55,8 +55,9 @@ impl Blend {
 
 #[derive(Debug)]
 pub(crate) struct LayerComposites {
-    composite: RenderPipelineId,
-    blend: RenderPipelineId,
+    /// Made for the first group that needs each.
+    composite: Option<RenderPipelineId>,
+    blend: Option<RenderPipelineId>,
     composite_layout: BindGroupLayoutId,
     blend_layout: BindGroupLayoutId,
     target: TargetFormat,
@@ -143,28 +144,9 @@ impl LayerComposites {
                 entry(2, texture),
             ],
         });
-        let pipeline = |gpu: &mut dyn Gpu, shader, blend, layout| {
-            draw_pipeline_blending(
-                gpu,
-                shader,
-                false,
-                PrimitiveTopology::TriangleList,
-                target,
-                &[layout],
-                blend,
-            )
-        };
-        let composite = pipeline(
-            gpu,
-            &LAYER_COMPOSITE_SHADER,
-            Some(BlendState::PremultipliedAlpha),
-            composite_layout,
-        );
-        // The blend writes the composited result over the canvas.
-        let blend = pipeline(gpu, &LAYER_BLEND_SHADER, None, blend_layout);
         Self {
-            composite,
-            blend,
+            composite: None,
+            blend: None,
             composite_layout,
             blend_layout,
             target,
@@ -203,10 +185,48 @@ impl LayerComposites {
         }
     }
 
+    /// Whether the pipelines the groups composite with compiled.
+    pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
+        let needs = |blending: bool| {
+            self.groups
+                .iter()
+                .any(|g| (g.blend != Blend::Normal) == blending)
+        };
+        [(needs(false), self.composite), (needs(true), self.blend)]
+            .into_iter()
+            .filter(|&(needed, _)| needed)
+            .all(|(_, p)| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
+    }
+
     /// Replaces the groups with `runs`, each drawn into a texture of
-    /// `size` of its own unless it has a source.
+    /// `size` of its own unless it has a source, making the pipelines
+    /// they composite with.
     pub(crate) fn regroup(&mut self, gpu: &mut dyn Gpu, runs: Vec<Run>, size: [u32; 2]) {
         self.clear(gpu);
+        let target = self.target;
+        let pipeline = |gpu: &mut dyn Gpu, shader, blend, layout| {
+            draw_pipeline_blending(
+                gpu,
+                shader,
+                false,
+                PrimitiveTopology::TriangleList,
+                target,
+                &[layout],
+                blend,
+            )
+        };
+        if self.composite.is_none() && runs.iter().any(|r| r.blend == Blend::Normal) {
+            self.composite = Some(pipeline(
+                gpu,
+                &LAYER_COMPOSITE_SHADER,
+                Some(BlendState::PremultipliedAlpha),
+                self.composite_layout,
+            ));
+        }
+        // The blend writes the composited result over the canvas.
+        if self.blend.is_none() && runs.iter().any(|r| r.blend != Blend::Normal) {
+            self.blend = Some(pipeline(gpu, &LAYER_BLEND_SHADER, None, self.blend_layout));
+        }
         if runs.iter().any(|r| r.blend != Blend::Normal) {
             self.canvases = vec![
                 self.attachment(gpu, "map canvas", size),
@@ -306,11 +326,14 @@ impl LayerComposites {
     /// normal blending, or opening the canvas pass after a split.
     pub(crate) fn composite_commands(&self, group: &Group) -> [RenderCommand; 3] {
         [
-            RenderCommand::SetPipeline(if group.blend == Blend::Normal {
-                self.composite
-            } else {
-                self.blend
-            }),
+            RenderCommand::SetPipeline(
+                if group.blend == Blend::Normal {
+                    self.composite
+                } else {
+                    self.blend
+                }
+                .expect("made with the group"),
+            ),
             RenderCommand::SetBindGroup {
                 index: 0,
                 group: group.group,

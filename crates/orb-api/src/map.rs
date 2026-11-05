@@ -131,6 +131,7 @@ impl Map {
                 }
             })
         };
+        runtime.add_wake(&wake);
         let mut map = orb_runtime::Map::new(runtime.services(wake.clone()), options.camera);
         // Plan §8's budgets: phones and tablets hold less than desktops.
         if cfg!(any(target_os = "android", target_os = "ios")) {
@@ -439,9 +440,11 @@ impl Map {
             target.scale() as f32,
         );
         target.end();
-        // A frame drew: its renderer's pipelines were made, and the driver
+        // Every pipeline the map asked for compiled, and the driver
         // survived them.
-        self.runtime.pipelines_made();
+        if report.frame.pipelines_pending == 0 {
+            self.runtime.pipelines_made();
+        }
         let mut jumped = false;
         for event in self.map.take_events() {
             // Loads and projection edits move the camera's surface.
@@ -471,7 +474,9 @@ impl Map {
             self.camera.set_terrain(self.map.elevation());
         }
         self.dirty = jumped;
-        self.busy = !report.idle || gesture || animating;
+        // A map waiting only for pipelines draws again when one compiles.
+        let waiting = report.compiling && self.runtime.compile_wakes();
+        self.busy = (!report.idle && !waiting) || gesture || animating;
         if report.idle {
             // A failed write costs the next run its warm start, nothing else.
             let _ = self.runtime.save_pipeline_cache();

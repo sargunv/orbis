@@ -27,7 +27,7 @@ impl Harness {
     }
 
     fn with_atlas(size: u32, pages: u32, entries: u32) -> Self {
-        Self::with(size, pages, entries, Self::SMALL)
+        Self::with(size, pages, entries, Self::SMALL, None)
     }
 
     const SMALL: SceneCapacity = SceneCapacity {
@@ -45,8 +45,17 @@ impl Harness {
         max_compacted_words: 0,
     };
 
-    fn with(size: u32, pages: u32, entries: u32, capacity: SceneCapacity) -> Self {
+    /// Pipelines compile on `threads` workers, or (`None`) before their
+    /// request returns, so every frame below draws in full.
+    fn with(
+        size: u32,
+        pages: u32,
+        entries: u32,
+        capacity: SceneCapacity,
+        threads: Option<usize>,
+    ) -> Self {
         let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+        gpu.set_compile_threads(threads);
         let target = gpu.create_texture(&TextureDesc {
             label: "target",
             width: SIZE,
@@ -178,7 +187,7 @@ fn pools_grow_into_larger_buffers_keeping_their_meshes() {
         max_index_words: 1 << 12,
         ..Harness::SMALL
     };
-    let mut h = Harness::with(4, 2, 8, capacity);
+    let mut h = Harness::with(4, 2, 8, capacity, None);
     red_fill(&mut h);
     let tile = h.renderer.scene().insert_tile();
     h.renderer
@@ -242,6 +251,45 @@ fn red_fill(h: &mut Harness) {
             gpu: Default::default(),
         }),
     );
+}
+
+#[test]
+fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
+    let mut h = Harness::with(4, 2, 8, Harness::SMALL, Some(1));
+    red_fill(&mut h);
+    let tile = h.renderer.scene().insert_tile();
+    h.renderer
+        .scene()
+        .place_tile(&mut h.gpu, tile, &[full_view_tile(0.0)])
+        .unwrap();
+    h.renderer
+        .scene()
+        .insert_mesh(
+            &mut h.gpu,
+            tile,
+            0,
+            &MeshData::new(&left_half_square(), &[], 0),
+        )
+        .unwrap();
+    // Only what the nodes use is made: the cull and the fill.
+    let counts = h.renderer.pipelines(&mut h.gpu);
+    assert_eq!(counts.made + counts.pending, 2, "{counts:?}");
+    // One worker can't have compiled both yet: the fill waits, and the
+    // frame draws only the clear colour.
+    let first = h.render_stats();
+    if first.pipelines_pending > 0 {
+        assert_eq!((first.nodes_waiting, first.draws), (1, 0));
+        let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+        assert_eq!(pixel(&pixels, 4, 32), CLEAR);
+    }
+    h.gpu.finish_pipelines();
+    // The next frame records the fill.
+    let next = h.render_stats();
+    assert_eq!((next.pipelines_pending, next.nodes_waiting), (0, 0));
+    assert!(next.bundle_recorded || first.pipelines_pending == 0);
+    let pixels = pollster::block_on(h.gpu.read_texture(h.target));
+    assert_eq!(pixel(&pixels, 4, 32), RED);
+    assert_eq!(h.gpu.pipelines_created(), 2);
 }
 
 #[test]

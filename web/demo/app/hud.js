@@ -50,6 +50,8 @@ export function hud({ onThread }) {
       ["candidates", ack.candidates],
       ["tiles", ack.tilesLoading ? `${ack.tilesDrawn}, ${ack.tilesLoading} loading` : ack.tilesDrawn],
       ["bundle", ack.bundleRecorded ? "recorded" : "replayed"],
+      ...(ack.pipelinesPending || ack.layersWaiting
+        ? [["pipelines", `${ack.pipelinesPending} compiling, ${ack.layersWaiting} layers waiting`]] : []),
       ["placements", ack.placementsWritten],
       ["paints", ack.paintsWritten],
       ["from JS", kib(ack.uploadedFromJs)],

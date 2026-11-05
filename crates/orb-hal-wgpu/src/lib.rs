@@ -10,6 +10,7 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 mod cache;
+mod compile;
 mod convert;
 mod offscreen;
 mod slots;
@@ -43,11 +44,22 @@ pub struct WgpuGpu {
     texture_usages: wgpu::TextureUsages,
     buffers: Slots<wgpu::Buffer>,
     textures: Slots<Texture>,
-    shader_modules: Slots<wgpu::ShaderModule>,
-    bind_group_layouts: Slots<wgpu::BindGroupLayout>,
+    shader_modules: Slots<compile::Shared<compile::Module>>,
+    bind_group_layouts: Slots<BindGroupLayout>,
     bind_groups: Slots<wgpu::BindGroup>,
-    render_pipelines: Slots<wgpu::RenderPipeline>,
-    compute_pipelines: Slots<wgpu::ComputePipeline>,
+    /// `None` while compiling.
+    render_pipelines: Slots<Option<wgpu::RenderPipeline>>,
+    compute_pipelines: Slots<Option<wgpu::ComputePipeline>>,
+    compiler: compile::Compiler,
+    /// Pipelines asked for and not yet compiled.
+    pending: u32,
+    /// A compile that ran past the watchdog's limit: the device is lost.
+    hung: Option<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    watchdog: std::time::Duration,
+    /// Each pipeline compiled, how long it took, in the order they
+    /// finished.
+    compiled: Vec<(String, std::time::Duration)>,
     render_bundles: Slots<wgpu::RenderBundle>,
     query_sets: Slots<wgpu::QuerySet>,
     samplers: Slots<wgpu::Sampler>,
@@ -59,11 +71,6 @@ pub struct WgpuGpu {
     host_images: Slots<web_sys::ImageBitmap>,
     uploaded: Uploaded,
     pipelines_created: u32,
-    /// Time spent making shader modules and pipelines. Natively wgpu
-    /// translates and the driver compiles there; browsers do it in the GPU
-    /// process, out of sight.
-    #[cfg(not(target_arch = "wasm32"))]
-    pipeline_time: std::time::Duration,
     /// Set when the device made by `offscreen` is lost.
     #[cfg(not(target_arch = "wasm32"))]
     lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -95,6 +102,14 @@ enum HostBytes {
     Js(js_sys::ArrayBuffer),
     /// Bytes in Rust memory, for native hosts and tests.
     Owned(Vec<u8>),
+}
+
+#[derive(Debug)]
+struct BindGroupLayout {
+    layout: wgpu::BindGroupLayout,
+    /// The browser's own, for async compiles.
+    #[cfg(target_arch = "wasm32")]
+    raw: wasm_bindgen::JsValue,
 }
 
 #[derive(Debug)]
@@ -205,6 +220,12 @@ impl WgpuGpu {
             bind_groups: Slots::default(),
             render_pipelines: Slots::default(),
             compute_pipelines: Slots::default(),
+            compiler: compile::Compiler::new(),
+            pending: 0,
+            hung: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            watchdog: orb_hal::device::COMPILE_WATCHDOG,
+            compiled: Vec::new(),
             render_bundles: Slots::default(),
             query_sets: Slots::default(),
             samplers: Slots::default(),
@@ -213,8 +234,6 @@ impl WgpuGpu {
             host_images: Slots::default(),
             uploaded: Uploaded::default(),
             pipelines_created: 0,
-            #[cfg(not(target_arch = "wasm32"))]
-            pipeline_time: std::time::Duration::ZERO,
             #[cfg(not(target_arch = "wasm32"))]
             lost: Default::default(),
         }
@@ -225,23 +244,122 @@ impl WgpuGpu {
         self.uploaded
     }
 
-    /// Render and compute pipelines created so far (plan §16).
+    /// Render and compute pipelines compiled so far (plan §16).
     pub fn pipelines_created(&self) -> u32 {
         self.pipelines_created
     }
 
-    /// The pipeline cache pipelines are made through, if any.
-    fn cache(&self) -> Option<&wgpu::PipelineCache> {
+    /// Each pipeline compiled so far and how long it took, in the order
+    /// they finished: natively the worker's time in wgpu and the driver;
+    /// in the browser from the request to its promise resolving.
+    pub fn pipeline_timings(&self) -> &[(String, std::time::Duration)] {
+        &self.compiled
+    }
+
+    /// Compiles every later pipeline on the calling thread, so it is ready
+    /// when [`Gpu::create_render_pipeline`] returns (`None`), or on
+    /// `threads` worker threads (the default: half the cores, at most
+    /// four).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_compile_threads(&mut self, threads: Option<usize>) {
+        self.compiler.set_threads(threads);
+    }
+
+    /// Blocks until every pipeline asked for so far compiled: for tools
+    /// and tests that want a complete frame now.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn finish_pipelines(&mut self) {
+        self.compiler.wait(self.pending);
+        self.poll_pipelines();
+    }
+
+    /// Calls `wake` from a compile thread whenever a pipeline compiles, so
+    /// a host that stopped drawing draws the layers that waited for it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_compile_wake(&self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.compiler.set_wake(wake);
+    }
+
+    /// Makes later compiles stall forever, as in a driver hung in its
+    /// compiler: fault injection for the watchdog's tests. Needs compile
+    /// threads.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn inject_compile_hang(&self) {
+        self.compiler.inject_hang();
+    }
+
+    /// How long a compile may run before the driver is taken to have hung
+    /// (by default [`orb_hal::device::COMPILE_WATCHDOG`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_compile_watchdog(&mut self, limit: std::time::Duration) {
+        self.watchdog = limit;
+    }
+
+    /// The compile that ran past the watchdog's limit
+    /// ([`orb_hal::device::COMPILE_WATCHDOG`]), if one did: the driver is
+    /// taken to have hung, and the device is lost.
+    pub fn hung(&self) -> Option<&str> {
+        self.hung.as_deref()
+    }
+
+    fn take_compiled(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
-        return self.pipeline_cache.as_ref();
+        let done: Vec<_> = self.compiler.take().collect();
+        #[cfg(target_arch = "wasm32")]
+        let done: Vec<_> = self.compiler.take(&self.device).collect();
+        for done in done {
+            let built = done
+                .built
+                .unwrap_or_else(|e| panic!("pipeline {}: {e}", done.label));
+            match built {
+                compile::Built::Render(slot, p) => self.render_pipelines.set(slot, Some(p)),
+                compile::Built::Compute(slot, p) => self.compute_pipelines.set(slot, Some(p)),
+            }
+            self.pending -= 1;
+            self.pipelines_created += 1;
+            self.compiled.push((done.label, done.took));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.hung.is_none()
+            && self.pending > 0
+            && let Some(label) = self.compiler.hung(self.watchdog)
+        {
+            self.hung = Some(label);
+            self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn submit_job(&mut self, job: compile::Job, layouts: &[BindGroupLayoutId]) {
+        self.pending += 1;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = layouts;
+            self.compiler.submit(&self.device, job);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let raw = layouts
+                .iter()
+                .map(|id| self.bind_group_layouts[id.0].raw.clone())
+                .collect();
+            self.compiler.submit(&self.device, raw, job);
+        }
+    }
+
+    /// The pipeline cache pipelines are made through, if any.
+    fn cache(&self) -> Option<wgpu::PipelineCache> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.pipeline_cache.clone();
         #[cfg(target_arch = "wasm32")]
         None
     }
 
-    /// Time spent making shader modules and pipelines so far.
+    /// Time spent compiling pipelines so far, summed over the threads
+    /// that compiled them (natively wgpu translates and the driver
+    /// compiles there).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn pipeline_time(&self) -> std::time::Duration {
-        self.pipeline_time
+        self.compiled.iter().map(|(_, took)| *took).sum()
     }
 
     /// Whether the device `offscreen` made was lost.
@@ -327,7 +445,7 @@ impl WgpuGpu {
     fn pipeline_layout(&self, label: &str, layouts: &[BindGroupLayoutId]) -> wgpu::PipelineLayout {
         let layouts: Vec<_> = layouts
             .iter()
-            .map(|id| Some(&self.bind_group_layouts[id.0]))
+            .map(|id| Some(&self.bind_group_layouts[id.0].layout))
             .collect();
         self.device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -339,7 +457,11 @@ impl WgpuGpu {
 
     fn encode_render<'p>(&'p self, pass: &mut impl RenderEncoder<'p>, command: &'p RenderCommand) {
         match command {
-            RenderCommand::SetPipeline(id) => pass.set_pipeline(&self.render_pipelines[id.0]),
+            RenderCommand::SetPipeline(id) => pass.set_pipeline(
+                self.render_pipelines[id.0]
+                    .as_ref()
+                    .expect("a pipeline used before it compiled"),
+            ),
             RenderCommand::SetBindGroup { index, group } => {
                 pass.set_bind_group(*index, &self.bind_groups[group.0])
             }
@@ -694,22 +816,14 @@ impl Gpu for WgpuGpu {
     }
 
     fn create_shader_module(&mut self, desc: &ShaderModuleDesc<'_>) -> ShaderModuleId {
-        #[cfg(not(target_arch = "wasm32"))]
-        let started = std::time::Instant::now();
-        let module = self
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(desc.label),
-                source: match &desc.source {
-                    ShaderSource::Wgsl(wgsl) => wgpu::ShaderSource::Wgsl(wgsl.clone()),
-                    ShaderSource::Glsl(_) => panic!("{}: GLSL is Compat's", desc.label),
-                },
-            });
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.pipeline_time += started.elapsed();
-        }
-        ShaderModuleId(self.shader_modules.insert(module))
+        let source = match &desc.source {
+            ShaderSource::Wgsl(wgsl) => wgsl.to_string(),
+            ShaderSource::Glsl(_) => panic!("{}: GLSL is Compat's", desc.label),
+        };
+        ShaderModuleId(
+            self.shader_modules
+                .insert(compile::Module::new(desc.label, source)),
+        )
     }
 
     fn create_bind_group_layout(&mut self, desc: &BindGroupLayoutDesc<'_>) -> BindGroupLayoutId {
@@ -718,12 +832,22 @@ impl Gpu for WgpuGpu {
             .iter()
             .map(convert::bind_group_layout_entry)
             .collect();
-        let layout = self
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some(desc.label),
-                entries: &entries,
-            });
+        let layout = BindGroupLayout {
+            layout: self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some(desc.label),
+                    entries: &entries,
+                }),
+            #[cfg(target_arch = "wasm32")]
+            raw: compile::raw_bind_group_layout(
+                self.device
+                    .as_webgpu()
+                    .expect("the web uses the WebGPU backend")
+                    .as_ref(),
+                desc,
+            ),
+        };
         BindGroupLayoutId(self.bind_group_layouts.insert(layout))
     }
 
@@ -776,7 +900,7 @@ impl Gpu for WgpuGpu {
             .collect();
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(desc.label),
-            layout: &self.bind_group_layouts[desc.layout.0],
+            layout: &self.bind_group_layouts[desc.layout.0].layout,
             entries: &entries,
         });
         BindGroupId(self.bind_groups.insert(group))
@@ -787,94 +911,61 @@ impl Gpu for WgpuGpu {
     }
 
     fn create_render_pipeline(&mut self, desc: &RenderPipelineDesc<'_>) -> RenderPipelineId {
-        #[cfg(not(target_arch = "wasm32"))]
-        let started = std::time::Instant::now();
-        let layout = self.pipeline_layout(desc.label, desc.bind_group_layouts);
-        let targets: Vec<_> = desc
-            .targets
-            .iter()
-            .map(|t| Some(convert::color_target(t)))
-            .collect();
-        let pipeline = self
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(desc.label),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &self.shader_modules[desc.vertex.module.0],
-                    entry_point: Some(desc.vertex.entry_point),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: desc.vertex.constants,
-                        ..Default::default()
-                    },
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: desc.cull_mode.map(|face| match face {
-                        Face::Front => wgpu::Face::Front,
-                        Face::Back => wgpu::Face::Back,
-                    }),
-                    topology: match desc.topology {
-                        PrimitiveTopology::LineList => wgpu::PrimitiveTopology::LineList,
-                        PrimitiveTopology::TriangleList => wgpu::PrimitiveTopology::TriangleList,
-                        PrimitiveTopology::TriangleStrip => wgpu::PrimitiveTopology::TriangleStrip,
-                    },
-                    ..Default::default()
-                },
-                depth_stencil: desc.depth.map(|d| wgpu::DepthStencilState {
-                    format: convert::texture_format(d.format),
-                    depth_write_enabled: Some(d.write),
-                    depth_compare: Some(convert::compare(d.compare)),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: desc.sample_count,
-                    ..Default::default()
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &self.shader_modules[desc.fragment.module.0],
-                    entry_point: Some(desc.fragment.entry_point),
-                    compilation_options: wgpu::PipelineCompilationOptions {
-                        constants: desc.fragment.constants,
-                        ..Default::default()
-                    },
-                    targets: &targets,
-                }),
-                multiview_mask: None,
-                cache: self.cache(),
-            });
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.pipeline_time += started.elapsed();
-        }
-        self.pipelines_created += 1;
-        RenderPipelineId(self.render_pipelines.insert(pipeline))
+        let module = |stage: &ShaderStage<'_>| self.shader_modules[stage.module.0].clone();
+        let job = compile::RenderJob {
+            label: desc.label.to_owned(),
+            layout: self.pipeline_layout(desc.label, desc.bind_group_layouts),
+            vertex: compile::Stage::new(&desc.vertex, module(&desc.vertex)),
+            fragment: compile::Stage::new(&desc.fragment, module(&desc.fragment)),
+            targets: desc.targets.to_vec(),
+            depth: desc.depth,
+            topology: desc.topology,
+            cull_mode: desc.cull_mode,
+            sample_count: desc.sample_count,
+            cache: self.cache(),
+        };
+        let slot = self.render_pipelines.insert(None);
+        self.submit_job(compile::Job::Render(slot, job), desc.bind_group_layouts);
+        RenderPipelineId(slot)
     }
 
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> ComputePipelineId {
-        #[cfg(not(target_arch = "wasm32"))]
-        let started = std::time::Instant::now();
-        let layout = self.pipeline_layout(desc.label, desc.bind_group_layouts);
-        let pipeline = self
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(desc.label),
-                layout: Some(&layout),
-                module: &self.shader_modules[desc.compute.module.0],
-                entry_point: Some(desc.compute.entry_point),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: desc.compute.constants,
-                    ..Default::default()
-                },
-                cache: self.cache(),
-            });
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.pipeline_time += started.elapsed();
+        let job = compile::ComputeJob {
+            label: desc.label.to_owned(),
+            layout: self.pipeline_layout(desc.label, desc.bind_group_layouts),
+            compute: compile::Stage::new(
+                &desc.compute,
+                self.shader_modules[desc.compute.module.0].clone(),
+            ),
+            cache: self.cache(),
+        };
+        let slot = self.compute_pipelines.insert(None);
+        self.submit_job(compile::Job::Compute(slot, job), desc.bind_group_layouts);
+        ComputePipelineId(slot)
+    }
+
+    fn pipeline_ready(&mut self, id: PipelineId) -> bool {
+        let ready = |gpu: &Self| match id {
+            PipelineId::Render(id) => gpu.render_pipelines[id.0].is_some(),
+            PipelineId::Compute(id) => gpu.compute_pipelines[id.0].is_some(),
+        };
+        if ready(self) {
+            return true;
         }
-        self.pipelines_created += 1;
-        ComputePipelineId(self.compute_pipelines.insert(pipeline))
+        self.take_compiled();
+        ready(self)
+    }
+
+    fn poll_pipelines(&mut self) -> PipelineCounts {
+        self.take_compiled();
+        PipelineCounts {
+            made: self.pipelines_created,
+            pending: self.pending,
+        }
+    }
+
+    fn prioritize_pipeline(&mut self, id: PipelineId) {
+        self.compiler.prioritize(id);
     }
 
     fn create_render_bundle(
@@ -1002,9 +1093,11 @@ impl Gpu for WgpuGpu {
                     });
                     for command in &compute.commands {
                         match command {
-                            ComputeCommand::SetPipeline(id) => {
-                                pass.set_pipeline(&self.compute_pipelines[id.0])
-                            }
+                            ComputeCommand::SetPipeline(id) => pass.set_pipeline(
+                                self.compute_pipelines[id.0]
+                                    .as_ref()
+                                    .expect("a pipeline used before it compiled"),
+                            ),
                             ComputeCommand::SetBindGroup { index, group } => {
                                 pass.set_bind_group(*index, &self.bind_groups[group.0], &[]);
                             }

@@ -17,13 +17,12 @@ mod glsl {
 }
 
 /// A Compat shader's offline GLSL ES 3.00 program (plan §8.4): its table
-/// class, or with `bytecode` the bytecode class, specialized for `pass`
-/// (the symbol shader's `PASS`; 0 elsewhere).
+/// class, or with `bytecode` the bytecode class.
 #[cfg(feature = "glsl")]
-pub fn glsl(shader: &Shader, bytecode: bool, pass: u32) -> &'static orb_hal::GlslProgram<'static> {
+pub fn glsl(shader: &Shader, bytecode: bool) -> &'static orb_hal::GlslProgram<'static> {
     glsl::PROGRAMS
         .iter()
-        .find(|(label, b, p, _)| *label == shader.label && *b == bytecode && *p == pass)
+        .find(|(label, b, _)| *label == shader.label && *b == bytecode)
         .map(|(.., program)| program)
         .unwrap_or_else(|| panic!("{} has no Compat program", shader.label))
 }

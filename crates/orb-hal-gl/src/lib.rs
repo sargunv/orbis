@@ -23,6 +23,8 @@
 #![allow(unsafe_code)]
 
 mod cache;
+#[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
+mod compile;
 mod data;
 #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
 pub mod egl;
@@ -49,7 +51,15 @@ pub struct GlGpu {
     modules: Slots<Module>,
     layouts: Slots<Vec<BindGroupLayoutEntry>>,
     groups: Slots<Vec<BindGroupEntry>>,
+    /// Linked programs; ids of those still compiling are reserved.
     pipelines: Slots<Pipeline>,
+    /// Programs compiling, in the order they finish in blocking mode.
+    pending: std::collections::VecDeque<Pending>,
+    /// A compile past the watchdog's limit.
+    hung: Option<String>,
+    compiler: Compiler,
+    /// Each program linked, how long from its request.
+    compiled: Vec<(String, std::time::Duration)>,
     bundles: Slots<Vec<RenderCommand>>,
     host_bytes: Slots<HostBytes>,
     #[cfg(target_arch = "wasm32")]
@@ -73,9 +83,6 @@ pub struct GlGpu {
     /// Compiled stages by kind and source: programs that share a stage
     /// (the symbol passes' vertex shader) compile it once.
     stages: std::collections::HashMap<(u32, u64), glow::Shader>,
-    /// Time spent compiling and linking (natively).
-    #[cfg(not(target_arch = "wasm32"))]
-    pipeline_time: std::time::Duration,
 }
 
 impl std::fmt::Debug for GlGpu {
@@ -158,6 +165,53 @@ struct Module {
     textures: Vec<(String, TextureBinding)>,
 }
 
+/// How programs compile off the drawing thread (the `compile` module).
+enum Compiler {
+    /// On a thread with a context sharing this one's objects.
+    #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
+    Thread(egl::CompileThread),
+    /// `KHR_parallel_shader_compile`: compile and link without waiting,
+    /// and ask whether each is done.
+    Parallel,
+    /// One program linked, waiting for it, per frame.
+    Blocking,
+}
+
+/// A program compiling, and what its pipeline needs of the request.
+struct Pending {
+    slot: u32,
+    module: ShaderModuleId,
+    /// Linking on this context (not the compile thread's), and whether
+    /// from a cached binary.
+    program: Option<(glow::Program, bool)>,
+    fixed: Fixed,
+    since: Instant,
+}
+
+/// What a pipeline keeps of its request besides the program.
+#[derive(Clone, Copy)]
+struct Fixed {
+    topology: u32,
+    blend: Option<BlendState>,
+    depth: Option<DepthState>,
+    cull: Option<Face>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+struct Instant(f64);
+#[cfg(target_arch = "wasm32")]
+impl Instant {
+    fn now() -> Self {
+        Self(js_sys::Date::now())
+    }
+    fn elapsed(&self) -> std::time::Duration {
+        std::time::Duration::from_secs_f64((js_sys::Date::now() - self.0).max(0.0) / 1000.0)
+    }
+}
+
 struct Pipeline {
     program: glow::Program,
     /// Uniform block binding points in order, with the (group, binding)
@@ -214,8 +268,14 @@ impl GlGpu {
             ));
         }
         // SAFETY: queries and object creation on the current context.
-        let (info, limits, float_targets, vao, data_sampler) = unsafe {
+        let (info, limits, float_targets, vao, data_sampler, parallel) = unsafe {
             let extensions = gl.supported_extensions();
+            let parallel = extensions.contains("KHR_parallel_shader_compile")
+                || extensions.contains("GL_KHR_parallel_shader_compile");
+            if parallel && !cfg!(target_arch = "wasm32") {
+                // As many compiler threads as the driver likes.
+                gl.max_shader_compiler_threads(u32::MAX);
+            }
             let float_targets = extensions.contains("EXT_color_buffer_float")
                 || extensions.contains("GL_EXT_color_buffer_float")
                 || extensions.contains("GL_EXT_color_buffer_half_float");
@@ -257,7 +317,7 @@ impl GlGpu {
             gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
             // Shaders flip Y, which turns counterclockwise faces clockwise.
             gl.front_face(glow::CW);
-            (info, limits, float_targets, vao, data_sampler)
+            (info, limits, float_targets, vao, data_sampler, parallel)
         };
         if limits.max_texture_dimension_2d < DATA_WIDTH {
             return Err(format!(
@@ -281,6 +341,14 @@ impl GlGpu {
             layouts: Slots::default(),
             groups: Slots::default(),
             pipelines: Slots::default(),
+            pending: Default::default(),
+            hung: None,
+            compiler: if parallel {
+                Compiler::Parallel
+            } else {
+                Compiler::Blocking
+            },
+            compiled: Vec::new(),
             bundles: Slots::default(),
             host_bytes: Slots::default(),
             #[cfg(target_arch = "wasm32")]
@@ -296,8 +364,6 @@ impl GlGpu {
             marked_lost: false,
             programs: None,
             stages: Default::default(),
-            #[cfg(not(target_arch = "wasm32"))]
-            pipeline_time: std::time::Duration::ZERO,
         })
     }
 
@@ -490,10 +556,292 @@ impl GlGpu {
         self.programs.as_mut()?.take_data()
     }
 
-    /// Time spent compiling and linking programs.
+    /// Time spent compiling and linking programs, from each request to
+    /// its program linking.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn pipeline_time(&self) -> std::time::Duration {
-        self.pipeline_time
+        self.compiled.iter().map(|(_, took)| *took).sum()
+    }
+
+    /// Each program linked so far and how long it took from its request,
+    /// in the order they linked.
+    pub fn pipeline_timings(&self) -> &[(String, std::time::Duration)] {
+        &self.compiled
+    }
+
+    /// Links later programs on `thread`, a context sharing this one's
+    /// objects (plan §8.4).
+    #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
+    pub fn set_compile_thread(&mut self, thread: egl::CompileThread) {
+        self.compiler = Compiler::Thread(thread);
+    }
+
+    /// Calls `wake` from the compile thread whenever a program links, so a
+    /// host that stopped drawing draws the layers that waited for it.
+    /// `false` without a compile thread: programs then link as frames ask.
+    #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
+    pub fn set_compile_wake(&self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> bool {
+        match &self.compiler {
+            Compiler::Thread(thread) => {
+                thread.set_wake(wake);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Blocks until every program asked for so far linked: for tools and
+    /// tests that want a complete frame now.
+    pub fn finish_pipelines(&mut self) {
+        while !self.pending.is_empty() {
+            #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
+            if let Compiler::Thread(thread) = &self.compiler {
+                match thread.wait() {
+                    Some(done) => self.finish_threaded(done),
+                    None => panic!("the compile thread exited"),
+                }
+                continue;
+            }
+            self.finish_front();
+        }
+    }
+
+    /// The compile that ran past the watchdog's limit, if one did: its
+    /// driver is taken to have hung. Compat is the last tier, so the
+    /// device isn't lost for it.
+    pub fn hung(&self) -> Option<&str> {
+        self.hung.as_deref()
+    }
+
+    /// Takes programs that finished: from the compile thread, those
+    /// `KHR_parallel_shader_compile` reports done, or with `block`, the
+    /// next in line.
+    fn take_linked(&mut self, block: bool) {
+        match &self.compiler {
+            #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
+            Compiler::Thread(thread) => {
+                let done: Vec<_> = thread.take().collect();
+                for done in done {
+                    self.finish_threaded(done);
+                }
+                if self.hung.is_none() {
+                    let Compiler::Thread(thread) = &self.compiler else {
+                        unreachable!()
+                    };
+                    self.hung = thread.hung(orb_hal::device::COMPILE_WATCHDOG);
+                }
+            }
+            Compiler::Parallel => {
+                let gl = &self.gl;
+                let done: Vec<usize> = self
+                    .pending
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| {
+                        // SAFETY: a program of this context.
+                        p.program.is_some_and(|(program, _)| unsafe {
+                            gl.get_program_completion_status(program)
+                        })
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                for i in done.into_iter().rev() {
+                    let pending = self.pending.remove(i).expect("found");
+                    self.finish(pending, None, None);
+                }
+            }
+            Compiler::Blocking => {
+                if block && !self.pending.is_empty() {
+                    self.finish_front();
+                }
+            }
+        }
+    }
+
+    /// Links the next program in line, waiting for it.
+    fn finish_front(&mut self) {
+        let pending = self.pending.pop_front().expect("a program is pending");
+        self.finish(pending, None, None);
+    }
+
+    #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
+    fn finish_threaded(&mut self, done: compile::Done) {
+        let at = self
+            .pending
+            .iter()
+            .position(|p| p.slot == done.slot)
+            .expect("a pending program");
+        let pending = self.pending.remove(at).expect("found");
+        let label = self.modules[pending.module.0].label.clone();
+        let (program, binary) = done.result.unwrap_or_else(|e| panic!("{label}: {e}"));
+        if let (Some(cache), Some(binary)) = (&mut self.programs, binary) {
+            let m = &self.modules[pending.module.0];
+            cache.insert(cache::key(&m.vertex_source, &m.fragment_source), binary);
+        }
+        self.finish(pending, Some(program), Some(done.took));
+    }
+
+    /// Makes a linked program's pipeline: checks the link, keeps its binary
+    /// and sets its uniform bindings on this context.
+    fn finish(
+        &mut self,
+        pending: Pending,
+        linked: Option<glow::Program>,
+        took: Option<std::time::Duration>,
+    ) {
+        let program = match (linked, pending.program) {
+            (Some(program), _) => program,
+            (None, Some((program, from_binary))) => {
+                // SAFETY: a program of this context.
+                let linked = unsafe { self.gl.get_program_link_status(program) };
+                if linked {
+                    if !from_binary {
+                        self.keep_binary(pending.module, program);
+                    }
+                    program
+                } else if from_binary {
+                    // The driver turned the binary down (it changed).
+                    // SAFETY: a program of this context.
+                    unsafe { self.gl.delete_program(program) };
+                    self.link(pending.module)
+                } else {
+                    let m = &self.modules[pending.module.0];
+                    let mut log = String::new();
+                    if let Some((vertex, fragment)) = m.shaders {
+                        for shader in [vertex, fragment] {
+                            // SAFETY: shaders of this context.
+                            log += &unsafe { self.gl.get_shader_info_log(shader) };
+                        }
+                    }
+                    // SAFETY: a program of this context.
+                    log += &unsafe { self.gl.get_program_info_log(program) };
+                    panic!("{}: GLSL link failed: {log}", m.label);
+                }
+            }
+            (None, None) => unreachable!("a program links somewhere"),
+        };
+        let pipeline = self.pipeline(pending.module, program, pending.fixed);
+        self.pipelines.fill(pending.slot, pipeline);
+        self.pipelines_created += 1;
+        let label = self.modules[pending.module.0].label.clone();
+        self.compiled
+            .push((label, took.unwrap_or_else(|| pending.since.elapsed())));
+    }
+
+    /// Keeps a program's binary for the cache, if one is kept.
+    fn keep_binary(&mut self, module: ShaderModuleId, program: glow::Program) {
+        if self.programs.is_none() {
+            return;
+        }
+        // SAFETY: a linked program of this context.
+        let binary = unsafe { self.gl.get_program_binary(program) };
+        let m = &self.modules[module.0];
+        let key = cache::key(&m.vertex_source, &m.fragment_source);
+        if let (Some(cache), Some(binary)) = (&mut self.programs, binary) {
+            cache.insert(key, binary);
+        }
+    }
+
+    /// Starts linking a module's program on this context without waiting:
+    /// from a cached binary, or compiled.
+    fn start(&mut self, module: ShaderModuleId) -> (glow::Program, bool) {
+        let key = {
+            let m = &self.modules[module.0];
+            cache::key(&m.vertex_source, &m.fragment_source)
+        };
+        // SAFETY: program objects of this context.
+        unsafe {
+            let program = self.gl.create_program().expect("program object");
+            if let Some(binary) = self.programs.as_ref().and_then(|c| c.get(key)) {
+                self.gl.program_binary(program, &binary);
+                return (program, true);
+            }
+            let (vertex, fragment) = self.shaders(module);
+            self.gl.attach_shader(program, vertex);
+            self.gl.attach_shader(program, fragment);
+            if self.programs.is_some() {
+                self.gl.program_binary_retrievable_hint(program, true);
+            }
+            self.gl.link_program(program);
+            (program, false)
+        }
+    }
+
+    /// A module's two stages, compiled once.
+    fn shaders(&mut self, module: ShaderModuleId) -> (glow::Shader, glow::Shader) {
+        if let Some(shaders) = self.modules[module.0].shaders {
+            return shaders;
+        }
+        let m = &self.modules[module.0];
+        let (vertex, fragment, label) = (
+            m.vertex_source.clone(),
+            m.fragment_source.clone(),
+            m.label.clone(),
+        );
+        let shaders = (
+            self.stage(glow::VERTEX_SHADER, &vertex, &label),
+            self.stage(glow::FRAGMENT_SHADER, &fragment, &label),
+        );
+        self.modules[module.0].shaders = Some(shaders);
+        shaders
+    }
+
+    /// Sets up a linked program's uniform bindings on this context.
+    fn pipeline(
+        &mut self,
+        module: ShaderModuleId,
+        program: glow::Program,
+        fixed: Fixed,
+    ) -> Pipeline {
+        let module = &self.modules[module.0];
+        let gl = &self.gl;
+        // SAFETY: sets up a linked program of this context's share group
+        // and queries it.
+        unsafe {
+            gl.use_program(Some(program));
+            self.state.forget_program();
+            let mut blocks = Vec::new();
+            for (name, group, binding) in &module.blocks {
+                if let Some(index) = gl.get_uniform_block_index(program, name) {
+                    // Both stages' blocks of one binding share a point.
+                    let point = match blocks.iter().position(|b| b == &(*group, *binding)) {
+                        Some(p) => p,
+                        None => {
+                            blocks.push((*group, *binding));
+                            blocks.len() - 1
+                        }
+                    };
+                    gl.uniform_block_binding(program, index, point as u32);
+                }
+            }
+            let mut textures = Vec::new();
+            for (name, (texture, sampler)) in &module.textures {
+                if let Some(location) = gl.get_uniform_location(program, name) {
+                    let unit = match textures.iter().position(|t| t == &(*texture, *sampler)) {
+                        Some(u) => u,
+                        None => {
+                            textures.push((*texture, *sampler));
+                            textures.len() - 1
+                        }
+                    };
+                    gl.uniform_1_i32(Some(&location), unit as i32);
+                }
+            }
+            let first_instance = gl.get_uniform_location(program, "naga_vs_first_instance");
+            if let Some(location) = &first_instance {
+                gl.uniform_1_u32(Some(location), 0);
+            }
+            Pipeline {
+                program,
+                blocks,
+                textures,
+                first_instance,
+                topology: fixed.topology,
+                blend: fixed.blend,
+                depth: fixed.depth,
+                cull: fixed.cull,
+            }
+        }
     }
 
     /// A compiled stage: one compile per distinct source.
@@ -507,18 +855,17 @@ impl GlGpu {
         shader
     }
 
+    /// Starts compiling a stage without waiting for it: a failure shows
+    /// when its program links.
     fn compile(&self, kind: u32, source: &str, label: &str) -> glow::Shader {
         // SAFETY: shader creation and compilation on the current context.
         unsafe {
-            let shader = self.gl.create_shader(kind).expect("shader object");
+            let shader = self
+                .gl
+                .create_shader(kind)
+                .unwrap_or_else(|e| panic!("{label}: shader object: {e}"));
             self.gl.shader_source(shader, source);
             self.gl.compile_shader(shader);
-            if !self.gl.get_shader_compile_status(shader) {
-                panic!(
-                    "{label}: GLSL compile failed: {}",
-                    self.gl.get_shader_info_log(shader)
-                );
-            }
             shader
         }
     }
@@ -552,6 +899,11 @@ impl Drop for GlGpu {
             }
             for pipeline in self.pipelines.drain() {
                 gl.delete_program(pipeline.program);
+            }
+            for pending in self.pending.drain(..) {
+                if let Some((program, _)) = pending.program {
+                    gl.delete_program(program);
+                }
             }
             self.framebuffers.clear(gl);
             gl.delete_sampler(self.data_sampler);
@@ -920,71 +1272,83 @@ impl Gpu for GlGpu {
             desc.vertex.module, desc.fragment.module,
             "a Compat program is one module"
         );
-        #[cfg(not(target_arch = "wasm32"))]
-        let started = std::time::Instant::now();
-        let program = self.link(desc.vertex.module);
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.pipeline_time += started.elapsed();
-        }
-        let module = &self.modules[desc.vertex.module.0];
-        let gl = &self.gl;
-        // SAFETY: sets up a linked program of this context and queries it.
-        let pipeline = unsafe {
-            gl.use_program(Some(program));
-            self.state.forget_program();
-            let mut blocks = Vec::new();
-            for (name, group, binding) in &module.blocks {
-                if let Some(index) = gl.get_uniform_block_index(program, name) {
-                    // Both stages' blocks of one binding share a point.
-                    let point = match blocks.iter().position(|b| b == &(*group, *binding)) {
-                        Some(p) => p,
-                        None => {
-                            blocks.push((*group, *binding));
-                            blocks.len() - 1
-                        }
-                    };
-                    gl.uniform_block_binding(program, index, point as u32);
-                }
-            }
-            let mut textures = Vec::new();
-            for (name, (texture, sampler)) in &module.textures {
-                if let Some(location) = gl.get_uniform_location(program, name) {
-                    let unit = match textures.iter().position(|t| t == &(*texture, *sampler)) {
-                        Some(u) => u,
-                        None => {
-                            textures.push((*texture, *sampler));
-                            textures.len() - 1
-                        }
-                    };
-                    gl.uniform_1_i32(Some(&location), unit as i32);
-                }
-            }
-            let first_instance = gl.get_uniform_location(program, "naga_vs_first_instance");
-            if let Some(location) = &first_instance {
-                gl.uniform_1_u32(Some(location), 0);
-            }
-            Pipeline {
-                program,
-                blocks,
-                textures,
-                first_instance,
-                topology: match desc.topology {
-                    PrimitiveTopology::LineList => glow::LINES,
-                    PrimitiveTopology::TriangleList => glow::TRIANGLES,
-                    PrimitiveTopology::TriangleStrip => glow::TRIANGLE_STRIP,
-                },
-                blend: desc.targets.first().and_then(|t| t.blend),
-                depth: desc.depth,
-                cull: desc.cull_mode,
-            }
+        let fixed = Fixed {
+            topology: match desc.topology {
+                PrimitiveTopology::LineList => glow::LINES,
+                PrimitiveTopology::TriangleList => glow::TRIANGLES,
+                PrimitiveTopology::TriangleStrip => glow::TRIANGLE_STRIP,
+            },
+            blend: desc.targets.first().and_then(|t| t.blend),
+            depth: desc.depth,
+            cull: desc.cull_mode,
         };
-        self.pipelines_created += 1;
-        RenderPipelineId(self.pipelines.insert(pipeline))
+        let slot = self.pipelines.reserve();
+        let module = desc.vertex.module;
+        let program = match &self.compiler {
+            #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
+            Compiler::Thread(thread) => {
+                let m = &self.modules[module.0];
+                let key = cache::key(&m.vertex_source, &m.fragment_source);
+                thread.submit(compile::Job {
+                    slot,
+                    label: m.label.clone(),
+                    vertex: m.vertex_source.clone(),
+                    fragment: m.fragment_source.clone(),
+                    binary: self.programs.as_ref().and_then(|c| c.get(key)),
+                    keep_binary: self.programs.is_some(),
+                });
+                None
+            }
+            _ => Some(self.start(module)),
+        };
+        self.pending.push_back(Pending {
+            slot,
+            module,
+            program,
+            fixed,
+            since: Instant::now(),
+        });
+        RenderPipelineId(slot)
     }
 
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> ComputePipelineId {
         panic!("{}: Compat has no compute", desc.label);
+    }
+
+    fn pipeline_ready(&mut self, id: PipelineId) -> bool {
+        let PipelineId::Render(id) = id else {
+            panic!("Compat has no compute");
+        };
+        if self.pipelines.contains(id.0) {
+            return true;
+        }
+        self.take_linked(false);
+        self.pipelines.contains(id.0)
+    }
+
+    fn poll_pipelines(&mut self) -> PipelineCounts {
+        self.take_linked(true);
+        PipelineCounts {
+            made: self.pipelines_created,
+            pending: self.pending.len() as u32,
+        }
+    }
+
+    fn prioritize_pipeline(&mut self, id: PipelineId) {
+        let PipelineId::Render(id) = id else {
+            return;
+        };
+        #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
+        if let Compiler::Thread(thread) = &self.compiler {
+            thread.prioritize(id.0);
+            return;
+        }
+        if let Some(at) = self.pending.iter().position(|p| p.slot == id.0)
+            && at > 0
+        {
+            let pending = self.pending.remove(at).expect("found");
+            self.pending.push_front(pending);
+        }
     }
 
     fn create_render_bundle(

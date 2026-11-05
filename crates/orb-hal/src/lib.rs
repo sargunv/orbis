@@ -20,9 +20,11 @@ pub use resource::*;
 
 /// The GPU as core crates see it.
 ///
-/// Creation is synchronous; implementations may compile pipelines lazily.
-/// Ids are never reused, and using a destroyed id is a bug that
-/// implementations may panic on.
+/// Creation is synchronous, except for pipelines: those compile
+/// asynchronously (plan §8.4), and commands may name one only once
+/// [`pipeline_ready`](Self::pipeline_ready) says it compiled. Ids are never
+/// reused, and using a destroyed id is a bug that implementations may panic
+/// on.
 pub trait Gpu {
     fn caps(&self) -> &Caps;
 
@@ -82,8 +84,19 @@ pub trait Gpu {
     fn create_bind_group_layout(&mut self, desc: &BindGroupLayoutDesc<'_>) -> BindGroupLayoutId;
     fn create_bind_group(&mut self, desc: &BindGroupDesc<'_>) -> BindGroupId;
     fn destroy_bind_group(&mut self, id: BindGroupId);
+    /// Queues a pipeline's compile and returns its id at once.
     fn create_render_pipeline(&mut self, desc: &RenderPipelineDesc<'_>) -> RenderPipelineId;
+    /// Queues a pipeline's compile and returns its id at once.
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> ComputePipelineId;
+    /// Whether a pipeline compiled, so commands may use it.
+    fn pipeline_ready(&mut self, id: PipelineId) -> bool;
+    /// Takes compiles that finished, and counts pipelines made and still
+    /// compiling.
+    fn poll_pipelines(&mut self) -> PipelineCounts;
+    /// Compiles a pending pipeline before those queued ahead of it, where
+    /// the implementation keeps a queue: what the current view needs
+    /// first (plan §8.4's first-visible order).
+    fn prioritize_pipeline(&mut self, id: PipelineId);
 
     /// Records render commands once for replay with
     /// [`RenderCommand::ExecuteBundles`]. Bundles may not contain
@@ -101,6 +114,33 @@ pub trait Gpu {
 
     /// Encodes and submits passes in order.
     fn submit(&mut self, passes: &[Pass]);
+}
+
+/// A render or compute pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PipelineId {
+    Render(RenderPipelineId),
+    Compute(ComputePipelineId),
+}
+
+impl From<RenderPipelineId> for PipelineId {
+    fn from(id: RenderPipelineId) -> Self {
+        Self::Render(id)
+    }
+}
+
+impl From<ComputePipelineId> for PipelineId {
+    fn from(id: ComputePipelineId) -> Self {
+        Self::Compute(id)
+    }
+}
+
+/// Pipelines a device has compiled, and those it is still compiling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PipelineCounts {
+    /// Pipelines compiled since the device was made; it only grows.
+    pub made: u32,
+    pub pending: u32,
 }
 
 /// What the device supports, detected at runtime.

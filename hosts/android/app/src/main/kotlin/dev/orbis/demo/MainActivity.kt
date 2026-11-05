@@ -39,6 +39,8 @@ class MainActivity : Activity() {
     private var popup: Pin? = null
     private var pendingQuery: Triple<ULong, Double, Double>? = null
     private var loadLogged = false
+    private var firstDrawLogged = false
+    private var compiledLogged = false
     /** When the GPU was lost on purpose, until a complete frame. */
     private var lostAt: Long? = null
 
@@ -101,10 +103,22 @@ class MainActivity : Activity() {
         view.onFrame = { frame ->
             for (pin in pins + listOfNotNull(popup)) pin.place(view.map)
             val c = view.map.camera()
-            status.text = "z%.2f · %d tiles · %d draws · %s · frames %d".format(
+            status.text = "z%.2f · %d tiles · %d draws · %s · frames %d%s".format(
                 c.zoom, frame.tilesDrawn.toInt(), frame.draws.toInt(),
                 if (frame.idle) "idle" else "loading", view.framesDrawn,
+                if (frame.pipelinesPending > 0u) " · %d pipelines compiling".format(frame.pipelinesPending.toInt()) else "",
             )
+            // Load to the first frame that draws a layer, and to the last
+            // pipeline (plan §18's pipeline-load gate).
+            if (!firstDrawLogged && frame.tilesDrawn > 0u && frame.draws > 0u) {
+                firstDrawLogged = true
+                Log.i("Orbis", "first draw %d ms after start; %d pipelines compiling, %d layers waiting".format(
+                    SystemClock.elapsedRealtime() - started, frame.pipelinesPending.toInt(), frame.layersWaiting.toInt()))
+            }
+            if (!compiledLogged && frame.tilesDrawn > 0u && frame.pipelinesPending == 0u) {
+                compiledLogged = true
+                Log.i("Orbis", "pipelines compiled %d ms after start".format(SystemClock.elapsedRealtime() - started))
+            }
             lostAt?.let { at ->
                 if (frame.idle) {
                     lostAt = null
@@ -130,6 +144,9 @@ class MainActivity : Activity() {
                         frame.tilesDrawn.toInt(), frame.draws.toInt(),
                     ),
                 )
+                for (line in runtime.pipelineTimings().lines().filter { it.isNotBlank() }) {
+                    Log.i("Orbis", "  pipeline %s ms".format(line))
+                }
             }
         }
         view.onRecovered = { ms -> Log.i("Orbis", "new device in %d ms: %s".format(ms, runtime.selection())) }

@@ -2432,6 +2432,7 @@ dependencies = [
  "orb-hal",
  "pollster",
  "sha2",
+ "wasm-bindgen",
  "web-sys",
  "wgpu",
 ]

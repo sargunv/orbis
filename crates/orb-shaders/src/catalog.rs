@@ -363,7 +363,7 @@ pub const EXTRUSION_COMPOSITE_SHADER: Shader = Shader {
 };
 
 /// The shaders Compat draws with (plan §8.7): all but terrain's, the
-/// drape's and compute. `PASS` overrides are specialized per value.
+/// drape's and compute.
 pub const COMPAT_SHADERS: &[Shader] = &[
     SKY_SHADER,
     LAYER_COMPOSITE_SHADER,
@@ -383,6 +383,3 @@ pub const COMPAT_SHADERS: &[Shader] = &[
     PREPARE_PAD_DRAW_SHADER,
     PREPARE_SLOPE_DRAW_SHADER,
 ];
-
-/// Values of the symbol shader's `PASS` override.
-pub const SYMBOL_PASSES: u32 = 3;

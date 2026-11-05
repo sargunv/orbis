@@ -98,6 +98,15 @@ impl Atmosphere {
         }
     }
 
+    /// The sky's pipelines, once made.
+    pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
+        self.sky
+            .map(|(.., p)| p.into())
+            .into_iter()
+            .chain(self.scatter.map(PipelineId::from))
+            .collect()
+    }
+
     /// Writes the frame's atmosphere: without a paint there is no sky and
     /// no fog.
     pub(crate) fn set(
@@ -166,17 +175,26 @@ impl Atmosphere {
         self.written = Some((paint, view));
     }
 
-    pub(crate) fn commands(&self) -> Vec<RenderCommand> {
-        let Some((_, group, pipeline)) = self.sky.filter(|_| self.enabled) else {
+    /// The sky's draw, once its pipeline compiled.
+    pub(crate) fn commands(&self, gpu: &mut dyn Gpu) -> Vec<RenderCommand> {
+        let Some((_, group, pipeline)) = self
+            .sky
+            .filter(|&(_, _, p)| self.enabled && gpu.pipeline_ready(p.into()))
+        else {
             return Vec::new();
         };
         Self::fullscreen(pipeline, group)
     }
 
-    /// The globe's scattering over the map, after its layers.
-    pub(crate) fn commands_after(&self) -> Vec<RenderCommand> {
+    /// The globe's scattering over the map, after its layers, once its
+    /// pipeline compiled.
+    pub(crate) fn commands_after(&self, gpu: &mut dyn Gpu) -> Vec<RenderCommand> {
         match (self.sky, self.scatter) {
-            (Some((_, group, _)), Some(pipeline)) if self.enabled && self.scatter_blend > 0.0 => {
+            (Some((_, group, _)), Some(pipeline))
+                if self.enabled
+                    && self.scatter_blend > 0.0
+                    && gpu.pipeline_ready(pipeline.into()) =>
+            {
                 Self::fullscreen(pipeline, group)
             }
             _ => Vec::new(),

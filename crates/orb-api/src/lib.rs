@@ -135,6 +135,29 @@ struct Shared {
     cache: RefCell<Option<(PathBuf, u32)>>,
     /// The directory the host asked to keep pipeline caches in.
     cache_dir: RefCell<Option<PathBuf>>,
+    /// Every map's wake: the device calls them all when a pipeline
+    /// compiles.
+    wakes: Wakes,
+    /// Whether the device wakes the maps when a pipeline compiles.
+    compile_wakes: std::cell::Cell<bool>,
+}
+
+/// Every map's wake, held weakly: a dropped map's goes.
+type Wakes = Arc<std::sync::Mutex<Vec<std::sync::Weak<dyn Fn() + Send + Sync>>>>;
+
+/// A wake for the device that wakes every map still alive.
+fn wake_all(wakes: &Wakes) -> Arc<dyn Fn() + Send + Sync> {
+    let wakes = wakes.clone();
+    Arc::new(move || {
+        let live: Vec<_> = {
+            let mut wakes = wakes.lock().expect("wakes poisoned");
+            wakes.retain(|w| w.strong_count() > 0);
+            wakes.iter().filter_map(std::sync::Weak::upgrade).collect()
+        };
+        for wake in live {
+            wake();
+        }
+    })
 }
 
 impl Runtime {
@@ -142,6 +165,8 @@ impl Runtime {
     /// pools. Blocks while the device is made.
     pub fn new(options: &RuntimeOptions) -> Result<Self, Error> {
         let (gpu, selection, sentinel) = Device::choose(options)?;
+        let wakes = Arc::default();
+        let compile_wakes = gpu.set_compile_wake(wake_all(&wakes));
         let threads = options
             .job_threads
             .unwrap_or_else(ThreadPool::default_size)
@@ -159,6 +184,8 @@ impl Runtime {
                 started: Instant::now(),
                 cache: RefCell::new(None),
                 cache_dir: RefCell::new(None),
+                wakes,
+                compile_wakes: std::cell::Cell::new(compile_wakes),
             }),
         })
     }
@@ -173,6 +200,15 @@ impl Runtime {
         match &*self.shared.gpu.borrow() {
             Device::Modern(gpu) => gpu.pipeline_time(),
             Device::Compat(c) => c.gpu.pipeline_time(),
+        }
+    }
+
+    /// Each pipeline compiled so far and how long it took, in the order
+    /// they finished (plan §8.9: pipelines created cold and warm).
+    pub fn pipeline_timings(&self) -> Vec<(String, std::time::Duration)> {
+        match &*self.shared.gpu.borrow() {
+            Device::Modern(gpu) => gpu.pipeline_timings().to_vec(),
+            Device::Compat(c) => c.gpu.pipeline_timings().to_vec(),
         }
     }
 
@@ -203,7 +239,19 @@ impl Runtime {
     /// texture targets are made again. Drop window targets first (their
     /// surfaces hold their windows) and make them again after.
     pub fn recover(&self) -> Result<Tier, Error> {
+        // A loss mid-compile isn't a crash in it: only a compile the
+        // watchdog found hung keeps the sentinel armed, so the device
+        // chosen now demotes as at the next start (plan §8.8 3).
+        let hung = self.shared.gpu.borrow().hung();
+        if let Some(marker) = self.shared.sentinel.borrow_mut().take()
+            && hung.is_none()
+        {
+            device::disarm(&marker);
+        }
         let (gpu, selection, sentinel) = Device::choose(&self.shared.options)?;
+        self.shared
+            .compile_wakes
+            .set(gpu.set_compile_wake(wake_all(&self.shared.wakes)));
         drop(std::mem::replace(&mut *self.shared.gpu.borrow_mut(), gpu));
         self.shared.gpu.borrow().make_current();
         *self.shared.selection.borrow_mut() = selection;
@@ -299,7 +347,28 @@ impl Runtime {
         }
     }
 
-    /// Clears the crash sentinel once the first pipelines are made.
+    /// The compile the watchdog found hung, if one was (plan §8.8 3): the
+    /// GPU is then lost, and [`recover`](Self::recover) demotes it.
+    pub fn hung_compile(&self) -> Option<String> {
+        self.shared.gpu.borrow().hung()
+    }
+
+    /// Wakes `wake` when a pipeline compiles, while it lives.
+    fn add_wake(&self, wake: &Arc<dyn Fn() + Send + Sync>) {
+        self.shared
+            .wakes
+            .lock()
+            .expect("wakes poisoned")
+            .push(Arc::downgrade(wake));
+    }
+
+    /// Whether the device wakes the maps when a pipeline compiles, so a
+    /// map waiting only for pipelines needs no frames.
+    fn compile_wakes(&self) -> bool {
+        self.shared.compile_wakes.get()
+    }
+
+    /// Clears the crash sentinel once the pipelines are made.
     fn pipelines_made(&self) {
         if let Some(marker) = self.shared.sentinel.borrow_mut().take() {
             device::disarm(&marker);

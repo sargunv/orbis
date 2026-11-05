@@ -26,6 +26,26 @@ impl<T> Slots<T> {
         id
     }
 
+    /// An id for an entry that [`fill`](Self::fill) adds later.
+    pub(crate) fn reserve(&mut self) -> u32 {
+        let id = self.next;
+        self.next = id.checked_add(1).expect("resource ids exhausted");
+        id
+    }
+
+    /// Adds the entry of a reserved id.
+    pub(crate) fn fill(&mut self, id: u32, item: T) {
+        assert!(id < self.next, "resource {id} was never reserved");
+        assert!(
+            self.items.insert(id, item).is_none(),
+            "resource {id} filled twice"
+        );
+    }
+
+    pub(crate) fn contains(&self, id: u32) -> bool {
+        self.items.contains_key(&id)
+    }
+
     /// Takes every live resource.
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
         self.items.drain().map(|(_, item)| item)

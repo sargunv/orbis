@@ -356,6 +356,18 @@ impl Gpu for TimedGpu {
         self.inner.create_compute_pipeline(desc)
     }
 
+    fn pipeline_ready(&mut self, id: PipelineId) -> bool {
+        self.inner.pipeline_ready(id)
+    }
+
+    fn poll_pipelines(&mut self) -> PipelineCounts {
+        self.inner.poll_pipelines()
+    }
+
+    fn prioritize_pipeline(&mut self, id: PipelineId) {
+        self.inner.prioritize_pipeline(id);
+    }
+
     fn create_render_bundle(
         &mut self,
         desc: &RenderBundleDesc<'_>,
