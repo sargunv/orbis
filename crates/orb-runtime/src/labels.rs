@@ -999,6 +999,13 @@ impl Labels {
         self.requests += 1;
     }
 
+    /// The lane couldn't place the frame asked of it: the next frame asks
+    /// again.
+    pub(crate) fn place_failed(&mut self) {
+        self.in_flight = None;
+        self.last_frame = None;
+    }
+
     /// Applies a commit: changed state words go to their meshes.
     pub(crate) fn committed(
         &mut self,

@@ -85,18 +85,27 @@ impl WorkerPlacement {
         }
     }
 
-    /// Completes map `map`'s oldest placement with its worker's reply.
+    /// Completes map `map`'s oldest placement with its worker's reply: a
+    /// commit, or `{error}` when the worker failed to place.
     pub(crate) fn receive(map: u32, reply: &JsValue) -> Result<(), JsError> {
-        let bytes = Reflect::get(reply, &"committed".into())
-            .ok()
-            .and_then(|b| b.dyn_into::<Uint8Array>().ok())
-            .ok_or_else(|| JsError::new("placement reply without a commit"))?;
-        let committed = unpack_committed(&bytes.to_vec()).map_err(|e| JsError::new(&e))?;
         let done = with_lane(map, |lane| lane.owed.pop_front())
             .flatten()
             .ok_or_else(|| JsError::new("a commit nobody asked for"))?;
+        if let Some(error) = Reflect::get(reply, &"error".into())
+            .ok()
+            .and_then(|e| e.as_string())
+        {
+            done(Err(error));
+            return Ok(());
+        }
+        let committed = Reflect::get(reply, &"committed".into())
+            .ok()
+            .and_then(|b| b.dyn_into::<Uint8Array>().ok())
+            .ok_or_else(|| "placement reply without a commit".to_string())
+            .and_then(|bytes| unpack_committed(&bytes.to_vec()));
+        let failed = committed.as_ref().err().cloned();
         done(committed);
-        Ok(())
+        failed.map_or(Ok(()), |e| Err(JsError::new(&e)))
     }
 }
 
@@ -191,7 +200,9 @@ impl PlacementWorker {
         self.lane.place(
             frame,
             Box::new(move |committed| {
-                *sink.lock().expect("reply poisoned") = Some(pack_committed(&committed));
+                if let Ok(committed) = committed {
+                    *sink.lock().expect("reply poisoned") = Some(pack_committed(&committed));
+                }
             }),
         );
         let packed = reply

@@ -1,5 +1,6 @@
 // The placement worker: places the map's labels (decision 0009),
-// answering each frame with its commit, transferred.
+// answering each frame with its commit, transferred, or with `{error}`
+// when it couldn't place it.
 //
 // Spawner → worker: {module, port}. Port messages are Rust's (orb-web's
 // `placement` module); this file only carries them.
@@ -13,7 +14,9 @@ self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAs
       const reply = placer.receive(data);
       if (reply) port.postMessage(reply, [reply.committed.buffer]);
     } catch (e) {
-      console.error(e);
+      // A frame asked for is always answered, so the map asks again.
+      if (data?.place) port.postMessage({ error: String(e instanceof Error ? e.message : e) });
+      else console.error(e);
     }
   };
 };

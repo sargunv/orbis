@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use orb_symbol::{Committed, Frame, PlacementTables, Placer};
 
-/// Called once with a placement's commit, on any thread.
-pub type PlaceDone = Box<dyn FnOnce(Committed) + Send + 'static>;
+/// Called once with a placement's commit, or why the lane couldn't place,
+/// on any thread.
+pub type PlaceDone = Box<dyn FnOnce(Result<Committed, String>) + Send + 'static>;
 
 /// Where placement runs.
 pub trait PlacementLane: Send + Sync {
@@ -30,7 +31,7 @@ fn run(placer: &mut Placer, message: Message) {
     match message {
         Message::Ingest(bucket, tables) => placer.ingest(bucket, tables),
         Message::Remove(bucket) => placer.remove(bucket),
-        Message::Place(frame, done) => done(placer.place(&frame)),
+        Message::Place(frame, done) => done(Ok(placer.place(&frame))),
     }
 }
 
@@ -106,6 +107,6 @@ impl PlacementLane for InlinePlacement {
 
     fn place(&self, frame: Frame, done: PlaceDone) {
         let committed = self.placer.lock().expect("lane poisoned").place(&frame);
-        done(committed);
+        done(Ok(committed));
     }
 }

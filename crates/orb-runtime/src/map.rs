@@ -161,10 +161,10 @@ pub struct JobCounts {
 }
 
 enum Message {
-    /// A placement committed, for the labels of `epoch`.
+    /// A placement committed, or failed, for the labels of `epoch`.
     Placed {
         epoch: u64,
-        committed: orb_symbol::Committed,
+        committed: Result<orb_symbol::Committed, String>,
     },
     /// A glyph raster job finished, for these code points and rows of the
     /// labels of `epoch`.
@@ -2957,9 +2957,18 @@ impl Map {
                 // Replies to the labels a GPU reset replaced are dropped.
                 Message::Placed { epoch, committed } => {
                     if epoch == self.label_epoch {
-                        let started = self.services.clock.now();
-                        self.labels.committed(gpu, renderer, committed);
-                        self.placement_ms += self.services.clock.now() - started;
+                        match committed {
+                            Ok(committed) => {
+                                let started = self.services.clock.now();
+                                self.labels.committed(gpu, renderer, committed);
+                                self.placement_ms += self.services.clock.now() - started;
+                            }
+                            // The labels ask again with the next frame.
+                            Err(message) => {
+                                self.labels.place_failed();
+                                self.warnings.push(format!("placement: {message}"));
+                            }
+                        }
                     }
                 }
                 Message::Raster {
