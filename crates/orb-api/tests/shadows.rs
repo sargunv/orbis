@@ -118,24 +118,29 @@ fn models_receive_shadows() {
 }
 
 /// A building out of view toward a low light still casts into it: its
-/// tile stays in the cover (#92). The 200 m building 500 m east, under a
-/// light 20° up, shades 550 m west of it, past the view's centre, while
-/// the view at zoom 17 spans about 150 m.
+/// tile stays in the cover (#92). The 120 m building 400 m east, under a
+/// light 10° up, shades about 680 m west of it, past the view's centre,
+/// while the view at zoom 17 spans about 150 m and its eye stands about
+/// 230 m up.
 #[test]
 fn casters_out_of_view_cast_into_it() {
     let low = |cast| {
-        scene(cast, 520.0, BUILDING)
-            .replace("[90, 45]", "[90, 70]")
+        scene(cast, 420.0, BUILDING)
+            .replace(
+                r#"[90, 45], "intensity": 0.5"#,
+                r#"[90, 80], "intensity": 1"#,
+            )
             .replace(
                 "\"fill-extrusion-height\": 100",
-                "\"fill-extrusion-height\": 200",
+                "\"fill-extrusion-height\": 120",
             )
     };
     let [lit] = red(&low(false), [0.0]);
     let [shadowed] = red(&low(true), [0.0]);
-    assert_eq!(lit, 255, "the ground is white without shadows");
+    // The ground is lit (decision 0026): in shadow it keeps the ambient
+    // light alone.
     assert!(
-        shadowed < 200,
-        "the ground is in the building's shadow: {shadowed}"
+        shadowed + 20 < lit,
+        "the ground is in the building's shadow: {shadowed}, lit {lit}"
     );
 }
