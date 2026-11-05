@@ -322,6 +322,22 @@ async function edits(browser, server) {
     await idle();
     console.log(`edits: ${name} → generation ${generation}, idle in ${Date.now() - started} ms`);
   }
+  // A placement worker that traps is replaced: labels place again.
+  const labels = () => page.evaluate(() => {
+    const snapshot = globalThis.orbis.semanticSnapshot();
+    return { commit: snapshot?.commit ?? 0, shown: snapshot?.nodes?.length ?? 0 };
+  });
+  const before = await labels();
+  await page.evaluate(() => globalThis.orbis.trapPlacementWorker());
+  await page.waitForTimeout(100);
+  await page.evaluate(() => globalThis.orbis.map.camera.jumpTo({ zoom: 15.5 }));
+  await page.waitForTimeout(50);
+  await idle();
+  const after = await labels();
+  assert.ok(before.shown > 0 && after.shown > 0 && after.commit > before.commit,
+    `labels before the trap ${JSON.stringify(before)}, after ${JSON.stringify(after)}`);
+  console.log(`edits: placement worker trapped and replaced; commit ${before.commit} → ${after.commit}, ${after.shown} labels`);
+
   const cost = await page.evaluate(async (writes) => {
     const { map } = globalThis.orbis;
     const write = (i) => map.setFeatureState({ source: "grid", id: 123 }, { hover: i % 2 === 0 });

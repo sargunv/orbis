@@ -36,6 +36,22 @@ struct Lane {
     post: js_sys::Function,
     owed: VecDeque<PlaceDone>,
     ground: Option<GroundRef>,
+    /// The worker was replaced since the map last asked.
+    restarted: bool,
+}
+
+/// Map `map`'s placement worker was lost and replaced, its `post` reaching
+/// the new one: the placements it owed fail, and the map sends the new one
+/// its buckets and terrain before it places again.
+pub(crate) fn lost(map: u32, why: &str) {
+    let owed = with_lane(map, |lane| {
+        lane.restarted = true;
+        lane.ground = None;
+        std::mem::take(&mut lane.owed)
+    });
+    for done in owed.into_iter().flatten() {
+        done(Err(format!("the placement worker was lost: {why}")));
+    }
 }
 
 /// Forgets map `map`'s placement worker.
@@ -66,6 +82,7 @@ impl WorkerPlacement {
             post,
             owed: VecDeque::new(),
             ground: None,
+            restarted: false,
         };
         LANES.with(|lanes| lanes.borrow_mut().insert(map, lane));
         Arc::new(Self(map))
@@ -141,6 +158,10 @@ impl PlacementLane for WorkerPlacement {
         let buffer = Uint8Array::from(wire::encode(&frame).as_slice());
         self.post(&object(&[("place", buffer.clone().into())]), Some(&buffer));
     }
+
+    fn restarted(&self) -> bool {
+        with_lane(self.0, |lane| std::mem::take(&mut lane.restarted)).unwrap_or(false)
+    }
 }
 
 /// The placement worker: `orb-symbol`'s placer behind a port.
@@ -157,6 +178,12 @@ impl PlacementWorker {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Traps, as a bug would: the page replaces the worker. To exercise
+    /// that recovery.
+    pub fn trap(&self) {
+        panic!("a trap asked for");
     }
 
     /// Handles a message from the render worker; returns the reply to post

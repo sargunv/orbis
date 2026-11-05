@@ -5,7 +5,7 @@
 import init, { createMap as createCoreMap, reloadRegions, setRequestHook, type OrbisMap as Core } from "../pkg/core.js";
 import { onRegionsChanged } from "./regions.ts";
 import { answerWorker, connectModule, connectWorker } from "./requests.ts";
-import { spawnWorkers } from "./workers.ts";
+import { spawnPlacement, spawnWorkers } from "./workers.ts";
 
 export type { Core };
 
@@ -51,6 +51,9 @@ export interface Host {
   /** Loses the GPU on purpose, to exercise recovery; with `switchTier`,
    * recovery skips the same tier. */
   loseDevice(switchTier: boolean): void;
+  /** Traps the placement worker's wasm, as a bug would, to exercise its
+   * replacement. */
+  trapPlacementWorker(): void;
   /** Draws on a new GPU after a loss: the same tier on the same canvas
    * where it works, else WebGL2 in a fresh canvas `replace` puts in the
    * old one's place. Resolves to the new tier. */
@@ -70,12 +73,34 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   };
   // A map with its job and placement workers.
   const start = async (tier: "modern" | "compat", canvas: HTMLCanvasElement, style: string) => {
-    const { workers, ports, placement } = spawnWorkers(module, jobWorkers);
+    const spawned = spawnWorkers(module, jobWorkers);
+    const { ports } = spawned;
+    const workers = spawned.workers.slice(0, -1);
+    let placement = { port: spawned.placement, worker: spawned.workers[spawned.workers.length - 1] };
     const { create, reload } = await rendererModule(tier, module);
     const core = await create(canvas, style, options, callbacks.wake, ports.length,
       (worker: number, message: unknown) => ports[worker].postMessage(message),
-      (message: unknown, transfer: Transferable[]) => placement.postMessage(message, transfer));
-    placement.onmessage = receive((data) => core.receivePlacement(data));
+      (message: unknown, transfer: Transferable[]) => placement.port.postMessage(message, transfer));
+    // A placement worker whose wasm trapped says so and closes; one that
+    // dies fires `error`. Either way another takes its place, and the map
+    // sends it what it places from.
+    const listen = () => {
+      const current = placement;
+      const replace = (why: string) => {
+        if (placement !== current) return;
+        current.worker.terminate();
+        placement = spawnPlacement(module);
+        listen();
+        core.placementWorkerLost(why);
+      };
+      current.port.onmessage = receive((data) => {
+        const lost = (data as { lost?: string }).lost;
+        if (lost !== undefined) replace(lost);
+        else core.receivePlacement(data);
+      });
+      current.worker.addEventListener("error", (e) => { e.preventDefault(); replace(e.message || "the worker died"); });
+    };
+    listen();
     // A job worker whose wasm trapped says so and closes; one that dies
     // fires `error`. Either way its requests fail and are retried on the
     // others.
@@ -90,9 +115,15 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
     });
     const regions = onRegionsChanged(reload);
     callbacks.setup(core);
-    return { core, stop: () => { regions(); for (const r of released) r(); for (const w of workers) w.terminate(); core.free(); } };
+    const stop = () => {
+      regions();
+      for (const r of released) r();
+      for (const w of [...workers, placement.worker]) w.terminate();
+      core.free();
+    };
+    return { core, stop, trap: () => placement.port.postMessage({ trap: true }) };
   };
-  let { core, stop } = await start(tier, canvas, style);
+  let { core, stop, trap } = await start(tier, canvas, style);
   let size: [number, number, number] | undefined;
   let skipTier = false;
   // A lost WebGL context is seen by the next frame, which this asks for.
@@ -105,6 +136,7 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
       core.resize(width, height, ratio);
     },
     loseDevice: (switchTier) => { skipTier = switchTier; core.loseDevice(); },
+    trapPlacementWorker: () => trap(),
     async recover(replace) {
       try {
         if (skipTier) throw new Error("switching tiers");
@@ -124,7 +156,7 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
         const c = core.camera();
         const camera = { center: [c.lon, c.lat], zoom: c.zoom, bearing: c.bearing, pitch: c.pitch, roll: c.roll, elevation: c.elevation };
         stop();
-        ({ core, stop } = await start("compat", fresh, `data:application/json,${encodeURIComponent(json)}`));
+        ({ core, stop, trap } = await start("compat", fresh, `data:application/json,${encodeURIComponent(json)}`));
         core.jumpTo(camera);
         if (size) core.resize(...size);
         canvas.removeEventListener("webglcontextlost", lost);

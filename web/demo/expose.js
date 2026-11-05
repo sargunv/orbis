@@ -11,6 +11,7 @@ export function expose(map) {
     getStyle: async () => JSON.stringify(await map.getStyle()),
     semanticSnapshot: () => map.semanticSnapshot(),
     loseDevice: (switchTier) => map.loseDevice(switchTier),
+    trapPlacementWorker: () => map.trapPlacementWorker(),
   };
   map.on("render", (ack) => window.dispatchEvent(new CustomEvent("orbis-frame", { detail: ack })));
 }

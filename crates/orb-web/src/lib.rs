@@ -773,6 +773,15 @@ impl OrbisMap {
         self.worker_jobs.lost(worker, why);
     }
 
+    /// The placement worker is lost (its wasm trapped, or it died) and the
+    /// page replaced it: the placements it owed fail, and the map sends the
+    /// new one its buckets before it places again.
+    #[wasm_bindgen(js_name = placementWorkerLost)]
+    pub fn placement_worker_lost(&mut self, why: &str) {
+        placement::lost(self.id, why);
+        wake(self.id);
+    }
+
     /// Completes a placement with the placement worker's reply.
     #[wasm_bindgen(js_name = receivePlacement)]
     pub fn receive_placement(&mut self, reply: &JsValue) -> Result<(), JsError> {

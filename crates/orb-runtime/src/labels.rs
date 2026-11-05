@@ -970,6 +970,18 @@ impl Labels {
         }
     }
 
+    /// Hands a lane that started afresh every bucket's tables again (the
+    /// scene holds them), and asks for a placement.
+    pub(crate) fn resend_if_restarted(&mut self) {
+        if !self.lane.restarted() {
+            return;
+        }
+        for (&bucket, meshes) in &self.buckets {
+            self.lane.ingest(bucket, Arc::clone(&meshes.tables));
+        }
+        self.last_frame = None;
+    }
+
     /// Whether `frame` needs placing: it differs from the last one placed
     /// (clock aside), nothing is out on the lane, and fades allow it.
     pub(crate) fn wants_placement(&self, frame: &orb_symbol::Frame) -> bool {
@@ -1806,6 +1818,12 @@ mod tests {
 
         /// A placement of `bucket`'s tile at `wraps`, out on the lane.
         fn placing(&mut self, bucket: u64, wraps: &[i32]) {
+            let frame = self.frame(bucket, wraps);
+            self.labels.placing(&frame);
+        }
+
+        /// A frame placing `bucket`'s tile at `wraps`.
+        fn frame(&self, bucket: u64, wraps: &[i32]) -> Frame {
             let tile = |wrap| PlacedTile {
                 bucket,
                 view: TileView {
@@ -1821,7 +1839,7 @@ mod tests {
                 text_size: orb_symbol::ZoomSize::default(),
             };
             let params = layer_params(self.worker.plan(), &self.worker.plan().nodes[0], 14.0);
-            self.labels.placing(&Frame {
+            Frame {
                 camera: Camera {
                     width: 512.0,
                     height: 512.0,
@@ -1841,7 +1859,7 @@ mod tests {
                 lng: 0.0,
                 ground: None,
                 scope: orb_symbol::Scope::Viewport,
-            });
+            }
         }
 
         /// A commit showing every text symbol of `bucket` at `wraps`.
@@ -1861,6 +1879,31 @@ mod tests {
                 ..Committed::default()
             }
         }
+    }
+
+    /// A placement thread whose placer traps starts afresh: that placement
+    /// fails, the labels hand the lane their buckets again, and the next
+    /// one places them.
+    #[test]
+    fn a_trapped_placement_lane_places_again() {
+        let mut h = Harness::new(SceneCapacity::default());
+        h.labels.lane = crate::ThreadPlacement::new();
+        let mut resident = h.tile();
+        h.upload(&mut resident).unwrap();
+        let bucket = resident.symbols[0].bucket;
+        let place = |h: &Harness| {
+            let (send, receive) = std::sync::mpsc::channel();
+            let done = Box::new(move |c| send.send(c).unwrap());
+            h.labels.lane.place(h.frame(bucket, &[0]), done);
+            receive.recv().unwrap()
+        };
+        let placed = |c: &Committed| c.changed.iter().any(|(b, _, _)| *b == bucket);
+        assert!(placed(&place(&h).unwrap()));
+        crate::placement::TRAP.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(place(&h).is_err());
+        h.labels.resend_if_restarted();
+        assert!(placed(&place(&h).unwrap()), "the bucket, sent again");
+        assert!(!h.labels.lane.restarted());
     }
 
     /// S1: a relayout drops the bucket a placement was asked for; its

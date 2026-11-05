@@ -17,9 +17,15 @@ export function spawnWorkers(module: WebAssembly.Module, count: number) {
     ports.push(channel.port1);
     workers.push(job);
   }
-  const placement = new MessageChannel();
-  const placer = new Worker(new URL("./placement-worker.ts", import.meta.url), { type: "module" });
-  placer.postMessage({ module, port: placement.port2 }, [placement.port2]);
-  workers.push(placer);
-  return { workers, ports, placement: placement.port1 };
+  const placement = spawnPlacement(module);
+  workers.push(placement.worker);
+  return { workers, ports, placement: placement.port };
+}
+
+/** A placement worker, and the port the map talks to it over. */
+export function spawnPlacement(module: WebAssembly.Module) {
+  const channel = new MessageChannel();
+  const worker = new Worker(new URL("./placement-worker.ts", import.meta.url), { type: "module" });
+  worker.postMessage({ module, port: channel.port2 }, [channel.port2]);
+  return { worker, port: channel.port1 };
 }

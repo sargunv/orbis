@@ -235,6 +235,9 @@ export class OrbisMap {
   /** Loses the GPU on purpose, to exercise recovery; with `switchTier`, a
    * WebGPU map recovers on WebGL2. */
   loseDevice(switchTier = false): void { this.#host.loseDevice(switchTier); }
+  /** Traps the placement worker's wasm, as a bug would, to exercise its
+   * replacement: labels place again within a frame or two. */
+  trapPlacementWorker(): void { this.#host.trapPlacementWorker(); }
 
   /** The last frame's counters. */
   get stats(): FrameStats | undefined { return this.#stats; }

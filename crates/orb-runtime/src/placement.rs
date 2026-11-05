@@ -3,6 +3,7 @@
 //! tiles become resident and camera snapshots as the view changes; it
 //! answers each snapshot with the state words that changed.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -19,7 +20,17 @@ pub trait PlacementLane: Send + Sync {
     fn remove(&self, bucket: u64);
     /// Places against `frame`; buckets ingested before the call are seen.
     fn place(&self, frame: Frame, done: PlaceDone);
+    /// Whether the lane started afresh, without the buckets it had, since
+    /// last asked: its placer failed (a trap, a panic) and was replaced.
+    /// The map ingests every bucket again before it places.
+    fn restarted(&self) -> bool {
+        false
+    }
 }
+
+/// A test's trap in the next placement.
+#[cfg(test)]
+pub(crate) static TRAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 enum Message {
     Ingest(u64, Arc<PlacementTables>),
@@ -35,33 +46,76 @@ fn run(placer: &mut Placer, message: Message) {
     }
 }
 
-/// Placement on a thread of its own: the native lane.
+/// Placement on a thread of its own: the native lane. A placement that
+/// panics fails, and the thread goes on with a fresh placer; a thread that
+/// died is replaced. Either way the lane has `restarted`.
 #[derive(Debug)]
 pub struct ThreadPlacement {
     sender: Mutex<Sender<Message>>,
+    restarted: Arc<AtomicBool>,
 }
 
 impl ThreadPlacement {
     pub fn new() -> Arc<Self> {
-        let (sender, receiver) = channel::<Message>();
-        std::thread::Builder::new()
-            .name("placement".into())
-            .spawn(move || {
-                let mut placer = Placer::default();
-                while let Ok(message) = receiver.recv() {
-                    run(&mut placer, message);
-                }
-            })
-            .expect("failed to spawn the placement thread");
+        let restarted = Arc::new(AtomicBool::new(false));
         Arc::new(Self {
-            sender: Mutex::new(sender),
+            sender: Mutex::new(spawn(Arc::clone(&restarted))),
+            restarted,
         })
     }
 
     fn send(&self, message: Message) {
-        // The thread lives as long as the sender.
-        let _ = self.sender.lock().expect("lane poisoned").send(message);
+        let mut sender = self.sender.lock().expect("lane poisoned");
+        if let Err(std::sync::mpsc::SendError(message)) = sender.send(message) {
+            *sender = spawn(Arc::clone(&self.restarted));
+            self.restarted.store(true, Ordering::Release);
+            // The map sends its buckets again; a placement asks again.
+            if let Message::Place(_, done) = message {
+                done(Err("the placement thread was lost".into()));
+            }
+        }
     }
+}
+
+/// The placement thread: a panic leaves a fresh placer.
+fn spawn(restarted: Arc<AtomicBool>) -> Sender<Message> {
+    let (sender, receiver) = channel::<Message>();
+    std::thread::Builder::new()
+        .name("placement".into())
+        .spawn(move || {
+            let mut placer = Placer::default();
+            let failed = |placer: &mut Placer| {
+                *placer = Placer::default();
+                restarted.store(true, Ordering::Release);
+            };
+            while let Ok(message) = receiver.recv() {
+                let Message::Place(frame, done) = message else {
+                    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run(&mut placer, message);
+                    }));
+                    if ran.is_err() {
+                        failed(&mut placer);
+                    }
+                    continue;
+                };
+                let placed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    #[cfg(test)]
+                    if TRAP.swap(false, Ordering::Relaxed) {
+                        panic!("an injected trap");
+                    }
+                    placer.place(&frame)
+                }));
+                match placed {
+                    Ok(committed) => done(Ok(committed)),
+                    Err(_) => {
+                        failed(&mut placer);
+                        done(Err("placement failed; the lane starts afresh".into()));
+                    }
+                }
+            }
+        })
+        .expect("failed to spawn the placement thread");
+    sender
 }
 
 impl std::fmt::Debug for Message {
@@ -81,6 +135,10 @@ impl PlacementLane for ThreadPlacement {
 
     fn place(&self, frame: Frame, done: PlaceDone) {
         self.send(Message::Place(Box::new(frame), done));
+    }
+
+    fn restarted(&self) -> bool {
+        self.restarted.swap(false, Ordering::Acquire)
     }
 }
 

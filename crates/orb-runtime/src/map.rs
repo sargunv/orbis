@@ -1860,6 +1860,7 @@ impl Map {
             self.placement_ms += self.services.clock.now() - started;
             return !self.labels.settling();
         }
+        self.labels.resend_if_restarted();
         let settled = self.labels.is_placed(&frame);
         if self.labels.wants_placement(&frame) {
             self.labels.placing(&frame);
