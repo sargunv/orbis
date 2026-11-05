@@ -24,6 +24,7 @@ struct ModelNode {
     // Paint slots: colour, colour mix, emissive strength, then scale,
     // rotation and translation by component.
     curves: array<Curve, 12>,
+    state: StateLookup,
 };
 @group(1) @binding(0) var<uniform> node: ModelNode;
 
@@ -66,18 +67,21 @@ struct ModelOut {
 
 fn model_word_f(i: u32) -> f32 { return bitcast<f32>(model_words[i]); }
 
-fn model_number(row: u32, slot: u32, constant: f32, tile_zoom: f32) -> f32 {
+fn model_number(row: u32, state: u32, slot: u32, constant: f32, tile_zoom: f32) -> f32 {
+    if from_state(state, node.state, slot) {
+        return state_number(state, node.state, slot, node.curves[slot]);
+    }
     if (node.table_mask & (1u << slot)) != 0u {
         return table_number(row, slot, node.curves[slot], tile_zoom);
     }
     return constant;
 }
 
-fn model_vec3(row: u32, first: u32, constant: vec3<f32>, tile_zoom: f32) -> vec3<f32> {
+fn model_vec3(row: u32, state: u32, first: u32, constant: vec3<f32>, tile_zoom: f32) -> vec3<f32> {
     return vec3<f32>(
-        model_number(row, first, constant.x, tile_zoom),
-        model_number(row, first + 1u, constant.y, tile_zoom),
-        model_number(row, first + 2u, constant.z, tile_zoom));
+        model_number(row, state, first, constant.x, tile_zoom),
+        model_number(row, state, first + 1u, constant.y, tile_zoom),
+        model_number(row, state, first + 2u, constant.z, tile_zoom));
 }
 
 // Clip position of metres `o` east, north and up of ground point `g`: on
@@ -117,14 +121,17 @@ fn vs_model(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instanc
     let tile = tile_at(v.tile);
     let anchor = unpack_i16x2(vertex_at(v.vertex));
     if !point_owned(tile, anchor) { return out; }
-    let row = prop_row(v, vertex_at(v.vertex + 1u), v.row_words);
+    let feature = vertex_at(v.vertex + 1u);
+    let row = prop_row(v, feature, v.row_words);
+    let state = state_block(v, feature, node.state);
     var color = node.color;
     if (node.table_mask & 1u) != 0u { color = table_color(row, 0u, node.curves[0], tile.zoom); }
-    let color_mix = model_number(row, 1u, node.color_mix, tile.zoom);
-    let emissive = model_number(row, 2u, node.emissive, tile.zoom);
-    let scale = model_vec3(row, 3u, node.scale, tile.zoom);
-    let rotation = model_vec3(row, 6u, node.rotation, tile.zoom);
-    let translation = model_vec3(row, 9u, node.translation, tile.zoom);
+    if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0]); }
+    let color_mix = model_number(row, state, 1u, node.color_mix, tile.zoom);
+    let emissive = model_number(row, state, 2u, node.emissive, tile.zoom);
+    let scale = model_vec3(row, state, 3u, node.scale, tile.zoom);
+    let rotation = model_vec3(row, state, 6u, node.rotation, tile.zoom);
+    let translation = model_vec3(row, state, 9u, node.translation, tile.zoom);
 
     let w = model_draw.vertex_base + vertex * MODEL_VERTEX_WORDS;
     let position = vec3<f32>(model_word_f(w), model_word_f(w + 1u), model_word_f(w + 2u));

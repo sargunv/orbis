@@ -4584,12 +4584,13 @@ fn write_paint(
             let bounds = node
                 .model
                 .and_then(|m| style.models.get(m).copied().flatten());
+            let lookup = style.states.lookup(index as usize);
             crate::model::paint(
                 gpu,
                 renderer,
                 (plan, node, index),
                 zoom,
-                &state.maxima,
+                (&state.maxima, lookup),
                 (bounds, resolution),
             );
             style.models_painted = resolution;

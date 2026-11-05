@@ -1548,6 +1548,7 @@ fn model_paint() -> NodePaint {
         curves: [Curve::Step; 12],
         reach_px: 16.0,
         height: 0.0,
+        state: Default::default(),
     })
 }
 

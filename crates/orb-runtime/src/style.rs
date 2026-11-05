@@ -448,6 +448,7 @@ impl StylePlan {
                 | Family::Circle
                 | Family::SymbolIcon
                 | Family::SymbolText
+                | Family::Model
         ) && self
             .paint_properties(node)
             .iter()

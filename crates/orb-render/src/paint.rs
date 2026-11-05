@@ -45,6 +45,7 @@ pub struct ModelPaint {
     /// ground (metres), for culling.
     pub reach_px: f32,
     pub height: f32,
+    pub state: StateLookup,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -592,6 +593,9 @@ impl NodePaint {
         if let Self::Circle(p) = self {
             words.extend(p.state.words());
         }
+        if let Self::Model(p) = self {
+            words.extend(p.state.words());
+        }
         if let Self::Symbol(p) = self {
             words.extend(p.state.words());
         }
@@ -768,11 +772,13 @@ mod tests {
             curves: [Curve::Step; 12],
             reach_px: 0.0,
             height: 0.0,
+            state: StateLookup::default(),
         });
         // `ModelNode`: colour, four scalars, three vec3s each padded to 16
-        // bytes (the scale's padding is the opacity), 12 curves.
+        // bytes (the scale's padding is the opacity), 12 curves, the state
+        // lookup.
         let words = model.uniform_words(7);
-        assert_eq!(words.len() * 4, 80 + 12 * 32);
+        assert_eq!(words.len() * 4, 80 + 12 * 32 + 16);
         assert_eq!(words[6], 7);
         assert_eq!(f32::from_bits(words[11]), 1.0);
     }

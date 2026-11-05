@@ -13,7 +13,7 @@ use orb_3d::load::Load;
 use orb_hal::Gpu;
 use orb_host::Fetch;
 use orb_jobs::Executor;
-use orb_render::{Curve, ModelPaint, NodePaint, Renderer};
+use orb_render::{Curve, ModelPaint, NodePaint, Renderer, StateLookup};
 
 use crate::style::{NodePlan, PaintProperty, StylePlan};
 
@@ -111,13 +111,14 @@ fn step(fetch: Arc<dyn Fetch>, executor: Arc<dyn Executor>, loading: Loading) {
 }
 
 /// Writes a model node's paint at `zoom`. `maxima` are its property rows'
-/// maxima; `metres_per_px` the camera target's, for the cull's reach.
+/// maxima; `metres_per_px` the camera target's, for the cull's reach;
+/// `state` where its feature-state lookups read.
 pub(crate) fn paint(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     (plan, node, index): (&StylePlan, &NodePlan, u32),
     zoom: f64,
-    maxima: &[f32],
+    (maxima, state): (&[f32], StateLookup),
     (bounds, metres_per_px): (Option<[[f32; 3]; 2]>, f64),
 ) {
     let l = &plan.style.layers[node.layer];
@@ -130,6 +131,13 @@ pub(crate) fn paint(
             table_mask |= 1 << slot;
             curves[slot] = property.curve();
             numbers[slot] = maxima.get(slot).copied().unwrap_or(0.0);
+        } else if property.is_state_lookup() {
+            // The value without state; features with state read theirs.
+            curves[slot] = property.curve();
+            match property {
+                PaintProperty::Color(_) => color = property.default_color(zoom),
+                p => numbers[slot] = p.default_number(zoom),
+            }
         } else {
             match property {
                 PaintProperty::Color(_) => color = property.color(zoom),
@@ -162,6 +170,7 @@ pub(crate) fn paint(
             curves,
             reach_px,
             height,
+            state,
         }),
     );
 }
