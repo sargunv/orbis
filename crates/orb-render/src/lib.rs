@@ -61,7 +61,7 @@ pub use paint::{
 };
 pub use tiles::{
     GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, TileBuild, TileKey, UploadError, WarpKey,
-    dem_prepares, resident_neighbours,
+    dem_neighbours,
 };
 
 use std::collections::BTreeMap;

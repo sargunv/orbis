@@ -8,10 +8,10 @@
 //! it is rebuilt, and the bundle re-recorded, only when the node changes
 //! pages or a page grows.
 //!
-//! DEM tiles are prepared once when they arrive, and again when a
-//! neighbour arrives: `pad` fills a two-texel border from the neighbours
-//! (GL JS's `backfillBorder`), `slope` computes hillshade slopes. Each is
-//! a draw into the tile's layer, on both tiers.
+//! DEM tiles are prepared when the neighbours the view draws beside them
+//! change (`Renderer::pad_dems`): `pad` fills a two-texel border from those
+//! neighbours (GL JS's `backfillBorder`), `slope` computes hillshade
+//! slopes. Each is a draw into the tile's layer, on both tiers.
 
 use orb_hal::*;
 use orb_scene::{PageTexture, Pixels, TilePage};

@@ -2060,6 +2060,12 @@ impl Map {
                 renderer.free_layer(page, retired.layer);
             }
         }
+        if let Some(page) = terrain.page {
+            let unpack = endpoint.dem_unpack.expect("raster-dem").map(|v| v as f32);
+            for job in terrain.pads(unpack) {
+                renderer.prepare_dem(page, job);
+            }
+        }
         // The terrain draws before its DEM tiles arrive, and where its
         // source has none: flat, skirts and all, as GL JS draws it.
         let paint = {
@@ -2197,10 +2203,9 @@ impl Map {
                 return;
             }
         };
-        let SourceState::Ready { endpoint, .. } = &style.sources[terrain.source] else {
+        if !matches!(style.sources[terrain.source], SourceState::Ready { .. }) {
             return;
-        };
-        let unpack = endpoint.dem_unpack.expect("raster-dem").map(|v| v as f32);
+        }
         let size = [image.width, image.height];
         let page = *terrain
             .page
@@ -2229,10 +2234,6 @@ impl Map {
             },
         };
         renderer.write_layer(gpu, page, layer, pixels);
-        let layer_of = |t: TileIndex| terrain.pyramid.get(t).map(|d| d.layer);
-        for job in orb_render::dem_prepares(tile, layer, unpack, &layer_of) {
-            renderer.prepare_dem(page, job);
-        }
         if let Some(old) = terrain.insert(
             tile,
             crate::terrain::DemTile {

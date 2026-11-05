@@ -78,12 +78,11 @@ mod tests {
             }
             eprintln!("rotate: frames in {}", dir.display());
         }
-        // Ridge silhouettes still differ by a few hundred pixels: the
-        // moved map holds more DEM tiles, and the terrain cover reads them
-        // (#84). A slot drawn for another camera would cover thousands.
-        let total = (crate::common::Offscreen::WIDTH * crate::common::Offscreen::HEIGHT) as usize;
+        // DEM borders come from the drawn neighbours alone (#84), but a
+        // few ridge pixels, up to a dozen, still differ now and then; a
+        // slot drawn for another camera would cover thousands.
         assert!(
-            differing < total / 200,
+            differing <= 16,
             "{differing} mid-rotation pixels differ from a fresh view"
         );
     }

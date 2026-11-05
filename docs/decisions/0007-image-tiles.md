@@ -39,13 +39,15 @@ of vector tiles. Image sources cache 32 ready tiles beyond those in view.
 
 **`Prepare` as compute, on arrival.** GL JS backfills each DEM tile's border
 from its neighbours on the CPU, then re-renders the tile's slopes in an
-offscreen pass. Orbis queues a prepare job when a DEM tile arrives, and for
-each resident same-zoom neighbour: a `pad` dispatch fills the two-texel
-border from the eight neighbours' raw layers, or the tile's own edge where a
-neighbour isn't resident, exactly as `DEMData` initializes and backfills; a
-`slope` dispatch ports `hillshade_prepare`. One dispatch of each runs per page
-over every pending tile, in frames with arrivals only; camera-only frames
-still run one cull dispatch. Hillshade samples the slopes and color-relief
+offscreen pass. Orbis prepares a DEM tile the view reads whenever the
+same-zoom neighbours the view also reads change (the drawn tiles of a
+source; the terrain's wanted tiles): a `pad` dispatch fills the two-texel
+border from those neighbours' raw layers, or the tile's own edge past the
+rest, as `DEMData` initializes and backfills; a `slope` dispatch ports
+`hillshade_prepare`. A border is then a function of the view, where GL JS's
+depends on which tiles happen to be resident (#84). One dispatch of each
+runs per page over every pending tile, in frames where those sets change
+only; camera-only frames still run one cull dispatch. Hillshade samples the slopes and color-relief
 the padded elevations, as GL JS does.
 
 **Pixel alignment.** GL JS draws image tiles with a projection whose

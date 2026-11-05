@@ -140,7 +140,15 @@ pub(crate) struct Terrain {
     next_slot: u32,
     generation: u64,
     elevation: Arc<TerrainElevation>,
-    /// DEM tiles arrived or left since the elevations were last taken.
+    /// The DEM tiles this camera's cover reads, sorted: the elevations hold
+    /// these alone (and, while one loads, its nearest ready ancestor), not
+    /// whatever else the pyramid keeps from earlier views (#84).
+    wanted: Vec<TileIndex>,
+    /// Per wanted DEM tile, its layer and the neighbours' layers its border
+    /// was last padded from ([`pads`](Self::pads)).
+    padded: HashMap<TileIndex, (u32, [Option<u32>; 8])>,
+    /// DEM tiles arrived, left or are wanted anew since the elevations were
+    /// last taken.
     stale: bool,
     pub(crate) revision: u64,
 }
@@ -174,6 +182,8 @@ impl Terrain {
             next_slot: 0,
             generation: 0,
             elevation: Arc::new(TerrainElevation::empty(tms.clone(), exaggeration)),
+            wanted: Vec::new(),
+            padded: HashMap::new(),
             stale: true,
             revision: 0,
         }
@@ -242,8 +252,53 @@ impl Terrain {
         }
         wanted.sort();
         wanted.dedup();
+        let indices: Vec<TileIndex> = wanted.iter().map(|t| t.index).collect();
+        if indices != self.wanted {
+            self.wanted = indices;
+            self.stale = true;
+        }
         let update = self.pyramid.update(&wanted);
         update.request
+    }
+
+    /// The prepares that pad the DEM tiles this camera reads (those it
+    /// wants, and the ancestors drawn while they load) from their ready
+    /// neighbours among them, for the tiles whose neighbours changed since:
+    /// a border is a function of what this camera reads, not of which tiles
+    /// were resident before (#84).
+    pub(crate) fn pads(&mut self, unpack: [f32; 4]) -> Vec<orb_render::DemPrepare> {
+        let mut read: Vec<TileIndex> = (self.tiles.iter())
+            .filter_map(|t| self.dem_for(t.index).map(|(at, _)| at))
+            .chain(self.wanted.iter().copied())
+            .collect();
+        read.sort();
+        read.dedup();
+        let pyramid = &self.pyramid;
+        let layer_of = |t: TileIndex| {
+            read.binary_search(&t)
+                .ok()
+                .and_then(|_| pyramid.get(t))
+                .map(|d| d.layer)
+        };
+        let mut jobs = Vec::new();
+        let mut padded = HashMap::new();
+        for &tile in &read {
+            let Some(dem) = pyramid.get(tile) else {
+                continue;
+            };
+            let now = (dem.layer, orb_render::dem_neighbours(tile, &layer_of));
+            if self.padded.get(&tile) != Some(&now) {
+                jobs.push(orb_render::DemPrepare {
+                    layer: now.0,
+                    neighbours: now.1,
+                    zoom: f32::from(tile.z),
+                    unpack,
+                });
+            }
+            padded.insert(tile, now);
+        }
+        self.padded = padded;
+        jobs
     }
 
     /// A DEM tile arrived: its page layer and elevations.
@@ -260,14 +315,30 @@ impl Terrain {
         evicted
     }
 
-    /// The CPU elevations, taken again when DEM tiles arrived or left.
+    /// The CPU elevations of the DEM tiles this camera reads, taken again
+    /// when they change.
     pub(crate) fn elevation(&mut self, tms: &TileMatrixSet) -> &Arc<TerrainElevation> {
         if std::mem::take(&mut self.stale) {
-            let dems = self
-                .pyramid
-                .ready()
-                .map(|(tile, dem)| (tile, Arc::clone(&dem.dem)))
-                .collect();
+            let mut dems = HashMap::new();
+            for &tile in &self.wanted {
+                let mut at = Some(tile);
+                while let Some(t) = at {
+                    if let Some(dem) = self.pyramid.get(t) {
+                        dems.insert(t, Arc::clone(&dem.dem));
+                        break;
+                    }
+                    at = t.parent().filter(|_| t.z > self.min_zoom);
+                }
+            }
+            // The same tiles as before: the same elevations, no new revision.
+            let held = &self.elevation.dems;
+            if dems.len() == held.len()
+                && dems
+                    .iter()
+                    .all(|(t, d)| held.get(t).is_some_and(|h| Arc::ptr_eq(h, d)))
+            {
+                return &self.elevation;
+            }
             let mut elevation = TerrainElevation::empty(tms.clone(), self.exaggeration);
             elevation.dems = dems;
             elevation.delta = self.delta;
@@ -896,7 +967,7 @@ mod tests {
         terrain
     }
 
-    /// DEM tiles requested and arrived.
+    /// DEM tiles wanted, as a cover would, and arrived.
     fn arrive(terrain: &mut Terrain, dems: &[(TileIndex, Arc<Dem>)]) {
         let mut wanted: Vec<CoveredTile> = terrain
             .pyramid
@@ -907,6 +978,8 @@ mod tests {
             dems.iter()
                 .map(|&(index, _)| CoveredTile { index, wrap: 0 }),
         );
+        wanted.sort();
+        terrain.wanted = wanted.iter().map(|t| t.index).collect();
         terrain.pyramid.update(&wanted);
         for (layer, (tile, dem)) in dems.iter().enumerate() {
             let tile_dem = DemTile {

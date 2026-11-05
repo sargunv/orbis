@@ -151,6 +151,10 @@ struct Image {
     layer: u32,
     mesh: Option<Arc<ImageMesh>>,
     fade: ImageFade,
+    /// A DEM tile's unpack vector, and the neighbours' layers its border
+    /// was last padded from ([`Renderer::pad_dems`]).
+    unpack: Option<[f32; 4]>,
+    padded: Option<[Option<u32>; 8]>,
 }
 
 /// A source's image page and its resident tiles.
@@ -341,6 +345,8 @@ impl Renderer {
                 layer,
                 mesh: build.mesh.clone(),
                 fade,
+                unpack: build.unpack,
+                padded: None,
             }),
             warp: TileWarp::NONE,
         };
@@ -360,12 +366,6 @@ impl Renderer {
             return Err(UploadError::NoRoom);
         }
 
-        if let Some(unpack) = build.unpack {
-            let layer_of = |t: TileIndex| self.tiles.layer_of(key.source, t);
-            for job in dem_prepares(key.tile, layer, unpack, &layer_of) {
-                self.images.prepare_dem(page, job);
-            }
-        }
         let handle = self.tiles.insert(entry);
         let replaced = self
             .tiles
@@ -629,6 +629,53 @@ impl Renderer {
             self.scene.set_mesh_image(gpu, mesh, word, image);
         }
         self.scene.set_mesh_state(gpu, mesh, rows.states)
+    }
+
+    /// Pads source `source`'s drawn DEM tiles (`drawn`) from their drawn
+    /// neighbours: a tile whose drawn neighbours changed since it was last
+    /// prepared is prepared again. A border is then a function of what the
+    /// view draws, not of which tiles were resident before (#84).
+    pub fn pad_dems(&mut self, source: u32, drawn: &std::collections::HashSet<TileIndex>) {
+        let Some(page) = self.tiles.sources.get(&source).map(|s| s.page) else {
+            return;
+        };
+        let tiles = &self.tiles;
+        let layer_of = |t: TileIndex| {
+            drawn
+                .contains(&t)
+                .then(|| tiles.layer_of(source, t))
+                .flatten()
+        };
+        let mut jobs = Vec::new();
+        for &tile in drawn {
+            let Some(&found) = tiles.sources[&source].tiles.get(&tile) else {
+                continue;
+            };
+            let Some(image) = &tiles.entry(found).image else {
+                continue;
+            };
+            let Some(unpack) = image.unpack else {
+                continue;
+            };
+            let neighbours = dem_neighbours(tile, &layer_of);
+            if image.padded != Some(neighbours) {
+                let zoom = f32::from(tile.z);
+                let (layer, prepare) = (image.layer, (neighbours, zoom, unpack));
+                jobs.push((found, layer, prepare));
+            }
+        }
+        for (found, layer, (neighbours, zoom, unpack)) in jobs {
+            if let Some(image) = &mut self.entry_mut(found).image {
+                image.padded = Some(neighbours);
+            }
+            let job = DemPrepare {
+                layer,
+                neighbours,
+                zoom,
+                unpack,
+            };
+            self.images.prepare_dem(page, job);
+        }
     }
 
     fn entry_mut(&mut self, tile: GpuTile) -> &mut Entry {
@@ -960,46 +1007,13 @@ const QUAD_CHUNK: Chunk = Chunk {
     },
 };
 
-/// The prepare jobs a DEM tile's arrival at `layer` starts: its own, and
-/// its resident neighbours', whose borders it fills. `layer_of` finds a
-/// resident tile's layer.
-pub fn dem_prepares(
+/// The layers of `tile`'s same-zoom neighbours that `layer_of` finds, in
+/// [`DemPrepare::neighbours`] order: what its padded border is filled from.
+pub fn dem_neighbours(
     tile: TileIndex,
-    layer: u32,
-    unpack: [f32; 4],
     layer_of: &dyn Fn(TileIndex) -> Option<u32>,
-) -> Vec<DemPrepare> {
-    let arrived = (tile, layer);
-    let mut jobs = vec![DemPrepare {
-        layer,
-        neighbours: neighbours(layer_of, tile, arrived),
-        zoom: f32::from(tile.z),
-        unpack,
-    }];
-    for offset in OFFSETS {
-        let Some(neighbour) = offset_tile(tile, offset) else {
-            continue;
-        };
-        if let Some(layer) = layer_of(neighbour) {
-            jobs.push(DemPrepare {
-                layer,
-                neighbours: neighbours(layer_of, neighbour, arrived),
-                zoom: f32::from(neighbour.z),
-                unpack,
-            });
-        }
-    }
-    jobs
-}
-
-/// Which of a DEM tile's neighbours are resident (`resident`), a bit
-/// each: its prepared borders come from them.
-pub fn resident_neighbours(tile: TileIndex, resident: &dyn Fn(TileIndex) -> bool) -> u8 {
-    OFFSETS
-        .iter()
-        .enumerate()
-        .filter(|&(_, &offset)| offset_tile(tile, offset).is_some_and(resident))
-        .fold(0, |bits, (i, _)| bits | 1 << i)
+) -> [Option<u32>; 8] {
+    OFFSETS.map(|offset| offset_tile(tile, offset).and_then(layer_of))
 }
 
 /// Neighbour offsets in [`DemPrepare::neighbours`] order.
@@ -1024,22 +1038,6 @@ fn offset_tile(tile: TileIndex, (dx, dy): (i32, i32)) -> Option<TileIndex> {
     }
     let col = (i64::from(tile.col) + i64::from(dx)).rem_euclid(n);
     Some(TileIndex::new(tile.z, col as u32, row as u32))
-}
-
-/// The layers of `tile`'s resident neighbours, counting `arrived`, a tile
-/// not yet resident.
-fn neighbours(
-    layer_of: &dyn Fn(TileIndex) -> Option<u32>,
-    tile: TileIndex,
-    arrived: (TileIndex, u32),
-) -> [Option<u32>; 8] {
-    OFFSETS.map(|offset| {
-        let neighbour = offset_tile(tile, offset)?;
-        if neighbour == arrived.0 {
-            return Some(arrived.1);
-        }
-        layer_of(neighbour)
-    })
 }
 
 /// The latitude of a row edge of the Web Mercator tile grid, in degrees.

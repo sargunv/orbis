@@ -180,6 +180,9 @@ impl Map {
         };
         let endpoint = Arc::clone(endpoint);
         let tms = &endpoint.tms;
+        if endpoint.dem_unpack.is_some() {
+            renderer.pad_dems(source_key, &draws.iter().map(|d| d.tile).collect());
+        }
         let mut rows: HashMap<TileIndex, Vec<&Draw>> = HashMap::new();
         // Picking reads tiles with features in drawing order, ancestors
         // before descendants.
@@ -488,6 +491,11 @@ impl Map {
             style.states.zoom_key(),
             images_revision,
         );
+        // A DEM tile's border comes from its drawn neighbours
+        // (`Renderer::pad_dems`).
+        let drawn_tiles: HashMap<usize, HashSet<TileIndex>> = (draped.iter())
+            .filter_map(|&i| Some((i, draws[i].as_ref()?.iter().map(|d| d.tile).collect())))
+            .collect();
         let content = |t: orb_crs::CoveredTile| {
             let zoom = crate::terrain::drape_zoom(&surface, t.index);
             let mut parts = Vec::new();
@@ -518,7 +526,10 @@ impl Map {
                     let held = resident.map(|r| r.gpu);
                     // A DEM tile's borders come from its neighbours.
                     let borders = endpoint.dem_unpack.map(|_| {
-                        orb_render::resident_neighbours(draw.tile, &|n| pyramid.get(n).is_some())
+                        let drawn = &drawn_tiles[&i];
+                        orb_render::dem_neighbours(draw.tile, &|n| {
+                            (drawn.contains(&n) && pyramid.get(n).is_some()).then_some(0)
+                        })
                     });
                     let regions = draw.regions.clone();
                     parts.push((i, draw.tile, draw.wrap, regions, meshes, held, borders));

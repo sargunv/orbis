@@ -269,9 +269,15 @@ fn a_globe_gesture_draws_what_a_fresh_globe_does() {
     assert_same("globe", both_ways(&style, start, end, 30));
 }
 
-/// Terrarium DEM tiles of rolling hills over central Tokyo, zooms 0–11,
-/// written to a fresh directory; the source's JSON.
-fn hills() -> String {
+/// Terrarium DEM tiles of `metres(lon, lat)` over `(west, south, east,
+/// north)`, zooms 0–`max_zoom`, written to a fresh directory; the source
+/// `name`'s JSON.
+fn dem(
+    name: &str,
+    (west, south, east, north): (f64, f64, f64, f64),
+    max_zoom: u8,
+    metres: impl Fn(f64, f64) -> f64,
+) -> String {
     let dir = std::env::temp_dir().join(format!(
         "orb-path-dem-{}-{}",
         std::process::id(),
@@ -280,9 +286,8 @@ fn hills() -> String {
             .unwrap()
             .as_nanos()
     ));
-    let (west, south, east, north) = (139.2, 35.2, 140.3, 36.2);
     const SIZE: u32 = 256;
-    for z in 0..=11u8 {
+    for z in 0..=max_zoom {
         let n = f64::from(1u32 << z);
         let col = |lon: f64| ((lon + 180.0) / 360.0 * n).floor() as u32;
         let row = |lat: f64| {
@@ -301,10 +306,7 @@ fn hills() -> String {
                             .sinh()
                             .atan()
                             .to_degrees();
-                        let metres = 600.0
-                            + 500.0 * (lon * 40.0).sin() * (lat * 55.0).cos()
-                            + 150.0 * (lon * 170.0 + lat * 90.0).sin();
-                        let v = ((metres + 32768.0) * 256.0).round() as u32;
+                        let v = ((metres(lon, lat) + 32768.0) * 256.0).round() as u32;
                         pixels.extend([(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]);
                     }
                 }
@@ -315,18 +317,48 @@ fn hills() -> String {
         }
     }
     format!(
-        r#""hills": {{"type": "raster-dem", "encoding": "terrarium", "tileSize": {SIZE},
-            "maxzoom": 11, "bounds": [{west}, {south}, {east}, {north}],
+        r#""{name}": {{"type": "raster-dem", "encoding": "terrarium", "tileSize": {SIZE},
+            "maxzoom": {max_zoom}, "bounds": [{west}, {south}, {east}, {north}],
             "tiles": ["file://{}/{{z}}/{{x}}/{{y}}.png"]}},"#,
         dir.display()
     )
 }
 
-/// Off until terrain geometry follows the view alone (#84): one pixel of
-/// background past the extract's edge differs by a few levels in about one
-/// run in six; drape slots key on content (#80).
+/// Rolling hills over central Tokyo, zooms 0–11.
+fn hills() -> String {
+    dem("hills", (139.2, 35.2, 140.3, 36.2), 11, |lon, lat| {
+        600.0
+            + 500.0 * (lon * 40.0).sin() * (lat * 55.0).cos()
+            + 150.0 * (lon * 170.0 + lat * 90.0).sin()
+    })
+}
+
+/// Sharp ridges over the Valais Alps, 700 to about 4,500 m, zooms 0–11,
+/// hillshaded on the terrain under a sky: ridge silhouettes stand against
+/// it at a high pitch.
+fn alps() -> String {
+    let dem = dem("alps", (7.4, 45.7, 8.4, 46.3), 11, |lon, lat| {
+        let ridge = |v: f64| 1.0 - v.sin().abs();
+        700.0
+            + 2600.0 * ridge(lon * 31.0 + lat * 9.0) * ridge(lat * 23.0 - lon * 5.0)
+            + 1200.0 * ridge(lon * 97.0 - lat * 61.0)
+    });
+    let dem = dem.trim_end_matches(',');
+    format!(
+        r##"{{"version": 8,
+            "sources": {{{dem}}},
+            "terrain": {{"source": "alps", "exaggeration": 1.2}},
+            "sky": {{"sky-color": "#4f8fd9", "horizon-color": "#d6e8fb", "fog-color": "#e4eef8"}},
+            "layers": [
+              {{"id": "ground", "type": "background", "paint": {{"background-color": "#d8e0c8"}}}},
+              {{"id": "relief", "type": "hillshade", "source": "alps"}}
+            ]}}"##
+    )
+}
+
+/// Terrain over local hills: DEM borders come from the neighbours the view
+/// draws, not from those a gesture saw (#84).
 #[test]
-#[ignore = "#84: terrain geometry depends on the DEM tiles the gesture saw"]
 fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     let style = tokyo(
         r#""terrain": {"source": "hills", "exaggeration": 1.5},"#,
@@ -335,6 +367,15 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
     assert_same("terrain", both_ways(&style, start, end, 30));
+}
+
+/// Ridges against the sky over the Alps: a turn and tilt to a pitch of
+/// 75° draws the silhouettes a fresh map at rest draws (#84).
+#[test]
+fn an_alpine_gesture_draws_what_a_fresh_map_does() {
+    let start = (Geodetic::new(7.95, 46.0), 11.2, 0.0, 30.0);
+    let end = (Geodetic::new(7.85, 45.95), 12.4, 60.0, 75.0);
+    assert_same("alps", both_ways(&alps(), start, end, 30));
 }
 
 /// A frame that only moves the camera, with nothing arriving or leaving
