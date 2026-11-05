@@ -94,6 +94,11 @@ impl<'a> Reader<'a> {
 pub struct HitGeometry {
     /// The layer's data units per tile side.
     extent: u32,
+    /// How far past the tile square its polygons answer queries, in data
+    /// units: the layer's clip buffer. An overzoom slice keeps a polygon
+    /// whole past its buffer to draw it once (`orb_tile`'s overzoom), but
+    /// it answers as clipped there, as GL JS's child tiles do.
+    clip: i32,
     words: Vec<u32>,
     /// Records by feature index, and whether they hold its parts.
     #[serde(skip)]
@@ -114,7 +119,10 @@ impl HitGeometry {
             return at;
         }
         let at = self.words.len() as u32;
-        self.extent = layer.extent();
+        if self.words.is_empty() {
+            self.extent = layer.extent();
+            self.clip = layer.clip_buffer();
+        }
         let (extent, f, words) = (self.extent as i32, feature as usize, &mut self.words);
         words.extend([
             0,
@@ -218,6 +226,8 @@ struct FeatureRef<'a> {
     feature: u32,
     kind: u32,
     extent: u32,
+    /// Its layer's clip buffer ([`HitGeometry`]'s).
+    clip: i32,
     radius: f32,
     stroke: f32,
     height: f32,
@@ -226,6 +236,15 @@ struct FeatureRef<'a> {
 }
 
 impl FeatureRef<'_> {
+    /// The box, in data units, a polygon of it answers within when it
+    /// reaches past it: the square and its layer's clip buffer.
+    fn clip_box(&self) -> Option<(f64, f64)> {
+        let (lo, hi) = (-self.clip, self.extent as i32 + self.clip);
+        let b = |i: usize| self.bounds[i] as i32;
+        (self.kind == 0 && (b(0) < lo || b(1) < lo || b(2) > hi || b(3) > hi))
+            .then(|| (f64::from(lo), f64::from(hi)))
+    }
+
     fn id(&self) -> Option<String> {
         let mut r = Reader::new(self.id?);
         r.text().ok()
@@ -248,6 +267,37 @@ impl FeatureRef<'_> {
         }
         Ok(parts)
     }
+}
+
+/// Closed polygon ring `ring` clipped to the box `lo..hi` on both axes
+/// (Sutherland–Hodgman), closed; empty when nothing of it is inside.
+fn clip_ring(ring: &[DVec2], lo: f64, hi: f64) -> Vec<DVec2> {
+    let mut points = ring.to_vec();
+    if points.len() > 1 && points.first() == points.last() {
+        points.pop();
+    }
+    for axis in 0..2 {
+        for (bound, keep_above) in [(lo, true), (hi, false)] {
+            let inside = |p: DVec2| (p[axis] >= bound) == keep_above || p[axis] == bound;
+            let mut out = Vec::with_capacity(points.len() + 4);
+            for (i, &b) in points.iter().enumerate() {
+                let a = points[(i + points.len() - 1) % points.len()];
+                if inside(a) != inside(b) {
+                    let t = (bound - a[axis]) / (b[axis] - a[axis]);
+                    out.push(a + (b - a) * t);
+                }
+                if inside(b) {
+                    out.push(b);
+                }
+            }
+            points = out;
+            if points.is_empty() {
+                return points;
+            }
+        }
+    }
+    points.push(points[0]);
+    points
 }
 
 fn point(words: &[u32; 2]) -> [i32; 2] {
@@ -349,6 +399,7 @@ impl MeshHits {
             feature: node[1],
             kind: node[2],
             extent: self.geometry.extent,
+            clip: self.geometry.clip,
             radius: f(3),
             stroke: f(4),
             height: f(5),
@@ -1351,28 +1402,37 @@ impl ScreenHit {
         let wrap = DVec2::new(f64::from(copy.wrap) * period, 0.0);
         let mut min = Vec2::splat(f32::INFINITY);
         let mut max = Vec2::splat(f32::NEG_INFINITY);
-        let project = |p: [i32; 2], height: f64| {
-            q.project(
-                transform(DVec2::new(p[0] as f64, p[1] as f64)) + wrap + shift,
-                height,
-            )
-        };
+        let project = |p: DVec2, height: f64| q.project(transform(p) + wrap + shift, height);
+        let clip_box = feature.clip_box();
         let mut parts = Vec::new();
         // Lines under pitch, as polygons.
         let mut buffered = Vec::new();
         for part in feature.parts().ok()? {
+            let part: Vec<Vec<DVec2>> = part
+                .iter()
+                .map(|ring| {
+                    let ring: Vec<DVec2> = ring
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|p| DVec2::new(f64::from(p[0] as i32), f64::from(p[1] as i32)))
+                        .collect();
+                    match clip_box {
+                        Some((lo, hi)) => clip_ring(&ring, lo, hi),
+                        None => ring,
+                    }
+                })
+                .filter(|ring| !ring.is_empty())
+                .collect();
+            if part.is_empty() {
+                continue;
+            }
             let mut rings = Vec::new();
-            for ring in &part {
-                let line: Vec<DVec2> = ring
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|p| DVec2::new(f64::from(p[0] as i32), f64::from(p[1] as i32)))
-                    .collect();
+            for line in &part {
                 let line = if offset != 0.0 {
-                    offset_line(&line, offset)
+                    offset_line(line, offset)
                 } else {
-                    line
+                    line.clone()
                 };
                 if feature.kind == 1 && q.camera.pitch > 0.0 {
                     // GL JS tests lines in tile space: under pitch their
@@ -1398,7 +1458,6 @@ impl ScreenHit {
             parts.push(rings);
             if elevation.1 > elevation.0 {
                 for ring in &part {
-                    let ring: Vec<[i32; 2]> = ring.as_chunks::<2>().0.iter().map(point).collect();
                     for (a, b) in ring
                         .iter()
                         .zip(ring.iter().cycle().skip(1))
@@ -1964,6 +2023,27 @@ fn read_text(next: &mut dyn FnMut() -> Result<u32, String>) -> Result<String, St
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A polygon an overzoom slice keeps whole answers as clipped at its
+    /// layer's buffer: a square reaching past the box keeps what's in it.
+    #[test]
+    fn rings_clip_to_the_box() {
+        let ring: Vec<DVec2> = [[-100.0, 10.0], [50.0, 10.0], [50.0, 300.0], [-100.0, 300.0]]
+            .into_iter()
+            .chain([[-100.0, 10.0]])
+            .map(DVec2::from)
+            .collect();
+        let clipped = clip_ring(&ring, -20.0, 220.0);
+        assert_eq!(clipped.first(), clipped.last());
+        let (lo, hi) = clipped.iter().fold(
+            (DVec2::splat(f64::MAX), DVec2::splat(f64::MIN)),
+            |(lo, hi), p| (lo.min(*p), hi.max(*p)),
+        );
+        assert_eq!((lo, hi), (DVec2::new(-20.0, 10.0), DVec2::new(50.0, 220.0)));
+        // Wholly outside, nothing.
+        let away: Vec<DVec2> = ring.iter().map(|p| *p + DVec2::new(1000.0, 0.0)).collect();
+        assert!(clip_ring(&away, -20.0, 220.0).is_empty());
+    }
+
     #[test]
     fn polygon_edges_holes_and_segments() {
         let outer = vec![
