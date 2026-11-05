@@ -327,8 +327,6 @@ impl Retired {
     }
 }
 
-/// A map: a style, a camera and the tiles they need, drawn by
-/// [`render`](Self::render).
 /// How a map renders (plan §14.2): interactively, or the still output of
 /// servers and snapshots.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -361,6 +359,8 @@ pub struct GridTile {
     pub center: glam::DVec2,
 }
 
+/// A map: a style, a camera and the tiles they need, drawn by
+/// [`render`](Self::render).
 pub struct Map {
     /// Interactive, a still picture or a tile ([`Map::set_mode`]).
     pub(crate) mode: RenderMode,
@@ -1472,21 +1472,15 @@ impl Map {
             }
         }
         let plan = style.worker.plan();
+        let keys: Vec<u32> = plan.nodes.iter().map(|n| n.key).collect();
+        let fresh = std::mem::take(&mut self.nodes_stale);
         // A projection edit put the map on or off a globe: the background
         // takes the mesh it bends (image tiles take theirs as they draw).
         let globe = self.surface.globe().is_some();
-        if style.globe_meshes != globe {
-            style.globe_meshes = globe;
-            if let Some(tile) = style.background.take() {
-                renderer.release_tile(tile);
-                style.background = make_background(gpu, renderer, plan, globe);
-            }
-        }
-        let keys: Vec<u32> = plan.nodes.iter().map(|n| n.key).collect();
-        let fresh = std::mem::take(&mut self.nodes_stale);
-        if !fresh && keys == style.drawn {
+        if !fresh && keys == style.drawn && style.globe_meshes == globe {
             return;
         }
+        style.globe_meshes = globe;
         if let Some(tile) = style.background.take() {
             renderer.release_tile(tile);
         }
@@ -1547,7 +1541,7 @@ impl Map {
         for page in self.retired_pages.drain(..) {
             renderer.remove_page(gpu, page);
         }
-        style.background = make_background(gpu, renderer, plan, style.globe_meshes);
+        style.background = make_background(gpu, renderer, plan, globe);
         style.drawn = keys;
         style.paint.invalidate();
         for placed in &mut style.placed {
@@ -2182,13 +2176,7 @@ impl Map {
         let SourceState::Ready { pyramid, .. } = &style.sources[index] else {
             return;
         };
-        let pixels = match &frame.pixels {
-            crate::ImagePixels::Core(pixels) => orb_render::Pixels::Core(pixels),
-            &crate::ImagePixels::Host(image) => orb_render::Pixels::Host {
-                image,
-                premultiply: true,
-            },
-        };
+        let pixels = frame.pixels.upload(true);
         for (tile, resident) in pyramid.ready() {
             if resident.image.is_some() {
                 let key = orb_render::TileKey { source: key, tile };

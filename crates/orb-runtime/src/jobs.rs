@@ -342,6 +342,17 @@ pub enum ImagePixels {
     Host(HostImageId),
 }
 
+impl ImagePixels {
+    /// The pixels for the renderer, a host image premultiplied on upload
+    /// if `premultiply`.
+    pub(crate) fn upload(&self, premultiply: bool) -> orb_render::Pixels<'_> {
+        match self {
+            Self::Core(bytes) => orb_render::Pixels::Core(bytes),
+            &Self::Host(image) => orb_render::Pixels::Host { image, premultiply },
+        }
+    }
+}
+
 /// One render node's share of a finished tile.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResultMesh {

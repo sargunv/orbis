@@ -384,14 +384,7 @@ impl Terrain {
                 .map_err(|_| "out of terrain texture layers".into()),
         };
         let layer = layer.inspect_err(|_| self.pyramid.insert_empty(tile))?;
-        let pixels = match &image.pixels {
-            crate::ImagePixels::Core(bytes) => orb_render::Pixels::Core(bytes),
-            &crate::ImagePixels::Host(image) => orb_render::Pixels::Host {
-                image,
-                premultiply: false,
-            },
-        };
-        renderer.write_layer(gpu, page, layer, pixels);
+        renderer.write_layer(gpu, page, layer, image.pixels.upload(false));
         self.stale = true;
         let dem = Arc::new(Dem::new(grid));
         if let Some(old) = self.pyramid.insert(tile, DemTile { layer, dem }) {

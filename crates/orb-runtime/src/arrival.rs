@@ -431,13 +431,9 @@ impl Map {
                     crate::style::ImageKind::Dem => orb_render::PageKind::Dem,
                 },
                 size: [tile_image.width, tile_image.height],
-                pixels: match &tile_image.pixels {
-                    crate::ImagePixels::Core(bytes) => orb_render::Pixels::Core(bytes),
-                    &crate::ImagePixels::Host(image) => orb_render::Pixels::Host {
-                        image,
-                        premultiply: kind == crate::style::ImageKind::Raster,
-                    },
-                },
+                pixels: tile_image
+                    .pixels
+                    .upload(kind == crate::style::ImageKind::Raster),
                 mesh: warped.as_ref().map(|w| Arc::clone(&w.mesh)),
                 patches,
                 fade_from: (fade_ms > 0.0).then_some((now - self.born.unwrap_or(now)) as f32),
