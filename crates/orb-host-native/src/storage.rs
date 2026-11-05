@@ -104,7 +104,7 @@ impl Storage for FileStorage {
 
 /// Runs a storage operation and waits for its outcome, on a thread that
 /// may block.
-pub(crate) fn wait<T: Send + 'static>(start: impl FnOnce(StorageDone<T>)) -> Result<T, String> {
+pub fn wait<T: Send + 'static>(start: impl FnOnce(StorageDone<T>)) -> Result<T, String> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     start(Box::new(move |result| {
         let _ = tx.send(result);

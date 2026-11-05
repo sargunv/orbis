@@ -24,13 +24,7 @@ pub(crate) struct Regions {
 
 /// Waits for a storage call (the file storage answers at once).
 fn wait<T: Send + 'static>(start: impl FnOnce(orb_host::StorageDone<T>)) -> Result<T, Error> {
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    start(Box::new(move |r| {
-        let _ = tx.send(r);
-    }));
-    rx.recv()
-        .map_err(|_| Error::Native("storage dropped a call".into()))?
-        .map_err(Error::Native)
+    orb_host_native::wait(start).map_err(Error::Native)
 }
 
 impl Regions {

@@ -11,7 +11,7 @@ use std::sync::Arc;
 pub use cache::{CacheStats, HttpCache};
 pub use fonts::SystemFonts;
 pub use orb_host::FontFileFaces;
-pub use storage::FileStorage;
+pub use storage::{FileStorage, wait};
 
 use orb_host::{Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
 use orb_jobs::{Executor, ThreadPool};

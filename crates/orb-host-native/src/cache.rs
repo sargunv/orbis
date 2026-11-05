@@ -119,11 +119,6 @@ impl HttpCache {
         }
     }
 
-    /// Writes pending index changes now.
-    pub fn flush(&self) -> Result<(), String> {
-        self.inner.write_index()
-    }
-
     /// Removes every entry.
     pub fn clear(&self) {
         let ids: Vec<_> = {
@@ -478,9 +473,7 @@ mod tests {
         // A blob the index lost in a crash goes on the next open.
         drop(cache);
         std::fs::write(dir.join("blobs/2"), b"orphan").unwrap();
-        let cache = open(&dir, 400);
-        cache.flush().unwrap();
-        drop(cache);
+        drop(open(&dir, 400));
         // The sweep runs on the cache thread, before the drop's join.
         assert!(!dir.join("blobs/2").exists());
         std::fs::remove_dir_all(dir).unwrap();
