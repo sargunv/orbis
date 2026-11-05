@@ -333,3 +333,249 @@ fn candidate_visible(
     }
     outside == 0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        CirclePaint, ClipRect, Curve, DemRef, Family, FillPaint, MeshData, NodePaint,
+        PlacementTarget, Renderer, SceneCapacity, TargetFormat, TileKey, TileRow, TileWarp,
+    };
+    use orb_hal::{TextureDesc, TextureFormat, TextureUsages, TextureViewDimension};
+    use orb_hal_wgpu::WgpuGpu;
+    use orb_tile::{GeometryType, LayerBuilder};
+
+    const SIZE: u32 = 64;
+
+    /// A 32 × 32 grid of features across a 4096-unit tile: squares or
+    /// points, enough for several chunks each.
+    fn grid(kind: GeometryType) -> orb_layout::Mesh {
+        let mut b = LayerBuilder::new("grid", 4096);
+        for (x, y) in (0..32).flat_map(|y| (0..32).map(move |x| (x * 128, y * 128))) {
+            b.begin_feature(None, kind);
+            b.begin_part();
+            b.begin_ring();
+            if kind == GeometryType::Point {
+                b.push_vertex([x + 64, y + 64]);
+            } else {
+                for v in [[x, y], [x + 96, y], [x + 96, y + 96], [x, y + 96]] {
+                    b.push_vertex(v);
+                }
+            }
+        }
+        let layer = b.finish();
+        let features: Vec<u32> = (0..32 * 32).collect();
+        if kind == GeometryType::Point {
+            orb_layout::point::layout(&layer, &features)
+        } else {
+            orb_layout::fill::layout(&layer, &features)
+        }
+    }
+
+    /// The tile across clip space from x = `x`, within `clip`.
+    fn row(x: f64, clip: ClipRect) -> TileRow {
+        TileRow {
+            pattern_origin: [0; 2],
+            extent: 4096.0,
+            wrap: 0,
+            origin: [x, 1.0],
+            scale: 2.0 / 4096.0,
+            zoom: 0.0,
+            bound: ClipRect::EVERYWHERE,
+            clips: [clip, ClipRect::EMPTY, ClipRect::EMPTY, ClipRect::EMPTY],
+            px_scale: 1.0,
+            drape_zoom: 0.0,
+            dem: DemRef::NONE,
+            terrain_range: [0.0; 2],
+            target: PlacementTarget::Map,
+            warp: TileWarp::NONE,
+            globe: None,
+        }
+    }
+
+    /// World = clip space under `view_proj`, the camera at `camera`.
+    fn frame(view_proj: [[f32; 4]; 4], camera: [f64; 2]) -> FrameBlock {
+        FrameBlock {
+            view_proj,
+            camera,
+            world_span: 8.0,
+            viewport: [SIZE as f32; 2],
+            world_per_px: 2.0 / SIZE as f32,
+            pixel_ratio: 1.0,
+            zoom: 0.0,
+            bearing: 0.0,
+            align: [0.0; 2],
+            extrusion_scale: 1.0,
+            ground_horizon: 0.0,
+            symbol_fade_change: 1.0,
+            time: 0.0,
+            pitch: 0.0,
+            roll: 0.0,
+            camera_to_center: 1.0,
+            terrain: None,
+            lights: None,
+            globe: None,
+        }
+    }
+
+    fn read(gpu: &WgpuGpu, buffer: BufferId) -> Vec<u32> {
+        bytemuck::cast_slice(&pollster::block_on(gpu.read_buffer(buffer))).to_vec()
+    }
+
+    /// What a cull kept, per node: its first draw's arguments and
+    /// counters, and the chunks it kept: an indexed node's candidates
+    /// drawn, a listed node's visible `(chunk, placement)` pairs.
+    fn kept(args: &[u32], drawn: &[u32], visible: &[u32], tables: &CullTables) -> Vec<String> {
+        let nodes = tables.node_cull.len() / nc::WORDS;
+        (0..nodes)
+            .map(|node| {
+                let n = &tables.node_cull[node * nc::WORDS..][..nc::WORDS];
+                let words = &args[node * ARGS_WORDS..][..8];
+                let (base, count) = (n[nc::VISIBLE_BASE] as usize, n[nc::CANDIDATE_COUNT]);
+                let chunks: Vec<[u32; 2]> = if n[nc::DRAW] & 255 == DRAW_INDEXED {
+                    (0..count as usize)
+                        .filter(|i| drawn[(base + i) * cd::WORDS + cd::DRAWN] != 0)
+                        .map(|i| {
+                            let c = &tables.candidates[(base + i) * cd::WORDS..];
+                            [c[cd::CHUNK], c[cd::TILE]]
+                        })
+                        .collect()
+                } else {
+                    let mut pairs: Vec<[u32; 2]> = visible[base * visible::WORDS..]
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .take(words[5] as usize)
+                        .copied()
+                        .collect();
+                    pairs.sort_unstable();
+                    pairs
+                };
+                format!("node {node} of {count}: args {words:?}, kept {chunks:?}")
+            })
+            .collect()
+    }
+
+    /// Compat's CPU cull keeps what the GPU's cull keeps, chunk for chunk,
+    /// with the same arguments, for indexed and point nodes, placements in
+    /// view, half out, clipped and off screen, under flat, zoomed,
+    /// perspective and moved cameras, frame after frame.
+    #[test]
+    fn the_cpu_cull_keeps_what_the_gpu_cull_keeps() {
+        let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
+        gpu.set_compile_executor(None);
+        let target = gpu.create_texture(&TextureDesc {
+            label: "target",
+            width: SIZE,
+            height: SIZE,
+            array_layers: 1,
+            dimension: TextureViewDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+            sample_count: 1,
+            mip_levels: 1,
+        });
+        let format = TargetFormat {
+            color: TextureFormat::Rgba8Unorm,
+            sample_count: 1,
+        };
+        let mut renderer = Renderer::new(&mut gpu, format, SceneCapacity::default());
+        renderer.scene.keep_cull_tables();
+        renderer.set_nodes(&mut gpu, &[Family::Fill, Family::Circle]);
+        let fill = NodePaint::Fill(FillPaint {
+            color: [1.0, 0.0, 0.0, 1.0],
+            opacity: 1.0,
+            translate: Default::default(),
+            table_mask: 0,
+            curves: [Curve::Step; 2],
+            state: Default::default(),
+        });
+        let circle = NodePaint::Circle(CirclePaint {
+            color: [0.0, 1.0, 0.0, 1.0],
+            stroke_color: [0.0; 4],
+            radius: 4.0,
+            blur: 0.0,
+            opacity: 1.0,
+            stroke_width: 0.0,
+            stroke_opacity: 1.0,
+            translate: Default::default(),
+            pitch_scale_map: false,
+            pitch_alignment_map: false,
+            table_mask: 0,
+            curves: [Curve::Step; 7],
+            state: Default::default(),
+        });
+        renderer.set_paint(&mut gpu, 0, &fill);
+        renderer.set_paint(&mut gpu, 1, &circle);
+        let key = TileKey {
+            source: 0,
+            tile: orb_crs::TileIndex::new(0, 0, 0),
+        };
+        let tile = renderer.add_tile(&mut gpu, key, None).unwrap();
+        let whole = ClipRect::new([0, 0], [4096, 4096]);
+        let rows = [
+            row(-1.0, whole),
+            row(0.5, whole),
+            row(-1.0, ClipRect::new([0, 0], [2048, 1024])),
+            row(5.0, whole),
+        ];
+        renderer.place(tile, 4096, &rows).unwrap();
+        for (node, kind) in [(0, GeometryType::Polygon), (1, GeometryType::Point)] {
+            let mesh = grid(kind);
+            assert!(mesh.chunks.len() >= 4);
+            let data = MeshData::new(&mesh, &[], 0);
+            (renderer.add_mesh(&mut gpu, tile, (node, 4096), &data, &Default::default())).unwrap();
+        }
+        let identity = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let zoomed = [
+            [4.0, 0.0, 0.0, 0.0],
+            [0.0, 4.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [1.5, -0.5, 0.0, 1.0],
+        ];
+        // w grows toward the top: the far rows shrink.
+        let perspective = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.6],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let frames = [
+            frame(identity, [0.0; 2]),
+            frame(zoomed, [0.0; 2]),
+            frame(perspective, [0.0; 2]),
+            frame(identity, [1.3, -0.4]),
+            frame(zoomed, [0.25, 0.0]),
+            frame(identity, [0.0; 2]),
+        ];
+        let b = *renderer.scene.buffers();
+        let (mut some_kept, mut some_culled) = (false, false);
+        for (i, frame) in frames.iter().enumerate() {
+            renderer.render(&mut gpu, frame, target, [0.0; 4]);
+            let (args, drawn, visible) = (
+                read(&gpu, b.args),
+                read(&gpu, b.candidates),
+                read(&gpu, b.visible),
+            );
+            let tables = renderer.scene.cull_tables().unwrap();
+            let gpu_kept = kept(&args, &drawn, &visible, tables);
+            cull(&mut gpu, &mut renderer.scene, frame);
+            let (args, visible) = (read(&gpu, b.args), read(&gpu, b.visible));
+            let tables = renderer.scene.cull_tables().unwrap();
+            let cpu_kept = kept(&args, &tables.candidates, &visible, tables);
+            assert_eq!(gpu_kept, cpu_kept, "frame {i}");
+            for node in 0..2 {
+                let candidates = tables.node_cull[node * nc::WORDS + nc::CANDIDATE_COUNT];
+                let kept = args[node * ARGS_WORDS + 5];
+                some_kept |= kept > 0;
+                some_culled |= kept < candidates;
+            }
+        }
+        assert!(some_kept && some_culled);
+    }
+}

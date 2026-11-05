@@ -1084,14 +1084,8 @@ impl Scene {
             *max = (*max).min(largest).max(*start);
         }
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
-        // Compat culls on the CPU: only its outputs reach the GPU, so the
-        // tables only the cull dispatch reads stay in core memory.
         let compat = gpu.caps().tier == orb_hal::Tier::Compat;
-        let cull_only = if compat {
-            BufferUsages::COPY_DST
-        } else {
-            storage
-        };
+        let cull_only = cull_only(gpu);
         let mut buffer = |label: &str, words: u64, usage: BufferUsages| {
             gpu.create_buffer(&BufferDesc {
                 label,
@@ -1112,10 +1106,14 @@ impl Scene {
             candidates: buffer(
                 "candidates",
                 words(c.candidates, CANDIDATE_WORDS),
-                cull_only,
+                cull_only | BufferUsages::COPY_SRC,
             ),
             node_cull: buffer("node cull", words(c.nodes, NODE_CULL_WORDS), storage),
-            visible: buffer("visible", words(c.candidates, VISIBLE_WORDS), storage),
+            visible: buffer(
+                "visible",
+                words(c.candidates, VISIBLE_WORDS),
+                storage | BufferUsages::COPY_SRC,
+            ),
             args: buffer(
                 "draw args",
                 words(c.nodes, ARGS_WORDS),
@@ -1172,9 +1170,17 @@ impl Scene {
     }
 
     /// The CPU copies the Compat cull reads, as of the last
-    /// [`prepare`](Self::prepare); `None` on Modern.
+    /// [`prepare`](Self::prepare); `None` on Modern unless
+    /// [kept](Self::keep_cull_tables).
     pub fn cull_tables(&mut self) -> Option<&mut CullTables> {
         self.cull.as_mut()
+    }
+
+    /// Keeps the Compat cull's CPU tables on Modern too, so both culls can
+    /// run on one scene and be compared. Before any content.
+    pub fn keep_cull_tables(&mut self) {
+        assert!(self.meshes.is_empty() && self.tile_rows.is_empty());
+        self.cull.get_or_insert_default();
     }
 
     pub fn capacity(&self) -> &SceneCapacity {
@@ -1272,11 +1278,7 @@ impl Scene {
         }
         let new = nodes.next_power_of_two();
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
-        let cull_only = if gpu.caps().tier == orb_hal::Tier::Compat {
-            BufferUsages::COPY_DST
-        } else {
-            storage
-        };
+        let cull_only = cull_only(gpu);
         let mut buffer = |label: &str, words: usize, usage: BufferUsages| {
             gpu.create_buffer(&BufferDesc {
                 label,
@@ -2198,16 +2200,12 @@ impl Scene {
         let candidates = gpu.create_buffer(&BufferDesc {
             label: "candidates",
             size: u64::from(new) * CANDIDATE_WORDS as u64 * 4,
-            usage: if self.cull.is_some() {
-                BufferUsages::COPY_DST
-            } else {
-                BufferUsages::STORAGE | BufferUsages::COPY_DST
-            },
+            usage: cull_only(gpu) | BufferUsages::COPY_SRC,
         });
         let visible = gpu.create_buffer(&BufferDesc {
             label: "visible",
             size: u64::from(new) * VISIBLE_WORDS as u64 * 4,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
         });
         gpu.destroy_buffer(std::mem::replace(&mut self.buffers.candidates, candidates));
         gpu.destroy_buffer(std::mem::replace(&mut self.buffers.visible, visible));
@@ -2229,11 +2227,10 @@ impl Scene {
         if new <= old {
             return false;
         }
-        let compat = self.cull.is_some();
         let grown = gpu.create_buffer(&BufferDesc {
             label: "compacted indices",
             size: u64::from(new) * 4,
-            usage: compacted_usage(compat),
+            usage: compacted_usage(gpu.caps().tier == orb_hal::Tier::Compat),
         });
         gpu.destroy_buffer(self.buffers.compacted);
         self.buffers.compacted = grown;
@@ -2309,10 +2306,24 @@ const POOL_USAGE: BufferUsages = BufferUsages::STORAGE
     .union(BufferUsages::COPY_DST)
     .union(BufferUsages::COPY_SRC);
 
-fn compacted_usage(compat: bool) -> BufferUsages {
-    if compat {
-        BufferUsages::INDEX | BufferUsages::COPY_DST
+/// The usage of a table only the cull dispatch reads. Compat culls on the
+/// CPU: only its outputs reach the GPU, so these tables stay in core
+/// memory and the GPU's copies only receive writes.
+fn cull_only(gpu: &dyn Gpu) -> BufferUsages {
+    if gpu.caps().tier == orb_hal::Tier::Compat {
+        BufferUsages::COPY_DST
     } else {
-        BufferUsages::STORAGE | BufferUsages::INDEX
+        BufferUsages::STORAGE | BufferUsages::COPY_DST
+    }
+}
+
+/// Compat's CPU cull writes the compacted indices; Modern's dispatch, or
+/// the CPU cull beside it ([`Scene::keep_cull_tables`]).
+fn compacted_usage(compat: bool) -> BufferUsages {
+    let usage = BufferUsages::INDEX | BufferUsages::COPY_DST;
+    if compat {
+        usage
+    } else {
+        usage | BufferUsages::STORAGE
     }
 }
