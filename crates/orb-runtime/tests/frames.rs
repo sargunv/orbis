@@ -1,6 +1,6 @@
 //! Frames of the Tokyo extract and the demo styles, drawn offscreen: what
-//! camera-only frames upload, that views reached by moving draw what fresh
-//! views draw, eviction and memory, idle, and labels.
+//! camera-only frames upload, eviction and memory, idle, and labels.
+//! Moved views against fresh ones are `orb-api`'s `path` tests.
 
 mod common;
 
@@ -11,93 +11,6 @@ mod tests {
             encoding: "mvt".into(),
             at: Some((orb_crs::Geodetic::new(139.74, 35.685), zoom, 0.0, 0.0)),
         }
-    }
-
-    /// Every frame is right for its camera over terrain (decision 0019):
-    /// a frame of a rotation over the Alps that never stops, once its
-    /// tiles have loaded, draws what a fresh map at rest at its camera
-    /// draws. Drape slots never depend on the camera, nor wait for it to
-    /// stop. Labels, which fade in after a move, are hidden. Needs the
-    /// network:
-    /// `cargo test --release -p orb-demo -- --ignored rotating`.
-    #[test]
-    #[ignore = "fetches tiles over the network"]
-    fn rotating_over_the_alps_matches_a_fresh_view() {
-        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-        let at = |bearing| crate::common::Options {
-            style: Some(format!("file://{root}/web/demo/data/alps.json")),
-            at: Some((orb_crs::Geodetic::new(7.7491, 46.0207), 11.6, bearing, 72.0)),
-            ..tokyo(11.6)
-        };
-        let hide_labels = |offscreen: &mut crate::common::Offscreen| {
-            let commands = r#"[["setLayoutProperty", "peaks", "visibility", "none"],
-                ["setLayoutProperty", "places", "visibility", "none"]]"#;
-            let edit = orb_runtime::Transaction::from_commands(commands).unwrap();
-            offscreen.map.edit(&edit).unwrap();
-            settle(offscreen);
-        };
-        let set_bearing = |offscreen: &mut crate::common::Offscreen, bearing: f64| {
-            crate::common::move_camera(&mut offscreen.map, |c| c.bearing = bearing);
-        };
-        let (mut moved, _, _) = crate::common::Offscreen::load(&at(-72.0)).unwrap();
-        hide_labels(&mut moved);
-        // Load what the arrival shows, then turn back without waiting.
-        set_bearing(&mut moved, -32.0);
-        settle(&mut moved);
-        set_bearing(&mut moved, -72.0);
-        settle(&mut moved);
-        for step in 1..10 {
-            set_bearing(&mut moved, -72.0 + 4.0 * f64::from(step));
-            moved.frame();
-        }
-        // The camera never stops: it turns half a degree and back each
-        // frame until a frame at the bearing has everything loaded.
-        for frame in 0.. {
-            set_bearing(&mut moved, -32.0);
-            let report = moved.frame();
-            if report.tiles_loading == 0 && report.loaded {
-                break;
-            }
-            assert!(frame < 2000, "tiles did not load: {report:?}");
-            set_bearing(&mut moved, -31.5);
-            moved.frame();
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let pixels = moved.pixels();
-        let (mut fresh, _, _) = crate::common::Offscreen::load(&at(-32.0)).unwrap();
-        hide_labels(&mut fresh);
-        fresh.map.jump_to_state(*moved.map.camera());
-        settle(&mut fresh);
-        let reference = fresh.pixels();
-        let differing = crate::common::differing_pixels(&pixels, &reference);
-        eprintln!("rotate: {differing} differing pixels");
-        if differing > 0 {
-            let dir = tempfile_dir("orb-demo-rotate");
-            for (name, image) in [("moved.png", &pixels), ("fresh.png", &reference)] {
-                crate::common::write_png(dir.join(name).to_str().unwrap(), image).unwrap();
-            }
-            eprintln!("rotate: frames in {}", dir.display());
-        }
-        // DEM borders come from the drawn neighbours alone (#84), but a
-        // few ridge pixels, up to a dozen, still differ now and then; a
-        // slot drawn for another camera would cover thousands.
-        assert!(
-            differing <= 16,
-            "{differing} mid-rotation pixels differ from a fresh view"
-        );
-    }
-
-    /// A new directory for a test's frames.
-    fn tempfile_dir(prefix: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
-        ));
-        std::fs::create_dir(&dir).unwrap();
-        dir
     }
 
     /// The Alps flight through a camera store, as the demos
@@ -560,43 +473,6 @@ mod tests {
             offscreen.pixels()
         });
         assert!(crate::common::take_warnings(&mut offscreen.map).is_empty());
-    }
-
-    #[test]
-    fn camera_only_frames_touch_only_placements() {
-        for patterned in [false, true] {
-            let options = crate::common::Options {
-                style: None,
-                encoding: "mvt".into(),
-                at: None,
-            };
-            let (mut offscreen, _, _) = crate::common::Offscreen::load(&options).unwrap();
-            if patterned {
-                let sprite = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../web/demo/data/sprites/ofm");
-                offscreen.map.set_style_json(&format!(r#"{{"version":8,"sprite":"file://{}","sources":{{}},"layers":[{{"id":"pattern","type":"background","paint":{{"background-pattern":"wetland"}}}}]}}"#, sprite.display())).unwrap();
-                let start = std::time::Instant::now();
-                while !offscreen.frame().idle {
-                    assert!(start.elapsed().as_secs() < 10);
-                    std::thread::yield_now();
-                }
-                offscreen.frame();
-            }
-            let viewport = offscreen.viewport;
-            pan(
-                &mut offscreen.map,
-                viewport,
-                glam::DVec2::new(512.0, 384.0),
-                glam::DVec2::new(520.0, 380.0),
-            );
-            let report = offscreen.frame();
-            assert_eq!(report.frame.dispatches, 1);
-            assert!(!report.frame.bundle_recorded);
-            assert_eq!(report.frame.paints_written, 0);
-            assert!(report.tiles_drawn > 0);
-            assert_eq!(report.frame.placements_written, 0);
-            assert_eq!(report.tiles_loading, 0);
-        }
     }
 
     #[test]
