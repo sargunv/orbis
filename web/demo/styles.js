@@ -16,6 +16,7 @@ import osmCarto from "./data/osm-carto.json?url";
 import alpsFlight from "./data/alps-flight.json";
 import globe from "./data/globe.json?url";
 import manhattan from "./data/manhattan.json?url";
+import video from "./data/video.json?url";
 
 // The sunlit Alps scene names its style relatively, which the bundle's
 // hashed asset names break: point it at the bundled style.
@@ -89,6 +90,17 @@ const DUSK = [
   ["setPaintProperty", "water", "fill-layer-blend", "screen"],
 ];
 
+/**
+ * GL JS's image source example: a weather radar frame over the northeast
+ * of the United States, on Liberty.
+ */
+const RADAR = [
+  ["addSource", "radar", { type: "image", url: "https://maplibre.org/maplibre-gl-js/docs/assets/radar.gif",
+    coordinates: [[-80.425, 46.437], [-71.516, 46.437], [-71.516, 37.936], [-80.425, 37.936]] }],
+  ["addLayer", { id: "radar", type: "raster", source: "radar",
+    paint: { "raster-fade-duration": 0, "raster-opacity": 0.85 } }],
+];
+
 /** @type {{ name: string, scenes: Scene[] }[]} */
 export const GROUPS = [
   {
@@ -111,12 +123,17 @@ export const GROUPS = [
         flight: alpsFlight.legs, swatch: ["#c9cdb8", "#8fa9bd", "#6b7660"] },
       { key: "arctic", name: "Arctic", detail: "Polar stereographic, EPSG:3413", url: arctic, dark: true,
         swatch: ["#24476b", "#e9eef2", "#9aa6ad"] },
-      { key: "equal-earth", name: "Equal Earth", detail: "The world on EPSG:8857, from Web Mercator tiles",
+      { key: "equal-earth", name: "Equal Earth", detail: "The whole world equal-area, handing over to Web Mercator by zoom 7",
         url: equalEarth, camera: { center: [0, 10], zoom: 0.5 }, swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
       { key: "nz", name: "New Zealand", detail: "Transverse Mercator, NZTM2000", url: nz,
         swatch: ["#f8f4f0", "#a0c8f0", "#bfd6a8"] },
       { key: "greenland", name: "Greenland ice flow", detail: "Polar imagery warped onto Web Mercator", url: greenland,
         constraints: { bounds: [-76, 58, -8, 84.5], maxZoom: 8 }, swatch: ["#f4f7fa", "#a0c8f0", "#7b4fb0"] },
+      { key: "radar", name: "Weather radar", detail: "An image source: a radar frame over the northeast US",
+        url: LIVE, calls: RADAR, camera: { center: [-75.789, 41.874], zoom: 5 },
+        swatch: ["#f8f4f0", "#a0c8f0", "#44b85c"] },
+      { key: "video", name: "Video on a map", detail: "A video source: drone footage over the coast",
+        url: video, constraints: { minZoom: 14 }, dark: true, swatch: ["#3b4a35", "#1f3a52", "#c9b98f"] },
       { key: "cairo", name: "Cairo", detail: "Arabic labels, shaped with HarfRust", url: scripts,
         camera: CITIES.cairo, swatch: ["#f6f3ee", "#a9cbe8", "#d9a066"] },
       { key: "delhi", name: "Delhi", detail: "Devanagari labels", url: scripts,
