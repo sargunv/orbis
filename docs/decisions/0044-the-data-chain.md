@@ -155,3 +155,12 @@ and z14): the Tokyo extract 5.59× → 3.31× (MVT) and 6.73× → 3.99× (MLT),
 OpenFreeMap Liberty 5.44× → 3.30×, VersaTiles 3.34× → 2.57×. Decoding the
 same tiles: 98 → 51 ms, 146 → 55 ms, 191 → 119 ms and 89 → 46 ms. Tile
 builds are unchanged within their noise.
+
+## Filters stay on the general evaluator
+
+Selecting a node's features by its filter takes 2–6% of a tile build
+(`orbis render` at Tokyo, z14 and z16: 14.5 of 286 ms on the extract,
+36 of 711 ms on OpenFreeMap Liberty, 130 of 2,019 ms on VersaTiles), with
+the filter's columns bound once per layer. Compiled column predicates
+would save at most that and add a second filter path, so they wait until
+a profile shows filters matter.
