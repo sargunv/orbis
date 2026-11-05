@@ -172,6 +172,15 @@ struct Sample {
     around: Option<DVec2>,
 }
 
+impl Sample {
+    fn at(time: f64) -> Self {
+        Self {
+            time,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WheelKind {
     Wheel,
@@ -312,12 +321,7 @@ impl Interaction {
         camera.hold();
         match (self.mode, self.pointers.len()) {
             (Mode::Idle, 1) => {
-                let tap = self.last_tap.filter(|(at, time, k)| {
-                    *k == kind
-                        && now - time < self.feel.tap_interval
-                        && at.distance(position) < self.feel.tap_tolerance
-                });
-                self.mode = if touch && tap.is_some() {
+                self.mode = if touch && self.follows_tap(kind, position, now) {
                     Mode::TapDrag {
                         origin: position,
                         moved: false,
@@ -329,10 +333,7 @@ impl Interaction {
                     }
                 };
                 self.samples.clear();
-                self.record(Sample {
-                    time: now,
-                    ..Sample::default()
-                });
+                self.record(Sample::at(now));
             }
             (Mode::Pressed { .. } | Mode::Pan | Mode::TapDrag { .. }, 2) if touch => {
                 let [a, b] = [self.pointers[0].position, self.pointers[1].position];
@@ -351,10 +352,7 @@ impl Interaction {
                     tap: now - self.pointers[0].down_at < self.feel.tap_interval
                         && matches!(self.mode, Mode::Pressed { .. }),
                 });
-                self.record(Sample {
-                    time: now,
-                    ..Sample::default()
-                });
+                self.record(Sample::at(now));
             }
             _ => self.mode = Mode::Ignored,
         }
@@ -556,10 +554,7 @@ impl Interaction {
                     self.mode = if tap {
                         Mode::Pinch(pinch)
                     } else {
-                        self.record(Sample {
-                            time: now,
-                            ..Sample::default()
-                        });
+                        self.record(Sample::at(now));
                         Mode::Pan
                     };
                     return true;
@@ -608,12 +603,8 @@ impl Interaction {
         if button != Button::Primary || now - pointer.down_at > self.feel.tap_interval {
             return;
         }
-        let double = self.last_tap.take().filter(|(at, time, kind)| {
-            *kind == pointer.kind
-                && now - time < self.feel.tap_interval
-                && at.distance(position) < self.feel.tap_tolerance
-        });
-        if double.is_some() {
+        if self.follows_tap(pointer.kind, position, now) {
+            self.last_tap = None;
             self.events.push(InteractEvent::DoubleClick { position });
             self.zoom_step(camera, position, 1.0, now);
         } else {
@@ -634,20 +625,22 @@ impl Interaction {
         }
     }
 
+    /// Whether a press of `kind` at `position` is the second of a double tap.
+    fn follows_tap(&self, kind: PointerKind, position: DVec2, now: f64) -> bool {
+        self.last_tap.is_some_and(|(at, time, k)| {
+            k == kind
+                && now - time < self.feel.tap_interval
+                && at.distance(position) < self.feel.tap_tolerance
+        })
+    }
+
     fn record(&mut self, sample: Sample) {
-        while self
-            .samples
-            .front()
-            .is_some_and(|s| sample.time - s.time > BUFFER_CUTOFF)
-        {
-            self.samples.pop_front();
-        }
+        self.prune(sample.time);
         self.samples.push_back(sample);
     }
 
-    /// GL JS's `HandlerInertia._onMoveEnd`: speed over the last moves up
-    /// to the release, so a gesture held still before release glides less.
-    fn inertia(&mut self, camera: &Camera, now: f64) -> Option<Glide> {
+    /// Drops samples older than the inertia buffer at `now`.
+    fn prune(&mut self, now: f64) {
         while self
             .samples
             .front()
@@ -655,6 +648,12 @@ impl Interaction {
         {
             self.samples.pop_front();
         }
+    }
+
+    /// GL JS's `HandlerInertia._onMoveEnd`: speed over the last moves up
+    /// to the release, so a gesture held still before release glides less.
+    fn inertia(&mut self, camera: &Camera, now: f64) -> Option<Glide> {
+        self.prune(now);
         let samples: Vec<_> = self.samples.iter().copied().collect();
         let mut first = samples.len().saturating_sub(2);
         while first > 0 && samples[first - 1].time >= now - VELOCITY_WINDOW {
