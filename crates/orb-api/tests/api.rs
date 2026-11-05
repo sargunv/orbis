@@ -352,3 +352,108 @@ fn wake_callbacks_die_with_their_map() {
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     drop(runtime);
 }
+
+/// A frame borrows the runtime's device once, for the target and the map,
+/// and lets it go before the pipeline cache is saved on going idle: frames
+/// to idle with a state directory keep the cache in its `pipelines/`
+/// where the driver has one.
+/// Window targets on this path: the Swift smoke test's `CAMetalLayer`.
+#[test]
+fn frames_to_idle_save_the_pipeline_cache() {
+    let dir = std::env::temp_dir().join(format!("orb-api-state-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let runtime = Runtime::new(&RuntimeOptions {
+        state_dir: Some(dir.clone()),
+        ..RuntimeOptions::default()
+    })
+    .expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(STYLE).expect("style");
+    settle(&mut map, &mut target);
+    settle(&mut map, &mut target);
+    // Drivers with a pipeline cache (Vulkan, GLES) keep it there; Metal
+    // caches pipelines itself and keeps none.
+    if let Ok(entries) = std::fs::read_dir(dir.join("pipelines")) {
+        assert!(
+            entries.count() > 0,
+            "a pipeline cache was started and not written"
+        );
+    }
+    drop((map, target, runtime));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A camera given at creation is the map's, at any zoom: the style's own
+/// (north up and flat) doesn't replace it, and the picture shows it. Two
+/// ground bands lie as far north of the target as south: pitched, the far
+/// one draws thinner; turned, their edges tilt.
+#[test]
+fn a_camera_given_keeps_its_pitch_and_bearing() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mercator = *orb_api::TileMatrixSet::by_id("WebMercatorQuad")
+        .unwrap()
+        .projection();
+    let (lon, lat) = (139.76_f64, 35.68_f64);
+    for zoom in [5.0, 9.0, 15.5] {
+        // Eight pixels of ground at this zoom, flat.
+        let degrees = 360.0 / (512.0 * 2f64.powf(zoom));
+        let (d, w) = (8.0 * degrees * lat.to_radians().cos(), 400.0 * degrees);
+        let band = |from: f64, to: f64| {
+            format!(
+                "[[[{w0}, {from}], [{w1}, {from}], [{w1}, {to}], [{w0}, {to}], [{w0}, {from}]]]",
+                w0 = lon - w,
+                w1 = lon + w
+            )
+        };
+        let style = format!(
+            r##"{{"version": 8, "center": [0, 0], "zoom": 0, "bearing": 0, "pitch": 0,
+              "sources": {{"bands": {{"type": "geojson", "data": {{"type": "MultiPolygon",
+                "coordinates": [{north}, {south}]}}}}}},
+              "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#ff0000"}}}},
+                {{"id": "bands", "type": "fill", "source": "bands", "paint": {{"fill-color": "#0000ff"}}}}
+              ]}}"##,
+            north = band(lat + d, lat + 2.0 * d),
+            south = band(lat - 2.0 * d, lat - d),
+        );
+        for (bearing, pitch) in [(0.0, 0.0), (-30.0, 55.0)] {
+            let camera = orb_api::CameraState {
+                bearing,
+                pitch,
+                ..orb_api::CameraState::new(orb_api::Geodetic::new(lon, lat), zoom, &mercator)
+            };
+            let mut map = Map::new(
+                &runtime,
+                MapOptions {
+                    camera: Some(camera),
+                    ..MapOptions::default()
+                },
+            );
+            map.set_style_json(&style).expect("style");
+            let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+            let c = map.camera();
+            let at = format!("z{zoom} bearing {bearing} pitch {pitch}");
+            assert_eq!((c.bearing, c.pitch), (bearing, pitch), "{at}");
+            assert!((map.zoom() - zoom).abs() < 1e-9, "{at}");
+            let blue = |x: u32, y: u32| pixel(&image.pixels, x, y)[2] > 200;
+            let (north, south) = (
+                (0..SIZE / 2).filter(|&y| blue(SIZE / 2, y)).count(),
+                (SIZE / 2..SIZE).filter(|&y| blue(SIZE / 2, y)).count(),
+            );
+            // The north band's top edge, a quarter in from each side.
+            let edge = |x: u32| (0..SIZE).find(|&y| blue(x, y)).expect("a band");
+            let tilt = edge(SIZE / 4).abs_diff(edge(3 * SIZE / 4));
+            if pitch == 0.0 {
+                assert!(
+                    north.abs_diff(south) <= 1,
+                    "{at}: bands {north} and {south} px"
+                );
+                assert!(tilt <= 1, "{at}: edges {tilt} px apart");
+            } else {
+                assert!(north + 1 < south, "{at}: bands {north} and {south} px");
+                assert!(tilt > 3, "{at}: edges {tilt} px apart");
+            }
+        }
+    }
+}

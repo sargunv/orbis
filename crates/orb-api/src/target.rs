@@ -170,9 +170,9 @@ impl Target {
         Rc::ptr_eq(&self.shared, shared)
     }
 
-    /// Starts a frame: the texture to draw it into, or `None` to skip it.
-    pub(crate) fn begin(&mut self) -> Result<Option<TextureId>, Error> {
-        let mut device = self.shared.gpu.borrow_mut();
+    /// Starts a frame on `device`, the runtime's, which the frame holds:
+    /// the texture to draw it into, or `None` to skip it.
+    pub(crate) fn begin(&mut self, device: &mut Device) -> Result<Option<TextureId>, Error> {
         if device.lost() {
             return Err(Error::DeviceLost);
         }
@@ -181,7 +181,7 @@ impl Target {
         if self.generation != self.shared.generation.get() {
             match &mut self.kind {
                 Kind::Texture(id) => {
-                    *id = create_texture(&mut device, self.width, self.height);
+                    *id = create_texture(device, self.width, self.height);
                     self.generation = self.shared.generation.get();
                 }
                 Kind::Surface(_) => {
@@ -189,7 +189,7 @@ impl Target {
                 }
             }
         }
-        match (&mut self.kind, &mut *device) {
+        match (&mut self.kind, device) {
             (Kind::Texture(id), _) => Ok(Some(*id)),
             (Kind::Surface(surface), Device::Modern(gpu)) => match &mut **surface {
                 Surface::Modern(surface) => match gpu.acquire(surface) {
@@ -224,12 +224,12 @@ impl Target {
         }
     }
 
-    /// Shows the frame on a surface.
-    pub(crate) fn end(&mut self) {
+    /// Shows the frame on a surface, on the device that began it.
+    pub(crate) fn end(&mut self, device: &mut Device) {
         let Kind::Surface(surface) = &mut self.kind else {
             return;
         };
-        match (&mut **surface, &mut *self.shared.gpu.borrow_mut()) {
+        match (&mut **surface, device) {
             (Surface::Modern(surface), Device::Modern(gpu)) => gpu.present(surface),
             (Surface::Compat { window, frame }, Device::Compat(c)) => {
                 if let Some((id, (w, h))) = *frame {

@@ -205,6 +205,11 @@ impl Map {
         *self.hook.lock().expect("wake hook poisoned") = Some(Box::new(wake));
     }
 
+    /// Whether an animation, a glide or a gesture moves the camera.
+    pub fn is_moving(&self) -> bool {
+        self.map.is_moving()
+    }
+
     /// Whether drawing a frame would show something new: data arrived, the
     /// camera moves, a gesture or animation runs, or loads and fades are
     /// under way. An idle map needs no frames.
@@ -756,34 +761,38 @@ impl Map {
         let viewport = target.viewport();
         // Markers and the location layer come back with a new style.
         self.batteries.sync(&mut self.map);
-        let Some(texture) = target.begin()? else {
-            return Ok(None);
+        // The frame borrows the device once: the target begins and ends
+        // with it, and it's let go before anything else here borrows it.
+        let report = {
+            let mut device = self.shared.gpu.borrow_mut();
+            let Some(texture) = target.begin(&mut device)? else {
+                return Ok(None);
+            };
+            self.woken.store(false, Ordering::Release);
+            if self.shared.sentinel.borrow().is_some() {
+                crate::device::before_pipelines();
+            }
+            let gpu = device.gpu();
+            let map = &mut self.map;
+            let renderer = self
+                .renderer
+                .get_or_insert_with(|| map.create_renderer(gpu, format));
+            let report = map.render(
+                gpu,
+                renderer,
+                texture,
+                viewport,
+                target.scale() as f32,
+                frame_time,
+            );
+            target.end(&mut device);
+            // The frame found the device lost (a compile the watchdog found
+            // hung): no frame follows to say so.
+            if device.lost() {
+                return Err(Error::DeviceLost);
+            }
+            report
         };
-        self.woken.store(false, Ordering::Release);
-        if self.shared.sentinel.borrow().is_some() {
-            crate::device::before_pipelines();
-        }
-        let mut device = self.shared.gpu.borrow_mut();
-        let gpu = device.gpu();
-        let map = &mut self.map;
-        let renderer = self
-            .renderer
-            .get_or_insert_with(|| map.create_renderer(gpu, format));
-        let report = map.render(
-            gpu,
-            renderer,
-            texture,
-            viewport,
-            target.scale() as f32,
-            frame_time,
-        );
-        target.end();
-        // The frame found the device lost (a compile the watchdog found
-        // hung): no frame follows to say so.
-        if device.lost() {
-            return Err(Error::DeviceLost);
-        }
-        drop(device);
         // Every pipeline the map asked for compiled, and the driver
         // survived them.
         if report.frame.pipelines_pending == 0 {
