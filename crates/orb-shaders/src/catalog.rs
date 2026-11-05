@@ -27,6 +27,7 @@ const FILL: &str = include_str!("wgsl/fill.wgsl");
 const LINE: &str = include_str!("wgsl/line.wgsl");
 const POINT: &str = include_str!("wgsl/point.wgsl");
 const CIRCLE: &str = include_str!("wgsl/circle.wgsl");
+const MODEL: &str = include_str!("wgsl/model.wgsl");
 const SYMBOL: &str = include_str!("wgsl/symbol.wgsl");
 const HEATMAP: &str = include_str!("wgsl/heatmap.wgsl");
 const HEATMAP_COLOR: &str = include_str!("wgsl/heatmap_color.wgsl");
@@ -172,6 +173,15 @@ pub const CIRCLE_SHADER: Shader = Shader {
     parts: &[TYPES, DRAW, POINT, CIRCLE],
     vertex: "vs_circle",
     fragment: "fs_circle",
+    compute: "",
+};
+/// glTF models at point features, lit by the style's lights (plan §9.4).
+/// Modern only: Compat warns for the gap.
+pub const MODEL_SHADER: Shader = Shader {
+    label: "model",
+    parts: &[TYPES, DRAW, POINT, PBR_MODULE, MODEL],
+    vertex: "vs_model",
+    fragment: "fs_model",
     compute: "",
 };
 /// Symbol quads: glyphs and icons, with their halos (decision 0009).

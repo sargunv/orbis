@@ -140,6 +140,7 @@ mod tests {
             FILL_OUTLINE_SHADER,
             LINE_SHADER,
             CIRCLE_SHADER,
+            MODEL_SHADER,
             SYMBOL_SHADER,
             HEATMAP_SHADER,
             HEATMAP_COLOR_SHADER,
