@@ -2200,6 +2200,8 @@ impl Map {
         }
         let period = self.surface.period();
         let placed = &mut style.placed[index];
+        // Labels past a Web Mercator tile go on exactly on a globe.
+        let on_mercator = view.globe().is_some() && *tms.projection() == mercator_projection();
         for (&tile, draws) in &rows {
             let resident = pyramid.get(tile).expect("drawn tiles are ready");
             let globe = view
@@ -2221,6 +2223,7 @@ impl Map {
                         bucket: symbols.bucket,
                         tile,
                         wrap,
+                        mercator: on_mercator && resident.series.is_none(),
                         globe: globe.clone(),
                     });
                 }
@@ -4152,6 +4155,13 @@ fn placements<'a>(
             }),
         }
     })
+}
+
+/// Web Mercator, which a globe's sphere wraps.
+fn mercator_projection() -> orb_crs::Projection {
+    *TileMatrixSet::by_id("WebMercatorQuad")
+        .expect("built-in tile matrix set")
+        .projection()
 }
 
 /// A globe view's frame terms: its matrix, the target, and the horizon

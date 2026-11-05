@@ -77,6 +77,11 @@ pub struct TileGlobe {
     /// The patches are on a low-zoom plane rather than the sphere: its
     /// world units, z up, with no horizon.
     pub plane: bool,
+    /// On the sphere, a Web Mercator tile's units → Web Mercator world
+    /// metres: a point past the tile goes on exactly from the tile's edge,
+    /// as the shader's `mercator_sphere` carries it, rather than along the
+    /// edge patch extrapolated.
+    pub mercator: Option<glam::DAffine2>,
 }
 
 impl TileView {
@@ -86,7 +91,16 @@ impl TileView {
         let Some(globe) = &self.globe else {
             return project(&self.matrix, x, y, z);
         };
-        let ground = globe.series.position(glam::DVec2::new(x, y) / EXTENT);
+        let p = glam::DVec2::new(x, y);
+        let edge = p.clamp(glam::DVec2::ZERO, glam::DVec2::splat(EXTENT));
+        let mut ground = globe.series.position(edge / EXTENT);
+        if let Some(to_world) = globe.mercator.filter(|_| edge != p && !globe.plane) {
+            let sphere = |q: glam::DVec2| {
+                let g = mercator().inverse(to_world.transform_point2(q));
+                orb_crs::sphere::ecef(g, 0.0)
+            };
+            ground += sphere(p) - sphere(edge);
+        }
         let up = if globe.plane {
             glam::DVec3::Z
         } else {
@@ -111,6 +125,16 @@ impl TileView {
     pub(crate) fn tile_units_per_pixel(&self, camera: &Camera) -> f64 {
         EXTENT / (512.0 * 2f64.powf(camera.zoom - f64::from(self.id.z)))
     }
+}
+
+/// Web Mercator, which the sphere's tiles are on.
+fn mercator() -> &'static orb_crs::Projection {
+    static MERCATOR: std::sync::OnceLock<orb_crs::Projection> = std::sync::OnceLock::new();
+    MERCATOR.get_or_init(|| {
+        *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
+            .expect("built-in tile matrix set")
+            .projection()
+    })
 }
 
 /// Whether the sphere stands between `eye` and `p` (ECEF). A point in
@@ -221,5 +245,57 @@ pub(crate) fn symbol_elevation(
     match ground {
         Some(ground) => Some(ground + height_offset),
         None => (height_offset != 0.0).then_some(height_offset),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn points_past_a_globe_tile_go_on_exactly_from_its_edge() {
+        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let tile = orb_crs::TileIndex::new(1, 1, 0);
+        let series = orb_crs::sphere::series(&tms, tile, 1.0 / 2048.0).unwrap();
+        let to_world = tms.data_to_world(tile, EXTENT as u32);
+        // Identity view: clip x, y are ECEF x, y; the eye far above the tile.
+        let centre = series.position(glam::DVec2::splat(0.5));
+        let view = |mercator| TileView {
+            id: TileId {
+                z: 1,
+                x: 1,
+                y: 0,
+                wrap: 0,
+            },
+            matrix: [0.0; 16],
+            globe: Some(TileGlobe {
+                series: std::sync::Arc::new(series.clone()),
+                target: glam::DVec3::ZERO,
+                view_proj: glam::DMat4::IDENTITY,
+                eye: centre * 100.0,
+                plane: false,
+                mercator,
+            }),
+        };
+        let off = |v: &TileView, p: glam::DVec2| {
+            let exact =
+                orb_crs::sphere::ecef(mercator().inverse(to_world.transform_point2(p)), 0.0);
+            let at = v.project(p.x, p.y, None).point;
+            glam::DVec2::new(at.x, at.y) - exact.truncate()
+        };
+        // A label anchor a fifth of a tile past its east edge is off by just
+        // what the patches are off at the edge (their fit's tolerance).
+        let (past, edge) = (
+            glam::DVec2::new(EXTENT * 1.2, EXTENT * 0.6),
+            glam::DVec2::new(EXTENT, EXTENT * 0.6),
+        );
+        let exact = view(Some(to_world));
+        assert!((off(&exact, past) - off(&exact, edge)).length() < 1.0);
+        // The edge patch extrapolated lands kilometres away.
+        assert!(
+            off(&view(None), past).length() > 1000.0,
+            "{}",
+            off(&view(None), past)
+        );
     }
 }

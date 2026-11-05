@@ -35,6 +35,10 @@ fn write_globe(w: &mut Writer, globe: Option<&TileGlobe>) {
         w.f64(v);
     }
     w.bool(g.plane);
+    w.bool(g.mercator.is_some());
+    for v in g.mercator.iter().flat_map(|m| m.to_cols_array()) {
+        w.f64(v);
+    }
 }
 
 fn read_globe(r: &mut Reader<'_>) -> Result<Option<TileGlobe>, String> {
@@ -76,6 +80,15 @@ fn read_globe(r: &mut Reader<'_>) -> Result<Option<TileGlobe>, String> {
         view_proj: glam::DMat4::from_cols_array(&m),
         eye,
         plane: r.bool()?,
+        mercator: if r.bool()? {
+            let mut m = [0.0; 6];
+            for v in &mut m {
+                *v = r.f64()?;
+            }
+            Some(glam::DAffine2::from_cols_array(&m))
+        } else {
+            None
+        },
     }))
 }
 
@@ -576,6 +589,9 @@ mod tests {
                             })),
                             eye: glam::DVec3::new(4.0, 5.0, 6.0),
                             plane: true,
+                            mercator: Some(glam::DAffine2::from_cols_array(&[
+                                1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+                            ])),
                         }),
                     },
                     text_size: ZoomSize { size: 16.0, t: 0.5 },

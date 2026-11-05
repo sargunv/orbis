@@ -221,6 +221,9 @@ pub(crate) struct SymbolTile {
     pub(crate) bucket: u64,
     pub(crate) tile: orb_crs::TileIndex,
     pub(crate) wrap: i32,
+    /// The tile is a Web Mercator tile drawn whole (not warped), so
+    /// `to_world` is exact Web Mercator: points past it go on exactly.
+    pub(crate) mercator: bool,
     /// On a globe, the tile's patches on the sphere, which placement
     /// projects through.
     pub(crate) globe: Option<Arc<orb_crs::Series<glam::DVec3>>>,
@@ -1211,6 +1214,7 @@ impl Labels {
                                         view_proj: globe.view_proj,
                                         eye: globe.target + globe.eye,
                                         plane: globe.plane.is_some(),
+                                        mercator: t.mercator.then_some(t.to_world),
                                     }
                                 }),
                             },
