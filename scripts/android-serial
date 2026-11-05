@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Prints the adb serial of the Android device a script drives.
+#
+#   scripts/android-serial [--physical]
+#
+# ANDROID_SERIAL wins when it is set. Otherwise devices-cli gives this worktree
+# its own emulator at ORB_ANDROID_EMULATOR_API, booted on demand, which keeps
+# running until `devices-cli release`. Every functional Android check runs
+# there, so no script needs a real phone. The image is the Google APIs variant
+# of the AOSP release: the bench and measure scripts drive Chrome, which the
+# plain AOSP image lacks, and the reference app runs there too.
+#
+# --physical is for measuring a real phone's performance, which is rarely
+# needed: it fails rather than fall back to the emulator, so the caller first
+# assigns a connected phone to this worktree with `devices-cli assign <serial>`
+# and runs `devices-cli release` right after the measurement, which serializes
+# the phones across agents.
+set -euo pipefail
+
+usage="usage: scripts/android-serial [--physical]"
+physical=
+case $# in
+  0) ;;
+  1)
+    if [[ $1 != --physical ]]; then
+      echo "$usage" >&2
+      exit 2
+    fi
+    physical=1
+    ;;
+  *)
+    echo "$usage" >&2
+    exit 2
+    ;;
+esac
+api=${ORB_ANDROID_EMULATOR_API:?ORB_ANDROID_EMULATOR_API must name the Android API level (mise sets it)}
+
+if [[ -n "${ANDROID_SERIAL:-}" ]]; then
+  serial=$ANDROID_SERIAL
+else
+  serial=$(devices-cli get android --api "$api" --variant google_apis)
+fi
+
+if [[ -n "$physical" ]]; then
+  # devices-cli hands out an assigned phone when it runs the API level and ABI
+  # asked for, and an emulator otherwise, so a measurement checks what it got.
+  characteristics=$(adb -s "$serial" shell getprop ro.build.characteristics 2>/dev/null | tr -d '\r') || true
+  kernel_qemu=$(adb -s "$serial" shell getprop ro.kernel.qemu 2>/dev/null | tr -d '\r') || true
+  if [[ "$characteristics" == *emulator* || "$kernel_qemu" == 1 ]]; then
+    echo "Android device $serial is an emulator, and this needs a physical phone." >&2
+    echo "Connect one, then: devices-cli assign <serial>; measure; devices-cli release." >&2
+    exit 1
+  fi
+fi
+
+printf '%s\n' "$serial"

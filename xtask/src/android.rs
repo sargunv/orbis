@@ -1,9 +1,10 @@
-//! `cargo xtask android [--run[=serial]]`: `liborbis.so` for arm64-v8a
-//! (`dist` profile, API 24, the D9 floor): `liborbis.a` linked with the
-//! generated JNI shim and the ANativeWindow glue by the NDK's clang into
-//! `hosts/android/orbis/src/main/jniLibs`, then the AAR and the reference
-//! app with Gradle (plan §17: Gradle only packages). `--run` installs the
-//! app on an adb device and starts it.
+//! `cargo xtask android [--run]`: `liborbis.so` for arm64-v8a (`dist` profile,
+//! API 24, the D9 floor): `liborbis.a` linked with the generated JNI shim and
+//! the ANativeWindow glue by the NDK's clang into
+//! `hosts/android/orbis/src/main/jniLibs`, then the AAR and the reference app
+//! with Gradle (plan §17: Gradle only packages). `--run` installs the app on
+//! the Android device `scripts/android-serial` names (this worktree's emulator
+//! from devices-cli, or `ANDROID_SERIAL`) and starts it.
 //!
 //! Needs `ANDROID_HOME` with an NDK (`mise x --` provides it here).
 
@@ -19,11 +20,10 @@ const API: u32 = 24;
 const PROJECT: &str = "hosts/android";
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
-    let device = match args {
-        [] => None,
-        [flag] if flag == "--run" => Some(None),
-        [flag] if flag.starts_with("--run=") => Some(Some(flag["--run=".len()..].to_owned())),
-        _ => return Err("android: usage: cargo xtask android [--run[=serial]]".into()),
+    let install_app = match args {
+        [] => false,
+        [flag] if flag == "--run" => true,
+        _ => return Err("android: usage: cargo xtask android [--run]".into()),
     };
     let root = root();
     let sdk = PathBuf::from(
@@ -125,8 +125,8 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
             size as f64 / 1e6
         );
     }
-    if let Some(serial) = device {
-        install(&apk, serial.as_deref())?;
+    if install_app {
+        install(&root, &apk)?;
     }
     Ok(())
 }
@@ -148,13 +148,14 @@ fn ndk_bin(sdk: &Path) -> Result<PathBuf, String> {
     Ok(host.path().join("bin"))
 }
 
-fn install(apk: &Path, serial: Option<&str>) -> Result<(), String> {
+/// Installs the reference app on the device `scripts/android-serial` names and
+/// starts it: the worktree's emulator from devices-cli, or `ANDROID_SERIAL`.
+fn install(root: &Path, apk: &Path) -> Result<(), String> {
+    let serial = android_serial(root)?;
+    eprintln!("android: installing on {serial}");
     let adb = |args: &[&str]| {
         let mut command = Command::new("adb");
-        if let Some(serial) = serial {
-            command.args(["-s", serial]);
-        }
-        command.args(args);
+        command.arg("-s").arg(&serial).args(args);
         command
     };
     check(adb(&["install", "-r"]).arg(apk))?;
@@ -166,4 +167,19 @@ fn install(apk: &Path, serial: Option<&str>) -> Result<(), String> {
         "-n",
         "dev.orbis.demo/.MainActivity",
     ]))
+}
+
+/// The adb serial `scripts/android-serial` prints for a functional check: this
+/// worktree's emulator, booted on demand.
+fn android_serial(root: &Path) -> Result<String, String> {
+    let output = Command::new(root.join("scripts/android-serial"))
+        .output()
+        .map_err(|e| format!("scripts/android-serial: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "scripts/android-serial failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }

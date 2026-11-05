@@ -26,10 +26,10 @@ import java.io.File
  * Tokyo Station that follows the map. Logs load timings (tag "Orbis").
  *
  * The web demo's live OpenFreeMap Liberty over Tokyo by default; the
- * committed extract with `adb shell am start -n dev.orbis.demo/.MainActivity
- * --es style tokyo`. `--es backend compat` (or `modern`) picks the GPU tier
- * instead of the device policy; `--el lose <ms>` loses the GPU that long
- * after loading, to show recovery.
+ * committed extract with `adb -s "$(scripts/android-serial)" shell am start -n
+ * dev.orbis.demo/.MainActivity --es style tokyo`. `--es backend compat` (or
+ * `modern`) picks the GPU tier instead of the device policy; `--el lose <ms>`
+ * loses the GPU that long after loading, to show recovery.
  */
 class MainActivity : Activity() {
     private lateinit var runtime: OrbRuntime

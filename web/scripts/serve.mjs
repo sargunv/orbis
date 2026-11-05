@@ -9,6 +9,7 @@ import { chromium } from "playwright";
 import { build } from "vite";
 
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
+const androidSerial = fileURLToPath(new URL("../../scripts/android-serial", import.meta.url));
 const types = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".css": "text/css" };
 
 // Resolves to { url, close } once listening on a free local port.
@@ -63,14 +64,31 @@ export function launchChromium({ unsafe = true } = {}) {
   });
 }
 
-// Opens a tab in Chrome on an adb-connected Android device, serving
-// `server` to it over `adb reverse`, and drives it through DevTools; keep
-// the screen on and unlocked. Resolves to { browser, page, close }.
-export async function openAndroid(server, serial = null) {
-  const adb = (...a) => execFileSync("adb", [...(serial ? ["-s", serial] : []), ...a], { encoding: "utf8" });
+// Opens a tab in Chrome on the Android device this worktree tests on: its
+// emulator from devices-cli, or the one `ANDROID_SERIAL` names
+// (`scripts/android-serial`), serving `server` to it over `adb reverse` and
+// driving it through DevTools. `physical` measures a phone that the caller
+// assigned to this worktree with `devices-cli assign`, and fails rather than
+// fall back to the emulator. Resolves to { browser, page, close }.
+export async function openAndroid(server, { physical = false } = {}) {
+  const serial = execFileSync(androidSerial, physical ? ["--physical"] : [], { encoding: "utf8" }).trim();
+  const adb = (...a) => execFileSync("adb", ["-s", serial, ...a], { encoding: "utf8" });
   const port = new URL(server.url).port;
   adb("reverse", `tcp:${port}`, `tcp:${port}`);
   const devtools = adb("forward", "tcp:0", "localabstract:chrome_devtools_remote").trim();
+  // A worktree's emulator instance starts with no Chrome profile, and Chrome's
+  // first-run screen never opens the DevTools socket, so its Chrome is told to
+  // skip that screen; Chrome reads the command line on a debuggable build,
+  // which the emulator image is. A phone keeps the Chrome its owner set up.
+  // The emulator's GPU is SwiftShader Vulkan, a software adapter that WebGPU
+  // refuses unless Chrome allows it, as headless Chromium does
+  // (`launchChromium`), so the emulator's Chrome allows it too.
+  const emulator = adb("shell", "getprop", "ro.build.characteristics").includes("emulator");
+  if (emulator) {
+    const flags = ["chrome", "--disable-fre", "--no-default-browser-check", "--enable-unsafe-webgpu"];
+    adb("shell", `echo '${flags.join(" ")}' > /data/local/tmp/chrome-command-line`);
+    adb("shell", "am", "force-stop", "com.android.chrome");
+  }
   adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-n",
     "com.android.chrome/com.google.android.apps.chrome.Main", "-d", "about:blank");
   let browser;

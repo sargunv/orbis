@@ -1,11 +1,15 @@
 // Plan §7.2's measurements in Chrome: input-to-photon latency for pan,
 // pinch and rotate, DOM overlay skew, main-thread busy time and frames when
 // idle, for Orbis in worker and main-thread mode and the pinned GL JS, on
-// web/dist/measure.html. In headless Chromium, or in Chrome on an Android
-// device over adb (keep its screen on).
+// web/dist/measure.html. In headless Chromium, or in Chrome on Android (keep
+// its screen on).
 //
-//   pnpm measure [--android[=serial]] [--runs=3] [--configs=orbis-worker,orbis-main,gljs]
-//     [--no-capture] [--no-annotation]
+//   pnpm measure [--android [--physical]] [--runs=3]
+//     [--configs=orbis-worker,orbis-main,gljs] [--no-capture] [--no-annotation]
+//
+// `--android` runs on this worktree's Android emulator (`scripts/android-serial`;
+// `ANDROID_SERIAL` overrides); `--physical` on a phone that the caller assigned
+// to this worktree with `devices-cli assign`, released after the measurement.
 //
 // Method: DevTools dispatches touch gestures (8 ms apart, one second each)
 // while it captures composited frames (Page.startScreencast, PNG). Each
@@ -21,8 +25,8 @@ import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const androidArg = args.find((a) => a === "--android" || a.startsWith("--android="));
-const android = androidArg ? { serial: androidArg.split("=")[1] ?? null } : null;
+const physical = args.includes("--physical");
+const android = physical || args.includes("--android");
 const runs = Number(option("runs", "3"));
 const configs = option("configs", "orbis-worker,orbis-main,gljs").split(",");
 // Busy time and idle frames only, without frame capture (whose PNG encoding
@@ -187,7 +191,7 @@ async function run(page, config, viewport) {
 const server = await serveDemo();
 let browser, page, close;
 if (android) {
-  ({ browser, page, close } = await openAndroid(server, android.serial));
+  ({ browser, page, close } = await openAndroid(server, { physical }));
 } else {
   browser = await launchChromium({ unsafe: false });
   page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: true });
@@ -210,7 +214,7 @@ try {
       // only: each config gets a tab of its own.
       if (android && results.length) {
         await close();
-        ({ browser, page, close } = await openAndroid(server, android.serial));
+        ({ browser, page, close } = await openAndroid(server, { physical }));
       }
       const result = await run(page, config, viewport);
       console.error(`measure: run ${r + 1} ${config}: ${JSON.stringify(result)}`);

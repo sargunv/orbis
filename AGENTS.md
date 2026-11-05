@@ -17,6 +17,7 @@ crates/         orb-* crates, one per row of plan §5.2, and diplomat-swift-kotl
                 (the project-agnostic binding emitters, decision 0018)
 xtask/          build, test, demo and pages tasks
 fixtures/       GL JS fixture mirror, fetched by `cargo xtask fixtures`, not committed
+scripts/        helpers the commands share across languages (Android device access)
 web/            TypeScript host package and the demo site
 hosts/          Android, Apple and desktop host shells
 docs/           plan, research, decisions
@@ -26,15 +27,15 @@ docs/           plan, research, decisions
 ## Commands
 
 `mise install` provides the pinned tools (wasm-bindgen, wasm-opt, twiggy,
-node, pnpm, a JDK, Gradle, kotlinc, CMake); run `pnpm -C web install` once for
-Playwright.
+node, pnpm, a JDK, Gradle, kotlinc, CMake, Go and devices-cli); run
+`pnpm -C web install` once for Playwright.
 
 | Command | What it does |
 | --- | --- |
 | `cargo xtask check [--affected [--base <rev>]]` | fmt, clippy (native and wasm32), tests, generated bindings up to date, boundary rules; offline, no fixture mirror needed; `--affected` scopes it to the packages changed since `<rev>` (default `origin/main`) and their dependents |
 | `cargo xtask bindings` | regenerate the C header (`crates/orb-capi/include`), Kotlin/JNI and Swift bindings from `orb-capi`'s bridge; run after changing it |
 | `mise x -- cargo xtask bindings test` | the emitters' Swift and Kotlin compile-and-run tests |
-| `mise x -- cargo xtask android [--run[=serial]]` | `liborbis.so` (arm64-v8a, NDK), the AAR and the Android reference app; `--run` installs and starts it (logcat tag `Orbis`) |
+| `mise x -- cargo xtask android [--run]` | `liborbis.so` (arm64-v8a, NDK), the AAR and the Android reference app; `--run` installs it on this worktree's emulator and starts it (logcat tag `Orbis`) |
 | `cargo xtask apple [--test] [--ios-sim[=name]]` | `hosts/apple/OrbisC.xcframework` (macOS, iOS, iOS simulator) and the Swift package; `--test` runs the Swift binding scenario; `--ios-sim` builds the iOS app and runs it on a simulator (whose Metal lacks indirect draws: it reports that, M4's Compat tier is its path) |
 | `hosts/apple/.build/release/OrbisDemo [--snapshot out.png] [tokyo \| style]` | macOS reference app (after `cargo xtask apple`): live Liberty as on the web, `tokyo` for the extract; `--snapshot` renders into a texture target, prints timings and pipeline counts |
 | `mise x -- cargo xtask capi --test` | the C library in `target/capi` (static lib, headers, pkg-config, CMake), the C smoke test through both, and the Kotlin binding scenario on the JVM |
@@ -54,8 +55,8 @@ Playwright.
 | `pnpm -C web dev` | Vite dev server at `/orbis/` (run `cargo xtask web` first) |
 | `pnpm -C web typecheck` / `pnpm -C web test` | type-check the `orbis` package (`web/src`); its unit tests and the build test |
 | `cargo xtask bench` | GPU/CPU frame timings, still and with the camera moving (decision 0002); `--experiment paint` for decision 0017; `--experiment gestures` for rotate, tilt and zoom frame times with tiles arriving (decision 0023); `alps --experiment gestures` for the terrain demo's rotate, pan and flight |
-| `pnpm -C web bench [--precise] [--android[=serial]]` | the same bench in headless Chromium, or in an adb-connected Android device's Chrome (`web/demo/bench.html`; keep its screen on); `--experiment=gestures` drives the `orbis` package in both thread modes (`--style=alps` for the terrain paths) |
-| `pnpm -C web measure [--android[=serial]] [--runs=3]` | plan §7.2's measurements in Chrome: input-to-photon latency (pan, pinch, rotate), DOM overlay skew, main-thread busy time and idle frames, for Orbis worker and main-thread mode and the pinned GL JS (`web/demo/measure.html`) |
+| `pnpm -C web bench [--precise] [--android [--physical]]` | the same bench in headless Chromium, or in this worktree's Android emulator's Chrome (`web/demo/bench.html`; keep its screen on; `--physical` for an assigned phone, below); `--experiment=gestures` drives the `orbis` package in both thread modes (`--style=alps` for the terrain paths) |
+| `pnpm -C web measure [--android [--physical]] [--runs=3]` | plan §7.2's measurements in Chrome: input-to-photon latency (pan, pinch, rotate), DOM overlay skew, main-thread busy time and idle frames, for Orbis worker and main-thread mode and the pinned GL JS (`web/demo/measure.html`) |
 | `pnpm -C web scenario [--configs=main,worker,webgl2]` | the binding scenario through the `orbis` package in headless Chromium (`web/demo/scenario.html`) |
 
 ## How we work
@@ -94,6 +95,28 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
   GL JS internals; a fixture that differs slightly for a principled reason
   is fine once it's understood and noted.
 - **Measure.** Report sizes, timings and counters as numbers.
+
+### Devices
+
+Functional Android checks run on this worktree's own emulator.
+`scripts/android-serial` prints the adb serial every script uses:
+`ANDROID_SERIAL` when you set one, otherwise `devices-cli get android --api
+$ORB_ANDROID_EMULATOR_API`, which boots an emulator for this worktree on demand
+and stops it when the worktree goes away. `devices-cli ls` shows what runs,
+`devices-cli release` stops this worktree's devices, and `devices-cli gc`
+collects stale ones. `cargo xtask android --run` installs and starts the
+reference app there; the emulator's software Vulkan draws only the background
+and crashes Chrome's WebGPU GPU process (#54), so it checks the build, the
+install and the load path, not rendering fidelity or performance, and
+`bench`/`measure --android` on the emulator fail the same way.
+
+Physical phones are for performance numbers from a real slow phone, which is
+rarely needed since the implementation is universal: a moto g (Adreno 619) and a
+Galaxy Z Fold 7 (Adreno 830) are connected. Assigning is how they serialize
+across agents: `devices-cli assign <serial>`, run the measurement with
+`--physical` (which fails rather than fall back to the emulator), then
+`devices-cli release` right after. Never hard-code a serial, change device
+settings (brightness, stay-awake) or force-stop apps you didn't start.
 
 ## Orchestration
 

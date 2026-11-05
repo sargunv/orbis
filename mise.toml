@@ -1,7 +1,8 @@
 # https://mise.jdx.dev
 #
 # Host requirements beyond mise: Xcode (Metal, iOS Simulator), an Android SDK
-# with an emulator image (ANDROID_HOME), Chrome, and a signed-in `gh` CLI.
+# (ANDROID_HOME), Chrome, and a signed-in `gh` CLI. devices-cli installs the
+# emulator image it needs into that SDK.
 
 min_version = "2026.10.0"
 
@@ -12,6 +13,15 @@ minimum_release_age = "3d"
 lockfile = true
 # The Pages workflow runs on linux-x64.
 lockfile_platforms = ["macos-arm64", "linux-x64"]
+
+[vars]
+# The Android API level of the emulator each worktree tests on. Functional
+# Android checks need no real phone, so this is one level for every script.
+android_system_image_api = "36"
+
+[env]
+# `scripts/android-serial` asks devices-cli for an emulator at this level.
+ORB_ANDROID_EMULATOR_API = "{{vars.android_system_image_api}}"
 
 [tools]
 # Web build: wasm-bindgen must match the wasm-bindgen crate in Cargo.lock.
@@ -26,3 +36,12 @@ java = "temurin-21.0.13+9.0.LTS"
 gradle = "9.8.2"
 kotlin = { version = "2.4.21", asset_pattern = "kotlin-compiler-*.zip", bin_path = "kotlinc/bin" }
 "aqua:Kitware/CMake" = "4.4.5"
+# Android device access: devices-cli gives each worktree its own emulator,
+# started on demand and stopped when the worktree goes away
+# (`scripts/android-serial`). It builds from a Go commit, so Go is pinned here
+# too, and it runs on Linux and macOS only.
+"core:go" = "1.27.3"
+"go:github.com/sargunv/devices-cli" = { version = "v0.0.0-20261029084046-1fb50144e197", os = [
+  "linux",
+  "macos",
+] }

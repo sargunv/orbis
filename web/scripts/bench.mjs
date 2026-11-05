@@ -1,7 +1,7 @@
 // Builds and runs web/dist/bench.html and prints its Markdown report: in
-// headless Chromium, or in Chrome on an Android device over adb.
+// headless Chromium, or in Chrome on Android.
 //
-//   pnpm bench [--precise] [--android[=serial]] [--name=value…]
+//   pnpm bench [--precise] [--android [--physical]] [--name=value…]
 //
 // `--name=value` pairs become the page's query (format, style, frames,
 // warmup, rounds, size, ratio, at, timing, experiment, labels; thread for
@@ -11,28 +11,30 @@
 // `performance.now()` (to 100 µs). `--precise` allows WebGPU's unsafe APIs,
 // which stops the first, and serves the page cross-origin isolated, which
 // refines the second to 5 µs: to check that the page's means agree with
-// exact medians. `--android` reverses the server's port onto the device,
-// opens the page in its Chrome and drives it through DevTools; keep the
-// screen on and unlocked.
+// exact medians. `--android` reverses the server's port onto this worktree's
+// Android emulator (`scripts/android-serial`; `ANDROID_SERIAL` overrides) and
+// opens the page in its Chrome; keep the screen on and unlocked. `--physical`
+// measures a phone instead of the emulator: assign one to this worktree with
+// `devices-cli assign <serial>` first and run `devices-cli release` after.
 import { launchChromium, openAndroid, serveDemo } from "./serve.mjs";
 
 const args = process.argv.slice(2);
 const precise = args.includes("--precise");
-let android = null;
+const physical = args.includes("--physical");
+const android = physical || args.includes("--android");
 const params = new URLSearchParams();
 for (const arg of args) {
-  const match = arg.match(/^--([a-z]+)(?:=(.*))?$/);
-  if (match?.[1] === "precise" && match[2] === undefined) continue;
-  if (match?.[1] === "android") { android = { serial: match[2] ?? null }; continue; }
-  if (match && match[2] !== undefined) params.set(match[1], match[2]);
-  else throw new Error(`unknown argument ${arg}`);
+  if (arg === "--precise" || arg === "--android" || arg === "--physical") continue;
+  const match = arg.match(/^--([a-z]+)=(.+)$/);
+  if (!match) throw new Error(`unknown argument ${arg}`);
+  params.set(match[1], match[2]);
 }
 if (android && precise) throw new Error("--precise needs headless Chromium");
 
 const server = await serveDemo({ isolated: precise });
 let browser, page, cleanup = () => {};
 if (android) {
-  ({ browser, page, close: cleanup } = await openAndroid(server, android.serial));
+  ({ browser, page, close: cleanup } = await openAndroid(server, { physical }));
 } else {
   browser = await launchChromium({ unsafe: precise });
   page = await browser.newPage();
