@@ -115,11 +115,25 @@ to 0.26 ms there; a mid-range phone at 1080p should see a few tenths of a
 millisecond. Sampling the shadow cascades in every layer's fragments cost
 1.2 ms more at z15 than the ground pass.
 
-Extrusions lit by their material measured, on a loaded machine whose
-medians swung threefold between runs, at 1.31 ms (z12) and 1.60 ms (z15)
-in its quiet runs, as above; the pitched 3D-buildings view wants a quiet
-machine.
+The demo scenes as they ship, on a quiet machine (Apple M6, 2048×1536,
+`orb-bench --view` over Tokyo Station; GPU median, main pass in
+brackets, ms, two runs within 1%). Unlit is Lit Tokyo's city with its
+solid buildings and no lights; noon adds the lit map, the sun's shadows
+and waves; night adds lit windows and self-lit streets, without shadows:
+
+| view | unlit | noon | night |
+|---|---|---|---|
+| z14 flat | 2.04 (0.94) | 4.61 (2.13) | 2.89 (1.72) |
+| z15.6 pitched 60° | 2.19 (1.33) | 3.84 (2.16) | 2.89 (1.87) |
+| z17 pitched 60° | 2.14 (1.65) | 3.42 (2.41) | 2.71 (2.05) |
+
+Lit Earth's globe costs about what its unlit style does: 3.0 to 3.4 ms
+unlit and 3.5 to 3.6 ms lit at z1.6, 4.3 to 4.4 ms either way at z3.2
+pitched 40°. The shadows are noon's largest share (decision 0046); the
+per-point sun costs the flat layers about 0.45 ms more per main pass at
+z14 than the lit map before it (1.26 → 1.72 ms), which #107 tracks. A
+mid-range phone at 1080p should see roughly a third of these.
 
 ## Next
 
-The bench numbers for Lit Tokyo and Lit Earth at a quiet moment.
+Procedural looks and animated effects beyond the lit map (#91).
