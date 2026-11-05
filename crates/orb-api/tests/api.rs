@@ -39,11 +39,16 @@ fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     pixels[i..i + 4].try_into().unwrap()
 }
 
-/// Draws frames until the map needs none, and returns the events.
+/// Draws frames until one is idle and the map needs no more, and returns
+/// the events. A map waiting only for pipelines to compile needs no frame
+/// until one compiles and wakes it, so that is no idle frame yet.
 fn settle(map: &mut Map, target: &mut Target) -> Vec<Event> {
     let started = std::time::Instant::now();
-    while map.needs_frame() {
-        map.render(target).expect("render");
+    let mut idle = false;
+    while !idle || map.needs_frame() {
+        if map.needs_frame() {
+            idle = map.render(target).expect("render").is_some_and(|r| r.idle);
+        }
         assert!(started.elapsed().as_secs() < 30, "the map never idled");
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
