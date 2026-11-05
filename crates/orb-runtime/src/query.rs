@@ -592,6 +592,8 @@ enum HitPaint {
     },
     Line {
         width: Property<f32>,
+        gap: Property<f32>,
+        offset: Property<f32>,
         translate: Property<[f32; 2]>,
         anchor: Property<TranslateAnchor>,
     },
@@ -620,8 +622,8 @@ impl HitPaint {
         use orb_style::{
             CIRCLE_RADIUS, CIRCLE_STROKE_WIDTH, CIRCLE_TRANSLATE, CIRCLE_TRANSLATE_ANCHOR,
             EXTRUSION_BASE, EXTRUSION_HEIGHT, EXTRUSION_TRANSLATE, EXTRUSION_TRANSLATE_ANCHOR,
-            FILL_TRANSLATE, FILL_TRANSLATE_ANCHOR, LINE_TRANSLATE, LINE_TRANSLATE_ANCHOR,
-            LINE_WIDTH,
+            FILL_TRANSLATE, FILL_TRANSLATE_ANCHOR, LINE_GAP_WIDTH, LINE_OFFSET, LINE_TRANSLATE,
+            LINE_TRANSLATE_ANCHOR, LINE_WIDTH,
         };
         match l.ty {
             LayerType::Fill => Self::Fill {
@@ -630,6 +632,8 @@ impl HitPaint {
             },
             LayerType::Line => Self::Line {
                 width: l.get(LINE_WIDTH).to_owned(),
+                gap: l.get(LINE_GAP_WIDTH).to_owned(),
+                offset: l.get(LINE_OFFSET).to_owned(),
                 translate: l.get(LINE_TRANSLATE).to_owned(),
                 anchor: l.get(LINE_TRANSLATE_ANCHOR).to_owned(),
             },
@@ -647,6 +651,26 @@ impl HitPaint {
             },
             _ => Self::Other,
         }
+    }
+
+    /// The dimensions picking reads of the paint.
+    fn dimensions(&self) -> Vec<&Property<f32>> {
+        match self {
+            Self::Circle { radius, stroke, .. } => vec![radius, stroke],
+            Self::Line {
+                width, gap, offset, ..
+            } => vec![width, gap, offset],
+            Self::Extrusion { base, height, .. } => vec![base, height],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether a dimension reads feature state: features' extents are
+    /// known only when picked.
+    fn reads_state(&self) -> bool {
+        self.dimensions()
+            .iter()
+            .any(|p| p.as_expression().is_some_and(|e| e.reads_feature_state()))
     }
 
     fn translate(&self) -> Option<(&Property<[f32; 2]>, &Property<TranslateAnchor>)> {
@@ -747,6 +771,31 @@ pub(crate) struct Scene<'a> {
     pub(crate) generation: u64,
     /// The terrain's elevations, metres, as the frame drew them.
     pub(crate) elevation: Option<&'a dyn orb_camera::Elevation>,
+    /// Feature states, for paint that reads them.
+    pub(crate) states: Option<&'a crate::state::FeatureStates>,
+}
+
+/// A feature's state and the data paint mixing state and data reads.
+type FeatureState<'a> = Option<(
+    &'a [(String, orb_style::Value<'static>)],
+    Option<&'a orb_expr::FeatureData>,
+)>;
+
+/// A dimension at the query's zoom: under the feature's state where it
+/// reads state (with its captured data where it mixes in properties),
+/// else `fallback` (the layer's value, or the feature's at layout).
+fn live(p: &Property<f32>, zoom: f64, state: FeatureState<'_>, fallback: f32) -> f32 {
+    let p_ref = p.get();
+    if !p.as_expression().is_some_and(|e| e.reads_feature_state()) {
+        return fallback;
+    }
+    match state {
+        Some((state, data)) if p_ref.is_state_lookup() || data.is_some() => {
+            p_ref.evaluate_state(zoom, state, data)
+        }
+        None if p_ref.is_state_lookup() => p_ref.evaluate_state(zoom, &[], None),
+        _ => fallback,
+    }
 }
 
 /// A feature a query may report, in the order that puts upper ones last:
@@ -771,6 +820,9 @@ struct LayerAt {
     /// Extrusions' base and height in metres; `None` where per feature.
     base: Option<f32>,
     height: Option<f32>,
+    /// Lines' gap width and offset in pixels; `None` where per feature.
+    gap: Option<f32>,
+    offset: Option<f32>,
     /// The translation in world units.
     shift: DVec2,
 }
@@ -824,6 +876,10 @@ impl Query<'_> {
             HitPaint::Extrusion { base, height, .. } => (None, None, level(base), level(height)),
             _ => (None, None, None, None),
         };
+        let (gap, offset) = match &layer.paint {
+            HitPaint::Line { gap, offset, .. } => (uniform(gap), uniform(offset)),
+            _ => (Some(0.0), Some(0.0)),
+        };
         let shift = match layer.paint.translate() {
             Some((translate, anchor)) => {
                 let [x, y] = translate.evaluate(zoom);
@@ -843,30 +899,53 @@ impl Query<'_> {
             stroke,
             base,
             height,
+            gap,
+            offset,
             shift,
         }
     }
 
-    /// The feature's tolerance in pixels and its base and top in world units.
-    fn feature(&self, layer: &HitLayer, at: &LayerAt, f: &FeatureRef<'_>) -> (f32, (f64, f64)) {
-        let radius = match &layer.paint {
-            HitPaint::Circle { .. } => {
-                at.radius.unwrap_or(f.radius) + at.stroke.unwrap_or(f.stroke)
+    /// The feature's tolerance in pixels, its line offset in pixels, and
+    /// its base and top in world units, under its state.
+    fn feature(
+        &self,
+        layer: &HitLayer,
+        at: &LayerAt,
+        f: &FeatureRef<'_>,
+        state: FeatureState<'_>,
+    ) -> (f32, f32, (f64, f64)) {
+        let zoom = self.zoom;
+        let (radius, offset) = match &layer.paint {
+            HitPaint::Circle { radius, stroke, .. } => (
+                live(radius, zoom, state, at.radius.unwrap_or(f.radius))
+                    + live(stroke, zoom, state, at.stroke.unwrap_or(f.stroke)),
+                0.0,
+            ),
+            // GL JS `getLineWidth`: a gap's line is two strokes about it.
+            HitPaint::Line {
+                width, gap, offset, ..
+            } => {
+                let width = live(width, zoom, state, at.radius.unwrap_or(f.radius) * 2.0);
+                let gap = live(gap, zoom, state, at.gap.unwrap_or(0.0));
+                let total = if gap > 0.0 { gap + 2.0 * width } else { width };
+                (
+                    total / 2.0,
+                    live(offset, zoom, state, at.offset.unwrap_or(0.0)),
+                )
             }
-            HitPaint::Line { .. } => at.radius.unwrap_or(f.radius),
-            _ => f.radius,
+            _ => (f.radius, 0.0),
         };
         let elevation = match &layer.paint {
-            HitPaint::Extrusion { .. } => {
+            HitPaint::Extrusion { base, height, .. } => {
                 let scale = self.view.height_scale();
                 (
-                    f64::from(at.base.unwrap_or(f.base)) * scale,
-                    f64::from(at.height.unwrap_or(f.height)) * scale,
+                    f64::from(live(base, zoom, state, at.base.unwrap_or(f.base))) * scale,
+                    f64::from(live(height, zoom, state, at.height.unwrap_or(f.height))) * scale,
                 )
             }
             _ => (0.0, 0.0),
         };
-        (radius, elevation)
+        (radius, offset, elevation)
     }
 
     /// The largest tolerance and top any of a mesh's features can have.
@@ -877,7 +956,12 @@ impl Query<'_> {
                 at.radius.unwrap_or(radius) + at.stroke.unwrap_or(stroke),
                 0.0,
             ),
-            HitPaint::Line { .. } => (at.radius.unwrap_or(radius), 0.0),
+            HitPaint::Line { .. } => {
+                let width = at.radius.unwrap_or(radius) * 2.0;
+                let gap = at.gap.unwrap_or(0.0);
+                let total = if gap > 0.0 { gap + 2.0 * width } else { width };
+                (total / 2.0 + at.offset.unwrap_or(0.0).abs(), 0.0)
+            }
             HitPaint::Extrusion { .. } => {
                 let top = at.height.unwrap_or(height).max(at.base.unwrap_or(height));
                 (radius, f64::from(top) * self.view.height_scale())
@@ -926,7 +1010,7 @@ impl Scene<'_> {
             layer.visible_at(q.zoom).then_some(layer)
         };
         // The furthest any feature reaches in pixels and how high.
-        let (mut pad, mut top) = (0f32, 0f64);
+        let (mut pad, mut top, mut unbounded) = (0f32, 0f64, false);
         for tile in self.tiles.iter().flatten() {
             for (node, mesh) in &tile.meshes {
                 let Some(layer) = layer_at(*node).filter(|l| !matches!(l.paint, HitPaint::Other))
@@ -937,10 +1021,15 @@ impl Scene<'_> {
                 let (radius, height) = q.mesh_bound(layer, at, mesh);
                 pad = pad.max(radius);
                 top = top.max(height);
+                unbounded |= layer.paint.reads_state();
             }
         }
         // A pixel's worth for the projection's rounding to f32.
-        let ground = q.ground(min, max, f64::from(pad) + 1.0, top);
+        let ground = if unbounded {
+            None
+        } else {
+            q.ground(min, max, f64::from(pad) + 1.0, top)
+        };
         let mut out = Vec::new();
         for (i, (drawn, tile)) in self.drawn.iter().zip(&self.tiles).enumerate() {
             let Some(tile) = tile else {
@@ -1029,7 +1118,14 @@ impl Scene<'_> {
                 at,
             } => {
                 let f = FeatureRef::parse(mesh.record(record)).ok()?;
-                let (radius, elevation) = q.feature(layer, &at, &f);
+                let id = f.id();
+                let state = match (self.states, &id) {
+                    (Some(states), Some(id)) if layer.paint.reads_state() => {
+                        states.feature(drawn.source, layer.source_layer.as_deref(), id)
+                    }
+                    _ => None,
+                };
+                let (radius, offset, elevation) = q.feature(layer, &at, &f, state);
                 let screen = ScreenHit::project(
                     &f,
                     layer.source_layer.is_some(),
@@ -1037,7 +1133,7 @@ impl Scene<'_> {
                     copy,
                     q,
                     self.period,
-                    f64::from(radius),
+                    (f64::from(radius), f64::from(offset)),
                     elevation,
                     at.shift,
                 )?;
@@ -1046,7 +1142,7 @@ impl Scene<'_> {
                     tile: drawn.tile,
                     feature: f.feature,
                 };
-                Some((screen, layer.hit(f.id(), self.generation), key))
+                Some((screen, layer.hit(id, self.generation), key))
             }
             Candidate::Label { layer, label } => {
                 let anchor = q.project(label.anchor, 0.0)?.as_dvec2();
@@ -1201,11 +1297,19 @@ impl ScreenHit {
         copy: &DrawnCopy,
         q: &Query<'_>,
         period: f64,
-        radius: f64,
+        (radius, offset): (f64, f64),
         elevation: (f64, f64),
         shift: DVec2,
     ) -> Option<Self> {
         let transform = mapping.mapper(feature.extent);
+        // A line's offset in its data units, as GL JS offsets it in tile
+        // units before projecting.
+        let offset = match mapping {
+            &TileMapping::Affine { span, .. } if offset != 0.0 && feature.kind == 1 => {
+                offset * q.view.world_per_px() * f64::from(feature.extent) / span
+            }
+            _ => 0.0,
+        };
         let wrap = DVec2::new(f64::from(copy.wrap) * period, 0.0);
         let mut min = Vec2::splat(f32::INFINITY);
         let mut max = Vec2::splat(f32::NEG_INFINITY);
@@ -1219,11 +1323,20 @@ impl ScreenHit {
         for part in feature.parts().ok()? {
             let mut rings = Vec::new();
             for ring in &part {
-                let points = ring
+                let line: Vec<DVec2> = ring
                     .as_chunks::<2>()
                     .0
                     .iter()
-                    .map(|p| project(point(p), elevation.1))
+                    .map(|p| DVec2::new(f64::from(p[0] as i32), f64::from(p[1] as i32)))
+                    .collect();
+                let line = if offset != 0.0 {
+                    offset_line(&line, offset)
+                } else {
+                    line
+                };
+                let points = line
+                    .iter()
+                    .map(|p| q.project(transform(*p) + wrap + shift, elevation.1))
                     .collect::<Option<Vec<_>>>()?;
                 rings.push(points);
             }
@@ -1402,6 +1515,36 @@ impl ScreenHit {
     }
 }
 
+/// GL JS `offsetLine`: a line moved `offset` to its right (y down), with
+/// mitred joins.
+fn offset_line(line: &[DVec2], offset: f64) -> Vec<DVec2> {
+    let perp = |v: DVec2| {
+        let u = v.normalize_or_zero();
+        DVec2::new(-u.y, u.x)
+    };
+    (0..line.len())
+        .map(|i| {
+            let b = line[i];
+            let a_to_b = if i == 0 {
+                DVec2::ZERO
+            } else {
+                perp(b - line[i - 1])
+            };
+            let b_to_c = if i + 1 == line.len() {
+                DVec2::ZERO
+            } else {
+                perp(line[i + 1] - b)
+            };
+            let mut extrude = (a_to_b + b_to_c).normalize_or_zero();
+            let cos_half = extrude.dot(b_to_c);
+            if cos_half != 0.0 {
+                extrude /= cos_half;
+            }
+            b + extrude * offset
+        })
+        .collect()
+}
+
 fn point_box_distance(p: Vec2, min: Vec2, max: Vec2) -> f32 {
     (p.clamp(min, max) - p).length()
 }
@@ -1524,6 +1667,7 @@ impl crate::Map {
             period: self.surface.period(),
             generation: picking.generation,
             elevation: elevation.as_deref(),
+            states: self.style.as_ref().map(|s| &s.states),
         };
         Some(f(
             &scene,

@@ -248,6 +248,23 @@ impl FeatureStates {
         }
     }
 
+    /// A feature's state, and what paint reading both state and data
+    /// reads of it, if it has an entry.
+    pub(crate) fn feature(
+        &self,
+        source: u32,
+        layer: Option<&str>,
+        id: &str,
+    ) -> Option<(&[(String, Value<'static>)], Option<&FeatureData>)> {
+        let key = StateKey {
+            source,
+            layer: layer.map(str::to_string),
+            id: id.to_string(),
+        };
+        let entry = &self.entries[*self.ids.get(&key)? as usize];
+        Some((&entry.state, entry.data.as_ref()))
+    }
+
     /// The states of features of `sources` (keys), as JSON objects by
     /// (source, source layer, id): what queried features report.
     pub(crate) fn snapshot(
