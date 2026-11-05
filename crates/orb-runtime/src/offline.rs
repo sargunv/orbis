@@ -166,22 +166,25 @@ pub fn delete(storage: &dyn Storage, id: u32, done: StorageDone<()>) {
 
 /// The regions in `storage`.
 pub fn list(storage: Arc<dyn Storage>, done: StorageDone<Vec<RegionInfo>>) {
+    regions(
+        storage,
+        Box::new(move |found| {
+            done(found.map(|found| found.into_iter().map(|(info, _)| info).collect()))
+        }),
+    );
+}
+
+/// The regions in `storage`, with their manifests.
+fn regions(storage: Arc<dyn Storage>, done: StorageDone<Vec<(RegionInfo, Json)>>) {
     let reader = storage.clone();
     storage.list(
         "regions",
-        Box::new(move |names| {
-            let ids: Vec<u32> = match names {
-                Ok(names) => names.iter().filter_map(|n| n.parse().ok()).collect(),
-                Err(e) => return done(Err(e)),
-            };
-            manifests(
-                reader,
-                ids,
-                Vec::new(),
-                Box::new(move |found| {
-                    done(found.map(|found| found.into_iter().map(|(info, _)| info).collect()))
-                }),
-            );
+        Box::new(move |names| match names {
+            Ok(names) => {
+                let ids = names.iter().filter_map(|n| n.parse().ok()).collect();
+                manifests(reader, ids, Vec::new(), done);
+            }
+            Err(e) => done(Err(e)),
         }),
     );
 }
@@ -1069,39 +1072,26 @@ impl RegionFetch {
     /// deleted.
     pub fn reload(self: &Arc<Self>) {
         let this = self.clone();
-        let storage = self.storage.clone();
-        self.storage.list(
-            "regions",
-            Box::new(move |names| {
-                let ids = names
+        regions(
+            self.storage.clone(),
+            Box::new(move |found| {
+                // Without readable storage (an insecure page), no regions.
+                let regions = found
                     .unwrap_or_default()
-                    .iter()
-                    .filter_map(|n| n.parse().ok())
+                    .into_iter()
+                    .filter(|(info, _)| info.complete)
+                    .map(|(info, doc)| served_region(info.id, &doc))
                     .collect();
-                manifests(
-                    storage,
-                    ids,
-                    Vec::new(),
-                    Box::new(move |found| {
-                        let regions = found
-                            .unwrap_or_default()
-                            .into_iter()
-                            .filter(|(info, _)| info.complete)
-                            .map(|(info, doc)| served_region(info.id, &doc))
-                            .collect();
-                        let pending = {
-                            let mut served = this.served.lock().expect("regions poisoned");
-                            match std::mem::replace(&mut *served, Served::Ready(Arc::new(regions)))
-                            {
-                                Served::Loading(pending) => pending,
-                                Served::Ready(_) => Vec::new(),
-                            }
-                        };
-                        for (url, range, done) in pending {
-                            this.serve(&url, range, done);
-                        }
-                    }),
-                );
+                let pending = {
+                    let mut served = this.served.lock().expect("regions poisoned");
+                    match std::mem::replace(&mut *served, Served::Ready(Arc::new(regions))) {
+                        Served::Loading(pending) => pending,
+                        Served::Ready(_) => Vec::new(),
+                    }
+                };
+                for (url, range, done) in pending {
+                    this.serve(&url, range, done);
+                }
             }),
         );
     }

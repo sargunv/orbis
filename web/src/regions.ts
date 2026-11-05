@@ -44,16 +44,22 @@ function changed(): void {
   channel.close();
 }
 
+/** Downloads starting: a region's id is the next free one once the one
+ * before has written its manifest. */
+let starting: Promise<unknown> = Promise.resolve();
+
 /** Downloads a region; `onEvent` follows its progress. Resolves to its id
  * once it starts. */
 export async function downloadRegion(definition: RegionDefinition,
   onEvent?: (event: RegionEvent) => void): Promise<number> {
   await init({ module_or_path: CORE });
-  return downloadCore(definition.name, definition.style, new Float64Array(definition.bounds),
-    new Float64Array(definition.zooms), (event: RegionEvent) => {
+  const start = starting.then(() => downloadCore(definition.name, definition.style,
+    new Float64Array(definition.bounds), new Float64Array(definition.zooms), (event: RegionEvent) => {
       if (event.type === "complete") changed();
       onEvent?.(event);
-    });
+    }));
+  starting = start.catch(() => {});
+  return start;
 }
 
 /** Deletes a region, stopping its download. */
