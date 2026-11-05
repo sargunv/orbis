@@ -176,3 +176,28 @@ Final size is **416.12 KiB Brotli**, leaving **34,690 B (33.88 KiB)** under
 450 KiB. Compared with the original recorded 398,484 B (~389 KiB) baseline,
 the total increase is 27,626 B (26.98 KiB), including all intervening main work.
 
+
+## Where the cover's detail ends
+
+A pitched cover picks each tile's zoom by its distance (GL JS's default
+level of detail), and a tile below an extrusion layer's `minzoom` has no
+bucket for it: Liberty's `building-3d` (minzoom 14) ended at a hard line
+along the first z13 tiles. That line follows the cover, which turns and
+shifts with the camera, so a rotate at high pitch showed buildings
+appearing and vanishing along it. GL JS draws the same line (checked over
+Manhattan at pitch 85 against the pinned GL JS); the still frames otherwise
+match.
+
+The layer now fades out over the half zoom level before the cover's zoom
+reaches its `minzoom`, in every direction. The frame block carries the
+cover's level-of-detail terms (`FrameLod`: the eye, its height, and
+`orb_camera::CoverLod`'s offset and distance behaviour, which the cover
+itself evaluates), and the extrusion fragment shader evaluates them at its
+ground point against the layer's minzoom less the source's centre zoom.
+Each frame depends only on its camera, never on how the camera got there.
+Fixtures are unchanged (fill-extrusion 51 pass, 12 fail, 1 skip natively;
+terrain unchanged but for two fixtures moving a pixel or two).
+
+The cover over terrain also now raises each tile's culling volume by its
+elevated content's height, as the flat cover does, so tall buildings on
+hills aren't culled before their roofs enter the view.

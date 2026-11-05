@@ -642,46 +642,51 @@ impl View {
         // horizon. Heights here stay in world units, just like tile bounds.
         let proximity =
             ((15.0 - (MAX_HORIZON_PITCH - self.pitch - self.fov / 2.0)) / 15.0).clamp(0.0, 1.0);
-        let culling_z = self.target_z + proximity * height.max(500.0 * self.height_scale);
+        let raised = proximity * height.max(500.0 * self.height_scale);
+        let culling_z = self.target_z + raised;
         let flat_range = (culling_z.min(0.0), culling_z.max(0.0));
         let reach = (self.far_px * self.world_per_px).max(self.viewport.width * self.world_per_px);
         // Match the reference's bounded repeated-world policy: at most
         // three copies on either side, with the same generic DFS in each.
         let wrap_period = self.projection.wrap_period();
         let copies = wrap_period.map_or(0, |period| ((reach / period).ceil() as i32).min(3));
-        let lod = self.pitched_lod(terrain.is_some());
-        // The eye's height above the target, GL JS's `distanceToTileZ`.
-        let eye_height = (self.eye.z - self.target_z).abs();
+        let lod = self.cover_lod(terrain.is_some());
         tms.cover_with(-copies..=copies, wrap_period, max_zoom, |index, offset| {
             let Some((bounds, center_zoom)) = place(index, offset) else {
                 return CoverDecision::Skip;
             };
             let (lo, hi) = terrain
                 .and_then(|t| t.range(bounds, index.z))
+                // Elevated content stands on the ground under the tile.
                 .map_or(flat_range, |(lo, hi)| {
-                    (lo * self.height_scale, hi * self.height_scale)
+                    (lo * self.height_scale, hi * self.height_scale + raised)
                 });
             let rel = bounds.translated(-self.camera_world);
             if !self.intersects_frustum(&rel, lo, hi) {
                 return CoverDecision::Skip;
             }
-            let desired = if let Some((behavior, fov_scale, penalty)) = lod {
-                let distance_2d = rel.clamp(self.eye.truncate()).distance(self.eye.truncate());
-                let distance = distance_2d.hypot(eye_height).max(1.0e-9);
-                let tile_pitch = distance_2d.atan2(eye_height);
-                let center_distance = self.eye_distance_px * self.world_per_px;
-                center_zoom
-                    + (center_distance / distance / fov_scale).log2()
-                    + behavior * tile_pitch.cos().log2() / 2.0
-                    - penalty
-            } else {
-                center_zoom
-            };
+            let desired =
+                center_zoom + lod.map_or(0.0, |lod| lod.at(rel.clamp(self.eye.truncate())));
             if f64::from(index.z) < desired.floor().max(0.0) {
                 CoverDecision::Refine
             } else {
                 CoverDecision::Accept
             }
+        })
+    }
+
+    /// How the cover's tile zoom falls with distance (GL JS's default LOD),
+    /// where it does: past the pitch threshold or on terrain. `None` keeps
+    /// one zoom across the view.
+    pub fn cover_lod(&self, terrain: bool) -> Option<CoverLod> {
+        let (behavior, fov_scale, penalty) = self.pitched_lod(terrain)?;
+        let center_distance = self.eye_distance_px * self.world_per_px;
+        Some(CoverLod {
+            eye: self.eye.truncate(),
+            // The eye's height above the target, GL JS's `distanceToTileZ`.
+            height: (self.eye.z - self.target_z).abs(),
+            offset: (center_distance / fov_scale).log2() - penalty,
+            behavior: behavior / 2.0,
         })
     }
 
@@ -878,6 +883,28 @@ fn box_in_frustum(view_proj: &DMat4, lo: DVec3, hi: DVec3) -> bool {
         || all(&|c| c.y < -c.w)
         || all(&|c| c.z > c.w)
         || all(&|c| c.z < 0.0))
+}
+
+/// The pitched cover's level of detail: a tile whose nearest ground point
+/// is `p` (camera-relative world) takes the zoom whose tiles span the
+/// source's tile size at the target, plus [`at`](Self::at)`(p)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CoverLod {
+    /// The eye's ground position, camera-relative world.
+    pub eye: DVec2,
+    /// The eye's height above the target, world units.
+    pub height: f64,
+    /// `offset − log2(distance) + behavior · log2(height / distance)`.
+    pub offset: f64,
+    pub behavior: f64,
+}
+
+impl CoverLod {
+    /// The zoom levels added to the cover's centre zoom at `p`.
+    pub fn at(&self, p: DVec2) -> f64 {
+        let distance = p.distance(self.eye).hypot(self.height).max(1.0e-9);
+        self.offset - distance.log2() + self.behavior * (self.height / distance).log2()
+    }
 }
 
 #[cfg(test)]

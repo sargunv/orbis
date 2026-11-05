@@ -1502,6 +1502,15 @@ impl Map {
                         self.camera.target,
                     )
                 }),
+            lod: view
+                .cover_lod(self.frame_terrain.is_some())
+                .filter(|_| globe.is_none())
+                .map(|l| orb_render::FrameLod {
+                    eye: l.eye.as_vec2().to_array(),
+                    height: l.height as f32,
+                    offset: l.offset as f32,
+                    behavior: l.behavior as f32,
+                }),
             globe,
         };
         let (renderer, _) = self.renderer.as_mut().expect("created above");
@@ -2076,6 +2085,20 @@ impl Map {
         let endpoint = Arc::clone(endpoint);
         let tms = &endpoint.tms;
         let (renderer, _) = self.renderer.as_mut().expect("created before placing");
+        // Extrusions fade out where the cover's tiles turn coarser than
+        // their layer's minzoom, which have no buckets for it.
+        let plan = style.worker.plan();
+        let center = (tms.tile_span(0) / (view.world_per_px() * endpoint.cover_px)).log2();
+        for (node, n) in plan.nodes.iter().enumerate() {
+            if n.source == index && n.family == Family::FillExtrusion {
+                let minzoom = plan.style.layers[n.layer].minzoom.floor();
+                let fade = [
+                    (minzoom - center) as f32,
+                    f32::from(u8::from(minzoom > 0.0)),
+                ];
+                renderer.set_extrusion_fade(gpu, node as u32, fade);
+            }
+        }
         let mut rows: HashMap<TileIndex, Vec<&Draw>> = HashMap::new();
         // Picking reads tiles with features in drawing order, ancestors
         // before descendants.
