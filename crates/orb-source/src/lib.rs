@@ -98,6 +98,11 @@ impl<T> TilePyramid<T> {
         }
     }
 
+    /// The least zoom the source has tiles at.
+    pub fn min_zoom(&self) -> u8 {
+        self.min_zoom
+    }
+
     pub fn max_zoom(&self) -> u8 {
         self.max_zoom
     }

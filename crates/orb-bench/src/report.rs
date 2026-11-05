@@ -83,6 +83,8 @@ pub(crate) struct ViewResult {
     pub(crate) tiles: u32,
     pub(crate) candidates: u32,
     pub(crate) meshes: u32,
+    /// GPU bytes the map holds, and those its scene pools use.
+    pub(crate) memory: (u64, u64),
 }
 
 /// Every view's results, and how they were measured.
@@ -191,8 +193,15 @@ impl FramesReport {
         for view in &self.views {
             writeln!(
                 out,
-                "- {}: {} tiles drawn, {} candidates, {} visible chunks, {} meshes",
-                view.name, view.tiles, view.candidates, view.chunks, view.meshes,
+                "- {}: {} tiles drawn, {} candidates, {} visible chunks, {} meshes, \
+                 {:.1} MiB of GPU memory allocated, {:.1} MiB of pools used",
+                view.name,
+                view.tiles,
+                view.candidates,
+                view.chunks,
+                view.meshes,
+                view.memory.0 as f64 / f64::from(1 << 20),
+                view.memory.1 as f64 / f64::from(1 << 20),
             )?;
         }
         for warning in &self.warnings {

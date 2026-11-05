@@ -10,6 +10,12 @@ fn covers_match_pinned_gl_js() {
     let mut failures = Vec::new();
     for case in golden["cases"].as_array().unwrap() {
         let n = |key: &str| case[key].as_f64().unwrap();
+        // GL JS switches its distance LOD on past 60° of pitch; Orbis eases
+        // it in over the 5° after (decision 0011), so just past 60° it has
+        // little of the LOD GL JS takes in full.
+        if n("pitch") > 60.0 && n("pitch") < 65.0 {
+            continue;
+        }
         let mut camera = CameraState::new(
             Geodetic::new(n("lon"), n("lat")),
             n("zoom"),
@@ -30,7 +36,7 @@ fn covers_match_pinned_gl_js() {
             .cover_volume(
                 &tms,
                 n("tileSize"),
-                n("maxzoom") as u8,
+                0..=n("maxzoom") as u8,
                 n("maxContentElevation") * tms.projection().style_height_scale(camera.target),
                 None,
                 0.0,

@@ -139,7 +139,6 @@ impl Harness {
             terrain: None,
             lights: None,
             globe: None,
-            lod: None,
         }
     }
 }

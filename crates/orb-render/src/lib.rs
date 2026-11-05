@@ -36,7 +36,7 @@ pub use terrain::{
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
 pub use orb_scene::Pixels;
 pub use orb_scene::{
-    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLights, FrameLod, FrameTerrain,
+    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLights, FrameTerrain,
     GLOBE_PATCH_WORDS, ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData,
     MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity,
     SceneStats, TileId, TileRow, TileWarp, WARP_PATCH_WORDS, Words,
@@ -189,8 +189,6 @@ struct Node {
     separate_halo: bool,
     /// On terrain, the drape stack a draped node draws into.
     stack: Option<u8>,
-    /// An extrusion node's distance fade, as last written.
-    fade: [f32; 2],
     /// Its style layer's key, layer opacity and blend mode
     /// (`*-layer-opacity`, `*-layer-blend`): below opacity 1 or blending
     /// other than normally, the layer composites once.
@@ -269,9 +267,6 @@ pub struct Renderer {
 
 /// Bytes reserved per node uniform; every node struct fits.
 const NODE_UNIFORM_SIZE: u64 = 512;
-/// Where an extrusion node's distance fade is (`extrusion.wgsl`), past
-/// its paint.
-const EXTRUSION_FADE_WORD: u64 = 52;
 
 impl Renderer {
     pub fn new(gpu: &mut dyn Gpu, target: TargetFormat, capacity: SceneCapacity) -> Self {
@@ -714,7 +709,6 @@ impl Renderer {
                 separate_halo: false,
                 stack: None,
                 composite: None,
-                fade: [0.0; 2],
             });
         }
         self.assign_stacks();
@@ -1086,21 +1080,6 @@ impl Renderer {
             entry.cull.margin_px = margin;
             entry.cull.elevation = elevation;
             self.scene.set_node(node, entry.cull);
-        }
-    }
-
-    /// Fades extrusion node `node` out where the cover's zoom falls below
-    /// its layer's: `fade[0]` is the layer's minzoom less the source's
-    /// centre zoom, `fade[1]` 1 to fade (`FrameLod`, `extrusion.wgsl`).
-    pub fn set_extrusion_fade(&mut self, gpu: &mut dyn Gpu, node: u32, fade: [f32; 2]) {
-        let entry = &mut self.nodes[node as usize];
-        if entry.fade != fade {
-            entry.fade = fade;
-            gpu.write_buffer(
-                self.node_uniforms,
-                u64::from(node) * self.node_stride + EXTRUSION_FADE_WORD * 4,
-                bytemuck::cast_slice(&fade),
-            );
         }
     }
 

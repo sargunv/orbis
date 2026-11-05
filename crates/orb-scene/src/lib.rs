@@ -143,22 +143,6 @@ pub struct FrameBlock {
     pub lights: Option<FrameLights>,
     /// The view's globe, when it is one at its zoom.
     pub globe: Option<FrameGlobe>,
-    /// How the cover's tile zoom falls with distance, where it does
-    /// (`orb_camera::CoverLod`), for content that fades before its tiles'
-    /// detail ends.
-    pub lod: Option<FrameLod>,
-}
-
-/// The cover's level of detail: at camera-relative ground point `p`, the
-/// tiles' zoom is a source's centre zoom plus
-/// `offset − log2 d + behavior · log2(height / d)`, `d` the distance from
-/// the eye.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FrameLod {
-    pub eye: [f32; 2],
-    pub height: f32,
-    pub offset: f32,
-    pub behavior: f32,
 }
 
 /// The style's lights as shaders take them (decision 0026): the ambient
@@ -278,18 +262,6 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
         words[36] = t.exaggeration.to_bits();
         words[37] = t.dem_dim.to_bits();
     }
-    // Without a falling level of detail nothing fades with it.
-    let lod = frame.lod.unwrap_or(FrameLod {
-        eye: [0.0; 2],
-        height: 1.0,
-        offset: 1e30,
-        behavior: 0.0,
-    });
-    words[38] = lod.offset.to_bits();
-    words[39] = lod.behavior.to_bits();
-    words[78] = lod.eye[0].to_bits();
-    words[79] = lod.eye[1].to_bits();
-    words[83] = lod.height.to_bits();
     if let Some(l) = frame.lights {
         let mut put = |at: usize, v: [f32; 3], w: f32| {
             for (word, v) in words[at..at + 4].iter_mut().zip([v[0], v[1], v[2], w]) {

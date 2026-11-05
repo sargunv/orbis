@@ -181,24 +181,43 @@ the total increase is 27,626 B (26.98 KiB), including all intervening main work.
 
 A pitched cover picks each tile's zoom by its distance (GL JS's default
 level of detail), and a tile below an extrusion layer's `minzoom` has no
-bucket for it: Liberty's `building-3d` (minzoom 14) ended at a hard line
-along the first z13 tiles. That line follows the cover, which turns and
-shifts with the camera, so a rotate at high pitch showed buildings
-appearing and vanishing along it. GL JS draws the same line (checked over
-Manhattan at pitch 85 against the pinned GL JS); the still frames otherwise
-match.
+bucket for it: Liberty's `building-3d` (minzoom 14) ended at the first z13
+tiles. GL JS switches that level of detail on past 60° of pitch, so over
+Manhattan at z14.52 the buildings reached Central Park at pitch 59 and
+stopped by Murray Hill at 61 (GL JS draws the same). A distance fade hid
+the edge for a while; it hid buildings whose data exists a few kilometres
+away, and is gone.
 
-The layer now fades out over the half zoom level before the cover's zoom
-reaches its `minzoom`, in every direction. The frame block carries the
-cover's level-of-detail terms (`FrameLod`: the eye, its height, and
-`orb_camera::CoverLod`'s offset and distance behaviour, which the cover
-itself evaluates), and the extrusion fragment shader evaluates them at its
-ground point against the layer's minzoom less the source's centre zoom.
-Each frame depends only on its camera, never on how the camera got there.
-Fixtures are unchanged (fill-extrusion 51 pass, 12 fail, 1 skip natively;
-terrain unchanged but for two fixtures moving a pixel or two).
+Two cover rules replace it (`orb_camera::View::cover_volume`):
+- **A data floor.** A source's cover keeps to the least zoom at which all
+  its layers visible at the view's style zoom have data (the greatest of
+  their `minzoom`s, within the source's zooms): a tile below it refines
+  wherever tiles of that zoom would still span `DATA_TILE_PX` (64 px) on
+  screen. Past that, a building (about a sixtieth of a z14 tile) is a
+  pixel or less. Above the floor, distance still picks the detail.
+- **Detail continuous in pitch.** The distance level of detail eases in
+  over the 5° past GL JS's threshold instead of switching on there.
+  GL JS's cover goldens at pitches 0, 45, 60, 80 and 85 still match; the
+  60.1° cases (and 9 of 400 pinned random cameras) sit in the ease and
+  are left out of the comparison.
 
-The cover over terrain also now raises each tile's culling volume by its
+Over Manhattan (`globe.json`, Liberty, z14.52, bearing −18.1, Apple M6,
+2048×1536; tiles, GPU median, GPU memory allocated / scene pools used):
+
+| pitch | before | after |
+|---|---|---|
+| 59 | 40, 3.70 ms, 153 / 56 MiB | 40, 3.03 ms, 137 / 56 MiB |
+| 61 | 33, 2.81 ms, 137 / 38 MiB | 49, 3.30 ms, 169 / 66 MiB |
+| 70 | 40, 1.45 ms, 121 / 29 MiB | 94, 4.46 ms, 201 / 114 MiB |
+| 85 | 50, 1.21 ms, 121 / 29 MiB | 74, 2.96 ms, 201 / 77 MiB |
+
+Before, pitches 61–85 drew few or no buildings past a couple of
+kilometres; after, buildings show to the end of the data or the horizon.
+Native fixtures are unchanged (1190 or 1191 pass: the variable-anchor
+fixture flaky under load, #18). The memory budget (decision 0037) bounds
+the pools on phones.
+
+The cover over terrain also raises each tile's culling volume by its
 elevated content's height, as the flat cover does, so tall buildings on
 hills aren't culled before their roofs enter the view.
 

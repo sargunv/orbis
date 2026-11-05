@@ -124,6 +124,9 @@ pub struct Settings {
     pub timing: Option<Timing>,
     pub experiment: Experiment,
     pub paths: GesturePaths,
+    /// The frames bench's views as `(zoom, pitch, bearing)`, in place of
+    /// its own (`--view`, repeatable).
+    pub views: Vec<[f64; 3]>,
 }
 
 impl Default for Settings {
@@ -139,6 +142,7 @@ impl Default for Settings {
             timing: None,
             experiment: Experiment::Frames,
             paths: GesturePaths::City,
+            views: Vec::new(),
         }
     }
 }
@@ -147,8 +151,9 @@ impl Settings {
     /// Sets one option by name, as the native tool's `--name value` and the
     /// page's `?name=value` give it: `frames`, `warmup`, `rounds`, `size`
     /// (`WxH`), `ratio`, `at` (`lon,lat`), `timing` (`timestamps` or
-    /// `work-done`), `experiment` (`frames` or `gestures`) or `paths` (`city` or `alps`,
-    /// the gestures bench's).
+    /// `work-done`), `experiment` (`frames` or `gestures`), `paths` (`city` or `alps`,
+    /// the gestures bench's) or `view` (`zoom,pitch,bearing`, adding a view
+    /// to measure instead of the frames bench's own).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let number = |value: &str| {
             value
@@ -171,6 +176,13 @@ impl Settings {
                 let (w, h) = value.split_once('x').ok_or("size needs WxH")?;
                 self.width = count(w)? as u32;
                 self.height = count(h)? as u32;
+            }
+            "view" => {
+                let v: Vec<f64> = value.split(',').map(number).collect::<Result<_, _>>()?;
+                let [zoom, pitch, bearing] = v[..] else {
+                    return Err("view needs zoom,pitch,bearing".into());
+                };
+                self.views.push([zoom, pitch, bearing]);
             }
             "at" => {
                 let (lon, lat) = value.split_once(',').ok_or("at needs lon,lat")?;
@@ -354,10 +366,26 @@ pub async fn run(
     // One map for every view: a dropped map keeps its GPU buffers (#20), and
     // a phone's browser has no room for a map per view.
     let mut map: Option<Map> = None;
-    for &(name, zoom, pitch, buildings) in VIEWS {
+    let cameras: Vec<(String, f64, f64, f64, bool)> = if settings.views.is_empty() {
+        VIEWS
+            .iter()
+            .map(|&(name, zoom, pitch, buildings)| (name.to_string(), zoom, pitch, 0.0, buildings))
+            .collect()
+    } else {
+        settings
+            .views
+            .iter()
+            .map(|&[zoom, pitch, bearing]| {
+                let name = format!("z{zoom} pitch {pitch} bearing {bearing}");
+                (name, zoom, pitch, bearing, false)
+            })
+            .collect()
+    };
+    for (name, zoom, pitch, bearing, buildings) in cameras {
         progress(&format!("{name}: loading"));
         let camera = CameraState {
             pitch,
+            bearing,
             ..CameraState::new(settings.center, zoom, &crate::web_mercator())
         };
         let map = match &mut map {
@@ -430,7 +458,7 @@ pub async fn run(
             .ok_or("no renderer")?;
         s.counters = counters(&words(&gpu.inner().read_buffer(args).await), nodes);
 
-        views.push(view_result(name, s));
+        views.push(view_result(&name, s));
     }
     Ok(Report::Frames(FramesReport {
         about,
@@ -472,6 +500,16 @@ fn view_result(name: &str, mut s: Samples) -> ViewResult {
         tiles: s.report.tiles_drawn,
         candidates: stats.candidates,
         meshes: s.report.scene.meshes,
+        memory: {
+            let m = &s.report.memory;
+            let pools = [
+                m.scene.vertices,
+                m.scene.indices,
+                m.scene.compacted,
+                m.scene.props,
+            ];
+            (m.allocated(), pools.iter().map(|p| p.used).sum())
+        },
     }
 }
 

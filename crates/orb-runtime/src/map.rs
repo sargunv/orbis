@@ -1575,15 +1575,6 @@ impl Map {
                         self.camera.state().target,
                     )
                 }),
-            lod: view
-                .cover_lod(self.frame_terrain.is_some())
-                .filter(|_| globe.is_none())
-                .map(|l| orb_render::FrameLod {
-                    eye: l.eye.as_vec2().to_array(),
-                    height: l.height as f32,
-                    offset: l.offset as f32,
-                    behavior: l.behavior as f32,
-                }),
             globe,
         };
         report.frame = renderer.render(gpu, &frame, target, clear);
@@ -2078,6 +2069,20 @@ impl Map {
         let endpoint = Arc::clone(endpoint);
         let tms = &endpoint.tms;
         pyramid.retry_failed(self.services.clock.now());
+        // Where the source's visible layers are shown, their tiles hold
+        // their data: the cover keeps to the least zoom all of them have
+        // data at, wherever that detail still shows (orb_camera's
+        // `DATA_TILE_PX`), and picks finer by distance above it.
+        let data_zoom = plan
+            .nodes
+            .iter()
+            .filter(|n| n.source == index)
+            .map(|n| &plan.style.layers[n.layer])
+            .filter(|l| l.is_visible_at(zoom))
+            .map(|l| l.minzoom.floor().max(0.0) as u8)
+            .max()
+            .unwrap_or(0)
+            .clamp(pyramid.min_zoom(), pyramid.max_zoom());
         let cover = match (view.low_plane(), warp.as_mut()) {
             // On a low-zoom plane every set's tiles land through its warp.
             (Some(low), _) => {
@@ -2088,7 +2093,7 @@ impl Map {
             (None, None) => view.cover_volume(
                 tms,
                 endpoint.cover_px,
-                pyramid.max_zoom(),
+                data_zoom..=pyramid.max_zoom(),
                 f64::from(height) * elevation_scale,
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
                 f64::from(reach),
@@ -2161,20 +2166,6 @@ impl Map {
         };
         let endpoint = Arc::clone(endpoint);
         let tms = &endpoint.tms;
-        // Extrusions fade out where the cover's tiles turn coarser than
-        // their layer's minzoom, which have no buckets for it.
-        let plan = style.worker.plan();
-        let center = (tms.tile_span(0) / (view.world_per_px() * endpoint.cover_px)).log2();
-        for (node, n) in plan.nodes.iter().enumerate() {
-            if n.source == index && n.family == Family::FillExtrusion {
-                let minzoom = plan.style.layers[n.layer].minzoom.floor();
-                let fade = [
-                    (minzoom - center) as f32,
-                    f32::from(u8::from(minzoom > 0.0)),
-                ];
-                renderer.set_extrusion_fade(gpu, node as u32, fade);
-            }
-        }
         let mut rows: HashMap<TileIndex, Vec<&Draw>> = HashMap::new();
         // Picking reads tiles with features in drawing order, ancestors
         // before descendants.
@@ -2850,7 +2841,7 @@ impl Map {
             None => view.cover_volume(
                 tms,
                 TILE_PX,
-                24,
+                0..=24,
                 0.0,
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
                 0.0,

@@ -16,9 +16,6 @@ struct ExtrusionNode {
     curves: array<Curve, 3>,
     pattern: Pattern,
     state: StateLookup,
-    // Where the layer fades out before its tiles' buckets end: x the
-    // layer's minzoom less the source's centre zoom, y 1 to fade.
-    fade: vec2<f32>,
 };
 @group(1) @binding(0) var<uniform> node: ExtrusionNode;
 struct ExtrusionOut {
@@ -28,7 +25,6 @@ struct ExtrusionOut {
     @location(2) @interpolate(flat) tile: u32,
     @location(3) pattern_pos: vec2<f32>,
     @location(4) @interpolate(flat) images: vec2<u32>,
-    @location(5) ground: vec2<f32>,
     // A building cut at the source's buffer, clipped per fragment to the
     // placement; whole ones draw entire from the placement that owns them.
     @location(6) @interpolate(flat) cut: u32,
@@ -84,7 +80,6 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let shift = translate_world(node.translate, node.translate_anchor, tile);
     let ground = tile_ground_shifted(tile, pos, shift);
     out.position = ground_clip_3d(ground, vec2<f32>(0.0), elevation * frame.extrusion_scale);
-    out.ground = ground.flat;
     // Modern uses reversed Z; the shared camera matrix remains usable by 2D.
     out.position.z = out.position.w - out.position.z;
     out.tile_pos = pos;
@@ -126,23 +121,13 @@ fn fs_extrusion(in: ExtrusionOut) -> @location(0) vec4<f32> {
         inside = all(in.tile_pos >= lo) && all(in.tile_pos <= hi);
     }
     if !inside { discard; }
-    // The cover's tiles here, as zoom levels past the centre's: from below
-    // the layer's minzoom they have no buckets, so it fades out over the
-    // half level before.
-    var fade = 1.0;
-    if node.fade.y > 0.0 {
-        let d = max(length(vec2<f32>(distance(in.ground, frame.lod_eye), frame.lod_height)), 1e-9);
-        let lod = frame.lod_offset - log2(d) + frame.lod_behavior * log2(frame.lod_height / d);
-        fade = smoothstep(node.fade.x, node.fade.x + 0.5, lod);
-        if fade <= 0.0 { discard; }
-    }
     if node.pattern.enabled != 0u {
         let image_a = image_at(in.images.x); let image_b = image_at(in.images.y);
         let pos_a = pattern_position(tile, in.pattern_pos, image_a, node.pattern.from_scale);
         let pos_b = pattern_position(tile, in.pattern_pos, image_b, node.pattern.to_scale);
         let a = pattern_sample(image_a, fract(pos_a), 0.0);
         let b = pattern_sample(image_b, fract(pos_b), 0.0);
-        return mix(a,b,node.pattern.fade) * in.color * fade;
+        return mix(a,b,node.pattern.fade) * in.color;
     }
-    return in.color * fade;
+    return in.color;
 }

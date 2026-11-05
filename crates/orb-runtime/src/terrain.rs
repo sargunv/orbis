@@ -209,7 +209,7 @@ impl Terrain {
         let tiles = view.cover_volume(
             tms,
             TERRAIN_TILE_PX,
-            TERRAIN_MAX_ZOOM,
+            0..=TERRAIN_MAX_ZOOM,
             0.0,
             Some(&*self.elevation),
             0.0,

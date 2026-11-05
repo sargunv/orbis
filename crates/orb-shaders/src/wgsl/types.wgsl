@@ -32,10 +32,7 @@ struct Frame {
     dem_unpack: vec4<f32>,
     terrain_exaggeration: f32,
     dem_dim: f32,
-    // The cover's level of detail (orb-scene's `FrameLod`): its offset and
-    // distance behaviour here, the eye's ground position and height below.
-    lod_offset: f32,
-    lod_behavior: f32,
+    _pad4: vec2<f32>,
     // The style's lights (decision 0026; see lighting.wgsl): the ambient
     // and directional colours with their levels in w, and the vector
     // toward the directional light in tile axes, w = 1 when terrain is lit.
@@ -55,10 +52,10 @@ struct Frame {
     // 1 when the low-zoom surface is a plane (its world units, z up, no
     // horizon) rather than the sphere.
     globe_plane: u32,
-    lod_eye: vec2<f32>,
+    _pad6: vec2<f32>,
     // The eye, camera-relative ECEF metres.
     globe_eye: vec3<f32>,
-    lod_height: f32,
+    _pad7: f32,
     // The camera's world position as whole quanta and a remainder (orb-
     // scene's `quantum`): rows' origins less it are camera-relative
     // (`tile_origin`).
