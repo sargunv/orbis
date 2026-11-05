@@ -27,6 +27,8 @@ struct CircleOut {
     @location(2) data: vec3<f32>,
     @location(3) radius_ratio: f32,
     @location(4) stroke_width: f32,
+    // The Earth's up at the centre, for the lit map (`ground_up`).
+    @location(5) up: vec3<f32>,
 };
 
 
@@ -91,6 +93,7 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     out.data = vec3<f32>(corner, max(1.0 / frame.pixel_ratio / total, blur));
     out.radius_ratio = radius / total;
     out.stroke_width = stroke_width;
+    out.up = ground_up(center);
     return out;
 }
 
@@ -102,5 +105,5 @@ fn fs_circle(in: CircleOut) -> MapOut {
     let stroke = select(smoothstep(-aa, 0.0, distance - in.radius_ratio), 0.0, in.stroke_width < 0.01);
     let color = coverage * mix(in.color, in.stroke_color, stroke);
     if all(color < vec4<f32>(0.5 / 255.0)) { discard; }
-    return map_out(color, node.index);
+    return map_out(color, node.index, in.up);
 }

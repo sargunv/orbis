@@ -53,5 +53,5 @@ fn fs_color_relief(in: ImageOut) -> MapOut {
     }
 
     let x = (f32(l) + (el - el_l) / (el_r - el_l) + 0.5) / f32(node.ramp_size);
-    return map_out(node.opacity * textureSampleLevel(ramp, linear_sampler, vec2<f32>(x, 0.25), 0.0), node.index);
+    return map_out(node.opacity * textureSampleLevel(ramp, linear_sampler, vec2<f32>(x, 0.25), 0.0), node.index, in.up);
 }

@@ -38,6 +38,8 @@ struct ExtrusionOut {
     @location(11) albedo: vec4<f32>,
     @location(12) wall: vec2<f32>,
     @location(13) @interpolate(flat) seed: u32,
+    // The Earth's up there (`ground_up`).
+    @location(14) up: vec3<f32>,
 };
 // Extrusions draw in two pipelines: whole buildings, and buildings cut at
 // the source's buffer, clipped per fragment to the placement. Only the
@@ -174,6 +176,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let along = f32(vertex_at(v.vertex + 3u) >> 16u) * tile.scale / max(frame.extrusion_scale, 1e-12);
     out.wall = vec2<f32>(along, mix(gradient_base, gradient_height, top));
     out.seed = prop_at(row + EXTRUSION_ROW_CENTROID);
+    out.up = ground_up(ground);
     var gradient = 1.0;
     if normal.z == 0.0 && node.vertical_gradient != 0u {
         gradient = light_wall_gradient(top + gradient_base, gradient_height);
@@ -223,5 +226,5 @@ fn extrusion_shade(in: ExtrusionOut, wall_width: vec2<f32>) -> vec4<f32> {
     if node.vertical_gradient != 0u && abs(in.normal.z) < 0.5 {
         occlusion = 0.7 + 0.3 * clamp(in.wall.y / 40.0, 0.0, 1.0);
     }
-    return surface_out(SurfaceIn(color, albedo, in.normal, lit, occlusion, node.index, in.wall, wall_width, in.seed));
+    return surface_out(SurfaceIn(color, albedo, in.normal, lit, occlusion, node.index, in.wall, wall_width, in.seed, in.up));
 }

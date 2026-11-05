@@ -35,14 +35,12 @@ pub(crate) fn frame_lights(
     if let Some(d) = &lights.directional {
         let [radius, azimuth, polar] = match d.direction {
             Direction::Position(ref p) => p.evaluate(zoom).map(f64::from),
+            // Where the sun stands from the target, below its horizon
+            // too: shaders fade it out over its last two degrees above each
+            // point's own horizon, so a globe's day side stays lit.
             Direction::Sun { time } => {
                 let (azimuth, altitude) = sun_position(time, target);
-                // The sun fades out over its last two degrees.
-                [
-                    (altitude / 2.0).clamp(0.0, 1.0),
-                    azimuth,
-                    90.0 - altitude.max(0.0),
-                ]
+                [1.0, azimuth, 90.0 - altitude]
             }
         };
         // GL JS's `sphericalToCartesian`.
@@ -266,13 +264,15 @@ mod tests {
             (v8.position[0] - turned.position[1]).abs() < 1e-5,
             "{v8:?} {turned:?}"
         );
-        // A scene's sun below the horizon gives no directional light.
+        // A scene's sun below the horizon stands there, for the points
+        // that still see it; the target's ground doesn't.
         let night = orb_v8::parse_scene(
             r#"{"style": "s.json", "lights": [{"type": "sun", "properties": {"time": "2024-06-21T23:00:00Z"}}]}"#,
         )
         .unwrap();
         let frame = frame_lights(&night.lights.unwrap(), 0.0, 0.0, target, [0.0; 2]);
-        assert_eq!(frame.position, [0.0; 3]);
+        assert!(frame.position[2] < 0.0, "{:?}", frame.position);
+        assert!(frame.shadow().is_none());
         assert!(frame.terrain);
     }
 }

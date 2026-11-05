@@ -13,9 +13,10 @@
 //!
 //! A layer's v8 colours are its albedo; `roughness` and `metalness` (0 to
 //! 1, matte paint by default), `emissive-strength` (how much of it shows
-//! unlit), for extrusions `windows` (the share of their windows that glow)
-//! and for fills and lines `waves` (water's slope, animated) complete its
-//! material. A layer's `paint` sets v8 paint properties over the style's,
+//! unlit), for extrusions `windows` (the share of their windows lit after
+//! dusk), for fills and lines `waves` (water's slope, animated), and
+//! `night-light` (a layer that is light where the sun is down, added to
+//! the map beneath) complete its material. A layer's `paint` sets v8 paint properties over the style's,
 //! so a scene can repaint a style it doesn't own (solid buildings, say).
 //!
 //! A `directional` light takes `direction`, `[azimuth, polar]` in degrees
@@ -163,8 +164,8 @@ pub(crate) struct SceneLayers {
 }
 
 /// `layers`: per layer id, its material (`emissive-strength`,
-/// `roughness`, `metalness`, an extrusion's lit `windows` and a fill's or
-/// line's `waves`, each 0 to 1) and the `paint` the scene sets on it.
+/// `roughness`, `metalness`, an extrusion's lit `windows`, a fill's or
+/// line's `waves` and `night-light`, each 0 to 1) and the `paint` the scene sets on it.
 pub(crate) fn parse_layers(cx: &mut Cx, json: &Json) -> SceneLayers {
     let mut layers = SceneLayers::default();
     for layer in cx.object(json, "layers").unwrap_or(&[]) {
@@ -184,6 +185,7 @@ pub(crate) fn parse_layers(cx: &mut Cx, json: &Json) -> SceneLayers {
                 "metalness" => &mut material.metalness,
                 "windows" => &mut material.windows,
                 "waves" => &mut material.waves,
+                "night-light" => &mut material.night_light,
                 key => {
                     cx.warn(&path, m.key_span, format!("unknown property \"{key}\""));
                     continue;

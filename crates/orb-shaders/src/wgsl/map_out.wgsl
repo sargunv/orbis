@@ -1,15 +1,16 @@
 // A map layer's fragment as the map's colour (`map_out_lit.wgsl` lights
-// it for a scene's lights); `map_out_at` for a fragment that knows the
-// ground under it, for detail anchored there.
+// it for a scene's lights, with `up` the Earth's up there, `ground_up`);
+// `map_out_at` for a fragment that knows the ground under it, for detail
+// anchored there.
 struct MapOut {
     @location(0) color: vec4<f32>,
 };
 
-fn map_out(color: vec4<f32>, node: u32) -> MapOut {
+fn map_out(color: vec4<f32>, node: u32, up: vec3<f32>) -> MapOut {
     return MapOut(color);
 }
 
-fn map_out_at(color: vec4<f32>, node: u32, ground: GroundPoint) -> MapOut {
+fn map_out_at(color: vec4<f32>, node: u32, ground: GroundPoint, up: vec3<f32>) -> MapOut {
     return MapOut(color);
 }
 
@@ -18,7 +19,8 @@ fn map_out_at(color: vec4<f32>, node: u32, ground: GroundPoint) -> MapOut {
 // north, up), the share of the directional light its shadows leave, the
 // ambient light reaching it, its node, and on a wall where along it and how high (metres), that
 // position's change across a pixel (taken where control flow is uniform)
-// and a value per building, for windows.
+// and a value per building, for windows, and the Earth's up there
+// (`ground_up`).
 struct SurfaceIn {
     color: vec4<f32>,
     albedo: vec4<f32>,
@@ -29,6 +31,7 @@ struct SurfaceIn {
     wall: vec2<f32>,
     wall_width: vec2<f32>,
     seed: u32,
+    up: vec3<f32>,
 };
 
 fn surface_out(s: SurfaceIn) -> vec4<f32> {

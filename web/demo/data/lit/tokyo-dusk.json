@@ -34,6 +34,7 @@
    "roughness": 0.15
   },
   "building-3d": {
+   "windows": 0.55,
    "paint": {
     "fill-extrusion-opacity": 1,
     "fill-extrusion-color": "hsl(30, 22%, 72%)"

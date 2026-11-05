@@ -39,6 +39,8 @@ struct FillOut {
     // where it was on a globe and in a drape slot (`tile_pos` is where it
     // lands there), so a translated fill moves whole.
     @location(7) owner_pos: vec2<f32>,
+    // The Earth's up there, for the lit map (`ground_up`).
+    @location(8) up: vec3<f32>,
 };
 
 @vertex
@@ -97,7 +99,9 @@ fn fill_vertex(v: Pulled) -> FillOut {
     }
 
     let shift = translate_world(node.translate, node.translate_anchor, tile);
-    out.position = ground_clip(tile_ground_shifted(tile, pos, shift), vec2<f32>(0.0), 0.0);
+    let ground = tile_ground_shifted(tile, pos, shift);
+    out.position = ground_clip(ground, vec2<f32>(0.0), 0.0);
+    out.up = ground_up(ground);
     out.color = color * opacity;
     out.opacity = opacity;
     out.pattern_pos = pos;
@@ -136,9 +140,9 @@ fn fs_fill(in: FillOut) -> MapOut {
         discard;
     }
     if node.pattern.enabled == 1u {
-        return map_out_at(fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity), node.index, ground);
+        return map_out_at(fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity), node.index, ground, in.up);
     }
-    return map_out_at(in.color, node.index, ground);
+    return map_out_at(in.color, node.index, ground, in.up);
 }
 
 @fragment
@@ -152,5 +156,5 @@ fn fs_fill_outline(in: FillOut) -> MapOut {
     if node.pattern.enabled == 1u {
         color = fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity);
     }
-    return map_out_at(color * (1.0 - smoothstep(0.0, 1.0, dist)), node.index, ground);
+    return map_out_at(color * (1.0 - smoothstep(0.0, 1.0, dist)), node.index, ground, in.up);
 }

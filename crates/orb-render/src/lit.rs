@@ -22,6 +22,8 @@ pub struct NodeMaterial {
     pub windows: f32,
     /// A fill's or line's waves: the water's RMS slope.
     pub waves: f32,
+    /// How much of its colour it gives off as light where the sun is down.
+    pub night_light: f32,
 }
 
 impl Default for NodeMaterial {
@@ -32,13 +34,14 @@ impl Default for NodeMaterial {
             self_lit: 0.0,
             windows: 0.0,
             waves: 0.0,
+            night_light: 0.0,
         }
     }
 }
 
 /// `map_out_lit.wgsl`'s `NodeMaterial`.
-const MATERIAL_WORDS: usize = 5;
-const MATTE: [f32; MATERIAL_WORDS] = [1.0, 0.0, 0.0, 0.0, 0.0];
+const MATERIAL_WORDS: usize = 6;
+const MATTE: [f32; MATERIAL_WORDS] = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
 #[derive(Debug)]
 pub(crate) struct Lit {
@@ -76,7 +79,14 @@ impl Lit {
         if self.materials.len() <= node {
             self.materials.resize(node + 1, MATTE);
         }
-        let words = [m.roughness, m.metalness, m.self_lit, m.windows, m.waves];
+        let words = [
+            m.roughness,
+            m.metalness,
+            m.self_lit,
+            m.windows,
+            m.waves,
+            m.night_light,
+        ];
         if self.materials[node] != words {
             self.materials[node] = words;
             self.dirty = true;

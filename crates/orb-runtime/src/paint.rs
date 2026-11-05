@@ -313,6 +313,7 @@ fn write_paint(
                 self_lit: material.emissive as f32,
                 windows: material.windows as f32,
                 waves: material.waves as f32,
+                night_light: material.night_light as f32,
             },
         );
         if node.family.is_symbol() {

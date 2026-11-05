@@ -13,10 +13,22 @@
 // negated, as its wall normals point and its `sphericalToCartesian` places
 // v8's light.
 fn light_factor(normal: vec3<f32>, luminance: f32, gradient: f32, lit_by: f32) -> vec3<f32> {
-    let ndotl = clamp(dot(normal, frame.light_position.xyz), 0.0, 1.0) * lit_by;
+    let ndotl = clamp(dot(normal, frame.light_position.xyz), 0.0, 1.0) * lit_by * scene_sun_up();
     let a = frame.light_ambient.w;
     let lit = max(a + frame.light_color.w - luminance, 1.0);
     return mix(a * frame.light_ambient.rgb, lit * frame.light_color.rgb, ndotl) * gradient;
+}
+
+// A scene's sun stands where it is, below the horizon too (the lit map
+// fades it per point): here it fades out over its last two degrees above
+// the target's horizon. v8's light is as given.
+fn scene_sun_up() -> f32 {
+    let p = frame.light_position;
+    let l = length(p.xyz);
+    if p.w == 0.0 || l == 0.0 {
+        return 1.0;
+    }
+    return clamp(degrees(asin(clamp(p.z / l, -1.0, 1.0))) * 0.5, 0.0, 1.0);
 }
 
 // A wall's vertical gradient: darker toward its foot, over its first

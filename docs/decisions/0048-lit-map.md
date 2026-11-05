@@ -37,6 +37,26 @@ their v8 colours. Decision 0043 left room for a material buffer.
   the lit composition shades it with its node's material, the classic one
   returns GL JS's lit colour as before. Models already fill `Material`
   from glTF. A v8 `light` alone keeps GL JS's extrusion response.
+- **Each point sees the sun from where it stands.** The frame gives the
+  lights in east, north and up at the camera's target; a `sun` stands
+  where it is from there, below the horizon too. Every lit fragment
+  carries the Earth's up at its point in those axes (`ground_up`, a
+  varying each family's vertex fills): on the globe the sphere's,
+  exactly; on a plane, tilted by the point's distance from the target
+  over the Earth's radius, which is close while a plane's view is a small
+  part of the world; the handover mixes them. Normals turn with it
+  (`turn_to_up`), and the directional light fades out over its last two
+  degrees above that point's own horizon. A globe so has a day side, a
+  terminator and a night side, and a point's light depends on the sun's
+  time alone, never on where the camera looks from. The GL JS response
+  (Compat, terrain) fades a scene's sun at the target, as before.
+- **Night lights, and dusk.** A layer's `night-light` (0 to 1) makes its
+  colour light: added to the map beneath, by how dark it is there, from
+  the sun 4° above the point's horizon to 4° below, and nothing by day.
+  Lit windows switch on through the same darkness, so one scene shows
+  its windows at dusk and night and none at noon; without a directional
+  light it is night. Lit Earth lays NASA's Black Marble city lights over
+  a globe under the sun on a November afternoon.
 - **Lit windows are a material property.** An extrusion's `windows` (0 to
   1) is the share of its windows lit: a procedural grid on its walls
   (3 m bays, 3.5 m floors from the second, a hash per window and
@@ -102,4 +122,4 @@ machine.
 
 ## Next
 
-The day–night globe.
+The bench numbers for Lit Tokyo and Lit Earth at a quiet moment.

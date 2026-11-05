@@ -67,6 +67,8 @@ struct ModelOut {
     // Camera-relative world and view depth, for shadows.
     @location(7) world: vec3<f32>,
     @location(8) depth: f32,
+    // The Earth's up at the instance (`ground_up`).
+    @location(9) up: vec3<f32>,
 };
 
 fn model_word_f(i: u32) -> f32 { return bitcast<f32>(model_words[i]); }
@@ -174,6 +176,7 @@ fn vs_model(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instanc
     out.local = p.local;
     out.world = model_world(p);
     out.depth = out.position.w;
+    out.up = ground_up(p.ground);
     // Normals scale inversely, then turn with the model.
     out.normal = turn_enu(octahedral_normal(model_words[p.w + 3u]) / p.scale, p.rotation);
     out.uv = vec2<f32>(model_word_f(p.w + 4u), model_word_f(p.w + 5u));
@@ -212,10 +215,10 @@ fn model_base(m: u32, uv: ModelUv, color: vec4<f32>) -> vec4<f32> {
     return factor * vec4<f32>(srgb_to_linear(texel.rgb), texel.a) * color;
 }
 
-// The style's lights, with the directional light's shadow at the
-// surface's geometric normal `n`.
-fn model_lights(world: vec3<f32>, n: vec3<f32>, depth: f32) -> PbrLights {
-    var lights = scene_lights();
+// The style's lights where the Earth's up is `up`, with the directional
+// light's shadow at the surface's geometric normal `n`.
+fn model_lights(world: vec3<f32>, n: vec3<f32>, depth: f32, up: vec3<f32>) -> PbrLights {
+    var lights = scene_lights_at(up);
     lights.shadow = shadow_at(world, n, depth);
     return lights;
 }
@@ -271,11 +274,11 @@ fn model_shade(in: ModelOut, front: bool, uv: ModelUv, dp: mat2x3<f32>, m: u32, 
         let sampled = model_texel(m, normal_layer, 2u, uv, vec4<f32>(0.5, 0.5, 1.0, 1.0)).xyz;
         n = perturb_normal(n, dp, mat2x2<f32>(uv.dx, uv.dy), sampled, model_word_f(m + 10u));
     }
-    material.normal = n;
+    material.normal = turn_to_up(n, in.up);
     material.occlusion = mix(1.0, model_texel(m, (layers >> 24u) & 255u, 3u, uv, vec4<f32>(1.0)).r, model_word_f(m + 11u));
     material.self_lit = select(in.mix_emissive.y, 1.0, (flags & MODEL_UNLIT) != 0u);
     material.emitted = vec3<f32>(model_word_f(m + 4u), model_word_f(m + 5u), model_word_f(m + 6u))
         * srgb_to_linear(model_texel(m, flags & 255u, 4u, uv, vec4<f32>(1.0)).rgb);
-    let color = pbr_light(material, model_lights(in.world, geometric, in.depth));
+    let color = pbr_light(material, model_lights(in.world, geometric, in.depth, in.up));
     return vec4<f32>(linear_to_srgb(color) * material.alpha, material.alpha);
 }

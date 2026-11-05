@@ -57,6 +57,11 @@ sprites once served.
   streets that light themselves and buildings with lit windows. They
   repaint Liberty's buildings solid and a warmer mid-tone. Written
   for this repository; `?style=lit-noon` and so on.
+- `lit/earth.json`: a scene document with its own low-zoom globe style
+  (OpenFreeMap's Natural Earth relief and OpenMapTiles water, borders and
+  country names) under the sun on a November afternoon, NASA's Black
+  Marble (VIIRS, via NASA GIBS) as its night lights (decision 0048).
+  Written for this repository; `?style=lit-earth`.
 - `scripts.json`: the Cairo, Delhi and Bangkok entries' style
   (`?style=cairo|delhi|bangkok`, or `scripts`), written for this repository. It draws OpenFreeMap's
   planet tiles with labels in Arabic, Devanagari, Thai and Latin from

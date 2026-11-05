@@ -22,6 +22,7 @@ import litMorning from "./data/lit/tokyo-morning.json?url";
 import litNoon from "./data/lit/tokyo-noon.json?url";
 import litDusk from "./data/lit/tokyo-dusk.json?url";
 import litNight from "./data/lit/tokyo-night.json?url";
+import litEarth from "./data/lit/earth.json?url";
 import tower from "./data/models/tower.glb?url";
 import torii from "./data/models/torii.glb?url";
 import pagoda from "./data/models/pagoda.glb?url";
@@ -137,6 +138,9 @@ export const GROUPS = [
       { key: "globe", name: "Globe", detail: "Liberty on the v8 globe in space, Web Mercator from zoom 12",
         url: globe, projection: { type: "globe" }, camera: { center: [10, 30], zoom: 1.5 }, dark: true,
         swatch: ["#f8f4f0", "#a0c8f0", "#02040b"] },
+      { key: "lit-earth", name: "Lit Earth", detail: "The sun over the globe: day, dusk, and NASA's city lights by night",
+        url: litEarth, projection: { type: "globe" }, camera: { center: [60, 22], zoom: 1.6 }, dark: true,
+        swatch: ["#e6dfcf", "#1c2440", "#f6d27a"] },
       { key: "manhattan", name: "Manhattan in 3D", detail: "Low afternoon sun: shadows, and labels hidden behind buildings",
         url: manhattan, camera: { center: [-73.985, 40.752], zoom: 15.6, bearing: 29, pitch: 62 },
         swatch: ["#d8d4cf", "#a0c8f0", "#e9ac77"] },

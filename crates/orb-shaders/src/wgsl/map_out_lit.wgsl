@@ -15,6 +15,8 @@ struct NodeMaterial {
     windows: f32,
     // A fill's or line's waves: the water's slope.
     waves: f32,
+    // How much of its colour it gives off where the sun is down.
+    night_light: f32,
 };
 @group(2) @binding(0) var<storage, read> node_materials: array<NodeMaterial>;
 
@@ -22,14 +24,20 @@ struct MapOut {
     @location(0) color: vec4<f32>,
 };
 
-// A flat layer's colour shaded with its node's material, facing `normal`,
-// its glint widened by a slope variance `spread`.
-fn map_lit(color: vec4<f32>, node: u32, normal: vec3<f32>, spread: f32) -> MapOut {
+// A flat layer's colour shaded with its node's material where the
+// Earth's up is `up`, facing `normal` (east, north and up there), its
+// glint widened by a slope variance `spread`. A night light's colour is
+// light instead, added to the map beneath where the sun is down.
+fn map_lit(color: vec4<f32>, node: u32, up: vec3<f32>, normal: vec3<f32>, spread: f32) -> MapOut {
     let a = color.a;
     if a <= 0.0 {
         return MapOut(vec4<f32>(0.0));
     }
     let n = node_materials[node];
+    let lights = scene_lights_at(up);
+    if n.night_light > 0.0 {
+        return MapOut(vec4<f32>(color.rgb * n.night_light * darkness(lights, up), 0.0));
+    }
     var m: Material;
     m.albedo = srgb_to_linear(color.rgb / a);
     m.alpha = a;
@@ -40,21 +48,21 @@ fn map_lit(color: vec4<f32>, node: u32, normal: vec3<f32>, spread: f32) -> MapOu
     m.self_lit = n.self_lit;
     m.occlusion = 1.0;
     m.emitted = vec3<f32>(0.0);
-    m.normal = normal;
-    return MapOut(vec4<f32>(linear_to_srgb(pbr_light(m, scene_lights())) * a, a));
+    m.normal = turn_to_up(normal, up);
+    return MapOut(vec4<f32>(linear_to_srgb(pbr_light(m, lights)) * a, a));
 }
 
-fn map_out(color: vec4<f32>, node: u32) -> MapOut {
-    return map_lit(color, node, vec3<f32>(0.0, 0.0, 1.0), 0.0);
+fn map_out(color: vec4<f32>, node: u32, up: vec3<f32>) -> MapOut {
+    return map_lit(color, node, up, vec3<f32>(0.0, 0.0, 1.0), 0.0);
 }
 
-fn map_out_at(color: vec4<f32>, node: u32, ground: GroundPoint) -> MapOut {
+fn map_out_at(color: vec4<f32>, node: u32, ground: GroundPoint, up: vec3<f32>) -> MapOut {
     let steepness = node_materials[node].waves;
     if steepness <= 0.0 {
-        return map_out(color, node);
+        return map_out(color, node, up);
     }
     let w = waves(ground, steepness);
-    return map_lit(color, node, w.normal, w.spread);
+    return map_lit(color, node, up, w.normal, w.spread);
 }
 
 // Water's surface at a ground point: its normal (east, north, up) and the
@@ -110,6 +118,7 @@ struct SurfaceIn {
     wall: vec2<f32>,
     wall_width: vec2<f32>,
     seed: u32,
+    up: vec3<f32>,
 };
 
 // How much of a lit window `wall` (metres along and up a wall) is on: a
@@ -135,7 +144,7 @@ fn window_light(wall: vec2<f32>, width: vec2<f32>, seed: u32, share: f32) -> f32
 }
 
 // The surface shaded by the scene's lights with its node's material; lit
-// windows on walls give off a warm light.
+// windows on walls give off a warm light once the sun is down there.
 fn surface_out(s: SurfaceIn) -> vec4<f32> {
     let a = s.albedo.a;
     if a <= 0.0 {
@@ -149,12 +158,14 @@ fn surface_out(s: SurfaceIn) -> vec4<f32> {
     m.metallic = n.metalness;
     m.self_lit = n.self_lit;
     m.occlusion = s.occlusion;
-    m.normal = normalize(s.normal);
-    m.emitted = vec3<f32>(0.0);
-    if n.windows > 0.0 && abs(m.normal.z) < 0.5 {
-        m.emitted = vec3<f32>(1.0, 0.72, 0.42) * window_light(s.wall, s.wall_width, s.seed, n.windows);
-    }
-    var lights = scene_lights();
+    let normal = normalize(s.normal);
+    m.normal = turn_to_up(normal, s.up);
+    var lights = scene_lights_at(s.up);
     lights.shadow = s.shadow;
+    m.emitted = vec3<f32>(0.0);
+    let dark = darkness(lights, s.up);
+    if n.windows > 0.0 && dark > 0.0 && abs(normal.z) < 0.5 {
+        m.emitted = vec3<f32>(1.0, 0.72, 0.42) * window_light(s.wall, s.wall_width, s.seed, n.windows) * dark;
+    }
     return vec4<f32>(linear_to_srgb(pbr_light(m, lights)) * a, a);
 }

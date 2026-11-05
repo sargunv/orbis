@@ -38,6 +38,9 @@ pub struct LayerMaterial {
     /// A fill's or line's waves, as water: their RMS slope, 0 flat. They
     /// move with time, so a map showing them draws frames continuously.
     pub waves: f64,
+    /// A layer that is light where the sun is down: its colour added to
+    /// the map beneath, this much, from dusk to dawn, and nothing by day.
+    pub night_light: f64,
 }
 
 impl Default for LayerMaterial {
@@ -49,6 +52,7 @@ impl Default for LayerMaterial {
             metalness: 0.0,
             windows: 0.0,
             waves: 0.0,
+            night_light: 0.0,
         }
     }
 }

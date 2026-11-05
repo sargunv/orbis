@@ -65,6 +65,8 @@ struct LineOut {
     // in a drape slot, so a translated line moves whole into it, bounded
     // by the slot where it lands (`tile_pos`).
     @location(13) owner_pos: vec2<f32>,
+    // The Earth's up there, for the lit map (`ground_up`).
+    @location(14) up: vec3<f32>,
 };
 
 fn line_prop(row: u32, state: u32, bit: u32, constant: f32, tile_zoom: f32) -> f32 {
@@ -147,7 +149,9 @@ fn line_vertex(v: Pulled) -> LineOut {
     let center = pos + offset2 * px_to_data + vec2<f32>(shift.x, -shift.y) / tile.scale;
     let projected_no_extrude = ground_clip(tile_ground(tile, center), vec2<f32>(0.0), 0.0);
     let extruded = center + dist * px_to_data;
-    out.position = ground_clip(tile_ground(tile, extruded), vec2<f32>(0.0), 0.0);
+    let ground = tile_ground(tile, extruded);
+    out.position = ground_clip(ground, vec2<f32>(0.0), 0.0);
+    out.up = ground_up(ground);
 
     // How much perspective squishes or stretches the extrusion, after both
     // tile positions have been projected (as in GL JS).
@@ -205,7 +209,7 @@ fn fs_line(in: LineOut) -> MapOut {
         let y = in.normal.y * 0.5 + 0.5;
         let ca = pattern_sample(a, vec2<f32>(x_a, y), 1.0);
         let cb = pattern_sample(b, vec2<f32>(x_b, y), 1.0);
-        return map_out_at(mix(ca, cb, node.pattern.fade) * alpha * in.opacity, node.index, ground);
+        return map_out_at(mix(ca, cb, node.pattern.fade) * alpha * in.opacity, node.index, ground, in.up);
     }
     if node.dashed != 0u {
         let a = image_at(in.images.x);
@@ -217,9 +221,9 @@ fn fs_line(in: LineOut) -> MapOut {
         alpha *= smoothstep(0.5 - gamma, 0.5 + gamma, mix(ca, cb, node.dash_fade));
     }
     if node.gradient != 0u {
-        return map_out_at(gradient_sample(image_at(in.ramp), in.progress) * alpha * in.opacity, node.index, ground);
+        return map_out_at(gradient_sample(image_at(in.ramp), in.progress) * alpha * in.opacity, node.index, ground, in.up);
     }
-    return map_out_at(in.color * alpha, node.index, ground);
+    return map_out_at(in.color * alpha, node.index, ground, in.up);
 }
 
 // GL JS LineAtlas: center row and 14-texel span for round dashes, one row
