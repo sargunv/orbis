@@ -321,6 +321,18 @@ pub(crate) struct LoadedStyle {
     globe_meshes: bool,
 }
 
+/// The host data a tile result holds until it's uploaded or dropped.
+fn host_data(result: &TileResult) -> (Option<HostBytesId>, Option<orb_hal::HostImageId>) {
+    let image = match &result.image {
+        Some(crate::TileImage {
+            pixels: crate::ImagePixels::Host(image),
+            ..
+        }) => Some(*image),
+        _ => None,
+    };
+    (result.host_bytes, image)
+}
+
 /// A tile result waiting for room in the scene (`Map::apply_tile`).
 #[derive(Debug)]
 struct WaitingTile {
@@ -2438,22 +2450,26 @@ impl Map {
         let started = self.services.clock.now();
         self.tiles_deferred = false;
         for waiting in std::mem::take(&mut self.waiting) {
-            let bytes = waiting.build.host_bytes;
+            let (bytes, image) = host_data(&waiting.build);
+            let release = |gpu: &mut dyn Gpu| {
+                if let Some(bytes) = bytes {
+                    gpu.release_host_bytes(bytes);
+                }
+                if let Some(image) = image {
+                    gpu.release_host_image(image);
+                }
+            };
             if self.tiles_deferred || waiting.generation != self.tile_generation {
                 if waiting.generation == self.tile_generation {
                     self.waiting.push(waiting);
-                } else if let Some(bytes) = bytes {
-                    gpu.release_host_bytes(bytes);
+                } else {
+                    release(gpu);
                 }
                 continue;
             }
             match self.apply_tile(gpu, waiting.source, waiting.tile, Ok(waiting.build), false) {
                 Some(build) => self.waiting.push(WaitingTile { build, ..waiting }),
-                None => {
-                    if let Some(bytes) = bytes {
-                        gpu.release_host_bytes(bytes);
-                    }
-                }
+                None => release(gpu),
             }
             self.tiles_deferred = self.services.clock.now() - started > TILE_APPLY_MS;
         }
@@ -2597,14 +2613,8 @@ impl Map {
                     terrain,
                     result,
                 } => {
-                    let host_bytes = result.as_ref().ok().and_then(|r| r.host_bytes);
-                    let host_image = result.as_ref().ok().and_then(|r| match &r.image {
-                        Some(crate::TileImage {
-                            pixels: crate::ImagePixels::Host(image),
-                            ..
-                        }) => Some(*image),
-                        _ => None,
-                    });
+                    let (host_bytes, host_image) =
+                        result.as_ref().ok().map_or((None, None), host_data);
                     if let Some(edit) = edit {
                         self.finish_job(edit);
                     }
@@ -2632,7 +2642,7 @@ impl Map {
                     if let Some(bytes) = host_bytes.filter(|_| !kept) {
                         gpu.release_host_bytes(bytes);
                     }
-                    if let Some(image) = host_image {
+                    if let Some(image) = host_image.filter(|_| !kept) {
                         gpu.release_host_image(image);
                     }
                 }
@@ -2670,8 +2680,8 @@ impl Map {
             pyramid,
             loading,
             endpoint,
-            page,
             warp,
+            ..
         } = &mut style.sources[source]
         else {
             return None;
@@ -2733,7 +2743,41 @@ impl Map {
                 warped,
                 zoom: tile_zoom,
             };
-            match image::upload(gpu, renderer, page, pyramid, &upload) {
+            // Room as for vector tiles: unused tiles of any source go first;
+            // while other tiles load, this one waits for theirs to go; then
+            // it gives up for what stands in.
+            let sizes = image::mesh_sizes(plan, source, upload.warped.as_deref());
+            let others_loading = style
+                .sources
+                .iter()
+                .any(|s| matches!(s, SourceState::Ready { loading, .. } if *loading > 0));
+            let uploaded = loop {
+                let tried = renderer.scene().fits(sizes.iter().copied()).then(|| {
+                    let SourceState::Ready { pyramid, page, .. } = &mut style.sources[source]
+                    else {
+                        unreachable!("checked above");
+                    };
+                    image::upload(gpu, renderer, page, pyramid, &upload)
+                });
+                match tried {
+                    Some(Ok(resident)) => break Ok(resident),
+                    Some(Err(image::UploadError::Invalid(e))) => break Err(Some(e)),
+                    Some(Err(image::UploadError::NoRoom)) | None => {
+                        match evict_unused(&mut style.sources, source) {
+                            Some(victim) => self.retired_ramps.extend(remove_resident(
+                                renderer,
+                                victim,
+                                &mut style.states,
+                            )),
+                            None => break Err(None),
+                        }
+                    }
+                }
+            };
+            let SourceState::Ready { pyramid, warp, .. } = &mut style.sources[source] else {
+                unreachable!("checked above");
+            };
+            match uploaded {
                 Ok(mut resident) => {
                     // On a globe, a warped image draws in its own space:
                     // through planar patches on the plane.
@@ -2755,9 +2799,21 @@ impl Map {
                         ));
                     }
                 }
-                Err(e) => {
+                Err(Some(e)) => {
                     self.warnings.push(format!("tile {tile:?}: {e}"));
                     pyramid.insert_empty(tile);
+                }
+                Err(None) if others_loading => return Some(build),
+                Err(None) => {
+                    let message = format!(
+                        "tile {tile:?} doesn't fit in scene memory with the tiles in view; \
+                         a coarser tile stands in"
+                    );
+                    self.events.push(MapEvent::Error {
+                        message: message.clone(),
+                    });
+                    self.warnings.push(message);
+                    pyramid.insert_missing(tile);
                 }
             }
             return None;

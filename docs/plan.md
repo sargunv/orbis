@@ -367,6 +367,7 @@ for every tile it evicted (about 250 rewrites in a 6 s rotation at Seattle,
 40 k contiguous words. A tile that doesn't fit while others load waits for
 their stand-ins to go, and only then gives up: an `error` event, with a
 coarser tile standing in.
+Raster and DEM tiles make room the same way (decision 0032).
 
 ### 7.5 Invalidation, idle, pacing
 

@@ -9,7 +9,8 @@ use orb_hal::Gpu;
 use orb_layout::{Chunk, TileBox};
 use orb_render::{
     ColorReliefPaint, DemPrepare, HillshadeMethod, HillshadePaint, IMAGE_EXTENT, IMAGE_ROW_WORDS,
-    MAX_LIGHTS, MeshData, NodePaint, PageId, PageKind, Pixels, RasterPaint, Renderer, Words,
+    MAX_LIGHTS, MeshData, MeshSize, NodePaint, PageId, PageKind, Pixels, RasterPaint, Renderer,
+    Words,
 };
 use orb_source::TilePyramid;
 use orb_v8::{Color, IlluminationAnchor, LayerKind, Property, PropertyValue, Resampling};
@@ -175,6 +176,40 @@ const QUAD_CHUNK: Chunk = Chunk {
     },
 };
 
+/// Why an image tile didn't upload.
+#[derive(Debug)]
+pub(crate) enum UploadError {
+    /// Out of texture layers or scene memory: evicting tiles may make room.
+    NoRoom,
+    /// The tile itself can't draw.
+    Invalid(String),
+}
+
+/// What an image tile's quads (or warped meshes) take in the scene: one
+/// per node of its source.
+pub(crate) fn mesh_sizes(
+    plan: &StylePlan,
+    source: usize,
+    warped: Option<&Warped>,
+) -> Vec<MeshSize> {
+    let size = match warped {
+        Some(warped) => MeshSize {
+            vertices: warped.vertices.len() as u32,
+            indices: warped.indices.len() as u32,
+            props: IMAGE_ROW_WORDS as u32,
+            chunks: warped.chunks.len() as u32,
+        },
+        None => MeshSize {
+            vertices: QUAD.len() as u32,
+            indices: QUAD_INDICES.len() as u32,
+            props: IMAGE_ROW_WORDS as u32,
+            chunks: 1,
+        },
+    };
+    let nodes = plan.nodes.iter().filter(|n| n.source == source).count();
+    vec![size; nodes]
+}
+
 /// Writes an image tile into its source's page, which the first tile
 /// creates at its size, and adds its quad to every node of the source. A
 /// DEM tile is queued for the prepare pass, and so are its resident
@@ -185,7 +220,7 @@ pub(crate) fn upload(
     page: &mut Option<PageId>,
     pyramid: &TilePyramid<ResidentTile>,
     upload: &Upload<'_>,
-) -> Result<ResidentTile, String> {
+) -> Result<ResidentTile, UploadError> {
     let Upload {
         plan,
         source,
@@ -196,7 +231,7 @@ pub(crate) fn upload(
     } = *upload;
     let size = [image.width, image.height];
     if kind == ImageKind::Dem && image.width != image.height {
-        return Err("DEM tiles must be square".into());
+        return Err(UploadError::Invalid("DEM tiles must be square".into()));
     }
     let page = *page.get_or_insert_with(|| {
         let kind = match kind {
@@ -213,14 +248,14 @@ pub(crate) fn upload(
     });
     let expected = renderer.page_size(page);
     if expected != size {
-        return Err(format!(
+        return Err(UploadError::Invalid(format!(
             "a {}×{} image in a source of {}×{} tiles",
             size[0], size[1], expected[0], expected[1]
-        ));
+        )));
     }
     let layer = renderer
         .alloc_layer(gpu, page)
-        .map_err(|_| "out of texture layers; the tile is not drawn".to_string())?;
+        .map_err(|_| UploadError::NoRoom)?;
     let pixels = match &image.pixels {
         ImagePixels::Core(bytes) => Pixels::Core(bytes),
         &ImagePixels::Host(image) => Pixels::Host {
@@ -250,7 +285,7 @@ pub(crate) fn upload(
         {
             renderer.scene().remove_tile(scene_tile);
             renderer.free_layer(page, layer);
-            return Err("out of scene memory; the tile is not drawn".into());
+            return Err(UploadError::NoRoom);
         }
     }
 

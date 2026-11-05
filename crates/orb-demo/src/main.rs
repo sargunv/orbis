@@ -1313,6 +1313,85 @@ mod tests {
         );
     }
 
+    /// Raster tiles make room as vector tiles do (decision 0032): with the
+    /// scene full of cached vector tiles the view no longer uses, arriving
+    /// raster tiles evict them rather than being dropped, which on the
+    /// globe left Liberty's ocean (its shaded-relief raster) with
+    /// tile-shaped gaps.
+    #[test]
+    fn raster_tiles_evict_unused_tiles_for_room() {
+        let dir = std::env::temp_dir().join(format!("orbis-raster-room-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tile = dir.join("tile.png");
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 256, 256);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[64u8, 128, 255, 255].repeat(256 * 256))
+                .unwrap();
+        }
+        std::fs::write(&tile, png).unwrap();
+        // A polygon that only low zooms draw; imagery only from zoom 5.
+        let ring: Vec<String> = (0..=360)
+            .map(|i| {
+                let a = f64::from(i).to_radians();
+                format!("[{:.4},{:.4}]", 60.0 * a.cos(), 45.0 * a.sin())
+            })
+            .collect();
+        let style = format!(
+            r#"{{"version":8,"sources":{{
+                "shapes":{{"type":"geojson","data":{{"type":"Polygon","coordinates":[[{ring}]]}}}},
+                "imagery":{{"type":"raster","tiles":["file://{tile}"],"tileSize":256}}}},
+              "layers":[{{"id":"fill","type":"fill","source":"shapes","maxzoom":4.5}},
+                {{"id":"raster","type":"raster","source":"imagery","minzoom":5}}]}}"#,
+            ring = ring.join(","),
+            tile = tile.display(),
+        );
+        let path = dir.join("style.json");
+        std::fs::write(&path, style).unwrap();
+        let options = |lon: f64, zoom: f64| super::Options {
+            style: Some(format!("file://{}", path.display())),
+            at: Some((orb_geo::Geodetic::new(lon, 0.0), zoom, 0.0, 0.0)),
+            ..tokyo(zoom)
+        };
+        let settle = |offscreen: &mut super::Offscreen| {
+            let started = std::time::Instant::now();
+            let mut warnings = Vec::new();
+            loop {
+                let report = offscreen.frame();
+                warnings.extend(offscreen.map.take_warnings());
+                if report.idle {
+                    return (report, warnings);
+                }
+                assert!(started.elapsed().as_secs() < 60, "did not settle");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        // The scene holds exactly the low-zoom view's vector tiles.
+        let (_, low, _) = super::Offscreen::load(&options(0.0, 3.0)).unwrap();
+        let capacity = super::SceneCapacity {
+            vertex_words: low.scene.vertex_words,
+            index_words: low.scene.index_words,
+            ..super::SceneCapacity::default()
+        };
+        let (mut offscreen, _, _) =
+            super::Offscreen::load_with(&options(0.0, 3.0), capacity).unwrap();
+        let (_, warnings) = settle(&mut offscreen);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        *offscreen.map.camera_mut() = orb_runtime::CameraState::new(
+            orb_geo::Geodetic::new(150.0, 0.0),
+            6.0,
+            &offscreen.map.projection(),
+        );
+        let (report, warnings) = settle(&mut offscreen);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(report.tiles_drawn > 0);
+    }
+
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
