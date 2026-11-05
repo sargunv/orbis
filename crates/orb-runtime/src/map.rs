@@ -1189,10 +1189,6 @@ impl Map {
         let zoom = self.zoom();
         let mut report = FrameReport::default();
         let clear = self.clear_color;
-        // The atmosphere: the sky above the surface's horizon (a globe's
-        // limb), fog on terrain, scattering over a globe.
-        let (fog_near, fog_far) = view.fog_range_px();
-        let (horizon, horizon_normal) = view.sky_horizon_line();
         let scene = self
             .style
             .as_ref()
@@ -1204,38 +1200,9 @@ impl Map {
         if lit && gpu.caps().tier != orb_hal::Tier::Modern {
             self.warnings.push(crate::COMPAT_UNLIT.into());
         }
-        // The sky over a sphere; a low-zoom plane's is a plane's.
-        let globe = view
-            .globe()
-            .filter(|g| g.plane.is_none())
-            .map(|g| crate::lights::globe_sky(g, &view, self.camera.state(), lights, zoom));
-        renderer.set_atmosphere(
-            gpu,
-            scene
-                .as_deref()
-                .and_then(|s| s.atmosphere.as_ref())
-                .map(|atmosphere| orb_render::AtmospherePaint {
-                    sky_color: atmosphere.sky_color.evaluate(zoom).premultiplied(),
-                    horizon_color: atmosphere.horizon_color.evaluate(zoom).premultiplied(),
-                    fog_color: atmosphere.fog_color.evaluate(zoom).premultiplied(),
-                    sky_horizon_blend: atmosphere.sky_horizon_blend.evaluate(zoom),
-                    horizon_fog_blend: atmosphere.horizon_fog_blend.evaluate(zoom),
-                    fog_ground_blend: atmosphere.fog_ground_blend.evaluate(zoom),
-                    atmosphere_blend: atmosphere.atmosphere_blend.evaluate(zoom),
-                    backdrop: atmosphere.backdrop.evaluate(zoom).premultiplied(),
-                    stars: atmosphere.stars.evaluate(zoom),
-                }),
-            orb_render::AtmosphereView {
-                horizon: horizon.as_vec2().to_array(),
-                horizon_normal: horizon_normal.as_vec2().to_array(),
-                height: viewport.height as f32,
-                fog_range: [fog_near as f32, fog_far as f32],
-                fog_opacity: fog_blend_opacity(self.camera.state().pitch),
-                ray_inverse: crate::lights::ray_inverse(&view, self.camera.state().target),
-                star_rotation: crate::lights::star_rotation(lights),
-                globe,
-            },
-        );
+        let (paint, at) =
+            crate::lights::atmosphere(scene.as_deref(), &view, self.camera.state(), zoom);
+        renderer.set_atmosphere(gpu, paint, at);
 
         let now = frame_time;
         let mut fading = false;
@@ -2289,12 +2256,6 @@ impl Map {
 }
 
 /// Removes a terrain's DEM page; the renderer's terrain is off.
-/// GL JS's `calculateFogBlendOpacity`: terrain fog fades in from 60° to
-/// 70° of pitch.
-fn fog_blend_opacity(pitch: f64) -> f32 {
-    ((pitch - 60.0) / 10.0).clamp(0.0, 1.0) as f32
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;

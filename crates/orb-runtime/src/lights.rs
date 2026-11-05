@@ -60,11 +60,57 @@ pub(crate) fn frame_lights(
     frame
 }
 
+/// The atmosphere of `scene` at `zoom` and how `view` of `camera` sees it:
+/// the sky above the surface's horizon (a globe's limb), fog on terrain,
+/// scattering over a globe.
+pub(crate) fn atmosphere(
+    scene: Option<&orb_style::Scene>,
+    view: &orb_camera::View,
+    camera: &orb_camera::CameraState,
+    zoom: f64,
+) -> (
+    Option<orb_render::AtmospherePaint>,
+    orb_render::AtmosphereView,
+) {
+    let lights = scene.map(|s| &s.lights);
+    let paint = scene
+        .and_then(|s| s.atmosphere.as_ref())
+        .map(|a| orb_render::AtmospherePaint {
+            sky_color: a.sky_color.evaluate(zoom).premultiplied(),
+            horizon_color: a.horizon_color.evaluate(zoom).premultiplied(),
+            fog_color: a.fog_color.evaluate(zoom).premultiplied(),
+            sky_horizon_blend: a.sky_horizon_blend.evaluate(zoom),
+            horizon_fog_blend: a.horizon_fog_blend.evaluate(zoom),
+            fog_ground_blend: a.fog_ground_blend.evaluate(zoom),
+            atmosphere_blend: a.atmosphere_blend.evaluate(zoom),
+            backdrop: a.backdrop.evaluate(zoom).premultiplied(),
+            stars: a.stars.evaluate(zoom),
+        });
+    let (fog_near, fog_far) = view.fog_range_px();
+    let (horizon, horizon_normal) = view.sky_horizon_line();
+    // GL JS's `calculateFogBlendOpacity`: terrain fog fades in from 60° to
+    // 70° of pitch.
+    let fog_opacity = ((camera.pitch - 60.0) / 10.0).clamp(0.0, 1.0) as f32;
+    let at = orb_render::AtmosphereView {
+        horizon: horizon.as_vec2().to_array(),
+        horizon_normal: horizon_normal.as_vec2().to_array(),
+        height: view.viewport().height as f32,
+        fog_range: [fog_near as f32, fog_far as f32],
+        fog_opacity,
+        ray_inverse: ray_inverse(view, camera.target),
+        star_rotation: star_rotation(lights),
+        // The sky over a sphere; a low-zoom plane's is a plane's.
+        globe: (view.globe().filter(|g| g.plane.is_none()))
+            .map(|g| globe_sky(g, view, camera, lights, zoom)),
+    };
+    (paint, at)
+}
+
 /// A globe view's sphere for its sky and scattering, with the sun the
 /// style's directional light gives: GL JS's `getSunPos` for a positioned
 /// light (in the view for a viewport anchor, fixed to the globe for a map
 /// one), the real sun for a scene's `sun`, overhead without one.
-pub(crate) fn globe_sky(
+fn globe_sky(
     globe: &orb_camera::GlobeView,
     view: &orb_camera::View,
     camera: &orb_camera::CameraState,
@@ -118,7 +164,7 @@ pub(crate) fn globe_sky(
 /// on Earth-fixed axes. On a flat surface, camera-relative world space is
 /// east, north and up at the target (projected coordinates are eastings
 /// and northings), turned onto the Earth's axes there.
-pub(crate) fn ray_inverse(view: &orb_camera::View, target: Geodetic) -> [[f32; 4]; 4] {
+fn ray_inverse(view: &orb_camera::View, target: Geodetic) -> [[f32; 4]; 4] {
     let inverse = match view.globe().filter(|g| g.plane.is_none()) {
         Some(globe) => globe.view_proj.inverse(),
         None => glam::DMat4::from_mat3(orb_crs::sphere::frame(target)) * view.view_proj().inverse(),
@@ -128,7 +174,7 @@ pub(crate) fn ray_inverse(view: &orb_camera::View, target: Geodetic) -> [[f32; 4
 
 /// The stars' turn about the pole: the Greenwich sidereal angle in radians
 /// at the scene's sun time, so the sky turns with the sun; 0 without one.
-pub(crate) fn star_rotation(lights: Option<&Lights>) -> f32 {
+fn star_rotation(lights: Option<&Lights>) -> f32 {
     match lights
         .and_then(|l| l.directional.as_ref())
         .map(|d| &d.direction)
