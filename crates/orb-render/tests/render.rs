@@ -294,6 +294,43 @@ fn red_fill(h: &mut Harness) {
     );
 }
 
+/// A style with more render nodes than the scene was made for grows its
+/// node tables rather than failing (#19), and the last node draws.
+#[test]
+fn node_tables_grow_for_more_nodes() {
+    let mut h = Harness::with(4, 2, 8, Harness::SMALL, None);
+    assert_eq!(Harness::SMALL.nodes, 4);
+    h.renderer.set_nodes(&mut h.gpu, &[Family::Fill; 6]);
+    let last = 5;
+    h.renderer.set_paint(
+        &mut h.gpu,
+        last,
+        &NodePaint::Fill(FillPaint {
+            color: [1.0, 0.0, 0.0, 1.0],
+            opacity: 1.0,
+            translate: Default::default(),
+            table_mask: 0,
+            curves: [Curve::Step; 2],
+            state: Default::default(),
+        }),
+    );
+    let tile = h.tile();
+    h.renderer
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .unwrap();
+    h.renderer
+        .add_mesh(
+            &mut h.gpu,
+            tile,
+            (last, EXTENT),
+            &MeshData::new(&left_half_square(), &[], 0),
+            &Default::default(),
+        )
+        .unwrap();
+    let pixels = h.render();
+    assert_eq!(pixel(&pixels, 4, 32), RED);
+}
+
 #[test]
 fn nodes_wait_for_their_pipelines_without_blocking_the_frame() {
     let mut h = Harness::with(4, 2, 8, Harness::SMALL, Some(1));

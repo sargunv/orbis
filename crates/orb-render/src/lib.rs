@@ -672,12 +672,19 @@ impl Renderer {
         assert_eq!(nodes.len(), retained.len());
         let families: Vec<Family> = nodes.iter().map(|n| n.family).collect();
         let families = &families[..];
-        assert!(
-            families.len() as u32 <= self.scene.capacity().nodes,
-            "{} render nodes exceed the scene's {}",
-            families.len(),
-            self.scene.capacity().nodes
-        );
+        // A style with more nodes than ever drawn: the node tables grow.
+        // Every node's group binds its uniform again below.
+        let count = families.len() as u32;
+        let mut retired_uniforms = None;
+        if count > self.scene.capacity().nodes {
+            self.scene.grow_nodes(gpu, count);
+            let uniforms = gpu.create_buffer(&BufferDesc {
+                label: "node uniforms",
+                size: self.node_stride * u64::from(self.scene.capacity().nodes),
+                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            });
+            retired_uniforms = Some(std::mem::replace(&mut self.node_uniforms, uniforms));
+        }
         let mut old: Vec<Option<Node>> = self.nodes.drain(..).map(Some).collect();
         let mut map = vec![None; old.len()];
         let mut kept: Vec<Option<Node>> = Vec::with_capacity(families.len());
@@ -771,6 +778,10 @@ impl Renderer {
                 stack: None,
                 composite: None,
             });
+        }
+        // Every group that bound the old uniforms is gone.
+        if let Some(buffer) = retired_uniforms {
+            gpu.destroy_buffer(buffer);
         }
         self.assign_stacks();
         // Nodes moved: their drape paint is set again at their indices.

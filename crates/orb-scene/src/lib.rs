@@ -1215,6 +1215,40 @@ impl Scene {
         }
     }
 
+    /// Makes room for `nodes` render nodes: the node cull and draw argument
+    /// tables move to buffers twice the size until they fit. Their rows
+    /// are written whole again ([`remap_nodes`](Self::remap_nodes) follows).
+    pub fn grow_nodes(&mut self, gpu: &mut dyn Gpu, nodes: u32) {
+        if nodes <= self.capacity.nodes {
+            return;
+        }
+        let new = nodes.next_power_of_two();
+        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
+        let cull_only = if gpu.caps().tier == orb_hal::Tier::Compat {
+            BufferUsages::COPY_DST
+        } else {
+            storage
+        };
+        let mut buffer = |label: &str, words: usize, usage: BufferUsages| {
+            gpu.create_buffer(&BufferDesc {
+                label,
+                size: (u64::from(new) * words as u64 * 4).max(16),
+                usage,
+            })
+        };
+        let node_cull = buffer("node cull", NODE_CULL_WORDS, storage);
+        let args = buffer(
+            "draw args",
+            ARGS_WORDS,
+            cull_only | BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+        );
+        gpu.destroy_buffer(std::mem::replace(&mut self.buffers.node_cull, node_cull));
+        gpu.destroy_buffer(std::mem::replace(&mut self.buffers.args, args));
+        self.capacity.nodes = new;
+        self.candidates_dirty = true;
+        self.buffers_revision += 1;
+    }
+
     /// Renumbers the render nodes with their meshes: node `i` becomes
     /// `map[i]`, and the scene has `nodes.len()` nodes. Nodes mapped to
     /// `None` must hold no meshes.
