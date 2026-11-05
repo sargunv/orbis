@@ -362,6 +362,12 @@ until they do, where a tile that ran out part way used to write itself again
 for every tile it evicted (about 250 rewrites in a 6 s rotation at Seattle,
 40–100 MiB in one frame).
 
+[built at M3, decision 0027] A node's mesh holds at most 2,048 input points
+(larger features split by their parts), so no layer needs more than about
+40 k contiguous words. A tile that doesn't fit while others load waits for
+their stand-ins to go, and only then gives up: an `error` event, with a
+coarser tile standing in.
+
 ### 7.5 Invalidation, idle, pacing
 
 The scene store is persistent and versioned; dirty sets derive from version deltas, including whether placement must rerun (generalizing GL JS #8208). `idle` = no P0/P1 jobs, no transitions, placement settled, every resource settled **or failed** (the GL JS #8716 class) [verified]. Idle means zero frames; timers run only with symbol layers (ffi#735); one 30 fps icon must not cause 88 renders/s (#8208) [verified]. Pacing: Choreographer + `Surface.setFrameRate` on Android, never `Thread.sleep` (#4617); `CADisplayLink` ranges on Apple; rAF only while dirty on the web; host-driven in engines. Opt-in thermal adaptation: 0.75× render scale and 30 Hz under `thermalState`/`getThermalHeadroom` pressure.

@@ -316,6 +316,16 @@ pub(crate) struct LoadedStyle {
     terrain_unusable: bool,
 }
 
+/// A tile result waiting for room in the scene (`Map::apply_tile`).
+#[derive(Debug)]
+struct WaitingTile {
+    generation: u64,
+    /// The plan source's key.
+    source: u32,
+    tile: TileIndex,
+    build: TileResult,
+}
+
 /// A map: a style, a camera and the tiles they need, drawn by
 /// [`render`](Self::render).
 pub struct Map {
@@ -327,6 +337,12 @@ pub struct Map {
     placement_ms: f64,
     /// Arrived tiles wait for the next frame: this one spent its budget.
     tiles_deferred: bool,
+    /// Tiles that arrived when the scene had no room for them, while other
+    /// tiles' jobs were in flight: those tiles' arrivals free the stand-ins
+    /// they replace, so these try again on the next frames.
+    waiting: Vec<WaitingTile>,
+    /// Chunks the last frame's cull left out for want of room.
+    candidates_dropped: u32,
     pub(crate) services: Services,
     camera: CameraState,
     antialias_3d: bool,
@@ -513,6 +529,8 @@ impl Map {
             picking: Default::default(),
             placement_ms: 0.0,
             tiles_deferred: false,
+            waiting: Vec::new(),
+            candidates_dropped: 0,
             services,
             camera,
             surface: Surface::default(),
@@ -1173,6 +1191,7 @@ impl Map {
                     .all(|source| !matches!(source, SourceState::Resolving))
         }) && report.tiles_loading == 0
             && !self.tiles_deferred
+            && self.waiting.is_empty()
             && self.pending.is_empty()
             && labels_settled;
         report.idle = report.loaded && !fading && !self.labels.fading(now);
@@ -1219,6 +1238,19 @@ impl Map {
         let (renderer, _) = self.renderer.as_mut().expect("created above");
         report.frame = renderer.render(gpu, &frame, target, clear);
         report.scene = renderer.scene().stats();
+        // Chunks the cull has no room for don't draw: say so when it starts.
+        let dropped = report.scene.candidates_dropped;
+        if dropped > 0 && self.candidates_dropped == 0 {
+            let message = format!(
+                "{dropped} chunks are not drawn: the scene's candidate or compacted-index \
+                 memory is full"
+            );
+            self.events.push(MapEvent::Error {
+                message: message.clone(),
+            });
+            self.warnings.push(message);
+        }
+        self.candidates_dropped = dropped;
         report
     }
 
@@ -2226,6 +2258,29 @@ impl Map {
     fn apply_messages(&mut self, gpu: &mut dyn Gpu) {
         let started = self.services.clock.now();
         self.tiles_deferred = false;
+        for waiting in std::mem::take(&mut self.waiting) {
+            let bytes = waiting.build.host_bytes;
+            if self.tiles_deferred || waiting.generation != self.tile_generation {
+                if waiting.generation == self.tile_generation {
+                    self.waiting.push(waiting);
+                } else if let Some(bytes) = bytes {
+                    gpu.release_host_bytes(bytes);
+                }
+                continue;
+            }
+            match self.apply_tile(gpu, waiting.source, waiting.tile, Ok(waiting.build), false) {
+                Some(build) => self.waiting.push(WaitingTile { build, ..waiting }),
+                None => {
+                    if let Some(bytes) = bytes {
+                        gpu.release_host_bytes(bytes);
+                    }
+                }
+            }
+            self.tiles_deferred = self.services.clock.now() - started > TILE_APPLY_MS;
+        }
+        if self.tiles_deferred {
+            return;
+        }
         while let Ok(message) = self.receiver.try_recv() {
             let new_tile = matches!(message, Message::Tile { edit: None, .. });
             match message {
@@ -2374,15 +2429,28 @@ impl Map {
                     if let Some(edit) = edit {
                         self.finish_job(edit);
                     }
+                    let mut kept = false;
                     if generation == self.tile_generation {
                         match edit {
                             None if terrain => self.apply_terrain_tile(gpu, source, tile, result),
-                            None => self.apply_tile(gpu, source, tile, result),
+                            None => {
+                                if let Some(build) =
+                                    self.apply_tile(gpu, source, tile, result, true)
+                                {
+                                    kept = true;
+                                    self.waiting.push(WaitingTile {
+                                        generation,
+                                        source,
+                                        tile,
+                                        build,
+                                    });
+                                }
+                            }
                             Some(_) => self.apply_edit(gpu, source, tile, result),
                         }
                     }
                     // Uploaded or dropped, the result's host data is done.
-                    if let Some(bytes) = host_bytes {
+                    if let Some(bytes) = host_bytes.filter(|_| !kept) {
                         gpu.release_host_bytes(bytes);
                     }
                     if let Some(image) = host_image {
@@ -2412,14 +2480,13 @@ impl Map {
         source: u32,
         tile: TileIndex,
         result: Result<TileResult, String>,
-    ) {
+        arrived: bool,
+    ) -> Option<TileResult> {
         let (Some(style), Some((renderer, _))) = (&mut self.style, &mut self.renderer) else {
-            return;
+            return None;
         };
         let plan = style.worker.plan();
-        let Some(source) = plan.source(source) else {
-            return;
-        };
+        let source = plan.source(source)?;
         let SourceState::Ready {
             pyramid,
             loading,
@@ -2428,10 +2495,12 @@ impl Map {
             warp,
         } = &mut style.sources[source]
         else {
-            return;
+            return None;
         };
-        *loading = loading.saturating_sub(1);
-        self.events.sources.insert(source);
+        if arrived {
+            *loading = loading.saturating_sub(1);
+            self.events.sources.insert(source);
+        }
         let mut build = match result {
             Ok(build) => build,
             Err(e) => {
@@ -2441,19 +2510,19 @@ impl Map {
                 });
                 self.warnings.push(message);
                 pyramid.insert_empty(tile);
-                return;
+                return None;
             }
         };
         self.warnings.append(&mut build.warnings);
         if build.missing {
             pyramid.insert_missing(tile);
-            return;
+            return None;
         }
         if let Some(tile_image) = &build.image {
             // Neighbours' prepares refer to the tile's layer, so only a
             // tile the pyramid still wants is uploaded.
             if !pyramid.is_loading(tile) {
-                return;
+                return None;
             }
             let kind = plan
                 .image_kind(source)
@@ -2469,7 +2538,7 @@ impl Map {
                     None => {
                         // Nothing of the tile reaches the surface.
                         pyramid.insert_empty(tile);
-                        return;
+                        return None;
                     }
                 },
                 None => None,
@@ -2499,10 +2568,10 @@ impl Map {
                     pyramid.insert_empty(tile);
                 }
             }
-            return;
+            return None;
         }
         if !pyramid.is_loading(tile) {
-            return;
+            return None;
         }
         // Nodes the tile was laid out for before an edit changed them are
         // laid out again from the job's cached tile.
@@ -2521,12 +2590,24 @@ impl Map {
         // that runs out part way starts over, so making room one eviction
         // at a time would write the tile again for every tile evicted.
         let sizes = mesh_sizes(plan, &build);
-        while !renderer.scene().fits(sizes.iter().copied()) {
+        let mut fits = renderer.scene().fits(sizes.iter().copied());
+        while !fits {
             let Some(victim) = evict_unused(&mut style.sources, source) else {
                 break;
             };
             self.retired_ramps
                 .extend(remove_resident(renderer, victim, &mut style.states));
+            fits = renderer.scene().fits(sizes.iter().copied());
+        }
+        // Other tiles still loading will free the stand-ins they replace:
+        // until they have, this one waits rather than give up its own, and
+        // writes nothing meanwhile.
+        let others_loading = style
+            .sources
+            .iter()
+            .any(|s| matches!(s, SourceState::Ready { loading, .. } if *loading > 0));
+        if !fits && others_loading {
+            return Some(build);
         }
         // Then evict cached tiles the view doesn't use, least recently used
         // first, this source's before others'; then the tiles this one
@@ -2553,7 +2634,9 @@ impl Map {
                 Err(OutOfSpace) => {
                     let unused = evict_unused(&mut style.sources, source);
                     let victim = unused.or_else(|| match &mut style.sources[source] {
-                        SourceState::Ready { pyramid, .. } => pyramid.evict_within(tile),
+                        SourceState::Ready { pyramid, .. } if !others_loading => {
+                            pyramid.evict_within(tile)
+                        }
                         _ => None,
                     });
                     match victim {
@@ -2572,12 +2655,21 @@ impl Map {
             unreachable!("checked above");
         };
         let Some(mut resident) = resident else {
-            // Even the tiles in view don't leave room: draw what stands in.
-            self.warnings.push(format!(
-                "tile {tile:?} doesn't fit in scene memory with the tiles in view"
-            ));
+            if others_loading {
+                return Some(build);
+            }
+            // Even the tiles in view don't leave room: draw what stands in,
+            // and say so.
+            let message = format!(
+                "tile {tile:?} doesn't fit in scene memory with the tiles in view; \
+                 a coarser tile stands in"
+            );
+            self.events.push(MapEvent::Error {
+                message: message.clone(),
+            });
+            self.warnings.push(message);
             pyramid.insert_missing(tile);
-            return;
+            return None;
         };
         // A tile on another plane draws through its series' patches.
         if let Some(series) = warp.as_mut().and_then(|warp| warp.series(tile)) {
@@ -2609,6 +2701,7 @@ impl Map {
             let version = self.version;
             self.send_job(source, tile, Some(stale), false, Some(version));
         }
+        None
     }
 
     fn fetch_text(

@@ -1279,6 +1279,40 @@ mod tests {
         assert_eq!(differing, 0, "pixels differ from an unbounded scene");
     }
 
+    /// A tile the scene can't hold even with nothing else to wait for is
+    /// an error event and a warning, never a silent hole: its coarser
+    /// stand-in draws instead.
+    #[test]
+    fn tiles_that_cannot_fit_are_errors() {
+        let capacity = super::SceneCapacity {
+            vertex_words: 2048,
+            ..super::SceneCapacity::default()
+        };
+        let (mut offscreen, _, _) = super::Offscreen::load_with(&tokyo(15.0), capacity).unwrap();
+        let started = std::time::Instant::now();
+        let mut errors = Vec::new();
+        loop {
+            let report = offscreen.frame();
+            offscreen.map.take_warnings();
+            for event in offscreen.map.take_events() {
+                if let orb_runtime::MapEvent::Error { message } = event {
+                    errors.push(message);
+                }
+            }
+            if report.idle {
+                break;
+            }
+            assert!(started.elapsed().as_secs() < 60, "did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("doesn't fit in scene memory")),
+            "{errors:?}"
+        );
+    }
+
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 

@@ -17,7 +17,7 @@
 //! Jobs carry the revision they were laid out with; per node, results from
 //! before the edit that invalidated it are stale and laid out again.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use orb_crs::TileIndex;
@@ -325,11 +325,21 @@ impl Map {
         let namespace = style.image_namespace.expect("namespace");
         let mut stale_rows = Vec::new();
         if build.rows_only {
+            // A node's meshes split by features alike in every job, so the
+            // rows' n-th mesh of a node is the tile's n-th.
+            let mut seen: HashMap<u32, usize> = HashMap::new();
             for mesh in &build.meshes {
                 let Some(state) = style.nodes.get(&mesh.node) else {
                     continue;
                 };
-                let Some(current) = resident.meshes.iter_mut().find(|m| m.node == mesh.node) else {
+                let nth = seen.entry(mesh.node).or_default();
+                let current = resident
+                    .meshes
+                    .iter_mut()
+                    .filter(|m| m.node == mesh.node)
+                    .nth(*nth);
+                *nth += 1;
+                let Some(current) = current else {
                     continue;
                 };
                 // A relayout since will bring its own rows.
@@ -385,8 +395,11 @@ impl Map {
                 if build.revision < state.rows_epoch {
                     stale_rows.push(key);
                 }
-                if let Some(at) = resident.meshes.iter().position(|m| m.node == key) {
-                    let mut old = resident.meshes.swap_remove(at);
+                let (old, kept) = std::mem::take(&mut resident.meshes)
+                    .into_iter()
+                    .partition(|m| m.node == key);
+                resident.meshes = kept;
+                for mut old in old {
                     renderer.scene().remove_mesh(old.mesh);
                     for index in old.states.drain(..) {
                         style.states.release(index);
@@ -401,29 +414,32 @@ impl Map {
                     resident.symbols.retain(|s| s.layer != key / 2);
                     continue;
                 }
-                let Some(mesh) = build.meshes.iter().find(|m| m.node == key) else {
-                    continue;
-                };
-                if upload_mesh(
-                    gpu,
-                    renderer,
-                    plan,
-                    &build,
-                    mesh,
-                    resident,
-                    atlas,
-                    namespace,
-                    &mut style.states,
-                    &mut self.warnings,
-                )
-                .is_err()
-                {
-                    self.warnings.push(format!(
-                        "tile {tile:?} doesn't fit in scene memory; a layer is not drawn"
-                    ));
-                    continue;
+                for mesh in build.meshes.iter().filter(|m| m.node == key) {
+                    if upload_mesh(
+                        gpu,
+                        renderer,
+                        plan,
+                        &build,
+                        mesh,
+                        resident,
+                        atlas,
+                        namespace,
+                        &mut style.states,
+                        &mut self.warnings,
+                    )
+                    .is_err()
+                    {
+                        let message = format!(
+                            "tile {tile:?} doesn't fit in scene memory; a layer is not drawn"
+                        );
+                        self.events.push(crate::MapEvent::Error {
+                            message: message.clone(),
+                        });
+                        self.warnings.push(message);
+                        break;
+                    }
+                    self.counts.meshes_uploaded += 1;
                 }
-                self.counts.meshes_uploaded += 1;
             }
             build.symbols.retain(|s| {
                 style

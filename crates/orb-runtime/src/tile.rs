@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use orb_layout::{Mesh, extrusion, fill, line, point};
 use orb_render::{Family, pack_color};
-use orb_tile::{Layer, TileFrame, ValueRef};
+use orb_tile::{Layer, LayerBuilder, TileFrame, ValueRef};
 use orb_v8::{Kind, LayerKind, SourceKind};
 
 use crate::glyphs::GlyphCatalog;
@@ -113,6 +113,104 @@ fn id_string(value: ValueRef<'_>) -> String {
 }
 
 /// The features a node draws from `layer`, in slot order.
+/// Input points a node's mesh lays out at most. A dense city tile's
+/// extrusions take about 20 vertex words a point: in one mesh, up to a
+/// million contiguous words, which a scene holding the other tiles in view
+/// may not have in one block though it has the words. Pieces of about
+/// 40,000 words fit the gaps a nearly full scene leaves.
+pub(crate) const MESH_POINTS: usize = 2048;
+
+/// A node's selected features, split into meshes of at most
+/// [`MESH_POINTS`] input points, in order.
+#[derive(Debug)]
+struct Split {
+    /// When a feature alone is larger (tiles merge a block's buildings
+    /// into one multipolygon), its parts go to several pieces: a layer of
+    /// pieces, each with its feature's properties and id, and each piece's
+    /// feature in the tile's layer. The groups index this layer then.
+    pieces: Option<(Layer, Vec<u32>)>,
+    groups: Vec<Vec<u32>>,
+}
+
+/// Splits `features` of `layer` into groups for [`MESH_POINTS`]. Only the
+/// geometry decides it, so a job that sends only property rows splits as
+/// the layout did. A single part larger than the cap stays whole.
+fn split_features(layer: &Layer, features: Vec<u32>) -> Split {
+    let part_points = |feature: u32| -> Vec<usize> {
+        layer
+            .geometry(feature as usize)
+            .parts()
+            .map(|part| part.rings().map(<[_]>::len).sum())
+            .collect()
+    };
+    // (feature, parts range, points) per piece.
+    let mut pieces = Vec::new();
+    for &feature in &features {
+        let parts = part_points(feature);
+        let mut start = 0;
+        let mut total = 0;
+        for (i, &n) in parts.iter().enumerate() {
+            if i > start && total + n > MESH_POINTS {
+                pieces.push((feature, start..i, total));
+                start = i;
+                total = 0;
+            }
+            total += n;
+        }
+        pieces.push((feature, start..parts.len(), total));
+    }
+    let mut groups = vec![Vec::new()];
+    let mut total = 0;
+    for (i, (_, _, n)) in pieces.iter().enumerate() {
+        let group = groups.last_mut().expect("one group at least");
+        if !group.is_empty() && total + n > MESH_POINTS {
+            groups.push(Vec::new());
+            total = 0;
+        }
+        groups.last_mut().expect("pushed above").push(i as u32);
+        total += n;
+    }
+    if pieces.len() == features.len() {
+        let groups = groups
+            .into_iter()
+            .map(|g| g.into_iter().map(|i| features[i as usize]).collect())
+            .collect();
+        return Split {
+            pieces: None,
+            groups,
+        };
+    }
+    let properties: Vec<_> = layer.properties().collect();
+    let mut builder = LayerBuilder::new(layer.name(), layer.extent());
+    for (feature, parts, _) in &pieces {
+        let feature = *feature as usize;
+        builder.begin_feature(None, layer.geometry_type(feature));
+        if let Some(id) = layer.ids().get(feature) {
+            builder.set_id(id.to_owned());
+        }
+        for (key, column) in &properties {
+            if let Some(value) = column.get(feature) {
+                builder.set_property(key, value.to_owned());
+            }
+        }
+        let geometry = layer.geometry(feature);
+        for part in geometry.parts().skip(parts.start).take(parts.len()) {
+            builder.begin_part();
+            for ring in part.rings() {
+                builder.begin_ring();
+                for &p in ring {
+                    builder.push_vertex(p);
+                }
+            }
+        }
+    }
+    let origin = pieces.iter().map(|(feature, ..)| *feature).collect();
+    Split {
+        pieces: Some((builder.finish(), origin)),
+        groups,
+    }
+}
+
 fn features(plan: &StylePlan, node: &NodePlan, layer: &Layer, zoom: f64) -> Vec<u32> {
     let style_layer = &plan.style.layers[node.layer];
     let selection = match &style_layer.kind {
@@ -363,178 +461,216 @@ pub(crate) fn build(
         let Some((layer, name)) = node_layer(frame, plan, node, zoom) else {
             continue;
         };
-        let features = features(plan, node, layer, zoom);
-        if features.is_empty() {
+        let selected = features(plan, node, layer, zoom);
+        if selected.is_empty() {
             continue;
         }
-        // The family's words, then the node's input columns.
-        let family_words = plan.row_words(node)
-            - node
-                .gpu
-                .as_ref()
-                .map_or(0, |g| g.layout.column_words() as usize);
-        let row_words = plan.row_words(node);
-        let bytecode = plan.bytecode_mask(node);
-        let mesh = match node.family {
-            _ if select.rows_only => Mesh::default(),
-            // Symbol geometry is the layer's bucket; its nodes carry rows.
-            family @ (Family::SymbolIcon | Family::SymbolText) => {
-                let bucket = build.symbols.iter().find(|(k, _)| *k == node.key / 2);
-                let stream = bucket.map(|(_, b)| match family {
-                    Family::SymbolIcon => &b.bucket.icon,
-                    _ => &b.bucket.text,
-                });
-                if stream.is_none_or(|s| s.quads.is_empty()) {
-                    continue;
-                }
-                Mesh::default()
+        // Large layers draw as several meshes (see `split_features`);
+        // symbol nodes' rows follow their whole bucket.
+        let split = if node.family.is_symbol() {
+            Split {
+                pieces: None,
+                groups: vec![selected],
             }
-            _ => {
-                let mesh = layout(
-                    layer,
-                    &features,
-                    &style_layer.kind,
-                    node.family,
-                    zoom,
-                    subdivision,
-                );
-                if mesh.is_empty() {
-                    continue;
-                }
-                mesh
-            }
-        };
-
-        let properties = plan.paint_properties(node);
-        let mut maxima = vec![0.0f32; properties.len()];
-        let pattern = plan
-            .pattern(node)
-            .filter(|p| matches!(p.kind(), Kind::Source | Kind::Composite));
-        let line_effects = matches!(&style_layer.kind, LayerKind::Line(l) if l.paint.dasharray.as_constant() != Some(&None) || l.paint.gradient.is_some());
-        // Extrusion rows carry each feature's centroid, for terrain.
-        let per_feature = line_effects
-            || node.family == Family::FillExtrusion
-            || pattern.is_some()
-            || bytecode != 0
-            || properties.iter().any(PaintProperty::per_feature);
-        let props = if per_feature {
-            let mut rows = vec![0u32; features.len() * row_words];
-            if let Some(gpu) = &node.gpu {
-                let layout = &gpu.layout;
-                layout.pack_columns(layer, &features, row_words, family_words, &mut rows);
-                // Each column's range, as a maximum and a negated minimum,
-                // for the culling bounds of interpreted widths.
-                for [lo, hi] in layout.ranges(layer, &features) {
-                    maxima.extend([up(hi), up(-lo)]);
-                }
-            }
-            for (slot, property) in properties.iter().enumerate() {
-                if !property.per_feature() || bytecode & 1 << slot != 0 {
-                    continue;
-                }
-                let composite = property.kind() == Kind::Composite;
-                let next = zoom + 1.0;
-                let mut write = |i: usize, words: [u32; 2]| {
-                    let at = i * row_words + slot * 2;
-                    rows[at..at + 2].copy_from_slice(&words);
-                };
-                match property {
-                    PaintProperty::Color(p) => {
-                        let bound = p.bind(layer);
-                        for (i, &feature) in features.iter().enumerate() {
-                            let start = bound.evaluate(zoom, feature as usize).premultiplied();
-                            let end = if composite {
-                                bound.evaluate(next, feature as usize).premultiplied()
-                            } else {
-                                start
-                            };
-                            write(i, [pack_color(start), pack_color(end)]);
-                        }
-                    }
-                    PaintProperty::OptionalColor(p) => {
-                        let bound = p.bind(layer);
-                        let color = |zoom, feature: u32| {
-                            bound
-                                .evaluate(zoom, feature as usize)
-                                .map_or([0.0; 4], |c| c.premultiplied())
-                        };
-                        for (i, &feature) in features.iter().enumerate() {
-                            let start = color(zoom, feature);
-                            let end = if composite {
-                                color(next, feature)
-                            } else {
-                                start
-                            };
-                            write(i, [pack_color(start), pack_color(end)]);
-                        }
-                    }
-                    PaintProperty::Number(p) => {
-                        let bound = p.bind(layer);
-                        for (i, &feature) in features.iter().enumerate() {
-                            let start = bound.evaluate(zoom, feature as usize);
-                            let end = if composite {
-                                bound.evaluate(next, feature as usize)
-                            } else {
-                                start
-                            };
-                            maxima[slot] = maxima[slot].max(start).max(end);
-                            write(i, [start.to_bits(), end.to_bits()]);
-                        }
-                    }
-                }
-            }
-            if node.family == Family::FillExtrusion {
-                for (i, &feature) in features.iter().enumerate() {
-                    let [x, y] = orb_layout::extrusion::centroid(layer, feature, 8192);
-                    rows[i * row_words + 9] = u32::from(x as u16) | u32::from(y as u16) << 16;
-                }
-            }
-            rows
         } else {
-            Vec::new()
+            split_features(layer, selected)
         };
+        let (layer, origin) = match &split.pieces {
+            Some((pieces, origin)) => (pieces, Some(origin.as_slice())),
+            None => (layer, None),
+        };
+        for features in split.groups {
+            // The family's words, then the node's input columns.
+            let family_words = plan.row_words(node)
+                - node
+                    .gpu
+                    .as_ref()
+                    .map_or(0, |g| g.layout.column_words() as usize);
+            let row_words = plan.row_words(node);
+            let bytecode = plan.bytecode_mask(node);
+            let mesh = match node.family {
+                _ if select.rows_only => Mesh::default(),
+                // Symbol geometry is the layer's bucket; its nodes carry rows.
+                family @ (Family::SymbolIcon | Family::SymbolText) => {
+                    let bucket = build.symbols.iter().find(|(k, _)| *k == node.key / 2);
+                    let stream = bucket.map(|(_, b)| match family {
+                        Family::SymbolIcon => &b.bucket.icon,
+                        _ => &b.bucket.text,
+                    });
+                    if stream.is_none_or(|s| s.quads.is_empty()) {
+                        continue;
+                    }
+                    Mesh::default()
+                }
+                _ => {
+                    let mesh = layout(
+                        layer,
+                        &features,
+                        &style_layer.kind,
+                        node.family,
+                        zoom,
+                        subdivision,
+                    );
+                    if mesh.is_empty() {
+                        continue;
+                    }
+                    mesh
+                }
+            };
 
-        let mut props = props;
-        let mut images = Vec::new();
-        if let Some(pattern) = pattern {
-            let bound = pattern.bind(layer);
-            for (slot, &feature) in features.iter().enumerate() {
-                for (j, z) in [zoom - 1.0, zoom, zoom + 1.0].into_iter().enumerate() {
-                    if let Some(name) = bound.evaluate(z, feature as usize) {
-                        images.push(ImageRef {
-                            word: (slot * row_words
-                                + match node.family {
-                                    Family::Line => 12,
-                                    // The feature's centroid follows.
-                                    Family::FillExtrusion => 6,
-                                    _ => family_words - 3,
-                                }
-                                + j) as u32,
-                            key: orb_render::ImageKey::Name(name),
-                        });
+            let properties = plan.paint_properties(node);
+            let mut maxima = vec![0.0f32; properties.len()];
+            let pattern = plan
+                .pattern(node)
+                .filter(|p| matches!(p.kind(), Kind::Source | Kind::Composite));
+            let line_effects = matches!(&style_layer.kind, LayerKind::Line(l) if l.paint.dasharray.as_constant() != Some(&None) || l.paint.gradient.is_some());
+            // Extrusion rows carry each feature's centroid, for terrain.
+            let per_feature = line_effects
+                || node.family == Family::FillExtrusion
+                || pattern.is_some()
+                || bytecode != 0
+                || properties.iter().any(PaintProperty::per_feature);
+            let props = if per_feature {
+                let mut rows = vec![0u32; features.len() * row_words];
+                if let Some(gpu) = &node.gpu {
+                    let layout = &gpu.layout;
+                    layout.pack_columns(layer, &features, row_words, family_words, &mut rows);
+                    // Each column's range, as a maximum and a negated minimum,
+                    // for the culling bounds of interpreted widths.
+                    for [lo, hi] in layout.ranges(layer, &features) {
+                        maxima.extend([up(hi), up(-lo)]);
                     }
                 }
-            }
-            // Image slots are patched after upload, including host-held rows.
-            props.shrink_to_fit();
-        }
-        if let LayerKind::Line(l) = &style_layer.kind {
-            // Dash and pattern scales read the width at the tile's zoom per
-            // feature (word 18); an interpreted width has no table words.
-            if bytecode & 1 << 2 != 0 {
-                let width = l.paint.width.bind(layer);
-                for (i, &feature) in features.iter().enumerate() {
-                    props[i * row_words + 18] = width.evaluate(zoom, feature as usize).to_bits();
+                for (slot, property) in properties.iter().enumerate() {
+                    if !property.per_feature() || bytecode & 1 << slot != 0 {
+                        continue;
+                    }
+                    let composite = property.kind() == Kind::Composite;
+                    let next = zoom + 1.0;
+                    let mut write = |i: usize, words: [u32; 2]| {
+                        let at = i * row_words + slot * 2;
+                        rows[at..at + 2].copy_from_slice(&words);
+                    };
+                    match property {
+                        PaintProperty::Color(p) => {
+                            let bound = p.bind(layer);
+                            for (i, &feature) in features.iter().enumerate() {
+                                let start = bound.evaluate(zoom, feature as usize).premultiplied();
+                                let end = if composite {
+                                    bound.evaluate(next, feature as usize).premultiplied()
+                                } else {
+                                    start
+                                };
+                                write(i, [pack_color(start), pack_color(end)]);
+                            }
+                        }
+                        PaintProperty::OptionalColor(p) => {
+                            let bound = p.bind(layer);
+                            let color = |zoom, feature: u32| {
+                                bound
+                                    .evaluate(zoom, feature as usize)
+                                    .map_or([0.0; 4], |c| c.premultiplied())
+                            };
+                            for (i, &feature) in features.iter().enumerate() {
+                                let start = color(zoom, feature);
+                                let end = if composite {
+                                    color(next, feature)
+                                } else {
+                                    start
+                                };
+                                write(i, [pack_color(start), pack_color(end)]);
+                            }
+                        }
+                        PaintProperty::Number(p) => {
+                            let bound = p.bind(layer);
+                            for (i, &feature) in features.iter().enumerate() {
+                                let start = bound.evaluate(zoom, feature as usize);
+                                let end = if composite {
+                                    bound.evaluate(next, feature as usize)
+                                } else {
+                                    start
+                                };
+                                maxima[slot] = maxima[slot].max(start).max(end);
+                                write(i, [start.to_bits(), end.to_bits()]);
+                            }
+                        }
+                    }
                 }
-            }
-            let maxzoom = match &source_def.kind {
-                SourceKind::GeoJson(source) => source.options.max_zoom,
-                SourceKind::Vector(source) => source.tileset.maxzoom.unwrap_or(22.0) as u8,
-                _ => unreachable!("line source"),
+                if node.family == Family::FillExtrusion {
+                    for (i, &feature) in features.iter().enumerate() {
+                        let [x, y] = orb_layout::extrusion::centroid(layer, feature, 8192);
+                        rows[i * row_words + 9] = u32::from(x as u16) | u32::from(y as u16) << 16;
+                    }
+                }
+                rows
+            } else {
+                Vec::new()
             };
-            crate::line::textures(l, layer, &features, zoom, maxzoom, &mut props, &mut images);
-        }
-        let state_ids = plan.reads_state(node).then(|| {
+
+            let mut props = props;
+            let mut images = Vec::new();
+            if let Some(pattern) = pattern {
+                let bound = pattern.bind(layer);
+                for (slot, &feature) in features.iter().enumerate() {
+                    for (j, z) in [zoom - 1.0, zoom, zoom + 1.0].into_iter().enumerate() {
+                        if let Some(name) = bound.evaluate(z, feature as usize) {
+                            images.push(ImageRef {
+                                word: (slot * row_words
+                                    + match node.family {
+                                        Family::Line => 12,
+                                        // The feature's centroid follows.
+                                        Family::FillExtrusion => 6,
+                                        _ => family_words - 3,
+                                    }
+                                    + j) as u32,
+                                key: orb_render::ImageKey::Name(name),
+                            });
+                        }
+                    }
+                }
+                // Image slots are patched after upload, including host-held rows.
+                props.shrink_to_fit();
+            }
+            if let LayerKind::Line(l) = &style_layer.kind {
+                // Dash and pattern scales read the width at the tile's zoom per
+                // feature (word 18); an interpreted width has no table words.
+                if bytecode & 1 << 2 != 0 {
+                    let width = l.paint.width.bind(layer);
+                    for (i, &feature) in features.iter().enumerate() {
+                        props[i * row_words + 18] =
+                            width.evaluate(zoom, feature as usize).to_bits();
+                    }
+                }
+                let maxzoom = match &source_def.kind {
+                    SourceKind::GeoJson(source) => source.options.max_zoom,
+                    SourceKind::Vector(source) => source.tileset.maxzoom.unwrap_or(22.0) as u8,
+                    _ => unreachable!("line source"),
+                };
+                crate::line::textures(l, layer, &features, zoom, maxzoom, &mut props, &mut images);
+            }
+            let state_ids = plan.reads_state(node).then(|| {
+                let promote = match &source_def.kind {
+                    SourceKind::Vector(v) => v
+                        .promote_id
+                        .as_ref()
+                        .and_then(|p| p.key(name))
+                        .and_then(|key| layer.property(key)),
+                    _ => None,
+                };
+                features
+                    .iter()
+                    .map(|&feature| {
+                        let value = match promote {
+                            Some(column) => column.get(feature as usize),
+                            None => layer.ids().get(feature as usize),
+                        };
+                        value.map_or(NO_ID, |value| {
+                            let next = ids.len() as u32;
+                            *ids.entry(id_string(value)).or_insert(next)
+                        })
+                    })
+                    .collect()
+            });
             let promote = match &source_def.kind {
                 SourceKind::Vector(v) => v
                     .promote_id
@@ -543,126 +679,107 @@ pub(crate) fn build(
                     .and_then(|key| layer.property(key)),
                 _ => None,
             };
-            features
-                .iter()
-                .map(|&feature| {
-                    let value = match promote {
-                        Some(column) => column.get(feature as usize),
-                        None => layer.ids().get(feature as usize),
-                    };
-                    value.map_or(NO_ID, |value| {
-                        let next = ids.len() as u32;
-                        *ids.entry(id_string(value)).or_insert(next)
-                    })
-                })
-                .collect()
-        });
-        let promote = match &source_def.kind {
-            SourceKind::Vector(v) => v
-                .promote_id
-                .as_ref()
-                .and_then(|p| p.key(name))
-                .and_then(|key| layer.property(key)),
-            _ => None,
-        };
-        let hits: Vec<crate::HitFeature> = if matches!(
-            node.family,
-            Family::Fill | Family::Line | Family::Circle | Family::FillExtrusion
-        ) {
-            features
-                .iter()
-                .filter(|&&f| match node.family {
-                    Family::Fill | Family::FillExtrusion => {
-                        layer.geometry_type(f as usize) == orb_tile::GeometryType::Polygon
-                    }
-                    Family::Line => {
-                        layer.geometry_type(f as usize) != orb_tile::GeometryType::Point
-                    }
-                    _ => true,
-                })
-                .map(|&f| {
-                    let i = f as usize;
-                    let (kind, radius, stroke, height) = match &style_layer.kind {
-                        LayerKind::Circle(c) => (
-                            2,
-                            c.paint.radius.bind(layer).evaluate(zoom, i),
-                            c.paint.stroke_width.bind(layer).evaluate(zoom, i),
-                            0.0,
-                        ),
-                        LayerKind::Line(l) => (
-                            1,
-                            l.paint.width.bind(layer).evaluate(zoom, i) / 2.0,
-                            0.0,
-                            0.0,
-                        ),
-                        LayerKind::FillExtrusion(e) => {
-                            (0, 0.0, 0.0, e.paint.height.bind(layer).evaluate(zoom, i))
-                        }
-                        _ => (0, 0.0, 0.0, 0.0),
-                    };
-                    crate::HitFeature {
-                        id: promote.unwrap_or(layer.ids()).get(i).map(id_string),
-                        feature: f,
-                        kind,
-                        radius,
-                        stroke,
-                        height,
-                        base: match &style_layer.kind {
-                            LayerKind::FillExtrusion(e) => {
-                                e.paint.base.bind(layer).evaluate(zoom, i)
-                            }
-                            _ => 0.0,
-                        },
-                        extent: layer.extent(),
-                        parts: layer
-                            .geometry(i)
-                            .parts()
-                            .map(|p| {
-                                p.rings()
-                                    .map(|r| {
-                                        let mut points = r.to_vec();
-                                        if kind == 2 {
-                                            // Circle buckets own only vertices inside the half-open tile.
-                                            points.retain(|p| {
-                                                p.iter()
-                                                    .all(|v| *v >= 0 && *v < layer.extent() as i32)
-                                            });
-                                        } else if kind == 1
-                                            && layer.geometry_type(i)
-                                                == orb_tile::GeometryType::Polygon
-                                            && let Some(first) = points.first().copied()
-                                        {
-                                            points.push(first);
-                                        }
-                                        points
-                                    })
-                                    .collect()
-                            })
-                            .collect(),
-                    }
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        build.meshes.push(NodeMesh {
-            hits: crate::MeshHits::new(&hits),
-            node: node.key,
-            extent: if matches!(
+            let hits: Vec<crate::HitFeature> = if matches!(
                 node.family,
-                Family::Line | Family::FillExtrusion | Family::SymbolIcon | Family::SymbolText
+                Family::Fill | Family::Line | Family::Circle | Family::FillExtrusion
             ) {
-                8192
+                features
+                    .iter()
+                    .filter(|&&f| match node.family {
+                        Family::Fill | Family::FillExtrusion => {
+                            layer.geometry_type(f as usize) == orb_tile::GeometryType::Polygon
+                        }
+                        Family::Line => {
+                            layer.geometry_type(f as usize) != orb_tile::GeometryType::Point
+                        }
+                        _ => true,
+                    })
+                    .map(|&f| {
+                        let i = f as usize;
+                        let (kind, radius, stroke, height) = match &style_layer.kind {
+                            LayerKind::Circle(c) => (
+                                2,
+                                c.paint.radius.bind(layer).evaluate(zoom, i),
+                                c.paint.stroke_width.bind(layer).evaluate(zoom, i),
+                                0.0,
+                            ),
+                            LayerKind::Line(l) => (
+                                1,
+                                l.paint.width.bind(layer).evaluate(zoom, i) / 2.0,
+                                0.0,
+                                0.0,
+                            ),
+                            LayerKind::FillExtrusion(e) => {
+                                (0, 0.0, 0.0, e.paint.height.bind(layer).evaluate(zoom, i))
+                            }
+                            _ => (0, 0.0, 0.0, 0.0),
+                        };
+                        crate::HitFeature {
+                            id: promote.unwrap_or(layer.ids()).get(i).map(id_string),
+                            // Queries read the feature from the tile's layer.
+                            feature: origin.map_or(f, |origin| origin[i]),
+                            kind,
+                            radius,
+                            stroke,
+                            height,
+                            base: match &style_layer.kind {
+                                LayerKind::FillExtrusion(e) => {
+                                    e.paint.base.bind(layer).evaluate(zoom, i)
+                                }
+                                _ => 0.0,
+                            },
+                            extent: layer.extent(),
+                            parts: layer
+                                .geometry(i)
+                                .parts()
+                                .map(|p| {
+                                    p.rings()
+                                        .map(|r| {
+                                            let mut points = r.to_vec();
+                                            if kind == 2 {
+                                                // Circle buckets own only vertices inside the half-open tile.
+                                                points.retain(|p| {
+                                                    p.iter().all(|v| {
+                                                        *v >= 0 && *v < layer.extent() as i32
+                                                    })
+                                                });
+                                            } else if kind == 1
+                                                && layer.geometry_type(i)
+                                                    == orb_tile::GeometryType::Polygon
+                                                && let Some(first) = points.first().copied()
+                                            {
+                                                points.push(first);
+                                            }
+                                            points
+                                        })
+                                        .collect()
+                                })
+                                .collect(),
+                        }
+                    })
+                    .collect()
             } else {
-                layer.extent()
-            },
-            mesh,
-            props,
-            row_words: row_words as u32,
-            maxima,
-            images,
-            state_ids,
-        });
+                Vec::new()
+            };
+            build.meshes.push(NodeMesh {
+                hits: crate::MeshHits::new(&hits),
+                node: node.key,
+                extent: if matches!(
+                    node.family,
+                    Family::Line | Family::FillExtrusion | Family::SymbolIcon | Family::SymbolText
+                ) {
+                    8192
+                } else {
+                    layer.extent()
+                },
+                mesh,
+                props,
+                row_words: row_words as u32,
+                maxima,
+                images,
+                state_ids,
+            });
+        }
     }
     let mut table: Vec<(String, u32)> = ids.into_iter().collect();
     table.sort_unstable_by_key(|&(_, i)| i);
@@ -731,6 +848,173 @@ mod tests {
         let polygon = &hits(Family::Line)[1].parts[0][0];
         assert_eq!(polygon.first(), polygon.last());
         assert_eq!(hits(Family::Circle)[0].parts[0][0], vec![[5, 5]]);
+    }
+
+    /// A dense city tile: thousands of buildings whose extrusions would need
+    /// one contiguous block of hundreds of thousands of vertex words. They
+    /// lay out as several meshes of at most `MESH_POINTS` input points, in
+    /// feature order, and a job sending only property rows splits alike.
+    #[test]
+    fn dense_layers_split_into_meshes() {
+        let plan = plan(
+            r#"{"version":8,"sources":{"s":{"type":"vector","tiles":["test://{z}/{x}/{y}"]}},
+          "layers":[{"id":"b","type":"fill-extrusion","source":"s","source-layer":"building",
+            "paint":{"fill-extrusion-height":["get","h"]}}]}"#,
+        );
+        let mut builder = LayerBuilder::new("building", 4096);
+        // 60 × 60 buildings of 8 points each: 28,800 points.
+        for i in 0..3600 {
+            let (x, y) = ((i % 60) * 64 + 8, (i / 60) * 64 + 8);
+            builder.begin_feature(None, GeometryType::Polygon);
+            builder.set_property("h", Value::F64(f64::from(10 + i % 50)));
+            builder.begin_part();
+            builder.begin_ring();
+            for [dx, dy] in [
+                [0, 0],
+                [20, 0],
+                [40, 0],
+                [40, 20],
+                [40, 40],
+                [20, 40],
+                [0, 40],
+                [0, 20],
+            ] {
+                builder.push_vertex([x + dx, y + dy]);
+            }
+        }
+        let frame = TileFrame {
+            layers: vec![builder.finish()],
+        };
+        let full = build(
+            &frame,
+            &plan,
+            0,
+            15.0,
+            None,
+            Select::default(),
+            no_symbols(),
+        )
+        .unwrap();
+        let per_mesh = MESH_POINTS / 8;
+        assert_eq!(
+            full.meshes.len(),
+            3600usize.div_ceil(per_mesh),
+            "whole buildings a mesh"
+        );
+        let mut features = Vec::new();
+        for mesh in &full.meshes {
+            let hits = mesh.hits.decode();
+            let points: usize = hits.iter().map(|h| h.parts[0][0].len()).sum();
+            assert!(points <= MESH_POINTS, "{points} points in one mesh");
+            features.extend(hits.iter().map(|h| h.feature));
+        }
+        assert_eq!(
+            features,
+            (0..3600).collect::<Vec<u32>>(),
+            "every feature once, in order"
+        );
+        let rows = build(
+            &frame,
+            &plan,
+            0,
+            15.0,
+            None,
+            Select {
+                rows_only: true,
+                ..Select::default()
+            },
+            no_symbols(),
+        )
+        .unwrap();
+        let row_counts = |b: &TileBuild| -> Vec<usize> {
+            b.meshes
+                .iter()
+                .map(|m| m.props.len() / m.row_words as usize)
+                .collect()
+        };
+        assert_eq!(row_counts(&rows), row_counts(&full));
+    }
+
+    /// OpenFreeMap merges a dense z14 tile's buildings into a few
+    /// multipolygons (lower Manhattan: one of 36,347 points). A feature
+    /// over the cap splits by its parts into pieces that keep its
+    /// properties and id; picking still names the tile's feature.
+    #[test]
+    fn merged_buildings_split_by_parts() {
+        let plan = plan(
+            r#"{"version":8,"sources":{"s":{"type":"vector","tiles":["test://{z}/{x}/{y}"]}},
+          "layers":[{"id":"b","type":"fill-extrusion","source":"s","source-layer":"building",
+            "paint":{"fill-extrusion-height":["get","h"]}}]}"#,
+        );
+        let mut builder = LayerBuilder::new("building", 4096);
+        builder.begin_feature(Some(7), GeometryType::Polygon);
+        builder.set_property("h", Value::F64(30.0));
+        for i in 0..3600 {
+            let (x, y) = ((i % 60) * 64 + 8, (i / 60) * 64 + 8);
+            builder.begin_part();
+            builder.begin_ring();
+            for [dx, dy] in [[0, 0], [40, 0], [40, 40], [0, 40]] {
+                builder.push_vertex([x + dx, y + dy]);
+            }
+        }
+        builder.begin_feature(Some(8), GeometryType::Polygon);
+        builder.set_property("h", Value::F64(10.0));
+        builder.begin_part();
+        builder.begin_ring();
+        for p in [[0, 0], [8, 0], [8, 8], [0, 8]] {
+            builder.push_vertex(p);
+        }
+        let frame = TileFrame {
+            layers: vec![builder.finish()],
+        };
+        let result = build(
+            &frame,
+            &plan,
+            0,
+            15.0,
+            None,
+            Select::default(),
+            no_symbols(),
+        )
+        .unwrap();
+        // 14,400 points of the first feature in pieces of whole buildings,
+        // then the second feature with the last piece.
+        let per_piece = MESH_POINTS / 4;
+        let mut expected = vec![per_piece; 3600 / per_piece];
+        expected.push(3600 % per_piece + 1);
+        let parts: Vec<usize> = result
+            .meshes
+            .iter()
+            .map(|m| m.hits.decode().iter().map(|h| h.parts.len()).sum())
+            .collect();
+        assert_eq!(parts, expected, "4 points a building");
+        let features: Vec<u32> = result
+            .meshes
+            .iter()
+            .flat_map(|m| m.hits.decode().into_iter().map(|h| h.feature))
+            .collect();
+        let mut pieces = vec![0; expected.len()];
+        pieces.push(1);
+        assert_eq!(features, pieces, "every piece names the tile's feature");
+        let ids: Vec<Option<String>> = result
+            .meshes
+            .iter()
+            .flat_map(|m| m.hits.decode().into_iter().map(|h| h.id))
+            .collect();
+        assert_eq!(ids.len(), expected.len() + 1);
+        assert!(
+            ids[..expected.len()]
+                .iter()
+                .all(|id| id.as_deref() == Some("7"))
+        );
+        assert_eq!(ids.last(), Some(&Some("8".to_string())));
+        // A property row a piece.
+        let rows: usize = result
+            .meshes
+            .iter()
+            .map(|m| m.props.len() / m.row_words as usize)
+            .sum();
+        assert_eq!(rows, expected.len() + 1);
     }
 
     fn frame() -> TileFrame {
