@@ -294,7 +294,32 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
             f::LIGHT_POSITION,
             &[p[0], p[1], p[2], f32::from(u8::from(l.terrain))],
         );
+        // `scene_lights.wgsl`'s terms, once a frame: the lights' axes keep
+        // GL JS's (x negated, y south), the lit map's east, north and up.
+        let linear = |c: [f32; 3], level: f32| {
+            let c = c.map(|c| {
+                if c <= 0.04045 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            });
+            [c[0] * level, c[1] * level, c[2] * level, 0.0]
+        };
+        b.f(f::LIT_AMBIENT, &linear(a, l.ambient_level));
+        b.f(f::LIT_DIRECTIONAL, &linear(d, l.directional_level));
+        let toward = [-p[0], p[1], p[2]];
+        let length = toward.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let toward = if length > 0.0 {
+            toward.map(|v| v / length)
+        } else {
+            [0.0, 0.0, -1.0]
+        };
+        b.f(f::LIT_TOWARD_LIGHT, &[toward[0], toward[1], toward[2], 0.0]);
     }
+    let (sb, cb) = frame.bearing.sin_cos();
+    let (sp, cp) = frame.pitch.sin_cos();
+    b.f(f::LIT_TOWARD_EYE, &[-sb * sp, -cb * sp, cp, 0.0]);
     // Where a casting chunk's shadow reaches, per world unit of height,
     // for the cull.
     if let Some(reach) = frame.shadow().and_then(|_| frame.lights?.shadow_reach()) {

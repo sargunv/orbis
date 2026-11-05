@@ -25,9 +25,9 @@ struct MapOut {
 };
 
 // A flat layer's colour shaded with its node's material where the
-// Earth's up is `up`, facing `normal` (east, north and up there), its
-// glint widened by a slope variance `spread`. A night light's colour is
-// light instead, added to the map beneath where the sun is down.
+// Earth's up is `up`, facing `normal` (in the target's axes, as `up` is),
+// its glint widened by a slope variance `spread`. A night light's colour
+// is light instead, added to the map beneath where the sun is down.
 fn map_lit(color: vec4<f32>, node: u32, up: vec3<f32>, normal: vec3<f32>, spread: f32) -> MapOut {
     let a = color.a;
     if a <= 0.0 {
@@ -48,12 +48,13 @@ fn map_lit(color: vec4<f32>, node: u32, up: vec3<f32>, normal: vec3<f32>, spread
     m.self_lit = n.self_lit;
     m.occlusion = 1.0;
     m.emitted = vec3<f32>(0.0);
-    m.normal = turn_to_up(normal, up);
+    m.normal = normal;
     return MapOut(vec4<f32>(linear_to_srgb(pbr_light(m, lights)) * a, a));
 }
 
+// Flat layers face the Earth's up.
 fn map_out(color: vec4<f32>, node: u32, up: vec3<f32>) -> MapOut {
-    return map_lit(color, node, up, vec3<f32>(0.0, 0.0, 1.0), 0.0);
+    return map_lit(color, node, up, up, 0.0);
 }
 
 fn map_out_at(color: vec4<f32>, node: u32, ground: GroundPoint, up: vec3<f32>) -> MapOut {
@@ -62,7 +63,7 @@ fn map_out_at(color: vec4<f32>, node: u32, ground: GroundPoint, up: vec3<f32>) -
         return map_out(color, node, up);
     }
     let w = waves(ground, steepness);
-    return map_lit(color, node, up, w.normal, w.spread);
+    return map_lit(color, node, up, turn_to_up(w.normal, up), w.spread);
 }
 
 // Water's surface at a ground point: its normal (east, north, up) and the

@@ -68,6 +68,14 @@ struct Frame {
     light_ambient: vec4<f32>,
     light_color: vec4<f32>,
     light_position: vec4<f32>,
+    // The same lights as the lit map shades with (`scene_lights`), worked
+    // out once a frame: linear ambient and directional colours times their
+    // levels, and unit vectors toward the directional light (straight
+    // down without one) and the eye, in east, north and up at the target.
+    lit_ambient: vec4<f32>,
+    lit_directional: vec4<f32>,
+    lit_toward_light: vec4<f32>,
+    lit_toward_eye: vec4<f32>,
     // The low-zoom surface (orb-scene's `FrameGlobe`), the sphere or a plane
     // as `globe_plane` says: camera-relative ECEF metres →
     // clip, the horizon plane (`dot(xyz, p) + w`: 1 under the eye, 0 at the
