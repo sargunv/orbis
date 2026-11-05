@@ -10,17 +10,16 @@
 //! mode (`--at`'s zoom is Web Mercator's, as the style's own plane is known
 //! only once it loads). `tiles` draws every tile of a tile matrix set on the
 //! scene's plane in Tile mode, `dir/z/col/row.png`, rows in the set's own
-//! order; `--bbox` (degrees) limits them to the tiles it touches. Both take
-//! `--timeout` seconds per picture (60 by default).
+//! order; `--bbox` (degrees) limits them to the tiles it touches.
 
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use orb_api::{
-    CameraState, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target, TileMatrixSet,
+    CameraState, Geodetic, Image, Map, MapOptions, Runtime, RuntimeOptions, TileMatrixSet,
     TileRequest,
 };
 
@@ -91,12 +90,11 @@ fn run(args: Vec<String>) -> Result<(), String> {
     };
     let output = PathBuf::from(args.get(&["-o", "--output"]).ok_or("-o is required")?);
     let style = style_url(style)?;
-    let timeout = Duration::from_secs_f64(args.number("--timeout", 60.0)?);
     let scale = args.number("--scale", 1.0)?;
     let runtime = Runtime::new(&RuntimeOptions::default()).map_err(|e| e.to_string())?;
     match command.as_str() {
-        "render" => render(&runtime, &style, &args, &output, scale, timeout),
-        "tiles" => tiles(&runtime, &style, &args, &output, scale, timeout),
+        "render" => render(&runtime, &style, &args, &output, scale),
+        "tiles" => tiles(&runtime, &style, &args, &output, scale),
         other => Err(format!("unknown command {other}")),
     }
 }
@@ -118,7 +116,6 @@ fn render(
     args: &Args,
     output: &Path,
     scale: f64,
-    timeout: Duration,
 ) -> Result<(), String> {
     let camera = match args.numbers("--at", ',')?.as_deref() {
         None => None,
@@ -147,21 +144,16 @@ fn render(
         },
     );
     map.load_style_url(style);
-    let px = |v: f64| (v * scale).round() as u32;
-    let mut target = Target::texture(runtime, px(width), px(height), scale);
     let started = Instant::now();
-    let report = map
-        .render_still(&mut target, timeout)
+    let image = map
+        .snapshot(width as u32, height as u32, scale)
         .map_err(|e| e.to_string())?;
     warn(&mut map);
-    let pixels = target.read_pixels().map_err(|e| e.to_string())?;
-    let (w, h) = target.size();
-    write_png(output, w, h, pixels)?;
+    write_png(output, image)?;
     eprintln!(
-        "orbis: {} in {:.0} ms: {} tiles drawn",
+        "orbis: {} in {:.0} ms",
         output.display(),
         started.elapsed().as_secs_f64() * 1000.0,
-        report.tiles_drawn
     );
     Ok(())
 }
@@ -172,7 +164,6 @@ fn tiles(
     args: &Args,
     output: &Path,
     scale: f64,
-    timeout: Duration,
 ) -> Result<(), String> {
     let tms = args.get(&["--tms"]).ok_or("--tms is required")?;
     let tms = if tms.ends_with(".json") {
@@ -201,25 +192,21 @@ fn tiles(
     let mut count = 0;
     for z in zooms.0.max(tms.min_zoom())..=zooms.1.min(tms.max_zoom()) {
         for index in tms.tiles_in(rect, z) {
-            let pixels = map
-                .render_tile(
-                    &TileRequest {
-                        tile_matrix_set: tms.clone(),
-                        z,
-                        col: index.col,
-                        row: index.row,
-                        size,
-                        scale,
-                    },
-                    timeout,
-                )
+            let image = map
+                .render_tile(&TileRequest {
+                    tile_matrix_set: tms.clone(),
+                    z,
+                    col: index.col,
+                    row: index.row,
+                    size,
+                    scale,
+                })
                 .map_err(|e| format!("{z}/{}/{}: {e}", index.col, index.row))?;
             warn(&mut map);
             let dir = output.join(z.to_string()).join(index.col.to_string());
             std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-            let px = (f64::from(size) * scale) as u32;
             let path = dir.join(format!("{}.png", tms.native_row(index)));
-            write_png(&path, px, px, pixels)?;
+            write_png(&path, image)?;
             count += 1;
         }
     }
@@ -254,8 +241,13 @@ fn warn(map: &mut Map) {
     }
 }
 
-/// Writes premultiplied RGBA8 as a PNG of straight alpha.
-fn write_png(path: &Path, width: u32, height: u32, mut pixels: Vec<u8>) -> Result<(), String> {
+/// Writes a picture as a PNG of straight alpha.
+fn write_png(path: &Path, image: Image) -> Result<(), String> {
+    let Image {
+        width,
+        height,
+        mut pixels,
+    } = image;
     for p in pixels.as_chunks_mut::<4>().0 {
         let a = u32::from(p[3]);
         if a != 0 && a != 255 {

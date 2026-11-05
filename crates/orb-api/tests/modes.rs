@@ -2,14 +2,11 @@
 //! and tiles drawn apart agree on the labels across their edges.
 
 use std::path::PathBuf;
-use std::time::Duration;
 
 use orb_api::{
-    CameraState, CameraTarget, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target,
-    TileMatrixSet, TileRequest,
+    CameraState, CameraTarget, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, TileMatrixSet,
+    TileRequest,
 };
-
-const TIMEOUT: Duration = Duration::from_secs(60);
 
 fn data() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -76,11 +73,7 @@ fn mercator() -> TileMatrixSet {
 #[test]
 fn still_output_repeats_byte_for_byte() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
-    let still = |map: &mut Map| {
-        let mut target = Target::texture(&runtime, 512, 384, 1.0);
-        map.render_still(&mut target, TIMEOUT).unwrap();
-        target.read_pixels().unwrap()
-    };
+    let still = |map: &mut Map| map.snapshot(512, 384, 1.0).unwrap().pixels;
     let station = Geodetic::new(139.7671, 35.6812);
     let mut map = Map::new(
         &runtime,
@@ -128,7 +121,7 @@ fn edges(style: &str, at: Geodetic, z: u8, size: u32) -> (usize, Vec<Label>, boo
             size,
             scale: 1.0,
         };
-        let pixels = map.render_tile(&request, TIMEOUT).unwrap();
+        let pixels = map.render_tile(&request).unwrap().pixels;
         // The view holds the tile and a tile around it.
         let s = f64::from(size);
         let (x0, y0) = ((f64::from(col) - 1.0) * s, (f64::from(row) - 1.0) * s);

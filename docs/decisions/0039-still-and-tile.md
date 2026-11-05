@@ -11,13 +11,15 @@ sit on the same frames as an interactive map.
   tiles), and placement starts from nothing each time it runs, so its
   variable anchors, orientations and fades never depend on earlier frames.
   Everything else is the ordinary frame.
-- **`orb_api::Map::render_still`** draws frames until two in a row are
-  idle, waiting on the map's wake (a frame's time at most, for clock-driven
-  work) between them, and fails after a timeout. **`render_tile`** draws one
-  tile of a tile matrix set on the scene's plane: a camera centred on it,
-  looking straight down and unrotated, in a target three tiles wide, and
-  returns the middle tile's pixels. The camera store isn't touched; the next
-  interactive frame takes its camera back.
+- **`orb_api::Map::snapshot(width, height, scale)`** draws frames into a
+  texture of its own until two in a row are idle, waiting on the map's wake
+  (a frame's time at most, for clock-driven work) between them, and returns
+  the `Image`; it fails after a minute (`STILL_TIMEOUT`). **`render_tile`**
+  draws one tile of a tile matrix set on the scene's plane: a camera centred
+  on it, looking straight down and unrotated, in a texture three tiles wide,
+  and returns the middle tile's `Image`. The camera store isn't touched; the
+  next interactive frame takes its camera back. These are the snapshot and
+  tile API of decision 0040, for the bindings and the web package to mirror.
 - **Tile-scope placement** (`orb_symbol::Scope::Tiles`). The scene hands the
   placement lane, beside the frame, each of the 3×3 grid tiles around the
   drawn one as a view of its own (centred on it, the tile's size). Placement

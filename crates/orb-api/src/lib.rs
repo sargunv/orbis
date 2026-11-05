@@ -21,7 +21,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-pub use map::{Event, Map, MapOptions, TileRequest};
+pub use map::{Event, Image, Map, MapOptions, STILL_TIMEOUT, TileRequest};
 pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraTarget, Change, EaseOptions, Easing, FitOptions,
     FlyOptions, Padding, Phase,

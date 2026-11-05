@@ -65,6 +65,17 @@ pub enum Event {
 
 type WakeHook = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
 
+/// How long still output waits for its data: a minute.
+pub const STILL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A picture: premultiplied RGBA8, rows top to bottom.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
 /// A tile to draw with [`Map::render_tile`].
 #[derive(Clone, Debug)]
 pub struct TileRequest {
@@ -96,9 +107,9 @@ pub struct Map {
     woken: Arc<AtomicBool>,
     /// Notified with `woken`, for still output to wait on.
     signal: Arc<(Mutex<()>, Condvar)>,
-    /// What [`render_tile`](Self::render_tile) draws into: the tile with a
+    /// What still output last drew into: a snapshot, or a tile with a
     /// tile of its neighbours around it.
-    tile_target: Option<Target>,
+    offscreen: Option<Target>,
     hook: WakeHook,
     /// Marks the map woken and calls the hook, from any thread.
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -186,7 +197,7 @@ impl Map {
             terrain: 0,
             woken,
             signal,
-            tile_target: None,
+            offscreen: None,
             hook,
             wake,
             events: VecDeque::new(),
@@ -425,29 +436,38 @@ impl Map {
         self.frame(target, true)
     }
 
-    /// Draws what the camera shows once everything in view has loaded and
-    /// nothing fades (still output): labels place as if nothing had been
-    /// placed before, so the same style, data and camera always draw the
-    /// same pixels. Renders as many frames as that takes, waiting for data
-    /// in between; an error if it takes longer than `timeout`.
-    pub fn render_still(
-        &mut self,
-        target: &mut Target,
-        timeout: Duration,
-    ) -> Result<FrameReport, Error> {
+    /// Draws what the camera shows in a `width × height` view (logical
+    /// pixels, `scale` physical ones each) once everything in it has loaded
+    /// and nothing fades, and returns the picture (still output): labels
+    /// place as if nothing had been placed before, so the same style, data
+    /// and camera always draw the same bytes. Renders as many frames as that
+    /// takes, waiting for data in between; an error after [`STILL_TIMEOUT`].
+    pub fn snapshot(&mut self, width: u32, height: u32, scale: f64) -> Result<Image, Error> {
+        let deadline = Instant::now() + STILL_TIMEOUT;
+        let px = |v: u32| (f64::from(v) * scale).round() as u32;
+        let mut target = self.offscreen(px(width), px(height), scale);
         self.set_mode(RenderMode::Still);
-        self.settle(target, true, timeout)
+        let pixels = self
+            .settle(&mut target, true, deadline)
+            .and_then(|_| target.read_pixels());
+        let (width, height) = target.size();
+        self.offscreen = Some(target);
+        Ok(Image {
+            width,
+            height,
+            pixels: pixels?,
+        })
     }
 
     /// Draws one tile of a tile matrix set on the map's plane as still
-    /// output, and returns its pixels: RGBA8, premultiplied, rows top to
-    /// bottom. The map draws the tile with a tile of its neighbours around
-    /// it and places labels in tile scope ([`RenderMode::Tile`]): tiles
-    /// drawn apart agree on the labels that cross their edges, those
-    /// smaller than half a tile at least, and the same tile always draws
-    /// the same bytes. The map's camera store is left as it was.
-    pub fn render_tile(&mut self, tile: &TileRequest, timeout: Duration) -> Result<Vec<u8>, Error> {
-        let deadline = Instant::now() + timeout;
+    /// output, and returns its picture. The map draws the tile with a tile
+    /// of its neighbours around it and places labels in tile scope
+    /// ([`RenderMode::Tile`]): tiles drawn apart agree on the labels that
+    /// cross their edges, those smaller than half a tile at least, and the
+    /// same tile always draws the same bytes. The map's camera is left as it
+    /// was. An error after [`STILL_TIMEOUT`].
+    pub fn render_tile(&mut self, tile: &TileRequest) -> Result<Image, Error> {
+        let deadline = Instant::now() + STILL_TIMEOUT;
         let index = TileIndex::new(tile.z, tile.col, tile.row);
         let tms = &tile.tile_matrix_set;
         if !tms.contains(index) {
@@ -467,21 +487,30 @@ impl Map {
             )));
         }
         let px = px as u32;
-        let mut target = match self.tile_target.take() {
-            Some(t) if t.size() == (3 * px, 3 * px) && t.scale() == tile.scale => t,
-            _ => Target::texture(&self.runtime, 3 * px, 3 * px, tile.scale),
-        };
+        let mut target = self.offscreen(3 * px, 3 * px, tile.scale);
         let drawn = self.draw_tile(&mut target, tile, index, deadline);
         let pixels = drawn.and_then(|()| target.read_pixels());
-        self.tile_target = Some(target);
+        self.offscreen = Some(target);
         let pixels = pixels?;
         // The middle tile.
         let row_bytes = 3 * px as usize * 4;
         let (start, len) = (px as usize * 4, px as usize * 4);
-        Ok((px as usize..2 * px as usize)
-            .flat_map(|y| &pixels[y * row_bytes + start..][..len])
-            .copied()
-            .collect())
+        Ok(Image {
+            width: px,
+            height: px,
+            pixels: (px as usize..2 * px as usize)
+                .flat_map(|y| &pixels[y * row_bytes + start..][..len])
+                .copied()
+                .collect(),
+        })
+    }
+
+    /// The texture still output draws into, of this size.
+    fn offscreen(&mut self, width: u32, height: u32, scale: f64) -> Target {
+        match self.offscreen.take() {
+            Some(t) if t.size() == (width, height) && t.scale() == scale => t,
+            _ => Target::texture(&self.runtime, width, height, scale),
+        }
     }
 
     fn draw_tile(
@@ -548,12 +577,7 @@ impl Map {
         // interactive frame.
         self.pushed = u64::MAX;
         self.set_mode(RenderMode::Tile(tiles));
-        self.settle(
-            target,
-            false,
-            deadline.saturating_duration_since(Instant::now()),
-        )
-        .map(|_| ())
+        self.settle(target, false, deadline).map(|_| ())
     }
 
     fn set_mode(&mut self, mode: RenderMode) {
@@ -570,9 +594,8 @@ impl Map {
         &mut self,
         target: &mut Target,
         camera: bool,
-        timeout: Duration,
+        deadline: Instant,
     ) -> Result<FrameReport, Error> {
-        let deadline = Instant::now() + timeout;
         let mut was_idle = false;
         loop {
             if let Some(report) = self.frame(target, camera)? {
