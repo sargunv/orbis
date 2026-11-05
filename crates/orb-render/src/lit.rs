@@ -18,6 +18,8 @@ pub struct NodeMaterial {
     pub metalness: f32,
     /// The share of its colour that shows whatever the lights.
     pub self_lit: f32,
+    /// An extrusion's windows: the share of them lit.
+    pub windows: f32,
 }
 
 impl Default for NodeMaterial {
@@ -26,6 +28,7 @@ impl Default for NodeMaterial {
             roughness: 1.0,
             metalness: 0.0,
             self_lit: 0.0,
+            windows: 0.0,
         }
     }
 }
@@ -66,7 +69,7 @@ impl Lit {
         if self.materials.len() <= node {
             self.materials.resize(node + 1, [1.0, 0.0, 0.0, 0.0]);
         }
-        let words = [m.roughness, m.metalness, m.self_lit, 0.0];
+        let words = [m.roughness, m.metalness, m.self_lit, m.windows];
         if self.materials[node] != words {
             self.materials[node] = words;
             self.dirty = true;
@@ -112,6 +115,11 @@ impl Lit {
             gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&self.materials));
         }
         regrouped
+    }
+
+    /// The materials' group's layout, for lit pipelines' group 2.
+    pub(crate) fn layout(&self) -> BindGroupLayoutId {
+        self.layout
     }
 
     /// The materials' group, once uploaded.

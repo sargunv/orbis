@@ -1131,6 +1131,17 @@ impl Renderer {
             self.lit_on = lit;
             self.pipelines_stale = true;
             self.invalidate_bundle(gpu);
+            self.forget_3d_bundles(gpu);
+        }
+    }
+
+    /// Drops 3D layers' recorded passes, which bind their pipelines and
+    /// the materials' group.
+    fn forget_3d_bundles(&mut self, gpu: &mut dyn Gpu) {
+        for node in &mut self.nodes {
+            if let Some(extrusion) = &mut node.extrusion {
+                extrusion.forget_bundle(gpu);
+            }
         }
     }
 
@@ -1511,7 +1522,10 @@ impl Renderer {
                 self.images.make(gpu, family);
             }
             Family::Heatmap => self.heatmaps.make(gpu),
-            Family::FillExtrusion => self.extrusions.make(gpu),
+            Family::FillExtrusion => {
+                let lit = self.lit_on.then(|| self.lit.layout());
+                self.extrusions.make(gpu, lit);
+            }
             Family::Model => {
                 self.models.make(gpu, self.extrusions.samples);
             }
@@ -1547,7 +1561,7 @@ impl Renderer {
         match node.family {
             Family::Heatmap => out.extend(self.heatmaps.pipelines()),
             Family::FillExtrusion => {
-                out.extend(self.extrusions.pipelines());
+                out.extend(self.extrusions.pipelines(self.lit_on));
                 out.extend(self.shadows.pipelines());
             }
             Family::Model => {
@@ -1816,7 +1830,10 @@ impl Renderer {
         let lit = self.lit_on;
         if lit {
             // Lit nodes' draws bind the materials' group.
-            resized |= self.lit.upload(gpu, self.nodes.len());
+            if self.lit.upload(gpu, self.nodes.len()) {
+                resized = true;
+                self.forget_3d_bundles(gpu);
+            }
         }
         if resized {
             self.invalidate_bundle(gpu);
@@ -2045,7 +2062,9 @@ impl Renderer {
             );
         }
         let mut first = !terrain_on;
-        let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
+        let extrusions_ready =
+            cull_ready && self.extrusions.ready(gpu, &self.composites, self.lit_on);
+        let materials = self.lit.group().filter(|_| self.lit_on);
         let samples = self.extrusions.samples;
         let models_ready = cull_ready
             && self.models.ready(gpu, samples)
@@ -2115,8 +2134,15 @@ impl Renderer {
             let pass = match (node.family, node.extrusion.as_mut()) {
                 (Family::FillExtrusion, Some(target)) if extrusions_ready => {
                     let groups = (draw_group, node.group);
-                    self.extrusions
-                        .prepare(gpu, target, groups, &buffers, index as u32, first)
+                    self.extrusions.prepare(
+                        gpu,
+                        target,
+                        groups,
+                        materials,
+                        &buffers,
+                        index as u32,
+                        first,
+                    )
                 }
                 (Family::Model, Some(target)) if models_ready => {
                     let models = &self.models;
@@ -2313,7 +2339,7 @@ impl Renderer {
                     self.models.ready(gpu, self.extrusions.samples)
                         && self.composites.ready(gpu, offscreen::Mode::Over)
                 }
-                _ => self.extrusions.ready(gpu, &self.composites),
+                _ => self.extrusions.ready(gpu, &self.composites, self.lit_on),
             };
             if !compiled {
                 return false;

@@ -533,8 +533,8 @@ mod tests {
         );
     }
 
-    /// A scene's lights (decision 0026) shade an extrusion's roof in the
-    /// response v8's light uses, and emissive strength shows its colour.
+    /// A scene's lights shade an extrusion's roof by its material (decision
+    /// 0048), and emissive strength shows its colour.
     #[test]
     fn scene_lights_shade_extrusions() {
         let options = crate::common::Options {
@@ -575,11 +575,12 @@ mod tests {
                 * 4;
             pixels[at]
         };
-        // GL JS's flat response (decision 0026). Overhead the roof gets
-        // max(0.5 + 0.5 − its luminance, 1) of its colour lifted by 0.03.
-        assert!(roof("[0, 0]", 0.0).abs_diff(136) <= 1);
-        // At the horizon only the ambient level, 0.5.
-        assert!(roof("[90, 90]", 0.0).abs_diff(68) <= 1);
+        // The lit map's material model (decision 0048): #808080 is 0.216
+        // linear. Overhead the roof gets both levels, 1, of it, and a
+        // matte specular glint (0.002): 128 in sRGB.
+        assert!(roof("[0, 0]", 0.0).abs_diff(128) <= 1);
+        // At the horizon only the ambient level, 0.5: 0.108, 92 in sRGB.
+        assert!(roof("[90, 90]", 0.0).abs_diff(92) <= 1);
         // Fully emissive: its own colour.
         assert!(roof("[90, 90]", 1.0).abs_diff(128) <= 1);
     }

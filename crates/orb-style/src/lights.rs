@@ -33,6 +33,8 @@ pub struct LayerMaterial {
     pub roughness: f64,
     /// 0 a dielectric to 1 a metal.
     pub metalness: f64,
+    /// An extrusion's lit windows, the share of them that glow: 0 none.
+    pub windows: f64,
 }
 
 impl Default for LayerMaterial {
@@ -42,6 +44,7 @@ impl Default for LayerMaterial {
             emissive: 0.0,
             roughness: 1.0,
             metalness: 0.0,
+            windows: 0.0,
         }
     }
 }

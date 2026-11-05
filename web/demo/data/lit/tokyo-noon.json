@@ -7,7 +7,7 @@
    "type": "ambient",
    "properties": {
     "color": "#e6ecff",
-    "intensity": 0.55
+    "intensity": 0.38
    }
   },
   {
@@ -16,7 +16,7 @@
    "properties": {
     "time": "2024-11-05T03:00:00Z",
     "color": "#fff6e8",
-    "intensity": 0.7,
+    "intensity": 0.95,
     "cast-shadows": true
    }
   }

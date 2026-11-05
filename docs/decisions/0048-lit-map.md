@@ -13,7 +13,7 @@ their v8 colours. Decision 0043 left room for a material buffer.
   still lights only extrusions, so v8 styles look as they did.
 - **Materials are scene-document properties, by layer.** The scene's
   `layers` member takes `roughness` and `metalness` (0 to 1) beside
-  `emissive-strength`; a layer's v8 colours are its albedo. The default is
+  `emissive-strength`, and `windows` for extrusions; a layer's v8 colours are its albedo. The default is
   matte paint: roughness 1, metalness 0.
 - **Forward, in the main pass.** A lit layer's fragment fills the
   `Material` of its colour and its node's material and shades it with
@@ -29,6 +29,19 @@ their v8 colours. Decision 0043 left room for a material buffer.
   takes the directional light's share of level ground's lighting away
   where shadows fall, which for matte lit ground is exactly its shadowed
   shading; layers don't each sample the cascades.
+- **Extrusions and models share the model.** An extrusion's fragment
+  hands `surface_out` its paint colour as albedo, its normal, its shadow
+  and its occlusion (walls near the ground get less ambient light, as
+  GL JS's vertical gradient darkens them: 0.7 at the ground to 1 at 40 m);
+  the lit composition shades it with its node's material, the classic one
+  returns GL JS's lit colour as before. Models already fill `Material`
+  from glTF. A v8 `light` alone keeps GL JS's extrusion response.
+- **Lit windows are a material property.** An extrusion's `windows` (0 to
+  1) is the share of its windows lit: a procedural grid on its walls
+  (3 m bays, 3.5 m floors from the second, a hash per window and
+  building) emits a warm light, its edges a pixel wide so far walls blend
+  to the share rather than alias. It depends on the wall alone, so every
+  frame shows the same windows lit.
 - 3D layers, heatmaps and layers composited once arrive shaded and
   composite as they do unlit; draped layers on terrain draw into the drape
   unlit, which the terrain's own lighting shades. Compat draws unlit and
@@ -56,7 +69,11 @@ to 0.26 ms there; a mid-range phone at 1080p should see a few tenths of a
 millisecond. Sampling the shadow cascades in every layer's fragments cost
 1.2 ms more at z15 than the ground pass.
 
+Extrusions lit by their material measured, on a loaded machine whose
+medians swung threefold between runs, at 1.31 ms (z12) and 1.60 ms (z15)
+in its quiet runs, as above; the pitched 3D-buildings view wants a quiet
+machine.
+
 ## Next
 
-3D layers and models in the same lighting model, procedural detail (water,
-windows at night).
+Procedural detail: water, then the day–night globe.

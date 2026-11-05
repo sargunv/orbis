@@ -111,7 +111,7 @@ impl Shader {
                     source.push_str(part);
                 }
             }
-        } else if source.contains("MapOut") {
+        } else if source.contains("MapOut") || source.contains("surface_out(") {
             source.push_str(MAP_OUT);
         }
         source
@@ -481,6 +481,7 @@ pub const SHADERS: &[Shader] = &[
     RASTER_SHADER.lit(),
     HILLSHADE_SHADER.lit(),
     COLOR_RELIEF_SHADER.lit(),
+    EXTRUSION_SHADER.lit(),
     SYMBOL_SHADERS[0],
     SYMBOL_SHADERS[1],
     HEATMAP_SHADER,

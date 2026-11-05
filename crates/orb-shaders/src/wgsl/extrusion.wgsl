@@ -35,6 +35,11 @@ struct ExtrusionOut {
     @location(8) world: vec3<f32>,
     @location(9) normal: vec3<f32>,
     @location(10) depth: f32,
+    // For the lit map (`surface_out`): the paint colour, where on a wall
+    // (metres along it and above the ground), and a value per building.
+    @location(11) albedo: vec4<f32>,
+    @location(12) wall: vec2<f32>,
+    @location(13) @interpolate(flat) seed: u32,
 };
 @vertex
 fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
@@ -97,6 +102,10 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     out.position.z = out.position.w - out.position.z;
     out.tile_pos = pos;
     out.tile = v.tile;
+    out.albedo = color;
+    let along = f32(vertex_at(v.vertex + 3u) >> 16u) * tile.scale / max(frame.extrusion_scale, 1e-12);
+    out.wall = vec2<f32>(along, mix(gradient_base, gradient_height, top));
+    out.seed = prop_at(row + EXTRUSION_ROW_CENTROID);
     var gradient = 1.0;
     if normal.z == 0.0 && node.vertical_gradient != 0u {
         gradient = light_wall_gradient(top + gradient_base, gradient_height);
@@ -126,6 +135,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
 }
 @fragment
 fn fs_extrusion(in: ExtrusionOut) -> @location(0) vec4<f32> {
+    let wall_width = fwidth(in.wall);
     // A cut building clips to the placement. Shared tile edges can contain
     // real vertical walls: they have zero ground area, and depth selects
     // their nearest surface without blending twice, so both bounds count.
@@ -139,14 +149,23 @@ fn fs_extrusion(in: ExtrusionOut) -> @location(0) vec4<f32> {
     if !inside { discard; }
     // Shadows take the directional light away; lit, the colour is exact.
     let lit = shadow_at(in.world, in.normal, in.depth);
-    let color = select(mix(in.unlit, in.color, lit), in.color, lit >= 1.0);
+    var color = select(mix(in.unlit, in.color, lit), in.color, lit >= 1.0);
+    var albedo = in.albedo;
     if node.pattern.enabled != 0u {
         let image_a = image_at(in.images.x); let image_b = image_at(in.images.y);
         let pos_a = pattern_position(tile, in.pattern_pos, image_a, node.pattern.from_scale);
         let pos_b = pattern_position(tile, in.pattern_pos, image_b, node.pattern.to_scale);
         let a = pattern_sample(image_a, fract(pos_a), 0.0);
         let b = pattern_sample(image_b, fract(pos_b), 0.0);
-        return mix(a,b,node.pattern.fade) * color;
+        let texel = mix(a, b, node.pattern.fade);
+        color = texel * color;
+        albedo = texel;
     }
-    return color;
+    // Walls near the ground get less of the sky, as GL JS's vertical
+    // gradient darkens them: ambient occlusion for the lit map.
+    var occlusion = 1.0;
+    if node.vertical_gradient != 0u && abs(in.normal.z) < 0.5 {
+        occlusion = 0.7 + 0.3 * clamp(in.wall.y / 40.0, 0.0, 1.0);
+    }
+    return surface_out(SurfaceIn(color, albedo, in.normal, lit, occlusion, node.index, in.wall, wall_width, in.seed));
 }

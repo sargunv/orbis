@@ -74,7 +74,7 @@
    "emissive-strength": 0.5
   },
   "building-3d": {
-   "emissive-strength": 0.12
+   "windows": 0.55
   }
  },
  "atmosphere": {
