@@ -95,6 +95,8 @@ pub struct FillLayout {
 pub struct FillPaint {
     pub antialias: Property<bool>,
     pub opacity: Property<f32>,
+    /// Applied to the layer as a whole, once (`fill-layer-opacity`).
+    pub layer_opacity: Property<f32>,
     pub color: Property<Color>,
     /// `None` draws the outline in `color`.
     pub outline_color: Property<Option<Color>>,
@@ -144,6 +146,8 @@ pub struct LineLayout {
 #[derive(Clone, Debug)]
 pub struct LinePaint {
     pub opacity: Property<f32>,
+    /// Applied to the layer as a whole, once (`line-layer-opacity`).
+    pub layer_opacity: Property<f32>,
     pub color: Property<Color>,
     pub translate: Property<[f32; 2]>,
     pub translate_anchor: Property<TranslateAnchor>,
@@ -792,6 +796,7 @@ pub(crate) fn parse_layer(
                 paint: FillPaint {
                     antialias: property(cx, &paint, &spec::FILL_ANTIALIAS),
                     opacity: property(cx, &paint, &spec::FILL_OPACITY),
+                    layer_opacity: property(cx, &paint, &spec::FILL_LAYER_OPACITY),
                     color: property(cx, &paint, &spec::FILL_COLOR),
                     outline_color: property(cx, &paint, &spec::FILL_OUTLINE_COLOR),
                     translate: property(cx, &paint, &spec::FILL_TRANSLATE),
@@ -827,6 +832,7 @@ pub(crate) fn parse_layer(
                 },
                 paint: LinePaint {
                     opacity: property(cx, &paint, &spec::LINE_OPACITY),
+                    layer_opacity: property(cx, &paint, &spec::LINE_LAYER_OPACITY),
                     color: property(cx, &paint, &spec::LINE_COLOR),
                     translate: property(cx, &paint, &spec::LINE_TRANSLATE),
                     translate_anchor: property(cx, &paint, &spec::LINE_TRANSLATE_ANCHOR),

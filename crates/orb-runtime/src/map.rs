@@ -3626,6 +3626,15 @@ fn write_paint(
             paint
         };
         renderer.set_paint(gpu, index, &paint);
+        // A fill or line layer below layer opacity 1 composites once.
+        let layer_opacity = match &layer.kind {
+            LayerKind::Fill(f) => Some(f.paint.layer_opacity.evaluate(zoom)),
+            LayerKind::Line(l) => Some(l.paint.layer_opacity.evaluate(zoom)),
+            _ => None,
+        };
+        if let Some(opacity) = layer_opacity {
+            renderer.set_layer_opacity(gpu, index, node.layer as u32, opacity);
+        }
     }
 }
 

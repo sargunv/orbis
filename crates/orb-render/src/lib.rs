@@ -22,6 +22,7 @@ mod compat;
 mod extrusion;
 mod heatmap;
 mod image;
+mod layer_opacity;
 mod paint;
 mod terrain;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
@@ -161,6 +162,9 @@ struct Node {
     separate_halo: bool,
     /// On terrain, the drape stack a draped node draws into.
     stack: Option<u8>,
+    /// Its style layer's key and layer opacity (`fill-layer-opacity`,
+    /// `line-layer-opacity`); below 1 the layer composites once.
+    layer_opacity: Option<(u32, f32)>,
 }
 
 #[derive(Debug)]
@@ -190,6 +194,8 @@ pub struct Renderer {
     images: image::Images,
     heatmaps: heatmap::Heatmaps,
     extrusions: extrusion::Extrusions,
+    /// Layers drawn whole and composited at their layer opacity.
+    layer_opacities: layer_opacity::LayerOpacities,
     /// Made for the first terrain.
     terrain: Option<terrain::Terrain>,
     /// The scene group over the drape frame, and the draped nodes' bundle.
@@ -428,6 +434,7 @@ impl Renderer {
         let image_bindings = images;
         let images = image::Images::new(gpu, target, draw_layout);
         let heatmaps = heatmap::Heatmaps::new(gpu, target, draw_layout, node_layout);
+        let layer_opacities = layer_opacity::LayerOpacities::new(gpu, target);
         let extrusions = extrusion::Extrusions::new(gpu, target, draw_layout, node_layout);
         let node_stride = NODE_UNIFORM_SIZE.max(u64::from(
             gpu.caps().limits.min_uniform_buffer_offset_alignment,
@@ -457,6 +464,7 @@ impl Renderer {
             paints_written: 0,
             images,
             heatmaps,
+            layer_opacities,
             extrusions,
             terrain: None,
             drape_group: None,
@@ -595,6 +603,7 @@ impl Renderer {
                 image,
                 separate_halo: false,
                 stack: None,
+                layer_opacity: None,
             });
         }
         self.assign_stacks();
@@ -706,6 +715,22 @@ impl Renderer {
             buffer: self.node_uniforms,
             offset: u64::from(node) * self.node_stride,
             size: Some(NODE_UNIFORM_SIZE),
+        }
+    }
+
+    /// Sets a fill or line node's layer opacity: its style layer `layer`
+    /// (nodes of one layer share it) draws whole and composites once at
+    /// `opacity` when that is below 1.
+    pub fn set_layer_opacity(&mut self, gpu: &mut dyn Gpu, node: u32, layer: u32, opacity: f32) {
+        let n = &mut self.nodes[node as usize];
+        let grouped = |o: Option<(u32, f32)>| o.filter(|&(_, o)| o < 1.0).map(|(l, _)| l);
+        let before = grouped(n.layer_opacity);
+        n.layer_opacity = Some((layer, opacity));
+        if grouped(n.layer_opacity) != before {
+            self.invalidate_bundle(gpu);
+        } else if before.is_some() {
+            self.layer_opacities
+                .set_opacity(gpu, node as usize, opacity);
         }
     }
 
@@ -1014,8 +1039,63 @@ impl Renderer {
                     offset: 0,
                 });
             }
+            // Runs of one layer's nodes below layer opacity 1 draw into a
+            // texture of their own; draped nodes take the terrain's way.
+            let mut runs: Vec<(std::ops::Range<usize>, f32)> = Vec::new();
+            for (i, node) in self.nodes.iter().enumerate() {
+                let Some((layer, opacity)) = node
+                    .layer_opacity
+                    .filter(|&(_, o)| o < 1.0 && !(terrain_on && node.stack.is_some()))
+                else {
+                    continue;
+                };
+                match runs.last_mut() {
+                    Some((nodes, _))
+                        if nodes.end == i
+                            && self.nodes[nodes.start].layer_opacity.map(|(l, _)| l)
+                                == Some(layer) =>
+                    {
+                        nodes.end = i + 1;
+                    }
+                    _ => runs.push((i..i + 1, opacity)),
+                }
+            }
+            self.layer_opacities.regroup(gpu, runs, size);
+            for g in 0..self.layer_opacities.groups.len() {
+                let mut group = vec![RenderCommand::SetIndexBuffer {
+                    buffer: self.scene.buffers().compacted,
+                    format: IndexFormat::Uint32,
+                    offset: 0,
+                }];
+                for i in self.layer_opacities.groups[g].nodes.clone() {
+                    self.node_commands(i, self.draw_group, &mut group);
+                }
+                self.layer_opacities.groups[g].bundle = Some(gpu.create_render_bundle(
+                    &RenderBundleDesc {
+                        label: "layer opacity",
+                        color_formats: &[self.target.color],
+                        depth_format: None,
+                        sample_count: self.target.sample_count,
+                    },
+                    &group,
+                ));
+            }
             for i in 0..self.nodes.len() {
-                self.node_commands(i, self.draw_group, &mut commands);
+                let (start, member) = self.layer_opacities.at(i);
+                if let Some(group) = start {
+                    commands.extend(self.layer_opacities.composite_commands(group));
+                    // The composite changed the pipeline and bindings.
+                    if self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed) {
+                        commands.push(RenderCommand::SetIndexBuffer {
+                            buffer: self.scene.buffers().compacted,
+                            format: IndexFormat::Uint32,
+                            offset: 0,
+                        });
+                    }
+                }
+                if !member {
+                    self.node_commands(i, self.draw_group, &mut commands);
+                }
             }
             if terrain_on && self.target.color != DRAPE_FORMAT {
                 self.make_drape_pipelines(gpu);
@@ -1143,6 +1223,7 @@ impl Renderer {
         let bundle = self.bundle.expect("recorded above");
         commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
         commands.extend(self.atmosphere.commands_after());
+        passes.extend(self.layer_opacities.passes());
         passes.push(Pass::Render(RenderPass {
             label: "main".into(),
             color: ColorAttachment {

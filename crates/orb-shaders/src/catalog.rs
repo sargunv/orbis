@@ -141,6 +141,16 @@ pub const SKY_SHADER: Shader = Shader {
     paint: false,
 };
 
+/// A layer's composite at its layer opacity.
+pub const LAYER_OPACITY_SHADER: Shader = Shader {
+    label: "layer opacity",
+    parts: &[include_str!("wgsl/layer_opacity.wgsl")],
+    vertex: "vs_layer_composite",
+    fragment: "fs_layer_composite",
+    compute: "",
+    paint: false,
+};
+
 /// The globe atmosphere's scattering over the map (decision 0025).
 pub const SCATTER_SHADER: Shader = Shader {
     label: "atmosphere scattering",
@@ -344,6 +354,7 @@ pub const EXTRUSION_COMPOSITE_SHADER: Shader = Shader {
 /// drape's and compute. `PASS` overrides are specialized per value.
 pub const COMPAT_SHADERS: &[Shader] = &[
     SKY_SHADER,
+    LAYER_OPACITY_SHADER,
     FILL_SHADER,
     FILL_OUTLINE_SHADER,
     LINE_SHADER,

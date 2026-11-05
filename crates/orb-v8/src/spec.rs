@@ -113,6 +113,10 @@ pub(crate) const FILL_OPACITY: Prop = prop("fill-opacity", NUMBER, Some("1"))
     .data_driven()
     .interpolated()
     .range(0.0, Some(1.0));
+/// The layer composited once at this opacity (style-spec 26).
+pub(crate) const FILL_LAYER_OPACITY: Prop = prop("fill-layer-opacity", NUMBER, Some("1"))
+    .interpolated()
+    .range(0.0, Some(1.0));
 pub(crate) const FILL_COLOR: Prop = prop("fill-color", COLOR, Some("\"#000000\""))
     .data_driven()
     .interpolated();
@@ -142,6 +146,10 @@ pub(crate) const LINE_SORT_KEY: Prop = prop("line-sort-key", NUMBER, None).data_
 
 pub(crate) const LINE_OPACITY: Prop = prop("line-opacity", NUMBER, Some("1"))
     .data_driven()
+    .interpolated()
+    .range(0.0, Some(1.0));
+/// The layer composited once at this opacity (style-spec 26).
+pub(crate) const LINE_LAYER_OPACITY: Prop = prop("line-layer-opacity", NUMBER, Some("1"))
     .interpolated()
     .range(0.0, Some(1.0));
 pub(crate) const LINE_COLOR: Prop = prop("line-color", COLOR, Some("\"#000000\""))
@@ -260,6 +268,7 @@ pub(crate) const FILL_LAYOUT: &[&Prop] = &[&FILL_SORT_KEY, &VISIBILITY];
 pub(crate) const FILL_PAINT: &[&Prop] = &[
     &FILL_ANTIALIAS,
     &FILL_OPACITY,
+    &FILL_LAYER_OPACITY,
     &FILL_COLOR,
     &FILL_OUTLINE_COLOR,
     &FILL_TRANSLATE,
@@ -276,6 +285,7 @@ pub(crate) const LINE_LAYOUT: &[&Prop] = &[
 ];
 pub(crate) const LINE_PAINT: &[&Prop] = &[
     &LINE_OPACITY,
+    &LINE_LAYER_OPACITY,
     &LINE_COLOR,
     &LINE_TRANSLATE,
     &LINE_TRANSLATE_ANCHOR,
