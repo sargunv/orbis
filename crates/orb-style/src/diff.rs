@@ -349,6 +349,18 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         }
     }
 
+    // A projection that reads the global state follows it.
+    if let Some(json) = member(&draft.root, "projection")
+        && (draft.new_root || reads_global(json, &changed))
+    {
+        let (globe, w) = orb_v8::parse_projection(json, &new_state);
+        warnings.extend(w);
+        if globe != old.globe && !changes.contains(&Change::Projection) {
+            changes.push(Change::Projection);
+        }
+        style.globe = globe;
+    }
+
     // Sources.
     let old_sources: HashMap<SourceKey, &Source> = doc.source_keys().zip(&old.sources).collect();
     for entry in &draft.sources {

@@ -117,12 +117,30 @@ GL JS's pinned commit has 135 render tests under `projection/` (130 of them
 `projection/globe/*`, 45 of those on terrain). The mirror now takes the
 `projection` prefix whole, rather than a subset or goldens of our own: they
 are GL JS's own reference for the globe and the transform, and their
-pixels are reviewed upstream. On native, at this commit: 33 pass, 69 fail,
-33 skip. Outside globe terrain, 21 of 68 run pass, and 27 of the failures
-differ by under 0.3% of pixels, almost all at the globe's limb: the
-silhouette is the horizon plane cutting a tessellated sphere, so it lands
-within a pixel of GL JS's, whose tessellation differs. That is a principled
-difference, not one to chase. The rest are listed in #62.
+pixels are reviewed upstream. Triage (#62) took native from 33 to 53
+passes of 103 run: outside globe terrain, 40 of 68.
+
+The principled causes it fixed: a limb 0.3 px inside GL JS's (the
+sphere's patches and grids now hold 1/8192 of a tile side; whole-world
+tiles take up to 32 patches per side); translate moving points in tile
+units before the sphere, as GL JS adds `u_translate`; map-aligned offsets
+turning points around the sphere per axis (`globeRotateVector`); 3D
+content keeping perspective depth and hiding behind the sphere, with
+roofs cut along the grid; depth and pole caps handing over as GL JS's do;
+line layers stroking the jobs' polygon cut along the antimeridian;
+symbols hidden where the sphere stands between them and the eye at their
+height; GL JS's pitched text correction; and projections read from the
+global state.
+
+Of the 28 failures outside terrain, 14 differ by under 0.1% of pixels
+(at most 150): glyph rasterization, coastline and limb edges, texture
+sampling at the poles, all understood and not chased. Four are the
+atmosphere's and one extrusion lighting (R2); one asks for a pitch past
+90°. Open: `heatmap` (kernels drift toward the globe's centre near the
+limb), circles near the limb, `line-gradient-dasharray` and
+`fill-planet-pole-top`. Skips: `image` sources, custom layers, collision
+debug boxes, the identity projection and an operation the harness lacks.
+Terrain's 45 wait for terrain on the globe (#61).
 
 ## Left for later
 - Terrain on the globe, and extrusions' depth (the horizon plane's depth is

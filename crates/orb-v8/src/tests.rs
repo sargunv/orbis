@@ -534,3 +534,16 @@ fn projections_parse_to_globes() {
     );
     assert_eq!(globe(r#"{"type": "equal-earth"}"#), (None, 1));
 }
+
+#[test]
+fn projections_read_the_global_state() {
+    let style = parse(
+        r#"{"version": 8, "state": {"kind": {"default": "vertical-perspective"}},
+            "projection": {"type": ["global-state", "kind"]}, "sources": {}, "layers": []}"#,
+    )
+    .unwrap();
+    assert_eq!(style.globe, Some(orb_crs::Globe { handover: None }));
+    let state = vec![("kind".to_string(), Value::String("mercator".into()))];
+    let json = orb_expr::json::parse(r#"{"type": ["global-state", "kind"]}"#).unwrap();
+    assert_eq!(parse_projection(&json, &state).0, None);
+}

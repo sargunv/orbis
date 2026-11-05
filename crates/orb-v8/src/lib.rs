@@ -376,8 +376,14 @@ pub fn parse_terrain(
 
 /// Parses a root `projection`, returning its globe (`None` for Web
 /// Mercator) and its warnings.
-pub fn parse_projection(json: &Json) -> (Option<orb_crs::Globe>, Vec<Diagnostic>) {
-    let mut cx = Cx::default();
+pub fn parse_projection(
+    json: &Json,
+    state: &[(String, Value<'static>)],
+) -> (Option<orb_crs::Globe>, Vec<Diagnostic>) {
+    let mut cx = Cx {
+        state: state.to_vec(),
+        ..Cx::default()
+    };
     let globe = parse_globe(&mut cx, json);
     (globe, cx.diagnostics.warnings)
 }
@@ -397,7 +403,18 @@ fn parse_globe(cx: &mut Cx, json: &Json) -> Option<orb_crs::Globe> {
         );
         None
     };
-    if let Some(name) = ty.as_str() {
+    // A type from the global state: `["global-state", name]`.
+    let from_state = ty.as_array().and_then(|items| match items {
+        [op, name] if op.as_str() == Some("global-state") => {
+            let name = name.as_str()?;
+            match cx.state.iter().find(|(key, _)| key == name) {
+                Some((_, Value::String(value))) => Some(value.to_string()),
+                _ => None,
+            }
+        }
+        _ => None,
+    });
+    if let Some(name) = from_state.as_deref().or(ty.as_str()) {
         return match name {
             "mercator" => None,
             "globe" => Some(orb_crs::Globe::V8),
