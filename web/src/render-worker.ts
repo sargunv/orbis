@@ -32,7 +32,11 @@ const send = (ack: FrameAck) => {
   const transfer = [ack.stats.buffer, ack.hits?.buffer, ack.elevation?.buffer].filter((b) => b !== undefined);
   self.postMessage({ type: "frame", ack }, transfer);
 };
+// Whether something asked for a frame since the last one drawn, rather
+// than only a frame pending to send.
+let wanted = false;
 const draw = (camera: boolean) => {
+  wanted = false;
   const ack = renderFrame(map as unknown as Renderer);
   const idle = ackIdle(ack);
   last = { idle, camera };
@@ -40,20 +44,19 @@ const draw = (camera: boolean) => {
   else pending = ack;
   return !idle;
 };
-// Whether something asked for a frame, rather than one pending to send.
-let wanted = false;
 const loop = frameLoop(() => {
   if (!map) return false;
+  // A change since the last frame draws, even right after a camera's.
+  if (wanted) return draw(false) || pending !== undefined;
   if (last.camera) {
     last.camera = false;
     return !last.idle || pending !== undefined;
   }
-  if (!wanted && last.idle) {
+  if (last.idle) {
     // A frame without a new camera: the last one drawn goes out.
     if (pending) send(pending);
     return false;
   }
-  wanted = false;
   return draw(false) || pending !== undefined;
 }, fail);
 const request = () => {

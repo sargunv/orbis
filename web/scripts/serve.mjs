@@ -56,9 +56,11 @@ export async function serveDemo({ isolated = false } = {}) {
 }
 
 // `unsafe` allows WebGPU's unsafe APIs, which also stops Chrome quantizing
-// timestamps; a user's Chrome runs without it.
-export function launchChromium({ unsafe = true } = {}) {
+// timestamps; a user's Chrome runs without it. `headed` opens a window on
+// the display rather than drawing offscreen.
+export function launchChromium({ unsafe = true, headed = false } = {}) {
   return chromium.launch({
+    headless: !headed,
     args: [...(unsafe ? ["--enable-unsafe-webgpu"] : []), "--enable-features=Vulkan,WebGPU",
       "--use-angle=metal"],
   });
@@ -89,8 +91,11 @@ export async function openAndroid(server, { physical = false } = {}) {
     adb("shell", `echo '${flags.join(" ")}' > /data/local/tmp/chrome-command-line`);
     adb("shell", "am", "force-stop", "com.android.chrome");
   }
+  // A phone's Chrome comes to the front without a new tab, so runs leave
+  // none behind (each run's own tab closes with it); the emulator's, just
+  // restarted, opens on a blank one.
   adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-n",
-    "com.android.chrome/com.google.android.apps.chrome.Main", "-d", "about:blank");
+    "com.android.chrome/com.google.android.apps.chrome.Main", ...(emulator ? ["-d", "about:blank"] : []));
   let browser;
   for (let i = 0; ; i++) {
     try { browser = await chromium.connectOverCDP(`http://127.0.0.1:${devtools}`); break; }

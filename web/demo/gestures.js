@@ -47,12 +47,14 @@ function idle(map, label) {
 }
 
 /** Runs one path on a fresh map; resolves to its row. */
-async function runPath(container, style, thread, center, path, show) {
+async function runPath(container, style, thread, jobWorkers, center, path, show) {
   const label = `${thread}: ${path.name}`;
   show(`${label}: loading`);
-  const map = await createMap({ container, style, thread, camera: path.camera(center, 0), interactive: false });
+  const created = performance.now();
+  const map = await createMap({ container, style, thread, jobWorkers, camera: path.camera(center, 0), interactive: false });
   try {
     await idle(map, label);
+    const load = performance.now() - created;
     show(`${label}: moving`);
     const acks = [];
     const off = map.on("render", (ack) => acks.push({ t: performance.now(), ms: ack.ms }));
@@ -82,7 +84,7 @@ async function runPath(container, style, thread, center, path, show) {
     const gaps = moving.slice(1).map((a, i) => a.t - moving[i].t);
     const cpu = moving.map((a) => a.ms);
     return {
-      thread: map.thread, path: path.name, frames: moving.length,
+      thread: map.thread, path: path.name, frames: moving.length, load,
       interval: [0.5, 0.95, 0.99, 1].map((p) => percentile(gaps, p)),
       cpu: [0.5, 0.95, 1].map((p) => percentile(cpu, p)),
       missed: gaps.filter((g) => g > 50).length,
@@ -95,7 +97,7 @@ async function runPath(container, style, thread, center, path, show) {
 }
 
 /** Runs every path of `paths` (`city` or `alps`) in each of `threads`; resolves to the Markdown report. */
-export async function runGestures({ style, center, paths, threads, size, about, show }) {
+export async function runGestures({ style, center, paths, threads, jobWorkers, size, about, show }) {
   const run = PATH_SETS[paths];
   if (!run) throw new Error("paths must be city or alps");
   const container = document.createElement("div");
@@ -104,7 +106,7 @@ export async function runGestures({ style, center, paths, threads, size, about, 
   const rows = [];
   try {
     for (const thread of threads) {
-      for (const path of run) rows.push(await runPath(container, style, thread, center, path, show));
+      for (const path of run) rows.push(await runPath(container, style, thread, jobWorkers, center, path, show));
     }
   } finally {
     container.remove();
@@ -113,11 +115,12 @@ export async function runGestures({ style, center, paths, threads, size, about, 
     "### Gestures bench (page)", "",
     ...about.map((line) => `- ${line}`),
     `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${PATH_FRAMES} frames a path, ` +
-      "the camera moved once a display frame (`jumpTo`; a flight's legs through `flyTo`), each path from a fresh map at rest",
+      "the camera moved once a display frame (`jumpTo`; a flight's legs through `flyTo`), each path from a fresh map at rest; " +
+      `${jobWorkers ?? "default"} job workers`,
     "",
-    "| thread | path | frames | interval p50 | p95 | p99 | max | gaps > 50 ms | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
-    ...rows.map((r) => `| ${r.thread} | ${r.path} | ${r.frames} | ${r.interval.map(ms).join(" | ")} | ${r.missed} | ` +
+    "| thread | path | load to idle ms | frames | interval p50 | p95 | p99 | max | gaps > 50 ms | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ...rows.map((r) => `| ${r.thread} | ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${r.interval.map(ms).join(" | ")} | ${r.missed} | ` +
       `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} |`),
     "",
     "Times in ms. Interval: between frames reaching the page while the camera moves; render CPU: the frame's " +

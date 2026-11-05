@@ -106,9 +106,59 @@ keeps the main thread busier than GL JS (1.7× on the Mac, 1.4× on the
 phone), which the worker mode exists to avoid; the worker mode's skew
 stays under a frame (DOM annotations on frame acknowledgements).
 
-Open: Chrome on Windows, Safari on macOS and iOS, and Firefox are
-unmeasured (no automation here: Playwright's Firefox has no WebGPU, its
-WebKit isn't Safari, and `safaridriver` needs remote automation enabled);
-Android latency needs a capture that keeps up (a high-speed camera or
-`screenrecord` with visible touches). M3's exit criterion of worker-mode
-main busy at most 10% of GL JS's is not met (19–25%).
+## Measured again at the end of M3
+
+The numbers above predate decision 0023 (picking on demand, coalesced
+worker camera draws, budgeted tile intake, job workers in main-thread
+mode), decision 0024 (picking without the camera: nothing published at a
+gesture's end) and a leaner worker mode: the render worker spawns the job
+and placement workers (the page made all seven, about 1 ms each), frame
+acknowledgements are one transferred array sent only when the page needs
+them, and annotations write the DOM only when they move. Medians of five
+runs, the same page and gestures, Apple M6, Chrome 156 at 60 Hz:
+
+| | pan p50 / p95 | pinch p50 / p95 | rotate p50 / p95 | skew p95 (pan / pinch / rotate) | main busy: load / 3 gestures |
+|---|---|---|---|---|---|
+| headless, worker | 55.9 / 57.8 ms | 55.1 / 56.3 | 54.7 / 57.7 | 1.6 / 8.8 / 3.9 ms | 7.2 / 70.4 ms |
+| headless, main | 38.5 / 41.1 | 38.0 / 40.5 | 37.5 / 39.3 | 1.6 / 8.5 / 3.0 | 91.1 / 125.7 |
+| headless, GL JS 6.16.0 | 54.4 / 334.1 | 52.7 / 62.3 | 54.2 / 405.9 | 1.6 / 9.3 / 2.3 | 162.5 / 210.0 |
+| window, worker | 56.4 / 66.9 | 56.5 / 405.9 | 55.2 / 57.3 | 1.6 / 8.8 / 3.1 | 8.2 / 83.6 |
+| window, main | 40.0 / 42.2 | 39.3 / 42.0 | 38.6 / 40.8 | 1.5 / 8.5 / 2.6 | 104.4 / 162.4 |
+| window, GL JS 6.16.0 | 53.2 / 73.8 | 50.9 / 62.0 | 55.2 / 421.2 | 1.6 / 8.5 / 2.3 | 157.0 / 281.4 |
+
+"Window" is `pnpm -C web measure --headed`: Playwright's Chromium in a
+window on the display. Busy times without frame capture (`--no-capture`,
+five runs, headless) agree: worker 13.2 / 70–78 ms, GL JS 143–156 /
+270–281, an empty page receiving the same input −3 / 27–28.
+
+The worker's p95 penalty over main-thread Orbis is one frame or a little
+more: headless 1.00 (pan), 0.95 (pinch) and 1.10 frames (rotate); in a
+window 1.48 (pan) and 0.99 (rotate), with one 406 ms pinch tail. Its p50
+penalty is one frame throughout (16–17 ms). Its main busy time, the empty
+page's subtracted, is 15% of GL JS's over load and gestures headless and
+16% in a window; during load alone it is 4.4–5.2% (7–8 ms against
+157–163), within plan §18 row 6's 10%. The rule's busy criterion holds;
+its latency criterion still fails at the tail (pan in a window, rotate
+headless), so **`thread: "main"` stays the default**. Main-thread mode's
+busy time during load is 56–66% of GL JS's (§18 row 6 asks ≤40%).
+
+What remains on the page in worker mode during gestures is per-frame work
+that each frame needs: the animation frame that advances the camera and
+posts it, the acknowledgement that places DOM annotations (a message task
+and its deserialization), and the style, layout and commit an annotation's
+move costs. JS and wasm on the page are about 15 ms of the 70; the rest is
+the browser's (#65).
+
+Firefox 157 on macOS runs the map but takes 15 s to idle (#60); its
+latency is unmeasured (no driver for a stock Firefox here). Safari: the
+owner enabled remote automation, but `safaridriver` still fails with
+"session not created: The session timed out while connecting to a Safari
+instance … Finding or launching a compatible local Safari and waiting for
+its RWIApplication to appear and become ready" (#37). The moto g's Chrome
+stopped bringing WebGPU maps to idle during this pass (a build from
+before M3's changes as well; GL JS's WebGL map loads), so the phone's
+numbers above are decision 0021's (#37).
+
+Open: Chrome on Windows, Safari on macOS and iOS, Firefox latency and
+Android latency (a capture that keeps up: a high-speed camera or
+`screenrecord` with visible touches); the worker's latency tail.

@@ -4,12 +4,15 @@
 // web/dist/measure.html. In headless Chromium, or in Chrome on Android (keep
 // its screen on).
 //
-//   pnpm measure [--android [--physical]] [--runs=3]
+//   pnpm measure [--android [--physical] | --headed] [--runs=3]
 //     [--configs=orbis-worker,orbis-main,gljs] [--no-capture] [--no-annotation]
 //
 // `--android` runs on this worktree's Android emulator (`scripts/android-serial`;
 // `ANDROID_SERIAL` overrides); `--physical` on a phone that the caller assigned
 // to this worktree with `devices-cli assign`, released after the measurement.
+//
+// `--headed` measures in a Chromium window on this machine's display, at
+// its refresh rate, rather than headless.
 //
 // Method: DevTools dispatches touch gestures (8 ms apart, one second each)
 // while it captures composited frames (Page.startScreencast, PNG). Each
@@ -193,7 +196,7 @@ let browser, page, close;
 if (android) {
   ({ browser, page, close } = await openAndroid(server, { physical }));
 } else {
-  browser = await launchChromium({ unsafe: false });
+  browser = await launchChromium({ unsafe: false, headed: args.includes("--headed") });
   page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: true });
   close = () => browser.close();
 }

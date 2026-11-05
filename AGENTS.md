@@ -55,8 +55,10 @@ node, pnpm, a JDK, Gradle, kotlinc, CMake, Go and devices-cli); run
 | `pnpm -C web dev` | Vite dev server at `/orbis/` (run `cargo xtask web` first) |
 | `pnpm -C web typecheck` / `pnpm -C web test` | type-check the `orbis` package (`web/src`); its unit tests and the build test |
 | `cargo xtask bench` | GPU/CPU frame timings, still and with the camera moving (decision 0002); `--experiment paint` for decision 0017; `--experiment gestures` for rotate, tilt and zoom frame times with tiles arriving (decision 0023); `alps --experiment gestures` for the terrain demo's rotate, pan and flight |
-| `pnpm -C web bench [--precise] [--android [--physical]]` | the same bench in headless Chromium, or in this worktree's Android emulator's Chrome (`web/demo/bench.html`; keep its screen on; `--physical` for an assigned phone, below); `--experiment=gestures` drives the `orbis` package in both thread modes (`--style=alps` for the terrain paths) |
-| `pnpm -C web measure [--android [--physical]] [--runs=3]` | plan §7.2's measurements in Chrome: input-to-photon latency (pan, pinch, rotate), DOM overlay skew, main-thread busy time and idle frames, for Orbis worker and main-thread mode and the pinned GL JS (`web/demo/measure.html`) |
+| `pnpm -C web bench [--precise] [--android [--physical]] [--experiment=gestures [--workers=N]]` | the same bench in headless Chromium, or in this worktree's Android emulator's Chrome (`web/demo/bench.html`; keep its screen on; `--physical` for an assigned phone, below); `--experiment=gestures` drives the `orbis` package in both thread modes (`--style=alps` for the terrain paths) |
+| `pnpm -C web measure [--android [--physical] \| --headed] [--runs=3]` | plan §7.2's measurements in Chrome: input-to-photon latency (pan, pinch, rotate), DOM overlay skew, main-thread busy time and idle frames, for Orbis worker and main-thread mode and the pinned GL JS (`web/demo/measure.html`); `--headed` in a window on the display |
+| `pnpm -C web pipelines [--runs=3] [--android [--physical]]` | pipeline creation (#26): shaders and pipelines made, GPU queue wait from `createMap` to idle, cold (fresh profile, or after `chrome://gpuclean` on Android) and warm |
+| `node web/scripts/open.mjs <app> pipelines.html` | a page in a browser no driver controls (Firefox, Safari), its result posted back |
 | `pnpm -C web scenario [--configs=main,worker,webgl2]` | the binding scenario through the `orbis` package in headless Chromium (`web/demo/scenario.html`) |
 
 ## How we work

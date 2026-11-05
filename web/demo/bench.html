@@ -36,7 +36,7 @@ issue.</p>
 // Query: format=mvt|mlt or style=<url> (the Tokyo extract by default); orb-bench settings frames, warmup,
 // rounds, size=WxH, ratio, at=lon,lat, timing=timestamps|work-done,
 // experiment=frames|paint|labels|gestures, labels=on|off; for gestures,
-// thread=main|worker and paths=city|alps (alps by default with style=alps,
+// thread=main|worker, workers=<job workers> and paths=city|alps (alps by default with style=alps,
 // at the terrain demo's view).
 import init, { runBench } from "../pkg/harness.js";
 import { runGestures } from "./gestures.js";
@@ -135,6 +135,7 @@ async function run() {
       if (thread && !["main", "worker"].includes(thread)) throw new Error("thread must be main or worker");
       report = await runGestures({
         style, center, paths, size: [w, h], threads: thread ? [thread] : ["main", "worker"], about: lines,
+        jobWorkers: params.has("workers") ? Number(params.get("workers")) : undefined,
         show: (line) => show(line),
       });
     } else {
