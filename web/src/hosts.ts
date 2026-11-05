@@ -73,6 +73,9 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   };
   // A map with its job and placement workers.
   const start = async (tier: "modern" | "compat", canvas: HTMLCanvasElement, style: string) => {
+    // Replies still on their way when the map stops find it gone.
+    let stopped = false;
+    const reply = (apply: (data: unknown) => void) => receive((data) => { if (!stopped) apply(data); });
     const spawned = spawnWorkers(module, jobWorkers);
     const { ports } = spawned;
     const workers = spawned.workers.slice(0, -1);
@@ -93,12 +96,12 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
         listen();
         core.placementWorkerLost(why);
       };
-      current.port.onmessage = receive((data) => {
+      current.port.onmessage = reply((data) => {
         const lost = (data as { lost?: string }).lost;
         if (lost !== undefined) replace(lost);
         else core.receivePlacement(data);
       });
-      current.worker.addEventListener("error", (e) => { e.preventDefault(); replace(e.message || "the worker died"); });
+      current.worker.addEventListener("error", (e) => { e.preventDefault(); if (!stopped) replace(e.message || "the worker died"); });
     };
     listen();
     // A job worker whose wasm trapped says so and closes; one that dies
@@ -106,16 +109,18 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
     // others.
     const released = ports.map(connectWorker);
     ports.forEach((port, i) => {
-      port.onmessage = receive((data) => {
+      port.onmessage = reply((data) => {
         const lost = (data as { lost?: string }).lost;
         if (lost !== undefined) core.jobWorkerLost(i, lost);
         else if (!answerWorker(port, data)) core.receiveJob(data);
       });
-      workers[i].addEventListener("error", (e) => { e.preventDefault(); core.jobWorkerLost(i, e.message || "the worker died"); });
+      workers[i].addEventListener("error", (e) => { e.preventDefault(); if (!stopped) core.jobWorkerLost(i, e.message || "the worker died"); });
     });
     const regions = onRegionsChanged(reload);
     callbacks.setup(core);
     const stop = () => {
+      stopped = true;
+      for (const port of [...ports, placement.port]) port.close();
       regions();
       for (const r of released) r();
       for (const w of [...workers, placement.worker]) w.terminate();
@@ -152,12 +157,16 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
         fresh.style.cssText = canvas.style.cssText;
         fresh.width = canvas.width;
         fresh.height = canvas.height;
+        // The map's own state: its style as edited, its camera, and what the
+        // app set at run time.
         const json = core.getStyle();
+        const state = core.exportState();
         const c = core.camera();
         const camera = { center: [c.lon, c.lat], zoom: c.zoom, bearing: c.bearing, pitch: c.pitch, roll: c.roll, elevation: c.elevation };
         stop();
         ({ core, stop, trap } = await start("compat", fresh, `data:application/json,${encodeURIComponent(json)}`));
         core.jumpTo(camera);
+        core.importState(state);
         if (size) core.resize(...size);
         canvas.removeEventListener("webglcontextlost", lost);
         canvas = fresh;

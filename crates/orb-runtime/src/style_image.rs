@@ -21,7 +21,7 @@ use crate::{MapEvent, SpriteIcons};
 /// An image for the style: straight (not premultiplied) RGBA8 rows, top
 /// first, and how icons and patterns read it (`pixel_ratio`, `sdf`,
 /// stretches, content box, text fit).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StyleImage {
     pub width: u32,
     pub height: u32,

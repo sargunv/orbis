@@ -383,6 +383,8 @@ pub struct Map {
     pub(crate) services: Services,
     pub(crate) videos: crate::video::Videos,
     pub(crate) host_tiles: crate::host_tiles::HostTiles,
+    /// App state to set again once the style loads ([`Map::restore`]).
+    pub(crate) restoring: Option<crate::AppState>,
     /// The camera's only writer: the app's moves, the style's camera and
     /// gestures all go through it (decision 0042).
     pub(crate) camera: orb_camera::Camera,
@@ -569,6 +571,7 @@ impl Map {
             services,
             videos: Default::default(),
             host_tiles: Default::default(),
+            restoring: None,
             camera: store,
             input: orb_interact::Interaction::default(),
             camera_seen: 0,
@@ -926,18 +929,12 @@ impl Map {
         self.labels = labels;
         self.label_epoch += 1;
         *self.picking.get_mut() = Default::default();
+        // What the host set at run time comes back with it.
+        let state = self.app_state();
         if let Some(style) = self.style.take() {
             self.generation += 1;
-            // What the host set at run time comes back with it.
-            let states = style.states.carried();
             self.install_revision(style.doc, Some((style.id, &style.worker)));
-            for (name, image) in style.added_images {
-                let _ = self.add_image(&name, Arc::unwrap_or_clone(image));
-            }
-            let style = self.style.as_mut().expect("installed");
-            for op in &states {
-                style.states.apply(op);
-            }
+            self.restore(state);
         }
         // What the old renderer held went with it.
         self.retired = Retired::default();
@@ -947,6 +944,9 @@ impl Map {
     /// Replaces the style with a document, every tile loaded fresh.
     pub(crate) fn install(&mut self, doc: StyleDoc) {
         self.install_revision(doc, None);
+        if let Some(state) = self.restoring.take() {
+            self.restore(state);
+        }
     }
 
     /// Installs a document: a new style, or with `previous` the same

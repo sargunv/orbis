@@ -910,6 +910,26 @@ impl OrbisMap {
         })
     }
 
+    /// What the app set on the map at run time, beside its style
+    /// document: feature state, added images, markers and the location,
+    /// for a map made afresh to take with `importState` (the switch to
+    /// WebGL2 after a loss).
+    #[wasm_bindgen(js_name = exportState)]
+    pub fn export_state(&self) -> Vec<u8> {
+        orb_runtime::wire::encode(&(self.map.app_state(), &self.batteries))
+    }
+
+    /// Takes another map's `exportState`: now, or once the style loads.
+    #[wasm_bindgen(js_name = importState)]
+    pub fn import_state(&mut self, bytes: &[u8]) -> Result<(), JsError> {
+        let (state, batteries): (orb_runtime::AppState, orb_runtime::batteries::Batteries) =
+            orb_runtime::wire::decode(bytes).map_err(|e| JsError::new(&e))?;
+        self.map.restore(state);
+        self.batteries = batteries;
+        wake(self.id);
+        Ok(())
+    }
+
     /// Loses the GPU on purpose (`GPUDevice.destroy()`, or WebGL's
     /// `WEBGL_lose_context`), to exercise recovery.
     #[wasm_bindgen(js_name = loseDevice)]

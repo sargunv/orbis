@@ -338,6 +338,25 @@ async function edits(browser, server) {
     `labels before the trap ${JSON.stringify(before)}, after ${JSON.stringify(after)}`);
   console.log(`edits: placement worker trapped and replaced; commit ${before.commit} → ${after.commit}, ${after.shown} labels`);
 
+  // A switch to WebGL2 after a loss keeps what the app set at run time:
+  // feature state (the grid's feature 7 above), images and markers.
+  const switched = await page.evaluate(async () => {
+    const { map } = globalThis.orbis;
+    map.addImage("e2e-dot", { width: 2, height: 2, data: new Uint8Array(16).fill(255) });
+    const marker = map.addMarker({ lngLat: [139.74, 35.685], image: "e2e-dot" });
+    const capability = map.once("capability");
+    map.loseDevice(true);
+    const { tier } = await capability;
+    await map.once("idle");
+    const at = map.project([139.735 + 7 * 0.0004, 35.682]);
+    const [feature] = await map.queryRenderedFeatures(at, { layers: ["grid"] });
+    let moved = true;
+    try { map.updateMarker(marker, { lngLat: [139.741, 35.685], image: "e2e-dot" }); } catch { moved = false; }
+    return { tier, image: await map.hasImage("e2e-dot"), state: feature?.state, moved };
+  });
+  assert.deepEqual(switched, { tier: "compat", image: true, state: { hover: true }, moved: true }, JSON.stringify(switched));
+  console.log("edits: lost on WebGPU, recovered on WebGL2 with the app's state");
+
   const cost = await page.evaluate(async (writes) => {
     const { map } = globalThis.orbis;
     const write = (i) => map.setFeatureState({ source: "grid", id: 123 }, { hover: i % 2 === 0 });
