@@ -265,7 +265,7 @@ hidden-surface removal for its whole pipeline: every overlapping tower
 fragment is shaded, shadow lookups included. So whole and cut buildings
 draw in two pipelines over the same arguments, each vertex shader keeping
 its own: whole ones never discard, and only cut ones clip per fragment.
-The casters split alike. An overzoom slice also keeps a polygon whole in
+An overzoom slice also keeps a polygon whole in
 its source tile whole, unclipped, in each child its bounds meet while it
 reaches no further than one child past it (`orb_tile::overzoom`): over
 Manhattan at z15.6 that raises whole buildings from 81.5% to 88.4%
@@ -280,7 +280,11 @@ of 64 pass, natively and in Chrome).
 Where the device has clip distances (`clip-distances`: Metal, Vulkan,
 WebGPU in Chrome), cut buildings of a placement with one clip rectangle,
 the tile square, are clipped by its four planes in a third pipeline, with
-the whole buildings' fragment stage: no discard (#102). Only those of a
+the whole buildings' fragment stage: no discard (#102). Casters draw every
+building in one pipeline, cut ones unclipped: two tiles' parts of a cut
+building write the same depths where they overlap, and depth-only
+drawing is bound by its vertices, which three pipelines would pass over
+three times (shadow passes over Manhattan at z14.52 5.7 → 3.6 ms). Only those of a
 placement clipping to several rectangles (an ancestor standing in for
 some children) still clip per fragment; Compat clips them all so. The
 planes pipeline's vertex stage comes from a vertex-only module

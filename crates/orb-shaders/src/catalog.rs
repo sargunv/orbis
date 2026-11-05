@@ -32,7 +32,6 @@ const SHADOW_RECEIVE: &str = concat!(
 const SHADOW_NONE: &str = include_str!("wgsl/shadow_none.wgsl");
 const SHADOW_GROUND: &str = include_str!("wgsl/shadow_ground.wgsl");
 const EXTRUSION_CASTER: &str = include_str!("wgsl/extrusion_caster.wgsl");
-const EXTRUSION_CASTER_FRAGMENT: &str = include_str!("wgsl/extrusion_caster_fragment.wgsl");
 const PATTERN: &str = include_str!("wgsl/pattern.wgsl");
 const EXTRUSION: &str = include_str!("wgsl/extrusion.wgsl");
 const EXTRUSION_FRAGMENT: &str = include_str!("wgsl/extrusion_fragment.wgsl");
@@ -451,40 +450,11 @@ pub const EXTRUSION_CASTER_SHADER: Shader = Shader {
         SHADOW_RECEIVE,
         EXTRUSION,
         EXTRUSION_CASTER,
-        EXTRUSION_CASTER_FRAGMENT,
     ],
     vertex: "vs_caster",
     fragment: "fs_caster",
     compute: "",
     lit: false,
-};
-/// Cut extrusions into a shadow cascade, clipped per fragment: every one,
-/// or where clip distances are ([`EXTRUSION_CASTER_PLANES_SHADER`]) those of
-/// placements with several clip rectangles (`vs_caster_cut_split`).
-pub const EXTRUSION_CASTER_CUT_SHADER: Shader = Shader {
-    label: "extrusion caster cut",
-    vertex: "vs_caster_cut",
-    fragment: "fs_caster_cut",
-    ..EXTRUSION_CASTER_SHADER
-};
-/// Cut extrusions of a placement with one clip rectangle into a shadow
-/// cascade, clipped by its planes. Where clip distances are; vertex only,
-/// drawn with `EXTRUSION_CASTER_SHADER`'s `fs_caster`.
-pub const EXTRUSION_CASTER_PLANES_SHADER: Shader = Shader {
-    label: "extrusion caster planes",
-    parts: &[
-        CLIP_PLANES,
-        TYPES,
-        DRAW,
-        PATTERN,
-        LIGHTING,
-        SHADOW_RECEIVE,
-        EXTRUSION,
-        EXTRUSION_CASTER,
-    ],
-    vertex: "vs_caster_cut_planes",
-    fragment: "",
-    ..EXTRUSION_CASTER_SHADER
 };
 /// Models' depth from the light, into a shadow cascade. Modern only.
 pub const MODEL_CASTER_SHADER: Shader = Shader {
@@ -557,8 +527,6 @@ pub const SHADERS: &[Shader] = &[
     EXTRUSION_CUT_SHADER,
     EXTRUSION_PLANES_SHADER,
     EXTRUSION_CASTER_SHADER,
-    EXTRUSION_CASTER_CUT_SHADER,
-    EXTRUSION_CASTER_PLANES_SHADER,
     SHADOW_GROUND_SHADER,
     OCCLUSION_SHADERS[0],
     OCCLUSION_SHADERS[1],
