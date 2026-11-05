@@ -937,6 +937,7 @@ impl Labels {
             last.camera == frame.camera
                 && last.layers == frame.layers
                 && last.cross_source_collisions == frame.cross_source_collisions
+                && last.scope == frame.scope
         });
         if same {
             return false;
@@ -955,6 +956,7 @@ impl Labels {
                 last.camera == frame.camera
                     && last.layers == frame.layers
                     && last.cross_source_collisions == frame.cross_source_collisions
+                    && last.scope == frame.scope
             })
     }
 
@@ -1056,6 +1058,7 @@ impl Labels {
         plan: &StylePlan,
         tiles: &[SymbolTile],
         view: &orb_camera::View,
+        camera_world: glam::DVec2,
         period: f64,
         camera: &orb_camera::CameraState,
         zoom: f64,
@@ -1063,7 +1066,6 @@ impl Labels {
         now: f64,
     ) -> orb_symbol::Frame {
         let view_proj = view.view_proj();
-        let camera_world = view.camera_world();
         let viewport = view.viewport();
         let layers = plan
             .nodes
@@ -1143,6 +1145,7 @@ impl Labels {
             cross_source_collisions: self.cross_source_collisions,
             lng: camera.target.lon,
             ground: None,
+            scope: orb_symbol::Scope::Viewport,
         }
     }
 
@@ -1629,6 +1632,7 @@ mod tests {
                 cross_source_collisions: true,
                 lng: 0.0,
                 ground: None,
+                scope: orb_symbol::Scope::Viewport,
             });
         }
 

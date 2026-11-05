@@ -3,16 +3,19 @@
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use glam::DVec2;
 use orb_camera::{
     AnimationId, Bounds, Camera, CameraEvent, CameraTarget, EaseOptions, FitOptions, FlyOptions,
 };
+use orb_crs::{TileIndex, TileMatrixSet};
 use orb_geo::Geodetic;
 use orb_interact::{Button, Feel, Input, InteractEvent, Interaction};
 use orb_runtime::{
-    CameraState, FrameReport, Hit, MapEvent, StyleImage, TargetFormat, Transaction, Viewport,
+    CameraState, FrameReport, GridTile, Hit, MapEvent, RenderMode, StyleImage, TargetFormat,
+    Transaction, Viewport,
 };
 
 use crate::{Error, Runtime, Shared, Target};
@@ -61,6 +64,20 @@ pub enum Event {
 }
 
 type WakeHook = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
+
+/// A tile to draw with [`Map::render_tile`].
+#[derive(Clone, Debug)]
+pub struct TileRequest {
+    /// The grid, on the map's plane: its projection must be the scene's.
+    pub tile_matrix_set: TileMatrixSet,
+    pub z: u8,
+    pub col: u32,
+    pub row: u32,
+    /// Pixels per side, logical; the image is `size × scale` physical
+    /// pixels a side, which must be whole.
+    pub size: u32,
+    pub scale: f64,
+}
 type Finished = Arc<Mutex<Vec<(u64, Result<String, String>)>>>;
 
 /// A map: style, camera store, gestures and events. Draw it with
@@ -77,6 +94,11 @@ pub struct Map {
     terrain: u64,
     /// Set from any thread when data arrived.
     woken: Arc<AtomicBool>,
+    /// Notified with `woken`, for still output to wait on.
+    signal: Arc<(Mutex<()>, Condvar)>,
+    /// What [`render_tile`](Self::render_tile) draws into: the tile with a
+    /// tile of its neighbours around it.
+    tile_target: Option<Target>,
     hook: WakeHook,
     /// Marks the map woken and calls the hook, from any thread.
     wake: Arc<dyn Fn() + Send + Sync>,
@@ -91,6 +113,8 @@ pub struct Map {
     busy: bool,
     /// A command or input since the last frame changed what it shows.
     dirty: bool,
+    /// How the map renders now.
+    mode: RenderMode,
 }
 
 impl std::fmt::Debug for Map {
@@ -120,12 +144,18 @@ impl Drop for Map {
 impl Map {
     pub fn new(runtime: &Runtime, options: MapOptions) -> Self {
         let woken = Arc::new(AtomicBool::new(false));
+        let signal: Arc<(Mutex<()>, Condvar)> = Arc::default();
         let hook: WakeHook = Arc::default();
         let wake: Arc<dyn Fn() + Send + Sync> = {
             let woken = woken.clone();
+            let signal = signal.clone();
             let hook = hook.clone();
             Arc::new(move || {
                 woken.store(true, Ordering::Release);
+                {
+                    let _waiting = signal.0.lock().expect("signal poisoned");
+                    signal.1.notify_all();
+                }
                 if let Some(hook) = hook.lock().expect("wake hook poisoned").as_ref() {
                     hook();
                 }
@@ -155,6 +185,8 @@ impl Map {
             pushed: 0,
             terrain: 0,
             woken,
+            signal,
+            tile_target: None,
             hook,
             wake,
             events: VecDeque::new(),
@@ -164,6 +196,7 @@ impl Map {
             device: runtime.shared.generation.get(),
             busy: true,
             dirty: true,
+            mode: RenderMode::Continuous,
         }
     }
 
@@ -380,6 +413,195 @@ impl Map {
     /// one format (all surfaces of a platform share one). Returns `None`
     /// when the surface had nothing to draw into this time.
     pub fn render(&mut self, target: &mut Target) -> Result<Option<FrameReport>, Error> {
+        self.set_mode(RenderMode::Continuous);
+        self.frame(target, true)
+    }
+
+    /// Draws what the camera shows once everything in view has loaded and
+    /// nothing fades (still output): labels place as if nothing had been
+    /// placed before, so the same style, data and camera always draw the
+    /// same pixels. Renders as many frames as that takes, waiting for data
+    /// in between; an error if it takes longer than `timeout`.
+    pub fn render_still(
+        &mut self,
+        target: &mut Target,
+        timeout: Duration,
+    ) -> Result<FrameReport, Error> {
+        self.set_mode(RenderMode::Still);
+        self.settle(target, true, timeout)
+    }
+
+    /// Draws one tile of a tile matrix set on the map's plane as still
+    /// output, and returns its pixels: RGBA8, premultiplied, rows top to
+    /// bottom. The map draws the tile with a tile of its neighbours around
+    /// it and places labels in tile scope ([`RenderMode::Tile`]): tiles
+    /// drawn apart agree on the labels that cross their edges, those
+    /// smaller than half a tile at least, and the same tile always draws
+    /// the same bytes. The map's camera store is left as it was.
+    pub fn render_tile(&mut self, tile: &TileRequest, timeout: Duration) -> Result<Vec<u8>, Error> {
+        let deadline = Instant::now() + timeout;
+        let index = TileIndex::new(tile.z, tile.col, tile.row);
+        let tms = &tile.tile_matrix_set;
+        if !tms.contains(index) {
+            return Err(Error::InvalidArgument(format!(
+                "{}/{}/{} isn't a tile of {}",
+                tile.z,
+                tile.col,
+                tile.row,
+                tms.id()
+            )));
+        }
+        let px = f64::from(tile.size) * tile.scale;
+        if tile.size == 0 || px.fract() != 0.0 || px < 1.0 {
+            return Err(Error::InvalidArgument(format!(
+                "{} pixels at scale {} isn't a whole tile",
+                tile.size, tile.scale
+            )));
+        }
+        let px = px as u32;
+        let mut target = match self.tile_target.take() {
+            Some(t) if t.size() == (3 * px, 3 * px) && t.scale() == tile.scale => t,
+            _ => Target::texture(&self.runtime, 3 * px, 3 * px, tile.scale),
+        };
+        let drawn = self.draw_tile(&mut target, tile, index, deadline);
+        let pixels = drawn.and_then(|()| target.read_pixels());
+        self.tile_target = Some(target);
+        let pixels = pixels?;
+        // The middle tile.
+        let row_bytes = 3 * px as usize * 4;
+        let (start, len) = (px as usize * 4, px as usize * 4);
+        Ok((px as usize..2 * px as usize)
+            .flat_map(|y| &pixels[y * row_bytes + start..][..len])
+            .copied()
+            .collect())
+    }
+
+    fn draw_tile(
+        &mut self,
+        target: &mut Target,
+        tile: &TileRequest,
+        index: TileIndex,
+        deadline: Instant,
+    ) -> Result<(), Error> {
+        // The scene document sets the plane.
+        self.set_mode(RenderMode::Still);
+        while self.map.style_doc().is_none() {
+            self.frame(target, false)?;
+            if self.map.style_doc().is_none() {
+                self.wait(deadline)?;
+            }
+        }
+        let surface = self.map.surface();
+        let tms = &tile.tile_matrix_set;
+        if surface.globe.is_some() || !tms.projection().same_plane(&surface.projection) {
+            return Err(Error::InvalidArgument(format!(
+                "{} isn't on the map's plane: set the scene's projection to its own",
+                tms.id()
+            )));
+        }
+        let projection = surface.projection;
+        let viewport = Viewport {
+            width: f64::from(tile.size),
+            height: f64::from(tile.size),
+        };
+        let world_per_px = tms.tile_span(index.z) / viewport.width;
+        let grid = |col: i64, row: i64| -> Option<GridTile> {
+            let index = TileIndex::new(index.z, u32::try_from(col).ok()?, u32::try_from(row).ok()?);
+            if !tms.contains(index) {
+                return None;
+            }
+            let bounds = tms.tile_bounds(index);
+            let center = (bounds.min + bounds.max) / 2.0;
+            let target = projection.inverse(center);
+            Some(GridTile {
+                col,
+                row,
+                camera: CameraState {
+                    target,
+                    resolution: world_per_px / projection.scale_factor(target.wrapped()),
+                    bearing: 0.0,
+                    pitch: 0.0,
+                    roll: 0.0,
+                    fov: CameraState::DEFAULT_FOV,
+                    elevation: 0.0,
+                },
+                viewport,
+                center,
+            })
+        };
+        let (col, row) = (i64::from(index.col), i64::from(index.row));
+        let tiles: Vec<GridTile> = (row - 1..=row + 1)
+            .flat_map(|r| (col - 1..=col + 1).map(move |c| (c, r)))
+            .filter_map(|(c, r)| grid(c, r))
+            .collect();
+        let camera = grid(col, row).expect("checked above").camera;
+        self.map.set_camera(camera);
+        // The camera store's camera goes back to the map with the next
+        // interactive frame.
+        self.pushed = u64::MAX;
+        self.set_mode(RenderMode::Tile(tiles));
+        self.settle(
+            target,
+            false,
+            deadline.saturating_duration_since(Instant::now()),
+        )
+        .map(|_| ())
+    }
+
+    fn set_mode(&mut self, mode: RenderMode) {
+        if self.mode != mode {
+            self.map.set_mode(mode.clone());
+            self.mode = mode;
+            self.dirty = true;
+        }
+    }
+
+    /// Renders until two frames in a row are idle, the second drawing what
+    /// the first's messages brought, waiting for data between frames.
+    fn settle(
+        &mut self,
+        target: &mut Target,
+        camera: bool,
+        timeout: Duration,
+    ) -> Result<FrameReport, Error> {
+        let deadline = Instant::now() + timeout;
+        let mut was_idle = false;
+        loop {
+            if let Some(report) = self.frame(target, camera)? {
+                if report.idle && was_idle {
+                    return Ok(report);
+                }
+                was_idle = report.idle;
+                if was_idle {
+                    continue;
+                }
+            }
+            self.wait(deadline)?;
+        }
+    }
+
+    /// Waits for data, a frame's time at most (fades and transitions run
+    /// on the clock), or fails at `deadline`.
+    fn wait(&self, deadline: Instant) -> Result<(), Error> {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(Error::InvalidState(format!(
+                "the map didn't settle in time: {:?}",
+                self.map.job_counts()
+            )));
+        }
+        let (lock, condvar) = &*self.signal;
+        let guard = lock.lock().expect("signal poisoned");
+        if !self.woken.load(Ordering::Acquire) {
+            let wait = (deadline - now).min(Duration::from_millis(16));
+            drop(condvar.wait_timeout(guard, wait).expect("signal poisoned"));
+        }
+        Ok(())
+    }
+
+    /// One frame; with `camera`, gestures and animations advance and the
+    /// camera store's camera goes to the map.
+    fn frame(&mut self, target: &mut Target, camera: bool) -> Result<Option<FrameReport>, Error> {
         if !target.same_runtime(&self.shared) {
             return Err(Error::InvalidArgument(
                 "the target belongs to another runtime".into(),
@@ -402,12 +624,15 @@ impl Map {
             )));
         }
         let viewport = target.viewport();
-        if self.camera.viewport() != viewport {
-            self.camera.set_viewport(viewport);
+        let (mut gesture, mut animating) = (false, false);
+        if camera {
+            if self.camera.viewport() != viewport {
+                self.camera.set_viewport(viewport);
+            }
+            let now = self.runtime.now();
+            gesture = self.input.frame(&mut self.camera, now);
+            animating = self.camera.frame(now);
         }
-        let now = self.runtime.now();
-        let gesture = self.input.frame(&mut self.camera, now);
-        let animating = self.camera.frame(now);
         self.events
             .extend(self.camera.take_events().into_iter().map(Event::Camera));
         self.events.extend(
@@ -421,7 +646,9 @@ impl Map {
         );
         // Until the app or the user moves it, the map's camera follows the
         // style.
-        if self.camera.modified() && self.camera.revision() != self.pushed {
+        // After a tile, the camera store's camera goes back to the map.
+        let back = self.pushed == u64::MAX;
+        if camera && ((self.camera.modified() && self.camera.revision() != self.pushed) || back) {
             self.pushed = self.camera.revision();
             self.map.set_camera(*self.camera.state());
         }

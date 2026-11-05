@@ -9,11 +9,12 @@ mod collision;
 mod cross_tile;
 mod grid;
 mod place;
+mod tile_scope;
 mod view;
 
 pub use grid::Overlap;
 pub use place::{
     BucketStates, Committed, Frame, GroundRef, LayerFrame, LayerParams, PlacedTile,
-    PlacementTables, Placer, ZoomSize, state,
+    PlacementTables, Placer, Scope, ScopeTile, ZoomSize, state,
 };
 pub use view::{Camera, Ground, Mat4, TileGlobe, TileId, TileView};

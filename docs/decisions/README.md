@@ -43,3 +43,4 @@ in code and commit messages.
 - [0036](0036-style-spec-proposals.md): Recent style-spec proposals: what the native model should take
 - [0037](0037-memory-budget.md): The memory budget: growable pools and a cache sized by memory
 - [0038](0038-async-pipelines.md): Pipelines compile off the drawing thread, only what the nodes use, under a watchdog
+- [0039](0039-still-and-tile.md): Still and Tile output, and tile-scope placement

@@ -390,7 +390,41 @@ struct WaitingTile {
 
 /// A map: a style, a camera and the tiles they need, drawn by
 /// [`render`](Self::render).
+/// How a map renders (plan §14.2): interactively, or the still output of
+/// servers and snapshots.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum RenderMode {
+    /// Interactive: labels place against the view and fade, and raster
+    /// tiles fade in.
+    #[default]
+    Continuous,
+    /// One picture: nothing fades and labels place as if nothing had been
+    /// placed before, so that the same inputs draw the same pixels.
+    Still,
+    /// One tile of a grid, drawn with its neighbours around it: `Still`,
+    /// with labels placed in tile scope over the grid's tiles listed, so
+    /// that tiles drawn apart agree on the labels that cross their edges.
+    Tile(Vec<GridTile>),
+}
+
+/// A tile of the grid [`RenderMode::Tile`] places labels over.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridTile {
+    /// Its column and row: neighbours differ by one.
+    pub col: i64,
+    pub row: i64,
+    /// A camera centred on it, looking straight down and unrotated, whose
+    /// viewport is the tile; the same size for every tile.
+    pub camera: CameraState,
+    pub viewport: Viewport,
+    /// Its centre in world units, unwrapped: on a plane that repeats, a
+    /// tile past the edge stays beside its neighbours.
+    pub center: glam::DVec2,
+}
+
 pub struct Map {
+    /// Interactive, a still picture or a tile ([`Map::set_mode`]).
+    mode: RenderMode,
     /// Placement and the scene side of labels.
     pub(crate) labels: crate::labels::Labels,
     /// The last frame's picking state; queries project from it.
@@ -605,6 +639,7 @@ impl Map {
         });
         let born = services.clock.now();
         Self {
+            mode: RenderMode::Continuous,
             born,
             image_fades_until: born,
             picking: Default::default(),
@@ -661,6 +696,13 @@ impl Map {
         self.renderer
             .as_ref()
             .map(|(renderer, _)| renderer.draw_args())
+    }
+
+    /// Sets how the map renders. `Still` and `Tile` frames wait for nothing
+    /// to fade, so a host renders until [`FrameReport::idle`] and keeps
+    /// that frame.
+    pub fn set_mode(&mut self, mode: RenderMode) {
+        self.mode = mode;
     }
 
     /// Sets how long labels fade in and out, milliseconds (GL JS
@@ -1771,12 +1813,45 @@ impl Map {
             style.worker.plan(),
             &style.symbol_tiles,
             view,
+            view.camera_world(),
             self.surface.period(),
             &self.camera,
             self.camera.zoom(self.surface.projection()),
             extrusion_scale,
             now,
         );
+        if self.mode != RenderMode::Continuous {
+            frame.fade_duration = 0.0;
+        }
+        frame.scope = match &self.mode {
+            RenderMode::Continuous => orb_symbol::Scope::Viewport,
+            RenderMode::Still => orb_symbol::Scope::Still,
+            RenderMode::Tile(tiles) => orb_symbol::Scope::Tiles(
+                tiles
+                    .iter()
+                    .map(|t| {
+                        let view = View::new(&t.camera, t.viewport, &self.surface.view_surface());
+                        let f = self.labels.frame(
+                            style.worker.plan(),
+                            &style.symbol_tiles,
+                            &view,
+                            t.center,
+                            self.surface.period(),
+                            &t.camera,
+                            t.camera.zoom(self.surface.projection()),
+                            extrusion_scale,
+                            now,
+                        );
+                        orb_symbol::ScopeTile {
+                            col: t.col,
+                            row: t.row,
+                            camera: f.camera,
+                            layers: f.layers,
+                        }
+                    })
+                    .collect(),
+            ),
+        };
         // Symbols stand on the terrain as drawn.
         frame.ground = style
             .terrain
@@ -3015,6 +3090,12 @@ impl Map {
                     _ => None,
                 })
                 .fold(0.0, f64::max);
+            // Still output shows tiles at once.
+            let fade_ms = if self.mode == RenderMode::Continuous {
+                fade_ms
+            } else {
+                0.0
+            };
             let now = self.services.clock.now();
             let upload = image::Upload {
                 plan,

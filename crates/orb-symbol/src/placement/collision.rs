@@ -110,6 +110,15 @@ impl CollisionIndex {
         }
     }
 
+    /// Whether a tile-unit anchor lies in the viewport, without its
+    /// padding: right and bottom edges excluded, so that tiles of a grid
+    /// share each anchor out.
+    pub(crate) fn in_view(&self, tile: &TileView, anchor: [i16; 2]) -> bool {
+        let p = self.project(tile, f64::from(anchor[0]), f64::from(anchor[1]), None);
+        (VIEWPORT_PADDING..self.camera.width + VIEWPORT_PADDING).contains(&p.x)
+            && (VIEWPORT_PADDING..self.camera.height + VIEWPORT_PADDING).contains(&p.y)
+    }
+
     pub(crate) fn is_offscreen(&self, x1: f64, y1: f64, x2: f64, y2: f64) -> bool {
         x2 < VIEWPORT_PADDING
             || x1 >= self.screen_right

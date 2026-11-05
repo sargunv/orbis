@@ -45,7 +45,8 @@ pub use layout::{
 };
 pub use placement::{
     BucketStates, Camera, Committed, Frame, Ground, GroundRef, LayerFrame, LayerParams, Mat4,
-    Overlap, PlacedTile, PlacementTables, Placer, TileGlobe, TileId, TileView, ZoomSize, state,
+    Overlap, PlacedTile, PlacementTables, Placer, Scope, ScopeTile, TileGlobe, TileId, TileView,
+    ZoomSize, state,
 };
 
 #[cfg(all(test, target_arch = "wasm32"))]

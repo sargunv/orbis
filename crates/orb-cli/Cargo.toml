@@ -1,0 +1,21 @@
+[package]
+name = "orb-cli"
+description = "`orbis`: still pictures and tile pyramids of a style, through orb-api's Still and Tile modes"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "orbis"
+path = "src/main.rs"
+
+[dependencies]
+orb-api.workspace = true
+orb-crs.workspace = true
+orb-expr.workspace = true
+orb-v8.workspace = true
+png.workspace = true
+
+[lints]
+workspace = true

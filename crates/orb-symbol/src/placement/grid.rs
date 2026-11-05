@@ -20,7 +20,7 @@ pub(crate) struct GridKey {
 }
 
 /// GL JS `overlapAllowed`.
-fn overlap_allowed(a: Overlap, b: Overlap) -> bool {
+pub(crate) fn overlap_allowed(a: Overlap, b: Overlap) -> bool {
     a == Overlap::Always || !(a == Overlap::Never || b == Overlap::Never)
 }
 
@@ -28,7 +28,7 @@ fn overlap_allowed(a: Overlap, b: Overlap) -> bool {
 /// predicate): `None` hits every group.
 pub(crate) type Group = Option<u32>;
 
-fn in_group(group: Group, key: &GridKey) -> bool {
+pub(crate) fn in_group(group: Group, key: &GridKey) -> bool {
     group.is_none_or(|g| key.group == g)
 }
 
@@ -125,8 +125,7 @@ impl GridIndex {
         if x1 <= 0.0 && y1 <= 0.0 && self.width <= x2 && self.height <= y2 {
             return true;
         }
-        // Boxes computed through different projections should still meet.
-        const EPSILON: f64 = 1e-6;
+
         let query = self.next_query();
         for cell in self.cells(x1, y1, x2, y2) {
             for &uid in &self.box_cells[cell] {
@@ -137,10 +136,7 @@ impl GridIndex {
                 *seen = query;
                 let b = &self.bboxes[uid as usize * 4..][..4];
                 let key = &self.box_keys[uid as usize];
-                if x1 <= b[2] + EPSILON
-                    && y1 <= b[3] + EPSILON
-                    && x2 >= b[0] - EPSILON
-                    && y2 >= b[1] - EPSILON
+                if boxes_collide([x1, y1, x2, y2], b)
                     && in_group(group, key)
                     && !overlap_allowed(overlap, key.overlap)
                 {
@@ -217,13 +213,31 @@ impl GridIndex {
     }
 }
 
-fn circles_collide(x1: f64, y1: f64, r1: f64, x2: f64, y2: f64, r2: f64) -> bool {
+/// Whether two boxes meet, edges included. Boxes computed through
+/// different projections should still meet.
+pub(crate) fn boxes_collide(a: [f64; 4], b: &[f64]) -> bool {
+    const EPSILON: f64 = 1e-6;
+    a[0] <= b[2] + EPSILON
+        && a[1] <= b[3] + EPSILON
+        && a[2] >= b[0] - EPSILON
+        && a[3] >= b[1] - EPSILON
+}
+
+pub(crate) fn circles_collide(x1: f64, y1: f64, r1: f64, x2: f64, y2: f64, r2: f64) -> bool {
     let (dx, dy) = (x2 - x1, y2 - y1);
     let both = r1 + r2;
     both * both > dx * dx + dy * dy
 }
 
-fn circle_and_rect_collide(cx: f64, cy: f64, r: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> bool {
+pub(crate) fn circle_and_rect_collide(
+    cx: f64,
+    cy: f64,
+    r: f64,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+) -> bool {
     let half_w = (x2 - x1) / 2.0;
     let dist_x = (cx - (x1 + half_w)).abs();
     if dist_x > half_w + r {

@@ -122,6 +122,41 @@ pub struct Frame {
     pub lng: f64,
     /// The terrain, if the map has one.
     pub ground: Option<GroundRef>,
+    /// Where labels collide.
+    pub scope: Scope,
+}
+
+/// Where a placement collides labels (plan §10's placement scopes).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Scope {
+    /// Against the view, continuing the last placement: fades, variable
+    /// anchors and orientations carry over, as in GL JS.
+    #[default]
+    Viewport,
+    /// Against the view as if nothing had been placed before, so that the
+    /// same inputs always place alike: still output.
+    Still,
+    /// Each tile of an output grid alone, as if nothing had been placed
+    /// before (tile scope): a tile places the labels anchored in it against
+    /// each other in its own view, and a label that then overlaps one of a
+    /// neighbouring tile's, ranked above it, is dropped. Neither step
+    /// depends on which tile is being drawn, so tiles drawn apart agree on
+    /// every label that crosses their shared edges, as long as their
+    /// neighbourhoods hold each such label's competitors.
+    Tiles(Vec<ScopeTile>),
+}
+
+/// One tile of a tile-scope placement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScopeTile {
+    /// Its column and row in the output grid: neighbours differ by one.
+    pub col: i64,
+    pub row: i64,
+    /// A view centred on the tile whose viewport is the tile, unrotated and
+    /// looking straight down, the same size for every tile.
+    pub camera: Camera,
+    /// The frame's layers as that view sees them.
+    pub layers: Vec<LayerFrame>,
 }
 
 /// A frame's terrain. Frames with the same terrain snapshot compare
@@ -428,14 +463,10 @@ impl Placer {
         }
     }
 
-    /// Places every layer of `frame` and commits, returning the buckets
-    /// whose states changed. Tiles of buckets not ingested are skipped.
-    pub fn place(&mut self, frame: &Frame) -> Committed {
-        self.update_copies(frame);
-        let camera = &frame.camera;
-        // GL JS orders a source's drawn tiles by zoom, finest first.
-        let mut layers: Vec<(LayerParams, Vec<PlacedTile>)> = frame
-            .layers
+    /// The drawn tiles of each layer whose buckets were ingested, GL JS's
+    /// order: a source's tiles by zoom, finest first.
+    fn drawn(&self, layers: &[LayerFrame]) -> Vec<(LayerParams, Vec<PlacedTile>)> {
+        layers
             .iter()
             .map(|l| {
                 let mut tiles: Vec<PlacedTile> = l
@@ -450,8 +481,22 @@ impl Placer {
                 });
                 (l.params.clone(), tiles)
             })
-            .collect();
-        for (params, tiles) in &mut layers {
+            .collect()
+    }
+
+    /// Places every layer of `frame` and commits, returning the buckets
+    /// whose states changed. Tiles of buckets not ingested are skipped.
+    pub fn place(&mut self, frame: &Frame) -> Committed {
+        if frame.scope != Scope::Viewport {
+            // Still output places as if nothing had been placed before.
+            self.buckets.clear();
+            self.index = CrossTileIndex::default();
+            self.prev = None;
+        }
+        self.update_copies(frame);
+        let camera = &frame.camera;
+        let layers = self.drawn(&frame.layers);
+        for (params, tiles) in &layers {
             let mut indexed: Vec<Indexed<'_>> = Vec::with_capacity(tiles.len());
             let buckets = &mut self.buckets;
             // Each copy appears once per layer: split the borrows by key.
@@ -473,45 +518,16 @@ impl Placer {
         self.index
             .retain_layers(&layers.iter().map(|(p, _)| p.layer).collect());
 
-        let mut placer = Pass {
-            index: CollisionIndex::new(*camera),
-            now: Decisions {
-                zoom: camera.zoom,
-                ..Decisions::default()
-            },
-            prev: self.prev.as_ref(),
-            camera,
-            ground: frame.ground.as_ref().map(|g| &*g.0),
+        let ground = frame.ground.as_ref().map(|g| &*g.0);
+        let now = match &frame.scope {
+            Scope::Tiles(tiles) => self.place_tiles(frame, tiles),
+            Scope::Viewport | Scope::Still => {
+                let mut placer = Pass::new(camera, self.prev.as_ref(), ground);
+                placer.run(&self.buckets, &layers, frame.cross_source_collisions);
+                placer.now
+            }
         };
-        for (params, tiles) in layers.iter().rev() {
-            let zoom = camera.zoom;
-            if (params.minzoom != 0.0 && params.minzoom > zoom)
-                || (params.maxzoom != 0.0 && params.maxzoom <= zoom)
-            {
-                continue;
-            }
-            let group = (!frame.cross_source_collisions).then_some(params.source);
-            let mut parts: Vec<(f64, &PlacedTile, std::ops::Range<usize>)> = Vec::new();
-            for t in tiles {
-                let b = &self.buckets[&copy_key(t)];
-                if params.sort_across_tiles {
-                    for r in &b.tables.sort_key_ranges {
-                        parts.push((r.sort_key, t, r.start as usize..r.end as usize));
-                    }
-                } else {
-                    parts.push((0.0, t, 0..b.tables.instances.len()));
-                }
-            }
-            if params.sort_across_tiles {
-                parts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            }
-            let mut seen = HashSet::new();
-            for (_, t, range) in parts {
-                let b = &self.buckets[&copy_key(t)];
-                placer.place_part(params, group, t, b, range, &mut seen);
-            }
-        }
-        let mut now = placer.now;
+        let mut now = now;
         let placement_changed =
             commit(&mut now, self.prev.as_ref(), frame.now, frame.fade_duration);
         let zoom_adjustment = self
@@ -542,6 +558,95 @@ impl Placer {
         self.prev = Some(now);
         committed
     }
+
+    /// Tile scope (see [`Scope::Tiles`]): each tile's own placement, then
+    /// the labels that overlap a higher-ranked one of another tile dropped.
+    fn place_tiles(&self, frame: &Frame, tiles: &[ScopeTile]) -> Decisions {
+        let ground = frame.ground.as_ref().map(|g| &*g.0);
+        let mut now = Decisions {
+            zoom: frame.camera.zoom,
+            ..Decisions::default()
+        };
+        let mut records = Vec::with_capacity(tiles.len());
+        for tile in tiles {
+            let layers = self.drawn(&tile.layers);
+            let mut pass = Pass::new(&tile.camera, None, ground);
+            pass.record = Some(Record::default());
+            pass.run(&self.buckets, &layers, frame.cross_source_collisions);
+            // A label two tiles both claim (an anchor on their shared edge,
+            // within rounding) keeps the first tile's placement.
+            let Decisions {
+                placements,
+                variable_offsets,
+                orientations,
+                ..
+            } = pass.now;
+            for (id, p) in placements {
+                if let std::collections::hash_map::Entry::Vacant(e) = now.placements.entry(id) {
+                    e.insert(p);
+                    if let Some(&o) = variable_offsets.get(&id) {
+                        now.variable_offsets.insert(id, o);
+                    }
+                    if let Some(&o) = orientations.get(&id) {
+                        now.orientations.insert(id, o);
+                    }
+                }
+            }
+            records.push(pass.record.expect("set above"));
+        }
+        for (id, text, icon) in super::tile_scope::outranked(tiles, &records) {
+            if let Some(p) = now.placements.get_mut(&id) {
+                p.text = text;
+                p.icon = icon;
+            }
+        }
+        now
+    }
+}
+
+/// What a tile-scope pass placed: each label's shapes as it inserted them,
+/// in its view's padded pixels, and its rank.
+#[derive(Debug, Default)]
+pub(crate) struct Record {
+    pub(crate) labels: Vec<RecordedLabel>,
+    pub(crate) shapes: Vec<RecordedShape>,
+    /// Labels placed so far in this pass.
+    next: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct RecordedLabel {
+    pub(crate) id: u32,
+    /// Rank among the labels of every tile, highest first: the layer
+    /// (topmost first), the sort key, then (with the tile's position) the
+    /// order the tile placed it in.
+    pub(crate) layer: u32,
+    pub(crate) sort_key: f64,
+    pub(crate) order: u64,
+    pub(crate) shapes: std::ops::Range<usize>,
+    /// Whether text and icon show when the label is dropped: `*-overlap:
+    /// always`.
+    pub(crate) always_text: bool,
+    pub(crate) always_icon: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ShapeGeometry {
+    Box([f64; 4]),
+    /// `x, y, radius`.
+    Circle([f64; 3]),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RecordedShape {
+    pub(crate) geometry: ShapeGeometry,
+    /// As a query: its overlap mode and the collision group it tests
+    /// against; as a placed shape, the key others test.
+    pub(crate) overlap: Overlap,
+    pub(crate) group: Option<u32>,
+    pub(crate) key: GridKey,
+    /// Others collide with it: not `*-ignore-placement`.
+    pub(crate) blocks: bool,
 }
 
 struct Pass<'a> {
@@ -550,9 +655,73 @@ struct Pass<'a> {
     prev: Option<&'a Decisions>,
     camera: &'a Camera,
     ground: Option<&'a dyn super::Ground>,
+    /// Tile scope: place only the labels anchored in the view, and record
+    /// what they insert.
+    record: Option<Record>,
+    /// The layer being placed, topmost first, and its part's sort key.
+    layer: u32,
+    sort_key: f64,
 }
 
-impl Pass<'_> {
+impl<'a> Pass<'a> {
+    fn new(
+        camera: &'a Camera,
+        prev: Option<&'a Decisions>,
+        ground: Option<&'a dyn super::Ground>,
+    ) -> Self {
+        Self {
+            index: CollisionIndex::new(*camera),
+            now: Decisions {
+                zoom: camera.zoom,
+                ..Decisions::default()
+            },
+            prev,
+            camera,
+            ground,
+            record: None,
+            layer: 0,
+            sort_key: 0.0,
+        }
+    }
+
+    /// Places `layers`, topmost first.
+    fn run(
+        &mut self,
+        buckets: &HashMap<(u64, i32), Bucket>,
+        layers: &[(LayerParams, Vec<PlacedTile>)],
+        cross_source_collisions: bool,
+    ) {
+        for (rank, (params, tiles)) in layers.iter().rev().enumerate() {
+            let zoom = self.camera.zoom;
+            if (params.minzoom != 0.0 && params.minzoom > zoom)
+                || (params.maxzoom != 0.0 && params.maxzoom <= zoom)
+            {
+                continue;
+            }
+            self.layer = rank as u32;
+            let group = (!cross_source_collisions).then_some(params.source);
+            let mut parts: Vec<(f64, &PlacedTile, std::ops::Range<usize>)> = Vec::new();
+            for t in tiles {
+                let b = &buckets[&copy_key(t)];
+                if params.sort_across_tiles {
+                    for r in &b.tables.sort_key_ranges {
+                        parts.push((r.sort_key, t, r.start as usize..r.end as usize));
+                    }
+                } else {
+                    parts.push((0.0, t, 0..b.tables.instances.len()));
+                }
+            }
+            if params.sort_across_tiles {
+                parts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            }
+            let mut seen = HashSet::new();
+            for (key, t, range) in parts {
+                self.sort_key = key;
+                let b = &buckets[&copy_key(t)];
+                self.place_part(params, group, t, b, range, &mut seen);
+            }
+        }
+    }
     /// GL JS `markUsedOrientation` records which orientation shows; the
     /// words read it from `orientations`.
     fn mark_orientation(&mut self, id: u32, orientation: u8) {
@@ -601,6 +770,10 @@ impl Pass<'_> {
             let instance = &t.instances[i];
             let id = b.ids[i];
             if seen.contains(&id) {
+                continue;
+            }
+            // Tile scope: a tile places the labels anchored in it.
+            if self.record.is_some() && !self.index.in_view(&tile.view, instance.anchor) {
                 continue;
             }
             let ground = self.ground;
@@ -803,17 +976,64 @@ impl Pass<'_> {
                 overlap,
                 group: group.unwrap_or(0),
             };
+            // Recorded in tile scope only.
+            let recording = self.record.is_some();
+            let mut shapes = Vec::new();
+            let shape = |geometry, overlap, ignore: bool| RecordedShape {
+                geometry,
+                overlap,
+                group,
+                key: key(overlap),
+                blocks: !ignore,
+            };
             if place_text && let Some(b) = placed.filter(|b| b.placeable) {
                 self.index
                     .insert_box(b.bounds, key(p.text_overlap), p.text_ignore_placement);
+                shapes.extend(recording.then(|| {
+                    shape(
+                        ShapeGeometry::Box(b.bounds),
+                        p.text_overlap,
+                        p.text_ignore_placement,
+                    )
+                }));
             }
             if place_icon && let Some(b) = placed_icon.filter(|b| b.placeable) {
                 self.index
                     .insert_box(b.bounds, key(p.icon_overlap), p.icon_ignore_placement);
+                shapes.extend(recording.then(|| {
+                    shape(
+                        ShapeGeometry::Box(b.bounds),
+                        p.icon_overlap,
+                        p.icon_ignore_placement,
+                    )
+                }));
             }
             if place_text && let Some(c) = &circles {
                 self.index
                     .insert_circles(&c.circles, key(p.text_overlap), p.text_ignore_placement);
+                for &circle in c.circles.iter().filter(|_| recording) {
+                    shapes.push(shape(
+                        ShapeGeometry::Circle(circle),
+                        p.text_overlap,
+                        p.text_ignore_placement,
+                    ));
+                }
+            }
+            if let Some(record) = &mut self.record
+                && !shapes.is_empty()
+            {
+                let start = record.shapes.len();
+                record.shapes.extend(shapes);
+                record.labels.push(RecordedLabel {
+                    id,
+                    layer: self.layer,
+                    sort_key: self.sort_key,
+                    order: record.next,
+                    shapes: start..record.shapes.len(),
+                    always_text,
+                    always_icon,
+                });
+                record.next += 1;
             }
             self.now.placements.insert(
                 id,
@@ -1177,6 +1397,7 @@ mod tests {
             cross_source_collisions: true,
             lng: 0.0,
             ground: None,
+            scope: Scope::Viewport,
         }
     }
 
@@ -1509,5 +1730,124 @@ mod tests {
         ));
         let s = &c.changed[0].2;
         assert!(shown(word(s, 0)) && shown(word(s, 1)));
+    }
+
+    /// Tile 0/0/0 as seen from a 256-pixel view of its quadrant `(col,
+    /// row)`, as tile scope places it.
+    fn quadrant(col: i64, row: i64, layers: &[(LayerParams, u64)]) -> ScopeTile {
+        let s = 1.0 / 2048.0;
+        let (c, r) = (col as f64, row as f64);
+        ScopeTile {
+            col,
+            row,
+            camera: Camera {
+                width: 256.0,
+                height: 256.0,
+                ..frame(Vec::new(), 0.0, 0.0).camera
+            },
+            layers: layers
+                .iter()
+                .map(|(params, bucket)| LayerFrame {
+                    params: params.clone(),
+                    tiles: vec![PlacedTile {
+                        view: TileView {
+                            matrix: [
+                                s,
+                                0.0,
+                                0.0,
+                                0.0,
+                                0.0,
+                                -s,
+                                0.0,
+                                0.0,
+                                0.0,
+                                0.0,
+                                1.0,
+                                0.0,
+                                -1.0 - 2.0 * c,
+                                1.0 + 2.0 * r,
+                                0.0,
+                                1.0,
+                            ],
+                            ..view(0)
+                        },
+                        ..tile(*bucket, 0)
+                    }],
+                })
+                .collect(),
+        }
+    }
+
+    fn tile_scope(placer: &mut Placer, owners: &[(i64, i64)]) -> BucketStates {
+        let layers = [(params(7), 1)];
+        let mut f = frame(
+            vec![LayerFrame {
+                params: params(7),
+                tiles: vec![tile(1, 0)],
+            }],
+            0.0,
+            0.0,
+        );
+        f.scope = Scope::Tiles(
+            owners
+                .iter()
+                .map(|&(c, r)| quadrant(c, r, &layers))
+                .collect(),
+        );
+        placer.place(&f).changed.remove(0).2
+    }
+
+    #[test]
+    fn tile_scope_agrees_across_tiles() {
+        let mut placer = Placer::default();
+        // Label 1 is anchored in quadrant (0, 0) and crosses into (1, 0),
+        // where label 2, anchored just across the edge, overlaps it. Label 3
+        // lies alone in (1, 1).
+        placer.ingest(
+            1,
+            labels(&[(1, [4090, 2000]), (2, [4100, 2000]), (3, [6000, 6000])]),
+        );
+        let all = tile_scope(&mut placer, &[(0, 0), (1, 0), (0, 1), (1, 1)]);
+        let placed = |states: &BucketStates| -> Vec<bool> {
+            (0..3).map(|i| shown(word(states, i))).collect()
+        };
+        // Each quadrant places its own; the first in row-major order wins
+        // across the edge.
+        assert_eq!(placed(&all), [true, false, true]);
+        // Drawing either side's neighbourhood decides the edge alike, and
+        // again the same.
+        let left = tile_scope(&mut placer, &[(0, 0), (1, 0)]);
+        assert_eq!(placed(&left)[..2], [true, false]);
+        // In any order.
+        let right = tile_scope(&mut placer, &[(1, 1), (1, 0), (0, 0)]);
+        assert_eq!(placed(&right), [true, false, true]);
+        assert_eq!(
+            tile_scope(&mut placer, &[(0, 0), (1, 0), (0, 1), (1, 1)]),
+            all
+        );
+        // A label no listed tile holds isn't placed.
+        assert!(!placed(&left)[2]);
+    }
+
+    #[test]
+    fn still_scope_places_as_if_first() {
+        let mut placer = Placer::default();
+        placer.ingest(1, labels(&[(1, [4096, 4096]), (2, [4100, 4100])]));
+        let layer = |overlap| {
+            let mut p = params(7);
+            p.text_overlap = overlap;
+            vec![LayerFrame {
+                params: p,
+                tiles: vec![tile(1, 0)],
+            }]
+        };
+        // A fading placement, then a still one: it shows fully at once.
+        placer.place(&frame(layer(Overlap::Always), 0.0, 300.0));
+        let mut f = frame(layer(Overlap::Never), 10.0, 0.0);
+        f.scope = Scope::Still;
+        let c = placer.place(&f);
+        let states = &c.changed[0].2;
+        assert_eq!(word(states, 0) & state::OPACITY, 127);
+        assert!(!shown(word(states, 1)));
     }
 }

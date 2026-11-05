@@ -5,7 +5,7 @@
 use bytemuck::Pod;
 use orb_symbol::{
     BucketStates, Camera, Committed, Frame, LayerFrame, LayerParams, Overlap, PlacedTile,
-    PlacementTables, SizeKind, TileGlobe, TileId, TileView, ZoomSize,
+    PlacementTables, Scope, ScopeTile, SizeKind, TileGlobe, TileId, TileView, ZoomSize,
 };
 use orb_text::WritingMode;
 
@@ -306,9 +306,7 @@ fn read_params(r: &mut Reader<'_>) -> Result<LayerParams, String> {
     })
 }
 
-pub fn pack_frame(f: &Frame) -> Vec<u8> {
-    let mut w = Writer::default();
-    let c = &f.camera;
+fn write_camera(w: &mut Writer, c: &Camera) {
     for v in [
         c.width,
         c.height,
@@ -317,16 +315,27 @@ pub fn pack_frame(f: &Frame) -> Vec<u8> {
         c.pitch,
         c.roll,
         c.camera_to_center_distance,
-        f.now,
-        f.fade_duration,
-        f.lng,
     ] {
         w.f64(v);
     }
-    w.bool(f.cross_source_collisions);
-    w.u32(f.layers.len() as u32);
-    for layer in &f.layers {
-        write_params(&mut w, &layer.params);
+}
+
+fn read_camera(r: &mut Reader<'_>) -> Result<Camera, String> {
+    Ok(Camera {
+        width: r.f64()?,
+        height: r.f64()?,
+        zoom: r.f64()?,
+        bearing: r.f64()?,
+        pitch: r.f64()?,
+        roll: r.f64()?,
+        camera_to_center_distance: r.f64()?,
+    })
+}
+
+fn write_layers(w: &mut Writer, layers: &[LayerFrame]) {
+    w.u32(layers.len() as u32);
+    for layer in layers {
+        write_params(w, &layer.params);
         w.u32(layer.tiles.len() as u32);
         for t in &layer.tiles {
             w.u64(t.bucket);
@@ -338,36 +347,17 @@ pub fn pack_frame(f: &Frame) -> Vec<u8> {
             for v in t.view.matrix {
                 w.f64(v);
             }
-            write_globe(&mut w, t.view.globe.as_ref());
+            write_globe(w, t.view.globe.as_ref());
             w.f64(t.text_size.size);
             w.f64(t.text_size.t);
         }
     }
-    w.0
 }
 
-pub fn unpack_frame(bytes: &[u8]) -> Result<Frame, String> {
-    let mut r = Reader(bytes);
-    let mut v = [0.0; 10];
-    for x in &mut v {
-        *x = r.f64()?;
-    }
-    let [
-        width,
-        height,
-        zoom,
-        bearing,
-        pitch,
-        roll,
-        camera_to_center_distance,
-        now,
-        fade,
-        lng,
-    ] = v;
-    let cross_source_collisions = r.bool()?;
-    let layers = (0..r.u32()?)
+fn read_layers(r: &mut Reader<'_>) -> Result<Vec<LayerFrame>, String> {
+    (0..r.u32()?)
         .map(|_| {
-            let params = read_params(&mut r)?;
+            let params = read_params(r)?;
             let tiles = (0..r.u32()?)
                 .map(|_| {
                     let bucket = r.u64()?;
@@ -381,7 +371,7 @@ pub fn unpack_frame(bytes: &[u8]) -> Result<Frame, String> {
                     for m in &mut matrix {
                         *m = r.f64()?;
                     }
-                    let globe = read_globe(&mut r)?;
+                    let globe = read_globe(r)?;
                     Ok(PlacedTile {
                         bucket,
                         view: TileView { id, matrix, globe },
@@ -394,24 +384,67 @@ pub fn unpack_frame(bytes: &[u8]) -> Result<Frame, String> {
                 .collect::<Result<_, String>>()?;
             Ok(LayerFrame { params, tiles })
         })
-        .collect::<Result<_, String>>()?;
+        .collect()
+}
+
+pub fn pack_frame(f: &Frame) -> Vec<u8> {
+    let mut w = Writer::default();
+    write_camera(&mut w, &f.camera);
+    for v in [f.now, f.fade_duration, f.lng] {
+        w.f64(v);
+    }
+    w.bool(f.cross_source_collisions);
+    write_layers(&mut w, &f.layers);
+    match &f.scope {
+        Scope::Viewport => w.u32(0),
+        Scope::Still => w.u32(1),
+        Scope::Tiles(tiles) => {
+            w.u32(2);
+            w.u32(tiles.len() as u32);
+            for t in tiles {
+                w.u64(t.col as u64);
+                w.u64(t.row as u64);
+                write_camera(&mut w, &t.camera);
+                write_layers(&mut w, &t.layers);
+            }
+        }
+    }
+    w.0
+}
+
+pub fn unpack_frame(bytes: &[u8]) -> Result<Frame, String> {
+    let mut r = Reader(bytes);
+    let camera = read_camera(&mut r)?;
+    let (now, fade_duration, lng) = (r.f64()?, r.f64()?, r.f64()?);
+    let cross_source_collisions = r.bool()?;
+    let layers = read_layers(&mut r)?;
+    let scope = match r.u32()? {
+        0 => Scope::Viewport,
+        1 => Scope::Still,
+        2 => Scope::Tiles(
+            (0..r.u32()?)
+                .map(|_| {
+                    Ok(ScopeTile {
+                        col: r.u64()? as i64,
+                        row: r.u64()? as i64,
+                        camera: read_camera(&mut r)?,
+                        layers: read_layers(&mut r)?,
+                    })
+                })
+                .collect::<Result<_, String>>()?,
+        ),
+        tag => return Err(format!("unknown placement scope {tag}")),
+    };
     r.done()?;
     Ok(Frame {
-        camera: Camera {
-            width,
-            height,
-            zoom,
-            bearing,
-            pitch,
-            roll,
-            camera_to_center_distance,
-        },
+        camera,
         layers,
         now,
-        fade_duration: fade,
+        fade_duration,
         cross_source_collisions,
         lng,
         ground: None,
+        scope,
     })
 }
 
@@ -550,8 +583,19 @@ mod tests {
             cross_source_collisions: true,
             lng: -170.0,
             ground: None,
+            scope: Scope::Viewport,
         };
         assert_eq!(unpack_frame(&pack_frame(&frame)).unwrap(), frame);
+        let tiles = Frame {
+            scope: Scope::Tiles(vec![ScopeTile {
+                col: -1,
+                row: 2,
+                camera: frame.camera,
+                layers: frame.layers.clone(),
+            }]),
+            ..frame.clone()
+        };
+        assert_eq!(unpack_frame(&pack_frame(&tiles)).unwrap(), tiles);
 
         let committed = Committed {
             changed: vec![(

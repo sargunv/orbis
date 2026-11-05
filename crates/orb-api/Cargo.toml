@@ -9,6 +9,7 @@ version.workspace = true
 [dependencies]
 glam.workspace = true
 orb-camera.workspace = true
+orb-crs.workspace = true
 orb-geo.workspace = true
 orb-hal.workspace = true
 orb-hal-gl = { workspace = true, features = ["egl"] }

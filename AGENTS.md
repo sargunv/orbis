@@ -49,6 +49,8 @@ node, pnpm, a JDK, Gradle, kotlinc, CMake, Go and devices-cli); run
 | `pnpm -C web playground` | headless style editor checks (controls, JSON, hover, frames per edit) in main and worker modes |
 | `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web playground:native` | dev bridge smoke test (build `orb-demo --release` first) |
 | `pnpm -C web edits` | every edit class through `globalThis.orbis.edit` in both thread modes, and the cost of a feature-state write |
+| `cargo run --release -p orb-cli -- render <style> -o out.png [--at lon,lat,z[,bearing,pitch]] [--size WxH]` | `orbis`: a still picture of a style or scene document (Still mode) |
+| `… -p orb-cli -- tiles <style> -o dir --tms <id\|tms.json> --zoom z[-z] [--bbox w,s,e,n]` | a tile pyramid on the scene's plane (Tile mode), `dir/z/col/row.png` |
 | `cargo xtask fixtures` | fetch and verify the pinned GL JS fixture mirror into `fixtures/gl-js` (gitignored; no work when it matches; `fixtures/README.md`) |
 | `cargo xtask rt [--suite render\|query] [--filter <substring>] [--platform native\|chrome\|lavapipe\|all]` | run the GL JS render fixtures, or with `--suite query` the query fixtures (native and Chrome); fetches the mirror first; report in `docs/scratch/rt` |
 | `cargo xtask pages` | `cargo xtask web`, then the Vite build into `web/dist`: the site `.github/workflows/pages.yml` deploys on every push to `main` |

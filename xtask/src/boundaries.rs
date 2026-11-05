@@ -22,6 +22,7 @@ const PLATFORM: &[&str] = &[
     "orb-hal-gl",
     "orb-api",
     "orb-capi",
+    "orb-cli",
     "orb-web",
     "orb-shaper",
     "orb-demo",
@@ -75,6 +76,7 @@ const SCENE_SIDE: &[&str] = &[
 pub(crate) const NATIVE_ONLY: &[&str] = &[
     "orb-host-native",
     "orb-api",
+    "orb-cli",
     "diplomat-swift-kotlin",
     "dsk-fixture",
     "orb-capi",

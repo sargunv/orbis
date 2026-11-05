@@ -21,11 +21,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
-pub use map::{Event, Map, MapOptions};
+pub use map::{Event, Map, MapOptions, TileRequest};
 pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraTarget, Change, EaseOptions, Easing, FitOptions,
     FlyOptions, Padding, Phase,
 };
+pub use orb_crs::TileMatrixSet;
 pub use orb_geo::Geodetic;
 pub use orb_hal::Tier;
 pub use orb_hal_gl::egl::EglWindow;

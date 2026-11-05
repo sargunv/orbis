@@ -51,7 +51,7 @@ pub use jobs::{
     TileImage, TileRequest, TileResult, TileWorker, pack, unpack,
 };
 pub use loader::{LoadDone, TileLoader, TileLocation};
-pub use map::{FrameReport, Images, JobCounts, Map, Memory, Services};
+pub use map::{FrameReport, GridTile, Images, JobCounts, Map, Memory, RenderMode, Services};
 pub use orb_camera::{CameraState, View, Viewport};
 pub use orb_layout::fill::Bend;
 pub use orb_render::{

@@ -2281,6 +2281,7 @@ version = "0.0.0"
 dependencies = [
  "glam",
  "orb-camera",
+ "orb-crs",
  "orb-geo",
  "orb-hal",
  "orb-hal-gl",
@@ -2332,6 +2333,17 @@ dependencies = [
  "diplomat-runtime",
  "glam",
  "orb-api",
+]
+
+[[package]]
+name = "orb-cli"
+version = "0.0.0"
+dependencies = [
+ "orb-api",
+ "orb-crs",
+ "orb-expr",
+ "orb-v8",
+ "png",
 ]
 
 [[package]]

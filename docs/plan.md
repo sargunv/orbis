@@ -209,7 +209,7 @@ LOC are CI-enforced ceilings [inferred]; "From" is the milestone that introduces
 | `orb-batteries` | location layer, annotation source, PMTiles region downloader, snapshotter | 3k | M5 |
 | `orb-api`, `orb-capi`, `orb-web` | safe Rust embedding API (runtime, map, targets, frames, events); the annotated Diplomat bridge and its C ABI; wasm-bindgen surface, roles, payload table | 6k + gen | M0, M3 |
 | `diplomat-swift-kotlin` | project-agnostic Swift and Kotlin/JNI emitters over Diplomat's HIR (decision 0018) | 4k | M3 |
-| tools | `orb-fixtures` (`cargo xtask rt`), real-world suite, bench, `xtask`, `orb-viewer`, LSP | 8k | M0 |
+| tools | `orb-fixtures` (`cargo xtask rt`), `orb-cli` (`orbis`: still pictures and tile pyramids), real-world suite, bench, `xtask`, `orb-viewer`, LSP | 8k | M0 |
 
 Total ceiling ≈ 155k lines of Rust + ~8k WGSL at M12 [inferred]; for scale, Native's core is 166,355 lines plus 259,225 of platform code and GL JS is 70,918 [verified].
 
@@ -836,7 +836,7 @@ OrbFrame f = OrbMap_render(map, t.ok);   // per display-link tick while OrbMap_n
   | Unreal | `IVulkanDynamicRHI` / `ID3D12DynamicRHI` | RDG external textures | `EnqueueLambda`; fences partly exposed |
 
 - **XR prerequisites (M9; packages later):** multi-view targets, union-frustum cover with per-view cull, native multiview where available (two passes on WebGPU), `world-3d` labels, host-depth occlusion, runtime-driven timing; WebXR via `XRWebGLBinding` first, `XRGPUBinding` (Editor's Draft) by detection.
-- **Servers (M6):** Owned/Inline; headless Vulkan, Metal, D3D12, lavapipe; `Still`/`Tile` with tile-scope placement; deterministic, any-TMS output; a `wasm32-wasip2` kernel component (validator, tiler, MLT transcode).
+- **Servers (M6):** Owned/Inline; headless Vulkan, Metal, D3D12, lavapipe; `Still`/`Tile` with tile-scope placement; deterministic, any-TMS output; a `wasm32-wasip2` kernel component (validator, tiler, MLT transcode). [built at M6, [decision 0039](decisions/0039-still-and-tile.md)] `Still` and `Tile` are a render mode of the ordinary frame: nothing fades and placement starts from nothing. `Tile` draws a tile of any tile matrix set on the scene's plane among its neighbours and places labels in tile scope (each of the 3×3 grid tiles places its own, then labels outranked across an edge drop), so tiles drawn apart agree on edge labels up to half a tile in size; output repeats byte for byte. The `orbis` CLI (`orb-cli`) drives both: a still picture or a tile pyramid of PNGs, about 28 ms a 512 px tile.
 
 ### 14.3 The web package
 
@@ -1073,7 +1073,7 @@ feature state and feature data draws its state when it compiles (#6).
 - *Exit:* real-world suite ≥90% within the yardstick on Modern (web and native) and on Compat for its supported layers; §18 rows 1–3, 5–16 and 19 on the device matrix; initial payload ≤550 KB br; fuzzers green 30 days; no open crash or blank-screen bugs on Tier 1; docs and the generated support matrix on Pages.
 
 **M6 Any CRS and servers.**
-- *Builds:* TMS registry; scene document v0; `CpuResample`, `RasterWarp`, planar `GpuPerVertex`; planar families and EPSG table; mixed TMSs; any-CRS gestures and queries; `Still`/`Tile`; the CLI; the `wasm32-wasip2` kernel component.
+- *Builds:* TMS registry; scene document v0; `CpuResample`, `RasterWarp`, planar `GpuPerVertex`; planar families and EPSG table; mixed TMSs; any-CRS gestures and queries; `Still`/`Tile` (built, decision 0039); the CLI (built); the `wasm32-wasip2` kernel component (after the cut line).
 - *Demo:* interactive NZTM2000Quad and EPSG:3413 maps on web and native; a Mercator basemap over a warped EPSG:3413 raster; a UTM tile pyramid from the CLI.
 - *Exit:* CRS suite green (4,000-camera Mercator pin, per-family agreement, TMS traps, polar data); non-Mercator real-world styles pass reviewed goldens on Modern and Compat; tile-edge label agreement and byte-identical repeat output in `Tile` mode; Mercator fixture and real-world results unchanged by the merge.
 
