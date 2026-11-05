@@ -19,7 +19,7 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     if (url.pathname === "/") {
       res.writeHead(200, { "content-type": "text/html" });
-      res.end('<!doctype html><script type="module">import init, { FixtureRenderer } from "/pkg/harness.js"; await init(); window.renderer = await FixtureRenderer.create(new URL("/assets/", location).href);</script>');
+      res.end('<!doctype html><script type="module">import init, { FixtureRenderer } from "/pkg/harness.js"; await init(); window.renderer = await FixtureRenderer.create(new URL("/assets/", location).href, new URLSearchParams(location.search).get("renderer") ?? "webgpu");</script>');
       return;
     }
     const mount = Object.keys(mounts).find((prefix) => url.pathname.startsWith(prefix));
@@ -47,7 +47,9 @@ try {
   const page = await browser.newPage();
   page.on("console", (message) => { if (["error", "warning"].includes(message.type())) console.error(message.text()); });
   page.on("pageerror", (error) => console.error(error));
-  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  // `--renderer=webgl2` drives the Compat tier (compat code in harness.wasm).
+  const renderer = process.argv.find((a) => a.startsWith("--renderer="))?.slice("--renderer=".length) ?? "webgpu";
+  await page.goto(`http://127.0.0.1:${server.address().port}/?renderer=${renderer}`);
   await page.waitForFunction(() => window.renderer, null, { timeout: 60_000 });
   reply({ ready: true, browser: browser.version(), max_size: await page.evaluate(() => window.renderer.maxTextureDimension2D), text_matrix: await page.evaluate(() => window.renderer.textMatrixDigest()) });
   for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {

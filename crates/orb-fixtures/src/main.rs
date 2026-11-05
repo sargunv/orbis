@@ -49,18 +49,28 @@ fn run() -> Result<(), String> {
             "--suite" => suite = args.next().ok_or("--suite needs render|query")?,
             "--filter" => filter = args.next().ok_or("--filter needs a substring")?,
             "--platform" => {
-                platform = args
-                    .next()
-                    .ok_or("--platform needs native|gl|chrome|lavapipe|llvmpipe|all")?
+                platform = args.next().ok_or(
+                    "--platform needs native|gl|chrome|chrome-webgl2|lavapipe|llvmpipe|all",
+                )?
             }
             _ => {
                 return Err(format!(
-                    "unknown argument {arg}; usage: orb-fixtures [--suite render|query] [--filter <substring>] [--platform native|gl|chrome|lavapipe|llvmpipe|all]"
+                    "unknown argument {arg}; usage: orb-fixtures [--suite render|query] [--filter <substring>] [--platform native|gl|chrome|chrome-webgl2|lavapipe|llvmpipe|all]"
                 ));
             }
         }
     }
-    if !["native", "gl", "chrome", "lavapipe", "llvmpipe", "all"].contains(&platform.as_str()) {
+    if ![
+        "native",
+        "gl",
+        "chrome",
+        "chrome-webgl2",
+        "lavapipe",
+        "llvmpipe",
+        "all",
+    ]
+    .contains(&platform.as_str())
+    {
         return Err(format!("unknown platform {platform}"));
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -139,7 +149,8 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     std::fs::create_dir_all(output.join("failures")).map_err(|e| e.to_string())?;
     let started = Instant::now();
     let mut backend = match name {
-        "chrome" => Backend::Chrome(chrome::Chrome::new(root)?),
+        "chrome" => Backend::Chrome(chrome::Chrome::new(root, "webgpu")?),
+        "chrome-webgl2" => Backend::Chrome(chrome::Chrome::new(root, "webgl2")?),
         "gl" | "llvmpipe" => Backend::Gl(Box::new(gl_context()?)),
         _ => Backend::Native(Box::new(pollster::block_on(WgpuGpu::offscreen())?)),
     };

@@ -17,8 +17,41 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 #[derive(Debug)]
 pub struct FixtureRenderer {
-    gpu: WgpuGpu,
+    device: Device,
     assets_url: String,
+}
+
+/// The device requests draw on: WebGPU (Modern), or a WebGL2 context
+/// (Compat) each request makes a fresh executor on.
+// One per driver page: the variants' sizes don't matter.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+enum Device {
+    Modern(WgpuGpu),
+    Compat(web_sys::WebGl2RenderingContext, u32),
+}
+
+/// A request's own GPU resource owner.
+#[allow(clippy::large_enum_variant)]
+enum Owner {
+    Modern(WgpuGpu),
+    Compat(orb_hal_gl::GlGpu),
+}
+
+impl Owner {
+    fn gpu(&mut self) -> &mut dyn Gpu {
+        match self {
+            Self::Modern(gpu) => gpu,
+            Self::Compat(gpu) => gpu,
+        }
+    }
+
+    async fn read(&mut self, target: orb_hal::TextureId) -> Vec<u8> {
+        match self {
+            Self::Modern(gpu) => gpu.read_texture(target).await,
+            Self::Compat(gpu) => gpu.read_rgba8(target),
+        }
+    }
 }
 
 /// Premultiplied, top-to-bottom RGBA8 pixels and runtime diagnostics.
@@ -56,13 +89,30 @@ impl Fetch for AssetFetch {
 
 #[wasm_bindgen]
 impl FixtureRenderer {
-    /// `assets_url` is the HTTP directory corresponding to `local://`.
+    /// `assets_url` is the HTTP directory corresponding to `local://`;
+    /// `renderer` is `"webgpu"` (Modern) or `"webgl2"` (Compat).
     #[wasm_bindgen(js_name = create)]
-    pub async fn create(assets_url: String) -> Result<FixtureRenderer, JsError> {
-        Ok(Self {
-            gpu: WgpuGpu::offscreen().await.map_err(|e| JsError::new(&e))?,
-            assets_url,
-        })
+    pub async fn create(assets_url: String, renderer: String) -> Result<FixtureRenderer, JsError> {
+        let device = match renderer.as_str() {
+            "webgl2" => {
+                let canvas = web_sys::OffscreenCanvas::new(1, 1)
+                    .map_err(|e| JsError::new(&format!("{e:?}")))?;
+                let gl = orb_hal_gl::GlGpu::from_canvas(&canvas.clone().into())
+                    .map_err(|e| JsError::new(&e))?;
+                let max = gl.caps().limits.max_texture_dimension_2d;
+                let context = gl.webgl2().expect("a WebGL2 executor").clone();
+                Device::Compat(context, max)
+            }
+            _ => Device::Modern(WgpuGpu::offscreen().await.map_err(|e| JsError::new(&e))?),
+        };
+        Ok(Self { device, assets_url })
+    }
+
+    fn max_size(&self) -> u32 {
+        match &self.device {
+            Device::Modern(gpu) => gpu.caps().limits.max_texture_dimension_2d,
+            Device::Compat(_, max) => *max,
+        }
     }
 
     /// The digest of `orb-text`'s right-to-left and complex-script matrix,
@@ -75,7 +125,7 @@ impl FixtureRenderer {
     /// Maximum physical canvas dimension supported by this device.
     #[wasm_bindgen(getter, js_name = maxTextureDimension2D)]
     pub fn max_texture_dimension_2d(&self) -> u32 {
-        self.gpu.caps().limits.max_texture_dimension_2d
+        self.max_size()
     }
 
     /// Render at a logical viewport and explicit physical dimensions. The
@@ -101,7 +151,7 @@ impl FixtureRenderer {
         max_pitch: f64,
         operations: String,
     ) -> Result<FixturePixels, JsError> {
-        let (_, gpu, target, mut output) = self
+        let (_, mut gpu, target, mut output) = self
             .settle(
                 style,
                 width,
@@ -117,7 +167,7 @@ impl FixtureRenderer {
                 operations,
             )
             .await?;
-        output.pixels = gpu.read_texture(target).await;
+        output.pixels = gpu.read(target).await;
         Ok(output)
     }
 
@@ -191,18 +241,21 @@ impl FixtureRenderer {
         local_ideographs: Option<String>,
         max_pitch: f64,
         operations: String,
-    ) -> Result<(Map, WgpuGpu, orb_hal::TextureId, FixturePixels), JsError> {
+    ) -> Result<(Map, Owner, orb_hal::TextureId, FixturePixels), JsError> {
         let operations =
             orb_expr::json::parse(&operations).map_err(|e| JsError::new(&e.to_string()))?;
         let operations = operations.as_array().unwrap_or_default();
-        if width == 0
-            || height == 0
-            || width > self.gpu.caps().limits.max_texture_dimension_2d
-            || height > self.gpu.caps().limits.max_texture_dimension_2d
-        {
+        if width == 0 || height == 0 || width > self.max_size() || height > self.max_size() {
             return Err(JsError::new("device:canvas-size"));
         }
-        let mut gpu = WgpuGpu::new(self.gpu.device().clone(), self.gpu.queue().clone());
+        let mut gpu = match &self.device {
+            Device::Modern(gpu) => {
+                Owner::Modern(WgpuGpu::new(gpu.device().clone(), gpu.queue().clone()))
+            }
+            Device::Compat(context, _) => Owner::Compat(
+                orb_hal_gl::GlGpu::from_webgl2(context.clone()).map_err(|e| JsError::new(&e))?,
+            ),
+        };
         let fetch = Arc::new(AssetFetch(self.assets_url.clone()));
         let jobs = PoolJobs::new(fetch.clone(), Arc::new(WebImageDecode), Arc::new(Inline));
         jobs.set_local_glyphs(Arc::new(orb_host_web::CanvasGlyphs));
@@ -228,7 +281,7 @@ impl FixtureRenderer {
             color: orb_hal::TextureFormat::Rgba8Unorm,
             sample_count: 1,
         };
-        let target = gpu.create_texture(&orb_hal::TextureDesc {
+        let target = gpu.gpu().create_texture(&orb_hal::TextureDesc {
             label: "render fixture",
             width,
             height,
@@ -256,7 +309,7 @@ impl FixtureRenderer {
         // Renders until `until`, or for a wait's wall time; false on the
         // timeout.
         let settle =
-            async |map: &mut Map, until: Next, gpu: &mut WgpuGpu, output: &mut FixturePixels| {
+            async |map: &mut Map, until: Next, gpu: &mut Owner, output: &mut FixturePixels| {
                 let step = js_sys::Date::now();
                 loop {
                     // GL JS's transform keeps to the world and its pitch
@@ -264,7 +317,7 @@ impl FixtureRenderer {
                     let camera = map.camera_mut();
                     camera.pitch = camera.pitch.min(max_pitch);
                     map.constrain_camera(viewport);
-                    let report = map.render(gpu, target, format, viewport, pixel_ratio);
+                    let report = map.render(gpu.gpu(), target, format, viewport, pixel_ratio);
                     output.frames += 1;
                     output.warnings.extend(map.take_warnings());
                     let done = match until {
@@ -310,7 +363,7 @@ impl FixtureRenderer {
         let last = if fades { Next::Continue } else { Next::Idle };
         if settled && settle(&mut map, last, &mut gpu, &mut output).await? {
             // Draw the state installed by the last frame's messages.
-            let report = map.render(&mut gpu, target, format, viewport, pixel_ratio);
+            let report = map.render(gpu.gpu(), target, format, viewport, pixel_ratio);
             output.frames += 1;
             output.tiles_drawn = report.tiles_drawn;
             output.warnings.extend(map.take_warnings());

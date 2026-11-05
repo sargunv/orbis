@@ -94,10 +94,9 @@ fn main() -> ExitCode {
 
 fn rt(args: &[String]) -> Result<(), String> {
     fixtures::ensure()?;
-    if args
-        .windows(2)
-        .any(|pair| pair[0] == "--platform" && ["chrome", "all"].contains(&pair[1].as_str()))
-    {
+    if args.windows(2).any(|pair| {
+        pair[0] == "--platform" && ["chrome", "chrome-webgl2", "all"].contains(&pair[1].as_str())
+    }) {
         web::build()?;
     }
     let mut command = vec!["run", "--release", "-p", "orb-fixtures", "--"];

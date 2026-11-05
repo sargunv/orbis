@@ -19,9 +19,11 @@ pub(crate) struct Chrome {
 }
 
 impl Chrome {
-    pub(crate) fn new(root: &Path) -> Result<Self, String> {
+    /// The driver on `renderer`: `webgpu` or `webgl2`.
+    pub(crate) fn new(root: &Path, renderer: &str) -> Result<Self, String> {
         let mut child = Command::new("node")
             .arg(root.join("web/scripts/render-fixtures.mjs"))
+            .arg(format!("--renderer={renderer}"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

@@ -60,6 +60,11 @@ impl GlGpu {
         Ok(gpu)
     }
 
+    /// The WebGL2 context underneath.
+    pub fn webgl2(&self) -> Option<&web_sys::WebGl2RenderingContext> {
+        self.webgl.as_ref()
+    }
+
     /// Loses the context on purpose (`WEBGL_lose_context`), to exercise
     /// recovery.
     pub fn lose_context(&self) {

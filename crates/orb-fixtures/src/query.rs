@@ -52,7 +52,7 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
     let started = Instant::now();
     let mut chrome = if name == "chrome" {
-        Some(chrome::Chrome::new(root)?)
+        Some(chrome::Chrome::new(root, "webgpu")?)
     } else {
         None
     };
