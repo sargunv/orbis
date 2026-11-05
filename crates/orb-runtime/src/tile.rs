@@ -223,8 +223,15 @@ fn features(plan: &StylePlan, node: &NodePlan, layer: &Layer, zoom: f64) -> Vec<
         Some(filter) => filter.select(layer, zoom),
         None => (0..layer.len() as u32).collect(),
     };
-    if let LayerKind::Circle(c) = &style_layer.kind {
-        let key = c.layout.sort_key.bind(layer);
+    // GL JS's buckets draw features by their sort key.
+    let sort_key = match &style_layer.kind {
+        LayerKind::Circle(c) => Some(&c.layout.sort_key),
+        LayerKind::Fill(f) => Some(&f.layout.sort_key),
+        LayerKind::Line(l) => Some(&l.layout.sort_key),
+        _ => None,
+    };
+    if let Some(key) = sort_key.filter(|k| k.as_constant() != Some(&None)) {
+        let key = key.bind(layer);
         // Stable order for equal keys, just like JS's Array.sort.
         features.sort_by(|&a, &b| {
             key.evaluate(zoom, a as usize)
