@@ -2339,7 +2339,25 @@ impl Map {
                 0
             },
         ];
-        let (tiles, redraw) = terrain.plan(&surface, view, &self.camera, layout, &content, look);
+        let globe_warps = &mut self.globe_warps;
+        let mut globe = |tile: TileIndex| {
+            let target = view.globe()?.target;
+            let (warp, anchor) = globe_warps.warp(gpu, renderer.scene(), &surface, tile)?;
+            Some(orb_render::TerrainGlobe {
+                warp,
+                origin: (anchor - target).as_vec3().to_array(),
+                poles: orb_crs::sphere::poles(&surface, tile),
+            })
+        };
+        let (tiles, redraw) = terrain.plan(
+            &surface,
+            view,
+            &self.camera,
+            layout,
+            &content,
+            look,
+            &mut globe,
+        );
         renderer.set_terrain_tiles(gpu, &tiles);
         let slots: Vec<u32> = redraw.iter().map(|&(_, slot)| slot).collect();
         renderer.redraw_drape(&slots);

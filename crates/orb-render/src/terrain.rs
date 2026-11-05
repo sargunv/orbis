@@ -27,7 +27,7 @@ pub const TERRAIN_GRID: u32 = 128;
 /// Terrain units per tile side (`terrain.wgsl`'s `TERRAIN_EXTENT`).
 pub const TERRAIN_EXTENT: f32 = 8192.0;
 const NO_DEM: u32 = u32::MAX;
-const TILE_WORDS: usize = 8;
+const TILE_WORDS: usize = 14;
 const PARAM_WORDS: usize = 12;
 /// Uniform slices are 256-byte aligned on every backend.
 const UNIFORM_STRIDE: u64 = 256;
@@ -54,6 +54,19 @@ pub struct TerrainTile {
     pub dem: Option<TerrainDem>,
     /// Its block of drape slots (see [`DrapeLayout`]).
     pub slot: u32,
+    /// On a globe, where it lies on the sphere.
+    pub globe: Option<TerrainGlobe>,
+}
+
+/// A terrain tile on a globe (decision 0030's surface): its patches in
+/// space around `origin`, the anchor less the camera target in metres, and
+/// which poles, north then south, its edge skirts close (a top or bottom
+/// row of a set that stops short of the pole).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerrainGlobe {
+    pub warp: orb_scene::TileWarp,
+    pub origin: [f32; 3],
+    pub poles: [bool; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -203,6 +216,8 @@ impl Terrain {
                 },
                 uniform(6, vf),
                 uniform(7, vf),
+                // The scene's property arena: globe patches.
+                storage(8),
             ],
         });
         let stack_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -556,6 +571,15 @@ impl Terrain {
                     Some(d) => (d.layer, d.offset, d.scale),
                     None => (NO_DEM, [0.0; 2], 1.0),
                 };
+                let (origin, base, cells, poles) = match t.globe {
+                    Some(g) => (
+                        g.origin,
+                        g.warp.base(),
+                        g.warp.cells(),
+                        u32::from(g.poles[0]) | u32::from(g.poles[1]) << 1,
+                    ),
+                    None => ([0.0; 3], 0, 0, 0),
+                };
                 [
                     t.origin[0].to_bits(),
                     t.origin[1].to_bits(),
@@ -565,6 +589,12 @@ impl Terrain {
                     offset[1].to_bits(),
                     scale.to_bits(),
                     t.slot,
+                    origin[0].to_bits(),
+                    origin[1].to_bits(),
+                    origin[2].to_bits(),
+                    base,
+                    cells,
+                    poles,
                 ]
             })
             .collect();
@@ -750,7 +780,7 @@ impl Terrain {
     pub(crate) fn passes(
         &mut self,
         gpu: &mut dyn Gpu,
-        frame: BufferId,
+        (frame, props): (BufferId, BufferId),
         drape: Option<RenderBundleId>,
         (depth, depth_store): (TextureId, StoreOp),
         passes: &mut Vec<Pass>,
@@ -859,6 +889,10 @@ impl Terrain {
                             binding: 7,
                             resource: BindingResource::buffer(self.atmosphere),
                         },
+                        BindGroupEntry {
+                            binding: 8,
+                            resource: BindingResource::buffer(props),
+                        },
                     ],
                 });
                 self.group = Some(group);
@@ -961,6 +995,8 @@ impl Terrain {
             pixel_ratio: 1.0,
             align: [0.0; 2],
             pitch: 0.0,
+            // Slots are flat: the terrain carries them onto a globe.
+            globe: None,
             ..*frame
         }
     }

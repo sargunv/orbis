@@ -2,6 +2,7 @@
 // Shared with the build script, which translates the Compat compositions
 // to GLSL ES 3.00.
 pub(crate) const TYPES: &str = include_str!("wgsl/types.wgsl");
+const PROJECT: &str = include_str!("wgsl/project.wgsl");
 const DRAW: &str = concat!(
     include_str!("wgsl/bezier.wgsl"),
     include_str!("wgsl/draw.wgsl"),
@@ -104,6 +105,7 @@ pub const TERRAIN_SHADER: Shader = Shader {
         DEM,
         ATMOSPHERE,
         LIGHTING,
+        PROJECT,
         include_str!("wgsl/terrain.wgsl"),
     ],
     vertex: "vs_terrain",

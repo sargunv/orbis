@@ -1,7 +1,9 @@
 // The terrain surface (plan §9.4): one instance per terrain tile of a
 // shared grid, raised by its DEM tile, coloured from the tile's drape slot
 // for the stack being drawn, fogged by the atmosphere like GL JS's
-// `terrain.fragment.glsl`.
+// `terrain.fragment.glsl`. On a globe it lies on the sphere through the
+// tile's patches in space (`project.wgsl`'s `sphere_at`), raised along the
+// sphere's up, and its top and bottom rows' skirts close the poles.
 //
 // Drape slots are squares of the drape atlas, `slot_px` texels per side,
 // `columns` per row; a tile's slot for stack `s` is `slot * stacks + s`.
@@ -20,6 +22,13 @@ struct TerrainTile {
     dem_scale: f32,
     // Its block of drape slots.
     slot: u32,
+    // On a globe: its patches in space (`globe_cells` per side from word
+    // `globe_base` of the props) around `globe_origin`, camera-relative
+    // metres, and the poles its skirts close (bit 0 north, bit 1 south).
+    globe_origin: array<f32, 3>,
+    globe_base: u32,
+    globe_cells: u32,
+    poles: u32,
 };
 
 struct Terrain {
@@ -58,7 +67,12 @@ const GRID: u32 = 128u;
 @group(0) @binding(5) var drape_sampler: sampler;
 @group(0) @binding(6) var<uniform> terrain: Terrain;
 @group(0) @binding(7) var<uniform> atmosphere: Atmosphere;
+@group(0) @binding(8) var<storage, read> props: array<u32>;
 @group(1) @binding(0) var<uniform> stack: Stack;
+
+fn prop_at(i: u32) -> u32 {
+    return props[i];
+}
 
 fn dem_texel(p: vec2<i32>, layer: u32) -> f32 {
     let hi = vec2<i32>(textureDimensions(dem)) - 1;
@@ -100,16 +114,34 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     let skirt = (g >> 16u) & 1u;
     let uv = cell / f32(GRID);
     let elevation = terrain_elevation(tile, uv);
-    let z = elevation * frame.extrusion_scale - f32(skirt) * terrain.skirt;
+    var z = elevation * frame.extrusion_scale - f32(skirt) * terrain.skirt;
     let world = tile.origin + vec2<f32>(uv.x, -uv.y) * TERRAIN_EXTENT * tile.scale;
-    let clip = frame.view_proj * vec4<f32>(world, z, 1.0);
+    var clip = frame.view_proj * vec4<f32>(world, z, 1.0);
+    let globe = frame.globe_amount > 0.0 && tile.globe_cells > 0u;
+    if globe {
+        var g: Ground;
+        g.flat = world;
+        g.on_plane = true;
+        let origin = vec3<f32>(tile.globe_origin[0], tile.globe_origin[1], tile.globe_origin[2]);
+        g.globe = sphere_at(tile.globe_base, tile.globe_cells, origin, uv);
+        // A top or bottom row's skirt reaches the pole its set stops short
+        // of, closing the globe with the edge's colour, as the layers' caps
+        // do.
+        let north = cell.y == 0.0 && (tile.poles & 1u) != 0u;
+        let south = cell.y == f32(GRID) && (tile.poles & 2u) != 0u;
+        if skirt != 0u && (north || south) {
+            g.globe = vec3<f32>(0.0, 0.0, select(-SPHERE_RADIUS, SPHERE_RADIUS, north)) - frame.globe_target;
+            z = 0.0;
+        }
+        clip = ground_clip_3d(g, vec2<f32>(0.0), z);
+    }
     var out: TerrainOut;
     // Reversed-Z, as extrusions draw.
     out.position = vec4<f32>(clip.xy, clip.w - clip.z, clip.w);
     out.uv = uv;
     out.slot = tile.slot * terrain.stacks + stack.index;
-    // The view depth is the clip w.
-    out.fog_depth = atmosphere_fog_depth(atmosphere, clip.w);
+    // The view depth is the clip w. Fog stays off on a globe, as in GL JS.
+    out.fog_depth = select(atmosphere_fog_depth(atmosphere, clip.w), 0.0, globe);
     out.normal = vec3<f32>(0.0, 0.0, 1.0);
     if frame.light_position.w > 0.0 && tile.dem_layer != NO_DEM {
         // Central differences over a grid cell, in world units; uv y runs

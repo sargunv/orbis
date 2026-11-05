@@ -322,6 +322,16 @@ impl TileWarp {
         cells: 0,
         words: 0,
     };
+
+    /// Its first word in the property arena.
+    pub fn base(self) -> u32 {
+        self.base
+    }
+
+    /// Its patches per tile side; 0 for none.
+    pub fn cells(self) -> u32 {
+        self.cells
+    }
 }
 
 /// Where a placement draws: on the map, or into the terrain's drape

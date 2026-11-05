@@ -29,7 +29,7 @@ pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
-    TerrainPaint, TerrainTile,
+    TerrainGlobe, TerrainPaint, TerrainTile,
 };
 
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, PageId, PageKind};
@@ -1222,9 +1222,10 @@ impl Renderer {
         }
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
             let depth = self.extrusions.depth().expect("sized above");
+            let b = self.scene.buffers();
             stats.draws += terrain.passes(
                 gpu,
-                self.scene.buffers().frame,
+                (b.frame, b.props),
                 self.drape_bundle,
                 depth,
                 &mut passes,

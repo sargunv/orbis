@@ -132,6 +132,34 @@ bit here and there (Brave's fingerprinting protection perturbs readbacks),
 which a Terrarium DEM turns into 256 m spikes. The decoders add 87 KiB
 brotli to core.wasm (720 to 807).
 
+## On the globe
+
+Terrain uses the globe surface's own placement (decision 0030), not a
+second projection:
+- **Placement.** Each terrain tile's row carries its patches in space,
+  the same ones the layers' tiles use, with the anchor's offset from the
+  camera target. The terrain shader evaluates them per grid vertex
+  (`project.wgsl`'s `sphere_at`, over the scene's property arena) and
+  raises the point by its elevation along the sphere's up
+  (`ground_clip_3d`).
+- **The hand-over.** As the view hands over between globe and plane it
+  mixes the sphere's position with the plane's, as layers do. Drape slots
+  stay flat: the drape frame drops the globe.
+- **Poles.** A top or bottom row of a set that stops short of the pole
+  (Web Mercator's 85.05°) sends its edge skirt to the pole, closing the
+  globe with the edge's colour, as the layers' caps do.
+- **Fog** stays off on the globe, as in GL JS.
+
+`projection/globe/terrain` went from 22 failures to 21 (natively):
+`fill-planet-solid` passes. Pole caps close and match GL JS
+(`fill-planet-pole` is 0.5% off, at the limb). The rest are limb and
+cover differences shared with the globe without terrain.
+
+The camera's terrain clearance, its ray walk and the terrain cover's
+elevation ranges are still planar. On the globe they read the flat
+surface's terrain, which is close at the zooms where terrain matters,
+since the globe hands over to the plane by zoom 12.
+
 ## The web's ui role and placement worker
 
 Threads without the map's DEM tiles get the elevation pyramid (plan §7.1):

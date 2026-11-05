@@ -311,7 +311,9 @@ impl Terrain {
     /// This frame's terrain tiles for the renderer, with slots assigned
     /// from `layout`, and which tile slots to redraw. `content` hashes the
     /// draped content under a terrain tile; `look` is the zoom, bearing and
-    /// cross-fade it draws at, redrawn for only once `camera` stops.
+    /// cross-fade it draws at, redrawn for only once `camera` stops. On a
+    /// globe, `globe` places a tile on the sphere.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
@@ -320,6 +322,7 @@ impl Terrain {
         layout: DrapeLayout,
         content: &dyn Fn(CoveredTile) -> u64,
         look: [u64; 3],
+        globe: &mut dyn FnMut(TileIndex) -> Option<orb_render::TerrainGlobe>,
     ) -> (Vec<TerrainTile>, Vec<(CoveredTile, u32)>) {
         if layout.generation != self.generation {
             self.generation = layout.generation;
@@ -387,6 +390,7 @@ impl Terrain {
                 scale: (tms.tile_span(tile.index.z) / f64::from(orb_render::TERRAIN_EXTENT)) as f32,
                 dem,
                 slot,
+                globe: globe(tile.index),
             });
         }
         (out, redraw)
