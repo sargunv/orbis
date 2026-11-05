@@ -846,7 +846,7 @@ impl Map {
                 target.scale() as f32,
                 frame_time,
             );
-            target.end(&mut device);
+            target.end(&mut device)?;
             // The frame found the device lost (a compile the watchdog found
             // hung): no frame follows to say so.
             if device.lost() {

@@ -39,6 +39,16 @@ fn default_library() -> &'static str {
     }
 }
 
+/// Why a frame wasn't presented.
+#[derive(Debug, PartialEq)]
+pub enum SwapError {
+    /// The context is gone (a power event): the device needs making again.
+    ContextLost,
+    /// The window's surface is gone or broken: the target needs making
+    /// again.
+    Surface(String),
+}
+
 impl EglContext {
     /// A context drawing to a 1 × 1 pbuffer, for offscreen targets: from
     /// the libEGL at `library`, or the platform's.
@@ -190,22 +200,25 @@ impl EglContext {
             .map_err(|e| format!("EGL make current: {e}"))
     }
 
-    /// A window's size in pixels.
-    pub fn window_size(&self, window: &EglWindow) -> (u32, u32) {
+    /// A window's size in pixels; an error when the surface is gone.
+    pub fn window_size(&self, window: &EglWindow) -> Result<(u32, u32), String> {
         let query = |attribute| {
             self.egl
                 .query_surface(self.display, window.surface, attribute)
-                .unwrap_or(0)
-                .max(1) as u32
+                .map(|v| v.max(1) as u32)
+                .map_err(|e| format!("EGL surface size: {e}"))
         };
-        (query(egl::WIDTH), query(egl::HEIGHT))
+        Ok((query(egl::WIDTH)?, query(egl::HEIGHT)?))
     }
 
     /// Presents a window's frame.
-    pub fn swap(&self, window: &EglWindow) -> Result<(), String> {
+    pub fn swap(&self, window: &EglWindow) -> Result<(), SwapError> {
         self.egl
             .swap_buffers(self.display, window.surface)
-            .map_err(|e| format!("EGL swap: {e}"))
+            .map_err(|e| match e {
+                egl::Error::ContextLost => SwapError::ContextLost,
+                e => SwapError::Surface(format!("EGL swap: {e}")),
+            })
     }
 
     /// Destroys a window surface, drawing to the context's own again.

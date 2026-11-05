@@ -62,7 +62,8 @@ impl Target {
         let (width, height) = match &surface {
             Surface::Modern(s) => s.size(),
             Surface::Compat { window, .. } => match &*runtime.shared.gpu.borrow() {
-                Device::Compat(c) => c.egl.window_size(window),
+                // A surface that can't say its size fails its first frame.
+                Device::Compat(c) => c.egl.window_size(window).unwrap_or((1, 1)),
                 Device::Modern(_) => (1, 1),
             },
         };
@@ -206,7 +207,7 @@ impl Target {
                 c.egl
                     .make_current(Some(window))
                     .map_err(Error::TargetLost)?;
-                let size = c.egl.window_size(window);
+                let size = c.egl.window_size(window).map_err(Error::TargetLost)?;
                 (self.width, self.height) = size;
                 let id = match *frame {
                     Some((id, made)) if made == size => id,
@@ -225,9 +226,9 @@ impl Target {
     }
 
     /// Shows the frame on a surface, on the device that began it.
-    pub(crate) fn end(&mut self, device: &mut Device) {
+    pub(crate) fn end(&mut self, device: &mut Device) -> Result<(), Error> {
         let Kind::Surface(surface) = &mut self.kind else {
-            return;
+            return Ok(());
         };
         match (&mut **surface, device) {
             (Surface::Modern(surface), Device::Modern(gpu)) => gpu.present(surface),
@@ -235,11 +236,14 @@ impl Target {
                 if let Some((id, (w, h))) = *frame {
                     c.gpu.present(id, w, h);
                 }
-                // A failed swap shows as a lost window next frame.
-                let _ = c.egl.swap(window);
+                return c.egl.swap(window).map_err(|e| match e {
+                    orb_hal_gl::egl::SwapError::ContextLost => Error::DeviceLost,
+                    orb_hal_gl::egl::SwapError::Surface(message) => Error::TargetLost(message),
+                });
             }
             _ => {}
         }
+        Ok(())
     }
 }
 
