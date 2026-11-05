@@ -46,8 +46,7 @@ GPUQueue.prototype.submit = function (buffers) {
 window.pipelines = (async () => {
   try {
     const started = performance.now();
-    const map = await createMap({ container: document.getElementById("map"), style: demoStyle(new URLSearchParams(location.search), "tokyo"),
-      renderer: "webgpu", camera: { center: [139.74, 35.685], zoom: 15 } });
+    const map = await createMap({ container: document.getElementById("map"), style: demoStyle(new URLSearchParams(location.search), "tokyo"), camera: { center: [139.74, 35.685], zoom: 15 } });
     // The first frame that draws a layer, and the first with no pipeline
     // compiling.
     let firstDrawMs, compiledMs;

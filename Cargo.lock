@@ -2630,7 +2630,6 @@ dependencies = [
  "orb-crs",
  "orb-expr",
  "orb-hal",
- "orb-hal-gl",
  "orb-hal-wgpu",
  "orb-host",
  "orb-host-web",

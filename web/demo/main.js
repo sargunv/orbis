@@ -3,8 +3,8 @@
 // through feature state, and a debug overlay.
 //
 // URL: `?style=<key|url>` (styles.js), `&flight` (the Alps),
-// `&renderer=webgpu|webgl2` (the package's default otherwise), `&debug`, `&edit`, `&lose=<ms>[&switch]` (lose the GPU that
-// long after loading, to show recovery; `switch` onto WebGL2),
+// `&debug`, `&edit`, `&lose=<ms>` (lose the GPU that long after loading,
+// to show recovery),
 // and the camera as `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
 import { GROUPS, LIVE_CAMERA, sceneFor, sceneUrl } from "./styles.js";
@@ -220,7 +220,6 @@ async function load(next, { camera }) {
     created = await createMap({
       container,
       style: sceneUrl(next.scene, next.format),
-      renderer: params().get("renderer") ?? undefined,
       camera,
       constraints: next.scene.constraints,
       feel: feel(),
@@ -253,13 +252,10 @@ async function load(next, { camera }) {
     showCompass();
   });
   map.on("moveend", writeHash);
-  // The tier the map draws at, and how long a device loss took to recover:
-  // to the first frame on the new device, and to the next complete one.
+  // How long a device loss took to recover: to the first frame on the new
+  // device, and to the next complete one.
   let lostAt;
-  map.on("capability", ({ tier, recoveredMs }) => {
-    app.dataset.renderer = tier === "modern" ? "WebGPU" : "WebGL2";
-    hudControl.renderer(app.dataset.renderer);
-    if (recoveredMs === undefined) return;
+  map.on("restored", ({ recoveredMs }) => {
     const idle = map.on("idle", () => {
       idle();
       const recovered = `first frame ${Math.round(recoveredMs)} ms` +
@@ -273,7 +269,7 @@ async function load(next, { camera }) {
   if (query.has("lose")) {
     const loaded = map.on("load", () => {
       loaded();
-      setTimeout(() => { lostAt = performance.now(); map.loseDevice(query.has("switch")); },
+      setTimeout(() => { lostAt = performance.now(); map.loseDevice(); },
         Number(query.get("lose")) || 0);
     });
   }

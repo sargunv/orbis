@@ -23,7 +23,7 @@ pub const PIN: &str = "orbis-pin";
 const HEADING: &str = "orbis-location-heading";
 
 /// A marker: an image at a point.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Marker {
     /// Longitude and latitude, degrees.
     pub position: [f64; 2],
@@ -37,7 +37,7 @@ pub struct Marker {
 }
 
 /// A location fix.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Location {
     /// Longitude and latitude, degrees.
     pub position: [f64; 2],
@@ -50,7 +50,7 @@ pub struct Location {
 }
 
 /// The markers and location of one map.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default)]
 pub struct Batteries {
     markers: BTreeMap<u64, Marker>,
     next_marker: u64,

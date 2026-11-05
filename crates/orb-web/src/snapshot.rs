@@ -6,7 +6,7 @@
 //! [`OrbisMap::end_snapshot`] for the pixels.
 
 use orb_camera::Viewport;
-use orb_hal::{TextureDesc, TextureFormat, TextureId, TextureUsages, TextureViewDimension};
+use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureId, TextureUsages, TextureViewDimension};
 use orb_runtime::RenderMode;
 use wasm_bindgen::prelude::*;
 

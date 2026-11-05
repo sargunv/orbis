@@ -27,7 +27,7 @@ type CoreEvent =
   | { type: "sourcedata"; source: string; loaded: boolean }
   | { type: "error" | "warning"; message: string }
   | { type: "styleimagemissing"; id: string }
-  | { type: "capability"; tier: "modern" | "compat" }
+  | { type: "capability" }
   | { type: "camera"; change: "move" | "zoom" | "rotate" | "pitch"; phase: "start" | "progress" | "end"; user: boolean }
   | { type: "animationend"; id: number; interrupted: boolean }
   | { type: "click"; x: number; y: number; button: number }
@@ -232,9 +232,8 @@ export class OrbisMap {
     return next;
   }
 
-  /** Loses the GPU on purpose, to exercise recovery; with `switchTier`, a
-   * WebGPU map recovers on WebGL2. */
-  loseDevice(switchTier = false): void { this.#host.loseDevice(switchTier); }
+  /** Loses the GPU on purpose, to exercise recovery. */
+  loseDevice(): void { this.#host.loseDevice(); }
   /** Traps the placement worker's wasm, as a bug would, to exercise its
    * replacement: labels place again within a frame or two. */
   trapPlacementWorker(): void { this.#host.trapPlacementWorker(); }
@@ -494,14 +493,7 @@ export class OrbisMap {
     if (this.#lostAt !== undefined) return;
     this.#lostAt = performance.now();
     this.#events.emit("lost", {});
-    const replace = (canvas: HTMLCanvasElement) => {
-      this.#detachInput?.();
-      this.#observer.unobserve(this.#canvas);
-      this.#canvas.replaceWith(canvas);
-      this.#canvas = canvas;
-      this.#attach();
-    };
-    this.#host.recover(replace).then(() => {
+    this.#host.recover().then(() => {
       this.#recovering = this.#lostAt;
       this.#lostAt = undefined;
       this.#request();
@@ -528,9 +520,10 @@ export class OrbisMap {
         case "video": this.#videos.request(event); break;
         case "styleimagemissing": this.#events.emit("styleimagemissing", { id: event.id }); break;
         case "capability": {
-          const recoveredMs = this.#recovering === undefined ? undefined : performance.now() - this.#recovering;
+          if (this.#recovering === undefined) break;
+          const recoveredMs = performance.now() - this.#recovering;
           this.#recovering = undefined;
-          this.#events.emit("capability", { tier: event.tier, recoveredMs });
+          this.#events.emit("restored", { recoveredMs });
           break;
         }
         case "camera": {
@@ -570,20 +563,23 @@ export class OrbisMap {
 
 const CORE = new URL("../pkg/core_bg.wasm", import.meta.url);
 
-/** Whether WebGPU gives an adapter here. */
-async function webgpuAdapter(): Promise<boolean> {
+/** Why WebGPU gives no adapter here, if it doesn't. */
+async function noWebgpu(): Promise<string | undefined> {
   const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
+  if (!gpu) return "this browser has none";
   try {
-    return !!gpu && !!await gpu.requestAdapter();
-  } catch {
-    return false;
+    if (await gpu.requestAdapter()) return undefined;
+    return "it found no GPU here";
+  } catch (e) {
+    return `it failed: ${e instanceof Error ? e.message : e}`;
   }
 }
 
-/** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on. */
+/** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on.
+ * Rejects, saying why, where the browser has no WebGPU. */
 export async function createMap(options: MapOptions): Promise<OrbisMap> {
-  const renderer = options.renderer ?? "auto";
-  const tier = renderer === "webgl2" || (renderer === "auto" && !await webgpuAdapter()) ? "compat" : "modern";
+  const missing = await noWebgpu();
+  if (missing) throw new Error(`Orbis needs WebGPU, and ${missing}`);
   const module = WebAssembly.compileStreaming(fetch(CORE));
   const frame = document.createElement("div");
   Object.assign(frame.style, { position: "relative", width: "100%", height: "100%", overflow: "hidden" });
@@ -601,7 +597,6 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     : `data:application/json,${encodeURIComponent(JSON.stringify(options.style))}`;
   // The map exists once its host does: until then its callbacks wait.
   let map: OrbisMap | undefined;
-  let first = true;
   const core = {
     fadeDuration: options.fadeDuration, crossSourceCollisions: options.crossSourceCollisions,
     localIdeographFontFamily: options.localIdeographFontFamily, antialias: options.antialias,
@@ -613,11 +608,9 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     setup: (core) => {
       core.setFeel(options.feel ?? "desktop");
       if (options.constraints) core.setConstraints(options.constraints);
-      // A map recovered on another tier takes its camera from the lost one.
-      if (first && options.camera) core.jumpTo(options.camera);
-      first = false;
+      if (options.camera) core.jumpTo(options.camera);
     },
-  }, tier);
+  });
   host.resize(canvas.width, canvas.height, ratio);
   map = new OrbisMap(options.container, frame, canvas, overlay, host, options.interactive ?? true,
     options.pixelRatio);

@@ -79,7 +79,7 @@ pub enum ImageKey {
 }
 
 /// Sprite metadata retained for symbol layout as well as pattern sampling.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ImageMetadata {
     pub pixel_ratio: f32,
     pub sdf: bool,

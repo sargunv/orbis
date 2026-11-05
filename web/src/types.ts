@@ -110,13 +110,6 @@ export interface MapOptions {
   container: HTMLElement;
   /** A v8 style URL, or a style object. */
   style: string | object;
-  /**
-   * What draws the map: "webgpu" (the Modern tier), "webgl2" (Compat,
-   * from the lazily loaded compat.wasm), or "auto" (the default):
-   * WebGPU where it works, else WebGL2. A lost device is
-   * replaced on the same tier where possible, else on WebGL2.
-   */
-  renderer?: "auto" | "webgpu" | "webgl2";
   /** The starting camera; the style's by default. */
   camera?: CameraOptions;
   constraints?: Constraints;
@@ -248,15 +241,13 @@ export interface MapEvents {
   /** A tile's layers name an image the style doesn't have (GL JS
    * `styleimagemissing`); once per name until it's added with `addImage`. */
   styleimagemissing: { id: string };
-  /**
-   * The tier the map draws at: on its first frame, and after a device loss
-   * on its first frame on the new device, with the milliseconds since the
-   * loss.
-   */
-  capability: { tier: "modern" | "compat"; recoveredMs?: number };
   /** The GPU was lost (GL JS `webglcontextlost`): the map draws nothing
-   * until it has another, then reports `capability`. Failing that, `error`. */
+   * until it has another, then reports `restored`. Failing that, `error`. */
   lost: Record<string, never>;
+  /** The map draws on a new GPU after a loss (GL JS
+   * `webglcontextrestored`): its first frame there, the milliseconds since
+   * the loss. */
+  restored: { recoveredMs: number };
   /** A frame was drawn. */
   render: FrameStats;
 }

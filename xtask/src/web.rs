@@ -1,7 +1,6 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
 //! `web/pkg/`, reports its size by crate (twiggy) and warns when it
-//! grows past its size targets; then `compat.wasm`, the renderer on
-//! WebGL2 that pages without WebGPU load instead.
+//! grows past its size targets.
 //!
 //! `cargo xtask pages`: the above, then the Vite build of the site
 //! `.github/workflows/pages.yml` deploys, into `web/dist/`.
@@ -46,7 +45,7 @@ pub(crate) fn build() -> Result<(), String> {
     let out = root.join(OUT_DIR);
     let built = root.join("target/wasm32-unknown-unknown/wasm-release/orb_web.wasm");
 
-    let core = module(&root, "orb-web", "core", &[])?;
+    let core = module(&root, "orb-web", "core")?;
     report_crates(&built);
     let js = std::fs::read(out.join("core.js")).map_err(|e| format!("core.js: {e}"))?;
     eprintln!(
@@ -65,22 +64,9 @@ pub(crate) fn build() -> Result<(), String> {
             break;
         }
     }
-    // The renderer role on WebGL2, loaded instead of core.wasm's where
-    // WebGPU is missing or lost; job and placement workers keep core.wasm.
-    let compat = module(
-        &root,
-        "orb-web",
-        "compat",
-        &["--no-default-features", "--features", "compat"],
-    )?;
-    eprintln!(
-        "compat.wasm: {} KiB raw, {} KiB brotli (lazy)",
-        compat.raw / 1024,
-        compat.brotli / 1024
-    );
     word_data(&out)?;
     // `font-faces` drawing, loaded the first time a style declares a file.
-    let shaper = module(&root, "orb-shaper", "shaper", &[])?;
+    let shaper = module(&root, "orb-shaper", "shaper")?;
     eprintln!(
         "shaper.wasm: {} KiB raw, {} KiB brotli (lazy)",
         shaper.raw / 1024,
@@ -102,14 +88,14 @@ struct Sizes {
     brotli: usize,
 }
 
-/// Builds `package` with `features`, binds it as `<name>.js` and
-/// `<name>_bg.wasm` in [`OUT_DIR`] and shrinks it.
-fn module(root: &Path, package: &str, name: &str, features: &[&str]) -> Result<Sizes, String> {
+/// Builds `package`, binds it as `<name>.js` and `<name>_bg.wasm` in
+/// [`OUT_DIR`] and shrinks it.
+fn module(root: &Path, package: &str, name: &str) -> Result<Sizes, String> {
     let built = root.join(format!(
         "target/wasm32-unknown-unknown/wasm-release/{}.wasm",
         package.replace('-', "_")
     ));
-    let mut args = vec![
+    let args = [
         "build",
         "--quiet",
         "-p",
@@ -119,7 +105,6 @@ fn module(root: &Path, package: &str, name: &str, features: &[&str]) -> Result<S
         "--profile",
         "wasm-release",
     ];
-    args.extend(features);
     cargo(&args)?;
     let out = root.join(OUT_DIR);
     run(Command::new("wasm-bindgen")

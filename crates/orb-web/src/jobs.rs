@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use js_sys::{ArrayBuffer, Object, Reflect};
 use orb_crs::TileIndex;
+use orb_hal::Gpu as _;
 use orb_runtime::wire;
 use orb_runtime::{
     DemUnpack, GlyphRaster, ImageKind, ImagePixels, JobHost, JobReply, JobRequest, Jobs, Loaded,
@@ -121,7 +122,7 @@ impl WorkerJobs {
     /// buffer is registered with `gpu`; only its header enters wasm memory.
     pub(crate) fn receive(
         &self,
-        gpu: &mut dyn crate::canvas::WebGpu,
+        gpu: &mut orb_hal_wgpu::WgpuGpu,
         reply: &JsValue,
     ) -> Result<(), JsError> {
         let message = field(reply, "message")
@@ -163,7 +164,7 @@ impl WorkerJobs {
     /// register their buffers with `gpu`.
     fn complete(
         &self,
-        gpu: Option<&mut dyn crate::canvas::WebGpu>,
+        gpu: Option<&mut orb_hal_wgpu::WgpuGpu>,
         message: JobReply,
         buffer: Option<ArrayBuffer>,
         reply: &JsValue,

@@ -28,7 +28,6 @@ export function hud() {
   root.replaceChildren(list, h("div", { class: "hud-foot" }, h("span", {}, "Build ", commit)));
   let latest;
   let hovered = "";
-  let tier = "";
   let recovery = "";
   let queued = false;
 
@@ -37,7 +36,6 @@ export function hud() {
     const ack = latest;
     if (!ack || root.hidden) return;
     const rows = [
-      ...(tier ? [["renderer", tier]] : []),
       ["zoom", ack.zoom.toFixed(2)],
       ["CPU", `${ack.ms.toFixed(1)} ms`],
       ["draws", ack.draws],
@@ -68,7 +66,6 @@ export function hud() {
     set visible(on) { root.hidden = !on; request(); },
     frame(ack) { latest = ack; request(); },
     hover(text) { hovered = text; request(); },
-    renderer(text) { tier = text; request(); },
     recovered(text) { recovery = text; request(); },
   };
 }

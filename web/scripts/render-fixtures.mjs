@@ -9,8 +9,6 @@ import { fileURLToPath } from "node:url";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const assets = fileURLToPath(new URL("../../fixtures/gl-js/assets/", import.meta.url));
-// `--renderer=webgl2` drives the Compat tier.
-const renderer = process.argv.find((a) => a.startsWith("--renderer="))?.slice("--renderer=".length) ?? "webgpu";
 const reply = (value) => process.stdout.write(JSON.stringify(value) + "\n");
 const server = await serveDemo({ assets });
 const browser = await launchChromium({ unpaced: true });
@@ -20,12 +18,10 @@ try {
   page.on("pageerror", (e) => console.error(e));
   const open = () => page.goto(`${server.url}fixture.html`).then(() => page.waitForFunction(() => window.fixture));
   await open();
-  const maxSize = await page.evaluate(async (renderer) => renderer === "webgl2"
-    ? document.createElement("canvas").getContext("webgl2").getParameter(WebGL2RenderingContext.MAX_TEXTURE_SIZE)
-    : (await navigator.gpu.requestAdapter()).limits.maxTextureDimension2D, renderer);
+  const maxSize = await page.evaluate(async () => (await navigator.gpu.requestAdapter()).limits.maxTextureDimension2D);
   reply({ ready: true, browser: browser.version(), max_size: maxSize });
   for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
-    const request = { ...JSON.parse(line), renderer };
+    const request = JSON.parse(line);
     try {
       // A watchdog for device loss or a readback that never completes.
       const result = await Promise.race([page.evaluate((r) => window.fixture(r), request),

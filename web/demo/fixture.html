@@ -45,7 +45,7 @@ window.fixture = async (r) => {
   document.body.replaceChildren(container);
   const warnings = [];
   const map = await createMap({
-    container, style: JSON.parse(local(r.style)), renderer: r.renderer, interactive: false, pixelRatio: r.ratio,
+    container, style: JSON.parse(local(r.style)), interactive: false, pixelRatio: r.ratio,
     constraints: { maxPitch: r.max_pitch }, fadeDuration: r.fade_duration, antialias: false,
     crossSourceCollisions: r.cross_source_collisions, localIdeographFontFamily: r.local_ideographs ?? false,
     terrainSkirts: r.terrain_skirts,

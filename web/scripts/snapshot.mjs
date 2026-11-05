@@ -3,7 +3,7 @@
 //
 //   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]]
 //     [--format=mvt|mlt] [--style=<key>|URL]
-//     [--size=WxH] [--compare=reference-map.png] [--renderer=webgpu|webgl2] [--lose=<ms> [--switch]]
+//     [--size=WxH] [--compare=reference-map.png] [--lose=<ms>]
 //     [--reopen[=offline]] [--still]
 //
 // `--reopen` loads the page again once it is idle, in the same browser
@@ -12,7 +12,7 @@
 // the stale entries' failed revalidations; they aren't counted as errors).
 //
 // `--lose` loses the GPU that long after the map loads and waits for it to
-// recover; with `--switch`, onto WebGL2.
+// recover.
 //
 // The map app draws the Tokyo extract (MVT by default) unless `--style`
 // names another.
@@ -25,9 +25,7 @@ const args = process.argv.slice(2);
 const format = args.find((a) => a.startsWith("--format="))?.slice("--format=".length);
 const compare = args.find((a) => a.startsWith("--compare="))?.slice("--compare=".length);
 const style = args.find((a) => a.startsWith("--style="))?.slice("--style=".length);
-const renderer = args.find((a) => a.startsWith("--renderer="))?.slice("--renderer=".length);
 const lose = args.find((a) => a.startsWith("--lose="))?.slice("--lose=".length);
-const switchTier = args.includes("--switch");
 const reopen = args.find((a) => a.startsWith("--reopen"));
 let offline = false;
 const [width, height] = (args.find((a) => a.startsWith("--size="))?.slice(7) ?? "1024x768").split("x").map(Number);
@@ -35,9 +33,7 @@ const [out = "snapshot.png", hash = ""] = args.filter((a) => !a.startsWith("--")
 
 const server = await serveDemo();
 const params = new URLSearchParams();
-if (renderer) params.set("renderer", renderer);
 if (lose) params.set("lose", lose);
-if (switchTier) params.set("switch", "");
 // Snapshots draw the committed extract unless told otherwise.
 if (style) params.set("style", style);
 else params.set("style", `tokyo-${format ?? "mvt"}`);
@@ -76,7 +72,7 @@ try {
   await page.waitForTimeout(250);
   const stats = await page.evaluate(() => {
     const s = globalThis.app.map?.stats;
-    return s ? `${document.getElementById("app").dataset.renderer}, z${s.zoom.toFixed(2)}, ${s.ms.toFixed(1)} ms CPU, ${s.draws} draws, ` +
+    return s ? `z${s.zoom.toFixed(2)}, ${s.ms.toFixed(1)} ms CPU, ${s.draws} draws, ` +
       `${s.tilesDrawn} tiles` : document.getElementById("toast").textContent;
   });
   console.log(`${stats} (${Date.now() - started} ms)`);

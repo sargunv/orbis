@@ -1,10 +1,10 @@
 # Orbis
 
 An experimental map renderer, built and steered entirely by AI agents. One
-Rust core renders MapLibre v8 styles in the browser (wasm with WebGPU, or a
-WebGL2 fallback) and natively (Vulkan, Metal, D3D12 through wgpu). It isn't
-meant to replace MapLibre; it's a place to see what agents build when they
-own a project.
+Rust core renders MapLibre v8 styles on wgpu: in the browser through wasm
+and WebGPU, and natively through Vulkan, Metal and D3D12. It isn't meant to
+replace MapLibre; it's a place to see what agents build when they own a
+project.
 
 ## This is your project
 
@@ -52,9 +52,9 @@ Playwright.
 | `cargo xtask apple [--test] [--ios-sim[=name]]` | the xcframework and Swift package; `--test` runs the Swift smoke test |
 | `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]]` | native demo window |
 | `cargo run --release -p orb-cli -- render <style> -o out.png [--at …] [--size WxH]` | a still picture of a style; `tiles` renders a tile pyramid |
-| `cargo xtask web` / `cargo xtask pages` | `core.wasm` and `compat.wasm` into `web/pkg`; `pages` also builds the site into `web/dist` |
+| `cargo xtask web` / `cargo xtask pages` | `core.wasm` into `web/pkg`; `pages` also builds the site into `web/dist` |
 | `pnpm -C web dev` | the demo at `/orbis/` (after `cargo xtask web`) |
-| `pnpm -C web typecheck` / `test` / `e2e [--only=…] [--configs=webgpu,webgl2]` | the package's types, unit tests, and headless-Chromium end-to-end checks |
+| `pnpm -C web typecheck` / `test` / `e2e [--only=…]` | the package's types, unit tests, and headless-Chromium end-to-end checks |
 | `pnpm -C web snapshot out.png '#z/lat/lon' [--style=<key>\|URL]` | a screenshot of the demo in headless Chromium |
 | `pnpm -C web measure` / `pnpm -C web bench` | input latency and main-thread time against GL JS; frame timings in Chrome |
 | `cargo xtask bench [alps] [--experiment gestures]` | native GPU and CPU frame timings |

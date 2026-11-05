@@ -36,7 +36,6 @@ const circleLngLat = (project, unproject) => {
 async function startOrbis() {
   const { createMap } = await import("orbis");
   const map = await createMap({ container, style: demoStyle(params, "tokyo"),
-    renderer: params.get("renderer") ?? undefined,
     camera: { center: CENTER, zoom: ZOOM } });
   await map.once("idle");
   const at = circleLngLat((l) => map.project(l), (p) => map.unproject(p));

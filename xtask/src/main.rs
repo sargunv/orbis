@@ -39,7 +39,7 @@ cargo xtask <task>
   apple [--test] [--ios-sim[=name]]  hosts/apple/OrbisC.xcframework (macOS,
                iOS, iOS simulator) and the Swift package; --test runs the
                Swift smoke test; --ios-sim runs the iOS app on a simulator
-  web          build core.wasm and compat.wasm into web/pkg, report sizes
+  web          build core.wasm into web/pkg, report sizes
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
   rt [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]
@@ -101,9 +101,10 @@ fn main() -> ExitCode {
 
 fn rt(args: &[String]) -> Result<(), String> {
     fixtures::ensure()?;
-    if args.windows(2).any(|pair| {
-        pair[0] == "--platform" && ["chrome", "chrome-webgl2", "all"].contains(&pair[1].as_str())
-    }) {
+    if args
+        .windows(2)
+        .any(|pair| pair[0] == "--platform" && ["chrome", "all"].contains(&pair[1].as_str()))
+    {
         web::build()?;
     }
     let mut command = vec!["run", "--release", "-p", "orb-fixtures", "--"];
@@ -155,9 +156,6 @@ fn full_check() -> Result<(), String> {
         "--quiet",
         "--target",
         "wasm32-unknown-unknown",
-        // Both tiers' code.
-        "--features",
-        "orb-web/compat",
     ];
     for name in boundaries::NATIVE_ONLY {
         wasm.extend(["--exclude", name]);
@@ -201,10 +199,6 @@ fn affected_check(base: &str) -> Result<(), String> {
         let mut wasm = vec!["clippy", "--quiet", "--target", "wasm32-unknown-unknown"];
         for name in &wasm_packages {
             wasm.extend(["-p", name.as_str()]);
-        }
-        // Both of orb-web's tiers, as the full check does.
-        if wasm_packages.iter().any(|name| *name == "orb-web") {
-            wasm.extend(["--features", "orb-web/compat"]);
         }
         wasm.extend(["--", "-D", "warnings"]);
         cargo(&wasm)?;

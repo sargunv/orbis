@@ -1,5 +1,5 @@
 // The binding scenario through the orbis
-// package; `pnpm -C web e2e` drives it on each renderer. The
+// package; `pnpm -C web e2e` drives it. The
 // page makes the map and records its events and frames; the driver reads
 // pixels off screenshots and moves the pointer.
 import { createMap, setRequestTransform } from "orbis";
@@ -34,7 +34,6 @@ window.requestAnimationFrame = (callback) => raf((t) => { rafs++; callback(t); }
 window.scenario = (async () => {
   const map = await createMap({
     container: document.getElementById("map"), style: STYLE,
-    renderer: params.get("renderer") ?? undefined,
   });
   // Before a frame: the canvas's size, for fits and projections.
   const firstProjection = map.project([0, 0]);

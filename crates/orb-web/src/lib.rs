@@ -7,7 +7,7 @@
 //! - **workers**: job workers ([`jobs::JobWorker`]) fetch and lay out
 //!   tiles; a placement worker ([`PlacementWorker`]) places labels.
 //!
-//! The map draws through WebGPU (`compat.wasm`: WebGL2).
+//! The map draws through WebGPU.
 
 #![cfg(target_arch = "wasm32")]
 
@@ -481,7 +481,7 @@ impl OrbisMap {
     /// What the map did since the last call, as plain objects by `type`:
     /// `styleload`, `styledata` (`generation`), `sourcedata` (`source`,
     /// `loaded`), `load`, `idle`, `error` and `warning` (`message`),
-    /// `styleimagemissing` (`id`), `capability` (`tier`), `camera`
+    /// `styleimagemissing` (`id`), `capability`, `camera`
     /// (`change`: move, zoom, rotate or pitch; `phase`: start, progress or
     /// end; `user`), `animationend` (`id`, `interrupted`), `click` (`x`,
     /// `y`, `button`), `dblclick` (`x`, `y`), and for the page's video
@@ -549,14 +549,7 @@ impl OrbisMap {
                     set(&object, "request", name(request));
                     "video"
                 }
-                MapEvent::Capability { tier } => {
-                    let tier = match tier {
-                        orb_hal::Tier::Modern => "modern",
-                        orb_hal::Tier::Compat => "compat",
-                    };
-                    set(&object, "tier", name(tier));
-                    "capability"
-                }
+                MapEvent::Capability { .. } => "capability",
                 MapEvent::Camera(orb_runtime::CameraEvent::Changed {
                     change,
                     phase,
@@ -788,16 +781,6 @@ impl OrbisMap {
         WorkerPlacement::receive(self.id, reply)
     }
 
-    /// The tier the map draws at: `"modern"` (WebGPU) or `"compat"`
-    /// (WebGL2).
-    #[wasm_bindgen(getter)]
-    pub fn tier(&self) -> String {
-        match self.canvas.gpu_ref().caps().tier {
-            orb_hal::Tier::Modern => "modern".into(),
-            orb_hal::Tier::Compat => "compat".into(),
-        }
-    }
-
     /// Adds a marker drawn over the style: the style's image `image` (the
     /// built-in pin when absent) at `lon`, `lat`, `anchor` (`icon-anchor`)
     /// on the point. Rendered queries name it by the returned id, in the
@@ -882,7 +865,7 @@ impl OrbisMap {
     }
 
     /// Times the GPU's submissions from now on, for measurements
-    /// (`gpuTimings` collects them); WebGPU only.
+    /// (`gpuTimings` collects them).
     #[wasm_bindgen(js_name = setGpuTiming)]
     pub fn set_gpu_timing(&mut self, on: bool) {
         self.canvas.gpu().set_timing(on);
@@ -893,7 +876,7 @@ impl OrbisMap {
     /// where the device has timestamp queries.
     #[wasm_bindgen(js_name = gpuTimings)]
     pub fn gpu_timings(&mut self) -> js_sys::Promise {
-        let timings = self.canvas.gpu().take_timings();
+        let timings = self.canvas.take_timings();
         wasm_bindgen_futures::future_to_promise(async move {
             let out = js_sys::Array::new();
             for (passes, cpu) in timings.await {
@@ -910,38 +893,17 @@ impl OrbisMap {
         })
     }
 
-    /// What the app set on the map at run time, beside its style
-    /// document: feature state, added images, markers and the location,
-    /// for a map made afresh to take with `importState` (the switch to
-    /// WebGL2 after a loss).
-    #[wasm_bindgen(js_name = exportState)]
-    pub fn export_state(&self) -> Vec<u8> {
-        orb_runtime::wire::encode(&(self.map.app_state(), &self.batteries))
-    }
-
-    /// Takes another map's `exportState`: now, or once the style loads.
-    #[wasm_bindgen(js_name = importState)]
-    pub fn import_state(&mut self, bytes: &[u8]) -> Result<(), JsError> {
-        let (state, batteries): (orb_runtime::AppState, orb_runtime::batteries::Batteries) =
-            orb_runtime::wire::decode(bytes).map_err(|e| JsError::new(&e))?;
-        self.map.restore(state);
-        self.batteries = batteries;
-        wake(self.id);
-        Ok(())
-    }
-
-    /// Loses the GPU on purpose (`GPUDevice.destroy()`, or WebGL's
-    /// `WEBGL_lose_context`), to exercise recovery.
+    /// Loses the GPU on purpose (`GPUDevice.destroy()`), to exercise
+    /// recovery.
     #[wasm_bindgen(js_name = loseDevice)]
     pub fn lose_device(&mut self) {
         self.canvas.lose();
     }
 
-    /// Draws on a new GPU in `canvas` after a loss: the same
-    /// canvas again, or a fresh one. The map keeps its style, camera and
-    /// cached tiles; the next frames lay the visible tiles out again.
-    /// Resolves to the new tier.
-    pub async fn recover(&mut self, canvas: JsValue) -> Result<String, JsError> {
+    /// Draws on a new GPU in `canvas` after a loss. The map keeps its
+    /// style, camera and cached tiles; the next frames lay the visible
+    /// tiles out again.
+    pub async fn recover(&mut self, canvas: JsValue) -> Result<(), JsError> {
         let size = self.canvas.size();
         self.canvas = Canvas::new(canvas, size, self.id)
             .await
@@ -949,7 +911,7 @@ impl OrbisMap {
         self.renderer = None;
         self.images.reset();
         wake(self.id);
-        Ok(self.tier())
+        Ok(())
     }
 
     /// Draws the frame shown at `frame_time`, the animation frame's
@@ -980,7 +942,7 @@ impl OrbisMap {
                 let _ = sender.send(pixels.await);
             });
         }
-        let uploaded = self.canvas.gpu_ref().uploaded();
+        let uploaded = orb_hal_wgpu::WgpuGpu::uploaded(self.canvas.gpu_ref());
         let jobs = self.worker_jobs.stats();
         let counts = self.map.job_counts();
         Ok(FrameStats {
@@ -990,8 +952,7 @@ impl OrbisMap {
             idle: report.idle,
             loaded: report.loaded,
             transitioning: self.map.transitioning(),
-            needs_frame: (!report.idle && !(report.compiling && self.canvas.compile_wakes()))
-                || report.frame.animated,
+            needs_frame: (!report.idle && !report.compiling) || report.frame.animated,
             lost: false,
             meshes_uploaded: counts.meshes_uploaded,
             rows_uploaded: counts.rows_uploaded,

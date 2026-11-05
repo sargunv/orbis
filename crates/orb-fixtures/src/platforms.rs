@@ -35,10 +35,8 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str) -> Result<(), Strin
     if ["chrome", "all"].contains(&platform) {
         reports.insert("chrome", run_suite(root, filter, "chrome")?);
     }
-    for compat in ["gl", "chrome-webgl2"] {
-        if platform == compat {
-            reports.insert(compat, run_suite(root, filter, compat)?);
-        }
+    if platform == "gl" {
+        reports.insert("gl", run_suite(root, filter, "gl")?);
     }
     for software in ["lavapipe", "llvmpipe"] {
         if platform == software || (platform == "all" && software == "lavapipe") {

@@ -1,7 +1,7 @@
 // End-to-end checks in headless Chromium:
 //
 // - `scenario`: the binding scenario through the orbis package
-//   on web/dist/scenario.html, on WebGPU and WebGL2: an inline style,
+//   on web/dist/scenario.html: an inline style,
 //   pixels, a hit test, a rendered-features query, an edit's generation,
 //   style images, camera moves with roll and elevation, project and
 //   unproject (for the camera now and another), padding, the free camera, a
@@ -23,7 +23,7 @@
 //   Tokyo extract with a granted geolocation: the dot shows, a click drops a
 //   pin and a click on it lifts it.
 //
-//   pnpm e2e [--only=scenario,edits,editor,batteries,offline] [--configs=webgpu,webgl2]
+//   pnpm e2e [--only=scenario,edits,editor,batteries,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520]
 import assert from "node:assert/strict";
 import { decodePng } from "./png.mjs";
@@ -31,7 +31,6 @@ import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
 const only = arg("only", "scenario,edits,editor,batteries").split(",");
-const configs = arg("configs", "webgpu,webgl2").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -69,9 +68,9 @@ async function open(browser, viewport) {
   return { page, errors };
 }
 
-async function scenario(browser, server, config) {
+async function scenario(browser, server) {
   const { page, errors } = await open(browser, { width: 400, height: 300 });
-  await page.goto(`${server.url}scenario.html?renderer=${config}`);
+  await page.goto(`${server.url}scenario.html`);
   const scenario = (fn, arg) => page.evaluate(([fn, arg]) => window.scenario.then((s) => new Function("s", "arg", `return (${fn})(s, arg)`)(s, arg)), [fn.toString(), arg]);
   const pixels = async () => decodePng(await page.locator("#map").screenshot());
   const pixel = (image, [x, y]) => {
@@ -302,7 +301,7 @@ async function scenario(browser, server, config) {
   image = await pixels();
   assert.deepEqual(pixel(image, CENTER), [255, 0, 255], "the app's tile");
   assert.deepEqual(errors, []);
-  console.log(`scenario: ${config} passed`);
+  console.log("scenario: passed");
   await page.close();
 }
 
@@ -338,10 +337,10 @@ async function edits(browser, server) {
     `labels before the trap ${JSON.stringify(before)}, after ${JSON.stringify(after)}`);
   console.log(`edits: placement worker trapped and replaced; commit ${before.commit} → ${after.commit}, ${after.shown} labels`);
 
-  // A switch to WebGL2 after a loss keeps what the app set at run time:
+  // A device loss keeps what the app set at run time:
   // feature state (the grid's feature 7 above), images, markers, a
   // GeoJSON source's diffed data and a transformed request.
-  const switched = await page.evaluate(async () => {
+  const recovered = await page.evaluate(async () => {
     const { map, setRequestTransform } = globalThis.orbis;
     map.camera.jumpTo({ center: [139.74, 35.688], zoom: 15, bearing: 0, pitch: 0 });
     map.addImage("e2e-dot", { width: 2, height: 2, data: new Uint8Array(16).fill(255) });
@@ -366,9 +365,9 @@ async function edits(browser, server) {
       return { geo: await query("e2e-geo", geoX), remote: await query("e2e-remote", remoteX) };
     };
     const before = await shown();
-    const capability = map.once("capability");
-    map.loseDevice(true);
-    const { tier } = await capability;
+    const restored = map.once("restored");
+    map.loseDevice();
+    await restored;
     await map.once("idle");
     const at = map.project([139.735 + 7 * 0.0004, 35.682]);
     const [feature] = await map.queryRenderedFeatures(at, { layers: ["grid"] });
@@ -377,13 +376,13 @@ async function edits(browser, server) {
     const after = await shown();
     map.edit((tx) => tx.removeLayer("e2e-geo").removeLayer("e2e-remote"));
     setRequestTransform(undefined);
-    return { tier, image: await map.hasImage("e2e-dot"), state: feature?.state, moved, before, after };
+    return { image: await map.hasImage("e2e-dot"), state: feature?.state, moved, before, after };
   });
   const sources = { geo: { name: "b" }, remote: {} };
-  assert.deepEqual(switched.before, sources, JSON.stringify(switched));
-  assert.deepEqual(switched, { tier: "compat", image: true, state: { hover: true }, moved: true, before: sources, after: sources },
-    JSON.stringify(switched));
-  console.log("edits: lost on WebGPU, recovered on WebGL2 with the app's state and sources");
+  assert.deepEqual(recovered.before, sources, JSON.stringify(recovered));
+  assert.deepEqual(recovered, { image: true, state: { hover: true }, moved: true, before: sources, after: sources },
+    JSON.stringify(recovered));
+  console.log("edits: lost the GPU, recovered with the app's state and sources");
 
   const cost = await page.evaluate(async (writes) => {
     const { map } = globalThis.orbis;
@@ -579,7 +578,7 @@ async function batteries(browser, server) {
 }
 
 const CHECKS = {
-  scenario: async (browser, server) => { for (const config of configs) await scenario(browser, server, config); },
+  scenario,
   edits,
   editor,
   offline,

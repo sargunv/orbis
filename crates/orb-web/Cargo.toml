@@ -9,13 +9,6 @@ version.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[features]
-default = ["modern"]
-# WebGPU through wgpu: the Modern tier, `core.wasm`.
-modern = ["dep:orb-hal-wgpu", "dep:wgpu"]
-# WebGL2 through orb-hal-gl: the Compat tier, `compat.wasm`.
-compat = ["dep:orb-hal-gl", "orb-runtime/compat"]
-
 [dependencies]
 futures-channel.workspace = true
 glam.workspace = true
@@ -26,8 +19,7 @@ orb-crs.workspace = true
 orb-expr.workspace = true
 orb-hal.workspace = true
 orb-interact.workspace = true
-orb-hal-gl = { workspace = true, optional = true }
-orb-hal-wgpu = { workspace = true, optional = true }
+orb-hal-wgpu.workspace = true
 orb-host.workspace = true
 orb-host-web.workspace = true
 orb-jobs.workspace = true
@@ -42,7 +34,7 @@ orb-v8.workspace = true
 wasm-bindgen = { workspace = true, features = ["enable-interning"] }
 wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["HtmlCanvasElement", "HtmlVideoElement", "ImageBitmap", "OffscreenCanvas", "Window"] }
-wgpu = { workspace = true, optional = true }
+wgpu.workspace = true
 
 [lints]
 workspace = true
