@@ -802,13 +802,44 @@ impl Map {
         Ok(())
     }
 
+    /// Forgets the GPU: after a device loss, or to draw on another device
+    /// (plan §8.8). The next frame makes a renderer on its GPU and lays the
+    /// style's tiles out again, from the jobs' cached tile frames where
+    /// they have them (refetched where not); labels place afresh, and
+    /// sprites and glyphs load again.
+    pub fn reset_gpu(&mut self) {
+        self.renderer = None;
+        *self.services.images.0.lock().expect("images poisoned") = ImageState::default();
+        self.retired_pages.clear();
+        self.retired_images.clear();
+        self.retired_ramps.clear();
+        let old = &self.labels;
+        let mut labels = crate::labels::Labels::new(Arc::clone(&old.lane));
+        labels.fade_duration = old.fade_duration;
+        labels.cross_source_collisions = old.cross_source_collisions;
+        labels.ideographs = old.ideographs.clone();
+        self.labels = labels;
+        *self.picking.get_mut() = Default::default();
+        if let Some(style) = self.style.take() {
+            self.generation += 1;
+            self.install_revision(style.doc, Some((style.id, &style.worker)));
+        }
+    }
+
     /// Replaces the style with a document, every tile loaded fresh.
-    pub(crate) fn install(&mut self, mut doc: StyleDoc) {
+    pub(crate) fn install(&mut self, doc: StyleDoc) {
+        self.install_revision(doc, None);
+    }
+
+    /// Installs a document: a new style, or with `previous` the same
+    /// style again as a new revision of its jobs' style, which keeps their
+    /// cached tile frames.
+    fn install_revision(&mut self, mut doc: StyleDoc, previous: Option<(u64, &Arc<TileWorker>)>) {
         doc.set_cost_model(self.cost);
         self.version += 1;
         self.labels.invalidate();
         let worker = Arc::new(revise(
-            None,
+            previous.map(|(_, worker)| &**worker),
             &doc,
             self.version,
             self.labels.ideographs.clone(),
@@ -819,7 +850,7 @@ impl Map {
             .extend(plan.style.warnings.iter().map(ToString::to_string));
         self.warnings.extend(plan.warnings.iter().cloned());
         let mut style_camera = None;
-        if std::mem::take(&mut self.camera_from_style) {
+        if previous.is_none() && std::mem::take(&mut self.camera_from_style) {
             if let Some([lon, lat]) = plan.style.center {
                 self.camera.target = orb_geo::Geodetic::new(lon, lat);
             }
@@ -831,15 +862,20 @@ impl Map {
             style_camera = Some(self.camera);
         }
         self.events.wake();
-        self.events.push(MapEvent::StyleLoad {
-            camera: style_camera,
-        });
+        if previous.is_none() {
+            self.events.push(MapEvent::StyleLoad {
+                camera: style_camera,
+            });
+        }
         self.events.push(MapEvent::StyleData {
             generation: self.version,
         });
         self.clear_style();
         self.pending.clear();
-        self.style_id += 1;
+        match previous {
+            Some((id, _)) => self.style_id = id,
+            None => self.style_id += 1,
+        }
         self.services.jobs.set_style(
             self.style_id,
             &full_update(
@@ -1003,6 +1039,9 @@ impl Map {
                 let renderer = Renderer::with_images(gpu, format, self.capacity, images.bindings());
                 self.renderer = Some((renderer, format));
                 self.nodes_stale = true;
+                self.events.push(MapEvent::Capability {
+                    tier: gpu.caps().tier,
+                });
             }
         }
         self.renderer
@@ -1208,7 +1247,7 @@ impl Map {
             .collect();
         let families: Vec<Family> = plan.nodes.iter().map(|n| n.family).collect();
         if !gpu.caps().rgba16float_blendable && families.contains(&Family::Heatmap) {
-            self.warnings.push("heatmap requires filterable, blendable rgba16float render attachments (Compat: EXT_color_buffer_float); heatmap layers are skipped".into());
+            self.warnings.push(crate::COMPAT_NO_HEATMAP.into());
         }
         renderer.remap_nodes(gpu, &families, &retained);
         if !self.retired_pages.is_empty() {
@@ -1700,7 +1739,13 @@ impl Map {
             return;
         };
         let plan = style.worker.plan();
-        let wanted = plan.terrain();
+        let mut wanted = plan.terrain();
+        if wanted.is_some() && gpu.caps().tier == orb_hal::Tier::Compat {
+            if !std::mem::replace(&mut style.terrain_unusable, true) {
+                self.warnings.push(crate::COMPAT_NO_TERRAIN.into());
+            }
+            wanted = None;
+        }
         let same = match (&style.terrain, wanted) {
             (Some(t), Some((index, exaggeration))) => {
                 t.source == index

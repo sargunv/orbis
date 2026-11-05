@@ -1016,9 +1016,10 @@ impl Renderer {
             ..FrameStats::default()
         };
         if let Some((prepare, prepared)) = self.images.prepare_pass(gpu) {
-            stats.dispatches += 2;
-            stats.prepared = prepared;
-            passes.push(Pass::Compute(prepare));
+            stats.dispatches += prepared.dispatches;
+            stats.draws += prepared.draws;
+            stats.prepared = prepared.tiles;
+            passes.extend(prepare);
         }
         // The dispatch writes every node's arguments, zeros included, so it
         // runs even when nothing is resident. Indexed nodes' batches add to

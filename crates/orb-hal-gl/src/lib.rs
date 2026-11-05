@@ -53,6 +53,9 @@ pub struct GlGpu {
     host_bytes: Slots<HostBytes>,
     #[cfg(target_arch = "wasm32")]
     host_images: Slots<web_sys::ImageBitmap>,
+    /// The WebGL2 context behind `gl`, for its extensions.
+    #[cfg(target_arch = "wasm32")]
+    webgl: Option<web_sys::WebGl2RenderingContext>,
     state: state::State,
     /// The one vertex array: draws pull their vertices, so it holds only
     /// the index buffer.
@@ -116,6 +119,8 @@ struct Texture {
     dimension: TextureViewDimension,
     /// The first mip level it covers: a view's, or 0.
     base_level: u32,
+    /// A layer view's layer of an array texture.
+    layer: u32,
     /// Views don't own their object.
     owned: bool,
 }
@@ -264,6 +269,8 @@ impl GlGpu {
             host_bytes: Slots::default(),
             #[cfg(target_arch = "wasm32")]
             host_images: Slots::default(),
+            #[cfg(target_arch = "wasm32")]
+            webgl: None,
             state: state::State::default(),
             vao,
             data_sampler,
@@ -299,6 +306,10 @@ impl GlGpu {
     /// Whether the context was lost: everything made on it is gone. Takes
     /// the context's error flag.
     pub fn lost(&self) -> bool {
+        #[cfg(target_arch = "wasm32")]
+        if let Some(webgl) = &self.webgl {
+            return webgl.is_context_lost();
+        }
         /// WebGL's `CONTEXT_LOST_WEBGL`.
         const CONTEXT_LOST_WEBGL: u32 = 0x9242;
         // SAFETY: a query on the current context.
@@ -319,7 +330,7 @@ impl GlGpu {
         );
         let fbo = self
             .framebuffers
-            .color(&self.gl, &mut self.state, &t, t.base_level, 0);
+            .color(&self.gl, &mut self.state, &t, t.base_level, t.layer);
         let mut pixels = vec![0u8; (t.width * t.height * 4) as usize];
         // SAFETY: reads the framebuffer made for this texture into a
         // buffer of its size.
@@ -345,7 +356,7 @@ impl GlGpu {
         let t = self.textures[frame.0];
         let fbo = self
             .framebuffers
-            .color(&self.gl, &mut self.state, &t, t.base_level, 0);
+            .color(&self.gl, &mut self.state, &t, t.base_level, t.layer);
         // SAFETY: a blit between framebuffers of this context.
         unsafe {
             self.state.read_framebuffer(&self.gl, Some(fbo));
@@ -592,6 +603,7 @@ impl Gpu for GlGpu {
             height: desc.height,
             dimension: desc.dimension,
             base_level: 0,
+            layer: 0,
             owned: true,
         }))
     }
@@ -606,6 +618,18 @@ impl Gpu for GlGpu {
         view.height = (view.height >> levels.start).max(1);
         assert_eq!(levels.len(), 1, "Compat views render into one level");
         view.base_level = levels.start;
+        view.owned = false;
+        TextureId(self.textures.insert(view))
+    }
+
+    fn create_layer_view(&mut self, texture: TextureId, layer: u32) -> TextureId {
+        let mut view = self.textures[texture.0];
+        assert_eq!(
+            view.dimension,
+            TextureViewDimension::D2Array,
+            "layers of arrays"
+        );
+        view.layer = layer;
         view.owned = false;
         TextureId(self.textures.insert(view))
     }

@@ -393,6 +393,9 @@ mod ffi {
         /// succeeded, `text` the features as a JSON array of GeoJSON
         /// features, topmost first, or the error.
         QueryResult = 10,
+        /// The map renders on a GPU tier: on its first frame and after a
+        /// device change; `text` is `modern` or `compat`.
+        Capability = 11,
     }
 
     /// For camera events: what changed.
@@ -516,10 +519,14 @@ mod ffi {
         }
 
         /// Source data: the source's id. Errors: the message. Query
-        /// results: the features' JSON, or the error.
+        /// results: the features' JSON, or the error. Capability: the tier.
         #[diplomat::attr(contract, snapshot)]
         pub fn text(&self, out: &mut DiplomatWrite) {
             let text = match &self.0 {
+                orb_api::Event::Map(orb_api::MapEvent::Capability { tier }) => match tier {
+                    orb_api::Tier::Modern => "modern",
+                    orb_api::Tier::Compat => "compat",
+                },
                 orb_api::Event::Map(orb_api::MapEvent::SourceData { source, .. }) => source,
                 orb_api::Event::Map(orb_api::MapEvent::Error { message }) => message,
                 orb_api::Event::Query {
@@ -1009,6 +1016,7 @@ fn event_kind(event: &orb_api::Event) -> OrbEventKind {
         Event::Map(MapEvent::Load) => OrbEventKind::Load,
         Event::Map(MapEvent::Idle) => OrbEventKind::Idle,
         Event::Map(MapEvent::Error { .. }) => OrbEventKind::Error,
+        Event::Map(MapEvent::Capability { .. }) => OrbEventKind::Capability,
         Event::Camera(CameraEvent::Changed { .. }) => OrbEventKind::Camera,
         Event::Camera(CameraEvent::AnimationEnd { .. }) => OrbEventKind::AnimationEnd,
         Event::Click { .. } => OrbEventKind::Click,

@@ -43,6 +43,7 @@ const COLOR_RELIEF: &str = include_str!("wgsl/color_relief.wgsl");
 const PREPARE: &str = include_str!("wgsl/prepare.wgsl");
 const PREPARE_PAD: &str = include_str!("wgsl/prepare_pad.wgsl");
 const PREPARE_SLOPE: &str = include_str!("wgsl/prepare_slope.wgsl");
+const PREPARE_FS: &str = include_str!("wgsl/prepare_fs.wgsl");
 
 /// A composed shader module and its entry points.
 #[derive(Clone, Copy, Debug)]
@@ -221,7 +222,11 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
 /// The DEM prepare pass's border fill, from raw tiles into padded ones.
 pub const PREPARE_PAD_SHADER: Shader = Shader {
     label: "prepare pad",
-    parts: &[PREPARE, PREPARE_PAD],
+    parts: &[
+        PREPARE,
+        PREPARE_PAD,
+        include_str!("wgsl/prepare_pad_cs.wgsl"),
+    ],
     vertex: "",
     fragment: "",
     compute: "pad",
@@ -231,10 +236,46 @@ pub const PREPARE_PAD_SHADER: Shader = Shader {
 /// The DEM prepare pass's hillshade slopes, from padded tiles.
 pub const PREPARE_SLOPE_SHADER: Shader = Shader {
     label: "prepare slope",
-    parts: &[DEM, PREPARE, PREPARE_SLOPE],
+    parts: &[
+        DEM,
+        PREPARE,
+        PREPARE_SLOPE,
+        include_str!("wgsl/prepare_slope_cs.wgsl"),
+    ],
     vertex: "",
     fragment: "",
     compute: "slope",
+    paint: false,
+};
+
+/// The border fill drawn into one padded layer (Compat).
+pub const PREPARE_PAD_DRAW_SHADER: Shader = Shader {
+    label: "prepare pad draw",
+    parts: &[
+        PREPARE,
+        PREPARE_PAD,
+        PREPARE_FS,
+        include_str!("wgsl/prepare_pad_fs.wgsl"),
+    ],
+    vertex: "vs_prepare",
+    fragment: "fs_pad",
+    compute: "",
+    paint: false,
+};
+
+/// The slopes drawn into one slope layer (Compat).
+pub const PREPARE_SLOPE_DRAW_SHADER: Shader = Shader {
+    label: "prepare slope draw",
+    parts: &[
+        DEM,
+        PREPARE,
+        PREPARE_SLOPE,
+        PREPARE_FS,
+        include_str!("wgsl/prepare_slope_fs.wgsl"),
+    ],
+    vertex: "vs_prepare",
+    fragment: "fs_slope",
+    compute: "",
     paint: false,
 };
 
@@ -281,6 +322,8 @@ pub const COMPAT_SHADERS: &[Shader] = &[
     COLOR_RELIEF_SHADER,
     EXTRUSION_SHADER,
     EXTRUSION_COMPOSITE_SHADER,
+    PREPARE_PAD_DRAW_SHADER,
+    PREPARE_SLOPE_DRAW_SHADER,
 ];
 
 /// Values of the symbol shader's `PASS` override.

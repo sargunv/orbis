@@ -184,6 +184,9 @@ impl State {
         target: u32,
         texture: Option<glow::Texture>,
     ) {
+        // Uploads bind to the active unit, so it's made active even when
+        // the texture is already bound there.
+        self.active_unit(gl, unit);
         let slot = grow(&mut self.textures, unit as usize);
         let wanted = texture.map(|t| (target, t));
         if *slot == wanted && wanted.is_some() {
@@ -191,7 +194,6 @@ impl State {
         }
         let previous = *slot;
         *slot = wanted;
-        self.active_unit(gl, unit);
         // SAFETY: a texture of this context at its own target.
         unsafe {
             // A unit holds one texture per target; clear the other.

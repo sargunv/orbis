@@ -50,7 +50,12 @@ enum class OrbEventKind(val value: Int) {
      * succeeded, `text` the features as a JSON array of GeoJSON
      * features, topmost first, or the error.
      */
-    QueryResult(10);
+    QueryResult(10),
+    /**
+     * The map renders on a GPU tier: on its first frame and after a
+     * device change; `text` is `modern` or `compat`.
+     */
+    Capability(11);
 
     companion object {
         @JvmStatic

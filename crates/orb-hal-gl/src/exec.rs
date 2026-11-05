@@ -184,7 +184,7 @@ impl GlGpu {
             &mut self.state,
             &color,
             color.base_level,
-            0,
+            color.layer,
             depth.as_ref(),
         );
         self.state.draw_framebuffer(&self.gl, Some(fbo));
@@ -211,9 +211,13 @@ impl GlGpu {
         }
         if let Some(resolve) = pass.color.resolve {
             let target = self.textures[resolve.0];
-            let to =
-                self.framebuffers
-                    .color(&self.gl, &mut self.state, &target, target.base_level, 0);
+            let to = self.framebuffers.color(
+                &self.gl,
+                &mut self.state,
+                &target,
+                target.base_level,
+                target.layer,
+            );
             self.state.read_framebuffer(&self.gl, Some(fbo));
             self.state.draw_framebuffer(&self.gl, Some(to));
             // SAFETY: a resolve blit of equal sizes.

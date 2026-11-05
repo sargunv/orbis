@@ -86,6 +86,13 @@ export interface MapOptions {
    * and WebGPU in workers work, else this thread.
    */
   thread?: "auto" | "worker" | "main";
+  /**
+   * What draws the map: "webgpu" (the Modern tier), "webgl2" (Compat, plan
+   * §8.7, from the lazily loaded compat.wasm), or "auto" (the default):
+   * WebGPU where it works, else WebGL2 on this thread. A lost device is
+   * replaced on the same tier where possible, else on WebGL2.
+   */
+  renderer?: "auto" | "webgpu" | "webgl2";
   /** The starting camera; the style's by default. */
   camera?: CameraOptions;
   constraints?: Constraints;
@@ -184,6 +191,12 @@ export interface MapEvents {
   /** No loads, fades, placement or camera motion: no more frames until something changes. */
   idle: Record<string, never>;
   error: { message: string };
+  /**
+   * The tier the map draws at: on its first frame, and after a device loss
+   * on its first frame on the new device, with the milliseconds since the
+   * loss.
+   */
+  capability: { tier: "modern" | "compat"; recoveredMs?: number };
   /** A frame was drawn. */
   render: FrameStats;
 }

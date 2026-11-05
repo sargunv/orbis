@@ -19,6 +19,7 @@
 
 #[cfg(feature = "harness")]
 pub mod bench;
+mod canvas;
 #[cfg(feature = "harness")]
 mod fixture;
 mod jobs;
@@ -35,13 +36,12 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use glam::DVec2;
-use orb_hal::Gpu;
-use orb_hal_wgpu::{WgpuGpu, from_texture_format};
 use orb_host_web::WebFetch;
-use orb_runtime::{CameraState, Jobs, Map, MapEvent, Services, TargetFormat, Viewport};
+use orb_runtime::{CameraState, Jobs, Map, MapEvent, Services, Viewport};
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, OffscreenCanvas};
 
+use crate::canvas::Canvas;
 use crate::jobs::WorkerJobs;
 use crate::placement::WorkerPlacement;
 
@@ -52,7 +52,7 @@ thread_local! {
     static WAKE: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
 }
 
-fn wake() {
+pub(crate) fn wake() {
     WAKE.with(|wake| {
         if let Some(f) = wake.borrow().as_ref() {
             let _ = f.call0(&JsValue::NULL);
@@ -65,10 +65,7 @@ fn wake() {
 #[derive(Debug)]
 pub struct OrbisMap {
     map: Map,
-    gpu: WgpuGpu,
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
-    format: TargetFormat,
+    canvas: Canvas,
     pixel_ratio: f64,
     worker_jobs: Arc<WorkerJobs>,
     /// What picking the page's ui role has: in the render worker; on the
@@ -148,6 +145,10 @@ pub struct FrameInfo {
     /// Tile jobs answered by job workers.
     #[wasm_bindgen(readonly)]
     pub jobs_done: u32,
+    /// The GPU was lost: nothing was drawn, and the map draws again once
+    /// [`OrbisMap::recover`] gives it another.
+    #[wasm_bindgen(readonly)]
+    pub lost: bool,
 }
 
 /// Creates a map in `canvas` showing the style at `style_url`, drawing on
@@ -166,8 +167,16 @@ pub async fn create_map(
     place: js_sys::Function,
 ) -> Result<OrbisMap, JsError> {
     let size = (canvas.width(), canvas.height());
-    let target = wgpu::SurfaceTarget::Canvas(canvas);
-    let mut map = create(target, size, &style_url, on_wake, job_workers, post, place).await?;
+    let mut map = create(
+        canvas.into(),
+        size,
+        &style_url,
+        on_wake,
+        job_workers,
+        post,
+        place,
+    )
+    .await?;
     map.hits = None;
     Ok(map)
 }
@@ -189,13 +198,21 @@ pub async fn create_worker_map(
     place: js_sys::Function,
 ) -> Result<OrbisMap, JsError> {
     let size = (canvas.width(), canvas.height());
-    let target = wgpu::SurfaceTarget::OffscreenCanvas(canvas);
-    create(target, size, &style_url, on_wake, job_workers, post, place).await
+    create(
+        canvas.into(),
+        size,
+        &style_url,
+        on_wake,
+        job_workers,
+        post,
+        place,
+    )
+    .await
 }
 
 async fn create(
-    target: wgpu::SurfaceTarget<'static>,
-    (width, height): (u32, u32),
+    canvas: JsValue,
+    size: (u32, u32),
     style_url: &str,
     on_wake: js_sys::Function,
     job_workers: u32,
@@ -206,43 +223,9 @@ async fn create(
     let jobs: Arc<dyn Jobs> = worker_jobs.clone();
     let lane: Arc<dyn orb_runtime::PlacementLane> = WorkerPlacement::new(place);
     WAKE.with(|w| *w.borrow_mut() = Some(on_wake));
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let surface = instance
-        .create_surface(target)
-        .map_err(|e| JsError::new(&format!("surface: {e}")))?;
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        })
+    let canvas = Canvas::new(canvas, size)
         .await
-        .map_err(|e| JsError::new(&format!("no WebGPU adapter: {e}")))?;
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("orbis"),
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| JsError::new(&format!("no WebGPU device: {e}")))?;
-    let caps = surface.get_capabilities(&adapter);
-    let surface_format = caps
-        .formats
-        .iter()
-        .copied()
-        .find(|f| !f.is_srgb() && from_texture_format(*f).is_some())
-        .ok_or_else(|| JsError::new("no non-sRGB 8-bit canvas format"))?;
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format: surface_format,
-        width: width.max(1),
-        height: height.max(1),
-        present_mode: wgpu::PresentMode::Fifo,
-        desired_maximum_frame_latency: 2,
-        alpha_mode: wgpu::CompositeAlphaMode::PreMultiplied,
-        view_formats: vec![],
-        color_space: wgpu::SurfaceColorSpace::Auto,
-    };
-    surface.configure(&device, &config);
+        .map_err(|e| JsError::new(&e))?;
 
     let services = Services {
         clock: Arc::new(orb_host_web::WebClock),
@@ -257,13 +240,7 @@ async fn create(
     map.load_style_url(style_url);
     Ok(OrbisMap {
         map,
-        gpu: WgpuGpu::new(device, queue),
-        surface,
-        config,
-        format: TargetFormat {
-            color: from_texture_format(surface_format).expect("checked above"),
-            sample_count: 1,
-        },
+        canvas,
         pixel_ratio: 1.0,
         worker_jobs,
         hits: Some(Default::default()),
@@ -359,10 +336,8 @@ impl OrbisMap {
 
     /// Matches the drawing buffer to the canvas's size in physical pixels.
     pub fn resize(&mut self, width: u32, height: u32, pixel_ratio: f64) {
-        self.config.width = width.max(1);
-        self.config.height = height.max(1);
         self.pixel_ratio = pixel_ratio;
-        self.surface.configure(self.gpu.device(), &self.config);
+        self.canvas.resize(width, height);
     }
 
     /// Sets the camera from the ui role: `[lon, lat, resolution, bearing,
@@ -414,6 +389,14 @@ impl OrbisMap {
                     set(&object, "message", message.into());
                     "error"
                 }
+                MapEvent::Capability { tier } => {
+                    let tier = match tier {
+                        orb_hal::Tier::Modern => "modern",
+                        orb_hal::Tier::Compat => "compat",
+                    };
+                    set(&object, "tier", tier.into());
+                    "capability"
+                }
             };
             set(&object, "type", kind.into());
             out.push(&object);
@@ -436,7 +419,7 @@ impl OrbisMap {
     /// Completes a tile job with a job worker's reply.
     #[wasm_bindgen(js_name = receiveJob)]
     pub fn receive_job(&mut self, reply: &JsValue) -> Result<(), JsError> {
-        self.worker_jobs.receive(&mut self.gpu, reply)
+        self.worker_jobs.receive(self.canvas.gpu(), reply)
     }
 
     /// Completes a placement with the placement worker's reply.
@@ -445,28 +428,53 @@ impl OrbisMap {
         WorkerPlacement::receive(reply)
     }
 
+    /// The tier the map draws at: `"modern"` (WebGPU) or `"compat"`
+    /// (WebGL2).
+    #[wasm_bindgen(getter)]
+    pub fn tier(&self) -> String {
+        match self.canvas.gpu_ref().caps().tier {
+            orb_hal::Tier::Modern => "modern".into(),
+            orb_hal::Tier::Compat => "compat".into(),
+        }
+    }
+
+    /// Loses the GPU on purpose (`GPUDevice.destroy()`, or WebGL's
+    /// `WEBGL_lose_context`), to exercise recovery.
+    #[wasm_bindgen(js_name = loseDevice)]
+    pub fn lose_device(&mut self) {
+        self.canvas.lose();
+    }
+
+    /// Draws on a new GPU in `canvas` after a loss (plan §8.8): the same
+    /// canvas again, or a fresh one. The map keeps its style, camera and
+    /// cached tiles; the next frames lay the visible tiles out again.
+    /// Resolves to the new tier.
+    pub async fn recover(&mut self, canvas: JsValue) -> Result<String, JsError> {
+        let size = self.canvas.size();
+        self.canvas = Canvas::new(canvas, size)
+            .await
+            .map_err(|e| JsError::new(&e))?;
+        self.map.reset_gpu();
+        // The ui role's picking is published afresh.
+        if let Some(hits) = &mut self.hits {
+            *hits = orb_runtime::HitPublication::default();
+        }
+        wake();
+        Ok(self.tier())
+    }
+
     /// Draws a frame.
     pub fn render(&mut self) -> Result<FrameInfo, JsError> {
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            other => return Err(JsError::new(&format!("canvas texture: {other:?}"))),
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let target = self.gpu.register_view(view);
+        if self.canvas.lost() {
+            return Ok(FrameInfo::lost());
+        }
         let viewport = self.viewport();
-        let report = self.map.render(
-            &mut self.gpu,
-            target,
-            self.format,
-            viewport,
-            self.pixel_ratio as f32,
-        );
-        self.gpu.destroy_texture(target);
-        self.gpu.queue().present(frame);
-        let uploaded = self.gpu.uploaded();
+        let (map, ratio) = (&mut self.map, self.pixel_ratio as f32);
+        let report = self
+            .canvas
+            .frame(|gpu, target, format| map.render(gpu, target, format, viewport, ratio))
+            .map_err(|e| JsError::new(&e))?;
+        let uploaded = self.canvas.gpu_ref().uploaded();
         let jobs = self.worker_jobs.stats();
         // Picking publishes what changed: tiles, the drawn list, labels and
         // the layer table; camera moves alone publish nothing.
@@ -515,13 +523,47 @@ impl OrbisMap {
             texels_from_js: uploaded.texels_from_js as f64,
             header_bytes: jobs.header_bytes as f64,
             jobs_done: jobs.done,
+            lost: false,
         })
     }
 
     fn viewport(&self) -> Viewport {
+        let (width, height) = self.canvas.size();
         Viewport {
-            width: f64::from(self.config.width) / self.pixel_ratio,
-            height: f64::from(self.config.height) / self.pixel_ratio,
+            width: f64::from(width) / self.pixel_ratio,
+            height: f64::from(height) / self.pixel_ratio,
+        }
+    }
+}
+
+impl FrameInfo {
+    /// A frame not drawn: the GPU is gone.
+    fn lost() -> Self {
+        Self {
+            zoom: 0.0,
+            camera: Vec::new(),
+            hits: None,
+            elevation: None,
+            meshes_uploaded: 0,
+            rows_uploaded: 0,
+            draws: 0,
+            dispatches: 0,
+            candidates: 0,
+            tiles_drawn: 0,
+            tiles_loading: 0,
+            bundle_recorded: false,
+            placements_written: 0,
+            paints_written: 0,
+            idle: true,
+            generation: 0.0,
+            warnings: Vec::new(),
+            uploaded_from_wasm: 0.0,
+            uploaded_from_js: 0.0,
+            texels_from_wasm: 0.0,
+            texels_from_js: 0.0,
+            header_bytes: 0.0,
+            jobs_done: 0,
+            lost: true,
         }
     }
 }

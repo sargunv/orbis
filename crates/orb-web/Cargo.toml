@@ -10,10 +10,16 @@ version.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [features]
+default = ["modern"]
+# WebGPU through wgpu: the Modern tier, `core.wasm`.
+modern = ["dep:orb-hal-wgpu", "dep:wgpu"]
+# WebGL2 through orb-hal-gl: the Compat tier, `compat.wasm` (plan §8.7).
+compat = ["dep:orb-hal-gl", "orb-runtime/compat"]
 # The test harness entry points, built into `harness.wasm` and never into
 # `core.wasm`: the render submissions bench (web/demo/bench.html) and the
-# render fixture driver (`cargo xtask rt --platform chrome`).
-harness = ["dep:orb-bench", "orb-host/fonts", "orb-text/fonts"]
+# render fixture driver (`cargo xtask rt --platform chrome`), on either
+# tier.
+harness = ["modern", "compat", "dep:orb-bench", "orb-host/fonts", "orb-text/fonts"]
 
 [dependencies]
 futures-channel.workspace = true
@@ -26,7 +32,8 @@ orb-expr.workspace = true
 orb-geo.workspace = true
 orb-hal.workspace = true
 orb-interact.workspace = true
-orb-hal-wgpu.workspace = true
+orb-hal-gl = { workspace = true, optional = true }
+orb-hal-wgpu = { workspace = true, optional = true }
 orb-host.workspace = true
 orb-host-web.workspace = true
 orb-jobs.workspace = true
@@ -38,7 +45,7 @@ orb-v8.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["HtmlCanvasElement", "ImageBitmap", "OffscreenCanvas", "Window"] }
-wgpu.workspace = true
+wgpu = { workspace = true, optional = true }
 
 [lints]
 workspace = true

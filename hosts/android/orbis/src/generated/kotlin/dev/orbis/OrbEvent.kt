@@ -126,7 +126,7 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
 
     /**
      * Source data: the source's id. Errors: the message. Query
-     * results: the features' JSON, or the error.
+     * results: the features' JSON, or the error. Capability: the tier.
      *
      * Contract: `snapshot`.
      */

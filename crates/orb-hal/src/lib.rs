@@ -54,6 +54,10 @@ pub trait Gpu {
         texture: TextureId,
         levels: std::ops::Range<u32>,
     ) -> TextureId;
+    /// A view of one layer of an array texture's first mip level as a 2D
+    /// texture, to render into (WebGPU's `baseArrayLayer`). Destroying it
+    /// leaves the texture.
+    fn create_layer_view(&mut self, texture: TextureId, layer: u32) -> TextureId;
     fn destroy_texture(&mut self, id: TextureId);
     /// Queues a write of tightly packed texel rows into a region; it lands
     /// before the next submitted pass.

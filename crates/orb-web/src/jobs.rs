@@ -122,7 +122,7 @@ impl WorkerJobs {
     /// buffer is registered with `gpu`; only its header enters wasm memory.
     pub(crate) fn receive(
         &self,
-        gpu: &mut orb_hal_wgpu::WgpuGpu,
+        gpu: &mut dyn crate::canvas::WebGpu,
         reply: &JsValue,
     ) -> Result<(), JsError> {
         let id = number(reply, "id")? as u32;
@@ -203,7 +203,7 @@ impl WorkerJobs {
                 let bytes = gpu.register_array_buffer(buffer);
                 let result = unpack(&header, bytes);
                 if result.is_err() {
-                    orb_hal::Gpu::release_host_bytes(gpu, bytes);
+                    gpu.release_host_bytes(bytes);
                 }
                 result
             }

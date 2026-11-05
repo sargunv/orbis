@@ -39,6 +39,8 @@ export interface FrameAck extends FrameStats {
   elevation?: Uint8Array;
   /** The map's events since the last frame. */
   events: MapEventObject[];
+  /** The GPU was lost and nothing was drawn; the host recovers. */
+  lost: boolean;
 }
 
 export type MapEventObject =
@@ -46,7 +48,8 @@ export type MapEventObject =
   | { type: "styledata"; generation: number }
   | { type: "sourcedata"; source: string; loaded: boolean }
   | { type: "load" } | { type: "idle" }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "capability"; tier: "modern" | "compat" };
 
 /** The wasm map's per-frame surface. */
 export interface Renderer {
@@ -62,7 +65,7 @@ export interface RenderInfo {
   candidates: number; tiles_drawn: number; tiles_loading: number; bundle_recorded: boolean;
   placements_written: number; paints_written: number; idle: boolean; warnings: string[];
   uploaded_from_wasm: number; uploaded_from_js: number; texels_from_wasm: number;
-  texels_from_js: number; header_bytes: number; jobs_done: number;
+  texels_from_js: number; header_bytes: number; jobs_done: number; lost: boolean;
   free(): void;
 }
 
@@ -97,6 +100,7 @@ export function renderFrame(map: Renderer): FrameAck {
     texelsFromJs: info.texels_from_js,
     headerBytes: info.header_bytes,
     jobsDone: info.jobs_done,
+    lost: info.lost,
   };
   info.free();
   return ack;

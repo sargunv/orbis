@@ -85,6 +85,9 @@ struct Page {
     page: TilePage,
     pending: Vec<DemPrepare>,
     prepare: Option<Prepare>,
+    /// Compat's prepare targets.
+    #[cfg(feature = "compat")]
+    targets: Option<compat_prepare::Targets>,
 }
 
 /// A DEM page's prepare bindings, for one revision of its textures.
@@ -105,6 +108,14 @@ pub(crate) struct NodeImage {
     ramp: Option<TextureId>,
     /// The page revision the group was built for; `None` to rebuild.
     built: Option<u32>,
+}
+
+/// What a frame's prepare did.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Prepared {
+    pub(crate) tiles: u32,
+    pub(crate) dispatches: u32,
+    pub(crate) draws: u32,
 }
 
 #[derive(Debug)]
@@ -130,6 +141,9 @@ pub(crate) struct Images {
     /// The prepare dispatch's layouts and pipelines (pad, slope); none on
     /// Compat, which has no compute.
     prepare: Option<PreparePipelines>,
+    /// Compat's prepare draws.
+    #[cfg(feature = "compat")]
+    draws: Option<compat_prepare::Draws>,
     pages: Vec<Option<Page>>,
 }
 
@@ -271,6 +285,8 @@ impl Images {
             placeholder: placeholder_array,
             placeholder_ramp,
             prepare,
+            #[cfg(feature = "compat")]
+            draws: (!compute_tier).then(|| compat_prepare::Draws::new(gpu)),
             pages: Vec::new(),
         }
     }
@@ -331,6 +347,8 @@ impl Images {
             page: TilePage::new(gpu, &textures),
             pending: Vec::new(),
             prepare: None,
+            #[cfg(feature = "compat")]
+            targets: None,
         };
         let id = match self.pages.iter().position(Option::is_none) {
             Some(free) => {
@@ -351,6 +369,10 @@ impl Images {
             .expect("page already removed");
         if let Some(prepare) = page.prepare {
             destroy_prepare(gpu, prepare);
+        }
+        #[cfg(feature = "compat")]
+        if let Some(targets) = page.targets {
+            targets.destroy(gpu);
         }
         page.page.destroy(gpu);
     }
@@ -403,14 +425,27 @@ impl Images {
 
     /// The compute pass that prepares pending DEM tiles, if any, and how
     /// many tiles it prepares.
-    pub(crate) fn prepare_pass(&mut self, gpu: &mut dyn Gpu) -> Option<(ComputePass, u32)> {
-        let Some(pipelines) = &self.prepare else {
-            // Compat: DEM tiles stay unprepared (plan §8.7's declared gaps).
+    pub(crate) fn prepare_pass(&mut self, gpu: &mut dyn Gpu) -> Option<(Vec<Pass>, Prepared)> {
+        #[cfg(feature = "compat")]
+        if let Some(draws) = &self.draws {
+            let mut passes = Vec::new();
+            let mut prepared = 0;
             for page in self.pages.iter_mut().flatten() {
-                page.pending.clear();
+                prepared += draws.passes(gpu, page, &mut passes);
             }
-            return None;
-        };
+            return (prepared > 0).then(|| {
+                let draws = passes.len() as u32;
+                (
+                    passes,
+                    Prepared {
+                        tiles: prepared,
+                        dispatches: 0,
+                        draws,
+                    },
+                )
+            });
+        }
+        let pipelines = self.prepare.as_ref()?;
         let mut commands = Vec::new();
         let mut prepared = 0;
         for page in self.pages.iter_mut().flatten() {
@@ -493,13 +528,18 @@ impl Images {
             prepared += count;
         }
         (prepared > 0).then(|| {
+            let pass = ComputePass {
+                label: "prepare".into(),
+                timestamps: None,
+                commands,
+            };
             (
-                ComputePass {
-                    label: "prepare".into(),
-                    timestamps: None,
-                    commands,
+                vec![Pass::Compute(pass)],
+                Prepared {
+                    tiles: prepared,
+                    dispatches: 2,
+                    draws: 0,
                 },
-                prepared,
             )
         })
     }
@@ -652,4 +692,214 @@ fn destroy_prepare(gpu: &mut dyn Gpu, prepare: Prepare) {
     gpu.destroy_bind_group(prepare.pad);
     gpu.destroy_bind_group(prepare.slope);
     gpu.destroy_buffer(prepare.jobs);
+}
+
+/// Compat's prepare (plan §8.5's render-to-texture `Prepare`): for each
+/// pending job a draw into its padded layer, then one into its slope layer,
+/// the job read from a uniform slot of its own.
+#[cfg(feature = "compat")]
+mod compat_prepare {
+    use orb_hal::*;
+    use orb_shaders::{PREPARE_PAD_DRAW_SHADER, PREPARE_SLOPE_DRAW_SHADER, Shader};
+
+    use super::{DEM_PADDED, DEM_RAW, DEM_SLOPES, JOB_WORDS, Page};
+
+    /// A job slot's bytes; jobs are 64 bytes.
+    const SLOT: u64 = 256;
+
+    #[derive(Debug)]
+    pub(super) struct Draws {
+        layout: BindGroupLayoutId,
+        pad: RenderPipelineId,
+        slope: RenderPipelineId,
+    }
+
+    /// A page's layer views, job slots and groups, for one revision of its
+    /// textures.
+    #[derive(Debug)]
+    pub(super) struct Targets {
+        revision: u32,
+        jobs: BufferId,
+        slots: u32,
+        /// Per layer: its padded and slope views.
+        views: Vec<Option<[TextureId; 2]>>,
+        /// Per slot: its pad and slope groups.
+        groups: Vec<[BindGroupId; 2]>,
+    }
+
+    impl Targets {
+        pub(super) fn destroy(self, gpu: &mut dyn Gpu) {
+            for view in self.views.into_iter().flatten().flatten() {
+                gpu.destroy_texture(view);
+            }
+            for group in self.groups.into_iter().flatten() {
+                gpu.destroy_bind_group(group);
+            }
+            gpu.destroy_buffer(self.jobs);
+        }
+    }
+
+    impl Draws {
+        pub(super) fn new(gpu: &mut dyn Gpu) -> Self {
+            let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+                label: "prepare draw",
+                entries: &[
+                    BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::FRAGMENT,
+                        ty: BindingType::Texture {
+                            sample: TextureSampleType::Float { filterable: false },
+                            dimension: TextureViewDimension::D2Array,
+                        },
+                    },
+                    BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: ShaderStages::FRAGMENT,
+                        ty: BindingType::Uniform,
+                    },
+                ],
+            });
+            let mut pipeline = |shader: &Shader| {
+                let module = crate::shader_module(gpu, shader, false, 0);
+                gpu.create_render_pipeline(&RenderPipelineDesc {
+                    label: shader.label,
+                    bind_group_layouts: &[layout],
+                    vertex: ShaderStage {
+                        module,
+                        entry_point: shader.vertex,
+                        constants: &[],
+                    },
+                    fragment: ShaderStage {
+                        module,
+                        entry_point: shader.fragment,
+                        constants: &[],
+                    },
+                    targets: &[ColorTargetState {
+                        format: TextureFormat::Rgba8Unorm,
+                        blend: None,
+                    }],
+                    depth: None,
+                    topology: PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    sample_count: 1,
+                })
+            };
+            Self {
+                pad: pipeline(&PREPARE_PAD_DRAW_SHADER),
+                slope: pipeline(&PREPARE_SLOPE_DRAW_SHADER),
+                layout,
+            }
+        }
+
+        /// Appends a page's pending jobs' passes; returns the jobs.
+        pub(super) fn passes(
+            &self,
+            gpu: &mut dyn Gpu,
+            page: &mut Page,
+            passes: &mut Vec<Pass>,
+        ) -> u32 {
+            if page.pending.is_empty() {
+                return 0;
+            }
+            let revision = page.page.revision();
+            let count = page.pending.len() as u32;
+            if page
+                .targets
+                .as_ref()
+                .is_some_and(|t| t.revision != revision || t.slots < count)
+            {
+                page.targets.take().expect("checked").destroy(gpu);
+            }
+            let targets = page.targets.get_or_insert_with(|| {
+                let slots = count.max(page.page.capacity()).max(1);
+                Targets {
+                    revision,
+                    jobs: gpu.create_buffer(&BufferDesc {
+                        label: "dem jobs",
+                        size: u64::from(slots) * SLOT,
+                        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                    }),
+                    slots,
+                    views: Vec::new(),
+                    groups: Vec::new(),
+                }
+            });
+            for (slot, job) in page.pending.drain(..).enumerate() {
+                let words = job.words();
+                // The uniform's layout: unpack, neighbours, layer, zoom.
+                let mut uniform = [0u32; JOB_WORDS];
+                uniform[..4].copy_from_slice(&words[..4]);
+                uniform[4..12].copy_from_slice(&words[5..13]);
+                uniform[12] = words[4];
+                uniform[13] = words[13];
+                gpu.write_buffer(
+                    targets.jobs,
+                    slot as u64 * SLOT,
+                    bytemuck::cast_slice(&uniform),
+                );
+                while targets.groups.len() <= slot {
+                    let at = targets.groups.len() as u64 * SLOT;
+                    let mut group = |label, texture| {
+                        gpu.create_bind_group(&BindGroupDesc {
+                            label,
+                            layout: self.layout,
+                            entries: &[
+                                BindGroupEntry {
+                                    binding: 0,
+                                    resource: BindingResource::Texture {
+                                        texture,
+                                        dimension: TextureViewDimension::D2Array,
+                                    },
+                                },
+                                BindGroupEntry {
+                                    binding: 2,
+                                    resource: BindingResource::Buffer {
+                                        buffer: targets.jobs,
+                                        offset: at,
+                                        size: Some(JOB_WORDS as u64 * 4),
+                                    },
+                                },
+                            ],
+                        })
+                    };
+                    let pad = group("prepare pad", page.page.texture(DEM_RAW));
+                    let slope = group("prepare slope", page.page.texture(DEM_PADDED));
+                    targets.groups.push([pad, slope]);
+                }
+                let layer = job.layer as usize;
+                if targets.views.len() <= layer {
+                    targets.views.resize(layer + 1, None);
+                }
+                let views = *targets.views[layer].get_or_insert_with(|| {
+                    [DEM_PADDED, DEM_SLOPES]
+                        .map(|t| gpu.create_layer_view(page.page.texture(t), job.layer))
+                });
+                for (pipeline, group, target) in [
+                    (self.pad, targets.groups[slot][0], views[0]),
+                    (self.slope, targets.groups[slot][1], views[1]),
+                ] {
+                    passes.push(Pass::Render(RenderPass {
+                        label: "prepare".into(),
+                        color: ColorAttachment {
+                            target,
+                            resolve: None,
+                            store: StoreOp::Store,
+                            load: LoadOp::Load,
+                        },
+                        depth: None,
+                        timestamps: None,
+                        commands: vec![
+                            RenderCommand::SetPipeline(pipeline),
+                            RenderCommand::SetBindGroup { index: 0, group },
+                            RenderCommand::Draw {
+                                vertices: 0..3,
+                                instances: 0..1,
+                            },
+                        ],
+                    }));
+                }
+            }
+            count
+        }
+    }
 }

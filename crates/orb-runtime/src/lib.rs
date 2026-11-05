@@ -32,6 +32,14 @@ mod testing;
 mod tile;
 
 pub use events::MapEvent;
+
+/// The warning a style with terrain gets on Compat (plan §8.7), whose
+/// maps draw flat.
+pub const COMPAT_NO_TERRAIN: &str =
+    "terrain is not drawn on the Compat tier (WebGL2, GLES 3.0); the map is flat";
+/// The warning heatmap layers get on devices without float render
+/// targets (Compat without EXT_color_buffer_float).
+pub const COMPAT_NO_HEATMAP: &str = "heatmap requires filterable, blendable rgba16float render attachments (Compat: EXT_color_buffer_float); heatmap layers are skipped";
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use jobs::{

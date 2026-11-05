@@ -65,7 +65,7 @@ fn pull(node_index: u32, instance: u32, index: u32, stride: u32, out: ptr<functi
 // Maps an indexed node's compacted index (`run << run_shift | vertex`) to
 // its vertex, or `None` (false) for a hidden index.
 fn pull_indexed(node_index: u32, index: u32, stride: u32, out: ptr<function, Pulled>) -> bool {
-    if index == HIDDEN_INDEX {
+    if index == HIDDEN_DRAW_INDEX {
         return false;
     }
     let cull = node_cull_at(node_index);

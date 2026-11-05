@@ -16,7 +16,9 @@ const DRAW_IMAGES: u32 = 0;
 const DRAW_POINTS: u32 = 1;
 const DRAW_INDEXED: u32 = 2;
 const DRAPED: u32 = 256;
-const HIDDEN_INDEX: u32 = 0xffff_fffe;
+/// `fetch_compat.wgsl`'s `HIDDEN_DRAW_INDEX`: WebGL rejects indices from
+/// 2^31.
+const HIDDEN_INDEX: u32 = 0x7fff_fffe;
 const CHUNK_VERTICES: u32 = 768;
 const TERRAIN_RANGE_UNIT: f32 = 4.0;
 

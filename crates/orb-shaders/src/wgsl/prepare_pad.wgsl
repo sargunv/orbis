@@ -1,14 +1,9 @@
 @group(0) @binding(0) var raw: texture_2d_array<f32>;
-@group(0) @binding(1) var padded: texture_storage_2d_array<rgba8unorm, write>;
 
-@compute @workgroup_size(8, 8)
-fn pad(@builtin(global_invocation_id) id: vec3<u32>) {
+// Texel `id` of a job's padded layer, (dim + 4)² texels.
+fn pad_texel(job: DemJob, id: vec2<u32>) -> vec4<f32> {
     let dim = i32(textureDimensions(raw).x);
-    if any(id.xy >= vec2<u32>(u32(dim + 4))) {
-        return;
-    }
-    let job = jobs[id.z];
-    let p = vec2<i32>(id.xy) - 2;
+    let p = vec2<i32>(id) - 2;
     let d = vec2<i32>(select(0, -1, p.x < 0) + select(0, 1, p.x >= dim),
         select(0, -1, p.y < 0) + select(0, 1, p.y >= dim));
     var layer = job.layer;
@@ -21,5 +16,5 @@ fn pad(@builtin(global_invocation_id) id: vec3<u32>) {
             q = p - d * dim;
         }
     }
-    textureStore(padded, id.xy, job.layer, textureLoad(raw, q, layer, 0));
+    return textureLoad(raw, q, layer, 0);
 }

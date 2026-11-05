@@ -1,7 +1,9 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
 //! `web/pkg/`, reports its size by crate (twiggy) and warns when it
-//! grows past plan §14.3's numbers; then `harness.wasm`, the same module with
-//! the bench page's and the fixture driver's entry points.
+//! grows past plan §14.3's numbers; then `compat.wasm`, the renderer on
+//! WebGL2 that pages without WebGPU load instead (plan §8.7), and
+//! `harness.wasm`, the module with the bench page's and the fixture
+//! driver's entry points on either tier.
 //!
 //! `cargo xtask pages`: the above, then the Vite build of the site
 //! `.github/workflows/pages.yml` deploys, into `web/dist/`.
@@ -65,6 +67,19 @@ pub(crate) fn build() -> Result<(), String> {
             break;
         }
     }
+    // The renderer role on WebGL2, loaded instead of core.wasm's where
+    // WebGPU is missing or lost; job and placement workers keep core.wasm.
+    let compat = module(
+        &root,
+        "orb-web",
+        "compat",
+        &["--no-default-features", "--features", "compat"],
+    )?;
+    eprintln!(
+        "compat.wasm: {} KiB raw, {} KiB brotli (lazy)",
+        compat.raw / 1024,
+        compat.brotli / 1024
+    );
     // The bench page's and the fixture driver's module: core plus their
     // entry points, outside the budget because no map page loads it.
     word_data(&out)?;

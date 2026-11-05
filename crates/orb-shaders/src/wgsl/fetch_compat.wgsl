@@ -12,6 +12,10 @@
 @group(0) @binding(7) var node_cull: texture_2d<u32>;
 @group(0) @binding(8) var image_rects: texture_2d<u32>;
 
+// The compacted index that draws nothing: WebGL rejects indices from 2^31,
+// so Compat's runs and hidden indices fit in 31 bits (orb-scene).
+const HIDDEN_DRAW_INDEX: u32 = 0x7ffffffeu;
+
 // orb-hal-gl's DATA_WIDTH_LOG2.
 const DATA_WIDTH_LOG2: u32 = 12u;
 

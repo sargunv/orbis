@@ -3,8 +3,9 @@
 // into a (dim + 4)² layer with a two-texel border taken from the eight
 // neighbouring tiles, or from its own edge where a neighbour isn't resident,
 // as GL JS's `DEMData` backfills. `slope` then computes GL JS's
-// `hillshade_prepare` slopes over a (dim + 2)² layer. One invocation per
-// texel; `z` picks the job.
+// `hillshade_prepare` slopes over a (dim + 2)² layer. The steps' texels
+// are computed by `pad_texel` and `slope_texel`, for a compute dispatch
+// (`*_cs.wgsl`, Modern) or a draw into each layer (`prepare_fs.wgsl`).
 
 const NO_TILE: u32 = 0xffffffffu;
 
@@ -19,5 +20,3 @@ struct DemJob {
     _pad0: u32,
     _pad1: u32,
 };
-
-@group(0) @binding(2) var<storage, read> jobs: array<DemJob>;

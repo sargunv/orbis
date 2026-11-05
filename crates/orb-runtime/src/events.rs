@@ -28,6 +28,10 @@ pub enum MapEvent {
     Idle,
     /// A style, source, tile or sprite failed to load (GL JS `error`).
     Error { message: String },
+    /// The map renders at `tier`: on its first frame, and on its first
+    /// frame on a new GPU (after device loss, perhaps on another tier).
+    /// What the tier gives up arrives as warnings (plan §8.7).
+    Capability { tier: orb_hal::Tier },
 }
 
 #[derive(Debug, Default)]

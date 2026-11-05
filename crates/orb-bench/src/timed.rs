@@ -302,6 +302,10 @@ impl Gpu for TimedGpu {
         self.inner.create_texture_view(texture, levels)
     }
 
+    fn create_layer_view(&mut self, texture: TextureId, layer: u32) -> TextureId {
+        self.inner.create_layer_view(texture, layer)
+    }
+
     fn destroy_texture(&mut self, id: TextureId) {
         self.inner.destroy_texture(id);
     }

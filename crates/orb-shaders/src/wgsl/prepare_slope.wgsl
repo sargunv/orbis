@@ -1,18 +1,13 @@
 @group(0) @binding(0) var padded: texture_2d_array<f32>;
-@group(0) @binding(1) var slopes: texture_storage_2d_array<rgba8unorm, write>;
 
 // The log2 of the Mercator world's width in metres, as GL JS's
 // `getLog2WorldWidth` gives for wrapping worlds.
 const LOG2_WORLD_WIDTH: f32 = 25.2562;
 
-@compute @workgroup_size(8, 8)
-fn slope(@builtin(global_invocation_id) id: vec3<u32>) {
-    let size = textureDimensions(slopes).x;
-    if any(id.xy >= vec2<u32>(size)) {
-        return;
-    }
-    let job = jobs[id.z];
-    let pos = vec2<i32>(id.xy) + 1;
+// Texel `id` of a job's slope layer, (dim + 2)² texels.
+fn slope_texel(job: DemJob, id: vec2<u32>) -> vec4<f32> {
+    let size = textureDimensions(padded).x - 2u;
+    let pos = vec2<i32>(id) + 1;
     let tile_size = f32(size - 2u);
 
     let a = elevation_at(job, pos + vec2<i32>(-1, -1));
@@ -43,7 +38,7 @@ fn slope(@builtin(global_invocation_id) id: vec3<u32>) {
     // Flat ground is 128/255, which 8 bits hold exactly.
     let color = clamp(vec4<f32>(deriv.x / 8.0 + 128.0 / 255.0, deriv.y / 8.0 + 128.0 / 255.0, 1.0, 1.0),
         vec4<f32>(0.0), vec4<f32>(1.0));
-    textureStore(slopes, id.xy, job.layer, color);
+    return color;
 }
 
 fn elevation_at(job: DemJob, p: vec2<i32>) -> f32 {

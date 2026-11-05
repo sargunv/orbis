@@ -26,6 +26,7 @@ pub use orb_camera::{
     FlyOptions, Padding, Phase,
 };
 pub use orb_geo::Geodetic;
+pub use orb_hal::Tier;
 pub use orb_hal_wgpu::{RawSurface, Surface};
 pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_runtime::{CameraState, FrameReport, Hit, MapEvent};

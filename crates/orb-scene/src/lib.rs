@@ -1346,7 +1346,9 @@ impl Scene {
             // An indexed node's index is `run << run_shift | vertex`; the
             // all-ones run is reserved for hidden indices.
             let run_shift = 32 - (vertex_words - 1).leading_zeros().min(31);
-            let max_runs = (1u64 << (32 - run_shift)) - 1;
+            // WebGL rejects indices from 2^31: Compat's fit in 31 bits.
+            let index_bits: u32 = if self.cull.is_some() { 31 } else { 32 };
+            let max_runs = (1u64 << index_bits.saturating_sub(run_shift)) - 1;
             let index_base = compacted;
             // Runs in order of first use by a kept candidate: no more than
             // the kept candidates, so they fit the node's visible slice.

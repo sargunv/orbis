@@ -514,6 +514,23 @@ impl Gpu for WgpuGpu {
         }))
     }
 
+    fn create_layer_view(&mut self, texture: TextureId, layer: u32) -> TextureId {
+        let texture = self.texture(texture).clone();
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_mip_level: 0,
+            mip_level_count: Some(1),
+            base_array_layer: layer,
+            array_layer_count: Some(1),
+            ..Default::default()
+        });
+        TextureId(self.textures.insert(Texture {
+            texture: Some(texture),
+            view,
+            levels: Some(0..1),
+        }))
+    }
+
     fn destroy_texture(&mut self, id: TextureId) {
         let entry = self.textures.remove(id.0);
         if let (Some(texture), None) = (entry.texture, entry.levels) {

@@ -11,6 +11,9 @@
 @group(0) @binding(7) var<storage, read> node_cull: array<NodeCull>;
 @group(0) @binding(8) var<storage, read> image_rects: array<ImageRect>;
 
+// The compacted index that draws nothing.
+const HIDDEN_DRAW_INDEX: u32 = HIDDEN_INDEX;
+
 fn tile_at(i: u32) -> Tile { return tiles[i]; }
 fn chunk_at(i: u32) -> Chunk { return chunks[i]; }
 fn visible_at(i: u32) -> Visible { return visible[i]; }

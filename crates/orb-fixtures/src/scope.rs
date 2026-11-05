@@ -27,7 +27,13 @@ pub(crate) fn parse_reason(message: &str) -> String {
 }
 
 pub(crate) fn runtime_reason(message: &str) -> Option<&'static str> {
-    if message.contains("only vector, GeoJSON, raster and raster-dem sources") {
+    // Compat's declared gaps (plan §8.7): warnings, so their fixtures
+    // leave the Compat subset with the gap as the reason.
+    if message == orb_runtime::COMPAT_NO_TERRAIN {
+        Some("compat:terrain")
+    } else if message == orb_runtime::COMPAT_NO_HEATMAP {
+        Some("compat:heatmap-float-targets")
+    } else if message.contains("only vector, GeoJSON, raster and raster-dem sources") {
         Some("source:unsupported")
     } else if message.contains("need a source-layer") {
         Some("source-layer")

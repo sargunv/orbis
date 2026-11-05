@@ -113,7 +113,6 @@ export class CameraControl {
 /** A map in a container element. Create one with {@link createMap}. */
 export class OrbisMap {
   readonly container: HTMLElement;
-  readonly canvas: HTMLCanvasElement;
   readonly camera: CameraControl;
   readonly annotations: Annotations;
   #ui: UiRole;
@@ -126,11 +125,19 @@ export class OrbisMap {
   #idle = false;
   #animations = new Map<number, (arrived: boolean) => void>();
   #detach: (() => void)[] = [];
+  #canvas: HTMLCanvasElement;
+  #interactive = true;
+  #detachInput: (() => void) | undefined;
+  #observer: ResizeObserver | undefined;
+  /** A device loss's start, while the host recovers. */
+  #lostAt: number | undefined;
+  /** The last device loss's start, until the new device draws. */
+  #recovering: number | undefined;
 
   /** @internal */
   constructor(container: HTMLElement, canvas: HTMLCanvasElement, overlay: HTMLElement, ui: UiRole) {
     this.container = container;
-    this.canvas = canvas;
+    this.#canvas = canvas;
     this.#ui = ui;
     this.#loop = frameLoop((now) => this.#tick(now), (e) => this.#error(e));
     const request = () => this.#loop.request();
@@ -141,12 +148,24 @@ export class OrbisMap {
   /** @internal */
   start(host: Host, interactive: boolean): void {
     this.#host = host;
-    if (interactive) this.#detach.push(attachInput(this.canvas, this.#ui, () => this.#loop.request()));
-    const observer = new ResizeObserver(() => this.#resize());
-    observer.observe(this.canvas);
-    this.#detach.push(() => observer.disconnect());
+    this.#interactive = interactive;
+    this.#observer = new ResizeObserver(() => this.#resize());
+    this.#attach();
+    this.#detach.push(() => { this.#detachInput?.(); this.#observer?.disconnect(); });
     this.#loop.request();
   }
+
+  /** The canvas the map draws into and takes input from. */
+  get canvas(): HTMLCanvasElement { return this.#canvas; }
+
+  #attach(): void {
+    if (this.#interactive) this.#detachInput = attachInput(this.#canvas, this.#ui, () => this.#loop.request());
+    this.#observer?.observe(this.#canvas);
+  }
+
+  /** Loses the GPU on purpose, to exercise recovery (main-thread maps);
+   * with `switchTier`, a WebGPU map recovers on WebGL2. */
+  loseDevice(switchTier = false): void { this.#host.loseDevice?.(switchTier); }
 
   /** Where the map draws: "worker" (a render worker) or "main". */
   get thread(): "main" | "worker" { return this.#host.thread; }
@@ -266,8 +285,12 @@ export class OrbisMap {
       this.#idle = false;
     }
     let more = moving;
-    if (this.#host.render && this.#dirty) {
+    if (this.#host.render && this.#dirty && this.#lostAt === undefined) {
       const ack = this.#host.render();
+      if (ack.lost) {
+        this.#recover();
+        return false;
+      }
       this.#dirty = !ack.idle;
       this.#frame(ack);
       more ||= this.#dirty;
@@ -275,6 +298,26 @@ export class OrbisMap {
     if (moving) this.#idle = false;
     else this.#maybeIdle();
     return more;
+  }
+
+  /** Gets a new GPU after a loss (plan §8.8) and draws on. */
+  #recover(): void {
+    if (this.#lostAt !== undefined || !this.#host.recover) return;
+    this.#lostAt = performance.now();
+    const replace = (canvas: HTMLCanvasElement) => {
+      this.#detachInput?.();
+      this.#observer?.unobserve(this.#canvas);
+      this.#canvas.replaceWith(canvas);
+      this.#canvas = canvas;
+      this.#attach();
+    };
+    this.#host.recover(replace, new Float64Array(this.#ui.camera())).then(() => {
+      this.#recovering = this.#lostAt;
+      this.#lostAt = undefined;
+      this.#pushed = -1;
+      this.#dirty = true;
+      this.#loop.request();
+    }, (e) => this.#error(`the GPU was lost and no other could be made: ${e}`));
   }
 
   /** @internal A frame drawn here or acknowledged by the render worker. */
@@ -309,6 +352,12 @@ export class OrbisMap {
         case "styledata": this.#events.emit("styledata", { generation: event.generation }); break;
         case "sourcedata": this.#events.emit("sourcedata", { source: event.source, loaded: event.loaded }); break;
         case "load": this.#events.emit("load", {}); break;
+        case "capability": {
+          const recoveredMs = this.#recovering === undefined ? undefined : performance.now() - this.#recovering;
+          this.#recovering = undefined;
+          this.#events.emit("capability", { tier: event.tier, recoveredMs });
+          break;
+        }
         case "error": this.#error(event.message); break;
         // Idle needs the camera at rest too; see #maybeIdle.
         case "idle": break;
@@ -361,10 +410,20 @@ export class OrbisMap {
 
 const CORE = new URL("../pkg/core_bg.wasm", import.meta.url);
 
+/** Whether WebGPU gives an adapter here. */
+async function webgpuAdapter(): Promise<boolean> {
+  const gpu = (navigator as Navigator & { gpu?: GPU }).gpu;
+  try {
+    return !!gpu && !!await gpu.requestAdapter();
+  } catch {
+    return false;
+  }
+}
+
 /** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on. */
 export async function createMap(options: MapOptions): Promise<OrbisMap> {
-  const gpu = (navigator as Navigator & { gpu?: unknown }).gpu;
-  if (!gpu) throw new Error("WebGPU is not available in this browser");
+  const renderer = options.renderer ?? "auto";
+  const tier = renderer === "webgl2" || (renderer === "auto" && !await webgpuAdapter()) ? "compat" : "modern";
   const module = WebAssembly.compileStreaming(fetch(CORE));
   const frame = document.createElement("div");
   Object.assign(frame.style, { position: "relative", width: "100%", height: "100%", overflow: "hidden" });
@@ -378,7 +437,8 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   canvas.width = Math.round(canvas.clientWidth * ratio);
   canvas.height = Math.round(canvas.clientHeight * ratio);
 
-  let thread = options.thread ?? "main";
+  // WebGL2 draws on this thread (its module is the renderer role's alone).
+  let thread = tier === "compat" ? "main" : options.thread ?? "main";
   let probed: Awaited<ReturnType<typeof probeWorker>> | undefined;
   const offscreen = typeof OffscreenCanvas !== "undefined" && "transferControlToOffscreen" in canvas;
   if (thread !== "main") {
@@ -407,7 +467,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   };
   const host = thread === "worker"
     ? startWorker(compiled, probed!.worker, canvas, style, callbacks)
-    : await startMain(compiled, canvas, style, callbacks);
+    : await startMain(compiled, canvas, style, callbacks, tier);
   map.start(host, options.interactive ?? true);
   return map;
 }

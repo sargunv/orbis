@@ -57,10 +57,35 @@ async function main() {
     container: document.getElementById("map"),
     style: demoStyle(params),
     thread: params.get("thread") ?? undefined,
+    renderer: params.get("renderer") ?? undefined,
     camera: hashCamera() ?? (isLive(params) ? LIVE_CAMERA : undefined),
     feel: feel(),
   });
   status = `${map.thread} thread`;
+  // The tier the map draws at, and how long a device loss took to recover:
+  // to the first frame on the new device, and to the next complete one.
+  let lostAt;
+  map.on("capability", ({ tier, recoveredMs }) => {
+    status = `${map.thread} thread · ${tier === "modern" ? "WebGPU" : "WebGL2"}`;
+    console.info(`orbis: ${status}`);
+    if (recoveredMs === undefined) return;
+    const first = Math.round(recoveredMs);
+    const idle = map.on("idle", () => {
+      idle();
+      status += ` · recovered from device loss: first frame ${first} ms, complete ${Math.round(performance.now() - lostAt)} ms`;
+      console.info(`orbis: ${status}`);
+      if (map.stats) showFrame(map.stats);
+    });
+  });
+  // `?lose=<ms>` loses the GPU that long after loading, to show recovery
+  // (plan §8.8); with `&switch`, WebGPU's loss switches to WebGL2.
+  // `orbis.loseDevice(switchTier)` any time.
+  if (params.has("lose")) {
+    const loaded = map.on("load", () => {
+      loaded();
+      setTimeout(() => { lostAt = performance.now(); map.loseDevice(params.has("switch")); }, Number(params.get("lose")) || 0);
+    });
+  }
   hud.textContent = `${status}\nloading…`;
   expose(map);
   map.on("render", showFrame);

@@ -49,10 +49,30 @@ impl GlGpu {
 
     /// The executor over a WebGL2 context.
     pub fn from_webgl2(context: web_sys::WebGl2RenderingContext) -> Result<Self, String> {
+        if context.is_context_lost() {
+            return Err("the WebGL2 context is lost".into());
+        }
         // Unmasked renderer names, where the browser offers them.
         let _ = context.get_extension("WEBGL_debug_renderer_info");
         let _ = context.get_extension("EXT_color_buffer_float");
-        Self::new(glow::Context::from_webgl2_context(context))
+        let mut gpu = Self::new(glow::Context::from_webgl2_context(context.clone()))?;
+        gpu.webgl = Some(context);
+        Ok(gpu)
+    }
+
+    /// Loses the context on purpose (`WEBGL_lose_context`), to exercise
+    /// recovery.
+    pub fn lose_context(&self) {
+        let lose = self
+            .webgl
+            .as_ref()
+            .and_then(|gl| gl.get_extension("WEBGL_lose_context").ok().flatten());
+        if let Some(lose) = lose {
+            let _ = js_sys::Reflect::get(&lose, &"loseContext".into())
+                .ok()
+                .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+                .map(|f| f.call0(&lose));
+        }
     }
 
     /// A transferred `ArrayBuffer`, for [`orb_hal::Gpu::write_buffer_from_host`].

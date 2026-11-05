@@ -3,6 +3,10 @@
 //
 //   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]] [--thread=main|worker]
 //     [--format=mvt|mlt] [--style=URL|scripts] [--compare=reference-map.png]
+//     [--renderer=webgpu|webgl2] [--lose=<ms> [--switch]]
+//
+// `--lose` loses the GPU that long after the map loads and waits for it to
+// recover (plan §8.8); with `--switch`, onto WebGL2.
 //
 // The map viewer draws the Tokyo extract (MVT by default) unless `--style`
 // names another.
@@ -16,11 +20,17 @@ const thread = args.find((a) => a.startsWith("--thread="))?.slice("--thread=".le
 const format = args.find((a) => a.startsWith("--format="))?.slice("--format=".length);
 const compare = args.find((a) => a.startsWith("--compare="))?.slice("--compare=".length);
 const style = args.find((a) => a.startsWith("--style="))?.slice("--style=".length);
+const renderer = args.find((a) => a.startsWith("--renderer="))?.slice("--renderer=".length);
+const lose = args.find((a) => a.startsWith("--lose="))?.slice("--lose=".length);
+const switchTier = args.includes("--switch");
 const [out = "snapshot.png", hash = ""] = args.filter((a) => !a.startsWith("--"));
 
 const server = await serveDemo();
 const params = new URLSearchParams();
 if (thread) params.set("thread", thread);
+if (renderer) params.set("renderer", renderer);
+if (lose) params.set("lose", lose);
+if (switchTier) params.set("switch", "");
 // Snapshots draw the committed extract unless told otherwise.
 if (style) params.set("style", style);
 else if (entry === "") params.set("style", `tokyo-${format ?? "mvt"}`);
@@ -40,7 +50,8 @@ try {
   const started = Date.now();
   await page.waitForFunction(() => {
     const text = document.getElementById("hud").textContent;
-    return text.endsWith(" · idle") || text.startsWith("WebGPU") || text.includes("Error");
+    return (text.endsWith(" · idle") || text.startsWith("WebGPU") || text.includes("Error"))
+      && (!new URLSearchParams(location.search).has("lose") || text.includes("recovered"));
   }, null, { timeout: 60_000 });
   await page.waitForTimeout(250);
   console.log(`${await page.locator("#hud").textContent()} (${Date.now() - started} ms)`);

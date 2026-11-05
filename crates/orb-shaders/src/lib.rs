@@ -114,6 +114,8 @@ mod tests {
             COLOR_RELIEF_SHADER,
             PREPARE_PAD_SHADER,
             PREPARE_SLOPE_SHADER,
+            PREPARE_PAD_DRAW_SHADER,
+            PREPARE_SLOPE_DRAW_SHADER,
             CULL_SHADER,
         ] {
             let module = validate(&shader);
