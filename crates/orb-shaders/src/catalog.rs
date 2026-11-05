@@ -57,6 +57,7 @@ const RASTER: &str = include_str!("wgsl/raster.wgsl");
 const HILLSHADE: &str = include_str!("wgsl/hillshade.wgsl");
 const TERRAIN: &str = include_str!("wgsl/terrain.wgsl");
 const COLOR_RELIEF: &str = include_str!("wgsl/color_relief.wgsl");
+const CONTOUR: &str = include_str!("wgsl/contour.wgsl");
 const PREPARE: &str = include_str!("wgsl/prepare.wgsl");
 const PREPARE_PAD: &str = include_str!("wgsl/prepare_pad.wgsl");
 /// First of a vertex-only shader's parts where clip distances are (wgpu's
@@ -325,6 +326,15 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
     compute: "",
     lit: false,
 };
+/// Contour lines of a raster-dem source: the scene document's `contour`.
+pub const CONTOUR_SHADER: Shader = Shader {
+    label: "contour",
+    parts: &[TYPES, DRAW, IMAGE, DEM, CONTOUR],
+    vertex: "vs_contour",
+    fragment: "fs_contour",
+    compute: "",
+    lit: false,
+};
 
 /// Mip levels over regions of array layers: drape slots, raster pages.
 pub const DOWNSAMPLE_SHADER: Shader = Shader {
@@ -507,6 +517,7 @@ pub const COMPAT_SHADERS: &[Shader] = &[
     RASTER_SHADER,
     HILLSHADE_SHADER,
     COLOR_RELIEF_SHADER,
+    CONTOUR_SHADER,
     EXTRUSION_SHADER,
     EXTRUSION_CUT_SHADER,
     PREPARE_PAD_SHADER,
@@ -545,6 +556,7 @@ pub const SHADERS: &[Shader] = &[
     RASTER_SHADER.lit(),
     HILLSHADE_SHADER.lit(),
     COLOR_RELIEF_SHADER.lit(),
+    CONTOUR_SHADER.lit(),
     EXTRUSION_SHADER.lit(),
     SYMBOL_SHADERS[0],
     SYMBOL_SHADERS[1],
@@ -552,6 +564,7 @@ pub const SHADERS: &[Shader] = &[
     RASTER_SHADER,
     HILLSHADE_SHADER,
     COLOR_RELIEF_SHADER,
+    CONTOUR_SHADER,
     PREPARE_PAD_SHADER,
     PREPARE_SLOPE_SHADER,
     DOWNSAMPLE_SHADER,

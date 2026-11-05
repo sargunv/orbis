@@ -405,6 +405,36 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     assert_same("terrain", both_ways(&style, start, end, 30));
 }
 
+/// Contour lines over the hills (the scene document's `contour`), flat and
+/// draped on terrain: each tile's lines meet its neighbours' from the
+/// borders the view reads, so a gesture through a change of interval
+/// draws the lines a fresh map at rest does.
+#[test]
+fn contours_after_a_gesture_are_a_fresh_map_s() {
+    let (hills, _dem) = hills();
+    let hills = hills.trim_end_matches(',');
+    let scene = |terrain: &str| {
+        format!(
+            r##"{{"style": {{"version": 8, "sources": {{{hills}}}, {terrain}
+                "layers": [{{"id": "ground", "type": "background", "paint": {{"background-color": "#f4f0e6"}}}}]}},
+              "layers+": [{{"id": "contours", "type": "contour", "source": "hills",
+                "paint": {{"contour-interval": ["step", ["zoom"], 100, 12, 50], "contour-color": "#6b4a2b"}}}}]}}"##
+        )
+    };
+    let start = (Geodetic::new(139.70, 35.66), 11.5, 0.0, 0.0);
+    let end = (STATION, 12.8, 30.0, 50.0);
+    let flat = both_ways(&scene(""), start, end, 30);
+    // The lines draw: dark on the light ground.
+    let lines = flat.1.chunks(4).filter(|p| p[0] < 200).count();
+    assert!(lines > 2000, "{lines} pixels of contour lines");
+    assert_same("contours", flat);
+    let terrain = r#""terrain": {"source": "hills", "exaggeration": 1.5},"#;
+    assert_same(
+        "draped contours",
+        both_ways(&scene(terrain), start, end, 30),
+    );
+}
+
 /// Ridges against the sky over the Alps: a turn and tilt to a pitch of
 /// 75° draws the silhouettes a fresh map at rest draws (#84).
 #[test]

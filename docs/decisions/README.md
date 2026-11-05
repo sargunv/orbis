@@ -53,3 +53,4 @@ in code and commit messages.
 - [0046](0046-shadows.md): Shadows from the directional light
 - [0047](0047-model-layers.md): Model layers: instanced draws, one 3D target per layer, the map's material
 - [0048](0048-lit-map.md): The lit map: a scene's lights shade every layer's fragments
+- [0049](0049-contours.md): Contour lines worked out on the GPU

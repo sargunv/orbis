@@ -161,6 +161,9 @@ pub enum LayerType {
     /// glTF models at point features: the scene document's `model`, which
     /// v8 documents can't have.
     Model,
+    /// Contour lines of a `raster-dem` source, worked out on the GPU: the
+    /// scene document's `contour`.
+    Contour,
 }
 
 impl LayerType {
@@ -191,13 +194,14 @@ impl LayerType {
             Self::ColorRelief => "color-relief",
             Self::Symbol => "symbol",
             Self::Model => "model",
+            Self::Contour => "contour",
         }
     }
 
     pub fn from_name(name: &str) -> Option<Self> {
         Self::V8
             .into_iter()
-            .chain([Self::Model])
+            .chain([Self::Model, Self::Contour])
             .find(|t| t.name() == name)
     }
 
@@ -223,7 +227,7 @@ impl LayerType {
     pub fn draws_features(self) -> bool {
         !matches!(
             self,
-            Self::Background | Self::Raster | Self::Hillshade | Self::ColorRelief
+            Self::Background | Self::Raster | Self::Hillshade | Self::ColorRelief | Self::Contour
         )
     }
 }
@@ -543,6 +547,18 @@ properties! {
         /// Applies to the whole layer, as `fill-extrusion-opacity` does.
         paint MODEL_OPACITY: f32 = prop("model-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
         paint MODEL_EMISSIVE: f32 = prop("model-emissive-strength", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
+    }
+    Contour {
+        /// Metres between lines, at the camera's zoom. Steps by zoom, not
+        /// interpolated: an interval that slid would slide every line.
+        paint CONTOUR_INTERVAL: f32 = prop("contour-interval", NUMBER, Some("100")).range(0.0, None);
+        /// Every this many lines is a major one, drawn `contour-major-width`.
+        paint CONTOUR_MAJOR: f32 = prop("contour-major", NUMBER, Some("5")).range(1.0, None);
+        paint CONTOUR_COLOR: Color = prop("contour-color", COLOR, Some("\"#8c6d4f\"")).interpolated();
+        /// Pixels.
+        paint CONTOUR_WIDTH: f32 = prop("contour-width", NUMBER, Some("1")).interpolated().range(0.0, None);
+        paint CONTOUR_MAJOR_WIDTH: f32 = prop("contour-major-width", NUMBER, Some("2")).interpolated().range(0.0, None);
+        paint CONTOUR_OPACITY: f32 = prop("contour-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
     }
 }
 

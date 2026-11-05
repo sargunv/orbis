@@ -18,6 +18,8 @@ pub enum Family {
     Hillshade,
     /// Elevations of a `raster-dem` source's tiles through a colour ramp.
     ColorRelief,
+    /// Contour lines of a `raster-dem` source's tiles' elevations.
+    Contour,
     /// A symbol layer's icons.
     SymbolIcon,
     /// A symbol layer's text.
@@ -29,7 +31,10 @@ pub enum Family {
 impl Family {
     /// Whether the family draws image tiles from a page.
     pub fn is_image(self) -> bool {
-        matches!(self, Self::Raster | Self::Hillshade | Self::ColorRelief)
+        matches!(
+            self,
+            Self::Raster | Self::Hillshade | Self::ColorRelief | Self::Contour
+        )
     }
 
     /// Whether the family draws symbol quads.
@@ -48,6 +53,7 @@ impl Family {
                 | Self::Raster
                 | Self::Hillshade
                 | Self::ColorRelief
+                | Self::Contour
         )
     }
 }

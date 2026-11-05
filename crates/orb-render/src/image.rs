@@ -16,7 +16,7 @@
 use crate::release::Release;
 use orb_hal::*;
 use orb_scene::{PageTexture, Pixels, TilePage};
-use orb_shaders::{COLOR_RELIEF_SHADER, HILLSHADE_SHADER, RASTER_SHADER};
+use orb_shaders::{COLOR_RELIEF_SHADER, CONTOUR_SHADER, HILLSHADE_SHADER, RASTER_SHADER};
 
 use crate::{Family, OutOfSpace, TargetFormat};
 
@@ -153,16 +153,17 @@ pub(crate) struct Prepared {
     pub(crate) draws: u32,
 }
 
-/// One target format's raster, hillshade and color-relief pipelines, each
-/// made for the first node of its family.
+/// One target format's raster, hillshade, color-relief and contour
+/// pipelines, each made for the first node of its family.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ImagePipelines(pub(crate) [Option<RenderPipelineId>; 3]);
+pub(crate) struct ImagePipelines(pub(crate) [Option<RenderPipelineId>; 4]);
 
 fn image_index(family: Family) -> usize {
     match family {
         Family::Raster => 0,
         Family::Hillshade => 1,
         Family::ColorRelief => 2,
+        Family::Contour => 3,
         _ => unreachable!("not an image family"),
     }
 }
@@ -304,6 +305,7 @@ impl Images {
             let (shader, layout) = match family {
                 Family::Raster => (&RASTER_SHADER, self.image_layout),
                 Family::Hillshade => (&HILLSHADE_SHADER, self.image_layout),
+                Family::Contour => (&CONTOUR_SHADER, self.image_layout),
                 _ => (&COLOR_RELIEF_SHADER, self.relief_layout),
             };
             crate::draw_pipeline(
@@ -679,7 +681,7 @@ impl Images {
             (None, _) => self.placeholder,
             (Some(page), Family::Raster) => page.page.texture(0),
             (Some(page), Family::Hillshade) => page.page.texture(DEM_SLOPES),
-            (Some(page), Family::ColorRelief) => page.page.texture(DEM_PADDED),
+            (Some(page), Family::ColorRelief | Family::Contour) => page.page.texture(DEM_PADDED),
             _ => unreachable!("not an image family"),
         };
         let mut entries = vec![

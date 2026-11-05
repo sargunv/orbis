@@ -41,6 +41,10 @@ sprites once served.
 - `alps-sunlit.json`: a scene document over `alps.json` that lights it by a
   morning sun over Zermatt and an ambient sky (decision 0026), written for
   this repository; `?style=alps-sunlit&flight`.
+- `alps-hiking.json`: a scene document over `alps.json` under a summer
+  morning sun, adding `contour` lines (worked out on the GPU from the
+  same DEM) and dashed trails. Written for this repository;
+  `?style=alps-hiking`.
 - `manhattan.json`: a scene document over OpenFreeMap's Liberty (data as
   above): Midtown lit by an October afternoon sun that casts shadows
   (decision 0046), labels hidden behind buildings, written for this

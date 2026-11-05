@@ -345,7 +345,9 @@ pub(crate) fn parse_layer(
             None
         }
         Some(t) => match t.as_str().and_then(LayerType::from_name) {
-            Some(ty) if ty != LayerType::Model || cx.scene => Some(ty),
+            Some(ty) if !matches!(ty, LayerType::Model | LayerType::Contour) || cx.scene => {
+                Some(ty)
+            }
             _ => {
                 let names: Vec<&str> = LayerType::V8.iter().map(|t| t.name()).collect();
                 cx.error(
@@ -401,7 +403,7 @@ pub(crate) fn parse_layer(
         .collect();
     let (source, source_layer, filter) = match ty {
         LayerType::Background => (None, None, None),
-        LayerType::Raster | LayerType::Hillshade | LayerType::ColorRelief => {
+        LayerType::Raster | LayerType::Hillshade | LayerType::ColorRelief | LayerType::Contour => {
             let dem = ty != LayerType::Raster;
             (image_source(cx, json, &path, &id, sources, dem), None, None)
         }

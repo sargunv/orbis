@@ -12,6 +12,7 @@ import equalEarth from "./data/crs/equal-earth.json?url";
 import blueMarble from "./data/crs/blue-marble.json?url";
 import alps from "./data/alps.json?url";
 import alpsSunlitScene from "./data/alps-sunlit.json";
+import alpsHikingScene from "./data/alps-hiking.json";
 import osmCarto from "./data/osm-carto.json?url";
 import alpsFlight from "./data/alps-flight.json";
 import globe from "./data/globe.json?url";
@@ -31,6 +32,9 @@ import pagoda from "./data/models/pagoda.glb?url";
 // hashed asset names break: point it at the bundled style.
 const alpsSunlit = `data:application/json,${encodeURIComponent(JSON.stringify({
   ...alpsSunlitScene, style: new URL(alps, location.href).href,
+}))}`;
+const alpsHiking = `data:application/json,${encodeURIComponent(JSON.stringify({
+  ...alpsHikingScene, style: new URL(alps, location.href).href,
 }))}`;
 
 // The landmarks scene names its models relatively, which hashed asset
@@ -153,6 +157,9 @@ export const GROUPS = [
         flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
       { key: "alps-sunlit", name: "Alps in morning sun", detail: "The same flight, lit by the sun at a time and place", url: alpsSunlit,
         flight: alpsFlight.legs, swatch: ["#c9cdb8", "#8fa9bd", "#6b7660"] },
+      { key: "alps-hiking", name: "Alps hiking map", detail: "Contour lines worked out on the GPU, trails, lit terrain",
+        url: alpsHiking, camera: { center: [7.70, 45.985], zoom: 13.2, bearing: -60, pitch: 45 },
+        swatch: ["#d9d2c0", "#7a5636", "#c8322a"] },
       { key: "landmarks", name: "Tokyo landmarks", detail: "glTF models among sunlit 3D buildings",
         url: landmarks, calls: LANDMARKS, camera: { center: [139.7471, 35.6566], zoom: 16.2, bearing: -25, pitch: 60 },
         swatch: ["#e9e4dc", "#a0c8f0", "#e8542a"] },

@@ -241,6 +241,7 @@ impl StylePlan {
                 LayerType::Raster => Family::Raster,
                 LayerType::Hillshade => Family::Hillshade,
                 LayerType::ColorRelief => Family::ColorRelief,
+                LayerType::Contour => Family::Contour,
                 LayerType::Symbol => Family::SymbolIcon,
                 LayerType::Model => Family::Model,
             };

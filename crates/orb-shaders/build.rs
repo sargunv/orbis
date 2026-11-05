@@ -30,6 +30,7 @@ mod reflect {
         ("RasterNode", "raster_node"),
         ("HillshadeNode", "hillshade_node"),
         ("ColorReliefNode", "color_relief_node"),
+        ("ContourNode", "contour_node"),
         ("SymbolNode", "symbol_node"),
         ("SymbolSize", "symbol_size"),
         ("Curve", "curve"),

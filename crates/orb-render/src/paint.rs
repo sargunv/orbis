@@ -192,6 +192,22 @@ pub struct ColorReliefPaint {
     pub nearest: bool,
 }
 
+/// A contour layer's paint at the camera's zoom.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContourPaint {
+    /// The source's DEM unpack vector.
+    pub unpack: [f32; 4],
+    /// Premultiplied, at the layer's opacity.
+    pub color: [f32; 4],
+    /// Metres between lines.
+    pub interval: f32,
+    /// Every this many lines is a major one.
+    pub major: f32,
+    /// Logical pixels.
+    pub width: f32,
+    pub major_width: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExtrusionPaint {
     pub color: [f32; 4],
@@ -221,6 +237,7 @@ pub enum NodePaint {
     Raster(RasterPaint),
     Hillshade(HillshadePaint),
     ColorRelief(ColorReliefPaint),
+    Contour(ContourPaint),
     FillPattern(FillPaint, PatternPaint),
     LinePattern(LinePaint, PatternPaint),
     Symbol(SymbolPaint),
@@ -341,6 +358,7 @@ impl NodePaint {
                 | (Self::Raster(_), Family::Raster)
                 | (Self::Hillshade(_), Family::Hillshade)
                 | (Self::ColorRelief(_), Family::ColorRelief)
+                | (Self::Contour(_), Family::Contour)
                 | (Self::Symbol(_), Family::SymbolIcon | Family::SymbolText)
                 | (Self::Model(_), Family::Model)
         )
@@ -500,6 +518,16 @@ impl NodePaint {
                 b.u(n::INDEX, &[node])
                     .u(n::NEAREST, &[u32::from(p.nearest)]);
             }
+            Self::Contour(p) => {
+                use contour_node as n;
+                b = Block::new(n::WORDS);
+                b.f(n::UNPACK, &p.unpack).f(n::COLOR, &p.color);
+                b.f(n::INTERVAL, &[p.interval])
+                    .f(n::MAJOR, &[p.major])
+                    .f(n::WIDTH, &[p.width])
+                    .f(n::MAJOR_WIDTH, &[p.major_width]);
+                b.u(n::INDEX, &[node]);
+            }
             Self::Symbol(p) => {
                 use symbol_node as n;
                 let flags = [
@@ -556,7 +584,7 @@ impl NodePaint {
                 };
                 outset + p.offset.abs() + p.blur + p.translate.length() + 1.0
             }
-            Self::Raster(_) | Self::Hillshade(_) | Self::ColorRelief(_) => 0.0,
+            Self::Raster(_) | Self::Hillshade(_) | Self::ColorRelief(_) | Self::Contour(_) => 0.0,
             Self::Symbol(p) => p.reach_px + p.translate.length(),
             Self::Model(p) => p.reach_px,
         }
@@ -644,6 +672,7 @@ mod tests {
             raster_node::WORDS,
             hillshade_node::WORDS,
             color_relief_node::WORDS,
+            contour_node::WORDS,
             symbol_node::WORDS,
         ] {
             assert!(words * 4 <= crate::NODE_UNIFORM_SIZE as usize);

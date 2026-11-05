@@ -57,9 +57,9 @@ pub use orb_scene::{
     SYMBOL_STATE_WORDS, SymbolMeshData, pack_image_rect, symbol_header,
 };
 pub use paint::{
-    CirclePaint, ColorReliefPaint, Curve, ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod,
-    HillshadePaint, LinePaint, MAX_LIGHTS, ModelPaint, NodePaint, PatternPaint, RasterPaint,
-    StateLookup, SymbolPaint, SymbolSize, Translate,
+    CirclePaint, ColorReliefPaint, ContourPaint, Curve, ExtrusionPaint, FillPaint, HeatmapPaint,
+    HillshadeMethod, HillshadePaint, LinePaint, MAX_LIGHTS, ModelPaint, NodePaint, PatternPaint,
+    RasterPaint, StateLookup, SymbolPaint, SymbolSize, Translate,
 };
 pub use tiles::{
     GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, TileBuild, TileKey, UploadError, WarpKey,
@@ -86,7 +86,9 @@ fn draw_of(family: Family) -> NodeDraw {
         Family::Circle | Family::Heatmap | Family::SymbolIcon | Family::SymbolText => {
             NodeDraw::Points
         }
-        Family::Raster | Family::Hillshade | Family::ColorRelief => NodeDraw::Images,
+        Family::Raster | Family::Hillshade | Family::ColorRelief | Family::Contour => {
+            NodeDraw::Images
+        }
         // Its model's ranges once it is resident.
         Family::Model => NodeDraw::Instances {
             first: 0,
@@ -1531,7 +1533,7 @@ impl Renderer {
                     ));
                 }
             }
-            Family::Raster | Family::Hillshade | Family::ColorRelief => {
+            Family::Raster | Family::Hillshade | Family::ColorRelief | Family::Contour => {
                 self.images.make(gpu, family);
             }
             Family::Heatmap => self.heatmaps.make(gpu),
@@ -2413,7 +2415,11 @@ impl Renderer {
             }
             return true;
         }
-        if matches!(node.family, Family::Hillshade | Family::ColorRelief) && !ready.prepare {
+        if matches!(
+            node.family,
+            Family::Hillshade | Family::ColorRelief | Family::Contour
+        ) && !ready.prepare
+        {
             return false;
         }
         if node.family == Family::Raster && !ready.mips {
