@@ -54,7 +54,7 @@ node, pnpm, a JDK, Gradle, kotlinc, CMake, Go and devices-cli); run
 | `cargo xtask rt [--suite render\|query] [--filter <substring>] [--platform native\|chrome\|lavapipe\|all]` | run the GL JS render fixtures, or with `--suite query` the query fixtures (native and Chrome); fetches the mirror first; report in `docs/scratch/rt` |
 | `cargo xtask bench` | GPU/CPU still-frame timings of five views; `--experiment gestures` for rotate, tilt and zoom frame times with tiles arriving (decision 0023); `alps --experiment gestures` for the terrain demo's rotate, pan and flight |
 | `pnpm -C web bench [--precise] [--android [--physical]] [--experiment=gestures [--workers=N]]` | the same bench in headless Chromium, or in this worktree's Android emulator's Chrome (`web/demo/bench.html`; keep its screen on; `--physical` for an assigned phone, below); `--experiment=gestures` drives the `orbis` package (`--style=alps` for the terrain paths) |
-| `cargo xtask sweep [--dry-run] [--target-dir <path>]` | prune stale build artifacts (keeps the 2 newest builds per crate) when the disk runs low |
+| `cargo xtask sweep [--dry-run] [--target-dir <path>] [--keep-hours <n>]` | prune stale build artifacts (keeps builds compiled in the last 6 hours and the 2 newest per crate) when the disk runs low |
 | `cargo xtask demo-data` / `cargo xtask unicode` | regenerate the committed Tokyo extracts and their labelled styles; orb-text's character tables from the UCD |
 
 ## How we work

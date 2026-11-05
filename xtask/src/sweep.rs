@@ -2,22 +2,27 @@
 //!
 //! Cargo keeps every build of a crate under a fresh metadata hash, so a
 //! `target/<profile>/deps` fills with duplicates: one worktree held 14 copies
-//! of `liborb_runtime-<hash>.rlib` at about 60 MB each. Per `deps` directory
-//! this keeps the two newest builds of each crate and deletes the rest; per
-//! `incremental/` directory, the newest session of each crate. Nothing outside
-//! the target directory is touched.
+//! of `liborb_runtime-<hash>.rlib` at about 60 MB each. One stem has many
+//! builds live at once (lib, test harness, clippy's check metadata, feature
+//! sets), so per `deps` directory this keeps every build compiled within
+//! `--keep-hours` (default 6) and the two newest of each crate, and deletes
+//! the rest; per `incremental/` directory, the newest session of each crate.
+//!
+//! A no-op rebuild touches nothing: neither a build's `.fingerprint` directory
+//! nor its deps files move (measured), so a build's newest deps file dates when
+//! it was last compiled. Nothing outside the target directory is touched.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// The newest builds kept per crate, to rebuild beside an older one.
 const KEEP: usize = 2;
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
-    let (mut dry_run, mut target) = (false, None);
+    let (mut dry_run, mut target, mut hours) = (false, None, 6u64);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -29,9 +34,19 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
                         .into(),
                 );
             }
+            "--keep-hours" => {
+                let value = args.next().ok_or("sweep: --keep-hours takes a number")?;
+                hours = value
+                    .parse()
+                    .map_err(|_| format!("sweep: --keep-hours `{value}` is not a number"))?;
+            }
             other => return Err(format!("sweep: unknown argument `{other}`")),
         }
     }
+    let window = Duration::from_secs(hours.saturating_mul(3600));
+    let cutoff = SystemTime::now()
+        .checked_sub(window)
+        .unwrap_or(SystemTime::UNIX_EPOCH);
     let target = target.unwrap_or_else(|| {
         std::env::var_os("CARGO_TARGET_DIR").map_or_else(
             || Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"),
@@ -45,15 +60,15 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     collect(&target, &mut deps, &mut incremental);
     let mut stale = Vec::new();
     for dir in &deps {
-        stale.extend(sweep(dir, KEEP, deps_key)?);
+        stale.extend(sweep(dir, KEEP, cutoff, deps_key)?);
     }
     for dir in &incremental {
-        stale.extend(sweep(dir, 1, session_key)?);
+        stale.extend(sweep(dir, 1, cutoff, session_key)?);
     }
 
-    let mut freed = 0;
+    let (mut freed, mut counted) = (0, BTreeSet::new());
     for path in &stale {
-        let bytes = size(path);
+        let bytes = size(path, &mut counted);
         if dry_run {
             println!("{}", path.strip_prefix(&target).unwrap_or(path).display());
         } else if let Err(e) = remove(path) {
@@ -93,6 +108,7 @@ fn collect(dir: &Path, deps: &mut Vec<PathBuf>, incremental: &mut Vec<PathBuf>) 
 fn sweep(
     dir: &Path,
     keep: usize,
+    cutoff: SystemTime,
     key: impl Fn(&str) -> Option<(String, String)>,
 ) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
@@ -116,6 +132,7 @@ fn sweep(
             .iter()
             .map(|(stem, build, modified, _)| (stem.as_str(), build.as_str(), *modified)),
         keep,
+        cutoff,
     );
     Ok(files
         .iter()
@@ -144,37 +161,53 @@ fn session_key(name: &str) -> Option<(String, String)> {
     Some((stem.to_owned(), name.to_owned()))
 }
 
-/// The builds to delete: every build of each crate stem but its `keep`
-/// newest, a build dated by its newest file.
+/// The builds to delete: those of each crate stem that were neither compiled
+/// since `cutoff` nor among its `keep` newest, a build dated by its newest file.
 fn doomed<'a>(
     files: impl Iterator<Item = (&'a str, &'a str, SystemTime)>,
     keep: usize,
+    cutoff: SystemTime,
 ) -> BTreeSet<(&'a str, &'a str)> {
     let mut files: Vec<_> = files.collect();
-    files.sort_by_key(|&(_, _, modified)| Reverse(modified));
-    let (mut kept, mut doomed) = (BTreeMap::new(), BTreeSet::new());
-    for (stem, build, _) in files {
-        let kept = kept.entry(stem).or_insert_with(BTreeSet::new);
-        if !kept.contains(build) {
-            if kept.len() == keep {
-                doomed.insert((stem, build));
-            } else {
-                kept.insert(build);
-            }
+    files.sort_by_key(|&(.., modified)| Reverse(modified));
+    let (mut newest, mut seen, mut doomed) = (BTreeMap::new(), BTreeSet::new(), BTreeSet::new());
+    for (stem, build, modified) in files {
+        // Newest first: a build's first sighting is its newest file.
+        if !seen.insert((stem, build)) {
+            continue;
         }
+        let rank = newest.entry(stem).or_insert(0);
+        if *rank >= keep && modified < cutoff {
+            doomed.insert((stem, build));
+        }
+        *rank += 1;
     }
     doomed
 }
 
-/// The bytes under `path`: the file's, or a directory's whole tree.
-fn size(path: &Path) -> u64 {
-    match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_dir() => {
-            fs::read_dir(path).map_or(0, |e| e.flatten().map(|e| size(&e.path())).sum())
-        }
-        Ok(meta) => meta.len(),
-        Err(_) => 0,
+/// The bytes under `path`: the file's, or a directory's whole tree, counting a
+/// file's bytes once across hard links.
+fn size(path: &Path, seen: &mut BTreeSet<(u64, u64)>) -> u64 {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if meta.is_dir() {
+        return fs::read_dir(path).map_or(0, |e| e.flatten().map(|e| size(&e.path(), seen)).sum());
     }
+    let counted = inode(&meta).is_none_or(|id| seen.insert(id));
+    if counted { meta.len() } else { 0 }
+}
+
+/// The device and inode a file's bytes live in, where the platform reports them.
+#[cfg(unix)]
+fn inode(meta: &fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn inode(_: &fs::Metadata) -> Option<(u64, u64)> {
+    None
 }
 
 fn remove(path: &Path) -> std::io::Result<()> {
@@ -190,15 +223,17 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// Names group by crate stem and build; only the newest two survive.
+    /// Names group by crate stem and build; a build survives when it was
+    /// compiled in the window or is one of its crate's newest two.
     #[test]
-    fn keeps_the_newest_two_builds() {
-        let at = |secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
-        let (a, b, c, d) = (
+    fn keeps_recent_and_newest_builds() {
+        let at = |hours: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(hours * 3600);
+        let (a, b, c, d, e) = (
             "0123456789abcdef",
             "fedcba9876543210",
             "00000000000000ff",
             "1111111111111111",
+            "2222222222222222",
         );
         let want = Some(("orb_runtime".to_owned(), a.to_owned()));
         for name in [
@@ -211,22 +246,31 @@ mod tests {
         }
         assert_eq!(deps_key("invoked.timestamp"), None);
 
-        // `a` was built twice: its newest file dates the build.
-        let files = [
-            ("orb_runtime", a, at(1)),
-            ("orb_runtime", a, at(9)),
-            ("orb_runtime", b, at(5)),
-            ("orb_runtime", c, at(7)),
-            ("orb_runtime", d, at(3)),
+        // `e` and `d` are the newest two of orb_runtime; `c` is past them but
+        // within the 4 h window, so only the two older builds go.
+        let mut files = vec![
+            ("orb_runtime", e, at(5)),
+            ("orb_runtime", d, at(4)),
+            ("orb_runtime", c, at(3)),
+            ("orb_runtime", b, at(1)),
+            ("orb_runtime", a, at(0)),
+            // orb_scene is idle: its newest two stay anyway.
+            ("orb_scene", a, at(1)),
+            ("orb_scene", b, at(2)),
             // The same hash of another crate is another build.
-            ("orb_scene", a, at(2)),
-            ("orb_scene", b, at(8)),
+            ("orb_style", a, at(5)),
         ];
         assert_eq!(
-            doomed(files.into_iter(), KEEP),
-            [("orb_runtime", b), ("orb_runtime", d)]
+            doomed(files.clone().into_iter(), KEEP, at(2)),
+            [("orb_runtime", a), ("orb_runtime", b)]
                 .into_iter()
                 .collect()
+        );
+        // `a` was built twice: its newest file dates the build, keeping it.
+        files.push(("orb_runtime", b, at(6)));
+        assert_eq!(
+            doomed(files.into_iter(), KEEP, at(2)),
+            [("orb_runtime", a)].into_iter().collect()
         );
     }
 }

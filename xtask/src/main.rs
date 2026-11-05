@@ -46,8 +46,9 @@ cargo xtask <task>
                the GL JS fixtures
   bench [args]  GPU/CPU frame timings, still or along gesture paths (release);
                web/demo/bench.html runs the same bench in a browser
-  sweep [--dry-run] [--target-dir <path>]  prune stale build artifacts, keeping
-               the 2 newest builds per crate, when the disk runs low
+  sweep [--dry-run] [--target-dir <path>] [--keep-hours <n>]  prune stale build
+               artifacts: keep every build compiled in the last <n> hours
+               (default 6) and the 2 newest builds of each crate
   fixtures [expressions]  fetch and verify the pinned GL JS fixture mirror
                (fixtures/gl-js, not committed); with `expressions`, bundle the
                pinned style-spec expression fixtures into orb-expr
