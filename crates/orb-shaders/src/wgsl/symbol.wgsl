@@ -246,11 +246,11 @@ fn symbol_metres(tile: Tile, p: vec2<f32>) -> f32 {
 // Map-pitched glyphs keep their size on a globe, whose tile units shrink
 // toward the poles: GL JS's pitched text correction, the cosine of the
 // target's latitude over the anchor's, mixed in as the globe hands over.
-fn pitched_correction(tile: Tile, p: vec2<f32>) -> f32 {
+fn pitched_correction(anchor: Ground) -> f32 {
     if frame.globe_amount <= 0.0 || frame.globe_plane != 0u {
         return 1.0;
     }
-    let up = normalize(tile_ground(tile, p).globe + frame.globe_target);
+    let up = normalize(anchor.globe + frame.globe_target);
     let centre = normalize(frame.globe_target);
     let ratio = sqrt(max(1.0 - centre.z * centre.z, 1e-6)) / sqrt(max(1.0 - up.z * up.z, 1e-6));
     return mix(1.0, ratio, frame.globe_amount);
@@ -258,13 +258,12 @@ fn pitched_correction(tile: Tile, p: vec2<f32>) -> f32 {
 
 // On a globe, whether the sphere stands between the eye and the symbol's
 // anchor at its height, as GL JS hides symbols behind the planet.
-fn globe_hides_anchor(tile: Tile, p: vec2<f32>) -> bool {
+fn globe_hides_anchor(anchor: Ground, metres: f32) -> bool {
     if frame.globe_amount <= 0.0 || frame.globe_plane != 0u {
         return false;
     }
-    let g = tile_ground(tile, p);
-    let up = normalize(g.globe + frame.globe_target);
-    return sphere_hides(g.globe + up * (symbol_metres(tile, p) * frame.extrusion_scale * frame.globe_metres));
+    let up = normalize(anchor.globe + frame.globe_target);
+    return sphere_hides(anchor.globe + up * (metres * frame.extrusion_scale * frame.globe_metres));
 }
 
 fn clip_to_px(c: vec4<f32>) -> vec2<f32> {
@@ -353,15 +352,26 @@ fn line_vertex(base: u32, placed: Placed, i: u32) -> vec2<f32> {
 
 // A line vertex in the label plane; one behind the camera becomes a point
 // far enough along the line (GL JS `projectLineVertexToLabelPlane`).
+// One projection call site, in a loop (Adreno compilers inline every
+// call): the vertex, then, behind the camera, a point a unit back along the
+// line.
 fn project_line_vertex(tile: Tile, base: u32, placed: Placed, i: u32, previous_tile: vec2<f32>, previous: vec2<f32>, needed: f32) -> vec2<f32> {
     let v = line_vertex(base, placed, i);
-    let q = to_label_plane(tile, v);
-    if q.w > 0.0 {
+    var point = v;
+    var behind = false;
+    var q: PlanePoint;
+    loop {
+        q = to_label_plane(tile, point);
+        if q.w > 0.0 || behind {
+            break;
+        }
+        behind = true;
+        point = previous_tile + normalize(previous_tile - v);
+    }
+    if !behind {
         return q.p;
     }
-    let unit_vertex = previous_tile + normalize(previous_tile - v);
-    let projected = to_label_plane(tile, unit_vertex).p;
-    let segment = previous - projected;
+    let segment = previous - q.p;
     return previous + segment * (needed / length(segment));
 }
 
@@ -457,18 +467,27 @@ fn place_glyph(tile: Tile, base: u32, placed: Placed, anchor: vec2<f32>, offset_
         distance += segment_distance;
         previous = current;
         let needed = abs_offset - distance + 1.0;
-        current = project_line_vertex(tile, base, placed, u32(index), previous_tile, previous, needed);
+        // This vertex and, for an offset line, the one after it, through
+        // one call site (Adreno compilers inline every call).
+        let n = clamp(index + i32(direction), 0, i32(placed.line_count) - 1);
+        var next = vec2<f32>(0.0);
+        let vertices = select(1u, 2u, line_offset.y != 0.0);
+        for (var k = 0u; k < vertices; k++) {
+            // The next vertex's previous is this one, or GL JS's synthetic
+            // vertex before the first step: the anchor.
+            let from_tile = select(previous_tile, select(line_vertex(base, placed, u32(index)), placed.anchor, first), k == 1u);
+            let projected = project_line_vertex(tile, base, placed, u32(select(index, n, k == 1u)), from_tile, previous, needed);
+            if k == 0u {
+                current = projected;
+            } else {
+                next = projected;
+            }
+        }
         previous_tile = line_vertex(base, placed, u32(index));
         if line_offset.y == 0.0 {
             start = previous;
             segment = current - previous;
         } else {
-            // As GL JS's synthetic vertex: the anchor before the first step.
-            let next_previous_tile = select(previous_tile, placed.anchor, first);
-            // The vertex after this one, projected once for both uses
-            // below (Adreno compilers inline every call).
-            let n = clamp(index + i32(direction), 0, i32(placed.line_count) - 1);
-            let next = project_line_vertex(tile, base, placed, u32(n), next_previous_tile, previous, needed);
             var normal: vec2<f32>;
             if all(current == previous) {
                 // The anchor sits on the vertex: look one vertex ahead.
@@ -489,6 +508,21 @@ fn place_glyph(tile: Tile, base: u32, placed: Placed, anchor: vec2<f32>, offset_
     out.angle = select(0.0, angle + atan2(current.y - previous.y, current.x - previous.x), rotate_to_line);
     out.ok = true;
     return out;
+}
+
+// Label-plane points `a` and `b` in clip space (`xy`, `zw`), through one
+// call site (Adreno compilers inline every call).
+fn clip_pair(tile: Tile, a: vec2<f32>, b: vec2<f32>) -> vec4<f32> {
+    var clip = vec4<f32>(0.0);
+    for (var k = 0u; k < 2u; k++) {
+        let c = label_plane_to_clip(tile, select(a, b, k == 1u));
+        if k == 0u {
+            clip = vec4<f32>(c, clip.zw);
+        } else {
+            clip = vec4<f32>(clip.xy, c);
+        }
+    }
+    return clip;
 }
 
 fn glyph_offset(base: u32, quad: u32) -> f32 {
@@ -514,11 +548,23 @@ fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32)
     let last_offset = glyph_offset(base, placed.quad_start + max(placed.quad_count, 1u) - 1u) * font_scale;
     var flip = false;
     if !several && keep_upright {
+        // The segment's end, or behind the camera, the anchor's mirror of
+        // a point a unit back: one projection call site.
         let segment_end = line_vertex(base, placed, placed.segment + 1u);
-        let b = to_label_plane(tile, segment_end);
-        let ca = label_plane_to_clip(tile, anchor);
-        let cb = label_plane_to_clip(tile, select(anchor + (anchor - to_label_plane(tile, placed.anchor + normalize(placed.anchor - segment_end)).p), b.p, b.w > 0.0));
-        flip = select(ca.x > cb.x, ca.y < cb.y, placed.writing_mode == 2u);
+        var point = segment_end;
+        var behind = false;
+        var q: PlanePoint;
+        loop {
+            q = to_label_plane(tile, point);
+            if q.w > 0.0 || behind {
+                break;
+            }
+            behind = true;
+            point = placed.anchor + normalize(placed.anchor - segment_end);
+        }
+        let end = select(q.p, anchor + (anchor - q.p), behind);
+        let c = clip_pair(tile, anchor, end);
+        flip = select(c.x > c.z, c.y < c.w, placed.writing_mode == 2u);
     }
     // 0, 1: the first and last glyph; 2, 3: both flipped; 4: this glyph.
     var step = select(4u, 0u, several);
@@ -543,8 +589,9 @@ fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32)
         if step == 1u {
             step = 4u;
             if keep_upright {
-                let a = label_plane_to_clip(tile, first);
-                let b = label_plane_to_clip(tile, glyph.p);
+                let c = clip_pair(tile, first, glyph.p);
+                let a = c.xy;
+                let b = c.zw;
                 // A horizontal label with a vertical alternative steeper
                 // than flat gives way to it; the vertical one shows only
                 // then.
@@ -634,11 +681,24 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     }
     let translation = t * tile_units_per_px(tile);
     let anchor = placed.anchor + translation;
-    let projected_point = tile_clip(tile, anchor);
+    // The anchor on the ground, once for its projection, the globe's
+    // horizon and pitched text's correction (Adreno compilers inline
+    // every call).
+    let anchor_ground = tile_ground(tile, anchor);
+    let anchor_metres = symbol_metres(tile, anchor);
+    let projected_point = ground_clip(anchor_ground, vec2<f32>(0.0), anchor_metres * frame.extrusion_scale);
     // Terrain in front of the anchor hides it (GL JS `calculate_visibility`).
     let visible_opacity = total_opacity * terrain_visibility(projected_point);
     if visible_opacity < 0.1 { return out; }
-    if globe_hides_anchor(tile, anchor) { return out; }
+    if globe_hides_anchor(anchor_ground, anchor_metres) { return out; }
+    // The anchor's east neighbour, which map-rotated shifted labels and
+    // in-shader rotation read: projected at one call site.
+    let rotate_shifted = (node.flags & ALONG_LINE) == 0u && (state & S_SHIFTED) != 0u && !pitch
+        && (node.flags & ROTATE_WITH_MAP) != 0u;
+    var east_clip = projected_point;
+    if rotate_shifted || (node.flags & ROTATE_IN_SHADER) != 0u {
+        east_clip = tile_clip(tile, anchor + vec2<f32>(1.0, 0.0));
+    }
     let ctcd = camera_to_center();
     let distance_ratio = select(ctcd / projected_point.w, projected_point.w / ctcd, pitch);
     let perspective_ratio = clamp(0.5 + 0.5 * distance_ratio, 0.0, 4.0);
@@ -684,9 +744,10 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
             }
             plane_pos = to_pitched_plane(tile, anchor + adjusted);
         } else {
-            let projected = to_label_plane(tile, anchor).p;
+            // Not pitched: the label plane is the screen.
+            let projected = clip_to_px(projected_point);
             if (node.flags & ROTATE_WITH_MAP) != 0u {
-                let east = to_label_plane(tile, anchor + vec2<f32>(1.0, 0.0)).p - projected;
+                let east = clip_to_px(east_clip) - projected;
                 let a = atan(east.y / east.x) + select(0.0, PI, east.x < 0.0);
                 let s = sin(a);
                 let c = cos(a);
@@ -707,9 +768,8 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
 
     var symbol_rotation = 0.0;
     if (node.flags & ROTATE_IN_SHADER) != 0u {
-        let b4 = tile_clip(tile, anchor + vec2<f32>(1.0, 0.0));
         let a = projected_point.xy / projected_point.w;
-        let b = b4.xy / b4.w;
+        let b = east_clip.xy / east_clip.w;
         symbol_rotation = atan2((b.y - a.y) / (frame.viewport.x / frame.viewport.y), b.x - a.x);
     }
     let angle_sin = sin(segment_angle + symbol_rotation);
@@ -745,7 +805,7 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let glyph_offset_px = rotation * (offset / 32.0 * max(min_font_scale, vec2<f32>(font_scale)) + pixel_offset);
     var final_pos: vec4<f32>;
     if pitch {
-        let p = plane_pos + glyph_offset_px * pitched_correction(tile, anchor);
+        let p = plane_pos + glyph_offset_px * pitched_correction(anchor_ground);
         final_pos = tile_clip(tile, from_pitched_plane(tile, p));
     } else {
         final_pos = vec4<f32>(px_to_clip(plane_pos + glyph_offset_px), 0.0, 1.0);
