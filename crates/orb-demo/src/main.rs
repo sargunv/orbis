@@ -257,15 +257,19 @@ impl Offscreen {
         let mut this = Self::new(options, capacity)?;
         let started = Instant::now();
         let mut frames = 0;
+        // Two idle frames in a row: the second draws what the first's
+        // messages installed.
+        let mut was_idle = false;
         loop {
             let report = this.frame();
             frames += 1;
             for warning in this.map.take_warnings() {
                 eprintln!("orb-demo: {warning}");
             }
-            if report.idle {
+            if report.idle && was_idle {
                 return Ok((this, report, frames));
             }
+            was_idle = report.idle;
             if started.elapsed().as_secs() > 60 {
                 return Err("timed out waiting for tiles".into());
             }
@@ -356,18 +360,7 @@ fn snapshot(options: &Options, path: &str) -> Result<Vec<u8>, String> {
         );
     }
     let pixels = offscreen.pixels();
-    let file = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
-    let mut encoder = png::Encoder::new(
-        std::io::BufWriter::new(file),
-        Offscreen::WIDTH,
-        Offscreen::HEIGHT,
-    );
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder
-        .write_header()
-        .and_then(|mut w| w.write_image_data(&pixels))
-        .map_err(|e| format!("{path}: {e}"))?;
+    write_png(path, &pixels)?;
     eprintln!(
         "orb-demo: wrote {path} after {frames} frames, {:.0} ms, {} pipelines; {:?}",
         started.elapsed().as_secs_f64() * 1000.0,
@@ -892,6 +885,22 @@ impl ApplicationHandler<Wake> for App {
 #[cfg(test)]
 mod edits;
 
+/// Writes an offscreen frame's RGBA pixels as a PNG.
+fn write_png(path: &str, pixels: &[u8]) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut encoder = png::Encoder::new(
+        std::io::BufWriter::new(file),
+        Offscreen::WIDTH,
+        Offscreen::HEIGHT,
+    );
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .and_then(|mut w| w.write_image_data(pixels))
+        .map_err(|e| format!("{path}: {e}"))
+}
+
 /// Pixels that differ by more than one level in a channel. Glyphs sit where
 /// the shared atlas packed them, which depends on the order they arrived,
 /// and filtering at another texel origin can round one level apart.
@@ -1100,14 +1109,19 @@ mod tests {
         map.constrain_camera(viewport);
     }
 
+    /// Renders until two frames in a row are idle: the second draws what
+    /// the first's messages installed, as the fixture runner's last frame
+    /// does.
     fn settle(offscreen: &mut super::Offscreen) -> orb_runtime::FrameReport {
         let started = std::time::Instant::now();
+        let mut was_idle = false;
         loop {
             let report = offscreen.frame();
-            if report.idle {
+            if report.idle && was_idle {
                 assert!(offscreen.map.take_warnings().is_empty());
                 return report;
             }
+            was_idle = report.idle;
             assert!(started.elapsed().as_secs() < 60, "tiles did not settle");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -1153,6 +1167,21 @@ mod tests {
         let differing = super::differing_pixels(&pixels, &reference);
         let moved = offscreen.frame();
         eprintln!("zoom-out: {differing} differing pixels; moved {moved:?}; fresh {report:?}");
+        if differing > 0 {
+            // Keep both frames for the hunt (#63).
+            let dir = std::env::temp_dir().join(format!(
+                "orb-demo-zoom-out-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos())
+            ));
+            std::fs::create_dir(&dir).unwrap();
+            for (name, image) in [("moved.png", &pixels), ("fresh.png", &reference)] {
+                super::write_png(dir.join(name).to_str().unwrap(), image).unwrap();
+            }
+            eprintln!("zoom-out: frames in {}", dir.display());
+        }
         assert_eq!(
             differing, 0,
             "nominal z12: moved {moved:?}, fresh {report:?}"
