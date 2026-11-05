@@ -2505,6 +2505,7 @@ dependencies = [
  "orb-jobs",
  "orb-layout",
  "orb-render",
+ "orb-shaders",
  "orb-source",
  "orb-style",
  "orb-symbol",

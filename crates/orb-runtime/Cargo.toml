@@ -25,6 +25,7 @@ orb-host = { workspace = true, features = ["decode"] }
 orb-jobs.workspace = true
 orb-layout.workspace = true
 orb-render.workspace = true
+orb-shaders.workspace = true
 orb-source.workspace = true
 orb-style.workspace = true
 orb-a11y.workspace = true

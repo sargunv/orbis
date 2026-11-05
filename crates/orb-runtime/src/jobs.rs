@@ -1777,7 +1777,7 @@ pub(crate) mod tests {
         let nodes: Vec<u32> = build.meshes.iter().map(|m| m.node).collect();
         assert_eq!(nodes, [crate::style::node_key(1, 1)]);
         assert_eq!(
-            build.meshes[0].props.len() % orb_render::SYMBOL_ROW_WORDS,
+            build.meshes[0].props.len() % orb_shaders::layout::SYMBOL_ROW_WORDS,
             0
         );
         assert_eq!(symbols.instance_rows.len(), 2 * b.instances.len());

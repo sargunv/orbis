@@ -46,13 +46,13 @@ fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
     }
     return extrusion_vertex(v);
 }
-// A whole building belongs to the one placement holding its centroid (row
-// word 9; half open, as points are owned), which draws all of it, past its
-// clip rectangles: its walls and their pattern run on unbroken. A building
-// cut at the source's buffer (row word 10 is 0) draws from every placement.
+// A whole building belongs to the one placement holding its centroid (half
+// open, as points are owned), which draws all of it, past its clip
+// rectangles: its walls and their pattern run on unbroken. A building cut
+// at the source's buffer draws from every placement.
 fn extrusion_drawn(v: Pulled) -> bool {
     let row = prop_row(v, vertex_at(v.vertex + 1u), v.row_words);
-    return prop_at(row + 10u) == 0u || inside_clips(tile_at(v.tile), unpack_i16x2(prop_at(row + 9u)));
+    return prop_at(row + EXTRUSION_ROW_WHOLE) == 0u || inside_clips(tile_at(v.tile), unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID)));
 }
 fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     var out: ExtrusionOut;
@@ -71,12 +71,12 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     if from_state(state, node.state, 1u) { height = state_number(state, node.state, 1u, node.curves[1]); }
     if from_state(state, node.state, 2u) { base = state_number(state, node.state, 2u, node.curves[2]); }
     // On terrain, raise the roof by the ground under the feature's
-    // centroid (row word 9) and give ground-level parts a 10 m basement,
+    // centroid and give ground-level parts a 10 m basement,
     // so buildings don't hang over slopes (GL JS's `a_centroid`).
     let gradient_base = max(0.0, base);
     let gradient_height = max(0.0, height);
-    let centroid = unpack_i16x2(prop_at(row + 9u));
-    out.cut = 1u - prop_at(row + 10u);
+    let centroid = unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID));
+    out.cut = 1u - prop_at(row + EXTRUSION_ROW_WHOLE);
     let raise = ground_elevation(tile, centroid);
     let basement = select(0.0, 10.0, base <= 0.0 && frame.dem_dim > 0.0);
     height = gradient_height + raise;
@@ -102,7 +102,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
         gradient = light_wall_gradient(top + gradient_base, gradient_height);
     }
     if node.pattern.enabled != 0u {
-        out.images = pattern_ids(row, 6u, node.image_from, node.image_to, node.table_mask, node.pattern);
+        out.images = pattern_ids(row, EXTRUSION_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
         var pattern_pos = pos;
         if normal.z == 0.0 {
             let distance = f32(vertex_at(v.vertex+3u) >> 16u);

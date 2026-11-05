@@ -25,7 +25,7 @@ fn vs_heatmap(@builtin(vertex_index) index: u32, @builtin(instance_index) instan
     let tile = tile_at(v.tile);
     let p = unpack_i16x2(vertex_at(v.vertex));
     if !point_owned(tile, p) { return out; }
-    let row = prop_row(v, vertex_at(v.vertex + 1u), 4u);
+    let row = prop_row(v, vertex_at(v.vertex + 1u), HEATMAP_ROW_WORDS);
     var radius = node.radius;
     var weight = node.weight;
     if (node.table_mask & 1u) != 0u { radius = table_number(row, 0u, node.curves[0], tile.zoom); }

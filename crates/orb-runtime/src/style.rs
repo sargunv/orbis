@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use orb_expr::{Interpolation, Kind};
 use orb_render::{Curve, Family};
+use orb_shaders::layout;
 use orb_style::{Color, LayerType, PropertyRef, Scene, SourceKind, Value};
 
 /// Node keys a layer has: a model layer's node per model its `model-id`
@@ -401,13 +402,13 @@ impl StylePlan {
     /// Words per feature of the node's property rows.
     pub(crate) fn row_words(&self, node: &NodePlan) -> usize {
         match node.family {
-            Family::Fill | Family::FillOutline => orb_render::FILL_ROW_WORDS,
-            Family::Line => orb_render::LINE_ROW_WORDS,
-            Family::FillExtrusion => orb_render::EXTRUSION_ROW_WORDS,
-            Family::Circle => orb_render::CIRCLE_ROW_WORDS,
-            Family::Heatmap => orb_render::HEATMAP_ROW_WORDS,
-            Family::SymbolIcon | Family::SymbolText => orb_render::SYMBOL_ROW_WORDS,
-            Family::Model => orb_render::MODEL_ROW_WORDS,
+            Family::Fill | Family::FillOutline => layout::FILL_ROW_WORDS,
+            Family::Line => layout::LINE_ROW_WORDS,
+            Family::FillExtrusion => layout::EXTRUSION_ROW_WORDS,
+            Family::Circle => layout::CIRCLE_ROW_WORDS,
+            Family::Heatmap => layout::HEATMAP_ROW_WORDS,
+            Family::SymbolIcon | Family::SymbolText => layout::SYMBOL_ROW_WORDS,
+            Family::Model => layout::MODEL_ROW_WORDS,
             image => unreachable!("{image:?} nodes have no property rows"),
         }
     }

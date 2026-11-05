@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use orb_layout::{Mesh, extrusion, fill, line, point};
 use orb_render::{Family, pack_color};
+use orb_shaders::layout;
 use orb_style::{Kind, LayerType, SourceKind};
 use orb_tile::{Layer, LayerBuilder, TileFrame, ValueRef};
 
@@ -553,76 +554,58 @@ pub(crate) fn build(
                         continue;
                     }
                     let composite = property.kind() == Kind::Composite;
-                    let next = zoom + 1.0;
-                    let mut write = |i: usize, words: [u32; 2]| {
-                        let at = i * row_words + slot * 2;
-                        rows[at..at + 2].copy_from_slice(&words);
-                    };
-                    match property {
+                    // Per feature at a zoom: its row word, and its
+                    // magnitude for culling margins (none for colours).
+                    let value: Box<dyn Fn(f64, usize) -> (u32, f32)> = match property {
                         PaintProperty::Color(p) => {
-                            let bound = p.bind(layer);
-                            for (i, &feature) in features.iter().enumerate() {
-                                let start = bound.evaluate(zoom, feature as usize).premultiplied();
-                                let end = if composite {
-                                    bound.evaluate(next, feature as usize).premultiplied()
-                                } else {
-                                    start
-                                };
-                                write(i, [pack_color(start), pack_color(end)]);
-                            }
+                            let b = p.bind(layer);
+                            Box::new(move |z, f| {
+                                (pack_color(b.evaluate(z, f).premultiplied()), 0.0)
+                            })
                         }
                         PaintProperty::OptionalColor(p) => {
-                            let bound = p.bind(layer);
-                            let color = |zoom, feature: u32| {
-                                bound
-                                    .evaluate(zoom, feature as usize)
-                                    .map_or([0.0; 4], |c| c.premultiplied())
-                            };
-                            for (i, &feature) in features.iter().enumerate() {
-                                let start = color(zoom, feature);
-                                let end = if composite {
-                                    color(next, feature)
-                                } else {
-                                    start
-                                };
-                                write(i, [pack_color(start), pack_color(end)]);
-                            }
+                            let b = p.bind(layer);
+                            Box::new(move |z, f| {
+                                let c = b.evaluate(z, f).map_or([0.0; 4], |c| c.premultiplied());
+                                (pack_color(c), 0.0)
+                            })
                         }
                         PaintProperty::Number(p) => {
-                            let bound = p.bind(layer);
-                            for (i, &feature) in features.iter().enumerate() {
-                                let start = bound.evaluate(zoom, feature as usize);
-                                let end = if composite {
-                                    bound.evaluate(next, feature as usize)
-                                } else {
-                                    start
-                                };
-                                maxima[slot] = maxima[slot].max(start).max(end);
-                                write(i, [start.to_bits(), end.to_bits()]);
-                            }
+                            let b = p.bind(layer);
+                            Box::new(move |z, f| {
+                                let v = b.evaluate(z, f);
+                                (v.to_bits(), v)
+                            })
                         }
+                        // Reaches count either way.
                         PaintProperty::Component(p, c) => {
-                            let bound = p.bind(layer);
-                            for (i, &feature) in features.iter().enumerate() {
-                                let start = bound.evaluate(zoom, feature as usize)[*c];
-                                let end = if composite {
-                                    bound.evaluate(next, feature as usize)[*c]
-                                } else {
-                                    start
-                                };
-                                // Reaches count either way.
-                                maxima[slot] = maxima[slot].max(start.abs()).max(end.abs());
-                                write(i, [start.to_bits(), end.to_bits()]);
-                            }
+                            let (b, c) = (p.bind(layer), *c);
+                            Box::new(move |z, f| {
+                                let v = b.evaluate(z, f)[c];
+                                (v.to_bits(), v.abs())
+                            })
                         }
+                    };
+                    for (i, &feature) in features.iter().enumerate() {
+                        let f = feature as usize;
+                        let (start, a) = value(zoom, f);
+                        let (end, b) = if composite {
+                            value(zoom + 1.0, f)
+                        } else {
+                            (start, a)
+                        };
+                        maxima[slot] = maxima[slot].max(a).max(b);
+                        rows[i * row_words + slot * 2..][..2].copy_from_slice(&[start, end]);
                     }
                 }
                 if node.family == Family::FillExtrusion {
                     let whole = orb_layout::extrusion::Whole::of(layer, bend.is_some());
                     for (i, &feature) in features.iter().enumerate() {
                         let [x, y] = orb_layout::extrusion::centroid(layer, feature, 8192);
-                        rows[i * row_words + 9] = u32::from(x as u16) | u32::from(y as u16) << 16;
-                        rows[i * row_words + 10] = u32::from(whole.is_whole(layer, feature));
+                        rows[i * row_words + layout::EXTRUSION_ROW_CENTROID] =
+                            u32::from(x as u16) | u32::from(y as u16) << 16;
+                        rows[i * row_words + layout::EXTRUSION_ROW_WHOLE] =
+                            u32::from(whole.is_whole(layer, feature));
                     }
                 }
                 rows
@@ -640,10 +623,9 @@ pub(crate) fn build(
                             images.push(ImageRef {
                                 word: (slot * row_words
                                     + match node.family {
-                                        Family::Line => 12,
-                                        // The feature's centroid follows.
-                                        Family::FillExtrusion => 6,
-                                        _ => row_words - 3,
+                                        Family::Line => layout::LINE_ROW_PATTERN,
+                                        Family::FillExtrusion => layout::EXTRUSION_ROW_PATTERN,
+                                        _ => layout::FILL_ROW_PATTERN,
                                     }
                                     + j) as u32,
                                 key: orb_render::ImageKey::Name(name),
@@ -833,7 +815,7 @@ pub(crate) fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orb_render::LINE_ROW_WORDS;
+    use orb_shaders::layout::LINE_ROW_WORDS;
     use orb_tile::{GeometryType, LayerBuilder, Value};
 
     fn no_symbols() -> Symbols<'static> {

@@ -7,8 +7,8 @@
 // the last word retains full precision within the clip for gradient ramps.
 // Both vectors are scaled by 63 with JavaScript rounding. Offset normals are
 // bounded join miters, easing toward segment normals near hairpins.
-// Property row, two words per property (see `table_number`): color, opacity,
-// width, gap width, offset, blur.
+// Property row (`LINE_ROW_*`): color, opacity, width, gap width, offset,
+// blur.
 
 struct LineNode {
     color: vec4<f32>,
@@ -159,17 +159,17 @@ fn line_vertex(v: Pulled) -> LineOut {
     if (node.table_mask & 4u) != 0u {
         out.floorwidth = bitcast<f32>(prop_at(row + 4u + select(0u, 1u, floor(frame.zoom) > tile.zoom)));
     }
-    out.images = pattern_ids(row, 12u, node.image_from, node.image_to, node.table_mask, node.pattern);
+    out.images = pattern_ids(row, LINE_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
     out.progress = bitcast<f32>(vertex_at(v.vertex + 4u));
-    if node.gradient != 0u { out.ramp = prop_at(row + 19u); }
+    if node.gradient != 0u { out.ramp = prop_at(row + LINE_ROW_GRADIENT); }
     if node.dashed != 0u {
         out.images = vec2<u32>(node.dash_from, node.dash_to);
         if (node.table_mask & 128u) != 0u {
-            out.images = vec2<u32>(prop_at(row + 15u + select(2u, 0u, node.dash_from_scale > 1.0)), prop_at(row + 16u));
+            out.images = vec2<u32>(prop_at(row + LINE_ROW_DASH + select(2u, 0u, node.dash_from_scale > 1.0)), prop_at(row + LINE_ROW_DASH + 1u));
         }
         out.floorwidth = node.dash_floor_width;
         if (node.table_mask & 4u) != 0u {
-            out.floorwidth = bitcast<f32>(prop_at(row + 18u));
+            out.floorwidth = bitcast<f32>(prop_at(row + LINE_ROW_FLOOR_WIDTH));
         }
     }
     out.normal = normal;

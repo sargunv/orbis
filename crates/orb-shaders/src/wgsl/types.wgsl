@@ -1,6 +1,28 @@
 // Scene tables shared by every pipeline. Layouts must match orb-scene's
 // `#[repr(C)]` rows.
 
+// Property rows, one per feature (`prop_row`): two words per paint
+// property in the plan's order (`table_number`), then each family's
+// extra words. Rust reads these through orb-shaders' `layout`. Pattern and
+// dash ids are three, for layout zoom -1, 0 and +1.
+const FILL_ROW_PATTERN: u32 = 4u;
+const FILL_ROW_WORDS: u32 = 7u;
+const LINE_ROW_PATTERN: u32 = 12u;
+const LINE_ROW_DASH: u32 = 15u;
+const LINE_ROW_FLOOR_WIDTH: u32 = 18u;
+const LINE_ROW_GRADIENT: u32 = 19u;
+const LINE_ROW_WORDS: u32 = 20u;
+const EXTRUSION_ROW_PATTERN: u32 = 6u;
+// The feature's centroid (two i16s), and 1 when the building is whole in
+// the tile's data.
+const EXTRUSION_ROW_CENTROID: u32 = 9u;
+const EXTRUSION_ROW_WHOLE: u32 = 10u;
+const EXTRUSION_ROW_WORDS: u32 = 11u;
+const CIRCLE_ROW_WORDS: u32 = 14u;
+const HEATMAP_ROW_WORDS: u32 = 4u;
+const SYMBOL_ROW_WORDS: u32 = 10u;
+const MODEL_ROW_WORDS: u32 = 24u;
+
 struct Frame {
     // Camera-relative world → clip.
     view_proj: mat4x4<f32>,

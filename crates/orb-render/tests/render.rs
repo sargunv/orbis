@@ -793,7 +793,7 @@ fn circle_sort_keys_merge_across_tiles() {
             .place(tile, EXTENT, &[full_view_tile(0.0)])
             .unwrap();
         let mesh = orb_layout::point::layout_sorted(&point_at([2048, 2048]), &[0], |_| Some(key));
-        let mut props = [0; orb_render::CIRCLE_ROW_WORDS];
+        let mut props = [0; orb_shaders::layout::CIRCLE_ROW_WORDS];
         props[0] = orb_render::pack_color(color);
         props[1] = props[0];
         h.renderer
@@ -801,7 +801,7 @@ fn circle_sort_keys_merge_across_tiles() {
                 &mut h.gpu,
                 tile,
                 (0, EXTENT),
-                &MeshData::new(&mesh, &props, orb_render::CIRCLE_ROW_WORDS as u32),
+                &MeshData::new(&mesh, &props, orb_shaders::layout::CIRCLE_ROW_WORDS as u32),
                 &Default::default(),
             )
             .unwrap();
@@ -1112,14 +1112,14 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
     h.renderer
         .place(tile, EXTENT, &[full_view_tile(0.0)])
         .unwrap();
-    let mut props = [0; orb_render::LINE_ROW_WORDS];
+    let mut props = [0; orb_shaders::layout::LINE_ROW_WORDS];
     props[19] = ramp;
     h.renderer
         .add_mesh(
             &mut h.gpu,
             tile,
             (0, EXTENT),
-            &MeshData::new(&mesh, &props, orb_render::LINE_ROW_WORDS as u32),
+            &MeshData::new(&mesh, &props, orb_shaders::layout::LINE_ROW_WORDS as u32),
             &Default::default(),
         )
         .unwrap();

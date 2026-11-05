@@ -1,7 +1,7 @@
 // Fill family: triangles (`vs_fill`) and antialiasing outlines as line
 // lists (`vs_fill_outline`, after GL JS's `fill_outline`). Vertex:
 // [x | y << 16, feature slot].
-// Property row, two words per property (see `table_number`): color, opacity.
+// Property row (`FILL_ROW_*`): color, opacity.
 
 struct FillNode {
     color: vec4<f32>,
@@ -97,7 +97,7 @@ fn fill_vertex(v: Pulled) -> FillOut {
     out.color = color * opacity;
     out.opacity = opacity;
     out.pattern_pos = pos;
-    out.images = pattern_ids(row, 4u, node.image_from, node.image_to, node.table_mask, node.pattern);
+    out.images = pattern_ids(row, FILL_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
     // Translated geometry is clipped where it lands, as GL JS's stencil
     // does on a plane; on a globe, where GL JS clips no tile, where it was,
     // so a fill crossing tiles moves whole.

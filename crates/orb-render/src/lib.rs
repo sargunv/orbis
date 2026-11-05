@@ -52,10 +52,9 @@ pub use orb_scene::{
     SYMBOL_STATE_WORDS, SymbolMeshData, pack_image_rect, symbol_header,
 };
 pub use paint::{
-    CIRCLE_ROW_WORDS, CirclePaint, ColorReliefPaint, Curve, EXTRUSION_ROW_WORDS, ExtrusionPaint,
-    FILL_ROW_WORDS, FillPaint, HEATMAP_ROW_WORDS, HeatmapPaint, HillshadeMethod, HillshadePaint,
-    LINE_ROW_WORDS, LinePaint, MAX_LIGHTS, MODEL_ROW_WORDS, ModelPaint, NodePaint, PatternPaint,
-    RasterPaint, SYMBOL_ROW_WORDS, StateLookup, SymbolPaint, SymbolSize, Translate, pack_color,
+    CirclePaint, ColorReliefPaint, Curve, ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod,
+    HillshadePaint, LinePaint, MAX_LIGHTS, ModelPaint, NodePaint, PatternPaint, RasterPaint,
+    StateLookup, SymbolPaint, SymbolSize, Translate, pack_color,
 };
 pub use tiles::{
     GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, TileBuild, TileKey, UploadError, WarpKey,

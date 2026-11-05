@@ -3,6 +3,7 @@
 
 use orb_hal::Gpu;
 use orb_render::{ImageAtlas, ImageKey, NodePaint, PatternPaint, pack_color};
+use orb_shaders::layout;
 use orb_style::{
     Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH, LayerType, LineCap,
 };
@@ -79,12 +80,13 @@ pub(crate) fn textures(
     };
     for (slot, &feature) in features.iter().enumerate() {
         let base = slot * stride;
-        props[base + 18] = width.evaluate(zoom, feature as usize).to_bits();
+        props[base + layout::LINE_ROW_FLOOR_WIDTH] =
+            width.evaluate(zoom, feature as usize).to_bits();
         if dashed {
             for (i, z) in [zoom - 1.0, zoom, zoom + 1.0].into_iter().enumerate() {
                 if let Some(array) = dash.evaluate(z, feature as usize) {
                     images.push(ImageRef {
-                        word: (base + 15 + i) as u32,
+                        word: (base + layout::LINE_ROW_DASH + i) as u32,
                         key: ImageKey::Dash {
                             array: array.iter().map(|v| v.to_bits()).collect(),
                             round: cap.evaluate(zoom, feature as usize) == LineCap::Round,
@@ -114,7 +116,7 @@ pub(crate) fn textures(
                 })
                 .collect();
             images.push(ImageRef {
-                word: (base + 19) as u32,
+                word: (base + layout::LINE_ROW_GRADIENT) as u32,
                 key: ImageKey::Ramp { colors, nearest },
             });
         }

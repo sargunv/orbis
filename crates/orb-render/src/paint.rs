@@ -9,23 +9,6 @@
 
 use crate::Family;
 
-/// Words per feature in a fill row: color, opacity, three pattern image ids.
-pub const FILL_ROW_WORDS: usize = 7;
-/// Words per feature in a line property row: color, opacity, width, gap
-/// width, offset, blur (pairs), three pattern ids, three dash ids, floor
-/// width, gradient ramp id. The two triples cover layout zoom −1/0/+1.
-pub const LINE_ROW_WORDS: usize = 20;
-/// Symbol paint rows: opacity, colour, halo colour, halo width and halo
-/// blur, each at the tile's zoom and the next.
-pub const SYMBOL_ROW_WORDS: usize = 10;
-/// Color, radius, blur, opacity, stroke color, width and opacity.
-pub const CIRCLE_ROW_WORDS: usize = 14;
-/// Radius and weight.
-pub const HEATMAP_ROW_WORDS: usize = 4;
-/// Colour, colour mix, emissive strength, then scale, rotation and
-/// translation by component.
-pub const MODEL_ROW_WORDS: usize = 24;
-
 /// A model node's paint (`model.wgsl`'s `ModelNode`). Slots: colour,
 /// colour mix, emissive strength, scale, rotation and translation by
 /// component.
@@ -235,11 +218,6 @@ pub struct ColorReliefPaint {
     pub ramp_size: u32,
     pub nearest: bool,
 }
-
-/// Colour, height and base (pairs), three pattern ids, the feature's
-/// centroid (two i16s), and 1 when the building is whole in the tile's
-/// data, which only the placement holding its centroid draws.
-pub const EXTRUSION_ROW_WORDS: usize = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ExtrusionPaint {
