@@ -57,7 +57,7 @@ async function runPath(container, style, jobWorkers, center, path, show) {
     const load = performance.now() - created;
     show(`${label}: moving`);
     const acks = [];
-    const off = map.on("render", (ack) => acks.push({ t: performance.now(), ms: ack.ms }));
+    const off = map.on("render", (ack) => acks.push({ t: performance.now(), ms: ack.ms, placement: ack.placementMs }));
     const longs = [];
     const observer = typeof PerformanceObserver !== "undefined" &&
       PerformanceObserver.supportedEntryTypes?.includes("longtask")
@@ -87,6 +87,7 @@ async function runPath(container, style, jobWorkers, center, path, show) {
       path: path.name, frames: moving.length, load,
       interval: [0.5, 0.95, 0.99, 1].map((p) => percentile(gaps, p)),
       cpu: [0.5, 0.95, 1].map((p) => percentile(cpu, p)),
+      placement: [0.5, 0.95].map((p) => percentile(moving.map((a) => a.placement), p)),
       missed: gaps.filter((g) => g > 50).length,
       longs: longs.length, longest: Math.max(0, ...longs.map((l) => l.duration)),
       settle, settleCpu: Math.max(0, ...after.map((a) => a.ms)), settleLong: Math.max(0, ...longsAfter),
@@ -116,14 +117,15 @@ export async function runGestures({ style, center, paths, jobWorkers, size, abou
       "the camera moved once a display frame (`jumpTo`; a flight's legs through `flyTo`), each path from a fresh map at rest; " +
       `${jobWorkers ?? "default"} job workers`,
     "",
-    "| path | load to idle ms | frames | interval p50 | p95 | p99 | max | gaps > 50 ms | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "| path | load to idle ms | frames | interval p50 | p95 | p99 | max | gaps > 50 ms | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max | placement p50 | p95 |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ...rows.map((r) => `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${r.interval.map(ms).join(" | ")} | ${r.missed} | ` +
-      `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} |`),
+      `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} | ${r.placement.map(ms).join(" | ")} |`),
     "",
     "Times in ms. Interval: between frames reaching the page while the camera moves; render CPU: the frame's " +
       "`render`; long tasks: the page's, over 50 ms; idle after: " +
-      "from the path's end until the map's `idle` event; after: the frames and the page's long tasks from the path's end to `idle`.",
+      "from the path's end until the map's `idle` event; after: the frames and the page's long tasks from the path's end to `idle`; " +
+      "placement: the page thread's share of render CPU (building the placement worker's frame, applying commits; plan §6.1's 0.2 ms).",
   ];
   return `${lines.join("\n")}\n`;
 }

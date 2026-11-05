@@ -127,6 +127,10 @@ pub struct FrameStats {
     pub bundle_recorded: bool,
     #[wasm_bindgen(readonly, js_name = placementsWritten)]
     pub placements_written: u32,
+    /// Milliseconds of the frame spent on placement on this thread:
+    /// building the frame the placement worker places, applying commits.
+    #[wasm_bindgen(readonly, js_name = placementMs)]
+    pub placement_ms: f64,
     #[wasm_bindgen(readonly, js_name = paintsWritten)]
     pub paints_written: u32,
     #[wasm_bindgen(readonly, js_name = uploadedFromWasm)]
@@ -743,6 +747,7 @@ impl OrbisMap {
             tiles_loading: report.tiles_loading,
             bundle_recorded: report.frame.bundle_recorded,
             placements_written: report.frame.placements_written,
+            placement_ms: f64::from(report.placement_us) / 1000.0,
             paints_written: report.frame.paints_written,
             uploaded_from_wasm: uploaded.from_core as f64,
             uploaded_from_js: uploaded.from_js as f64,

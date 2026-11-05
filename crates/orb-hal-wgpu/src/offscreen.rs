@@ -92,7 +92,12 @@ impl WgpuGpu {
 
     /// Resolves when the GPU has finished all work submitted so far.
     pub fn work_done(&self) -> impl Future<Output = ()> + 'static {
-        let index = self.queue.submit([]);
+        // Gathered writes are work submitted too.
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        self.encode_writes(&mut encoder);
+        let index = self.queue.submit([encoder.finish()]);
         let (sender, receiver) = futures_channel::oneshot::channel();
         self.queue.on_submitted_work_done(move || {
             let _ = sender.send(());
@@ -126,6 +131,7 @@ impl WgpuGpu {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        self.encode_writes(&mut encoder);
         encoder.copy_texture_to_buffer(
             texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
@@ -163,6 +169,7 @@ impl WgpuGpu {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        self.encode_writes(&mut encoder);
         encoder.copy_buffer_to_buffer(source, 0, &buffer, 0, source.size());
         self.queue.submit([encoder.finish()]);
         map_read(&self.device, &buffer).await.to_vec()

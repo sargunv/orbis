@@ -16,6 +16,7 @@ mod offscreen;
 mod slots;
 #[cfg(not(target_arch = "wasm32"))]
 mod surface;
+mod writes;
 
 pub use convert::from_texture_format;
 use orb_hal::*;
@@ -70,6 +71,8 @@ pub struct WgpuGpu {
     #[cfg(target_arch = "wasm32")]
     host_images: Slots<wgpu::ExternalImageSource>,
     uploaded: Uploaded,
+    /// Small buffer writes, copied in at the next submission.
+    writes: writes::Writes,
     pipelines_created: u32,
     /// Set when the device made by `offscreen` is lost.
     #[cfg(not(target_arch = "wasm32"))]
@@ -91,6 +94,23 @@ pub struct Uploaded {
     /// Texel bytes copied to textures from JS images registered with
     /// `WgpuGpu::register_image_bitmap` or `register_video`.
     pub texels_from_js: u64,
+}
+
+/// A write from core memory: gathered when small, or when it overlaps a
+/// gathered one it must land after; otherwise straight to the queue.
+fn write_core(
+    writes: &mut writes::Writes,
+    queue: &wgpu::Queue,
+    buffers: &Slots<wgpu::Buffer>,
+    id: BufferId,
+    offset: u64,
+    data: &[u8],
+) {
+    if data.len() <= writes::GATHERED || writes.overlaps(id, offset, data.len() as u64) {
+        writes.gather(id, offset, data);
+    } else {
+        queue.write_buffer(&buffers[id.0], offset, data);
+    }
 }
 
 /// Bytes held for [`Gpu::write_buffer_from_host`].
@@ -231,10 +251,22 @@ impl WgpuGpu {
             #[cfg(target_arch = "wasm32")]
             host_images: Slots::default(),
             uploaded: Uploaded::default(),
+            writes: writes::Writes::default(),
             pipelines_created: 0,
             #[cfg(not(target_arch = "wasm32"))]
             lost: Default::default(),
         }
+    }
+
+    /// Copies the gathered writes into place ahead of what `encoder`
+    /// records next.
+    fn encode_writes(&self, encoder: &mut wgpu::CommandEncoder) {
+        self.writes.encode(
+            &self.device,
+            &self.queue,
+            |id| self.buffers[id.0].clone(),
+            encoder,
+        );
     }
 
     /// Bytes written to buffers so far.
@@ -615,12 +647,20 @@ impl Gpu for WgpuGpu {
     }
 
     fn destroy_buffer(&mut self, id: BufferId) {
+        self.writes.forget(id);
         self.buffers.remove(id.0).destroy();
     }
 
     fn write_buffer(&mut self, id: BufferId, offset: u64, data: &[u8]) {
         self.uploaded.from_core += data.len() as u64;
-        self.queue.write_buffer(&self.buffers[id.0], offset, data);
+        write_core(
+            &mut self.writes,
+            &self.queue,
+            &self.buffers,
+            id,
+            offset,
+            data,
+        );
     }
 
     fn write_buffer_from_host(
@@ -635,12 +675,26 @@ impl Gpu for WgpuGpu {
             HostBytes::Owned(data) => {
                 self.uploaded.from_core += len;
                 let range = range.start as usize..range.end as usize;
-                self.queue
-                    .write_buffer(&self.buffers[id.0], offset, &data[range]);
+                write_core(
+                    &mut self.writes,
+                    &self.queue,
+                    &self.buffers,
+                    id,
+                    offset,
+                    &data[range],
+                );
             }
             #[cfg(target_arch = "wasm32")]
             HostBytes::Js(data) => {
                 self.uploaded.from_js += len;
+                // It lands before gathered writes: those it overlaps go first.
+                if self.writes.overlaps(id, offset, len) {
+                    let mut encoder = self
+                        .device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                    self.encode_writes(&mut encoder);
+                    self.queue.submit([encoder.finish()]);
+                }
                 let queue = self
                     .queue
                     .as_webgpu()
@@ -1043,6 +1097,7 @@ impl Gpu for WgpuGpu {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        self.encode_writes(&mut encoder);
         for pass in passes {
             match pass {
                 Pass::CopyTextureLayers {
