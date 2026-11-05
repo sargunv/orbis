@@ -155,6 +155,7 @@ fn full_view_tile(offset_x: f32) -> TileRow {
             ClipRect::EMPTY,
         ],
         px_scale: 1.0,
+        drape_zoom: 0.0,
         dem: DemRef::NONE,
         terrain_range: [0.0; 2],
         target: PlacementTarget::Map,

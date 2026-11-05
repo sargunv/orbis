@@ -98,6 +98,8 @@ pub struct ImageAtlas {
     free: Vec<u32>,
     namespace: u64,
     lines: crate::line::LineAtlas,
+    /// Changes whenever an image's pixels do.
+    revision: u64,
 }
 
 impl ImageAtlas {
@@ -148,7 +150,14 @@ impl ImageAtlas {
             free: Vec::new(),
             namespace: 0,
             lines,
+            revision: 0,
         }
+    }
+
+    /// Changes whenever an image's pixels do (an upload, or an image
+    /// cleared or released), so what draws them can be drawn again.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn bindings(&self) -> ImageBindings {
@@ -298,6 +307,7 @@ impl ImageAtlas {
         image: ImageUpload<'_>,
         premultiplied: bool,
     ) -> Result<(), &'static str> {
+        self.revision += 1;
         let ImageUpload {
             size: [width, height],
             pixels: rgba,
@@ -420,6 +430,7 @@ impl ImageAtlas {
 
     /// Frees a row's texels and empties its table words; the id stays.
     fn vacate(&mut self, gpu: &mut dyn Gpu, id: u32) {
+        self.revision += 1;
         let entry = self.entries[id as usize].as_mut().unwrap();
         if let Some(page) = entry.page.take() {
             let p = &mut self.pages[page];

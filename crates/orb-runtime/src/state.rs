@@ -183,6 +183,12 @@ impl FeatureStates {
         self.writes
     }
 
+    /// The zoom the rows hold values for, when any lookup's values depend
+    /// on the zoom: what they draw then changes with it.
+    pub(crate) fn zoom_key(&self) -> Option<u64> {
+        self.zoom_dependent.then(|| self.zoom.to_bits())
+    }
+
     pub(crate) fn apply(&mut self, op: &FeatureStateOp) {
         self.writes += 1;
         match op {

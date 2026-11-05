@@ -5,10 +5,9 @@
 //! Terrain tiles are 512 logical pixels at their zoom, covered as GL JS's
 //! terrain covers; each samples the DEM tile at its zoom less `delta`, so
 //! that its 128-cell grid has one vertex per DEM pixel: GL JS's density
-//! for 256- and 512-pixel DEM tiles alike. A terrain tile redraws its
-//! drape slots when the draped content under it changes, and when only
-//! the zoom changed once the camera has stopped, as GL JS's render to
-//! texture does.
+//! for 256- and 512-pixel DEM tiles alike. A terrain tile's drape slots
+//! are drawn at a zoom of its own ([`drape_zoom`]), whatever the camera's,
+//! and redrawn only when the draped content under it changes.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -103,13 +102,18 @@ fn bilinear(dim: u32, uv: DVec2, texel: impl Fn(i64, i64) -> f32) -> f64 {
     top + (bottom - top) * f.y
 }
 
-/// A terrain tile's drape slots and what they were drawn with.
+/// A terrain tile's drape slots and the content they were drawn with.
 #[derive(Debug)]
 struct Slot {
     index: u32,
     content: u64,
-    /// The zoom and pattern cross-fade they were drawn at.
-    look: [u64; 3],
+}
+
+/// The style zoom a terrain tile's drape slots are drawn at, whatever the
+/// camera's: the tile's own, where it spans its 512 logical pixels, at
+/// [`DRAPE_SLOT_PX`] texels (GL JS's quality factor 2; decision 0019).
+pub(crate) fn drape_zoom(tms: &TileMatrixSet, tile: TileIndex) -> u8 {
+    tms.style_zoom(tile).round().clamp(0.0, 255.0) as u8
 }
 
 #[derive(Debug)]
@@ -299,18 +303,15 @@ impl Terrain {
     }
 
     /// This frame's terrain tiles for the renderer, with slots assigned
-    /// from `layout`, and which tile slots to redraw. `content` hashes the
-    /// draped content under a terrain tile; `look` is the zoom, bearing and
-    /// cross-fade it draws at. A tile whose either changed redraws in this
-    /// frame. On a globe, `globe` places a tile on the sphere.
-    #[allow(clippy::too_many_arguments)]
+    /// from `layout`, and which tile slots to redraw: those whose draped
+    /// content, as `content` hashes it, changed. On a globe, `globe` places
+    /// a tile on the sphere.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
         view: &View,
         layout: DrapeLayout,
         content: &dyn Fn(CoveredTile) -> u64,
-        look: [u64; 3],
         globe: &mut dyn FnMut(TileIndex) -> Option<orb_render::TerrainGlobe>,
     ) -> (Vec<TerrainTile>, Vec<(CoveredTile, u32)>) {
         if layout.generation != self.generation {
@@ -335,9 +336,8 @@ impl Terrain {
             let content = content(tile);
             let slot = match self.slots.get_mut(&tile) {
                 Some(slot) => {
-                    if slot.content != content || slot.look != look {
+                    if slot.content != content {
                         slot.content = content;
-                        slot.look = look;
                         redraw.push((tile, slot.index));
                     }
                     slot.index
@@ -347,14 +347,7 @@ impl Terrain {
                         self.next_slot += 1;
                         self.next_slot - 1
                     });
-                    self.slots.insert(
-                        tile,
-                        Slot {
-                            index,
-                            content,
-                            look,
-                        },
-                    );
+                    self.slots.insert(tile, Slot { index, content });
                     redraw.push((tile, index));
                     index
                 }
@@ -435,9 +428,11 @@ fn terrain_bounds(surface: &TileMatrixSet, terrain: CoveredTile) -> WorldRect {
 }
 
 /// Drape placements of a drawn tile (`extent` data units a side, mapped
-/// by its map placements `map_rows`) for a terrain tile and its tile slot:
-/// one row set per drape stack, each mapping the tile's data into the
-/// stack's slot and clipped to the terrain tile.
+/// by its map placements `map_rows`, placed at the terrain tile's
+/// [`drape_zoom`]) for a terrain tile and its tile slot: one row set per
+/// drape stack, each mapping the tile's data into the stack's slot,
+/// clipped to the terrain tile, with pixel sizes in slot texels at the
+/// drape zoom.
 pub(crate) fn drape_rows(
     surface: &TileMatrixSet,
     drawn: Drawn,
@@ -458,6 +453,11 @@ pub(crate) fn drape_rows(
     let clamp = |v: f64| v.round().clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
     let (lo, hi) = ([clamp(lo.x), clamp(lo.y)], [clamp(hi.x), clamp(hi.y)]);
     let k = f64::from(DRAPE_SLOT_PX) / span;
+    let zoom = drape_zoom(surface, terrain.index);
+    // Texels per logical pixel at the drape zoom: the slot spans the 512
+    // logical pixels of the terrain tile at its own zoom.
+    let px_scale = f64::from(DRAPE_SLOT_PX)
+        / (TERRAIN_TILE_PX * (f64::from(zoom) - surface.style_zoom(terrain.index)).exp2());
     for row in map_rows {
         let mut clips = [ClipRect::EMPTY; 4];
         let mut any = false;
@@ -480,8 +480,11 @@ pub(crate) fn drape_rows(
                 origin: o.to_array(),
                 scale: (scale * k) as f32,
                 clips,
-                px_scale: (f64::from(row.px_scale) * k) as f32,
+                px_scale: px_scale as f32,
+                drape_zoom: f32::from(zoom),
                 target: PlacementTarget::Drape(stack as u8),
+                // Slots are flat: the terrain carries them onto a globe.
+                globe: None,
                 ..row
             });
         }
@@ -1044,6 +1047,7 @@ mod tests {
             extent: 4096.0,
             wrap: 0,
             px_scale: 1.0,
+            drape_zoom: 0.0,
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,
@@ -1068,10 +1072,10 @@ mod tests {
         let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() + (a[1] - b[1]).abs() < 1e-9;
         assert!(near(rows[0].origin, [2.5 * px, -0.5 * px]));
         assert_eq!(rows[0].scale, slot / 2.0 / 4096.0);
-        assert_eq!(
-            rows[0].px_scale,
-            (f64::from(DRAPE_SLOT_PX) / tms.tile_span(3)) as f32
-        );
+        // Drawn at the terrain tile's zoom, two texels a logical pixel.
+        let zoom = tms.style_zoom(terrain.index);
+        assert_eq!(f64::from(rows[0].drape_zoom), zoom);
+        assert_eq!(rows[0].px_scale, 2.0);
         assert_eq!(rows[1].target, PlacementTarget::Drape(1));
         assert_eq!(rows[1].origin[0], 3.5 * px);
         // Clipped to the terrain tile: the whole vector tile is inside.

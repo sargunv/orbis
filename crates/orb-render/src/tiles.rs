@@ -778,6 +778,16 @@ pub fn dem_prepares(
     jobs
 }
 
+/// Which of a DEM tile's neighbours are resident (`resident`), a bit
+/// each: its prepared borders come from them.
+pub fn resident_neighbours(tile: TileIndex, resident: &dyn Fn(TileIndex) -> bool) -> u8 {
+    OFFSETS
+        .iter()
+        .enumerate()
+        .filter(|&(_, &offset)| offset_tile(tile, offset).is_some_and(resident))
+        .fold(0, |bits, (i, _)| bits | 1 << i)
+}
+
 /// Neighbour offsets in [`DemPrepare::neighbours`] order.
 const OFFSETS: [(i32, i32); 8] = [
     (-1, -1),

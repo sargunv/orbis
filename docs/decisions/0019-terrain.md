@@ -50,12 +50,12 @@ The GPU-driven design is kept by making drape slots ordinary placements:
 - A drape placement maps a source tile's data into a slot, clipped to the
   terrain tile, in drape space: atlas texels with y up. The drape frame is
   the map's with an orthographic atlas projection.
-- Pixel sizes now convert with a per-placement `world_per_px` (map
-  placements carry the camera's; drape placements scale it with their
-  slot), since terrain tiles of several zooms share the atlas. Tile rows
-  grow from 64 to 80 bytes: that, the DEM reference and the terrain range.
+- Pixel sizes convert with a per-placement `world_per_px`: map
+  placements carry the camera's, drape placements their slot's at its
+  drape zoom (below). Tile rows grew from 64 to 80 bytes for that, the DEM
+  reference and the terrain range, then to 120 for the drape zoom.
 - One render pass redraws every slot marked this frame: it clears them,
-  then replays a bundle of the draped nodes over the drape scene group.
+  then replays one bundle per drape zoom among them.
   One compute pass then downsamples them, a dispatch per mip level over
   the redrawn slots (a render pass per level cost 3 to 5 ms each on
   Apple GPUs whatever its size; the compute pass costs 0.35 ms for all
@@ -63,24 +63,88 @@ The GPU-driven design is kept by making drape slots ordinary placements:
   never mix slots, and the terrain shader clamps samples to the slot at
   the level it reads, as a texture of its own would clamp to its edge.
 
-A slot is redrawn in the frame the draped content over its tile changes
-(drawn tiles, their meshes, the style revision, feature-state writes) or
-the look it draws at does: the zoom, the pattern cross-fade, and the
-bearing under a viewport-anchored hillshade, whose light turns with the
-map. Unchanged slots cost nothing per frame. Slots first waited for the
-camera to stop before taking a new look, as GL JS's fingerprint policy
-does (#7549), so lighting and widths lagged a moving camera and caught up
-tile by tile; the renderer must be right at every camera. Redrawing in the
-frame (Apple M6, 2048×1536, render until the GPU is done) moved a rotate's
-p50/p95 from 7.2/12.7 to 10.0/15.4 ms and the Alps flight's, which zooms
-throughout, from 3.7/9.1 to 11.5/16.5 ms. Slots keyed by content alone,
-each draped at a fixed zoom of its own tile and hillshades lit in the
-terrain pass, take the camera out of them (#80).
-
 Each stack's terrain draws into a layer of its own sharing the 3D depth
 with extrusions, then composites into the map at the stack's place, as
 extrusion layers do (decision 0011). GL JS's terrain fog (sky `fog-*`,
 `horizon-*`, faded in from 60° to 70° of pitch) is applied there.
+
+### Slots don't depend on the camera
+
+A slot draws its terrain tile's content at the tile's own style zoom, its
+*drape zoom*, whatever the camera's. That is where the tile spans its 512
+logical pixels, at two texels each (GL JS's quality factor). Every draped
+property evaluates there: node uniforms, table and feature-state curves,
+the GPU interpreter, pattern images at a settled cross-fade, dashes, and
+layer minimum and maximum zooms. Widths are in slot texels at that zoom.
+GL JS instead renders to texture at the camera's zoom and waits for the
+camera to stop before redrawing (#7549). Orbis first did the same, so
+lighting and widths lagged a moving camera and caught up tile by tile.
+Then it redrew in the frame the zoom changed, which cost the Alps flight
+p50/p95 3.7/9.1 → 11.5/16.5 ms (Apple M6, 2048×1536, to GPU done).
+
+How several zooms draw in one GPU-driven pass, without more nodes or
+culls:
+
+- A drape placement carries its drape zoom (`TileRow::drape_zoom`; 0 on
+  map placements).
+- The renderer keeps a drape pass per drape zoom in use (`DrapeZoom`):
+  a frame block at that zoom, the draped nodes' uniforms at that zoom
+  (written by `Renderer::set_drape_paint`, which leaves a node out where
+  its layer doesn't draw), their bind groups, and a bundle.
+- The drape render pass replays the bundles of the zooms being redrawn.
+  The cull is shared: each node's visible list holds its drape placements
+  of every zoom. A draw drops the vertices of placements whose zoom isn't
+  its frame's (`drawn_in_pass` in `draw.wgsl`). That multiplies vertex
+  work by the number of zooms only in frames that redraw slots of several
+  zooms. Every shader reads its zoom from the frame as before.
+- The runtime writes the paint for a drape zoom when the zoom first
+  appears or the paint inputs change. It does not do this per frame.
+
+A slot is redrawn when what it draws changes. Its key is the tiles drawn
+over it, with their meshes (and, for DEM image sources, which neighbours
+fill their borders), the style revision, feature-state writes, a revision
+per drape zoom that changes when the uniforms written there do, and the
+image atlas's pixel revision. Unchanged slots cost nothing per frame.
+
+Two exceptions follow the camera honestly. A draped layer that turns with
+the bearing has its zoom's slots keyed on the bearing: a viewport-anchored
+hillshade's light, or a viewport-anchored `*-translate`. Lighting
+viewport hillshades in the terrain pass instead needs a second slot or
+plane per tile, because the hillshade sits between other draped layers
+(#83). Feature-state rows hold values for the camera's integer zoom, so
+state paint that varies with zoom keys on that zoom (#85).
+
+Because widths are fixed per tile, a draped line's width on screen
+ranges from its width at the tile's zoom up to twice that, as the camera
+zooms in until the cover splits the tile. Each tile keeps its own scale,
+so widths keep their pixel size into the distance, where GL JS's narrow
+with perspective, and step by up to 2× at seams between tile zooms. The
+terrain fixtures pass as before (31 natively, 31 in Chrome); views at
+fractional zooms differ a little more in width (`skirts-none` 0.25% →
+1.1% of pixels). Draping one zoom deeper, where a texel is a logical
+pixel, halved widths at the fixtures' integer zooms and failed two more.
+
+Over the Alps demo (`cargo xtask bench alps --experiment gestures
+--timing work-done`, Apple M6, 2048×1536, to GPU done, p50/p95 ms; the
+demo style, median of three runs on a shared machine, then once with its
+hillshade anchored to the map):
+
+| | rotate | Alps flight | flight frames > 16.7 ms |
+| --- | --- | --- | --- |
+| redrawn in the frame the zoom changes | 8.8 / 14.3 | 8.2 / 12.9 | 74 |
+| keyed by content, at drape zooms | 10.3 / 17.5 | 8.7 / 13.8 | 101 |
+| … hillshade anchored to the map, before | 5.1 / 9.4 | 8.8 / 19.5 | 233 |
+| … hillshade anchored to the map, after | 5.6 / 13.0 | 4.3 / 11.2 | 82 |
+
+The demo's hillshade is viewport-anchored, so turning still redraws every
+slot. Those frames now replay the draped nodes once per drape zoom, which
+costs 0.5 to 1.5 ms. Without a layer that turns, slots redraw only when
+their content changes, which halves the flight's p50. Lighting viewport
+hillshades in the terrain pass (#83) gives the demo style that too.
+`orb-demo`'s `rotating_over_the_alps_matches_a_fresh_view` keeps the camera
+turning until its tiles load, then checks that frame against a fresh map
+at rest at that camera. Silhouettes differ by about 1,200 pixels for
+another reason (#84).
 
 ## Elevated content
 
@@ -219,7 +283,7 @@ Frame cost over the Alps demo view (`orb-bench`'s `alps_terrain_frame_cost`,
 | --- | --- | --- | --- | --- |
 | at rest | 0.31 | 0.94 | 0.41 | 0.28 |
 | turning 0.2°/frame, tiles loading | 6.7 | 2.4 | 1.0 | 0.72 |
-| a zoom change redrawing all 19 slots | | 14.2 | | |
+| redrawing all 19 slots | | 14.2 | | |
 
 The full redraw's drape pass is 5.1 ms of that, its mips 0.35 ms.
 

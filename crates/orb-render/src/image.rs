@@ -873,6 +873,19 @@ impl Images {
         node: &mut NodeImage,
         uniform: BindingResource,
     ) -> BindGroupId {
+        node.built = Some(node.page.map_or(0, |id| self.page(id).page.revision()));
+        self.group(gpu, family, node, uniform)
+    }
+
+    /// A bind group of an image node's textures with a uniform at
+    /// `uniform`.
+    pub(crate) fn group(
+        &self,
+        gpu: &mut dyn Gpu,
+        family: Family,
+        node: &NodeImage,
+        uniform: BindingResource,
+    ) -> BindGroupId {
         let page = node.page.map(|id| self.page(id));
         let texture = match (page, family) {
             (None, _) => self.placeholder,
@@ -881,7 +894,6 @@ impl Images {
             (Some(page), Family::ColorRelief) => page.page.texture(DEM_PADDED),
             _ => unreachable!("not an image family"),
         };
-        node.built = Some(page.map_or(0, |p| p.page.revision()));
         let mut entries = vec![
             BindGroupEntry {
                 binding: 0,

@@ -346,9 +346,13 @@ pub struct TileRow {
     pub wrap: i32,
     /// World units per logical pixel at this placement's scale, as a
     /// multiple of the frame's: pixel sizes (line widths, translations)
-    /// convert with it. 1 for a map placement; a drape placement scales it
-    /// with its slot.
+    /// convert with it. 1 for a map placement; a drape placement's is its
+    /// slot's texels per logical pixel at its drape zoom.
     pub px_scale: f32,
+    /// A drape placement's style zoom: its slot is drawn at that zoom,
+    /// whatever the camera's, by the drape pass of that zoom. 0 for map
+    /// placements.
+    pub drape_zoom: f32,
     /// The DEM tile elevated content of this placement stands on.
     pub dem: DemRef,
     /// The lowest and highest terrain elevation under the placement, in
@@ -393,6 +397,7 @@ impl TileRow {
             words[30..33].copy_from_slice(&lo);
         }
         words[28..30].copy_from_slice(&origin_lo);
+        words[33] = self.drape_zoom.to_bits();
         words
     }
 }

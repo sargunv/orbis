@@ -6,9 +6,9 @@
 //! of draped layers between layers that draw in 3D or on screen). Slots are
 //! squares of one mipmapped atlas. A frame redraws only the slots the
 //! runtime marks: their drape placements, the draped nodes' only
-//! candidates, map them into the atlas, so one pass over a bundle of the
-//! draped nodes redraws them all, then a compute pass downsamples their
-//! mip levels. Each stack's terrain draws into a layer of its own with the depth
+//! candidates, map them into the atlas, so one pass redraws them all,
+//! replaying a bundle of the draped nodes per drape zoom among them, then
+//! a compute pass downsamples their mip levels. Each stack's terrain draws into a layer of its own with the depth
 //! extrusions share, composited in the map at the stack's place.
 
 use crate::{TargetFormat, draw_pipeline};
@@ -156,11 +156,10 @@ pub(crate) struct Terrain {
     occlusion_pipeline: Option<RenderPipelineId>,
     target_size: [u32; 2],
     target_samples: u32,
-    /// Atlas slots to redraw this frame.
+    /// Atlas slots to redraw this frame, and the drape zooms they draw at.
     pending: Vec<u32>,
+    pending_zooms: Vec<u8>,
     pub(crate) paint: Option<TerrainPaint>,
-    /// The frame block draped nodes draw with.
-    pub(crate) drape_frame: BufferId,
     /// The atmosphere's uniform, for fog.
     atmosphere: BufferId,
 }
@@ -347,11 +346,6 @@ impl Terrain {
             mipmap_filter: FilterMode::Linear,
             anisotropy: 1,
         });
-        let drape_frame = gpu.create_buffer(&BufferDesc {
-            label: "drape frame",
-            size: orb_scene::FRAME_BYTES,
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
         Self {
             target,
             layout,
@@ -391,8 +385,8 @@ impl Terrain {
             target_size: [0; 2],
             target_samples: 0,
             pending: Vec::new(),
+            pending_zooms: Vec::new(),
             paint: None,
-            drape_frame,
             atmosphere,
         }
     }
@@ -520,6 +514,7 @@ impl Terrain {
             generation: state.generation + 1,
         };
         self.pending.clear();
+        self.pending_zooms.clear();
         self.forget_group(gpu);
         Ok(())
     }
@@ -544,12 +539,20 @@ impl Terrain {
         }
     }
 
-    /// Redraws tile slots' every stack this frame.
-    pub(crate) fn redraw(&mut self, tile_slots: &[u32]) {
+    /// Redraws tile slots' every stack this frame, each at its drape zoom.
+    pub(crate) fn redraw(&mut self, tile_slots: &[(u32, u8)]) {
         let stacks = self.layout_state.stacks;
-        for &tile in tile_slots {
+        for &(tile, zoom) in tile_slots {
             self.pending.extend((0..stacks).map(|s| tile * stacks + s));
+            self.pending_zooms.push(zoom);
         }
+        self.pending_zooms.sort_unstable();
+        self.pending_zooms.dedup();
+    }
+
+    /// The drape zooms of the slots this frame redraws.
+    pub(crate) fn pending_zooms(&self) -> &[u8] {
+        &self.pending_zooms
     }
 
     pub(crate) fn set_tiles(&mut self, gpu: &mut dyn Gpu, tiles: &[TerrainTile]) {
@@ -777,6 +780,7 @@ impl Terrain {
     pub(crate) fn redraw_all(&mut self) {
         self.layout_state.generation += 1;
         self.pending.clear();
+        self.pending_zooms.clear();
     }
 
     fn pipeline(&mut self, gpu: &mut dyn Gpu, samples: u32) -> RenderPipelineId {
@@ -825,7 +829,7 @@ impl Terrain {
         &mut self,
         gpu: &mut dyn Gpu,
         (frame, props): (BufferId, BufferId),
-        drape: Option<RenderBundleId>,
+        drape: &[RenderBundleId],
         (depth, depth_store): (TextureId, StoreOp),
         passes: &mut Vec<Pass>,
     ) -> u32 {
@@ -857,7 +861,7 @@ impl Terrain {
                 ]
             };
             let mut commands = quads(self.clear, atlas.groups[0]);
-            commands.extend(drape.map(|b| RenderCommand::ExecuteBundles(vec![b])));
+            commands.push(RenderCommand::ExecuteBundles(drape.to_vec()));
             passes.push(Pass::Render(RenderPass {
                 label: "drape".into(),
                 color: ColorAttachment {
@@ -894,6 +898,7 @@ impl Terrain {
             }));
             draws += 1;
             self.pending.clear();
+            self.pending_zooms.clear();
         }
         let atlas_texture = atlas.texture;
         let group = match self.group {
@@ -1028,8 +1033,13 @@ impl Terrain {
         draws
     }
 
-    /// The drape frame: the map's, drawn into the atlas.
-    pub(crate) fn drape_frame(&self, frame: &orb_scene::FrameBlock) -> orb_scene::FrameBlock {
+    /// The drape frame at style zoom `zoom`: the map's, drawn into the
+    /// atlas.
+    pub(crate) fn drape_frame(
+        &self,
+        frame: &orb_scene::FrameBlock,
+        zoom: u8,
+    ) -> orb_scene::FrameBlock {
         let [w, h] = self
             .atlas
             .as_ref()
@@ -1046,7 +1056,11 @@ impl Terrain {
             // Drape placements' origins are in drape space already.
             camera: [0.0; 2],
             viewport: [w, h],
+            // Drape placements' `px_scale` is their texels per logical
+            // pixel at the drape zoom.
+            world_per_px: 1.0,
             pixel_ratio: 1.0,
+            zoom: f64::from(zoom),
             align: [0.0; 2],
             pitch: 0.0,
             // Slots are flat: the terrain carries them onto a globe.
@@ -1069,6 +1083,7 @@ impl Terrain {
         self.target_size = [0; 2];
         self.dem = None;
         self.pending.clear();
+        self.pending_zooms.clear();
         self.layout_state.tile_slots = 0;
     }
 

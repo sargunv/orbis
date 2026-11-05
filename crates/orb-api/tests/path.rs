@@ -257,10 +257,11 @@ fn hills() -> String {
     )
 }
 
-/// Off until drape slots key on content (#80): one pixel at the extract's
-/// edge keeps a stain from earlier in the gesture in about one run in six.
+/// Off until terrain geometry follows the view alone (#84): one pixel of
+/// background past the extract's edge differs by a few levels in about one
+/// run in six; drape slots key on content (#80).
 #[test]
-#[ignore = "#80: a drape slot keeps a stain from earlier in the gesture"]
+#[ignore = "#84: terrain geometry depends on the DEM tiles the gesture saw"]
 fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     let style = tokyo(
         r#""terrain": {"source": "hills", "exaggeration": 1.5},"#,

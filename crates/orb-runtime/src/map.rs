@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -366,6 +366,8 @@ pub(crate) struct LoadedStyle {
     /// The zoom and bearing node paint was last written for; `None` to
     /// rewrite.
     pub(crate) painted: Option<(f64, f64)>,
+    /// The draped nodes' paint at drape zooms.
+    drape: DrapePaint,
     painted_fade: Option<Crossfade>,
     zoom_history: ZoomHistory,
     pub(crate) image_namespace: Option<u64>,
@@ -594,6 +596,22 @@ impl Drop for Map {
 pub(crate) struct Crossfade {
     pub(crate) from_scale: f32,
     pub(crate) mix: f32,
+}
+
+/// The draped nodes' paint at the drape zooms slots are drawn at
+/// (decision 0019), and what tells a slot's content changed with it.
+#[derive(Debug, Default)]
+struct DrapePaint {
+    /// Zooms written since the paint last changed.
+    painted: HashSet<u8>,
+    /// Per zoom, a revision that changes with what is written there.
+    revisions: HashMap<u8, u64>,
+    /// Zooms where something drawn turns with the bearing, and the
+    /// bearing they were written at.
+    turning: HashSet<u8>,
+    bearing: f64,
+    /// The drape layout generation written for.
+    generation: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -1222,6 +1240,7 @@ impl Map {
             sources,
             retired: Vec::new(),
             painted: None,
+            drape: DrapePaint::default(),
             painted_fade: None,
             zoom_history: ZoomHistory::default(),
             image_namespace: None,
@@ -2293,13 +2312,19 @@ impl Map {
                         let drawn = crate::terrain::Drawn::of(tms, draw, frame, period);
                         for &(terrain, slot) in &drape.redraw {
                             if drawn.overlaps(&drape.surface, terrain) {
+                                let zoom =
+                                    crate::terrain::drape_zoom(&drape.surface, terrain.index);
+                                let at = Placement {
+                                    zoom: f64::from(zoom),
+                                    ..at
+                                };
                                 crate::terrain::drape_rows(
                                     &drape.surface,
                                     drawn,
                                     extent,
                                     (terrain, slot),
                                     &drape.layout,
-                                    map_rows(draw).into_iter(),
+                                    placements(tms, draw, at),
                                     &mut rows,
                                 );
                             }
@@ -2687,9 +2712,11 @@ impl Map {
         }
     }
 
-    /// Plans this frame's drape: makes room for the terrain tiles' slots
-    /// and picks those to redraw, by what is draped under each tile and
-    /// the zoom it was drawn at.
+    /// Plans this frame's drape: makes room for the terrain tiles' slots,
+    /// writes the draped paint at their drape zooms and picks the slots to
+    /// redraw, by what is draped under each tile (decision 0019). Nothing
+    /// here depends on the camera but which tiles there are, and the
+    /// bearing under layers that turn with it.
     fn plan_drape(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -2699,7 +2726,7 @@ impl Map {
         let Some(style) = &mut self.style else {
             return None;
         };
-        let terrain = style.terrain.as_mut()?;
+        let terrain = style.terrain.as_ref()?;
         if !renderer.terrain_on() {
             return None;
         }
@@ -2712,7 +2739,47 @@ impl Map {
                 return None;
             }
         };
-        let plan = style.worker.plan();
+        let surface = self.surface.tms().clone();
+        let zooms: BTreeSet<u8> = terrain
+            .tiles
+            .iter()
+            .map(|t| crate::terrain::drape_zoom(&surface, t.index))
+            .collect();
+        let worker = Arc::clone(&style.worker);
+        let plan = worker.plan();
+        let bearing = self.camera.bearing;
+        let drape = &mut style.drape;
+        if drape.generation != Some(layout.generation) {
+            // A new atlas, or one whose slots all draw again.
+            drape.generation = Some(layout.generation);
+            drape.painted.clear();
+        }
+        if drape.bearing != bearing {
+            drape.bearing = bearing;
+            let turning = &drape.turning;
+            drape.painted.retain(|z| !turning.contains(z));
+        }
+        let mut images = self.services.images.0.lock().expect("images poisoned");
+        let atlas = images.atlas.as_mut().expect("initialized");
+        for &zoom in &zooms {
+            if style.drape.painted.contains(&zoom) {
+                continue;
+            }
+            let (changed, turns) =
+                write_drape_paint(gpu, renderer, (style, plan), zoom, bearing, atlas);
+            let drape = &mut style.drape;
+            if changed {
+                *drape.revisions.entry(zoom).or_default() += 1;
+            }
+            if turns {
+                drape.turning.insert(zoom);
+            } else {
+                drape.turning.remove(&zoom);
+            }
+            drape.painted.insert(zoom);
+        }
+        let images_revision = atlas.revision();
+        drop(images);
         let draped: Vec<usize> = (0..style.sources.len())
             .filter(|&i| {
                 plan.nodes
@@ -2720,12 +2787,18 @@ impl Map {
                     .any(|n| n.source == i && n.family.is_draped())
             })
             .collect();
-        let surface = self.surface.tms().clone();
         let period = self.surface.period();
         let sources = &style.sources;
         let draws = &style.draws;
-        let revision = (self.version, style.states.writes());
+        let drape = &style.drape;
+        let revision = (
+            self.version,
+            style.states.writes(),
+            style.states.zoom_key(),
+            images_revision,
+        );
         let content = |t: orb_crs::CoveredTile| {
+            let zoom = crate::terrain::drape_zoom(&surface, t.index);
             let mut parts = Vec::new();
             for &i in &draped {
                 let (
@@ -2752,28 +2825,18 @@ impl Map {
                         .map(|r| r.meshes.iter().map(|m| m.mesh).collect())
                         .unwrap_or_default();
                     let held = resident.map(|r| r.gpu);
-                    parts.push((i, draw.tile, draw.wrap, draw.regions.clone(), meshes, held));
+                    // A DEM tile's borders come from its neighbours.
+                    let borders = endpoint.dem_unpack.map(|_| {
+                        orb_render::resident_neighbours(draw.tile, &|n| pyramid.get(n).is_some())
+                    });
+                    let regions = draw.regions.clone();
+                    parts.push((i, draw.tile, draw.wrap, regions, meshes, held, borders));
                 }
             }
-            crate::terrain::hash((revision, parts))
+            let paint = drape.revisions.get(&zoom);
+            let turned = drape.turning.contains(&zoom).then_some(bearing.to_bits());
+            crate::terrain::hash((revision, parts, zoom, paint, turned))
         };
-        // Viewport-anchored hillshades turn their light with the map: the
-        // bearing joins the look, so they redraw as it turns.
-        let zoom = self.camera.zoom(self.surface.projection());
-        let turns = plan.nodes.iter().any(|n| {
-            matches!(&plan.style.layers[n.layer].kind, LayerKind::Hillshade(h)
-                if h.paint.illumination_anchor.evaluate(zoom) == orb_v8::IlluminationAnchor::Viewport)
-        });
-        let look = [
-            zoom.to_bits(),
-            u64::from(self.crossfade.mix.to_bits())
-                | u64::from(self.crossfade.from_scale.to_bits()) << 32,
-            if turns {
-                self.camera.bearing.to_bits()
-            } else {
-                0
-            },
-        ];
         let globe_warps = &mut self.globe_warps;
         let mut globe = |tile: TileIndex| {
             let target = view.globe()?.target;
@@ -2784,9 +2847,13 @@ impl Map {
                 poles: orb_crs::sphere::poles(&surface, tile),
             })
         };
-        let (tiles, redraw) = terrain.plan(&surface, view, layout, &content, look, &mut globe);
+        let terrain = style.terrain.as_mut().expect("checked above");
+        let (tiles, redraw) = terrain.plan(&surface, view, layout, &content, &mut globe);
         renderer.set_terrain_tiles(gpu, &tiles);
-        let slots: Vec<u32> = redraw.iter().map(|&(_, slot)| slot).collect();
+        let slots: Vec<(u32, u8)> = redraw
+            .iter()
+            .map(|&(tile, slot)| (slot, crate::terrain::drape_zoom(&surface, tile.index)))
+            .collect();
         renderer.redraw_drape(&slots);
         Some(DrapePlan {
             surface,
@@ -2872,6 +2939,7 @@ impl Map {
                 };
                 let at = Placement {
                     tile_zoom: tms.style_zoom(terrain.index),
+                    zoom: f64::from(crate::terrain::drape_zoom(tms, terrain.index)),
                     ..at
                 };
                 let map = placements(tms, &draw, at);
@@ -4138,6 +4206,7 @@ fn placements<'a>(
             zoom: tile_zoom as f32,
             clips,
             px_scale: 1.0,
+            drape_zoom: 0.0,
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,
@@ -4198,6 +4267,15 @@ fn fog_blend_opacity(pitch: f64) -> f32 {
     ((pitch - 60.0) / 10.0).clamp(0.0, 1.0) as f32
 }
 
+/// What a node's paint is evaluated at: a zoom, the bearing (for
+/// viewport-anchored hillshade light) and the pattern cross-fade.
+#[derive(Clone, Copy)]
+struct PaintAt {
+    zoom: f64,
+    bearing: f64,
+    crossfade: Crossfade,
+}
+
 /// Writes every node's paint and visibility for `zoom`, if it changed.
 fn write_paint(
     gpu: &mut dyn Gpu,
@@ -4209,11 +4287,18 @@ fn write_paint(
     lights: Option<&orb_v8::Lights>,
 ) -> Vec<String> {
     let mut missing = Vec::new();
+    if style.painted.is_none() {
+        // What draped nodes draw with at their drape zooms may have changed.
+        style.drape.painted.clear();
+    }
     if style.painted == Some((zoom, bearing)) && style.painted_fade == Some(crossfade) {
         return missing;
     }
     style.painted = Some((zoom, bearing));
     style.painted_fade = Some(crossfade);
+    // Draped nodes on terrain draw at their slots' zooms, which hide them
+    // where their layers don't draw ([`write_drape_paint`]).
+    let draping = renderer.terrain_on();
     for (index, node) in plan.nodes.iter().enumerate() {
         let state = style.nodes.entry(node.key).or_default();
         let index = index as u32;
@@ -4232,134 +4317,45 @@ fn write_paint(
                 LayerKind::FillExtrusion(e) => e.paint.opacity.evaluate(zoom) > 0.0,
                 _ => true,
             };
-        renderer.set_visible(index, visible);
-        if node.family.is_image() {
-            let unpack = match &style.sources[node.source] {
-                SourceState::Ready { endpoint, .. } => endpoint.dem_unpack,
-                _ => None,
-            };
-            let context = (plan, node, index);
-            if let Some(paint) = image::paint(
+        let draped = draping && node.family.is_draped();
+        renderer.set_visible(
+            index,
+            if draped {
+                layer.visibility == orb_v8::Visibility::Visible
+            } else {
+                visible
+            },
+        );
+        if matches!(node.family, Family::Circle | Family::Heatmap) {
+            let properties = plan.paint_properties(node).len();
+            if state.maxima.len() < properties {
+                state.maxima.resize(properties, 0.0);
+            }
+            let lookup = style.states.lookup(index as usize);
+            crate::point::paint(
                 gpu,
                 renderer,
-                context,
+                plan,
+                node,
+                index,
                 zoom,
-                bearing,
-                unpack,
-                &mut state.ramp,
-            ) {
-                renderer.set_paint(gpu, index, &paint);
-            }
+                &state.maxima,
+                lookup,
+            );
             continue;
         }
-        let properties = plan.paint_properties(node);
-        if state.maxima.len() < properties.len() {
-            state.maxima.resize(properties.len(), 0.0);
-        }
-        let lookup = style.states.lookup(index as usize);
-        if crate::point::paint(
-            gpu,
-            renderer,
-            plan,
-            node,
-            index,
+        let at = PaintAt {
             zoom,
-            &state.maxima,
-            lookup,
-        ) {
-            continue;
-        }
-        let maxima = &state.maxima;
-        let mut table_mask = 0;
-        let mut curves = [Curve::Step; 6];
-        let mut numbers = [0.0f32; 6];
-        let mut color = [0.0f32; 4];
-        for (slot, property) in properties.iter().enumerate() {
-            if property.per_feature() {
-                table_mask |= 1 << slot;
-                curves[slot] = property.curve();
-                numbers[slot] = maxima[slot];
-            } else if property.is_state_lookup() {
-                curves[slot] = property.curve();
-                match property {
-                    PaintProperty::Number(_) => numbers[slot] = property.default_number(zoom),
-                    _ => color = property.default_color(zoom),
-                }
-            } else {
-                match property {
-                    PaintProperty::Number(p) => numbers[slot] = p.evaluate(zoom),
-                    color_property => color = color_property.color(zoom),
-                }
-            }
-        }
-        let translate = match &plan.style.layers[node.layer].kind {
-            LayerKind::Fill(fill) => Translate {
-                px: fill.paint.translate.evaluate(zoom),
-                viewport: fill.paint.translate_anchor.evaluate(zoom) == TranslateAnchor::Viewport,
-            },
-            LayerKind::Line(line) => Translate {
-                px: line.paint.translate.evaluate(zoom),
-                viewport: line.paint.translate_anchor.evaluate(zoom) == TranslateAnchor::Viewport,
-            },
-            LayerKind::FillExtrusion(e) => Translate {
-                px: e.paint.translate.evaluate(zoom),
-                viewport: e.paint.translate_anchor.evaluate(zoom) == TranslateAnchor::Viewport,
-            },
-            LayerKind::Background(_) => Translate::default(),
-            _ => unreachable!("drawable layer"),
-        };
-        let paint = match node.family {
-            Family::Fill | Family::FillOutline => NodePaint::Fill(FillPaint {
-                color,
-                opacity: numbers[1],
-                translate,
-                table_mask,
-                curves: [curves[0], curves[1]],
-                state: lookup,
-            }),
-            Family::FillExtrusion => {
-                let LayerKind::FillExtrusion(e) = &plan.style.layers[node.layer].kind else {
-                    unreachable!()
-                };
-                NodePaint::Extrusion(orb_render::ExtrusionPaint {
-                    color,
-                    height: numbers[1],
-                    base: numbers[2],
-                    opacity: e.paint.opacity.evaluate(zoom),
-                    translate,
-                    vertical_gradient: e.paint.vertical_gradient.evaluate(zoom),
-                    emissive: lights.map_or(0.0, |l| l.emissive(&plan.style.layers[node.layer].id))
-                        as f32,
-                    table_mask,
-                    curves: [curves[0], curves[1], curves[2]],
-                    state: lookup,
-                })
-            }
-            Family::Line => NodePaint::Line(LinePaint {
-                color,
-                opacity: numbers[1],
-                translate,
-                width: numbers[2],
-                gap_width: numbers[3],
-                offset: numbers[4],
-                blur: numbers[5],
-                table_mask,
-                curves,
-                dash: None,
-                gradient: false,
-                state: lookup,
-            }),
-            image => unreachable!("{image:?} nodes are painted above"),
-        };
-        let paint = crate::line::paint(
-            gpu,
-            paint,
-            &plan.style.layers[node.layer].kind,
-            atlas,
-            style.image_namespace.unwrap(),
-            zoom,
+            bearing,
             crossfade,
-        );
+        };
+        let Some(paint) = node_paint(gpu, renderer, (style, plan), index, at, atlas, lights) else {
+            continue;
+        };
+        renderer.set_paint(gpu, index, &paint);
+        if node.family.is_image() {
+            continue;
+        }
         // A pattern the same for every feature is the node's paint: the
         // style lacking it is reported here, as tiles report theirs.
         if let Some(pattern) = plan
@@ -4374,29 +4370,6 @@ fn write_paint(
         {
             missing.push(name);
         }
-        let paint = pattern_paint(
-            paint,
-            plan.pattern(node),
-            style.image_namespace.unwrap(),
-            atlas,
-            zoom,
-            crossfade,
-            match &plan.style.layers[node.layer].kind {
-                LayerKind::Line(line) => line.paint.width.evaluate(zoom.floor()),
-                _ => 0.0,
-            },
-        );
-        let paint = if matches!(plan.style.layers[node.layer].kind, LayerKind::Background(_))
-            && plan.pattern(node).is_none()
-        {
-            match paint {
-                NodePaint::Fill(p) => NodePaint::Background(p),
-                _ => unreachable!("solid background"),
-            }
-        } else {
-            paint
-        };
-        renderer.set_paint(gpu, index, &paint);
         // A fill or line layer below layer opacity 1, or blending other
         // than normally, composites once.
         let composite = match &layer.kind {
@@ -4415,6 +4388,220 @@ fn write_paint(
         }
     }
     missing
+}
+
+/// Writes the draped nodes' paint for the slots drawn at drape zoom
+/// `zoom` (decision 0019): evaluated there, with the cross-fade of a zoom
+/// at rest, and left out where their layers don't draw. Whether anything
+/// changed, and whether anything drawn there turns with the bearing.
+fn write_drape_paint(
+    gpu: &mut dyn Gpu,
+    renderer: &mut Renderer,
+    (style, plan): (&mut LoadedStyle, &StylePlan),
+    zoom: u8,
+    bearing: f64,
+    atlas: &mut ImageAtlas,
+) -> (bool, bool) {
+    let at = PaintAt {
+        zoom: f64::from(zoom),
+        bearing,
+        // At an integer zoom at rest: that zoom's images alone.
+        crossfade: Crossfade {
+            from_scale: 0.5,
+            mix: 1.0,
+        },
+    };
+    let (mut changed, mut turns) = (false, false);
+    for (index, node) in plan.nodes.iter().enumerate() {
+        if !node.family.is_draped() {
+            continue;
+        }
+        let layer = &plan.style.layers[node.layer];
+        let paint = layer
+            .is_visible_at(at.zoom)
+            .then(|| node_paint(gpu, renderer, (style, plan), index as u32, at, atlas, None))
+            .flatten();
+        turns |= paint.is_some() && turns_with_bearing(&layer.kind, at.zoom);
+        changed |= renderer.set_drape_paint(gpu, index as u32, zoom, paint.as_ref());
+    }
+    (changed, turns)
+}
+
+/// Whether a layer drawn at `zoom` turns with the map's bearing: a
+/// viewport-anchored hillshade's light, or a viewport-anchored translate.
+fn turns_with_bearing(kind: &LayerKind, zoom: f64) -> bool {
+    let translates = |px: [f32; 2], anchor: TranslateAnchor| {
+        anchor == TranslateAnchor::Viewport && px != [0.0; 2]
+    };
+    match kind {
+        LayerKind::Hillshade(h) => {
+            h.paint.illumination_anchor.evaluate(zoom) == orb_v8::IlluminationAnchor::Viewport
+        }
+        LayerKind::Fill(f) => translates(
+            f.paint.translate.evaluate(zoom),
+            f.paint.translate_anchor.evaluate(zoom),
+        ),
+        LayerKind::Line(l) => translates(
+            l.paint.translate.evaluate(zoom),
+            l.paint.translate_anchor.evaluate(zoom),
+        ),
+        _ => false,
+    }
+}
+
+/// Node `index`'s paint at `at`, for a fill, line, background, extrusion
+/// or image node; `None` for an image node that can't draw yet.
+fn node_paint(
+    gpu: &mut dyn Gpu,
+    renderer: &mut Renderer,
+    (style, plan): (&mut LoadedStyle, &StylePlan),
+    index: u32,
+    at: PaintAt,
+    atlas: &mut ImageAtlas,
+    lights: Option<&orb_v8::Lights>,
+) -> Option<NodePaint> {
+    let PaintAt {
+        zoom,
+        bearing,
+        crossfade,
+    } = at;
+    let node = &plan.nodes[index as usize];
+    let state = style.nodes.entry(node.key).or_default();
+    if node.family.is_image() {
+        let unpack = match &style.sources[node.source] {
+            SourceState::Ready { endpoint, .. } => endpoint.dem_unpack,
+            _ => None,
+        };
+        let context = (plan, node, index);
+        return image::paint(
+            gpu,
+            renderer,
+            context,
+            zoom,
+            bearing,
+            unpack,
+            &mut state.ramp,
+        );
+    }
+    let properties = plan.paint_properties(node);
+    if state.maxima.len() < properties.len() {
+        state.maxima.resize(properties.len(), 0.0);
+    }
+    let lookup = style.states.lookup(index as usize);
+    let maxima = &state.maxima;
+    let mut table_mask = 0;
+    let mut curves = [Curve::Step; 6];
+    let mut numbers = [0.0f32; 6];
+    let mut color = [0.0f32; 4];
+    for (slot, property) in properties.iter().enumerate() {
+        if property.per_feature() {
+            table_mask |= 1 << slot;
+            curves[slot] = property.curve();
+            numbers[slot] = maxima[slot];
+        } else if property.is_state_lookup() {
+            curves[slot] = property.curve();
+            match property {
+                PaintProperty::Number(_) => numbers[slot] = property.default_number(zoom),
+                _ => color = property.default_color(zoom),
+            }
+        } else {
+            match property {
+                PaintProperty::Number(p) => numbers[slot] = p.evaluate(zoom),
+                color_property => color = color_property.color(zoom),
+            }
+        }
+    }
+    let translate = match &plan.style.layers[node.layer].kind {
+        LayerKind::Fill(fill) => Translate {
+            px: fill.paint.translate.evaluate(zoom),
+            viewport: fill.paint.translate_anchor.evaluate(zoom) == TranslateAnchor::Viewport,
+        },
+        LayerKind::Line(line) => Translate {
+            px: line.paint.translate.evaluate(zoom),
+            viewport: line.paint.translate_anchor.evaluate(zoom) == TranslateAnchor::Viewport,
+        },
+        LayerKind::FillExtrusion(e) => Translate {
+            px: e.paint.translate.evaluate(zoom),
+            viewport: e.paint.translate_anchor.evaluate(zoom) == TranslateAnchor::Viewport,
+        },
+        LayerKind::Background(_) => Translate::default(),
+        _ => unreachable!("drawable layer"),
+    };
+    let paint = match node.family {
+        Family::Fill | Family::FillOutline => NodePaint::Fill(FillPaint {
+            color,
+            opacity: numbers[1],
+            translate,
+            table_mask,
+            curves: [curves[0], curves[1]],
+            state: lookup,
+        }),
+        Family::FillExtrusion => {
+            let LayerKind::FillExtrusion(e) = &plan.style.layers[node.layer].kind else {
+                unreachable!()
+            };
+            NodePaint::Extrusion(orb_render::ExtrusionPaint {
+                color,
+                height: numbers[1],
+                base: numbers[2],
+                opacity: e.paint.opacity.evaluate(zoom),
+                translate,
+                vertical_gradient: e.paint.vertical_gradient.evaluate(zoom),
+                emissive: lights.map_or(0.0, |l| l.emissive(&plan.style.layers[node.layer].id))
+                    as f32,
+                table_mask,
+                curves: [curves[0], curves[1], curves[2]],
+                state: lookup,
+            })
+        }
+        Family::Line => NodePaint::Line(LinePaint {
+            color,
+            opacity: numbers[1],
+            translate,
+            width: numbers[2],
+            gap_width: numbers[3],
+            offset: numbers[4],
+            blur: numbers[5],
+            table_mask,
+            curves,
+            dash: None,
+            gradient: false,
+            state: lookup,
+        }),
+        image => unreachable!("{image:?} nodes are painted above"),
+    };
+    let paint = crate::line::paint(
+        gpu,
+        paint,
+        &plan.style.layers[node.layer].kind,
+        atlas,
+        style.image_namespace.unwrap(),
+        zoom,
+        crossfade,
+    );
+    let paint = pattern_paint(
+        paint,
+        plan.pattern(node),
+        style.image_namespace.unwrap(),
+        atlas,
+        zoom,
+        crossfade,
+        match &plan.style.layers[node.layer].kind {
+            LayerKind::Line(line) => line.paint.width.evaluate(zoom.floor()),
+            _ => 0.0,
+        },
+    );
+    let paint = if matches!(plan.style.layers[node.layer].kind, LayerKind::Background(_))
+        && plan.pattern(node).is_none()
+    {
+        match paint {
+            NodePaint::Fill(p) => NodePaint::Background(p),
+            _ => unreachable!("solid background"),
+        }
+    } else {
+        paint
+    };
+    Some(paint)
 }
 
 /// The renderer's blend for a v8 layer blend.
