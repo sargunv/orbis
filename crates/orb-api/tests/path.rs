@@ -75,11 +75,11 @@ fn settle(map: &mut Map, target: &mut Target) {
         .expect("the map idles");
 }
 
-/// The still picture a map draws at `end` after moving there frame by
-/// frame from `start` (a gesture: one frame per step, nothing waits for
-/// data), and a fresh map's at `end`. Still pictures, since continuous
-/// placement keeps labels it showed before, as GL JS's does: the tiles
-/// must not depend on the path, the labels may.
+/// What a live map draws at `end` once loaded and faded to idle, after
+/// moving there frame by frame from `start` (a gesture: one frame per
+/// step, nothing waits for data), and what a fresh map draws at rest at
+/// `end`. Labels too: what idle shows depends on the camera and the data
+/// alone, not on the order tiles arrived in or what showed on the way.
 fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
@@ -101,13 +101,19 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
         moved.render(&mut target, 0.0).unwrap();
         std::thread::sleep(Duration::from_millis(8));
     }
-    let gestured = moved.snapshot(WIDTH, HEIGHT, 1.0).unwrap().pixels;
+    settle(&mut moved, &mut target);
+    let gestured = target.read_pixels().unwrap();
     drop(moved);
+    (gestured, fresh_at(&runtime, &mut target, style, end))
+}
 
-    let mut fresh = Map::new(&runtime, MapOptions::default());
+/// What a fresh map draws at rest at `at`, live, once idle.
+fn fresh_at(runtime: &Runtime, target: &mut Target, style: &str, at: At) -> Vec<u8> {
+    let mut fresh = Map::new(runtime, MapOptions::default());
     fresh.set_style_json(style).unwrap();
-    fresh.jump_to(&camera(end));
-    (gestured, fresh.snapshot(WIDTH, HEIGHT, 1.0).unwrap().pixels)
+    fresh.jump_to(&camera(at));
+    settle(&mut fresh, target);
+    target.read_pixels().unwrap()
 }
 
 /// Asserts the two pictures equal, to one step in a channel: the GPU cull
@@ -213,6 +219,39 @@ fn shadows_after_a_gesture_are_a_fresh_map_s() {
     let start = (Geodetic::new(139.72, 35.67), 14.2, 0.0, 0.0);
     let end = (STATION, 15.6, -40.0, 60.0);
     assert_same("shadows", both_ways(&shadowed_tokyo(), start, end, 30));
+}
+
+/// Panning around a circle frame by frame, as the bench's moving camera
+/// does, stopping six times to idle and compare with a fresh map there.
+#[test]
+fn panning_frame_by_frame_draws_what_a_fresh_map_does() {
+    let style = tokyo("", "");
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    // A circle of about 300 m around the station.
+    let at = |f: u32| {
+        let angle = std::f64::consts::TAU * f64::from(f) / 120.0;
+        let center = Geodetic::new(
+            STATION.lon + 0.003 * (angle.cos() - 1.0),
+            STATION.lat + 0.0025 * angle.sin(),
+        );
+        (center, 15.0, 0.0, 0.0)
+    };
+    map.jump_to(&camera(at(0)));
+    settle(&mut map, &mut target);
+    for stop in 1..=6 {
+        for f in (stop - 1) * 20 + 1..=stop * 20 {
+            map.jump_to(&camera(at(f)));
+            map.render(&mut target, 0.0).unwrap();
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        settle(&mut map, &mut target);
+        let panned = target.read_pixels().unwrap();
+        let fresh = fresh_at(&runtime, &mut target, &style, at(stop * 20));
+        assert_same(&format!("pan-{stop}"), (panned, fresh));
+    }
 }
 
 #[test]
