@@ -36,6 +36,9 @@ impl Deps {
     pub(crate) const LOCALE: Self = Self(256);
     pub(crate) const IMAGE: Self = Self(512);
     pub(crate) const SCRIPT: Self = Self(1024);
+    /// The feature's geometry (`within`, `distance`): evaluation needs it
+    /// in the context. Implies [`PROPERTIES`](Self::PROPERTIES).
+    pub(crate) const GEOMETRY: Self = Self(4096 | 2048 | 2);
 
     pub(crate) fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0 && other.0 != 0
@@ -480,7 +483,7 @@ impl Op {
                 Call::Collator => Deps::LOCALE,
                 Call::Image => Deps::IMAGE,
                 Call::SupportedScript => Deps::SCRIPT,
-                Call::Geometry { .. } => Deps::PROPERTIES,
+                Call::Geometry { .. } => Deps::GEOMETRY,
                 _ => Deps::NONE,
             },
             Op::Zoom => Deps::ZOOM,

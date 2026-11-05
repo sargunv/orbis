@@ -441,6 +441,17 @@ public final class OrbMap {
         return OrbMap_query_rendered(live(), x0, y0, x1, y1)
     }
 
+    /// GL JS `querySourceFeatures`: the features of `source` in the
+    /// tiles the last frame drew, of `source_layer` (vector sources;
+    /// empty for every layer), that a v8 `filter` as JSON selects
+    /// (empty for all; `["within", polygon]` for an area). Returns the
+    /// query's id, as `query_rendered` does.
+    ///
+    /// Contract: `query`.
+    public func querySource(source: String, sourceLayer: String, filter: String) -> UInt64 {
+        return withStringView(source) { sourceView in withStringView(sourceLayer) { sourceLayerView in withStringView(filter) { filterView in OrbMap_query_source(live(), sourceView, sourceLayerView, filterView) } } }
+    }
+
     /// Where a point is in the viewport, in logical pixels.
     ///
     /// Contract: `query`.

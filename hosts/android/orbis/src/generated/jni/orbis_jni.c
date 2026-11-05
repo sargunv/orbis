@@ -753,6 +753,25 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapQueryRendered(JNIEnv* e
     return (jlong)(result);
 }
 
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapQuerySource(JNIEnv* env, jclass cls, jlong self, jbyteArray source, jbyteArray sourceLayer, jbyteArray filter) {
+    (void)env;
+    (void)cls;
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return 0;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    jbyte* sourceLayer_bytes = (*env)->GetByteArrayElements(env, sourceLayer, NULL);
+    if (!sourceLayer_bytes) return 0;
+    DiplomatStringView sourceLayer_view = { (const char*)sourceLayer_bytes, (size_t)(*env)->GetArrayLength(env, sourceLayer) };
+    jbyte* filter_bytes = (*env)->GetByteArrayElements(env, filter, NULL);
+    if (!filter_bytes) return 0;
+    DiplomatStringView filter_view = { (const char*)filter_bytes, (size_t)(*env)->GetArrayLength(env, filter) };
+    uint64_t result = OrbMap_query_source((OrbMap*)(intptr_t)self, source_view, sourceLayer_view, filter_view);
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, sourceLayer, sourceLayer_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, filter, filter_bytes, JNI_ABORT);
+    return (jlong)(result);
+}
+
 JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapProject(JNIEnv* env, jclass cls, jlong self, jdouble lon, jdouble lat) {
     (void)env;
     (void)cls;

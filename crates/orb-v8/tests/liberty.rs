@@ -171,7 +171,7 @@ fn filters_select_features() {
     let tile = b.finish();
     let select = |id: &str| {
         let layer = layer(&style, id);
-        layer.filter.as_ref().unwrap().select(&tile, 14.0)
+        layer.filter.as_ref().unwrap().select(&tile, 14.0, None)
     };
     assert_eq!(select("road_minor"), [0]);
     assert_eq!(select("road_trunk_primary"), [3]);

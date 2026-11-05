@@ -651,7 +651,7 @@ mod tests {
             let symbol = &style.layers[0];
             let zoom = num(&case["zoom"]);
             let features: Vec<u32> = match &symbol.filter {
-                Some(filter) => filter.select(layer, zoom),
+                Some(filter) => filter.select(layer, zoom, None),
                 None => (0..layer.len() as u32).collect(),
             };
             let ids = case

@@ -234,6 +234,9 @@ internal object OrbisNative {
     external fun orbMapQueryRendered(self: Long, x0: Double, y0: Double, x1: Double, y1: Double): Long
 
     @JvmStatic
+    external fun orbMapQuerySource(self: Long, source: ByteArray, sourceLayer: ByteArray, filter: ByteArray): Long
+
+    @JvmStatic
     external fun orbMapProject(self: Long, lon: Double, lat: Double): OrbPoint
 
     @JvmStatic

@@ -71,8 +71,9 @@ impl Default for MapOptions {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Map(MapEvent),
-    /// A query from [`Map::query_rendered`] finished: a JSON array of
-    /// GeoJSON features, topmost first, or why it failed.
+    /// A query from [`Map::query_rendered`] or [`Map::query_source`]
+    /// finished: a JSON array of GeoJSON features (rendered ones topmost
+    /// first), or why it failed.
     Query {
         id: u64,
         result: Result<String, String>,
@@ -520,23 +521,41 @@ impl Map {
     /// frame drawn. The features arrive as an [`Event::Query`] with the
     /// returned id; the map wakes when they do.
     pub fn query_rendered(&mut self, min: DVec2, max: DVec2) -> u64 {
+        let done = self.query_done();
+        self.map.query_rendered(min, max, None, done.1);
+        done.0
+    }
+
+    /// GL JS `querySourceFeatures`: the features of `source` in the tiles
+    /// the last frame drew, of `source_layer` (vector sources) or every
+    /// layer, that a v8 `filter` as JSON selects (`["within", polygon]`
+    /// for an area); a feature crossing tiles comes once a tile. They
+    /// arrive as an [`Event::Query`] with the returned id.
+    pub fn query_source(
+        &mut self,
+        source: &str,
+        source_layer: Option<&str>,
+        filter: Option<&str>,
+    ) -> u64 {
+        let done = self.query_done();
+        self.map.query_source(source, source_layer, filter, done.1);
+        done.0
+    }
+
+    /// A new query's id, and what reports its answer as an event.
+    fn query_done(&mut self) -> (u64, orb_runtime::QueryDone) {
         self.next_query += 1;
         let id = self.next_query;
         let finished = self.finished.clone();
         let wake = self.wake.clone();
-        self.map.query_rendered(
-            min,
-            max,
-            None,
-            Box::new(move |result| {
-                finished
-                    .lock()
-                    .expect("queries poisoned")
-                    .push((id, result));
-                wake();
-            }),
-        );
-        id
+        let done = Box::new(move |result| {
+            finished
+                .lock()
+                .expect("queries poisoned")
+                .push((id, result));
+            wake();
+        });
+        (id, done)
     }
 
     /// Where a point is in the viewport, in logical pixels; `None` when

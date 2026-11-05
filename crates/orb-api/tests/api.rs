@@ -509,3 +509,78 @@ fn padding_draws_the_center_where_it_projects() {
     let hit = map.hit_test(center).expect("the box");
     assert_eq!(hit.layer, "box");
 }
+
+/// The answer to query `id`, waiting for it.
+fn answer(map: &mut Map, id: u64) -> String {
+    let started = std::time::Instant::now();
+    loop {
+        match map.poll_event() {
+            Some(Event::Query { id: done, result }) if done == id => {
+                return result.expect("query");
+            }
+            Some(_) => {}
+            None => std::thread::sleep(std::time::Duration::from_millis(1)),
+        }
+        assert!(started.elapsed().as_secs() < 10, "no answer to query {id}");
+    }
+}
+
+#[test]
+fn source_queries_select_by_filter_and_area() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    let points: Vec<String> = (0..6)
+        .map(|i| {
+            format!(
+                r#"{{"type":"Feature","id":{i},"properties":{{"even":{}}},"geometry":{{"type":"Point","coordinates":[{},0]}}}}"#,
+                i % 2 == 0,
+                i * 10 - 25
+            )
+        })
+        .collect();
+    map.set_style_json(&format!(
+        r#"{{"version":8,"center":[0,0],"zoom":0,
+          "sources":{{"p":{{"type":"geojson","data":{{"type":"FeatureCollection","features":[{}]}}}}}},
+          "layers":[{{"id":"p","type":"circle","source":"p"}}]}}"#,
+        points.join(",")
+    ))
+    .expect("style");
+    settle(&mut map, &mut target);
+    let ids = |json: String| {
+        let doc = json::parse(&json).unwrap();
+        let mut ids: Vec<i64> = doc
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f.get("id").unwrap().as_f64().unwrap() as i64)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    let all = map.query_source("p", None, None);
+    assert_eq!(ids(answer(&mut map, all)), [0, 1, 2, 3, 4, 5]);
+    let even = map.query_source("p", None, Some(r#"["get", "even"]"#));
+    assert_eq!(ids(answer(&mut map, even)), [0, 2, 4]);
+    // East of the meridian: points at 5, 15 and 25 degrees.
+    let east = map.query_source(
+        "p",
+        None,
+        Some(
+            r#"["within", {"type":"Polygon","coordinates":[[[0,-10],[30,-10],[30,10],[0,10],[0,-10]]]}]"#,
+        ),
+    );
+    assert_eq!(ids(answer(&mut map, east)), [3, 4, 5]);
+    let missing = map.query_source("nope", None, None);
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(Event::Query { id, result }) = map.poll_event() {
+            assert_eq!(id, missing);
+            assert!(result.is_err());
+            break;
+        }
+        assert!(started.elapsed().as_secs() < 10);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}

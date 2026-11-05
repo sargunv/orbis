@@ -385,6 +385,26 @@ impl TileWorker {
         8192.0 * projection.scale_factor(center) / tms.tile_span(tile.z)
     }
 
+    /// Where `within` and `distance` find a tile of `source`: the tile
+    /// itself on Web Mercator's grid, the one they measure in; nowhere on
+    /// other grids.
+    pub(crate) fn canonical(
+        &self,
+        source: usize,
+        tile: TileIndex,
+    ) -> Option<orb_expr::CanonicalTile> {
+        let id = &self.plan.style.sources[source].id;
+        let mercator = match self.surface.sources.iter().find(|(s, _)| s == id) {
+            Some((_, tms)) => tms.id() == "WebMercatorQuad",
+            None => true,
+        };
+        mercator.then_some(orb_expr::CanonicalTile {
+            z: tile.z,
+            x: tile.col,
+            y: tile.row,
+        })
+    }
+
     pub(crate) fn surface(&self) -> &crate::SurfaceTiles {
         &self.surface
     }
@@ -515,7 +535,11 @@ impl TileWorker {
             &frame,
             &self.plan,
             index,
-            (request.zoom, self.units_per_metre(index, request.tile)),
+            (
+                request.zoom,
+                self.units_per_metre(index, request.tile),
+                self.canonical(index, request.tile),
+            ),
             bend,
             select,
             symbols,

@@ -1719,6 +1719,25 @@ mod ffi {
                 .query_rendered(glam::DVec2::new(x0, y0), glam::DVec2::new(x1, y1))
         }
 
+        /// GL JS `querySourceFeatures`: the features of `source` in the
+        /// tiles the last frame drew, of `source_layer` (vector sources;
+        /// empty for every layer), that a v8 `filter` as JSON selects
+        /// (empty for all; `["within", polygon]` for an area). Returns the
+        /// query's id, as `query_rendered` does.
+        #[diplomat::attr(contract, query)]
+        pub fn query_source(
+            &mut self,
+            source: &DiplomatStr,
+            source_layer: &DiplomatStr,
+            filter: &DiplomatStr,
+        ) -> u64 {
+            self.0.query_source(
+                &text(source),
+                name(source_layer).as_deref(),
+                name(filter).as_deref(),
+            )
+        }
+
         /// Where a point is in the viewport, in logical pixels.
         #[diplomat::attr(contract, query)]
         pub fn project(&self, lon: f64, lat: f64) -> OrbPoint {

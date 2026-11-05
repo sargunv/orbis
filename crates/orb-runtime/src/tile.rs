@@ -208,10 +208,15 @@ fn split_features(layer: &Layer, features: Vec<u32>) -> Split {
     }
 }
 
-fn features(plan: &StylePlan, node: &NodePlan, layer: &Layer, zoom: f64) -> Vec<u32> {
+fn features(
+    plan: &StylePlan,
+    node: &NodePlan,
+    layer: &Layer,
+    (zoom, canonical): (f64, Option<orb_expr::CanonicalTile>),
+) -> Vec<u32> {
     let style_layer = &plan.style.layers[node.layer];
     let mut features: Vec<u32> = match &style_layer.filter {
-        Some(filter) => filter.select(layer, zoom),
+        Some(filter) => filter.select(layer, zoom, canonical),
         None => (0..layer.len() as u32).collect(),
     };
     // GL JS's buckets draw features by their sort key.
@@ -337,7 +342,7 @@ fn build_symbols(
     frame: &TileFrame,
     plan: &StylePlan,
     source: usize,
-    zoom: f64,
+    (zoom, canonical): (f64, Option<orb_expr::CanonicalTile>),
     select: Select<'_>,
     symbols: Symbols<'_>,
     warnings: &mut Vec<String>,
@@ -361,7 +366,7 @@ fn build_symbols(
         let Some((layer, _)) = node_layer(frame, plan, node, zoom) else {
             continue;
         };
-        let features = features(plan, node, layer, zoom);
+        let features = features(plan, node, layer, (zoom, canonical));
         if features.is_empty() {
             continue;
         }
@@ -432,7 +437,7 @@ pub(crate) fn build(
     frame: &TileFrame,
     plan: &StylePlan,
     source: usize,
-    (zoom, units_per_metre): (f64, f64),
+    (zoom, units_per_metre, canonical): (f64, f64, Option<orb_expr::CanonicalTile>),
     bend: Option<orb_layout::fill::Bend>,
     select: Select<'_>,
     symbols: Symbols<'_>,
@@ -446,7 +451,7 @@ pub(crate) fn build(
         frame,
         plan,
         source,
-        zoom,
+        (zoom, canonical),
         select,
         symbols,
         &mut build.warnings,
@@ -469,7 +474,7 @@ pub(crate) fn build(
         let Some((layer, name)) = node_layer(frame, plan, node, zoom) else {
             continue;
         };
-        let selected = features(plan, node, layer, zoom);
+        let selected = features(plan, node, layer, (zoom, canonical));
         if selected.is_empty() {
             continue;
         }
@@ -852,7 +857,7 @@ mod tests {
             &frame,
             &plan,
             0,
-            (0.0, 1.0),
+            (0.0, 1.0, None),
             None,
             Select::default(),
             no_symbols(),
@@ -913,7 +918,7 @@ mod tests {
             &frame,
             &plan,
             0,
-            (15.0, 1.0),
+            (15.0, 1.0, None),
             None,
             Select::default(),
             no_symbols(),
@@ -941,7 +946,7 @@ mod tests {
             &frame,
             &plan,
             0,
-            (15.0, 1.0),
+            (15.0, 1.0, None),
             None,
             Select {
                 rows_only: true,
@@ -995,7 +1000,7 @@ mod tests {
             &frame,
             &plan,
             0,
-            (15.0, 1.0),
+            (15.0, 1.0, None),
             None,
             Select::default(),
             no_symbols(),
@@ -1065,7 +1070,7 @@ mod tests {
             &frame(),
             &plan,
             0,
-            (10.0, 1.0),
+            (10.0, 1.0, None),
             None,
             Select::default(),
             no_symbols(),
@@ -1115,7 +1120,7 @@ mod tests {
             &frame(),
             &plan,
             0,
-            (10.0, 1.0),
+            (10.0, 1.0, None),
             None,
             Select::default(),
             no_symbols(),
@@ -1135,7 +1140,7 @@ mod tests {
             &frame(),
             &plan,
             0,
-            (10.0, 1.0),
+            (10.0, 1.0, None),
             None,
             Select::default(),
             no_symbols(),

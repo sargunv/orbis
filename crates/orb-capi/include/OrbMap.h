@@ -143,6 +143,8 @@ OrbFeature* OrbMap_hit_test(const OrbMap* self, double x, double y);
 
 uint64_t OrbMap_query_rendered(OrbMap* self, double x0, double y0, double x1, double y1);
 
+uint64_t OrbMap_query_source(OrbMap* self, DiplomatStringView source, DiplomatStringView source_layer, DiplomatStringView filter);
+
 OrbPoint OrbMap_project(const OrbMap* self, double lon, double lat);
 
 OrbPoint OrbMap_project_with(const OrbMap* self, OrbCameraTarget camera, double lon, double lat);

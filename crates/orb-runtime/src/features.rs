@@ -117,13 +117,14 @@ impl TileWorker {
                     None => None,
                 };
                 let zoom = request.tile.zoom;
+                let canonical = self.canonical(index, tile);
                 frame
                     .layers
                     .iter()
                     .filter(|l| layer.as_deref().is_none_or(|name| l.name() == name))
                     .flat_map(|l| {
                         let selected = match &filter {
-                            Some(filter) => filter.select(l, zoom),
+                            Some(filter) => filter.select(l, zoom, canonical),
                             None => (0..l.len() as u32).collect(),
                         };
                         read(l, &mut selected.into_iter())

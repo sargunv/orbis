@@ -2,7 +2,7 @@
 use crate::json::{self, Json};
 use crate::property::{PropertyExpression, PropertySpec, PropertyType};
 use crate::value::{Type, Value};
-use crate::{Color, Expression, Filter, Kind};
+use crate::{CanonicalTile, Color, Expression, Filter, Kind};
 use orb_tile::{GeometryType, LayerBuilder};
 use std::borrow::Cow;
 fn parse(text: &str) -> Json {
@@ -52,7 +52,35 @@ fn roads() -> orb_tile::Layer {
 fn select(filter: &str, zoom: f64) -> Vec<u32> {
     let mut warnings = Vec::new();
     let filter = Filter::parse(&parse(filter), &mut warnings).unwrap();
-    filter.select(&roads(), zoom)
+    filter.select(&roads(), zoom, None)
+}
+
+#[test]
+fn within_filters_read_each_feature_where_its_tile_is() {
+    // Points in the west and east halves of the zoom-1 tile 0/0, the
+    // north-west quarter of the world.
+    let mut b = LayerBuilder::new("points", 4096);
+    for x in [1024, 3072] {
+        b.begin_feature(None, GeometryType::Point);
+        b.begin_part();
+        b.begin_ring();
+        b.push_vertex([x, 2048]);
+    }
+    let points = b.finish();
+    let mut warnings = Vec::new();
+    let west = Filter::parse(
+        &parse(
+            r#"["within", {"type": "Polygon", "coordinates":
+                [[[-180, 0], [-90, 0], [-90, 85], [-180, 85], [-180, 0]]]}]"#,
+        ),
+        &mut warnings,
+    )
+    .unwrap();
+    assert!(west.expression().reads_geometry());
+    let tile = CanonicalTile { z: 1, x: 0, y: 0 };
+    assert_eq!(west.select(&points, 1.0, Some(tile)), [0]);
+    // Nowhere to find the geometry: nothing is within.
+    assert_eq!(west.select(&points, 1.0, None), Vec::<u32>::new());
 }
 
 #[test]

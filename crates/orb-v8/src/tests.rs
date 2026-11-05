@@ -193,7 +193,7 @@ fn legacy_functions_and_filters() {
     )
     .unwrap();
     let line = &s.layers[0];
-    assert_eq!(line.filter.as_ref().unwrap().select(&tile, 0.0), [1]);
+    assert_eq!(line.filter.as_ref().unwrap().select(&tile, 0.0, None), [1]);
 }
 
 #[test]

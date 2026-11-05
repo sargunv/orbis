@@ -5,7 +5,7 @@ use orb_tile::Layer;
 use crate::legacy::{is_expression_filter, lower_filter, mixed_filter_warning};
 use crate::parse::Parser;
 use crate::value::{Type, Value};
-use crate::{Diagnostic, Expression};
+use crate::{CanonicalTile, Diagnostic, Expression, FeatureGeometry};
 
 /// A compiled layer filter: an expression or a lowered legacy filter.
 #[derive(Clone, Debug)]
@@ -64,7 +64,9 @@ impl Filter {
 
     /// The indices of the features of `layer` the filter selects at `zoom`.
     /// A feature whose evaluation fails is not selected, as in GL JS.
-    pub fn select(&self, layer: &Layer, zoom: f64) -> Vec<u32> {
+    /// `tile` locates the layer's geometry for filters that read it
+    /// (`within`, `distance`); without it they select nothing.
+    pub fn select(&self, layer: &Layer, zoom: f64, tile: Option<CanonicalTile>) -> Vec<u32> {
         if let Some(constant) = self.expression.constant() {
             return if *constant == Value::Bool(true) {
                 (0..layer.len() as u32).collect()
@@ -73,8 +75,23 @@ impl Filter {
             };
         }
         let bound = self.expression.bind(layer);
+        let geometry = tile.filter(|_| self.expression.reads_geometry());
         (0..layer.len())
-            .filter(|&row| matches!(bound.evaluate(zoom, row), Ok(Value::Bool(true))))
+            .filter(|&row| {
+                let selects = |value| matches!(value, Ok(Value::Bool(true)));
+                match geometry {
+                    Some(tile) => {
+                        let geometry = FeatureGeometry::from_layer(layer, row, tile);
+                        let context = crate::EvaluationContext {
+                            zoom,
+                            geometry: Some(&geometry),
+                            ..crate::EvaluationContext::default()
+                        };
+                        selects(bound.evaluate_with(&context, row))
+                    }
+                    None => selects(bound.evaluate(zoom, row)),
+                }
+            })
             .map(|row| row as u32)
             .collect()
     }

@@ -124,6 +124,12 @@ impl Expression {
         !self.deps().contains(Deps::FEATURE)
     }
 
+    /// Whether the expression reads the feature's geometry (`within`,
+    /// `distance`), which evaluation then needs in its context.
+    pub fn reads_geometry(&self) -> bool {
+        self.deps().contains(Deps::GEOMETRY)
+    }
+
     /// Whether the expression reads `image`, whose availability evaluation
     /// decides.
     pub fn reads_images(&self) -> bool {
