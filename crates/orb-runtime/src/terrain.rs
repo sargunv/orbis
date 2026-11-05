@@ -45,7 +45,7 @@ struct Slot {
     index: u32,
     content: u64,
     /// The zoom and pattern cross-fade they were drawn at.
-    look: [u64; 2],
+    look: [u64; 3],
 }
 
 #[derive(Debug)]
@@ -246,7 +246,7 @@ impl Terrain {
 
     /// This frame's terrain tiles for the renderer, with slots assigned
     /// from `layout`, and which tile slots to redraw. `content` hashes the
-    /// draped content under a terrain tile; `look` is the zoom and
+    /// draped content under a terrain tile; `look` is the zoom, bearing and
     /// cross-fade it draws at, redrawn for only once `camera` stops.
     pub(crate) fn plan(
         &mut self,
@@ -255,7 +255,7 @@ impl Terrain {
         camera: &CameraState,
         layout: DrapeLayout,
         content: &dyn Fn(CoveredTile) -> u64,
-        look: [u64; 2],
+        look: [u64; 3],
     ) -> (Vec<TerrainTile>, Vec<(CoveredTile, u32)>) {
         if layout.generation != self.generation {
             self.generation = layout.generation;

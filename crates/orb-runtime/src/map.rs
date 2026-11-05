@@ -2068,10 +2068,18 @@ impl Map {
             }
             crate::terrain::hash((revision, parts))
         };
+        // Viewport-anchored hillshades turn their light with the map: the
+        // bearing joins the look, so they redraw once the camera stops.
+        let zoom = self.camera.zoom(self.surface.projection());
+        let turns = plan.nodes.iter().any(|n| {
+            matches!(&plan.style.layers[n.layer].kind, LayerKind::Hillshade(h)
+                if h.paint.illumination_anchor.evaluate(zoom) == orb_v8::IlluminationAnchor::Viewport)
+        });
         let look = [
-            self.camera.zoom(self.surface.projection()).to_bits(),
+            zoom.to_bits(),
             u64::from(self.crossfade.mix.to_bits())
                 | u64::from(self.crossfade.from_scale.to_bits()) << 32,
+            if turns { self.camera.bearing.to_bits() } else { 0 },
         ];
         let (tiles, redraw) = terrain.plan(&surface, view, &self.camera, layout, &content, look);
         renderer.set_terrain_tiles(gpu, &tiles);
