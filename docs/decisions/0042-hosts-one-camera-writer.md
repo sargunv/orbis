@@ -115,3 +115,20 @@ until the map is idle: a map waiting only on jobs needs no frame until
 their wake, so loops that stopped when `needs_frame` turned false stopped
 before the first tile.
 
+
+## One clock: the frame's
+
+Frames drive everything a frame shows. Fades (labels, raster tiles),
+paint transitions, the pattern crossfade and the shaders' time run on the
+frame timestamp the host passes, counted from the map's first frame; a
+paint transition, like an animation, starts with the frame after its edit.
+The wall clock is left for CPU budgets (tile intake, placement) and network
+retry backoff. `orb-api`'s still output times its frames from the host's
+last frame plus the wall time since, so a map keeps one clock. A test that
+draws on a synthetic 60 Hz clock now sees the same frames under any load: a
+400 ms ease ends on its 25th frame.
+
+The page builds an object per event for the package (camera progress
+events come every frame); their keys and names are interned, so the page
+decodes each string once rather than per event (14 ms of `TextDecoder`
+over a three-gesture profile before).

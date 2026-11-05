@@ -20,7 +20,6 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Instant;
 
 pub use map::{Event, Image, Map, MapOptions, STILL_TIMEOUT, TileRequest};
 pub use orb_camera::{
@@ -137,8 +136,6 @@ struct Shared {
     regions: Option<regions::Regions>,
     executor: Arc<ThreadPool>,
     images: orb_runtime::Images,
-    /// The gesture and animation clock's origin.
-    started: Instant,
     /// Where the pipeline cache is kept, and the pipeline count it was
     /// last saved at.
     cache: RefCell<Option<(PathBuf, u32)>>,
@@ -195,7 +192,6 @@ impl Runtime {
                     .map(|dir| regions::Regions::new(dir, fetch)),
                 executor: Arc::new(ThreadPool::new("jobs", threads)),
                 images: Default::default(),
-                started: Instant::now(),
                 cache: RefCell::new(None),
                 cache_dir: RefCell::new(None),
                 wakes,
@@ -455,11 +451,6 @@ impl Runtime {
             jobs,
             wake,
         }
-    }
-
-    /// Milliseconds on the runtime's gesture and animation clock.
-    fn now(&self) -> f64 {
-        self.shared.started.elapsed().as_secs_f64() * 1000.0
     }
 }
 

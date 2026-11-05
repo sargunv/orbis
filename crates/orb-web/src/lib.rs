@@ -382,8 +382,11 @@ impl OrbisMap {
     #[wasm_bindgen(js_name = takeEvents)]
     pub fn take_events(&mut self) -> js_sys::Array {
         let out = js_sys::Array::new();
-        let set = |object: &js_sys::Object, key: &str, value: JsValue| {
-            let _ = js_sys::Reflect::set(object, &key.into(), &value);
+        // Keys and names are the same few strings every frame: interned,
+        // the page decodes each once.
+        let name = |text: &'static str| JsValue::from(wasm_bindgen::intern(text));
+        let set = |object: &js_sys::Object, key: &'static str, value: JsValue| {
+            let _ = js_sys::Reflect::set(object, &name(key), &value);
         };
         for event in self.map.take_events() {
             let object = js_sys::Object::new();
@@ -428,7 +431,7 @@ impl OrbisMap {
                         }
                         orb_runtime::VideoRequest::Close => "close",
                     };
-                    set(&object, "request", request.into());
+                    set(&object, "request", name(request));
                     "video"
                 }
                 MapEvent::Capability { tier } => {
@@ -436,7 +439,7 @@ impl OrbisMap {
                         orb_hal::Tier::Modern => "modern",
                         orb_hal::Tier::Compat => "compat",
                     };
-                    set(&object, "tier", tier.into());
+                    set(&object, "tier", name(tier));
                     "capability"
                 }
                 MapEvent::Camera(orb_runtime::CameraEvent::Changed {
@@ -455,8 +458,8 @@ impl OrbisMap {
                         orb_camera::Phase::Progress => "progress",
                         orb_camera::Phase::End => "end",
                     };
-                    set(&object, "change", change.into());
-                    set(&object, "phase", phase.into());
+                    set(&object, "change", name(change));
+                    set(&object, "phase", name(phase));
                     set(&object, "user", user.into());
                     "camera"
                 }
@@ -482,7 +485,7 @@ impl OrbisMap {
                     "dblclick"
                 }
             };
-            set(&object, "type", kind.into());
+            set(&object, "type", name(kind));
             out.push(&object);
         }
         out

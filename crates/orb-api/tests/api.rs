@@ -5,8 +5,8 @@
 use std::time::Duration;
 
 use orb_api::{
-    Button, CameraTarget, EaseOptions, Error, Event, Input, Map, MapEvent, MapOptions, Modifiers,
-    PointerKind, Runtime, RuntimeOptions, StyleImage, Target,
+    Button, CameraEvent, CameraTarget, EaseOptions, Error, Event, Input, Map, MapEvent, MapOptions,
+    Modifiers, PointerKind, Runtime, RuntimeOptions, StyleImage, Target,
 };
 
 /// A red background and a blue box around the origin, with feature ids.
@@ -268,26 +268,41 @@ fn idle_comes_once_after_an_ease() {
             ..EaseOptions::default()
         },
     );
-    // Frames on a display's 60 Hz clock, whatever the wall clock does.
-    // The ease ends on the clock; tiles for its zoom may arrive later.
-    let (mut frames, mut idles, mut time, mut eased) = (0, 0, 1e6, None);
-    while map.needs_frame() {
-        let report = map.render(&mut target, time).unwrap().unwrap();
-        frames += 1;
-        time += 1000.0 / 60.0;
-        if eased.is_none() && (map.zoom() - 1.0).abs() < 1e-9 {
-            eased = Some(frames);
-        }
-        for event in std::iter::from_fn(|| map.poll_event()) {
-            if event == Event::Map(MapEvent::Idle) {
-                idles += 1;
-                assert!(report.idle, "idle on a frame with work left");
+    // Frames on a display's 60 Hz clock, whatever the wall clock does:
+    // the first starts the ease, which arrives on the frame 400 ms on.
+    let (mut frames, mut idles, mut arrived) = (0, 0, None);
+    let started = std::time::Instant::now();
+    while idles == 0 || map.needs_frame() {
+        if map.needs_frame() {
+            let time = 1e6 + f64::from(frames) * 1000.0 / 60.0;
+            let report = map.render(&mut target, time).unwrap().unwrap();
+            frames += 1;
+            for event in std::iter::from_fn(|| map.poll_event()) {
+                match event {
+                    Event::Map(MapEvent::Idle) => {
+                        idles += 1;
+                        assert!(report.idle, "idle on a frame with work left");
+                    }
+                    Event::Map(MapEvent::Camera(CameraEvent::AnimationEnd {
+                        interrupted, ..
+                    })) => {
+                        assert!(!interrupted);
+                        arrived = Some(frames);
+                    }
+                    _ => {}
+                }
             }
+        } else {
+            // Waiting on data (the new zoom's tiles): its wake asks for a frame.
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert!(frames < 100, "the ease never ended");
+        assert!(started.elapsed().as_secs() < 30, "the map never idled");
     }
-    let eased = eased.expect("the ease ended");
-    assert!((24..=27).contains(&eased), "{eased} frames for 400 ms");
+    assert_eq!(
+        arrived,
+        Some(25),
+        "frame 0 at the start, frame 24 at 400 ms"
+    );
     assert_eq!(idles, 1);
     assert!((map.zoom() - 1.0).abs() < 1e-9);
 }

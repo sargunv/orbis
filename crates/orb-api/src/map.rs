@@ -117,6 +117,10 @@ pub struct Map {
     mode: RenderMode,
     /// Markers and the location layer.
     batteries: orb_runtime::batteries::Batteries,
+    /// The last frame's time and when it was drawn: frames the map times
+    /// itself (still output, [`render_until_idle`](Self::render_until_idle))
+    /// go on from it, on the host's clock.
+    last_frame: Option<(f64, Instant)>,
 }
 
 impl std::fmt::Debug for Map {
@@ -189,6 +193,7 @@ impl Map {
             dirty: true,
             mode: RenderMode::Continuous,
             batteries: Default::default(),
+            last_frame: None,
         }
     }
 
@@ -610,7 +615,7 @@ impl Map {
         // The scene document sets the plane.
         self.set_mode(RenderMode::Still);
         while self.map.style_doc().is_none() {
-            self.frame(target, self.runtime.now())?;
+            self.frame(target, self.now())?;
             if self.map.style_doc().is_none() {
                 self.wait(deadline)?;
             }
@@ -680,7 +685,7 @@ impl Map {
     fn settle(&mut self, target: &mut Target, deadline: Instant) -> Result<FrameReport, Error> {
         let mut was_idle = false;
         loop {
-            if let Some(report) = self.frame(target, self.runtime.now())? {
+            if let Some(report) = self.frame(target, self.now())? {
                 if report.idle && was_idle {
                     return Ok(report);
                 }
@@ -712,12 +717,20 @@ impl Map {
         Ok(())
     }
 
+    /// The time of a frame the map times itself: the host's last frame's
+    /// time and the wall time since, so the map's frames keep one clock.
+    fn now(&self) -> f64 {
+        self.last_frame
+            .map_or(0.0, |(time, at)| time + at.elapsed().as_secs_f64() * 1000.0)
+    }
+
     /// One frame, shown at `frame_time`.
     fn frame(
         &mut self,
         target: &mut Target,
         frame_time: f64,
     ) -> Result<Option<FrameReport>, Error> {
+        self.last_frame = Some((frame_time, Instant::now()));
         if !target.same_runtime(&self.shared) {
             return Err(Error::InvalidArgument(
                 "the target belongs to another runtime".into(),

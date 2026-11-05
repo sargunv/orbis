@@ -26,8 +26,18 @@ struct Running {
     layer: String,
     id: PropertyId,
     prior: Slot,
-    begin: f64,
-    end: f64,
+    /// When it eases, in frame time; `None` until the first frame after
+    /// the edit, when its delay starts.
+    span: Option<(f64, f64)>,
+    transition: Transition,
+}
+
+impl Running {
+    /// How far it has eased at `now`; a transition not started yet hasn't.
+    fn at(&self, now: f64) -> f64 {
+        self.span
+            .map_or(0.0, |(begin, end)| ease((now - begin) / (end - begin)))
+    }
 }
 
 /// GL JS's `easeCubicInOut`.
@@ -52,14 +62,15 @@ fn per_feature(kind: Kind) -> bool {
 
 impl Transitions {
     /// A paint change of `layer`'s property `id` from `prior` (its slot
-    /// before the edit), at `now` and `zoom`.
+    /// before the edit), made after the frame at `shown` and `zoom`; it
+    /// starts with the next frame.
     pub(crate) fn start(
         &mut self,
         layer: &str,
         id: PropertyId,
         prior: &Slot,
         transition: Transition,
-        (now, zoom): (f64, f64),
+        (shown, zoom): (f64, f64),
     ) {
         if !id.transitions() {
             return;
@@ -74,7 +85,7 @@ impl Transitions {
         {
             Some(i) => {
                 let r = self.running.remove(i);
-                let t = ease((now - r.begin) / (r.end - r.begin));
+                let t = r.at(shown);
                 let mut current = prior.clone();
                 mix(id, &mut current, &r.prior, zoom, t);
                 current
@@ -88,8 +99,8 @@ impl Transitions {
             layer: layer.to_string(),
             id,
             prior,
-            begin: now + transition.delay,
-            end: now + transition.delay + transition.duration,
+            span: None,
+            transition,
         });
     }
 
@@ -100,7 +111,13 @@ impl Transitions {
     /// The style overlaid with the eased values at `zoom` and `now`, while
     /// a transition runs; finished ones end.
     pub(crate) fn overlay(&mut self, plan: &StylePlan, zoom: f64, now: f64) -> Option<StylePlan> {
-        self.running.retain(|r| r.end > now);
+        for r in &mut self.running {
+            let t = r.transition;
+            r.span
+                .get_or_insert((now + t.delay, now + t.delay + t.duration));
+        }
+        self.running
+            .retain(|r| r.span.is_some_and(|(_, end)| end > now));
         self.ran |= !self.running.is_empty();
         if self.running.is_empty() {
             return None;
@@ -115,7 +132,7 @@ impl Transitions {
             else {
                 continue;
             };
-            let t = ease((now - r.begin) / (r.end - r.begin));
+            let t = r.at(now);
             mix(r.id, Arc::make_mut(layer).slot_mut(r.id), &r.prior, zoom, t);
         }
         Some(StylePlan {

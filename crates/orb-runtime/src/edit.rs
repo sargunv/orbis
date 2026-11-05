@@ -154,7 +154,7 @@ impl Map {
         let plan = worker.plan();
 
         // Paint changes ease from the property before the edit.
-        let (now, zoom) = (self.services.clock.now(), self.zoom());
+        let (now, zoom) = (self.frame_time, self.zoom());
         let old_plan = old.plan();
         for change in &patch.changes {
             let Change::Paint { layer, id, .. } = change else {

@@ -49,7 +49,9 @@ orb-text.workspace = true
 orb-tile.workspace = true
 orb-style.workspace = true
 orb-v8.workspace = true
-wasm-bindgen.workspace = true
+# Event names and keys cross to the page every frame: interned, they're
+# decoded once.
+wasm-bindgen = { workspace = true, features = ["enable-interning"] }
 wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["HtmlCanvasElement", "HtmlVideoElement", "ImageBitmap", "OffscreenCanvas", "Window"] }
 wgpu = { workspace = true, optional = true }

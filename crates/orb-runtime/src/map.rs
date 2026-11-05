@@ -514,8 +514,11 @@ pub struct Map {
     /// A scene document whose style is loading, which the style parses
     /// under (models resolved against the scene).
     pending_scene: Option<orb_v8::SceneDocument>,
-    /// When the map began, by its clock: frames' time counts from it.
-    born: f64,
+    /// The first frame's time: frames' time counts from it (decision 0042:
+    /// fades, transitions and the shaders' time run on frame time).
+    born: Option<f64>,
+    /// The time of the frame being drawn, or the last one.
+    pub(crate) frame_time: f64,
     /// When the last raster tile to arrive finishes fading in.
     image_fades_until: f64,
     /// Paint edits easing in (decision 0031).
@@ -724,11 +727,11 @@ impl Map {
             store.jump_to_state(camera);
             store.take_events();
         }
-        let born = services.clock.now();
         Self {
             mode: RenderMode::Continuous,
-            born,
-            image_fades_until: born,
+            born: None,
+            frame_time: 0.0,
+            image_fades_until: f64::NEG_INFINITY,
             picking: Default::default(),
             placement_ms: 0.0,
             tiles_deferred: false,
@@ -885,10 +888,10 @@ impl Map {
         )
     }
 
-    /// Per label text, the greatest opacity it drew with in the last
-    /// frame, now: for benches that watch labels across gestures.
+    /// Per label text, the greatest opacity it drew with at the last
+    /// frame's time: for benches that watch labels across gestures.
     pub fn shown_labels(&self) -> HashMap<Box<str>, f32> {
-        self.labels.shown(self.services.clock.now())
+        self.labels.shown(self.frame_time)
     }
 
     /// The view's style zoom (decision 0022): GL JS's in Web Mercator,
@@ -1315,6 +1318,8 @@ impl Map {
         pixel_ratio: f32,
         frame_time: f64,
     ) -> FrameReport {
+        self.frame_time = frame_time;
+        self.born.get_or_insert(frame_time);
         if self.renderer != Some(renderer.id()) {
             if self.renderer.is_some() {
                 self.forget_gpu();
@@ -1391,7 +1396,7 @@ impl Map {
             },
         );
 
-        let now = self.services.clock.now();
+        let now = frame_time;
         let mut fading = false;
         if let Some(style) = &mut self.style {
             let plan = style.worker.plan();
@@ -1528,7 +1533,7 @@ impl Map {
             extrusion_scale: self.extrusion_scale() as f32,
             ground_horizon: view.ground_horizon() as f32,
             symbol_fade_change: self.labels.fade_change(now),
-            time: (now - self.born) as f32,
+            time: (now - self.born.unwrap_or(now)) as f32,
             pitch: self.camera.state().pitch.to_radians() as f32,
             roll: self.camera.state().roll.to_radians() as f32,
             align: match globe {
@@ -3406,7 +3411,7 @@ impl Map {
             } else {
                 0.0
             };
-            let now = self.services.clock.now();
+            let now = self.frame_time;
             let series = warp
                 .as_deref_mut()
                 .filter(|_| globe)
@@ -3431,7 +3436,7 @@ impl Map {
                 },
                 mesh: warped.as_ref().map(|w| Arc::clone(&w.mesh)),
                 patches: patches.as_ref().map(|(cells, p)| (*cells, &p[..])),
-                fade_from: (fade_ms > 0.0).then_some((now - self.born) as f32),
+                fade_from: (fade_ms > 0.0).then_some((now - self.born.unwrap_or(now)) as f32),
                 unpack: endpoint.dem_unpack.map(|u| u.map(|v| v as f32)),
             };
             // Room as for vector tiles: what's free first, then unused
