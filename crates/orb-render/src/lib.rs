@@ -617,17 +617,21 @@ impl Renderer {
     }
 
     /// Puts draped nodes in their drape stacks while terrain is on: each
-    /// run of them between nodes that aren't draped is a stack.
+    /// run of them between nodes that aren't draped is a stack, and a layer
+    /// that composites once (below opacity 1 or blending other than
+    /// normally) has a stack of its own, whose terrain layer composites
+    /// as the layer's.
     fn assign_stacks(&mut self) {
         let on = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
         let mut stacks = 0u8;
-        let mut previous = false;
+        let mut previous: Option<Option<u32>> = None;
         for node in &mut self.nodes {
             let draped = on && node.family.is_draped();
-            if draped && !previous {
+            let group = composite_group(node.composite);
+            if draped && previous != Some(group) {
                 stacks = stacks.saturating_add(1);
             }
-            previous = draped;
+            previous = draped.then_some(group);
             node.stack = draped.then(|| stacks - 1);
             node.cull.target = match node.stack {
                 Some(stack) => PlacementTarget::Drape(stack),
@@ -741,6 +745,11 @@ impl Renderer {
         let before = grouped(n.composite);
         n.composite = Some((layer, opacity, blend));
         if grouped(n.composite) != before {
+            if n.stack.is_some() {
+                // The layer gains or loses a drape stack of its own.
+                self.assign_stacks();
+                self.sync_cull();
+            }
             self.invalidate_bundle(gpu);
         } else if before.is_some() {
             self.composites.set_opacity(gpu, node as usize, opacity);
@@ -1061,26 +1070,37 @@ impl Renderer {
             // Runs of one layer's nodes below layer opacity 1 or blending
             // other than normally draw into a texture of their own; draped
             // nodes take the terrain's way.
-            let mut runs: Vec<(std::ops::Range<usize>, f32, Blend)> = Vec::new();
+            // On terrain, a draped layer's group is its drape stack: the
+            // stack's terrain layer is the texture it composites.
+            let mut runs: Vec<layer_composite::Run> = Vec::new();
             for (i, node) in self.nodes.iter().enumerate() {
-                let Some((layer, opacity, blend)) = node.composite.filter(|&(_, o, b)| {
-                    (o < 1.0 || b != Blend::Normal) && !(terrain_on && node.stack.is_some())
-                }) else {
+                let Some(layer) = composite_group(node.composite) else {
                     continue;
                 };
+                let (_, opacity, blend) = node.composite.expect("grouped");
+                let stack = node.stack.filter(|_| terrain_on);
                 match runs.last_mut() {
-                    Some((nodes, _, _))
-                        if nodes.end == i
-                            && self.nodes[nodes.start].composite.map(|(l, _, _)| l)
+                    Some(run)
+                        if run.nodes.end == i
+                            && composite_group(self.nodes[run.nodes.start].composite)
                                 == Some(layer) =>
                     {
-                        nodes.end = i + 1;
+                        run.nodes.end = i + 1;
                     }
-                    _ => runs.push((i..i + 1, opacity, blend)),
+                    _ => runs.push(layer_composite::Run {
+                        nodes: i..i + 1,
+                        opacity,
+                        blend,
+                        source: stack
+                            .and_then(|s| self.terrain.as_ref()?.stack_texture(u32::from(s))),
+                    }),
                 }
             }
             self.composites.regroup(gpu, runs, size);
             for g in 0..self.composites.groups.len() {
+                if self.composites.groups[g].drawn_elsewhere() {
+                    continue;
+                }
                 let mut group = vec![RenderCommand::SetIndexBuffer {
                     buffer: self.scene.buffers().compacted,
                     format: IndexFormat::Uint32,
@@ -1378,6 +1398,14 @@ impl Renderer {
             },
         ]);
     }
+}
+
+/// The style layer a node composites once with, when it does: below layer
+/// opacity 1 or blending other than normally.
+fn composite_group(composite: Option<(u32, f32, Blend)>) -> Option<u32> {
+    composite
+        .filter(|&(_, o, b)| o < 1.0 || b != Blend::Normal)
+        .map(|(l, _, _)| l)
 }
 
 /// Draped families' pipelines for the drape atlas's format.

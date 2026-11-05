@@ -721,6 +721,12 @@ impl Terrain {
     }
 
     /// Stack `stack`'s composite into the map, for the main bundle.
+    /// The colour texture stack `stack`'s terrain layer draws into, once
+    /// sized.
+    pub(crate) fn stack_texture(&self, stack: u32) -> Option<TextureId> {
+        self.targets.get(stack as usize)?.color
+    }
+
     pub(crate) fn composite_commands(&self, stack: u32) -> Vec<RenderCommand> {
         let Some(group) = self.targets.get(stack as usize).and_then(|t| t.group) else {
             return Vec::new();

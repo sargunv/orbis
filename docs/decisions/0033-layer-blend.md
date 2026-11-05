@@ -53,8 +53,13 @@ It isn't parsed yet. Nothing needs it before that module, and it should
 come with z-groups, which would composite a group of layers through the
 same path.
 
-On terrain, draped layers don't composite yet, opacity or blend
-(#64).
+On terrain, a draped layer that composites once gets a drape stack of its
+own (decision 0019). The stack's terrain layer, drawn into its texture as
+every stack's is, becomes the group's texture, composited at the layer's
+opacity and in its blend in place of the stack's plain composite.
+`fill-layer-opacity/terrain` and `line-layer-opacity/terrain` now pass.
+The cost is a drape slot per terrain tile and a terrain pass for each such
+layer.
 
 ## Validation
 

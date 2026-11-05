@@ -12,6 +12,10 @@
 //! draw: the group's layer over the previous canvas, by W3C Compositing 1's
 //! formula. Then the map's draws continue on top. The last pass draws
 //! into the target, so a map without such groups keeps its one pass.
+//!
+//! On terrain, a draped layer's group is its own drape stack (decision
+//! 0019): the stack's terrain layer is the texture the group composites,
+//! in place of the stack's plain composite.
 
 use std::ops::Range;
 
@@ -85,15 +89,35 @@ impl Attachment {
     }
 }
 
+/// A run of one layer's nodes that composites once.
+#[derive(Debug)]
+pub(crate) struct Run {
+    pub(crate) nodes: Range<usize>,
+    pub(crate) opacity: f32,
+    pub(crate) blend: Blend,
+    /// The texture another pass draws the layer into (a drape stack's
+    /// terrain layer), or `None` for the group's own.
+    pub(crate) source: Option<TextureId>,
+}
+
 #[derive(Debug)]
 pub(crate) struct Group {
     pub(crate) nodes: Range<usize>,
     pub(crate) blend: Blend,
     uniform: BufferId,
     opacity: f32,
-    layer: Attachment,
+    /// Its own texture, unless another pass draws the layer.
+    layer: Option<Attachment>,
     group: BindGroupId,
     pub(crate) bundle: Option<RenderBundleId>,
+}
+
+impl Group {
+    /// Whether another pass draws the layer (a drape stack), so the group
+    /// records no bundle of its own.
+    pub(crate) fn drawn_elsewhere(&self) -> bool {
+        self.layer.is_none()
+    }
 }
 
 impl LayerComposites {
@@ -179,24 +203,28 @@ impl LayerComposites {
         }
     }
 
-    /// Replaces the groups with `runs` of node indices, their opacities
-    /// and blend modes, each with a texture of `size`.
-    pub(crate) fn regroup(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        runs: Vec<(Range<usize>, f32, Blend)>,
-        size: [u32; 2],
-    ) {
+    /// Replaces the groups with `runs`, each drawn into a texture of
+    /// `size` of its own unless it has a source.
+    pub(crate) fn regroup(&mut self, gpu: &mut dyn Gpu, runs: Vec<Run>, size: [u32; 2]) {
         self.clear(gpu);
-        if runs.iter().any(|&(_, _, b)| b != Blend::Normal) {
+        if runs.iter().any(|r| r.blend != Blend::Normal) {
             self.canvases = vec![
                 self.attachment(gpu, "map canvas", size),
                 self.attachment(gpu, "map canvas", size),
             ];
         }
         let mut backdrops = 0;
-        for (nodes, opacity, blend) in runs {
-            let layer = self.attachment(gpu, "layer composite", size);
+        for Run {
+            nodes,
+            opacity,
+            blend,
+            source,
+        } in runs
+        {
+            let layer = source
+                .is_none()
+                .then(|| self.attachment(gpu, "layer composite", size));
+            let texture = source.unwrap_or_else(|| layer.expect("made above").color);
             let uniform = gpu.create_buffer(&BufferDesc {
                 label: "layer composite",
                 size: 16,
@@ -215,7 +243,7 @@ impl LayerComposites {
                 BindGroupEntry {
                     binding: 1,
                     resource: BindingResource::Texture {
-                        texture: layer.color,
+                        texture,
                         dimension: TextureViewDimension::D2,
                     },
                 },
@@ -299,7 +327,7 @@ impl LayerComposites {
         self.groups.iter().filter_map(|g| {
             Some(Pass::Render(RenderPass {
                 label: "layer composite".into(),
-                color: g.layer.color_attachment(LoadOp::Clear([0.0; 4])),
+                color: g.layer?.color_attachment(LoadOp::Clear([0.0; 4])),
                 depth: None,
                 timestamps: None,
                 commands: vec![RenderCommand::ExecuteBundles(vec![g.bundle?])],
@@ -362,7 +390,9 @@ impl LayerComposites {
             }
             gpu.destroy_bind_group(g.group);
             gpu.destroy_buffer(g.uniform);
-            destroy(gpu, g.layer);
+            if let Some(layer) = g.layer {
+                destroy(gpu, layer);
+            }
         }
         for canvas in self.canvases.drain(..) {
             destroy(gpu, canvas);
