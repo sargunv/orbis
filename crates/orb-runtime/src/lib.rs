@@ -51,22 +51,10 @@ pub use events::MapEvent;
 pub use orb_a11y::Snapshot as SemanticSnapshot;
 pub use video::{NO_VIDEO, VideoRequest};
 
-/// The warning a style with terrain gets on Compat, whose
-/// maps draw flat.
-pub const COMPAT_NO_TERRAIN: &str =
-    "terrain is not drawn on the Compat tier (WebGL2, GLES 3.0); the map is flat";
-/// The warning scenes whose lights cast shadows get on the Compat tier.
-pub const COMPAT_NO_SHADOWS: &str = "shadows are not drawn on the Compat tier (WebGL2, GLES 3.0)";
-/// The warning they get while the view shows a globe.
+/// The warning scenes whose lights cast shadows get while the view shows
+/// a globe.
 pub const GLOBE_NO_SHADOWS: &str =
     "shadows are drawn on a plane only, not while the view shows a globe";
-/// The warning heatmap layers get on devices without float render
-/// targets (Compat without EXT_color_buffer_float).
-pub const COMPAT_NO_HEATMAP: &str = "heatmap requires filterable, blendable rgba16float render attachments (Compat: EXT_color_buffer_float); heatmap layers are skipped";
-/// Compat's warning for a style with models.
-pub const COMPAT_NO_MODELS: &str = "model layers draw on WebGPU and native GPUs only (Compat: WebGL2 and GLES); model layers are skipped";
-/// Compat's warning for a scene's lights over the whole map.
-pub const COMPAT_UNLIT: &str = "a scene's lights shade the whole map on WebGPU and native GPUs only (Compat: WebGL2 and GLES); its layers draw unlit";
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};

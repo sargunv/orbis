@@ -6,19 +6,11 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
-[features]
-# The Compat programs: every Compat composition translated to GLSL ES 3.00
-# by naga at build time, for orb-hal-gl.
-glsl = ["dep:orb-hal"]
-
-[dependencies]
-orb-hal = { workspace = true, optional = true }
-
 [build-dependencies]
-naga = { workspace = true, features = ["glsl-out"] }
+naga.workspace = true
 
 [dev-dependencies]
-naga = { workspace = true, features = ["glsl-out"] }
+naga.workspace = true
 
 [lints]
 workspace = true

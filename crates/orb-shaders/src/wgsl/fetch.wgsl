@@ -1,6 +1,5 @@
-// The `fetch` module, Modern: draw pipelines read the scene's tables from
-// storage buffers. `fetch_compat.wgsl` reads the same words
-// from data textures.
+// The `fetch` module: draw pipelines read the scene's tables from storage
+// buffers.
 
 @group(0) @binding(1) var<storage, read> tiles: array<Tile>;
 @group(0) @binding(2) var<storage, read> chunks: array<Chunk>;
@@ -10,9 +9,6 @@
 @group(0) @binding(6) var<storage, read> props: array<u32>;
 @group(0) @binding(7) var<storage, read> node_cull: array<NodeCull>;
 @group(0) @binding(8) var<storage, read> image_rects: array<ImageRect>;
-
-// The compacted index that draws nothing.
-const HIDDEN_DRAW_INDEX: u32 = HIDDEN_INDEX;
 
 fn tile_at(i: u32) -> Tile { return tiles[i]; }
 fn chunk_at(i: u32) -> Chunk { return chunks[i]; }

@@ -2,8 +2,8 @@
 //!
 //! Core crates talk to the GPU only through [`Gpu`]: they create resources
 //! from descriptors, receive opaque ids, and describe work as plain lists of
-//! passes and commands. Implementations (`orb-hal-wgpu`, later `orb-hal-gl`)
-//! own the real handles, so nothing below `orb-runtime` holds one, and command
+//! passes and commands. The implementation (`orb-hal-wgpu`) owns the
+//! real handles, so nothing below `orb-runtime` holds one, and command
 //! lists recorded once can be replayed as render bundles.
 
 #![forbid(unsafe_code)]
@@ -152,25 +152,12 @@ pub struct PipelineCounts {
 /// What the device supports, detected at runtime.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Caps {
-    pub tier: Tier,
     pub limits: Limits,
     /// Timestamp queries on pass boundaries (`timestamp-query`).
     pub timestamp_query: bool,
-    /// `rgba16float` render attachments with additive blending and filtering.
-    /// Core WebGPU guarantees this; Compat needs EXT_color_buffer_float.
-    pub rgba16float_blendable: bool,
     /// Clip distances in vertex shaders (`clip-distances`): a placement's
     /// clip rectangle as planes, where a fragment would otherwise discard.
     pub clip_distances: bool,
-}
-
-/// The two render configurations.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tier {
-    /// Storage buffers in every stage, compute and indirect draws.
-    Modern,
-    /// WebGL2-class GL.
-    Compat,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

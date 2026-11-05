@@ -160,7 +160,6 @@ impl Scene {
             crate::write_words(
                 gpu,
                 self.buffers.chunks,
-                self.cull.as_mut().map(|c| &mut c.chunks),
                 id * crate::CHUNK_WORDS as u32,
                 &row,
             );

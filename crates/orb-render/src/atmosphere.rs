@@ -120,10 +120,7 @@ impl Atmosphere {
             let (layout, group) = sky_group(gpu, frame, self.uniform);
             self.sky = Some((layout, group, pipeline(gpu, &SKY_SHADER, target, layout)));
         }
-        // Compat draws no scattering.
-        let modern = gpu.caps().tier != Tier::Compat;
         if let Some((layout, ..)) = self.sky
-            && modern
             && view.globe.is_some()
             && self.scatter.is_none()
         {

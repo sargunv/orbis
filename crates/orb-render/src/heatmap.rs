@@ -8,10 +8,8 @@ use orb_shaders::HEATMAP_SHADER;
 
 #[derive(Debug)]
 pub(crate) struct Heatmaps {
-    /// The density pipeline, made for the first heatmap node; none without
-    /// blendable half-float targets, which Compat may lack.
+    /// The density pipeline, made for the first heatmap node.
     pipeline: Option<RenderPipelineId>,
-    density: bool,
     layouts: [BindGroupLayoutId; 2],
 }
 
@@ -25,21 +23,16 @@ pub(crate) struct NodeHeatmap {
 }
 
 impl Heatmaps {
-    pub(crate) fn new(
-        gpu: &mut dyn Gpu,
-        scene: BindGroupLayoutId,
-        node: BindGroupLayoutId,
-    ) -> Self {
+    pub(crate) fn new(scene: BindGroupLayoutId, node: BindGroupLayoutId) -> Self {
         Self {
             pipeline: None,
-            density: gpu.caps().rgba16float_blendable,
             layouts: [scene, node],
         }
     }
 
     /// Makes the density pipeline, for the first heatmap node.
     pub(crate) fn make(&mut self, gpu: &mut dyn Gpu) {
-        if self.pipeline.is_some() || !self.density {
+        if self.pipeline.is_some() {
             return;
         }
         let shader = HEATMAP_SHADER;
@@ -127,16 +120,15 @@ impl Heatmaps {
         node: &mut NodeHeatmap,
         size: [u32; 2],
     ) -> bool {
-        self.density
-            && Offscreen::fit(
-                &mut node.apart.offscreen,
-                gpu,
-                composites,
-                ("heatmap density", &[TextureFormat::Rgba16Float]),
-                (size, 1),
-                (Mode::Ramp, Some(node.ramp)),
-                node.apart.opacity,
-            )
+        Offscreen::fit(
+            &mut node.apart.offscreen,
+            gpu,
+            composites,
+            ("heatmap density", &[TextureFormat::Rgba16Float]),
+            (size, 1),
+            (Mode::Ramp, Some(node.ramp)),
+            node.apart.opacity,
+        )
     }
 
     pub(crate) fn prepare(

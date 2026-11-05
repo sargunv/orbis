@@ -1194,12 +1194,8 @@ impl Map {
             .as_ref()
             .map(|s| Arc::clone(&s.worker.plan().style));
         let lights = scene.as_deref().map(|s| &s.lights);
-        // A scene's lights light the whole map, on Modern.
-        let lit = lights.is_some_and(|l| l.terrain);
-        renderer.set_lit_map(gpu, lit);
-        if lit && gpu.caps().tier != orb_hal::Tier::Modern {
-            self.warnings.push(crate::COMPAT_UNLIT.into());
-        }
+        // A scene's lights light the whole map.
+        renderer.set_lit_map(gpu, lights.is_some_and(|l| l.terrain));
         let (paint, at) =
             crate::lights::atmosphere(scene.as_deref(), &view, self.camera.state(), zoom);
         renderer.set_atmosphere(gpu, paint, at);
@@ -1338,13 +1334,10 @@ impl Map {
 
         let globe = view.globe().map(|globe| frame_globe(globe, &view));
         // Why shadows the lights cast aren't drawn.
-        let shadows_off = frame_lights.and_then(|l| l.shadow).and_then(|_| {
-            if gpu.caps().tier == orb_hal::Tier::Compat {
-                Some(crate::COMPAT_NO_SHADOWS)
-            } else {
-                globe.map(|_| crate::GLOBE_NO_SHADOWS)
-            }
-        });
+        let shadows_off = frame_lights
+            .and_then(|l| l.shadow)
+            .and(globe)
+            .map(|_| crate::GLOBE_NO_SHADOWS);
         self.warnings.extend(shadows_off.map(String::from));
         let frame = FrameBlock {
             camera: view.camera_world().to_array(),
@@ -1380,10 +1373,6 @@ impl Map {
             globe,
         };
         let occluded = scene.as_deref().is_some_and(|s| s.symbol_occlusion);
-        if occluded && gpu.caps().tier == orb_hal::Tier::Compat {
-            self.warnings
-                .push("symbol-occlusion: Compat hides labels behind the terrain alone".into());
-        }
         renderer.set_symbol_occlusion(gpu, occluded);
         // The shared atlas grows pages as images arrive.
         if let Some(atlas) = &self
@@ -1490,11 +1479,6 @@ impl Map {
                 model: n.model.map(|m| (m as u32, crate::style::layer_key(n.key))),
             })
             .collect();
-        if !gpu.caps().rgba16float_blendable
-            && plan.nodes.iter().any(|n| n.family == Family::Heatmap)
-        {
-            self.warnings.push(crate::COMPAT_NO_HEATMAP.into());
-        }
         // New nodes of image sources draw the tiles already resident.
         if !renderer.remap_nodes(gpu, &nodes, &retained) {
             self.warnings
@@ -1517,8 +1501,7 @@ impl Map {
     }
 
     /// Loads the style's models for `renderer`, once per style and
-    /// renderer; a new style's replace the last one's there. Compat draws
-    /// no models.
+    /// renderer; a new style's replace the last one's there.
     fn start_models(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
         let Some(style) = &mut self.style else { return };
         if style.models_for == Some(renderer.id()) {
@@ -1532,10 +1515,6 @@ impl Map {
         let models = &worker.plan().style.models;
         style.models = vec![None; models.len()];
         if models.is_empty() {
-            return;
-        }
-        if gpu.caps().tier != orb_hal::Tier::Modern {
-            self.warnings.push(crate::COMPAT_NO_MODELS.into());
             return;
         }
         style.models_loading = models.len() as u32;
@@ -1916,9 +1895,6 @@ impl Map {
         let mut wanted = plan.terrain();
         // Terrain tiles are the surface's; their DEM must be too.
         let unusable = match wanted.map(|(index, _)| &style.sources[index]) {
-            Some(_) if gpu.caps().tier == orb_hal::Tier::Compat => {
-                Some(crate::COMPAT_NO_TERRAIN.to_string())
-            }
             Some(SourceState::Ready { endpoint, .. }) if endpoint.tms != *self.surface.tms() => {
                 Some(format!(
                     "terrain: the DEM source's tiles ({}) are not the map's ({}); the map is flat",

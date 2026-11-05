@@ -38,54 +38,14 @@ fn state_base(range: &Range<u32>) -> u32 {
     }
 }
 
-fn write_chunk_word(
-    gpu: &mut dyn Gpu,
-    chunks: BufferId,
-    mirror: Option<&mut CullTables>,
-    chunk: u32,
-    word: u64,
-    value: u32,
-) {
+fn write_chunk_word(gpu: &mut dyn Gpu, chunks: BufferId, chunk: u32, word: u64, value: u32) {
     let at = u64::from(chunk) * CHUNK_WORDS as u64 + word;
-    write_words(
-        gpu,
-        chunks,
-        mirror.map(|m| &mut m.chunks),
-        at as u32,
-        &[value],
-    );
+    write_words(gpu, chunks, at as u32, &[value]);
 }
 
-/// Writes words into a table, and into its CPU copy on Compat.
-fn write_words(
-    gpu: &mut dyn Gpu,
-    buffer: BufferId,
-    mirror: Option<&mut Vec<u32>>,
-    word: u32,
-    words: &[u32],
-) {
+/// Writes words into a table at word `word`.
+fn write_words(gpu: &mut dyn Gpu, buffer: BufferId, word: u32, words: &[u32]) {
     gpu.write_buffer(buffer, u64::from(word) * 4, bytemuck::cast_slice(words));
-    if let Some(mirror) = mirror {
-        write_words_cpu(mirror, word, words);
-    }
-}
-
-/// CPU copies of the tables the cull reads, kept on Compat for its CPU
-/// cull: rows as the GPU tables hold them.
-#[derive(Debug, Default)]
-pub struct CullTables {
-    /// Tile placement rows by slot.
-    pub tiles: Vec<u32>,
-    /// Chunk rows by slot.
-    pub chunks: Vec<u32>,
-    /// `(chunk, placement, slot, run, drawn)` rows, grouped by node; the
-    /// cull keeps `drawn` current.
-    pub candidates: Vec<u32>,
-    /// Per node: its slice of the candidate and visible lists, margin,
-    /// draw word, elevation and compacted slots (`cull.wgsl`'s `NodeCull`).
-    pub node_cull: Vec<u32>,
-    /// The index arena, which indexed nodes' slots copy.
-    pub indices: Vec<u32>,
 }
 
 /// Per-frame values every pipeline reads.
@@ -713,34 +673,7 @@ pub enum Words<'a> {
     },
 }
 
-/// Copies words into a CPU table at word `at`, growing it.
-fn write_words_cpu(table: &mut Vec<u32>, at: u32, words: &[u32]) {
-    let end = at as usize + words.len();
-    if table.len() < end {
-        table.resize(end, 0);
-    }
-    table[at as usize..end].copy_from_slice(words);
-}
-
 impl Words<'_> {
-    /// The words in core memory: copied from the host if it holds them.
-    fn read(&self, gpu: &dyn Gpu) -> std::borrow::Cow<'_, [u32]> {
-        match *self {
-            Self::Core(words) => std::borrow::Cow::Borrowed(words),
-            Self::Host { bytes, offset, len } => {
-                let bytes = gpu.read_host_bytes(bytes, offset..offset + u64::from(len) * 4);
-                std::borrow::Cow::Owned(
-                    bytes
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|w| u32::from_le_bytes(*w))
-                        .collect(),
-                )
-            }
-        }
-    }
-
     pub fn len(&self) -> u32 {
         match self {
             Self::Core(words) => words.len() as u32,
@@ -887,8 +820,7 @@ const CHUNK_ROW_WORDS_WORD: u64 = layout::chunk::ROW_WORDS as u64;
 /// No feature-state remap: every feature has the default state.
 pub const NO_STATE: u32 = u32::MAX;
 
-/// A resident mesh as CPU-side culling reads it (the Compat path, and
-/// benchmarks).
+/// A resident mesh's place in the arenas.
 #[derive(Clone, Copy, Debug)]
 pub struct ResidentMesh<'a> {
     /// The mesh's words in the vertex arena.
@@ -1025,8 +957,6 @@ pub struct Scene {
     compacted_words: u32,
     /// Rows of the cull dispatch: the most batches an indexed node has.
     cull_batches: u32,
-    /// On Compat, what the CPU cull reads.
-    cull: Option<CullTables>,
     revision: u64,
     /// Changes whenever a pool or table moves into a larger buffer: bind
     /// groups and
@@ -1108,8 +1038,6 @@ impl Scene {
             *max = (*max).min(largest).max(*start);
         }
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
-        let compat = gpu.caps().tier == orb_hal::Tier::Compat;
-        let cull_only = cull_only(gpu);
         let mut buffer = |label: &str, words: u64, usage: BufferUsages| {
             gpu.create_buffer(&BufferDesc {
                 label,
@@ -1130,7 +1058,7 @@ impl Scene {
             candidates: buffer(
                 "candidates",
                 words(c.candidates, CANDIDATE_WORDS),
-                cull_only | BufferUsages::COPY_SRC,
+                storage | BufferUsages::COPY_SRC,
             ),
             node_cull: buffer("node cull", words(c.nodes, NODE_CULL_WORDS), storage),
             visible: buffer(
@@ -1141,17 +1069,14 @@ impl Scene {
             args: buffer(
                 "draw args",
                 words(c.nodes, ARGS_WORDS),
-                cull_only
-                    | BufferUsages::INDIRECT
-                    | BufferUsages::COPY_DST
-                    | BufferUsages::COPY_SRC,
+                storage | BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             ),
             vertices: buffer("vertices", u64::from(c.vertex_words), POOL_USAGE),
             indices: buffer("indices", u64::from(c.index_words), POOL_USAGE),
             compacted: buffer(
                 "compacted indices",
                 u64::from(c.compacted_words),
-                compacted_usage(compat),
+                COMPACTED_USAGE,
             ),
             props: buffer("props", u64::from(c.prop_words), POOL_USAGE),
         };
@@ -1179,7 +1104,6 @@ impl Scene {
             candidates_dropped: 0,
             compacted_words: 0,
             cull_batches: 1,
-            cull: compat.then(CullTables::default),
             revision: 0,
             buffers_revision: 0,
             placements_written: 0,
@@ -1191,20 +1115,6 @@ impl Scene {
 
     pub fn buffers(&self) -> &SceneBuffers {
         &self.buffers
-    }
-
-    /// The CPU copies the Compat cull reads, as of the last
-    /// [`prepare`](Self::prepare); `None` on Modern unless
-    /// [kept](Self::keep_cull_tables).
-    pub fn cull_tables(&mut self) -> Option<&mut CullTables> {
-        self.cull.as_mut()
-    }
-
-    /// Keeps the Compat cull's CPU tables on Modern too, so both culls can
-    /// run on one scene and be compared. Before any content.
-    pub fn keep_cull_tables(&mut self) {
-        assert!(self.meshes.is_empty() && self.tile_rows.is_empty());
-        self.cull.get_or_insert_default();
     }
 
     pub fn capacity(&self) -> &SceneCapacity {
@@ -1302,7 +1212,6 @@ impl Scene {
         }
         let new = nodes.next_power_of_two();
         let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
-        let cull_only = cull_only(gpu);
         let mut buffer = |label: &str, words: usize, usage: BufferUsages| {
             gpu.create_buffer(&BufferDesc {
                 label,
@@ -1314,7 +1223,7 @@ impl Scene {
         let args = buffer(
             "draw args",
             ARGS_WORDS,
-            cull_only | BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            storage | BufferUsages::INDIRECT | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
         );
         gpu.destroy_buffer(std::mem::replace(&mut self.buffers.node_cull, node_cull));
         gpu.destroy_buffer(std::mem::replace(&mut self.buffers.args, args));
@@ -1541,7 +1450,6 @@ impl Scene {
         write_words(
             gpu,
             self.buffers.tiles,
-            self.cull.as_mut().map(|c| &mut c.tiles),
             words(first) as u32,
             &self.tile_rows[words(first)..words(end)],
         );
@@ -1633,10 +1541,6 @@ impl Scene {
         mesh.vertices
             .write(gpu, self.buffers.vertices, vertices.start);
         mesh.indices.write(gpu, self.buffers.indices, indices.start);
-        if let Some(cull) = &mut self.cull {
-            let words = mesh.indices.read(gpu);
-            write_words_cpu(&mut cull.indices, indices.start, &words);
-        }
         mesh.props.write(gpu, self.buffers.props, prop_range.start);
 
         let mut chunk_ids = Vec::with_capacity(mesh.chunks.len());
@@ -1659,13 +1563,7 @@ impl Scene {
                 NO_STATE,
                 mesh.row_words,
             ];
-            write_words(
-                gpu,
-                self.buffers.chunks,
-                self.cull.as_mut().map(|c| &mut c.chunks),
-                id * CHUNK_WORDS as u32,
-                &row,
-            );
+            write_words(gpu, self.buffers.chunks, id * CHUNK_WORDS as u32, &row);
             chunk_ids.push(id);
         }
 
@@ -1740,7 +1638,6 @@ impl Scene {
                 write_chunk_word(
                     gpu,
                     self.buffers.chunks,
-                    self.cull.as_mut(),
                     chunk,
                     CHUNK_ROW_WORDS_WORD,
                     row_words,
@@ -1755,7 +1652,6 @@ impl Scene {
                 write_chunk_word(
                     gpu,
                     self.buffers.chunks,
-                    self.cull.as_mut(),
                     chunk,
                     CHUNK_PROPS_WORD,
                     range.start,
@@ -1787,7 +1683,6 @@ impl Scene {
                 write_chunk_word(
                     gpu,
                     self.buffers.chunks,
-                    self.cull.as_mut(),
                     chunk,
                     CHUNK_STATE_WORD,
                     state_base(&range),
@@ -1866,13 +1761,7 @@ impl Scene {
                 self.rebuild_candidates(gpu);
             }
         } else if std::mem::take(&mut self.params_dirty) && !self.node_rows.is_empty() {
-            write_words(
-                gpu,
-                self.buffers.node_cull,
-                self.cull.as_mut().map(|c| &mut c.node_cull),
-                0,
-                &self.node_rows,
-            );
+            write_words(gpu, self.buffers.node_cull, 0, &self.node_rows);
         }
 
         write_frame(gpu, self.buffers.frame, frame);
@@ -1937,9 +1826,7 @@ impl Scene {
             // An indexed node's index is `run << run_shift | vertex`; the
             // all-ones run is reserved for hidden indices.
             let run_shift = 32 - (vertex_words - 1).leading_zeros().min(31);
-            // WebGL rejects indices from 2^31: Compat's fit in 31 bits.
-            let index_bits: u32 = if self.cull.is_some() { 31 } else { 32 };
-            let max_runs = (1u64 << index_bits.saturating_sub(run_shift)) - 1;
+            let max_runs = (1u64 << 32u32.saturating_sub(run_shift)) - 1;
             let index_base = compacted;
             // Runs in order of first use by a kept candidate: no more than
             // the kept candidates, so they fit the node's visible slice.
@@ -2010,10 +1897,6 @@ impl Scene {
         }
         if !node_cull.is_empty() {
             gpu.write_buffer(self.buffers.node_cull, 0, bytemuck::cast_slice(&node_cull));
-        }
-        if let Some(cull) = &mut self.cull {
-            cull.candidates = rows;
-            cull.node_cull = node_cull.clone();
         }
         self.node_rows = node_cull;
         self.params_dirty = false;
@@ -2224,7 +2107,7 @@ impl Scene {
         let candidates = gpu.create_buffer(&BufferDesc {
             label: "candidates",
             size: u64::from(new) * CANDIDATE_WORDS as u64 * 4,
-            usage: cull_only(gpu) | BufferUsages::COPY_SRC,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
         });
         let visible = gpu.create_buffer(&BufferDesc {
             label: "visible",
@@ -2254,7 +2137,7 @@ impl Scene {
         let grown = gpu.create_buffer(&BufferDesc {
             label: "compacted indices",
             size: u64::from(new) * 4,
-            usage: compacted_usage(gpu.caps().tier == orb_hal::Tier::Compat),
+            usage: COMPACTED_USAGE,
         });
         gpu.destroy_buffer(self.buffers.compacted);
         self.buffers.compacted = grown;
@@ -2330,24 +2213,7 @@ const POOL_USAGE: BufferUsages = BufferUsages::STORAGE
     .union(BufferUsages::COPY_DST)
     .union(BufferUsages::COPY_SRC);
 
-/// The usage of a table only the cull dispatch reads. Compat culls on the
-/// CPU: only its outputs reach the GPU, so these tables stay in core
-/// memory and the GPU's copies only receive writes.
-fn cull_only(gpu: &dyn Gpu) -> BufferUsages {
-    if gpu.caps().tier == orb_hal::Tier::Compat {
-        BufferUsages::COPY_DST
-    } else {
-        BufferUsages::STORAGE | BufferUsages::COPY_DST
-    }
-}
-
-/// Compat's CPU cull writes the compacted indices; Modern's dispatch, or
-/// the CPU cull beside it ([`Scene::keep_cull_tables`]).
-fn compacted_usage(compat: bool) -> BufferUsages {
-    let usage = BufferUsages::INDEX | BufferUsages::COPY_DST;
-    if compat {
-        usage
-    } else {
-        usage | BufferUsages::STORAGE
-    }
-}
+/// The compacted indices: the cull dispatch writes them, draws read them.
+const COMPACTED_USAGE: BufferUsages = BufferUsages::INDEX
+    .union(BufferUsages::COPY_DST)
+    .union(BufferUsages::STORAGE);

@@ -1,14 +1,10 @@
 [package]
 name = "orb-render"
-description = "Render graph: the Modern GPU-driven path and the Compat path"
+description = "Render graph: GPU culling, passes and draws"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 version.workspace = true
-
-[features]
-# The Compat path: the CPU cull and offline GLSL programs.
-compat = ["orb-shaders/glsl"]
 
 [dependencies]
 bytemuck.workspace = true

@@ -18,8 +18,7 @@ pub enum Pass {
     /// Copies `size` bytes of `source` from `source_offset` into
     /// `destination` at `destination_offset`, another buffer: how a scene
     /// pool moves into a larger buffer. Both offsets and the size are whole
-    /// words, the offsets at the same word of a 4,096-word row (Compat
-    /// stores storage buffers as rows of a texture).
+    /// words.
     CopyBuffer {
         source: BufferId,
         source_offset: u64,
@@ -61,7 +60,7 @@ pub enum ComputeCommand {
 pub struct RenderPass {
     pub label: String,
     /// Colour attachments, at the pipelines' target locations; none draws
-    /// depth only (Modern; Compat draws one attachment).
+    /// depth only.
     pub colors: Vec<ColorAttachment>,
     pub depth: Option<DepthAttachment>,
     pub commands: Vec<RenderCommand>,

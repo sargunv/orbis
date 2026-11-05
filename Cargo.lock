@@ -2498,7 +2498,6 @@ name = "orb-shaders"
 version = "0.0.0"
 dependencies = [
  "naga",
- "orb-hal",
 ]
 
 [[package]]

@@ -6,8 +6,7 @@
 //! per cascade. Receivers read the cascades and maps in the scene group
 //! (`shadow_receive.wgsl`): extrusions and models per fragment (models in
 //! `pbr_light`'s directional term), and the ground in one
-//! full-screen multiply at the first 3D layer's place. Planes only, and
-//! Modern only.
+//! full-screen multiply at the first 3D layer's place. Planes only.
 
 use crate::release::Release;
 use glam::{DMat4, DVec3};

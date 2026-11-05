@@ -97,7 +97,7 @@ fn samples_written_layers_of_a_texture_array() {
     });
     let module = gpu.create_shader_module(&ShaderModuleDesc {
         label: "sample",
-        source: ShaderSource::Wgsl(SHADER.into()),
+        source: SHADER.into(),
     });
     let stage = |entry_point| ShaderStage {
         module,

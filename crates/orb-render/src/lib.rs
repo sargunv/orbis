@@ -1,4 +1,4 @@
-//! The Modern GPU-driven path.
+//! The GPU-driven render graph.
 //!
 //! A frame has a cull and main pass: one cull/compact dispatch, a workgroup per render
 //! node that keeps its visible `(chunk, tile placement)` candidates in draw
@@ -18,8 +18,6 @@
 #![forbid(unsafe_code)]
 
 mod atmosphere;
-#[cfg(feature = "compat")]
-mod compat;
 mod downsample;
 mod extrusion;
 mod heatmap;
@@ -207,9 +205,8 @@ pub struct Renderer {
     atmosphere: atmosphere::Atmosphere,
     scene: Scene,
     draw_group: BindGroupId,
-    /// The cull dispatch's pipeline and group; none on Compat, which culls
-    /// on the CPU.
-    cull: Option<(ComputePipelineId, BindGroupId)>,
+    /// The cull dispatch's pipeline and group.
+    cull: (ComputePipelineId, BindGroupId),
     draw_layout: BindGroupLayoutId,
     node_layout: BindGroupLayoutId,
     /// The vector families' pipelines, each made for the family's first
@@ -256,7 +253,7 @@ pub struct Renderer {
     models: model::Models,
     /// The lit map: the nodes' materials and the lit pipelines.
     lit: lit::Lit,
-    /// Whether the map is lit (on Modern).
+    /// Whether the map is lit.
     lit_on: bool,
     /// The 3D depth resolved for the symbols it hides, when they are.
     occlusion: occlusion::Occlusion,
@@ -548,8 +545,7 @@ impl Renderer {
             (glyphs.texture(), nearest, no_dem, no_occlusion),
             shadows.bindings(),
         );
-        let modern = gpu.caps().tier == Tier::Modern;
-        let cull_group = modern.then(|| cull_group(gpu, cull_layout, &b));
+        let cull_group = cull_group(gpu, cull_layout, &b);
 
         let symbol_pass_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "symbol pass",
@@ -581,10 +577,10 @@ impl Renderer {
             })
         });
         // The cull pipeline first: nothing draws without it.
-        let cull = cull_group.map(|group| {
+        let cull = {
             let module = gpu.create_shader_module(&ShaderModuleDesc {
                 label: CULL_SHADER.label,
-                source: ShaderSource::Wgsl(CULL_SHADER.source().into()),
+                source: CULL_SHADER.source().into(),
             });
             let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
                 label: CULL_SHADER.label,
@@ -596,13 +592,13 @@ impl Renderer {
                 },
             });
             gpu.destroy_shader_module(module);
-            (pipeline, group)
-        });
+            (pipeline, cull_group)
+        };
 
         let image_bindings = images;
         let images = image::Images::new(gpu, target, draw_layout);
         let downsampler = downsample::Downsampler::new(gpu);
-        let heatmaps = heatmap::Heatmaps::new(gpu, draw_layout, node_layout);
+        let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
         let extrusions = extrusion::Extrusions::new(draw_layout, node_layout);
         let models = model::Models::new(gpu, draw_layout, node_layout);
@@ -982,8 +978,6 @@ impl Renderer {
         gpu: &mut dyn Gpu,
         terrain: Option<(Option<PageId>, TerrainPaint)>,
     ) {
-        // Compat draws no terrain.
-        let terrain = terrain.filter(|_| gpu.caps().tier == Tier::Modern);
         let was = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
         match terrain {
             Some((page, paint)) => {
@@ -1148,10 +1142,8 @@ impl Renderer {
 
     /// Lights the whole map (#91): the map's layers shade
     /// their fragments with their materials under the frame's lights.
-    /// Modern only: otherwise the map draws unlit. Draped layers draw into
-    /// the drape unlit, which the terrain lights.
+    /// Draped layers draw into the drape unlit, which the terrain lights.
     pub fn set_lit_map(&mut self, gpu: &mut dyn Gpu, lit: bool) {
-        let lit = lit && gpu.caps().tier == Tier::Modern;
         if lit != self.lit_on {
             self.lit_on = lit;
             self.pipelines_stale = true;
@@ -1616,9 +1608,7 @@ impl Renderer {
     /// the view), the cull before everything.
     fn prioritize(&self, gpu: &mut dyn Gpu) {
         let mut wanted = Vec::new();
-        if let Some((cull, _)) = self.cull {
-            wanted.push(cull.into());
-        }
+        wanted.push(self.cull.0.into());
         for i in 0..self.nodes.len() {
             if self.scene.node_meshes(i as u32).next().is_some() {
                 self.node_pipelines(i, &mut wanted);
@@ -1644,7 +1634,7 @@ impl Renderer {
         clear: [f64; 4],
     ) -> FrameStats {
         self.destroy_retired_pages(gpu);
-        let cast = self.casting(gpu, frame);
+        let cast = self.casting(frame);
         self.shadows.set_casting(
             gpu,
             cast.map_or([false; 2], |_| self.casters()),
@@ -1660,7 +1650,7 @@ impl Renderer {
                 bytemuck::cast_slice(&self.node_words[nodes.start * stride..nodes.end * stride]),
             );
         }
-        let mut stats = self.render_modern(gpu, frame, target, clear, cast);
+        let mut stats = self.record(gpu, frame, target, clear, cast);
         stats.draws += u32::from(self.atmosphere.enabled);
         stats.draws -= stats.nodes_waiting;
         self.end_surface_warps();
@@ -1675,9 +1665,7 @@ impl Renderer {
 
     /// Hides symbols and circles behind 3D layers as well as the terrain
     /// (the scene document's `symbol-occlusion`).
-    /// Compat draws them over the terrain's depth alone.
     pub fn set_symbol_occlusion(&mut self, gpu: &mut dyn Gpu, enabled: bool) {
-        let enabled = enabled && gpu.caps().tier == Tier::Modern;
         if enabled == self.occlusion.enabled {
             return;
         }
@@ -1721,10 +1709,8 @@ impl Renderer {
             self.images_bound = self.image_bindings.texture;
             if buffers != self.buffers_bound {
                 self.buffers_bound = buffers;
-                if let Some((_, group)) = &mut self.cull {
-                    gpu.destroy_bind_group(*group);
-                    *group = cull_group(gpu, self.cull_layout, self.scene.buffers());
-                }
+                gpu.destroy_bind_group(self.cull.1);
+                self.cull.1 = cull_group(gpu, self.cull_layout, self.scene.buffers());
             }
             gpu.destroy_bind_group(self.draw_group);
             self.caster_group.take().release(gpu);
@@ -1759,11 +1745,9 @@ impl Renderer {
     }
 
     /// The shadows this frame casts: from the frame's light, onto a
-    /// plane, on Modern, with extrusions to cast them.
-    fn casting(&self, gpu: &dyn Gpu, frame: &FrameBlock) -> Option<(FrameShadow, [f32; 3])> {
-        frame
-            .shadow()
-            .filter(|_| gpu.caps().tier == Tier::Modern && self.casters().contains(&true))
+    /// plane, with extrusions to cast them.
+    fn casting(&self, frame: &FrameBlock) -> Option<(FrameShadow, [f32; 3])> {
+        frame.shadow().filter(|_| self.casters().contains(&true))
     }
 
     /// Whether extrusions, and models, are in the style to cast shadows.
@@ -1771,7 +1755,7 @@ impl Renderer {
         [Family::FillExtrusion, Family::Model].map(|f| self.nodes.iter().any(|n| n.family == f))
     }
 
-    fn render_modern(
+    fn record(
         &mut self,
         gpu: &mut dyn Gpu,
         frame: &FrameBlock,
@@ -2021,14 +2005,9 @@ impl Renderer {
         // The dispatch writes every node's arguments, zeros included, so it
         // runs even when nothing is resident. Indexed nodes' batches add to
         // cleared arguments.
-        #[cfg(feature = "compat")]
-        if self.cull.is_none() {
-            compat::cull(gpu, &mut self.scene, frame);
-        }
-        if let Some((pipeline, group)) = self
-            .cull
-            .filter(|&(cull, _)| !self.nodes.is_empty() && gpu.pipeline_ready(cull.into()))
-        {
+        let (pipeline, group) = self.cull;
+        let cull_ready = gpu.pipeline_ready(pipeline.into());
+        if !self.nodes.is_empty() && cull_ready {
             if self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed) {
                 passes.push(Pass::ClearBuffer {
                     buffer: self.scene.buffers().args,
@@ -2047,9 +2026,6 @@ impl Renderer {
                 ],
             }));
         }
-        let cull_ready = self
-            .cull
-            .is_none_or(|(cull, _)| gpu.pipeline_ready(cull.into()));
         for (index, node) in self.nodes.iter_mut().enumerate() {
             if let Some(heatmap) = &mut node.heatmap
                 && cull_ready
@@ -2231,9 +2207,7 @@ impl Renderer {
     fn ready(&mut self, gpu: &mut dyn Gpu, terrain_on: bool) -> Ready {
         Ready {
             lit: false,
-            cull: self
-                .cull
-                .is_none_or(|(cull, _)| gpu.pipeline_ready(cull.into())),
+            cull: gpu.pipeline_ready(self.cull.0.into()),
             terrain: self
                 .terrain
                 .as_mut()
@@ -2562,19 +2536,11 @@ impl DrapeZoom {
     }
 }
 
-/// A module of `shader` for the device's tier: its WGSL on Modern, or on
-/// Compat its offline GLSL.
+/// A module of `shader`'s WGSL.
 fn shader_module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
-    #[cfg(feature = "compat")]
-    if gpu.caps().tier == Tier::Compat {
-        return gpu.create_shader_module(&ShaderModuleDesc {
-            label: shader.label,
-            source: ShaderSource::Glsl(orb_shaders::glsl(shader)),
-        });
-    }
     gpu.create_shader_module(&ShaderModuleDesc {
         label: shader.label,
-        source: ShaderSource::Wgsl(shader.source().into()),
+        source: shader.source().into(),
     })
 }
 

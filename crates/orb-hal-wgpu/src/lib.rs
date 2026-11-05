@@ -186,7 +186,6 @@ impl WgpuGpu {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let limits = device.limits();
         let caps = Caps {
-            tier: Tier::Modern,
             limits: Limits {
                 max_buffer_size: limits.max_buffer_size,
                 max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
@@ -198,16 +197,6 @@ impl WgpuGpu {
             },
             timestamp_query: device.features().contains(wgpu::Features::TIMESTAMP_QUERY),
             clip_distances: device.features().contains(wgpu::Features::CLIP_DISTANCES),
-            rgba16float_blendable: {
-                let format =
-                    wgpu::TextureFormat::Rgba16Float.guaranteed_format_features(device.features());
-                format.allowed_usages.contains(
-                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                ) && format.flags.contains(
-                    wgpu::TextureFormatFeatureFlags::BLENDABLE
-                        | wgpu::TextureFormatFeatureFlags::FILTERABLE,
-                )
-            },
         };
         Self {
             device,
@@ -935,10 +924,7 @@ impl Gpu for WgpuGpu {
     }
 
     fn create_shader_module(&mut self, desc: &ShaderModuleDesc<'_>) -> ShaderModuleId {
-        let source = match &desc.source {
-            ShaderSource::Wgsl(wgsl) => wgsl.to_string(),
-            ShaderSource::Glsl(_) => panic!("{}: GLSL is not WGSL", desc.label),
-        };
+        let source = desc.source.to_string();
         ShaderModuleId(
             self.shader_modules
                 .insert(compile::Module::new(desc.label, source)),

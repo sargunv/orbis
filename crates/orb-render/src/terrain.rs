@@ -276,7 +276,7 @@ impl Terrain {
         });
         let drape_module = gpu.create_shader_module(&ShaderModuleDesc {
             label: DRAPE_SHADER.label,
-            source: ShaderSource::Wgsl(DRAPE_SHADER.source().into()),
+            source: DRAPE_SHADER.source().into(),
         });
         let clear = gpu.create_render_pipeline(&RenderPipelineDesc {
             label: DRAPE_SHADER.label,
@@ -826,7 +826,7 @@ impl Terrain {
         };
         let module = gpu.create_shader_module(&ShaderModuleDesc {
             label: shader.label,
-            source: ShaderSource::Wgsl(shader.source().into()),
+            source: shader.source().into(),
         });
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
             label: shader.label,
@@ -1153,7 +1153,7 @@ impl Terrain {
         }
         let module = gpu.create_shader_module(&ShaderModuleDesc {
             label: TERRAIN_SHADER.label,
-            source: ShaderSource::Wgsl(TERRAIN_SHADER.source().into()),
+            source: TERRAIN_SHADER.source().into(),
         });
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
             label: "terrain depth",

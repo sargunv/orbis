@@ -11,7 +11,7 @@
 //! DEM tiles are prepared when the neighbours the view draws beside them
 //! change (`Renderer::pad_dems`): `pad` fills a two-texel border from those
 //! neighbours (GL JS's `backfillBorder`), `slope` computes hillshade
-//! slopes. Each is a draw into the tile's layer, on both tiers.
+//! slopes. Each is a draw into the tile's layer.
 
 use crate::release::Release;
 use orb_hal::*;
@@ -379,31 +379,24 @@ impl Images {
         if kind == PageKind::Dem {
             self.make_prepare(gpu);
         }
-        // Mipmapped on Modern (#3), whose compute pass makes the levels.
-        let mipmapped = gpu.caps().tier == Tier::Modern;
-        if mipmapped {
-            downsampler.make(gpu);
-        }
+        // Mipmapped (#3): a compute pass makes the levels.
+        downsampler.make(gpu);
         let levels = |border: u32| 32 - (width.max(height) + 2 * border).max(1).leading_zeros();
         let textures = match kind {
-            PageKind::Raster if mipmapped => vec![PageTexture {
+            PageKind::Raster => vec![PageTexture {
                 usage: uploaded | TextureUsages::STORAGE_BINDING,
                 mip_levels: levels(0),
                 ..texture("raster tiles", 0, uploaded)
             }],
-            PageKind::Raster => vec![texture("raster tiles", 0, uploaded)],
-            // Slopes are mipmapped on Modern too, for the terrain pass's
-            // shaded hillshades in the distance.
+            // Slopes are mipmapped too, for the terrain pass's shaded
+            // hillshades in the distance.
             PageKind::Dem => vec![
                 texture("dem tiles", 0, uploaded),
                 texture("padded dem tiles", 2, uploaded),
-                match mipmapped {
-                    true => PageTexture {
-                        usage: uploaded | TextureUsages::STORAGE_BINDING,
-                        mip_levels: levels(1),
-                        ..texture("hillshade slopes", 1, uploaded)
-                    },
-                    false => texture("hillshade slopes", 1, uploaded),
+                PageTexture {
+                    usage: uploaded | TextureUsages::STORAGE_BINDING,
+                    mip_levels: levels(1),
+                    ..texture("hillshade slopes", 1, uploaded)
                 },
             ],
         };

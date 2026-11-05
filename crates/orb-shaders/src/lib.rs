@@ -8,11 +8,6 @@
 mod catalog;
 pub use catalog::*;
 
-/// Compat's reads of the scene tables' rows, reflected from `types.wgsl`.
-fn rows_compat() -> &'static str {
-    include_str!(concat!(env!("OUT_DIR"), "/rows_compat.wgsl"))
-}
-
 /// The scene tables' layouts, reflected from `types.wgsl`: each struct's
 /// words and each member's first word.
 pub mod layout {
@@ -40,21 +35,6 @@ impl Block {
         }
         self
     }
-}
-
-#[cfg(feature = "glsl")]
-mod glsl {
-    include!(concat!(env!("OUT_DIR"), "/glsl.rs"));
-}
-
-/// A Compat shader's offline GLSL ES 3.00 program.
-#[cfg(feature = "glsl")]
-pub fn glsl(shader: &Shader) -> &'static orb_hal::GlslProgram<'static> {
-    glsl::PROGRAMS
-        .iter()
-        .find(|(label, _)| *label == shader.label)
-        .map(|(.., program)| program)
-        .unwrap_or_else(|| panic!("{} has no Compat program", shader.label))
 }
 
 #[cfg(test)]
