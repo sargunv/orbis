@@ -121,8 +121,6 @@ pub struct FrameBlock {
     pub extrusion_scale: f32,
     /// Top logical row where the finite view frustum intersects ground.
     pub ground_horizon: f32,
-    /// Top logical row of the apparent sky horizon.
-    pub sky_horizon: f32,
     /// How far symbol fades have run since the last placement commit (GL
     /// JS `symbolFadeChange`).
     pub symbol_fade_change: f32,
@@ -164,7 +162,6 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     words[23] = frame.align[1].to_bits();
     words[24] = frame.extrusion_scale.to_bits();
     words[25] = frame.ground_horizon.to_bits();
-    words[26] = frame.sky_horizon.to_bits();
     words[27] = frame.symbol_fade_change.to_bits();
     words[28] = frame.pitch.to_bits();
     words[30] = frame.zoom.to_bits() as u32;

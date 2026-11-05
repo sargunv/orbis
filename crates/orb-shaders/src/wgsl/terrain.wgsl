@@ -1,6 +1,7 @@
 // The terrain surface (plan §9.4): one instance per terrain tile of a
 // shared grid, raised by its DEM tile, coloured from the tile's drape slot
-// for the stack being drawn, fogged like GL JS's `terrain.fragment.glsl`.
+// for the stack being drawn, fogged by the atmosphere like GL JS's
+// `terrain.fragment.glsl`.
 //
 // Drape slots are squares of the drape atlas, `slot_px` texels per side,
 // `columns` per row; a tile's slot for stack `s` is `slot * stacks + s`.
@@ -24,8 +25,6 @@ struct TerrainTile {
 struct Terrain {
     // GL JS's unpack vector: metres = `r·x + g·y + b·z − w`.
     unpack: vec4<f32>,
-    fog_color: vec4<f32>,
-    horizon_color: vec4<f32>,
     exaggeration: f32,
     // DEM pixels per side, without the 2-texel border.
     dem_dim: f32,
@@ -36,12 +35,6 @@ struct Terrain {
     slot_px: f32,
     // Mip levels of the atlas.
     levels: f32,
-    fog_ground_blend: f32,
-    fog_ground_blend_opacity: f32,
-    horizon_fog_blend: f32,
-    // GL JS's fog matrix as a depth range along the view, in pixels.
-    fog_near: f32,
-    fog_far: f32,
 };
 
 struct Stack {
@@ -64,6 +57,7 @@ const GRID: u32 = 128u;
 @group(0) @binding(4) var drape: texture_2d<f32>;
 @group(0) @binding(5) var drape_sampler: sampler;
 @group(0) @binding(6) var<uniform> terrain: Terrain;
+@group(0) @binding(7) var<uniform> atmosphere: Atmosphere;
 @group(1) @binding(0) var<uniform> stack: Stack;
 
 fn dem_texel(p: vec2<i32>, layer: u32) -> f32 {
@@ -112,11 +106,8 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     out.position = vec4<f32>(clip.xy, clip.w - clip.z, clip.w);
     out.uv = uv;
     out.slot = tile.slot * terrain.stacks + stack.index;
-    // The fog matrix's [0, 1] depth: a GL perspective from `fog_near` to
-    // `fog_far` over the view depth, which is the clip w.
-    let n = terrain.fog_near;
-    let f = terrain.fog_far;
-    out.fog_depth = f / (f - n) * (1.0 - n / max(clip.w, 1e-6));
+    // The view depth is the clip w.
+    out.fog_depth = atmosphere_fog_depth(atmosphere, clip.w);
     return out;
 }
 
@@ -133,17 +124,7 @@ fn drape_color(slot: u32, uv: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(drape, drape_sampler, (corner + p) / size, lod);
 }
 
-const GAMMA: f32 = 2.2;
-
 @fragment
 fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
-    let surface = drape_color(in.slot, in.uv);
-    if terrain.fog_ground_blend_opacity > 0.0 && in.fog_depth > terrain.fog_ground_blend {
-        let linear = pow(surface, vec4<f32>(GAMMA));
-        let blend = smoothstep(0.0, 1.0, max((in.fog_depth - terrain.horizon_fog_blend) / (1.0 - terrain.horizon_fog_blend), 0.0));
-        let fog = mix(pow(terrain.fog_color, vec4<f32>(GAMMA)), pow(terrain.horizon_color, vec4<f32>(GAMMA)), blend);
-        let factor = max(in.fog_depth - terrain.fog_ground_blend, 0.0) / (1.0 - terrain.fog_ground_blend);
-        return pow(mix(linear, fog, pow(factor, 2.0) * terrain.fog_ground_blend_opacity), vec4<f32>(1.0 / GAMMA));
-    }
-    return surface;
+    return atmosphere_fog(atmosphere, drape_color(in.slot, in.uv), in.fog_depth);
 }

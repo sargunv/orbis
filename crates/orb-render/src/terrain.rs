@@ -28,7 +28,7 @@ pub const TERRAIN_GRID: u32 = 128;
 pub const TERRAIN_EXTENT: f32 = 8192.0;
 const NO_DEM: u32 = u32::MAX;
 const TILE_WORDS: usize = 8;
-const PARAM_WORDS: usize = 32;
+const PARAM_WORDS: usize = 12;
 /// Uniform slices are 256-byte aligned on every backend.
 const UNIFORM_STRIDE: u64 = 256;
 const MAX_STACKS: u32 = 16;
@@ -41,34 +41,6 @@ pub struct TerrainPaint {
     pub exaggeration: f32,
     /// World units the tile skirts hang below their edges.
     pub skirt: f32,
-    pub fog: Fog,
-}
-
-/// GL JS's terrain fog, from the style's sky.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Fog {
-    /// Premultiplied.
-    pub color: [f32; 4],
-    pub horizon_color: [f32; 4],
-    pub ground_blend: f32,
-    /// 0 turns fog off.
-    pub ground_blend_opacity: f32,
-    pub horizon_blend: f32,
-    /// The view's fog depth range in pixels (`View::fog_range_px`).
-    pub near: f32,
-    pub far: f32,
-}
-
-impl Fog {
-    pub const NONE: Self = Self {
-        color: [0.0; 4],
-        horizon_color: [0.0; 4],
-        ground_blend: 1.0,
-        ground_blend_opacity: 0.0,
-        horizon_blend: 1.0,
-        near: 1.0,
-        far: 2.0,
-    };
 }
 
 /// A terrain tile to draw this frame.
@@ -172,6 +144,8 @@ pub(crate) struct Terrain {
     pub(crate) paint: Option<TerrainPaint>,
     /// The frame block draped nodes draw with.
     pub(crate) drape_frame: BufferId,
+    /// The atmosphere's uniform, for fog.
+    atmosphere: BufferId,
 }
 
 fn uniform(binding: u32, visibility: ShaderStages) -> BindGroupLayoutEntry {
@@ -194,7 +168,7 @@ fn texture(binding: u32, visibility: ShaderStages, filterable: bool) -> BindGrou
 }
 
 impl Terrain {
-    pub(crate) fn new(gpu: &mut dyn Gpu, target: TargetFormat) -> Self {
+    pub(crate) fn new(gpu: &mut dyn Gpu, target: TargetFormat, atmosphere: BufferId) -> Self {
         let vs = ShaderStages::VERTEX;
         let fs = ShaderStages::FRAGMENT;
         let vf = vs | fs;
@@ -224,6 +198,7 @@ impl Terrain {
                     ty: BindingType::Sampler { filtering: true },
                 },
                 uniform(6, vf),
+                uniform(7, vf),
             ],
         });
         let stack_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -397,6 +372,7 @@ impl Terrain {
             pending: Vec::new(),
             paint: None,
             drape_frame,
+            atmosphere,
         }
     }
 
@@ -608,20 +584,13 @@ impl Terrain {
         let mut words = [0u32; PARAM_WORDS];
         let f = |v: f32| v.to_bits();
         words[..4].copy_from_slice(&paint.unpack.map(f));
-        words[4..8].copy_from_slice(&paint.fog.color.map(f));
-        words[8..12].copy_from_slice(&paint.fog.horizon_color.map(f));
-        words[12] = f(paint.exaggeration);
-        words[13] = f(dim as f32);
-        words[14] = f(paint.skirt);
-        words[15] = state.stacks;
-        words[16] = state.columns;
-        words[17] = f(DRAPE_SLOT_PX as f32);
-        words[18] = f((DRAPE_SLOT_PX.ilog2() + 1) as f32);
-        words[19] = f(paint.fog.ground_blend);
-        words[20] = f(paint.fog.ground_blend_opacity);
-        words[21] = f(paint.fog.horizon_blend);
-        words[22] = f(paint.fog.near);
-        words[23] = f(paint.fog.far);
+        words[4] = f(paint.exaggeration);
+        words[5] = f(dim as f32);
+        words[6] = f(paint.skirt);
+        words[7] = state.stacks;
+        words[8] = state.columns;
+        words[9] = f(DRAPE_SLOT_PX as f32);
+        words[10] = f((DRAPE_SLOT_PX.ilog2() + 1) as f32);
         gpu.write_buffer(self.params, 0, bytemuck::cast_slice(&words));
         self.paint = Some(paint);
     }
@@ -850,6 +819,10 @@ impl Terrain {
                         BindGroupEntry {
                             binding: 6,
                             resource: BindingResource::buffer(self.params),
+                        },
+                        BindGroupEntry {
+                            binding: 7,
+                            resource: BindingResource::buffer(self.atmosphere),
                         },
                     ],
                 });

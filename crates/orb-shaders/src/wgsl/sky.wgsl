@@ -1,12 +1,7 @@
-// Flat-surface sky: pinned GL JS sky.fragment.glsl, with top-left pixel Y.
-struct Sky {
-    color: vec4<f32>,
-    horizon_color: vec4<f32>,
-    blend: f32,
-    _pad0: f32, _pad1: f32, _pad2: f32,
-};
+// The atmosphere's sky, drawn before the map layers: pinned GL JS's
+// `sky.fragment.glsl` over a flat surface's horizon.
 @group(0) @binding(0) var<uniform> sky_frame: Frame;
-@group(0) @binding(1) var<uniform> sky: Sky;
+@group(0) @binding(1) var<uniform> atmosphere: Atmosphere;
 
 @vertex
 fn vs_sky(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
@@ -16,11 +11,9 @@ fn vs_sky(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_sky(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let distance = sky_frame.sky_horizon - position.y / sky_frame.pixel_ratio;
-    if distance <= 0.0 { discard; }
-    let blend_distance = sky.blend * sky_frame.viewport.y / 2.0;
-    if distance < blend_distance {
-        return mix(sky.color, sky.horizon_color, pow(1.0 - distance / blend_distance, 2.0));
+    let color = atmosphere_sky(atmosphere, position.xy / sky_frame.pixel_ratio);
+    if color.a <= 0.0 && all(color.rgb <= vec3<f32>(0.0)) {
+        discard;
     }
-    return sky.color;
+    return color;
 }

@@ -1064,17 +1064,34 @@ impl Map {
         let zoom = self.zoom();
         let mut report = FrameReport::default();
         let clear = self.clear_color;
-        self.renderer.as_mut().expect("created above").0.set_sky(
-            gpu,
-            self.style
-                .as_ref()
-                .and_then(|style| style.worker.plan().style.sky.as_ref())
-                .map(|sky| orb_render::SkyPaint {
-                    color: sky.color.evaluate(zoom).premultiplied(),
-                    horizon_color: sky.horizon_color.evaluate(zoom).premultiplied(),
-                    blend: sky.sky_horizon_blend.evaluate(zoom),
-                }),
-        );
+        // The atmosphere over a flat surface: the sky above its horizon,
+        // fog on terrain.
+        let (fog_near, fog_far) = view.fog_range_px();
+        self.renderer
+            .as_mut()
+            .expect("created above")
+            .0
+            .set_atmosphere(
+                gpu,
+                self.style
+                    .as_ref()
+                    .and_then(|style| style.worker.plan().style.sky.as_ref())
+                    .map(|sky| orb_render::AtmospherePaint {
+                        sky_color: sky.color.evaluate(zoom).premultiplied(),
+                        horizon_color: sky.horizon_color.evaluate(zoom).premultiplied(),
+                        fog_color: sky.fog_color.evaluate(zoom).premultiplied(),
+                        sky_horizon_blend: sky.sky_horizon_blend.evaluate(zoom),
+                        horizon_fog_blend: sky.horizon_fog_blend.evaluate(zoom),
+                        fog_ground_blend: sky.fog_ground_blend.evaluate(zoom),
+                    }),
+                orb_render::AtmosphereView {
+                    horizon: [(viewport.width / 2.0) as f32, view.sky_horizon() as f32],
+                    horizon_normal: [0.0, -1.0],
+                    height: viewport.height as f32,
+                    fog_range: [fog_near as f32, fog_far as f32],
+                    fog_opacity: fog_blend_opacity(self.camera.pitch),
+                },
+            );
 
         let now = self.services.clock.now();
         let mut fading = false;
@@ -1177,7 +1194,6 @@ impl Map {
             bearing: self.camera.bearing.to_radians() as f32,
             extrusion_scale: self.extrusion_scale() as f32,
             ground_horizon: view.ground_horizon() as f32,
-            sky_horizon: view.sky_horizon() as f32,
             symbol_fade_change: self.labels.fade_change(now),
             pitch: self.camera.pitch.to_radians() as f32,
             align: pixel_alignment(&view, self.surface.projection(), self.camera.bearing),
@@ -1810,27 +1826,12 @@ impl Map {
             // GL JS's `getSkirtLength`: a fifth of a tile's width at the
             // camera's zoom, in metres at the equator.
             let skirt = 2.0 * std::f64::consts::PI * 6_371_008.8 / zoom.max(0.0).exp2() / 5.0;
-            let (near, far) = view.fog_range_px();
-            let fog = plan
-                .style
-                .sky
-                .as_ref()
-                .map_or(orb_render::Fog::NONE, |sky| orb_render::Fog {
-                    color: sky.fog_color.evaluate(zoom).premultiplied(),
-                    horizon_color: sky.horizon_color.evaluate(zoom).premultiplied(),
-                    ground_blend: sky.fog_ground_blend.evaluate(zoom),
-                    ground_blend_opacity: fog_blend_opacity(self.camera.pitch),
-                    horizon_blend: sky.horizon_fog_blend.evaluate(zoom),
-                    near: near as f32,
-                    far: far as f32,
-                });
             (
                 page,
                 orb_render::TerrainPaint {
                     unpack: endpoint.dem_unpack.expect("raster-dem").map(|v| v as f32),
                     exaggeration: terrain.exaggeration as f32,
                     skirt: (skirt * height_scale) as f32,
-                    fog,
                 },
             )
         });
@@ -2079,7 +2080,11 @@ impl Map {
             zoom.to_bits(),
             u64::from(self.crossfade.mix.to_bits())
                 | u64::from(self.crossfade.from_scale.to_bits()) << 32,
-            if turns { self.camera.bearing.to_bits() } else { 0 },
+            if turns {
+                self.camera.bearing.to_bits()
+            } else {
+                0
+            },
         ];
         let (tiles, redraw) = terrain.plan(&surface, view, &self.camera, layout, &content, look);
         renderer.set_terrain_tiles(gpu, &tiles);

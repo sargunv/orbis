@@ -16,17 +16,17 @@
 
 #![forbid(unsafe_code)]
 
+mod atmosphere;
 #[cfg(feature = "compat")]
 mod compat;
 mod extrusion;
 mod heatmap;
 mod image;
 mod paint;
-mod sky;
 mod terrain;
-pub use sky::SkyPaint;
+pub use atmosphere::{AtmospherePaint, AtmosphereView};
 pub use terrain::{
-    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, Fog, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
+    DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
     TerrainPaint, TerrainTile,
 };
 
@@ -165,7 +165,7 @@ struct Node {
 #[derive(Debug)]
 pub struct Renderer {
     target: TargetFormat,
-    sky: Option<sky::Sky>,
+    atmosphere: atmosphere::Atmosphere,
     scene: Scene,
     draw_group: BindGroupId,
     /// The cull dispatch's pipeline and group; none on Compat, which culls
@@ -411,9 +411,10 @@ impl Renderer {
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
 
+        let atmosphere = atmosphere::Atmosphere::new(gpu);
         Self {
             target,
-            sky: None,
+            atmosphere,
             scene,
             draw_group,
             cull,
@@ -613,9 +614,10 @@ impl Renderer {
                 let target = self.target;
                 let dem = self.images.dem_texture(page);
                 let dim = self.images.page_size(page)[0];
+                let atmosphere = self.atmosphere.uniform;
                 let t = self
                     .terrain
-                    .get_or_insert_with(|| terrain::Terrain::new(gpu, target));
+                    .get_or_insert_with(|| terrain::Terrain::new(gpu, target, atmosphere));
                 t.set_paint(gpu, paint, dem, dim);
             }
             None => {
@@ -843,21 +845,21 @@ impl Renderer {
         self.scene.set_nodes(&cull);
     }
 
-    /// Sets the style's sky, drawn before the map. An absent sky leaves the
-    /// host's backing colour visible, matching GL JS's transparent default.
-    pub fn set_sky(&mut self, gpu: &mut dyn Gpu, paint: Option<SkyPaint>) {
-        if paint.is_some() && self.sky.is_none() {
-            self.sky = Some(sky::Sky::new(gpu, self.target, self.scene.buffers().frame));
-        }
-        if let Some(sky) = &mut self.sky
-            && sky.set(gpu, paint)
-        {
-            self.paints_written += 1;
-        }
+    /// Sets the frame's atmosphere: the style's sky, drawn before the map,
+    /// and the fog on terrain. Without a sky the host's backing colour
+    /// shows, matching GL JS's transparent default, and terrain has no fog.
+    pub fn set_atmosphere(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        paint: Option<AtmospherePaint>,
+        view: AtmosphereView,
+    ) {
+        let frame = self.scene.buffers().frame;
+        self.atmosphere.set(gpu, self.target, frame, paint, view);
     }
 
     fn sky_commands(&self) -> Vec<RenderCommand> {
-        self.sky.as_ref().map_or_else(Vec::new, sky::Sky::commands)
+        self.atmosphere.commands()
     }
 
     /// Draws a frame into `target`, cleared to `clear` (premultiplied RGBA).
@@ -902,7 +904,7 @@ impl Renderer {
             }
         }
         let mut stats = self.render_modern(gpu, frame, target, clear);
-        stats.draws += u32::from(self.sky.as_ref().is_some_and(|sky| sky.enabled));
+        stats.draws += u32::from(self.atmosphere.enabled);
         stats
     }
 

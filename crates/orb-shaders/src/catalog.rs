@@ -37,6 +37,8 @@ const HEATMAP_COLOR: &str = include_str!("wgsl/heatmap_color.wgsl");
 pub(crate) const CULL: &str = include_str!("wgsl/cull.wgsl");
 const IMAGE: &str = include_str!("wgsl/image.wgsl");
 const DEM: &str = include_str!("wgsl/dem.wgsl");
+/// The atmosphere's sky and fog (decision 0025).
+const ATMOSPHERE: &str = include_str!("wgsl/atmosphere.wgsl");
 const RASTER: &str = include_str!("wgsl/raster.wgsl");
 const HILLSHADE: &str = include_str!("wgsl/hillshade.wgsl");
 const COLOR_RELIEF: &str = include_str!("wgsl/color_relief.wgsl");
@@ -95,7 +97,7 @@ impl Shader {
 
 pub const TERRAIN_SHADER: Shader = Shader {
     label: "terrain",
-    parts: &[TYPES, DEM, include_str!("wgsl/terrain.wgsl")],
+    parts: &[TYPES, DEM, ATMOSPHERE, include_str!("wgsl/terrain.wgsl")],
     vertex: "vs_terrain",
     fragment: "fs_terrain",
     compute: "",
@@ -124,7 +126,7 @@ pub const TERRAIN_STACK_SHADER: Shader = Shader {
 
 pub const SKY_SHADER: Shader = Shader {
     label: "sky",
-    parts: &[TYPES, include_str!("wgsl/sky.wgsl")],
+    parts: &[TYPES, ATMOSPHERE, include_str!("wgsl/sky.wgsl")],
     vertex: "vs_sky",
     fragment: "fs_sky",
     compute: "",

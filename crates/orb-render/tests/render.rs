@@ -102,7 +102,6 @@ impl Harness {
             align: [0.0; 2],
             extrusion_scale: 1.0,
             ground_horizon: 0.0,
-            sky_horizon: 0.0,
             symbol_fade_change: 1.0,
             pitch: 0.0,
             terrain: None,
@@ -936,14 +935,23 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
 #[test]
 fn sky_gradient_composites_over_the_host_backing() {
     let mut h = Harness::new();
-    let sky = orb_render::SkyPaint {
-        color: [0.5, 0.0, 0.0, 0.5],
+    let sky = orb_render::AtmospherePaint {
+        sky_color: [0.5, 0.0, 0.0, 0.5],
         horizon_color: [0.5; 4],
-        blend: 1.0,
+        fog_color: [1.0; 4],
+        sky_horizon_blend: 1.0,
+        horizon_fog_blend: 0.5,
+        fog_ground_blend: 0.5,
     };
-    h.renderer.set_sky(&mut h.gpu, Some(sky));
-    let mut frame = Harness::frame(1.0);
-    frame.sky_horizon = 32.0;
+    let view = orb_render::AtmosphereView {
+        horizon: [0.0, 32.0],
+        horizon_normal: [0.0, -1.0],
+        height: SIZE as f32,
+        fog_range: [1.0, 2.0],
+        fog_opacity: 0.0,
+    };
+    h.renderer.set_atmosphere(&mut h.gpu, Some(sky), view);
+    let frame = Harness::frame(1.0);
     let clear = [0.0, 0.0, 1.0, 1.0];
     let report = h.renderer.render(&mut h.gpu, &frame, h.target, clear);
     assert_eq!(report.draws, 1);
@@ -962,7 +970,7 @@ fn sky_gradient_composites_over_the_host_backing() {
     }
     assert_eq!(pixel(&pixels, 32, 40), CLEAR);
     // Removing the style's sky restores transparent/background output.
-    h.renderer.set_sky(&mut h.gpu, None);
+    h.renderer.set_atmosphere(&mut h.gpu, None, view);
     h.renderer.render(&mut h.gpu, &frame, h.target, clear);
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
     assert_eq!(pixel(&pixels, 32, 15), CLEAR);
