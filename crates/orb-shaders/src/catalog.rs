@@ -141,6 +141,13 @@ pub const SKY_SHADER: Shader = Shader {
     paint: false,
 };
 
+/// The globe atmosphere's scattering over the map (decision 0025).
+pub const SCATTER_SHADER: Shader = Shader {
+    label: "atmosphere scattering",
+    fragment: "fs_scatter",
+    ..SKY_SHADER
+};
+
 pub const FILL_SHADER: Shader = Shader {
     label: "fill",
     parts: &[TYPES, DRAW, PATTERN, FILL],

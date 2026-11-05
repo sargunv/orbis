@@ -1108,11 +1108,16 @@ impl Map {
         let zoom = self.zoom();
         let mut report = FrameReport::default();
         let clear = self.clear_color;
-        // The atmosphere over a flat surface: the sky above its horizon,
-        // fog on terrain. A globe has no flat sky; its atmosphere joins as
-        // decision 0025 records.
+        // The atmosphere: the sky above the surface's horizon (a globe's
+        // limb), fog on terrain, scattering over a globe.
         let (fog_near, fog_far) = view.fog_range_px();
-        let flat = view.globe().is_none();
+        let lights = self
+            .lights
+            .as_ref()
+            .or(self.style.as_ref().map(|s| &s.worker.plan().style.lights));
+        let globe = view
+            .globe()
+            .map(|g| crate::lights::globe_sky(g, &view, &self.camera, lights, zoom));
         self.renderer
             .as_mut()
             .expect("created above")
@@ -1122,7 +1127,6 @@ impl Map {
                 self.style
                     .as_ref()
                     .and_then(|style| style.worker.plan().style.atmosphere.as_ref())
-                    .filter(|_| flat)
                     .map(|atmosphere| orb_render::AtmospherePaint {
                         sky_color: atmosphere.sky_color.evaluate(zoom).premultiplied(),
                         horizon_color: atmosphere.horizon_color.evaluate(zoom).premultiplied(),
@@ -1130,6 +1134,7 @@ impl Map {
                         sky_horizon_blend: atmosphere.sky_horizon_blend.evaluate(zoom),
                         horizon_fog_blend: atmosphere.horizon_fog_blend.evaluate(zoom),
                         fog_ground_blend: atmosphere.fog_ground_blend.evaluate(zoom),
+                        atmosphere_blend: atmosphere.atmosphere_blend.evaluate(zoom),
                     }),
                 orb_render::AtmosphereView {
                     horizon: [(viewport.width / 2.0) as f32, view.sky_horizon() as f32],
@@ -1137,6 +1142,7 @@ impl Map {
                     height: viewport.height as f32,
                     fog_range: [fog_near as f32, fog_far as f32],
                     fog_opacity: fog_blend_opacity(self.camera.pitch),
+                    globe,
                 },
             );
 

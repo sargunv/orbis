@@ -56,6 +56,61 @@ pub(crate) fn frame_lights(
     frame
 }
 
+/// A globe view's sphere for its sky and scattering, with the sun the
+/// style's directional light gives: GL JS's `getSunPos` for a positioned
+/// light (in the view for a viewport anchor, fixed to the globe for a map
+/// one), the real sun for a scene's `sun`, overhead without one.
+pub(crate) fn globe_sky(
+    globe: &orb_camera::GlobeView,
+    view: &orb_camera::View,
+    camera: &orb_camera::CameraState,
+    lights: Option<&Lights>,
+    zoom: f64,
+) -> orb_render::GlobeSky {
+    use glam::{DMat3, DVec3};
+    let target = camera.target;
+    let frame = orb_crs::sphere::frame(target);
+    let directional = lights.and_then(|l| l.directional.as_ref());
+    let sun = match directional.map(|d| (&d.direction, d.anchor.evaluate(zoom))) {
+        Some((Direction::Position(p), anchor)) => {
+            let [_, azimuth, polar] = p.evaluate(zoom).map(f64::from);
+            let (a, p) = ((azimuth + 90.0).to_radians(), polar.to_radians());
+            let v = -DVec3::new(a.cos() * p.sin(), a.sin() * p.sin(), p.cos());
+            match anchor {
+                // View axes back through the view's pitch and bearing to
+                // the target's east, north and up.
+                TranslateAnchor::Viewport => {
+                    frame
+                        * DMat3::from_rotation_z(-camera.bearing.to_radians())
+                        * DMat3::from_rotation_x(camera.pitch.to_radians())
+                        * v
+                }
+                TranslateAnchor::Map => {
+                    frame
+                        * DMat3::from_rotation_x(target.lat.to_radians())
+                        * DMat3::from_rotation_y(-target.lon.to_radians())
+                        * v
+                }
+            }
+        }
+        Some((Direction::Sun { time }, _)) => {
+            let (azimuth, altitude) = sun_position(*time, target);
+            let (a, h) = (azimuth.to_radians(), altitude.to_radians());
+            frame * DVec3::new(a.sin() * h.cos(), a.cos() * h.cos(), h.sin())
+        }
+        None => frame * DVec3::Z,
+    };
+    let eye = globe.target + globe.eye;
+    orb_render::GlobeSky {
+        inverse_view_proj: globe.view_proj.inverse().as_mat4().to_cols_array_2d(),
+        eye: eye.as_vec3().to_array(),
+        radius: orb_crs::sphere::RADIUS as f32,
+        amount: globe.amount as f32,
+        eye_distance_px: view.eye_distance_px() as f32,
+        sun: sun.normalize().as_vec3().to_array(),
+    }
+}
+
 /// Where the sun stands at `time` (Unix seconds) over `at`: azimuth in
 /// degrees clockwise from north and altitude in degrees above the horizon,
 /// by the Astronomical Almanac's low-precision formulas (about 0.01° from

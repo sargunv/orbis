@@ -24,7 +24,7 @@ mod heatmap;
 mod image;
 mod paint;
 mod terrain;
-pub use atmosphere::{AtmospherePaint, AtmosphereView};
+pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
     TerrainPaint, TerrainTile,
@@ -1137,6 +1137,7 @@ impl Renderer {
         let mut commands = self.sky_commands();
         let bundle = self.bundle.expect("recorded above");
         commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
+        commands.extend(self.atmosphere.commands_after());
         passes.push(Pass::Render(RenderPass {
             label: "main".into(),
             color: ColorAttachment {

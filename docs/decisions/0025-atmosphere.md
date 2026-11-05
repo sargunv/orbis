@@ -41,16 +41,31 @@ a line: a point on it and its normal toward the sky, in logical pixels. This
 is GL JS's `u_horizon`/`u_horizon_normal`, so camera roll (#46) only has to
 pass a turned line.
 
-The globe joins here rather than adding a second sky. GL JS 6 draws its
-globe atmosphere in the same sky shader: with `u_sky_blend` (the
-projection's globe blend) it measures the sky from the globe's limb and
-fades it out where the view ray misses a shell 100 km above the sphere,
-less `atmosphere-blend`. When R1's globe surface lands, `AtmosphereView`
-gains its sphere in view space (centre, radius, blend). `AtmospherePaint`
-gains `atmosphere-blend`, which v8 already parses. The sky shader takes
-GL JS's terms, and terrain fog stays off on the globe as in GL JS. Until
-then the three `sky/atmosphere-blend` fixtures and `terrain/fog-sky-blend-globe`
-skip on `property:projection`.
+The globe joins here rather than adding a second sky. `AtmosphereView`
+takes the globe's sphere (`GlobeSky`, from R1's `View::globe`, decision
+0030):
+- the inverse of its view-projection, for a view ray per pixel;
+- the eye from the globe's centre;
+- the radius, how much of a globe the view is, and the eye's distance.
+
+On it, as GL JS 6 draws its globe:
+- The sky's gradient starts at the sphere's limb. The sky fades to space
+  where the view ray misses a shell 100 km above the sphere, less
+  `atmosphere-blend` (scaled by the eye's altitude, GL JS's
+  `getAtmosphereAltitudeBlend`), mixed in by the globe amount.
+- After the map's layers a scattering pass blends over everything: GL JS's
+  port of glsl-atmosphere, Rayleigh and Mie scattering along the view ray
+  in 5 and 3 steps. Its sun comes from the style's lights (decision 0026).
+  For a v8 light it is GL JS's `getSunPos`: in the view for a viewport
+  anchor, fixed to the globe for a map one. For a scene's `sun` it is the
+  sun at that time over the target, so the night side falls where it
+  should.
+
+Sphere arithmetic runs in units of the radius for f32 precision. Compat
+draws the sky but not the scattering (plan §8.7). Terrain fog stays off
+on the globe, as in GL JS. The three `sky/atmosphere-blend` fixtures now
+run; they differ by 0.03–0.4% of pixels, along the anti-aliased limb,
+natively and in Chrome alike.
 
 ## Interplay found on the way
 

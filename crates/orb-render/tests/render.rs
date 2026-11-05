@@ -946,6 +946,7 @@ fn sky_gradient_composites_over_the_host_backing() {
         sky_horizon_blend: 1.0,
         horizon_fog_blend: 0.5,
         fog_ground_blend: 0.5,
+        atmosphere_blend: 0.8,
     };
     let view = orb_render::AtmosphereView {
         horizon: [0.0, 32.0],
@@ -953,6 +954,7 @@ fn sky_gradient_composites_over_the_host_backing() {
         height: SIZE as f32,
         fog_range: [1.0, 2.0],
         fog_opacity: 0.0,
+        globe: None,
     };
     h.renderer.set_atmosphere(&mut h.gpu, Some(sky), view);
     let frame = Harness::frame(1.0);

@@ -97,6 +97,7 @@ mod tests {
     fn shaders_validate() {
         for shader in [
             SKY_SHADER,
+            SCATTER_SHADER,
             TERRAIN_SHADER,
             DRAPE_SHADER,
             TERRAIN_STACK_SHADER,

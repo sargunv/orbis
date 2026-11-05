@@ -72,8 +72,8 @@ On an Apple M-series laptop, native:
   absolute cost, well under a tenth of a millisecond.
 - Fixtures: native results equal `main`'s, except the three
   `sky/atmosphere-blend` fixtures, which used to skip on
-  `property:projection` and now skip on `atmosphere-blend` until the
-  globe's atmosphere joins (decision 0025).
+  `property:projection`; they run since the globe's atmosphere joined
+  (decision 0025).
 
 ## Gestures
 
@@ -97,8 +97,6 @@ region's rectangle to the pole), and on the tile's edge, as a degenerate
 triangle, everywhere else and on the plane.
 
 ## Left for later
-- The atmosphere on the globe (R2, decision 0025): the flat sky is off on a
-  globe until its sphere joins `AtmosphereView`.
 - Terrain on the globe, and extrusions' depth (the horizon plane's depth is
   GL JS's, not perspective depth).
 - Globe gestures: panning drags plane coordinates, which behaves near the

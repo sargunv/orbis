@@ -245,19 +245,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         glyphs,
         font_faces: font_faces::parse(cx, doc.get("font-faces")),
         lights: light::parse(cx, doc.get("light")).lower(),
-        globe: doc
-            .get("projection")
-            .and_then(|p| parse_globe(cx, p))
-            .inspect(|_| {
-                // The globe's atmosphere joins the sky as decision 0025 records.
-                if let Some(blend) = doc.get("sky").and_then(|s| s.get("atmosphere-blend")) {
-                    cx.warn(
-                        "sky.atmosphere-blend",
-                        blend.span,
-                        "\"atmosphere-blend\" is not drawn yet: a globe has no atmosphere",
-                    );
-                }
-            }),
+        globe: doc.get("projection").and_then(|p| parse_globe(cx, p)),
         state,
         atmosphere: doc.get("sky").map(|json| sky::parse(cx, json)),
         terrain: doc

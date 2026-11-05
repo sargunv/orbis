@@ -461,6 +461,12 @@ impl View {
         (self.sea_level_px, self.far_px)
     }
 
+    /// The eye's distance from the target, logical pixels (GL JS's
+    /// `cameraToCenterDistance`).
+    pub fn eye_distance_px(&self) -> f64 {
+        self.eye_distance_px
+    }
+
     /// The eye's position in camera-relative world space.
     pub fn eye(&self) -> DVec3 {
         self.eye

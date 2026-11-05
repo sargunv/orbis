@@ -11,9 +11,19 @@ fn vs_sky(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_sky(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let color = atmosphere_sky(atmosphere, position.xy / sky_frame.pixel_ratio);
+    let color = atmosphere_sky(atmosphere, position.xy / sky_frame.pixel_ratio, sky_frame.viewport);
     if color.a <= 0.0 && all(color.rgb <= vec3<f32>(0.0)) {
         discard;
     }
     return color;
+}
+
+// The globe's scattering over the map (GL JS `atmosphere.fragment.glsl`):
+// exposure and gamma as GL JS applies them, premultiplied by the blend.
+@fragment
+fn fs_scatter(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let ray = atmosphere_ray(atmosphere, position.xy / sky_frame.pixel_ratio, sky_frame.viewport);
+    let scattered = atmosphere_scatter(atmosphere, ray);
+    let color = pow(vec4<f32>(1.0 - exp(-scattered.rgb), scattered.a), vec4<f32>(1.0 / 2.2));
+    return vec4<f32>(color.rgb, 1.0 - color.a) * atmosphere.scatter_blend;
 }
