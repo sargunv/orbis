@@ -441,7 +441,8 @@ The tile cover follows GL JS's constant zoom through the FOV-dependent pitch
 threshold and its default variable zoom above it. Vector overzoom slices the
 ancestor before layout, as the pinned GL JS's default `zoomLevelsToOverscale`
 does; lines keep a tile past the child's square rather than its 128-unit
-buffer, so wide strokes cross its edges whole (decision 0009).
+buffer, so wide strokes cross its edges whole, split where they cross the
+buffer so dashes and labels start where GL JS's slices do (decision 0009).
 
 Dashes use a Runtime-shared 256 × 512 R8 SDF atlas (128 KiB), with typed
 job keys resolved through the shared image table. Constant and data-driven

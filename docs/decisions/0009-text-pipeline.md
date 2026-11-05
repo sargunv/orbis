@@ -452,13 +452,11 @@ sort). The leaves are ported line by line: `quads.ts`, `get_anchors.ts`,
     pinned GL JS (`zoomLevelsToOverscale`, 4 by default) slices tiles up to
     four zooms below the map's `maxZoom` the same way, then overscales those
     slices. Its slices cut lines at a 128-unit buffer, so a wide stroke ends
-    in caps at a child's edge; Orbis keeps lines a tile past the square, so
-    strokes cross it whole and dash phase and line-label anchors start at
-    the line's own start when that lies within a tile. Twelve render
-    fixtures at z16–17 over maxzoom-14 sources expect GL JS's cut and
-    differ for that reason: `line-dasharray/overscaled`,
-    `line-pattern/pitch`, `symbol-placement/line-center-upperright`, seven
-    of `text-pitch-alignment/` and `text-pitch-scaling/line-half{,-roll}`.
+    in caps at a child's edge. Orbis keeps lines a tile past the square, so
+    strokes cross it whole, but splits them where they cross the buffer's
+    square: dash phase and pattern start at the inside pieces' starts, and
+    labels lay out along the inside pieces only (`Layer::labelled`), as
+    along GL JS's slice.
   - No Southeast Asian word breaks: no segmentation data is loaded, which
     matches GL JS without `Intl.Segmenter`.
 

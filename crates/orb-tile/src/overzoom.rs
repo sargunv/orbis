@@ -6,9 +6,10 @@
 //! wide stroke crossing the child's edge needs its line to go on well past
 //! it, or the end of the stroke shows inside the tile. (GL JS's buffer is
 //! 28 px at z19.8; a 140 px road crossing a tile edge at 57° lost a corner
-//! on each side of it.) A line's dash phase and label anchors so start at
-//! its own start when that lies within a tile of the child; GL JS's slices
-//! start them at its buffer (decision 0009).
+//! on each side of it.) Such a line splits where it crosses the buffer's
+//! square: the pieces inside are GL JS's slice of it, so dash phase and
+//! line-label anchors start where GL JS's do, and the pieces outside only
+//! carry the stroke on across the edge (decision 0009).
 //!
 //! A polygon whole in the source tile (`Layer::is_whole`) stays whole in a
 //! child its bounds meet, unclipped, while it reaches no further than one
@@ -33,6 +34,51 @@ impl TileFrame {
                 .filter(|l| !l.is_empty())
                 .collect(),
         }
+    }
+}
+
+impl Layer {
+    /// The layer without the pieces of lines an overzoom slice keeps past
+    /// its buffer for their strokes: what labels lay out along, as in
+    /// GL JS's slice. Feature indices stay.
+    pub fn labelled(&self) -> std::borrow::Cow<'_, Layer> {
+        let (b, e) = (self.clip_buffer(), self.extent() as i32);
+        let inside = |r: &[[i32; 2]]| {
+            r.len() < 2
+                || [0, 1]
+                    .iter()
+                    .all(|&i| (-b..=e + b).contains(&((r[0][i] + r[1][i]) / 2)))
+        };
+        let lines = |f| self.geometry_type(f) == GeometryType::LineString;
+        let outer = (0..self.len()).filter(|&f| lines(f)).any(|f| {
+            self.geometry(f)
+                .parts()
+                .any(|p| p.rings().any(|r| !inside(r)))
+        });
+        if self.clip.is_none() || !outer {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut builder = LayerBuilder::new(self.name(), self.extent());
+        builder.clipped_at(b);
+        for f in 0..self.len() {
+            builder.begin_feature(None, self.geometry_type(f));
+            if let Some(id) = self.ids().get(f) {
+                builder.set_id(id.to_owned());
+            }
+            for (key, column) in self.properties() {
+                if let Some(value) = column.get(f) {
+                    builder.set_property(key, value.to_owned());
+                }
+            }
+            for part in self.geometry(f).parts() {
+                builder.begin_part();
+                for ring in part.rings().filter(|r| !lines(f) || inside(r)) {
+                    builder.begin_ring();
+                    ring.iter().for_each(|&p| builder.push_vertex(p));
+                }
+            }
+        }
+        std::borrow::Cow::Owned(builder.finish())
     }
 }
 
@@ -94,7 +140,12 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
                 for axis in (0..2).filter(|_| whole.is_none()) {
                     geometry = clip(geometry, kind, -reach, 8192.0 + reach, axis);
                 }
-                rings.extend(geometry);
+                if kind == GeometryType::LineString {
+                    let (lo, hi) = (-buffer, 8192.0 + buffer);
+                    rings.extend(geometry.into_iter().flat_map(|l| split(&l, lo, hi)));
+                } else {
+                    rings.extend(geometry);
+                }
             }
             if !rings.is_empty() {
                 parts.push(rings);
@@ -129,6 +180,42 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
         }
     }
     builder.finish()
+}
+
+/// Splits a line where it crosses the square `lo..=hi`, at points shared
+/// by the pieces on each side, so their strokes meet seamlessly.
+fn split(line: &[Point], lo: f64, hi: f64) -> Vec<Vec<Point>> {
+    let mut pieces = Vec::new();
+    let mut piece: Vec<Point> = line.first().into_iter().copied().collect();
+    for pair in line.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        // The part of the segment inside the square (Liang–Barsky).
+        let (mut t0, mut t1) = (0f64, 1f64);
+        for axis in 0..2 {
+            let d = b[axis] - a[axis];
+            for (p, q) in [(-d, a[axis] - lo), (d, hi - a[axis])] {
+                if p == 0.0 && q < 0.0 {
+                    (t0, t1) = (1.0, 0.0);
+                } else if p < 0.0 {
+                    t0 = t0.max(q / p);
+                } else if p > 0.0 {
+                    t1 = t1.min(q / p);
+                }
+            }
+        }
+        for t in [t0, t1]
+            .into_iter()
+            .filter(|&t| t0 < t1 && t > 0.0 && t < 1.0)
+        {
+            let at = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+            piece.push(at);
+            pieces.push(std::mem::replace(&mut piece, vec![at]));
+        }
+        piece.push(b);
+    }
+    pieces.push(piece);
+    pieces.retain(|p| p.len() > 1);
+    pieces
 }
 
 fn clip(
@@ -224,11 +311,23 @@ mod tests {
         let l = &child.layers[0];
         assert_eq!(l.extent(), 8192);
         // The line goes on a tile past each side of the square, clipped
-        // between vertices; the polygon stops at the source buffer.
-        assert_eq!(&l.vertices[..2], [[-8192, 802], [16384, 813]]);
+        // between vertices, in three pieces split where it crosses the
+        // buffer's square; the polygon stops at the source buffer.
+        assert_eq!(
+            &l.vertices[..6],
+            [
+                [-8192, 802],
+                [-256, 805],
+                [-256, 805],
+                [8448, 809],
+                [8448, 809],
+                [16384, 813]
+            ]
+        );
+        assert_eq!(l.geometry(0).parts().next().unwrap().rings().count(), 3);
         assert_eq!(l.clip_buffer(), 256);
         assert!(
-            l.vertices[2..]
+            l.vertices[6..]
                 .iter()
                 .flatten()
                 .all(|&v| (-256..=8448).contains(&v))

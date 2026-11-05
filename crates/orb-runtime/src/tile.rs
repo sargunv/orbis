@@ -364,6 +364,9 @@ fn build_symbols(
         let Some((layer, _)) = node_layer(frame, plan, node, zoom) else {
             continue;
         };
+        // Labels lay out along GL JS's slice of an overzoomed tile's lines.
+        let labelled = layer.labelled();
+        let layer = &*labelled;
         let features = features(plan, node, layer, (zoom, canonical));
         if features.is_empty() {
             continue;
@@ -383,13 +386,14 @@ fn build_symbols(
         {
             missing.push(url.to_string());
         }
-        prepared.push((node, layer, features, p));
+        prepared.push((node, labelled, features, p));
     }
     if !missing.is_empty() {
         return Err(missing);
     }
     let mut built = Vec::with_capacity(prepared.len());
     for (node, layer, features, mut p) in prepared {
+        let layer = &*layer;
         let requests = std::mem::take(&mut p.requests);
         let resolved = symbols.glyphs.resolve(
             requests,
