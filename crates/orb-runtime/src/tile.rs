@@ -610,13 +610,12 @@ pub(crate) fn build(
                     }
                 }
                 if node.family == Family::FillExtrusion {
-                    let whole = orb_layout::extrusion::Whole::of(layer, bend.is_some());
+                    let whole = orb_layout::extrusion::whole(layer, &features, bend.is_some());
                     for (i, &feature) in features.iter().enumerate() {
                         let [x, y] = orb_layout::extrusion::centroid(layer, feature, 8192);
                         rows[i * row_words + layout::EXTRUSION_ROW_CENTROID] =
                             u32::from(x as u16) | u32::from(y as u16) << 16;
-                        rows[i * row_words + layout::EXTRUSION_ROW_WHOLE] =
-                            u32::from(whole.is_whole(layer, feature));
+                        rows[i * row_words + layout::EXTRUSION_ROW_WHOLE] = u32::from(whole[i]);
                     }
                 }
                 rows

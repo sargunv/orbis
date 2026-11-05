@@ -9,6 +9,12 @@
 //! on each side of it.) A line's dash phase and label anchors so start at
 //! its own start when that lies within a tile of the child; GL JS's slices
 //! start them at its buffer (decision 0009).
+//!
+//! A polygon whole in the source tile (`Layer::is_whole`) stays whole in a
+//! child its bounds meet, unclipped, while it reaches no further than one
+//! child past it: a building crossing the child's edge is then drawn once,
+//! entire, by the child owning its centroid, not clipped by every child
+//! per fragment, which turns off the GPU's hidden-surface removal.
 
 use crate::{GeometryType, Layer, LayerBuilder, TileFrame};
 
@@ -40,8 +46,37 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
         / f64::from(layer.extent());
     let mut builder = LayerBuilder::new(layer.name(), 8192);
     builder.clipped_at(buffer.round() as i32);
+    let source_buffer = layer.clip_buffer();
+    let place = |p: &[i32; 2]| {
+        [
+            f64::from(p[0]) * scale - offset[0],
+            f64::from(p[1]) * scale - offset[1],
+        ]
+    };
     for feature in 0..layer.len() {
         let kind = layer.geometry_type(feature);
+        let whole = (kind == GeometryType::Polygon && layer.is_whole(feature, source_buffer))
+            .then(|| {
+                let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+                for part in layer.geometry(feature).parts() {
+                    for p in part.rings().flatten() {
+                        let p = place(p);
+                        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+                        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+                    }
+                }
+                (lo, hi)
+            })
+            .filter(|&(lo, hi)| {
+                lo.iter()
+                    .chain(&hi)
+                    .all(|v| (-8192.0..=16384.0).contains(v))
+            });
+        if let Some((lo, hi)) = whole
+            && (lo.iter().any(|&v| v > 8192.0 + buffer) || hi.iter().any(|&v| v < -buffer))
+        {
+            continue;
+        }
         let reach = if kind == GeometryType::LineString {
             8192.0
         } else {
@@ -51,20 +86,12 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
         for part in layer.geometry(feature).parts() {
             let mut rings = Vec::new();
             for ring in part.rings() {
-                let mut points: Vec<Point> = ring
-                    .iter()
-                    .map(|p| {
-                        [
-                            f64::from(p[0]) * scale - offset[0],
-                            f64::from(p[1]) * scale - offset[1],
-                        ]
-                    })
-                    .collect();
+                let mut points: Vec<Point> = ring.iter().map(place).collect();
                 if kind == GeometryType::Polygon && !points.is_empty() {
                     points.push(points[0]);
                 }
                 let mut geometry = vec![points];
-                for axis in 0..2 {
+                for axis in (0..2).filter(|_| whole.is_none()) {
                     geometry = clip(geometry, kind, -reach, 8192.0 + reach, axis);
                 }
                 rings.extend(geometry);

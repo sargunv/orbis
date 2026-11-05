@@ -360,6 +360,14 @@ pub const EXTRUSION_SHADER: Shader = Shader {
     compute: "",
     lit: false,
 };
+/// Extrusions cut at the source's buffer, clipped per fragment: apart from
+/// whole ones, whose pipeline never discards.
+pub const EXTRUSION_CUT_SHADER: Shader = Shader {
+    label: "extrusion cut",
+    vertex: "vs_extrusion_cut",
+    fragment: "fs_extrusion_cut",
+    ..EXTRUSION_SHADER
+};
 /// The 3D depth resolved for the symbols it hides, from one sample and
 /// from several.
 pub const OCCLUSION_SHADERS: [Shader; 2] = [
@@ -402,6 +410,13 @@ pub const EXTRUSION_CASTER_SHADER: Shader = Shader {
     fragment: "fs_caster",
     compute: "",
     lit: false,
+};
+/// Cut extrusions into a shadow cascade, clipped per fragment.
+pub const EXTRUSION_CASTER_CUT_SHADER: Shader = Shader {
+    label: "extrusion caster cut",
+    vertex: "vs_caster_cut",
+    fragment: "fs_caster_cut",
+    ..EXTRUSION_CASTER_SHADER
 };
 /// Models' depth from the light, into a shadow cascade. Modern only.
 pub const MODEL_CASTER_SHADER: Shader = Shader {
@@ -448,6 +463,7 @@ pub const COMPAT_SHADERS: &[Shader] = &[
     HILLSHADE_SHADER,
     COLOR_RELIEF_SHADER,
     EXTRUSION_SHADER,
+    EXTRUSION_CUT_SHADER,
     PREPARE_PAD_SHADER,
     PREPARE_SLOPE_SHADER,
 ];
@@ -463,7 +479,9 @@ pub const SHADERS: &[Shader] = &[
     TERRAIN_SHADE_SHADER,
     DRAPE_SHADER,
     EXTRUSION_SHADER,
+    EXTRUSION_CUT_SHADER,
     EXTRUSION_CASTER_SHADER,
+    EXTRUSION_CASTER_CUT_SHADER,
     SHADOW_GROUND_SHADER,
     OCCLUSION_SHADERS[0],
     OCCLUSION_SHADERS[1],

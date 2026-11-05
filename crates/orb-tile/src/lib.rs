@@ -87,6 +87,23 @@ impl Layer {
         })
     }
 
+    /// Whether polygon `feature` is whole in this tile's data: none of its
+    /// edges lies on the line the source clipped along, `buffer` past the
+    /// square ([`clip_buffer`](Self::clip_buffer), which callers take once).
+    /// A whole building can be drawn entire by the tile owning its centroid.
+    pub fn is_whole(&self, feature: usize, buffer: i32) -> bool {
+        let (lo, hi) = (-buffer, self.extent as i32 + buffer);
+        let cut = |a: [i32; 2], b: [i32; 2]| {
+            buffer > 0 && (0..2).any(|axis| a[axis] == b[axis] && (a[axis] == lo || a[axis] == hi))
+        };
+        self.geometry(feature).parts().all(|part| {
+            part.rings().all(|ring| {
+                let n = ring.len();
+                (0..n).all(|i| !cut(ring[i], ring[(i + 1) % n]))
+            })
+        })
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

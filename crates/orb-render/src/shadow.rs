@@ -14,7 +14,10 @@ use crate::release::Release;
 use glam::{DMat4, DVec3};
 use orb_hal::*;
 use orb_scene::{FrameBlock, FrameShadow, SceneBuffers};
-use orb_shaders::{EXTRUSION_CASTER_SHADER, MODEL_CASTER_SHADER, SHADOW_GROUND_SHADER, Shader};
+use orb_shaders::{
+    EXTRUSION_CASTER_CUT_SHADER, EXTRUSION_CASTER_SHADER, MODEL_CASTER_SHADER,
+    SHADOW_GROUND_SHADER, Shader,
+};
 
 use crate::{TargetFormat, draw_pipeline_blending, shader_module};
 
@@ -40,7 +43,7 @@ pub(crate) struct Shadows {
     passes: [BindGroupId; CASCADES],
     pass_buffer: BufferId,
     /// Made when extrusions, then models, first cast.
-    casters: [Option<RenderPipelineId>; 2],
+    casters: [Option<RenderPipelineId>; 3],
     /// Made when shadows are first cast.
     ground: Option<RenderPipelineId>,
     /// The caster passes' bundles, recorded with the main pass's.
@@ -116,7 +119,7 @@ impl Shadows {
             pass_layout,
             passes,
             pass_buffer,
-            casters: [None; 2],
+            casters: [None; 3],
             ground: None,
             bundles: Vec::new(),
         }
@@ -148,18 +151,18 @@ impl Shadows {
         [scene, node, model]: [BindGroupLayoutId; 3],
     ) {
         let casting = casters.contains(&true);
+        let extrusions = vec![scene, node, self.pass_layout];
         let shaders = [
-            (
-                &EXTRUSION_CASTER_SHADER,
-                vec![scene, node, self.pass_layout],
-            ),
+            (&EXTRUSION_CASTER_SHADER, extrusions.clone()),
+            (&EXTRUSION_CASTER_CUT_SHADER, extrusions),
             (
                 &MODEL_CASTER_SHADER,
                 vec![scene, node, model, self.pass_layout],
             ),
         ];
-        for ((made, casts), (shader, layouts)) in self.casters.iter_mut().zip(casters).zip(shaders)
-        {
+        let [extrusions, models] = casters;
+        let casts = [extrusions, extrusions, models];
+        for ((made, casts), (shader, layouts)) in self.casters.iter_mut().zip(casts).zip(shaders) {
             if casts && made.is_none() {
                 *made = Some(caster_pipeline(gpu, shader, &layouts));
             }
@@ -210,8 +213,9 @@ impl Shadows {
     /// Whether the map exists and the pipelines `casters` (extrusions',
     /// models') need compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, casters: [bool; 2]) -> bool {
+        let [extrusions, models] = casters;
         self.map.is_some()
-            && (self.casters.iter().zip(casters))
+            && (self.casters.iter().zip([extrusions, extrusions, models]))
                 .filter(|&(_, casts)| casts)
                 .map(|(&p, _)| p)
                 .chain([self.ground])
@@ -285,9 +289,14 @@ impl Shadows {
         if self.bundles.is_empty() {
             for &group in &self.passes {
                 let mut commands = Vec::new();
-                if let Some(caster) = self.casters[0].filter(|_| !extrusions.is_empty()) {
+                // Whole buildings, then cut ones, whose pipeline alone
+                // discards.
+                for caster in self.casters[..2].iter().flatten() {
+                    if extrusions.is_empty() {
+                        break;
+                    }
                     commands.extend([
-                        RenderCommand::SetPipeline(caster),
+                        RenderCommand::SetPipeline(*caster),
                         RenderCommand::SetBindGroup {
                             index: 0,
                             group: scene,
@@ -299,20 +308,20 @@ impl Shadows {
                             offset: 0,
                         },
                     ]);
+                    for &(index, node) in extrusions {
+                        commands.extend([
+                            RenderCommand::SetBindGroup {
+                                index: 1,
+                                group: node,
+                            },
+                            RenderCommand::DrawIndexedIndirect {
+                                buffer: buffers.args,
+                                offset: crate::args_offset(index),
+                            },
+                        ]);
+                    }
                 }
-                for &(index, node) in extrusions {
-                    commands.extend([
-                        RenderCommand::SetBindGroup {
-                            index: 1,
-                            group: node,
-                        },
-                        RenderCommand::DrawIndexedIndirect {
-                            buffer: buffers.args,
-                            offset: crate::args_offset(index),
-                        },
-                    ]);
-                }
-                if let Some(caster) = self.casters[1].filter(|_| !models.is_empty()) {
+                if let Some(caster) = self.casters[2].filter(|_| !models.is_empty()) {
                     commands.extend([
                         RenderCommand::SetPipeline(caster),
                         RenderCommand::SetBindGroup {

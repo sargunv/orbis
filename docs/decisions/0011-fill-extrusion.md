@@ -257,3 +257,23 @@ its buildings in the buffer show past the edge over a neighbour with other
 data. Here each building belongs to the tile holding its centroid, so they
 don't, and the fixture keeps a seam along a z14 edge that real tiles,
 whose neighbours agree, never show.
+
+### Only cut buildings discard
+
+A fragment shader that may `discard` turns off a tile-based GPU's
+hidden-surface removal for its whole pipeline: every overlapping tower
+fragment is shaded, shadow lookups included. So whole and cut buildings
+draw in two pipelines over the same arguments, each vertex shader keeping
+its own: whole ones never discard, and only cut ones clip per fragment.
+The casters split alike. An overzoom slice also keeps a polygon whole in
+its source tile whole, unclipped, in each child its bounds meet while it
+reaches no further than one child past it (`orb_tile::overzoom`): over
+Manhattan at z15.6 that raises whole buildings from 81.5% to 88.4%
+(7,985 of 9,032), so more walls and patterns run on unbroken.
+
+Manhattan under the demo's sun, 2048×1536 at 2× on an Apple M6, GPU time:
+z14.52 pitch 61 21.7 → 19.7 ms, z15.6 pitch 70 22.4 → 17.7 ms; the bench's
+z16 pitch 60 with buildings 1.51 → 1.38 ms, and with the sun and shadows
+3.07 → 2.79 ms. The cut buildings' discard still costs about 2.2 and 1.4
+ms of the Manhattan frames (#102). Fixtures are unchanged (fill-extrusion
+and extrusion: 51 of 64 pass, natively and in Chrome).

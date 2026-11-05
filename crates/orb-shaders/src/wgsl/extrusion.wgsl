@@ -27,9 +27,6 @@ struct ExtrusionOut {
     @location(2) @interpolate(flat) tile: u32,
     @location(3) pattern_pos: vec2<f32>,
     @location(4) @interpolate(flat) images: vec2<u32>,
-    // A building cut at the source's buffer, clipped per fragment to the
-    // placement; whole ones draw entire from the placement that owns them.
-    @location(6) @interpolate(flat) cut: u32,
     // Camera-relative world (x east, y north, z up), the face's normal
     // there and the view depth, for shadows.
     @location(8) world: vec3<f32>,
@@ -41,23 +38,55 @@ struct ExtrusionOut {
     @location(12) wall: vec2<f32>,
     @location(13) @interpolate(flat) seed: u32,
 };
+// Extrusions draw in two pipelines: whole buildings, and buildings cut at
+// the source's buffer, clipped per fragment to the placement. Only the
+// second discards, which would turn off the GPU's hidden-surface removal
+// for every building it drew: a quarter of a dense 3D frame.
 @vertex
 fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
+    return extrusion_part(index, EXTRUSION_WHOLE);
+}
+@vertex
+fn vs_extrusion_cut(@builtin(vertex_index) index: u32) -> ExtrusionOut {
+    return extrusion_part(index, EXTRUSION_CUT);
+}
+const EXTRUSION_WHOLE: u32 = 1u;
+const EXTRUSION_CUT: u32 = 2u;
+// Vertex `index` if its building is drawn here as `part`.
+fn extrusion_part(index: u32, part: u32) -> ExtrusionOut {
     var v: Pulled;
-    if !pull_indexed(node.index, index, 4u, &v) || !extrusion_drawn(v) {
+    if !pull_indexed(node.index, index, 4u, &v) || extrusion_drawn(v) != part {
         var out: ExtrusionOut;
         out.position = discarded_vertex();
         return out;
     }
     return extrusion_vertex(v);
 }
-// A whole building belongs to the one placement holding its centroid (half
-// open, as points are owned), which draws all of it, past its clip
-// rectangles: its walls and their pattern run on unbroken. A building cut
-// at the source's buffer draws from every placement.
-fn extrusion_drawn(v: Pulled) -> bool {
+// How a building draws from this placement: 0 not at all, EXTRUSION_WHOLE
+// or EXTRUSION_CUT. A whole building belongs to the one placement holding
+// its centroid (half open, as points are owned), which draws all of it,
+// past its clip rectangles: its walls and their pattern run on unbroken. A
+// building cut at the source's buffer draws from every placement.
+fn extrusion_drawn(v: Pulled) -> u32 {
     let row = prop_row(v, vertex_at(v.vertex + 1u), v.row_words);
-    return prop_at(row + EXTRUSION_ROW_WHOLE) == 0u || inside_clips(tile_at(v.tile), unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID)));
+    if prop_at(row + EXTRUSION_ROW_WHOLE) == 0u {
+        return EXTRUSION_CUT;
+    }
+    return select(0u, EXTRUSION_WHOLE, inside_clips(tile_at(v.tile), unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID))));
+}
+// Whether a cut building's fragment at `tile_pos` lies in its placement.
+// Shared tile edges can contain real vertical walls: they have zero ground
+// area, and depth selects their nearest surface without blending twice, so
+// both bounds count.
+fn extrusion_inside(tile: Tile, tile_pos: vec2<f32>) -> bool {
+    for (var i = 0u; i < 4u; i++) {
+        let lo = unpack_i16x2(tile.clips[i].x);
+        let hi = unpack_i16x2(tile.clips[i].y);
+        if all(tile_pos >= lo) && all(tile_pos <= hi) {
+            return true;
+        }
+    }
+    return false;
 }
 fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     var out: ExtrusionOut;
@@ -81,7 +110,6 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let gradient_base = max(0.0, base);
     let gradient_height = max(0.0, height);
     let centroid = unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID));
-    out.cut = 1u - prop_at(row + EXTRUSION_ROW_WHOLE);
     let raise = ground_elevation(tile, centroid);
     let basement = select(0.0, 10.0, base <= 0.0 && frame.dem_dim > 0.0);
     height = gradient_height + raise;
@@ -135,18 +163,16 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
 }
 @fragment
 fn fs_extrusion(in: ExtrusionOut) -> @location(0) vec4<f32> {
+    return extrusion_shade(in, fwidth(in.wall));
+}
+@fragment
+fn fs_extrusion_cut(in: ExtrusionOut) -> @location(0) vec4<f32> {
     let wall_width = fwidth(in.wall);
-    // A cut building clips to the placement. Shared tile edges can contain
-    // real vertical walls: they have zero ground area, and depth selects
-    // their nearest surface without blending twice, so both bounds count.
+    if !extrusion_inside(tile_at(in.tile), in.tile_pos) { discard; }
+    return extrusion_shade(in, wall_width);
+}
+fn extrusion_shade(in: ExtrusionOut, wall_width: vec2<f32>) -> vec4<f32> {
     let tile = tile_at(in.tile);
-    var inside = in.cut == 0u;
-    for (var i = 0u; i < 4u && !inside; i++) {
-        let lo = unpack_i16x2(tile.clips[i].x);
-        let hi = unpack_i16x2(tile.clips[i].y);
-        inside = all(in.tile_pos >= lo) && all(in.tile_pos <= hi);
-    }
-    if !inside { discard; }
     // Shadows take the directional light away; lit, the colour is exact.
     let lit = shadow_at(in.world, in.normal, in.depth);
     var color = select(mix(in.unlit, in.color, lit), in.color, lit >= 1.0);

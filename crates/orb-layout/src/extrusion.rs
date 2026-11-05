@@ -38,8 +38,7 @@ pub fn layout_in_extent(
     });
     let rounded = rounding > 0.0;
     // From the source's rings, as the property rows take it.
-    let cuts = Whole::of(layer, bend.is_some());
-    let whole: Vec<bool> = features.iter().map(|&f| cuts.is_whole(layer, f)).collect();
+    let whole = whole(layer, features, bend.is_some());
     if output_extent == layer.extent() && !rounded {
         return layout_normalized(layer, features, &whole, false, bend);
     }
@@ -111,42 +110,15 @@ pub fn centroid(layer: &Layer, feature: u32, output_extent: u32) -> [i16; 2] {
     [clamp(mean(x)), clamp(mean(y))]
 }
 
-/// Which buildings are whole in a tile's data: none of their edges lies on
-/// the line the source clipped along, its buffer past the tile square
-/// ([`Layer::clip_buffer`]). A whole building can be drawn entire by the
-/// tile owning its centroid, where its placement maps past the square:
-/// not for a tile `bent` onto a curved surface, whose patches end there.
-#[derive(Clone, Copy, Debug)]
-pub struct Whole {
-    buffer: i32,
-    extent: i32,
-    bent: bool,
-}
-
-impl Whole {
-    pub fn of(layer: &Layer, bent: bool) -> Self {
-        Self {
-            buffer: layer.clip_buffer(),
-            extent: layer.extent() as i32,
-            bent,
-        }
-    }
-
-    pub fn is_whole(&self, layer: &Layer, feature: u32) -> bool {
-        !self.bent
-            && layer.geometry(feature as usize).parts().all(|part| {
-                part.rings().all(|ring| {
-                    let n = ring.len();
-                    (0..n).all(|i| !self.cut(ring[i], ring[(i + 1) % n]))
-                })
-            })
-    }
-
-    /// An edge along the clip line.
-    fn cut(&self, a: [i32; 2], b: [i32; 2]) -> bool {
-        let (lo, hi) = (-self.buffer, self.extent + self.buffer);
-        self.buffer > 0 && (0..2).any(|axis| a[axis] == b[axis] && (a[axis] == lo || a[axis] == hi))
-    }
+/// Which of `features` are whole in `layer`'s data ([`Layer::is_whole`])
+/// and can be drawn entire by the tile owning their centroid, where its
+/// placement maps past the square: none for a tile `bent` onto a curved
+/// surface, whose patches end there.
+pub fn whole(layer: &Layer, features: &[u32], bent: bool) -> Vec<bool> {
+    let buffer = layer.clip_buffer();
+    (features.iter())
+        .map(|&f| !bent && layer.is_whole(f as usize, buffer))
+        .collect()
 }
 
 /// `whole`, per slot: the building keeps its roof and walls past the
@@ -280,7 +252,7 @@ mod tests {
             b.push_vertex(p);
         }
         let layer = b.finish();
-        assert!(Whole::of(&layer, false).is_whole(&layer, 0));
+        assert!(layer.is_whole(0, layer.clip_buffer()));
         let mesh = layout(&layer, &[0]);
         // Two roof triangles and four whole walls, reaching x = −10.
         assert_eq!(mesh.indices.len(), 6 + 4 * 6);
@@ -305,7 +277,7 @@ mod tests {
         }
         let layer = b.finish();
         assert!(
-            !Whole::of(&layer, false).is_whole(&layer, 0),
+            !layer.is_whole(0, layer.clip_buffer()),
             "cut along the buffer at x = −10"
         );
         let mesh = layout(&layer, &[0]);
