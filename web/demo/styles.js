@@ -17,11 +17,22 @@ import alpsFlight from "./data/alps-flight.json";
 import globe from "./data/globe.json?url";
 import manhattan from "./data/manhattan.json?url";
 import video from "./data/video.json?url";
+import landmarksScene from "./data/tokyo-landmarks.json";
+import tower from "./data/models/tower.glb?url";
+import torii from "./data/models/torii.glb?url";
+import pagoda from "./data/models/pagoda.glb?url";
 
 // The sunlit Alps scene names its style relatively, which the bundle's
 // hashed asset names break: point it at the bundled style.
 const alpsSunlit = `data:application/json,${encodeURIComponent(JSON.stringify({
   ...alpsSunlitScene, style: new URL(alps, location.href).href,
+}))}`;
+
+// The landmarks scene names its models relatively, which hashed asset
+// names break too.
+const absolute = (url) => new URL(url, location.href).href;
+const landmarks = `data:application/json,${encodeURIComponent(JSON.stringify({
+  ...landmarksScene, models: { tower: absolute(tower), torii: absolute(torii), pagoda: absolute(pagoda) },
 }))}`;
 
 /** OpenFreeMap's live Liberty style over the planet: the demo's default. */
@@ -101,6 +112,19 @@ const RADAR = [
     paint: { "raster-fade-duration": 0, "raster-opacity": 0.85 } }],
 ];
 
+/** The landmarks scene's glTF models, at points of a GeoJSON source, under Liberty's labels. */
+const point = (model, coordinates) => ({ type: "Feature", properties: { model },
+  geometry: { type: "Point", coordinates } });
+const LANDMARKS = [
+  ["addSource", "landmarks", { type: "geojson", data: { type: "FeatureCollection", features: [
+    point("tower", [139.74543, 35.65858]),
+    point("torii", [139.7497, 35.6572]),
+    point("pagoda", [139.7462, 35.6553]),
+  ] } }],
+  ["addLayer", { id: "landmarks", type: "model", source: "landmarks",
+    layout: { "model-id": ["get", "model"] } }, "road_one_way_arrow"],
+];
+
 /** @type {{ name: string, scenes: Scene[] }[]} */
 export const GROUPS = [
   {
@@ -121,6 +145,9 @@ export const GROUPS = [
         flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
       { key: "alps-sunlit", name: "Alps in morning sun", detail: "The same flight, lit by the sun at a time and place", url: alpsSunlit,
         flight: alpsFlight.legs, swatch: ["#c9cdb8", "#8fa9bd", "#6b7660"] },
+      { key: "landmarks", name: "Tokyo landmarks", detail: "glTF models among sunlit 3D buildings",
+        url: landmarks, calls: LANDMARKS, camera: { center: [139.7471, 35.6566], zoom: 16.2, bearing: -25, pitch: 60 },
+        swatch: ["#e9e4dc", "#a0c8f0", "#e8542a"] },
       { key: "arctic", name: "Arctic", detail: "Polar stereographic, EPSG:3413", url: arctic, dark: true,
         swatch: ["#24476b", "#e9eef2", "#9aa6ad"] },
       { key: "equal-earth", name: "Equal Earth", detail: "The whole world equal-area, handing over to Web Mercator by zoom 7",

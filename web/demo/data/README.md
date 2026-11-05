@@ -45,6 +45,12 @@ sprites once served.
   above): Midtown lit by an October afternoon sun that casts shadows
   (decision 0046), labels hidden behind buildings, written for this
   repository; `?style=manhattan`.
+- `tokyo-landmarks.json` and `models/`: a scene document over OpenFreeMap's
+  Liberty (data as above): Shiba Park lit by a November afternoon sun, with
+  three glTF landmarks (a lattice tower, a torii and a pagoda) that the
+  demo's entry places at GeoJSON points in a `model` layer (decision 0047);
+  `?style=landmarks`. The models are built from boxes, frusta and prisms by
+  `cargo xtask demo-data models`; both are written for this repository.
 - `scripts.json`: the Cairo, Delhi and Bangkok entries' style
   (`?style=cairo|delhi|bangkok`, or `scripts`), written for this repository. It draws OpenFreeMap's
   planet tiles with labels in Arabic, Devanagari, Thai and Latin from
