@@ -2216,10 +2216,12 @@ impl Map {
                 .map(|warped| warped.frame);
             let ground = terrain.map(|t| t.ground(tile));
             let series = resident.series.clone();
-            // A tile on another plane has a place on the surface's plane
+            // A tile on another plane has a place on a globe surface's plane
             // through its planar patches; without them (one at a pole, say)
-            // it draws on the globe alone.
-            let on_plane = source_warp.is_none() || series.is_some();
+            // it draws on the globe alone. On a plane surface every tile has
+            // one: a warped image draws through its warp's mesh.
+            let on_plane =
+                self.surface.globe().is_none() || source_warp.is_none() || series.is_some();
             // On a globe, a tile draws through its patches on the sphere.
             let globe = match view.globe() {
                 Some(_) => self
