@@ -1,12 +1,15 @@
-/// One value per feature, with a bitmap of which features have one.
+/// A value for some of a layer's features: a bitmap of which have one, and
+/// their values in feature order. Most keys of a layer are on few of its
+/// features, so absent rows take one bit.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Column {
     present: Bitmap,
+    /// Per bitmap word, the values before it.
+    ranks: Vec<u32>,
     data: ColumnData,
 }
 
-/// A column's values, typed for the whole column. Rows that are absent hold
-/// an unspecified placeholder.
+/// A column's present values, typed for the whole column.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ColumnData {
     Bool(Vec<bool>),
@@ -73,15 +76,20 @@ impl ValueRef<'_> {
 }
 
 impl Column {
-    /// A column from its data and presence bitmap, which must be the same
-    /// length.
+    /// A column from its presence bitmap and its present values.
     pub fn new(present: Bitmap, data: ColumnData) -> Self {
-        let column = Self { present, data };
-        assert_eq!(
-            column.present.len(),
-            column.data_len(),
-            "column length mismatch"
-        );
+        let mut ranks = Vec::with_capacity(present.words.len());
+        let mut count = 0;
+        for word in &present.words {
+            ranks.push(count);
+            count += word.count_ones();
+        }
+        let column = Self {
+            present,
+            ranks,
+            data,
+        };
+        assert_eq!(count as usize, column.data_len(), "column length mismatch");
         column
     }
 
@@ -102,6 +110,8 @@ impl Column {
         if !self.present.get(row) {
             return None;
         }
+        let below = self.present.words[row / 64] & ((1 << (row % 64)) - 1);
+        let row = (self.ranks[row / 64] + below.count_ones()) as usize;
         Some(match &self.data {
             ColumnData::Bool(v) => ValueRef::Bool(v[row]),
             ColumnData::I64(v) => ValueRef::I64(v[row]),
@@ -112,6 +122,28 @@ impl Column {
             }
             ColumnData::Mixed(v) => v[row].as_ref(),
         })
+    }
+
+    /// Heap bytes the column holds.
+    pub fn bytes(&self) -> usize {
+        let text = |s: &String| size_of::<String>() + s.len();
+        self.present.words.len() * 12
+            + match &self.data {
+                ColumnData::Bool(v) => v.len(),
+                ColumnData::I64(v) => v.len() * 8,
+                ColumnData::U64(v) => v.len() * 8,
+                ColumnData::F64(v) => v.len() * 8,
+                ColumnData::Str { dictionary, codes } => {
+                    codes.len() * 4 + dictionary.iter().map(text).sum::<usize>()
+                }
+                ColumnData::Mixed(v) => v
+                    .iter()
+                    .map(|v| match v {
+                        Value::Str(s) | Value::Json(s) => text(s),
+                        _ => size_of::<Value>(),
+                    })
+                    .sum(),
+            }
     }
 
     fn data_len(&self) -> usize {

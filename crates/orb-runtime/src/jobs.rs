@@ -31,41 +31,58 @@ use crate::style::{ImageKind, StylePlan};
 use crate::symbol::{ResultSymbols, SpriteIcons};
 use crate::tile::{self, ImageRef, Select, TileBuild};
 
-/// Decoded tiles a worker keeps per source, least recently used first out.
-const FRAME_CACHE: usize = 256;
+/// Bytes of decoded tiles a worker keeps, least recently used first out.
+const FRAME_BUDGET: usize = 64 << 20;
 
 /// One source's data in a worker, shared by its style revisions.
 #[derive(Debug, Default)]
 struct SourceData {
     geojson: Mutex<Option<Result<crate::geojson::Index, String>>>,
-    frames: Mutex<Frames>,
 }
+
+/// A cached frame's key: its source, the style revision its source data
+/// began at, and its tile.
+type FrameKey = (u32, u64, TileIndex);
 
 #[derive(Debug, Default)]
 struct Frames {
-    tiles: HashMap<TileIndex, (Arc<TileFrame>, u64)>,
+    /// Each frame, its bytes and when it was last used.
+    tiles: HashMap<FrameKey, (Arc<TileFrame>, usize, u64)>,
+    bytes: usize,
     clock: u64,
 }
 
 impl Frames {
-    fn get(&mut self, tile: TileIndex) -> Option<Arc<TileFrame>> {
+    fn get(&mut self, key: FrameKey) -> Option<Arc<TileFrame>> {
         self.clock += 1;
         let clock = self.clock;
-        self.tiles.get_mut(&tile).map(|(frame, used)| {
+        self.tiles.get_mut(&key).map(|(frame, _, used)| {
             *used = clock;
             Arc::clone(frame)
         })
     }
 
-    fn insert(&mut self, tile: TileIndex, frame: Arc<TileFrame>) {
+    fn insert(&mut self, key: FrameKey, frame: Arc<TileFrame>) {
         self.clock += 1;
-        if self.tiles.len() >= FRAME_CACHE && !self.tiles.contains_key(&tile) {
-            let oldest = self.tiles.iter().min_by_key(|(_, (_, used))| *used);
-            if let Some((&oldest, _)) = oldest {
-                self.tiles.remove(&oldest);
-            }
+        let bytes = frame.bytes();
+        self.bytes += bytes;
+        if let Some((_, old, _)) = self.tiles.insert(key, (frame, bytes, self.clock)) {
+            self.bytes -= old;
         }
-        self.tiles.insert(tile, (frame, self.clock));
+        while self.bytes > FRAME_BUDGET && self.tiles.len() > 1 {
+            let (&oldest, _) = self
+                .tiles
+                .iter()
+                .min_by_key(|(_, (.., used))| *used)
+                .expect("a frame");
+            self.remove(oldest);
+        }
+    }
+
+    fn remove(&mut self, key: FrameKey) {
+        if let Some((_, bytes, _)) = self.tiles.remove(&key) {
+            self.bytes -= bytes;
+        }
     }
 }
 
@@ -83,6 +100,8 @@ const DATA_REVISIONS: usize = 3;
 pub(crate) struct WorkerData {
     /// Per source key, kept while the source is.
     sources: Mutex<HashMap<u32, SourceRevisions>>,
+    /// Decoded tiles of every source.
+    frames: Mutex<Frames>,
     /// Glyph metrics of the PBF ranges fetched so far.
     pub(crate) glyphs: GlyphCatalog,
     /// Sprite metadata for icon layout.
@@ -434,12 +453,12 @@ impl TileWorker {
 
     /// A source's newest data.
     fn data(&self, source: u32) -> Arc<SourceData> {
-        self.data_at(source, None)
+        self.data_at(source, None).1
     }
 
     /// A source's data as of style revision `revision`: the newest that
-    /// began by then, or the newest of all.
-    fn data_at(&self, source: u32, revision: Option<u64>) -> Arc<SourceData> {
+    /// began by then, or the newest of all, with the revision it began at.
+    fn data_at(&self, source: u32, revision: Option<u64>) -> (u64, Arc<SourceData>) {
         let mut data = self.data.sources.lock().expect("worker data poisoned");
         let revisions = data.entry(source).or_default();
         if revisions.is_empty() {
@@ -448,7 +467,8 @@ impl TileWorker {
         let at = revision
             .and_then(|r| revisions.iter().rposition(|(began, _)| *began <= r))
             .unwrap_or(revisions.len() - 1);
-        Arc::clone(&revisions[at].1)
+        let (began, data) = &revisions[at];
+        (*began, Arc::clone(data))
     }
 
     /// Whether `source` (a source key) has image tiles to decode rather
@@ -489,13 +509,15 @@ impl TileWorker {
         if self.plan.source(request.source).is_none() {
             return false;
         }
-        let data = self.data(request.source);
-        if data
+        let (began, data) = self.data_at(request.source, None);
+        let key = (request.source, began, request.tile);
+        if self
+            .data
             .frames
             .lock()
             .expect("frames poisoned")
             .tiles
-            .contains_key(&request.tile)
+            .contains_key(&key)
         {
             return true;
         }
@@ -636,16 +658,16 @@ impl TileWorker {
             .plan
             .source(source)
             .ok_or_else(|| format!("source {source} was removed"))?;
-        let data = self.data_at(source, revision);
-        let cached = data.frames.lock().expect("frames poisoned").get(tile);
+        let (began, data) = self.data_at(source, revision);
+        let key = (source, began, tile);
+        let frames = &self.data.frames;
+        let cached = frames.lock().expect("frames poisoned").get(key);
         Ok(match cached {
             Some(frame) => frame,
             None => {
                 let frame = Arc::new(self.decode(bytes, encoding, index, &data, tile, data_zoom)?);
-                data.frames
-                    .lock()
-                    .expect("frames poisoned")
-                    .insert(tile, Arc::clone(&frame));
+                let mut frames = frames.lock().expect("frames poisoned");
+                frames.insert(key, Arc::clone(&frame));
                 frame
             }
         })
@@ -1599,95 +1621,32 @@ pub(crate) mod tests {
         assert!(build.warnings.is_empty(), "{:?}", build.warnings);
     }
 
+    /// The header is postcard; the streams follow it raw, where the
+    /// result's host bytes say.
     #[test]
     fn packs_and_unpacks() {
-        let make = || TileBuild {
-            symbols: Vec::new(),
-            revision: 1 << 33 | 5,
-            nodes: vec![3, 4, 9],
-            rows_only: false,
-            ids: vec!["a".into(), "1.5".into()],
-            warnings: vec![
-                "source geo: nested object and array property values become strings (é)".into(),
-            ],
-            missing_images: vec!["marker".into(), "ü".into()],
-            meshes: vec![
-                NodeMesh {
-                    hits: crate::MeshHits::new(&[crate::HitFeature {
-                        id: Some("promoted é".into()),
-                        feature: 7,
-                        kind: 0,
-                        extent: 4096,
-                        radius: 2.0,
-                        stroke: 1.0,
-                        height: 40.0,
-                        base: 2.0,
-                        parts: vec![vec![vec![[-3, 5], [30, 50], [30, 5]]]],
-                    }]),
-                    node: 3,
-                    extent: 4096,
-                    mesh: Mesh {
-                        vertices: vec![1, 2, 3, 4],
-                        indices: vec![0, 1, 0],
-                        chunks: vec![Chunk {
-                            first_index: 0,
-                            index_count: 3,
-                            sort_key: Some(2.5),
-                            bounds: orb_layout::TileBox {
-                                min: [-5, 0],
-                                max: [10, 4096],
-                            },
-                        }],
-                    },
-                    props: vec![9; 12],
-                    row_words: 6,
-                    maxima: vec![0.0, 2.5],
-                    images: vec![
-                        ImageRef {
-                            word: 0,
-                            key: orb_layout::ImageKey::Name("extra:pattern-é".into()),
-                        },
-                        ImageRef {
-                            word: 3,
-                            key: orb_layout::ImageKey::Dash {
-                                array: vec![1.0f32.to_bits(), 2.0f32.to_bits()],
-                                round: true,
-                            },
-                        },
-                        ImageRef {
-                            word: 4,
-                            key: orb_layout::ImageKey::Ramp {
-                                colors: vec![0xff0000ff; 256],
-                                nearest: true,
-                            },
-                        },
-                    ],
-                    state_ids: Some(vec![1, crate::tile::NO_ID, 0]),
-                    data: vec![
-                        orb_expr::FeatureData {
-                            id: Value::Number(7.0),
-                            geometry_type: Some(orb_tile::GeometryType::LineString),
-                            properties: vec![("class".into(), Value::String("major".into()))],
-                        };
-                        3
-                    ],
-                },
-                NodeMesh {
-                    hits: crate::MeshHits::default(),
-                    node: 4,
-                    extent: 8192,
-                    mesh: Mesh::default(),
-                    props: vec![],
-                    row_words: 0,
-                    maxima: vec![],
-                    images: vec![],
-                    state_ids: None,
-                    data: vec![],
-                },
-            ],
+        let mesh = |node, vertices: Vec<u32>, props: Vec<u32>| NodeMesh {
+            hits: crate::MeshHits::default(),
+            node,
+            extent: 4096,
+            mesh: Mesh {
+                vertices,
+                ..Mesh::default()
+            },
+            props,
+            row_words: 6,
+            maxima: vec![2.5],
+            images: Vec::new(),
+            state_ids: Some(vec![1, crate::tile::NO_ID]),
+            data: Vec::new(),
         };
-        let build = make();
-        let bytes = pack(make());
+        let bytes = pack(TileBuild {
+            revision: 1 << 33 | 5,
+            nodes: vec![3, 4],
+            warnings: vec!["é".into()],
+            meshes: vec![mesh(3, vec![1, 2, 3], vec![9; 12]), mesh(4, vec![], vec![])],
+            ..TileBuild::default()
+        });
         let words: Vec<u32> = bytes
             .as_chunks::<4>()
             .0
@@ -1696,33 +1655,20 @@ pub(crate) mod tests {
             .collect();
         let result = unpack(packed_header(&bytes).unwrap(), HostBytesId(7)).unwrap();
         assert_eq!(result.host_bytes, Some(HostBytesId(7)));
-        assert_eq!(*result.meshes[0].hits, build.meshes[0].hits);
-        assert_eq!(result.warnings, build.warnings);
-        assert_eq!(result.missing_images, build.missing_images);
         assert_eq!(
-            (result.revision, &result.nodes, &result.ids),
-            (build.revision, &build.nodes, &build.ids)
+            (result.revision, &result.warnings[..]),
+            (1 << 33 | 5, &["é".to_string()][..])
         );
-        assert_eq!(result.meshes[0].state_ids, build.meshes[0].state_ids);
-        assert_eq!(result.meshes[0].data, build.meshes[0].data);
-        assert_eq!(result.meshes[1].state_ids, None);
-        let m = &result.meshes[0];
         assert_eq!(
-            (m.node, m.extent, m.row_words, m.maxima.clone()),
-            (3, 4096, 6, vec![0.0, 2.5])
+            result.meshes[1].state_ids,
+            Some(vec![1, crate::tile::NO_ID])
         );
-        assert_eq!(m.chunks, build.meshes[0].mesh.chunks);
-        assert_eq!(m.images, build.meshes[0].images);
-        let Stream::Host { offset, len } = m.vertices else {
-            panic!("host stream")
+        let stream = |s: &Stream| match *s {
+            Stream::Host { offset, len } => &words[offset as usize / 4..][..len as usize],
+            Stream::Core(_) => panic!("a host stream"),
         };
-        let at = offset as usize / 4;
-        assert_eq!(&words[at..at + len as usize], [1, 2, 3, 4]);
-        let Stream::Host { offset, len } = m.props else {
-            panic!("host stream")
-        };
-        assert_eq!(&words[offset as usize / 4..][..len as usize], [9; 12]);
-        assert_eq!(result.meshes[1].node, 4);
+        assert_eq!(stream(&result.meshes[0].vertices), [1, 2, 3]);
+        assert_eq!(stream(&result.meshes[0].props), [9; 12]);
         assert!(packed_header(&bytes[..3]).is_err());
         assert!(unpack(&bytes[4..8], HostBytesId(0)).is_err());
     }

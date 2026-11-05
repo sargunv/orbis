@@ -139,3 +139,19 @@ interface this chain proposes for it:
   every family's uniforms from the reflected layout.
 - A transition step writes the eased constant into the node's program, so
   the overlay above goes too.
+
+## Sparse columns and a byte budget for frames
+
+A property column keeps a presence bitmap and only its present values,
+indexed by the bitmap's rank (a count per 64 features), so `Column::get`
+stays O(1) and absent cells take a bit. The layer builder collects
+`(feature, value)` pairs rather than one slot per feature for every key.
+Workers keep decoded frames in one LRU per worker, keyed by source, the
+revision its data began at and tile, within 64 MiB by `TileFrame::bytes`,
+in place of 256 frames per source.
+
+Frame bytes against the encoded tiles' bytes (`orbis render`, Tokyo at z12
+and z14): the Tokyo extract 5.59× → 3.31× (MVT) and 6.73× → 3.99× (MLT),
+OpenFreeMap Liberty 5.44× → 3.30×, VersaTiles 3.34× → 2.57×. Decoding the
+same tiles: 98 → 51 ms, 146 → 55 ms, 191 → 119 ms and 89 → 46 ms. Tile
+builds are unchanged within their noise.

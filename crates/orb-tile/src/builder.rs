@@ -14,14 +14,15 @@ use crate::{Bitmap, Column, ColumnData, GeometryType, Layer, Value};
 pub struct LayerBuilder {
     name: String,
     extent: u32,
-    ids: Vec<Option<Value>>,
+    /// Per column, its values by feature, in feature order.
+    ids: Vec<(u32, Value)>,
     types: Vec<GeometryType>,
     feature_parts: Vec<u32>,
     part_rings: Vec<u32>,
     ring_vertices: Vec<u32>,
     vertices: Vec<[i32; 2]>,
     keys: HashMap<String, usize>,
-    columns: Vec<(String, Vec<Option<Value>>)>,
+    columns: Vec<(String, Vec<(u32, Value)>)>,
     clip: Option<i32>,
 }
 
@@ -43,14 +44,21 @@ impl LayerBuilder {
     }
 
     pub fn begin_feature(&mut self, id: Option<u64>, geometry_type: GeometryType) {
-        self.ids.push(id.map(Value::U64));
         self.types.push(geometry_type);
         self.feature_parts.push(len_u32(self.part_rings.len()));
+        if let Some(id) = id {
+            self.set_id(Value::U64(id));
+        }
     }
 
     /// Sets the current feature's id, including string ids from GeoJSON.
     pub fn set_id(&mut self, id: Value) {
-        *self.ids.last_mut().expect("set_id outside a feature") = Some(id);
+        let feature = self.feature().expect("set_id outside a feature");
+        set(&mut self.ids, feature, id);
+    }
+
+    fn feature(&self) -> Option<u32> {
+        self.types.len().checked_sub(1).map(len_u32)
     }
 
     pub fn begin_part(&mut self) {
@@ -71,11 +79,7 @@ impl LayerBuilder {
     /// Sets a property of the current feature, replacing any earlier value
     /// for the same key.
     pub fn set_property(&mut self, key: &str, value: Value) {
-        let feature = self
-            .types
-            .len()
-            .checked_sub(1)
-            .expect("set_property outside a feature");
+        let feature = self.feature().expect("set_property outside a feature");
         let index = match self.keys.get(key) {
             Some(&index) => index,
             None => {
@@ -84,9 +88,7 @@ impl LayerBuilder {
                 self.columns.len() - 1
             }
         };
-        let values = &mut self.columns[index].1;
-        values.resize(feature + 1, None);
-        values[feature] = Some(value);
+        set(&mut self.columns[index].1, feature, value);
     }
 
     /// Discards the current feature and everything added to it.
@@ -94,8 +96,7 @@ impl LayerBuilder {
         let Some(part_start) = self.feature_parts.pop() else {
             return;
         };
-        let feature = self.types.len() - 1;
-        self.ids.pop();
+        let feature = self.feature().expect("a feature");
         self.types.pop();
         let ring_start = self.part_rings.get(part_start as usize).copied();
         self.part_rings.truncate(part_start as usize);
@@ -106,8 +107,12 @@ impl LayerBuilder {
                 self.vertices.truncate(vertex_start as usize);
             }
         }
-        for (_, values) in &mut self.columns {
-            values.truncate(feature);
+        for values in
+            std::iter::once(&mut self.ids).chain(self.columns.iter_mut().map(|c| &mut c.1))
+        {
+            if values.last().is_some_and(|(f, _)| *f == feature) {
+                values.pop();
+            }
         }
     }
 
@@ -124,14 +129,11 @@ impl LayerBuilder {
         self.part_rings.push(len_u32(self.ring_vertices.len()));
         self.ring_vertices.push(len_u32(self.vertices.len()));
 
-        let ids = typed_column(self.ids);
+        let ids = typed_column(len, self.ids);
         let properties = self
             .columns
             .into_iter()
-            .map(|(key, mut values)| {
-                values.resize(len, None);
-                (key, typed_column(values))
-            })
+            .map(|(key, values)| (key, typed_column(len, values)))
             .collect();
 
         Layer {
@@ -153,7 +155,15 @@ fn len_u32(len: usize) -> u32 {
     u32::try_from(len).expect("layer exceeds u32 offsets")
 }
 
-fn typed_column(values: Vec<Option<Value>>) -> Column {
+/// Sets `feature`'s value in `values`, replacing one set before.
+fn set(values: &mut Vec<(u32, Value)>, feature: u32, value: Value) {
+    match values.last_mut() {
+        Some((f, v)) if *f == feature => *v = value,
+        _ => values.push((feature, value)),
+    }
+}
+
+fn typed_column(len: usize, values: Vec<(u32, Value)>) -> Column {
     #[derive(PartialEq)]
     enum Kind {
         Bool,
@@ -165,7 +175,7 @@ fn typed_column(values: Vec<Option<Value>>) -> Column {
         Mixed,
     }
     let mut kind = None;
-    for value in values.iter().flatten() {
+    for (_, value) in &values {
         let k = match value {
             Value::Bool(_) => Kind::Bool,
             Value::I64(_) => Kind::I64,
@@ -187,42 +197,36 @@ fn typed_column(values: Vec<Option<Value>>) -> Column {
     }
 
     let mut present = Bitmap::new();
-    for value in &values {
-        present.push(value.is_some());
+    let mut next = values.iter().map(|(f, _)| *f as usize).peekable();
+    for feature in 0..len {
+        present.push(next.next_if_eq(&feature).is_some());
     }
+    let values = values.into_iter().map(|(_, v)| v);
     let data = match kind.unwrap_or(Kind::Bool) {
-        Kind::Bool => ColumnData::Bool(
-            values
-                .into_iter()
-                .map(|v| matches!(v, Some(Value::Bool(true))))
-                .collect(),
-        ),
+        Kind::Bool => ColumnData::Bool(values.map(|v| v == Value::Bool(true)).collect()),
         Kind::I64 => ColumnData::I64(
             values
-                .into_iter()
                 .map(|v| match v {
-                    Some(Value::I64(v)) => v,
-                    _ => 0,
+                    Value::I64(v) => v,
+                    _ => unreachable!("an i64 column"),
                 })
                 .collect(),
         ),
         Kind::U64 => ColumnData::U64(
             values
-                .into_iter()
                 .map(|v| match v {
-                    Some(Value::U64(v)) => v,
-                    _ => 0,
+                    Value::U64(v) => v,
+                    _ => unreachable!("a u64 column"),
                 })
                 .collect(),
         ),
         Kind::F64 | Kind::Number => ColumnData::F64(
             values
-                .into_iter()
                 .map(|v| match v {
-                    Some(Value::I64(v)) => v as f64,
-                    Some(Value::U64(v)) => v as f64,
-                    Some(Value::F64(v)) => v,
-                    _ => 0.0,
+                    Value::I64(v) => v as f64,
+                    Value::U64(v) => v as f64,
+                    Value::F64(v) => v,
+                    _ => unreachable!("a number column"),
                 })
                 .collect(),
         ),
@@ -230,23 +234,17 @@ fn typed_column(values: Vec<Option<Value>>) -> Column {
             let mut dictionary = Vec::new();
             let mut lookup: HashMap<String, u32> = HashMap::new();
             let codes = values
-                .into_iter()
                 .map(|v| match v {
-                    Some(Value::Str(s)) => *lookup.entry(s).or_insert_with_key(|s| {
+                    Value::Str(s) => *lookup.entry(s).or_insert_with_key(|s| {
                         dictionary.push(s.clone());
                         len_u32(dictionary.len() - 1)
                     }),
-                    _ => 0,
+                    _ => unreachable!("a string column"),
                 })
                 .collect();
             ColumnData::Str { dictionary, codes }
         }
-        Kind::Mixed => ColumnData::Mixed(
-            values
-                .into_iter()
-                .map(|v| v.unwrap_or(Value::Bool(false)))
-                .collect(),
-        ),
+        Kind::Mixed => ColumnData::Mixed(values.collect()),
     };
     Column::new(present, data)
 }

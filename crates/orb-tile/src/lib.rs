@@ -40,6 +40,11 @@ impl TileFrame {
     pub fn layer(&self, name: &str) -> Option<&Layer> {
         self.layers.iter().find(|l| l.name == name)
     }
+
+    /// Heap bytes the frame holds, for caches' budgets.
+    pub fn bytes(&self) -> usize {
+        self.layers.iter().map(Layer::bytes).sum()
+    }
 }
 
 /// One source layer of a tile, stored by column.
@@ -122,6 +127,20 @@ impl Layer {
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, c)| c)
+    }
+
+    fn bytes(&self) -> usize {
+        let offsets = self.feature_parts.len() + self.part_rings.len() + self.ring_vertices.len();
+        self.name.len()
+            + self.ids.bytes()
+            + self.types.len()
+            + offsets * 4
+            + self.vertices.len() * 8
+            + self
+                .properties
+                .iter()
+                .map(|(k, c)| size_of::<(String, Column)>() + k.len() + c.bytes())
+                .sum::<usize>()
     }
 
     /// Every property column with its key.
