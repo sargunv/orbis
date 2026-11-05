@@ -489,6 +489,7 @@ pub(crate) fn full_update(
             .enumerate()
             .map(|(i, k)| (k.0, Arc::new(doc.layer_json(i).clone())))
             .collect(),
+        source_diffs: Vec::new(),
         source_json: doc
             .source_keys()
             .enumerate()

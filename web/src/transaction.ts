@@ -15,12 +15,29 @@ export interface Transaction {
   /** A GeoJSON source's new data (GL JS's `setData`): its drawn tiles stay
    * until the new data's replace them. */
   setSourceData(id: string, data: object): Transaction;
+  /** A GeoJSON source's data changed by a diff (GL JS's `updateData`):
+   * only the diff goes to the map and its workers. */
+  updateSourceData(id: string, diff: GeoJSONSourceDiff): Transaction;
   setGlobalStateProperty(name: string, value: unknown): Transaction;
   setFeatureState(feature: FeatureTarget, state: Record<string, unknown>): Transaction;
   removeFeatureState(feature: Partial<FeatureTarget>, key?: string): Transaction;
   setStyle(style: object): Transaction;
   /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"`, `"mercator"`, `"equal-earth"`, `"natural-earth"`, `"equirectangular"`, with an optional `transition: [start, end] | false`. */
   setProjection(projection: object): Transaction;
+}
+
+/** GL JS's `GeoJSONSourceDiff`: features by id (or the source's `promoteId`). */
+export interface GeoJSONSourceDiff {
+  removeAll?: boolean;
+  remove?: (string | number)[];
+  add?: object[];
+  update?: {
+    id: string | number;
+    newGeometry?: object;
+    removeAllProperties?: boolean;
+    removeProperties?: string[];
+    addOrUpdateProperties?: { key: string; value: unknown }[];
+  }[];
 }
 
 export interface FeatureTarget {
@@ -31,7 +48,7 @@ export interface FeatureTarget {
 
 const CALLS = [
   "setPaintProperty", "setLayoutProperty", "setFilter", "setLayerZoomRange",
-  "addLayer", "removeLayer", "moveLayer", "addSource", "removeSource", "setSourceData",
+  "addLayer", "removeLayer", "moveLayer", "addSource", "removeSource", "setSourceData", "updateSourceData",
   "setGlobalStateProperty", "setFeatureState", "removeFeatureState", "setStyle",
   "setProjection",
 ] as const;

@@ -128,6 +128,23 @@ public final class OrbTransaction: @unchecked Sendable {
         }
     }
 
+    /// Changes a GeoJSON source's inline data by a diff (GL JS
+    /// `updateData`), sending only the diff: `{"removeAll", "remove":
+    /// [ids], "add": [features], "update": [{"id", "newGeometry",
+    /// "removeAllProperties", "removeProperties",
+    /// "addOrUpdateProperties": [{"key", "value"}]}]}`, features by id
+    /// (or by the source's `promoteId`).
+    ///
+    /// Contract: `immediate`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func updateSourceData(id: String, diff: String) throws {
+        let result = withStringView(id) { idView in withStringView(diff) { diffView in OrbTransaction_update_source_data(handle, idView, diffView) } }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
     /// Contract: `immediate`.
     ///
     /// - Throws: `OrbErrorFailure` when it fails.

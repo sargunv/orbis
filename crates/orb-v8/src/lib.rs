@@ -27,7 +27,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 pub use doc::StyleDoc;
-pub use geojson::parse_geojson;
+pub use geojson::{apply_diffs, parse_geojson};
 pub use light::default_lights;
 pub use lights::parse_time;
 pub use orb_expr::json::Span;

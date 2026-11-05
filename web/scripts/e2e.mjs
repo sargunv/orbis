@@ -5,7 +5,7 @@
 //   pixels, a hit test, a rendered-features query, an edit's generation,
 //   style images, camera moves with roll and elevation, project and
 //   unproject (for the camera now and another), padding, the free camera, a
-//   clustered source's queries, a canvas source, a drag, a click, idle drawing nothing, and an error.
+//   clustered source's queries, a GeoJSON diff, a canvas source, a drag, a click, idle drawing nothing, and an error.
 // - `edits`: every edit class through the map app's edit API
 //   (`globalThis.orbis`, web/demo/expose.js) must resolve and settle, and
 //   the cost of a feature-state write (plan §10.2's ≤0.05 ms target) over
@@ -249,6 +249,15 @@ async function scenario(browser, server, config) {
   });
   image = await pixels();
   assert.deepEqual(pixel(image, CENTER), [0, 255, 0], "the canvas");
+
+  // A diff changes a GeoJSON source's data in the job workers.
+  const updated = await scenario(async (s, c) => {
+    await s.shows(s.map.edit((tx) => tx.updateSourceData("box",
+      { update: [{ id: 7, addOrUpdateProperties: [{ key: "name", value: "seven" }] }] })));
+    await s.idle();
+    return (await s.map.queryRenderedFeatures(c, { layers: ["box"] }))[0]?.properties;
+  }, CENTER);
+  assert.deepEqual(updated, { name: "seven" });
   assert.deepEqual(errors, []);
   console.log(`scenario: ${config} passed`);
   await page.close();

@@ -688,3 +688,51 @@ fn canvas_sources_show_the_pixels_the_app_hands_in() {
     assert!(map.control_video("c", orb_api::VideoRequest::Play).is_err());
     assert!(map.source_frame("d", 1, 1, vec![0; 4]).is_err());
 }
+
+#[test]
+fn geojson_diffs_change_what_queries_find() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(
+        r#"{"version":8,"center":[0,0],"zoom":0,
+          "sources":{"p":{"type":"geojson","data":{"type":"FeatureCollection","features":[
+            {"type":"Feature","id":1,"properties":{"n":1},"geometry":{"type":"Point","coordinates":[0,0]}},
+            {"type":"Feature","id":2,"properties":{"n":2},"geometry":{"type":"Point","coordinates":[10,0]}}]}}},
+          "layers":[{"id":"p","type":"circle","source":"p"}]}"#,
+    )
+    .expect("style");
+    settle(&mut map, &mut target);
+    let mut tx = Transaction::new();
+    tx.push(Op::UpdateSourceData {
+        id: "p".into(),
+        diff: json::parse(
+            r#"{"remove":[2],"add":[{"type":"Feature","id":3,"properties":{"n":3},
+                 "geometry":{"type":"Point","coordinates":[-10,0]}}],
+               "update":[{"id":1,"addOrUpdateProperties":[{"key":"n","value":10}]}]}"#,
+        )
+        .unwrap(),
+    });
+    map.edit(&tx).expect("a diff");
+    settle(&mut map, &mut target);
+    let all = map.query_source("p", None, None);
+    let doc = json::parse(&answer(&mut map, all)).unwrap();
+    let mut found: Vec<(i64, i64)> = doc
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            let n = f
+                .get("properties")
+                .unwrap()
+                .get("n")
+                .unwrap()
+                .as_f64()
+                .unwrap();
+            (f.get("id").unwrap().as_f64().unwrap() as i64, n as i64)
+        })
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    assert_eq!(found, [(1, 10), (3, 3)]);
+}

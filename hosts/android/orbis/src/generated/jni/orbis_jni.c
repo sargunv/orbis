@@ -1330,6 +1330,24 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetSourceData(JN
     }
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionUpdateSourceData(JNIEnv* env, jclass cls, jlong self, jbyteArray id, jbyteArray diff) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    jbyte* diff_bytes = (*env)->GetByteArrayElements(env, diff, NULL);
+    if (!diff_bytes) return;
+    DiplomatStringView diff_view = { (const char*)diff_bytes, (size_t)(*env)->GetArrayLength(env, diff) };
+    OrbTransaction_update_source_data_result result = OrbTransaction_update_source_data((OrbTransaction*)(intptr_t)self, id_view, diff_view);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, diff, diff_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTransactionSetGlobalStateProperty(JNIEnv* env, jclass cls, jlong self, jbyteArray name, jbyteArray value) {
     (void)env;
     (void)cls;

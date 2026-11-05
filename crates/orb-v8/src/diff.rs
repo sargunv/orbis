@@ -200,6 +200,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
     }
 
     // Sources.
+    let mut source_diffs = Vec::new();
     let old_sources: HashMap<SourceKey, &std::sync::Arc<Source>> =
         doc.source_keys().zip(&old.sources).collect();
     for entry in &draft.sources {
@@ -209,6 +210,16 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
                 warnings.extend(w);
                 style.sources.push(std::sync::Arc::new(source));
                 changes.push(Change::SourceData(entry.key));
+            }
+            Some(source)
+                if let Some((_, diffs)) = draft.diffs.iter().find(|(k, _)| *k == entry.key) =>
+            {
+                // The parsed features change by the diffs; the JSON already did.
+                let source =
+                    crate::geojson::apply_diffs(source, diffs).map_err(crate::doc::error)?;
+                style.sources.push(std::sync::Arc::new(source));
+                changes.push(Change::SourceData(entry.key));
+                source_diffs.push((entry.key, diffs.clone()));
             }
             Some(source) => style.sources.push(std::sync::Arc::clone(source)),
             None => {
@@ -317,6 +328,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
             changes,
             feature_state: Vec::new(),
             warnings,
+            source_diffs,
         },
     ))
 }

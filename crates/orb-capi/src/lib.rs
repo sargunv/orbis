@@ -1094,6 +1094,26 @@ mod ffi {
             Ok(())
         }
 
+        /// Changes a GeoJSON source's inline data by a diff (GL JS
+        /// `updateData`), sending only the diff: `{"removeAll", "remove":
+        /// [ids], "add": [features], "update": [{"id", "newGeometry",
+        /// "removeAllProperties", "removeProperties",
+        /// "addOrUpdateProperties": [{"key", "value"}]}]}`, features by id
+        /// (or by the source's `promoteId`).
+        #[diplomat::attr(contract, immediate)]
+        pub fn update_source_data(
+            &mut self,
+            id: &DiplomatStr,
+            diff: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let op = orb_api::Op::UpdateSourceData {
+                id: text(id).into(),
+                diff: json(diff)?.ok_or_else(|| invalid("updateSourceData: no diff".into()))?,
+            };
+            self.0.push(op);
+            Ok(())
+        }
+
         #[diplomat::attr(contract, immediate)]
         pub fn set_global_state_property(
             &mut self,

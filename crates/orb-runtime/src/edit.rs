@@ -125,6 +125,10 @@ impl Map {
                 .changes
                 .iter()
                 .filter_map(|c| match c {
+                    // Job hosts apply a diff to the data they hold.
+                    Change::SourceData(key) if patch.source_diffs.iter().any(|(k, _)| k == key) => {
+                        None
+                    }
                     Change::SourceAdded(key) | Change::SourceData(key) => {
                         let i = doc.source_index(*key).expect("added sources exist");
                         let id = doc.style().sources[i].id.clone();
@@ -132,6 +136,11 @@ impl Map {
                     }
                     _ => None,
                 })
+                .collect(),
+            source_diffs: patch
+                .source_diffs
+                .iter()
+                .map(|(key, diffs)| (key.0, diffs.clone()))
                 .collect(),
             state: doc.global_state(),
             glyphs: doc.style().glyphs.clone(),

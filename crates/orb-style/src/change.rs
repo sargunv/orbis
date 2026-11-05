@@ -179,6 +179,10 @@ pub struct Patch {
     pub feature_state: Vec<FeatureStateOp>,
     /// Warnings of the re-parsed layers and sources.
     pub warnings: Vec<Diagnostic>,
+    /// GeoJSON sources whose data changed by diffs alone (GL JS
+    /// `updateData`), with the diffs in order: job hosts holding the
+    /// source's data apply them rather than receive it whole.
+    pub source_diffs: Vec<(SourceKey, Vec<std::sync::Arc<orb_expr::json::Json>>)>,
 }
 
 impl Patch {

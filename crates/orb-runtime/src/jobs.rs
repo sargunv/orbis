@@ -284,9 +284,21 @@ impl TileWorker {
         let old = previous.map(|p| &p.plan);
         let mut sources = Vec::with_capacity(update.sources.len());
         for key in &update.sources {
+            let previous = || {
+                old.and_then(|plan| {
+                    let at = plan.source_keys.iter().position(|k| k == key)?;
+                    Some(&plan.style.sources[at])
+                })
+            };
+            let diffs = update.source_diffs.iter().find(|(k, _)| k == key);
             let source = match update.source_json.iter().find(|(k, ..)| k == key) {
                 Some((_, id, json)) => {
                     Arc::new(orb_v8::parse_source(id, json).map_err(|d| d.to_string())?.0)
+                }
+                None if let Some((_, diffs)) = diffs => {
+                    let source =
+                        previous().ok_or_else(|| format!("a diff of unknown source {key}"))?;
+                    Arc::new(orb_v8::apply_diffs(source, diffs)?)
                 }
                 None => old
                     .and_then(|plan| {
@@ -348,8 +360,14 @@ impl TileWorker {
             layers,
             warnings: Vec::new(),
         };
-        // A source sent again has new data (an added one has none yet).
-        let new_data: Vec<u32> = update.source_json.iter().map(|(k, ..)| *k).collect();
+        // A source sent again or diffed has new data (an added one has
+        // none yet).
+        let new_data: Vec<u32> = update
+            .source_json
+            .iter()
+            .map(|(k, ..)| *k)
+            .chain(update.source_diffs.iter().map(|(k, _)| *k))
+            .collect();
         Ok(Self::with_style(
             previous,
             Arc::new(style),
@@ -693,6 +711,9 @@ pub struct StyleUpdate {
     pub layer_json: Vec<(u32, Arc<Json>)>,
     /// Key, id and definition.
     pub source_json: Vec<(u32, String, Arc<Json>)>,
+    /// GeoJSON sources whose data changed by diffs alone, with the diffs:
+    /// job hosts apply them to the data they hold.
+    pub source_diffs: Vec<(u32, Vec<Arc<Json>>)>,
     pub state: Vec<(String, Value<'static>)>,
     /// The style's glyph PBF URL template.
     pub glyphs: Option<String>,
@@ -1485,6 +1506,7 @@ pub(crate) mod tests {
                     orb_expr::json::parse(r#"{"id":"l","type":"line","source":"geo"}"#).unwrap(),
                 ),
             )],
+            source_diffs: Vec::new(),
             source_json: vec![(
                 1,
                 "geo".into(),

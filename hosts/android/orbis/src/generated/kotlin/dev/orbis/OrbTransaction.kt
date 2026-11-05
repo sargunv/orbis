@@ -138,6 +138,24 @@ class OrbTransaction internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Changes a GeoJSON source's inline data by a diff (GL JS
+     * `updateData`), sending only the diff: `{"removeAll", "remove":
+     * [ids], "add": [features], "update": [{"id", "newGeometry",
+     * "removeAllProperties", "removeProperties",
+     * "addOrUpdateProperties": [{"key", "value"}]}]}`, features by id
+     * (or by the source's `promoteId`).
+     *
+     * Contract: `immediate`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun updateSourceData(id: String, diff: String) {
+        synchronized(this) {
+            OrbisNative.orbTransactionUpdateSourceData(live(), id.encodeToByteArray(), diff.encodeToByteArray())
+        }
+    }
+
+    /**
      * Contract: `immediate`.
      *
      * @throws OrbErrorException when it fails.

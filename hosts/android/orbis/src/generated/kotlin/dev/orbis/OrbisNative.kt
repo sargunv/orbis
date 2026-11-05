@@ -402,6 +402,9 @@ internal object OrbisNative {
     external fun orbTransactionSetSourceData(self: Long, id: ByteArray, data: ByteArray): Unit
 
     @JvmStatic
+    external fun orbTransactionUpdateSourceData(self: Long, id: ByteArray, diff: ByteArray): Unit
+
+    @JvmStatic
     external fun orbTransactionSetGlobalStateProperty(self: Long, name: ByteArray, value: ByteArray): Unit
 
     @JvmStatic

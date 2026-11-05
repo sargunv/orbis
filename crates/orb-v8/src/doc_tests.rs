@@ -384,3 +384,73 @@ fn source_data_is_a_new_revision_of_the_same_source() {
         );
     }
 }
+
+#[test]
+fn source_diffs_change_the_record_and_the_features_alike() {
+    let mut doc = doc();
+    let point = |id: &str, x: f64, name: &str| {
+        format!(
+            r#"{{"type":"Feature","id":{id},"properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[{x},0]}}}}"#
+        )
+    };
+    commands(
+        &mut doc,
+        &format!(
+            r#"[["setSourceData", "g", {{"type":"FeatureCollection","features":[{},{},{}]}}]]"#,
+            point("1", 1.0, "a"),
+            point("2", 2.0, "b"),
+            point("\"3\"", 3.0, "c")
+        ),
+    );
+    let patch = commands(
+        &mut doc,
+        &format!(
+            r#"[["updateSourceData", "g", {{"remove": [2], "add": [{}, {}],
+                "update": [{{"id": "3", "addOrUpdateProperties": [{{"key": "name", "value": "z"}}],
+                  "newGeometry": {{"type": "Point", "coordinates": [30, 0]}}}},
+                  {{"id": 1, "removeAllProperties": true}}]}}]]"#,
+            point("1", 10.0, "a2"),
+            point("4", 4.0, "d")
+        ),
+    );
+    let key = doc.source_keys().nth(1).unwrap();
+    assert_eq!(patch.changes, [Change::SourceData(key)]);
+    assert_eq!(patch.source_diffs.len(), 1);
+    // The parsed features, as job hosts get them by the diff.
+    let SourceKind::GeoJson(g) = &doc.style().sources[1].kind else {
+        panic!()
+    };
+    let GeoJsonData::Inline(features) = &g.data else {
+        panic!()
+    };
+    let summary: Vec<String> = features
+        .iter()
+        .map(|f| format!("{:?} {:?} {:?}", f.id, f.properties, f.geometry))
+        .collect();
+    // The record, parsed again from scratch, agrees.
+    let reparsed = crate::geojson::convert(doc.source_json(1).get("data").unwrap()).unwrap();
+    let again: Vec<String> = reparsed
+        .iter()
+        .map(|f| format!("{:?} {:?} {:?}", f.id, f.properties, f.geometry))
+        .collect();
+    assert_eq!(summary, again);
+    // 1 kept its place, re-added and then stripped; 2 went; 3 moved; 4 is new.
+    assert_eq!(features.len(), 3, "{summary:?}");
+    assert_eq!(features[0].id, Some(orb_tile::Value::F64(1.0)));
+    assert!(features[0].properties.is_empty());
+    assert_eq!(
+        features[1].properties,
+        [("name".to_string(), orb_tile::Value::Str("z".into()))]
+    );
+    assert_eq!(features[2].id, Some(orb_tile::Value::F64(4.0)));
+    for bad in [
+        r#"[["updateSourceData", "v", {}]]"#,
+        r#"[["updateSourceData", "g", {"remove": [{}]}]]"#,
+    ] {
+        assert!(
+            doc.apply(&Transaction::from_commands(bad).unwrap())
+                .is_err(),
+            "{bad}"
+        );
+    }
+}

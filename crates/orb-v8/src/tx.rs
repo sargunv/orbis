@@ -56,6 +56,13 @@ pub enum Op {
         id: String,
         data: Json,
     },
+    /// Changes a GeoJSON source's inline data by a diff (GL JS
+    /// `updateData`): features removed, added and updated by id. Job hosts
+    /// get the diff, not the data.
+    UpdateSourceData {
+        id: String,
+        diff: Json,
+    },
     /// Sets a global state property; `None` (or `null`) resets it to the
     /// style's default.
     SetGlobalState {
@@ -228,6 +235,10 @@ impl Op {
             "setSourceData" => Op::SetSourceData {
                 id: string(1, "the source id")?,
                 data: arg(2).cloned().ok_or("setSourceData: no data")?,
+            },
+            "updateSourceData" => Op::UpdateSourceData {
+                id: string(1, "the source id")?,
+                diff: arg(2).cloned().ok_or("updateSourceData: no diff")?,
             },
             "setGlobalStateProperty" => Op::set_global_state(string(1, "the property")?, arg(2)),
             "setFeatureState" => Op::set_feature_state(target(arg(1), name)?, arg(2))?,

@@ -47,6 +47,9 @@ void OrbTransaction_remove_source(OrbTransaction* self, DiplomatStringView id);
 typedef struct OrbTransaction_set_source_data_result {union { OrbError err;}; bool is_ok;} OrbTransaction_set_source_data_result;
 OrbTransaction_set_source_data_result OrbTransaction_set_source_data(OrbTransaction* self, DiplomatStringView id, DiplomatStringView data);
 
+typedef struct OrbTransaction_update_source_data_result {union { OrbError err;}; bool is_ok;} OrbTransaction_update_source_data_result;
+OrbTransaction_update_source_data_result OrbTransaction_update_source_data(OrbTransaction* self, DiplomatStringView id, DiplomatStringView diff);
+
 typedef struct OrbTransaction_set_global_state_property_result {union { OrbError err;}; bool is_ok;} OrbTransaction_set_global_state_property_result;
 OrbTransaction_set_global_state_property_result OrbTransaction_set_global_state_property(OrbTransaction* self, DiplomatStringView name, DiplomatStringView value);
 

@@ -80,13 +80,15 @@ pub(crate) struct Draft {
     pub(crate) dirty: Vec<LayerKey>,
     /// Sources given new data.
     pub(crate) new_data: Vec<SourceKey>,
+    /// Sources whose data changed by diffs alone, with the diffs.
+    pub(crate) diffs: Vec<(SourceKey, Vec<Arc<Json>>)>,
     /// The root (other than sources and layers) was replaced.
     pub(crate) new_root: bool,
     pub(crate) feature_state: Vec<FeatureStateOp>,
     next_key: u32,
 }
 
-fn error(message: impl Into<String>) -> Diagnostics {
+pub(crate) fn error(message: impl Into<String>) -> Diagnostics {
     Diagnostics {
         errors: vec![Diagnostic {
             path: String::new(),
@@ -112,7 +114,7 @@ pub(crate) fn member<'a>(members: &'a [Member], key: &str) -> Option<&'a Json> {
 }
 
 /// Sets or (with `None`) removes `key` among `members`.
-fn set_member(members: &mut Vec<Member>, key: &str, value: Option<Json>) {
+pub(crate) fn set_member(members: &mut Vec<Member>, key: &str, value: Option<Json>) {
     members.retain(|m| m.key != key);
     if let Some(value) = value {
         members.push(Member {
@@ -346,6 +348,7 @@ impl StyleDoc {
             overrides: self.overrides.clone(),
             dirty: Vec::new(),
             new_data: Vec::new(),
+            diffs: Vec::new(),
             new_root: false,
             feature_state: Vec::new(),
             next_key: self.next_key,
@@ -565,6 +568,42 @@ impl Draft {
                 entry.json = Arc::new(synthetic(JsonValue::Object(members)));
                 if !self.new_data.contains(&entry.key) {
                     self.new_data.push(entry.key);
+                }
+                Ok(())
+            }
+            Op::UpdateSourceData { id, diff } => {
+                let entry = self
+                    .sources
+                    .iter_mut()
+                    .find(|s| s.id == *id)
+                    .ok_or_else(|| format!("the source \"{id}\" does not exist"))?;
+                if entry.json.get("type").and_then(Json::as_str) != Some("geojson") {
+                    return Err(format!("the source \"{id}\" is not a GeoJSON source"));
+                }
+                let data = entry
+                    .json
+                    .get("data")
+                    .filter(|d| d.as_object().is_some())
+                    .ok_or_else(|| format!("the source \"{id}\" has no inline data to update"))?;
+                let promote_id = match entry.json.get("promoteId") {
+                    Some(p) => p
+                        .as_str()
+                        .or_else(|| p.get(orb_tile::geojson::LAYER_NAME).and_then(Json::as_str)),
+                    None => None,
+                };
+                let parsed = crate::geojson::Diff::parse(diff)?;
+                let data = parsed.apply_json(data, promote_id)?;
+                let mut members = entry
+                    .json
+                    .as_object()
+                    .expect("sources are objects")
+                    .to_vec();
+                set_member(&mut members, "data", Some(data));
+                entry.json = Arc::new(synthetic(JsonValue::Object(members)));
+                let key = entry.key;
+                match self.diffs.iter_mut().find(|(k, _)| *k == key) {
+                    Some((_, diffs)) => diffs.push(Arc::new(diff.clone())),
+                    None => self.diffs.push((key, vec![Arc::new(diff.clone())])),
                 }
                 Ok(())
             }
