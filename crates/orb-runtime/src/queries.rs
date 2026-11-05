@@ -161,6 +161,33 @@ impl crate::Map {
         self.read_features(requests, None, done);
     }
 
+    /// GL JS's cluster queries on a clustered GeoJSON source: a cluster's
+    /// children or leaves, as a JSON array of GeoJSON features, or its
+    /// expansion zoom, as a number.
+    pub fn query_cluster(&self, source: &str, query: crate::ClusterQuery, done: QueryDone) {
+        let Some(style) = &self.style else {
+            return done(Err("no style is loaded".into()));
+        };
+        let plan = style.worker.plan();
+        let Some(index) = plan.sources.iter().position(|s| s.id == source) else {
+            return done(Err(format!("no source {source}")));
+        };
+        let clustered = matches!(
+            &plan.source_def(index).kind,
+            orb_style::SourceKind::GeoJson(g) if g.cluster.is_some()
+        );
+        if !clustered {
+            return done(Err(format!("{source} isn't a clustered GeoJSON source")));
+        }
+        // Any tile reaches a worker with the source's data.
+        let Some(tile) = self.tile_request(index, TileIndex::new(0, 0, 0)) else {
+            return done(Err(format!("{source} hasn't loaded")));
+        };
+        self.services
+            .jobs
+            .cluster(crate::ClusterRequest { tile, query }, done);
+    }
+
     /// How tile `tile` of plan source `index` was loaded.
     /// The oldest style revision a drawn tile's meshes were laid out with:
     /// its features are read from the data of then.

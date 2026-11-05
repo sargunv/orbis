@@ -33,7 +33,7 @@ The JSON report identifies the comparator and effective defaults explicitly.
 
 Parser and runtime plan diagnostics determine scope; original messages are
 retained alongside stable, deduplicated skip reasons. GeoJSON property-string
-conversion warnings are informational; clustering and source filters are skips.
+conversion warnings are informational; source filters are skips.
 `operations` apply after the map first goes idle, as GL JS's harness applies
 them after `load`: `wait` and `idle` render until idle, `setZoom`,
 `setCenter`, `setBearing` and `setPitch` move the camera, and every other

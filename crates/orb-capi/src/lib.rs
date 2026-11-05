@@ -1738,6 +1738,43 @@ mod ffi {
             )
         }
 
+        /// A cluster's members one zoom in, clusters and points, in
+        /// clustered GeoJSON source `source` (GL JS
+        /// `getClusterChildren`): a `QueryResult` event with the returned
+        /// id brings them, a JSON array of GeoJSON features.
+        #[diplomat::attr(contract, query)]
+        pub fn cluster_children(&mut self, source: &DiplomatStr, cluster: u64) -> u64 {
+            let query = orb_api::ClusterQuery::Children(cluster);
+            self.0.query_cluster(&text(source), query)
+        }
+
+        /// Up to `limit` of a cluster's points, past the first `offset`
+        /// (GL JS `getClusterLeaves`), as `cluster_children` answers.
+        #[diplomat::attr(contract, query)]
+        pub fn cluster_leaves(
+            &mut self,
+            source: &DiplomatStr,
+            cluster: u64,
+            limit: u32,
+            offset: u32,
+        ) -> u64 {
+            let query = orb_api::ClusterQuery::Leaves {
+                id: cluster,
+                limit,
+                offset,
+            };
+            self.0.query_cluster(&text(source), query)
+        }
+
+        /// The zoom at which a cluster breaks apart (GL JS
+        /// `getClusterExpansionZoom`): the `QueryResult` event's text is
+        /// the number.
+        #[diplomat::attr(contract, query)]
+        pub fn cluster_expansion_zoom(&mut self, source: &DiplomatStr, cluster: u64) -> u64 {
+            let query = orb_api::ClusterQuery::ExpansionZoom(cluster);
+            self.0.query_cluster(&text(source), query)
+        }
+
         /// Where a point is in the viewport, in logical pixels.
         #[diplomat::attr(contract, query)]
         pub fn project(&self, lon: f64, lat: f64) -> OrbPoint {

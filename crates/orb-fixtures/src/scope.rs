@@ -7,9 +7,6 @@ use orb_style::Scene;
 /// Diagnostic locations contain source ids and layer indices; the message's
 /// first quoted spec name gives a short, stable aggregation key instead.
 pub(crate) fn parse_reason(message: &str) -> String {
-    if message.starts_with("GeoJSON clustering") {
-        return "source:geojson-cluster".into();
-    }
     let name = message.split('"').nth(1).unwrap_or("diagnostic");
     let category = if message.starts_with("layer type") {
         "layer"

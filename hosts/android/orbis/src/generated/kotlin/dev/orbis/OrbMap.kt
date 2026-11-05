@@ -493,6 +493,39 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * A cluster's members one zoom in, clusters and points, in
+     * clustered GeoJSON source `source` (GL JS
+     * `getClusterChildren`): a `QueryResult` event with the returned
+     * id brings them, a JSON array of GeoJSON features.
+     *
+     * Contract: `query`.
+     */
+    fun clusterChildren(source: String, cluster: ULong): ULong {
+        return OrbisNative.orbMapClusterChildren(live(), source.encodeToByteArray(), cluster.toLong()).toULong()
+    }
+
+    /**
+     * Up to `limit` of a cluster's points, past the first `offset`
+     * (GL JS `getClusterLeaves`), as `cluster_children` answers.
+     *
+     * Contract: `query`.
+     */
+    fun clusterLeaves(source: String, cluster: ULong, limit: UInt, offset: UInt): ULong {
+        return OrbisNative.orbMapClusterLeaves(live(), source.encodeToByteArray(), cluster.toLong(), limit.toInt(), offset.toInt()).toULong()
+    }
+
+    /**
+     * The zoom at which a cluster breaks apart (GL JS
+     * `getClusterExpansionZoom`): the `QueryResult` event's text is
+     * the number.
+     *
+     * Contract: `query`.
+     */
+    fun clusterExpansionZoom(source: String, cluster: ULong): ULong {
+        return OrbisNative.orbMapClusterExpansionZoom(live(), source.encodeToByteArray(), cluster.toLong()).toULong()
+    }
+
+    /**
      * Where a point is in the viewport, in logical pixels.
      *
      * Contract: `query`.

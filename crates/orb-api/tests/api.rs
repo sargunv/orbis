@@ -584,3 +584,75 @@ fn source_queries_select_by_filter_and_area() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
+
+#[test]
+fn clustered_sources_draw_clusters_and_answer_cluster_queries() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    // Twelve points a few metres apart: one cluster at zoom 0.
+    let points: Vec<String> = (0..12)
+        .map(|i| {
+            format!(
+                r#"{{"type":"Feature","id":{i},"properties":{{"n":{i}}},"geometry":{{"type":"Point","coordinates":[{},0]}}}}"#,
+                f64::from(i) * 0.0001
+            )
+        })
+        .collect();
+    map.set_style_json(&format!(
+        r##"{{"version":8,"center":[0,0],"zoom":0,
+          "sources":{{"p":{{"type":"geojson","cluster":true,
+            "clusterProperties":{{"sum":["+",["get","n"]]}},
+            "data":{{"type":"FeatureCollection","features":[{}]}}}}}},
+          "layers":[
+            {{"id":"background","type":"background","paint":{{"background-color":"#ff0000"}}}},
+            {{"id":"clusters","type":"circle","source":"p","filter":["has","point_count"],
+              "paint":{{"circle-radius":10,"circle-color":"#0000ff"}}}}]}}"##,
+        points.join(",")
+    ))
+    .expect("style");
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    assert_eq!(
+        pixel(&pixels, SIZE / 2, SIZE / 2),
+        [0, 0, 255, 255],
+        "the cluster"
+    );
+    let center = glam::DVec2::splat(f64::from(SIZE) / 2.0);
+    let rendered = map.query_rendered(center, center);
+    let doc = json::parse(&answer(&mut map, rendered)).unwrap();
+    let cluster = &doc.as_array().unwrap()[0];
+    let properties = cluster.get("properties").unwrap();
+    assert_eq!(properties.get("point_count").unwrap().as_f64(), Some(12.0));
+    assert_eq!(properties.get("sum").unwrap().as_f64(), Some(66.0));
+    let id = properties.get("cluster_id").unwrap().as_f64().unwrap() as u64;
+
+    let leaves = map.query_cluster(
+        "p",
+        orb_api::ClusterQuery::Leaves {
+            id,
+            limit: 5,
+            offset: 10,
+        },
+    );
+    let leaves = json::parse(&answer(&mut map, leaves)).unwrap();
+    assert_eq!(leaves.as_array().unwrap().len(), 2);
+    let zoom = map.query_cluster("p", orb_api::ClusterQuery::ExpansionZoom(id));
+    let zoom: f64 = answer(&mut map, zoom).parse().unwrap();
+    assert!(zoom >= 1.0, "{zoom}");
+    let children = map.query_cluster("p", orb_api::ClusterQuery::Children(id));
+    let children = json::parse(&answer(&mut map, children)).unwrap();
+    assert!(!children.as_array().unwrap().is_empty());
+    // Not a cluster: an error.
+    let wrong = map.query_cluster("p", orb_api::ClusterQuery::Children(3));
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(Event::Query { id, result }) = map.poll_event() {
+            assert_eq!(id, wrong);
+            assert!(result.is_err());
+            break;
+        }
+        assert!(started.elapsed().as_secs() < 10);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}

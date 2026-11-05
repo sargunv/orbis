@@ -370,6 +370,36 @@ impl OrbisMap {
         features_promise(receiver)
     }
 
+    /// GL JS's cluster queries on clustered GeoJSON source `source`:
+    /// `"children"`, `"leaves"` (`limit` past `offset`) or
+    /// `"expansionZoom"` of cluster `id`. Resolves to JSON: an array of
+    /// GeoJSON features, or a number.
+    #[wasm_bindgen(js_name = queryCluster)]
+    pub fn query_cluster(
+        &self,
+        source: &str,
+        kind: &str,
+        id: f64,
+        limit: u32,
+        offset: u32,
+    ) -> js_sys::Promise {
+        let id = id as u64;
+        let query = match kind {
+            "children" => orb_runtime::ClusterQuery::Children(id),
+            "leaves" => orb_runtime::ClusterQuery::Leaves { id, limit, offset },
+            _ => orb_runtime::ClusterQuery::ExpansionZoom(id),
+        };
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        self.map.query_cluster(
+            source,
+            query,
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        );
+        features_promise(receiver)
+    }
+
     /// Matches the drawing buffer to the canvas's size in physical pixels.
     pub fn resize(&mut self, width: u32, height: u32, pixel_ratio: f64) {
         self.pixel_ratio = pixel_ratio;

@@ -300,23 +300,14 @@ fn parse_geojson_source(cx: &mut Cx, json: &Json, path: &str) -> Option<GeoJsonS
             "promoteId and generateId cannot be used together",
         );
     }
-    let cluster = json
-        .get("cluster")
-        .and_then(|v| match v.as_bool() {
-            Some(b) => Some(b),
-            None => {
-                cx.error(at("cluster"), v.span, "expected a boolean");
-                None
-            }
-        })
-        .unwrap_or(false);
-    if cluster {
-        cx.warn(
-            at("cluster"),
-            json.span,
-            "GeoJSON clustering is not supported yet; the source is skipped",
-        );
-    }
+    let cluster = match json.get("cluster").map(|v| (v, v.as_bool())) {
+        Some((_, Some(true))) => Some(cluster(json, path, options.max_zoom, cx)),
+        Some((v, None)) => {
+            cx.error(at("cluster"), v.span, "expected a boolean");
+            None
+        }
+        _ => None,
+    };
     if let Some(v) = json.get("filter") {
         cx.warn(
             at("filter"),
@@ -324,11 +315,92 @@ fn parse_geojson_source(cx: &mut Cx, json: &Json, path: &str) -> Option<GeoJsonS
             "GeoJSON source filters are not supported yet",
         );
     }
+    let cluster = cluster.map(|mut c| {
+        c.options.generate_id = options.generate_id;
+        c
+    });
     (cx.diagnostics.errors.len() == errors).then_some(GeoJsonSource {
         data,
         options,
         cluster,
     })
+}
+
+/// A clustered source's options, as GL JS gives them to supercluster:
+/// `clusterRadius` pixels (50) in tile units, `clusterMaxZoom` (the
+/// source's `maxzoom` less one), `clusterMinPoints` (2, at least) and
+/// `clusterProperties`.
+fn cluster(json: &Json, path: &str, max_zoom: u8, cx: &mut Cx) -> orb_style::Cluster {
+    let at = |key: &str| format!("{path}.{key}");
+    let mut options = orb_tile::geojson::ClusterOptions {
+        max_zoom: max_zoom.saturating_sub(1),
+        ..Default::default()
+    };
+    let number = |cx: &mut Cx, key: &str, max: f64, integer: bool| {
+        let v = json.get(key)?;
+        let n = cx.number(v, &at(key))?;
+        if n < 0.0 || n > max || (integer && n.fract() != 0.0) {
+            let what = if integer { "an integer" } else { "a number" };
+            cx.error(at(key), v.span, format!("expected {what} in 0..={max}"));
+            return None;
+        }
+        Some(n)
+    };
+    if let Some(radius) = number(cx, "clusterRadius", f64::MAX / 16.0, false) {
+        options.radius = if radius > 0.0 { radius } else { 50.0 } * 16.0;
+    }
+    if let Some(zoom) = number(cx, "clusterMaxZoom", 24.0, true) {
+        options.max_zoom = zoom as u8;
+    }
+    if let Some(points) = number(cx, "clusterMinPoints", u32::MAX as f64, true) {
+        options.min_points = (points as usize).max(2);
+    }
+    let mut properties = Vec::new();
+    if let Some(v) = json.get("clusterProperties") {
+        let Some(members) = v.as_object() else {
+            cx.error(at("clusterProperties"), v.span, "expected an object");
+            return orb_style::Cluster {
+                options,
+                properties,
+            };
+        };
+        for m in members {
+            let key = format!("{}.{}", at("clusterProperties"), m.key);
+            let parts = m.value.as_array().filter(|a| a.len() == 2);
+            let Some([operator, map]) = parts.map(|a| [&a[0], &a[1]]) else {
+                cx.error(&key, m.value.span, "expected [operator, map expression]");
+                continue;
+            };
+            // An operator's name folds the accumulated value with the
+            // other's: [operator, ["accumulated"], ["get", name]].
+            let reduce = match operator.as_str() {
+                Some(name) => orb_expr::json::parse(&format!(
+                    r#"["{name}", ["accumulated"], ["get", {}]]"#,
+                    orb_expr::Value::String(m.key.as_str().into()).to_json_string()
+                ))
+                .expect("well-formed"),
+                None => operator.clone(),
+            };
+            let mut ok = true;
+            for (expression, suffix) in [(map, "[1]"), (&reduce, "[0]")] {
+                if let Err(e) = orb_expr::Expression::parse(expression, None) {
+                    cx.errors_at(&format!("{key}{suffix}"), e);
+                    ok = false;
+                }
+            }
+            if ok {
+                properties.push(orb_style::ClusterProperty {
+                    name: m.key.clone(),
+                    map: map.clone(),
+                    reduce,
+                });
+            }
+        }
+    }
+    orb_style::Cluster {
+        options,
+        properties,
+    }
 }
 
 #[cfg(test)]
@@ -366,12 +438,39 @@ mod tests {
             panic!()
         };
         assert_eq!(s.options.promote_id.as_deref(), Some("name"));
-        assert!(s.cluster);
+        let cluster = s.cluster.as_ref().expect("clustered");
+        assert_eq!(cluster.options.max_zoom, 17);
+        assert_eq!(cluster.options.radius, 800.0);
+        let style = parse(
+            r#"{"type":"geojson","data":"data.json","cluster":true,"maxzoom":12,
+              "clusterRadius":20,"clusterMinPoints":1,
+              "clusterProperties":{"sum":["+",["get","n"]],
+                "max":[["max",["accumulated"],["get","max"]],["get","n"]]}}"#,
+        )
+        .unwrap();
+        let SourceKind::GeoJson(s) = &style.sources[0].kind else {
+            panic!()
+        };
+        let cluster = s.cluster.as_ref().expect("clustered");
+        assert_eq!(
+            (
+                cluster.options.max_zoom,
+                cluster.options.radius,
+                cluster.options.min_points
+            ),
+            (11, 320.0, 2)
+        );
+        let names: Vec<_> = cluster.properties.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["sum", "max"]);
+        assert_eq!(
+            cluster.properties[0].reduce,
+            orb_expr::json::parse(r#"["+", ["accumulated"], ["get", "sum"]]"#).unwrap()
+        );
         assert!(
-            style
-                .warnings
-                .iter()
-                .any(|w| w.message.contains("source is skipped"))
+            parse(
+                r#"{"type":"geojson","data":"x","cluster":true,"clusterProperties":{"a":["+"]}}"#
+            )
+            .is_err()
         );
     }
     #[test]

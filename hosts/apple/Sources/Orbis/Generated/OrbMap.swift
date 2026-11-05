@@ -452,6 +452,33 @@ public final class OrbMap {
         return withStringView(source) { sourceView in withStringView(sourceLayer) { sourceLayerView in withStringView(filter) { filterView in OrbMap_query_source(live(), sourceView, sourceLayerView, filterView) } } }
     }
 
+    /// A cluster's members one zoom in, clusters and points, in
+    /// clustered GeoJSON source `source` (GL JS
+    /// `getClusterChildren`): a `QueryResult` event with the returned
+    /// id brings them, a JSON array of GeoJSON features.
+    ///
+    /// Contract: `query`.
+    public func clusterChildren(source: String, cluster: UInt64) -> UInt64 {
+        return withStringView(source) { sourceView in OrbMap_cluster_children(live(), sourceView, cluster) }
+    }
+
+    /// Up to `limit` of a cluster's points, past the first `offset`
+    /// (GL JS `getClusterLeaves`), as `cluster_children` answers.
+    ///
+    /// Contract: `query`.
+    public func clusterLeaves(source: String, cluster: UInt64, limit: UInt32, offset: UInt32) -> UInt64 {
+        return withStringView(source) { sourceView in OrbMap_cluster_leaves(live(), sourceView, cluster, limit, offset) }
+    }
+
+    /// The zoom at which a cluster breaks apart (GL JS
+    /// `getClusterExpansionZoom`): the `QueryResult` event's text is
+    /// the number.
+    ///
+    /// Contract: `query`.
+    public func clusterExpansionZoom(source: String, cluster: UInt64) -> UInt64 {
+        return withStringView(source) { sourceView in OrbMap_cluster_expansion_zoom(live(), sourceView, cluster) }
+    }
+
     /// Where a point is in the viewport, in logical pixels.
     ///
     /// Contract: `query`.

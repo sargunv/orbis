@@ -9,6 +9,7 @@ mod camera;
 mod edit;
 mod events;
 mod features;
+mod geojson;
 mod globe;
 mod glyphs;
 mod image;
@@ -57,6 +58,7 @@ pub const COMPAT_NO_HEATMAP: &str = "heatmap requires filterable, blendable rgba
 /// Compat's warning for a style with models (plan §8.7).
 pub const COMPAT_NO_MODELS: &str = "model layers draw on WebGPU and native GPUs only (Compat: WebGL2 and GLES); model layers are skipped";
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
+pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use jobs::{
     Built, DemUnpack, ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, ResultMesh, Stream,

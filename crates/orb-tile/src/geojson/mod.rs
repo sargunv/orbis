@@ -6,8 +6,12 @@
 //! are longitude/latitude degrees. Output goes straight to `TileFrame`.
 
 mod clip;
+mod cluster;
 mod convert;
+mod kdbush;
 mod tile;
+
+pub use cluster::{Aggregate, ClusterOptions, Clusters, Member, Properties};
 
 use std::collections::HashMap;
 use std::sync::Arc;

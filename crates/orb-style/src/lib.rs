@@ -28,8 +28,8 @@ pub use property::*;
 pub use resources::{FontFace, FontFaces, Sprite, Terrain};
 pub use scene::{Dialect, Scene};
 pub use source::{
-    GeoJsonData, GeoJsonSource, ImageContent, ImageSource, PromoteId, RasterDemSource,
-    RasterSource, Source, SourceKind, TileSet, VectorSource,
+    Cluster, ClusterProperty, GeoJsonData, GeoJsonSource, ImageContent, ImageSource, PromoteId,
+    RasterDemSource, RasterSource, Source, SourceKind, TileSet, VectorSource,
 };
 pub use spec::*;
 pub use transition::{Transition, TransitionOverride};

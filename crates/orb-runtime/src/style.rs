@@ -266,15 +266,12 @@ impl StylePlan {
                         continue;
                     }
                 }
-                Some(SourceKind::GeoJson(source)) if !source.cluster => {}
-                Some(SourceKind::GeoJson(_)) => {
-                    warn(
-                        index,
-                        "GeoJSON clustering is not supported yet; the layer is skipped",
-                    );
-                    continue;
-                }
-                Some(SourceKind::Raster(_) | SourceKind::RasterDem(_) | SourceKind::Image(_)) => {}
+                Some(
+                    SourceKind::GeoJson(_)
+                    | SourceKind::Raster(_)
+                    | SourceKind::RasterDem(_)
+                    | SourceKind::Image(_),
+                ) => {}
                 _ => {
                     warn(
                         index,

@@ -190,7 +190,7 @@ LOC are CI-enforced ceilings [inferred]; "From" is the milestone that introduces
 | `orb-camera` | single-writer camera store, resolution truth, animations against `Surface`, multi-view, terrain constraints | 4k | M0 |
 | `orb-interact` | recognizers, inertia, feel profiles, keyboard | 3k | M3 |
 | `orb-source` | `TileKey {tms, z, col, row}`, tile state machine, priorities, caches keyed by data TMS, 3D traversal hooks | 5k | M0 |
-| `orb-tile` | `TileFrame`; MVT, MLT, GeoJSON (geojson-vt 6 port), GeoArrow, overzoom, DEM, KTX2 | 7k | M0 |
+| `orb-tile` | `TileFrame`; MVT, MLT, GeoJSON (geojson-vt 6 and supercluster 8 ports), GeoArrow, overzoom, DEM, KTX2 | 7k | M0 |
 | `orb-layout` | layout families, earcut, clip-at-layout, **chunking**, property tables, hit index, subdivision | 9k | M0 |
 | `orb-text` | fonts, itemize/bidi/ICU4X segmentation, HarfRust `Shaper`, line breaking, glyph service, atlas | 10k | M2 |
 | `orb-symbol` | SoA symbol layout, stable keys, collision, placement scopes, fades, sort-key permutations | 9k | M2 |
@@ -633,7 +633,7 @@ The single in-memory vector representation, after MLT's FeatureTable [verified]:
 |---|---|
 | MLT | `mlt-core` streams into columns (columnar API, mlt-tile-spec #1901); no per-feature objects; avoids Native's MULTIPOINT → LineString bug (`vector_mlt_tile_data.cpp:~59`) [verified] |
 | MVT | single-pass protobuf → columns |
-| GeoJSON | Rust port of `@maplibre/geojson-vt` 6.3.0 → `TileFrame` directly (no GL JS `fromVectorTileJs` PBF re-encode); base tiling implemented, `updateData` and clustering remain planned [verified] |
+| GeoJSON | Rust port of `@maplibre/geojson-vt` 6.3.0 → `TileFrame` directly (no GL JS `fromVectorTileJs` PBF re-encode); base tiling and clustering (a port of `supercluster` 8.0 and `kdbush` 4.0, with `clusterProperties` and the cluster queries) implemented, `updateData` remains planned [verified] |
 | Overzoom | implemented: pure TileFrame child slicing with buffered clipping, retained ids/properties, and rounding on the normalized 8192 grid (GL JS writes a new MVT for queries) |
 | PMTiles / MBTiles | PMTiles v3 reader in `orb-source` (pure header/directory/Hilbert logic, bounded directory cache); runtime satisfies host range reads. Both hosts require matching 206/Content-Range before reading, with a 64 MiB compressed/decompressed cap (a 200 answer to a Range request pulled an 83 GB archive into RAM, #4374) [verified]; gzip via `flate2`/`miniz_oxide`, MVT and MLT tile types; MBTiles via native storage |
 | Rasters / DEM | host decode in jobs (`createImageBitmap` in job workers, the bitmap transferred and copied with `copyExternalImageToTexture`; `image` natively) → per-source texture-array pages, one tile per layer, drawn as one quad per tile and node; KTX2 transcode later (decision 0007) |

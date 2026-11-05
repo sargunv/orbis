@@ -772,6 +772,39 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapQuerySource(JNIEnv* env
     return (jlong)(result);
 }
 
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapClusterChildren(JNIEnv* env, jclass cls, jlong self, jbyteArray source, jlong cluster) {
+    (void)env;
+    (void)cls;
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return 0;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    uint64_t result = OrbMap_cluster_children((OrbMap*)(intptr_t)self, source_view, (uint64_t)(cluster));
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+    return (jlong)(result);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapClusterLeaves(JNIEnv* env, jclass cls, jlong self, jbyteArray source, jlong cluster, jint limit, jint offset) {
+    (void)env;
+    (void)cls;
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return 0;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    uint64_t result = OrbMap_cluster_leaves((OrbMap*)(intptr_t)self, source_view, (uint64_t)(cluster), (uint32_t)(limit), (uint32_t)(offset));
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+    return (jlong)(result);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapClusterExpansionZoom(JNIEnv* env, jclass cls, jlong self, jbyteArray source, jlong cluster) {
+    (void)env;
+    (void)cls;
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return 0;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    uint64_t result = OrbMap_cluster_expansion_zoom((OrbMap*)(intptr_t)self, source_view, (uint64_t)(cluster));
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+    return (jlong)(result);
+}
+
 JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapProject(JNIEnv* env, jclass cls, jlong self, jdouble lon, jdouble lat) {
     (void)env;
     (void)cls;

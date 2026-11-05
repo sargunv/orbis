@@ -17,8 +17,8 @@ use orb_crs::{TileIndex, TileMatrixSet};
 use orb_interact::{Feel, Input};
 use orb_runtime::batteries::{Location, Marker};
 use orb_runtime::{
-    CameraState, FrameReport, GridTile, Hit, MapEvent, RenderMode, StyleImage, Transaction,
-    VideoRequest, Viewport,
+    CameraState, ClusterQuery, FrameReport, GridTile, Hit, MapEvent, RenderMode, StyleImage,
+    Transaction, VideoRequest, Viewport,
 };
 
 use crate::{Error, Runtime, Shared, Target};
@@ -71,9 +71,10 @@ impl Default for MapOptions {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     Map(MapEvent),
-    /// A query from [`Map::query_rendered`] or [`Map::query_source`]
-    /// finished: a JSON array of GeoJSON features (rendered ones topmost
-    /// first), or why it failed.
+    /// A query from [`Map::query_rendered`], [`Map::query_source`] or
+    /// [`Map::query_cluster`] finished: a JSON array of GeoJSON features
+    /// (rendered ones topmost first) or an expansion zoom, or why it
+    /// failed.
     Query {
         id: u64,
         result: Result<String, String>,
@@ -559,6 +560,16 @@ impl Map {
     ) -> u64 {
         let done = self.query_done();
         self.map.query_source(source, source_layer, filter, done.1);
+        done.0
+    }
+
+    /// GL JS's cluster queries on a clustered GeoJSON source: a cluster's
+    /// children or leaves, as a JSON array of GeoJSON features, or its
+    /// expansion zoom, as a number. The answer arrives as an
+    /// [`Event::Query`] with the returned id.
+    pub fn query_cluster(&mut self, source: &str, query: ClusterQuery) -> u64 {
+        let done = self.query_done();
+        self.map.query_cluster(source, query, done.1);
         done.0
     }
 

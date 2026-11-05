@@ -39,8 +39,26 @@ pub enum ImageContent {
 pub struct GeoJsonSource {
     pub data: GeoJsonData,
     pub options: orb_tile::geojson::Options,
-    /// Clustering is parsed but the runtime skips the source with a warning.
-    pub cluster: bool,
+    /// `cluster: true`: its points cluster.
+    pub cluster: Option<Cluster>,
+}
+
+/// How a `geojson` source's points cluster.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cluster {
+    pub options: orb_tile::geojson::ClusterOptions,
+    /// `clusterProperties`: each property's name, the expression a point
+    /// contributes (`map`), and the one folding two contributions, which
+    /// reads `["accumulated"]` and the other's value as `["get", name]`
+    /// (`reduce`).
+    pub properties: Vec<ClusterProperty>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClusterProperty {
+    pub name: String,
+    pub map: orb_expr::json::Json,
+    pub reduce: orb_expr::json::Json,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum GeoJsonData {

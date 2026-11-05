@@ -237,6 +237,15 @@ internal object OrbisNative {
     external fun orbMapQuerySource(self: Long, source: ByteArray, sourceLayer: ByteArray, filter: ByteArray): Long
 
     @JvmStatic
+    external fun orbMapClusterChildren(self: Long, source: ByteArray, cluster: Long): Long
+
+    @JvmStatic
+    external fun orbMapClusterLeaves(self: Long, source: ByteArray, cluster: Long, limit: Int, offset: Int): Long
+
+    @JvmStatic
+    external fun orbMapClusterExpansionZoom(self: Long, source: ByteArray, cluster: Long): Long
+
+    @JvmStatic
     external fun orbMapProject(self: Long, lon: Double, lat: Double): OrbPoint
 
     @JvmStatic

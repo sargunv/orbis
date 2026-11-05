@@ -297,6 +297,21 @@ export class OrbisMap {
     return JSON.parse(json);
   }
 
+  /** A cluster's members one zoom in: clusters and points (GL JS `getClusterChildren`). */
+  async getClusterChildren(source: string, clusterId: number): Promise<Feature[]> {
+    return JSON.parse(await this.#host.core.queryCluster(source, "children", clusterId, 0, 0) as string);
+  }
+
+  /** Up to `limit` of a cluster's points, past the first `offset` (GL JS `getClusterLeaves`). */
+  async getClusterLeaves(source: string, clusterId: number, limit = 10, offset = 0): Promise<Feature[]> {
+    return JSON.parse(await this.#host.core.queryCluster(source, "leaves", clusterId, limit, offset) as string);
+  }
+
+  /** The zoom at which a cluster breaks apart (GL JS `getClusterExpansionZoom`). */
+  async getClusterExpansionZoom(source: string, clusterId: number): Promise<number> {
+    return JSON.parse(await this.#host.core.queryCluster(source, "expansionZoom", clusterId, 0, 0) as string);
+  }
+
   /** Applies GL JS map calls as one transaction, or throws and applies
    * none; returns the style generation whose frames show it in full
    * (`render` events carry it). */

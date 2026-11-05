@@ -4,7 +4,8 @@
 //   on web/dist/scenario.html, on WebGPU and WebGL2: an inline style,
 //   pixels, a hit test, a rendered-features query, an edit's generation,
 //   style images, camera moves with roll and elevation, project and
-//   unproject (for the camera now and another), padding, the free camera, a drag, a click, idle drawing nothing, and an error.
+//   unproject (for the camera now and another), padding, the free camera, a
+//   clustered source's queries, a drag, a click, idle drawing nothing, and an error.
 // - `edits`: every edit class through the map app's edit API
 //   (`globalThis.orbis`, web/demo/expose.js) must resolve and settle, and
 //   the cost of a feature-state write (plan §10.2's ≤0.05 ms target) over
@@ -213,6 +214,28 @@ async function scenario(browser, server, config) {
   assert.ok(rejected, "a bad edit rejects");
   const hit = await scenario((s) => s.map.hitTest(s.map.project([0, 0]))?.layer);
   assert.equal(hit, "box");
+
+  // A clustered source: its points' cluster, whose queries answer.
+  const clustered = await scenario(async (s) => {
+    const features = Array.from({ length: 12 }, (_, i) => ({ type: "Feature", id: i, properties: { n: i },
+      geometry: { type: "Point", coordinates: [i * 0.0001, 0] } }));
+    await s.shows(s.map.edit((tx) => tx
+      .addSource("points", { type: "geojson", cluster: true, clusterProperties: { sum: ["+", ["get", "n"]] },
+        data: { type: "FeatureCollection", features } })
+      .addLayer({ id: "points", type: "circle", source: "points", paint: { "circle-radius": 6 } })));
+    await s.idle();
+    const [cluster] = await s.map.querySourceFeatures("points", { filter: ["has", "point_count"] });
+    const id = cluster.properties.cluster_id;
+    return {
+      sum: cluster.properties.sum,
+      leaves: (await s.map.getClusterLeaves("points", id, 5, 10)).length,
+      zoom: await s.map.getClusterExpansionZoom("points", id),
+      children: (await s.map.getClusterChildren("points", id)).length,
+    };
+  });
+  assert.equal(clustered.sum, 66, JSON.stringify(clustered));
+  assert.equal(clustered.leaves, 2, JSON.stringify(clustered));
+  assert.ok(clustered.zoom >= 1 && clustered.children > 0, JSON.stringify(clustered));
   assert.deepEqual(errors, []);
   console.log(`scenario: ${config} passed`);
   await page.close();

@@ -235,6 +235,25 @@ struct Row<'s, 'a> {
     row: usize,
 }
 
+impl Value<'_> {
+    /// A tile property's value, as expressions read it.
+    pub fn from_tile(v: ValueRef<'_>) -> Value<'_> {
+        value(v)
+    }
+
+    /// The value as a tile property: numbers, strings and booleans as
+    /// themselves, other values as JSON; `null` is no property.
+    pub fn to_tile(&self) -> Option<orb_tile::Value> {
+        Some(match self {
+            Value::Null => return None,
+            Value::Bool(b) => orb_tile::Value::Bool(*b),
+            Value::Number(n) => orb_tile::Value::F64(*n),
+            Value::String(s) => orb_tile::Value::Str(s.to_string()),
+            other => orb_tile::Value::Json(other.to_json_string()),
+        })
+    }
+}
+
 pub(crate) fn value(v: ValueRef<'_>) -> Value<'_> {
     match v {
         ValueRef::Bool(b) => Value::Bool(b),

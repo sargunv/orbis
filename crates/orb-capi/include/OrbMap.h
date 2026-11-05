@@ -145,6 +145,12 @@ uint64_t OrbMap_query_rendered(OrbMap* self, double x0, double y0, double x1, do
 
 uint64_t OrbMap_query_source(OrbMap* self, DiplomatStringView source, DiplomatStringView source_layer, DiplomatStringView filter);
 
+uint64_t OrbMap_cluster_children(OrbMap* self, DiplomatStringView source, uint64_t cluster);
+
+uint64_t OrbMap_cluster_leaves(OrbMap* self, DiplomatStringView source, uint64_t cluster, uint32_t limit, uint32_t offset);
+
+uint64_t OrbMap_cluster_expansion_zoom(OrbMap* self, DiplomatStringView source, uint64_t cluster);
+
 OrbPoint OrbMap_project(const OrbMap* self, double lon, double lat);
 
 OrbPoint OrbMap_project_with(const OrbMap* self, OrbCameraTarget camera, double lon, double lat);

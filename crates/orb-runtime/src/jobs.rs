@@ -37,7 +37,7 @@ const FRAME_CACHE: usize = 256;
 /// One source's data in a worker, shared by its style revisions.
 #[derive(Debug, Default)]
 struct SourceData {
-    geojson: Mutex<Option<Result<orb_tile::geojson::Index, String>>>,
+    geojson: Mutex<Option<Result<crate::geojson::Index, String>>>,
     frames: Mutex<Frames>,
 }
 
@@ -553,6 +553,39 @@ impl TileWorker {
         }
     }
 
+    /// A GeoJSON source's index, from its inline data or its document's
+    /// `bytes`.
+    fn geojson_index(
+        &self,
+        bytes: &[u8],
+        geojson: &orb_style::GeoJsonSource,
+    ) -> Result<crate::geojson::Index, String> {
+        let features = match &geojson.data {
+            GeoJsonData::Inline(features) => features.clone(),
+            GeoJsonData::Url(_) => {
+                orb_v8::parse_geojson(std::str::from_utf8(bytes).map_err(|e| e.to_string())?)?
+            }
+        };
+        let plane = self.surface.plane.clone().map(Arc::new);
+        crate::geojson::Index::new(features, geojson, plane)
+    }
+
+    /// Answers a cluster query from the source's index, built from its
+    /// document's `bytes` when this worker has none yet.
+    pub fn cluster(&self, bytes: &[u8], request: &crate::ClusterRequest) -> Result<String, String> {
+        let source = request.tile.source;
+        let geojson = self
+            .geojson_source(source)
+            .ok_or("the source isn't a GeoJSON source")?;
+        let data = self.data(source);
+        let mut cached = data.geojson.lock().expect("GeoJSON index poisoned");
+        cached
+            .get_or_insert_with(|| self.geojson_index(bytes, geojson))
+            .as_ref()
+            .map_err(Clone::clone)?
+            .answer(&request.query)
+    }
+
     /// The tile's decoded frame: cached, or decoded from `bytes` and cached.
     pub(crate) fn frame(
         &self,
@@ -612,20 +645,8 @@ impl TileWorker {
     ) -> Result<TileFrame, String> {
         let frame = if let SourceKind::GeoJson(geojson) = &self.plan.source_def(index).kind {
             let mut cached = data.geojson.lock().expect("GeoJSON index poisoned");
-            let index = cached.get_or_insert_with(|| {
-                let features = match &geojson.data {
-                    GeoJsonData::Inline(features) => features.clone(),
-                    GeoJsonData::Url(_) => orb_v8::parse_geojson(
-                        std::str::from_utf8(bytes).map_err(|e| e.to_string())?,
-                    )?,
-                };
-                let options = orb_tile::geojson::Options {
-                    plane: self.surface.plane.clone().map(Arc::new),
-                    ..geojson.options.clone()
-                };
-                orb_tile::geojson::Index::new(features, options)
-            });
-            index
+            cached
+                .get_or_insert_with(|| self.geojson_index(bytes, geojson))
                 .as_mut()
                 .map_err(|e| e.clone())?
                 .tile(tile.z, tile.col as i32, tile.row)
@@ -773,6 +794,10 @@ pub enum JobRequest {
         id: u32,
         request: crate::FeatureRequest,
     },
+    Cluster {
+        id: u32,
+        request: crate::ClusterRequest,
+    },
     Raster {
         id: u32,
         request: GlyphRaster,
@@ -811,6 +836,11 @@ pub enum JobReply {
         id: u32,
         features: Vec<crate::TileFeature>,
     },
+    /// A cluster query's answer, as JSON.
+    Answer {
+        id: u32,
+        json: String,
+    },
     Glyphs {
         id: u32,
         bitmaps: Vec<crate::GlyphBitmap>,
@@ -835,6 +865,7 @@ impl JobReply {
             | Self::Dem { id, .. }
             | Self::Missing { id }
             | Self::Features { id, .. }
+            | Self::Answer { id, .. }
             | Self::Glyphs { id, .. }
             | Self::Model { id }
             | Self::Error { id, .. } => *id,
@@ -865,6 +896,9 @@ pub trait Jobs: Send + Sync {
     /// Loads the glTF model at `url`, packed for the GPU
     /// ([`model::load`](crate::model::load)).
     fn model(&self, url: String, done: crate::model::ModelDone);
+    /// Answers a cluster query, in the worker that loads the request's
+    /// tile: it has the source's data, or fetches it.
+    fn cluster(&self, request: crate::ClusterRequest, done: crate::QueryDone);
 }
 
 type PendingSources = HashMap<(u64, u32), Vec<(TileRequest, TileDone)>>;
@@ -1104,6 +1138,30 @@ impl Jobs for PoolJobs {
             Arc::clone(&self.executor),
             url,
             done,
+        );
+    }
+
+    fn cluster(&self, request: crate::ClusterRequest, done: crate::QueryDone) {
+        let Some(worker) = self.worker(request.tile.style) else {
+            done(Err(format!("style {} was replaced", request.tile.style)));
+            return;
+        };
+        let executor = Arc::clone(&self.executor);
+        if worker.has_data(&request.tile) {
+            executor.spawn(Box::new(move || done(worker.cluster(&[], &request))));
+            return;
+        }
+        let tile = &request.tile;
+        self.loader.load(
+            tile.location.clone(),
+            tile.data_tile(),
+            tile.encoding,
+            Box::new(move |fetched| {
+                executor.spawn(Box::new(move || match fetched {
+                    Ok((bytes, _)) => done(worker.cluster(&bytes, &request)),
+                    Err(e) => done(Err(e.to_string())),
+                }));
+            }),
         );
     }
 
@@ -1764,10 +1822,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn geojson_errors_are_terminal_and_clusters_skipped() {
+    fn geojson_errors_are_terminal_and_clusters_draw() {
         let worker =
             TileWorker::new(&INLINE.replace("\"data\":{", "\"cluster\":true,\"data\":{")).unwrap();
-        assert!(worker.plan.nodes.is_empty());
+        assert!(!worker.plan.nodes.is_empty());
         // Updates round-trip through JSON for job workers.
         let update = StyleUpdate {
             revision: 3,
@@ -1816,7 +1874,6 @@ pub(crate) mod tests {
         let revised = TileWorker::update(None, &parsed).unwrap();
         assert_eq!(revised.revision(), 3);
         assert_eq!(revised.plan.nodes.len(), 1);
-        assert!(!worker.plan.style.warnings.is_empty());
         let data = orb_expr::json::parse(INLINE)
             .unwrap()
             .get("sources")

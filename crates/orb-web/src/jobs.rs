@@ -69,6 +69,7 @@ struct State {
     rasters: HashMap<u32, RasterDone>,
     features: HashMap<u32, orb_runtime::FeaturesDone>,
     models: HashMap<u32, orb_runtime::model::ModelDone>,
+    answers: HashMap<u32, orb_runtime::QueryDone>,
     /// Bytes of packed headers copied into this worker's wasm memory.
     header_bytes: u64,
     /// Replies received.
@@ -147,6 +148,15 @@ impl WorkerJobs {
                 }
                 (JobReply::Error { message, .. }, _) => Err(message),
                 _ => Err("malformed model reply".into()),
+            });
+            return Ok(());
+        }
+        if let Some(done) = state.answers.remove(&id) {
+            drop(state);
+            done(match message {
+                JobReply::Answer { json, .. } => Ok(json),
+                JobReply::Error { message, .. } => Err(message),
+                _ => Err("malformed cluster reply".into()),
             });
             return Ok(());
         }
@@ -324,6 +334,17 @@ impl Jobs for WorkerJobs {
             &bytes(&wire::encode(&JobRequest::Model { id, url })),
         );
     }
+
+    fn cluster(&self, request: orb_runtime::ClusterRequest, done: orb_runtime::QueryDone) {
+        let id = self.next_id(|state, id| {
+            state.answers.insert(id, done);
+        });
+        let worker = owner(request.tile.source, request.tile.tile, self.workers);
+        self.post(
+            worker,
+            &bytes(&wire::encode(&JobRequest::Cluster { id, request })),
+        );
+    }
 }
 
 /// A job worker: fetches and lays out tiles for the render worker.
@@ -416,6 +437,10 @@ impl JobWorker {
             JobRequest::Features { id, request } => {
                 let worker = worker(&self.styles, request.tile.style);
                 Ok(Some(query(worker, request, &self.loader, id)))
+            }
+            JobRequest::Cluster { id, request } => {
+                let worker = worker(&self.styles, request.tile.style);
+                Ok(Some(cluster(worker, request, &self.loader, id)))
             }
             JobRequest::Load { id, request } => {
                 let worker = worker(&self.styles, request.style);
@@ -674,6 +699,47 @@ fn query(
         };
         match worker.features(&bytes, encoding, &request) {
             Ok(features) => Ok(reply(&JobReply::Features { id, features }, None, None)),
+            Err(e) => error(e),
+        }
+    })
+}
+
+/// Answers a cluster query from the source's index, fetching its document
+/// when this worker has none yet.
+fn cluster(
+    worker: Option<Rc<TileWorker>>,
+    request: orb_runtime::ClusterRequest,
+    loader: &Arc<TileLoader>,
+    id: u32,
+) -> js_sys::Promise {
+    let tile = &request.tile;
+    let loaded = worker.as_ref().filter(|w| !w.has_data(tile)).map(|_| {
+        let (sender, loaded) = futures_channel::oneshot::channel();
+        loader.load(
+            tile.location.clone(),
+            tile.data_tile(),
+            tile.encoding,
+            Box::new(move |r| {
+                let _ = sender.send(r);
+            }),
+        );
+        loaded
+    });
+    wasm_bindgen_futures::future_to_promise(async move {
+        let error = |message: String| Ok(reply(&JobReply::Error { id, message }, None, None));
+        let Some(worker) = worker else {
+            return error(format!("style {} was replaced", request.tile.style));
+        };
+        let bytes = match loaded {
+            None => Vec::new(),
+            Some(loaded) => match loaded.await {
+                Ok(Ok((bytes, _))) => bytes,
+                Ok(Err(e)) => return error(e.to_string()),
+                Err(_) => return error("tile loader dropped".into()),
+            },
+        };
+        match worker.cluster(&bytes, &request) {
+            Ok(json) => Ok(reply(&JobReply::Answer { id, json }, None, None)),
             Err(e) => error(e),
         }
     })
