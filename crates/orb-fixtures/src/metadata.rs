@@ -22,6 +22,9 @@ pub(crate) struct Metadata {
     /// GL JS `maxPitch`: the harness leaves it to the map's default, 60
     /// degrees, which clamps steeper style pitches.
     pub(crate) max_pitch: f64,
+    /// GL JS `terrainSkirtLength`: `auto` (the default) hangs skirts,
+    /// `none` doesn't.
+    pub(crate) terrain_skirts: bool,
     pub(crate) value: Value,
     /// GL JS's `operations`, applied after the map first goes idle.
     pub(crate) operations: Vec<Value>,
@@ -41,6 +44,8 @@ fn operation_skip(op: &Value) -> Option<String> {
         "idle" => None,
         "setZoom" | "setBearing" | "setPitch" | "setRoll" if number(1) => None,
         "addImage" if op.get(2).is_some_and(Value::is_string) => None,
+        "setCenterElevation" if number(1) => None,
+        "setCenterClampedToGround" if op.get(1).is_some_and(Value::is_boolean) => None,
         "removeImage" if op.get(1).is_some_and(Value::is_string) => None,
         "setCenter"
             if op
@@ -70,7 +75,7 @@ impl Metadata {
                     value[key] = v.clone();
                     let supported = match key.as_str() {
                         "width" | "height" | "pixelRatio" | "allowed" | "threshold" | "timeout"
-                        | "description" => true,
+                        | "description" | "note_on_threshold" => true,
                         "operations" => match v.as_array() {
                             Some(ops) => {
                                 skips.extend(ops.iter().filter_map(operation_skip));
@@ -88,6 +93,7 @@ impl Metadata {
                         "localIdeographFontFamily" => v.is_string() || v == false || v.is_null(),
                         "crossSourceCollisions" => v.is_boolean(),
                         "continuesRepaint" => v.is_boolean(),
+                        "terrainSkirtLength" => v == "auto" || v == "none",
                         _ => false,
                     };
                     if !supported {
@@ -120,6 +126,7 @@ impl Metadata {
         let timeout_ms = number("timeout", 60000.0, 1.0, u32::MAX as f64, true) as u64;
         let fade_duration = value["fadeDuration"].as_f64().unwrap_or(0.0);
         let max_pitch = value["maxPitch"].as_f64().unwrap_or(60.0);
+        let terrain_skirts = value["terrainSkirtLength"] != "none";
         let cross_source_collisions = value["crossSourceCollisions"].as_bool().unwrap_or(true);
         let local_ideographs = value["localIdeographFontFamily"]
             .as_str()
@@ -143,6 +150,7 @@ impl Metadata {
             cross_source_collisions,
             local_ideographs,
             max_pitch,
+            terrain_skirts,
             value,
             operations,
             skips,

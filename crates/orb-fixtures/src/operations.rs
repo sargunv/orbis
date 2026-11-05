@@ -46,6 +46,14 @@ pub(crate) fn apply(map: &mut Map, op: &Value, assets: &Path) -> Result<Next, St
         "setBearing" => map.camera_mut().bearing = number(1)?,
         "setPitch" => map.camera_mut().pitch = number(1)?,
         "setRoll" => map.camera_mut().roll = number(1)?,
+        "setCenterElevation" => map.camera_mut().elevation = number(1)?,
+        "setCenterClampedToGround" => {
+            let clamped = op
+                .get(1)
+                .and_then(Value::as_bool)
+                .ok_or("expected a boolean")?;
+            map.set_center_clamped_to_ground(clamped);
+        }
         "setCenter" => {
             let center = op
                 .get(1)

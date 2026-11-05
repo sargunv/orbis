@@ -146,6 +146,7 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
                 map.set_antialias_3d(false);
                 map.set_fade_duration(metadata.fade_duration);
                 map.set_cross_source_collisions(metadata.cross_source_collisions);
+                map.set_terrain_skirts(metadata.terrain_skirts);
                 map.set_style_json(&text)
                     .map_err(|e| format!("{id}: {e}"))?;
                 record_warnings(&mut map, &mut reasons, &mut diagnostics);

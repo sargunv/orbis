@@ -521,4 +521,28 @@ mod tests {
         store.set_terrain(None);
         assert_eq!(store.state().elevation, 0.0);
     }
+
+    #[test]
+    fn an_unclamped_target_keeps_the_elevation_it_is_given() {
+        let (projection, viewport, state) = setup();
+        let mut store = Camera::new(state, Surface::from(projection), viewport);
+        store.set_terrain(Some(Arc::new(Ridge {
+            loaded_until: f64::INFINITY,
+        })));
+        let ground = store.state().elevation;
+        // Clamped, the terrain takes the target back.
+        store.set_center_elevation(ground + 500.0);
+        assert_eq!(store.state().elevation, ground);
+        store.set_center_clamped_to_ground(false);
+        store.set_center_elevation(ground + 500.0);
+        assert_eq!(store.state().elevation, ground + 500.0);
+        store.jump_to(&CameraTarget {
+            center: Some(Geodetic::new(10.0, 0.0)),
+            ..CameraTarget::default()
+        });
+        assert_eq!(store.state().elevation, ground + 500.0);
+        // Clamped again, it stands on the ground under it.
+        store.set_center_clamped_to_ground(true);
+        assert_ne!(store.state().elevation, ground + 500.0);
+    }
 }

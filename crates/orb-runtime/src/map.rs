@@ -367,6 +367,10 @@ pub struct Map {
     candidates_dropped: u32,
     pub(crate) services: Services,
     camera: CameraState,
+    /// The target stands on the terrain ([`Map::set_center_clamped_to_ground`]).
+    center_clamped: bool,
+    /// Terrain tiles hang skirts ([`Map::set_terrain_skirts`]).
+    terrain_skirts: bool,
     antialias_3d: bool,
     cost: CostModel,
     /// The plane the map draws on and its sources' tile matrix sets, from
@@ -577,6 +581,8 @@ impl Map {
             tile_generation: 0,
             style: None,
             renderer: None,
+            center_clamped: true,
+            terrain_skirts: true,
             antialias_3d: true,
             cost: CostModel::DEFAULT,
             nodes_stale: false,
@@ -643,6 +649,22 @@ impl Map {
         );
         // Without a style, no bucket is on the old lane.
         self.labels.lane = lane;
+    }
+
+    /// Whether terrain tiles hang skirts below their edges, hiding the
+    /// cracks between tiles of different detail (GL JS
+    /// `terrainSkirtLength`: on is `auto`, the default; off is `none`, for
+    /// translucent terrain, where skirts would show).
+    pub fn set_terrain_skirts(&mut self, skirts: bool) {
+        self.terrain_skirts = skirts;
+    }
+
+    /// Whether [`constrain_camera`](Self::constrain_camera) stands the
+    /// camera's target on the terrain (GL JS `centerClampedToGround`, on by
+    /// default). Off, the target keeps the elevation it is given (GL JS
+    /// `setCenterElevation`), and the camera orbits a point in the air.
+    pub fn set_center_clamped_to_ground(&mut self, clamped: bool) {
+        self.center_clamped = clamped;
     }
 
     /// Enables 4× MSAA for 3D surfaces (the default). Disabling it uses
@@ -759,10 +781,13 @@ impl Map {
             .constrain(&orb_camera::Constraints::WORLD, &surface, viewport);
         match self.elevation() {
             Some(terrain) => {
-                self.camera.settle_on(&*terrain, &surface.projection);
+                if self.center_clamped {
+                    self.camera.settle_on(&*terrain, &surface.projection);
+                }
                 self.camera.keep_above(&*terrain, &surface, viewport);
             }
-            None => self.camera.elevation = 0.0,
+            None if self.center_clamped => self.camera.elevation = 0.0,
+            None => {}
         }
     }
 
@@ -2091,7 +2116,11 @@ impl Map {
             let height_scale = view.height_scale();
             // GL JS's `getSkirtLength`: a fifth of a tile's width at the
             // camera's zoom, in metres at the equator.
-            let skirt = 2.0 * std::f64::consts::PI * 6_371_008.8 / zoom.max(0.0).exp2() / 5.0;
+            let skirt = if self.terrain_skirts {
+                2.0 * std::f64::consts::PI * 6_371_008.8 / zoom.max(0.0).exp2() / 5.0
+            } else {
+                0.0
+            };
             (
                 page,
                 orb_render::TerrainPaint {

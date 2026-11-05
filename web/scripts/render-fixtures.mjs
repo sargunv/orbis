@@ -58,7 +58,7 @@ try {
       // A query fixture: settle, then query; features come back as JSON.
       try {
         const r = request;
-        const features = await page.evaluate((r) => window.renderer.query(r.style, r.width, r.height, r.logical_width, r.logical_height, r.pixel_ratio, r.timeout_ms, r.fade_duration, r.cross_source_collisions, r.local_ideographs, r.max_pitch, r.operations, r.query), r);
+        const features = await page.evaluate((r) => window.renderer.query(r.style, r.width, r.height, r.logical_width, r.logical_height, r.pixel_ratio, r.timeout_ms, r.fade_duration, r.cross_source_collisions, r.local_ideographs, r.max_pitch, r.terrain_skirts, r.operations, r.query), r);
         reply({ features });
       } catch (error) {
         await page.reload();
@@ -75,7 +75,7 @@ try {
         try {
           return await Promise.race([
             (async () => {
-              const pixels = await window.renderer.render(r.style, r.width, r.height, r.logical_width, r.logical_height, r.pixel_ratio, r.timeout_ms, r.fade_duration, r.cross_source_collisions, r.local_ideographs, r.max_pitch, r.operations);
+              const pixels = await window.renderer.render(r.style, r.width, r.height, r.logical_width, r.logical_height, r.pixel_ratio, r.timeout_ms, r.fade_duration, r.cross_source_collisions, r.local_ideographs, r.max_pitch, r.terrain_skirts, r.operations);
               try {
                 // Chunk the conversion to avoid the JS argument-count limit.
                 const bytes = pixels.pixels;

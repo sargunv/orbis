@@ -149,6 +149,7 @@ impl FixtureRenderer {
         cross_source_collisions: bool,
         local_ideographs: Option<String>,
         max_pitch: f64,
+        terrain_skirts: bool,
         operations: String,
     ) -> Result<FixturePixels, JsError> {
         let (_, mut gpu, target, mut output) = self
@@ -164,6 +165,7 @@ impl FixtureRenderer {
                 cross_source_collisions,
                 local_ideographs,
                 max_pitch,
+                terrain_skirts,
                 operations,
             )
             .await?;
@@ -188,6 +190,7 @@ impl FixtureRenderer {
         cross_source_collisions: bool,
         local_ideographs: Option<String>,
         max_pitch: f64,
+        terrain_skirts: bool,
         operations: String,
         rect: Vec<f64>,
     ) -> Result<String, JsError> {
@@ -207,6 +210,7 @@ impl FixtureRenderer {
                 cross_source_collisions,
                 local_ideographs,
                 max_pitch,
+                terrain_skirts,
                 operations,
             )
             .await?;
@@ -265,6 +269,7 @@ impl FixtureRenderer {
         cross_source_collisions: bool,
         local_ideographs: Option<String>,
         max_pitch: f64,
+        terrain_skirts: bool,
         operations: String,
     ) -> Result<(Map, Owner, orb_hal::TextureId, FixturePixels), JsError> {
         let operations =
@@ -299,6 +304,7 @@ impl FixtureRenderer {
         map.set_antialias_3d(false);
         map.set_fade_duration(fade_duration);
         map.set_cross_source_collisions(cross_source_collisions);
+        map.set_terrain_skirts(terrain_skirts);
         map.set_local_ideograph_font_family(local_ideographs.as_deref());
         map.set_style_json(&style)
             .map_err(|e| JsError::new(&e.to_string()))?;
@@ -455,6 +461,14 @@ fn apply(map: &mut Map, op: &orb_expr::json::Json) -> Result<Next, String> {
         "setBearing" => map.camera_mut().bearing = number(1)?,
         "setPitch" => map.camera_mut().pitch = number(1)?,
         "setRoll" => map.camera_mut().roll = number(1)?,
+        "setCenterElevation" => map.camera_mut().elevation = number(1)?,
+        "setCenterClampedToGround" => {
+            let clamped = items
+                .get(1)
+                .and_then(|b| b.as_bool())
+                .ok_or("expected a boolean")?;
+            map.set_center_clamped_to_ground(clamped);
+        }
         "setCenter" => {
             let center = items.get(1).and_then(|c| c.as_array()).unwrap_or_default();
             let at = |i: usize| {

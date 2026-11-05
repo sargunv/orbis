@@ -28,6 +28,9 @@ pixel, raised in the vertex shader by GL JS's bilinear `get_elevation`
 over the padded DEM page the prepare pass already fills (decision 0007).
 Plan §9.4's CDLOD quadtree is this tile quadtree; no geomorphing was needed
 for the fixtures or the demo.
+Skirts hang a fifth of a tile's width, GL JS's `auto`.
+`Map::set_terrain_skirts(false)` is GL JS's `terrainSkirtLength: "none"`,
+for translucent drapes, where skirts would show.
 
 ## Draping: slots of one atlas, drawn by drape placements
 
@@ -100,6 +103,10 @@ the map publishes (`Map::elevation`, `Map::elevation_revision`):
 - At rest the target stands on the terrain (`settle_on`); where the DEM
   under it is still loading it keeps its elevation and moves once, when
   the data lands (GL JS #8549's jump on `jumpTo` does not happen).
+  Unclamped (`set_center_clamped_to_ground(false)` on the camera store
+  and on `Map`, GL JS's `centerClampedToGround`), the target keeps the
+  elevation it is given (`set_center_elevation`, or `CameraState::elevation`
+  directly), so the camera orbits a point in the air.
 - Gestures hold the elevation; when they end the target moves to the
   terrain along the view with the eye in place (`recenter_on`, GL JS's
   `recalculateZoomAndCenter`), so the picture doesn't move.

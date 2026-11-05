@@ -86,6 +86,8 @@ pub struct Camera {
     /// A gesture held the target's elevation: putting it back on the
     /// terrain keeps the eye in place.
     elevation_held: bool,
+    /// The target stands on the terrain (GL JS `centerClampedToGround`).
+    clamped: bool,
 }
 
 impl Camera {
@@ -106,17 +108,44 @@ impl Camera {
             revision: 0,
             terrain: None,
             elevation_held: false,
+            clamped: true,
         }
     }
 
     /// Stands the target on `terrain`, or on the surface without it. Call
     /// it again when the terrain's DEM data changes (`Map::elevation`).
     pub fn set_terrain(&mut self, terrain: Option<Arc<dyn Elevation>>) {
-        if terrain.is_none() {
+        if terrain.is_none() && self.clamped {
             self.state.elevation = 0.0;
         }
         self.terrain = terrain;
         self.write(self.state);
+    }
+
+    /// Whether the target stands on the terrain at rest (GL JS
+    /// `centerClampedToGround`, on by default). Off, it keeps the elevation
+    /// [`set_center_elevation`](Self::set_center_elevation) gives it, and
+    /// the camera orbits a point that high.
+    pub fn set_center_clamped_to_ground(&mut self, clamped: bool) {
+        self.clamped = clamped;
+        self.write(self.state);
+    }
+
+    pub fn center_clamped_to_ground(&self) -> bool {
+        self.clamped
+    }
+
+    /// Puts the target this many metres above the surface at once (GL JS
+    /// `setCenterElevation`). While the target is clamped to the ground,
+    /// the terrain takes it back.
+    pub fn set_center_elevation(&mut self, elevation: f64) {
+        self.stop();
+        self.modified = true;
+        self.user = false;
+        self.write(CameraState {
+            elevation,
+            ..self.state
+        });
     }
 
     /// The terrain the camera stands on.
@@ -500,7 +529,7 @@ impl Camera {
     fn write(&mut self, mut next: CameraState) {
         next.bearing = wrap_bearing(next.bearing);
         next.constrain(&self.constraints, &self.surface, self.viewport);
-        if let Some(terrain) = self.terrain.as_deref() {
+        if let Some(terrain) = self.terrain.as_deref().filter(|_| self.clamped) {
             // Gestures hold the target's elevation, as GL JS's do; at rest
             // it stands on the terrain.
             let gesture = self.held || self.running.as_ref().is_some_and(|r| r.user);
@@ -513,6 +542,8 @@ impl Camera {
                     next.settle_on(terrain, &self.surface.projection);
                 }
             }
+        }
+        if let Some(terrain) = self.terrain.as_deref() {
             next.keep_above(terrain, &self.surface, self.viewport);
         }
         if next != self.state {
@@ -583,7 +614,7 @@ impl Camera {
         }
         to.bearing = wrap_bearing(to.bearing);
         to.constrain(&self.constraints, surface, viewport);
-        if let Some(terrain) = self.terrain.as_deref() {
+        if let Some(terrain) = self.terrain.as_deref().filter(|_| self.clamped) {
             to.settle_on(terrain, projection);
         }
         (to, around)

@@ -317,6 +317,7 @@ fn run_test(
     // GL JS's render tests run with `fadeDuration: 0` unless they say.
     map.set_fade_duration(metadata.fade_duration);
     map.set_cross_source_collisions(metadata.cross_source_collisions);
+    map.set_terrain_skirts(metadata.terrain_skirts);
     map.set_local_ideograph_font_family(metadata.local_ideographs.as_deref());
     match orb_v8::parse(&text) {
         Ok(style) => {
