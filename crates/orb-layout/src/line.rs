@@ -12,9 +12,11 @@
 //!   With GeoJSON metrics, word 2 stores global progress × 32767, quantized
 //!   by two, as GL JS does. Word 4 retains precision for per-clip ramps.
 //!
-//! Lines are clipped to `[-extent / 16, extent + extent / 16]²`; the fragment
-//! shader must discard outside the actual tile square. Clipped ends use butt
-//! caps. Sharp-corner vertices use MapLibre's 512-pixel tile at overscaling 1.
+//! Lines are clipped to `[-extent, 2 · extent]²`, which holds any source
+//! buffer (GL JS's GeoJSON buffer reaches at most a tile) and fits i16: a
+//! stroke drawn from a neighbour's line in the buffer reaches into the tile,
+//! as GL JS's unclipped buckets do. The fragment shader must discard outside
+//! the actual tile square. Clipped ends use butt caps. Sharp-corner vertices use MapLibre's 512-pixel tile at overscaling 1.
 //!
 //! Extrusion ported from MapLibre GL JS 2b68611a4e2d4f7f076f6c6ebf758e2d53f91471, src/data/bucket/line_bucket.ts
 //! (addLine, addCurrentVertex, addHalfVertex and the fakeround pie slices):
@@ -82,7 +84,7 @@ pub fn layout_in_extent(
     output_extent: u32,
 ) -> Mesh {
     let extent = i32::try_from(output_extent).expect("extent fits i32");
-    let margin = extent / 16;
+    let margin = extent;
     assert!(
         extent <= i32::from(i16::MAX) - margin,
         "extent {extent} plus margin exceeds i16 positions"
@@ -935,24 +937,27 @@ mod tests {
     #[test]
     fn clipping_uses_margin_and_suppresses_only_synthetic_caps() {
         let mesh = line(
-            &[[-1000, 50], [1000, 50], [5000, 50]],
+            &[[-5000, 50], [1000, 50], [9000, 50]],
             &params(LineJoin::Miter, LineCap::Round),
         );
-        counts(&mesh, 6, 4);
+        // Past 16384 normalized units the distance resets: a pair repeats.
+        counts(&mesh, 8, 6);
         assert_eq!(
             positions(&mesh),
             [
-                [-256, 50],
-                [-256, 50],
+                [-4096, 50],
+                [-4096, 50],
                 [1000, 50],
                 [1000, 50],
-                [4352, 50],
-                [4352, 50]
+                [8192, 50],
+                [8192, 50],
+                [8192, 50],
+                [8192, 50]
             ]
         );
         assert!(data(&mesh).iter().all(|v| v[2] & 1 == 0));
         let one_end = line(
-            &[[-1000, 50], [1000, 50]],
+            &[[-5000, 50], [1000, 50]],
             &params(LineJoin::Miter, LineCap::Round),
         );
         counts(&one_end, 6, 4);
@@ -966,23 +971,22 @@ mod tests {
         feature(
             &mut b,
             GeometryType::Polygon,
-            &[&[[-1000, 10], [10, 10], [10, 20], [-1000, 20]]],
+            &[&[[-5000, 10], [10, 10], [10, 20], [-5000, 20]]],
         );
         let mesh = layout(&b.finish(), &[0], |_| {
             params(LineJoin::Miter, LineCap::Round)
         });
-        counts(&mesh, 12, 10); // four positions + two sharp-corner insertions
+        // Four positions, two sharp-corner insertions, and the pair a
+        // distance reset repeats.
+        counts(&mesh, 14, 12);
         let positions = positions(&mesh);
-        assert_eq!(positions.first(), Some(&[-256, 10]));
-        assert_eq!(positions.last(), Some(&[-256, 20]));
+        assert_eq!(positions.first(), Some(&[-4096, 10]));
+        assert_eq!(positions.last(), Some(&[-4096, 20]));
         // There is no artificial vertical edge joining the two clipped ends.
-        assert!(
-            mesh.indices
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .all(|t| !t.iter().all(|&i| positions[i as usize][0] == -256))
-        );
+        assert!(mesh.indices.as_chunks::<3>().0.iter().all(|t| {
+            let p = t.map(|i| positions[i as usize]);
+            !(p.iter().all(|q| q[0] == -4096) && p.iter().any(|q| q[1] != p[0][1]))
+        }));
         assert!(data(&mesh).iter().all(|v| v[2] & 1 == 0));
     }
 
@@ -1091,7 +1095,7 @@ mod tests {
         feature(
             &mut b,
             GeometryType::LineString,
-            &[&[[-1000, 0], [1000, 0]]],
+            &[&[[-5000, 0], [1000, 0]]],
         );
         b.set_property("geojsonvt_clip_start", orb_tile::Value::F64(0.0));
         b.set_property("geojsonvt_clip_end", orb_tile::Value::F64(1.0));
@@ -1099,8 +1103,8 @@ mod tests {
             params(LineJoin::Miter, LineCap::Butt)
         });
         let first = &mesh.vertices[..STRIDE];
-        assert_eq!(f32::from_bits(first[4]), 744.0 / 2000.0);
-        assert_eq!(first[2] >> 2, (744.0 / 2000.0 * 32767.0 / 2.0) as u32);
+        assert_eq!(f32::from_bits(first[4]), 904.0 / 6000.0);
+        assert_eq!(first[2] >> 2, (904.0 / 6000.0 * 32767.0 / 2.0) as u32);
     }
 
     #[test]
