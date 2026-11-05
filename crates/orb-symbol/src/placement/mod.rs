@@ -12,7 +12,6 @@ mod place;
 mod tile_scope;
 mod view;
 
-pub use cross_tile::matching_labels;
 pub use grid::Overlap;
 pub use place::{
     BucketStates, Committed, Frame, GroundRef, LayerFrame, LayerParams, PlacedTile,

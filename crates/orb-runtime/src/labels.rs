@@ -1112,74 +1112,14 @@ impl Labels {
             .map_or(1.0, |c| c.fade_change(now) as f32)
     }
 
-    /// Gives buckets drawn for the first time the state words of the
-    /// labels they show from the buckets the last frame drew (GL JS
-    /// `updateLayerOpacities`): a tile that replaces its parent or its
-    /// children shows their labels as they were, rather than nothing until
-    /// its placement commits.
-    pub(crate) fn inherit(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        renderer: &mut Renderer,
-        frame: &orb_symbol::Frame,
-    ) {
-        use orb_symbol::{NONE, state::WORDS};
-        let previous = std::mem::take(&mut self.drawn);
-        let mut inherited = Vec::new();
+    /// Records the buckets `frame` draws, for [`shown`](Self::shown).
+    pub(crate) fn drawing(&mut self, frame: &orb_symbol::Frame) {
+        self.drawn.clear();
         for layer in &frame.layers {
-            let key = layer.params.layer;
             for tile in &layer.tiles {
-                let id = tile.view.id;
-                self.drawn.push((key, tile.bucket, id));
-                let Some(meshes) = self.buckets.get(&tile.bucket) else {
-                    continue;
-                };
-                if meshes.written.contains_key(&id.wrap) {
-                    continue;
-                }
-                let shown: Vec<(orb_symbol::TileId, &BucketMeshes)> = previous
-                    .iter()
-                    .filter(|&&(l, b, t)| l == key && b != tile.bucket && t.wrap == id.wrap)
-                    .filter_map(|&(_, b, t)| Some((t, self.buckets.get(&b)?)))
-                    .filter(|(_, m)| m.written.contains_key(&id.wrap))
-                    .collect();
-                let instances: Vec<_> = shown
-                    .iter()
-                    .map(|(t, m)| (*t, &m.tables.instances[..]))
-                    .collect();
-                let matches = orb_symbol::matching_labels(id, &meshes.tables.instances, &instances);
-                if matches.iter().all(Option::is_none) {
-                    continue;
-                }
-                let tables = &meshes.tables;
-                let mut states = orb_symbol::BucketStates {
-                    text: vec![0; tables.text_placed.len() * WORDS],
-                    icon: vec![0; tables.icon_placed.len() * WORDS],
-                    ..Default::default()
-                };
-                let copy =
-                    |to: &mut [u32], to_placed: &[u32], from: &[u32], from_placed: &[u32]| {
-                        for (&t, &f) in to_placed.iter().zip(from_placed) {
-                            if t != NONE && f != NONE {
-                                let (t, f) = (t as usize * WORDS, f as usize * WORDS);
-                                to[t..t + WORDS].copy_from_slice(&from[f..f + WORDS]);
-                            }
-                        }
-                    };
-                for (instance, matched) in tables.instances.iter().zip(matches) {
-                    let Some((k, j)) = matched else { continue };
-                    let other = shown[k].1;
-                    let (from, words) = (&other.tables.instances[j], &other.written[&id.wrap]);
-                    copy(&mut states.text, &instance.text, &words.text, &from.text);
-                    copy(&mut states.icon, &instance.icon, &words.icon, &from.icon);
-                }
-                inherited.push((tile.bucket, id.wrap, states));
+                self.drawn
+                    .push((layer.params.layer, tile.bucket, tile.view.id));
             }
-        }
-        for (bucket, wrap, states) in inherited {
-            let meshes = self.buckets.get_mut(&bucket).expect("checked above");
-            meshes.written.insert(wrap, states);
-            meshes.write(gpu, renderer, wrap);
         }
     }
 

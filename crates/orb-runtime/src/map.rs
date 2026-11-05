@@ -1967,7 +1967,7 @@ impl Map {
                     .collect(),
             ),
         };
-        self.labels.inherit(gpu, renderer, &frame);
+        self.labels.drawing(&frame);
         // Symbols stand on the terrain as drawn.
         frame.ground = style
             .terrain
