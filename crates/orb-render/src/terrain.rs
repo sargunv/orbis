@@ -453,9 +453,10 @@ impl Terrain {
         }
     }
 
-    /// Sizes the atlas for `tile_slots` blocks of `stacks` slots, with
-    /// an eighth to spare: made again when they outgrow it or fill less
-    /// than four fifths of it. The tile slots in `kept` carry their texels
+    /// Sizes the atlas for `tile_slots` blocks of `stacks` slots, with a
+    /// quarter to spare: made again when they outgrow it, or fill less
+    /// than half of it and the new one is at least a quarter smaller (each
+    /// new atlas copies the kept slots). The tile slots in `kept` carry their texels
     /// into a new atlas, those past its end moved to free slots; returns
     /// the moves (from, to), or `None` when the atlas stays. A change of
     /// stacks blanks every slot (a new [`DrapeLayout::generation`]).
@@ -473,9 +474,9 @@ impl Terrain {
         if tile_slots * stacks > side * side {
             return Err(crate::OutOfSpace);
         }
-        let want = (tile_slots + tile_slots.div_ceil(8)).clamp(1, side * side / stacks);
+        let want = (tile_slots + tile_slots.div_ceil(4)).clamp(1, side * side / stacks);
         let same = self.atlas.is_some() && state.stacks == stacks;
-        if same && tile_slots <= state.tile_slots && state.tile_slots <= want + want / 4 {
+        if same && tile_slots <= state.tile_slots && tile_slots * 2 >= state.tile_slots {
             return Ok(None);
         }
         // The grid of the fewest slots that holds them, squarest first.
@@ -485,6 +486,10 @@ impl Terrain {
             .filter(|&(_, r)| r <= side)
             .min_by_key(|&(c, r)| (c * r, c.abs_diff(r)))
             .expect("one column fits");
+        let held = state.tile_slots * stacks;
+        if same && tile_slots <= state.tile_slots && columns * rows * 4 > held * 3 {
+            return Ok(None);
+        }
         let layout = DrapeLayout {
             stacks,
             columns,

@@ -251,15 +251,20 @@ classes would save under 1% of atlas memory, so #42 is closed.
 
 The drape atlas used to double and never shrink, and each new atlas
 blanked every slot for a full redraw. Now it holds the slots in use with
-an eighth to spare. It is made again when the slots outgrow it or fill
-under four fifths of it. The new atlas takes the kept slots' texels,
-every mip level, by a GPU copy (the HAL's `CopyTexture`), slots past its
-end move to free ones, and the runtime follows the moves, so nothing
-redraws. Only a change of drape stacks blanks it. On the Alps gestures
-bench, the atlas's mean per frame went from 341 MiB to 264–278 MiB
-across rotate, pan and the flight. The peak stays at 341 MiB: 29 tiles
-at 2 stacks reach the 64 slots an 8192-texel texture holds. The three
-paths made 54 resizes, each under 1 ms of CPU.
+a quarter to spare. It is made again when the slots outgrow it, or when
+they fill under half of it and the new texture would be at least a
+quarter smaller. The new atlas takes the kept slots' texels, every mip
+level, by a GPU copy (the HAL's `CopyTexture`), slots past its end move
+to free ones, and the runtime follows the moves, so nothing redraws.
+Only a change of drape stacks blanks it. A resize is a new texture, so
+every kept slot is copied, not only the ones that move. That trade sets
+the policy: on a slow phone a copy of up to about 250 MB is a stutter.
+
+On the Alps gestures bench, resizes and the atlas's mean per frame
+went: rotate 10 to 1 (278 to 340 MiB), pan 13 to 1 (266 to 339 MiB),
+and the flight 28 to 4 (264 to 304 MiB), against 341 MiB for the
+doubling atlas. The peak stays at 341 MiB: 25 or more tiles at 2 stacks,
+with their spare, reach the 64 slots an 8192-texel texture holds.
 
 ## Map trims
 
