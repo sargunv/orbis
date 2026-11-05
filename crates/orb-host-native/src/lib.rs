@@ -2,10 +2,12 @@
 
 #![forbid(unsafe_code)]
 
+mod cache;
 mod fonts;
 
 use std::sync::Arc;
 
+pub use cache::{CacheStats, HttpCache};
 pub use fonts::SystemFonts;
 pub use orb_host::FontFileFaces;
 
@@ -13,18 +15,39 @@ use orb_host::{Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
 use orb_jobs::{Executor, ThreadPool};
 
 /// Fetches `http(s)://` URLs with ureq and `file://` URLs from disk, on a
-/// small pool of I/O threads.
+/// small pool of I/O threads, through an [`HttpCache`] when it has one.
 #[derive(Debug)]
 pub struct NativeFetch {
     agent: ureq::Agent,
     pool: ThreadPool,
+    cache: Option<Arc<HttpCache>>,
 }
 
 /// Largest response body accepted.
 const MAX_BODY: u64 = 64 << 20;
 
+/// What the network answered.
+enum Response {
+    Body {
+        bytes: Vec<u8>,
+        /// `None` when the response may not be stored.
+        fresh_until: Option<u64>,
+        etag: Option<String>,
+        last_modified: Option<String>,
+    },
+    NotModified {
+        fresh_until: Option<u64>,
+    },
+}
+
 impl NativeFetch {
     pub fn new() -> Arc<Self> {
+        Self::with_cache(None)
+    }
+
+    /// Fetches through `cache`: fresh entries without the network, stale
+    /// ones revalidated, and either when the network fails.
+    pub fn with_cache(cache: Option<Arc<HttpCache>>) -> Arc<Self> {
         let agent = ureq::Agent::config_builder()
             .user_agent(concat!("orbis/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -32,97 +55,217 @@ impl NativeFetch {
         Arc::new(Self {
             agent,
             pool: ThreadPool::new("fetch", 8),
+            cache,
         })
+    }
+
+    /// The cache fetches go through.
+    pub fn cache(&self) -> Option<&Arc<HttpCache>> {
+        self.cache.as_ref()
     }
 
     fn get_blocking(
         agent: &ureq::Agent,
+        cache: Option<&HttpCache>,
         url: &str,
         range: Option<(u64, u64)>,
     ) -> Result<Vec<u8>, FetchError> {
         if let Some(path) = url.strip_prefix("file://") {
-            use std::io::{Read, Seek, SeekFrom};
-            let mut file = std::fs::File::open(path).map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => FetchError::NotFound,
-                _ => FetchError::Network(e.to_string()),
-            })?;
-            let mut bytes = Vec::new();
-            let limit = if let Some((offset, length)) = range {
-                orb_host::range_end(offset, length)?;
-                file.seek(SeekFrom::Start(offset))
-                    .map_err(|e| FetchError::Network(e.to_string()))?;
-                length
-            } else {
-                MAX_BODY
-            };
-            file.take(limit + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|e| FetchError::Network(e.to_string()))?;
-            if range.is_some() {
-                bytes.truncate(limit as usize);
-            }
-            if (range.is_some() && bytes.len() as u64 != limit) || bytes.len() as u64 > limit {
-                return Err(FetchError::Range("short or oversized file".into()));
-            }
-            return Ok(bytes);
+            return read_file(path, range);
         }
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
+        if !orb_host::cache::cacheable(url) {
             return Err(FetchError::UnsupportedUrl(url.to_string()));
         }
-        let mut request = agent.get(encode_url(url).as_ref());
-        if let Some((offset, length)) = range {
-            let end = orb_host::range_end(offset, length)?;
-            request = request
-                .header("Range", format!("bytes={offset}-{end}"))
-                .header("Accept-Encoding", "identity");
+        let Some(cache) = cache else {
+            return match http(agent, url, range, None)? {
+                Response::Body { bytes, .. } => Ok(bytes),
+                Response::NotModified { .. } => Err(FetchError::Status(304)),
+            };
+        };
+        let key = orb_host::cache::key(url, range);
+        let cached = cache.lookup(&key);
+        if let Some(cached) = cached.as_ref().filter(|c| c.fresh) {
+            return Ok(cached.bytes.clone());
         }
-        let mut response = request.call().map_err(|e| match e {
-            ureq::Error::StatusCode(404) => FetchError::NotFound,
-            ureq::Error::StatusCode(code) => FetchError::Status(code),
-            e => FetchError::Network(e.to_string()),
-        })?;
-        if response.status() == 204 {
-            return Err(FetchError::NotFound);
+        let validators = cached
+            .as_ref()
+            .map(|c| (c.etag.as_deref(), c.last_modified.as_deref()));
+        match (http(agent, url, range, validators), cached) {
+            (
+                Ok(Response::Body {
+                    bytes,
+                    fresh_until,
+                    etag,
+                    last_modified,
+                }),
+                _,
+            ) => {
+                match fresh_until {
+                    Some(until) => cache.store(
+                        &key,
+                        &bytes,
+                        until,
+                        etag.as_deref(),
+                        last_modified.as_deref(),
+                    ),
+                    None => cache.remove(&key),
+                }
+                Ok(bytes)
+            }
+            (Ok(Response::NotModified { fresh_until }), Some(cached)) => {
+                cache.refresh(&key, fresh_until.unwrap_or(0));
+                Ok(cached.bytes)
+            }
+            (Ok(Response::NotModified { .. }), None) => Err(FetchError::Status(304)),
+            // Offline, or the server failing: the stale copy.
+            (Err(FetchError::Network(_) | FetchError::Status(500..)), Some(cached)) => {
+                Ok(cached.bytes)
+            }
+            (Err(error), _) => {
+                cache.remove(&key);
+                Err(error)
+            }
         }
-        if let Some((offset, length)) = range {
-            orb_host::check_range(
-                response.status().as_u16(),
-                response
-                    .headers()
-                    .get("content-range")
-                    .and_then(|h| h.to_str().ok()),
-                offset,
-                length,
-            )?;
-        }
-        let bytes = response
-            .body_mut()
-            .with_config()
-            .limit(range.map_or(MAX_BODY, |(_, length)| length + 1))
-            .read_to_vec()
-            .map_err(|e| FetchError::Network(e.to_string()))?;
-        if range.is_some_and(|(_, length)| bytes.len() as u64 != length) {
-            return Err(FetchError::Range("short range body".into()));
-        }
-        Ok(bytes)
     }
+}
+
+fn read_file(path: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => FetchError::NotFound,
+        _ => FetchError::Network(e.to_string()),
+    })?;
+    let mut bytes = Vec::new();
+    let limit = if let Some((offset, length)) = range {
+        orb_host::range_end(offset, length)?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| FetchError::Network(e.to_string()))?;
+        length
+    } else {
+        MAX_BODY
+    };
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| FetchError::Network(e.to_string()))?;
+    if range.is_some() {
+        bytes.truncate(limit as usize);
+    }
+    if (range.is_some() && bytes.len() as u64 != limit) || bytes.len() as u64 > limit {
+        return Err(FetchError::Range("short or oversized file".into()));
+    }
+    Ok(bytes)
+}
+
+/// One HTTP GET, conditional on `validators` (ETag, Last-Modified).
+fn http(
+    agent: &ureq::Agent,
+    url: &str,
+    range: Option<(u64, u64)>,
+    validators: Option<(Option<&str>, Option<&str>)>,
+) -> Result<Response, FetchError> {
+    let mut request = agent.get(encode_url(url).as_ref());
+    if let Some((offset, length)) = range {
+        let end = orb_host::range_end(offset, length)?;
+        request = request
+            .header("Range", format!("bytes={offset}-{end}"))
+            .header("Accept-Encoding", "identity");
+    }
+    if let Some((etag, last_modified)) = validators {
+        if let Some(etag) = etag {
+            request = request.header("If-None-Match", etag);
+        }
+        if let Some(last_modified) = last_modified {
+            request = request.header("If-Modified-Since", last_modified);
+        }
+    }
+    let mut response = request.call().map_err(|e| match e {
+        ureq::Error::StatusCode(404) => FetchError::NotFound,
+        ureq::Error::StatusCode(code) => FetchError::Status(code),
+        e => FetchError::Network(e.to_string()),
+    })?;
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_owned)
+    };
+    let (cache_control, expires, date) =
+        (header("cache-control"), header("expires"), header("date"));
+    let (etag, last_modified) = (header("etag"), header("last-modified"));
+    let fresh_until = orb_host::cache::fresh_until(
+        orb_host::cache::Headers {
+            cache_control: cache_control.as_deref(),
+            expires: expires.as_deref(),
+            date: date.as_deref(),
+            last_modified: last_modified.as_deref(),
+        },
+        cache::now(),
+    );
+    match response.status().as_u16() {
+        204 => return Err(FetchError::NotFound),
+        304 => return Ok(Response::NotModified { fresh_until }),
+        _ => {}
+    }
+    if let Some((offset, length)) = range {
+        orb_host::check_range(
+            response.status().as_u16(),
+            header("content-range").as_deref(),
+            offset,
+            length,
+        )?;
+    }
+    let bytes = response
+        .body_mut()
+        .with_config()
+        .limit(range.map_or(MAX_BODY, |(_, length)| length + 1))
+        .read_to_vec()
+        .map_err(|e| FetchError::Network(e.to_string()))?;
+    if range.is_some_and(|(_, length)| bytes.len() as u64 != length) {
+        return Err(FetchError::Range("short range body".into()));
+    }
+    Ok(Response::Body {
+        bytes,
+        fresh_until,
+        etag,
+        last_modified,
+    })
 }
 
 impl Fetch for NativeFetch {
     fn get(&self, url: &str, done: FetchDone) {
-        let agent = self.agent.clone();
-        let url = url.to_string();
-        self.pool.spawn(Box::new(move || {
-            done(Self::get_blocking(&agent, &url, None))
-        }));
+        self.get_range_opt(url, None, done);
     }
     fn get_range(&self, url: &str, offset: u64, length: u64, done: FetchDone) {
+        self.get_range_opt(url, Some((offset, length)), done);
+    }
+}
+
+impl NativeFetch {
+    fn get_range_opt(&self, url: &str, range: Option<(u64, u64)>, done: FetchDone) {
         let agent = self.agent.clone();
+        let cache = self.cache.clone();
         let url = url.to_string();
         self.pool.spawn(Box::new(move || {
-            done(Self::get_blocking(&agent, &url, Some((offset, length))))
+            done(Self::get_blocking(&agent, cache.as_deref(), &url, range))
         }));
     }
+}
+
+/// Writes `data` to a file of its own beside `path`, then renames it over
+/// `path`: readers see the old file or the new one whole, and writers in
+/// other runtimes or processes never share the temporary file.
+pub fn write_atomically(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_owned();
+    name.push(format!(".{}.{n}.partial", std::process::id()));
+    let partial = path.with_file_name(name);
+    let written = std::fs::write(&partial, data).and_then(|()| std::fs::rename(&partial, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written
 }
 
 /// Decodes images with the core's decoder ([`orb_host::decode_image`]),
@@ -248,7 +391,7 @@ mod range_tests {
             let _ = stream.write_all(&body);
         });
         let result =
-            NativeFetch::get_blocking(&ureq::Agent::new_with_defaults(), &url, Some((2, 3)));
+            NativeFetch::get_blocking(&ureq::Agent::new_with_defaults(), None, &url, Some((2, 3)));
         thread.join().unwrap();
         result
     }
@@ -290,11 +433,11 @@ mod range_tests {
         let url = format!("file://{}", path.display());
         let agent = ureq::Agent::new_with_defaults();
         assert_eq!(
-            NativeFetch::get_blocking(&agent, &url, Some((2, 3))).unwrap(),
+            NativeFetch::get_blocking(&agent, None, &url, Some((2, 3))).unwrap(),
             b"cde"
         );
         for range in [(4, 3), (0, 0), (0, MAX_BODY + 1), (u64::MAX, 2)] {
-            assert!(NativeFetch::get_blocking(&agent, &url, Some(range)).is_err());
+            assert!(NativeFetch::get_blocking(&agent, None, &url, Some(range)).is_err());
         }
         std::fs::remove_file(path).unwrap();
     }
@@ -313,5 +456,94 @@ impl Default for NativeClock {
 impl orb_host::Clock for NativeClock {
     fn now(&self) -> f64 {
         self.0.elapsed().as_secs_f64() * 1000.0
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    #[test]
+    fn concurrent_writers_publish_whole_files() {
+        let dir = std::env::temp_dir().join(format!("orb-host-write-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cache");
+        let writers: Vec<_> = (0..8u8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..20 {
+                        super::write_atomically(&path, &vec![i; 64 << 10]).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(data.len(), 64 << 10);
+        assert!(data.iter().all(|&b| b == data[0]), "bytes of two writers");
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "partial files left"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// Serves `replies` to one connection each, and returns the requests.
+    fn serve(replies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/tile", server.local_addr().unwrap());
+        let thread = std::thread::spawn(move || {
+            replies
+                .into_iter()
+                .map(|reply| {
+                    let (mut stream, _) = server.accept().unwrap();
+                    let mut request = [0; 2048];
+                    let n = stream.read(&mut request).unwrap();
+                    stream.write_all(reply.as_bytes()).unwrap();
+                    String::from_utf8_lossy(&request[..n]).to_lowercase()
+                })
+                .collect()
+        });
+        (url, thread)
+    }
+
+    #[test]
+    fn revalidates_stale_entries_and_answers_offline() {
+        let dir = std::env::temp_dir().join(format!("orb-fetch-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = HttpCache::open(&dir, 1 << 20).unwrap();
+        let agent = ureq::Agent::new_with_defaults();
+        let close = "Connection: close\r\n";
+        let (url, server) = serve(vec![
+            format!(
+                "HTTP/1.1 200 OK\r\n{close}Cache-Control: no-cache\r\nETag: \"v1\"\r\nContent-Length: 4\r\n\r\ntile"
+            ),
+            format!("HTTP/1.1 304 Not Modified\r\n{close}Cache-Control: max-age=60\r\n\r\n"),
+        ]);
+        let get = || NativeFetch::get_blocking(&agent, Some(&cache), &url, None);
+        assert_eq!(get().unwrap(), b"tile");
+        assert_eq!(get().unwrap(), b"tile");
+        // Fresh after the 304: no request.
+        assert_eq!(get().unwrap(), b"tile");
+        let requests = server.join().unwrap();
+        assert!(
+            requests[1].contains("if-none-match: \"v1\""),
+            "{}",
+            requests[1]
+        );
+        // Stale and the server gone: the stale copy.
+        cache.refresh(&orb_host::cache::key(&url, None), 0);
+        assert_eq!(get().unwrap(), b"tile");
+        drop(cache);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

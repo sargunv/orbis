@@ -188,6 +188,33 @@ mod ffi {
                 .map_err(fail)
         }
 
+        /// Keeps fetched styles, tiles, glyphs and sprites in the directory
+        /// `dir` between runs, up to `max_bytes`: fresh ones load without
+        /// the network and any loads when it fails, so a map seen before
+        /// opens offline. Applies to maps made after the call.
+        #[diplomat::attr(contract, command)]
+        pub fn set_http_cache(
+            &mut self,
+            dir: &DiplomatStr,
+            max_bytes: u64,
+        ) -> Result<(), OrbError> {
+            self.0
+                .set_http_cache(std::path::Path::new(&*text(dir)), max_bytes)
+                .map_err(fail)
+        }
+
+        /// Bytes of response bodies the HTTP cache holds (0 without one).
+        #[diplomat::attr(contract, snapshot)]
+        pub fn http_cache_bytes(&self) -> u64 {
+            self.0.http_cache_stats().map_or(0, |s| s.bytes)
+        }
+
+        /// Empties the HTTP cache.
+        #[diplomat::attr(contract, command)]
+        pub fn clear_http_cache(&mut self) {
+            self.0.clear_http_cache();
+        }
+
         /// Milliseconds spent compiling pipelines so far, summed over the
         /// threads that compiled them: translation and the driver's
         /// compiles.

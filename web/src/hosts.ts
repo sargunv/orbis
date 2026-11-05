@@ -3,20 +3,22 @@
 // go to job workers and a placement worker (plan §7.1), which the drawing
 // thread spawns (workers.ts).
 
-import init, { createMap as createCoreMap, type OrbisMap as CoreMap } from "../pkg/core.js";
+import init, { createMap as createCoreMap, setHttpCache, type OrbisMap as CoreMap } from "../pkg/core.js";
 
 const COMPAT = new URL("../pkg/compat_bg.wasm", import.meta.url);
 
 /** The renderer role's module for a tier: core.wasm (WebGPU), or
  * compat.wasm (WebGL2, loaded the first time it's needed). Job and
  * placement workers run core.wasm either way. */
-async function rendererModule(tier: "modern" | "compat", module: WebAssembly.Module) {
+async function rendererModule(tier: "modern" | "compat", module: WebAssembly.Module, httpCache: number) {
   if (tier === "modern") {
     await init({ module_or_path: module });
+    setHttpCache(httpCache);
     return createCoreMap;
   }
   const compat = await import("../pkg/compat.js");
   await compat.default({ module_or_path: COMPAT });
+  compat.setHttpCache(httpCache);
   return compat.createMap as unknown as typeof createCoreMap;
 }
 import { renderFrame, type FrameAck, type Renderer } from "./frames.ts";
@@ -73,7 +75,7 @@ export async function probeWorker(): Promise<{ worker: Worker; ok: boolean; adap
 
 /** The map on this thread, drawing into `canvas` at `tier`. */
 export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasElement, style: string,
-  jobWorkers: number, callbacks: HostCallbacks, tier: "modern" | "compat"): Promise<Host> {
+  jobWorkers: number, httpCache: number, callbacks: HostCallbacks, tier: "modern" | "compat"): Promise<Host> {
   const receive = (apply: (data: unknown) => void) => ({ data }: MessageEvent) => {
     try {
       apply(data);
@@ -83,8 +85,8 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   };
   // A map with its job and placement workers.
   const start = async (tier: "modern" | "compat", canvas: HTMLCanvasElement, style: string) => {
-    const { workers, ports, placement } = spawnWorkers(module, jobWorkers);
-    const create = await rendererModule(tier, module);
+    const { workers, ports, placement } = spawnWorkers(module, jobWorkers, httpCache);
+    const create = await rendererModule(tier, module, httpCache);
     const core = await create(canvas, style, callbacks.wake, ports.length,
       (worker: number, message: unknown) => ports[worker].postMessage(message),
       (message: unknown, transfer: Transferable[]) => placement.postMessage(message, transfer));
@@ -160,7 +162,7 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
 /** Hands `canvas` to the probed render worker, which spawns the job
  * workers and the placement worker. */
 export function startWorker(module: WebAssembly.Module, worker: Worker, canvas: HTMLCanvasElement,
-  style: string, jobWorkers: number, callbacks: HostCallbacks): Host {
+  style: string, jobWorkers: number, httpCache: number, callbacks: HostCallbacks): Host {
   const offscreen = canvas.transferControlToOffscreen();
   // Calls in flight, by id, until the render worker answers.
   const pending = new Map<number, { resolve(value: unknown): void; reject(e: Error): void }>();
@@ -182,7 +184,7 @@ export function startWorker(module: WebAssembly.Module, worker: Worker, canvas: 
     }
   };
   worker.onerror = (e) => callbacks.error(e.message);
-  worker.postMessage({ type: "init", module, canvas: offscreen, style, jobWorkers }, [offscreen]);
+  worker.postMessage({ type: "init", module, canvas: offscreen, style, jobWorkers, httpCache }, [offscreen]);
   return {
     thread: "worker",
     setCamera: (camera) => worker.postMessage({ type: "camera", camera }),

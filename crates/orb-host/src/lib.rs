@@ -4,6 +4,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cache;
+
 use std::fmt;
 
 /// Called once with the outcome of a fetch, on any thread.

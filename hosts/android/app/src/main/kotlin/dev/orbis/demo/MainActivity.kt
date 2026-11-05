@@ -76,6 +76,7 @@ class MainActivity : Activity() {
         )
         Log.i("Orbis", runtime.selection())
         runtime.setPipelineCacheDir(File(cacheDir, "orbis-pipelines").path)
+        runtime.setHttpCache(File(cacheDir, "orbis-http").path, 100uL shl 20)
         val deviceMs = SystemClock.elapsedRealtime() - started
         view = MapView(this, runtime)
         status = TextView(this).apply {

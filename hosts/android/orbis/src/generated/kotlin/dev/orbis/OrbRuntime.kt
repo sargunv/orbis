@@ -93,6 +93,38 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Keeps fetched styles, tiles, glyphs and sprites in the directory
+     * `dir` between runs, up to `max_bytes`: fresh ones load without
+     * the network and any loads when it fails, so a map seen before
+     * opens offline. Applies to maps made after the call.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun setHttpCache(dir: String, maxBytes: ULong) {
+        OrbisNative.orbRuntimeSetHttpCache(live(), dir.encodeToByteArray(), maxBytes.toLong())
+    }
+
+    /**
+     * Bytes of response bodies the HTTP cache holds (0 without one).
+     *
+     * Contract: `snapshot`.
+     */
+    fun httpCacheBytes(): ULong {
+        return OrbisNative.orbRuntimeHttpCacheBytes(live()).toULong()
+    }
+
+    /**
+     * Empties the HTTP cache.
+     *
+     * Contract: `command`.
+     */
+    fun clearHttpCache() {
+        OrbisNative.orbRuntimeClearHttpCache(live())
+    }
+
+    /**
      * Milliseconds spent compiling pipelines so far, summed over the
      * threads that compiled them: translation and the driver's
      * compiles.

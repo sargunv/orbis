@@ -131,6 +131,35 @@ public final class OrbRuntime {
         }
     }
 
+    /// Keeps fetched styles, tiles, glyphs and sprites in the directory
+    /// `dir` between runs, up to `max_bytes`: fresh ones load without
+    /// the network and any loads when it fails, so a map seen before
+    /// opens offline. Applies to maps made after the call.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func setHttpCache(dir: String, maxBytes: UInt64) throws {
+        let result = withStringView(dir) { dirView in OrbRuntime_set_http_cache(live(), dirView, maxBytes) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Bytes of response bodies the HTTP cache holds (0 without one).
+    ///
+    /// Contract: `snapshot`.
+    public func httpCacheBytes() -> UInt64 {
+        return OrbRuntime_http_cache_bytes(live())
+    }
+
+    /// Empties the HTTP cache.
+    ///
+    /// Contract: `command`.
+    public func clearHttpCache() {
+        OrbRuntime_clear_http_cache(live())
+    }
+
     /// Milliseconds spent compiling pipelines so far, summed over the
     /// threads that compiled them: translation and the driver's
     /// compiles.

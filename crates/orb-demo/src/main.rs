@@ -3,7 +3,7 @@
 //! features under it.
 //!
 //! `cargo run --release -p orb-demo -- [style URL] [--at lon,lat,zoom[,bearing,pitch]]
-//! [--format mvt|mlt] [--flight flight.json] [--snapshot out.png [--a11y out.json]]`
+//! [--format mvt|mlt] [--flight flight.json] [--cache dir] [--snapshot out.png [--a11y out.json]]`
 //!
 //! Frame counters are shown in the window title. `--flight` flies a loop
 //! of `flyTo` legs until the user takes the camera (the terrain demo:
@@ -11,7 +11,8 @@
 //! web/demo/data/alps-flight.json`). `--snapshot` renders 1024×768
 //! offscreen until everything has loaded, writes a PNG and exits; `--a11y`
 //! also writes the frame's semantic snapshot (plan §13) as JSON.
-//! `--count-frames <seconds>` prints how many frames the window drew in
+//! `--cache <dir>` keeps fetched resources there between runs (the HTTP
+//! cache, 200 MiB). `--count-frames <seconds>` prints how many frames the window drew in
 //! that long after the map first went idle, then exits.
 
 #![forbid(unsafe_code)]
@@ -60,6 +61,8 @@ struct Options {
     count_frames: Option<f64>,
     /// A flight file to fly in a loop (`web/demo/data/alps-flight.json`).
     flight: Option<String>,
+    /// The HTTP cache's directory.
+    cache: Option<String>,
 }
 
 fn options() -> Result<Options, String> {
@@ -72,6 +75,7 @@ fn options() -> Result<Options, String> {
         watch_style: None,
         count_frames: None,
         flight: None,
+        cache: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -102,6 +106,8 @@ fn options() -> Result<Options, String> {
             options.watch_style = Some(args.next().ok_or("--watch-style needs a path")?);
         } else if arg == "--snapshot" {
             options.snapshot = Some(args.next().ok_or("--snapshot needs a path")?);
+        } else if arg == "--cache" {
+            options.cache = Some(args.next().ok_or("--cache needs a directory")?);
         } else if arg == "--a11y" {
             options.a11y = Some(args.next().ok_or("--a11y needs a path")?);
         } else if arg == "--format" {
@@ -171,9 +177,14 @@ fn main() {
     event_loop.run_app(&mut app).expect("event loop failed");
 }
 
-/// HTTP and file fetches, and tile jobs on a thread pool.
-fn native_services(wake: Arc<dyn Fn() + Send + Sync>) -> Services {
-    let fetch = NativeFetch::new();
+/// HTTP and file fetches, through the HTTP cache in `cache` if given, and
+/// tile jobs on a thread pool.
+fn native_services(wake: Arc<dyn Fn() + Send + Sync>, cache: Option<&str>) -> Services {
+    let cache = cache.map(|dir| {
+        orb_host_native::HttpCache::open(std::path::Path::new(dir), 200 << 20)
+            .unwrap_or_else(|e| panic!("--cache {dir}: {e}"))
+    });
+    let fetch = NativeFetch::with_cache(cache);
     let executor = Arc::new(ThreadPool::new("jobs", ThreadPool::default_size()));
     let jobs = PoolJobs::new(fetch.clone(), Arc::new(NativeImageDecode), executor);
     jobs.set_local_glyphs(orb_host_native::SystemFonts::shared());
@@ -260,7 +271,7 @@ impl Offscreen {
         // Two idle frames in a row: the second draws what the first's
         // messages installed.
         let mut was_idle = false;
-        let (mut first_draw, mut compiled) = (None, None);
+        let (mut first_draw, mut compiled, mut loaded) = (None, None, None);
         // The longest frame while pipelines compiled: compiles never block
         // one (plan §8.4).
         let mut longest = 0.0f64;
@@ -281,15 +292,21 @@ impl Offscreen {
             if compiled.is_none() && report.frame.pipelines_pending == 0 && report.tiles_drawn > 0 {
                 compiled = Some(ms());
             }
+            if loaded.is_none() && report.loaded {
+                loaded = Some(ms());
+            }
             if report.idle && was_idle {
                 // Load to the first frame that draws a layer, to the last
-                // pipeline, and to idle (plan §18's pipeline-load gate).
+                // pipeline, to everything placed with fades left (plan §18
+                // row 15's cold open) and to idle (the pipeline-load gate).
                 eprintln!(
-                    "orb-demo: load: first draw {:.0} ms, pipelines {:.0} ms, idle {:.0} ms; \
+                    "orb-demo: load: first draw {:.0} ms, pipelines {:.0} ms, loaded {:.0} ms, \
+                     idle {:.0} ms; \
                      longest frame while compiling {longest:.1} ms; \
                      {} pipelines in {:.0} ms of compile threads",
                     first_draw.unwrap_or(f64::NAN),
                     compiled.unwrap_or(f64::NAN),
+                    loaded.unwrap_or(f64::NAN),
                     ms(),
                     this.gpu.pipelines_created(),
                     this.gpu.pipeline_time().as_secs_f64() * 1000.0,
@@ -334,7 +351,7 @@ impl Offscreen {
             sample_count: 1,
             mip_levels: 1,
         });
-        let services = native_services(Arc::new(|| {}));
+        let services = native_services(Arc::new(|| {}), options.cache.as_deref());
         let mut map = Map::new(services, camera(options));
         // Snapshots use the same white backing as the native demo window.
         map.set_clear_color([1.0; 4]);
@@ -545,9 +562,12 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        let services = native_services(Arc::new(move || {
-            let _ = proxy.send_event(Wake::Data);
-        }));
+        let services = native_services(
+            Arc::new(move || {
+                let _ = proxy.send_event(Wake::Data);
+            }),
+            options.cache.as_deref(),
+        );
         let initial = camera(options);
         let mut map = Map::new(services, initial);
         // The opaque swapchain has no page behind transparent style pixels.
@@ -965,6 +985,7 @@ mod tests {
             watch_style: None,
             count_frames: None,
             flight: None,
+            cache: None,
         }
     }
 
@@ -1267,6 +1288,7 @@ mod tests {
             watch_style: None,
             count_frames: None,
             flight: None,
+            cache: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let projection = offscreen.map.projection();
@@ -1299,6 +1321,7 @@ mod tests {
             watch_style: None,
             count_frames: None,
             flight: None,
+            cache: None,
         };
         let (_, report, _) = super::Offscreen::load(&at(12.0)).unwrap();
         let used = report.scene;
@@ -1504,9 +1527,12 @@ mod tests {
     fn idle_maps_ask_for_no_frames() {
         let wakes = Arc::new(AtomicUsize::new(0));
         let wake_count = wakes.clone();
-        let services = super::native_services(Arc::new(move || {
-            wake_count.fetch_add(1, Ordering::SeqCst);
-        }));
+        let services = super::native_services(
+            Arc::new(move || {
+                wake_count.fetch_add(1, Ordering::SeqCst);
+            }),
+            None,
+        );
         let mut offscreen = super::Offscreen::load(&tokyo(15.0)).unwrap().0;
         offscreen.map = super::Map::new(services, super::camera(&tokyo(15.0)));
         super::load_style(&mut offscreen.map, &tokyo(15.0)).unwrap();
@@ -1554,6 +1580,7 @@ mod tests {
             watch_style: None,
             count_frames: None,
             flight: None,
+            cache: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let executor = Arc::new(HeldExecutor::default());
@@ -1656,6 +1683,7 @@ mod tests {
                 watch_style: None,
                 count_frames: None,
                 flight: None,
+                cache: None,
             };
             let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
             if patterned {
@@ -1718,6 +1746,7 @@ mod tests {
             watch_style: None,
             count_frames: None,
             flight: None,
+            cache: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         for (bearing, pitch) in [(31.0, 61.0), (10.0, 40.0)] {
@@ -1767,6 +1796,7 @@ mod tests {
             watch_style: None,
             count_frames: None,
             flight: None,
+            cache: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let style = r##"{"version": 8,
@@ -1832,6 +1862,7 @@ mod tests {
                 watch_style: None,
                 count_frames: None,
                 flight: None,
+                cache: None,
             };
             let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
             let fetch = super::NativeFetch::new();
@@ -1895,6 +1926,7 @@ mod tests {
             watch_style: None,
             count_frames: None,
             flight: None,
+            cache: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let fetch = super::NativeFetch::new();
@@ -1970,6 +2002,7 @@ mod tests {
             watch_style: None,
             count_frames: None,
             flight: None,
+            cache: None,
         };
         let (mut offscreen, _, _) = super::Offscreen::load(&options).unwrap();
         let fetch = super::NativeFetch::new();
@@ -2033,6 +2066,7 @@ mod tests {
                 watch_style: None,
                 count_frames: None,
                 flight: None,
+                cache: None,
             };
             let path =
                 std::env::temp_dir().join(format!("orbis-{encoding}-{}.png", std::process::id()));

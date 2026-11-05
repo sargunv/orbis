@@ -644,6 +644,33 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeSetPipelineCacheDir(
     }
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeSetHttpCache(JNIEnv* env, jclass cls, jlong self, jbyteArray dir, jlong maxBytes) {
+    (void)env;
+    (void)cls;
+    jbyte* dir_bytes = (*env)->GetByteArrayElements(env, dir, NULL);
+    if (!dir_bytes) return;
+    DiplomatStringView dir_view = { (const char*)dir_bytes, (size_t)(*env)->GetArrayLength(env, dir) };
+    OrbRuntime_set_http_cache_result result = OrbRuntime_set_http_cache((OrbRuntime*)(intptr_t)self, dir_view, (uint64_t)(maxBytes));
+    (*env)->ReleaseByteArrayElements(env, dir, dir_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeHttpCacheBytes(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint64_t result = OrbRuntime_http_cache_bytes((const OrbRuntime*)(intptr_t)self);
+    return (jlong)(result);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeClearHttpCache(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbRuntime_clear_http_cache((OrbRuntime*)(intptr_t)self);
+}
+
 JNIEXPORT jdouble JNICALL Java_dev_orbis_OrbisNative_orbRuntimePipelineMs(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;

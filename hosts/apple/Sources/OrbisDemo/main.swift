@@ -164,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let runtime: OrbRuntime
         do {
             runtime = try OrbRuntime.create(jobThreads: 0)
+            try runtime.setHttpCache(dir: httpCacheDir(), maxBytes: 100 << 20)
         } catch {
             fatalError("no GPU device: \(error)")
         }
@@ -190,11 +191,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
+/// Where the app keeps fetched resources between runs.
+func httpCacheDir() -> String {
+    FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("dev.orbis.demo/http").path
+}
+
 /// Renders into a texture until idle and writes a PNG with the pin.
 @MainActor
 func snapshot(to path: String, style: String?) throws {
     let started = Date()
     let runtime = try OrbRuntime.create(jobThreads: 0)
+    try runtime.setHttpCache(dir: httpCacheDir(), maxBytes: 100 << 20)
     let deviceMs = Date().timeIntervalSince(started) * 1000
     let (width, height, scale) = (1024, 768, 2.0)
     let target = OrbTarget.createTexture(

@@ -39,11 +39,11 @@ node, pnpm, a JDK, Gradle, kotlinc, CMake, Go and devices-cli); run
 | `cargo xtask apple [--test] [--ios-sim[=name]]` | `hosts/apple/OrbisC.xcframework` (macOS, iOS, iOS simulator) and the Swift package; `--test` runs the Swift binding scenario; `--ios-sim` builds the iOS app and runs it on a simulator (whose Metal lacks indirect draws: it reports that, M4's Compat tier is its path) |
 | `hosts/apple/.build/release/OrbisDemo [--snapshot out.png] [tokyo \| style]` | macOS reference app (after `cargo xtask apple`): live Liberty as on the web, `tokyo` for the extract; `--snapshot` renders into a texture target, prints timings and pipeline counts |
 | `mise x -- cargo xtask capi --test` | the C library in `target/capi` (static lib, headers, pkg-config, CMake), the C smoke test through both, and the Kotlin binding scenario on the JVM |
-| `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]]` | native demo window |
+| `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]] [--cache <dir>]` | native demo window; `--cache` keeps fetches in an HTTP cache there |
 | `… -p orb-demo -- --snapshot out.png` | render offscreen until idle, write a PNG |
 | `… -p orb-demo -- file://$PWD/web/demo/data/alps.json --flight web/demo/data/alps-flight.json` | the terrain flight over the Alps (web: `?style=alps&flight`) |
 | `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/pkg` |
-| `pnpm -C web snapshot out.png '#z/lat/lon' [--thread=main\|worker] [--style=<key>\|URL] [--size=WxH]` | the map app on the Tokyo extract (the site defaults to the live map) in headless Chromium, screenshot |
+| `pnpm -C web snapshot out.png '#z/lat/lon' [--thread=main\|worker] [--style=<key>\|URL] [--size=WxH] [--reopen[=offline]]` | the map app on the Tokyo extract (the site defaults to the live map) in headless Chromium, screenshot; `--reopen` times a reload from the HTTP cache, `=offline` with the network cut |
 | `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web dev` | the map app with its style editor at `/orbis/?style=playground&edit`; writes accepted styles and hover state to that file (dev only) |
 | `cargo run --release -p orb-demo -- file://$PWD/web/demo/data/playground.json --watch-style <same path>` | native viewer beside the style editor; follows that file as diffed transactions; logs generation, frames and edit ms |
 | `pnpm -C web playground` | headless style editor checks (controls, JSON, hover, frames per edit) in main and worker modes |

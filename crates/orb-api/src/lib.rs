@@ -38,7 +38,8 @@ pub use target::Target;
 
 use device::Device;
 use orb_hal_wgpu::WgpuGpu;
-use orb_host_native::{NativeFetch, NativeImageDecode};
+pub use orb_host_native::CacheStats;
+use orb_host_native::{HttpCache, NativeFetch, NativeImageDecode};
 use orb_jobs::ThreadPool;
 
 /// Why a call failed.
@@ -126,7 +127,9 @@ struct Shared {
     generation: std::cell::Cell<u64>,
     /// The crash sentinel's marker while armed.
     sentinel: RefCell<Option<PathBuf>>,
-    fetch: Arc<NativeFetch>,
+    /// Fetches for maps made from now on: through the HTTP cache once
+    /// [`Runtime::set_http_cache`] opens one.
+    fetch: RefCell<Arc<NativeFetch>>,
     executor: Arc<ThreadPool>,
     images: orb_runtime::Images,
     /// The gesture and animation clock's origin.
@@ -179,7 +182,7 @@ impl Runtime {
                 selection: RefCell::new(selection),
                 generation: std::cell::Cell::new(0),
                 sentinel: RefCell::new(sentinel),
-                fetch: NativeFetch::new(),
+                fetch: RefCell::new(NativeFetch::new()),
                 executor: Arc::new(ThreadPool::new("jobs", threads)),
                 images: Default::default(),
                 started: Instant::now(),
@@ -313,10 +316,34 @@ impl Runtime {
         let Some(data) = data else {
             return Ok(());
         };
-        write_atomically(file, &data)
+        orb_host_native::write_atomically(file, &data)
             .map_err(|e| Error::Native(format!("{}: {e}", file.display())))?;
         *saved = made;
         Ok(())
+    }
+
+    /// Keeps fetched styles, tiles, glyphs and sprites in `dir` between
+    /// runs, up to `max_bytes`, least recently used out first: fresh ones
+    /// load without the network, stale ones are revalidated, and either
+    /// loads when the network fails, so a map seen before opens offline.
+    /// Applies to maps made after the call.
+    pub fn set_http_cache(&self, dir: &Path, max_bytes: u64) -> Result<(), Error> {
+        let cache = HttpCache::open(dir, max_bytes)
+            .map_err(|e| Error::InvalidArgument(format!("{}: {e}", dir.display())))?;
+        *self.shared.fetch.borrow_mut() = NativeFetch::with_cache(Some(cache));
+        Ok(())
+    }
+
+    /// What the HTTP cache holds, if there is one.
+    pub fn http_cache_stats(&self) -> Option<CacheStats> {
+        self.shared.fetch.borrow().cache().map(|c| c.stats())
+    }
+
+    /// Empties the HTTP cache.
+    pub fn clear_http_cache(&self) {
+        if let Some(cache) = self.shared.fetch.borrow().cache() {
+            cache.clear();
+        }
     }
 
     /// A surface on a window or view that wgpu accepts safely (a winit
@@ -377,15 +404,16 @@ impl Runtime {
     }
 
     fn services(&self, wake: Arc<dyn Fn() + Send + Sync>) -> orb_runtime::Services {
+        let fetch = self.shared.fetch.borrow().clone();
         let jobs = orb_runtime::PoolJobs::new(
-            self.shared.fetch.clone(),
+            fetch.clone(),
             Arc::new(NativeImageDecode),
             self.shared.executor.clone(),
         );
         jobs.set_local_glyphs(orb_host_native::SystemFonts::shared());
         jobs.set_font_files(Arc::new(orb_host_native::FontFileFaces::new()));
         orb_runtime::Services {
-            fetch: self.shared.fetch.clone(),
+            fetch,
             clock: Arc::new(orb_host_native::NativeClock::default()),
             image_decode: Arc::new(NativeImageDecode),
             images: self.shared.images.clone(),
@@ -405,52 +433,4 @@ impl Runtime {
 pub enum DeviceRef<'a> {
     Modern(&'a WgpuGpu),
     Compat(&'a orb_hal_gl::egl::EglContext),
-}
-
-/// Writes `data` to a file of its own beside `path`, then renames it over
-/// `path`: readers see the old file or the new one whole, and writers in
-/// other runtimes or processes never share the temporary file.
-fn write_atomically(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut name = path.file_name().unwrap_or_default().to_owned();
-    name.push(format!(".{}.{n}.partial", std::process::id()));
-    let partial = path.with_file_name(name);
-    let written = std::fs::write(&partial, data).and_then(|()| std::fs::rename(&partial, path));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&partial);
-    }
-    written
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn concurrent_writers_publish_whole_files() {
-        let dir = std::env::temp_dir().join(format!("orb-api-write-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("cache");
-        let writers: Vec<_> = (0..8u8)
-            .map(|i| {
-                let path = path.clone();
-                std::thread::spawn(move || {
-                    for _ in 0..20 {
-                        super::write_atomically(&path, &vec![i; 64 << 10]).unwrap();
-                    }
-                })
-            })
-            .collect();
-        for writer in writers {
-            writer.join().unwrap();
-        }
-        let data = std::fs::read(&path).unwrap();
-        assert_eq!(data.len(), 64 << 10);
-        assert!(data.iter().all(|&b| b == data[0]), "bytes of two writers");
-        assert_eq!(
-            std::fs::read_dir(&dir).unwrap().count(),
-            1,
-            "partial files left"
-        );
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
 }

@@ -201,6 +201,15 @@ internal object OrbisNative {
     external fun orbRuntimeSetPipelineCacheDir(self: Long, dir: ByteArray): Unit
 
     @JvmStatic
+    external fun orbRuntimeSetHttpCache(self: Long, dir: ByteArray, maxBytes: Long): Unit
+
+    @JvmStatic
+    external fun orbRuntimeHttpCacheBytes(self: Long): Long
+
+    @JvmStatic
+    external fun orbRuntimeClearHttpCache(self: Long): Unit
+
+    @JvmStatic
     external fun orbRuntimePipelineMs(self: Long): Double
 
     @JvmStatic

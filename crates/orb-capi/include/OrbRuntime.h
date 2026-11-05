@@ -39,6 +39,13 @@ uint32_t OrbRuntime_pipelines_created(const OrbRuntime* self);
 typedef struct OrbRuntime_set_pipeline_cache_dir_result {union { OrbError err;}; bool is_ok;} OrbRuntime_set_pipeline_cache_dir_result;
 OrbRuntime_set_pipeline_cache_dir_result OrbRuntime_set_pipeline_cache_dir(OrbRuntime* self, DiplomatStringView dir);
 
+typedef struct OrbRuntime_set_http_cache_result {union { OrbError err;}; bool is_ok;} OrbRuntime_set_http_cache_result;
+OrbRuntime_set_http_cache_result OrbRuntime_set_http_cache(OrbRuntime* self, DiplomatStringView dir, uint64_t max_bytes);
+
+uint64_t OrbRuntime_http_cache_bytes(const OrbRuntime* self);
+
+void OrbRuntime_clear_http_cache(OrbRuntime* self);
+
 double OrbRuntime_pipeline_ms(const OrbRuntime* self);
 
 void OrbRuntime_pipeline_timings(const OrbRuntime* self, DiplomatWrite* write);

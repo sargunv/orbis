@@ -194,6 +194,8 @@ async function load(next, { camera }) {
       camera,
       constraints: next.scene.constraints,
       feel: feel(),
+      // Seen places open offline from the HTTP cache; `?cache=off` skips it.
+      httpCache: params().get("cache") === "off" ? undefined : { maxBytes: 200 << 20 },
     });
   } catch (e) {
     app.dataset.map = "error";

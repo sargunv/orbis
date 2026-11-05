@@ -18,6 +18,7 @@ fn tokyo() -> Offscreen {
         watch_style: None,
         count_frames: None,
         flight: None,
+        cache: None,
     };
     let (mut offscreen, _, _) = Offscreen::load(&options).unwrap();
     settle(&mut offscreen);
@@ -94,6 +95,7 @@ fn assert_matches_fresh(offscreen: &mut Offscreen) {
         watch_style: None,
         count_frames: None,
         flight: None,
+        cache: None,
     })
     .unwrap()
     .0;

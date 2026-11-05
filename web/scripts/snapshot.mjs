@@ -4,6 +4,13 @@
 //   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]] [--thread=main|worker]
 //     [--format=mvt|mlt] [--style=<key>|URL]
 //     [--size=WxH] [--compare=reference-map.png] [--renderer=webgpu|webgl2] [--lose=<ms> [--switch]]
+//     [--reopen[=offline]] [--cache=off]
+//
+// `--reopen` loads the page again once it is idle, in the same browser
+// profile, and times the reopen from the HTTP cache (plan §18 row 15);
+// `=offline` fails every request but the demo server's (the browser logs
+// the stale entries' failed revalidations; they aren't counted as errors).
+// `--cache=off` opens without the HTTP cache.
 //
 // `--lose` loses the GPU that long after the map loads and waits for it to
 // recover (plan §8.8); with `--switch`, onto WebGL2.
@@ -22,6 +29,8 @@ const style = args.find((a) => a.startsWith("--style="))?.slice("--style=".lengt
 const renderer = args.find((a) => a.startsWith("--renderer="))?.slice("--renderer=".length);
 const lose = args.find((a) => a.startsWith("--lose="))?.slice("--lose=".length);
 const switchTier = args.includes("--switch");
+const reopen = args.find((a) => a.startsWith("--reopen"));
+let offline = false;
 const [width, height] = (args.find((a) => a.startsWith("--size="))?.slice(7) ?? "1024x768").split("x").map(Number);
 const [out = "snapshot.png", hash = ""] = args.filter((a) => !a.startsWith("--"));
 
@@ -31,6 +40,7 @@ if (thread) params.set("thread", thread);
 if (renderer) params.set("renderer", renderer);
 if (lose) params.set("lose", lose);
 if (switchTier) params.set("switch", "");
+if (args.includes("--cache=off")) params.set("cache", "off");
 // Snapshots draw the committed extract unless told otherwise.
 if (style) params.set("style", style);
 else params.set("style", `tokyo-${format ?? "mvt"}`);
@@ -42,17 +52,30 @@ try {
   const page = await browser.newPage({ viewport: { width, height } });
   let warnings = 0;
   page.on("console", (m) => {
+    if (offline && m.text().includes("ERR_INTERNET_DISCONNECTED")) return;
     if (["error", "warning"].includes(m.type())) { warnings++; console.error(`page: ${m.text()}`); }
     else if (m.type() === "info") console.log(`page: ${m.text()}`);
   });
   page.on("pageerror", (e) => console.error(`page: ${e.message}`));
-  await page.goto(url);
-  const started = Date.now();
-  await page.waitForFunction(() => {
+  const idle = () => page.waitForFunction(() => {
     const app = document.getElementById("app")?.dataset;
     return app?.map === "error" || (app?.map === "idle"
       && (!new URLSearchParams(location.search).has("lose") || app.recovered === "true"));
   }, null, { timeout: 60_000 });
+  let started = Date.now();
+  await page.goto(url);
+  await idle();
+  console.log(`opened: ${Date.now() - started} ms to idle`);
+  if (reopen) {
+    if (reopen === "--reopen=offline") {
+      offline = true;
+      await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
+    }
+    started = Date.now();
+    await page.reload();
+    await idle();
+    console.log(`reopened${reopen === "--reopen=offline" ? " offline" : ""}: ${Date.now() - started} ms to idle`);
+  }
   await page.waitForTimeout(250);
   const stats = await page.evaluate(() => {
     const s = globalThis.app.map?.stats;

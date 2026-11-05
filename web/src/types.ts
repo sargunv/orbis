@@ -112,6 +112,13 @@ export interface MapOptions {
   /** How many job workers lay out tiles; by default
    * `clamp(hardwareConcurrency − 2, 1, 4)` (plan §7.1). */
   jobWorkers?: number;
+  /**
+   * Keeps fetched styles, tiles, glyphs and sprites in the origin's Cache
+   * API (cache "orbis-http"), up to `maxBytes`, oldest out first: fresh
+   * ones load without the network and any loads when it fails, so a map
+   * seen before opens offline. Off by default; `clearHttpCache()` empties it.
+   */
+  httpCache?: { maxBytes: number };
 }
 
 /** The topmost feature under a point, from the published picking index. */
