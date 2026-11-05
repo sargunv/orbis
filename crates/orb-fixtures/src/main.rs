@@ -592,9 +592,14 @@ fn render_native(
             Err(e) => diagnostics.push(format!("operation {op}: {e}")),
         }
     }
-    // GL JS reads a fading test's pixels after its last operation; the
-    // rest after one more settle.
-    let last = if fades { Next::Continue } else { Next::Idle };
+    // GL JS reads a fading test's pixels after its last operation, and a
+    // transition's where its waits left it (its harness's time moves only
+    // with them); the rest after one more settle.
+    let last = if fades || map.transitioning() {
+        Next::Continue
+    } else {
+        Next::Idle
+    };
     if settled && settle(map, last, reasons, diagnostics, &mut frames).is_some() {
         // Draw the state installed by the last frame's messages.
         let final_report = map.render(gpu, target, format, viewport, metadata.pixel_ratio as f32);

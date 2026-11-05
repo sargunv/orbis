@@ -357,6 +357,8 @@ pub struct Map {
     pub(crate) surface: Surface,
     /// The scene document's lights, which replace the style's.
     lights: Option<orb_v8::Lights>,
+    /// Paint edits easing in (decision 0031).
+    pub(crate) transitions: crate::transitions::Transitions,
     /// The latest `load_style_url` request; earlier ones are ignored.
     style_request: u64,
     generation: u64,
@@ -542,6 +544,7 @@ impl Map {
             camera,
             surface: Surface::default(),
             lights: None,
+            transitions: Default::default(),
             style_request: 0,
             generation: 0,
             tile_generation: 0,
@@ -734,6 +737,11 @@ impl Map {
             }
             None => self.camera.elevation = 0.0,
         }
+    }
+
+    /// Whether a paint transition is running (decision 0031).
+    pub fn transitioning(&self) -> bool {
+        self.transitions.running()
     }
 
     /// What the map did since the last call: style and source data, load,
@@ -1162,11 +1170,18 @@ impl Map {
                     plan.pattern(n).is_some()
                         || matches!(&plan.style.layers[n.layer].kind, LayerKind::Line(l) if l.paint.dasharray.as_constant() != Some(&None))
                 });
+            // Paint transitions write from the style overlaid with their
+            // eased values, and once more when they end.
+            let worker = Arc::clone(&style.worker);
+            let overlay = self.transitions.overlay(worker.plan(), zoom, now);
+            if overlay.is_some() || std::mem::take(&mut self.transitions.ran) {
+                style.painted = None;
+            }
             let mut images = self.services.images.0.lock().expect("images poisoned");
             write_paint(
                 gpu,
                 renderer,
-                style,
+                (style, overlay.as_ref().unwrap_or(worker.plan())),
                 (zoom, self.camera.bearing),
                 crossfade,
                 images.atlas.as_mut().expect("initialized"),
@@ -1226,7 +1241,8 @@ impl Map {
             && self.waiting.is_empty()
             && self.pending.is_empty()
             && labels_settled;
-        report.idle = report.loaded && !fading && !self.labels.fading(now);
+        report.idle =
+            report.loaded && !fading && !self.labels.fading(now) && !self.transitions.running();
         if let Some(style) = &self.style {
             let plan = style.worker.plan();
             for index in std::mem::take(&mut self.events.sources) {
@@ -3439,7 +3455,7 @@ fn fog_blend_opacity(pitch: f64) -> f32 {
 fn write_paint(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
-    style: &mut LoadedStyle,
+    (style, plan): (&mut LoadedStyle, &StylePlan),
     (zoom, bearing): (f64, f64),
     crossfade: Crossfade,
     atlas: &mut ImageAtlas,
@@ -3450,7 +3466,6 @@ fn write_paint(
     }
     style.painted = Some((zoom, bearing));
     style.painted_fade = Some(crossfade);
-    let plan = style.worker.plan();
     style.programs.prepare(gpu, renderer, plan);
     for (index, node) in plan.nodes.iter().enumerate() {
         let state = style.nodes.entry(node.key).or_default();

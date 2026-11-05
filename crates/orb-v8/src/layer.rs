@@ -26,6 +26,9 @@ pub struct Layer {
     pub maxzoom: f64,
     pub visibility: Visibility,
     pub kind: LayerKind,
+    /// Paint properties' own `*-transition`, by property name; the rest
+    /// take the style's.
+    pub transitions: Vec<(String, crate::TransitionOverride)>,
 }
 
 impl Layer {
@@ -419,11 +422,7 @@ fn section<'a>(
                 continue;
             }
             match m.key.strip_suffix("-transition") {
-                Some(base) if key == "paint" && known(base) => cx.warn(
-                    member_path,
-                    m.key_span,
-                    "transitions are not supported yet and are ignored",
-                ),
+                Some(base) if key == "paint" && known(base) => {}
                 _ => cx.warn(
                     member_path,
                     m.key_span,
@@ -1054,11 +1053,30 @@ pub(crate) fn parse_layer(
             }
         }
     };
+    let transitions = paint
+        .members
+        .iter()
+        .filter_map(|m| {
+            let name = m.key.strip_suffix("-transition")?;
+            match crate::paint::parse_transition(&m.value) {
+                Some(t) => Some((name.to_string(), t)),
+                None => {
+                    cx.warn(
+                        format!("{}.{}", paint.path, m.key),
+                        m.key_span,
+                        "expected {\"duration\", \"delay\"} in milliseconds",
+                    );
+                    None
+                }
+            }
+        })
+        .collect();
     (cx.diagnostics.errors.len() == errors).then_some(Layer {
         id,
         minzoom,
         maxzoom,
         visibility,
         kind,
+        transitions,
     })
 }

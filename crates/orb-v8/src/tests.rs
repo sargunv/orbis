@@ -284,7 +284,6 @@ fn warnings_for_what_is_not_supported() {
         warnings,
         [
             "layers[0].layout.text-wrap: unknown property \"text-wrap\"",
-            "layers[1].paint.fill-color-transition: transitions are not supported yet and are ignored",
             "layers[1].paint.fill-emissive: unknown property \"fill-emissive\"",
         ]
     );
@@ -334,19 +333,32 @@ fn extrusion_paint_and_light_are_typed() {
 }
 
 #[test]
-fn zero_duration_transitions_are_honoured() {
-    let text =
-        |t: &str| format!(r#"{{"version": 8, "transition": {t}, "sources": {{}}, "layers": []}}"#);
-    assert!(
-        parse(&text(r#"{"duration": 0}"#))
-            .unwrap()
-            .warnings
-            .is_empty()
-    );
+fn transitions_parse_and_merge_over_the_style() {
+    let style = parse(
+        r#"{"version": 8, "transition": {"duration": 500}, "sources": {}, "layers": [
+            {"id": "b", "type": "background", "paint": {"background-color": "red",
+                "background-color-transition": {"delay": 100}}}]}"#,
+    )
+    .unwrap();
+    assert!(style.warnings.is_empty(), "{:?}", style.warnings);
     assert_eq!(
-        parse(&text(r#"{"duration": 300}"#)).unwrap().warnings.len(),
-        1
+        style.transition,
+        crate::Transition {
+            duration: 500.0,
+            delay: 0.0
+        }
     );
+    let (name, t) = &style.layers[0].transitions[0];
+    assert_eq!(name, "background-color");
+    assert_eq!(
+        t.over(style.transition),
+        crate::Transition {
+            duration: 500.0,
+            delay: 100.0
+        }
+    );
+    let default = parse(r#"{"version": 8, "sources": {}, "layers": []}"#).unwrap();
+    assert_eq!(default.transition, crate::Transition::default());
 }
 
 #[test]

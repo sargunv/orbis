@@ -14,8 +14,9 @@ use orb_render::{Curve, Family};
 use orb_style::CostModel;
 use orb_v8::{Color, LayerKind, Property, SourceKind, Style, Value};
 
-/// A style ready to render: one revision of it.
-#[derive(Debug)]
+/// A style ready to render: one revision of it. Clones are shallow, as a
+/// frame's paint transitions overlay it.
+#[derive(Clone, Debug)]
 pub(crate) struct StylePlan {
     /// The map's style version this plan is of.
     pub(crate) revision: u64,
@@ -48,7 +49,7 @@ pub enum ImageKind {
 }
 
 /// One style layer drawn as a render node.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct NodePlan {
     /// Index into the style's layers.
     pub(crate) layer: usize,
@@ -58,7 +59,7 @@ pub(crate) struct NodePlan {
     /// Stable across revisions.
     pub(crate) key: u32,
     /// The paint the GPU interprets, if any.
-    pub(crate) gpu: Option<NodeGpu>,
+    pub(crate) gpu: Option<Arc<NodeGpu>>,
 }
 
 /// A render node's bytecode paint (plan §11.3 `GpuBytecode`): per paint
@@ -364,10 +365,10 @@ impl StylePlan {
         };
         let gpu: Vec<Option<NodeGpu>> = plan.nodes.iter().map(|n| plan.gpu(n, cost)).collect();
         for (node, gpu) in plan.nodes.iter_mut().zip(gpu) {
-            node.gpu = gpu;
+            node.gpu = gpu.map(Arc::new);
         }
         for node in &plan.nodes {
-            let mask = node.gpu.as_ref().map_or(0, NodeGpu::mask);
+            let mask = node.gpu.as_deref().map_or(0, NodeGpu::mask);
             if plan
                 .paint_properties(node)
                 .iter()
@@ -437,7 +438,7 @@ impl StylePlan {
 
     /// Bit `i`: the node interprets paint slot `i` on the GPU.
     pub(crate) fn bytecode_mask(&self, node: &NodePlan) -> u32 {
-        node.gpu.as_ref().map_or(0, NodeGpu::mask)
+        node.gpu.as_deref().map_or(0, NodeGpu::mask)
     }
 
     /// Words per feature of the node's property rows: the family's, then

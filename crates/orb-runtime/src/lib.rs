@@ -32,6 +32,7 @@ mod terrain;
 #[cfg(test)]
 mod testing;
 mod tile;
+mod transitions;
 
 pub use events::MapEvent;
 

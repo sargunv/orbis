@@ -301,6 +301,7 @@ impl TileWorker {
             bearing: 0.0,
             pitch: 0.0,
             roll: 0.0,
+            transition: Default::default(),
             sprites: Vec::new(),
             glyphs: update.glyphs.clone(),
             font_faces: update.font_faces.clone(),

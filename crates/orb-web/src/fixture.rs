@@ -360,7 +360,13 @@ impl FixtureRenderer {
                 Err(e) => output.warnings.push(format!("operation {op}: {e}")),
             }
         }
-        let last = if fades { Next::Continue } else { Next::Idle };
+        // A transition reads where the waits left it, as GL JS's harness
+        // time moves only with them.
+        let last = if fades || map.transitioning() {
+            Next::Continue
+        } else {
+            Next::Idle
+        };
         if settled && settle(&mut map, last, &mut gpu, &mut output).await? {
             // Draw the state installed by the last frame's messages.
             let report = map.render(gpu.gpu(), target, format, viewport, pixel_ratio);

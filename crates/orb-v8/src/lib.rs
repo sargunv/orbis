@@ -16,6 +16,7 @@ mod geojson;
 mod layer;
 mod light;
 pub mod lights;
+mod paint;
 mod property;
 mod scene;
 mod sky;
@@ -38,6 +39,7 @@ pub use layer::{
 pub use lights::{AmbientLight, Direction, DirectionalLight, Level, Lights, parse_time};
 pub use orb_expr::json::Span;
 pub use orb_expr::{Color, Diagnostic, Filter, Kind, PropertyExpression, Value};
+pub use paint::{PaintMut, PaintRef, PaintValue, Transition, TransitionOverride};
 pub use property::{
     Alignment, Anchor, AnchorOffsets, BoundProperty, DemEncoding, Encoding, Enum, HeightAnchor,
     HillshadeMethod, IconTextFit, IlluminationAnchor, LineCap, LineJoin, Overlap, Padding,
@@ -66,6 +68,8 @@ pub struct Style {
     pub pitch: f64,
     /// The default camera's roll about the view axis, degrees.
     pub roll: f64,
+    /// How paint changes animate unless a property says otherwise.
+    pub transition: Transition,
     pub sprites: Vec<Sprite>,
     /// The glyph PBF URL template, with `{fontstack}` and `{range}`.
     pub glyphs: Option<String>,
@@ -156,7 +160,7 @@ pub fn parse_with_state(
 }
 
 /// Root keys v8 defines that Orbis does not model yet.
-const UNMODELED_ROOT: &[&str] = &["centerAltitude", "transition"];
+const UNMODELED_ROOT: &[&str] = &["centerAltitude"];
 
 fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -> Option<Style> {
     let root = cx.object(doc, "")?;
@@ -165,8 +169,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             "version" | "name" | "metadata" | "center" | "zoom" | "bearing" | "pitch" | "roll"
             | "sources" | "layers" | "sprite" | "glyphs" | "font-faces" | "light" | "state"
             | "sky" | "terrain" | "projection" => {}
-            // Edits apply at once: what a zero-duration transition asks.
-            "transition" if m.value.get("duration").and_then(Json::as_f64) == Some(0.0) => {}
+            "transition" => {}
             key if UNMODELED_ROOT.contains(&key) => {
                 cx.warn(
                     key,
@@ -197,6 +200,19 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         .get("roll")
         .and_then(|r| cx.number(r, "roll"))
         .unwrap_or(0.0);
+    let transition = match doc.get("transition") {
+        None => Transition::default(),
+        Some(json) => paint::parse_transition(json)
+            .map(|t| t.over(Transition::default()))
+            .unwrap_or_else(|| {
+                cx.warn(
+                    "transition",
+                    json.span,
+                    "expected {\"duration\", \"delay\"} in milliseconds",
+                );
+                Transition::default()
+            }),
+    };
 
     let sprites = sprite::parse(cx, doc.get("sprite"));
     let glyphs = doc.get("glyphs").and_then(|g| cx.string(g, "glyphs"));
@@ -248,6 +264,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         bearing,
         pitch,
         roll,
+        transition,
         sprites,
         glyphs,
         font_faces: font_faces::parse(cx, doc.get("font-faces")),

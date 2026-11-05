@@ -50,6 +50,14 @@ impl Color {
         }
     }
 
+    /// `self` to `other` by `t`, in premultiplied components as the style
+    /// spec interpolates colours.
+    pub fn mix(&self, other: &Self, t: f64) -> Self {
+        let [a, b] = [self.premultiplied, other.premultiplied];
+        let at = |i: usize| f64::from(a[i]) + (f64::from(b[i]) - f64::from(a[i])) * t;
+        Self::from_premultiplied(at(0), at(1), at(2), at(3))
+    }
+
     /// Parses a CSS colour: a keyword (including `transparent`), hex with 3,
     /// 4, 6 or 8 digits, `rgb()`/`rgba()` or `hsl()`/`hsla()` in comma or
     /// space syntax. `None` if the string is not a colour.

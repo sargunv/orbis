@@ -151,6 +151,35 @@ impl Map {
         style.worker = Arc::clone(&worker);
         let plan = worker.plan();
 
+        // Paint changes ease from the property before the edit.
+        let (now, zoom) = (self.services.clock.now(), self.zoom());
+        let old_plan = old.plan();
+        for change in &patch.changes {
+            let Change::Paint { layer, name, .. } = change else {
+                continue;
+            };
+            let index =
+                |plan: &crate::style::StylePlan| plan.layer_keys.iter().position(|k| *k == layer.0);
+            let (Some(before), Some(after)) = (index(old_plan), index(plan)) else {
+                continue;
+            };
+            let new = &plan.style.layers[after];
+            let transition = new
+                .transitions
+                .iter()
+                .find(|(n, _)| n == name)
+                .map_or(plan.style.transition, |(_, t)| {
+                    t.over(plan.style.transition)
+                });
+            self.transitions.start(
+                &new.id,
+                name,
+                old_plan.style.layers[before].kind.paint(name),
+                transition,
+                (now, zoom),
+            );
+        }
+
         // Sources, by key: removed ones leave the scene next frame.
         let old_keys: Vec<u32> = old.plan().sources.iter().map(|s| s.key).collect();
         let mut old_sources: Vec<Option<_>> = std::mem::take(&mut style.sources)

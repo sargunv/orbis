@@ -109,6 +109,9 @@ fn assert_matches_fresh(offscreen: &mut Offscreen) {
 #[test]
 fn uniform_paint_edits_cost_one_frame_and_no_jobs() {
     let mut map = tokyo();
+    // Without transitions, so each edit shows in full at once.
+    edit(&mut map, r#"[["setTransition", {"duration": 0}]]"#);
+    settle(&mut map);
     for commands in [
         r##"[["setPaintProperty", "water", "fill-color", "#ff0000"]]"##,
         r##"[["setPaintProperty", "road_minor", "line-width",

@@ -10,9 +10,6 @@ pub(crate) fn parse_reason(message: &str) -> String {
     if message.starts_with("GeoJSON clustering") {
         return "source:geojson-cluster".into();
     }
-    if message.starts_with("transitions are not supported") {
-        return "transitions".into();
-    }
     let name = message.split('"').nth(1).unwrap_or("diagnostic");
     let category = if message.starts_with("source type") {
         "source"
