@@ -133,6 +133,13 @@ whose content moves in (#100). Before, it was clipped where it landed to
 the tile it came from, so a translate past the tile buffer (a globe at a
 low zoom) left only the pieces that stayed in their own tile.
 
+A drape placement's vertex positions are atlas texels, snapped to the
+middle of the rasterizer's 1/256 grid before they're projected. In f32
+their precision falls with a slot's distance from the atlas origin, and
+which slot a tile gets depends on the map's history, so one-texel fill
+outlines lit other texels in another slot (#84). Snapped, they cover the
+same texels in any slot, whichever rounding the hardware takes.
+
 ### Viewport-anchored hillshades are shaded, not draped
 
 A viewport-anchored hillshade (v8's default anchor) is lit from the

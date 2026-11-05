@@ -157,6 +157,14 @@ fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
     g.on_plane = (tile.globe_flags & 1u) == 0u;
     if g.on_plane {
         g.flat = tile_to_world(tile, p);
+        // A drape placement's positions are atlas texels, whose f32
+        // precision falls with the slot's distance from the atlas origin:
+        // snapped to the rasterizer's 1/256 grid, exact at any slot, they
+        // cover the same texels wherever the slot is, which the map's
+        // history decides (#84).
+        if draped_placement(tile) {
+            g.flat = (floor(g.flat * 256.0) + 0.5) / 256.0;
+        }
     }
     if frame.globe_amount > 0.0 && tile.globe_cells > 0u {
         // A point past the tile (a translated label or fill, a stroke's

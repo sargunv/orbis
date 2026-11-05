@@ -121,7 +121,12 @@ fn fresh_at(runtime: &Runtime, target: &mut Target, style: &str, at: At) -> Vec<
 /// one layer may blend in either order and round apart, even between two
 /// fresh maps. On failure, writes both and their difference to a fresh
 /// directory and names it.
-fn assert_same(name: &str, (gestured, fresh): (Vec<u8>, Vec<u8>)) {
+fn assert_same(name: &str, pair: (Vec<u8>, Vec<u8>)) {
+    assert_within(name, pair, 1);
+}
+
+/// [`assert_same`] to `steps` in a channel.
+fn assert_within(name: &str, (gestured, fresh): (Vec<u8>, Vec<u8>), steps: u8) {
     // A map that loaded nothing draws its background alike both ways.
     let colours: std::collections::HashSet<&[u8]> = fresh.chunks(4).collect();
     if colours.len() <= 64 {
@@ -143,7 +148,7 @@ fn assert_same(name: &str, (gestured, fresh): (Vec<u8>, Vec<u8>)) {
                 a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap(),
             )
         })
-        .filter(|&(_, d)| d > 1)
+        .filter(|&(_, d)| d > steps)
         .collect();
     if differ.is_empty() {
         return;
@@ -163,7 +168,7 @@ fn assert_same(name: &str, (gestured, fresh): (Vec<u8>, Vec<u8>)) {
         .chunks(4)
         .zip(fresh.chunks(4))
         .flat_map(|(a, b)| {
-            let close = a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 1);
+            let close = a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= steps);
             if close {
                 [0, 0, 0, 255]
             } else {
@@ -390,6 +395,65 @@ fn an_alpine_gesture_draws_what_a_fresh_map_does() {
     let end = (Geodetic::new(7.85, 45.95), 12.4, 60.0, 75.0);
     let (alps, _dem) = alps();
     assert_same("alps", both_ways(&alps, start, end, 30));
+}
+
+/// The terrain demo's Alps (live tiles), turned at a pitch of 72° with the
+/// camera never stopping: once loaded, a frame mid-turn draws what a fresh
+/// map at rest at its camera draws, ridges against the sky and every drape
+/// slot's edge. What a slot's filter reads past its tile never depends on
+/// which tile holds the next slot (#84). Labels, which settle by their own
+/// history, are hidden. Needs the network:
+/// `cargo test --release -p orb-api --test path -- --ignored alps`.
+#[test]
+#[ignore = "fetches tiles over the network"]
+fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
+    let data = data();
+    let style = std::fs::read_to_string(data.join("alps.json")).unwrap();
+    let hide = orb_api::Transaction::from_commands(
+        r#"[["setLayoutProperty", "peaks", "visibility", "none"],
+            ["setLayoutProperty", "places", "visibility", "none"]]"#,
+    )
+    .unwrap();
+    let at = |bearing| (Geodetic::new(7.7491, 46.0207), 11.6, bearing, 72.0);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut moved = Map::new(&runtime, MapOptions::default());
+    moved.set_style_json(&style).unwrap();
+    moved.edit(&hide).unwrap();
+    moved.jump_to(&camera(at(-72.0)));
+    settle(&mut moved, &mut target);
+    // Load what the arrival shows, then turn back without waiting.
+    moved.jump_to(&camera(at(-32.0)));
+    settle(&mut moved, &mut target);
+    moved.jump_to(&camera(at(-72.0)));
+    settle(&mut moved, &mut target);
+    for step in 1..10 {
+        moved.jump_to(&camera(at(-72.0 + 4.0 * f64::from(step))));
+        moved.render(&mut target, 0.0).unwrap();
+    }
+    // The camera never stops: it turns half a degree and back each frame
+    // until a frame at the bearing has everything loaded.
+    for frame in 0.. {
+        moved.jump_to(&camera(at(-32.0)));
+        let report = moved.render(&mut target, 0.0).unwrap();
+        if report.is_some_and(|r| r.tiles_loading == 0 && r.loaded) {
+            break;
+        }
+        assert!(frame < 4000, "tiles did not load");
+        moved.jump_to(&camera(at(-31.5)));
+        moved.render(&mut target, 0.0).unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let turned = target.read_pixels().unwrap();
+    drop(moved);
+    let mut fresh = Map::new(&runtime, MapOptions::default());
+    fresh.set_style_json(&style).unwrap();
+    fresh.edit(&hide).unwrap();
+    fresh.jump_to(&camera(at(-32.0)));
+    settle(&mut fresh, &mut target);
+    // The terrain filters several drape texels into a pixel, each of which
+    // may round a step apart (`assert_same`'s translucent pieces): two.
+    assert_within("live-alps", (turned, target.read_pixels().unwrap()), 2);
 }
 
 /// A draped fill whose hovered colour varies with zoom shows the colour of
