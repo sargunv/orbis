@@ -199,20 +199,21 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
     }
 
     // Sources.
-    let old_sources: HashMap<SourceKey, &Source> = doc.source_keys().zip(&old.sources).collect();
+    let old_sources: HashMap<SourceKey, &std::sync::Arc<Source>> =
+        doc.source_keys().zip(&old.sources).collect();
     for entry in &draft.sources {
         match old_sources.get(&entry.key) {
             Some(_) if draft.new_data.contains(&entry.key) => {
                 let (source, w) = crate::parse_source(&entry.id, &entry.json)?;
                 warnings.extend(w);
-                style.sources.push(source);
+                style.sources.push(std::sync::Arc::new(source));
                 changes.push(Change::SourceData(entry.key));
             }
-            Some(source) => style.sources.push((*source).clone()),
+            Some(source) => style.sources.push(std::sync::Arc::clone(source)),
             None => {
                 let (source, w) = crate::parse_source(&entry.id, &entry.json)?;
                 warnings.extend(w);
-                style.sources.push(source);
+                style.sources.push(std::sync::Arc::new(source));
                 changes.push(Change::SourceAdded(entry.key));
             }
         }
@@ -231,7 +232,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
     }
 
     // Layers.
-    let old_layers: HashMap<LayerKey, (usize, &Layer)> = doc
+    let old_layers: HashMap<LayerKey, (usize, &std::sync::Arc<Layer>)> = doc
         .layer_keys()
         .zip(&old.layers)
         .enumerate()
@@ -258,7 +259,9 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
         let global = reads_global(&entry.json, &changed);
         let reparse = old_entry.is_none() || draft.dirty.contains(&entry.key) || global;
         if !reparse {
-            style.layers.push(old_entry.expect("kept").1.clone());
+            style
+                .layers
+                .push(std::sync::Arc::clone(old_entry.expect("kept").1));
             continue;
         }
         let (layer, w) = crate::parse_layer(
@@ -279,7 +282,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
                 &mut changes,
             ),
         }
-        style.layers.push(layer);
+        style.layers.push(std::sync::Arc::new(layer));
     }
     for key in doc.layer_keys() {
         if !draft.layers.iter().any(|l| l.key == key) {

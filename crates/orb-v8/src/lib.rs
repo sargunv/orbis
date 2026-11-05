@@ -193,7 +193,10 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             cx.error("", doc.span, "missing required property \"sources\"");
             Vec::new()
         }
-        Some(sources) => source::parse_sources(cx, sources),
+        Some(sources) => source::parse_sources(cx, sources)
+            .into_iter()
+            .map(std::sync::Arc::new)
+            .collect(),
     };
     let layers = match doc.get("layers") {
         None => {
@@ -208,6 +211,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
                     .iter()
                     .enumerate()
                     .filter_map(|(i, l)| layer::parse_layer(cx, l, i, &sources, &mut ids))
+                    .map(std::sync::Arc::new)
                     .collect()
             }
         },
@@ -300,7 +304,7 @@ pub fn resolve_state(
 pub fn parse_layer(
     json: &Json,
     index: usize,
-    sources: &[Source],
+    sources: &[std::sync::Arc<Source>],
     state: &[(String, Value<'static>)],
     dialect: Dialect,
 ) -> Result<(Layer, Vec<Diagnostic>), Diagnostics> {
@@ -343,7 +347,7 @@ pub fn parse_sky(
 /// warnings.
 pub fn parse_terrain(
     json: &Json,
-    sources: &[Source],
+    sources: &[std::sync::Arc<Source>],
 ) -> Result<(Terrain, Vec<Diagnostic>), Diagnostics> {
     let mut cx = Cx::default();
     match terrain::parse(&mut cx, json, sources) {

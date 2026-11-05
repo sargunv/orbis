@@ -270,7 +270,9 @@ impl TileWorker {
         let mut sources = Vec::with_capacity(update.sources.len());
         for key in &update.sources {
             let source = match update.source_json.iter().find(|(k, ..)| k == key) {
-                Some((_, id, json)) => orb_v8::parse_source(id, json).map_err(|d| d.to_string())?.0,
+                Some((_, id, json)) => {
+                    Arc::new(orb_v8::parse_source(id, json).map_err(|d| d.to_string())?.0)
+                }
                 None => old
                     .and_then(|plan| {
                         let at = plan.source_keys.iter().position(|k| k == key)?;
@@ -287,11 +289,11 @@ impl TileWorker {
         let mut layers = Vec::with_capacity(update.layers.len());
         for (index, key) in update.layers.iter().enumerate() {
             let layer = match update.layer_json.iter().find(|(k, _)| k == key) {
-                Some((_, json)) => {
+                Some((_, json)) => Arc::new(
                     orb_v8::parse_layer(json, index, &sources, &update.state, dialect)
                         .map_err(|d| d.to_string())?
-                        .0
-                }
+                        .0,
+                ),
                 None => old
                     .and_then(|plan| {
                         let at = plan.layer_keys.iter().position(|k| k == key)?;

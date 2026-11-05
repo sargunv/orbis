@@ -1,7 +1,8 @@
 //! Paint transitions (v8 `transition`, `*-transition`; decision 0031): a
 //! paint edit eases from the property's prior value to its new one. Each
 //! frame a transition runs, the plan's style is overlaid with the eased
-//! values as constants, by [`PropertyId`], and the paint writes from that.
+//! values as constants, by [`PropertyId`]: the overlay copies only the
+//! eased layers, and the paint writes from it. A new style ends them.
 //! Values interpolate as GL JS's do: numbers, colours (premultiplied) and
 //! pairs, eased cubic in-out. Per-feature values (data or feature state)
 //! change at once, which is also what GL JS does with feature state.
@@ -115,7 +116,7 @@ impl Transitions {
                 continue;
             };
             let t = ease((now - r.begin) / (r.end - r.begin));
-            mix(r.id, layer.slot_mut(r.id), &r.prior, zoom, t);
+            mix(r.id, Arc::make_mut(layer).slot_mut(r.id), &r.prior, zoom, t);
         }
         Some(StylePlan {
             style: Arc::new(style),

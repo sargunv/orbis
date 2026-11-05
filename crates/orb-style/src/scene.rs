@@ -57,13 +57,15 @@ pub struct Scene {
     /// Sources' tile matrix sets by source id (the scene document's); the
     /// rest use `WebMercatorQuad`, GeoJSON the plane's own.
     pub tile_matrix_sets: Vec<(String, orb_crs::TileMatrixSet)>,
-    pub sources: Vec<Source>,
-    pub layers: Vec<Layer>,
+    pub sources: Vec<std::sync::Arc<Source>>,
+    /// Shared, so a snapshot that changes some layers (an edit, a frame's
+    /// transitions) copies only those.
+    pub layers: Vec<std::sync::Arc<Layer>>,
     /// What parsed but isn't supported or rendered yet.
     pub warnings: Vec<Diagnostic>,
 }
 impl Scene {
     pub fn source(&self, id: &str) -> Option<&Source> {
-        self.sources.iter().find(|s| s.id == id)
+        self.sources.iter().find(|s| s.id == id).map(|s| &**s)
     }
 }

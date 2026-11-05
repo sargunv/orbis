@@ -1046,8 +1046,10 @@ impl Map {
             None => StyleDoc::parse(text),
         }
         .map_err(|d| d.to_string())?;
-        // A style URL still loading is superseded.
+        // A style URL still loading is superseded, and the old style's
+        // paint transitions with it.
         self.style_request += 1;
+        self.transitions = Default::default();
         self.install(doc);
         Ok(())
     }

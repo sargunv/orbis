@@ -29,7 +29,7 @@ fn line(paint: &str, layout: &str) -> Layer {
         r#"[{{"id": "l", "type": "line", "source": "v", "source-layer": "roads", "paint": {paint}, "layout": {layout}}}]"#
     ))
     .unwrap_or_else(|d| panic!("{d}"));
-    style.layers.into_iter().next().unwrap()
+    (*style.layers[0]).clone()
 }
 
 #[test]
@@ -392,7 +392,7 @@ fn symbol(layout: &str, paint: &str) -> Layer {
         r#"[{{"id": "s", "type": "symbol", "source": "v", "source-layer": "poi", "layout": {layout}, "paint": {paint}}}]"#
     ))
     .unwrap_or_else(|d| panic!("{d}"));
-    style.layers.into_iter().next().unwrap()
+    (*style.layers[0]).clone()
 }
 
 #[test]

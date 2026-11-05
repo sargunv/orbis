@@ -113,3 +113,29 @@ byte (label fades vary between runs on both).
 
 `pnpm -C web e2e --only=edits` and the `orb-demo` edit tests keep their
 classes and job counts; the runtime-styling fixtures pass, 177 of 177.
+
+## Transitions as overrides; the paint program to come
+
+A frame that runs a paint transition cloned the whole style, inline GeoJSON
+included, to overlay the eased values. The scene's layers and sources are
+now shared (`Arc`), so the overlay copies pointers and only the layers it
+eases. Transitions belong to their style: a new style (`set_style_json`,
+a style URL, a scene document) ends them (#79), and an edit's restyle keeps
+them.
+
+The rest of the paint path waits on the renderer's node layouts, which the
+core chain reflects from WGSL (`orb_shaders::layout`, its B5). The
+interface this chain proposes for it:
+
+- `Plan` (render nodes and their bindings) moves to `orb-style`, with
+  the families it names; `orb-shaders`' reflected layouts are the small
+  crate both sides depend on, holding the row and node-uniform structs.
+- Each node's paint property lowers to one program: a constant, a zoom
+  curve (stops, interpolation and outputs; GL JS's `interpolate` and `step`
+  over `zoom`), or a column of the node's typed rows. Camera expressions a
+  curve can't hold stay CPU-evaluated per frame, as GL JS evaluates them.
+- Node uniforms hold the programs, written on a revision or a transition
+  step; shaders evaluate curves at the frame's zoom. One packer writes
+  every family's uniforms from the reflected layout.
+- A transition step writes the eased constant into the node's program, so
+  the overlay above goes too.

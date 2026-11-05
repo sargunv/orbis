@@ -269,11 +269,15 @@ fn idle_comes_once_after_an_ease() {
         },
     );
     // Frames on a display's 60 Hz clock, whatever the wall clock does.
-    let (mut frames, mut idles, mut time) = (0, 0, 1e6);
+    // The ease ends on the clock; tiles for its zoom may arrive later.
+    let (mut frames, mut idles, mut time, mut eased) = (0, 0, 1e6, None);
     while map.needs_frame() {
         let report = map.render(&mut target, time).unwrap().unwrap();
         frames += 1;
         time += 1000.0 / 60.0;
+        if eased.is_none() && (map.zoom() - 1.0).abs() < 1e-9 {
+            eased = Some(frames);
+        }
         for event in std::iter::from_fn(|| map.poll_event()) {
             if event == Event::Map(MapEvent::Idle) {
                 idles += 1;
@@ -282,7 +286,8 @@ fn idle_comes_once_after_an_ease() {
         }
         assert!(frames < 100, "the ease never ended");
     }
-    assert!((24..=27).contains(&frames), "{frames} frames for 400 ms");
+    let eased = eased.expect("the ease ended");
+    assert!((24..=27).contains(&eased), "{eased} frames for 400 ms");
     assert_eq!(idles, 1);
     assert!((map.zoom() - 1.0).abs() < 1e-9);
 }

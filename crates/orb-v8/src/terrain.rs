@@ -4,7 +4,11 @@ use crate::{Cx, Source, SourceKind};
 use orb_expr::json::Json;
 use orb_style::*;
 
-pub(crate) fn parse(cx: &mut Cx, json: &Json, sources: &[Source]) -> Option<Terrain> {
+pub(crate) fn parse(
+    cx: &mut Cx,
+    json: &Json,
+    sources: &[std::sync::Arc<Source>],
+) -> Option<Terrain> {
     let members = cx.object(json, "terrain")?;
     for m in members {
         if !matches!(m.key.as_str(), "source" | "exaggeration") {

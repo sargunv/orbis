@@ -217,7 +217,7 @@ fn selection(
     json: &Json,
     path: &str,
     id: &str,
-    sources: &[Source],
+    sources: &[std::sync::Arc<Source>],
 ) -> Option<(String, Option<String>, Option<Filter>)> {
     let errors = cx.diagnostics.errors.len();
     let source = match json.get("source") {
@@ -230,7 +230,7 @@ fn selection(
     let source_layer = optional_string(cx, json, "source-layer", path);
     if let Some(source) = &source {
         let span = json.get("source").expect("present").span;
-        match sources.iter().find(|s| s.id == *source) {
+        match sources.iter().find(|s| s.id == *source).map(|s| &**s) {
             None => cx.error(
                 format!("{path}.source"),
                 span,
@@ -279,7 +279,7 @@ fn image_source(
     json: &Json,
     path: &str,
     id: &str,
-    sources: &[Source],
+    sources: &[std::sync::Arc<Source>],
     dem: bool,
 ) -> Option<String> {
     let Some(value) = json.get("source") else {
@@ -316,7 +316,7 @@ pub(crate) fn parse_layer(
     cx: &mut Cx,
     json: &Json,
     index: usize,
-    sources: &[Source],
+    sources: &[std::sync::Arc<Source>],
     ids: &mut HashSet<String>,
 ) -> Option<Layer> {
     let path = format!("layers[{index}]");
