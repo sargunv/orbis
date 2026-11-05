@@ -142,6 +142,7 @@ impl Harness {
             time: 0.0,
             pitch: 0.0,
             roll: 0.0,
+            camera_to_center: 1.0,
             terrain: None,
             lights: None,
             globe: None,

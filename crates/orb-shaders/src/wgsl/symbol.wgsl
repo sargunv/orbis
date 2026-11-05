@@ -274,10 +274,6 @@ fn px_to_clip(p: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(p.x / frame.viewport.x * 2.0 - 1.0, 1.0 - p.y / frame.viewport.y * 2.0);
 }
 
-fn camera_to_center() -> f32 {
-    return frame.view_proj[3].w;
-}
-
 // GL JS `getTileSkewVectors`: east, south.
 fn skew_vectors() -> mat2x2<f32> {
     let cp = cos(frame.pitch);
@@ -699,7 +695,7 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     if rotate_shifted || (node.flags & ROTATE_IN_SHADER) != 0u {
         east_clip = tile_clip(tile, anchor + vec2<f32>(1.0, 0.0));
     }
-    let ctcd = camera_to_center();
+    let ctcd = frame.camera_to_center;
     let distance_ratio = select(ctcd / projected_point.w, projected_point.w / ctcd, pitch);
     let perspective_ratio = clamp(0.5 + 0.5 * distance_ratio, 0.0, 4.0);
 
@@ -871,7 +867,7 @@ fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
     let gamma_scale = in.data.x;
     let font_scale = select(size, size / 24.0, is_text);
     let edge_gamma = 0.105 / frame.pixel_ratio;
-    let u_gamma_scale = select(1.0, cos(frame.pitch) * camera_to_center(), (node.flags & PITCH_WITH_MAP) != 0u);
+    let u_gamma_scale = select(1.0, cos(frame.pitch) * frame.camera_to_center, (node.flags & PITCH_WITH_MAP) != 0u);
     let gamma = edge_gamma / (font_scale * u_gamma_scale);
     let inner_edge = (256.0 - 64.0) / 256.0;
 

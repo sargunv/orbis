@@ -1567,6 +1567,7 @@ impl Map {
             time: (now - self.born.unwrap_or(now)) as f32,
             pitch: self.camera.state().pitch.to_radians() as f32,
             roll: self.camera.state().roll.to_radians() as f32,
+            camera_to_center: view.camera_to_center() as f32,
             align: match globe {
                 Some(_) => [0.0; 2],
                 None => pixel_alignment(

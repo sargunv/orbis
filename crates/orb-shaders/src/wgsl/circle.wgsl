@@ -71,9 +71,7 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let z = ground_elevation(tile, p) * frame.extrusion_scale;
     let center = tile_ground_shifted(tile, p, shift);
     let projected = ground_clip(center, vec2<f32>(0.0), z);
-    // At the camera target (camera-relative world 0), clip.w is GL JS's
-    // camera-to-center distance in logical pixels.
-    let camera_distance = frame.view_proj[3].w;
+    let camera_distance = frame.camera_to_center;
     let scale_map = (node.flags & 2u) != 0u;
     if (node.flags & 4u) != 0u {
         var scale = total * tile_world_per_px(tile);

@@ -134,6 +134,8 @@ pub struct FrameBlock {
     pub pitch: f32,
     /// Camera roll about the view axis, radians.
     pub roll: f32,
+    /// The camera target's clip w (orb-camera's `View::camera_to_center`).
+    pub camera_to_center: f32,
     /// Milliseconds since the map began, which image fades measure from
     /// (their rows hold when each tile arrived).
     pub time: f32,
@@ -281,6 +283,7 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     put(f::SYMBOL_FADE_CHANGE, &[frame.symbol_fade_change]);
     put(f::PITCH, &[frame.pitch]);
     put(f::ROLL, &[frame.roll]);
+    put(f::CAMERA_TO_CENTER, &[frame.camera_to_center]);
     let q = quantum(frame.world_span);
     put(f::QUANTUM, &[q as f32]);
     put(f::GLOBE_QUANTUM, &[quantum(GLOBE_SPAN) as f32]);

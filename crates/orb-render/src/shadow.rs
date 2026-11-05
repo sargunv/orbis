@@ -528,6 +528,7 @@ mod tests {
             symbol_fade_change: 1.0,
             pitch: 1.05,
             roll: 0.0,
+            camera_to_center: 1.0,
             time: 0.0,
             terrain: None,
             lights: None,

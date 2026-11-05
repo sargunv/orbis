@@ -34,7 +34,9 @@ struct Frame {
     dem_unpack: vec4<f32>,
     terrain_exaggeration: f32,
     dem_dim: f32,
-    _pad4: vec2<f32>,
+    // The target's clip w (orb-camera's `View::camera_to_center`).
+    camera_to_center: f32,
+    _pad4: f32,
     // The style's lights (decision 0026; see lighting.wgsl): the ambient
     // and directional colours with their levels in w, and the vector
     // toward the directional light in tile axes, w = 1 when terrain is lit.

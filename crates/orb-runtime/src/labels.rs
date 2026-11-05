@@ -1268,7 +1268,7 @@ impl Labels {
                 bearing: camera.bearing.to_radians(),
                 pitch: camera.pitch.to_radians(),
                 roll: camera.roll.to_radians(),
-                camera_to_center_distance: view_proj.col(3).w,
+                camera_to_center_distance: view.camera_to_center(),
             },
             layers,
             now,

@@ -537,6 +537,14 @@ impl View {
         self.eye_distance_px
     }
 
+    /// The target's clip w: how far it lies in front of the eye along the
+    /// view, in clip units (GL JS's `cameraToCenterDistance`, which sizes
+    /// labels by their distance against it). On terrain the target stands
+    /// above the datum, the origin of camera-relative space.
+    pub fn camera_to_center(&self) -> f64 {
+        (self.view_proj * DVec4::new(0.0, 0.0, self.target_z, 1.0)).w
+    }
+
     /// The eye's position in camera-relative world space.
     pub fn eye(&self) -> DVec3 {
         self.eye
