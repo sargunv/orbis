@@ -82,6 +82,8 @@ pub struct OrbisMap {
 impl Drop for OrbisMap {
     fn drop(&mut self) {
         WAKES.with(|wakes| wakes.borrow_mut().remove(&self.id));
+        jobs::forget(self.id);
+        placement::forget(self.id);
     }
 }
 
@@ -240,10 +242,10 @@ pub async fn create_map(
 ) -> Result<OrbisMap, JsError> {
     let size = (canvas.width(), canvas.height());
 
-    let worker_jobs = WorkerJobs::new(job_workers, post);
-    let jobs: Arc<dyn Jobs> = worker_jobs.clone();
-    let lane: Arc<dyn orb_runtime::PlacementLane> = WorkerPlacement::new(place);
     let id = NEXT_MAP.with(|next| next.replace(next.get() + 1));
+    let worker_jobs = WorkerJobs::new(id, job_workers, post);
+    let jobs: Arc<dyn Jobs> = worker_jobs.clone();
+    let lane: Arc<dyn orb_runtime::PlacementLane> = WorkerPlacement::new(id, place);
     WAKES.with(|wakes| wakes.borrow_mut().insert(id, on_wake));
     let canvas = Canvas::new(canvas.into(), size, id)
         .await
@@ -595,7 +597,7 @@ impl OrbisMap {
     /// Completes a placement with the placement worker's reply.
     #[wasm_bindgen(js_name = receivePlacement)]
     pub fn receive_placement(&mut self, reply: &JsValue) -> Result<(), JsError> {
-        WorkerPlacement::receive(reply)
+        WorkerPlacement::receive(self.id, reply)
     }
 
     /// The tier the map draws at: `"modern"` (WebGPU) or `"compat"`

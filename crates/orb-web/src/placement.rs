@@ -16,7 +16,7 @@
 //! `{committed: buffer}`, one per frame.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use js_sys::{Array, Object, Reflect, Uint8Array};
@@ -28,13 +28,26 @@ use orb_symbol::{Frame, GroundRef, PlacementTables};
 use wasm_bindgen::prelude::*;
 
 thread_local! {
-    /// The render worker's `post(message, transfer)` to the placement
-    /// worker, and the commits it owes, oldest first. Wasm in a worker is
-    /// single-threaded, so the runtime's `Send` lane reaches them here.
-    static POST: RefCell<Option<js_sys::Function>> = const { RefCell::new(None) };
-    static OWED: RefCell<VecDeque<PlaceDone>> = const { RefCell::new(VecDeque::new()) };
-    /// The terrain the placement worker has last been sent.
-    static GROUND: RefCell<Option<GroundRef>> = const { RefCell::new(None) };
+    /// Each map's placement worker, by map. Wasm in a page is
+    /// single-threaded, so the runtime's `Send` lane reaches it here.
+    static LANES: RefCell<HashMap<u32, Lane>> = RefCell::new(HashMap::new());
+}
+
+/// A map's `post(message, transfer)` to its placement worker, the commits
+/// it owes, oldest first, and the terrain last sent.
+struct Lane {
+    post: js_sys::Function,
+    owed: VecDeque<PlaceDone>,
+    ground: Option<GroundRef>,
+}
+
+/// Forgets map `map`'s placement worker.
+pub(crate) fn forget(map: u32) {
+    LANES.with(|lanes| lanes.borrow_mut().remove(&map));
+}
+
+fn with_lane<T>(map: u32, f: impl FnOnce(&mut Lane) -> T) -> Option<T> {
+    LANES.with(|lanes| lanes.borrow_mut().get_mut(&map).map(f))
 }
 
 fn object(fields: &[(&str, JsValue)]) -> Object {
@@ -45,37 +58,42 @@ fn object(fields: &[(&str, JsValue)]) -> Object {
     object
 }
 
-fn post(message: &Object, buffer: Option<&Uint8Array>) {
-    let transfer = Array::new();
-    if let Some(buffer) = buffer {
-        transfer.push(&buffer.buffer());
-    }
-    POST.with(|post| {
-        if let Some(f) = post.borrow().as_ref() {
-            let _ = f.call2(&JsValue::NULL, message, &transfer);
-        }
-    });
-}
-
-/// The render worker's [`PlacementLane`].
+/// A map's [`PlacementLane`]: its placement worker.
 #[derive(Debug)]
-pub(crate) struct WorkerPlacement;
+pub(crate) struct WorkerPlacement(u32);
 
 impl WorkerPlacement {
-    pub(crate) fn new(post: js_sys::Function) -> Arc<Self> {
-        POST.with(|p| *p.borrow_mut() = Some(post));
-        Arc::new(Self)
+    /// Map `map`'s placement worker, reached through `post`.
+    pub(crate) fn new(map: u32, post: js_sys::Function) -> Arc<Self> {
+        let lane = Lane {
+            post,
+            owed: VecDeque::new(),
+            ground: None,
+        };
+        LANES.with(|lanes| lanes.borrow_mut().insert(map, lane));
+        Arc::new(Self(map))
     }
 
-    /// Completes the oldest placement with the worker's reply.
-    pub(crate) fn receive(reply: &JsValue) -> Result<(), JsError> {
+    fn post(&self, message: &Object, buffer: Option<&Uint8Array>) {
+        let transfer = Array::new();
+        if let Some(buffer) = buffer {
+            transfer.push(&buffer.buffer());
+        }
+        // Called outside the borrow: the worker's reply may come back in.
+        if let Some(post) = with_lane(self.0, |lane| lane.post.clone()) {
+            let _ = post.call2(&JsValue::NULL, message, &transfer);
+        }
+    }
+
+    /// Completes map `map`'s oldest placement with its worker's reply.
+    pub(crate) fn receive(map: u32, reply: &JsValue) -> Result<(), JsError> {
         let bytes = Reflect::get(reply, &"committed".into())
             .ok()
             .and_then(|b| b.dyn_into::<Uint8Array>().ok())
             .ok_or_else(|| JsError::new("placement reply without a commit"))?;
         let committed = unpack_committed(&bytes.to_vec()).map_err(|e| JsError::new(&e))?;
-        let done = OWED
-            .with(|owed| owed.borrow_mut().pop_front())
+        let done = with_lane(map, |lane| lane.owed.pop_front())
+            .flatten()
             .ok_or_else(|| JsError::new("a commit nobody asked for"))?;
         done(committed);
         Ok(())
@@ -85,7 +103,7 @@ impl WorkerPlacement {
 impl PlacementLane for WorkerPlacement {
     fn ingest(&self, bucket: u64, tables: Arc<PlacementTables>) {
         let buffer = Uint8Array::from(pack_tables(&tables).as_slice());
-        post(
+        self.post(
             &object(&[
                 ("ingest", (bucket as f64).into()),
                 ("buffer", buffer.clone().into()),
@@ -95,27 +113,27 @@ impl PlacementLane for WorkerPlacement {
     }
 
     fn remove(&self, bucket: u64) {
-        post(&object(&[("remove", (bucket as f64).into())]), None);
+        self.post(&object(&[("remove", (bucket as f64).into())]), None);
     }
 
     fn place(&self, frame: Frame, done: PlaceDone) {
-        OWED.with(|owed| owed.borrow_mut().push_back(done));
-        let changed = GROUND.with(|sent| {
-            let mut sent = sent.borrow_mut();
-            let changed = *sent != frame.ground;
-            sent.clone_from(&frame.ground);
+        let changed = with_lane(self.0, |lane| {
+            lane.owed.push_back(done);
+            let changed = lane.ground != frame.ground;
+            lane.ground.clone_from(&frame.ground);
             changed
-        });
+        })
+        .unwrap_or(false);
         if changed {
             let bytes = frame
                 .ground
                 .as_ref()
                 .map_or_else(Default::default, |g| g.0.pyramid());
             let buffer = Uint8Array::from(&bytes[..]);
-            post(&object(&[("ground", buffer.clone().into())]), Some(&buffer));
+            self.post(&object(&[("ground", buffer.clone().into())]), Some(&buffer));
         }
         let buffer = Uint8Array::from(pack_frame(&frame).as_slice());
-        post(&object(&[("place", buffer.clone().into())]), Some(&buffer));
+        self.post(&object(&[("place", buffer.clone().into())]), Some(&buffer));
     }
 }
 

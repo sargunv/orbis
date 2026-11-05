@@ -50,25 +50,24 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 thread_local! {
-    /// The render worker's `post(worker, message)`, which sends a message to
-    /// job worker `worker`. Wasm in a worker is single-threaded, so the
+    /// Each map's `self.post(worker, message)`, which sends a message to its job
+    /// worker `worker`, by map. Wasm in a page is single-threaded, so the
     /// runtime's `Send` jobs reach it here.
-    static POST: std::cell::RefCell<Option<js_sys::Function>> =
-        const { std::cell::RefCell::new(None) };
+    static POSTS: std::cell::RefCell<HashMap<u32, js_sys::Function>> =
+        std::cell::RefCell::new(HashMap::new());
 }
 
-fn post(worker: u32, message: &JsValue) {
-    POST.with(|post| {
-        if let Some(f) = post.borrow().as_ref() {
-            let _ = f.call2(&JsValue::NULL, &worker.into(), message);
-        }
-    });
+/// Forgets map `map`'s job workers' `post`.
+pub(crate) fn forget(map: u32) {
+    POSTS.with(|posts| posts.borrow_mut().remove(&map));
 }
 
 /// [`Jobs`] for the render worker: each tile goes to job worker
 /// `hash(source, tile) mod N`, so a tile's relayouts and queries find its
 /// data where it was decoded.
 pub(crate) struct WorkerJobs {
+    /// The map whose job workers these are.
+    map: u32,
     workers: u32,
     state: Mutex<State>,
 }
@@ -101,13 +100,22 @@ pub(crate) struct JobStats {
 }
 
 impl WorkerJobs {
-    /// Jobs on `workers` job workers, reached through `post`.
-    pub(crate) fn new(workers: u32, post: js_sys::Function) -> Arc<Self> {
-        POST.with(|p| *p.borrow_mut() = Some(post));
+    /// Map `map`'s jobs on `workers` job workers, reached through `post`.
+    pub(crate) fn new(map: u32, workers: u32, post: js_sys::Function) -> Arc<Self> {
+        POSTS.with(|posts| posts.borrow_mut().insert(map, post));
         Arc::new(Self {
+            map,
             workers: workers.max(1),
             state: Mutex::new(State::default()),
         })
+    }
+
+    fn post(&self, worker: u32, message: &JsValue) {
+        POSTS.with(|posts| {
+            if let Some(f) = posts.borrow().get(&self.map) {
+                let _ = f.call2(&JsValue::NULL, &worker.into(), message);
+            }
+        });
     }
 
     pub(crate) fn stats(&self) -> JobStats {
@@ -317,7 +325,7 @@ impl Jobs for WorkerJobs {
             ("update", JsValue::from_str(&update.to_json())),
         ]);
         for worker in 0..self.workers {
-            post(worker, &message);
+            self.post(worker, &message);
         }
     }
 
@@ -327,7 +335,7 @@ impl Jobs for WorkerJobs {
             ("icons", JsValue::from_str(&icons.to_json())),
         ]);
         for worker in 0..self.workers {
-            post(worker, &message);
+            self.post(worker, &message);
         }
     }
 
@@ -386,7 +394,7 @@ impl Jobs for WorkerJobs {
                 ),
             ]),
         };
-        post(worker, &message);
+        self.post(worker, &message);
     }
 
     fn load(&self, request: TileRequest, done: TileDone) {
@@ -415,7 +423,7 @@ impl Jobs for WorkerJobs {
                 },
             ),
         ]);
-        post(worker, &object(&fields));
+        self.post(worker, &object(&fields));
     }
 
     fn features(&self, request: orb_runtime::FeatureRequest, done: orb_runtime::FeaturesDone) {
@@ -443,7 +451,7 @@ impl Jobs for WorkerJobs {
                 ("filter", filter.map_or(JsValue::UNDEFINED, JsValue::from)),
             ]),
         }
-        post(worker, &object(&fields));
+        self.post(worker, &object(&fields));
     }
 }
 
