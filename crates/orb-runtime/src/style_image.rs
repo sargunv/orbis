@@ -102,9 +102,9 @@ impl Map {
             .icons
             .add(name, [image.width, image.height], &image.metadata);
         style.reported_missing.remove(name);
-        style
-            .image_edits
-            .push(AtlasEdit::Put(name.into(), Arc::new(image)));
+        let image = Arc::new(image);
+        style.added_images.insert(name.into(), Arc::clone(&image));
+        style.image_edits.push(AtlasEdit::Put(name.into(), image));
         self.icons_changed();
         Ok(())
     }
@@ -133,6 +133,9 @@ impl Map {
         if pixels.len() as u64 != u64::from(width) * u64::from(height) * 4 {
             return Err(format!("a {width}x{height} image needs its RGBA bytes"));
         }
+        if let Some(added) = style.added_images.get_mut(name) {
+            Arc::make_mut(added).pixels = pixels.clone();
+        }
         style
             .image_edits
             .push(AtlasEdit::Pixels(name.into(), Arc::new(pixels)));
@@ -147,6 +150,7 @@ impl Map {
         if !style.icons.remove(name) {
             return Err(format!("no image named {name:?}"));
         }
+        style.added_images.remove(name);
         style.image_edits.push(AtlasEdit::Remove(name.into()));
         self.icons_changed();
         Ok(())

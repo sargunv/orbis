@@ -185,9 +185,40 @@ fn recovers(backend: Backend) {
     };
     let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
     let mut map = Map::new(&runtime, MapOptions::default());
-    map.set_style_json(STYLE).unwrap();
+    // What the app added at run time: a feature's state and an image.
+    map.set_style_json(
+        r##"{"version":8,"sources":{"boxes":{"type":"geojson","data":{"type":"FeatureCollection",
+          "features":[{"type":"Feature","id":1,"properties":{},"geometry":{"type":"Polygon",
+            "coordinates":[[[-40,-10],[-10,-10],[-10,10],[-40,10],[-40,-10]]]}},
+          {"type":"Feature","id":2,"properties":{},"geometry":{"type":"Polygon",
+            "coordinates":[[[10,-10],[40,-10],[40,10],[10,10],[10,-10]]]}}]}}},
+          "layers":[{"id":"bg","type":"background","paint":{"background-color":"#ff0000"}},
+          {"id":"state","type":"fill","source":"boxes","filter":["==",["id"],1],"paint":{"fill-color":
+            ["case",["boolean",["feature-state","on"],false],"#00ff00","#0000ff"]}},
+          {"id":"image","type":"fill","source":"boxes","filter":["==",["id"],2],"paint":{"fill-pattern":"dot"}}]}"##,
+    )
+    .unwrap();
+    settle(&mut map, &mut target).unwrap();
+    let tx = orb_api::Transaction::from_commands(
+        r#"[["setFeatureState", {"source": "boxes", "id": 1}, {"on": true}]]"#,
+    )
+    .unwrap();
+    map.edit(&tx).unwrap();
+    let yellow = [255, 255, 0, 255].repeat(64);
+    let dot = orb_api::StyleImage::with_options(8, 8, yellow, r#"{"pixelRatio": 1}"#).unwrap();
+    map.add_image("dot", dot).unwrap();
     settle(&mut map, &mut target).unwrap();
     let before = target.read_pixels().unwrap();
+    let at = |pixels: &[u8], x: u32| {
+        let i = ((SIZE / 2 * SIZE + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    assert_eq!(
+        at(&before, SIZE / 2 - 18),
+        [0, 255, 0],
+        "the feature's state"
+    );
+    assert_eq!(at(&before, SIZE / 2 + 18), [255, 255, 0], "the added image");
 
     runtime.lose_device();
     let lost = Instant::now();
@@ -198,7 +229,18 @@ fn recovers(backend: Backend) {
         lost.elapsed().as_secs_f64() * 1000.0,
         drawn.as_secs_f64() * 1000.0
     );
-    assert_eq!(target.read_pixels().unwrap(), before);
+    let after = target.read_pixels().unwrap();
+    assert_eq!(
+        at(&after, SIZE / 2 - 18),
+        [0, 255, 0],
+        "the feature's state, again"
+    );
+    assert_eq!(
+        at(&after, SIZE / 2 + 18),
+        [255, 255, 0],
+        "the added image, again"
+    );
+    assert!(after == before, "the same picture again");
 }
 
 #[test]

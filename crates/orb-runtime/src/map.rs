@@ -260,6 +260,9 @@ pub(crate) struct LoadedStyle {
     pub(crate) icons: crate::SpriteIcons,
     /// Image edits for the next frame's atlas.
     pub(crate) image_edits: Vec<crate::style_image::AtlasEdit>,
+    /// The images the host added, as they are now: a style installed
+    /// afresh (after a device loss) adds them again.
+    pub(crate) added_images: std::collections::BTreeMap<String, Arc<crate::StyleImage>>,
     /// Image names reported missing since they were last added.
     pub(crate) reported_missing: std::collections::HashSet<String>,
     /// The scene tile of the background layers' quads.
@@ -926,7 +929,16 @@ impl Map {
         *self.picking.get_mut() = Default::default();
         if let Some(style) = self.style.take() {
             self.generation += 1;
+            // What the host set at run time comes back with it.
+            let states = style.states.carried();
             self.install_revision(style.doc, Some((style.id, &style.worker)));
+            for (name, image) in style.added_images {
+                let _ = self.add_image(&name, Arc::unwrap_or_clone(image));
+            }
+            let style = self.style.as_mut().expect("installed");
+            for op in &states {
+                style.states.apply(op);
+            }
         }
         // What the old renderer held went with it.
         self.retired = Retired::default();
@@ -1025,6 +1037,7 @@ impl Map {
             sprites_loading: 0,
             icons: crate::SpriteIcons::default(),
             image_edits: Vec::new(),
+            added_images: Default::default(),
             reported_missing: Default::default(),
             background: None,
             states: FeatureStates::default(),

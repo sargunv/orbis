@@ -262,6 +262,24 @@ impl FeatureStates {
         }
     }
 
+    /// Every feature's state as edits that set it again: what a style
+    /// installed afresh (after a device loss) carries over.
+    pub(crate) fn carried(&self) -> Vec<FeatureStateOp> {
+        self.entries
+            .iter()
+            .filter(|e| !e.state.is_empty())
+            .filter_map(|e| {
+                let key = e.key.as_ref()?;
+                Some(FeatureStateOp::Set {
+                    source: orb_style::SourceKey(key.source),
+                    source_layer: key.layer.clone(),
+                    id: key.id.clone(),
+                    state: e.state.clone(),
+                })
+            })
+            .collect()
+    }
+
     /// A feature's state, and what paint reading both state and data
     /// reads of it, if it has an entry.
     pub(crate) fn feature(&self, source: u32, layer: Option<&str>, id: &str) -> FeatureState<'_> {
