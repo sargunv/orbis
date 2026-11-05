@@ -16,9 +16,10 @@ use std::sync::{Arc, OnceLock};
 use glam::DVec2;
 use orb_camera::View;
 use orb_crs::{CoveredTile, TileIndex, TileMatrixSet, WorldRect};
+use orb_hal::Gpu;
 use orb_render::{
-    ClipRect, DRAPE_SLOT_PX, DemRef, DrapeLayout, GpuTile, PageId, PlacementTarget, TerrainDem,
-    TerrainSlopes, TerrainTile, TileRow,
+    ClipRect, DRAPE_SLOT_PX, DemRef, DrapeLayout, GpuTile, PageId, PlacementTarget, Renderer,
+    TerrainDem, TerrainSlopes, TerrainTile, TileRow,
 };
 use orb_source::endpoint::TileEndpoint;
 use orb_source::{Draw, TilePyramid};
@@ -216,7 +217,7 @@ impl Terrain {
 
     /// Covers the view, asks for the DEM tiles missing and returns the
     /// tiles to request.
-    pub(crate) fn update(&mut self, view: &View, tms: &TileMatrixSet) -> Vec<TileIndex> {
+    fn update(&mut self, view: &View, tms: &TileMatrixSet) -> Vec<TileIndex> {
         let tiles = view.cover_volume(
             tms,
             TERRAIN_TILE_PX,
@@ -266,7 +267,7 @@ impl Terrain {
     /// neighbours among them, for the tiles whose neighbours changed since:
     /// a border is a function of what this camera reads, not of which tiles
     /// were resident before (#84).
-    pub(crate) fn pads(&mut self, unpack: [f32; 4]) -> Vec<orb_render::DemPrepare> {
+    fn pads(&mut self, unpack: [f32; 4]) -> Vec<orb_render::DemPrepare> {
         let mut read: Vec<TileIndex> = (self.tiles.iter())
             .filter_map(|t| self.dem_for(t.index).map(|(at, _)| at))
             .chain(self.wanted.iter().copied())
@@ -301,18 +302,110 @@ impl Terrain {
         jobs
     }
 
-    /// A DEM tile arrived: its page layer and elevations.
-    pub(crate) fn insert(&mut self, tile: TileIndex, dem: DemTile) -> Option<DemTile> {
-        self.stale = true;
-        self.pyramid.insert(tile, dem)
+    /// This frame's terrain over `view`, its DEM `unpack`ed, with skirts
+    /// `skirt` world units long: covers the view, frees the DEM tiles it
+    /// no longer keeps, pads borders and gives the renderer its paint.
+    /// Returns the frame's terrain and the DEM tiles to load.
+    pub(crate) fn upkeep(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        (view, tms): (&View, &TileMatrixSet),
+        unpack: [f32; 4],
+        skirt: f64,
+    ) -> (orb_render::FrameTerrain, Vec<TileIndex>) {
+        let requests = self.update(view, tms);
+        let evicted = self.pyramid.evict();
+        self.stale |= !evicted.is_empty();
+        if let Some(page) = self.page {
+            for retired in evicted {
+                renderer.free_layer(page, retired.layer);
+            }
+            for job in self.pads(unpack) {
+                renderer.prepare_dem(page, job);
+            }
+        }
+        // The terrain draws before its DEM tiles arrive, and where its
+        // source has none: flat, skirts and all, as GL JS draws it.
+        let exaggeration = self.exaggeration as f32;
+        let skirt = skirt as f32;
+        let paint = orb_render::TerrainPaint {
+            unpack,
+            exaggeration,
+            skirt,
+        };
+        renderer.set_terrain(gpu, Some((self.page, paint)));
+        let dem_dim = self.page.map_or(1, |page| renderer.page_size(page)[0]) as f32;
+        let frame = orb_render::FrameTerrain {
+            unpack,
+            exaggeration,
+            dem_dim,
+        };
+        (frame, requests)
     }
 
-    pub(crate) fn evict(&mut self) -> Vec<DemTile> {
-        let evicted = self.pyramid.evict();
-        if !evicted.is_empty() {
-            self.stale = true;
+    /// A DEM tile's `result` arrived: into the page and the elevations.
+    /// `Err` says why it isn't drawn.
+    pub(crate) fn arrive(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        renderer: &mut Renderer,
+        tile: TileIndex,
+        result: Result<crate::TileResult, String>,
+        now: f64,
+    ) -> Result<(), String> {
+        self.loading = self.loading.saturating_sub(1);
+        if !self.pyramid.is_loading(tile) {
+            return Ok(());
         }
-        evicted
+        let (image, grid) = match result {
+            Ok(crate::TileResult { missing: true, .. }) => {
+                self.pyramid.insert_missing(tile);
+                return Ok(());
+            }
+            Ok(crate::TileResult {
+                image: Some(image),
+                dem: Some(dem),
+                ..
+            }) => (image, dem),
+            Ok(_) | Err(_) => {
+                self.pyramid.insert_failed(tile, now);
+                return Err(result.err().unwrap_or("no elevations".into()));
+            }
+        };
+        let size = [image.width, image.height];
+        let page = *self
+            .page
+            .get_or_insert_with(|| renderer.create_page(gpu, orb_render::PageKind::Dem, size));
+        let layer = match renderer.page_size(page) {
+            other if other != size => Err(format!("{}×{} among {other:?} tiles", size[0], size[1])),
+            _ => renderer
+                .alloc_layer(gpu, page)
+                .map_err(|_| "out of terrain texture layers".into()),
+        };
+        let layer = layer.inspect_err(|_| self.pyramid.insert_empty(tile))?;
+        let pixels = match &image.pixels {
+            crate::ImagePixels::Core(bytes) => orb_render::Pixels::Core(bytes),
+            &crate::ImagePixels::Host(image) => orb_render::Pixels::Host {
+                image,
+                premultiply: false,
+            },
+        };
+        renderer.write_layer(gpu, page, layer, pixels);
+        self.stale = true;
+        let dem = Arc::new(Dem::new(grid));
+        if let Some(old) = self.pyramid.insert(tile, DemTile { layer, dem }) {
+            renderer.free_layer(page, old.layer);
+        }
+        Ok(())
+    }
+
+    /// Gives back its DEM page.
+    pub(crate) fn release(self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
+        renderer.set_terrain(gpu, None);
+        if let Some(page) = self.page {
+            renderer.remove_page(gpu, page);
+        }
     }
 
     /// The CPU elevations of the DEM tiles this camera reads, taken again
@@ -986,8 +1079,9 @@ mod tests {
                 layer: layer as u32,
                 dem: Arc::clone(dem),
             };
-            assert!(terrain.insert(*tile, tile_dem).is_none());
+            assert!(terrain.pyramid.insert(*tile, tile_dem).is_none());
         }
+        terrain.stale = true;
     }
 
     #[test]
