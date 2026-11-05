@@ -306,6 +306,8 @@ pub struct TileResult {
     /// Feature ids the meshes' state ids index.
     pub ids: Vec<String>,
     pub meshes: Vec<ResultMesh>,
+    /// Per source layer laid out, the geometry its meshes' hits point into.
+    pub hit_geometry: Vec<Arc<crate::HitGeometry>>,
     /// Per symbol layer laid out, its bucket. Its icon and text nodes'
     /// meshes carry property rows only.
     pub symbols: Vec<ResultSymbols>,
@@ -343,7 +345,7 @@ pub enum ImagePixels {
 /// One render node's share of a finished tile.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResultMesh {
-    pub hits: std::sync::Arc<crate::MeshHits>,
+    pub hits: Arc<crate::MeshHits>,
     /// The node's key.
     pub node: u32,
     pub extent: u32,
@@ -378,13 +380,14 @@ pub enum Stream {
 
 impl From<TileBuild> for TileResult {
     fn from(build: TileBuild) -> Self {
-        Self {
+        let hit_geometry: Vec<_> = build.hits.into_iter().map(|(_, g)| Arc::new(g)).collect();
+        let mut result = Self {
             meshes: build
                 .meshes
                 .into_iter()
                 .map(|m| ResultMesh {
                     node: m.node,
-                    hits: std::sync::Arc::new(m.hits),
+                    hits: Arc::new(m.hits),
                     extent: m.extent,
                     chunks: m.mesh.chunks,
                     vertices: Stream::Core(m.mesh.vertices),
@@ -412,7 +415,10 @@ impl From<TileBuild> for TileResult {
             image: None,
             dem: None,
             missing: false,
-        }
+            hit_geometry,
+        };
+        result.link_hits();
+        result
     }
 }
 
@@ -440,6 +446,15 @@ impl<'de> serde::Deserialize<'de> for Stream {
 }
 
 impl TileResult {
+    /// Points its meshes' hits at its hit geometry.
+    fn link_hits(&mut self) {
+        for mesh in &mut self.meshes {
+            Arc::get_mut(&mut mesh.hits)
+                .expect("a result's hits are its own")
+                .link(&self.hit_geometry);
+        }
+    }
+
     /// The streams in packed order: each mesh's vertices, indices and
     /// rows, then each symbol layer's tables.
     fn streams_mut(&mut self) -> impl Iterator<Item = &mut Stream> {
@@ -491,6 +506,7 @@ pub fn unpack(header: &[u8], bytes: HostBytesId) -> Result<TileResult, String> {
         }
     }
     result.host_bytes = Some(bytes);
+    result.link_hits();
     Ok(result)
 }
 

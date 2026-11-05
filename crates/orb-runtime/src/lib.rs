@@ -93,7 +93,7 @@ pub use orb_source::endpoint::{HOST_TILES, HostTile};
 pub use orb_v8::{FeatureTarget, Op, Transaction};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};
 pub use queries::QueryDone;
-pub use query::{Hit, HitFeature, MeshHits};
+pub use query::{Hit, HitGeometry, MeshHits};
 pub use style::ImageKind;
 pub use style_image::StyleImage;
 pub use surface::SurfaceTiles;

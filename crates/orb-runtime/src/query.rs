@@ -28,27 +28,16 @@ pub struct Hit {
     pub generation: u64,
 }
 
-/// A hit-testable feature as a tile job builds it; [`MeshHits`] packs a
-/// node's.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct HitFeature {
+/// A hit-testable feature's id, index and parts, unpacked, for tests.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub(crate) struct HitFeature {
     pub id: Option<String>,
-    /// The feature's index in its source layer, for queries.
     pub feature: u32,
-    /// 0: polygons, 1: lines, 2: points, [`LABEL`]: a label's feature,
-    /// with no geometry (labels pick from placement).
-    pub kind: u32,
-    pub extent: u32,
-    /// Circles: the radius; lines: half the width.
-    pub radius: f32,
-    /// Circles: the stroke width, bound apart from the radius.
-    pub stroke: f32,
-    pub height: f32,
-    pub base: f32,
     pub parts: Vec<Vec<Vec<[i32; 2]>>>,
 }
 
-/// [`HitFeature::kind`] of a symbol node's feature: its id, by feature
+/// [`NodeHit::kind`] of a symbol node's feature: its id, by feature
 /// index, for the labels placement shows of it.
 pub(crate) const LABEL: u32 = 3;
 
@@ -85,9 +74,6 @@ impl<'a> Reader<'a> {
         self.at = end;
         Ok(words)
     }
-    fn f32(&mut self) -> Result<f32, String> {
-        self.next().map(f32::from_bits)
-    }
     fn text(&mut self) -> Result<String, String> {
         read_text(&mut || self.next())
     }
@@ -96,56 +82,123 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// One render node's hit-testable features in one tile, packed in
-/// tile-local data units as the tile job wrote them, with their bounds, so
+/// A tile's hit-testable geometry of one source layer, in tile-local data
+/// units as the tile job wrote it: each feature its nodes pick, once, so
 /// that neither the render thread nor a UI thread decodes them to pick.
+/// Polygons' rings are closed, and points only those inside the half-open
+/// tile, as lines and circles pick them.
 ///
-/// Words: the feature count; the largest radius, stroke and height (or
-/// base) of any feature (f32); the features' extent (0 when they differ);
-/// their bounds `min_x, min_y, max_x, max_y` (i32); then per feature its
-/// length in words and `min_x, min_y, max_x, max_y, has_id, [id], feature,
-/// kind, extent, radius, stroke, height, base, parts, {rings, {points,
-/// {x, y}}}`.
-#[derive(Debug)]
-pub struct MeshHits {
+/// Words, per feature: its length in words, then `min_x, min_y, max_x,
+/// max_y` (i32), `has_id, [id], parts, {rings, {points, {x, y}}}`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HitGeometry {
+    /// The layer's data units per tile side.
+    extent: u32,
     words: Vec<u32>,
-    /// Per feature: its record's first word and world bounds, worked out
-    /// on first use.
-    bounds: OnceLock<Vec<Bounds>>,
-    /// Records by feature index, worked out on first use.
-    by_feature: OnceLock<HashMap<u32, u32>>,
+    /// Records by feature index, and whether they hold its parts.
+    #[serde(skip)]
+    added: HashMap<(u32, bool), u32>,
 }
 
-impl MeshHits {
-    /// Bytes its records take.
+impl HitGeometry {
+    /// Feature `feature` of the tile's `layer`, with `id`, and its parts
+    /// if `with_parts`: its record's first word, added unless it is here.
+    pub(crate) fn add(
+        &mut self,
+        layer: &orb_tile::Layer,
+        feature: u32,
+        id: Option<&str>,
+        with_parts: bool,
+    ) -> u32 {
+        if let Some(&at) = self.added.get(&(feature, with_parts)) {
+            return at;
+        }
+        let at = self.words.len() as u32;
+        self.extent = layer.extent();
+        let (extent, f, words) = (self.extent as i32, feature as usize, &mut self.words);
+        words.extend([
+            0,
+            i32::MAX as u32,
+            i32::MAX as u32,
+            i32::MIN as u32,
+            i32::MIN as u32,
+        ]);
+        words.push(u32::from(id.is_some()));
+        if let Some(id) = id {
+            write_text(words, id);
+        }
+        let parts: Vec<_> = layer.geometry(f).parts().filter(|_| with_parts).collect();
+        words.push(parts.len() as u32);
+        let kind = layer.geometry_type(f);
+        for part in parts {
+            words.push(part.rings().count() as u32);
+            for ring in part.rings() {
+                let points: Vec<[i32; 2]> = match kind {
+                    orb_tile::GeometryType::Point => ring
+                        .iter()
+                        .filter(|p| p.iter().all(|v| (0..extent).contains(v)))
+                        .copied()
+                        .collect(),
+                    orb_tile::GeometryType::Polygon => {
+                        ring.iter().chain(ring.first()).copied().collect()
+                    }
+                    _ => ring.to_vec(),
+                };
+                words.push(points.len() as u32);
+                for p in points {
+                    for (i, v) in p.into_iter().enumerate() {
+                        let (min, max) = (at as usize + 1 + i, at as usize + 3 + i);
+                        words[min] = (words[min] as i32).min(v) as u32;
+                        words[max] = (words[max] as i32).max(v) as u32;
+                    }
+                    words.extend(p.map(|v| v as u32));
+                }
+            }
+        }
+        words[at as usize] = words.len() as u32 - at - 1;
+        self.added.insert((feature, with_parts), at);
+        at
+    }
+
+    /// The record at `at`, after its length word.
+    fn record(&self, at: u32) -> Result<&[u32], String> {
+        let at = at as usize;
+        let len = *self.words.get(at).ok_or(MALFORMED)? as usize;
+        self.words
+            .get(at + 1..at + 1 + len)
+            .ok_or_else(|| MALFORMED.into())
+    }
+
     pub fn bytes(&self) -> u64 {
         self.words.len() as u64 * 4
     }
 }
 
-/// Hit records cross between workers as their words.
-impl serde::Serialize for MeshHits {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.words.serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for MeshHits {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::from_words(Vec::deserialize(deserializer)?).map_err(serde::de::Error::custom)
-    }
-}
-
-impl Default for MeshHits {
-    fn default() -> Self {
-        Self::new(&[])
-    }
-}
-
-impl PartialEq for MeshHits {
-    fn eq(&self, other: &Self) -> bool {
-        self.words == other.words
-    }
+/// One render node's hit-testable features in one tile: for each, its
+/// record in the tile's [`HitGeometry`] of the node's source layer and the
+/// node's dimensions of it.
+///
+/// Words: the feature count; the largest radius, stroke and height (or
+/// base) of any feature (f32); the features' extent;
+/// their bounds `min_x, min_y, max_x, max_y` (i32); then per feature
+/// `geometry, feature, kind, radius, stroke, height, base`.
+///
+/// Records cross between workers as their words, the tile's geometry once
+/// beside them; a malformed one is skipped when picked.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct MeshHits {
+    words: Vec<u32>,
+    /// Its geometry's index in the tile's ([`link`](Self::link)).
+    layer: u32,
+    #[serde(skip)]
+    geometry: Arc<HitGeometry>,
+    /// Per feature: its record's first word and world bounds, worked out
+    /// on first use.
+    #[serde(skip)]
+    bounds: OnceLock<Vec<Bounds>>,
+    /// Records by feature index, worked out on first use.
+    #[serde(skip)]
+    by_feature: OnceLock<HashMap<u32, u32>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -156,11 +209,11 @@ struct Bounds {
 }
 
 const MESH_HEADER: usize = 9;
-/// A record's bounds, before the feature.
-const RECORD_BOUNDS: usize = 4;
+const NODE_RECORD: usize = 7;
 
 /// One feature of a [`MeshHits`], unpacked but for its geometry.
 struct FeatureRef<'a> {
+    bounds: &'a [u32],
     id: Option<&'a [u32]>,
     feature: u32,
     kind: u32,
@@ -172,38 +225,14 @@ struct FeatureRef<'a> {
     geometry: &'a [u32],
 }
 
-impl<'a> FeatureRef<'a> {
-    fn parse(record: &'a [u32]) -> Result<Self, String> {
-        let mut r = Reader::new(record);
-        r.take(RECORD_BOUNDS)?;
-        let id = if r.next()? != 0 {
-            let start = r.at;
-            let len = r.next()? as usize;
-            r.take(len.div_ceil(4))?;
-            Some(&record[start..r.at])
-        } else {
-            None
-        };
-        Ok(Self {
-            id,
-            feature: r.next()?,
-            kind: r.next()?,
-            extent: r.next()?,
-            radius: r.f32()?,
-            stroke: r.f32()?,
-            height: r.f32()?,
-            base: r.f32()?,
-            geometry: &record[r.at..],
-        })
-    }
-
+impl FeatureRef<'_> {
     fn id(&self) -> Option<String> {
         let mut r = Reader::new(self.id?);
         r.text().ok()
     }
 
     /// Per part, its rings' points.
-    fn parts(&self) -> Result<Vec<Vec<&'a [u32]>>, String> {
+    fn parts(&self) -> Result<Vec<Vec<&[u32]>>, String> {
         let mut r = Reader::new(self.geometry);
         let mut parts = Vec::new();
         for _ in 0..r.next()? {
@@ -226,101 +255,59 @@ fn point(words: &[u32; 2]) -> [i32; 2] {
 }
 
 impl MeshHits {
-    /// Packs a node's features.
-    pub fn new(features: &[HitFeature]) -> Self {
-        let mut words = vec![0; MESH_HEADER];
-        words[0] = features.len() as u32;
-        let (mut radius, mut stroke, mut height) = (0f32, 0f32, 0f32);
-        let extent = features.first().map_or(0, |f| f.extent);
-        let extent = if features.iter().all(|f| f.extent == extent) {
-            extent
-        } else {
-            0
-        };
-        let (mut lo, mut hi) = ([i32::MAX; 2], [i32::MIN; 2]);
-        for h in features {
-            let start = words.len();
-            let (mut min, mut max) = ([i32::MAX; 2], [i32::MIN; 2]);
-            for p in h.parts.iter().flatten().flatten() {
-                for i in 0..2 {
-                    min[i] = min[i].min(p[i]);
-                    max[i] = max[i].max(p[i]);
-                }
-            }
-            for i in 0..2 {
-                lo[i] = lo[i].min(min[i]);
-                hi[i] = hi[i].max(max[i]);
-            }
-            words.push(0);
-            words.extend([min[0], min[1], max[0], max[1]].map(|v| v as u32));
-            words.push(u32::from(h.id.is_some()));
-            if let Some(id) = &h.id {
-                write_text(&mut words, id);
-            }
-            words.extend([
-                h.feature,
-                h.kind,
-                h.extent,
-                h.radius.to_bits(),
-                h.stroke.to_bits(),
-                h.height.to_bits(),
-                h.base.to_bits(),
-                h.parts.len() as u32,
-            ]);
-            for part in &h.parts {
-                words.push(part.len() as u32);
-                for ring in part {
-                    words.push(ring.len() as u32);
-                    for p in ring {
-                        words.extend(p.map(|v| v as u32));
-                    }
-                }
-            }
-            words[start] = (words.len() - start - 1) as u32;
-            radius = radius.max(h.radius);
-            stroke = stroke.max(h.stroke);
-            height = height.max(h.height).max(h.base);
-        }
-        words[1] = radius.to_bits();
-        words[2] = stroke.to_bits();
-        words[3] = height.to_bits();
-        words[4] = extent;
-        for (i, v) in [lo[0], lo[1], hi[0], hi[1]].into_iter().enumerate() {
-            words[5 + i] = v as u32;
-        }
+    /// A node's hits, their records in the tile's `layer`th geometry.
+    pub(crate) fn new(layer: u32) -> Self {
+        let (lo, hi) = (i32::MAX as u32, i32::MIN as u32);
         Self {
-            words,
-            bounds: OnceLock::new(),
-            by_feature: OnceLock::new(),
+            words: vec![0, 0, 0, 0, 0, lo, lo, hi, hi],
+            layer,
+            ..Self::default()
         }
     }
 
-    /// Takes packed words, as [`words`](Self::words) gave them, checking
-    /// their framing; a feature malformed within its record is skipped
-    /// when picked.
-    pub fn from_words(words: Vec<u32>) -> Result<Self, String> {
-        let mut r = Reader::new(&words);
-        let count = r.next()?;
-        r.take(MESH_HEADER - 1)?;
-        for _ in 0..count {
-            let len = r.next()? as usize;
-            if len < RECORD_BOUNDS {
-                return Err(MALFORMED.into());
+    /// Adds feature `feature` of its source layer, its record at `at` in
+    /// `geometry`, of `kind` (0: polygons, 1: lines, 2: points, [`LABEL`]:
+    /// a label's feature, which labels pick from placement), with the
+    /// node's `[radius, stroke, height, base]` of it: a circle's radius
+    /// and stroke width, half a line's width, an extrusion's height and
+    /// base.
+    pub(crate) fn push(
+        &mut self,
+        geometry: &HitGeometry,
+        at: u32,
+        feature: u32,
+        kind: u32,
+        dimensions: [f32; 4],
+    ) {
+        let w = &mut self.words;
+        w[0] += 1;
+        let [radius, stroke, height, base] = dimensions;
+        for (i, v) in [radius, stroke, height.max(base)].into_iter().enumerate() {
+            w[1 + i] = f32::from_bits(w[1 + i]).max(v).to_bits();
+        }
+        w[4] = geometry.extent;
+        if let Ok(record) = geometry.record(at) {
+            for i in 0..2 {
+                w[5 + i] = (w[5 + i] as i32).min(record[i] as i32) as u32;
+                w[7 + i] = (w[7 + i] as i32).max(record[2 + i] as i32) as u32;
             }
-            r.take(len)?;
         }
-        if !r.done() {
-            return Err(MALFORMED.into());
-        }
-        Ok(Self {
-            words,
-            bounds: OnceLock::new(),
-            by_feature: OnceLock::new(),
-        })
+        w.extend([at, feature, kind]);
+        w.extend(dimensions.map(f32::to_bits));
     }
 
-    pub fn words(&self) -> &[u32] {
-        &self.words
+    /// Points its records at the tile's hit geometries, as the tile
+    /// arrives.
+    pub(crate) fn link(&mut self, geometries: &[Arc<HitGeometry>]) {
+        if let Some(geometry) = geometries.get(self.layer as usize) {
+            self.geometry = Arc::clone(geometry);
+        }
+    }
+
+    /// Bytes its records take, with its share of the tile's geometry.
+    pub fn bytes(&self) -> u64 {
+        self.words.len() as u64 * 4
+            + self.geometry.bytes() / Arc::strong_count(&self.geometry) as u64
     }
 
     pub fn is_empty(&self) -> bool {
@@ -331,49 +318,57 @@ impl MeshHits {
         self.words.get(i).map_or(0.0, |&w| f32::from_bits(w))
     }
 
-    /// Each feature's record, after its length word, with that word's index.
-    fn records(&self) -> Result<Vec<(u32, &[u32])>, String> {
-        let mut r = Reader::new(&self.words);
-        let count = r.next()?;
-        r.take(MESH_HEADER - 1)?;
-        let mut records = Vec::with_capacity(count as usize);
-        for _ in 0..count {
-            let at = r.at as u32;
-            let len = r.next()? as usize;
-            records.push((at, r.take(len)?));
-        }
-        if !r.done() {
-            return Err(MALFORMED.into());
-        }
-        Ok(records)
+    /// Its features, by their records' first words.
+    fn features(&self) -> impl Iterator<Item = (u32, FeatureRef<'_>)> {
+        (0..self.words.first().copied().unwrap_or(0) as usize)
+            .map(|i| (MESH_HEADER + i * NODE_RECORD) as u32)
+            .filter_map(|at| Some((at, self.feature(at).ok()?)))
     }
 
-    fn record(&self, at: u32) -> &[u32] {
+    /// The feature whose record starts at `at`; malformed geometry is an
+    /// error, never a panic.
+    fn feature(&self, at: u32) -> Result<FeatureRef<'_>, String> {
         let at = at as usize;
-        &self.words[at + 1..at + 1 + self.words[at] as usize]
+        let node = self.words.get(at..at + NODE_RECORD).ok_or(MALFORMED)?;
+        let record = self.geometry.record(node[0])?;
+        let mut r = Reader::new(record);
+        let bounds = r.take(4)?;
+        let id = if r.next()? != 0 {
+            let start = r.at;
+            let len = r.next()? as usize;
+            r.take(len.div_ceil(4))?;
+            Some(&record[start..r.at])
+        } else {
+            None
+        };
+        let f = |i: usize| f32::from_bits(node[i]);
+        Ok(FeatureRef {
+            bounds,
+            id,
+            feature: node[1],
+            kind: node[2],
+            extent: self.geometry.extent,
+            radius: f(3),
+            stroke: f(4),
+            height: f(5),
+            base: f(6),
+            geometry: &record[r.at..],
+        })
     }
 
     /// The id of the feature at index `feature` of its source layer.
     fn id_of(&self, feature: u32) -> Option<String> {
-        let by_feature = self.by_feature.get_or_init(|| {
-            self.records()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(at, record)| Some((FeatureRef::parse(record).ok()?.feature, at)))
-                .collect()
-        });
-        FeatureRef::parse(self.record(*by_feature.get(&feature)?))
-            .ok()?
-            .id()
+        let by_feature = self
+            .by_feature
+            .get_or_init(|| self.features().map(|(at, f)| (f.feature, at)).collect());
+        self.feature(*by_feature.get(&feature)?).ok()?.id()
     }
 
     /// The features, unpacked.
-    pub fn decode(&self) -> Vec<HitFeature> {
-        self.records()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|(_, record)| {
-                let f = FeatureRef::parse(record).ok()?;
+    #[cfg(test)]
+    pub(crate) fn decode(&self) -> Vec<HitFeature> {
+        self.features()
+            .filter_map(|(_, f)| {
                 let parts = f
                     .parts()
                     .ok()?
@@ -388,12 +383,6 @@ impl MeshHits {
                 Some(HitFeature {
                     id: f.id(),
                     feature: f.feature,
-                    kind: f.kind,
-                    extent: f.extent,
-                    radius: f.radius,
-                    stroke: f.stroke,
-                    height: f.height,
-                    base: f.base,
                     parts,
                 })
             })
@@ -415,14 +404,9 @@ impl MeshHits {
     fn bounds(&self, mapping: &TileMapping) -> &[Bounds] {
         self.bounds.get_or_init(|| {
             let mut out = Vec::new();
-            for (at, record) in self.records().unwrap_or_default() {
-                let Ok(f) = FeatureRef::parse(record) else {
-                    continue;
-                };
+            for (at, f) in self.features() {
                 let (min, max) = match mapping {
-                    TileMapping::Affine { .. } => {
-                        affine_bounds(mapping, f.extent, &record[..RECORD_BOUNDS])
-                    }
+                    TileMapping::Affine { .. } => affine_bounds(mapping, f.extent, f.bounds),
                     TileMapping::Warped(_) => {
                         let transform = mapping.mapper(f.extent);
                         let (mut min, mut max) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
@@ -1143,7 +1127,7 @@ impl Scene<'_> {
                 record,
                 at,
             } => {
-                let f = FeatureRef::parse(mesh.record(record)).ok()?;
+                let f = mesh.feature(record).ok()?;
                 let id = f.id();
                 let state = match (self.states, &id) {
                     (Some(states), Some(id)) if layer.paint.reads_state() => {
@@ -1958,38 +1942,43 @@ mod tests {
         );
     }
 
+    /// A tile's geometry holds each feature once, polygons closed and
+    /// points in the tile, and crosses workers beside its nodes' records.
     #[test]
     fn mesh_hits_round_trip() {
-        let features = vec![
-            HitFeature {
-                id: Some("seven".into()),
-                feature: 3,
-                kind: 2,
-                extent: 4096,
-                radius: 5.0,
-                stroke: 2.0,
-                parts: vec![vec![vec![[1, 2], [-3, 4]]]],
-                ..HitFeature::default()
-            },
-            HitFeature {
-                feature: 4,
-                kind: 0,
-                extent: 4096,
-                height: 30.0,
-                parts: vec![vec![vec![[0, 0], [10, 0], [10, 10]], vec![]]],
-                ..HitFeature::default()
-            },
-        ];
-        let hits = MeshHits::new(&features);
-        assert_eq!(hits.decode(), features);
-        let copy = MeshHits::from_words(hits.words().to_vec()).unwrap();
-        assert_eq!(copy, hits);
+        let mut b = orb_tile::LayerBuilder::new("l", 4096);
+        b.begin_feature(Some(7), orb_tile::GeometryType::Point);
+        b.begin_part();
+        b.begin_ring();
+        b.push_vertex([1, 2]);
+        b.push_vertex([-3, 4]);
+        b.begin_feature(None, orb_tile::GeometryType::Polygon);
+        b.begin_part();
+        b.begin_ring();
+        for p in [[0, 0], [10, 0], [10, 10]] {
+            b.push_vertex(p);
+        }
+        let layer = b.finish();
+        let mut geometry = HitGeometry::default();
+        let point = geometry.add(&layer, 0, Some("seven"), true);
+        let polygon = geometry.add(&layer, 1, None, true);
+        assert_eq!(geometry.add(&layer, 1, None, true), polygon);
+        let mut hits = MeshHits::new(0);
+        hits.push(&geometry, point, 0, 2, [5.0, 0.0, 0.0, 0.0]);
+        hits.push(&geometry, polygon, 1, 0, [0.0; 4]);
+        hits.link(&[Arc::new(geometry)]);
+        let decoded = hits.decode();
+        assert_eq!(decoded[0].id.as_deref(), Some("seven"));
+        assert_eq!(decoded[0].parts, [vec![vec![[1, 2]]]]);
         assert_eq!(
-            (hits.header(1), hits.header(2), hits.header(3)),
-            (5.0, 2.0, 30.0)
+            decoded[1].parts,
+            [vec![vec![[0, 0], [10, 0], [10, 10], [0, 0]]]]
         );
-        let mut words = hits.words().to_vec();
-        words.pop();
-        assert!(MeshHits::from_words(words).is_err());
+        assert_eq!(hits.header(1), 5.0);
+        let mut copy: MeshHits = crate::wire::decode(&crate::wire::encode(&hits)).unwrap();
+        copy.link(&[Arc::clone(&hits.geometry)]);
+        assert_eq!(copy.decode(), decoded);
+        copy.words.truncate(MESH_HEADER + NODE_RECORD + 3);
+        assert_eq!(copy.decode().len(), 1, "a malformed record is skipped");
     }
 }

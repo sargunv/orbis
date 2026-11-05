@@ -7,7 +7,7 @@ use orb_layout::{Family, ImageKey, pack_color};
 use orb_layout::{Mesh, extrusion, fill, line, point};
 use orb_shaders::layout;
 use orb_style::{Kind, LayerType, SourceKind};
-use orb_tile::{Layer, LayerBuilder, TileFrame};
+use orb_tile::{GeometryType, Layer, LayerBuilder, TileFrame};
 
 use crate::glyphs::GlyphCatalog;
 use crate::style::{NodePlan, PaintProperty, StylePlan};
@@ -28,6 +28,8 @@ pub struct TileBuild {
     /// Feature ids, as GL JS keys feature state, that meshes refer to.
     pub(crate) ids: Vec<String>,
     pub(crate) meshes: Vec<NodeMesh>,
+    /// Per source layer laid out, the geometry its nodes' hits point into.
+    pub(crate) hits: Vec<(String, crate::HitGeometry)>,
     /// Per symbol layer laid out, by layer key: its bucket. Its icon and
     /// text nodes' meshes carry property rows only.
     pub(crate) symbols: Vec<(u32, SymbolBuild)>,
@@ -484,6 +486,26 @@ pub(crate) fn build(
         } else {
             split_features(layer, selected)
         };
+        let tile_layer = layer;
+        let tile_promote = match &source_def.kind {
+            SourceKind::Vector(v) => v
+                .promote_id
+                .as_ref()
+                .and_then(|p| p.key(name))
+                .and_then(|key| layer.property(key)),
+            _ => None,
+        };
+        let hit_layer = match build.hits.iter().position(|(n, _)| n == name) {
+            Some(i) => i,
+            None => {
+                build
+                    .hits
+                    .push((name.to_string(), crate::HitGeometry::default()));
+                build.hits.len() - 1
+            }
+        };
+        // A feature split into pieces picks once, with all its parts.
+        let mut picked = std::collections::HashSet::new();
         let (layer, origin) = match &split.pieces {
             Some((pieces, origin)) => (pieces, Some(origin.as_slice())),
             None => (layer, None),
@@ -669,105 +691,56 @@ pub(crate) fn build(
                     })
                     .collect()
             };
-            let hits: Vec<crate::HitFeature> = if matches!(
-                node.family,
-                Family::Fill | Family::Line | Family::Circle | Family::FillExtrusion
-            ) {
-                features
-                    .iter()
-                    .filter(|&&f| match node.family {
-                        Family::Fill | Family::FillExtrusion => {
-                            layer.geometry_type(f as usize) == orb_tile::GeometryType::Polygon
-                        }
-                        Family::Line => {
-                            layer.geometry_type(f as usize) != orb_tile::GeometryType::Point
-                        }
-                        _ => true,
-                    })
-                    .map(|&f| {
-                        let i = f as usize;
-                        let l = style_layer;
-                        let at =
-                            |key: orb_style::Key<f32>| l.get(key).bind(layer).evaluate(zoom, i);
-                        let (kind, radius, stroke, height) = match l.ty {
-                            LayerType::Circle => (
-                                2,
-                                at(orb_style::CIRCLE_RADIUS),
-                                at(orb_style::CIRCLE_STROKE_WIDTH),
-                                0.0,
-                            ),
-                            LayerType::Line => (1, at(orb_style::LINE_WIDTH) / 2.0, 0.0, 0.0),
-                            LayerType::FillExtrusion => {
-                                (0, 0.0, 0.0, at(orb_style::EXTRUSION_HEIGHT))
-                            }
-                            _ => (0, 0.0, 0.0, 0.0),
-                        };
-                        crate::HitFeature {
-                            id: promote
-                                .unwrap_or(layer.ids())
-                                .get(i)
-                                .map(crate::features::state_key),
-                            // Queries read the feature from the tile's layer.
-                            feature: origin.map_or(f, |origin| origin[i]),
-                            kind,
-                            radius,
-                            stroke,
-                            height,
-                            base: match l.ty {
-                                LayerType::FillExtrusion => at(orb_style::EXTRUSION_BASE),
-                                _ => 0.0,
-                            },
-                            extent: layer.extent(),
-                            parts: layer
-                                .geometry(i)
-                                .parts()
-                                .map(|p| {
-                                    p.rings()
-                                        .map(|r| {
-                                            let mut points = r.to_vec();
-                                            if kind == 2 {
-                                                // Circle buckets own only vertices inside the half-open tile.
-                                                points.retain(|p| {
-                                                    p.iter().all(|v| {
-                                                        *v >= 0 && *v < layer.extent() as i32
-                                                    })
-                                                });
-                                            } else if kind == 1
-                                                && layer.geometry_type(i)
-                                                    == orb_tile::GeometryType::Polygon
-                                                && let Some(first) = points.first().copied()
-                                            {
-                                                points.push(first);
-                                            }
-                                            points
-                                        })
-                                        .collect()
-                                })
-                                .collect(),
-                        }
-                    })
-                    .collect()
-            } else if matches!(node.family, Family::SymbolIcon | Family::SymbolText) {
-                // Labels pick from placement; their features' ids come from
-                // here, by feature index.
-                features
-                    .iter()
-                    .map(|&f| crate::HitFeature {
-                        id: promote
-                            .unwrap_or(layer.ids())
-                            .get(f as usize)
-                            .map(crate::features::state_key),
-                        feature: origin.map_or(f, |origin| origin[f as usize]),
-                        kind: crate::query::LABEL,
-                        extent: layer.extent(),
-                        ..crate::HitFeature::default()
-                    })
-                    .collect()
-            } else {
-                Vec::new()
+            let kind = match node.family {
+                Family::Fill | Family::FillExtrusion => Some(0),
+                Family::Line => Some(1),
+                Family::Circle => Some(2),
+                Family::SymbolIcon | Family::SymbolText => Some(crate::query::LABEL),
+                _ => None,
             };
+            let geometry = &mut build.hits[hit_layer].1;
+            let mut hits = crate::MeshHits::new(hit_layer as u32);
+            for &f in features.iter().filter(|_| kind.is_some()) {
+                let i = f as usize;
+                let shape = layer.geometry_type(i);
+                let fits = match node.family {
+                    Family::Fill | Family::FillExtrusion => shape == GeometryType::Polygon,
+                    Family::Line => shape != GeometryType::Point,
+                    _ => true,
+                };
+                // Queries read the feature from the tile's layer.
+                let feature = origin.map_or(f, |origin| origin[i]);
+                if !fits || (origin.is_some() && !picked.insert(feature)) {
+                    continue;
+                }
+                let kind = kind.expect("a picked family");
+                let id = tile_promote
+                    .unwrap_or(tile_layer.ids())
+                    .get(feature as usize);
+                let id = id.map(crate::features::state_key);
+                let at = |key| style_layer.get(key).bind(layer).evaluate(zoom, i);
+                let dimensions = match style_layer.ty {
+                    LayerType::Circle => [
+                        at(orb_style::CIRCLE_RADIUS),
+                        at(orb_style::CIRCLE_STROKE_WIDTH),
+                        0.0,
+                        0.0,
+                    ],
+                    LayerType::Line => [at(orb_style::LINE_WIDTH) / 2.0, 0.0, 0.0, 0.0],
+                    LayerType::FillExtrusion => [
+                        0.0,
+                        0.0,
+                        at(orb_style::EXTRUSION_HEIGHT),
+                        at(orb_style::EXTRUSION_BASE),
+                    ],
+                    _ => [0.0; 4],
+                };
+                let parts = kind != crate::query::LABEL;
+                let record = geometry.add(tile_layer, feature, id.as_deref(), parts);
+                hits.push(geometry, record, feature, kind, dimensions);
+            }
             build.meshes.push(NodeMesh {
-                hits: crate::MeshHits::new(&hits),
+                hits,
                 node: node.key,
                 extent: if matches!(
                     node.family,
@@ -850,13 +823,11 @@ mod tests {
         )
         .unwrap();
         let hits = |family| {
-            result
+            let mesh = result
                 .meshes
                 .iter()
-                .find(|m| plan.nodes[plan.node(m.node).unwrap()].family == family)
-                .unwrap()
-                .hits
-                .decode()
+                .find(|m| plan.nodes[plan.node(m.node).unwrap()].family == family);
+            hits(&result, mesh.unwrap())
         };
         assert_eq!(hits(Family::Fill).len(), 1);
         assert_eq!(hits(Family::Line).len(), 2);
@@ -918,8 +889,9 @@ mod tests {
         );
         let mut features = Vec::new();
         for mesh in &full.meshes {
-            let hits = mesh.hits.decode();
-            let points: usize = hits.iter().map(|h| h.parts[0][0].len()).sum();
+            let hits = hits(&full, mesh);
+            // Picking closes the rings.
+            let points: usize = hits.iter().map(|h| h.parts[0][0].len() - 1).sum();
             assert!(points <= MESH_POINTS, "{points} points in one mesh");
             features.extend(hits.iter().map(|h| h.feature));
         }
@@ -993,36 +965,24 @@ mod tests {
         )
         .unwrap();
         // 14,400 points of the first feature in pieces of whole buildings,
-        // then the second feature with the last piece.
+        // then the second feature with the last piece. The first piece
+        // picks the first feature, with all its parts, and the last the
+        // second.
         let per_piece = MESH_POINTS / 4;
         let mut expected = vec![per_piece; 3600 / per_piece];
         expected.push(3600 % per_piece + 1);
-        let parts: Vec<usize> = result
+        let picked: Vec<Vec<(u32, Option<String>, usize)>> = result
             .meshes
             .iter()
-            .map(|m| m.hits.decode().iter().map(|h| h.parts.len()).sum())
+            .map(|m| {
+                let hits = hits(&result, m).into_iter();
+                hits.map(|h| (h.feature, h.id, h.parts.len())).collect()
+            })
             .collect();
-        assert_eq!(parts, expected, "4 points a building");
-        let features: Vec<u32> = result
-            .meshes
-            .iter()
-            .flat_map(|m| m.hits.decode().into_iter().map(|h| h.feature))
-            .collect();
-        let mut pieces = vec![0; expected.len()];
-        pieces.push(1);
-        assert_eq!(features, pieces, "every piece names the tile's feature");
-        let ids: Vec<Option<String>> = result
-            .meshes
-            .iter()
-            .flat_map(|m| m.hits.decode().into_iter().map(|h| h.id))
-            .collect();
-        assert_eq!(ids.len(), expected.len() + 1);
-        assert!(
-            ids[..expected.len()]
-                .iter()
-                .all(|id| id.as_deref() == Some("7"))
-        );
-        assert_eq!(ids.last(), Some(&Some("8".to_string())));
+        assert_eq!(picked.len(), expected.len());
+        assert_eq!(picked[0], [(0, Some("7".to_string()), 3600)]);
+        assert!(picked[1..picked.len() - 1].iter().all(Vec::is_empty));
+        assert_eq!(picked.last().unwrap(), &[(1, Some("8".to_string()), 1)]);
         // A property row a piece.
         let rows: usize = result
             .meshes
@@ -1030,6 +990,18 @@ mod tests {
             .map(|m| m.props.len() / m.row_words as usize)
             .sum();
         assert_eq!(rows, expected.len() + 1);
+    }
+
+    /// A mesh's hits, pointed at its build's geometry.
+    fn hits(build: &TileBuild, mesh: &NodeMesh) -> Vec<crate::query::HitFeature> {
+        let geometry: Vec<_> = build
+            .hits
+            .iter()
+            .map(|(_, g)| std::sync::Arc::new(g.clone()))
+            .collect();
+        let mut hits = mesh.hits.clone();
+        hits.link(&geometry);
+        hits.decode()
     }
 
     fn frame() -> TileFrame {

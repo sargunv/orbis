@@ -164,3 +164,20 @@ Selecting a node's features by its filter takes 2–6% of a tile build
 the filter's columns bound once per layer. Compiled column predicates
 would save at most that and add a second filter path, so they wait until
 a profile shows filters matter.
+
+## Hit geometry once per tile and source layer
+
+A tile's hit-testable geometry is one `HitGeometry` per source layer: each
+feature its nodes pick, once, with its id and bounds, polygons' rings
+closed and points only inside the tile (as lines and circles pick them),
+and the layer's extent once. A node's `MeshHits` keeps a header and seven
+words a feature: its record, index, kind and the node's radius, stroke,
+height and base. A feature a node splits into pieces picks once, with all
+its parts. The geometry crosses workers once per tile, beside the nodes'
+records, and meshes link to it as the tile arrives; picking reads the same
+`FeatureRef`s as before.
+
+Hit bytes at z14 over Tokyo (`orbis render`): the extract 1.09 MB → 720 KB
+(4 tiles), OpenFreeMap Liberty 6.4 → 5.8 MB (9 tiles; its line layers
+split roads by filter, so few features have two nodes), VersaTiles
+20.3 → 13.5 MB (18 tiles). The query fixtures are unchanged (71 of 83).
