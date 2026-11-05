@@ -100,6 +100,12 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
   a goal. Don't complicate code to chase the last few pixels or reproduce
   GL JS internals; a fixture that differs slightly for a principled reason
   is fine once it's understood and noted.
+- **Every frame is right for its camera.** A moving camera is the normal
+  state of a map. What a frame shows must depend on the camera of that frame,
+  not on whether the camera is moving or how it got there: no "update once
+  the camera stops", no caches keyed on the camera that go stale mid-gesture,
+  no gesture-only modes. If something looks wrong while moving, find the
+  still frame that looks wrong and fix that.
 - **Measure.** Report sizes, timings and counters as numbers.
 
 ### Devices
