@@ -1448,11 +1448,21 @@ impl crate::Map {
         })
     }
 
-    /// The labels the last commit shows, worked out once per commit.
-    fn label_hits(&self) -> Arc<Vec<LabelHit>> {
+    /// The labels the last commit shows, worked out once per commit; the
+    /// last live frame's while the map draws still output.
+    pub(crate) fn label_hits(&self) -> Arc<Vec<LabelHit>> {
         let Some(style) = &self.style else {
             return Arc::default();
         };
+        if self.mode != crate::RenderMode::Continuous {
+            return self
+                .picking
+                .borrow()
+                .labels
+                .as_ref()
+                .map(|(_, labels)| Arc::clone(labels))
+                .unwrap_or_default();
+        }
         let key = (
             self.labels.commits(),
             self.version,

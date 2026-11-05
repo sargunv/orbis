@@ -486,7 +486,7 @@ pub struct GridTile {
 
 pub struct Map {
     /// Interactive, a still picture or a tile ([`Map::set_mode`]).
-    mode: RenderMode,
+    pub(crate) mode: RenderMode,
     /// Placement and the scene side of labels.
     pub(crate) labels: crate::labels::Labels,
     /// Counts the [`Labels`](crate::labels::Labels) a GPU reset replaced.
@@ -785,7 +785,14 @@ impl Map {
     /// Sets how the map renders. `Still` and `Tile` frames wait for nothing
     /// to fade, so a host renders until [`FrameReport::idle`] and keeps
     /// that frame.
+    ///
+    /// Hit tests and rendered queries answer for the last `Continuous`
+    /// frame meanwhile: a snapshot leaves the live view's as they were.
     pub fn set_mode(&mut self, mode: RenderMode) {
+        if self.mode == RenderMode::Continuous && mode != RenderMode::Continuous {
+            // The labels shown now, before still placement replaces them.
+            self.label_hits();
+        }
         self.mode = mode;
     }
 
@@ -1527,13 +1534,15 @@ impl Map {
         }
         report.generation = self.generation();
         let picking = self.picking.get_mut();
-        if picking.layers_version != Some(self.version)
-            && let Some(style) = &self.style
-        {
-            picking.layers = Arc::new(crate::query::HitLayers::of(style.worker.plan()));
-            picking.layers_version = Some(self.version);
+        if self.mode == RenderMode::Continuous {
+            if picking.layers_version != Some(self.version)
+                && let Some(style) = &self.style
+            {
+                picking.layers = Arc::new(crate::query::HitLayers::of(style.worker.plan()));
+                picking.layers_version = Some(self.version);
+            }
+            picking.drew(view.clone(), self.camera, drawn, report.generation);
         }
-        picking.drew(view.clone(), self.camera, drawn, report.generation);
         report.loaded = self.style.as_ref().is_some_and(|s| {
             s.sprites_loading == 0
                 && s.sources
