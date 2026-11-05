@@ -124,7 +124,9 @@ fn a_hung_compile_demotes_the_device() {
             .hung_compile()
             .expect("the watchdog names the compile");
         eprintln!("{frames} frames drawn while {hung} compiled; lost after {lost:?}");
-        assert!(frames > 10, "frames go on while a compile hangs");
+        // A compile that blocked the drawing thread would hold the first
+        // frame until the watchdog fired; more than one frame is enough.
+        assert!(frames > 1, "frames go on while a compile hangs");
         runtime.recover().unwrap();
         let selection = runtime.selection();
         assert!(selection.contains("crash sentinel"), "{selection}");

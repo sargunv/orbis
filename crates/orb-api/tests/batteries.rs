@@ -10,13 +10,8 @@ const STYLE: &str = r##"{"version": 8, "center": [0, 0], "zoom": 4, "sources": {
     "layers": [{"id": "bg", "type": "background", "paint": {"background-color": "#ffffff"}}]}"##;
 
 fn settle(map: &mut Map, target: &mut Target) {
-    let started = Instant::now();
-    let mut idle = false;
-    while !idle || map.needs_frame() {
-        idle = map.render(target, 0.0).unwrap().is_some_and(|r| r.idle);
-        assert!(started.elapsed() < Duration::from_secs(30), "never idle");
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    map.render_until_idle(target, Duration::from_secs(30))
+        .expect("the map idles");
 }
 
 /// Pixels of a colour: red-ish (the pin) or blue-ish (the location).
