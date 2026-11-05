@@ -360,6 +360,25 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * The limits the camera keeps to, whoever moves it.
+     *
+     * Contract: `command`.
+     */
+    fun setConstraints(constraints: OrbConstraints) {
+        OrbisNative.orbMapSetConstraints(live(), constraints.minZoom, constraints.maxZoom, constraints.minPitch, constraints.maxPitch, constraints.bounded, constraints.west, constraints.south, constraints.east, constraints.north)
+    }
+
+    /**
+     * What the labels on screen say, for assistive technology (plan
+     * §13), as JSON; empty before labels are first placed.
+     *
+     * Contract: `snapshot`.
+     */
+    fun semanticSnapshot(): String {
+        return OrbisNative.orbMapSemanticSnapshot(live()).decodeToString()
+    }
+
+    /**
      * A pointer went down, in logical pixels. Returns whether the map
      * used the input.
      *

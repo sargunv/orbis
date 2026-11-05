@@ -15,6 +15,7 @@ static jmethodID g_function0_invoke;
 static jmethodID g_new_OrbBounds;
 static jmethodID g_new_OrbCamera;
 static jmethodID g_new_OrbCameraTarget;
+static jmethodID g_new_OrbConstraints;
 static jmethodID g_new_OrbFrame;
 static jmethodID g_new_OrbLngLat;
 static jmethodID g_new_OrbModifiers;
@@ -109,6 +110,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     g_new_OrbBounds = (*env)->GetStaticMethodID(env, g_native, "newOrbBounds", "(DDDD)Ldev/orbis/OrbBounds;");
     g_new_OrbCamera = (*env)->GetStaticMethodID(env, g_native, "newOrbCamera", "(DDDDDDD)Ldev/orbis/OrbCamera;");
     g_new_OrbCameraTarget = (*env)->GetStaticMethodID(env, g_native, "newOrbCameraTarget", "(DDDDDDD)Ldev/orbis/OrbCameraTarget;");
+    g_new_OrbConstraints = (*env)->GetStaticMethodID(env, g_native, "newOrbConstraints", "(DDDDZDDDD)Ldev/orbis/OrbConstraints;");
     g_new_OrbFrame = (*env)->GetStaticMethodID(env, g_native, "newOrbFrame", "(ZJZZIIIIII)Ldev/orbis/OrbFrame;");
     g_new_OrbLngLat = (*env)->GetStaticMethodID(env, g_native, "newOrbLngLat", "(DDZ)Ldev/orbis/OrbLngLat;");
     g_new_OrbModifiers = (*env)->GetStaticMethodID(env, g_native, "newOrbModifiers", "(ZZZZ)Ldev/orbis/OrbModifiers;");
@@ -152,6 +154,12 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeDestroy(JNIEnv* env,
     (void)env;
     (void)cls;
     OrbRuntime_destroy((OrbRuntime*)(intptr_t)self);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbStatsDestroy(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbStats_destroy((OrbStats*)(intptr_t)self);
 }
 
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbTargetDestroy(JNIEnv* env, jclass cls, jlong self) {
@@ -649,6 +657,20 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapStop(JNIEnv* env, jclass
     OrbMap_stop((OrbMap*)(intptr_t)self);
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetConstraints(JNIEnv* env, jclass cls, jlong self, jdouble constraints_min_zoom, jdouble constraints_max_zoom, jdouble constraints_min_pitch, jdouble constraints_max_pitch, jboolean constraints_bounded, jdouble constraints_west, jdouble constraints_south, jdouble constraints_east, jdouble constraints_north) {
+    (void)env;
+    (void)cls;
+    OrbMap_set_constraints((OrbMap*)(intptr_t)self, (OrbConstraints){ .min_zoom = (double)(constraints_min_zoom), .max_zoom = (double)(constraints_max_zoom), .min_pitch = (double)(constraints_min_pitch), .max_pitch = (double)(constraints_max_pitch), .bounded = (bool)(constraints_bounded), .west = (double)(constraints_west), .south = (double)(constraints_south), .east = (double)(constraints_east), .north = (double)(constraints_north) });
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbMapSemanticSnapshot(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbMap_semantic_snapshot((const OrbMap*)(intptr_t)self, write);
+    return write_to_bytes(env, write);
+}
+
 JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapPointerDown(JNIEnv* env, jclass cls, jlong self, jint id, jint kind, jint button, jdouble x, jdouble y, jboolean modifiers_shift, jboolean modifiers_ctrl, jboolean modifiers_alt, jboolean modifiers_meta, jdouble timeMs) {
     (void)env;
     (void)cls;
@@ -846,19 +868,11 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeCreateWith(JNIEnv* 
     return (jlong)(intptr_t)(result.ok);
 }
 
-JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbRuntimeCompat(JNIEnv* env, jclass cls, jlong self) {
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeStats(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
-    bool result = OrbRuntime_compat((const OrbRuntime*)(intptr_t)self);
-    return (result) ? JNI_TRUE : JNI_FALSE;
-}
-
-JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbRuntimeSelection(JNIEnv* env, jclass cls, jlong self) {
-    (void)env;
-    (void)cls;
-    DiplomatWrite* write = diplomat_buffer_write_create(0);
-    OrbRuntime_selection((const OrbRuntime*)(intptr_t)self, write);
-    return write_to_bytes(env, write);
+    OrbStats* result = OrbRuntime_stats((const OrbRuntime*)(intptr_t)self);
+    return (jlong)(intptr_t)(result);
 }
 
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeLoseDevice(JNIEnv* env, jclass cls, jlong self) {
@@ -882,27 +896,6 @@ JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRuntimeAbiVersion(JNIEnv* e
     (void)cls;
     uint32_t result = OrbRuntime_abi_version();
     return (jint)(result);
-}
-
-JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRuntimePipelinesCreated(JNIEnv* env, jclass cls, jlong self) {
-    (void)env;
-    (void)cls;
-    uint32_t result = OrbRuntime_pipelines_created((const OrbRuntime*)(intptr_t)self);
-    return (jint)(result);
-}
-
-JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeSetPipelineCacheDir(JNIEnv* env, jclass cls, jlong self, jbyteArray dir) {
-    (void)env;
-    (void)cls;
-    jbyte* dir_bytes = (*env)->GetByteArrayElements(env, dir, NULL);
-    if (!dir_bytes) return;
-    DiplomatStringView dir_view = { (const char*)dir_bytes, (size_t)(*env)->GetArrayLength(env, dir) };
-    OrbRuntime_set_pipeline_cache_dir_result result = OrbRuntime_set_pipeline_cache_dir((OrbRuntime*)(intptr_t)self, dir_view);
-    (*env)->ReleaseByteArrayElements(env, dir, dir_bytes, JNI_ABORT);
-    if (!result.is_ok) {
-        throw_OrbError(env, result.err);
-        return;
-    }
 }
 
 JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbRuntimeDownloadRegion(JNIEnv* env, jclass cls, jlong self, jbyteArray name, jbyteArray styleUrl, jdouble west, jdouble south, jdouble east, jdouble north, jdouble minZoom, jdouble maxZoom) {
@@ -954,32 +947,54 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimePollRegionEvent(JNI
     return (jlong)(intptr_t)(result);
 }
 
-JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeHttpCacheBytes(JNIEnv* env, jclass cls, jlong self) {
-    (void)env;
-    (void)cls;
-    uint64_t result = OrbRuntime_http_cache_bytes((const OrbRuntime*)(intptr_t)self);
-    return (jlong)(result);
-}
-
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeClearHttpCache(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
     OrbRuntime_clear_http_cache((OrbRuntime*)(intptr_t)self);
 }
 
-JNIEXPORT jdouble JNICALL Java_dev_orbis_OrbisNative_orbRuntimePipelineMs(JNIEnv* env, jclass cls, jlong self) {
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbStatsCompat(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
-    double result = OrbRuntime_pipeline_ms((const OrbRuntime*)(intptr_t)self);
-    return (jdouble)(result);
+    bool result = OrbStats_compat((const OrbStats*)(intptr_t)self);
+    return (result) ? JNI_TRUE : JNI_FALSE;
 }
 
-JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbRuntimePipelineTimings(JNIEnv* env, jclass cls, jlong self) {
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbStatsSelection(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
     DiplomatWrite* write = diplomat_buffer_write_create(0);
-    OrbRuntime_pipeline_timings((const OrbRuntime*)(intptr_t)self, write);
+    OrbStats_selection((const OrbStats*)(intptr_t)self, write);
     return write_to_bytes(env, write);
+}
+
+JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbStatsPipelinesCreated(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint32_t result = OrbStats_pipelines_created((const OrbStats*)(intptr_t)self);
+    return (jint)(result);
+}
+
+JNIEXPORT jdouble JNICALL Java_dev_orbis_OrbisNative_orbStatsPipelineMs(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    double result = OrbStats_pipeline_ms((const OrbStats*)(intptr_t)self);
+    return (jdouble)(result);
+}
+
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbStatsPipelineTimings(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbStats_pipeline_timings((const OrbStats*)(intptr_t)self, write);
+    return write_to_bytes(env, write);
+}
+
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbStatsHttpCacheBytes(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint64_t result = OrbStats_http_cache_bytes((const OrbStats*)(intptr_t)self);
+    return (jlong)(result);
 }
 
 JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbTargetCreateTexture(JNIEnv* env, jclass cls, jlong runtime, jint width, jint height, jdouble scale) {

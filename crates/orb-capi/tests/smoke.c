@@ -37,7 +37,7 @@ static DiplomatStringView view(const char* text) {
 }
 
 int main(void) {
-    CHECK(OrbRuntime_abi_version() == 4);
+    CHECK(OrbRuntime_abi_version() == 5);
     OrbRuntime_create_result rt = OrbRuntime_create(0);
     CHECK(rt.is_ok);
     OrbTarget* target = OrbTarget_create_texture(rt.ok, SIZE, SIZE, 1.0);

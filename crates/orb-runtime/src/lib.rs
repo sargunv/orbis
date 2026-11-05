@@ -39,6 +39,7 @@ mod video;
 pub mod wire;
 
 pub use events::MapEvent;
+pub use orb_a11y::Snapshot as SemanticSnapshot;
 pub use video::{NO_VIDEO, VideoRequest};
 
 /// The warning a style with terrain gets on Compat (plan §8.7), whose

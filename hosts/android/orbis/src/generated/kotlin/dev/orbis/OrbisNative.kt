@@ -27,6 +27,9 @@ internal object OrbisNative {
     external fun orbRuntimeDestroy(self: Long)
 
     @JvmStatic
+    external fun orbStatsDestroy(self: Long)
+
+    @JvmStatic
     external fun orbTargetDestroy(self: Long)
 
     @JvmStatic
@@ -189,6 +192,12 @@ internal object OrbisNative {
     external fun orbMapStop(self: Long): Unit
 
     @JvmStatic
+    external fun orbMapSetConstraints(self: Long, constraints_min_zoom: Double, constraints_max_zoom: Double, constraints_min_pitch: Double, constraints_max_pitch: Double, constraints_bounded: Boolean, constraints_west: Double, constraints_south: Double, constraints_east: Double, constraints_north: Double): Unit
+
+    @JvmStatic
+    external fun orbMapSemanticSnapshot(self: Long): ByteArray
+
+    @JvmStatic
     external fun orbMapPointerDown(self: Long, id: Int, kind: Int, button: Int, x: Double, y: Double, modifiers_shift: Boolean, modifiers_ctrl: Boolean, modifiers_alt: Boolean, modifiers_meta: Boolean, timeMs: Double): Boolean
 
     @JvmStatic
@@ -261,10 +270,7 @@ internal object OrbisNative {
     external fun orbRuntimeCreateWith(jobThreads: Int, backend: Int, stateDir: ByteArray, androidApiLevel: Int): Long
 
     @JvmStatic
-    external fun orbRuntimeCompat(self: Long): Boolean
-
-    @JvmStatic
-    external fun orbRuntimeSelection(self: Long): ByteArray
+    external fun orbRuntimeStats(self: Long): Long
 
     @JvmStatic
     external fun orbRuntimeLoseDevice(self: Long): Unit
@@ -274,12 +280,6 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbRuntimeAbiVersion(): Int
-
-    @JvmStatic
-    external fun orbRuntimePipelinesCreated(self: Long): Int
-
-    @JvmStatic
-    external fun orbRuntimeSetPipelineCacheDir(self: Long, dir: ByteArray): Unit
 
     @JvmStatic
     external fun orbRuntimeDownloadRegion(self: Long, name: ByteArray, styleUrl: ByteArray, west: Double, south: Double, east: Double, north: Double, minZoom: Double, maxZoom: Double): Int
@@ -294,16 +294,25 @@ internal object OrbisNative {
     external fun orbRuntimePollRegionEvent(self: Long): Long
 
     @JvmStatic
-    external fun orbRuntimeHttpCacheBytes(self: Long): Long
-
-    @JvmStatic
     external fun orbRuntimeClearHttpCache(self: Long): Unit
 
     @JvmStatic
-    external fun orbRuntimePipelineMs(self: Long): Double
+    external fun orbStatsCompat(self: Long): Boolean
 
     @JvmStatic
-    external fun orbRuntimePipelineTimings(self: Long): ByteArray
+    external fun orbStatsSelection(self: Long): ByteArray
+
+    @JvmStatic
+    external fun orbStatsPipelinesCreated(self: Long): Int
+
+    @JvmStatic
+    external fun orbStatsPipelineMs(self: Long): Double
+
+    @JvmStatic
+    external fun orbStatsPipelineTimings(self: Long): ByteArray
+
+    @JvmStatic
+    external fun orbStatsHttpCacheBytes(self: Long): Long
 
     @JvmStatic
     external fun orbTargetCreateTexture(runtime: Long, width: Int, height: Int, scale: Double): Long
@@ -340,6 +349,9 @@ internal object OrbisNative {
 
     @JvmStatic
     fun newOrbCameraTarget(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double): OrbCameraTarget = OrbCameraTarget(lon, lat, zoom, bearing, pitch, roll, elevation)
+
+    @JvmStatic
+    fun newOrbConstraints(min_zoom: Double, max_zoom: Double, min_pitch: Double, max_pitch: Double, bounded: Boolean, west: Double, south: Double, east: Double, north: Double): OrbConstraints = OrbConstraints(min_zoom, max_zoom, min_pitch, max_pitch, bounded, west, south, east, north)
 
     @JvmStatic
     fun newOrbFrame(drawn: Boolean, generation: Long, idle: Boolean, loaded: Boolean, tiles_drawn: Int, tiles_loading: Int, draws: Int, dispatches: Int, pipelines_pending: Int, layers_waiting: Int): OrbFrame = OrbFrame(drawn, generation.toULong(), idle, loaded, tiles_drawn.toUInt(), tiles_loading.toUInt(), draws.toUInt(), dispatches.toUInt(), pipelines_pending.toUInt(), layers_waiting.toUInt())

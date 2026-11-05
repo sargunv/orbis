@@ -69,7 +69,9 @@ private func solidVideo(at url: URL, rgb: (UInt8, UInt8, UInt8), seconds: Int) a
     let started = Date()
     while Date().timeIntervalSince(started) < 20 {
         videos.pump(map)
-        if map.needsFrame() { _ = try map.render(target: target) }
+        if map.needsFrame() {
+            _ = try map.render(target: target, frameTimeMs: ProcessInfo.processInfo.systemUptime * 1000)
+        }
         while let event = map.pollEvent() {
             _ = videos.handle(event, map: map)
             #expect(event.kind() != .error, "\(event.text())")

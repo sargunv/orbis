@@ -11,6 +11,7 @@
 #include "OrbButton.d.h"
 #include "OrbCamera.d.h"
 #include "OrbCameraTarget.d.h"
+#include "OrbConstraints.d.h"
 #include "OrbError.d.h"
 #include "OrbEvent.d.h"
 #include "OrbFeature.d.h"
@@ -113,6 +114,10 @@ uint64_t OrbMap_fly_to(OrbMap* self, OrbCameraTarget target, double duration_ms)
 uint64_t OrbMap_fit_bounds(OrbMap* self, OrbBounds bounds, double padding, double duration_ms);
 
 void OrbMap_stop(OrbMap* self);
+
+void OrbMap_set_constraints(OrbMap* self, OrbConstraints constraints);
+
+void OrbMap_semantic_snapshot(const OrbMap* self, DiplomatWrite* write);
 
 bool OrbMap_pointer_down(OrbMap* self, uint32_t id, OrbPointerKind kind, OrbButton button, double x, double y, OrbModifiers modifiers, double time_ms);
 

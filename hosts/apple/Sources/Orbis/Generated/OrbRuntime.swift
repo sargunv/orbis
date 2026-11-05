@@ -67,18 +67,11 @@ public final class OrbRuntime {
         return OrbRuntime(handle: result.ok!)
     }
 
-    /// Whether the runtime draws at the Compat tier (GLES 3.0).
+    /// What the runtime's device is and has done, now.
     ///
     /// Contract: `snapshot`.
-    public func compat() -> Bool {
-        return OrbRuntime_compat(live())
-    }
-
-    /// Why the device is the tier it is: "Modern: …" or "Compat: …".
-    ///
-    /// Contract: `snapshot`.
-    public func selection() -> String {
-        return withWrite { write in OrbRuntime_selection(live(), write) }.text
+    public func stats() -> OrbStats {
+        return OrbStats(handle: OrbRuntime_stats(live())!)
     }
 
     /// Loses the GPU on purpose, to exercise recovery: frames fail
@@ -108,28 +101,6 @@ public final class OrbRuntime {
     /// Contract: `immediate`.
     public static func abiVersion() -> UInt32 {
         return OrbRuntime_abi_version()
-    }
-
-    /// Render and compute pipelines the device has made so far.
-    ///
-    /// Contract: `snapshot`.
-    public func pipelinesCreated() -> UInt32 {
-        return OrbRuntime_pipelines_created(live())
-    }
-
-    /// Keeps the driver's compiled pipelines in the directory `dir`
-    /// between runs, so warm starts skip compiling them (Vulkan;
-    /// elsewhere the platform caches and this does nothing). Call
-    /// before the first frame; maps save the cache when idle.
-    ///
-    /// Contract: `command`.
-    ///
-    /// - Throws: `OrbErrorFailure` when it fails.
-    public func setPipelineCacheDir(dir: String) throws {
-        let result = withStringView(dir) { dirView in OrbRuntime_set_pipeline_cache_dir(live(), dirView) }
-        guard result.is_ok else {
-            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
-        }
     }
 
     /// Downloads `style_url`'s map of the area west, south, east,
@@ -182,35 +153,11 @@ public final class OrbRuntime {
         return OrbRuntime_poll_region_event(live()).map { OrbRegionEvent(handle: $0) }
     }
 
-    /// Bytes of response bodies the HTTP cache holds (0 without one).
-    ///
-    /// Contract: `snapshot`.
-    public func httpCacheBytes() -> UInt64 {
-        return OrbRuntime_http_cache_bytes(live())
-    }
-
     /// Empties the HTTP cache.
     ///
     /// Contract: `command`.
     public func clearHttpCache() {
         OrbRuntime_clear_http_cache(live())
-    }
-
-    /// Milliseconds spent compiling pipelines so far, summed over the
-    /// threads that compiled them: translation and the driver's
-    /// compiles.
-    ///
-    /// Contract: `snapshot`.
-    public func pipelineMs() -> Double {
-        return OrbRuntime_pipeline_ms(live())
-    }
-
-    /// Each pipeline compiled so far, slowest first: one line each,
-    /// milliseconds then its label.
-    ///
-    /// Contract: `snapshot`.
-    public func pipelineTimings() -> String {
-        return withWrite { write in OrbRuntime_pipeline_timings(live(), write) }.text
     }
 
 }

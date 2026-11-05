@@ -349,6 +349,21 @@ public final class OrbMap {
         OrbMap_stop(live())
     }
 
+    /// The limits the camera keeps to, whoever moves it.
+    ///
+    /// Contract: `command`.
+    public func setConstraints(constraints: OrbConstraints) {
+        OrbMap_set_constraints(live(), constraints.c)
+    }
+
+    /// What the labels on screen say, for assistive technology (plan
+    /// §13), as JSON; empty before labels are first placed.
+    ///
+    /// Contract: `snapshot`.
+    public func semanticSnapshot() -> String {
+        return withWrite { write in OrbMap_semantic_snapshot(live(), write) }.text
+    }
+
     /// A pointer went down, in logical pixels. Returns whether the map
     /// used the input.
     ///

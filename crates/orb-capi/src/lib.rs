@@ -139,16 +139,10 @@ mod ffi {
             .map_err(fail)
         }
 
-        /// Whether the runtime draws at the Compat tier (GLES 3.0).
+        /// What the runtime's device is and has done, now.
         #[diplomat::attr(contract, snapshot)]
-        pub fn compat(&self) -> bool {
-            self.0.tier() == orb_api::Tier::Compat
-        }
-
-        /// Why the device is the tier it is: "Modern: …" or "Compat: …".
-        #[diplomat::attr(contract, snapshot)]
-        pub fn selection(&self, out: &mut DiplomatWrite) {
-            out.write_str(&self.0.selection()).ok();
+        pub fn stats(&self) -> Box<OrbStats> {
+            Box::new(OrbStats(self.0.stats()))
         }
 
         /// Loses the GPU on purpose, to exercise recovery: frames fail
@@ -170,23 +164,6 @@ mod ffi {
         #[diplomat::attr(contract, immediate)]
         pub fn abi_version() -> u32 {
             crate::ABI_VERSION
-        }
-
-        /// Render and compute pipelines the device has made so far.
-        #[diplomat::attr(contract, snapshot)]
-        pub fn pipelines_created(&self) -> u32 {
-            self.0.pipelines_created()
-        }
-
-        /// Keeps the driver's compiled pipelines in the directory `dir`
-        /// between runs, so warm starts skip compiling them (Vulkan;
-        /// elsewhere the platform caches and this does nothing). Call
-        /// before the first frame; maps save the cache when idle.
-        #[diplomat::attr(contract, command)]
-        pub fn set_pipeline_cache_dir(&mut self, dir: &DiplomatStr) -> Result<(), OrbError> {
-            self.0
-                .set_pipeline_cache_dir(std::path::Path::new(&*text(dir)))
-                .map_err(fail)
         }
 
         /// Downloads `style_url`'s map of the area west, south, east,
@@ -246,35 +223,60 @@ mod ffi {
                 .map(|e| Box::new(OrbRegionEvent(e)))
         }
 
-        /// Bytes of response bodies the HTTP cache holds (0 without one).
-        #[diplomat::attr(contract, snapshot)]
-        pub fn http_cache_bytes(&self) -> u64 {
-            self.0.http_cache_stats().map_or(0, |s| s.bytes)
-        }
-
         /// Empties the HTTP cache.
         #[diplomat::attr(contract, command)]
         pub fn clear_http_cache(&mut self) {
             self.0.clear_http_cache();
         }
+    }
 
-        /// Milliseconds spent compiling pipelines so far, summed over the
-        /// threads that compiled them: translation and the driver's
-        /// compiles.
+    /// A snapshot of what a runtime's device is and has done.
+    #[diplomat::opaque]
+    #[diplomat::attr(contract, thread = "any")]
+    #[derive(Debug)]
+    pub struct OrbStats(orb_api::RuntimeStats);
+
+    impl OrbStats {
+        /// Whether the runtime draws at the Compat tier (GLES 3.0).
         #[diplomat::attr(contract, snapshot)]
-        pub fn pipeline_ms(&self) -> f64 {
-            self.0.pipeline_time().as_secs_f64() * 1000.0
+        pub fn compat(&self) -> bool {
+            self.0.tier == orb_api::Tier::Compat
         }
 
-        /// Each pipeline compiled so far, slowest first: one line each,
+        /// Why the device is the tier it is: "Modern: …" or "Compat: …".
+        #[diplomat::attr(contract, snapshot)]
+        pub fn selection(&self, out: &mut DiplomatWrite) {
+            out.write_str(&self.0.selection).ok();
+        }
+
+        /// Render and compute pipelines the device had made.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn pipelines_created(&self) -> u32 {
+            self.0.pipelines_created
+        }
+
+        /// Milliseconds spent compiling pipelines, summed over the threads
+        /// that compiled them: translation and the driver's compiles.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn pipeline_ms(&self) -> f64 {
+            self.0.pipeline_time.as_secs_f64() * 1000.0
+        }
+
+        /// Each pipeline compiled, slowest first: one line each,
         /// milliseconds then its label.
         #[diplomat::attr(contract, snapshot)]
         pub fn pipeline_timings(&self, out: &mut DiplomatWrite) {
-            let mut timings = self.0.pipeline_timings();
+            let mut timings = self.0.pipeline_timings.clone();
             timings.sort_by_key(|t| std::cmp::Reverse(t.1));
             for (label, took) in timings {
                 let _ = writeln!(out, "{:.1} {label}", took.as_secs_f64() * 1000.0);
             }
+        }
+
+        /// Bytes of response bodies the HTTP cache holds (0 without one).
+        #[diplomat::attr(contract, snapshot)]
+        pub fn http_cache_bytes(&self) -> u64 {
+            self.0.http_cache.as_ref().map_or(0, |s| s.bytes)
         }
     }
 
@@ -486,6 +488,22 @@ mod ffi {
         Pixel = 0,
         Line = 1,
         Page = 2,
+    }
+
+    /// Limits the camera keeps to: zoom and pitch ranges and, when
+    /// `bounded`, a box west, south, east, north in degrees.
+    #[diplomat::attr(contract, thread = "any")]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct OrbConstraints {
+        pub min_zoom: f64,
+        pub max_zoom: f64,
+        pub min_pitch: f64,
+        pub max_pitch: f64,
+        pub bounded: bool,
+        pub west: f64,
+        pub south: f64,
+        pub east: f64,
+        pub north: f64,
     }
 
     #[diplomat::attr(contract, thread = "any")]
@@ -1237,6 +1255,33 @@ mod ffi {
             self.0.stop();
         }
 
+        /// The limits the camera keeps to, whoever moves it.
+        #[diplomat::attr(contract, command)]
+        pub fn set_constraints(&mut self, constraints: OrbConstraints) {
+            let c = constraints;
+            self.0.set_constraints(orb_api::Constraints {
+                min_zoom: c.min_zoom,
+                max_zoom: c.max_zoom,
+                min_pitch: c.min_pitch,
+                max_pitch: c.max_pitch,
+                bounds: c.bounded.then_some(orb_api::Bounds {
+                    west: c.west,
+                    south: c.south,
+                    east: c.east,
+                    north: c.north,
+                }),
+            });
+        }
+
+        /// What the labels on screen say, for assistive technology (plan
+        /// §13), as JSON; empty before labels are first placed.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn semantic_snapshot(&self, out: &mut DiplomatWrite) {
+            if let Some(snapshot) = self.0.semantic_snapshot() {
+                out.write_str(&snapshot.to_json()).ok();
+            }
+        }
+
         /// A pointer went down, in logical pixels. Returns whether the map
         /// used the input.
         #[diplomat::attr(contract, command)]
@@ -1504,7 +1549,7 @@ use std::ptr::NonNull;
 use ffi::{OrbError, OrbEventKind};
 
 /// Bumped on every incompatible change to the C ABI while it is 0.x.
-const ABI_VERSION: u32 = 4;
+const ABI_VERSION: u32 = 5;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };

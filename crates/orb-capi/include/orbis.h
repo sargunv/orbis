@@ -12,6 +12,7 @@
 #include "OrbCamera.h"
 #include "OrbCameraTarget.h"
 #include "OrbChange.h"
+#include "OrbConstraints.h"
 #include "OrbError.h"
 #include "OrbEvent.h"
 #include "OrbEventKind.h"
@@ -29,6 +30,7 @@
 #include "OrbRegionEvent.h"
 #include "OrbRegionEventKind.h"
 #include "OrbRuntime.h"
+#include "OrbStats.h"
 #include "OrbTarget.h"
 #include "OrbWheelUnit.h"
 

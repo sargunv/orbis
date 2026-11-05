@@ -74,8 +74,7 @@ class MainActivity : Activity() {
         runtime = OrbRuntime.createWith(
             0u, backend, File(noBackupFilesDir, "orbis-state").path, Build.VERSION.SDK_INT.toUInt(),
         )
-        Log.i("Orbis", runtime.selection())
-        runtime.setPipelineCacheDir(File(cacheDir, "orbis-pipelines").path)
+        Log.i("Orbis", runtime.stats().use { it.selection() })
         val deviceMs = SystemClock.elapsedRealtime() - started
         view = MapView(this, runtime)
         status = TextView(this).apply {
@@ -133,20 +132,22 @@ class MainActivity : Activity() {
                         view.setNeedsFrame()
                     }, lose)
                 }
-                Log.i(
-                    "Orbis",
-                    "loaded in %d ms (device %d ms) after %d frames; %d pipelines in %.0f ms; %d tiles, %d draws".format(
-                        SystemClock.elapsedRealtime() - started, deviceMs, view.framesDrawn,
-                        runtime.pipelinesCreated().toInt(), runtime.pipelineMs(),
-                        frame.tilesDrawn.toInt(), frame.draws.toInt(),
-                    ),
-                )
-                for (line in runtime.pipelineTimings().lines().filter { it.isNotBlank() }) {
-                    Log.i("Orbis", "  pipeline %s ms".format(line))
+                runtime.stats().use { stats ->
+                    Log.i(
+                        "Orbis",
+                        "loaded in %d ms (device %d ms) after %d frames; %d pipelines in %.0f ms; %d tiles, %d draws".format(
+                            SystemClock.elapsedRealtime() - started, deviceMs, view.framesDrawn,
+                            stats.pipelinesCreated().toInt(), stats.pipelineMs(),
+                            frame.tilesDrawn.toInt(), frame.draws.toInt(),
+                        ),
+                    )
+                    for (line in stats.pipelineTimings().lines().filter { it.isNotBlank() }) {
+                        Log.i("Orbis", "  pipeline %s ms".format(line))
+                    }
                 }
             }
         }
-        view.onRecovered = { ms -> Log.i("Orbis", "new device in %d ms: %s".format(ms, runtime.selection())) }
+        view.onRecovered = { ms -> Log.i("Orbis", "new device in %d ms: %s".format(ms, runtime.stats().use { it.selection() })) }
         view.onEvent = { event ->
             when (event.kind()) {
                 OrbEventKind.Click -> {

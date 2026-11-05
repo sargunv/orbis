@@ -17,14 +17,14 @@ mod regions;
 mod target;
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 pub use map::{Event, Image, Map, MapOptions, STILL_TIMEOUT, TileRequest};
 pub use orb_camera::{
-    AnimationId, Bounds, CameraEvent, CameraTarget, Change, EaseOptions, Easing, FitOptions,
-    FlyOptions, Padding, Phase,
+    AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints, EaseOptions, Easing,
+    FitOptions, FlyOptions, Padding, Phase,
 };
 pub use orb_crs::Geodetic;
 pub use orb_crs::TileMatrixSet;
@@ -91,9 +91,11 @@ pub struct RuntimeOptions {
     /// The GPU tier to draw at.
     pub backend: Backend,
     /// Where the runtime keeps state between runs: the crash sentinel
-    /// (plan §8.8) and the HTTP cache (`http/`, [`HTTP_CACHE_BYTES`]).
+    /// (plan §8.8), the driver's compiled pipelines (`pipelines/`), the
+    /// HTTP cache (`http/`, [`HTTP_CACHE_BYTES`]) and offline regions.
     /// Without one, a device that crashed its driver last time is tried on
-    /// Modern again, and nothing fetched is kept.
+    /// Modern again, pipelines compile on every start, and nothing fetched
+    /// is kept.
     pub state_dir: Option<PathBuf>,
     /// Android's API level (`Build.VERSION.SDK_INT`), for the allowlist.
     pub android_api_level: u32,
@@ -139,13 +141,32 @@ struct Shared {
     /// Where the pipeline cache is kept, and the pipeline count it was
     /// last saved at.
     cache: RefCell<Option<(PathBuf, u32)>>,
-    /// The directory the host asked to keep pipeline caches in.
-    cache_dir: RefCell<Option<PathBuf>>,
     /// Every map's wake: the device calls them all when a pipeline
     /// compiles.
     wakes: Wakes,
     /// Whether the device wakes the maps when a pipeline compiles.
     compile_wakes: std::cell::Cell<bool>,
+}
+
+/// What a runtime's device is and has done ([`Runtime::stats`]).
+#[derive(Clone, Debug)]
+pub struct RuntimeStats {
+    /// The tier the runtime draws at.
+    pub tier: Tier,
+    /// Why the device is the tier it is: "Modern: …" or "Compat: …".
+    pub selection: String,
+    /// Render and compute pipelines the device has made so far.
+    pub pipelines_created: u32,
+    /// Time spent making shader modules and pipelines so far.
+    pub pipeline_time: std::time::Duration,
+    /// Each pipeline compiled so far and how long it took, in the order
+    /// they finished (plan §8.9: pipelines created cold and warm).
+    pub pipeline_timings: Vec<(String, std::time::Duration)>,
+    /// The compile the watchdog found hung, if one was (plan §8.8 3): the
+    /// GPU is then lost, and [`Runtime::recover`] demotes it.
+    pub hung_compile: Option<String>,
+    /// What the HTTP cache holds, if there is one.
+    pub http_cache: Option<CacheStats>,
 }
 
 /// Every map's wake, held weakly: a dropped map's goes.
@@ -178,7 +199,7 @@ impl Runtime {
             .unwrap_or_else(ThreadPool::default_size)
             .max(1);
         let fetch = NativeFetch::with_cache(http_cache(options)?);
-        Ok(Self {
+        let runtime = Self {
             shared: Rc::new(Shared {
                 gpu: RefCell::new(gpu),
                 options: options.clone(),
@@ -193,44 +214,31 @@ impl Runtime {
                 executor: Arc::new(ThreadPool::new("jobs", threads)),
                 images: Default::default(),
                 cache: RefCell::new(None),
-                cache_dir: RefCell::new(None),
                 wakes,
                 compile_wakes: std::cell::Cell::new(compile_wakes),
             }),
-        })
+        };
+        runtime.start_pipeline_cache()?;
+        Ok(runtime)
     }
 
-    /// Render and compute pipelines the device has made so far.
-    pub fn pipelines_created(&self) -> u32 {
-        self.shared.gpu.borrow().pipelines_created()
-    }
-
-    /// Time spent making shader modules and pipelines so far.
-    pub fn pipeline_time(&self) -> std::time::Duration {
-        match &*self.shared.gpu.borrow() {
-            Device::Modern(gpu) => gpu.pipeline_time(),
-            Device::Compat(c) => c.gpu.pipeline_time(),
+    /// What the runtime's device is and has done: for diagnostics and
+    /// measurements.
+    pub fn stats(&self) -> RuntimeStats {
+        let gpu = self.shared.gpu.borrow();
+        let (pipeline_time, pipeline_timings) = match &*gpu {
+            Device::Modern(gpu) => (gpu.pipeline_time(), gpu.pipeline_timings().to_vec()),
+            Device::Compat(c) => (c.gpu.pipeline_time(), c.gpu.pipeline_timings().to_vec()),
+        };
+        RuntimeStats {
+            tier: gpu.tier(),
+            selection: self.shared.selection.borrow().clone(),
+            pipelines_created: gpu.pipelines_created(),
+            pipeline_time,
+            pipeline_timings,
+            hung_compile: gpu.hung(),
+            http_cache: self.shared.fetch.cache().map(|c| c.stats()),
         }
-    }
-
-    /// Each pipeline compiled so far and how long it took, in the order
-    /// they finished (plan §8.9: pipelines created cold and warm).
-    pub fn pipeline_timings(&self) -> Vec<(String, std::time::Duration)> {
-        match &*self.shared.gpu.borrow() {
-            Device::Modern(gpu) => gpu.pipeline_timings().to_vec(),
-            Device::Compat(c) => c.gpu.pipeline_timings().to_vec(),
-        }
-    }
-
-    /// The tier the runtime draws at.
-    pub fn tier(&self) -> Tier {
-        self.shared.gpu.borrow().tier()
-    }
-
-    /// Why the device is the tier it is, for diagnostics: "Modern: …" or
-    /// "Compat: …".
-    pub fn selection(&self) -> String {
-        self.shared.selection.borrow().clone()
     }
 
     /// Whether the GPU was lost; [`recover`](Self::recover) makes another.
@@ -270,20 +278,25 @@ impl Runtime {
         // The maps' images were on the old device.
         self.shared.images.reset();
         *self.shared.cache.borrow_mut() = None;
-        let dir = self.shared.cache_dir.borrow().clone();
-        if let Some(dir) = dir {
-            self.set_pipeline_cache_dir(&dir)?;
-        }
-        Ok(self.tier())
+        self.start_pipeline_cache()?;
+        Ok(self.shared.gpu.borrow().tier())
     }
 
-    /// Keeps the driver's compiled pipelines in `dir` between runs, so
-    /// warm starts skip compiling them (Vulkan's pipeline cache, GLES's
-    /// program binaries; elsewhere the platform caches and this does
-    /// nothing). Call before the first frame; maps
-    /// save the cache when they go idle with new pipelines.
-    pub fn set_pipeline_cache_dir(&self, dir: &Path) -> Result<(), Error> {
-        *self.shared.cache_dir.borrow_mut() = Some(dir.to_owned());
+    /// Keeps the driver's compiled pipelines in the state directory's
+    /// `pipelines/` between runs, so warm starts skip compiling them
+    /// (Vulkan's pipeline cache, GLES's program binaries; elsewhere the
+    /// platform caches and this does nothing). Maps save the cache when
+    /// they go idle with new pipelines.
+    fn start_pipeline_cache(&self) -> Result<(), Error> {
+        let Some(dir) = self
+            .shared
+            .options
+            .state_dir
+            .as_ref()
+            .map(|d| d.join("pipelines"))
+        else {
+            return Ok(());
+        };
         let mut device = self.shared.gpu.borrow_mut();
         let key = match &*device {
             Device::Modern(gpu) => gpu.pipeline_cache_key(),
@@ -293,7 +306,7 @@ impl Runtime {
         let Some(key) = key else {
             return Ok(());
         };
-        std::fs::create_dir_all(dir)
+        std::fs::create_dir_all(&dir)
             .map_err(|e| Error::InvalidArgument(format!("{}: {e}", dir.display())))?;
         let file = dir.join(key);
         let data = std::fs::read(&file).ok();
@@ -307,7 +320,7 @@ impl Runtime {
 
     /// Writes the pipeline cache if pipelines were made since it was last
     /// written.
-    pub fn save_pipeline_cache(&self) -> Result<(), Error> {
+    fn save_pipeline_cache(&self) -> Result<(), Error> {
         let mut cache = self.shared.cache.borrow_mut();
         let Some((file, saved)) = cache.as_mut() else {
             return Ok(());
@@ -362,11 +375,6 @@ impl Runtime {
             .ok_or_else(|| Error::InvalidState("offline regions need a state directory".into()))
     }
 
-    /// What the HTTP cache holds, if there is one.
-    pub fn http_cache_stats(&self) -> Option<CacheStats> {
-        self.shared.fetch.cache().map(|c| c.stats())
-    }
-
     /// Empties the HTTP cache.
     pub fn clear_http_cache(&self) {
         if let Some(cache) = self.shared.fetch.cache() {
@@ -401,12 +409,6 @@ impl Runtime {
             Device::Modern(gpu) => f(DeviceRef::Modern(gpu)),
             Device::Compat(c) => f(DeviceRef::Compat(&c.egl)),
         }
-    }
-
-    /// The compile the watchdog found hung, if one was (plan §8.8 3): the
-    /// GPU is then lost, and [`recover`](Self::recover) demotes it.
-    pub fn hung_compile(&self) -> Option<String> {
-        self.shared.gpu.borrow().hung()
     }
 
     /// Wakes `wake` when a pipeline compiles, while it lives.

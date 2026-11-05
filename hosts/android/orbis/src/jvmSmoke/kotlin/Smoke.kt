@@ -18,7 +18,7 @@ val STYLE = """
 """.trimIndent()
 
 fun main() {
-    check(OrbRuntime.abiVersion() == 4u)
+    check(OrbRuntime.abiVersion() == 5u)
     OrbRuntime.create(0u).use { runtime ->
         OrbTarget.createTexture(runtime, 64u, 64u, 1.0).use { target ->
             OrbMap.create(runtime, OrbFeel.Desktop, 0.0, 0.0, 0.0, 0.0).use { map ->

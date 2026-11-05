@@ -796,6 +796,13 @@ impl Map {
         Ok(Some(report))
     }
 
+    /// What the labels on screen say, for assistive technology (plan
+    /// §13): the last placement's labels and icons, a reading order and a
+    /// summary; `None` before labels are first placed.
+    pub fn semantic_snapshot(&self) -> Option<orb_runtime::SemanticSnapshot> {
+        self.map.semantic_snapshot()
+    }
+
     /// The oldest event not yet taken.
     pub fn poll_event(&mut self) -> Option<Event> {
         let finished = std::mem::take(&mut *self.finished.lock().expect("queries poisoned"));
@@ -805,10 +812,5 @@ impl Map {
                 .map(|(id, result)| Event::Query { id, result }),
         );
         self.events.pop_front()
-    }
-
-    /// The Rust map underneath, for what this API doesn't cover yet.
-    pub fn inner(&self) -> &orb_runtime::Map {
-        &self.map
     }
 }

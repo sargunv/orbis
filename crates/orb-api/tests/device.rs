@@ -55,14 +55,19 @@ fn sentinel_demotes_after_a_crash_in_pipelines() {
     let _ = std::fs::remove_dir_all(&dir);
     // A clean run arms and clears the sentinel.
     let runtime = Runtime::new(&options(Some(dir.clone()))).unwrap();
-    let modern = runtime.tier() == Tier::Modern;
+    let modern = runtime.stats().tier == Tier::Modern;
     first_frame(&runtime);
     drop(runtime);
     if !modern {
         return; // No Modern adapter here: nothing to demote.
     }
     let clean = Runtime::new(&options(Some(dir.clone()))).unwrap();
-    assert_eq!(clean.tier(), Tier::Modern, "{}", clean.selection());
+    assert_eq!(
+        clean.stats().tier,
+        Tier::Modern,
+        "{}",
+        clean.stats().selection
+    );
     drop(clean);
 
     let child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -78,9 +83,9 @@ fn sentinel_demotes_after_a_crash_in_pipelines() {
     assert!(!child.status.success(), "the child should have crashed");
 
     let demoted = Runtime::new(&options(Some(dir.clone()))).unwrap();
-    let selection = demoted.selection();
+    let selection = demoted.stats().selection;
     assert!(selection.contains("crash sentinel"), "{selection}");
-    if demoted.tier() == Tier::Compat {
+    if demoted.stats().tier == Tier::Compat {
         // Compat draws the same map.
         let pixels = first_frame(&demoted);
         assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
@@ -102,7 +107,7 @@ const HANG_CHILD: &str = "ORB_TEST_HANG_CHILD";
 fn a_hung_compile_demotes_the_device() {
     if let Some(dir) = std::env::var_os(HANG_CHILD) {
         let runtime = Runtime::new(&options(Some(dir.into()))).unwrap();
-        if runtime.tier() != Tier::Modern {
+        if runtime.stats().tier != Tier::Modern {
             return; // No Modern adapter here: nothing to demote.
         }
         let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
@@ -121,14 +126,15 @@ fn a_hung_compile_demotes_the_device() {
             std::thread::sleep(Duration::from_millis(5));
         };
         let hung = runtime
-            .hung_compile()
+            .stats()
+            .hung_compile
             .expect("the watchdog names the compile");
         eprintln!("{frames} frames drawn while {hung} compiled; lost after {lost:?}");
         // A compile that blocked the drawing thread would hold the first
         // frame until the watchdog fired; more than one frame is enough.
         assert!(frames > 1, "frames go on while a compile hangs");
         runtime.recover().unwrap();
-        let selection = runtime.selection();
+        let selection = runtime.stats().selection;
         assert!(selection.contains("crash sentinel"), "{selection}");
         return;
     }
@@ -152,7 +158,7 @@ fn a_hung_compile_demotes_the_device() {
     }
     // The next start demotes too.
     let demoted = Runtime::new(&options(Some(dir.clone()))).unwrap();
-    let selection = demoted.selection();
+    let selection = demoted.stats().selection;
     assert!(selection.contains("crash sentinel"), "{selection}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -180,7 +186,7 @@ fn recovers(backend: Backend) {
     ));
     assert!(runtime.lost());
     runtime.recover().unwrap();
-    let tier = runtime.tier();
+    let tier = runtime.stats().tier;
     let drawn = settle(&mut map, &mut target).unwrap();
     eprintln!(
         "{backend:?} → {tier:?}: recovered in {:.1} ms ({:.1} ms drawing)",

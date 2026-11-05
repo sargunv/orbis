@@ -30,21 +30,12 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * Whether the runtime draws at the Compat tier (GLES 3.0).
+     * What the runtime's device is and has done, now.
      *
      * Contract: `snapshot`.
      */
-    fun compat(): Boolean {
-        return OrbisNative.orbRuntimeCompat(live())
-    }
-
-    /**
-     * Why the device is the tier it is: "Modern: …" or "Compat: …".
-     *
-     * Contract: `snapshot`.
-     */
-    fun selection(): String {
-        return OrbisNative.orbRuntimeSelection(live()).decodeToString()
+    fun stats(): OrbStats {
+        return OrbStats(OrbisNative.orbRuntimeStats(live()))
     }
 
     /**
@@ -67,29 +58,6 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
      */
     fun recover() {
         OrbisNative.orbRuntimeRecover(live())
-    }
-
-    /**
-     * Render and compute pipelines the device has made so far.
-     *
-     * Contract: `snapshot`.
-     */
-    fun pipelinesCreated(): UInt {
-        return OrbisNative.orbRuntimePipelinesCreated(live()).toUInt()
-    }
-
-    /**
-     * Keeps the driver's compiled pipelines in the directory `dir`
-     * between runs, so warm starts skip compiling them (Vulkan;
-     * elsewhere the platform caches and this does nothing). Call
-     * before the first frame; maps save the cache when idle.
-     *
-     * Contract: `command`.
-     *
-     * @throws OrbErrorException when it fails.
-     */
-    fun setPipelineCacheDir(dir: String) {
-        OrbisNative.orbRuntimeSetPipelineCacheDir(live(), dir.encodeToByteArray())
     }
 
     /**
@@ -140,42 +108,12 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * Bytes of response bodies the HTTP cache holds (0 without one).
-     *
-     * Contract: `snapshot`.
-     */
-    fun httpCacheBytes(): ULong {
-        return OrbisNative.orbRuntimeHttpCacheBytes(live()).toULong()
-    }
-
-    /**
      * Empties the HTTP cache.
      *
      * Contract: `command`.
      */
     fun clearHttpCache() {
         OrbisNative.orbRuntimeClearHttpCache(live())
-    }
-
-    /**
-     * Milliseconds spent compiling pipelines so far, summed over the
-     * threads that compiled them: translation and the driver's
-     * compiles.
-     *
-     * Contract: `snapshot`.
-     */
-    fun pipelineMs(): Double {
-        return OrbisNative.orbRuntimePipelineMs(live())
-    }
-
-    /**
-     * Each pipeline compiled so far, slowest first: one line each,
-     * milliseconds then its label.
-     *
-     * Contract: `snapshot`.
-     */
-    fun pipelineTimings(): String {
-        return OrbisNative.orbRuntimePipelineTimings(live()).decodeToString()
     }
 
     companion object {

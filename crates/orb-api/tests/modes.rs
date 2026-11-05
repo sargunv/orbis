@@ -127,7 +127,6 @@ fn edges(style: &str, at: Geodetic, z: u8, size: u32) -> (usize, Vec<Label>, boo
         let (x0, y0) = ((f64::from(col) - 1.0) * s, (f64::from(row) - 1.0) * s);
         let [left, top] = [f64::from(col) * s, f64::from(row) * s];
         let labels = map
-            .inner()
             .semantic_snapshot()
             .map(|s| s.nodes)
             .unwrap_or_default()

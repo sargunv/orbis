@@ -75,7 +75,7 @@ final class ViewController: UIViewController {
                 logged = true
                 print(String(format: "Orbis: loaded in %.0f ms after %d frames; %u pipelines in %.0f ms",
                     Date().timeIntervalSince(started) * 1000, mapView.framesDrawn,
-                    runtime.pipelinesCreated(), runtime.pipelineMs()))
+                    runtime.stats().pipelinesCreated(), runtime.stats().pipelineMs()))
             }
         }
         mapView.onEvent = { [unowned self] event in
