@@ -42,7 +42,7 @@ pub struct WarpMesh {
 
 /// A tile on the target plane (or, as `Series<DVec3>`, on a sphere) as
 /// quadratic patches over an even grid.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Series<V = DVec2> {
     /// The tile centre's position on the target; patches are relative to
     /// it.
@@ -205,7 +205,7 @@ impl Series<DVec2> {
 /// Lagrange polynomials in parameters `s` (right) and `t` (down), each in
 /// `[-1, 1]`. Neighbouring patches share their edges' three nodes, so they
 /// meet exactly.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Patch<V = DVec2> {
     pub points: [V; 9],
 }

@@ -19,7 +19,7 @@ use crate::placement::view::{Camera, TileView};
 
 /// The placement lane's view of one symbol layer's tile: the tables
 /// placement reads, never quads.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlacementTables {
     pub instances: Vec<SymbolInstance>,
     pub text_placed: Vec<PlacedSymbol>,
@@ -34,7 +34,7 @@ pub struct PlacementTables {
 }
 
 /// A layer's placement settings, from its evaluated layout and paint.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LayerParams {
     /// The layer's key.
     pub layer: u32,
@@ -80,7 +80,7 @@ pub struct LayerParams {
 /// interpolation factor `u_size_t` for composite ones. Equal when the
 /// bits are: frames compare to see whether their inputs changed, and a
 /// NaN size (`["sqrt", -1]`) is an input that stays the same.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ZoomSize {
     pub size: f64,
     pub t: f64,
@@ -93,7 +93,7 @@ impl PartialEq for ZoomSize {
 }
 
 /// One drawn tile of a layer.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlacedTile {
     pub bucket: u64,
     pub view: TileView,
@@ -101,14 +101,14 @@ pub struct PlacedTile {
 }
 
 /// One layer of a placement, its drawn tiles in any order.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LayerFrame {
     pub params: LayerParams,
     pub tiles: Vec<PlacedTile>,
 }
 
 /// What a placement runs against.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Frame {
     pub camera: Camera,
     /// Symbol layers in style order.
@@ -121,13 +121,15 @@ pub struct Frame {
     /// The camera's longitude, degrees, for world copies.
     pub lng: f64,
     /// The terrain, if the map has one.
+    /// Placement workers have their own elevations.
+    #[serde(skip)]
     pub ground: Option<GroundRef>,
     /// Where labels collide.
     pub scope: Scope,
 }
 
 /// Where a placement collides labels (plan §10's placement scopes).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Scope {
     /// Against the view, continuing the last placement: fades, variable
     /// anchors and orientations carry over, as in GL JS.
@@ -147,7 +149,7 @@ pub enum Scope {
 }
 
 /// One tile of a tile-scope placement.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ScopeTile {
     /// Its column and row in the output grid: neighbours differ by one.
     pub col: i64,
@@ -194,7 +196,7 @@ const HIDDEN_WORDS: [u32; 3] = [state::HIDDEN, 0, 0];
 
 /// A bucket's state words, [`state::WORDS`] per placed symbol, and, for
 /// layers drawn by viewport y, the quads of each stream in draw order.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BucketStates {
     pub text: Vec<u32>,
     pub icon: Vec<u32>,
@@ -204,7 +206,7 @@ pub struct BucketStates {
 
 /// A committed placement: the buckets whose state words changed, by world
 /// copy (wrap), and how fades progress.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Committed {
     pub changed: Vec<(u64, i32, BucketStates)>,
     pub commit_time: f64,

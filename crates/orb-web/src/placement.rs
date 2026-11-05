@@ -5,7 +5,7 @@
 //! through unread. The render worker's [`WorkerPlacement`] posts a bucket's
 //! tables once and a frame per placement; the [`PlacementWorker`] answers
 //! each frame, in order, with its commit. Payloads are
-//! [`orb_runtime::pack_tables`]' bytes and the like, in transferred
+//! [`orb_runtime::wire`]'s bytes, in transferred
 //! buffers.
 //!
 //! Messages, render worker to placement worker: `{ingest, buffer}` (a
@@ -20,10 +20,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use js_sys::{Array, Object, Reflect, Uint8Array};
-use orb_runtime::{
-    InlinePlacement, PlaceDone, PlacementLane, TerrainElevation, pack_committed, pack_frame,
-    pack_tables, unpack_committed, unpack_frame, unpack_tables,
-};
+use orb_runtime::{InlinePlacement, PlaceDone, PlacementLane, TerrainElevation, wire};
 use orb_symbol::{Frame, GroundRef, PlacementTables};
 use wasm_bindgen::prelude::*;
 
@@ -102,7 +99,7 @@ impl WorkerPlacement {
             .ok()
             .and_then(|b| b.dyn_into::<Uint8Array>().ok())
             .ok_or_else(|| "placement reply without a commit".to_string())
-            .and_then(|bytes| unpack_committed(&bytes.to_vec()));
+            .and_then(|bytes| wire::decode(&bytes.to_vec()));
         let failed = committed.as_ref().err().cloned();
         done(committed);
         failed.map_or(Ok(()), |e| Err(JsError::new(&e)))
@@ -111,7 +108,7 @@ impl WorkerPlacement {
 
 impl PlacementLane for WorkerPlacement {
     fn ingest(&self, bucket: u64, tables: Arc<PlacementTables>) {
-        let buffer = Uint8Array::from(pack_tables(&tables).as_slice());
+        let buffer = Uint8Array::from(wire::encode(&*tables).as_slice());
         self.post(
             &object(&[
                 ("ingest", (bucket as f64).into()),
@@ -141,7 +138,7 @@ impl PlacementLane for WorkerPlacement {
             let buffer = Uint8Array::from(&bytes[..]);
             self.post(&object(&[("ground", buffer.clone().into())]), Some(&buffer));
         }
-        let buffer = Uint8Array::from(pack_frame(&frame).as_slice());
+        let buffer = Uint8Array::from(wire::encode(&frame).as_slice());
         self.post(&object(&[("place", buffer.clone().into())]), Some(&buffer));
     }
 }
@@ -173,7 +170,8 @@ impl PlacementWorker {
                 .map_err(|_| JsError::new("placement message without bytes"))
         };
         if let Some(bucket) = get("ingest").as_f64() {
-            let tables = unpack_tables(&bytes(get("buffer"))?).map_err(|e| JsError::new(&e))?;
+            let tables: PlacementTables =
+                wire::decode(&bytes(get("buffer"))?).map_err(|e| JsError::new(&e))?;
             self.lane.ingest(bucket as u64, Arc::new(tables));
             return Ok(JsValue::UNDEFINED);
         }
@@ -193,7 +191,7 @@ impl PlacementWorker {
             };
             return Ok(JsValue::UNDEFINED);
         }
-        let mut frame = unpack_frame(&bytes(get("place"))?).map_err(|e| JsError::new(&e))?;
+        let mut frame: Frame = wire::decode(&bytes(get("place"))?).map_err(|e| JsError::new(&e))?;
         frame.ground.clone_from(&self.ground);
         let reply = Arc::new(Mutex::new(None));
         let sink = Arc::clone(&reply);
@@ -201,7 +199,7 @@ impl PlacementWorker {
             frame,
             Box::new(move |committed| {
                 if let Ok(committed) = committed {
-                    *sink.lock().expect("reply poisoned") = Some(pack_committed(&committed));
+                    *sink.lock().expect("reply poisoned") = Some(wire::encode(&committed));
                 }
             }),
         );

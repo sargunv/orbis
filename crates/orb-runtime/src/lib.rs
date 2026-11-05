@@ -20,7 +20,6 @@ mod loader;
 mod map;
 pub mod offline;
 mod placement;
-mod placement_wire;
 mod point;
 mod queries;
 mod query;
@@ -71,9 +70,6 @@ pub use orb_render::{
 };
 pub use orb_v8::{FeatureTarget, Transaction};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};
-pub use placement_wire::{
-    pack_committed, pack_frame, pack_tables, unpack_committed, unpack_frame, unpack_tables,
-};
 pub use queries::QueryDone;
 pub use query::{Hit, HitFeature, MeshHits};
 pub use style::ImageKind;
