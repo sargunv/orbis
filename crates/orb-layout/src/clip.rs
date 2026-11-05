@@ -1,4 +1,4 @@
-//! Ring and polyline clipping to tile squares.
+//! Polyline clipping to tile squares.
 
 /// One connected piece of a clipped line. Closed rings have no repeated end.
 #[derive(Debug, PartialEq)]
@@ -127,67 +127,6 @@ pub(crate) fn clip_segment(
     Some((point(enter), point(exit), enter > 0.0, exit < 1.0))
 }
 
-/// Clips a closed ring to the square (Sutherland–Hodgman). The result may
-/// run along the square's edges; it is empty when nothing is inside.
-pub(crate) fn clip_ring(ring: &[[i32; 2]], extent: i32, out: &mut Vec<[i32; 2]>) {
-    let mut a: Vec<[i32; 2]> = ring.to_vec();
-    let mut b = Vec::with_capacity(ring.len() + 4);
-    // (axis, keep >= bound when `min`, else keep <= bound)
-    for (axis, bound, min) in [
-        (0, 0, true),
-        (0, extent, false),
-        (1, 0, true),
-        (1, extent, false),
-    ] {
-        b.clear();
-        let inside = |p: &[i32; 2]| {
-            if min {
-                p[axis] >= bound
-            } else {
-                p[axis] <= bound
-            }
-        };
-        let Some(&last) = a.last() else { break };
-        let mut prev = last;
-        for &p in &a {
-            match (inside(&prev), inside(&p)) {
-                (true, true) => b.push(p),
-                (true, false) => b.push(intersect(prev, p, axis, bound)),
-                (false, true) => {
-                    b.push(intersect(prev, p, axis, bound));
-                    b.push(p);
-                }
-                (false, false) => {}
-            }
-            prev = p;
-        }
-        std::mem::swap(&mut a, &mut b);
-    }
-    out.clear();
-    for p in a {
-        if out.last() != Some(&p) {
-            out.push(p);
-        }
-    }
-    while out.len() > 1 && out.first() == out.last() {
-        out.pop();
-    }
-    if out.len() < 3 {
-        out.clear();
-    }
-}
-
-/// The point where segment `a → b` crosses `p[axis] == bound`, rounded to
-/// the grid.
-fn intersect(a: [i32; 2], b: [i32; 2], axis: usize, bound: i32) -> [i32; 2] {
-    let other = 1 - axis;
-    let t = f64::from(bound - a[axis]) / f64::from(b[axis] - a[axis]);
-    let mut p = [0; 2];
-    p[axis] = bound;
-    p[other] = (f64::from(a[other]) + t * f64::from(b[other] - a[other])).round() as i32;
-    p
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,30 +230,5 @@ mod tests {
         assert!(at_vertices[0].start_clipped && at_vertices[0].end_clipped);
         let extreme = clip_polyline(&[[i32::MIN, 5], [i32::MAX, 5]], false, 0, 10);
         assert_eq!(extreme[0].points, [[0, 5], [10, 5]]);
-    }
-
-    #[test]
-    fn keeps_inside_rings() {
-        let ring = [[1, 1], [9, 1], [9, 9]];
-        let mut out = Vec::new();
-        clip_ring(&ring, 10, &mut out);
-        assert_eq!(out, ring);
-    }
-
-    #[test]
-    fn clips_to_the_square() {
-        let ring = [[-10, -10], [20, -10], [20, 20], [-10, 20]];
-        let mut out = Vec::new();
-        clip_ring(&ring, 10, &mut out);
-        let mut sorted = out.clone();
-        sorted.sort();
-        assert_eq!(sorted, [[0, 0], [0, 10], [10, 0], [10, 10]]);
-    }
-
-    #[test]
-    fn drops_rings_outside() {
-        let mut out = Vec::new();
-        clip_ring(&[[20, 20], [30, 20], [30, 30]], 10, &mut out);
-        assert!(out.is_empty());
     }
 }

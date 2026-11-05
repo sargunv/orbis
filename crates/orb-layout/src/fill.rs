@@ -4,9 +4,8 @@
 //! Vertex layout, 2 words: `x | y << 16` as i16 tile units, then the feature
 //! slot.
 
-use orb_tile::{GeometryType, Layer};
+use orb_tile::{GeometryType, Layer, clip_ring};
 
-use crate::clip::clip_ring;
 use crate::{Mesh, MeshBuilder};
 
 /// Words per fill vertex.
@@ -66,7 +65,7 @@ pub fn layout_subdivided(layer: &Layer, features: &[u32], bend: Option<Bend>) ->
             points.clear();
             holes.clear();
             for (r, source) in part.rings().enumerate() {
-                clip_ring(source, extent, &mut ring);
+                clip_ring(source, 0, extent, &mut ring);
                 if ring.is_empty() {
                     if r == 0 {
                         break;
@@ -139,7 +138,7 @@ pub fn outline(layer: &Layer, features: &[u32]) -> Mesh {
         let slot = slot as u32;
         for part in layer.geometry(feature).parts() {
             for source in part.rings() {
-                clip_ring(source, extent, &mut ring);
+                clip_ring(source, 0, extent, &mut ring);
                 if ring.is_empty() {
                     continue;
                 }

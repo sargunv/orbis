@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod builder;
+mod clip;
 mod column;
 mod decode;
 mod dem;
@@ -20,6 +21,7 @@ mod overzoom;
 mod subdivide;
 
 pub use builder::LayerBuilder;
+pub use clip::clip_ring;
 pub use column::{Bitmap, Column, ColumnData, Value, ValueRef};
 pub use decode::DecodeError;
 pub use dem::DemGrid;

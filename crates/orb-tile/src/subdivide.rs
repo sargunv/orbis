@@ -3,7 +3,7 @@
 //! curve between them, and the vertices on a tile's edges fall on grid lines
 //! its neighbours share.
 
-use crate::{GeometryType, Layer, TileFrame};
+use crate::{GeometryType, Layer, TileFrame, clip_ring};
 
 impl TileFrame {
     /// The frame with a vertex wherever a line or polygon-ring segment
@@ -113,60 +113,6 @@ pub(crate) fn grid_crossings(a: [i32; 2], b: [i32; 2], step: f64, out: &mut Vec<
         if out.last() != Some(&point) && point != a && point != b {
             out.push(point);
         }
-    }
-}
-
-/// Clips a closed ring to the square `0..=extent` (Sutherland–Hodgman), as
-/// layout does; empty when nothing is inside.
-fn clip_ring(ring: &[[i32; 2]], lo: i32, hi: i32, out: &mut Vec<[i32; 2]>) {
-    let mut a: Vec<[i32; 2]> = ring.to_vec();
-    let mut b = Vec::with_capacity(ring.len() + 4);
-    for (axis, bound, keep_above) in [(0, lo, true), (0, hi, false), (1, lo, true), (1, hi, false)]
-    {
-        b.clear();
-        let inside = |p: &[i32; 2]| {
-            if keep_above {
-                p[axis] >= bound
-            } else {
-                p[axis] <= bound
-            }
-        };
-        let Some(&last) = a.last() else { break };
-        let mut prev = last;
-        for &p in &a {
-            let cross = |a: [i32; 2], b: [i32; 2]| {
-                let t = f64::from(bound - a[axis]) / f64::from(b[axis] - a[axis]);
-                let other = 1 - axis;
-                let mut q = [0; 2];
-                q[axis] = bound;
-                q[other] =
-                    (f64::from(a[other]) + t * f64::from(b[other] - a[other])).round() as i32;
-                q
-            };
-            match (inside(&prev), inside(&p)) {
-                (true, true) => b.push(p),
-                (true, false) => b.push(cross(prev, p)),
-                (false, true) => {
-                    b.push(cross(prev, p));
-                    b.push(p);
-                }
-                (false, false) => {}
-            }
-            prev = p;
-        }
-        std::mem::swap(&mut a, &mut b);
-    }
-    out.clear();
-    for p in a {
-        if out.last() != Some(&p) {
-            out.push(p);
-        }
-    }
-    while out.len() > 1 && out.first() == out.last() {
-        out.pop();
-    }
-    if out.len() < 3 {
-        out.clear();
     }
 }
 
