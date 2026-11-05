@@ -12,7 +12,8 @@ use orb_render::{
 use orb_style::{LayerType, TranslateAnchor};
 
 use crate::image;
-use crate::map::{LoadedStyle, SourceState};
+use crate::map::LoadedStyle;
+use crate::resident::SourceState;
 use crate::style::{PaintProperty, StylePlan};
 
 /// What a style's paint was last written for.

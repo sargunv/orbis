@@ -26,9 +26,8 @@ use orb_style::{Binding, Change, Class, LayerKey, PropertyId};
 use orb_v8::Transaction;
 
 use crate::jobs::{StyleUpdate, TileResult};
-use crate::map::{
-    Map, NodeState, SourceState, record_maxima, resolve_rows, revise, upload_mesh, words,
-};
+use crate::map::{Map, NodeState, revise};
+use crate::resident::{SourceState, record_maxima, resolve_rows, upload_mesh, words};
 
 /// The class a paint change costs this renderer for one node:
 /// `orb-style`'s, raised where property rows hold more than the property
@@ -572,7 +571,7 @@ impl Map {
         // per feature, say), which culling pads by; results skipped as
         // stale can only pad more than needed.
         record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);
-        resident.cost = crate::map::tile_cost(renderer, resident);
+        resident.cost = crate::resident::tile_cost(renderer, resident);
         drop(images);
         if !stale_rows.is_empty() {
             let version = self.version;

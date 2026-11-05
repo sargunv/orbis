@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod arrival;
 pub mod batteries;
 mod camera;
 mod edit;
@@ -27,6 +28,7 @@ mod placement;
 mod point;
 mod queries;
 mod query;
+mod resident;
 mod sprite;
 mod state;
 mod style;

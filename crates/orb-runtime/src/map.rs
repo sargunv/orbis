@@ -7,22 +7,22 @@ use orb_camera::{CameraState, View, Viewport};
 use orb_crs::{TileIndex, TileMatrixSet};
 
 use crate::surface::{Plan, Surface};
-use orb_hal::{Gpu, HostBytesId, TextureId};
+use orb_hal::{Gpu, TextureId};
 use orb_host::{Fetch, FetchError, ImageDecode};
 use orb_render::GpuTile;
+use orb_render::ImageAtlas;
 use orb_render::{
-    ClipRect, DemRef, Family, FrameBlock, FrameStats, MeshData, MeshId, MeshSize, OutOfSpace,
-    PageId, PlacementTarget, RenderNode, Renderer, SceneCapacity, SceneStats, TargetFormat,
-    TileKey, TileRow, TileWarp, Words,
+    ClipRect, DemRef, Family, FrameBlock, FrameStats, MeshData, PageId, PlacementTarget,
+    RenderNode, Renderer, SceneCapacity, SceneStats, TargetFormat, TileKey, TileRow, TileWarp,
 };
-use orb_render::{ImageAtlas, ImageUpload};
-use orb_source::{Draw, TilePyramid};
-use orb_style::{LayerType, SourceKind};
+use orb_source::Draw;
+use orb_style::SourceKind;
 use orb_v8::StyleDoc;
 
 use crate::MapEvent;
-use crate::image::{self, ResidentImage};
-use crate::jobs::{Jobs, ResultMesh, Stream, StyleUpdate, TileRequest, TileResult, TileWorker};
+use crate::image::{self};
+use crate::jobs::{Jobs, StyleUpdate, TileRequest, TileResult, TileWorker};
+use crate::resident::*;
 use crate::state::FeatureStates;
 use crate::style::StylePlan;
 use orb_source::endpoint::TileEndpoint;
@@ -32,7 +32,7 @@ const TILE_PX: f64 = 512.0;
 
 /// Milliseconds a frame spends applying arrived tiles before it leaves the
 /// rest for the next frame (plan §7.4's upload budget at 60 Hz).
-const TILE_APPLY_MS: f64 = 1.5;
+pub(crate) const TILE_APPLY_MS: f64 = 1.5;
 
 /// GPU images shared by the maps in one Runtime / host-service set. The
 /// first render initializes them on that Runtime's device.
@@ -165,7 +165,7 @@ pub struct JobCounts {
     pub state_rows: u64,
 }
 
-enum Message {
+pub(crate) enum Message {
     /// A placement committed, or failed, for the labels of `epoch`.
     Placed {
         epoch: u64,
@@ -228,119 +228,6 @@ pub(crate) struct DrapePlan {
     pub(crate) redraw: Vec<(orb_crs::CoveredTile, u32)>,
 }
 
-/// A tile in the scene: one scene tile per layer extent holding a mesh per
-/// render node with features, and an image tile's texture layer.
-#[derive(Debug)]
-pub(crate) struct ResidentTile {
-    /// What the renderer holds of it: its meshes in scene tiles, its
-    /// patches, an image tile's layer.
-    pub(crate) gpu: GpuTile,
-    /// What the map keeps of each mesh, symbol meshes included.
-    pub(crate) meshes: Vec<Resident>,
-    pub(crate) image: Option<ResidentImage>,
-    /// A tile drawn through a warp's patches: its series.
-    pub(crate) series: Option<Arc<orb_crs::Series>>,
-    /// The style zoom it laid out at (decision 0022).
-    pub(crate) zoom: f64,
-    /// Its symbol layers' buckets; their meshes are among `meshes`.
-    pub(crate) symbols: Vec<crate::labels::ResidentSymbols>,
-    /// What it costs to keep: GPU bytes of its meshes and texture layer,
-    /// and its picking data (see [`tile_cost`]).
-    pub(crate) cost: u64,
-}
-
-impl ResidentTile {
-    pub(crate) fn new(gpu: GpuTile, zoom: f64) -> Self {
-        Self {
-            gpu,
-            meshes: Vec::new(),
-            image: None,
-            series: None,
-            zoom,
-            symbols: Vec::new(),
-            cost: 0,
-        }
-    }
-}
-
-/// One node's mesh of a resident tile.
-#[derive(Debug)]
-pub(crate) struct Resident {
-    /// The node's key.
-    pub(crate) node: u32,
-    pub(crate) mesh: MeshId,
-    pub(crate) hits: Arc<crate::MeshHits>,
-    /// The style revisions its geometry and its rows were laid out with.
-    pub(crate) layout_rev: u64,
-    pub(crate) rows_rev: u64,
-    /// Gradient ramps its rows retain.
-    pub(crate) ramps: Vec<u32>,
-    /// The feature-state indices its features refer to.
-    pub(crate) states: Vec<u32>,
-}
-
-#[derive(Debug)]
-pub(crate) enum SourceState {
-    Resolving,
-    Ready {
-        endpoint: Arc<TileEndpoint>,
-        pyramid: TilePyramid<ResidentTile>,
-        loading: u32,
-        /// How its tiles reach the surface when they are on another plane.
-        warp: Option<Box<WarpState>>,
-    },
-    Failed,
-}
-
-/// A `RasterWarp` source's plan and the footprints its tiles have had.
-#[derive(Debug)]
-pub(crate) struct WarpState {
-    warp: orb_crs::Warp,
-    footprints: HashMap<TileIndex, Option<orb_crs::Footprint>>,
-    /// Vector tiles' quadratic patches.
-    series: HashMap<TileIndex, Option<Arc<orb_crs::Series>>>,
-}
-
-impl WarpState {
-    /// Tiles whose footprints and series are kept before the caches start
-    /// over.
-    const CACHED: usize = 4096;
-    /// A quarter pixel at 512 pixels per tile side.
-    const TOLERANCE: f64 = 1.0 / 2048.0;
-
-    fn new(warp: orb_crs::Warp) -> Self {
-        Self {
-            warp,
-            footprints: HashMap::new(),
-            series: HashMap::new(),
-        }
-    }
-
-    pub(crate) fn footprint(&mut self, tile: TileIndex) -> Option<orb_crs::Footprint> {
-        if self.footprints.len() >= Self::CACHED {
-            self.footprints.clear();
-        }
-        let warp = &self.warp;
-        *self
-            .footprints
-            .entry(tile)
-            .or_insert_with(|| warp.footprint(tile))
-    }
-
-    /// A vector tile's patches, or `None` if it can't be drawn through
-    /// them (it crosses a wrapping plane's seam, or bends too much).
-    pub(crate) fn series(&mut self, tile: TileIndex) -> Option<Arc<orb_crs::Series>> {
-        if self.series.len() >= Self::CACHED {
-            self.series.clear();
-        }
-        let warp = &self.warp;
-        self.series
-            .entry(tile)
-            .or_insert_with(|| warp.series(tile, Self::TOLERANCE).map(Arc::new))
-            .clone()
-    }
-}
-
 /// A render node's state across style revisions, by node key.
 #[derive(Debug, Default)]
 pub(crate) struct NodeState {
@@ -374,7 +261,7 @@ pub(crate) struct LoadedStyle {
     pub(crate) drawn: Vec<u32>,
     pub(crate) paint: crate::paint::PaintState,
     pub(crate) image_namespace: Option<u64>,
-    sprites_started: bool,
+    pub(crate) sprites_started: bool,
     pub(crate) sprites_loading: u32,
     /// Sprite metadata loaded so far, and the images the host added; the
     /// jobs get it once every sprite has resolved, before tiles with symbol
@@ -385,7 +272,7 @@ pub(crate) struct LoadedStyle {
     /// Image names reported missing since they were last added.
     pub(crate) reported_missing: std::collections::HashSet<String>,
     /// The scene tile of the background layers' quads.
-    background: Option<GpuTile>,
+    pub(crate) background: Option<GpuTile>,
     /// Tiles with placements in publication order, parallel to sources.
     pub(crate) placed: Vec<Vec<TileIndex>>,
     /// Tiles that left the draw list but whose labels still draw until a
@@ -402,48 +289,22 @@ pub(crate) struct LoadedStyle {
     pub(crate) terrain: Option<crate::terrain::Terrain>,
     /// The terrain's DEM is on another tile matrix set than the surface;
     /// warned once.
-    terrain_unusable: bool,
+    pub(crate) terrain_unusable: bool,
     /// Whether the background and image tiles' meshes are grids for a
     /// globe to bend.
-    globe_meshes: bool,
+    pub(crate) globe_meshes: bool,
     /// The style's models by index: their bounds once the renderer holds
     /// them.
     pub(crate) models: Vec<Option<[[f32; 3]; 2]>>,
     /// The renderer the models load for, and how many are loading.
-    models_for: Option<u64>,
-    models_loading: u32,
-}
-
-/// The host data a tile result holds until it's uploaded or dropped.
-#[derive(Clone, Copy)]
-struct HostData(Option<HostBytesId>, Option<orb_hal::HostImageId>);
-
-impl HostData {
-    fn of(result: &TileResult) -> Self {
-        let image = match &result.image {
-            Some(crate::TileImage {
-                pixels: crate::ImagePixels::Host(image),
-                ..
-            }) => Some(*image),
-            _ => None,
-        };
-        Self(result.host_bytes, image)
-    }
-
-    fn release(self, gpu: &mut dyn Gpu) {
-        self.0
-            .into_iter()
-            .for_each(|bytes| gpu.release_host_bytes(bytes));
-        self.1
-            .into_iter()
-            .for_each(|image| gpu.release_host_image(image));
-    }
+    pub(crate) models_for: Option<u64>,
+    pub(crate) models_loading: u32,
 }
 
 /// What tiles and styles let go of between frames, released from the
 /// renderer at the next.
 #[derive(Debug, Default)]
-struct Retired {
+pub(crate) struct Retired {
     /// Tiles of sources and the background.
     tiles: Vec<GpuTile>,
     /// A replaced style's feature-state table.
@@ -459,18 +320,6 @@ impl Retired {
             renderer.free_table(table);
         }
     }
-}
-
-/// A tile result waiting for room in the scene (`Map::apply_tile`).
-#[derive(Debug)]
-struct WaitingTile {
-    generation: u64,
-    /// The plan source's key.
-    source: u32,
-    tile: TileIndex,
-    build: TileResult,
-    /// [`Map::room_state`] when it last failed to fit.
-    tried: Option<[u64; 6]>,
 }
 
 /// A map: a style, a camera and the tiles they need, drawn by
@@ -513,21 +362,21 @@ pub struct Map {
     /// Placement and the scene side of labels.
     pub(crate) labels: crate::labels::Labels,
     /// Counts the [`Labels`](crate::labels::Labels) a GPU reset replaced.
-    label_epoch: u64,
+    pub(crate) label_epoch: u64,
     /// The last frame's picking state; queries project from it.
     pub(crate) picking: std::cell::RefCell<crate::query::Picking>,
     /// This frame's placement time so far, in milliseconds.
-    placement_ms: f64,
+    pub(crate) placement_ms: f64,
     /// Arrived tiles wait for the next frame: this one spent its budget.
-    tiles_deferred: bool,
+    pub(crate) tiles_deferred: bool,
     /// Tiles that arrived when the scene had no room for them, while other
     /// tiles' jobs were in flight: those tiles' arrivals free the stand-ins
     /// they replace, so these try again on the next frames.
-    waiting: Vec<WaitingTile>,
+    pub(crate) waiting: Vec<WaitingTile>,
     /// Chunks the last frame's cull left out for want of room.
-    candidates_dropped: u32,
+    pub(crate) candidates_dropped: u32,
     pub(crate) services: Services,
-    videos: crate::video::Videos,
+    pub(crate) videos: crate::video::Videos,
     /// The camera's only writer: the app's moves, the style's camera and
     /// gestures all go through it (decision 0042).
     pub(crate) camera: orb_camera::Camera,
@@ -536,74 +385,74 @@ pub struct Map {
     pub(crate) camera_seen: u64,
     pub(crate) terrain_seen: u64,
     /// Terrain tiles hang skirts ([`Map::set_terrain_skirts`]).
-    terrain_skirts: bool,
-    antialias_3d: bool,
+    pub(crate) terrain_skirts: bool,
+    pub(crate) antialias_3d: bool,
     /// The plane the map draws on and its sources' tile matrix sets: the
     /// scene's, planned for its tiles.
     pub(crate) surface: Surface,
     /// A scene document whose style is loading, which the style parses
     /// under (models resolved against the scene).
-    pending_scene: Option<orb_v8::SceneDocument>,
+    pub(crate) pending_scene: Option<orb_v8::SceneDocument>,
     /// Compat's lack of `symbol-occlusion` was reported.
-    occlusion_warned: bool,
+    pub(crate) occlusion_warned: bool,
     /// The first frame's time: frames' time counts from it (decision 0042:
     /// fades, transitions and the shaders' time run on frame time).
-    born: Option<f64>,
+    pub(crate) born: Option<f64>,
     /// The time of the frame being drawn, or the last one.
     pub(crate) frame_time: f64,
     /// When the last raster tile to arrive finishes fading in.
-    image_fades_until: f64,
+    pub(crate) image_fades_until: f64,
     /// Paint edits easing in (decision 0031).
     pub(crate) transitions: crate::transitions::Transitions,
     /// The latest `load_style_url` request; earlier ones are ignored.
-    style_request: u64,
+    pub(crate) style_request: u64,
     /// Why the latest style request failed: nothing will load until
     /// another style replaces it.
-    style_error: Option<String>,
-    generation: u64,
-    tile_generation: u64,
+    pub(crate) style_error: Option<String>,
+    pub(crate) generation: u64,
+    pub(crate) tile_generation: u64,
     pub(crate) style: Option<LoadedStyle>,
     /// The renderer whose tiles the map holds, by its id: a frame with
     /// another one forgets them.
-    renderer: Option<u64>,
+    pub(crate) renderer: Option<u64>,
     /// Model indices the renderer holds below: a new style's models
     /// replace them.
-    models_resident: u32,
+    pub(crate) models_resident: u32,
     /// What tiles and styles let go of between frames, for the next frame
     /// to release from the renderer.
-    retired: Retired,
+    pub(crate) retired: Retired,
     /// The renderer's nodes are of a replaced style.
-    nodes_stale: bool,
-    capacity: SceneCapacity,
+    pub(crate) nodes_stale: bool,
+    pub(crate) capacity: SceneCapacity,
     /// The GPU memory budget (plan §8).
-    budget: u64,
+    pub(crate) budget: u64,
     /// The last style id given to the jobs.
-    style_id: u64,
+    pub(crate) style_id: u64,
     /// Counts style revisions: every new style and every edit.
     pub(crate) version: u64,
     /// Outstanding relayout and column jobs, per edit generation.
     pub(crate) pending: BTreeMap<u64, u32>,
     pub(crate) counts: JobCounts,
-    clear_color: [f64; 4],
-    sender: Sender<Message>,
-    receiver: Receiver<Message>,
+    pub(crate) clear_color: [f64; 4],
+    pub(crate) sender: Sender<Message>,
+    pub(crate) receiver: Receiver<Message>,
     pub(crate) warnings: Vec<String>,
     /// Why the shadows the lights cast aren't drawn, once said.
-    shadows_off: Option<&'static str>,
+    pub(crate) shadows_off: Option<&'static str>,
     pub(crate) events: crate::events::EventQueue,
     /// Terrain pages of a replaced style, to destroy with the next
     /// frame's GPU.
-    retired_pages: Vec<PageId>,
-    retired_images: Vec<u64>,
+    pub(crate) retired_pages: Vec<PageId>,
+    pub(crate) retired_images: Vec<u64>,
     pub(crate) retired_ramps: Vec<u32>,
     /// This frame's pattern and dash cross-fade.
-    crossfade: crate::paint::Crossfade,
+    pub(crate) crossfade: crate::paint::Crossfade,
     /// What elevated content reads of the terrain this frame.
-    frame_terrain: Option<orb_render::FrameTerrain>,
+    pub(crate) frame_terrain: Option<orb_render::FrameTerrain>,
     /// Tiles' patches on the globe.
-    globe_warps: crate::globe::GlobeWarps,
+    pub(crate) globe_warps: crate::globe::GlobeWarps,
     /// Terrains made so far: each new one's id.
-    terrains: u64,
+    pub(crate) terrains: u64,
 }
 
 impl std::fmt::Debug for Map {
@@ -1901,7 +1750,7 @@ impl Map {
     }
 
     /// Sends a request to the jobs; its result comes back as a message.
-    fn load(&mut self, request: TileRequest, edit: Option<u64>, terrain: bool) {
+    pub(crate) fn load(&mut self, request: TileRequest, edit: Option<u64>, terrain: bool) {
         let (generation, source, tile) = (self.tile_generation, request.source, request.tile);
         let done = self.reply(move |result| Message::Tile {
             generation,
@@ -2621,7 +2470,7 @@ impl Map {
 
     /// A terrain DEM tile arrived: into the terrain's page, prepared with
     /// its neighbours, its elevations kept.
-    fn apply_terrain_tile(
+    pub(crate) fn apply_terrain_tile(
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
@@ -2976,7 +2825,7 @@ impl Map {
 
     /// Installs a style that `load_style_url` fetched, unless a later
     /// request or `set_style_json` superseded it.
-    fn apply_style(
+    pub(crate) fn apply_style(
         &mut self,
         request: u64,
         url: &str,
@@ -2993,297 +2842,6 @@ impl Map {
             let message = format!("style: {e}");
             self.style_error = Some(message.clone());
             self.fail(message);
-        }
-    }
-
-    /// Applies arrived results in order. New tiles apply within
-    /// [`TILE_APPLY_MS`], at least one a frame: tiles that arrive together
-    /// spread their uploads over frames rather than stalling one. Edits'
-    /// results apply whole.
-    fn apply_messages(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
-        let started = self.services.clock.now();
-        self.tiles_deferred = false;
-        while let Ok(message) = self.receiver.try_recv() {
-            let new_tile = matches!(message, Message::Tile { edit: None, .. });
-            match message {
-                // Replies to the labels a GPU reset replaced are dropped.
-                Message::Placed { epoch, committed } => {
-                    if epoch == self.label_epoch {
-                        match committed {
-                            Ok(committed) => {
-                                let started = self.services.clock.now();
-                                self.labels.committed(gpu, renderer, committed);
-                                self.placement_ms += self.services.clock.now() - started;
-                            }
-                            // The labels ask again with the next frame.
-                            Err(message) => {
-                                self.labels.place_failed();
-                                self.warnings.push(format!("placement: {message}"));
-                            }
-                        }
-                    }
-                }
-                Message::Raster {
-                    epoch,
-                    rows,
-                    result,
-                } => {
-                    if epoch == self.label_epoch {
-                        self.labels.rastered(
-                            gpu,
-                            renderer.glyphs(),
-                            &rows,
-                            result,
-                            &mut self.warnings,
-                        );
-                    }
-                }
-                Message::Style {
-                    request,
-                    url,
-                    scene,
-                    result,
-                } => self.apply_style(request, &url, scene, result),
-                Message::Sprite { generation, result } => {
-                    if let Some(style) = self
-                        .style
-                        .as_mut()
-                        .filter(|_| generation == self.generation)
-                    {
-                        style.sprites_loading -= 1;
-                        match result {
-                            Err(e) => {
-                                let message = format!("sprite: {e}");
-                                self.events.push(MapEvent::Error { message });
-                            }
-                            Ok(sprites) => {
-                                let mut atlas =
-                                    self.services.images.0.lock().expect("images poisoned");
-                                let atlas = atlas.atlas.as_mut().expect("initialized");
-                                for image in sprites {
-                                    style.icons.add(
-                                        &image.name,
-                                        [image.width, image.height],
-                                        &image.metadata,
-                                    );
-                                    let namespace =
-                                        style.image_namespace.expect("sprite namespace");
-                                    // Patterns and icons pad differently.
-                                    let mut upload = |pattern: bool| {
-                                        let id = if pattern {
-                                            atlas.resolve(namespace, &image.name)?
-                                        } else {
-                                            atlas.resolve_icon(namespace, &image.name)?
-                                        };
-                                        atlas.upload(
-                                            gpu,
-                                            id,
-                                            ImageUpload {
-                                                size: [image.width, image.height],
-                                                pixels: &image.pixels,
-                                                metadata: image.metadata.clone(),
-                                                pattern,
-                                            },
-                                        )
-                                    };
-                                    let uploaded = upload(true).and_then(|()| upload(false));
-                                    if let Err(e) = uploaded {
-                                        self.warnings.push(format!("sprite {}: {e}", image.name));
-                                    }
-                                }
-                            }
-                        }
-                        if style.sprites_loading == 0 {
-                            self.services.jobs.set_icons(
-                                style.id,
-                                &Arc::new(style.icons.clone()),
-                                &style.worker,
-                            );
-                        }
-                    }
-                }
-                Message::Model {
-                    generation,
-                    renderer: id,
-                    index,
-                    result,
-                } => {
-                    let Some(style) = self
-                        .style
-                        .as_mut()
-                        .filter(|_| generation == self.generation && id == renderer.id())
-                    else {
-                        continue;
-                    };
-                    style.models_loading -= 1;
-                    match result {
-                        Ok(model) => {
-                            renderer.set_model(gpu, index as u32, &model);
-                            self.models_resident = self.models_resident.max(index as u32 + 1);
-                            if let Some(bounds) = style.models.get_mut(index) {
-                                *bounds = Some(model.bounds);
-                            }
-                            style.paint.invalidate();
-                        }
-                        Err(e) => {
-                            let message = format!("model: {e}");
-                            self.events.push(MapEvent::Error { message });
-                        }
-                    }
-                }
-                Message::TileJson {
-                    generation,
-                    source,
-                    result,
-                } => {
-                    let Some(style) = self
-                        .style
-                        .as_mut()
-                        .filter(|_| generation == self.generation)
-                    else {
-                        continue;
-                    };
-                    let plan = style.worker.plan();
-                    let Some(index) = plan.source(source) else {
-                        continue;
-                    };
-                    if !matches!(style.sources[index], SourceState::Resolving) {
-                        continue;
-                    }
-                    let def = plan.source_def(index);
-                    let tms = self.surface.source_tms(&def.id, false);
-                    let endpoint = match (result, self.surface.plan(&tms, plan.image_kind(index))) {
-                        (Err(e), _) => Err(format!("TileJSON: {e}")),
-                        (Ok(_), Err(e)) => Err(e),
-                        (Ok(text), Ok(warp)) => TileEndpoint::resolve(&def.kind, Some(&text), tms)
-                            .map(|endpoint| (endpoint, warp)),
-                    };
-                    let image = plan.image_kind(index).is_some();
-                    style.sources[index] = ready_source(endpoint, &def.id, image, &mut self.events);
-                    self.events.sources.insert(index);
-                    // Color-relief ramps wait for their source's encoding.
-                    style.paint.invalidate();
-                    for node in plan.nodes.iter().filter(|n| n.source == index) {
-                        style.nodes.entry(node.key).or_default().ramp = None;
-                    }
-                }
-                Message::Tile {
-                    generation,
-                    source,
-                    tile,
-                    edit,
-                    terrain,
-                    result,
-                } => {
-                    let host = result.as_ref().ok().map(HostData::of);
-                    if let Some(edit) = edit {
-                        self.finish_job(edit);
-                    }
-                    let mut kept = false;
-                    if generation == self.tile_generation {
-                        match edit {
-                            None if terrain => {
-                                self.apply_terrain_tile(gpu, renderer, source, tile, result)
-                            }
-                            None => {
-                                if let Some(build) =
-                                    self.apply_tile(gpu, renderer, source, tile, result, true)
-                                {
-                                    kept = true;
-                                    let tried = Some(self.room_state(renderer));
-                                    self.waiting.push(WaitingTile {
-                                        generation,
-                                        source,
-                                        tile,
-                                        build,
-                                        tried,
-                                    });
-                                }
-                            }
-                            Some(_) => self.apply_edit(gpu, renderer, source, tile, result),
-                        }
-                    }
-                    // Uploaded or dropped, the result's host data is done.
-                    if let Some(host) = host.filter(|_| !kept) {
-                        host.release(gpu);
-                    }
-                }
-            }
-            if new_tile && self.services.clock.now() - started > TILE_APPLY_MS {
-                self.tiles_deferred = true;
-                break;
-            }
-        }
-        self.retry_waiting(gpu, renderer, started);
-    }
-
-    /// Tries the tiles waiting for room again, in the frame's budget left,
-    /// each only if room may have changed since it last failed: memory
-    /// freed or grown, or other tiles' jobs done.
-    fn retry_waiting(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer, started: f64) {
-        let mut state = self.room_state(renderer);
-        for mut waiting in std::mem::take(&mut self.waiting) {
-            let host = HostData::of(&waiting.build);
-            if waiting.generation != self.tile_generation {
-                host.release(gpu);
-                continue;
-            }
-            if self.tiles_deferred || waiting.tried == Some(state) {
-                self.waiting.push(waiting);
-                continue;
-            }
-            match self.apply_tile(
-                gpu,
-                renderer,
-                waiting.source,
-                waiting.tile,
-                Ok(waiting.build),
-                false,
-            ) {
-                Some(build) => {
-                    state = self.room_state(renderer);
-                    waiting.build = build;
-                    waiting.tried = Some(state);
-                    self.waiting.push(waiting);
-                }
-                None => {
-                    host.release(gpu);
-                    state = self.room_state(renderer);
-                }
-            }
-            self.tiles_deferred = self.services.clock.now() - started > TILE_APPLY_MS;
-        }
-    }
-
-    /// What a waiting tile's room depends on: the scene's pools in use and
-    /// their buffers, tile page layers in use, and tile jobs in flight.
-    fn room_state(&self, renderer: &Renderer) -> [u64; 6] {
-        let stats = renderer.stats();
-        let loading: u64 = self
-            .style
-            .iter()
-            .flat_map(|s| &s.sources)
-            .map(|s| match s {
-                SourceState::Ready { loading, .. } => u64::from(*loading),
-                _ => 0,
-            })
-            .sum();
-        [
-            u64::from(stats.vertex_words),
-            u64::from(stats.index_words),
-            u64::from(stats.prop_words),
-            renderer.pools_revision(),
-            renderer.used_layers(),
-            loading,
-        ]
-    }
-
-    fn finish_job(&mut self, edit: u64) {
-        if let Some(count) = self.pending.get_mut(&edit) {
-            *count -= 1;
-            if *count == 0 {
-                self.pending.remove(&edit);
-            }
         }
     }
 
@@ -3393,325 +2951,6 @@ impl Map {
         Ok(())
     }
 
-    fn apply_tile(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        renderer: &mut Renderer,
-        source: u32,
-        tile: TileIndex,
-        result: Result<TileResult, String>,
-        arrived: bool,
-    ) -> Option<TileResult> {
-        let Some(style) = &mut self.style else {
-            return None;
-        };
-        let plan = style.worker.plan();
-        let source = plan.source(source)?;
-        let SourceState::Ready {
-            pyramid,
-            loading,
-            endpoint,
-            warp,
-            ..
-        } = &mut style.sources[source]
-        else {
-            return None;
-        };
-        if arrived {
-            *loading = loading.saturating_sub(1);
-            self.events.sources.insert(source);
-        }
-        let mut build = match result {
-            Ok(build) => build,
-            Err(e) => {
-                let message = format!("tile {tile:?}: {e}");
-                self.events.push(MapEvent::Error { message });
-                pyramid.insert_failed(tile, self.services.clock.now());
-                return None;
-            }
-        };
-        self.warnings.append(&mut build.warnings);
-        crate::style_image::report_missing(
-            &mut style.reported_missing,
-            &style.icons,
-            style.sprites_loading,
-            &build,
-            &mut self.events,
-        );
-        if build.missing {
-            pyramid.insert_missing(tile);
-            return None;
-        }
-        if let Some(tile_image) = &build.image {
-            // Neighbours' prepares refer to the tile's layer, so only a
-            // tile the pyramid still wants is uploaded.
-            if !pyramid.is_loading(tile) {
-                return None;
-            }
-            let kind = plan
-                .image_kind(source)
-                .expect("image results are for image sources");
-            let tile_zoom = self.surface.tile_zoom(
-                &endpoint.tms,
-                tile,
-                warp.as_mut().and_then(|w| w.footprint(tile)),
-            );
-            let globe = self.surface.globe().is_some();
-            let Ok(warped) = image_mesh(
-                &mut self.globe_warps,
-                globe,
-                warp.as_deref_mut(),
-                endpoint,
-                tile,
-            ) else {
-                // Nothing of the tile reaches the surface.
-                pyramid.insert_empty(tile);
-                return None;
-            };
-            // Raster tiles fade in over their layers' longest duration.
-            let fade_ms = plan
-                .nodes
-                .iter()
-                .filter(|n| n.source == source)
-                .filter_map(|n| {
-                    let r = &plan.style.layers[n.layer];
-                    (r.ty == LayerType::Raster
-                        && !matches!(
-                            plan.source_def(source).kind,
-                            orb_style::SourceKind::Image(_)
-                        ))
-                    .then(|| f64::from(r.get(orb_style::RASTER_FADE_DURATION).evaluate(tile_zoom)))
-                })
-                .fold(0.0, f64::max);
-            // Still output shows tiles at once.
-            let fade_ms = if self.mode == RenderMode::Continuous {
-                fade_ms
-            } else {
-                0.0
-            };
-            let now = self.frame_time;
-            let series = warp
-                .as_deref_mut()
-                .filter(|_| globe)
-                .and_then(|w| w.series(tile));
-            let patches = series.as_deref().map(series_patches);
-            let image_build = orb_render::ImageBuild {
-                key: TileKey {
-                    source: plan.sources[source].key,
-                    tile,
-                },
-                kind: match kind {
-                    crate::style::ImageKind::Raster => orb_render::PageKind::Raster,
-                    crate::style::ImageKind::Dem => orb_render::PageKind::Dem,
-                },
-                size: [tile_image.width, tile_image.height],
-                pixels: match &tile_image.pixels {
-                    crate::ImagePixels::Core(bytes) => orb_render::Pixels::Core(bytes),
-                    &crate::ImagePixels::Host(image) => orb_render::Pixels::Host {
-                        image,
-                        premultiply: kind == crate::style::ImageKind::Raster,
-                    },
-                },
-                mesh: warped.as_ref().map(|w| Arc::clone(&w.mesh)),
-                patches: patches.as_ref().map(|(cells, p)| (*cells, &p[..])),
-                fade_from: (fade_ms > 0.0).then_some((now - self.born.unwrap_or(now)) as f32),
-                unpack: endpoint.dem_unpack.map(|u| u.map(|v| v as f32)),
-            };
-            // Room as for vector tiles: what's free first, then unused
-            // tiles of any source go, then the page and pools grow; while
-            // other tiles load, this one waits for theirs to go; then it
-            // gives up for what stands in.
-            let others_loading = style
-                .sources
-                .iter()
-                .any(|s| matches!(s, SourceState::Ready { loading, .. } if *loading > 0));
-            // Under the budget the pools grow before cached tiles go.
-            let mut grow = pools_under(renderer, self.budget);
-            let uploaded = loop {
-                match renderer.upload_image(gpu, &image_build, grow) {
-                    Ok(handle) => break Ok(handle),
-                    Err(orb_render::UploadError::Invalid(e)) => break Err(Some(e)),
-                    Err(orb_render::UploadError::NoRoom) => {}
-                }
-                if let Some(victim) = evict_unused(&mut style.sources, source) {
-                    self.retired_ramps
-                        .extend(remove_resident(renderer, victim, &mut style.states));
-                } else if !grow {
-                    grow = true;
-                } else {
-                    break Err(None);
-                }
-            };
-            let SourceState::Ready { pyramid, .. } = &mut style.sources[source] else {
-                unreachable!("checked above");
-            };
-            match uploaded {
-                Ok(handle) => {
-                    if fade_ms > 0.0 {
-                        self.image_fades_until = self.image_fades_until.max(now + fade_ms);
-                    }
-                    let mut resident = ResidentTile {
-                        image: Some(ResidentImage { warped }),
-                        series,
-                        ..ResidentTile::new(handle, tile_zoom)
-                    };
-                    resident.cost = tile_cost(renderer, &resident);
-                    if let Some(unwanted) = pyramid.insert(tile, resident) {
-                        self.retired_ramps.extend(remove_resident(
-                            renderer,
-                            unwanted,
-                            &mut style.states,
-                        ));
-                    }
-                }
-                Err(Some(e)) => {
-                    self.warnings.push(format!("tile {tile:?}: {e}"));
-                    pyramid.insert_empty(tile);
-                }
-                Err(None) if others_loading => return Some(build),
-                Err(None) => {
-                    let message = format!(
-                        "tile {tile:?} doesn't fit in scene memory with the tiles in view; \
-                         a coarser tile stands in"
-                    );
-                    self.events.push(MapEvent::Error { message });
-                    pyramid.insert_missing(tile);
-                }
-            }
-            return None;
-        }
-        if !pyramid.is_loading(tile) {
-            return None;
-        }
-        // Nodes the tile was laid out for before an edit changed them are
-        // laid out again from the job's cached tile.
-        let mut stale = Vec::new();
-        for node in plan.nodes.iter().filter(|n| n.source == source) {
-            let state = style.nodes.entry(node.key).or_default();
-            if build.revision < state.layout_epoch.max(state.rows_epoch) {
-                stale.push(node.key);
-            }
-        }
-        drop_stale(&mut build, plan, &stale);
-        let footprint = warp.as_mut().and_then(|warp| warp.footprint(tile));
-        let tile_zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
-        // A tile on another plane draws through its series' patches.
-        let series = warp.as_mut().and_then(|warp| warp.series(tile));
-        let patches = series.as_deref().map(series_patches);
-        let key = TileKey {
-            source: plan.sources[source].key,
-            tile,
-        };
-        let mut atlas = self.services.images.0.lock().expect("images poisoned");
-        // Make room for the whole tile before writing any of it: an upload
-        // that runs out part way starts over, so making room one eviction
-        // at a time would write the tile again for every tile evicted.
-        let sizes = mesh_sizes(plan, &build);
-        // Under the budget the pools grow before cached tiles go; past it,
-        // unused tiles make room first.
-        let mut fits = renderer.fits(&sizes)
-            || (pools_under(renderer, self.budget) && renderer.grow_for(gpu, &sizes));
-        while !fits {
-            let Some(victim) = evict_unused(&mut style.sources, source) else {
-                break;
-            };
-            self.retired_ramps
-                .extend(remove_resident(renderer, victim, &mut style.states));
-            fits = renderer.fits(&sizes);
-        }
-        // With nothing more to evict, the scene grows within its budget.
-        if !fits {
-            fits = renderer.grow_for(gpu, &sizes);
-        }
-        // Other tiles still loading will free the stand-ins they replace:
-        // until they have, this one waits rather than give up its own, and
-        // writes nothing meanwhile.
-        let others_loading = style
-            .sources
-            .iter()
-            .any(|s| matches!(s, SourceState::Ready { loading, .. } if *loading > 0));
-        if !fits && others_loading {
-            return Some(build);
-        }
-        // Then evict cached tiles the view doesn't use, least recently used
-        // first, this source's before others'; then the tiles this one
-        // replaces as soon as it's ready.
-        let resident = loop {
-            atlas
-                .atlas
-                .as_mut()
-                .unwrap()
-                .release_ramps(gpu, self.retired_ramps.drain(..));
-            let patches = patches.as_ref().map(|(cells, p)| (*cells, &p[..]));
-            match upload(
-                gpu,
-                renderer,
-                plan,
-                (key, &build, patches),
-                atlas.atlas.as_mut().expect("initialized"),
-                style.image_namespace.expect("namespace"),
-                &mut style.states,
-                &mut self.labels,
-                tile_zoom,
-                &mut self.warnings,
-            ) {
-                Ok(resident) => break Some(resident),
-                Err(OutOfSpace) => {
-                    let unused = evict_unused(&mut style.sources, source);
-                    // Labels' sizes aren't known ahead: grow both pools.
-                    if unused.is_none() && renderer.grow(gpu) {
-                        continue;
-                    }
-                    let victim = unused.or_else(|| match &mut style.sources[source] {
-                        SourceState::Ready { pyramid, .. } if !others_loading => {
-                            pyramid.evict_within(tile)
-                        }
-                        _ => None,
-                    });
-                    match victim {
-                        Some(victim) => self.retired_ramps.extend(remove_resident(
-                            renderer,
-                            victim,
-                            &mut style.states,
-                        )),
-                        None => break None,
-                    }
-                }
-            }
-        };
-        drop(atlas);
-        let SourceState::Ready { pyramid, .. } = &mut style.sources[source] else {
-            unreachable!("checked above");
-        };
-        let Some(mut resident) = resident else {
-            if others_loading {
-                return Some(build);
-            }
-            // Even the tiles in view don't leave room: draw what stands in,
-            // and say so.
-            let message = format!(
-                "tile {tile:?} doesn't fit in scene memory with the tiles in view; \
-                 a coarser tile stands in"
-            );
-            self.events.push(MapEvent::Error { message });
-            pyramid.insert_missing(tile);
-            return None;
-        };
-        resident.series = series;
-        self.counts.meshes_uploaded += build.meshes.len() as u32;
-        record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);
-        resident.cost = tile_cost(renderer, &resident);
-        if let Some(unwanted) = pyramid.insert(tile, resident) {
-            self.retired_ramps
-                .extend(remove_resident(renderer, unwanted, &mut style.states));
-        }
-        if !stale.is_empty() {
-            let version = self.version;
-            self.send_job(source, tile, Some(stale), false, Some(version));
-        }
-        None
-    }
-
     fn fetch_text(
         &self,
         url: &str,
@@ -3776,389 +3015,6 @@ impl Map {
         // In-flight tiles belong to the old scene.
         self.tile_generation += 1;
     }
-}
-
-/// Raises the nodes' row maxima to those of new meshes; paint is written
-/// again when they grow.
-pub(crate) fn record_maxima(
-    nodes: &mut HashMap<u32, NodeState>,
-    meshes: &[ResultMesh],
-    paint: &mut crate::paint::PaintState,
-) {
-    for mesh in meshes {
-        let Some(node) = nodes.get_mut(&mesh.node) else {
-            continue;
-        };
-        if node.maxima.len() < mesh.maxima.len() {
-            node.maxima.resize(mesh.maxima.len(), 0.0);
-        }
-        for (max, &value) in node.maxima.iter_mut().zip(&mesh.maxima) {
-            if value > *max {
-                *max = value;
-                paint.invalidate();
-            }
-        }
-    }
-}
-
-/// A source whose endpoint resolved; `image` sources cache fewer tiles.
-fn ready_source(
-    endpoint: Result<(TileEndpoint, Plan), String>,
-    id: &str,
-    image: bool,
-    events: &mut crate::events::EventQueue,
-) -> SourceState {
-    match endpoint {
-        Ok((endpoint, plan)) => SourceState::Ready {
-            warp: match plan {
-                Plan::Affine => None,
-                Plan::Warp(warp) => Some(Box::new(WarpState::new(*warp))),
-            },
-            pyramid: TilePyramid::new(
-                endpoint.minzoom,
-                if image {
-                    endpoint.maxzoom
-                } else {
-                    endpoint.cover_zoom()
-                },
-                // Map::trim_cache bounds the cache by memory.
-                usize::MAX,
-            ),
-            endpoint: Arc::new(endpoint),
-            loading: 0,
-        },
-        Err(e) => {
-            events.push(MapEvent::Error {
-                message: format!("source {id}: {e}"),
-            });
-            SourceState::Failed
-        }
-    }
-}
-
-/// Drops a result's meshes and symbol buckets of nodes no longer planned
-/// or laid out since (`stale`, by key); a symbol layer's bucket goes with
-/// its nodes.
-fn drop_stale(build: &mut TileResult, plan: &StylePlan, stale: &[u32]) {
-    build
-        .meshes
-        .retain(|m| plan.node(m.node).is_some() && !stale.contains(&m.node));
-    build.symbols.retain(|s| {
-        let keys = [
-            crate::style::node_key(s.layer, 0),
-            crate::style::node_key(s.layer, 1),
-        ];
-        plan.node(keys[0]).is_some() && !keys.iter().any(|k| stale.contains(k))
-    });
-}
-
-pub(crate) fn words(stream: &Stream, bytes: Option<HostBytesId>) -> Words<'_> {
-    match stream {
-        Stream::Core(words) => Words::Core(words),
-        Stream::Host { offset, len } => Words::Host {
-            bytes: bytes.expect("host streams come with host bytes"),
-            offset: *offset,
-            len: *len,
-        },
-    }
-}
-
-/// What a result mesh's rows refer to besides their words: the images
-/// patched into them, the ramps among those (retained), and the
-/// feature-state indices its features refer to (interned).
-pub(crate) struct ResolvedRows {
-    pub(crate) images: Vec<(u32, u32)>,
-    pub(crate) ramps: Vec<u32>,
-    pub(crate) states: Vec<u32>,
-}
-
-impl ResolvedRows {
-    pub(crate) fn rows(&self) -> orb_render::MeshRows<'_> {
-        orb_render::MeshRows {
-            images: &self.images,
-            states: &self.states,
-        }
-    }
-
-    /// Hands back what [`resolve_rows`] retained, for rows that didn't
-    /// upload.
-    pub(crate) fn release(
-        self,
-        gpu: &mut dyn Gpu,
-        atlas: &mut ImageAtlas,
-        states: &mut FeatureStates,
-    ) {
-        for index in self.states {
-            states.release(index);
-        }
-        atlas.release_ramps(gpu, self.ramps);
-    }
-}
-
-/// Resolves a result mesh's images in the atlas and interns its features'
-/// states.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn resolve_rows(
-    gpu: &mut dyn Gpu,
-    plan: &StylePlan,
-    result: &TileResult,
-    mesh: &ResultMesh,
-    atlas: &mut ImageAtlas,
-    namespace: u64,
-    states: &mut FeatureStates,
-    warnings: &mut Vec<String>,
-) -> ResolvedRows {
-    let mut images = Vec::new();
-    let mut ramps = Vec::new();
-    for image in &mesh.images {
-        match atlas.resolve_key(gpu, namespace, &image.key) {
-            Ok(image_id) => {
-                if matches!(image.key, orb_render::ImageKey::Ramp { .. }) {
-                    atlas.retain_ramp(image_id);
-                    ramps.push(image_id);
-                }
-                images.push((image.word, image_id));
-            }
-            Err(e) => warnings.push(e.into()),
-        }
-    }
-    let mut indices = Vec::new();
-    if let (Some(ids), Some(node)) = (&mesh.state_ids, plan.node(mesh.node)) {
-        let node = &plan.nodes[node];
-        let source = plan.sources[node.source].key;
-        let layer = plan.source_layer(node);
-        indices = ids
-            .iter()
-            .enumerate()
-            .map(|(slot, &i)| match result.ids.get(i as usize) {
-                Some(id) => states.intern(source, layer, id, mesh.data.get(slot)),
-                None => 0,
-            })
-            .collect();
-    }
-    ResolvedRows {
-        images,
-        ramps,
-        states: indices,
-    }
-}
-
-/// Uploads one result mesh into a resident tile, in the part of its
-/// extent.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn upload_mesh(
-    gpu: &mut dyn Gpu,
-    renderer: &mut Renderer,
-    plan: &StylePlan,
-    result: &TileResult,
-    mesh: &ResultMesh,
-    resident: &mut ResidentTile,
-    atlas: &mut ImageAtlas,
-    namespace: u64,
-    states: &mut FeatureStates,
-    warnings: &mut Vec<String>,
-) -> Result<(), OutOfSpace> {
-    let node = plan.node(mesh.node).expect("meshes of planned nodes") as u32;
-    let data = MeshData {
-        vertices: words(&mesh.vertices, result.host_bytes),
-        indices: words(&mesh.indices, result.host_bytes),
-        props: words(&mesh.props, result.host_bytes),
-        row_words: mesh.row_words,
-        chunks: &mesh.chunks,
-    };
-    let rows = resolve_rows(gpu, plan, result, mesh, atlas, namespace, states, warnings);
-    let added = renderer.add_mesh(gpu, resident.gpu, (node, mesh.extent), &data, &rows.rows());
-    let id = match added {
-        Ok(id) => id,
-        Err(e) => {
-            rows.release(gpu, atlas, states);
-            return Err(e);
-        }
-    };
-    resident.meshes.push(Resident {
-        hits: mesh.hits.clone(),
-        node: mesh.node,
-        mesh: id,
-        layout_rev: result.revision,
-        rows_rev: result.revision,
-        ramps: rows.ramps,
-        states: rows.states,
-    });
-    Ok(())
-}
-
-/// Uploads a tile's meshes and symbol buckets, drawing through `patches`:
-/// all of them or, when the scene is out of space, none.
-#[allow(clippy::too_many_arguments)]
-fn upload(
-    gpu: &mut dyn Gpu,
-    renderer: &mut Renderer,
-    plan: &StylePlan,
-    (key, result, patches): (TileKey, &TileResult, Option<(u32, &[f32])>),
-    atlas: &mut ImageAtlas,
-    namespace: u64,
-    states: &mut FeatureStates,
-    labels: &mut crate::labels::Labels,
-    tile_zoom: f64,
-    warnings: &mut Vec<String>,
-) -> Result<ResidentTile, OutOfSpace> {
-    // Symbol nodes' rows go up with their layer's bucket.
-    let meshes: Vec<&ResultMesh> = result
-        .meshes
-        .iter()
-        .filter(|m| {
-            !plan
-                .node(m.node)
-                .is_some_and(|i| plan.nodes[i].family.is_symbol())
-        })
-        .collect();
-    let rows: Vec<ResolvedRows> = meshes
-        .iter()
-        .map(|m| resolve_rows(gpu, plan, result, m, atlas, namespace, states, warnings))
-        .collect();
-    let builds: Vec<orb_render::MeshBuild> = meshes
-        .iter()
-        .zip(&rows)
-        .map(|(m, rows)| orb_render::MeshBuild {
-            node: plan.node(m.node).expect("meshes of planned nodes") as u32,
-            extent: m.extent,
-            data: MeshData {
-                vertices: words(&m.vertices, result.host_bytes),
-                indices: words(&m.indices, result.host_bytes),
-                props: words(&m.props, result.host_bytes),
-                row_words: m.row_words,
-                chunks: &m.chunks,
-            },
-            rows: rows.rows(),
-        })
-        .collect();
-    let build = orb_render::TileBuild {
-        key,
-        meshes: &builds,
-        patches,
-    };
-    let (handle, ids) = match renderer.upload_tile(gpu, &build, false) {
-        Ok(uploaded) => uploaded,
-        Err(_) => {
-            for rows in rows {
-                rows.release(gpu, atlas, states);
-            }
-            return Err(OutOfSpace);
-        }
-    };
-    let mut resident = ResidentTile::new(handle, tile_zoom);
-    resident.meshes = meshes
-        .iter()
-        .zip(rows)
-        .zip(ids)
-        .map(|((m, rows), mesh)| Resident {
-            hits: m.hits.clone(),
-            node: m.node,
-            mesh,
-            layout_rev: result.revision,
-            rows_rev: result.revision,
-            ramps: rows.ramps,
-            states: rows.states,
-        })
-        .collect();
-    if let Err(e) = labels.upload(
-        gpu,
-        renderer,
-        plan,
-        result,
-        &mut resident,
-        atlas,
-        namespace,
-        states,
-        tile_zoom,
-    ) {
-        atlas.release_ramps(gpu, remove_resident(renderer, resident, states));
-        return Err(e);
-    }
-    Ok(resident)
-}
-
-/// Evicts the least recently used cached tile the view doesn't use, of
-/// source `first` before others'.
-fn evict_unused(sources: &mut [SourceState], first: usize) -> Option<ResidentTile> {
-    let others = (0..sources.len()).filter(|&s| s != first);
-    std::iter::once(first)
-        .chain(others)
-        .find_map(|s| match &mut sources[s] {
-            SourceState::Ready { pyramid, .. } => pyramid.evict_lru(),
-            _ => None,
-        })
-}
-
-/// What a tile result's meshes take in the scene, as [`upload`] inserts
-/// them.
-fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize> {
-    let words = |stream: &Stream| match stream {
-        Stream::Core(words) => words.len() as u32,
-        Stream::Host { len, .. } => *len,
-    };
-    result
-        .meshes
-        .iter()
-        .filter(|mesh| {
-            !plan
-                .node(mesh.node)
-                .is_some_and(|i| plan.nodes[i].family.is_symbol())
-        })
-        .map(|mesh| MeshSize {
-            vertices: words(&mesh.vertices),
-            indices: words(&mesh.indices),
-            props: words(&mesh.props),
-            chunks: mesh.chunks.len() as u32,
-        })
-        .collect()
-}
-
-/// Whether the scene's pools and tables hold less than `budget` bytes: the
-/// pools grow for arriving tiles before cached ones go, and the cache is
-/// held to its share of the budget by `trim_cache`.
-fn pools_under(renderer: &Renderer, budget: u64) -> bool {
-    let m = renderer.memory();
-    let allocated = m.vertices.allocated
-        + m.indices.allocated
-        + m.compacted.allocated
-        + m.props.allocated
-        + m.tables;
-    allocated < budget
-}
-
-/// What a resident tile costs to keep: the GPU bytes of its meshes and its
-/// texture layer, and its picking data.
-pub(crate) fn tile_cost(renderer: &Renderer, resident: &ResidentTile) -> u64 {
-    let meshes: u64 = resident
-        .meshes
-        .iter()
-        .map(|m| renderer.mesh_bytes(m.mesh) + m.hits.bytes())
-        .sum();
-    meshes + renderer.tile_bytes(resident.gpu)
-}
-
-/// Removes a tile from the scene. Returns the ramps its rows retained.
-pub(crate) fn remove_resident(
-    renderer: &mut Renderer,
-    tile: ResidentTile,
-    states: &mut FeatureStates,
-) -> Vec<u32> {
-    renderer.release_tile(tile.gpu);
-    release_resident(tile, states)
-}
-
-/// Releases what a tile holds on the CPU, the feature states its features
-/// refer to; returns the ramps its rows retained.
-fn release_resident(tile: ResidentTile, states: &mut FeatureStates) -> Vec<u32> {
-    let mut ramps = Vec::new();
-    for mut mesh in tile.meshes {
-        for index in mesh.states {
-            states.release(index);
-        }
-        ramps.append(&mut mesh.ramps);
-    }
-    ramps
 }
 
 /// GL JS's aligned projection: the world offset that moves the camera
@@ -4371,7 +3227,7 @@ const IMAGE_SOURCE_CELLS: u32 = 16;
 
 /// A series' planar patches as the scene takes them: cells per side and
 /// their words.
-fn series_patches(series: &orb_crs::Series) -> (u32, Vec<f32>) {
+pub(crate) fn series_patches(series: &orb_crs::Series) -> (u32, Vec<f32>) {
     let patches = series
         .patches
         .iter()
@@ -4384,7 +3240,7 @@ fn series_patches(series: &orb_crs::Series) -> (u32, Vec<f32>) {
 /// the sphere and the plane's patches bend; on another plane, the warp's
 /// mesh; else `None` for its quad. `Err` when nothing of it reaches the
 /// surface.
-fn image_mesh(
+pub(crate) fn image_mesh(
     globe_warps: &mut crate::globe::GlobeWarps,
     globe: bool,
     warp: Option<&mut WarpState>,

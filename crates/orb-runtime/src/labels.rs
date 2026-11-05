@@ -18,8 +18,8 @@ use orb_symbol::{
 use orb_text::GlyphKey;
 
 use crate::jobs::{Stream, TileResult};
-use crate::map::{Resident, ResidentTile};
 use crate::placement::PlacementLane;
+use crate::resident::{Resident, ResidentTile};
 use crate::state::FeatureStates;
 use crate::style::StylePlan;
 use crate::symbol::{ResultSymbols, SymbolTable};
@@ -775,15 +775,17 @@ impl Labels {
                     c.bounds = all;
                 }
             }
-            let quads_words = crate::map::words(s.table(quads), bytes);
+            let quads_words = crate::resident::words(s.table(quads), bytes);
             if quads_words.len() / (std::mem::size_of::<Quad>() as u32 / 4) == 0 {
                 continue;
             }
             let rows_mesh = result.meshes.iter().find(|m| m.node == key);
-            let props = rows_mesh.map_or(Words::Core(&[]), |m| crate::map::words(&m.props, bytes));
+            let props = rows_mesh.map_or(Words::Core(&[]), |m| {
+                crate::resident::words(&m.props, bytes)
+            });
             let data = SymbolMeshData {
                 quads: quads_words,
-                placed: crate::map::words(
+                placed: crate::resident::words(
                     if key == text_key {
                         s.table(SymbolTable::TextPlaced)
                     } else {
@@ -791,14 +793,14 @@ impl Labels {
                     },
                     bytes,
                 ),
-                glyph_offsets: crate::map::words(s.table(offsets), bytes),
-                lines: crate::map::words(s.table(SymbolTable::Lines), bytes),
+                glyph_offsets: crate::resident::words(s.table(offsets), bytes),
+                lines: crate::resident::words(s.table(SymbolTable::Lines), bytes),
                 glyphs: &owner.rows,
                 images: &image_rects,
-                instance_rows: crate::map::words(s.table(SymbolTable::InstanceRows), bytes),
+                instance_rows: crate::resident::words(s.table(SymbolTable::InstanceRows), bytes),
                 text_sizes,
                 colors: if key == text_key {
-                    crate::map::words(s.table(SymbolTable::TextColors), bytes)
+                    crate::resident::words(s.table(SymbolTable::TextColors), bytes)
                 } else {
                     Words::Core(&[])
                 },
@@ -810,7 +812,7 @@ impl Labels {
             // Symbol rows name no images: only their features' states.
             let mut warnings = Vec::new();
             let rows = rows_mesh.map(|m| {
-                crate::map::resolve_rows(
+                crate::resident::resolve_rows(
                     gpu,
                     plan,
                     result,

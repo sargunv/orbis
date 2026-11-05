@@ -1865,7 +1865,7 @@ impl crate::Map {
             .sources
             .iter()
             .position(|s| s.key == source)?;
-        let crate::map::SourceState::Ready {
+        let crate::resident::SourceState::Ready {
             pyramid, endpoint, ..
         } = &style.sources[index]
         else {
