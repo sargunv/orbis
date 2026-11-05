@@ -321,10 +321,8 @@ impl Warp {
 
     /// `x` in the world copy nearest `reference`, on a wrapping plane.
     fn unwrap(&self, x: f64, reference: f64) -> f64 {
-        match self.to.wrap_period() {
-            Some(period) => x - ((x - reference) / period).round() * period,
-            None => x,
-        }
+        let near = DVec2::new(reference, 0.0);
+        self.to.nearest_copy(DVec2::new(x, 0.0), near).x
     }
 
     /// Whether the tile holds a pole that a wrapping target plane spreads

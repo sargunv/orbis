@@ -171,7 +171,6 @@ pub struct View {
     eye_distance_px: f64,
     /// Distance from the eye to the farthest visible ground point, in pixels.
     far_px: f64,
-    wrap_period: Option<f64>,
     frustum_min: DVec3,
     frustum_max: DVec3,
     height_scale: f64,
@@ -317,7 +316,6 @@ impl View {
             sea_level_px,
             eye_distance_px,
             far_px,
-            wrap_period: projection.wrap_period(),
             frustum_min,
             frustum_max,
             height_scale,
@@ -443,13 +441,7 @@ impl View {
                 .projection
                 .forward(sphere::geodetic(self.globe_ground(px, z)?));
             // The copy of a wrapping world nearest the target.
-            return Some(match self.wrap_period {
-                Some(period) => DVec2::new(
-                    world.x - ((world.x - self.camera_world.x) / period).round() * period,
-                    world.y,
-                ),
-                None => world,
-            });
+            return Some(self.projection.nearest_copy(world, self.camera_world));
         }
         let (near, far) = self.ray(px, &self.view_proj);
         let t = (near.z - z) / (near.z - far.z);
@@ -584,48 +576,42 @@ impl View {
         let reach = (self.far_px * self.world_per_px).max(self.viewport.width * self.world_per_px);
         // Match the reference's bounded repeated-world policy: at most
         // three copies on either side, with the same generic DFS in each.
-        let copies = self
-            .wrap_period
-            .map_or(0, |period| ((reach / period).ceil() as i32).min(3));
+        let wrap_period = self.projection.wrap_period();
+        let copies = wrap_period.map_or(0, |period| ((reach / period).ceil() as i32).min(3));
         let lod = self.pitched_lod(terrain.is_some());
         // The eye's height above the target, GL JS's `distanceToTileZ`.
         let eye_height = (self.eye.z - self.target_z).abs();
-        tms.cover_with(
-            -copies..=copies,
-            self.wrap_period,
-            max_zoom,
-            |index, offset| {
-                let Some((bounds, center_zoom)) = place(index, offset) else {
-                    return CoverDecision::Skip;
-                };
-                let (lo, hi) = terrain
-                    .and_then(|t| t.range(bounds, index.z))
-                    .map_or(flat_range, |(lo, hi)| {
-                        (lo * self.height_scale, hi * self.height_scale)
-                    });
-                let rel = bounds.translated(-self.camera_world);
-                if !self.intersects_frustum(&rel, lo, hi) {
-                    return CoverDecision::Skip;
-                }
-                let desired = if let Some((behavior, fov_scale, penalty)) = lod {
-                    let distance_2d = rel.clamp(self.eye.truncate()).distance(self.eye.truncate());
-                    let distance = distance_2d.hypot(eye_height).max(1.0e-9);
-                    let tile_pitch = distance_2d.atan2(eye_height);
-                    let center_distance = self.eye_distance_px * self.world_per_px;
-                    center_zoom
-                        + (center_distance / distance / fov_scale).log2()
-                        + behavior * tile_pitch.cos().log2() / 2.0
-                        - penalty
-                } else {
-                    center_zoom
-                };
-                if f64::from(index.z) < desired.floor().max(0.0) {
-                    CoverDecision::Refine
-                } else {
-                    CoverDecision::Accept
-                }
-            },
-        )
+        tms.cover_with(-copies..=copies, wrap_period, max_zoom, |index, offset| {
+            let Some((bounds, center_zoom)) = place(index, offset) else {
+                return CoverDecision::Skip;
+            };
+            let (lo, hi) = terrain
+                .and_then(|t| t.range(bounds, index.z))
+                .map_or(flat_range, |(lo, hi)| {
+                    (lo * self.height_scale, hi * self.height_scale)
+                });
+            let rel = bounds.translated(-self.camera_world);
+            if !self.intersects_frustum(&rel, lo, hi) {
+                return CoverDecision::Skip;
+            }
+            let desired = if let Some((behavior, fov_scale, penalty)) = lod {
+                let distance_2d = rel.clamp(self.eye.truncate()).distance(self.eye.truncate());
+                let distance = distance_2d.hypot(eye_height).max(1.0e-9);
+                let tile_pitch = distance_2d.atan2(eye_height);
+                let center_distance = self.eye_distance_px * self.world_per_px;
+                center_zoom
+                    + (center_distance / distance / fov_scale).log2()
+                    + behavior * tile_pitch.cos().log2() / 2.0
+                    - penalty
+            } else {
+                center_zoom
+            };
+            if f64::from(index.z) < desired.floor().max(0.0) {
+                CoverDecision::Refine
+            } else {
+                CoverDecision::Accept
+            }
+        })
     }
 
     /// GL JS's default tile LOD terms where it applies them: past 60° of

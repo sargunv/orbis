@@ -390,6 +390,18 @@ impl Projection {
         self.family.wrap_period()
     }
 
+    /// `world` in the copy of a wrapping world nearest `near`; unchanged on
+    /// a plane that doesn't wrap.
+    pub fn nearest_copy(&self, world: DVec2, near: DVec2) -> DVec2 {
+        match self.wrap_period() {
+            Some(period) => DVec2::new(
+                world.x - ((world.x - near.x) / period).round() * period,
+                world.y,
+            ),
+            None => world,
+        }
+    }
+
     /// The central meridian of a plane cut along its antimeridian (Equal
     /// Earth's, a conic's), in degrees: longitudes on the cut lie on either
     /// edge of the world.

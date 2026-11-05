@@ -8,7 +8,7 @@ use glam::DVec2;
 use orb_crs::Geodetic;
 use orb_crs::Projection;
 
-use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion};
+use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion, Track};
 use crate::fit::FitOptions;
 use crate::moves::{Bounds, Constraints, wrap_bearing};
 use crate::{CameraState, Elevation, Surface, View, Viewport};
@@ -221,13 +221,10 @@ impl Camera {
         let view = self.view();
         let world = self.surface.projection.forward(point);
         // The copy of a wrapping world nearest the view's centre.
-        let world = match self.surface.projection.wrap_period() {
-            Some(period) => DVec2::new(
-                world.x - ((world.x - view.camera_world().x) / period).round() * period,
-                world.y,
-            ),
-            None => world,
-        };
+        let world = self
+            .surface
+            .projection
+            .nearest_copy(world, view.camera_world());
         match self.terrain.as_deref() {
             Some(terrain) => {
                 let metres = terrain.at(world).unwrap_or(0.0);
@@ -267,10 +264,7 @@ impl Camera {
         options: EaseOptions,
         now: f64,
     ) -> AnimationId {
-        self.stop();
-        let (to, around) = self.resolve(target);
-        let motion = Motion::ease(self.state, to, around, options, &self.surface.projection);
-        self.start(motion, now, false, self.aims(target))
+        self.ease(target, options, now, false)
     }
 
     /// [`ease_to`](Self::ease_to) for input handlers: its events say the
@@ -281,10 +275,20 @@ impl Camera {
         options: EaseOptions,
         now: f64,
     ) -> AnimationId {
+        self.ease(target, options, now, true)
+    }
+
+    fn ease(
+        &mut self,
+        target: &CameraTarget,
+        options: EaseOptions,
+        now: f64,
+        user: bool,
+    ) -> AnimationId {
         self.stop();
         let (to, around) = self.resolve(target);
         let motion = Motion::ease(self.state, to, around, options, &self.surface.projection);
-        self.start(motion, now, true, self.aims(target))
+        self.start(motion, now, user, self.aims(target))
     }
 
     /// Flies to `target` along a zoom-out curve (GL JS `flyTo`).
@@ -333,18 +337,10 @@ impl Camera {
             .as_ref()
             .and_then(|r| r.motion.remaining_glide())
         {
-            let merge = |a: &mut Option<crate::animate::Track<f64>>,
-                         b: Option<crate::animate::Track<f64>>| {
-                if let (Some(a), Some(b)) = (a.as_mut(), b) {
-                    a.amount += b.amount;
-                }
-            };
             merge(&mut glide.zoom, rest.zoom);
             merge(&mut glide.bearing, rest.bearing);
             merge(&mut glide.pitch, rest.pitch);
-            if let (Some(a), Some(b)) = (glide.pan.as_mut(), rest.pan) {
-                a.amount += b.amount;
-            }
+            merge(&mut glide.pan, rest.pan);
         }
         self.stop();
         self.start(Motion::glide(glide), now, true, false)
@@ -627,6 +623,13 @@ impl Camera {
             to.settle_on(terrain, projection);
         }
         (to, around)
+    }
+}
+
+/// Adds what an interrupted glide's track had left to the new one's.
+fn merge<T: std::ops::AddAssign>(a: &mut Option<Track<T>>, b: Option<Track<T>>) {
+    if let (Some(a), Some(b)) = (a.as_mut(), b) {
+        a.amount += b.amount;
     }
 }
 

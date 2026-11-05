@@ -288,18 +288,6 @@ impl FlyCurve {
     }
 }
 
-/// Puts `world` within half a period of `near`, so animations take the
-/// short way around a wrapping world.
-fn nearest_copy(world: DVec2, near: DVec2, projection: &Projection) -> DVec2 {
-    match projection.wrap_period() {
-        Some(period) => DVec2::new(
-            world.x - ((world.x - near.x) / period).round() * period,
-            world.y,
-        ),
-        None => world,
-    }
-}
-
 /// The end bearing nearest the start, so rotations take the short way.
 fn nearest_bearing(from: f64, to: f64) -> f64 {
     from + wrap_bearing(to - from)
@@ -317,11 +305,8 @@ impl Motion {
         options: EaseOptions,
         projection: &Projection,
     ) -> Self {
-        let to_world = nearest_copy(
-            to.target_world(projection),
-            from.target_world(projection),
-            projection,
-        );
+        let to_world =
+            projection.nearest_copy(to.target_world(projection), from.target_world(projection));
         Self::Ease {
             from,
             to,
@@ -340,7 +325,7 @@ impl Motion {
         viewport: Viewport,
     ) -> Self {
         let from_world = from.target_world(projection);
-        let to_world = nearest_copy(to.target_world(projection), from_world, projection);
+        let to_world = projection.nearest_copy(to.target_world(projection), from_world);
         let start_px = from.world_per_px(projection);
         let w0 = viewport.width.max(viewport.height);
         let w1 = w0 / (to.zoom(projection) - from.zoom(projection)).exp2();
@@ -489,7 +474,7 @@ impl Motion {
                         let view = View::new(&next, viewport, surface);
                         if let Some(now) = view.unproject(*at) {
                             let target =
-                                view.camera_world() + nearest_copy(world, now, projection) - now;
+                                view.camera_world() + projection.nearest_copy(world, now) - now;
                             next.set_target_world(projection, target, view.world_per_px());
                         }
                     }
