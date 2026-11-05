@@ -366,28 +366,7 @@ impl Map {
                 };
                 let mut rows: Vec<TileRow> = draws.iter().flat_map(|d| map_rows(d)).collect();
                 if let Some(drape) = draped {
-                    for draw in draws {
-                        let drawn = crate::terrain::Drawn::of(tms, draw, frame, period);
-                        for &(terrain, slot) in &drape.redraw {
-                            if drawn.overlaps(&drape.surface, terrain) {
-                                let zoom =
-                                    crate::terrain::drape_zoom(&drape.surface, terrain.index);
-                                let at = Placement {
-                                    zoom: f64::from(zoom),
-                                    ..at
-                                };
-                                crate::terrain::drape_rows(
-                                    &drape.surface,
-                                    drawn,
-                                    extent,
-                                    (terrain, slot),
-                                    &drape.layout,
-                                    placements(tms, draw, at),
-                                    &mut rows,
-                                );
-                            }
-                        }
-                    }
+                    draws.iter().for_each(|d| drape.rows(tms, d, at, &mut rows));
                 }
                 report.tiles_drawn += rows.len() as u32;
                 if renderer.place(resident.gpu, extent, &rows).is_err() {
@@ -733,29 +712,18 @@ impl Map {
             })
             .collect();
         report.tiles_drawn += rows.len() as u32;
-        if let Some(drape) = drape {
-            for &(terrain, slot) in &drape.redraw {
-                let draw = Draw {
-                    tile: terrain.index,
-                    wrap: terrain.wrap,
-                    regions: vec![terrain.index],
-                };
-                let at = Placement {
-                    tile_zoom: tms.style_zoom(terrain.index),
-                    zoom: f64::from(crate::terrain::drape_zoom(tms, terrain.index)),
-                    ..at
-                };
-                let map = placements(tms, &draw, at);
-                crate::terrain::drape_rows(
-                    tms,
-                    crate::terrain::Drawn::of(tms, &draw, None, period),
-                    8192,
-                    (terrain, slot),
-                    &drape.layout,
-                    map,
-                    &mut rows,
-                );
-            }
+        // Into each slot, the background's quad on its terrain tile.
+        for (drape, (terrain, _)) in drape
+            .iter()
+            .flat_map(|d| d.redraw.iter().map(move |r| (d, r)))
+        {
+            let draw = Draw {
+                tile: terrain.index,
+                wrap: terrain.wrap,
+                regions: vec![terrain.index],
+            };
+            let tile_zoom = tms.style_zoom(terrain.index);
+            drape.rows(tms, &draw, Placement { tile_zoom, ..at }, &mut rows);
         }
         if renderer.place(tile, 8192, &rows).is_err() {
             self.warnings
@@ -774,10 +742,29 @@ pub(crate) struct DrapePlan {
     pub(crate) redraw: Vec<(orb_crs::CoveredTile, u32)>,
 }
 
-/// GL JS's aligned projection: the world offset that moves the camera
-/// target to a whole pixel of the world at this zoom (half a pixel off for
-/// odd viewport sizes, turned with the bearing), so image tiles at whole
-/// pixels draw crisp.
+impl DrapePlan {
+    /// The drape rows of `draw`, placed `at`, into every redrawn slot it
+    /// overlaps.
+    fn rows(&self, tms: &TileMatrixSet, draw: &Draw, at: Placement, out: &mut Vec<TileRow>) {
+        let drawn = crate::terrain::Drawn::of(tms, draw, at.frame, at.period);
+        for &(terrain, slot) in &self.redraw {
+            if drawn.overlaps(&self.surface, terrain) {
+                let zoom = f64::from(crate::terrain::drape_zoom(&self.surface, terrain.index));
+                let map = placements(tms, draw, Placement { zoom, ..at });
+                crate::terrain::drape_rows(
+                    &self.surface,
+                    drawn,
+                    at.extent,
+                    (terrain, slot),
+                    &self.layout,
+                    map,
+                    out,
+                );
+            }
+        }
+    }
+}
+
 /// Per side of `tile` (top, right, bottom, left), how many zooms finer
 /// than it the finest `drawn` tile across that side is, up to
 /// [`orb_crs::MAX_EDGE_REFINE`].
@@ -803,6 +790,10 @@ fn edge_refinement(tile: TileIndex, drawn: impl Fn(TileIndex) -> bool) -> [u8; 4
     })
 }
 
+/// GL JS's aligned projection: the world offset that moves the camera
+/// target to a whole pixel of the world at this zoom (half a pixel off for
+/// odd viewport sizes, turned with the bearing), so image tiles at whole
+/// pixels draw crisp.
 pub(crate) fn pixel_alignment(
     view: &View,
     projection: &orb_crs::Projection,
@@ -827,8 +818,6 @@ pub(crate) fn pixel_alignment(
     ]
 }
 
-/// Placement rows for drawing `draw.tile` in its world copy, clipped to
-/// the regions it stands in for.
 /// Where a tile's placement rows put it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Placement<'a> {
@@ -853,6 +842,8 @@ pub(crate) struct Placement<'a> {
     tile_zoom: f64,
 }
 
+/// Placement rows for drawing `draw.tile` in its world copy, clipped to
+/// the regions it stands in for.
 pub(crate) fn placements<'a>(
     tms: &TileMatrixSet,
     draw: &'a Draw,
