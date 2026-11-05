@@ -378,6 +378,65 @@ fn an_alpine_gesture_draws_what_a_fresh_map_does() {
     assert_same("alps", both_ways(&alps(), start, end, 30));
 }
 
+/// A draped fill whose hovered colour varies with zoom shows the colour of
+/// its new zoom in the first frame after a jump of six zooms: the state
+/// rows' zooms follow the camera that frame (#85), as a fresh map at rest
+/// draws it.
+#[test]
+fn a_fast_zoom_drapes_state_paint_of_its_new_zoom() {
+    let (lon, lat) = (139.76, 35.68);
+    let style = format!(
+        r##"{{"version": 8,
+            "sources": {{{}
+              "square": {{"type": "geojson", "data": {{"type": "Feature", "id": 1, "properties": {{}},
+                "geometry": {{"type": "Polygon", "coordinates": [[[{w}, {s}], [{e}, {s}], [{e}, {n}], [{w}, {n}], [{w}, {s}]]]}}}}}}
+            }},
+            "terrain": {{"source": "hills", "exaggeration": 1}},
+            "layers": [
+              {{"id": "ground", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+              {{"id": "square", "type": "fill", "source": "square", "paint": {{"fill-color":
+                ["interpolate", ["linear"], ["zoom"],
+                  10, ["case", ["boolean", ["feature-state", "hover"], false], "#ff0000", "#00ff00"],
+                  18, ["case", ["boolean", ["feature-state", "hover"], false], "#0000ff", "#00ff00"]]}}}}
+            ]}}"##,
+        hills(),
+        w = lon - 0.05,
+        e = lon + 0.05,
+        s = lat - 0.05,
+        n = lat + 0.05,
+    );
+    let hover = orb_api::Transaction::from_commands(
+        r#"[["setFeatureState", {"source": "square", "id": 1}, {"hover": true}]]"#,
+    )
+    .unwrap();
+    let centre = |pixels: &[u8]| {
+        let at = ((HEIGHT / 2 * WIDTH + WIDTH / 2) * 4) as usize;
+        pixels[at..at + 3].to_vec()
+    };
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let at = |zoom| (Geodetic::new(lon, lat), zoom, 0.0, 0.0);
+    let mut moved = Map::new(&runtime, MapOptions::default());
+    moved.set_style_json(&style).unwrap();
+    moved.edit(&hover).unwrap();
+    moved.jump_to(&camera(at(10.0)));
+    settle(&mut moved, &mut target);
+    moved.jump_to(&camera(at(16.0)));
+    moved.render(&mut target, 0.0).unwrap();
+    let jumped = centre(&target.read_pixels().unwrap());
+    drop(moved);
+    let mut fresh = Map::new(&runtime, MapOptions::default());
+    fresh.set_style_json(&style).unwrap();
+    fresh.edit(&hover).unwrap();
+    fresh.jump_to(&camera(at(16.0)));
+    settle(&mut fresh, &mut target);
+    let rest = centre(&target.read_pixels().unwrap());
+    assert!(
+        jumped.iter().zip(&rest).all(|(a, b)| a.abs_diff(*b) <= 2),
+        "the first frame at z16 draws {jumped:?}, a fresh map at rest {rest:?}"
+    );
+}
+
 /// A frame that only moves the camera, with nothing arriving or leaving
 /// the view, writes no tile rows and lays out no cull candidates: rows
 /// are of tiles' places in the world.
