@@ -1,5 +1,15 @@
 //! Vector overzoom, following pinned GL JS's `sliceVectorTileLayer` and
-//! `clipGeometry`. Clip before layout so each child starts its own line phase.
+//! `clipGeometry`, before layout.
+//!
+//! Polygons and points keep GL JS's buffer past the child's square. Lines
+//! keep a whole tile, the margin line layout keeps (`orb_layout::line`): a
+//! wide stroke crossing the child's edge needs its line to go on well past
+//! it, or the end of the stroke shows inside the tile. (GL JS's buffer is
+//! 28 px at z19.8; a 140 px road crossing a tile edge at 57° lost a corner
+//! on each side of it.) A line's dash phase and label anchors so start at
+//! its own start when that lies within a tile of the child, as in GL JS's
+//! default path, which lays out the whole ancestor; GL JS's slices start
+//! them at its buffer.
 
 use crate::{GeometryType, Layer, LayerBuilder, TileFrame};
 
@@ -33,6 +43,11 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
     builder.clipped_at(buffer.round() as i32);
     for feature in 0..layer.len() {
         let kind = layer.geometry_type(feature);
+        let reach = if kind == GeometryType::LineString {
+            8192.0
+        } else {
+            buffer
+        };
         let mut parts = Vec::new();
         for part in layer.geometry(feature).parts() {
             let mut rings = Vec::new();
@@ -51,7 +66,7 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
                 }
                 let mut geometry = vec![points];
                 for axis in 0..2 {
-                    geometry = clip(geometry, kind, -buffer, 8192.0 + buffer, axis);
+                    geometry = clip(geometry, kind, -reach, 8192.0 + reach, axis);
                 }
                 rings.extend(geometry);
             }
@@ -168,15 +183,30 @@ mod tests {
         b.set_property("class", Value::Str("primary".into()));
         b.begin_part();
         b.begin_ring();
-        b.push_vertex([0, 100]);
-        b.push_vertex([4608, 101]);
+        b.push_vertex([-512, 100]);
+        b.push_vertex([6144, 103]);
+        b.begin_feature(None, GeometryType::Polygon);
+        b.begin_part();
+        b.begin_ring();
+        for p in [[0, 0], [4096, 0], [4096, 4096], [0, 4096]] {
+            b.push_vertex(p);
+        }
         let child = TileFrame {
             layers: vec![b.finish()],
         }
-        .overzoom(1, 1, 0);
+        .overzoom(2, 1, 0);
         let l = &child.layers[0];
         assert_eq!(l.extent(), 8192);
-        assert_eq!(l.vertices, [[-256, 402], [8448, 404]]);
+        // The line goes on a tile past each side of the square, clipped
+        // between vertices; the polygon stops at the source buffer.
+        assert_eq!(&l.vertices[..2], [[-8192, 802], [16384, 813]]);
+        assert_eq!(l.clip_buffer(), 256);
+        assert!(
+            l.vertices[2..]
+                .iter()
+                .flatten()
+                .all(|&v| (-256..=8448).contains(&v))
+        );
         assert_eq!(l.ids().get(0), Some(ValueRef::U64(42)));
         assert_eq!(
             l.property("class").unwrap().get(0),

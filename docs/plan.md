@@ -439,7 +439,8 @@ beyond the world's edge at the poles; patterned backgrounds use tiled
 sampling.
 The tile cover follows GL JS's constant zoom through the FOV-dependent pitch
 threshold and its default variable zoom above it. Vector overzoom slices the
-ancestor before layout, preserving the reference's child-relative line phase.
+ancestor before layout; lines keep a tile past the child's square, so wide
+strokes cross its edges whole.
 
 Dashes use a Runtime-shared 256 × 512 R8 SDF atlas (128 KiB), with typed
 job keys resolved through the shared image table. Constant and data-driven

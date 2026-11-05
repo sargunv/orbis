@@ -447,6 +447,8 @@ sort). The leaves are ported line by line: `quads.ts`, `get_anchors.ts`,
   - Overscaling is 1. Orbis slices an overzoomed tile to its own extent, so
     every tile lays out at its own scale. GL JS lays out the whole ancestor
     at its overscaled size, so labels near a child tile's edges can differ.
+    A slice keeps lines a tile past its square, so line labels anchor from
+    the line's start when that lies within a tile.
   - No Southeast Asian word breaks: no segmentation data is loaded, which
     matches GL JS without `Intl.Segmenter`.
 

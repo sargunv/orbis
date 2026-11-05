@@ -59,7 +59,8 @@ pub struct Layer {
     vertices: Vec<[i32; 2]>,
     properties: Vec<(String, Column)>,
     /// How far past the tile square its producer clipped geometry, in data
-    /// units, when known (GeoJSON tiling, overzoom slices).
+    /// units, when known (GeoJSON tiling, overzoom slices; an overzoom
+    /// slice keeps its lines further).
     clip: Option<i32>,
 }
 
