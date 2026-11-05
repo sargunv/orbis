@@ -216,3 +216,19 @@ the wait, not the renderer. The full bench at load average 23: z12 0.476,
 z15 1.087, z15 pitch 60 1.527, z17 1.271, z16 pitch 60 with buildings
 4.194. The cull counters stay out: the cull shader writes them on the GPU,
 and a frame's stats would need a readback of them every frame.
+
+## After the rebuild
+
+`pnpm -C web measure --runs=3`, headless Chromium on the M6, 800×600 at
+1×, medians of three runs, under load from other sessions (load average
+about 22):
+
+| | pan p50 / p95 ms | pinch p50 / p95 ms | rotate p50 / p95 ms | main busy, load / gestures ms |
+|---|---|---|---|---|
+| Orbis | 37.8 / 40.2 | 36.3 / 52.6 | 36.5 / 39.1 | 88.6 / 187.1 |
+| GL JS | 54.4 / 87.4 | 50.4 / 61.2 | 53.6 / 387.1 | 157.7 / 262.9 |
+
+Input to photon is 15–17 ms (about a display frame) sooner than GL JS's at
+the median, and the main thread is busy 56% as long during load and 71% as
+long during the gestures. Neither map draws a frame while idle, before or
+after the gestures.
