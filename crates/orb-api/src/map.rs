@@ -763,20 +763,23 @@ impl Map {
         if self.shared.sentinel.borrow().is_some() {
             crate::device::before_pipelines();
         }
-        let mut gpu = self.shared.gpu.borrow_mut();
-        let gpu = gpu.gpu();
-        let map = &mut self.map;
-        let renderer = self
-            .renderer
-            .get_or_insert_with(|| map.create_renderer(gpu, format));
-        let report = map.render(
-            gpu,
-            renderer,
-            texture,
-            viewport,
-            target.scale() as f32,
-            frame_time,
-        );
+        // The device is borrowed for the draw only: presenting borrows it too.
+        let report = {
+            let mut gpu = self.shared.gpu.borrow_mut();
+            let gpu = gpu.gpu();
+            let map = &mut self.map;
+            let renderer = self
+                .renderer
+                .get_or_insert_with(|| map.create_renderer(gpu, format));
+            map.render(
+                gpu,
+                renderer,
+                texture,
+                viewport,
+                target.scale() as f32,
+                frame_time,
+            )
+        };
         target.end();
         // Every pipeline the map asked for compiled, and the driver
         // survived them.
