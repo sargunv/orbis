@@ -180,8 +180,6 @@ pub struct View {
     eye_distance_px: f64,
     /// Distance from the eye to the farthest visible ground point, in pixels.
     far_px: f64,
-    frustum_min: DVec3,
-    frustum_max: DVec3,
     height_scale: f64,
     projection: Projection,
     globe: Option<GlobeView>,
@@ -272,18 +270,6 @@ impl View {
         let eye = view.inverse().transform_point3(DVec3::ZERO);
 
         let view_proj = proj * view;
-        let inverse = view_proj.inverse();
-        let mut frustum_min = DVec3::splat(f64::INFINITY);
-        let mut frustum_max = DVec3::splat(f64::NEG_INFINITY);
-        for i in 0..8 {
-            let corner = inverse.project_point3(DVec3::new(
-                if i & 1 == 0 { -1.0 } else { 1.0 },
-                if i & 2 == 0 { -1.0 } else { 1.0 },
-                if i & 4 == 0 { 0.0 } else { 1.0 },
-            ));
-            frustum_min = frustum_min.min(corner);
-            frustum_max = frustum_max.max(corner);
-        }
 
         let amount = surface.globe_amount(camera.zoom(projection));
         let low_plane = surface.globe.and_then(|g| g.plane);
@@ -338,8 +324,6 @@ impl View {
             sea_level_px,
             eye_distance_px,
             far_px,
-            frustum_min,
-            frustum_max,
             height_scale,
             projection: *projection,
             globe,
@@ -561,7 +545,7 @@ impl View {
     /// The tiles of `tms` that cover the view, choosing for each the zoom at
     /// which GL JS's default level-of-detail policy selects `tile_px` tiles.
     pub fn cover(&self, tms: &TileMatrixSet, tile_px: f64, max_zoom: u8) -> Vec<CoveredTile> {
-        self.cover_volume(tms, tile_px, max_zoom, 0.0, None)
+        self.cover_volume(tms, tile_px, max_zoom, 0.0, None, 0.0)
     }
 
     /// Covers ground and elevated content. `height` is the maximum content
@@ -578,6 +562,7 @@ impl View {
         max_zoom: u8,
         height: f64,
         terrain: Option<&dyn Elevation>,
+        margin_px: f64,
     ) -> Vec<CoveredTile> {
         if let Some(low) = self.low_plane() {
             return low.cover_low(tms, tile_px, max_zoom);
@@ -586,10 +571,17 @@ impl View {
             return self.cover_globe(globe, tms, tile_px, max_zoom);
         }
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
-        self.cover_tiles(tms, max_zoom, height, terrain, |index, offset| {
-            let bounds = tms.tile_bounds(index).translated(DVec2::new(offset, 0.0));
-            Some((bounds, center_zoom))
-        })
+        self.cover_tiles(
+            tms,
+            max_zoom,
+            height,
+            terrain,
+            margin_px,
+            |index, offset| {
+                let bounds = tms.tile_bounds(index).translated(DVec2::new(offset, 0.0));
+                Some((bounds, center_zoom))
+            },
+        )
     }
 
     /// Covers the view with tiles of a set on another plane (the
@@ -609,7 +601,7 @@ impl View {
             return self.cover_globe(globe, tms, tile_px, max_zoom);
         }
         let scale = self.world_per_px * tile_px;
-        self.cover_tiles(tms, max_zoom, 0.0, None, |index, offset| {
+        self.cover_tiles(tms, max_zoom, 0.0, None, 0.0, |index, offset| {
             let f = footprint(index)?;
             // The zoom at which this tile, at its own scale, would span
             // `tile_px` pixels at the camera.
@@ -636,8 +628,16 @@ impl View {
         max_zoom: u8,
         height: f64,
         terrain: Option<&dyn Elevation>,
+        margin_px: f64,
         mut place: impl FnMut(TileIndex, f64) -> Option<(WorldRect, f64)>,
     ) -> Vec<CoveredTile> {
+        let frustum = Frustum::new(
+            self.view_proj,
+            DVec2::new(
+                2.0 * margin_px / self.viewport.width,
+                2.0 * margin_px / self.viewport.height,
+            ),
+        );
         // GL JS grows the culling volume as the bottom edge approaches the
         // horizon. Heights here stay in world units, just like tile bounds.
         let proximity =
@@ -662,7 +662,7 @@ impl View {
                     (lo * self.height_scale, hi * self.height_scale + raised)
                 });
             let rel = bounds.translated(-self.camera_world);
-            if !self.intersects_frustum(&rel, lo, hi) {
+            if !frustum.meets(&rel, lo, hi) {
                 return CoverDecision::Skip;
             }
             let desired =
@@ -803,7 +803,7 @@ impl View {
                 lo = lo.min(p - globe.target);
                 hi = hi.max(p - globe.target);
             }
-            if !box_in_frustum(&globe.view_proj, lo - bulge, hi + bulge) {
+            if !box_in_frustum(&globe.view_proj, lo - bulge, hi + bulge, DVec2::ZERO) {
                 return CoverDecision::Skip;
             }
             // Its side at the centre, along its middle row and column.
@@ -848,28 +848,65 @@ impl View {
             }
         })
     }
+}
 
-    /// Conservative test of a camera-relative ground rectangle against the
-    /// view frustum.
-    fn intersects_frustum(&self, rect: &WorldRect, lo: f64, hi: f64) -> bool {
+/// A view's frustum, widened by a margin in NDC per unit w (a reach in
+/// pixels past the viewport's edges), for conservative tests of
+/// camera-relative boxes.
+struct Frustum {
+    view_proj: DMat4,
+    margin: DVec2,
+    /// Its axis-aligned bounds in camera-relative world space.
+    min: DVec3,
+    max: DVec3,
+}
+
+impl Frustum {
+    fn new(view_proj: DMat4, margin: DVec2) -> Self {
+        let inverse = view_proj.inverse();
+        let (mut min, mut max) = (DVec3::INFINITY, DVec3::NEG_INFINITY);
+        for i in 0..8 {
+            let corner = inverse.project_point3(DVec3::new(
+                if i & 1 == 0 { -1.0 } else { 1.0 } * (1.0 + margin.x),
+                if i & 2 == 0 { -1.0 } else { 1.0 } * (1.0 + margin.y),
+                if i & 4 == 0 { 0.0 } else { 1.0 },
+            ));
+            min = min.min(corner);
+            max = max.max(corner);
+        }
+        Self {
+            view_proj,
+            margin,
+            min,
+            max,
+        }
+    }
+
+    /// Whether a ground rectangle raised between `lo` and `hi` may meet it.
+    fn meets(&self, rect: &WorldRect, lo: f64, hi: f64) -> bool {
         // The frustum planes alone can accept disjoint boxes near a corner.
         // Include the box's three axes, as GL JS's AABB test does.
-        if rect.min.x > self.frustum_max.x
-            || rect.min.y > self.frustum_max.y
-            || lo > self.frustum_max.z
-            || rect.max.x < self.frustum_min.x
-            || rect.max.y < self.frustum_min.y
-            || hi < self.frustum_min.z
+        if rect.min.x > self.max.x
+            || rect.min.y > self.max.y
+            || lo > self.max.z
+            || rect.max.x < self.min.x
+            || rect.max.y < self.min.y
+            || hi < self.min.z
         {
             return false;
         }
-        box_in_frustum(&self.view_proj, rect.min.extend(lo), rect.max.extend(hi))
+        box_in_frustum(
+            &self.view_proj,
+            rect.min.extend(lo),
+            rect.max.extend(hi),
+            self.margin,
+        )
     }
 }
 
-/// Whether a box may meet the frustum of `view_proj`: no clip plane has
-/// all eight corners outside.
-fn box_in_frustum(view_proj: &DMat4, lo: DVec3, hi: DVec3) -> bool {
+/// Whether a box may meet the frustum of `view_proj` widened by `margin`
+/// (NDC per unit w): no clip plane has all eight corners outside.
+fn box_in_frustum(view_proj: &DMat4, lo: DVec3, hi: DVec3, margin: DVec2) -> bool {
     let corners: [_; 8] = std::array::from_fn(|i| {
         let x = if i & 1 == 0 { lo.x } else { hi.x };
         let y = if i & 2 == 0 { lo.y } else { hi.y };
@@ -877,10 +914,11 @@ fn box_in_frustum(view_proj: &DMat4, lo: DVec3, hi: DVec3) -> bool {
         *view_proj * DVec4::new(x, y, z, 1.0)
     });
     let all = |f: &dyn Fn(&DVec4) -> bool| corners.iter().all(f);
-    !(all(&|c| c.x > c.w)
-        || all(&|c| c.x < -c.w)
-        || all(&|c| c.y > c.w)
-        || all(&|c| c.y < -c.w)
+    let (mx, my) = (1.0 + margin.x, 1.0 + margin.y);
+    !(all(&|c| c.x > c.w * mx)
+        || all(&|c| c.x < -c.w * mx)
+        || all(&|c| c.y > c.w * my)
+        || all(&|c| c.y < -c.w * my)
         || all(&|c| c.z > c.w)
         || all(&|c| c.z < 0.0))
 }
@@ -964,15 +1002,26 @@ mod tests {
         )
     }
 
+    /// A margin keeps the tiles whose points reach into the view from past
+    /// its edge.
+    #[test]
+    fn cover_margins_reach_past_the_edge() {
+        let (view, tms) = setup(3.0, 0.0);
+        let plain = view.cover_volume(&tms, 512.0, 14, 0.0, None, 0.0);
+        let padded = view.cover_volume(&tms, 512.0, 14, 0.0, None, 300.0);
+        assert!(padded.len() > plain.len());
+        assert!(plain.iter().all(|t| padded.contains(t)));
+    }
+
     #[test]
     fn elevated_cover_keeps_roofs_whose_ground_is_below_the_view() {
         let (view, tms) = setup(14.0, 80.0);
         let ground = view.cover(&tms, 512.0, 14);
+        let frustum = Frustum::new(view.view_proj(), DVec2::ZERO);
         assert!(
             ground.iter().any(|tile| {
                 let rect = tms.tile_bounds(tile.index).translated(-view.camera_world());
-                !view.intersects_frustum(&rect, 0.0, 0.0)
-                    && view.intersects_frustum(&rect, 0.0, 500.0)
+                !frustum.meets(&rect, 0.0, 0.0) && frustum.meets(&rect, 0.0, 500.0)
             }),
             "the assumed feature height retains tiles whose roofs enter the view"
         );

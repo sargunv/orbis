@@ -208,6 +208,7 @@ impl Terrain {
             TERRAIN_MAX_ZOOM,
             0.0,
             Some(&*self.elevation),
+            0.0,
         );
         self.tiles = tiles;
         let mut wanted: Vec<CoveredTile> = self

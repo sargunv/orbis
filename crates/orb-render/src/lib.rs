@@ -927,6 +927,12 @@ impl Renderer {
         }
     }
 
+    /// How far node `node`'s drawn pixels reach past its chunks' bounds,
+    /// from its last paint.
+    pub fn cull_margin_px(&self, node: u32) -> f32 {
+        self.nodes[node as usize].cull.margin_px
+    }
+
     /// Writes a node's paint values. The paint's family must match the
     /// node's.
     pub fn set_paint(&mut self, gpu: &mut dyn Gpu, node: u32, paint: &NodePaint) {

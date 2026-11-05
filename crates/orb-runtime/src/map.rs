@@ -1991,6 +1991,20 @@ impl Map {
                     .max(max(2))
             })
             .fold(0.0f32, f32::max);
+        // Circles and heatmaps draw from the tile their point is in alone,
+        // where GL JS draws the copies in its neighbours' buffers too: a
+        // neighbour out of view still reaches into it by their reach.
+        // Labels, as in GL JS, show from their anchor's tile only.
+        let reach = self.renderer.as_ref().map_or(0.0, |(renderer, _)| {
+            plan.nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| {
+                    n.source == index && matches!(n.family, Family::Circle | Family::Heatmap)
+                })
+                .map(|(i, _)| renderer.cull_margin_px(i as u32))
+                .fold(0.0f32, f32::max)
+        });
         let SourceState::Ready {
             endpoint,
             pyramid,
@@ -2017,6 +2031,7 @@ impl Map {
                 pyramid.max_zoom(),
                 f64::from(height) * elevation_scale,
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
+                f64::from(reach),
             ),
             (None, Some(warp)) => {
                 view.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
@@ -2729,6 +2744,7 @@ impl Map {
                 24,
                 0.0,
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
+                0.0,
             ),
         };
         let period = self.surface.period();

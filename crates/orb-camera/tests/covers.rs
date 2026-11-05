@@ -33,6 +33,7 @@ fn covers_match_pinned_gl_js() {
                 n("maxzoom") as u8,
                 n("maxContentElevation") * tms.projection().style_height_scale(camera.target),
                 None,
+                0.0,
             )
             .iter()
             .filter(|t| t.index.z >= n("minzoom") as u8)
