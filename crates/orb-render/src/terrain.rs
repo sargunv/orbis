@@ -31,7 +31,6 @@ const TILE_WORDS: usize = 14;
 const PARAM_WORDS: usize = 12;
 /// Uniform slices are 256-byte aligned on every backend.
 const UNIFORM_STRIDE: u64 = 256;
-const MAX_STACKS: u32 = 16;
 
 /// The terrain's values for a frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -142,7 +141,10 @@ pub(crate) struct Terrain {
     tile_capacity: u32,
     tile_count: u32,
     params: BufferId,
+    /// Each stack's group over its slice of `stack_uniforms`, made for as
+    /// many stacks as the style has.
     stack_groups: Vec<BindGroupId>,
+    stack_uniforms: Option<BufferId>,
     linear: SamplerId,
     atlas: Option<Atlas>,
     layout_state: DrapeLayout,
@@ -313,32 +315,6 @@ impl Terrain {
             size: PARAM_WORDS as u64 * 4,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
-        let stack_uniforms = gpu.create_buffer(&BufferDesc {
-            label: "terrain stacks",
-            size: UNIFORM_STRIDE * u64::from(MAX_STACKS),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-        let mut words = vec![0u32; (UNIFORM_STRIDE / 4 * u64::from(MAX_STACKS)) as usize];
-        for stack in 0..MAX_STACKS {
-            words[(UNIFORM_STRIDE / 4 * u64::from(stack)) as usize] = stack;
-        }
-        gpu.write_buffer(stack_uniforms, 0, bytemuck::cast_slice(&words));
-        let stack_groups = (0..MAX_STACKS)
-            .map(|stack| {
-                gpu.create_bind_group(&BindGroupDesc {
-                    label: "terrain stack",
-                    layout: stack_layout,
-                    entries: &[BindGroupEntry {
-                        binding: 0,
-                        resource: BindingResource::Buffer {
-                            buffer: stack_uniforms,
-                            offset: UNIFORM_STRIDE * u64::from(stack),
-                            size: Some(16),
-                        },
-                    }],
-                })
-            })
-            .collect();
         let linear = gpu.create_sampler(&SamplerDesc {
             label: "drape",
             filter: FilterMode::Linear,
@@ -368,7 +344,8 @@ impl Terrain {
             tile_capacity: 64,
             tile_count: 0,
             params,
-            stack_groups,
+            stack_groups: Vec::new(),
+            stack_uniforms: None,
             linear,
             atlas: None,
             layout_state: DrapeLayout {
@@ -395,6 +372,47 @@ impl Terrain {
         self.layout_state
     }
 
+    /// Groups for `stacks` stacks, each binding its index.
+    fn ensure_stacks(&mut self, gpu: &mut dyn Gpu, stacks: u32) {
+        if self.stack_groups.len() >= stacks as usize {
+            return;
+        }
+        let count = stacks.next_power_of_two().max(4);
+        for group in self.stack_groups.drain(..) {
+            gpu.destroy_bind_group(group);
+        }
+        if let Some(buffer) = self.stack_uniforms.take() {
+            gpu.destroy_buffer(buffer);
+        }
+        let buffer = gpu.create_buffer(&BufferDesc {
+            label: "terrain stacks",
+            size: UNIFORM_STRIDE * u64::from(count),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+        let mut words = vec![0u32; (UNIFORM_STRIDE / 4 * u64::from(count)) as usize];
+        for stack in 0..count {
+            words[(UNIFORM_STRIDE / 4 * u64::from(stack)) as usize] = stack;
+        }
+        gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&words));
+        self.stack_groups = (0..count)
+            .map(|stack| {
+                gpu.create_bind_group(&BindGroupDesc {
+                    label: "terrain stack",
+                    layout: self.stack_layout,
+                    entries: &[BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::Buffer {
+                            buffer,
+                            offset: UNIFORM_STRIDE * u64::from(stack),
+                            size: Some(16),
+                        },
+                    }],
+                })
+            })
+            .collect();
+        self.stack_uniforms = Some(buffer);
+    }
+
     /// Makes room for `tile_slots` blocks of `stacks` slots. A new atlas
     /// starts a new [`DrapeLayout::generation`]. Fails when the atlas
     /// would exceed the device's texture size.
@@ -404,7 +422,8 @@ impl Terrain {
         tile_slots: u32,
         stacks: u32,
     ) -> Result<(), crate::OutOfSpace> {
-        let stacks = stacks.clamp(1, MAX_STACKS);
+        let stacks = stacks.max(1);
+        self.ensure_stacks(gpu, stacks);
         let state = self.layout_state;
         if self.atlas.is_some() && state.stacks == stacks && state.tile_slots >= tile_slots {
             return Ok(());
