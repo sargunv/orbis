@@ -96,7 +96,8 @@ pub(crate) fn apply(map: &mut Map, op: &Value, assets: &Path) -> Result<Next, St
             map.remove_image(name).map_err(|e| e.to_string())?;
         }
         _ => {
-            map.edit(&format!("[{op}]")).map_err(|e| e.to_string())?;
+            let tx = orb_api::Transaction::from_commands(&format!("[{op}]"))?;
+            map.edit(&tx).map_err(|e| e.to_string())?;
         }
     }
     Ok(Next::Continue)
