@@ -11,18 +11,36 @@ const modifiers = (e: KeyboardEvent | MouseEvent) =>
 export function attachInput(canvas: HTMLCanvasElement, ui: UiRole, changed: () => void): () => void {
   canvas.tabIndex = 0;
   canvas.style.touchAction = "none";
+  // Where the canvas is while pointers are captured: `offsetX` would lay
+  // the page out again on every move once overlays have moved.
+  let origin: DOMRect | null = null;
+  let captured = 0;
+  const at = (e: PointerEvent): [number, number] => {
+    if (!captured) return [e.offsetX, e.offsetY];
+    origin ??= canvas.getBoundingClientRect();
+    return [e.clientX - origin.left, e.clientY - origin.top];
+  };
   const down = (e: PointerEvent) => {
     canvas.focus({ preventScroll: true });
-    if (ui.pointerDown(e.pointerId, e.pointerType, e.button, e.offsetX, e.offsetY, modifiers(e), e.timeStamp)) {
+    origin = null;
+    const [x, y] = at(e);
+    if (ui.pointerDown(e.pointerId, e.pointerType, e.button, x, y, modifiers(e), e.timeStamp)) {
       canvas.setPointerCapture(e.pointerId);
+      captured++;
       changed();
     }
   };
   const move = (e: PointerEvent) => {
-    if (ui.pointerMove(e.pointerId, e.offsetX, e.offsetY, e.timeStamp)) changed();
+    const [x, y] = at(e);
+    if (ui.pointerMove(e.pointerId, x, y, e.timeStamp)) changed();
   };
   const up = (e: PointerEvent) => {
-    if (ui.pointerUp(e.pointerId, e.offsetX, e.offsetY, e.timeStamp)) changed();
+    const [x, y] = at(e);
+    if (ui.pointerUp(e.pointerId, x, y, e.timeStamp)) changed();
+  };
+  const lost = () => {
+    captured = Math.max(0, captured - 1);
+    origin = null;
   };
   const cancel = (e: PointerEvent) => {
     if (ui.pointerCancel(e.pointerId, e.timeStamp)) changed();
@@ -46,6 +64,7 @@ export function attachInput(canvas: HTMLCanvasElement, ui: UiRole, changed: () =
     ["pointermove", move as EventListener],
     ["pointerup", up as EventListener],
     ["pointercancel", cancel as EventListener],
+    ["lostpointercapture", lost],
     ["wheel", wheel as EventListener, { passive: false }],
     ["keydown", key as EventListener],
     ["blur", blur as EventListener],

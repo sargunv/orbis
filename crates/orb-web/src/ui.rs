@@ -49,10 +49,6 @@ pub(crate) fn camera_from(words: &[f64]) -> Result<CameraState, JsError> {
     }
 }
 
-fn set(object: &js_sys::Object, key: &str, value: impl Into<JsValue>) {
-    let _ = js_sys::Reflect::set(object, &key.into(), &value.into());
-}
-
 fn known(v: f64) -> Option<f64> {
     (!v.is_nan()).then_some(v)
 }
@@ -317,67 +313,59 @@ impl UiRole {
         self.camera.frame(now) || gesture
     }
 
-    /// Camera and gesture events since the last call, as plain objects:
-    /// `{type: "movestart" … "pitchend", user}`, `{type: "animationend",
-    /// id, interrupted}`, `{type: "click", x, y, button}`, `{type:
-    /// "dblclick", x, y}`.
+    /// Camera and gesture events since the last call, four numbers each,
+    /// so a frame builds no objects: `[change · 3 + phase, user, 0, 0]` for
+    /// `move`, `zoom`, `rotate`, `pitch` (changes 0–3) and their `…start`,
+    /// progress and `…end` (phases 0–2); `[12, id, interrupted, 0]` for an
+    /// animation's end; `[13, x, y, button]` for a click and `[14, x, y,
+    /// 0]` for a double click.
     #[wasm_bindgen(js_name = takeEvents)]
-    pub fn take_events(&mut self) -> js_sys::Array {
-        let out = js_sys::Array::new();
+    pub fn take_events(&mut self) -> Vec<f64> {
+        let mut out = Vec::new();
         for event in self.camera.take_events() {
-            let object = js_sys::Object::new();
-            match event {
+            out.extend(match event {
                 CameraEvent::Changed {
                     change,
                     phase,
                     user,
                 } => {
-                    let name = match change {
-                        Change::Move => "move",
-                        Change::Zoom => "zoom",
-                        Change::Rotate => "rotate",
-                        Change::Pitch => "pitch",
+                    let change = match change {
+                        Change::Move => 0,
+                        Change::Zoom => 1,
+                        Change::Rotate => 2,
+                        Change::Pitch => 3,
                     };
-                    let suffix = match phase {
-                        Phase::Start => "start",
-                        Phase::Progress => "",
-                        Phase::End => "end",
+                    let phase = match phase {
+                        Phase::Start => 0,
+                        Phase::Progress => 1,
+                        Phase::End => 2,
                     };
-                    set(&object, "type", format!("{name}{suffix}"));
-                    set(&object, "user", user);
+                    [
+                        f64::from(change * 3 + phase),
+                        f64::from(u8::from(user)),
+                        0.0,
+                        0.0,
+                    ]
                 }
                 CameraEvent::AnimationEnd { id, interrupted } => {
-                    set(&object, "type", "animationend");
-                    set(&object, "id", id.0 as f64);
-                    set(&object, "interrupted", interrupted);
+                    [12.0, id.0 as f64, f64::from(u8::from(interrupted)), 0.0]
                 }
-            }
-            out.push(&object);
+            });
         }
         for event in self.input.take_events() {
-            let object = js_sys::Object::new();
-            match event {
-                InteractEvent::Click { position, button } => {
-                    set(&object, "type", "click");
-                    set(&object, "x", position.x);
-                    set(&object, "y", position.y);
-                    set(
-                        &object,
-                        "button",
-                        match button {
-                            Button::Primary => 0,
-                            Button::Middle => 1,
-                            Button::Secondary => 2,
-                        },
-                    );
-                }
-                InteractEvent::DoubleClick { position } => {
-                    set(&object, "type", "dblclick");
-                    set(&object, "x", position.x);
-                    set(&object, "y", position.y);
-                }
-            }
-            out.push(&object);
+            out.extend(match event {
+                InteractEvent::Click { position, button } => [
+                    13.0,
+                    position.x,
+                    position.y,
+                    match button {
+                        Button::Primary => 0.0,
+                        Button::Middle => 1.0,
+                        Button::Secondary => 2.0,
+                    },
+                ],
+                InteractEvent::DoubleClick { position } => [14.0, position.x, position.y, 0.0],
+            });
         }
         out
     }

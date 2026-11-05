@@ -30,6 +30,8 @@ export class Annotation {
   #anchor: Anchor;
   #offset: Point;
   #layer: Annotations;
+  /** Where it was last placed, to write the DOM only when that changes. */
+  #at: Point | null | undefined;
 
   constructor(layer: Annotations, options: AnnotationOptions) {
     this.#layer = layer;
@@ -53,11 +55,14 @@ export class Annotation {
   /** @internal */
   place(x: number, y: number): void {
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      this.element.style.visibility = "hidden";
+      if (this.#at !== null) this.element.style.visibility = "hidden";
+      this.#at = null;
       return;
     }
+    if (this.#at === null) this.element.style.visibility = "";
+    if (this.#at && this.#at[0] === x && this.#at[1] === y) return;
+    this.#at = [x, y];
     const [dx, dy] = this.#offset;
-    this.element.style.visibility = "";
     this.element.style.transform = `translate(${x + dx}px,${y + dy}px) translate(${SHIFT[this.#anchor]})`;
   }
 }
@@ -86,6 +91,7 @@ export class Annotations {
   remove(annotation: Annotation): void {
     this.#items.delete(annotation);
     annotation.element.remove();
+    this.#changed();
   }
 
   /** @internal */
@@ -96,10 +102,17 @@ export class Annotations {
   /** @internal Positions every annotation with `project`: [lon, lat, …] → [x, y, …]. */
   place(project: (points: Float64Array) => Float64Array): void {
     if (!this.#items.size) return;
-    const items = [...this.#items];
-    const points = new Float64Array(items.length * 2);
-    items.forEach((a, i) => { points[2 * i] = a.lngLat[0]; points[2 * i + 1] = a.lngLat[1]; });
+    const points = new Float64Array(this.#items.size * 2);
+    let i = 0;
+    for (const a of this.#items) {
+      points[i++] = a.lngLat[0];
+      points[i++] = a.lngLat[1];
+    }
     const pixels = project(points);
-    items.forEach((a, i) => a.place(pixels[2 * i], pixels[2 * i + 1]));
+    i = 0;
+    for (const a of this.#items) {
+      a.place(pixels[i], pixels[i + 1]);
+      i += 2;
+    }
   }
 }

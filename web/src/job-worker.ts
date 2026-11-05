@@ -3,7 +3,7 @@
 // packed tile's buffer, image tile's ImageBitmap (with a terrain DEM
 // tile's elevations) or glyph bitmaps, transferred.
 //
-// Page → worker: {module, port}. Port messages are Rust's (orb-web's
+// Spawner → worker: {module, port}. Port messages are Rust's (orb-web's
 // `jobs` module); this file only carries them.
 import init, { JobWorker } from "../pkg/core.js";
 import { loadShaper } from "./shaper.ts";

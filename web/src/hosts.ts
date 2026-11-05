@@ -1,6 +1,7 @@
 // The two places a map can draw (plan §7.2), behind one interface: on the
 // page's thread, or in a render worker. Either way its tile jobs and labels
-// go to job workers and a placement worker (plan §7.1).
+// go to job workers and a placement worker (plan §7.1), which the drawing
+// thread spawns (workers.ts).
 
 import init, { createMap as createCoreMap, type OrbisMap as CoreMap } from "../pkg/core.js";
 
@@ -20,6 +21,7 @@ async function rendererModule(tier: "modern" | "compat", module: WebAssembly.Mod
 }
 import { renderFrame, type FrameAck, type Renderer } from "./frames.ts";
 import type { Hit } from "./types.ts";
+import { spawnWorkers } from "./workers.ts";
 
 export interface HostCallbacks {
   /** A frame the worker drew (worker hosts; the page draws main hosts' itself). */
@@ -42,6 +44,9 @@ export interface Host {
   hitTest?(x: number, y: number): Hit | null;
   /** Main hosts draw on the page's frames. */
   render?(): FrameAck;
+  /** Worker hosts acknowledge every frame, or only those the page needs
+   * (with events, picking or terrain changes, or the last before a pause). */
+  acknowledge?(every: boolean): void;
   /** The wasm map, in main-thread mode: for benches and tests. */
   readonly core?: CoreMap;
   /** Loses the GPU on purpose, to exercise recovery (main hosts); with
@@ -54,8 +59,6 @@ export interface Host {
   destroy(): void;
 }
 
-const JOB_WORKERS = Math.min(Math.max((navigator.hardwareConcurrency ?? 4) - 2, 1), 4);
-
 /** Spawns a render worker and asks whether WebGPU works there. */
 export async function probeWorker(): Promise<{ worker: Worker; ok: boolean; adapter?: string; reason?: string }> {
   const worker = new Worker(new URL("./render-worker.ts", import.meta.url), { type: "module" });
@@ -67,28 +70,9 @@ export async function probeWorker(): Promise<{ worker: Worker; ok: boolean; adap
   return { worker, ...probe };
 }
 
-/** Spawns the job workers and the placement worker; the map talks to them
- * over `ports` and `placement`. */
-function spawnWorkers(module: WebAssembly.Module) {
-  const workers: Worker[] = [];
-  const ports: MessagePort[] = [];
-  for (let i = 0; i < JOB_WORKERS; i++) {
-    const channel = new MessageChannel();
-    const job = new Worker(new URL("./job-worker.ts", import.meta.url), { type: "module" });
-    job.postMessage({ module, port: channel.port2 }, [channel.port2]);
-    ports.push(channel.port1);
-    workers.push(job);
-  }
-  const placement = new MessageChannel();
-  const placer = new Worker(new URL("./placement-worker.ts", import.meta.url), { type: "module" });
-  placer.postMessage({ module, port: placement.port2 }, [placement.port2]);
-  workers.push(placer);
-  return { workers, ports, placement: placement.port1 };
-}
-
 /** The map on this thread, drawing into `canvas` at `tier`. */
 export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasElement, style: string,
-  callbacks: HostCallbacks, tier: "modern" | "compat"): Promise<Host> {
+  jobWorkers: number, callbacks: HostCallbacks, tier: "modern" | "compat"): Promise<Host> {
   const receive = (apply: (data: unknown) => void) => ({ data }: MessageEvent) => {
     try {
       apply(data);
@@ -98,7 +82,7 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   };
   // A map with its job and placement workers.
   const start = async (tier: "modern" | "compat", canvas: HTMLCanvasElement, style: string) => {
-    const { workers, ports, placement } = spawnWorkers(module);
+    const { workers, ports, placement } = spawnWorkers(module, jobWorkers);
     const create = await rendererModule(tier, module);
     const core = await create(canvas, style, callbacks.wake, ports.length,
       (worker: number, message: unknown) => ports[worker].postMessage(message),
@@ -157,13 +141,10 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   };
 }
 
-/** Hands `canvas` to the probed render worker and spawns the job workers
- * and the placement worker, wired to it directly. */
+/** Hands `canvas` to the probed render worker, which spawns the job
+ * workers and the placement worker. */
 export function startWorker(module: WebAssembly.Module, worker: Worker, canvas: HTMLCanvasElement,
-  style: string, callbacks: HostCallbacks): Host {
-  const spawned = spawnWorkers(module);
-  const workers = [worker, ...spawned.workers];
-  const { ports, placement } = spawned;
+  style: string, jobWorkers: number, callbacks: HostCallbacks): Host {
   const offscreen = canvas.transferControlToOffscreen();
   // Calls in flight, by id, until the render worker answers.
   const pending = new Map<number, { resolve(value: unknown): void; reject(e: Error): void }>();
@@ -185,14 +166,15 @@ export function startWorker(module: WebAssembly.Module, worker: Worker, canvas: 
     }
   };
   worker.onerror = (e) => callbacks.error(e.message);
-  worker.postMessage({ type: "init", module, canvas: offscreen, ports, placement, style },
-    [offscreen, ...ports, placement]);
+  worker.postMessage({ type: "init", module, canvas: offscreen, style, jobWorkers }, [offscreen]);
   return {
     thread: "worker",
     setCamera: (camera) => worker.postMessage({ type: "camera", camera }),
     resize: (width, height, ratio) => worker.postMessage({ type: "resize", width, height, ratio }),
+    acknowledge: (every) => worker.postMessage({ type: "acks", every }),
     edit: (commands) => call({ type: "edit", commands }) as Promise<number>,
     request: (method, ...args) => call({ type: "request", method, args }),
-    destroy: () => { for (const w of workers) w.terminate(); },
+    // Its own workers end with it.
+    destroy: () => worker.terminate(),
   };
 }

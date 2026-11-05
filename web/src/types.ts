@@ -100,6 +100,9 @@ export interface MapOptions {
   feel?: "desktop" | "ios" | "android";
   /** Whether input moves the map; true by default. */
   interactive?: boolean;
+  /** How many job workers lay out tiles; by default
+   * `clamp(hardwareConcurrency − 2, 1, 4)` (plan §7.1). */
+  jobWorkers?: number;
 }
 
 /** The topmost feature under a point, from the published picking index. */

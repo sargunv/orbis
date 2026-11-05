@@ -1,7 +1,7 @@
 // The placement worker: places the render worker's labels (decision 0009),
 // answering each frame with its commit, transferred.
 //
-// Page → worker: {module, port}. Port messages are Rust's (orb-web's
+// Spawner → worker: {module, port}. Port messages are Rust's (orb-web's
 // `placement` module); this file only carries them.
 import init, { PlacementWorker } from "../pkg/core.js";
 

@@ -80,16 +80,26 @@ pub struct OrbisMap {
     elevation_age: u32,
 }
 
-/// Frame counters, for the page's HUD.
+/// What a frame tells the page: its counters and camera packed in one
+/// array, and what changed for the page's [`UiRole`].
 #[wasm_bindgen(getter_with_clone)]
 #[derive(Debug)]
 pub struct FrameInfo {
+    /// `zoom, generation, idle, meshes_uploaded, rows_uploaded, draws,
+    /// dispatches, candidates, tiles_drawn, tiles_loading, bundle_recorded,
+    /// placements_written, paints_written, uploaded_from_wasm,
+    /// uploaded_from_js, texels_from_wasm, texels_from_js, header_bytes,
+    /// jobs_done, lost`, then the frame's camera as [`UiRole::camera`]
+    /// gives it, so DOM overlays can follow the frame on screen
+    /// (`web/src/frames.ts` reads them by name). Booleans are 0 or 1; byte
+    /// counts are since the map was created: buffer bytes written from wasm
+    /// memory and straight from JS `ArrayBuffer`s, texel bytes from wasm
+    /// memory and from `ImageBitmap`s, packed tile headers copied into wasm
+    /// memory; the generation is the style generation the frame shows in
+    /// full; `lost` means the GPU was lost, nothing was drawn and the map
+    /// draws again once [`OrbisMap::recover`] gives it another.
     #[wasm_bindgen(readonly)]
-    pub zoom: f64,
-    /// The frame's camera, as [`UiRole::camera`] gives it, so DOM overlays
-    /// can follow the frame on screen.
-    #[wasm_bindgen(readonly)]
-    pub camera: Vec<f64>,
+    pub stats: Vec<f64>,
     /// Picking's changes for the page's [`UiRole`], in the render worker
     /// (`orb_runtime::Map::publish_hits`).
     #[wasm_bindgen(readonly)]
@@ -100,55 +110,7 @@ pub struct FrameInfo {
     #[wasm_bindgen(readonly)]
     pub elevation: Option<Vec<u8>>,
     #[wasm_bindgen(readonly)]
-    pub meshes_uploaded: u32,
-    #[wasm_bindgen(readonly)]
-    pub rows_uploaded: u32,
-    #[wasm_bindgen(readonly)]
-    pub draws: u32,
-    #[wasm_bindgen(readonly)]
-    pub dispatches: u32,
-    #[wasm_bindgen(readonly)]
-    pub candidates: u32,
-    #[wasm_bindgen(readonly)]
-    pub tiles_drawn: u32,
-    #[wasm_bindgen(readonly)]
-    pub tiles_loading: u32,
-    #[wasm_bindgen(readonly)]
-    pub bundle_recorded: bool,
-    #[wasm_bindgen(readonly)]
-    pub placements_written: u32,
-    #[wasm_bindgen(readonly)]
-    pub paints_written: u32,
-    #[wasm_bindgen(readonly)]
-    pub idle: bool,
-    /// The style generation the frame shows in full.
-    #[wasm_bindgen(readonly)]
-    pub generation: f64,
-    #[wasm_bindgen(readonly)]
     pub warnings: Vec<String>,
-    /// Bytes written to GPU buffers from wasm memory, since the map was
-    /// created.
-    #[wasm_bindgen(readonly)]
-    pub uploaded_from_wasm: f64,
-    /// Bytes written to GPU buffers straight from JS `ArrayBuffer`s.
-    #[wasm_bindgen(readonly)]
-    pub uploaded_from_js: f64,
-    /// Texel bytes written to GPU textures from wasm memory.
-    #[wasm_bindgen(readonly)]
-    pub texels_from_wasm: f64,
-    /// Texel bytes copied to GPU textures straight from `ImageBitmap`s.
-    #[wasm_bindgen(readonly)]
-    pub texels_from_js: f64,
-    /// Bytes of packed tile headers copied into wasm memory.
-    #[wasm_bindgen(readonly)]
-    pub header_bytes: f64,
-    /// Tile jobs answered by job workers.
-    #[wasm_bindgen(readonly)]
-    pub jobs_done: u32,
-    /// The GPU was lost: nothing was drawn, and the map draws again once
-    /// [`OrbisMap::recover`] gives it another.
-    #[wasm_bindgen(readonly)]
-    pub lost: bool,
 }
 
 /// Creates a map in `canvas` showing the style at `style_url`, drawing on
@@ -409,7 +371,7 @@ impl OrbisMap {
     /// ["setFeatureState", {"source": "s", "id": 1}, {"hover": true}]]`.
     /// Every call applies or, on an error, none. Resolves to the style
     /// generation whose frames show the edit in full
-    /// ([`FrameInfo::generation`]).
+    /// ([`FrameInfo::stats`]).
     pub fn edit(&mut self, commands: &str) -> Result<f64, JsError> {
         let tx = orb_runtime::Transaction::from_commands(commands).map_err(|e| JsError::new(&e))?;
         let generation = self.map.edit(&tx).map_err(|e| JsError::new(&e))?;
@@ -499,31 +461,35 @@ impl OrbisMap {
             self.elevation_age = 0;
             self.map.elevation_pyramid()
         });
+        let counts = self.map.job_counts();
+        let mut stats = vec![
+            self.map.zoom(),
+            report.generation as f64,
+            f64::from(u8::from(report.idle)),
+            f64::from(counts.meshes_uploaded),
+            f64::from(counts.rows_uploaded),
+            f64::from(report.frame.draws),
+            f64::from(report.frame.dispatches),
+            f64::from(report.frame.candidates),
+            f64::from(report.tiles_drawn),
+            f64::from(report.tiles_loading),
+            f64::from(u8::from(report.frame.bundle_recorded)),
+            f64::from(report.frame.placements_written),
+            f64::from(report.frame.paints_written),
+            uploaded.from_core as f64,
+            uploaded.from_js as f64,
+            uploaded.texels_from_core as f64,
+            uploaded.texels_from_js as f64,
+            jobs.header_bytes as f64,
+            f64::from(jobs.done),
+            0.0,
+        ];
+        stats.extend(ui::camera_array(&camera, &self.map.projection()));
         Ok(FrameInfo {
-            zoom: self.map.zoom(),
-            camera: ui::camera_array(&camera, &self.map.projection()),
+            stats,
             hits,
             elevation,
-            meshes_uploaded: self.map.job_counts().meshes_uploaded,
-            rows_uploaded: self.map.job_counts().rows_uploaded,
-            draws: report.frame.draws,
-            dispatches: report.frame.dispatches,
-            candidates: report.frame.candidates,
-            tiles_drawn: report.tiles_drawn,
-            tiles_loading: report.tiles_loading,
-            bundle_recorded: report.frame.bundle_recorded,
-            placements_written: report.frame.placements_written,
-            paints_written: report.frame.paints_written,
-            idle: report.idle,
-            generation: report.generation as f64,
             warnings: self.map.take_warnings(),
-            uploaded_from_wasm: uploaded.from_core as f64,
-            uploaded_from_js: uploaded.from_js as f64,
-            texels_from_wasm: uploaded.texels_from_core as f64,
-            texels_from_js: uploaded.texels_from_js as f64,
-            header_bytes: jobs.header_bytes as f64,
-            jobs_done: jobs.done,
-            lost: false,
         })
     }
 
@@ -536,34 +502,21 @@ impl OrbisMap {
     }
 }
 
+/// [`FrameInfo::stats`]' counters before the camera, and where idleness is.
+const STATS: usize = 20;
+const IDLE: usize = 2;
+
 impl FrameInfo {
-    /// A frame not drawn: the GPU is gone.
+    /// A frame not drawn: the GPU is gone. Idle, lost, no camera.
     fn lost() -> Self {
+        let mut stats = vec![0.0; STATS];
+        stats[IDLE] = 1.0;
+        stats[STATS - 1] = 1.0;
         Self {
-            zoom: 0.0,
-            camera: Vec::new(),
+            stats,
             hits: None,
             elevation: None,
-            meshes_uploaded: 0,
-            rows_uploaded: 0,
-            draws: 0,
-            dispatches: 0,
-            candidates: 0,
-            tiles_drawn: 0,
-            tiles_loading: 0,
-            bundle_recorded: false,
-            placements_written: 0,
-            paints_written: 0,
-            idle: true,
-            generation: 0.0,
             warnings: Vec::new(),
-            uploaded_from_wasm: 0.0,
-            uploaded_from_js: 0.0,
-            texels_from_wasm: 0.0,
-            texels_from_js: 0.0,
-            header_bytes: 0.0,
-            jobs_done: 0,
-            lost: true,
         }
     }
 }

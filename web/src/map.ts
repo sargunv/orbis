@@ -5,9 +5,10 @@
 import init, { UiRole } from "../pkg/core.js";
 import { Annotations } from "./annotations.ts";
 import { Emitter, type Listener } from "./events.ts";
-import { frameLoop, type FrameAck } from "./frames.ts";
+import { ackCamera, ackGeneration, ackIdle, ackLost, frameLoop, frameStats, type FrameAck } from "./frames.ts";
 import { probeWorker, startMain, startWorker, type Host } from "./hosts.ts";
 import { attachInput } from "./input.ts";
+import { defaultJobWorkers } from "./workers.ts";
 import { transaction, type FeatureTarget, type Transaction } from "./transaction.ts";
 import type {
   Bounds, Camera, CameraOptions, Constraints, EaseOptions, Easing, Feature, FitOptions, FlyOptions,
@@ -16,6 +17,8 @@ import type {
 } from "./types.ts";
 
 const NAN2 = [NaN, NaN];
+const CHANGES = ["move", "zoom", "rotate", "pitch"];
+const PHASES = ["start", "", "end"];
 function targetArray(o: CameraOptions): Float64Array {
   return new Float64Array([
     ...(o.center ?? NAN2), o.zoom ?? NaN, o.bearing ?? NaN, o.pitch ?? NaN,
@@ -117,11 +120,14 @@ export class OrbisMap {
   readonly annotations: Annotations;
   #ui: UiRole;
   #host!: Host;
-  #events = new Emitter<MapEvents>();
+  #events = new Emitter<MapEvents>(() => this.#wantFrames());
   #loop: ReturnType<typeof frameLoop>;
   #pushed = -1;
   #dirty = true;
   #latest: FrameAck | undefined;
+  #latestStats: FrameStats | undefined;
+  /** Whether the page wants every frame acknowledged: annotations or `render` listeners. */
+  #everyFrame = false;
   #idle = false;
   #animations = new Map<number, (arrived: boolean) => void>();
   #detach: (() => void)[] = [];
@@ -142,12 +148,16 @@ export class OrbisMap {
     this.#loop = frameLoop((now) => this.#tick(now), (e) => this.#error(e));
     const request = () => this.#loop.request();
     this.camera = new CameraControl(ui, request, this.#animations);
-    this.annotations = new Annotations(overlay, () => this.#placeAnnotations());
+    this.annotations = new Annotations(overlay, () => {
+      this.#wantFrames();
+      this.#placeAnnotations();
+    });
   }
 
   /** @internal */
   start(host: Host, interactive: boolean): void {
     this.#host = host;
+    if (this.#everyFrame) host.acknowledge?.(true);
     this.#interactive = interactive;
     this.#observer = new ResizeObserver(() => this.#resize());
     this.#attach();
@@ -170,8 +180,12 @@ export class OrbisMap {
   /** Where the map draws: "worker" (a render worker) or "main". */
   get thread(): "main" | "worker" { return this.#host.thread; }
 
-  /** The last frame's counters. */
-  get stats(): FrameStats | undefined { return this.#latest; }
+  /** The last acknowledged frame's counters. A render worker acknowledges
+   * frames the page needs (with annotations or `render` listeners, every one). */
+  get stats(): FrameStats | undefined {
+    if (this.#latest && !this.#latestStats) this.#latestStats = frameStats(this.#latest);
+    return this.#latestStats;
+  }
 
   /** The wasm map in main-thread mode, for benches and tests; unstable. */
   get core() { return this.#host.core; }
@@ -287,11 +301,11 @@ export class OrbisMap {
     let more = moving;
     if (this.#host.render && this.#dirty && this.#lostAt === undefined) {
       const ack = this.#host.render();
-      if (ack.lost) {
+      if (ackLost(ack)) {
         this.#recover();
         return false;
       }
-      this.#dirty = !ack.idle;
+      this.#dirty = !ackIdle(ack);
       this.#frame(ack);
       more ||= this.#dirty;
     }
@@ -334,15 +348,16 @@ export class OrbisMap {
 
   #frame(ack: FrameAck): void {
     this.#latest = ack;
+    this.#latestStats = undefined;
     if (ack.hits) this.#ui.updateHits(ack.hits);
     if (ack.elevation) {
       // The camera stands on the new terrain: send it with the next tick.
       this.#ui.updateElevation(ack.elevation);
       this.#loop.request();
     }
-    this.#ui.advanceHits(ack.generation);
-    if (!ack.idle) this.#idle = false;
-    for (const event of ack.events) {
+    this.#ui.advanceHits(ackGeneration(ack));
+    if (!ackIdle(ack)) this.#idle = false;
+    for (const event of ack.events ?? []) {
       switch (event.type) {
         case "styleload":
           this.#ui.setProjection(event.projection);
@@ -363,40 +378,55 @@ export class OrbisMap {
         case "idle": break;
       }
     }
-    this.#events.emit("render", ack);
+    if (this.#events.has("render")) this.#events.emit("render", this.stats!);
     this.#placeAnnotations();
+  }
+
+  /** Tells a render worker whether to acknowledge every frame. */
+  #wantFrames(): void {
+    const every = (this.annotations?.size ?? 0) > 0 || this.#events.has("render");
+    if (every === this.#everyFrame) return;
+    this.#everyFrame = every;
+    this.#host?.acknowledge?.(every);
   }
 
   /** GL JS's `idle`: the last frame drawn is idle and the camera is at rest. */
   #maybeIdle(): void {
     const latest = this.#latest;
-    if (this.#idle || !latest?.idle || this.#ui.isMoving() || (this.#host.render && this.#dirty)) return;
+    if (this.#idle || !latest || !ackIdle(latest) || this.#ui.isMoving() || (this.#host.render && this.#dirty)) return;
     // The frame must show the camera as it is now: a worker's frame for an
     // older camera can arrive after this one was sent.
     if (this.#ui.modified()) {
       const camera = this.#ui.camera();
-      for (let i = 0; i < 6; i++) if (camera[i] !== latest.camera[i]) return;
+      const shown = ackCamera(latest);
+      for (let i = 0; i < 6; i++) if (camera[i] !== shown[i]) return;
     }
     this.#idle = true;
     this.#events.emit("idle", {});
   }
 
   #placeAnnotations(): void {
-    const camera = this.#latest?.camera;
-    if (!camera) return;
-    this.annotations.place((points) => new Float64Array(this.#ui.projectWith(camera, points)));
+    if (!this.#latest || !this.annotations.size) return;
+    const camera = ackCamera(this.#latest);
+    this.annotations.place((points) => this.#ui.projectWith(camera, points));
   }
 
+  /** The ui role's events, packed four numbers each (`UiRole::take_events`). */
   #drainUi(): void {
-    for (const event of this.#ui.takeEvents() as { type: string; [key: string]: unknown }[]) {
-      if (event.type === "animationend") {
-        this.#animations.get(event.id as number)?.(!event.interrupted);
-        this.#animations.delete(event.id as number);
-      } else if (event.type === "click" || event.type === "dblclick") {
-        const point: Point = [event.x as number, event.y as number];
-        this.#events.emit(event.type, { point, lngLat: this.unproject(point), button: event.button as number | undefined });
+    const events = this.#ui.takeEvents();
+    for (let i = 0; i < events.length; i += 4) {
+      const [kind, a, b, c] = [events[i], events[i + 1], events[i + 2], events[i + 3]];
+      if (kind === 12) {
+        this.#animations.get(a)?.(b === 0);
+        this.#animations.delete(a);
+      } else if (kind === 13 || kind === 14) {
+        const type = kind === 13 ? "click" : "dblclick";
+        if (!this.#events.has(type)) continue;
+        const point: Point = [a, b];
+        this.#events.emit(type, { point, lngLat: this.unproject(point), button: kind === 13 ? c : undefined });
       } else {
-        this.#events.emit(event.type as "move", { user: event.user as boolean });
+        const type = `${CHANGES[Math.floor(kind / 3)]}${PHASES[kind % 3]}` as "move";
+        if (this.#events.has(type)) this.#events.emit(type, { user: a !== 0 });
       }
     }
   }
@@ -465,9 +495,10 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     wake: () => map.wake(),
     error: (e: unknown) => map.fail(e),
   };
+  const jobWorkers = options.jobWorkers ?? defaultJobWorkers();
   const host = thread === "worker"
-    ? startWorker(compiled, probed!.worker, canvas, style, callbacks)
-    : await startMain(compiled, canvas, style, callbacks, tier);
+    ? startWorker(compiled, probed!.worker, canvas, style, jobWorkers, callbacks)
+    : await startMain(compiled, canvas, style, jobWorkers, callbacks, tier);
   map.start(host, options.interactive ?? true);
   return map;
 }

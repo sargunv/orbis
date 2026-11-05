@@ -29,18 +29,49 @@ export function frameLoop(frame: (now: number) => boolean, onError: (e: unknown)
   return { request, get scheduled() { return scheduled; } };
 }
 
-/** What crosses from the renderer to the page after each frame. */
-export interface FrameAck extends FrameStats {
-  /** The frame's camera: [lon, lat, resolution, bearing, pitch, fov, zoom, elevation]. */
-  camera: Float64Array;
+/** `FrameInfo::stats`' counters, in order (orb-web); the camera follows. */
+const STATS = [
+  "zoom", "generation", "idle", "meshesUploaded", "rowsUploaded", "draws", "dispatches",
+  "candidates", "tilesDrawn", "tilesLoading", "bundleRecorded", "placementsWritten",
+  "paintsWritten", "uploadedFromWasm", "uploadedFromJs", "texelsFromWasm", "texelsFromJs",
+  "headerBytes", "jobsDone", "lost",
+] as const;
+const GENERATION = 1;
+const IDLE = 2;
+const LOST = STATS.indexOf("lost");
+const CAMERA = STATS.length;
+
+/** What crosses from the renderer to the page after a frame: small, its
+ * counters packed in one transferable array. */
+export interface FrameAck {
+  /** CPU milliseconds the frame took where it rendered. */
+  ms: number;
+  /** Counters, then the frame's camera ([`ackCamera`]). */
+  stats: Float64Array;
   /** Picking's changes for the ui role (render worker). */
   hits?: Uint8Array;
   /** The terrain's elevation pyramid when it changed; empty when it's gone. */
   elevation?: Uint8Array;
-  /** The map's events since the last frame. */
-  events: MapEventObject[];
-  /** The GPU was lost and nothing was drawn; the host recovers. */
-  lost: boolean;
+  /** The map's events since the last frame, if any. */
+  events?: MapEventObject[];
+  warnings?: string[];
+}
+
+export const ackIdle = (ack: FrameAck) => ack.stats[IDLE] !== 0;
+/** The GPU was lost and nothing was drawn; the host recovers. */
+export const ackLost = (ack: FrameAck) => ack.stats[LOST] !== 0;
+export const ackGeneration = (ack: FrameAck) => ack.stats[GENERATION];
+/** The frame's camera: [lon, lat, resolution, bearing, pitch, fov, zoom, elevation]. */
+export const ackCamera = (ack: FrameAck) => ack.stats.subarray(CAMERA, CAMERA + 8);
+
+/** A frame's counters as the package reports them. */
+export function frameStats(ack: FrameAck): FrameStats {
+  const stats = { ms: ack.ms, warnings: ack.warnings ?? [] } as Record<string, unknown>;
+  STATS.forEach((name, i) => { stats[name] = ack.stats[i]; });
+  stats.idle = ack.stats[IDLE] !== 0;
+  stats.bundleRecorded = stats.bundleRecorded !== 0;
+  delete stats.lost;
+  return stats as unknown as FrameStats;
 }
 
 export type MapEventObject =
@@ -59,13 +90,7 @@ export interface Renderer {
 
 /** The fields of core.wasm's `FrameInfo`. */
 export interface RenderInfo {
-  zoom: number; camera: Float64Array; hits?: Uint8Array; elevation?: Uint8Array;
-  generation: number;
-  meshes_uploaded: number; rows_uploaded: number; draws: number; dispatches: number;
-  candidates: number; tiles_drawn: number; tiles_loading: number; bundle_recorded: boolean;
-  placements_written: number; paints_written: number; idle: boolean; warnings: string[];
-  uploaded_from_wasm: number; uploaded_from_js: number; texels_from_wasm: number;
-  texels_from_js: number; header_bytes: number; jobs_done: number; lost: boolean;
+  stats: Float64Array; hits?: Uint8Array; elevation?: Uint8Array; warnings: string[];
   free(): void;
 }
 
@@ -74,34 +99,13 @@ export function renderFrame(map: Renderer): FrameAck {
   const started = performance.now();
   const info = map.render();
   const ms = performance.now() - started;
-  const ack: FrameAck = {
-    ms,
-    camera: info.camera,
-    hits: info.hits,
-    elevation: info.elevation,
-    events: map.takeEvents(),
-    zoom: info.zoom,
-    generation: info.generation,
-    meshesUploaded: info.meshes_uploaded,
-    rowsUploaded: info.rows_uploaded,
-    draws: info.draws,
-    dispatches: info.dispatches,
-    candidates: info.candidates,
-    tilesDrawn: info.tiles_drawn,
-    tilesLoading: info.tiles_loading,
-    bundleRecorded: info.bundle_recorded,
-    placementsWritten: info.placements_written,
-    paintsWritten: info.paints_written,
-    idle: info.idle,
-    warnings: info.warnings,
-    uploadedFromWasm: info.uploaded_from_wasm,
-    uploadedFromJs: info.uploaded_from_js,
-    texelsFromWasm: info.texels_from_wasm,
-    texelsFromJs: info.texels_from_js,
-    headerBytes: info.header_bytes,
-    jobsDone: info.jobs_done,
-    lost: info.lost,
-  };
+  const ack: FrameAck = { ms, stats: info.stats };
+  if (info.hits) ack.hits = info.hits;
+  if (info.elevation) ack.elevation = info.elevation;
+  const events = map.takeEvents();
+  if (events.length) ack.events = events;
+  const warnings = info.warnings;
+  if (warnings.length) ack.warnings = warnings;
   info.free();
   return ack;
 }

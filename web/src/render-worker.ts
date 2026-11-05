@@ -1,16 +1,16 @@
 // The render worker: owns the map and draws into the page's transferred
 // canvas, with the camera the page's ui role sends (plan §7.1). Tile jobs
-// go to the job workers, and labels to the placement worker, over the
-// ports the page set up.
+// go to job workers, and labels to a placement worker, that it spawns.
 //
-// Page → worker: {type: "probe"}; {type: "init", module, canvas, ports,
-// placement, style}; {type: "camera", camera}; {type: "resize", width,
-// height, ratio}; {type: "edit", id, commands}; {type: "request", id,
-// method, args}. Worker → page: {type: "probe", ok, adapter | reason};
+// Page → worker: {type: "probe"}; {type: "init", module, canvas, style,
+// jobWorkers}; {type: "camera", camera}; {type: "resize", width,
+// height, ratio}; {type: "acks", every}; {type: "edit", id, commands};
+// {type: "request", id, method, args}. Worker → page: {type: "probe", ok, adapter | reason};
 // {type: "frame", ack}; {type: "edited", id, generation | error}; {type:
 // "reply", id, result | error}; {type: "error", message}.
 import init, { createWorkerMap, type OrbisMap } from "../pkg/core.js";
-import { frameLoop, renderFrame, type Renderer } from "./frames.ts";
+import { ackIdle, frameLoop, renderFrame, type FrameAck, type Renderer } from "./frames.ts";
+import { spawnWorkers } from "./workers.ts";
 
 const fail = (e: unknown) => self.postMessage({ type: "error", message: String(e) });
 let map: OrbisMap | undefined;
@@ -18,21 +18,48 @@ let ready: Promise<void> | undefined;
 // The last frame drawn: whether it was idle, and whether a camera drew it
 // since this worker's last animation frame.
 let last = { idle: true, camera: false };
+// Frames go to the page when it needs them: every one while it has
+// annotations or `render` listeners; otherwise those with events, picking
+// or terrain changes or a change of idleness, and the last before a pause
+// (`pending` until then), which shows the camera the map rests at.
+let every = false;
+let pending: FrameAck | undefined;
+let sentIdle = false;
+// Sending transfers the ack's arrays: read them first.
+const send = (ack: FrameAck) => {
+  sentIdle = ackIdle(ack);
+  pending = undefined;
+  const transfer = [ack.stats.buffer, ack.hits?.buffer, ack.elevation?.buffer].filter((b) => b !== undefined);
+  self.postMessage({ type: "frame", ack }, transfer);
+};
 const draw = (camera: boolean) => {
   const ack = renderFrame(map as unknown as Renderer);
-  const transfer = [ack.hits?.buffer, ack.elevation?.buffer].filter((b) => b !== undefined);
-  self.postMessage({ type: "frame", ack }, transfer);
-  last = { idle: ack.idle, camera };
-  return !ack.idle;
+  const idle = ackIdle(ack);
+  last = { idle, camera };
+  if (every || ack.events || ack.hits || ack.elevation || ack.warnings || idle !== sentIdle) send(ack);
+  else pending = ack;
+  return !idle;
 };
+// Whether something asked for a frame, rather than one pending to send.
+let wanted = false;
 const loop = frameLoop(() => {
   if (!map) return false;
   if (last.camera) {
     last.camera = false;
-    return !last.idle;
+    return !last.idle || pending !== undefined;
   }
-  return draw(false);
+  if (!wanted && last.idle) {
+    // A frame without a new camera: the last one drawn goes out.
+    if (pending) send(pending);
+    return false;
+  }
+  wanted = false;
+  return draw(false) || pending !== undefined;
 }, fail);
+const request = () => {
+  wanted = true;
+  loop.request();
+};
 // A camera draws once the messages queued before it are in, so when frames
 // fall behind the page's, a backlog of cameras draws only the newest
 // rather than every one in turn.
@@ -41,7 +68,7 @@ let cameraQueued = false;
 cameraDraw.port1.onmessage = () => {
   cameraQueued = false;
   try {
-    if (map && draw(true)) loop.request();
+    if (map && (draw(true) || pending)) loop.request();
   } catch (e) {
     fail(e);
   }
@@ -73,13 +100,17 @@ self.onmessage = async ({ data }: MessageEvent) => {
       break;
     case "resize":
       map.resize(data.width, data.height, data.ratio);
-      loop.request();
+      request();
+      break;
+    case "acks":
+      every = data.every;
+      if (every && pending) send(pending);
       break;
     case "edit":
       try {
         const generation = map.edit(data.commands);
         self.postMessage({ type: "edited", id: data.id, generation });
-        loop.request();
+        request();
       } catch (e) {
         self.postMessage({ type: "edited", id: data.id, error: String(e) });
       }
@@ -110,12 +141,12 @@ async function probe() {
   }
 }
 
-async function start({ module, canvas, ports, placement, style }: {
-  module: WebAssembly.Module; canvas: OffscreenCanvas; ports: MessagePort[];
-  placement: MessagePort; style: string;
+async function start({ module, canvas, style, jobWorkers }: {
+  module: WebAssembly.Module; canvas: OffscreenCanvas; style: string; jobWorkers: number;
 }) {
+  const { ports, placement } = spawnWorkers(module, jobWorkers);
   await init({ module_or_path: module });
-  map = await createWorkerMap(canvas, style, loop.request, ports.length,
+  map = await createWorkerMap(canvas, style, request, ports.length,
     (worker: number, message: unknown) => ports[worker].postMessage(message),
     (message: unknown, transfer: Transferable[]) => placement.postMessage(message, transfer));
   placement.onmessage = ({ data }) => {
@@ -134,5 +165,5 @@ async function start({ module, canvas, ports, placement, style }: {
       }
     };
   }
-  loop.request();
+  request();
 }
