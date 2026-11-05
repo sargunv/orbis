@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use glam::DVec2;
 use orb_host_web::WebFetch;
-use orb_runtime::{CameraState, Jobs, Map, MapEvent, Services, Viewport};
+use orb_runtime::{Jobs, Map, MapEvent, Services, Viewport};
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, OffscreenCanvas};
 
@@ -71,13 +71,8 @@ pub struct OrbisMap {
     /// What picking the page's ui role has: in the render worker; on the
     /// page the map answers hit tests itself.
     hits: Option<orb_runtime::HitPublication>,
-    /// The last frame's camera and how many frames in a row showed it, to
-    /// publish the elevation pyramid once it settles.
-    last_camera: Option<(CameraState, u32)>,
     /// The terrain revision last published to the ui role.
     elevation_revision: u64,
-    /// Frames since the pyramid was last published.
-    elevation_age: u32,
 }
 
 /// What a frame tells the page: its counters and camera packed in one
@@ -219,9 +214,7 @@ async fn create(
         pixel_ratio: 1.0,
         worker_jobs,
         hits: Some(Default::default()),
-        last_camera: None,
         elevation_revision: 0,
-        elevation_age: 0,
     })
 }
 
@@ -511,24 +504,12 @@ impl OrbisMap {
         // Picking publishes what changed: tiles, the drawn list, labels and
         // the layer table; camera moves alone publish nothing.
         let hits = self.hits.as_mut().and_then(|to| self.map.publish_hits(to));
-        let camera = *self.map.camera();
-        let still = match self.last_camera {
-            Some((last, frames)) if last == camera => frames + 1,
-            _ => 0,
-        };
-        self.last_camera = Some((camera, still));
-        let settled = still == SETTLE_FRAMES || (still > 0 && report.idle);
         // The ui role's camera keeps above the terrain the pyramid shows,
-        // and an animation ends on it, so it publishes while the camera
-        // moves too: at once when the ui role has none, then at most every
-        // `PUBLISH_FRAMES` while DEM tiles arrive in bursts, and once the
-        // camera settles.
+        // and an animation ends on it: it publishes whenever DEM tiles
+        // arrived or left.
         let revision = self.map.elevation_revision();
-        self.elevation_age = self.elevation_age.saturating_add(1);
-        let due = settled || self.elevation_revision == 0 || self.elevation_age >= PUBLISH_FRAMES;
-        let elevation = (due && revision != self.elevation_revision).then(|| {
+        let elevation = (revision != self.elevation_revision).then(|| {
             self.elevation_revision = revision;
-            self.elevation_age = 0;
             self.map.elevation_pyramid().to_vec()
         });
         let counts = self.map.job_counts();
@@ -557,7 +538,7 @@ impl OrbisMap {
             0.0,
         ];
         stats.extend(memory_stats(&report.memory));
-        stats.extend(ui::camera_array(&camera, &self.map.projection()));
+        stats.extend(ui::camera_array(self.map.camera(), &self.map.projection()));
         Ok(FrameInfo {
             stats,
             hits,
@@ -624,14 +605,6 @@ impl FrameInfo {
         }
     }
 }
-
-/// Frames a camera rests before the render worker publishes the
-/// elevation pyramid.
-const SETTLE_FRAMES: u32 = 3;
-
-/// How often, in frames, the elevation pyramid may publish while the camera
-/// moves: about twice a second.
-const PUBLISH_FRAMES: u32 = 30;
 
 /// Whether this browser is a phone's or a tablet's, for plan §8's mobile
 /// memory budget: `navigator.userAgentData.mobile` where there is one

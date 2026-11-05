@@ -180,11 +180,15 @@ since the globe hands over to the plane by zoom 12.
 
 Threads without the map's DEM tiles get the elevation pyramid (plan §7.1):
 each DEM tile resampled to 128² samples at pixel centres, quantized to 16
-bits per tile, with the drawn tiles. The map's thread publishes it with a
-frame when the terrain changed: at once when the ui role has none, then
-at most every 30 frames while the camera moves, and once it settles. (It
-published only once the camera settled at first, so a flight that never
-paused flew with the target at sea level, through the Alps.) The ui role's
+bits per tile. It follows the DEM tiles alone: a snapshot is taken when one
+arrives or leaves, never for the view, and a point reads the deepest DEM
+tile loaded there, as the nearest terrain draws. The map's thread publishes
+it with the frame in which it changed. (It once carried the drawn terrain
+tiles, so every cover change made a snapshot: 170 of them, 97 MiB encoded,
+in the gestures bench's 360-frame rotate. And it published at most every
+30 frames while the camera moved; before that, only once the camera
+settled, so a flight that never paused flew with the target at sea level
+through the Alps.) The ui role's
 camera stands on it, and its `project`/`unproject` go through it, so the
 synchronous `unproject` is approximate. The placement worker receives it
 when it changes, before the frames that use it.

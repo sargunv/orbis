@@ -492,8 +492,8 @@ impl GesturesReport {
             writeln!(
                 out,
                 "Elevation: `Map::elevation_pyramid` on the render thread and `TerrainElevation::from_pyramid` \
-                 on the UI's, at every revision (the web publishes at most every 30 frames while moving; \
-                 its placement worker takes one at each new snapshot)."
+                 on the UI's, at every revision, which follows DEM arrival and eviction (the web publishes \
+                 each; its placement worker takes one at each new snapshot)."
             )?;
         }
         for warning in &self.warnings {

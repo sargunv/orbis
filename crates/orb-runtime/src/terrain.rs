@@ -135,8 +135,7 @@ pub(crate) struct Terrain {
     next_slot: u32,
     generation: u64,
     elevation: Arc<TerrainElevation>,
-    /// DEM tiles arrived or left, or the drawn tiles changed, since the
-    /// elevations were last taken.
+    /// DEM tiles arrived or left since the elevations were last taken.
     stale: bool,
     pub(crate) revision: u64,
 }
@@ -210,9 +209,6 @@ impl Terrain {
             0.0,
             Some(&*self.elevation),
         );
-        if tiles != self.tiles {
-            self.stale = true;
-        }
         self.tiles = tiles;
         let mut wanted: Vec<CoveredTile> = self
             .tiles
@@ -258,8 +254,7 @@ impl Terrain {
         evicted
     }
 
-    /// The CPU elevations, taken again when DEM tiles or drawn tiles
-    /// changed.
+    /// The CPU elevations, taken again when DEM tiles arrived or left.
     pub(crate) fn elevation(&mut self, tms: &TileMatrixSet) -> &Arc<TerrainElevation> {
         if std::mem::take(&mut self.stale) {
             let dems = self
@@ -267,10 +262,8 @@ impl Terrain {
                 .ready()
                 .map(|(tile, dem)| (tile, Arc::clone(&dem.dem)))
                 .collect();
-            let drawn = self.tiles.iter().map(|t| t.index).collect();
             let mut elevation = TerrainElevation::empty(tms.clone(), self.exaggeration);
             elevation.dems = dems;
-            elevation.drawn = drawn;
             elevation.delta = self.delta;
             elevation.min_zoom = self.min_zoom;
             elevation.max_zoom = self.max_zoom;
@@ -501,8 +494,9 @@ pub(crate) fn hash(value: impl Hash) -> u64 {
     hasher.finish()
 }
 
-/// The terrain's elevations on the CPU, as drawn: a snapshot the camera
-/// and queries hold while the map moves on (plan §9.4).
+/// The terrain's elevations on the CPU: a snapshot of the ready DEM tiles
+/// the camera and queries hold while the map moves on (plan §9.4). It
+/// follows DEM arrival and eviction, never the view.
 #[derive(Debug)]
 pub struct TerrainElevation {
     tms: TileMatrixSet,
@@ -511,8 +505,6 @@ pub struct TerrainElevation {
     min_zoom: u8,
     max_zoom: u8,
     dems: HashMap<TileIndex, Arc<Dem>>,
-    /// Terrain tiles drawn: a point on one reads the DEM it draws with.
-    drawn: HashSet<TileIndex>,
     /// The pyramid, encoded once for every reader of this snapshot.
     encoded: OnceLock<Arc<[u8]>>,
 }
@@ -526,7 +518,6 @@ impl TerrainElevation {
             min_zoom: 0,
             max_zoom: 0,
             dems: HashMap::new(),
-            drawn: HashSet::new(),
             encoded: OnceLock::new(),
         }
     }
@@ -642,15 +633,13 @@ impl TerrainElevation {
 
     fn encode(&self) -> Arc<[u8]> {
         let block = 2 + (PYRAMID_DIM * PYRAMID_DIM).div_ceil(2) as usize;
-        let mut words: Vec<u32> =
-            Vec::with_capacity(16 + 3 * self.drawn.len() + (3 + block) * self.dems.len());
+        let mut words: Vec<u32> = Vec::with_capacity(16 + (3 + block) * self.dems.len());
         words.extend([
             1,
             (self.exaggeration as f32).to_bits(),
             u32::from(self.delta),
             u32::from(self.min_zoom),
             u32::from(self.max_zoom),
-            self.drawn.len() as u32,
             self.dems.len() as u32,
         ]);
         let id = self.tms.id().as_bytes();
@@ -659,9 +648,6 @@ impl TerrainElevation {
             let mut b = [0u8; 4];
             b[..chunk.len()].copy_from_slice(chunk);
             words.push(u32::from_le_bytes(b));
-        }
-        for t in &self.drawn {
-            words.extend([u32::from(t.z), t.col, t.row]);
         }
         for (tile, dem) in &self.dems {
             words.extend([u32::from(tile.z), tile.col, tile.row]);
@@ -693,7 +679,7 @@ impl TerrainElevation {
         }
         let exaggeration = f64::from(f32::from_bits(next()?));
         let (delta, min_zoom, max_zoom) = (next()? as u8, next()? as u8, next()? as u8);
-        let (drawn, tiles) = (next()?, next()?);
+        let tiles = next()?;
         let id_len = next()? as usize;
         let mut id = Vec::new();
         for _ in 0..id_len.div_ceil(4) {
@@ -706,10 +692,6 @@ impl TerrainElevation {
         elevation.delta = delta;
         elevation.min_zoom = min_zoom;
         elevation.max_zoom = max_zoom;
-        for _ in 0..drawn {
-            let (z, col, row) = (next()? as u8, next()?, next()?);
-            elevation.drawn.insert(TileIndex::new(z, col, row));
-        }
         let n = PYRAMID_DIM;
         for _ in 0..tiles {
             let (z, col, row) = (next()? as u8, next()?, next()?);
@@ -747,16 +729,7 @@ impl orb_symbol::Ground for TerrainElevation {
 impl orb_camera::Elevation for TerrainElevation {
     fn at(&self, world: DVec2) -> Option<f64> {
         let world = self.wrapped(world);
-        // Where a terrain tile is drawn, its surface.
-        let deepest = self.drawn.iter().map(|t| t.z).max().unwrap_or(0);
-        for z in (0..=deepest).rev() {
-            if let Some((tile, uv)) = self.locate(world, z)
-                && self.drawn.contains(&tile)
-            {
-                return self.on_tile(tile, uv);
-            }
-        }
-        // Elsewhere the deepest DEM tile loaded.
+        // The deepest DEM tile loaded, which the nearest terrain draws with.
         (self.min_zoom..=self.max_zoom).rev().find_map(|z| {
             let (tile, uv) = self.locate(world, z)?;
             let dem = self.dems.get(&tile)?;
@@ -819,7 +792,6 @@ mod tests {
             u32::from(e.delta),
             u32::from(e.min_zoom),
             u32::from(e.max_zoom),
-            e.drawn.len() as u32,
             e.dems.len() as u32,
         ];
         let id = e.tms.id().as_bytes();
@@ -828,9 +800,6 @@ mod tests {
             let mut b = [0u8; 4];
             b[..chunk.len()].copy_from_slice(chunk);
             words.push(u32::from_le_bytes(b));
-        }
-        for t in &e.drawn {
-            words.extend([u32::from(t.z), t.col, t.row]);
         }
         let n = PYRAMID_DIM;
         for (tile, dem) in &e.dems {
@@ -915,23 +884,14 @@ mod tests {
         assert!(Arc::ptr_eq(&bytes, &first.pyramid()));
         let ground: Arc<dyn orb_symbol::Ground> = Arc::clone(&first) as _;
         assert!(Arc::ptr_eq(&bytes, &ground.pyramid()));
-        // The cover changed: a new snapshot, its drawn tiles encoded anew
-        // around the same blocks.
+        // The cover changed: the same snapshot, which follows DEM tiles
+        // alone.
         terrain.tiles = vec![CoveredTile {
             index: quad(11, 1060, 720),
             wrap: 0,
         }];
-        terrain.stale = true;
-        let covered = Arc::clone(terrain.elevation(&tms));
-        assert!(!Arc::ptr_eq(&first, &covered));
-        let recovered = covered.pyramid();
-        assert_ne!(*recovered, *bytes);
-        assert_eq!(blocks(&covered), built);
-        assert_eq!(*recovered, *reference(&covered));
-        assert_eq!(
-            TerrainElevation::from_pyramid(&recovered).unwrap().drawn,
-            covered.drawn
-        );
+        assert!(Arc::ptr_eq(&first, terrain.elevation(&tms)));
+        assert_eq!(*bytes, *reference(&first));
         // One DEM tile arrives: one block resampled.
         arrive(&mut terrain, &[(quad(10, 530, 361), hills(256, 3.0))]);
         let added = Arc::clone(terrain.elevation(&tms));
@@ -974,7 +934,6 @@ mod tests {
                     e.dems
                         .insert(TileIndex::new(10, c, r), hills(dim, f64::from(c * 3 + r)));
                 }
-                e.drawn.insert(TileIndex::new(11, 1060, 720));
                 assert_eq!(*e.pyramid(), *reference(&e), "{dim} px, ×{exaggeration}");
             }
         }
@@ -987,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn elevations_follow_the_drawn_mesh_and_dem_pixels() {
+    fn elevations_follow_the_dem_pixels() {
         let tms = tms();
         let mut elevation = TerrainElevation::empty(tms.clone(), 2.0);
         elevation.delta = 1;
@@ -1003,10 +962,6 @@ mod tests {
             )
         };
         assert!((elevation.at(at(0.375, 0.5)).unwrap() - 220.0).abs() < 1e-9);
-        // Drawn at zoom 5, the terrain tile reads the same DEM.
-        elevation.drawn.insert(TileIndex::new(5, 16, 16));
-        let drawn = elevation.at(at(0.375, 0.375)).unwrap();
-        assert!((drawn - 220.0).abs() < 1e-6, "{drawn}");
         assert_eq!(
             elevation.range(tms.tile_bounds(TileIndex::new(5, 16, 16)), 5),
             Some((200.0, 260.0))
@@ -1035,9 +990,7 @@ mod tests {
                 DemGrid::from_elevations(dim, hills).unwrap(),
             ))),
         );
-        full.drawn.insert(TileIndex::new(11, 1060, 720));
         let coarse = TerrainElevation::from_pyramid(&full.pyramid()).unwrap();
-        assert_eq!(coarse.drawn, full.drawn);
         let bounds = tms.tile_bounds(tile);
         let mut worst = 0.0f64;
         for i in 0..50 {
