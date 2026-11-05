@@ -180,7 +180,7 @@ fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
     var surface = drape_color(in.slot, in.uv);
     if frame.light_position.w > 0.0 {
         // The scene's lights shade the terrain too (decision 0026).
-        surface = vec4<f32>(light_surface(surface.rgb, normalize(in.normal), 1.0, 0.0), surface.a);
+        surface = vec4<f32>(light_surface(surface.rgb, normalize(in.normal), 1.0, 0.0, 1.0), surface.a);
     }
     return atmosphere_fog(atmosphere, surface, in.fog_depth);
 }

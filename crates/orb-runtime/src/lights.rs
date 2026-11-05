@@ -3,15 +3,17 @@
 //! target.
 
 use orb_crs::Geodetic;
-use orb_render::FrameLights;
+use orb_render::{FrameLights, FrameShadow};
 use orb_style::{Direction, Lights, TranslateAnchor};
 
-/// The lights at `zoom` for a camera turned `bearing` degrees over `target`.
+/// The lights at `zoom` for a camera turned `bearing` degrees over `target`,
+/// with shadows falling between `heights` (world units) if they cast them.
 pub(crate) fn frame_lights(
     lights: &Lights,
     zoom: f64,
     bearing: f64,
     target: Geodetic,
+    heights: [f32; 2],
 ) -> FrameLights {
     let rgb = |c: orb_style::Color| {
         let [r, g, b, _] = c.premultiplied();
@@ -24,6 +26,7 @@ pub(crate) fn frame_lights(
         directional_level: 0.0,
         position: [0.0; 3],
         terrain: lights.terrain,
+        shadow: None,
     };
     if let Some(a) = &lights.ambient {
         frame.ambient = rgb(a.color.evaluate(zoom));
@@ -52,6 +55,7 @@ pub(crate) fn frame_lights(
         frame.position = [x * c - y * s, x * s + y * c, z].map(|v| v as f32);
         frame.directional = rgb(d.color.evaluate(zoom));
         frame.directional_level = d.level.evaluate(zoom);
+        frame.shadow = d.shadow.map(|intensity| FrameShadow { intensity, heights });
     }
     frame
 }
@@ -207,10 +211,10 @@ mod tests {
         let target = Geodetic::new(7.75, 46.02);
         // v8's default light: ambient 1 − 0.5, directional 2 · 0.5, at
         // [1.15, 210, 30], turning with the map.
-        let v8 = frame_lights(&orb_v8::default_lights(), 0.0, 0.0, target);
+        let v8 = frame_lights(&orb_v8::default_lights(), 0.0, 0.0, target, [0.0; 2]);
         assert_eq!((v8.ambient_level, v8.directional_level), (0.5, 1.0));
         assert!(!v8.terrain);
-        let turned = frame_lights(&orb_v8::default_lights(), 0.0, 90.0, target);
+        let turned = frame_lights(&orb_v8::default_lights(), 0.0, 90.0, target, [0.0; 2]);
         assert!((v8.position[2] - turned.position[2]).abs() < 1e-6);
         assert!(
             (v8.position[0] - turned.position[1]).abs() < 1e-5,
@@ -221,7 +225,7 @@ mod tests {
             r#"{"style": "s.json", "lights": [{"type": "sun", "properties": {"time": "2024-06-21T23:00:00Z"}}]}"#,
         )
         .unwrap();
-        let frame = frame_lights(&night.lights.unwrap(), 0.0, 0.0, target);
+        let frame = frame_lights(&night.lights.unwrap(), 0.0, 0.0, target, [0.0; 2]);
         assert_eq!(frame.position, [0.0; 3]);
         assert!(frame.terrain);
     }

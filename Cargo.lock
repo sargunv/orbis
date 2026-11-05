@@ -2504,6 +2504,7 @@ name = "orb-render"
 version = "0.0.0"
 dependencies = [
  "bytemuck",
+ "glam",
  "orb-crs",
  "orb-hal",
  "orb-hal-wgpu",

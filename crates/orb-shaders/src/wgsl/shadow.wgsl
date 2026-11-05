@@ -1,26 +1,29 @@
 // Cascaded shadows from the directional light (plan §8.5 `Shadow`,
-// decision 0036's take on style-spec #1797), as functions of the cascades
-// and their depth maps: no bindings, so casters and receivers compose it.
+// decision 0046), as functions of the cascades and their depth maps: no
+// bindings, so casters and receivers compose it.
 //
 // Each cascade is a depth layer the casters drew from the light: camera-
 // relative world → the light's clip space, x and y in [−1, 1], depth in
 // [0, 1] growing away from the light. A receiver compares its own depth
-// there, after moving along its normal by about a texel, which keeps
-// surfaces from shadowing themselves.
-
-const SHADOW_CASCADES: u32 = 4u;
+// there, after moving along its normal and toward the light by about a
+// texel, which keeps surfaces from shadowing themselves.
 
 struct ShadowCascades {
-    view_proj: array<mat4x4<f32>, 4>,
+    view_proj: array<mat4x4<f32>, 2>,
     // Each cascade's far end in view depth (clip w); a receiver uses the
     // first that reaches it.
     splits: vec4<f32>,
-    // World units per texel of each cascade, for the normal offset and
-    // the filter's reach.
+    // World units per texel of each cascade, for the receivers' offset.
     texel: vec4<f32>,
+    // Unit vector toward the light, camera-relative world axes (x east,
+    // y north, z up).
+    light: vec3<f32>,
+    // Cascades drawn this frame: 0 without shadows.
     count: u32,
     // How dark a shadow is: 1 removes all the directional light.
     strength: f32,
+    // The directional light's share of level ground's lighting.
+    ground: f32,
     _pad: vec2<f32>,
 };
 
@@ -35,15 +38,10 @@ fn shadow_cascade(c: ShadowCascades, depth: f32) -> u32 {
     return c.count;
 }
 
-// The light's clip position of a caster vertex for cascade `i`.
-fn shadow_clip(c: ShadowCascades, i: u32, world: vec3<f32>) -> vec4<f32> {
-    return c.view_proj[i] * vec4<f32>(world, 1.0);
-}
-
 // How lit a receiver is in cascade `i`, 0 to 1: a 3×3 comparison filter
 // around its place in the map, outside the map lit.
 fn shadow_lit(map: texture_depth_2d_array, cmp: sampler_comparison, c: ShadowCascades, i: u32, world: vec3<f32>, normal: vec3<f32>) -> f32 {
-    let p = c.view_proj[i] * vec4<f32>(world + normal * c.texel[i] * 1.5, 1.0);
+    let p = c.view_proj[i] * vec4<f32>(world + (normal * 1.5 + c.light) * c.texel[i], 1.0);
     let ndc = p.xyz / p.w;
     let uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
     if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z > 1.0 {

@@ -41,6 +41,10 @@ sprites once served.
 - `alps-sunlit.json`: a scene document over `alps.json` that lights it by a
   morning sun over Zermatt and an ambient sky (decision 0026), written for
   this repository; `?style=alps-sunlit&flight`.
+- `manhattan.json`: a scene document over OpenFreeMap's Liberty (data as
+  above): Midtown lit by an October afternoon sun that casts shadows
+  (decision 0046), labels hidden behind buildings, written for this
+  repository; `?style=manhattan`.
 - `scripts.json`: the Cairo, Delhi and Bangkok entries' style
   (`?style=cairo|delhi|bangkok`, or `scripts`), written for this repository. It draws OpenFreeMap's
   planet tiles with labels in Arabic, Devanagari, Thai and Latin from

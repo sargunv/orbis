@@ -109,7 +109,7 @@ export const GROUPS = [
       { key: "globe", name: "Globe", detail: "Liberty on the v8 globe in space, Web Mercator from zoom 12",
         url: globe, projection: { type: "globe" }, camera: { center: [10, 30], zoom: 1.5 }, dark: true,
         swatch: ["#f8f4f0", "#a0c8f0", "#02040b"] },
-      { key: "manhattan", name: "Manhattan in 3D", detail: "Buildings hide the labels behind them",
+      { key: "manhattan", name: "Manhattan in 3D", detail: "Low afternoon sun: shadows, and labels hidden behind buildings",
         url: manhattan, camera: { center: [-73.985, 40.752], zoom: 15.6, bearing: 29, pitch: 62 },
         swatch: ["#d8d4cf", "#a0c8f0", "#e9ac77"] },
       { key: "dusk", name: "Liberty at dusk", detail: "Layer blends: a multiplied tint, glowing roads",

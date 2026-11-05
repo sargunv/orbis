@@ -14,11 +14,18 @@ const BUILTINS: &str = include_str!("wgsl/builtins.wgsl");
 const BUILTINS_COMPAT: &str = include_str!("wgsl/builtins_compat.wgsl");
 /// glTF's metallic-roughness shading, functions without bindings (plan
 /// §9.4): for the model pipelines to compose.
-pub const PBR_MODULE: &str = include_str!("wgsl/pbr.wgsl");
+const PBR_MODULE: &str = include_str!("wgsl/pbr.wgsl");
 
-/// Cascaded shadows from the directional light, functions without
-/// bindings: for casters and receivers to compose.
-pub const SHADOW_MODULE: &str = include_str!("wgsl/shadow.wgsl");
+/// The shadows a surface receives (decision 0046): the cascades, their
+/// maps in the scene group and `shadow_at`. Compat composes
+/// `shadow_none.wgsl` in its place: no shadows (plan §8.7).
+const SHADOW_RECEIVE: &str = concat!(
+    include_str!("wgsl/shadow.wgsl"),
+    include_str!("wgsl/shadow_receive.wgsl")
+);
+const SHADOW_NONE: &str = include_str!("wgsl/shadow_none.wgsl");
+const SHADOW_GROUND: &str = include_str!("wgsl/shadow_ground.wgsl");
+const EXTRUSION_CASTER: &str = include_str!("wgsl/extrusion_caster.wgsl");
 const PATTERN: &str = include_str!("wgsl/pattern.wgsl");
 const EXTRUSION: &str = include_str!("wgsl/extrusion.wgsl");
 const EXTRUSION_COMPOSITE: &str = include_str!("wgsl/extrusion_composite.wgsl");
@@ -69,7 +76,14 @@ impl Shader {
     }
 
     fn compose(&self, compat: bool) -> String {
-        let mut source = self.parts.concat();
+        let mut source: String = self
+            .parts
+            .iter()
+            .map(|&part| match part {
+                SHADOW_RECEIVE if compat => SHADOW_NONE,
+                part => part,
+            })
+            .collect();
         if self.parts.contains(&DRAW) {
             source.push_str(if compat { FETCH_COMPAT } else { FETCH });
             if compat {
@@ -310,7 +324,7 @@ pub const CULL_SHADER: Shader = Shader {
 /// Lit roofs and walls with reversed-Z depth.
 pub const EXTRUSION_SHADER: Shader = Shader {
     label: "extrusion",
-    parts: &[TYPES, DRAW, PATTERN, LIGHTING, EXTRUSION],
+    parts: &[TYPES, DRAW, PATTERN, LIGHTING, SHADOW_RECEIVE, EXTRUSION],
     vertex: "vs_extrusion",
     fragment: "fs_extrusion",
     compute: "",
@@ -339,6 +353,30 @@ pub const OCCLUSION_SHADERS: [Shader; 2] = [
         compute: "",
     },
 ];
+/// Extrusions' depth from the light, into a shadow cascade. Modern only.
+pub const EXTRUSION_CASTER_SHADER: Shader = Shader {
+    label: "extrusion caster",
+    parts: &[
+        TYPES,
+        DRAW,
+        PATTERN,
+        LIGHTING,
+        SHADOW_RECEIVE,
+        EXTRUSION,
+        EXTRUSION_CASTER,
+    ],
+    vertex: "vs_caster",
+    fragment: "fs_caster",
+    compute: "",
+};
+/// Shadows on the ground, multiplied over the main pass. Modern only.
+pub const SHADOW_GROUND_SHADER: Shader = Shader {
+    label: "shadow ground",
+    parts: &[TYPES, DRAW, SHADOW_RECEIVE, SHADOW_GROUND],
+    vertex: "vs_shadow_ground",
+    fragment: "fs_shadow_ground",
+    compute: "",
+};
 pub const EXTRUSION_COMPOSITE_SHADER: Shader = Shader {
     label: "extrusion composite",
     parts: &[
@@ -346,6 +384,7 @@ pub const EXTRUSION_COMPOSITE_SHADER: Shader = Shader {
         DRAW,
         PATTERN,
         LIGHTING,
+        SHADOW_RECEIVE,
         EXTRUSION,
         EXTRUSION_COMPOSITE,
     ],

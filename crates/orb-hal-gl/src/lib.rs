@@ -1227,6 +1227,18 @@ impl Gpu for GlGpu {
             ] {
                 self.gl.sampler_parameter_i32(s, name, value as i32);
             }
+            if let Some(compare) = desc.compare {
+                self.gl.sampler_parameter_i32(
+                    s,
+                    glow::TEXTURE_COMPARE_MODE,
+                    glow::COMPARE_REF_TO_TEXTURE as i32,
+                );
+                self.gl.sampler_parameter_i32(
+                    s,
+                    glow::TEXTURE_COMPARE_FUNC,
+                    state::compare(compare) as i32,
+                );
+            }
             s
         };
         SamplerId(self.samplers.insert(sampler))

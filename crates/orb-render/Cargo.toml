@@ -12,6 +12,7 @@ compat = ["orb-shaders/glsl"]
 
 [dependencies]
 bytemuck.workspace = true
+glam.workspace = true
 orb-crs.workspace = true
 orb-hal.workspace = true
 orb-layout.workspace = true

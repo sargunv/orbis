@@ -115,11 +115,18 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
     let c1 = frame.view_proj * vec4<f32>(tile_affine(tile, vec2<f32>(hi.x, lo.y)), ground.x, 1.0);
     let c2 = frame.view_proj * vec4<f32>(tile_affine(tile, vec2<f32>(lo.x, hi.y)), ground.x, 1.0);
     let c3 = frame.view_proj * vec4<f32>(tile_affine(tile, hi), ground.x, 1.0);
-    let raised = frame.view_proj * vec4<f32>(0.0, 0.0, ground.y - ground.x + elevation * frame.extrusion_scale, 0.0);
+    let rise = ground.y - ground.x + elevation * frame.extrusion_scale;
+    let raised = frame.view_proj * vec4<f32>(0.0, 0.0, rise, 0.0);
     let m = 2.0 * margin_px / frame.viewport;
-    let outside = outside_planes(c0, m) & outside_planes(c1, m) & outside_planes(c2, m)
+    var outside = outside_planes(c0, m) & outside_planes(c1, m) & outside_planes(c2, m)
         & outside_planes(c3, m) & outside_planes(c0 + raised, m) & outside_planes(c1 + raised, m)
         & outside_planes(c2 + raised, m) & outside_planes(c3 + raised, m);
+    // A raised chunk off the view still draws if its shadow falls in it.
+    if elevation > 0.0 && any(frame.shadow_reach != vec2<f32>(0.0)) {
+        let shade = frame.view_proj * vec4<f32>(frame.shadow_reach * rise, 0.0, 0.0);
+        outside &= outside_planes(c0 + shade, m) & outside_planes(c1 + shade, m)
+            & outside_planes(c2 + shade, m) & outside_planes(c3 + shade, m);
+    }
     return outside == 0u;
 }
 

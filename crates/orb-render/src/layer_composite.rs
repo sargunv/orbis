@@ -349,7 +349,7 @@ impl LayerComposites {
         self.groups.iter().filter_map(|g| {
             Some(Pass::Render(RenderPass {
                 label: "layer composite".into(),
-                color: g.layer?.color_attachment(LoadOp::Clear([0.0; 4])),
+                color: Some(g.layer?.color_attachment(LoadOp::Clear([0.0; 4]))),
                 depth: None,
                 timestamps: None,
                 commands: vec![RenderCommand::ExecuteBundles(vec![g.bundle?])],
@@ -396,7 +396,7 @@ impl LayerComposites {
                 };
                 Pass::Render(RenderPass {
                     label: "main".into(),
-                    color,
+                    color: Some(color),
                     depth: None,
                     timestamps: None,
                     commands,

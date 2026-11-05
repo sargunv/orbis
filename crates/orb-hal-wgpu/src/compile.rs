@@ -670,6 +670,13 @@ mod web {
                             ("alpha", component("one", "one-minus-src-alpha")),
                         ]),
                     )),
+                    Some(BlendState::Multiply) => fields.push((
+                        "blend",
+                        dict(&[
+                            ("color", component("zero", "src")),
+                            ("alpha", component("zero", "one")),
+                        ]),
+                    )),
                     None => {}
                 }
                 dict(&fields)
@@ -803,6 +810,9 @@ mod web {
                             .into(),
                         )]),
                     ),
+                    BindingType::ComparisonSampler => {
+                        ("sampler", dict(&[("type", "comparison".into())]))
+                    }
                     BindingType::StorageTexture {
                         format: f,
                         dimension: d,

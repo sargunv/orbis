@@ -136,7 +136,7 @@ After M12: point clouds, splats, ProjIR, expression-function and wasm plugins, a
 | Tier | APIs | Requires | Provides |
 |---|---|---|---|
 | **M (Modern)** | browser WebGPU core; Vulkan 1.1+ (Android: allowlisted 12+ devices); Metal (iOS 16+, macOS 13+); D3D12 (Windows 10+) | storage buffers in vertex/fragment/compute (WebGPU core default 8 per stage); compute; `drawIndirect`; 128 MiB storage bindings and 256 MiB buffers (WebGPU core defaults [inferred from spec; re-check]); 256-layer texture arrays | everything in the build path; all §18 budgets |
-| **M+** (optional) | per adapter, web and native | any of `multi_draw_indirect(_count)`, partially bound binding arrays, `subgroups`, `shader-f16`, `indirect-first-instance`, timestamp queries, compressed formats, native multiview | fewer padded invocations, cheaper compaction, larger atlases; shadows/OIT (declared M+-only) |
+| **M+** (optional) | per adapter, web and native | any of `multi_draw_indirect(_count)`, partially bound binding arrays, `subgroups`, `shader-f16`, `indirect-first-instance`, timestamp queries, compressed formats, native multiview | fewer padded invocations, cheaper compaction, larger atlases; OIT (declared M+-only) |
 | **C (Compat)** | WebGL2; GLES 3.0+ below the allowlist or after a crash-sentinel trip; GL 3.3 (Linux without Vulkan, toolkit GL contexts) | WebGL2-class GL; `EXT_color_buffer_float` for heatmap | the declared subset of §8.7, no performance budgets |
 | Unsupported | WebGL1, GLES 2; Safari < 16.4 (no SIMD); Android < API 24; iOS < 16 | — | a structured "unsupported device" error |
 
@@ -497,7 +497,7 @@ Compiled per (style IR, projection plan, scene features, tier); empty passes cul
 | `Symbols` (single-pass halo; depth-tested with `symbol-occlusion`) | yes | screen-space only |
 | `ViewAnnotations` (host images at anchors, collided with labels) | yes | yes |
 | `Atmosphere` (M7; one sky/fog model on every surface; today fog exists only in GL JS's Mercator terrain shader, #4337 [verified]) | yes | no |
-| `Shadow` (M8) | M+ | no |
+| `Shadow` (M8; two cascades fitted per frame, [decision 0046](decisions/0046-shadows.md)) | yes | no |
 | `Overlay`/`Custom` (debug, focus ring, plugin passes) | yes | yes |
 
 Extrusion nodes resolve their nearest lit surfaces with reversed-Z depth to
@@ -617,7 +617,7 @@ The planner picks the cheapest plan within the projection's declared pixel error
 
 - **Terrain (M7):** CDLOD quadtree over the surface TMS with skirts; min/max elevation pyramid for cover and camera constraints; a real depth texture (GL JS packs depth into RGBA at CSS resolution) [verified]; layers `drape` (cached RTT) or `project` (per-vertex elevation). **The renderer never writes the camera** (GL JS's `Map._render` does, causing jumps, #8549); elevation queries use a CPU DEM ray walk, never `readPixels` (108–117 ms stalls, #8387) [verified]. [implemented at M7 under Mercator, decision 0019] Terrain tiles are a quadtree of 512-pixel tiles with skirts, one grid vertex per DEM pixel; draped layers draw into 1024² slots of one mipmapped atlas through drape placements (ordinary tile placements targeting a slot), each slot drawn at its terrain tile's own zoom whatever the camera's (one drape pass per zoom, sharing one cull) and redrawn only when its content changes, never waiting for the camera to stop (layers that turn with the bearing, such as a viewport-anchored hillshade, still redraw as it turns, #83); each drape stack's terrain composites in style order over the 3D depth extrusions share. Map placements name their DEM tile, so circles, heatmaps and extrusions stand on the ground. `CameraState::elevation` holds the target's height: at rest it stands on the terrain, keeping its elevation while the DEM under it loads; gestures end with the eye in place.
 - **Flat v8 extrusion lighting (available):** style light anchor, spherical position, color and intensity; reference luminance/ambient terms and optional vertical wall gradient. Viewport anchoring rotates from frame bearing, so camera motion needs no paint uploads. All extrusion paint properties, including shared-atlas patterns, are rendered; 39 of 41 enabled pinned fixtures pass on native and Chrome, with 11 explicit skips. See [decision 0011](decisions/0011-fill-extrusion.md).
-- **Lighting (M8):** ambient + directional + sun from time and location; PBR metallic-roughness for glTF; lit extrusions and terrain; `*-emissive-strength`; cascaded shadows on M+. One lighting model in the Style IR and renderer, onto which v8's `light` lowers ([decision 0026](decisions/0026-lighting.md)).
+- **Lighting (M8):** ambient + directional + sun from time and location; PBR metallic-roughness for glTF; lit extrusions and terrain; `*-emissive-strength`; cascaded shadows ([decision 0046](decisions/0046-shadows.md)). One lighting model in the Style IR and renderer, onto which v8's `light` lowers ([decision 0026](decisions/0026-lighting.md)).
 - **3D content (M8):** glTF `model` layer (instanced from points or one georeferenced placement; meshopt, quantization, KTX2; Draco native-only); `clip` volumes; 3D Tiles 1.1 (implicit tiling, `EXT_mesh_features`/`EXT_structural_metadata`, screen-space-error traversal in `orb-source`; vector content ingested into `TileFrame`). Placement scopes `viewport | tile | region | world-3d`; `world-3d` labels are ECEF billboards collided in screen space and occluded by depth.
 
 ---
@@ -969,7 +969,7 @@ Rendering-lane milestones do not wait for M3–M5. Where an exit criterion needs
 | M5 | Hardening and batteries | platform | real-world styles, budgets and size ceilings on the device matrix; batteries, offline cache, composition | M4 |
 | M6 | Any CRS and servers | rendering | TMS per source, planner, planar families, Still/Tile | M2 |
 | M7 | Globe, ellipsoid, terrain | rendering | surfaces, non-affine rows, precision, terrain, atmosphere | M6 |
-| M8 | 3D content and lighting | rendering | glTF, lit extrusions, `world-3d` labels, 3D Tiles 1.1, shadows (M+) | M7 |
+| M8 | 3D content and lighting | rendering | glTF, lit extrusions, `world-3d` labels, 3D Tiles 1.1, shadows | M7 |
 | M9 | Guest embedding | platform | SharedDevice, host depth, HostDriven, multi-view, toolkit texture import | M4 (full value after M8) |
 | M10 | Accessibility host mappings | platform | AccessKit, Android, iOS, ARIA from one snapshot | M3 |
 | M11 | Data layers | rendering | GeoArrow → GPU chunks sharing placement with the basemap | M2 |
@@ -1081,7 +1081,7 @@ feature state and feature data draws its state when it compiles (#6).
 - *Exit:* ≥90% of mirrored globe/terrain/sky fixtures on Modern (globe also on Compat); projection switch ≤2 frames with no refetch; globe cover ≤1.5× Mercator; z18–z22 agreement on the farm before globe-at-every-zoom is enabled; no terrain camera jumps; web sync `unproject` within its documented error.
 
 **M8 3D content and lighting.**
-- *Builds:* lighting block; lit extrusions; `orb-3d` glTF layer; `world-3d` scope and depth-tested symbols; MSAA; `clip`; Hi-Z occlusion; id-buffer picking; shadows on M+; 3D Tiles 1.1 last.
+- *Builds:* lighting block; lit extrusions; `orb-3d` glTF layer; `world-3d` scope and depth-tested symbols; MSAA; `clip`; Hi-Z occlusion; id-buffer picking; shadows; 3D Tiles 1.1 last.
 - *Demo:* a lit city with glTF landmarks and occluded labels; a photogrammetry 3D Tiles set with MapLibre labels and draped roads.
 - *Exit:* Khronos glTF samples; lighting and occlusion fixtures; z17 extrusion memory ≤300 MB; a 3D Tiles conformance subset; Compat warns for every 3D gap.
 

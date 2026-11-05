@@ -78,6 +78,7 @@ impl Heatmaps {
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
             anisotropy: 1,
+            compare: None,
         });
         Self {
             pipelines: None,
@@ -297,12 +298,12 @@ impl Heatmaps {
         });
         Some(RenderPass {
             label: "heatmap density".into(),
-            color: ColorAttachment {
+            color: Some(ColorAttachment {
                 store: StoreOp::Store,
                 target,
                 resolve: None,
                 load: LoadOp::Clear([0.0; 4]),
-            },
+            }),
             depth: None,
             timestamps: None,
             commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],

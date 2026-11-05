@@ -321,6 +321,7 @@ impl Terrain {
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Linear,
             anisotropy: 1,
+            compare: None,
         });
         Self {
             target,
@@ -883,12 +884,12 @@ impl Terrain {
             commands.push(RenderCommand::ExecuteBundles(drape.to_vec()));
             passes.push(Pass::Render(RenderPass {
                 label: "drape".into(),
-                color: ColorAttachment {
+                color: Some(ColorAttachment {
                     target: atlas.levels[0],
                     resolve: None,
                     store: StoreOp::Store,
                     load: LoadOp::Load,
-                },
+                }),
                 depth: None,
                 timestamps: None,
                 commands,
@@ -1005,12 +1006,12 @@ impl Terrain {
         ) {
             passes.push(Pass::Render(RenderPass {
                 label: "terrain depth".into(),
-                color: ColorAttachment {
+                color: Some(ColorAttachment {
                     target: color,
                     resolve: None,
                     store: StoreOp::Store,
                     load: LoadOp::Clear([0.0; 4]),
-                },
+                }),
                 depth: Some(DepthAttachment {
                     target: occlusion_depth,
                     load: LoadOp::Clear(0.0),
@@ -1025,7 +1026,7 @@ impl Terrain {
             let color = target.color.expect("sized");
             passes.push(Pass::Render(RenderPass {
                 label: "terrain".into(),
-                color: ColorAttachment {
+                color: Some(ColorAttachment {
                     target: target.multisample.unwrap_or(color),
                     resolve: target.multisample.map(|_| color),
                     store: if target.multisample.is_some() {
@@ -1034,7 +1035,7 @@ impl Terrain {
                         StoreOp::Store
                     },
                     load: LoadOp::Clear([0.0; 4]),
-                },
+                }),
                 depth: Some(DepthAttachment {
                     target: depth,
                     load: if stack == 0 {

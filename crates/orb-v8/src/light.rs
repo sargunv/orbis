@@ -38,6 +38,8 @@ impl Light {
                 },
                 anchor: self.anchor,
                 direction: Direction::Position(self.position),
+                // v8's light casts no shadows.
+                shadow: None,
             }),
             terrain: false,
             emissive: Vec::new(),

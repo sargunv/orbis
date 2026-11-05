@@ -57,6 +57,7 @@ fn samples_written_layers_of_a_texture_array() {
         address: AddressMode::ClampToEdge,
         mipmap_filter: FilterMode::Nearest,
         anisotropy: 1,
+        compare: None,
     });
     let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
         label: "pages",
@@ -132,12 +133,12 @@ fn samples_written_layers_of_a_texture_array() {
     assert!(gpu.pipeline_ready(pipeline.into()));
     gpu.submit(&[Pass::Render(RenderPass {
         label: "sample".into(),
-        color: ColorAttachment {
+        color: Some(ColorAttachment {
             store: StoreOp::Store,
             target,
             resolve: None,
             load: LoadOp::Clear([0.0; 4]),
-        },
+        }),
         depth: None,
         commands: vec![
             RenderCommand::SetPipeline(pipeline),

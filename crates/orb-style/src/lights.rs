@@ -40,6 +40,9 @@ pub struct DirectionalLight {
     /// Viewport-anchored lights turn with the map's bearing.
     pub anchor: Property<TranslateAnchor>,
     pub direction: Direction,
+    /// When it casts shadows, how much of its light they take away, 0 to
+    /// 1 (the scene's `cast-shadows` and `shadow-intensity`).
+    pub shadow: Option<f32>,
 }
 #[derive(Clone, Debug)]
 pub enum Direction {

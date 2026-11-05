@@ -99,11 +99,18 @@ impl State {
                     if !matches!(self.blend, Some(Some(_))) {
                         gl.enable(glow::BLEND);
                     }
-                    let dst = match state {
-                        BlendState::PremultipliedAlpha => glow::ONE_MINUS_SRC_ALPHA,
-                        BlendState::Additive => glow::ONE,
-                    };
-                    gl.blend_func(glow::ONE, dst);
+                    match state {
+                        BlendState::PremultipliedAlpha => {
+                            gl.blend_func(glow::ONE, glow::ONE_MINUS_SRC_ALPHA)
+                        }
+                        BlendState::Additive => gl.blend_func(glow::ONE, glow::ONE),
+                        BlendState::Multiply => gl.blend_func_separate(
+                            glow::ZERO,
+                            glow::SRC_COLOR,
+                            glow::ZERO,
+                            glow::ONE,
+                        ),
+                    }
                 }
             }
         }
@@ -122,13 +129,7 @@ impl State {
                 Some((write, compare)) => {
                     gl.enable(glow::DEPTH_TEST);
                     gl.depth_mask(write);
-                    gl.depth_func(match compare {
-                        CompareFunction::Always => glow::ALWAYS,
-                        CompareFunction::Less => glow::LESS,
-                        CompareFunction::LessEqual => glow::LEQUAL,
-                        CompareFunction::Greater => glow::GREATER,
-                        CompareFunction::GreaterEqual => glow::GEQUAL,
-                    });
+                    gl.depth_func(self::compare(compare));
                 }
             }
         }
@@ -295,5 +296,16 @@ impl State {
             // SAFETY: the current program's uniform.
             unsafe { gl.uniform_1_u32(Some(location), first) };
         }
+    }
+}
+
+/// GL's comparison function.
+pub(crate) fn compare(compare: CompareFunction) -> u32 {
+    match compare {
+        CompareFunction::Always => glow::ALWAYS,
+        CompareFunction::Less => glow::LESS,
+        CompareFunction::LessEqual => glow::LEQUAL,
+        CompareFunction::Greater => glow::GREATER,
+        CompareFunction::GreaterEqual => glow::GEQUAL,
     }
 }

@@ -119,6 +119,8 @@ pub struct Memory {
     pub glyph_textures: u64,
     /// Icons and patterns.
     pub image_atlas: u64,
+    /// The shadow cascades' depth map, while the lights cast shadows.
+    pub shadow_map: u64,
     /// Tiles kept beyond those in view, and their cost: GPU memory and
     /// picking data.
     pub cached_tiles: u32,
@@ -139,6 +141,7 @@ impl Memory {
             + self.tile_textures
             + self.glyph_textures
             + self.image_atlas
+            + self.shadow_map
     }
 }
 
@@ -552,6 +555,8 @@ pub struct Map {
     sender: Sender<Message>,
     receiver: Receiver<Message>,
     pub(crate) warnings: Vec<String>,
+    /// Why the shadows the lights cast aren't drawn, once said.
+    shadows_off: Option<&'static str>,
     pub(crate) events: crate::events::EventQueue,
     /// Terrain pages of a replaced style, to destroy with the next
     /// frame's GPU.
@@ -768,6 +773,7 @@ impl Map {
             sender,
             receiver,
             warnings: Vec::new(),
+            shadows_off: None,
             events: Default::default(),
             retired_pages: Vec::new(),
             retired_images: Vec::new(),
@@ -1519,6 +1525,28 @@ impl Map {
         }
 
         let globe = view.globe().map(|globe| frame_globe(globe, &view));
+        let heights = self.shadow_heights(&view, zoom);
+        let frame_lights = lights.map(|lights| {
+            crate::lights::frame_lights(
+                lights,
+                zoom,
+                self.camera.state().bearing,
+                self.camera.state().target,
+                heights,
+            )
+        });
+        // Say once, as they turn off, why shadows the lights cast aren't
+        // drawn.
+        let shadows_off = frame_lights.and_then(|l| l.shadow).and_then(|_| {
+            if gpu.caps().tier == orb_hal::Tier::Compat {
+                Some(crate::COMPAT_NO_SHADOWS)
+            } else {
+                globe.map(|_| crate::GLOBE_NO_SHADOWS)
+            }
+        });
+        if shadows_off != std::mem::replace(&mut self.shadows_off, shadows_off) {
+            self.warnings.extend(shadows_off.map(String::from));
+        }
         let frame = FrameBlock {
             camera: view.camera_world().to_array(),
             world_span: self
@@ -1548,14 +1576,7 @@ impl Map {
                 ),
             },
             terrain: self.frame_terrain,
-            lights: lights.map(|lights| {
-                crate::lights::frame_lights(
-                    lights,
-                    zoom,
-                    self.camera.state().bearing,
-                    self.camera.state().target,
-                )
-            }),
+            lights: frame_lights,
             globe,
         };
         let occluded = scene.as_deref().is_some_and(|s| s.symbol_occlusion);
@@ -1785,6 +1806,24 @@ impl Map {
                 }),
             );
         }
+    }
+
+    /// The heights shadows fall between, world units: the terrain's range
+    /// around the view's target (sea level without terrain), up to the
+    /// tallest buildings standing on it.
+    fn shadow_heights(&mut self, view: &orb_camera::View, zoom: f64) -> [f32; 2] {
+        const TALLEST_M: f64 = 600.0;
+        let target = view.camera_world();
+        // A tile some zooms out holds what the view's cascades reach.
+        let z = (zoom - 3.0).floor().max(0.0) as u8;
+        let (low, high) = self
+            .terrain_elevation()
+            .and_then(|e| {
+                orb_camera::Elevation::range(&*e, orb_crs::WorldRect::around([target]), z)
+            })
+            .unwrap_or((0.0, 0.0));
+        let scale = self.extrusion_scale();
+        [low * scale, (high + TALLEST_M) * scale].map(|h| h as f32)
     }
 
     // Pinned GL JS v8 heights use the IUGG mean sphere (6371008.8 m),
@@ -2417,6 +2456,7 @@ impl Map {
             tile_textures,
             glyph_textures,
             image_atlas: images.atlas.as_ref().map_or(0, ImageAtlas::bytes),
+            shadow_map: renderer.shadow_bytes(),
             cached_tiles,
             cached,
             cache_budget: self.budget / 4,

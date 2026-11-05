@@ -328,7 +328,7 @@ impl Extrusions {
         });
         RenderPass {
             label: "extrusion".into(),
-            color: ColorAttachment {
+            color: Some(ColorAttachment {
                 store: if node.multisample.is_some() {
                     StoreOp::Discard
                 } else {
@@ -337,7 +337,7 @@ impl Extrusions {
                 target: node.multisample.or(node.color).unwrap(),
                 resolve: node.multisample.and(node.color),
                 load: LoadOp::Clear([0.0; 4]),
-            },
+            }),
             depth: Some(DepthAttachment {
                 store: self.depth().expect("sized").1,
                 target: self.depth.unwrap(),

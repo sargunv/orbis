@@ -285,6 +285,7 @@ impl Images {
                 address: AddressMode::ClampToEdge,
                 mipmap_filter: filter,
                 anisotropy,
+                compare: None,
             })
         };
         let linear = sampler("linear", FilterMode::Linear, 16);
@@ -1162,12 +1163,12 @@ mod compat_prepare {
                 ] {
                     passes.push(Pass::Render(RenderPass {
                         label: "prepare".into(),
-                        color: ColorAttachment {
+                        color: Some(ColorAttachment {
                             target,
                             resolve: None,
                             store: StoreOp::Store,
                             load: LoadOp::Load,
-                        },
+                        }),
                         depth: None,
                         timestamps: None,
                         commands: vec![

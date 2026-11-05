@@ -138,6 +138,9 @@ pub(crate) fn bind_group_layout_entry(entry: &BindGroupLayoutEntry) -> wgpu::Bin
             } else {
                 wgpu::SamplerBindingType::NonFiltering
             }),
+            BindingType::ComparisonSampler => {
+                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison)
+            }
             BindingType::StorageTexture { format, dimension } => {
                 wgpu::BindingType::StorageTexture {
                     access: wgpu::StorageTextureAccess::WriteOnly,
@@ -167,6 +170,18 @@ pub(crate) fn color_target(target: &ColorTargetState) -> wgpu::ColorTargetState 
                 },
             },
             BlendState::PremultipliedAlpha => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            BlendState::Multiply => wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::Src,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            },
         }),
         write_mask: wgpu::ColorWrites::ALL,
     }
@@ -198,6 +213,7 @@ pub(crate) fn sampler(desc: &SamplerDesc<'_>) -> wgpu::SamplerDescriptor<'static
             FilterMode::Nearest => wgpu::MipmapFilterMode::Nearest,
             FilterMode::Linear => wgpu::MipmapFilterMode::Linear,
         },
+        compare: desc.compare.map(compare),
         ..Default::default()
     }
 }

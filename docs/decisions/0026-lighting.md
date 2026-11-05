@@ -58,7 +58,7 @@ The sun's position uses the Astronomical Almanac's low-precision formulas
 ## Where it grows
 
 The levels and colours stay the model's terms:
-- shadows (M+) attenuate the directional term;
+- shadows attenuate the directional term ([decision 0046](0046-shadows.md));
 - glTF's PBR materials read the same lights with their own response;
 - emissive strength reaches other families when they light.
 

@@ -242,7 +242,10 @@ impl GlGpu {
     }
 
     fn render_pass(&mut self, pass: &RenderPass) {
-        let color = self.textures[pass.color.target.0];
+        let attachment = pass
+            .color
+            .unwrap_or_else(|| panic!("{}: Compat draws no depth-only passes", pass.label));
+        let color = self.textures[attachment.target.0];
         let depth = pass.depth.map(|d| self.textures[d.target.0]);
         let fbo = self.framebuffers.get(
             &self.gl,
@@ -257,7 +260,7 @@ impl GlGpu {
             .viewport(&self.gl, [0, 0, color.width as i32, color.height as i32]);
         // SAFETY: clears of the bound framebuffer.
         unsafe {
-            if let LoadOp::Clear(c) = pass.color.load {
+            if let LoadOp::Clear(c) = attachment.load {
                 let c = [c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32];
                 self.gl.clear_buffer_f32_slice(glow::COLOR, 0, &c);
             }
@@ -274,7 +277,7 @@ impl GlGpu {
         for command in &pass.commands {
             self.command(&mut encoder, command);
         }
-        if let Some(resolve) = pass.color.resolve {
+        if let Some(resolve) = attachment.resolve {
             let target = self.textures[resolve.0];
             let to = self.framebuffers.color(
                 &self.gl,
@@ -302,7 +305,7 @@ impl GlGpu {
             }
         }
         let mut discard = Vec::new();
-        if pass.color.store == StoreOp::Discard {
+        if attachment.store == StoreOp::Discard {
             discard.push(glow::COLOR_ATTACHMENT0);
         }
         if pass.depth.is_some_and(|d| d.store == StoreOp::Discard) {

@@ -34,6 +34,28 @@ fn tokyo(extra: &str, sources: &str) -> String {
     style.replacen("\"sources\": {", &format!("\"sources\": {{{sources}"), 1)
 }
 
+/// Tokyo's buildings standing, under a low sun that casts shadows
+/// (decision 0046): a scene document over the extract.
+fn shadowed_tokyo() -> String {
+    let style = tokyo("", "").replacen(
+        "{\n      \"id\": \"building\",",
+        r##"{"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles",
+            "source-layer": "building", "minzoom": 14,
+            "paint": {"fill-extrusion-color": "#d9d0c9",
+                      "fill-extrusion-height": ["get", "render_height"]}},
+        {"id": "building","##,
+        1,
+    );
+    assert!(style.contains("building-3d"));
+    format!(
+        r##"{{"style": {style},
+            "lights": [
+              {{"type": "ambient", "properties": {{"intensity": 0.5}}}},
+              {{"type": "sun", "properties": {{"time": "2024-10-20T06:30:00Z",
+                "intensity": 0.6, "cast-shadows": true}}}}]}}"##
+    )
+}
+
 /// A camera: centre, zoom, bearing, pitch.
 type At = (Geodetic, f64, f64, f64);
 
@@ -187,6 +209,13 @@ fn zooming_in_with_a_turn_and_tilt_draws_what_a_fresh_map_does() {
 }
 
 #[test]
+fn shadows_after_a_gesture_are_a_fresh_map_s() {
+    let start = (Geodetic::new(139.72, 35.67), 14.2, 0.0, 0.0);
+    let end = (STATION, 15.6, -40.0, 60.0);
+    assert_same("shadows", both_ways(&shadowed_tokyo(), start, end, 30));
+}
+
+#[test]
 fn zooming_out_draws_what_a_fresh_map_does() {
     let start = (STATION, 16.6, -20.0, 30.0);
     let end = (Geodetic::new(139.75, 35.69), 14.3, 10.0, 0.0);
@@ -277,6 +306,7 @@ fn camera_only_frames_write_no_rows() {
     for style in [
         tokyo("", ""),
         tokyo(r#""projection": {"type": "globe"},"#, ""),
+        shadowed_tokyo(),
     ] {
         let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
         let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
@@ -291,6 +321,9 @@ fn camera_only_frames_write_no_rows() {
             assert_eq!(report.tiles_loading, 0, "the move loads nothing");
             assert_eq!(report.frame.placements_written, 0, "step {step}");
             assert!(!report.frame.candidates_rebuilt, "step {step}");
+            // One cull, and the recorded bundles replayed.
+            assert_eq!(report.frame.dispatches, 1, "step {step}");
+            assert!(!report.frame.bundle_recorded, "step {step}");
         }
     }
 }

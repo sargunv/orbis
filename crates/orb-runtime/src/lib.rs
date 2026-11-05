@@ -45,6 +45,11 @@ pub use video::{NO_VIDEO, VideoRequest};
 /// maps draw flat.
 pub const COMPAT_NO_TERRAIN: &str =
     "terrain is not drawn on the Compat tier (WebGL2, GLES 3.0); the map is flat";
+/// The warning scenes whose lights cast shadows get on the Compat tier.
+pub const COMPAT_NO_SHADOWS: &str = "shadows are not drawn on the Compat tier (WebGL2, GLES 3.0)";
+/// The warning they get while the view shows a globe.
+pub const GLOBE_NO_SHADOWS: &str =
+    "shadows are drawn on a plane only, not while the view shows a globe";
 /// The warning heatmap layers get on devices without float render
 /// targets (Compat without EXT_color_buffer_float).
 pub const COMPAT_NO_HEATMAP: &str = "heatmap requires filterable, blendable rgba16float render attachments (Compat: EXT_color_buffer_float); heatmap layers are skipped";

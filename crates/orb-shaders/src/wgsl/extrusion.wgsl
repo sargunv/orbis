@@ -20,7 +20,9 @@ struct ExtrusionNode {
 @group(1) @binding(0) var<uniform> node: ExtrusionNode;
 struct ExtrusionOut {
     @builtin(position) position: vec4<f32>,
+    // Lit, and with none of the directional light (in shadow).
     @location(0) color: vec4<f32>,
+    @location(7) unlit: vec4<f32>,
     @location(1) @interpolate(perspective, centroid) tile_pos: vec2<f32>,
     @location(2) @interpolate(flat) tile: u32,
     @location(3) pattern_pos: vec2<f32>,
@@ -28,16 +30,29 @@ struct ExtrusionOut {
     // A building cut at the source's buffer, clipped per fragment to the
     // placement; whole ones draw entire from the placement that owns them.
     @location(6) @interpolate(flat) cut: u32,
+    // Camera-relative world (x east, y north, z up), the face's normal
+    // there and the view depth, for shadows.
+    @location(8) world: vec3<f32>,
+    @location(9) normal: vec3<f32>,
+    @location(10) depth: f32,
 };
 @vertex
 fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
     var v: Pulled;
-    if !pull_indexed(node.index, index, 4u, &v) {
+    if !pull_indexed(node.index, index, 4u, &v) || !extrusion_drawn(v) {
         var out: ExtrusionOut;
         out.position = discarded_vertex();
         return out;
     }
     return extrusion_vertex(v);
+}
+// A whole building belongs to the one placement holding its centroid (row
+// word 9; half open, as points are owned), which draws all of it, past its
+// clip rectangles: its walls and their pattern run on unbroken. A building
+// cut at the source's buffer (row word 10 is 0) draws from every placement.
+fn extrusion_drawn(v: Pulled) -> bool {
+    let row = prop_row(v, vertex_at(v.vertex + 1u), v.row_words);
+    return prop_at(row + 10u) == 0u || inside_clips(tile_at(v.tile), unpack_i16x2(prop_at(row + 9u)));
 }
 fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     var out: ExtrusionOut;
@@ -61,14 +76,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let gradient_base = max(0.0, base);
     let gradient_height = max(0.0, height);
     let centroid = unpack_i16x2(prop_at(row + 9u));
-    // A whole building belongs to the one placement holding its centroid
-    // (half open, as points are owned), which draws all of it, past its
-    // clip rectangles: its walls and their pattern run on unbroken.
     out.cut = 1u - prop_at(row + 10u);
-    if out.cut == 0u && !inside_clips(tile, centroid) {
-        out.position = discarded_vertex();
-        return out;
-    }
     let raise = ground_elevation(tile, centroid);
     let basement = select(0.0, 10.0, base <= 0.0 && frame.dem_dim > 0.0);
     height = gradient_height + raise;
@@ -80,6 +88,11 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let shift = translate_world(node.translate, node.translate_anchor, tile);
     let ground = tile_ground_shifted(tile, pos, shift);
     out.position = ground_clip_3d(ground, vec2<f32>(0.0), elevation * frame.extrusion_scale);
+    // Shadows fall on the plane only: there world is the ground point,
+    // raised, and the normal leaves GL JS's axes (horizontal parts negated).
+    out.world = vec3<f32>(ground.flat, elevation * frame.extrusion_scale);
+    out.normal = normal * vec3<f32>(-1.0, 1.0, 1.0);
+    out.depth = out.position.w;
     // Modern uses reversed Z; the shared camera matrix remains usable by 2D.
     out.position.z = out.position.w - out.position.z;
     out.tile_pos = pos;
@@ -100,12 +113,15 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
         out.pattern_pos = pattern_pos;
         // The pattern's texels multiply the light, as GL JS shades them at
         // mid luminance.
-        let light = clamp(light_factor(normal, 0.5, gradient),
-            (vec3<f32>(1.0) - frame.light_color.rgb) * 0.3, vec3<f32>(1.0));
+        let least = (vec3<f32>(1.0) - frame.light_color.rgb) * 0.3;
+        let light = clamp(light_factor(normal, 0.5, gradient, 1.0), least, vec3<f32>(1.0));
+        let unlit = clamp(light_factor(normal, 0.5, gradient, 0.0), least, vec3<f32>(1.0));
         out.color = vec4<f32>(mix(light, vec3<f32>(1.0), node.emissive), 1.0);
+        out.unlit = vec4<f32>(mix(unlit, vec3<f32>(1.0), node.emissive), 1.0);
         return out;
     }
-    out.color = vec4<f32>(light_surface(color.rgb, normal, gradient, node.emissive), 1.0);
+    out.color = vec4<f32>(light_surface(color.rgb, normal, gradient, node.emissive, 1.0), 1.0);
+    out.unlit = vec4<f32>(light_surface(color.rgb, normal, gradient, node.emissive, 0.0), 1.0);
     return out;
 }
 @fragment
@@ -121,13 +137,16 @@ fn fs_extrusion(in: ExtrusionOut) -> @location(0) vec4<f32> {
         inside = all(in.tile_pos >= lo) && all(in.tile_pos <= hi);
     }
     if !inside { discard; }
+    // Shadows take the directional light away; lit, the colour is exact.
+    let lit = shadow_at(in.world, in.normal, in.depth);
+    let color = select(mix(in.unlit, in.color, lit), in.color, lit >= 1.0);
     if node.pattern.enabled != 0u {
         let image_a = image_at(in.images.x); let image_b = image_at(in.images.y);
         let pos_a = pattern_position(tile, in.pattern_pos, image_a, node.pattern.from_scale);
         let pos_b = pattern_position(tile, in.pattern_pos, image_b, node.pattern.to_scale);
         let a = pattern_sample(image_a, fract(pos_a), 0.0);
         let b = pattern_sample(image_b, fract(pos_b), 0.0);
-        return mix(a,b,node.pattern.fade) * in.color;
+        return mix(a,b,node.pattern.fade) * color;
     }
-    return in.color;
+    return color;
 }

@@ -14,7 +14,9 @@
 //! A `directional` light takes `direction`, `[azimuth, polar]` in degrees
 //! (clockwise from north, from the zenith); a `sun` takes a UTC `time`
 //! (RFC 3339) and shines from where the sun stands then over the camera's
-//! target. Values are constants.
+//! target. Either casts shadows with `cast-shadows: true` (Mapbox GL JS's
+//! name), as dark as `shadow-intensity` (0 to 1, default 1) takes away
+//! its light. Values are constants.
 
 use orb_expr::Color;
 use orb_expr::json::{Json, JsonValue};
@@ -63,6 +65,7 @@ pub(crate) fn parse_lights(cx: &mut Cx, json: &Json) -> Lights {
         }
         let (mut color, mut intensity) = (Color::parse("white").expect("white"), 0.5);
         let (mut direction, mut time) = ([210.0, 30.0], f64::NAN);
+        let (mut casts, mut shadow_intensity) = (false, 1.0);
         let props = properties
             .and_then(|p| cx.object(p, &format!("{path}.properties")))
             .unwrap_or(&[]);
@@ -91,6 +94,12 @@ pub(crate) fn parse_lights(cx: &mut Cx, json: &Json) -> Lights {
                     Some(t) => time = t,
                     None => cx.error(&key, m.value.span, "expected an RFC 3339 time"),
                 },
+                ("cast-shadows", JsonValue::Bool(b)) if kind != "ambient" => casts = *b,
+                ("shadow-intensity", JsonValue::Number(n))
+                    if kind != "ambient" && (0.0..=1.0).contains(n) =>
+                {
+                    shadow_intensity = *n;
+                }
                 (other, _) => cx.warn(
                     &key,
                     m.key_span,
@@ -133,6 +142,7 @@ pub(crate) fn parse_lights(cx: &mut Cx, json: &Json) -> Lights {
                     direction[1] as f32,
                 ]))
             },
+            shadow: casts.then_some(shadow_intensity as f32),
         });
     }
     lights
@@ -238,7 +248,7 @@ mod tests {
             r##"{"style": "s.json",
                 "lights": [
                     {"id": "a", "type": "ambient", "properties": {"color": "#ff0000", "intensity": 0.25}},
-                    {"type": "directional", "properties": {"direction": [90, 45]}},
+                    {"type": "directional", "properties": {"direction": [90, 45], "cast-shadows": true, "shadow-intensity": 0.5}},
                     {"type": "sun", "properties": {"time": "2024-06-21T12:00:00Z"}}
                 ],
                 "layers": {"b": {"emissive-strength": 0.5}}}"##,
@@ -253,6 +263,7 @@ mod tests {
             panic!("the first directional light shines");
         };
         assert_eq!(position.evaluate(0.0), [1.0, 90.0, 45.0]);
+        assert_eq!(directional.shadow, Some(0.5));
         assert!(l.terrain);
         assert_eq!(l.emissive("b"), 0.5);
         assert_eq!(l.emissive("c"), 0.0);
@@ -274,6 +285,7 @@ mod tests {
         assert_eq!(lights.ambient.unwrap().level.evaluate(0.0), 0.5);
         let directional = lights.directional.unwrap();
         assert_eq!(directional.level.evaluate(0.0), 1.0);
+        assert_eq!(directional.shadow, None);
         assert!(!lights.terrain);
     }
 }

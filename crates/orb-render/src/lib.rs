@@ -25,6 +25,7 @@ mod image;
 mod layer_composite;
 mod occlusion;
 mod paint;
+mod shadow;
 mod terrain;
 mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
@@ -37,7 +38,7 @@ pub use terrain::{
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
 pub use orb_scene::Pixels;
 pub use orb_scene::{
-    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLights, FrameTerrain,
+    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLights, FrameShadow, FrameTerrain,
     GLOBE_PATCH_WORDS, ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData,
     MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity,
     SceneStats, TileId, TileRow, TileWarp, WARP_PATCH_WORDS, Words,
@@ -225,6 +226,9 @@ pub struct Renderer {
     /// nodes a drape bundle left out.
     waiting: u32,
     drape_waiting: u32,
+    /// The main bundle left out the ground's shadows, waiting for their
+    /// pipeline.
+    ground_waiting: bool,
     node_uniforms: BufferId,
     node_stride: u64,
     nodes: Vec<Node>,
@@ -240,6 +244,11 @@ pub struct Renderer {
     extrusions: extrusion::Extrusions,
     /// The 3D depth resolved for the symbols it hides, when they are.
     occlusion: occlusion::Occlusion,
+    shadows: shadow::Shadows,
+    /// The shadow map the scene groups bind.
+    shadow_bound: TextureId,
+    /// The shadow casters' scene group, without the map they draw.
+    caster_group: Option<BindGroupId>,
     /// Layers drawn whole and composited at their layer opacity.
     composites: layer_composite::LayerComposites,
     /// Made for the first terrain.
@@ -362,11 +371,25 @@ impl Renderer {
                 },
                 BindGroupLayoutEntry {
                     binding: 15,
-                    visibility: ShaderStages::VERTEX,
+                    visibility: vf,
                     ty: BindingType::Texture {
                         sample: TextureSampleType::Float { filterable: false },
                         dimension: TextureViewDimension::D2,
                     },
+                },
+                uniform(16, vf),
+                BindGroupLayoutEntry {
+                    binding: 17,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample: TextureSampleType::Depth,
+                        dimension: TextureViewDimension::D2Array,
+                    },
+                },
+                BindGroupLayoutEntry {
+                    binding: 18,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::ComparisonSampler,
                 },
             ],
         });
@@ -397,6 +420,7 @@ impl Renderer {
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
             anisotropy: 1,
+            compare: None,
         });
         let no_dem = gpu.create_texture(&TextureDesc {
             label: "no dem",
@@ -422,6 +446,7 @@ impl Renderer {
             sample_count: 1,
             mip_levels: 1,
         });
+        let shadows = shadow::Shadows::new(gpu);
         let draw_group = scene_group(
             gpu,
             draw_layout,
@@ -429,6 +454,7 @@ impl Renderer {
             b.frame,
             &images,
             (glyphs.texture(), nearest, no_dem, no_occlusion),
+            shadows.bindings(),
         );
         let modern = gpu.caps().tier == Tier::Modern;
         let cull_group = modern.then(|| cull_group(gpu, cull_layout, &b));
@@ -514,6 +540,7 @@ impl Renderer {
             made_seen: 0,
             waiting: 0,
             drape_waiting: 0,
+            ground_waiting: false,
             node_uniforms,
             node_stride,
             nodes: Vec::new(),
@@ -526,6 +553,9 @@ impl Renderer {
             composites,
             extrusions,
             occlusion,
+            shadow_bound: shadows.bindings().1,
+            caster_group: None,
+            shadows,
             terrain: None,
             drape_zooms: BTreeMap::new(),
             drape_pipelines: None,
@@ -568,6 +598,11 @@ impl Renderer {
     /// The scene's GPU memory.
     pub fn memory(&self) -> orb_scene::SceneMemory {
         self.scene.memory()
+    }
+
+    /// GPU bytes of the shadow map, while shadows are cast.
+    pub fn shadow_bytes(&self) -> u64 {
+        self.shadows.bytes()
     }
 
     /// Changes when a pool moves into a larger buffer: room may have
@@ -953,6 +988,7 @@ impl Renderer {
 
     fn invalidate_bundle(&mut self, gpu: &mut dyn Gpu) {
         self.drop_bundles(gpu);
+        self.shadows.forget_bundles(gpu);
         for zoom in self.drape_zooms.values_mut() {
             zoom.forget_bundle(gpu);
         }
@@ -1219,7 +1255,10 @@ impl Renderer {
         }
         match node.family {
             Family::Heatmap => out.extend(self.heatmaps.pipelines()),
-            Family::FillExtrusion => out.extend(self.extrusions.pipelines()),
+            Family::FillExtrusion => {
+                out.extend(self.extrusions.pipelines());
+                out.extend(self.shadows.pipelines());
+            }
             Family::SymbolIcon | Family::SymbolText => {
                 out.extend(self.symbol_pipeline.map(PipelineId::from));
             }
@@ -1269,8 +1308,15 @@ impl Renderer {
         clear: [f64; 4],
     ) -> FrameStats {
         self.destroy_retired_pages(gpu);
+        let cast = self.casting(gpu, frame);
+        self.shadows.set_casting(
+            gpu,
+            cast.is_some(),
+            self.target,
+            [self.draw_layout, self.node_layout],
+        );
         self.bind_scene(gpu);
-        let mut stats = self.render_modern(gpu, frame, target, clear);
+        let mut stats = self.render_modern(gpu, frame, target, clear, cast);
         stats.draws += u32::from(self.atmosphere.enabled);
         stats.draws -= stats.nodes_waiting;
         self.end_surface_warps();
@@ -1320,9 +1366,11 @@ impl Renderer {
             })
             .unwrap_or(self.no_occlusion);
         let buffers = self.scene.buffers_revision();
+        let shadow_map = self.shadows.bindings().1;
         if self.glyphs.revision() != self.glyphs_bound
             || dem != self.dem_bound
             || occlusion != self.occlusion_bound
+            || shadow_map != self.shadow_bound
             || buffers != self.buffers_bound
             || self.image_bindings.texture != self.images_bound
         {
@@ -1335,6 +1383,9 @@ impl Renderer {
                 }
             }
             gpu.destroy_bind_group(self.draw_group);
+            if let Some(group) = self.caster_group.take() {
+                gpu.destroy_bind_group(group);
+            }
             let b = *self.scene.buffers();
             self.draw_group = scene_group(
                 gpu,
@@ -1343,7 +1394,9 @@ impl Renderer {
                 b.frame,
                 &self.image_bindings,
                 (self.glyphs.texture(), self.nearest, dem, occlusion),
+                self.shadows.bindings(),
             );
+            self.shadow_bound = shadow_map;
             self.glyphs_bound = self.glyphs.revision();
             self.dem_bound = dem;
             self.occlusion_bound = occlusion;
@@ -1365,12 +1418,21 @@ impl Renderer {
         }
     }
 
+    /// The shadows this frame casts: from the frame's light, onto a
+    /// plane, on Modern, with extrusions to cast them.
+    fn casting(&self, gpu: &dyn Gpu, frame: &FrameBlock) -> Option<(FrameShadow, [f32; 3])> {
+        frame.shadow().filter(|_| {
+            gpu.caps().tier == Tier::Modern && self.nodes.iter().any(|n| n.extrusion.is_some())
+        })
+    }
+
     fn render_modern(
         &mut self,
         gpu: &mut dyn Gpu,
         frame: &FrameBlock,
         target: TextureId,
         clear: [f64; 4],
+        cast: Option<(FrameShadow, [f32; 3])>,
     ) -> FrameStats {
         let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame);
         // Preparing may have grown the compacted index buffer.
@@ -1381,7 +1443,7 @@ impl Renderer {
         if compiling.made != self.made_seen {
             // Pipelines arrived: record again what waited for them.
             self.made_seen = compiling.made;
-            if self.waiting > 0 || self.drape_waiting > 0 {
+            if self.waiting > 0 || self.drape_waiting > 0 || self.ground_waiting {
                 self.invalidate_bundle(gpu);
             }
             if self.drape_waiting > 0
@@ -1508,6 +1570,10 @@ impl Renderer {
                 depth_format: None,
                 sample_count: self.target.sample_count,
             };
+            // The ground's shadows go under the first 3D layer.
+            let first_extrusion =
+                cast.and_then(|_| self.nodes.iter().position(|n| n.extrusion.is_some()));
+            self.ground_waiting = false;
             for i in 0..self.nodes.len() {
                 let (start, member) = self.composites.at(i);
                 match start {
@@ -1529,6 +1595,12 @@ impl Renderer {
                         }
                     }
                     None => {}
+                }
+                if !member && first_extrusion == Some(i) {
+                    match self.shadows.ground_commands(gpu, self.draw_group) {
+                        Some(ground) => commands.extend(ground),
+                        None => self.ground_waiting = true,
+                    }
                 }
                 let groups = (self.draw_group, self.nodes[i].group);
                 if !member && !self.node_commands(gpu, &ready, i, groups, &mut commands) {
@@ -1625,6 +1697,34 @@ impl Renderer {
         }
         let mut first = !terrain_on;
         let extrusions_ready = cull_ready && self.extrusions.composite(gpu).is_some();
+        let shadowed = cast.filter(|_| extrusions_ready && self.shadows.ready(gpu));
+        self.shadows.write(gpu, frame, shadowed);
+        if shadowed.is_some() {
+            let casters: Vec<(u32, BindGroupId)> = (self.nodes.iter().enumerate())
+                .filter(|(_, n)| n.extrusion.is_some())
+                .map(|(i, n)| (i as u32, n.group))
+                .collect();
+            let b = *self.scene.buffers();
+            let scene = *self.caster_group.get_or_insert_with(|| {
+                scene_group(
+                    gpu,
+                    self.draw_layout,
+                    &b,
+                    b.frame,
+                    &self.image_bindings,
+                    (
+                        self.glyphs.texture(),
+                        self.nearest,
+                        self.dem_bound,
+                        self.occlusion_bound,
+                    ),
+                    self.shadows.caster_bindings(),
+                )
+            });
+            let shadow_passes = self.shadows.passes(gpu, scene, &casters, &b);
+            stats.draws += shadow_passes.len() as u32;
+            passes.extend(shadow_passes);
+        }
         for (index, node) in self.nodes.iter_mut().enumerate() {
             if let Some(extrusion) = node.extrusion.as_mut().filter(|_| extrusions_ready) {
                 passes.push(Pass::Render(self.extrusions.prepare(
@@ -1661,8 +1761,12 @@ impl Renderer {
         // during the frame.
         let end = gpu.poll_pipelines();
         stats.pipelines_pending = end.pending;
-        stats.waited =
-            compiling.pending > 0 || end.pending > 0 || end.made != made || self.waiting > 0;
+        stats.waited = compiling.pending > 0
+            || end.pending > 0
+            || end.made != made
+            || self.waiting > 0
+            || self.ground_waiting
+            || cast.is_some() != shadowed.is_some();
         stats
     }
 
@@ -1711,6 +1815,7 @@ impl Renderer {
                     self.dem_bound,
                     self.no_occlusion,
                 ),
+                self.shadows.bindings(),
             ));
             level.forget_bundle(gpu);
         }
@@ -2127,6 +2232,7 @@ fn scene_group(
     frame: BufferId,
     images: &ImageBindings,
     (glyphs, nearest, dem, occlusion): (TextureId, SamplerId, TextureId, TextureId),
+    (shadow, shadow_map, shadow_compare): (BufferId, TextureId, SamplerId),
 ) -> BindGroupId {
     let whole = BindingResource::buffer;
     let mut entries: Vec<BindGroupEntry> = [
@@ -2165,6 +2271,15 @@ fn scene_group(
         },
         texture(14, dem, TextureViewDimension::D2Array),
         texture(15, occlusion, TextureViewDimension::D2),
+        BindGroupEntry {
+            binding: 16,
+            resource: whole(shadow),
+        },
+        texture(17, shadow_map, TextureViewDimension::D2Array),
+        BindGroupEntry {
+            binding: 18,
+            resource: BindingResource::Sampler(shadow_compare),
+        },
     ]);
     gpu.create_bind_group(&BindGroupDesc {
         label: "scene",

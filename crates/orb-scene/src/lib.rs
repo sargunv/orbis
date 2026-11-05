@@ -162,6 +162,37 @@ pub struct FrameLights {
     pub position: [f32; 3],
     /// Whether the terrain surface is lit too.
     pub terrain: bool,
+    /// The directional light's shadows, when it casts them.
+    pub shadow: Option<FrameShadow>,
+}
+
+/// How the directional light casts shadows (decision 0046).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameShadow {
+    /// How much of the directional light a shadow takes away, 0 to 1.
+    pub intensity: f32,
+    /// The heights shadows fall between, world units: the ground under
+    /// the view up to the tallest content on it.
+    pub heights: [f32; 2],
+}
+
+/// Below this sine of its elevation the light casts no shadows: they
+/// would run past the view.
+const SHADOW_MIN_ELEVATION_SIN: f32 = 0.035;
+
+impl FrameBlock {
+    /// The shadows cast this frame and the unit vector toward their light
+    /// in camera-relative world axes (x east, y north, z up): on a plane,
+    /// from a light above the horizon.
+    pub fn shadow(&self) -> Option<(FrameShadow, [f32; 3])> {
+        let lights = self.lights?;
+        let shadow = lights
+            .shadow
+            .filter(|s| s.intensity > 0.0 && self.globe.is_none())?;
+        let [x, y, z] = lights.position;
+        let length = (x * x + y * y + z * z).sqrt();
+        (z > SHADOW_MIN_ELEVATION_SIN * length).then(|| (shadow, [-x, y, z].map(|v| v / length)))
+    }
 }
 
 /// A low-zoom surface's terms (`project.wgsl`), as a globe's; positions on the sphere are
@@ -266,6 +297,11 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
             f::LIGHT_POSITION,
             &[p[0], p[1], p[2], f32::from(u8::from(l.terrain))],
         );
+    }
+    // Where a casting chunk's shadow reaches, per world unit of height,
+    // for the cull.
+    if let Some((_, [x, y, z])) = frame.shadow() {
+        put(f::SHADOW_REACH, &[-x / z, -y / z]);
     }
     let globe = frame.globe.map(|g| {
         put(f::GLOBE_VIEW_PROJ, g.view_proj.as_flattened());

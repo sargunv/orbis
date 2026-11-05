@@ -26,7 +26,9 @@ struct Frame {
     // Camera pitch and roll, radians.
     pitch: f32,
     roll: f32,
-    _pad: vec2<u32>,
+    // Where a caster's shadow falls on the ground per world unit of its
+    // height, when the directional light casts shadows (decision 0046).
+    shadow_reach: vec2<f32>,
     // The terrain's DEM unpack vector (metres = r·x + g·y + b·z − w),
     // its exaggeration (0 without terrain) and DEM pixels per side.
     dem_unpack: vec4<f32>,
