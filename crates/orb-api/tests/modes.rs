@@ -21,10 +21,10 @@ fn tokyo() -> String {
     std::fs::read_to_string(data.join("tokyo-mvt.json"))
         .unwrap()
         .replace(
-            "pmtiles://./data/",
+            "pmtiles://./",
             &format!("pmtiles://file://{}/", data.display()),
         )
-        .replace("\"./data/", &format!("\"file://{}/", data.display()))
+        .replace("\"./", &format!("\"file://{}/", data.display()))
 }
 
 /// Labels a few pixels apart over a few tiles at zoom 10, each longer than

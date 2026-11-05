@@ -22,7 +22,7 @@ sprites once served.
 - Style: OpenFreeMap Liberty, fetched from
   <https://tiles.openfreemap.org/styles/liberty>, reduced to
   background/fill/line layers without patterns, dashes or gradients, with
-  source/camera replaced; `cargo xtask demo-labels` then adds Liberty's
+  source/camera replaced; `cargo xtask demo-data` then adds Liberty's
   symbol layers, in Liberty's order. It inherits OSM Liberty's BSD code and
   CC BY design licences; see [STYLE-LICENSE.md](STYLE-LICENSE.md).
   Upstream style SHA-256: `408245464e76791801a64393c403433d09e8110eb9516040f8dc2b62584eee2a`.
@@ -64,10 +64,8 @@ sprites once served.
 Reproduce from the repository root:
 
 ```sh
-cargo xtask extract             # HTTP ranges → both archives and manifest
-cargo xtask transcode           # regenerate MLT from the committed MVT archive
-cargo xtask demo-labels         # Liberty's symbol layers, its sprite and glyph subsets
-cargo run --release -p xtask -- tile-parity
+cargo xtask demo-data   # HTTP ranges → both archives and manifest; Liberty's labels, sprite and glyph subsets
+cargo test -p xtask     # the MLT archive decodes to the same columns as the MVT one
 cargo run --release -p orb-demo -- --format mvt --snapshot /tmp/tokyo-mvt.png
 cargo run --release -p orb-demo -- --format mlt --snapshot /tmp/tokyo-mlt.png
 cargo xtask web
@@ -77,7 +75,8 @@ pnpm -C web snapshot /tmp/tokyo-web-mlt.png --format=mlt \
 ```
 
 The native demo defaults to this MVT extract; `--format mlt` selects MLT.
-An explicit style URL still loads that style. The web demo accepts
+An explicit style URL still loads that style. The styles' tile, glyph and
+sprite URLs are relative to the style file. The web demo accepts
 `?format=mvt|mlt` alongside an optional `style` URL.
 Run `pnpm -C web dev` after `cargo xtask web` for local work at `/orbis/`.
 `pnpm -C web build` writes the production site to `web/dist/`; its styles

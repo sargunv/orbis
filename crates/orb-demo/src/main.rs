@@ -44,7 +44,6 @@ const DEMO_DATA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/demo/dat
 #[derive(Debug)]
 enum Wake {
     Data,
-    Edit(String),
 }
 
 struct Options {
@@ -55,7 +54,6 @@ struct Options {
     snapshot: Option<String>,
     /// With `snapshot`: where to write the semantic snapshot's JSON.
     a11y: Option<String>,
-    watch_style: Option<String>,
     /// Count the frames drawn this many seconds after the map first goes
     /// idle, print them and exit: idle means zero frames (plan §7.5).
     count_frames: Option<f64>,
@@ -72,7 +70,6 @@ fn options() -> Result<Options, String> {
         at: None,
         snapshot: None,
         a11y: None,
-        watch_style: None,
         count_frames: None,
         flight: None,
         cache: None,
@@ -102,8 +99,6 @@ fn options() -> Result<Options, String> {
             );
         } else if arg == "--flight" {
             options.flight = Some(args.next().ok_or("--flight needs a flight file")?);
-        } else if arg == "--watch-style" {
-            options.watch_style = Some(args.next().ok_or("--watch-style needs a path")?);
         } else if arg == "--snapshot" {
             options.snapshot = Some(args.next().ok_or("--snapshot needs a path")?);
         } else if arg == "--cache" {
@@ -142,33 +137,6 @@ fn main() {
     let event_loop = EventLoop::<Wake>::with_user_event()
         .build()
         .expect("event loop");
-    if let Some(path) = options.watch_style.clone() {
-        let proxy = event_loop.create_proxy();
-        std::thread::Builder::new()
-            .name("playground-style".into())
-            .spawn(move || {
-                let mut previous = String::new();
-                loop {
-                    if let Ok(json) = std::fs::read_to_string(&path)
-                        && json != previous
-                    {
-                        previous.clone_from(&json);
-                        if proxy
-                            .send_event(Wake::Edit(if json.trim_start().starts_with('[') {
-                                json
-                            } else {
-                                format!("[[\"setStyle\",{json}]]")
-                            }))
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(16));
-                }
-            })
-            .expect("style watcher");
-    }
     let mut app = App {
         options,
         proxy: event_loop.create_proxy(),
@@ -207,18 +175,11 @@ fn load_style(map: &mut Map, options: &Options) -> Result<(), String> {
         return Ok(());
     }
     let path = std::path::Path::new(DEMO_DATA)
+        .join(format!("tokyo-{}.json", options.encoding))
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let json = std::fs::read_to_string(path.join(format!("tokyo-{}.json", options.encoding)))
-        .map_err(|e| e.to_string())?;
-    // Tiles, glyphs and sprites beside the style.
-    let json = json
-        .replace(
-            "pmtiles://./data/",
-            &format!("pmtiles://file://{}/", path.display()),
-        )
-        .replace("\"./data/", &format!("\"file://{}/", path.display()));
-    map.set_style_json(&json)
+    map.load_style_url(&format!("file://{}", path.display()));
+    Ok(())
 }
 
 /// The default surface's projection.
@@ -386,36 +347,7 @@ impl Offscreen {
 /// Renders offscreen until idle and writes the frame as a PNG.
 fn snapshot(options: &Options, path: &str) -> Result<Vec<u8>, String> {
     let started = Instant::now();
-    let (mut offscreen, mut report, mut frames) = Offscreen::load(options)?;
-    if let Some(path) = &options.watch_style {
-        let json = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-        let commands = if json.trim_start().starts_with('[') {
-            json
-        } else {
-            format!("[[\"setStyle\",{json}]]")
-        };
-        let started = Instant::now();
-        let generation = offscreen
-            .map
-            .edit(&orb_runtime::Transaction::from_commands(&commands)?)?;
-        let ms = started.elapsed().as_secs_f64() * 1000.0;
-        let mut edit_frames = 0;
-        loop {
-            report = offscreen.frame();
-            frames += 1;
-            edit_frames += 1;
-            if report.generation >= generation {
-                break;
-            }
-            if started.elapsed().as_secs() > 60 {
-                return Err("snapshot edit did not settle".into());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        eprintln!(
-            "playground: generation {generation} visible in {edit_frames} frames; edit {ms:.4} ms"
-        );
-    }
+    let (offscreen, report, frames) = Offscreen::load(options)?;
     let pixels = offscreen.pixels();
     write_png(path, &pixels)?;
     eprintln!(
@@ -469,8 +401,6 @@ struct State {
     cursor: DVec2,
     modifiers: Modifiers,
     last_title: Instant,
-    edit_pending: Vec<(u64, u32, f64)>,
-    queued_edit: Option<String>,
     /// Flying until the user takes the camera.
     flight: Option<Flight>,
 }
@@ -601,8 +531,6 @@ impl State {
             cursor: DVec2::ZERO,
             modifiers: Modifiers::default(),
             last_title: Instant::now(),
-            edit_pending: Vec::new(),
-            queued_edit: None,
             flight: options
                 .flight
                 .as_deref()
@@ -707,22 +635,6 @@ impl State {
         }
     }
 
-    fn edit(&mut self, commands: String) {
-        if self.map.style_doc().is_none() {
-            self.queued_edit = Some(commands);
-            return;
-        }
-        let started = Instant::now();
-        match orb_runtime::Transaction::from_commands(&commands).and_then(|tx| self.map.edit(&tx)) {
-            Ok(generation) => {
-                self.edit_pending
-                    .push((generation, 0, started.elapsed().as_secs_f64() * 1000.0))
-            }
-            Err(e) => eprintln!("playground: {e}"),
-        }
-        self.window.request_redraw();
-    }
-
     fn redraw(&mut self) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -755,19 +667,6 @@ impl State {
         if self.map.elevation_revision() != self.terrain {
             self.terrain = self.map.elevation_revision();
             self.camera.set_terrain(self.map.elevation());
-        }
-        self.edit_pending.retain_mut(|(generation, frames, ms)| {
-            *frames += 1;
-            if report.generation >= *generation {
-                eprintln!("playground: generation {generation} visible in {frames} frames; edit {ms:.4} ms; meshes {} rows {}",
-                    self.map.job_counts().meshes_uploaded, self.map.job_counts().rows_uploaded);
-                false
-            } else { true }
-        });
-        if self.map.style_doc().is_some()
-            && let Some(commands) = self.queued_edit.take()
-        {
-            self.edit(commands);
         }
         self.gpu.destroy_texture(target);
         self.window.pre_present_notify();
@@ -830,10 +729,8 @@ impl ApplicationHandler<Wake> for App {
     }
 
     fn user_event(&mut self, _: &ActiveEventLoop, event: Wake) {
+        let Wake::Data = event;
         if let Some(state) = &mut self.state {
-            if let Wake::Edit(commands) = event {
-                state.edit(commands);
-            }
             state.window.request_redraw();
         }
     }
@@ -983,7 +880,6 @@ mod tests {
             at: Some((orb_crs::Geodetic::new(139.74, 35.685), zoom, 0.0, 0.0)),
             snapshot: None,
             a11y: None,
-            watch_style: None,
             count_frames: None,
             flight: None,
             cache: None,
@@ -1210,7 +1106,6 @@ mod tests {
             at: Some((orb_crs::Geodetic::new(139.74, 35.685), 3.0, 0.0, 0.0)),
             snapshot: None,
             a11y: None,
-            watch_style: None,
             count_frames: None,
             flight: None,
             cache: None,
@@ -1243,7 +1138,6 @@ mod tests {
             at: Some((orb_crs::Geodetic::new(139.74, 35.685), zoom, 0.0, 0.0)),
             snapshot: None,
             a11y: None,
-            watch_style: None,
             count_frames: None,
             flight: None,
             cache: None,
@@ -1502,7 +1396,6 @@ mod tests {
             at: None,
             snapshot: None,
             a11y: None,
-            watch_style: None,
             count_frames: None,
             flight: None,
             cache: None,
@@ -1605,7 +1498,6 @@ mod tests {
                 at: None,
                 snapshot: None,
                 a11y: None,
-                watch_style: None,
                 count_frames: None,
                 flight: None,
                 cache: None,
@@ -1667,7 +1559,6 @@ mod tests {
             at: Some((orb_crs::Geodetic::new(0.0, 0.0), 19.0, -20.0, 60.0)),
             snapshot: None,
             a11y: None,
-            watch_style: None,
             count_frames: None,
             flight: None,
             cache: None,
@@ -1717,7 +1608,6 @@ mod tests {
             at: Some((orb_crs::Geodetic::new(-0.00015, -0.00025), 19.0, 0.0, 0.0)),
             snapshot: None,
             a11y: None,
-            watch_style: None,
             count_frames: None,
             flight: None,
             cache: None,
@@ -1783,7 +1673,6 @@ mod tests {
                 at: None,
                 snapshot: None,
                 a11y: None,
-                watch_style: None,
                 count_frames: None,
                 flight: None,
                 cache: None,
@@ -1847,7 +1736,6 @@ mod tests {
             at: None,
             snapshot: None,
             a11y: None,
-            watch_style: None,
             count_frames: None,
             flight: None,
             cache: None,
@@ -1923,7 +1811,6 @@ mod tests {
             at: None,
             snapshot: None,
             a11y: None,
-            watch_style: None,
             count_frames: None,
             flight: None,
             cache: None,
@@ -1987,7 +1874,6 @@ mod tests {
                 at: None,
                 snapshot: None,
                 a11y: None,
-                watch_style: None,
                 count_frames: None,
                 flight: None,
                 cache: None,

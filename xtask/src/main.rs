@@ -20,53 +20,46 @@ use std::process::{Command, ExitCode};
 const HELP: &str = "\
 cargo xtask <task>
 
-  check [--affected] [--base <rev>]  fmt, clippy (native and wasm32), tests and
-               boundary rules; --affected scopes them to the packages changed
-               since <rev>'s merge base with HEAD, the working tree and
-               untracked files, and every package depending on those
-  boundaries   plan §5.3 boundary rules only
-  bindings [--check | test]  the C header, Kotlin and Swift bindings from orb-capi
-               (decision 0018); --check fails when they're stale; test runs the
-               emitters' Swift and Kotlin compile-and-run tests
+  check [--affected [--base <rev>]]  fmt, clippy (native and wasm32), tests,
+               generated bindings and boundary rules; --affected scopes them
+               to the packages changed since <rev>'s merge base with HEAD
+               (default origin/main), the working tree and untracked files,
+               and every package depending on those
+  bindings [--check | --test]  the C header, Kotlin and Swift bindings from
+               orb-capi (decision 0018); --check fails when they're stale;
+               --test runs the emitters' tests and the C, Kotlin and Swift
+               smoke tests
+  capi         the C library for this host: static library, headers,
+               pkg-config and CMake files in target/capi
   android [--run]  liborbis.so for arm64-v8a (NDK, API 24), the AAR and
                the reference app with Gradle; --run installs it on this
                worktree's Android emulator and starts it
-  apple [--test]  liborbis.a for macOS, iOS and the iOS simulator as
-               hosts/apple/OrbisC.xcframework, then the Swift package and the
-               macOS reference app; --test runs the Swift binding scenario
-  capi [--test]  the C library for this host: static library, headers,
-               pkg-config and CMake files in target/capi; --test builds and runs
-               the C smoke test against it, through pkg-config and CMake
-  fixtures     fetch and verify the pinned MapLibre GL JS fixture mirror
-               (fixtures/gl-js, not committed); no work when it matches
-  fixtures expressions  bundle the pinned style-spec expression fixtures
-  unicode      regenerate orb-text's character tables from the UCD
+  apple [--test] [--ios-sim[=name]]  hosts/apple/OrbisC.xcframework (macOS,
+               iOS, iOS simulator) and the Swift package; --test runs the
+               Swift smoke test; --ios-sim runs the iOS app on a simulator
   web          build core.wasm and harness.wasm into web/pkg, report sizes
-  extract      reproduce the committed Tokyo MVT/MLT PMTiles archives
-  demo-labels  add Liberty's labels, its sprite and glyph subsets to the Tokyo demo
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
-  rt [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]  GL JS fixtures
-  bench [args]  time frames, still and moving, on the default GPU (release);
+  rt [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]
+               the GL JS fixtures
+  bench [args]  GPU/CPU frame timings, still or along gesture paths (release);
                web/demo/bench.html runs the same bench in a browser
+  fixtures [expressions]  fetch and verify the pinned GL JS fixture mirror
+               (fixtures/gl-js, not committed); with `expressions`, bundle the
+               pinned style-spec expression fixtures into orb-expr
+  demo-data    reproduce the committed Tokyo MVT/MLT PMTiles extracts, then
+               add Liberty's labels, sprite and glyph subsets to their styles
+  unicode      regenerate orb-text's character tables from the UCD
 ";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("check") => check(&args[1..]),
-        Some("boundaries") => boundaries::check(),
         Some("bindings") => bindings::run(&args[1..]),
-        Some("capi") => capi::run(&args[1..]),
-        Some("apple") => apple::run(&args[1..]),
+        Some("capi") => capi::build().map(|_| ()),
         Some("android") => android::run(&args[1..]),
-        Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
-            expression_fixtures::bundle()
-        }
-        Some("fixtures") => fixtures::ensure(),
-        Some("extract") => pmtiles::extract(),
-        Some("unicode") => unicode::generate(),
-        Some("demo-labels") => labels::generate(),
+        Some("apple") => apple::run(&args[1..]),
         Some("web") => web::build(),
         Some("pages") => web::pages(),
         Some("rt") => rt(&args[1..]),
@@ -75,6 +68,12 @@ fn main() -> ExitCode {
             command.extend(args.iter().skip(1).map(String::as_str));
             cargo(&command)
         }
+        Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
+            expression_fixtures::bundle()
+        }
+        Some("fixtures") => fixtures::ensure(),
+        Some("demo-data") => pmtiles::extract().and_then(|()| labels::generate()),
+        Some("unicode") => unicode::generate(),
         Some("help") | None => {
             print!("{HELP}");
             Ok(())

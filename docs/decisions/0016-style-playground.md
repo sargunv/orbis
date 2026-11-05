@@ -1,5 +1,9 @@
 # 0016: Style playground and published picking
 
+> **Superseded in part:** the native viewer bridge (`orb-demo --watch-style`,
+> the Vite endpoint and `pnpm -C web playground:native`) was removed for the
+> first release. The style editor and published picking stand.
+
 The M1 demo needs live JSON edits and hover feedback, with the same edits
 visible in a native viewer. It uses the existing `Map::edit`, GL JS command
 transactions and `edit.js`, including `setStyle`'s diff. It adds no second

@@ -1,8 +1,8 @@
 //! `cargo xtask apple [--test]`: `liborbis.a` for macOS, iOS and the iOS
 //! simulator (arm64, `dist` profile) as `hosts/apple/OrbisC.xcframework`
-//! with the C headers and a Clang module map, then the Swift package and
-//! its macOS reference app with SwiftPM (plan §17: SwiftPM only packages).
-//! `--test` also runs the package's Swift binding scenario.
+//! with the C headers and a Clang module map, then the Swift package with
+//! SwiftPM (plan §17: SwiftPM only packages). `--test` also runs the
+//! package's Swift smoke test.
 //! `--ios-sim[=name]` builds the iOS reference app for the simulator,
 //! wraps it in an app bundle, and installs and launches it on a booted
 //! simulator of that name (default "iPhone 17"), booting it if needed.
@@ -83,19 +83,12 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
                 "build",
                 "-c",
                 "release",
-                "--product",
-                "OrbisDemo",
+                "--target",
+                "Orbis",
                 "--package-path",
             ])
             .arg(&package),
     )?;
-    let demo = package.join(".build/release/OrbisDemo");
-    let size = std::fs::metadata(&demo).map_err(|e| e.to_string())?.len();
-    eprintln!(
-        "apple: {} ({:.1} MB, macOS arm64)",
-        demo.display(),
-        size as f64 / 1e6
-    );
     if test {
         check(
             Command::new("swift")

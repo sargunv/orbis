@@ -438,5 +438,4 @@ h2, h3 { margin: 0; }
 .editor-foot .applied.fresh { color: var(--accent); font-weight: 700; }
 @media (prefers-reduced-motion: no-preference) { .editor-foot .applied { transition: color 600ms ease-out; } }
 .editor-foot .inspect { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.editor-foot .native { flex-basis: 100%; }
 .attribution-text > span:not(:last-child) { margin-right: 6px; }

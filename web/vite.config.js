@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -70,8 +70,8 @@ function extractStyles() {
       this.addWatchFile(path);
       const style = JSON.parse(await readFile(path, "utf8"));
       for (const source of Object.values(style.sources)) {
-        if (!source.url?.startsWith("pmtiles://./data/")) continue;
-        const archive = resolve(dirname(path), "..", source.url.slice("pmtiles://".length));
+        if (!source.url?.startsWith("pmtiles://./")) continue;
+        const archive = resolve(dirname(path), source.url.slice("pmtiles://".length));
         this.addWatchFile(archive);
         const ref = this.emitFile({ type: "asset", name: basename(archive), source: await readFile(archive) });
         // Fetch runs in both the page and workers under assets/, so use a
@@ -79,8 +79,8 @@ function extractStyles() {
         source.url = `pmtiles://${base}${this.getFileName(ref)}`;
       }
       for (const key of ["glyphs", "sprite"]) {
-        if (!style[key]?.startsWith("./data/")) continue;
-        style[key] = `${base}${style[key].slice("./".length)}`;
+        if (!style[key]?.startsWith("./")) continue;
+        style[key] = `${base}data/${style[key].slice("./".length)}`;
         data ??= emitData(this);
       }
       await data;
@@ -98,37 +98,13 @@ export default defineConfig({
   resolve: { alias: { orbis: fileURLToPath(new URL("./src/index.ts", import.meta.url)) } },
   server: { fs: { allow: [web] } },
   define: { __ORBIS_COMMIT__: JSON.stringify(commit()) },
-  plugins: [extractStyles(), paintSpec(), {
-    name: "playground-native",
-    configureServer(server) {
-      const path = process.env.ORB_PLAYGROUND_STYLE;
-      let writes = Promise.resolve();
-      server.middlewares.use("/orbis/__playground/style", async (req, res) => {
-        if (req.method !== "PUT") { res.statusCode = 405; res.end(); return; }
-        if (req.headers.origin !== `http://${req.headers.host}`) { res.statusCode = 403; res.end(); return; }
-        try {
-          let body = "";
-          for await (const chunk of req) {
-            body += chunk;
-            if (body.length > 4 * 1024 * 1024) throw new Error("style exceeds 4 MiB");
-          }
-          JSON.parse(body);
-          if (path) {
-            writes = writes.catch(() => {}).then(() => writeFile(path,body));
-            await writes;
-          }
-          res.setHeader("Content-Type","application/json");
-          res.end(JSON.stringify({linked:!!path}));
-        } catch (e) { res.statusCode = 400; res.end(String(e)); }
-      });
-    },
-  }],
+  plugins: [extractStyles(), paintSpec()],
   build: {
     outDir: "../dist",
     emptyOutDir: true,
     assetsInlineLimit: 0,
     rolldownOptions: {
-      input: Object.fromEntries(["index", "probe", "bench", "measure", "scenario", "pipelines"].map((name) => [name, `${demo}${name}.html`])),
+      input: Object.fromEntries(["index", "bench", "measure", "scenario"].map((name) => [name, `${demo}${name}.html`])),
     },
   },
   worker: { format: "es" },

@@ -1,5 +1,5 @@
 // The binding scenario (plan §14.1, decision 0018) through the orbis
-// package; `web/scripts/scenario.mjs` drives it on each renderer. The
+// package; `pnpm -C web e2e` drives it on each renderer. The
 // page makes the map and records its events and frames; the driver reads
 // pixels off screenshots and moves the pointer.
 import { createMap } from "orbis";

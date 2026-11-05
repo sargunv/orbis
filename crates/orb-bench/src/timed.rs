@@ -75,18 +75,6 @@ pub(crate) struct TimedGpu {
     queries: Option<Queries>,
     submissions: Vec<Submission>,
     in_flight: VecDeque<Pin<Box<dyn Future<Output = ()>>>>,
-    capture: Option<Capture>,
-}
-
-/// Copies of a buffer's first `size` bytes, one per submission, into a
-/// ring read back by [`TimedGpu::take_captures`].
-#[derive(Debug)]
-struct Capture {
-    source: BufferId,
-    size: u64,
-    ring: BufferId,
-    slots: u64,
-    next: u64,
 }
 
 impl std::fmt::Debug for TimedGpu {
@@ -123,43 +111,7 @@ impl TimedGpu {
             queries,
             submissions: Vec::new(),
             in_flight: VecDeque::new(),
-            capture: None,
         }
-    }
-
-    /// Copies `source`'s first `size` bytes after each of the next
-    /// `submissions` submissions.
-    pub(crate) fn capture(&mut self, source: BufferId, size: u64, submissions: u64) {
-        assert!(self.capture.is_none(), "one capture at a time");
-        let ring = self.inner.create_buffer(&BufferDesc {
-            label: "captures",
-            size: size * submissions,
-            usage: BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-        });
-        self.capture = Some(Capture {
-            source,
-            size,
-            ring,
-            slots: submissions,
-            next: 0,
-        });
-    }
-
-    /// The captured copies, in submission order, ending the capture.
-    pub(crate) async fn take_captures(&mut self) -> Vec<Vec<u32>> {
-        let capture = self.capture.take().expect("capturing");
-        let bytes = self.inner.read_buffer(capture.ring).await;
-        self.inner.destroy_buffer(capture.ring);
-        bytes[..(capture.next * capture.size) as usize]
-            .chunks(capture.size as usize)
-            .map(|copy| {
-                copy.as_chunks::<4>()
-                    .0
-                    .iter()
-                    .map(|w| u32::from_le_bytes(*w))
-                    .collect()
-            })
-            .collect()
     }
 
     pub(crate) fn inner(&self) -> &WgpuGpu {
@@ -418,20 +370,6 @@ impl Gpu for TimedGpu {
         self.inner.submit(&timed);
         let cpu = clock::now() - started;
         drop(timed);
-        if let Some(c) = self.capture.as_mut().filter(|c| c.next < c.slots) {
-            let device = self.inner.device();
-            let mut encoder =
-                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            encoder.copy_buffer_to_buffer(
-                self.inner.buffer(c.source),
-                0,
-                self.inner.buffer(c.ring),
-                c.next * c.size,
-                c.size,
-            );
-            self.inner.queue().submit([encoder.finish()]);
-            c.next += 1;
-        }
         self.submissions.push(Submission {
             passes: queries,
             cpu,

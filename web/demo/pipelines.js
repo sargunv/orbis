@@ -1,8 +1,9 @@
-// Pipeline creation in the browser (#26): the Tokyo extract from `createMap` to `idle`, counting
+// Pipeline creation in the browser (#26, measure.html `?pipelines`): the
+// Tokyo extract from `createMap` to `idle`, counting
 // the shader modules and pipelines made and timing each queue submission
 // to its `onSubmittedWorkDone`. Browsers compile pipelines in the GPU
 // process when they are made or first used, so the queue's wait during
-// load holds the compilation; `web/scripts/pipelines.mjs` compares a
+// load holds the compilation; `pnpm measure --pipelines` compares a
 // fresh profile (cold) with the same profile reopened (the browser's
 // shader cache warm).
 import { createMap } from "orbis";

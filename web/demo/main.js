@@ -307,7 +307,6 @@ function wireFeatures(target) {
     popup = target.annotations.add({ element, lngLat, anchor: "bottom", offset: [0, -14] });
     const selected = feature.id !== undefined && targetOf({ ...feature, sourceLayer: feature.sourceLayer ?? null }, editor.style);
     await highlighter?.set("selected", selected || null);
-    editor.states(highlighter?.targets ?? {});
   });
   let pointer;
   let busy = false;
@@ -324,7 +323,6 @@ function wireFeatures(target) {
         if (!editor.open) continue;
         editor.inspect(hit);
         await highlighter.set("hover", targetOf(hit, editor.style));
-        editor.states(highlighter.targets);
       }
     } finally { busy = false; }
   };

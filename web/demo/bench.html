@@ -16,10 +16,9 @@
   button { font: inherit; padding: 6px 14px; margin: 4px 4px 4px 0; }
 </style>
 <h1>Frame bench</h1>
-<p>Decision 0002's bench: five views of the committed Tokyo extract, still
-and with the camera panning, timed on the GPU and CPU; the same loop as
-<code>cargo xtask bench</code>. <code>?experiment=labels</code> runs the labels bench instead,
-<code>?experiment=gestures</code> rotate, tilt and zoom paths through the
+<p>Still frames of five views of the committed Tokyo extract, timed on the
+GPU and CPU; the same loop as <code>cargo xtask bench</code>.
+<code>?experiment=gestures</code> runs rotate, tilt and zoom paths through the
 <code>orbis</code> package. It takes several minutes on a phone. Keep the phone
 plugged in, the screen on and this tab in front, then copy the result into the
 issue.</p>
@@ -33,14 +32,14 @@ issue.</p>
 <script type="module">
 // Query: format=mvt|mlt or style=<url> (the Tokyo extract by default); orb-bench settings frames, warmup,
 // rounds, size=WxH, ratio, at=lon,lat, timing=timestamps|work-done,
-// experiment=frames|labels|gestures, labels=on|off; for gestures,
+// experiment=frames|gestures; for gestures,
 // workers=<job workers> and paths=city|alps (alps by default with style=alps,
 // at the terrain demo's view).
 import init, { runBench } from "../pkg/harness.js";
 import { runGestures } from "./gestures.js";
 import { demoStyle } from "./styles.js";
 
-const SETTINGS = ["frames", "warmup", "rounds", "size", "ratio", "at", "timing", "experiment", "labels"];
+const SETTINGS = ["frames", "warmup", "rounds", "size", "ratio", "at", "timing", "experiment"];
 const params = new URLSearchParams(location.search);
 const format = params.get("format") ?? "mvt";
 if (!["mvt", "mlt"].includes(format)) throw new Error("format must be mvt or mlt");

@@ -63,7 +63,7 @@ impl Stat {
     }
 }
 
-/// One view's still frames and its moving camera.
+/// One view's still frames.
 #[derive(Debug)]
 pub(crate) struct ViewResult {
     pub(crate) name: String,
@@ -83,25 +83,6 @@ pub(crate) struct ViewResult {
     pub(crate) tiles: u32,
     pub(crate) candidates: u32,
     pub(crate) meshes: u32,
-    pub(crate) moving: Moving,
-}
-
-/// Frames along the moving camera's path.
-#[derive(Debug, Default)]
-pub(crate) struct Moving {
-    pub(crate) frames: Vec<MovingFrame>,
-    /// Frames during which tiles were loading.
-    pub(crate) loading: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct MovingFrame {
-    /// GPU time or proxy.
-    pub(crate) gpu: Duration,
-    pub(crate) cull: Option<Duration>,
-    pub(crate) cpu: Duration,
-    /// Compacted indices the cull pass wrote.
-    pub(crate) written: u64,
 }
 
 /// Every view's results, and how they were measured.
@@ -131,7 +112,7 @@ impl FramesReport {
         Stat::for_clock(Some(self.cpu_resolution))
     }
 
-    /// The report as Markdown: setup, still frames, the moving camera.
+    /// The report as Markdown: setup and still frames.
     pub(crate) fn write(&self, out: &mut String) -> std::fmt::Result {
         let s = &self.settings;
         let (gpu_stat, cpu_stat) = (self.gpu_stat(), self.cpu_stat());
@@ -143,7 +124,7 @@ impl FramesReport {
         }
         writeln!(
             out,
-            "- {}×{} px ({}×{} @{}x) offscreen at {:.4}, {:.4}; {} rounds × {} frames after {} warm-up per view; labels {}",
+            "- {}×{} px ({}×{} @{}x) offscreen at {:.4}, {:.4}; {} rounds × {} frames after {} warm-up per view",
             self.size.0,
             self.size.1,
             s.width,
@@ -154,7 +135,6 @@ impl FramesReport {
             s.rounds,
             s.frames,
             s.warmup,
-            if s.labels { "on" } else { "off" },
         )?;
         match self.timing {
             Timing::Timestamps => writeln!(
@@ -217,93 +197,6 @@ impl FramesReport {
         }
         for warning in &self.warnings {
             writeln!(out, "- warning: {warning}")?;
-        }
-        writeln!(out)?;
-        self.write_moving(out, gpu_stat, cpu_stat)
-    }
-
-    fn write_moving(&self, out: &mut String, gpu_stat: Stat, cpu_stat: Stat) -> std::fmt::Result {
-        let (g, c) = (gpu_stat.name(), cpu_stat.name());
-        writeln!(out, "#### Moving camera")?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "The camera pans around a circle of {} px radius in {} frames (about {:.1} px per frame), once to load the path, then measured in {} rounds. Frames that rewrite compacted indices are those where chunks entered or left the view, or the scene changed (every slot is rewritten then). While moving, the CPU's frame dominates and the GPU's clock varies.",
-            crate::PATH_RADIUS,
-            crate::PATH_FRAMES,
-            std::f64::consts::TAU * crate::PATH_RADIUS / crate::PATH_FRAMES as f64,
-            self.settings.rounds,
-        )?;
-        writeln!(out)?;
-        writeln!(
-            out,
-            "| view | GPU {g} | p90 | max | CPU render {c} | max | frames rewriting | indices rewritten per such frame, mean | max | cull pass on those frames, {g} | max | cull pass on the others, {g} |"
-        )?;
-        writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|---|")?;
-        for view in &self.views {
-            let m = &view.moving;
-            let summary = |f: &dyn Fn(&MovingFrame) -> Option<Duration>,
-                           which: &dyn Fn(&MovingFrame) -> bool| {
-                let mut v: Vec<Duration> =
-                    m.frames.iter().filter(|x| which(x)).filter_map(f).collect();
-                (!v.is_empty()).then(|| {
-                    let max = v.iter().copied().max().unwrap_or_default();
-                    (Summary::of(&mut v), max)
-                })
-            };
-            let show = |s: Option<(Summary, Duration)>, stat: Stat| {
-                s.map_or(("—".to_string(), "—".to_string()), |(s, max)| {
-                    (ms(stat.of(&s)), ms(max))
-                })
-            };
-            let all = |_: &MovingFrame| true;
-            let rewriting = |x: &MovingFrame| x.written > 0;
-            let other = |x: &MovingFrame| x.written == 0;
-            let (gpu, gpu_max) = summary(&|x| Some(x.gpu), &all).expect("frames");
-            let (cpu, cpu_max) = summary(&|x| Some(x.cpu), &all).expect("frames");
-            let (cull_rewriting, cull_rewriting_max) =
-                show(summary(&|x| x.cull, &rewriting), gpu_stat);
-            let (cull_other, _) = show(summary(&|x| x.cull, &other), gpu_stat);
-            let written: Vec<u64> = m
-                .frames
-                .iter()
-                .map(|x| x.written)
-                .filter(|&w| w > 0)
-                .collect();
-            let (written_mean, written_max) = match written.iter().max() {
-                Some(&max) => (
-                    thousands(written.iter().sum::<u64>() / written.len() as u64),
-                    thousands(max),
-                ),
-                None => ("—".to_string(), "—".to_string()),
-            };
-            writeln!(
-                out,
-                "| {} | {} | {} | {} | {} | {} | {} of {} | {} | {} | {} | {} | {} |",
-                view.name,
-                ms(gpu_stat.of(&gpu)),
-                ms(gpu.p90),
-                ms(gpu_max),
-                ms(cpu_stat.of(&cpu)),
-                ms(cpu_max),
-                written.len(),
-                m.frames.len(),
-                written_mean,
-                written_max,
-                cull_rewriting,
-                cull_rewriting_max,
-                cull_other,
-            )?;
-        }
-        writeln!(out)?;
-        for view in self.views.iter().filter(|v| v.moving.loading > 0) {
-            writeln!(
-                out,
-                "- {}: tiles were loading in {} of {} measured frames",
-                view.name,
-                view.moving.loading,
-                view.moving.frames.len()
-            )?;
         }
         Ok(())
     }

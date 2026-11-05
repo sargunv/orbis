@@ -138,16 +138,16 @@ binding's owner-thread check, Apple M-series:
 | Kotlin over the JNI shim, JVM 25 | 6.12 |
 | Kotlin through Diplomat's JNA (prototype above) | 368.8 |
 
-The C library (`cargo xtask capi --test`) builds a static library,
-headers, a pkg-config file and a CMake package; the C smoke test passes
-through both. The Swift and Kotlin run tests exercise every supported shape,
-callbacks from another thread included.
+The C library (`cargo xtask capi`) builds a static library, headers, a
+pkg-config file and a CMake package. The Swift and Kotlin run tests exercise
+every supported shape, callbacks from another thread included.
 
-The binding scenario passes through every language Orbis binds natively:
-style, pixels, hit test, rendered-features query, edit generation, click,
-idle, projection and errors. It runs through Rust (`crates/orb-api/tests`),
-C (`crates/orb-capi/tests/smoke.c`), Kotlin on the JVM over the JNI shim
-(`hosts/android/orbis/src/jvmScenario`) and Swift (`hosts/apple/Tests`). The
+The binding scenario (style, pixels, hit test, rendered-features query, edit
+generation, click, idle, projection and errors) runs through Rust
+(`crates/orb-api/tests`). C (`crates/orb-capi/tests/smoke.c`, through
+pkg-config and CMake), Kotlin on the JVM over the JNI shim
+(`hosts/android/orbis/src/jvmSmoke`) and Swift (`hosts/apple/Tests`) run
+smoke tests, all from `cargo xtask bindings --test`. The
 Android and Apple hosts are written against the generated bindings and
 call nothing else of Orbis. The one exception is the JNI glue that turns a
 `Surface` into an `ANativeWindow`, which only JNI can do.

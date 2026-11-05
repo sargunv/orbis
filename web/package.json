@@ -6,17 +6,12 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "playground:native": "node scripts/playground-native.mjs",
-    "playground": "node scripts/playground.mjs",
-    "snapshot": "node scripts/snapshot.mjs",
-    "offline": "node scripts/offline.mjs",
-    "bench": "node scripts/bench.mjs",
-    "edits": "node scripts/edits.mjs",
-    "test": "node --test src/*.test.ts scripts/*.test.mjs",
     "typecheck": "tsc -p .",
+    "test": "node --test src/*.test.ts scripts/*.test.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "snapshot": "node scripts/snapshot.mjs",
     "measure": "node scripts/measure.mjs",
-    "scenario": "node scripts/scenario.mjs",
-    "pipelines": "node scripts/pipelines.mjs"
+    "bench": "node scripts/bench.mjs"
   },
   "devDependencies": {
     "@fontsource-variable/atkinson-hyperlegible-next": "5.3.0",

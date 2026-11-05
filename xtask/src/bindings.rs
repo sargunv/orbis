@@ -2,8 +2,10 @@
 //! bindings, from `orb-capi`'s Diplomat bridge (decision 0018). Each output
 //! directory holds only generated files; `--check` fails when they're stale.
 //!
-//! `cargo xtask bindings test` runs `diplomat-swift-kotlin`'s compile-and-
-//! run tests (`swiftc`, a JDK and `kotlinc` from `mise.toml`).
+//! `cargo xtask bindings --test` runs `diplomat-swift-kotlin`'s compile-and-
+//! run tests (`swiftc`, a JDK and `kotlinc` from `mise.toml`), then the C and
+//! Kotlin smoke tests against `cargo xtask capi`'s library and, on macOS, the
+//! Swift one (`cargo xtask apple --test`).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,7 +29,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
         None => generate(false),
         Some("--check") => generate(true),
-        Some("test") => test(),
+        Some("--test") => test(),
         Some(other) => Err(format!("bindings: unknown argument {other}")),
     }
 }
@@ -167,7 +169,7 @@ fn files_under(root: &Path, dir: &Path, out: &mut Vec<String>) {
     }
 }
 
-/// The emitters' compile-and-run tests.
+/// The emitters' compile-and-run tests, then the smoke tests.
 fn test() -> Result<(), String> {
     let mut command = Command::new(env!("CARGO"));
     command.args([
@@ -182,9 +184,12 @@ fn test() -> Result<(), String> {
     ]);
     eprintln!("$ {command:?}");
     let status = command.status().map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("binding run tests failed".into())
+    if !status.success() {
+        return Err("binding run tests failed".into());
     }
+    crate::capi::smoke(&crate::capi::build()?)?;
+    if cfg!(target_os = "macos") {
+        crate::apple::run(&["--test".into()])?;
+    }
+    Ok(())
 }

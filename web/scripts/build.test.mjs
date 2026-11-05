@@ -34,7 +34,7 @@ test("built styles pin their archives, and archive changes propagate to entry JS
     // Glyphs and sprites keep their names: styles fetch them by template.
     // The glyphs' font licence ships with them.
     for (const entry of before) {
-      assert.match(entry.fileName, /^(?:index|probe|bench)\.html$|^assets\/.+-[\w-]{8}\.(?:js|json|wasm|pmtiles|bin)$|^data\/(?:glyphs\/(?:[^/]+\/\d+-\d+\.pbf|OFL\.txt)|sprites\/ofm(?:@2x)?\.(?:json|png))$/);
+      assert.match(entry.fileName, /^index\.html$|^assets\/.+-[\w-]{8}\.(?:js|json|wasm|pmtiles|bin)$|^data\/(?:glyphs\/(?:[^/]+\/\d+-\d+\.pbf|OFL\.txt)|sprites\/ofm(?:@2x)?\.(?:json|png))$/);
     }
     const find = (output, prefix) => {
       const entry = output.find((entry) => entry.fileName.startsWith(`assets/${prefix}-`));

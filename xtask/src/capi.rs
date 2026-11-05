@@ -1,4 +1,4 @@
-//! `cargo xtask capi [--test]`: the C library for this host (plan §17), in
+//! `cargo xtask capi`: the C library for this host (plan §17), in
 //! `target/capi`:
 //!
 //! - `lib/liborbis.a`, built with the `dist` profile;
@@ -6,10 +6,11 @@
 //! - `lib/pkgconfig/orbis.pc` and `lib/cmake/orbis/orbisConfig.cmake`
 //!   (`orbis::orbis`), with the system libraries rustc reports.
 //!
-//! `--test` compiles `crates/orb-capi/tests/smoke.c` once through
-//! pkg-config and once through CMake, and runs both; then runs the Kotlin
-//! binding scenario on the host's JVM, over the generated JNI shim linked
-//! with the same library (a JDK, `JAVA_HOME` and `kotlinc`, from mise).
+//! [`smoke`] (from `cargo xtask bindings --test`) compiles
+//! `crates/orb-capi/tests/smoke.c` once through pkg-config and once through
+//! CMake, and runs both; then runs the Kotlin smoke test on the host's JVM,
+//! over the generated JNI shim linked with the same library (a JDK,
+//! `JAVA_HOME` and `kotlinc`, from mise).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,20 +19,7 @@ use crate::bindings::{C_DIR, root};
 
 const PREFIX: &str = "target/capi";
 
-pub(crate) fn run(args: &[String]) -> Result<(), String> {
-    let test = match args {
-        [] => false,
-        [flag] if flag == "--test" => true,
-        _ => return Err("capi: usage: cargo xtask capi [--test]".into()),
-    };
-    let prefix = build()?;
-    if test {
-        smoke(&prefix)?;
-    }
-    Ok(())
-}
-
-fn build() -> Result<PathBuf, String> {
+pub(crate) fn build() -> Result<PathBuf, String> {
     let root = root();
     eprintln!("$ cargo rustc -p orb-capi --profile dist --lib --crate-type staticlib");
     let output = Command::new(env!("CARGO"))
@@ -140,7 +128,9 @@ fn cmake_libs(native: &str) -> String {
     link_items(native).join(";")
 }
 
-fn smoke(prefix: &Path) -> Result<(), String> {
+/// The C smoke test through pkg-config and CMake, then the Kotlin one on
+/// the JVM.
+pub(crate) fn smoke(prefix: &Path) -> Result<(), String> {
     let root = root();
     let source = root.join("crates/orb-capi/tests/smoke.c");
     let out = prefix.join("smoke");
@@ -193,19 +183,18 @@ fn smoke(prefix: &Path) -> Result<(), String> {
     check(Command::new("cmake").arg("--build").arg(&build))?;
     check(&mut Command::new(build.join("smoke")))?;
     eprintln!("capi: the smoke test passed through pkg-config and CMake");
-    kotlin_scenario(prefix, &flags)
+    kotlin_smoke(prefix, &flags)
 }
 
-/// The Kotlin scenario on the JVM: the JNI shim and liborbis.a as a
-/// shared library, the generated Kotlin and the scenario compiled with
-/// kotlinc.
-fn kotlin_scenario(prefix: &Path, link: &str) -> Result<(), String> {
+/// The Kotlin smoke test on the JVM: the JNI shim and liborbis.a as a
+/// shared library, the generated Kotlin and the test compiled with kotlinc.
+fn kotlin_smoke(prefix: &Path, link: &str) -> Result<(), String> {
     let root = root();
     let out = prefix.join("smoke/kotlin");
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     let java_home = PathBuf::from(
         std::env::var_os("JAVA_HOME")
-            .ok_or("capi: the Kotlin scenario needs JAVA_HOME (mise x --)")?,
+            .ok_or("capi: the Kotlin smoke test needs JAVA_HOME (mise x --)")?,
     );
     let platform = if cfg!(target_os = "macos") {
         "darwin"
@@ -234,8 +223,8 @@ fn kotlin_scenario(prefix: &Path, link: &str) -> Result<(), String> {
         &root.join("hosts/android/orbis/src/generated/kotlin"),
         &mut sources,
     )?;
-    sources.push(root.join("hosts/android/orbis/src/jvmScenario/kotlin/Scenario.kt"));
-    let jar = out.join("scenario.jar");
+    sources.push(root.join("hosts/android/orbis/src/jvmSmoke/kotlin/Smoke.kt"));
+    let jar = out.join("smoke.jar");
     check(
         Command::new("kotlinc")
             .args(["-nowarn", "-include-runtime", "-d"])
@@ -248,9 +237,9 @@ fn kotlin_scenario(prefix: &Path, link: &str) -> Result<(), String> {
             .arg(format!("-Djava.library.path={}", out.display()))
             .arg("-cp")
             .arg(&jar)
-            .arg("ScenarioKt"),
+            .arg("SmokeKt"),
     )?;
-    eprintln!("capi: the Kotlin scenario passed on the JVM");
+    eprintln!("capi: the Kotlin smoke test passed on the JVM");
     Ok(())
 }
 

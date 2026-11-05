@@ -4,7 +4,7 @@
 //   pnpm bench [--precise] [--android [--physical]] [--name=value…]
 //
 // `--name=value` pairs become the page's query (format, style, frames,
-// warmup, rounds, size, ratio, at, timing, experiment, labels; workers
+// warmup, rounds, size, ratio, at, timing, experiment; workers
 // (job workers) and paths for `--experiment=gestures`: city|alps, alps with `--style=alps`). Chrome runs as a
 // user's would, quantizing timestamps (to 65.5 µs on a Mac) and
 // `performance.now()` (to 100 µs). `--precise` allows WebGPU's unsafe APIs,

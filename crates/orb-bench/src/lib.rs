@@ -1,14 +1,11 @@
-//! GPU and CPU frame timings of the default render path (decision 0002):
-//! natively (`cargo xtask bench`)
-//! and in the browser (`orb-web`'s `harness` feature, `web/demo/bench.html`),
-//! through the same loop.
+//! GPU and CPU frame timings: natively (`cargo xtask bench`) and in the
+//! browser (`orb-web`'s `harness` feature, `web/demo/bench.html`), through
+//! the same loop.
 //!
-//! One map visits each view, loads until it is idle and renders `rounds`
-//! runs of camera-only frames offscreen. Then the camera pans around a
-//! circle, once to load what it shows and `rounds` times measured, with the
-//! cull pass's counters read back per frame: how often compacted indices
-//! are rewritten, and what those frames cost. [`run`] returns a [`Report`],
-//! which formats as Markdown.
+//! By default one map visits each view, loads until it is idle and renders
+//! `rounds` runs of still frames offscreen; `experiment=gestures` times
+//! rotate, tilt, zoom and pan paths with tiles arriving. [`run`] returns a
+//! [`Report`], which formats as Markdown.
 //!
 //! The loop is async so it runs on the browser's event loop; natively,
 //! every future it awaits is ready when first polled.
@@ -17,19 +14,17 @@
 
 mod clock;
 mod gestures;
-mod labels;
 mod report;
 mod timed;
 
 use std::time::Duration;
 
 pub use gestures::GesturesReport;
-pub use labels::LabelsReport;
 use orb_crs::Geodetic;
 use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureUsages};
 use orb_hal_wgpu::WgpuGpu;
 use orb_runtime::{CameraState, FrameReport, Map, TargetFormat, Transaction, Viewport};
-use report::{FramesReport, Moving, Summary, ViewResult};
+use report::{FramesReport, Summary, ViewResult};
 use timed::TimedGpu;
 
 /// The committed Tokyo extract's view, by the Imperial Palace
@@ -49,10 +44,6 @@ const VIEWS: &[(&str, f64, f64, bool)] = &[
 /// OpenFreeMap Liberty's extrusion layer, which the reduced style leaves
 /// out, added before the labels.
 const BUILDINGS_3D: &str = r#"{"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles", "source-layer": "building", "minzoom": 14, "filter": ["!", ["has", "hide_3d"]], "paint": {"fill-extrusion-base": ["get", "render_min_height"], "fill-extrusion-color": "hsl(35,8%,85%)", "fill-extrusion-height": ["get", "render_height"], "fill-extrusion-opacity": 0.8}}"#;
-/// The moving camera pans around a circle of this radius, in logical
-/// pixels, over this many frames: about 6.7 px per frame.
-const PATH_RADIUS: f64 = 128.0;
-const PATH_FRAMES: usize = 120;
 /// Words of the cull pass's counters in a node's draw arguments
 /// (`cull.wgsl`): chunks kept, indices written, vertex inputs.
 const KEPT_WORD: usize = 5;
@@ -64,12 +55,9 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// What the bench compares.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Experiment {
-    /// The default path's frames, still and moving (decision 0002).
+    /// Still frames of each view.
     #[default]
     Frames,
-    /// M2's label exits: placement time while turning, hidden symbols' GPU
-    /// cost.
-    Labels,
     /// Rotate, tilt and zoom paths at a 60 Hz pace with tiles arriving:
     /// frame-time distributions.
     Gestures,
@@ -90,7 +78,6 @@ pub enum GesturePaths {
 #[derive(Debug)]
 pub enum Report {
     Frames(FramesReport),
-    Labels(LabelsReport),
     Gestures(GesturesReport),
 }
 
@@ -100,7 +87,6 @@ impl Report {
         let mut out = String::new();
         match self {
             Self::Frames(r) => r.write(&mut out),
-            Self::Labels(r) => r.write(&mut out),
             Self::Gestures(r) => r.write(&mut out),
         }
         .expect("writing to a String");
@@ -137,8 +123,6 @@ pub struct Settings {
     /// `None` uses timestamps where the device has them.
     pub timing: Option<Timing>,
     pub experiment: Experiment,
-    /// Keeps the style's symbol layers.
-    pub labels: bool,
     pub paths: GesturePaths,
 }
 
@@ -154,7 +138,6 @@ impl Default for Settings {
             center: Geodetic::new(TOKYO.0, TOKYO.1),
             timing: None,
             experiment: Experiment::Frames,
-            labels: true,
             paths: GesturePaths::City,
         }
     }
@@ -164,7 +147,7 @@ impl Settings {
     /// Sets one option by name, as the native tool's `--name value` and the
     /// page's `?name=value` give it: `frames`, `warmup`, `rounds`, `size`
     /// (`WxH`), `ratio`, `at` (`lon,lat`), `timing` (`timestamps` or
-    /// `work-done`), `experiment` (`frames`, `labels` or `gestures`), `labels` (`on` or `off`) or `paths` (`city` or `alps`,
+    /// `work-done`), `experiment` (`frames` or `gestures`) or `paths` (`city` or `alps`,
     /// the gestures bench's).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let number = |value: &str| {
@@ -200,19 +183,11 @@ impl Settings {
                     _ => return Err("timing needs timestamps or work-done".into()),
                 })
             }
-            "labels" => {
-                self.labels = match value {
-                    "on" => true,
-                    "off" => false,
-                    _ => return Err("labels needs on or off".into()),
-                }
-            }
             "experiment" => {
                 self.experiment = match value {
                     "frames" => Experiment::Frames,
-                    "labels" => Experiment::Labels,
                     "gestures" => Experiment::Gestures,
-                    _ => return Err("experiment needs frames, labels or gestures".into()),
+                    _ => return Err("experiment needs frames or gestures".into()),
                 }
             }
             "paths" => {
@@ -349,19 +324,6 @@ pub async fn run(
     };
     let size = (width, height);
     match settings.experiment {
-        Experiment::Labels => {
-            let run = labels::run(
-                &mut gpu,
-                timing,
-                (target, size),
-                format,
-                settings,
-                about,
-                new_map,
-                progress,
-            );
-            return run.await.map(Report::Labels);
-        }
         Experiment::Gestures => {
             let run = gestures::run(
                 &mut gpu,
@@ -388,7 +350,6 @@ pub async fn run(
     // One map for every view: a dropped map keeps its GPU buffers (#20), and
     // a phone's browser has no room for a map per view.
     let mut map: Option<Map> = None;
-    let mut labels_removed = false;
     for &(name, zoom, pitch, buildings) in VIEWS {
         progress(&format!("{name}: loading"));
         let camera = CameraState {
@@ -402,52 +363,21 @@ pub async fn run(
             }
             None => map.insert(new_map(camera)?),
         };
-        // `labels=off` measures the views without the style's labels.
-        let mut edit = (!settings.labels && !labels_removed) || buildings;
-        let started = clock::now();
-        loop {
-            let (report, _, _) = render(&mut gpu, map);
-            warnings.extend(map.take_warnings());
-            gpu.take_frames().await;
-            if report.idle && edit {
-                edit = false;
-                let symbols = map
-                    .style_doc()
-                    .into_iter()
-                    .flat_map(|doc| doc.style().layers.iter())
-                    .filter(|l| matches!(l.kind, orb_v8::LayerKind::Symbol(_)))
-                    .map(|l| l.id.replace('\\', "\\\\").replace('"', "\\\""));
-                let mut calls = Vec::new();
-                let mut first_symbol = None;
-                for id in symbols {
-                    first_symbol.get_or_insert_with(|| id.clone());
-                    if !settings.labels && !labels_removed {
-                        calls.push(format!("[\"removeLayer\", \"{id}\"]"));
-                    }
-                }
-                labels_removed = !settings.labels;
-                if buildings {
-                    calls.push(match first_symbol.filter(|_| settings.labels) {
-                        Some(before) => format!("[\"addLayer\", {BUILDINGS_3D}, \"{before}\"]"),
-                        None => format!("[\"addLayer\", {BUILDINGS_3D}]"),
-                    });
-                }
-                if !calls.is_empty() {
-                    let tx = Transaction::from_commands(&format!("[{}]", calls.join(",")))?;
-                    map.edit(&tx)?;
-                    continue;
-                }
-            }
-            if report.idle {
-                // One more frame draws what the last one received.
-                render(&mut gpu, map);
-                gpu.take_frames().await;
-                break;
-            }
-            if clock::now() - started > LOAD_TIMEOUT {
-                return Err(format!("{name}: timed out waiting for tiles"));
-            }
-            clock::sleep(Duration::from_millis(5)).await;
+        settle(&mut gpu, map, &|g, m| render(g, m).0, &mut warnings).await?;
+        if buildings {
+            // Liberty's extrusions, beneath its labels.
+            let before = map
+                .style_doc()
+                .into_iter()
+                .flat_map(|doc| doc.style().layers.iter())
+                .find(|l| matches!(l.kind, orb_v8::LayerKind::Symbol(_)))
+                .map(|l| l.id.replace('\\', "\\\\").replace('"', "\\\""));
+            let call = match before {
+                Some(before) => format!("[[\"addLayer\", {BUILDINGS_3D}, \"{before}\"]]"),
+                None => format!("[[\"addLayer\", {BUILDINGS_3D}]]"),
+            };
+            map.edit(&Transaction::from_commands(&call)?)?;
+            settle(&mut gpu, map, &|g, m| render(g, m).0, &mut warnings).await?;
         }
 
         let mut s = Samples::default();
@@ -492,24 +422,7 @@ pub async fn run(
         let (args, nodes) = map.draw_args().ok_or("no renderer")?;
         s.counters = counters(&words(&gpu.inner().read_buffer(args).await), nodes);
 
-        progress(&format!("{name}: loading the moving camera's path"));
-        let path = Path::new(viewport);
-        for f in 0..PATH_FRAMES {
-            path.step(map, f);
-            render(&mut gpu, map);
-            gpu.throttle().await;
-        }
-        settle(&mut gpu, map, &|g, m| render(g, m).0, &mut warnings).await?;
-        let mut moving = Moving::default();
-        for round in 0..settings.rounds {
-            progress(&format!(
-                "{name}: moving, round {} of {}",
-                round + 1,
-                settings.rounds
-            ));
-            pan_circle(&mut gpu, map, &render, &path, timing, &mut moving).await?;
-        }
-        views.push(view_result(name, s, moving));
+        views.push(view_result(name, s));
     }
     Ok(Report::Frames(FramesReport {
         about,
@@ -533,79 +446,7 @@ fn words(bytes: &[u8]) -> Vec<u32> {
         .collect()
 }
 
-/// The moving camera's path: around a circle of [`PATH_RADIUS`], back to
-/// where it started.
-struct Path {
-    viewport: Viewport,
-}
-
-impl Path {
-    fn new(viewport: Viewport) -> Self {
-        Self { viewport }
-    }
-
-    fn point(&self, f: usize) -> glam::DVec2 {
-        let center = glam::DVec2::new(self.viewport.width / 2.0, self.viewport.height / 2.0);
-        let angle = std::f64::consts::TAU * f as f64 / PATH_FRAMES as f64;
-        center + PATH_RADIUS * glam::DVec2::new(angle.cos() - 1.0, angle.sin())
-    }
-
-    /// Pans from frame `f`'s point to the next.
-    fn step(&self, map: &mut Map, f: usize) {
-        let surface = map.surface();
-        map.camera_mut()
-            .pan(&surface, self.viewport, self.point(f), self.point(f + 1));
-    }
-}
-
-/// Pans once around `path`, measured, adding the frames to `moving`.
-async fn pan_circle(
-    gpu: &mut TimedGpu,
-    map: &mut Map,
-    render: &impl Fn(&mut TimedGpu, &mut Map) -> (FrameReport, Duration, Duration),
-    path: &Path,
-    timing: Timing,
-    moving: &mut Moving,
-) -> Result<(), String> {
-    gpu.take_frames().await;
-    let (args, nodes) = map.draw_args().ok_or("no renderer")?;
-    gpu.capture(
-        args,
-        u64::from(nodes) * orb_runtime::ARGS_WORDS as u64 * 4,
-        PATH_FRAMES as u64,
-    );
-    let mut cpu = Vec::with_capacity(PATH_FRAMES);
-    let mut wall = Vec::with_capacity(PATH_FRAMES);
-    for f in 0..PATH_FRAMES {
-        path.step(map, f);
-        let (report, started, time) = render(gpu, map);
-        match timing {
-            Timing::Timestamps => gpu.throttle().await,
-            Timing::WorkDone => {
-                gpu.finish().await;
-                wall.push(clock::now() - started);
-            }
-        }
-        moving.loading += usize::from(report.tiles_loading > 0);
-        cpu.push(time);
-    }
-    let times = gpu.take_frames().await;
-    let captures = gpu.take_captures().await;
-    moving
-        .frames
-        .extend((0..PATH_FRAMES).map(|f| report::MovingFrame {
-            gpu: match timing {
-                Timing::Timestamps => times[f].gpu(),
-                Timing::WorkDone => wall[f].saturating_sub(times[f].overhead),
-            },
-            cull: times[f].pass("cull"),
-            cpu: cpu[f].saturating_sub(times[f].overhead),
-            written: counters(&captures[f], nodes)[1],
-        }));
-    Ok(())
-}
-
-fn view_result(name: &str, mut s: Samples, moving: Moving) -> ViewResult {
+fn view_result(name: &str, mut s: Samples) -> ViewResult {
     let summary = |v: &mut Vec<Duration>| (!v.is_empty()).then(|| Summary::of(v));
     let stats = s.report.frame;
     ViewResult {
@@ -623,278 +464,6 @@ fn view_result(name: &str, mut s: Samples, moving: Moving) -> ViewResult {
         tiles: s.report.tiles_drawn,
         candidates: stats.candidates,
         meshes: s.report.scene.meshes,
-        moving,
-    }
-}
-
-/// Reproducible steady-state cost of the Liberty building layer in the Tokyo
-/// extract. Kept outside the A/B/C experiment, which compares 2D submissions.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod extrusion_benchmark {
-    use super::*;
-    use orb_host_native::{NativeFetch, NativeImageDecode};
-    use orb_runtime::{PoolJobs, Services};
-    use std::sync::Arc;
-
-    #[test]
-    #[ignore = "GPU benchmark: cargo test --release -p orb-bench tokyo_extrusion_frame_cost -- --ignored --nocapture"]
-    fn tokyo_extrusion_frame_cost() {
-        pollster::block_on(async {
-            let device = device(Some(Timing::Timestamps)).await.unwrap();
-            eprintln!("adapter: {}", device.adapter);
-            let mut gpu = TimedGpu::new(device.gpu, true);
-            let path =
-                std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/demo/data"))
-                    .canonicalize()
-                    .unwrap();
-            let style_path = std::env::var_os("ORB_BENCH_STYLE")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| path.join("tokyo-mvt.json"));
-            let style = std::fs::read_to_string(style_path).unwrap().replace(
-                "pmtiles://./data/",
-                &format!("pmtiles://file://{}/", path.display()),
-            );
-            let fetch = NativeFetch::new();
-            let services = Services {
-                clock: Arc::new(orb_host_native::NativeClock::default()),
-                image_decode: Arc::new(NativeImageDecode),
-                images: Default::default(),
-                jobs: PoolJobs::new(
-                    fetch.clone(),
-                    Arc::new(NativeImageDecode),
-                    Arc::new(orb_jobs::ThreadPool::new("jobs", 2)),
-                ),
-                fetch,
-                wake: Arc::new(|| {}),
-            };
-            let mut map = Map::new(
-                services,
-                Some(CameraState {
-                    bearing: 30.0,
-                    pitch: 60.0,
-                    ..CameraState::new(
-                        Geodetic::new(TOKYO.0, TOKYO.1),
-                        16.0,
-                        &crate::web_mercator(),
-                    )
-                }),
-            );
-            map.set_style_json(&style).unwrap();
-            let format = TargetFormat {
-                color: TextureFormat::Rgba8Unorm,
-                sample_count: 1,
-            };
-            let target = gpu.create_texture(&TextureDesc {
-                label: "extrusion benchmark",
-                width: 1024,
-                height: 768,
-                array_layers: 1,
-                dimension: orb_hal::TextureViewDimension::D2,
-                format: format.color,
-                usage: TextureUsages::RENDER_ATTACHMENT,
-                sample_count: 1,
-                mip_levels: 1,
-            });
-            let render = |gpu: &mut TimedGpu, map: &mut Map| {
-                map.render(
-                    gpu,
-                    target,
-                    format,
-                    Viewport {
-                        width: 1024.0,
-                        height: 768.0,
-                    },
-                    1.0,
-                )
-            };
-            let start = std::time::Instant::now();
-            loop {
-                let report = render(&mut gpu, &mut map);
-                gpu.take_frames().await;
-                if report.idle {
-                    break;
-                }
-                assert!(start.elapsed() < Duration::from_secs(120));
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            for _ in 0..50 {
-                render(&mut gpu, &mut map);
-                gpu.throttle().await;
-            }
-            gpu.take_frames().await;
-            let mut cpu = Vec::new();
-            let mut report = FrameReport::default();
-            for _ in 0..300 {
-                let start = std::time::Instant::now();
-                report = render(&mut gpu, &mut map);
-                cpu.push(start.elapsed());
-                gpu.throttle().await;
-            }
-            let frames = gpu.take_frames().await;
-            for (cpu, frame) in cpu.iter_mut().zip(&frames) {
-                *cpu = cpu.saturating_sub(frame.overhead);
-            }
-            let median = |mut samples: Vec<Duration>| {
-                samples.sort();
-                samples[samples.len() / 2].as_secs_f64() * 1000.0
-            };
-            eprintln!(
-                "Tokyo 139.74,35.685,16,30,60; 1024x768; 50 warmup + 300 samples; milliseconds, medians"
-            );
-            eprintln!(
-                "CPU render {:.6}; GPU total {:.6}; cull {:.6}; extrusion {:.6}; main {:.6}",
-                median(cpu),
-                median(frames.iter().map(|f| f.gpu()).collect()),
-                median(frames.iter().map(|f| f.pass("cull").unwrap()).collect()),
-                median(
-                    frames
-                        .iter()
-                        .map(|f| f.pass("extrusion").unwrap_or_default())
-                        .collect()
-                ),
-                median(frames.iter().map(|f| f.pass("main").unwrap()).collect())
-            );
-            eprintln!("{report:?}");
-            assert_eq!(report.frame.dispatches, 1);
-            assert!(!report.frame.bundle_recorded);
-            assert_eq!(report.frame.paints_written, 0);
-        });
-    }
-
-    /// Terrain's frame cost on the Alps demo view (decision 0019): frames
-    /// at rest, frames while the camera turns (no drape redraw), and the
-    /// frame that redraws every drape slot. Fetches tiles over the network.
-    #[test]
-    #[ignore = "GPU benchmark over the network: cargo test --release -p orb-bench alps_terrain_frame_cost -- --ignored --nocapture"]
-    fn alps_terrain_frame_cost() {
-        pollster::block_on(async {
-            let device = device(Some(Timing::Timestamps)).await.unwrap();
-            eprintln!("adapter: {}", device.adapter);
-            let mut gpu = TimedGpu::new(device.gpu, true);
-            let style = std::fs::read_to_string(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../web/demo/data/alps.json"
-            ))
-            .unwrap();
-            let fetch = NativeFetch::new();
-            let services = Services {
-                clock: Arc::new(orb_host_native::NativeClock::default()),
-                image_decode: Arc::new(NativeImageDecode),
-                images: Default::default(),
-                jobs: PoolJobs::new(
-                    fetch.clone(),
-                    Arc::new(NativeImageDecode),
-                    Arc::new(orb_jobs::ThreadPool::new("jobs", 4)),
-                ),
-                fetch,
-                wake: Arc::new(|| {}),
-            };
-            let mut map = Map::new(services, None);
-            map.set_style_json(&style).unwrap();
-            let format = TargetFormat {
-                color: TextureFormat::Rgba8Unorm,
-                sample_count: 1,
-            };
-            let target = gpu.create_texture(&TextureDesc {
-                label: "terrain benchmark",
-                width: 1024,
-                height: 768,
-                array_layers: 1,
-                dimension: orb_hal::TextureViewDimension::D2,
-                format: format.color,
-                usage: TextureUsages::RENDER_ATTACHMENT,
-                sample_count: 1,
-                mip_levels: 1,
-            });
-            let viewport = Viewport {
-                width: 1024.0,
-                height: 768.0,
-            };
-            let render = |gpu: &mut TimedGpu, map: &mut Map| {
-                map.constrain_camera(viewport);
-                map.render(gpu, target, format, viewport, 1.0)
-            };
-            let start = std::time::Instant::now();
-            loop {
-                let report = render(&mut gpu, &mut map);
-                gpu.take_frames().await;
-                if report.idle {
-                    break;
-                }
-                assert!(start.elapsed() < Duration::from_secs(180));
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            let median = |mut samples: Vec<Duration>| {
-                samples.sort();
-                samples[samples.len() / 2].as_secs_f64() * 1000.0
-            };
-            let pass = |frames: &[timed::FrameTimes], label: &str| {
-                median(
-                    frames
-                        .iter()
-                        .map(|f| f.pass(label).unwrap_or_default())
-                        .collect(),
-                )
-            };
-            let sample = |gpu: &mut TimedGpu, map: &mut Map, turn: f64| {
-                let mut cpu = Vec::new();
-                let mut report = FrameReport::default();
-                for _ in 0..200 {
-                    map.camera_mut().bearing += turn;
-                    let start = std::time::Instant::now();
-                    report = render(gpu, map);
-                    cpu.push(start.elapsed());
-                    pollster::block_on(gpu.throttle());
-                }
-                (cpu, report)
-            };
-            for (label, turn) in [("at rest", 0.0), ("turning 0.2°/frame", 0.2)] {
-                for _ in 0..30 {
-                    render(&mut gpu, &mut map);
-                    gpu.throttle().await;
-                }
-                gpu.take_frames().await;
-                let (mut cpu, report) = sample(&mut gpu, &mut map, turn);
-                let frames = gpu.take_frames().await;
-                for (cpu, frame) in cpu.iter_mut().zip(&frames) {
-                    *cpu = cpu.saturating_sub(frame.overhead);
-                }
-                eprintln!(
-                    "{label}: CPU render {:.3}; GPU total {:.3}; cull {:.3}; terrain {:.3}; main {:.3}; drape redraws {}",
-                    median(cpu),
-                    median(frames.iter().map(|f| f.gpu()).collect()),
-                    pass(&frames, "cull"),
-                    pass(&frames, "terrain"),
-                    pass(&frames, "main"),
-                    frames.iter().filter(|f| f.pass("drape").is_some()).count()
-                );
-                eprintln!("{report:?}");
-            }
-            // A zoom change waits for the camera to stop, then redraws
-            // every slot in one frame.
-            let mut redraws = Vec::new();
-            for i in 0..20 {
-                let projection = map.projection();
-                map.camera_mut()
-                    .set_zoom(&projection, 11.6 + f64::from(i % 2) * 0.01);
-                render(&mut gpu, &mut map);
-                render(&mut gpu, &mut map);
-                gpu.throttle().await;
-                redraws.extend(
-                    gpu.take_frames()
-                        .await
-                        .into_iter()
-                        .filter(|f| f.pass("drape").is_some()),
-                );
-            }
-            eprintln!(
-                "full drape redraw ({} frames): drape {:.3}; mips {:.3}; GPU total {:.3}",
-                redraws.len(),
-                pass(&redraws, "drape"),
-                pass(&redraws, "drape mips"),
-                median(redraws.iter().map(|f| f.gpu()).collect())
-            );
-        });
     }
 }
 

@@ -33,36 +33,29 @@ node, pnpm, a JDK, Gradle, kotlinc, CMake, Go and devices-cli); run
 | Command | What it does |
 | --- | --- |
 | `cargo xtask check [--affected [--base <rev>]]` | fmt, clippy (native and wasm32), tests, generated bindings up to date, boundary rules; offline, no fixture mirror needed; `--affected` scopes it to the packages changed since `<rev>` (default `origin/main`) and their dependents |
-| `cargo xtask bindings` | regenerate the C header (`crates/orb-capi/include`), Kotlin/JNI and Swift bindings from `orb-capi`'s bridge; run after changing it |
-| `mise x -- cargo xtask bindings test` | the emitters' Swift and Kotlin compile-and-run tests |
+| `cargo xtask bindings [--check]` | regenerate the C header (`crates/orb-capi/include`), Kotlin/JNI and Swift bindings from `orb-capi`'s bridge; run after changing it; `--check` fails when they're stale |
+| `mise x -- cargo xtask bindings --test` | the emitters' Swift and Kotlin compile-and-run tests, then the C (pkg-config and CMake), Kotlin (JVM) and, on macOS, Swift smoke tests |
+| `cargo xtask capi` | the C library in `target/capi`: static lib, headers, pkg-config and CMake files |
 | `mise x -- cargo xtask android [--run]` | `liborbis.so` (arm64-v8a, NDK), the AAR and the Android reference app; `--run` installs it on this worktree's emulator and starts it (logcat tag `Orbis`) |
-| `cargo xtask apple [--test] [--ios-sim[=name]]` | `hosts/apple/OrbisC.xcframework` (macOS, iOS, iOS simulator) and the Swift package; `--test` runs the Swift binding scenario; `--ios-sim` builds the iOS app and runs it on a simulator (whose Metal lacks indirect draws: it reports that, M4's Compat tier is its path) |
-| `hosts/apple/.build/release/OrbisDemo [--snapshot out.png] [tokyo \| style]` | macOS reference app (after `cargo xtask apple`): live Liberty as on the web, `tokyo` for the extract; `--snapshot` renders into a texture target, prints timings and pipeline counts |
-| `mise x -- cargo xtask capi --test` | the C library in `target/capi` (static lib, headers, pkg-config, CMake), the C smoke test through both, and the Kotlin binding scenario on the JVM |
+| `cargo xtask apple [--test] [--ios-sim[=name]]` | `hosts/apple/OrbisC.xcframework` (macOS, iOS, iOS simulator) and the Swift package; `--test` runs the Swift smoke test; `--ios-sim` builds the iOS app and runs it on a simulator (whose Metal lacks indirect draws: it reports that, M4's Compat tier is its path) |
 | `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]] [--cache <dir>]` | native demo window; `--cache` keeps fetches in an HTTP cache there |
 | `… -p orb-demo -- --snapshot out.png` | render offscreen until idle, write a PNG |
 | `… -p orb-demo -- file://$PWD/web/demo/data/alps.json --flight web/demo/data/alps-flight.json` | the terrain flight over the Alps (web: `?style=alps&flight`) |
-| `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/pkg` |
-| `pnpm -C web snapshot out.png '#z/lat/lon' [--style=<key>\|URL] [--size=WxH] [--reopen[=offline]] [--still]` | the map app on the Tokyo extract (the site defaults to the live map) in headless Chromium, screenshot; `--reopen` times a reload from the browser's cache, `=offline` with the network cut; `--still` also writes the map's own snapshot (`<out>-still.png`) |
-| `pnpm -C web offline ['#z/lat/lon']` | downloads the live map's view as an offline region in headless Chromium, then reopens it with the network cut; `cargo test -p orb-api --test regions -- --ignored` does the same natively |
-| `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web dev` | the map app with its style editor at `/orbis/?style=playground&edit`; writes accepted styles and hover state to that file (dev only) |
-| `cargo run --release -p orb-demo -- file://$PWD/web/demo/data/playground.json --watch-style <same path>` | native viewer beside the style editor; follows that file as diffed transactions; logs generation, frames and edit ms |
-| `pnpm -C web playground` | headless style editor checks (controls, JSON, hover, frames per edit) |
-| `ORB_PLAYGROUND_STYLE=<mktemp path> pnpm -C web playground:native` | dev bridge smoke test (build `orb-demo --release` first) |
-| `pnpm -C web edits` | every edit class through `globalThis.orbis.edit`, and the cost of a feature-state write |
 | `cargo run --release -p orb-cli -- render <style> -o out.png [--at lon,lat,z[,bearing,pitch]] [--size WxH]` | `orbis`: a still picture of a style or scene document (Still mode) |
 | `… -p orb-cli -- tiles <style> -o dir --tms <id\|tms.json> --zoom z[-z] [--bbox w,s,e,n]` | a tile pyramid on the scene's plane (Tile mode), `dir/z/col/row.png` |
-| `cargo xtask fixtures` | fetch and verify the pinned GL JS fixture mirror into `fixtures/gl-js` (gitignored; no work when it matches; `fixtures/README.md`) |
-| `cargo xtask rt [--suite render\|query] [--filter <substring>] [--platform native\|chrome\|lavapipe\|all]` | run the GL JS render fixtures, or with `--suite query` the query fixtures (native and Chrome); fetches the mirror first; report in `docs/scratch/rt` |
+| `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (bench and fixture entry points) into `web/pkg` |
 | `cargo xtask pages` | `cargo xtask web`, then the Vite build into `web/dist`: the site `.github/workflows/pages.yml` deploys on every push to `main` |
-| `pnpm -C web dev` | Vite dev server at `/orbis/` (run `cargo xtask web` first) |
+| `pnpm -C web dev` | Vite dev server at `/orbis/` (run `cargo xtask web` first); the style editor at `/orbis/?style=playground&edit` |
 | `pnpm -C web typecheck` / `pnpm -C web test` | type-check the `orbis` package (`web/src`); its unit tests and the build test |
-| `cargo xtask bench` | GPU/CPU frame timings, still and with the camera moving (decision 0002); `--experiment gestures` for rotate, tilt and zoom frame times with tiles arriving (decision 0023); `alps --experiment gestures` for the terrain demo's rotate, pan and flight |
+| `pnpm -C web e2e [--only=scenario,edits,editor,offline] [--configs=webgpu,webgl2]` | headless Chromium: the binding scenario through the `orbis` package (`web/demo/scenario.html`) on each renderer, every edit class through the map app and the cost of a feature-state write, and the style editor's controls, JSON, hover and frames per edit; `offline` (opt-in, live network) downloads the live map's view as an offline region and reopens it with the network cut (`cargo test -p orb-api --test regions -- --ignored` natively) |
+| `pnpm -C web snapshot out.png '#z/lat/lon' [--style=<key>\|URL] [--size=WxH] [--reopen[=offline]] [--still]` | the map app on the Tokyo extract (the site defaults to the live map) in headless Chromium, screenshot; `--reopen` times a reload from the browser's cache, `=offline` with the network cut; `--still` also writes the map's own snapshot (`<out>-still.png`) |
+| `pnpm -C web measure [--android [--physical] \| --headed] [--runs=3] [--pipelines]` | plan §7.2's measurements in Chrome: input-to-photon latency (pan, pinch, rotate), DOM overlay skew, main-thread busy time and idle frames, for Orbis and the pinned GL JS (`web/demo/measure.html`); `--headed` in a window on the display; `--pipelines` instead times pipeline creation (#26) cold and warm: shaders and pipelines made, first draw, last pipeline, idle and the GPU queue's wait |
+| `node web/scripts/open.mjs <app> measure.html pipelines` | a measurement page in a browser no driver controls (Firefox, Safari), its result posted back |
+| `cargo xtask fixtures [expressions]` | fetch and verify the pinned GL JS fixture mirror into `fixtures/gl-js` (gitignored; no work when it matches; `fixtures/README.md`); `expressions` bundles the style-spec expression fixtures into `orb-expr` |
+| `cargo xtask rt [--suite render\|query] [--filter <substring>] [--platform native\|chrome\|lavapipe\|all]` | run the GL JS render fixtures, or with `--suite query` the query fixtures (native and Chrome); fetches the mirror first; report in `docs/scratch/rt` |
+| `cargo xtask bench` | GPU/CPU still-frame timings of five views; `--experiment gestures` for rotate, tilt and zoom frame times with tiles arriving (decision 0023); `alps --experiment gestures` for the terrain demo's rotate, pan and flight |
 | `pnpm -C web bench [--precise] [--android [--physical]] [--experiment=gestures [--workers=N]]` | the same bench in headless Chromium, or in this worktree's Android emulator's Chrome (`web/demo/bench.html`; keep its screen on; `--physical` for an assigned phone, below); `--experiment=gestures` drives the `orbis` package (`--style=alps` for the terrain paths) |
-| `pnpm -C web measure [--android [--physical] \| --headed] [--runs=3]` | plan §7.2's measurements in Chrome: input-to-photon latency (pan, pinch, rotate), DOM overlay skew, main-thread busy time and idle frames, for Orbis and the pinned GL JS (`web/demo/measure.html`); `--headed` in a window on the display |
-| `pnpm -C web pipelines [--runs=3] [--android [--physical]]` | pipeline creation (#26): shaders and pipelines made, first draw, last pipeline and idle (plan §18 row 10), GPU queue wait from `createMap` to idle, cold (fresh profile, or after `chrome://gpuclean` on Android) and warm |
-| `node web/scripts/open.mjs <app> pipelines.html` | a page in a browser no driver controls (Firefox, Safari), its result posted back |
-| `pnpm -C web scenario [--configs=webgpu,webgl2]` | the binding scenario through the `orbis` package in headless Chromium (`web/demo/scenario.html`) |
+| `cargo xtask demo-data` / `cargo xtask unicode` | regenerate the committed Tokyo extracts and their labelled styles; orb-text's character tables from the UCD |
 
 ## How we work
 

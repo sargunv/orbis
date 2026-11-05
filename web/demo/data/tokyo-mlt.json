@@ -1,11 +1,11 @@
 {
   "version": 8,
-  "glyphs": "./data/glyphs/{fontstack}/{range}.pbf",
-  "sprite": "./data/sprites/ofm",
+  "glyphs": "./glyphs/{fontstack}/{range}.pbf",
+  "sprite": "./sprites/ofm",
   "sources": {
     "openmaptiles": {
       "type": "vector",
-      "url": "pmtiles://./data/tokyo-mlt.pmtiles",
+      "url": "pmtiles://./tokyo-mlt.pmtiles",
       "attribution": "<a href=\"https://openfreemap.org\">OpenFreeMap</a> <a href=\"https://www.openmaptiles.org/\">© OpenMapTiles</a> Data from <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>"
     }
   },

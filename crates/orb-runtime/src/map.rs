@@ -1018,9 +1018,9 @@ impl Map {
         self.set_document(json, None, false)
     }
 
-    /// Installs a v8 style or a scene document; `base` resolves a scene's
-    /// relative style URL, and `scene` keeps the surface for a scene's own
-    /// style.
+    /// Installs a v8 style or a scene document; `base`, the URL it came
+    /// from, resolves its relative URLs, and `scene` keeps the surface for
+    /// a scene's own style.
     fn set_document(&mut self, json: &str, base: Option<&str>, scene: bool) -> Result<(), String> {
         if !scene && orb_v8::is_scene(json) {
             let parsed = orb_v8::parse_scene(json).map_err(|d| d.to_string())?;
@@ -1041,7 +1041,10 @@ impl Map {
                 }
             };
         }
-        let doc = StyleDoc::parse(json).map_err(|d| d.to_string())?;
+        // A fetched style's relative URLs are relative to it.
+        let resolved = base.map(|base| orb_source::endpoint::resolve_style_urls(json, base));
+        let doc =
+            StyleDoc::parse(resolved.as_deref().unwrap_or(json)).map_err(|d| d.to_string())?;
         if !scene {
             self.surface = Surface::default();
             self.lights = None;

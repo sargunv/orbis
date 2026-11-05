@@ -14,9 +14,9 @@ const OUT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/demo/data");
 const LIBERTY: &str = "https://tiles.openfreemap.org/styles/liberty";
 const FONTS: &str = "https://tiles.openfreemap.org/fonts";
 const SPRITE: &str = "https://tiles.openfreemap.org/sprites/ofm_f384/ofm";
-/// The demo style's URLs; hosts resolve `./data/` as they do for tiles.
-const GLYPHS_URL: &str = "./data/glyphs/{fontstack}/{range}.pbf";
-const SPRITE_URL: &str = "./data/sprites/ofm";
+/// The demo style's URLs, relative to it.
+const GLYPHS_URL: &str = "./glyphs/{fontstack}/{range}.pbf";
+const SPRITE_URL: &str = "./sprites/ofm";
 
 pub(crate) fn generate() -> Result<(), String> {
     let agent = ureq::Agent::new_with_defaults();

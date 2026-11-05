@@ -65,7 +65,6 @@ export function editor({ onClose, onReplaced }) {
   const applied = h("output", { class: "applied", "aria-live": "polite" }, "Edits apply as you make them");
   const inspect = h("button", { class: "text-button inspect", type: "button", hidden: true,
     onclick: () => hovered && reveal(hovered) });
-  const native = h("span", { class: "native", hidden: !import.meta.env.DEV });
   const filter = h("input", { class: "field layer-filter", type: "search", placeholder: "Filter layers",
     "aria-label": "Filter layers", oninput: () => renderLayers() });
   const groups = h("div", { class: "layer-groups" });
@@ -93,7 +92,7 @@ export function editor({ onClose, onReplaced }) {
       h("button", { class: "tool quiet", type: "button", title: "Close the editor", onclick: () => onClose() },
         icon("close"), hidden("Close the editor"))),
     tabList, tabs.layers, tabs.json,
-    h("footer", { class: "editor-foot" }, applied, inspect, native));
+    h("footer", { class: "editor-foot" }, applied, inspect));
   root.addEventListener("keydown", (e) => { if (e.key === "Escape") onClose(); });
 
   function showTab(key) {
@@ -113,7 +112,6 @@ export function editor({ onClose, onReplaced }) {
     const started = performance.now();
     const generation = await map.edit(build);
     pending.push({ generation, frame: before, ms: performance.now() - started });
-    mirror();
     return generation;
   }
 
@@ -328,36 +326,6 @@ export function editor({ onClose, onReplaced }) {
     row?.querySelector(".layer-name")?.focus({ preventScroll: true });
   }
 
-  // The native viewer bridge (development only).
-  let mirrorTimer;
-  let mirrorChain = Promise.resolve();
-  let targets = { hover: null, selected: null };
-  function mirror() {
-    if (!import.meta.env.DEV) return;
-    clearTimeout(mirrorTimer);
-    mirrorTimer = setTimeout(() => {
-      const current = map;
-      mirrorChain = mirrorChain.catch(() => {}).then(async () => {
-        const live = await current.getStyle();
-        const sources = new Map();
-        for (const layer of live.layers) {
-          if (!layer.source || !["vector", "geojson"].includes(live.sources[layer.source]?.type)) continue;
-          const target = { source: layer.source, sourceLayer: layer["source-layer"] };
-          sources.set(JSON.stringify(target), target);
-        }
-        const commands = [["setStyle", live], ...[...sources.values()].map((t) => ["removeFeatureState", t])];
-        for (const [key, target] of Object.entries(targets)) if (target) commands.push(["setFeatureState", target, { [key]: true }]);
-        const response = await fetch(`${import.meta.env.BASE_URL}__playground/style`, {
-          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(commands),
-        });
-        const { linked } = await response.json();
-        native.textContent = linked ? "Native viewer linked: style and hover sent"
-          : "Native viewer not linked: start Vite with ORB_PLAYGROUND_STYLE";
-        native.dataset.sent = String(Date.now());
-      });
-    }, 30);
-  }
-
   return {
     get open() { return !root.hidden; },
     get style() { return style; },
@@ -367,12 +335,10 @@ export function editor({ onClose, onReplaced }) {
       frame = 0;
       pending = [];
       expanded.clear();
-      targets = { hover: null, selected: null };
       hovered = undefined;
       style = await map.getStyle();
       original = JSON.stringify(style);
       if (tab === "json" && !root.hidden) showTab("json"); else renderLayers();
-      mirror();
     },
     show(on) {
       root.hidden = !on;
@@ -399,10 +365,6 @@ export function editor({ onClose, onReplaced }) {
       inspect.title = hit ? `Edit ${hit.layer}` : "";
       markHovered();
     },
-    /** Highlight state moved: the native viewer follows. */
-    states(next) { targets = next; mirror(); },
     reveal,
-    /** The highlighter changed the style's layers. */
-    refresh: () => mirror(),
   };
 }

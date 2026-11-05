@@ -1,7 +1,7 @@
 //! Builds the fixture bridge, generates its bindings, compiles a program
 //! in each language against them and runs it. Ignored by default: they
 //! need `swiftc`, or a JDK and `kotlinc` (`KOTLINC`, `JAVA_HOME`);
-//! `cargo xtask bindings test` runs them.
+//! `cargo xtask bindings --test` runs them.
 
 mod support;
 

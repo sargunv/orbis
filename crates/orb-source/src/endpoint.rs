@@ -330,6 +330,79 @@ pub fn join_url(base: &str, relative: &str) -> String {
     format!("{origin}{}", segments.join("/"))
 }
 
+/// A style fetched from `base` with its relative URLs resolved against
+/// it, as a browser resolves a style's links: sources' `url`, `urls`,
+/// `tiles` and GeoJSON `data`, `glyphs`, `sprite` and `font-faces` (a
+/// `pmtiles://` URL keeps its prefix). The rest of the text is unchanged.
+pub fn resolve_style_urls(style: &str, base: &str) -> String {
+    use orb_expr::json::Json;
+    let Ok(doc) = json::parse(style) else {
+        return style.to_string();
+    };
+    fn add<'a>(strings: &mut Vec<&'a Json>, value: Option<&'a Json>) {
+        if let Some(value) = value {
+            match value.as_array() {
+                Some(items) => strings.extend(items),
+                None => strings.push(value),
+            }
+        }
+    }
+    let mut strings: Vec<&Json> = Vec::new();
+    add(&mut strings, doc.get("glyphs"));
+    match doc.get("sprite").and_then(Json::as_array) {
+        Some(sprites) => {
+            for s in sprites {
+                add(&mut strings, s.get("url"));
+            }
+        }
+        None => add(&mut strings, doc.get("sprite")),
+    }
+    for source in doc
+        .get("sources")
+        .and_then(Json::as_object)
+        .unwrap_or_default()
+    {
+        for key in ["url", "urls", "tiles", "data"] {
+            add(&mut strings, source.value.get(key));
+        }
+    }
+    for faces in doc
+        .get("font-faces")
+        .and_then(Json::as_object)
+        .unwrap_or_default()
+    {
+        match faces.value.as_array() {
+            Some(faces) => {
+                for f in faces {
+                    add(&mut strings, f.get("url"));
+                }
+            }
+            None => add(&mut strings, faces.value.get("url")),
+        }
+    }
+    let mut edits: Vec<(usize, usize, String)> = strings
+        .into_iter()
+        .filter_map(|value| {
+            let url = value.as_str()?;
+            let (prefix, rest) = match url.strip_prefix("pmtiles://") {
+                Some(rest) => ("pmtiles://", rest),
+                None => ("", url),
+            };
+            let joined = format!("{prefix}{}", join_url(base, rest));
+            (joined != url).then(|| {
+                let quoted = format!("\"{}\"", joined.replace('\\', "\\\\").replace('"', "\\\""));
+                (value.span.start as usize, value.span.end as usize, quoted)
+            })
+        })
+        .collect();
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut out = style.to_string();
+    for (start, end, text) in edits {
+        out.replace_range(start..end, &text);
+    }
+    out
+}
+
 /// Header metadata has the same precedence as TileJSON keys.
 pub fn archive_tilejson(bytes: &[u8]) -> Result<String, String> {
     let header = crate::pmtiles::Header::parse(bytes)?;
@@ -351,6 +424,59 @@ mod tests {
 
     fn mercator() -> TileMatrixSet {
         TileMatrixSet::by_id("WebMercatorQuad").unwrap()
+    }
+
+    #[test]
+    fn resolves_a_styles_relative_urls() {
+        let style = r#"{"version": 8, "glyphs": "./glyphs/{fontstack}/{range}.pbf",
+            "sprite": [{"id": "a", "url": "sprites/a"}],
+            "sources": {"t": {"type": "vector", "url": "pmtiles://./t.pmtiles"},
+                "g": {"type": "geojson", "data": "../g.json"},
+                "r": {"type": "raster", "tiles": ["https://x.org/{z}.png", "r/{z}.png"]},
+                "i": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}},
+            "layers": []}"#;
+        let resolved = resolve_style_urls(style, "file:///d/styles/s.json");
+        let doc = json::parse(&resolved).unwrap();
+        let at = |path: &[&str]| {
+            let mut v = &doc;
+            for key in path {
+                v = v.get(key).unwrap();
+            }
+            v.as_str().unwrap().to_string()
+        };
+        assert_eq!(
+            at(&["glyphs"]),
+            "file:///d/styles/glyphs/{fontstack}/{range}.pbf"
+        );
+        assert_eq!(
+            doc.get("sprite").unwrap().as_array().unwrap()[0]
+                .get("url")
+                .unwrap()
+                .as_str(),
+            Some("file:///d/styles/sprites/a")
+        );
+        assert_eq!(
+            at(&["sources", "t", "url"]),
+            "pmtiles://file:///d/styles/t.pmtiles"
+        );
+        assert_eq!(at(&["sources", "g", "data"]), "file:///d/g.json");
+        let tiles = doc
+            .get("sources")
+            .unwrap()
+            .get("r")
+            .unwrap()
+            .get("tiles")
+            .unwrap();
+        let tiles: Vec<_> = tiles
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            tiles,
+            ["https://x.org/{z}.png", "file:///d/styles/r/{z}.png"]
+        );
     }
 
     #[test]

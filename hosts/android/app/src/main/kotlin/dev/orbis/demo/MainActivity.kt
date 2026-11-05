@@ -91,10 +91,7 @@ class MainActivity : Activity() {
         addPin(Pin("Tokyo Station", 139.7671, 35.6812, Color.YELLOW))
 
         if (intent.getStringExtra("style") == "tokyo") {
-            val style = File(data, "tokyo-mvt.json").readText()
-                .replace("pmtiles://./data/", "pmtiles://file://${data.path}/")
-                .replace("\"./data/", "\"file://${data.path}/")
-            view.map.setStyleJson(style)
+            view.map.loadStyleUrl("file://${File(data, "tokyo-mvt.json").path}")
         } else {
             view.map.jumpTo(OrbCameraTarget(139.767, 35.681, 13.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN))
             view.map.loadStyleUrl("https://tiles.openfreemap.org/styles/liberty")

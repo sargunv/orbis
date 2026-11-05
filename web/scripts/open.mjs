@@ -1,8 +1,8 @@
 // Opens a demo page in a desktop browser no driver controls (Safari,
 // Firefox, a user's Chrome) and prints the result the page posts back to
-// `?report=` (pipelines.html, measure.html with `?auto`).
+// `?report=` (measure.html with `?pipelines` or `?auto`).
 //
-//   node scripts/open.mjs <app> <page> [query]   e.g. Safari pipelines.html
+//   node scripts/open.mjs <app> <page> [query]   e.g. Safari measure.html pipelines
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { serveDemo } from "./serve.mjs";
