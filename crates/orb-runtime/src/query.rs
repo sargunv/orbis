@@ -1365,6 +1365,8 @@ impl ScreenHit {
             )
         };
         let mut parts = Vec::new();
+        // Lines under pitch, as polygons.
+        let mut buffered = Vec::new();
         for part in feature.parts().ok()? {
             let mut rings = Vec::new();
             for ring in &part {
@@ -1379,6 +1381,21 @@ impl ScreenHit {
                 } else {
                     line
                 };
+                if feature.kind == 1 && q.camera.pitch > 0.0 {
+                    // GL JS tests lines in tile space: under pitch their
+                    // width widens toward the eye. The line buffered on
+                    // the map, projected.
+                    let world: Vec<DVec2> =
+                        line.iter().map(|p| transform(*p) + wrap + shift).collect();
+                    for polygon in buffer_line(&world, radius * q.view.world_per_px()) {
+                        let ring = polygon
+                            .iter()
+                            .map(|&p| q.project(p, elevation.1))
+                            .collect::<Option<Vec<_>>>()?;
+                        buffered.push(vec![ring]);
+                    }
+                    continue;
+                }
                 let points = line
                     .iter()
                     .map(|p| q.project(transform(*p) + wrap + shift, elevation.1))
@@ -1404,6 +1421,13 @@ impl ScreenHit {
                 }
             }
         }
+        let clip_pad = (shift.length() / q.view.world_per_px()) as f32 + radius as f32;
+        let (kind, radius) = if buffered.is_empty() {
+            (feature.kind, radius)
+        } else {
+            parts = buffered;
+            (0, 0.0)
+        };
         for point in parts.iter().flatten().flatten() {
             min = min.min(*point);
             max = max.max(*point);
@@ -1421,10 +1445,9 @@ impl ScreenHit {
                     .collect()
             })
             .collect();
-        let clip_pad = (shift.length() / q.view.world_per_px()) as f32 + radius;
         Some(Self {
             clipped,
-            kind: feature.kind,
+            kind,
             radius,
             parts,
             circles: Vec::new(),
@@ -1650,6 +1673,25 @@ impl ScreenHit {
 fn tile_rank(tile: TileIndex, drawn: usize) -> u64 {
     let z = u64::from(31u8.saturating_sub(tile.z));
     (z << 58) | (u64::from(tile.row) << 30) | (u64::from(tile.col) << 2) | (drawn as u64 & 3)
+}
+
+/// A line widened by `half` on each side, as polygons: a quadrilateral a
+/// segment and a circumscribed octagon a vertex (round joins and caps).
+fn buffer_line(line: &[DVec2], half: f64) -> Vec<Vec<DVec2>> {
+    let mut out = Vec::new();
+    for pair in line.windows(2) {
+        let n = (pair[1] - pair[0]).normalize_or_zero().perp() * half;
+        out.push(vec![pair[0] + n, pair[1] + n, pair[1] - n, pair[0] - n]);
+    }
+    let r = half / (std::f64::consts::PI / 8.0).cos();
+    for &p in line {
+        out.push(
+            (0..8)
+                .map(|i| p + DVec2::from_angle(f64::from(i) * std::f64::consts::FRAC_PI_4) * r)
+                .collect(),
+        );
+    }
+    out
 }
 
 /// GL JS `offsetLine`: a line moved `offset` to its right (y down), with

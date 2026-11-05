@@ -146,3 +146,41 @@ fn labels_pick_where_their_variable_anchor_puts_them() {
         "where it isn't"
     );
 }
+
+/// Every pixel a tall building draws picks it, across the edge of the
+/// tiles that hold it, under pitch.
+#[test]
+fn buildings_pick_wherever_they_draw() {
+    // Straddling the z13 tile edge at 0° longitude, a quarter tile wide.
+    let style = r##"{"version": 8, "center": [0.0, 0.01], "zoom": 13.5, "pitch": 55, "bearing": 20,
+        "sources": {"b": {"type": "geojson", "maxzoom": 13, "data": {"type": "Feature", "id": 6, "properties": {},
+            "geometry": {"type": "Polygon", "coordinates": [[[-0.006, 0.004], [0.004, 0.004], [0.004, 0.012], [-0.006, 0.012], [-0.006, 0.004]]]}}}},
+        "layers": [
+          {"id": "bg", "type": "background", "paint": {"background-color": "#ffffff"}},
+          {"id": "x", "type": "fill-extrusion", "source": "b",
+           "paint": {"fill-extrusion-color": "#ff0000", "fill-extrusion-height": 400,
+             "fill-extrusion-vertical-gradient": false}}]}"##;
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, 300, 300, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(style).unwrap();
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    let (mut drawn, mut missed) = (0, 0);
+    for (i, p) in pixels.chunks(4).enumerate() {
+        // Lit walls darken; any strongly red pixel is the building.
+        if p[0] > 120 && p[1] < 60 && p[2] < 60 {
+            drawn += 1;
+            let at = DVec2::new((i % 300) as f64 + 0.5, (i / 300) as f64 + 0.5);
+            if map.hit_test(at).is_none_or(|h| h.layer != "x") {
+                missed += 1;
+            }
+        }
+    }
+    assert!(drawn > 2000, "{drawn} pixels drawn");
+    // Edge pixels round either way.
+    assert!(
+        missed * 100 < drawn,
+        "{missed} of {drawn} drawn pixels miss"
+    );
+}
