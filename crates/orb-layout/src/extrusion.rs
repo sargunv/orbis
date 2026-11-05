@@ -32,8 +32,7 @@ pub fn layout_in_extent(
 ) -> Mesh {
     // Roofs don't reach the poles: caps are the ground's.
     let bend = bend.map(|b| fill::Bend {
-        north: false,
-        south: false,
+        poles: [false; 2],
         ..b
     });
     let rounded = rounding > 0.0;

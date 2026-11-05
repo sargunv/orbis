@@ -44,8 +44,8 @@ impl PaintState {
 }
 
 /// Writes this frame's node paint: at `zoom`, `bearing` and `resolution`,
-/// with paint transitions eased in at `now`. Returns the pattern and dash
-/// cross-fade, whether it is still fading, and images the style lacks.
+/// with paint transitions eased in at `now`. Returns whether the pattern
+/// and dash cross-fade is still fading, and images the style lacks.
 pub(crate) fn frame(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
@@ -54,7 +54,7 @@ pub(crate) fn frame(
     (zoom, bearing, resolution): (f64, f64, f64),
     now: f64,
     atlas: &mut ImageAtlas,
-) -> (Crossfade, bool, Vec<String>) {
+) -> (bool, Vec<String>) {
     let worker = Arc::clone(&style.worker);
     let plan = worker.plan();
     if style.states.prepare(gpu, renderer, plan, zoom) {
@@ -90,7 +90,7 @@ pub(crate) fn frame(
         crossfade,
         atlas,
     );
-    (crossfade, fading, missing)
+    (fading, missing)
 }
 
 /// Writes the draped nodes' paint at each of `zooms` not written since it

@@ -236,6 +236,20 @@ pub(crate) struct NodeState {
     pub(crate) painted: Option<u64>,
 }
 
+impl NodeState {
+    /// A node new at revision `epoch`: tiles laid out before are stale.
+    pub(crate) fn new(plan: &StylePlan, node: &crate::style::NodePlan, epoch: u64) -> Self {
+        let maxima = vec![0.0; plan.paint_properties(node).len()];
+        let (layout_epoch, rows_epoch) = (epoch, epoch);
+        Self {
+            maxima,
+            layout_epoch,
+            rows_epoch,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedStyle {
     /// Identifies the style to the jobs.
@@ -442,8 +456,6 @@ pub struct Map {
     pub(crate) retired_pages: Vec<PageId>,
     pub(crate) retired_images: Vec<u64>,
     pub(crate) retired_ramps: Vec<u32>,
-    /// This frame's pattern and dash cross-fade.
-    pub(crate) crossfade: crate::paint::Crossfade,
     /// Tiles' patches on the globe.
     pub(crate) globe_warps: crate::globe::GlobeWarps,
     /// Terrains made so far: each new one's id.
@@ -598,10 +610,6 @@ impl Map {
             retired_pages: Vec::new(),
             retired_images: Vec::new(),
             retired_ramps: Vec::new(),
-            crossfade: crate::paint::Crossfade {
-                from_scale: 1.0,
-                mix: 1.0,
-            },
             terrains: 0,
             labels: crate::labels::Labels::new(default_lane()),
             label_epoch: 0,
@@ -1009,16 +1017,8 @@ impl Map {
             .map(|index| self.start_source(plan, index))
             .collect();
         self.style = Some(LoadedStyle {
-            nodes: plan
-                .nodes
-                .iter()
-                .map(|n| {
-                    let state = NodeState {
-                        maxima: vec![0.0; plan.paint_properties(n).len()],
-                        ..NodeState::default()
-                    };
-                    (n.key, state)
-                })
+            nodes: (plan.nodes.iter())
+                .map(|n| (n.key, NodeState::new(plan, n, 0)))
                 .collect(),
             drawn: Vec::new(),
             placed: vec![Vec::new(); plan.sources.len()],
@@ -1252,7 +1252,8 @@ impl Map {
         let mut fading = false;
         if let Some(style) = &mut self.style {
             let mut images = self.services.images.0.lock().expect("images poisoned");
-            let (crossfade, fades, missing) = crate::paint::frame(
+            let missing;
+            (fading, missing) = crate::paint::frame(
                 gpu,
                 renderer,
                 style,
@@ -1270,7 +1271,6 @@ impl Map {
                 self.events.push(MapEvent::StyleImageMissing { name });
             }
             style.symbol_tiles.clear();
-            (self.crossfade, fading) = (crossfade, fades);
         }
         let (mut frame_lights, mut frame_terrain) = (None, None);
         if self.style.is_some() {
@@ -1695,7 +1695,10 @@ impl Map {
         let mut bend = (warped && vector)
             .then(|| self.globe_warps.surface_series(tms, tile))
             .flatten()
-            .map(|series| bend_of(series.grid(), [false; 2]));
+            .map(|series| crate::Bend {
+                cells: series.grid(),
+                poles: [false; 2],
+            });
         let footprint = warped
             .then(|| self.globe_warps.surface_footprint(tms, tile))
             .flatten();
@@ -1714,10 +1717,9 @@ impl Map {
             };
             if grid > 1 || poles.contains(&true) {
                 let cells = bend.map_or(grid, |b| b.cells.max(grid));
-                bend = Some(bend_of(cells, poles));
+                bend = Some(crate::Bend { cells, poles });
             }
         }
-        let key = style.worker.plan().sources[index].key;
         let host = endpoint.host();
         let mut request = TileRequest {
             style: style.id,
@@ -1841,7 +1843,7 @@ impl Map {
         view: &View,
         now: f64,
     ) -> bool {
-        let extrusion_scale = self.extrusion_scale();
+        let extrusion = self.extrusion_scale();
         let Some(style) = &self.style else {
             return true;
         };
@@ -1867,17 +1869,20 @@ impl Map {
         );
         // Glyph rasterization above is the jobs'; placement starts here.
         let started = self.services.clock.now();
-        let mut frame = self.labels.frame(
+        // The labels' frame for a view of `camera` centred on `center`.
+        let (plan, tiles, period) = (
             style.worker.plan(),
             &style.symbol_tiles,
-            view,
-            view.camera_world(),
             self.surface.period(),
-            self.camera.state(),
-            self.camera.state().zoom(self.surface.projection()),
-            extrusion_scale,
-            now,
         );
+        let frame_at = |view: &View, center, camera: &orb_camera::CameraState| {
+            let zoom = camera.zoom(self.surface.projection());
+            let labels = &self.labels;
+            labels.frame(
+                plan, tiles, view, center, period, camera, zoom, extrusion, now,
+            )
+        };
+        let mut frame = frame_at(view, view.camera_world(), self.camera.state());
         if self.mode != RenderMode::Continuous {
             frame.fade_duration = 0.0;
         }
@@ -1889,17 +1894,7 @@ impl Map {
                     .iter()
                     .map(|t| {
                         let view = View::new(&t.camera, t.viewport, &self.surface.view_surface());
-                        let f = self.labels.frame(
-                            style.worker.plan(),
-                            &style.symbol_tiles,
-                            &view,
-                            t.center,
-                            self.surface.period(),
-                            &t.camera,
-                            t.camera.zoom(self.surface.projection()),
-                            extrusion_scale,
-                            now,
-                        );
+                        let f = frame_at(&view, t.center, &t.camera);
                         orb_symbol::ScopeTile {
                             col: t.col,
                             row: t.row,

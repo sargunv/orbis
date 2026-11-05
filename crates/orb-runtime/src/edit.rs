@@ -230,16 +230,9 @@ impl Map {
             if style.nodes.contains_key(&node.key) {
                 continue;
             }
-            style.nodes.insert(
-                node.key,
-                NodeState {
-                    maxima: vec![0.0; plan.paint_properties(node).len()],
-                    ramp: None,
-                    layout_epoch: version,
-                    rows_epoch: version,
-                    painted: None,
-                },
-            );
+            style
+                .nodes
+                .insert(node.key, NodeState::new(plan, node, version));
             if node.source != usize::MAX && plan.image_kind(node.source).is_none() {
                 relayout.entry(node.source).or_default().push(node.key);
             }

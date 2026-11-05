@@ -23,8 +23,8 @@ pub const SOUTH_POLE_Y: i16 = i16::MAX;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Bend {
     pub cells: u32,
-    pub north: bool,
-    pub south: bool,
+    /// Whether the north and south poles take caps.
+    pub poles: [bool; 2],
 }
 
 /// Lays out the polygons among `features` (indices into `layer`); other
@@ -110,10 +110,8 @@ pub(crate) fn layout_clipped(
                     );
                 }
                 let edge = extent as i16;
-                for (on, y, pole) in [
-                    (bend.north, 0, NORTH_POLE_Y),
-                    (bend.south, edge, SOUTH_POLE_Y),
-                ] {
+                let [north, south] = bend.poles;
+                for (on, y, pole) in [(north, 0, NORTH_POLE_Y), (south, edge, SOUTH_POLE_Y)] {
                     if on {
                         cap(&mut points, &mut triangles, y, pole);
                     }

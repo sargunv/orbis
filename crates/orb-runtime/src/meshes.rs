@@ -10,14 +10,6 @@ use orb_source::endpoint::TileEndpoint;
 
 use crate::image;
 
-pub(crate) fn bend_of(cells: u32, [north, south]: [bool; 2]) -> crate::Bend {
-    crate::Bend {
-        cells,
-        north,
-        south,
-    }
-}
-
 /// Cells per side of an image source's grid: GL JS's granularity for warped
 /// image quads.
 pub(crate) const IMAGE_SOURCE_CELLS: u32 = 16;
