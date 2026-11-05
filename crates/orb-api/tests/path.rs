@@ -103,17 +103,30 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
     }
     settle(&mut moved, &mut target);
     let gestured = target.read_pixels().unwrap();
+    let rest = moved.camera();
     drop(moved);
-    (gestured, fresh_at(&runtime, &mut target, style, end))
+    let (fresh, fresh_rest) = fresh_at(&runtime, &mut target, style, end);
+    // At rest, the camera too is what a fresh one is: over terrain, it
+    // stands on the same ground at the same height (#104).
+    assert_eq!(
+        rest, fresh_rest,
+        "the camera at rest differs from a fresh map's"
+    );
+    (gestured, fresh)
 }
 
-/// What a fresh map draws at rest at `at`, live, once idle.
-fn fresh_at(runtime: &Runtime, target: &mut Target, style: &str, at: At) -> Vec<u8> {
+/// What a fresh map draws at rest at `at`, live, once idle, and its camera.
+fn fresh_at(
+    runtime: &Runtime,
+    target: &mut Target,
+    style: &str,
+    at: At,
+) -> (Vec<u8>, orb_api::CameraState) {
     let mut fresh = Map::new(runtime, MapOptions::default());
     fresh.set_style_json(style).unwrap();
     fresh.jump_to(&camera(at));
     settle(&mut fresh, target);
-    target.read_pixels().unwrap()
+    (target.read_pixels().unwrap(), fresh.camera())
 }
 
 /// Asserts the two pictures equal, to one step in a channel: the GPU cull
@@ -254,7 +267,12 @@ fn panning_frame_by_frame_draws_what_a_fresh_map_does() {
         }
         settle(&mut map, &mut target);
         let panned = target.read_pixels().unwrap();
-        let fresh = fresh_at(&runtime, &mut target, &style, at(stop * 20));
+        let rest = map.camera();
+        let (fresh, fresh_rest) = fresh_at(&runtime, &mut target, &style, at(stop * 20));
+        assert_eq!(
+            rest, fresh_rest,
+            "the camera at rest differs from a fresh map's"
+        );
         assert_same(&format!("pan-{stop}"), (panned, fresh));
     }
 }
