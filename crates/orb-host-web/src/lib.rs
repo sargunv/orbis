@@ -95,6 +95,19 @@ pub async fn fetch(url: &str) -> Result<Vec<u8>, FetchError> {
     fetch_body(url, None).await
 }
 
+thread_local! {
+    static REQUEST_HOOK: std::cell::RefCell<Option<js_sys::Function>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Transforms every request this JS context's fetches make (GL JS
+/// `transformRequest`): `hook(url)` answers `{url, headers}` (or a promise
+/// of it), `null` to refuse, or `undefined` to leave the request.
+pub fn set_request_hook(hook: Option<js_sys::Function>) {
+    REQUEST_HOOK.with(|h| *h.borrow_mut() = hook);
+}
+
 async fn fetch_body(url: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchError> {
     let network = |e: JsValue| FetchError::Network(format!("{e:?}"));
     let global = js_sys::global();
@@ -103,16 +116,41 @@ async fn fetch_body(url: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, Fet
         .dyn_into::<js_sys::Function>()
         .map_err(network)?;
     let init = web_sys::RequestInit::new();
+    let headers = web_sys::Headers::new().map_err(network)?;
+    let mut url = JsValue::from(url);
+    if let Some(hook) = REQUEST_HOOK.with(|h| h.borrow().clone()) {
+        let mut request = hook.call1(&JsValue::NULL, &url).map_err(network)?;
+        if let Ok(promise) = request.clone().dyn_into::<js_sys::Promise>() {
+            request = JsFuture::from(promise).await.map_err(network)?;
+        }
+        if request.is_null() {
+            let url = url.as_string().unwrap_or_default();
+            return Err(FetchError::UnsupportedUrl(format!("{url}: refused")));
+        }
+        if !request.is_undefined() {
+            url = Reflect::get(&request, &"url".into()).map_err(network)?;
+            let extra = Reflect::get(&request, &"headers".into()).map_err(network)?;
+            if extra.is_object() {
+                for entry in js_sys::Object::entries(extra.unchecked_ref()).iter() {
+                    let entry: js_sys::Array = entry.unchecked_into();
+                    let (name, value) = (entry.get(0), entry.get(1));
+                    let (Some(name), Some(value)) = (name.as_string(), value.as_string()) else {
+                        continue;
+                    };
+                    headers.set(&name, &value).map_err(network)?;
+                }
+            }
+        }
+    }
     if let Some((offset, length)) = range {
         let end = orb_host::range_end(offset, length)?;
-        let headers = web_sys::Headers::new().map_err(network)?;
         headers
             .set("Range", &format!("bytes={offset}-{end}"))
             .map_err(network)?;
-        init.set_headers(&headers);
     }
+    init.set_headers(&headers);
     let promise = fetch
-        .call2(&global, &url.into(), &init)
+        .call2(&global, &url, &init)
         .map_err(network)?
         .dyn_into::<js_sys::Promise>()
         .map_err(network)?;

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use operations::Next;
-use orb_api::{Event, Map, MapEvent, MapOptions, Runtime, RuntimeOptions, Target, UrlTransform};
+use orb_api::{Event, Map, MapEvent, MapOptions, Runtime, RuntimeOptions, Target};
 use serde_json::{Value, json};
 
 use images::Image;
@@ -105,12 +105,16 @@ pub(crate) fn runtime(root: &Path, backend: orb_api::Backend) -> Result<Backend,
     let runtime = Runtime::new(&RuntimeOptions {
         backend,
         egl_library: std::env::var("ORB_EGL_LIBRARY").ok(),
-        url_transform: Some(UrlTransform(Arc::new(move |url| {
-            fetch::resolve(&assets, url)
-        }))),
         ..RuntimeOptions::default()
     })
     .map_err(|e| e.to_string())?;
+    runtime.set_request_transform(Some(Arc::new(move |url: &str| {
+        let url = fetch::resolve(&assets, url)?;
+        Some(orb_api::Request {
+            url,
+            headers: Vec::new(),
+        })
+    })));
     Ok(Backend::Native(runtime))
 }
 

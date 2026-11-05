@@ -312,6 +312,15 @@ internal object OrbisNative {
     external fun orbRuntimeCreateWith(jobThreads: Int, backend: Int, stateDir: ByteArray, androidApiLevel: Int): Long
 
     @JvmStatic
+    external fun orbRuntimeSetRequestRules(self: Long, rules: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbRuntimeSetOnline(self: Long, online: Boolean): Unit
+
+    @JvmStatic
+    external fun orbRuntimeOnline(self: Long): Boolean
+
+    @JvmStatic
     external fun orbRuntimeStats(self: Long): Long
 
     @JvmStatic

@@ -26,7 +26,14 @@ fun main() {
                 check(bad is OrbErrorException && bad.error == OrbError.InvalidArgument && !bad.message.isNullOrEmpty())
 
                 // Draws until the blue box shows in the middle.
-                map.setStyleJson(STYLE)
+                // From a style a request rule finds on disk (files read offline).
+                val dir = kotlin.io.path.createTempDirectory("orb-smoke").toFile()
+                java.io.File(dir, "style.json").writeText(STYLE)
+                check(runCatching { runtime.setRequestRules("{bad") }.isFailure)
+                runtime.setRequestRules("""{"rewrites": [["smoke://", "file://${dir.absolutePath}/"]]}""")
+                runtime.setOnline(false)
+                check(!runtime.online())
+                map.loadStyleUrl("smoke://style.json")
                 val started = System.nanoTime()
                 val i = (32 * 64 + 32) * 4
                 while (true) {

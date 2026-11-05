@@ -5,8 +5,9 @@
 //
 // Spawner → worker: {module, port}. Port messages are Rust's (orb-web's
 // `jobs` module); this file only carries them.
-import init, { JobWorker, reloadRegions } from "../pkg/core.js";
+import init, { JobWorker, reloadRegions, setRequestHook } from "../pkg/core.js";
 import { onRegionsChanged } from "./regions.ts";
+import { askPage } from "./requests.ts";
 import { loadShaper } from "./shaper.ts";
 
 self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAssembly.Module; port: MessagePort }>) => {
@@ -27,7 +28,15 @@ self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAs
   };
   self.addEventListener("unhandledrejection", (e) => { if (trapped(e.reason)) e.preventDefault(); });
   self.addEventListener("error", (e) => { if (trapped(e.error)) e.preventDefault(); });
+  // The page's request transform, asked for each fetch while it has one.
+  const page = askPage(port);
   port.onmessage = async ({ data }) => {
+    if (page.answer(data)) return;
+    const { requestHook } = data as { requestHook?: boolean };
+    if (requestHook !== undefined) {
+      setRequestHook(requestHook ? page.hook : undefined);
+      return;
+    }
     try {
       const reply = await jobs.receive(data);
       if (reply) port.postMessage(reply, [reply.message.buffer, reply.buffer, reply.image].filter(Boolean));

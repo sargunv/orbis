@@ -5,8 +5,8 @@
 //   pixels, a hit test, a rendered-features query, an edit's generation,
 //   style images, camera moves with roll and elevation, project and
 //   unproject (for the camera now and another), padding, the free camera, a
-//   clustered source's queries, a GeoJSON diff, a canvas source, a source
-//   the app feeds, a drag, a click, idle drawing nothing, and an error.
+//   clustered source's queries, a GeoJSON diff, a canvas source, a request
+//   transform, a source the app feeds, a drag, a click, idle drawing nothing, and an error.
 // - `edits`: every edit class through the map app's edit API
 //   (`globalThis.orbis`, web/demo/expose.js) must resolve and settle, and
 //   the cost of a feature-state write (plan §10.2's ≤0.05 ms target) over
@@ -259,6 +259,22 @@ async function scenario(browser, server, config) {
     return (await s.map.queryRenderedFeatures(c, { layers: ["box"] }))[0]?.properties;
   }, CENTER);
   assert.deepEqual(updated, { name: "seven" });
+
+  // A request transform rewrites what the job workers fetch.
+  await scenario(async (s) => {
+    const square = { type: "Feature", properties: {}, geometry: { type: "Polygon",
+      coordinates: [[[-5, -5], [5, -5], [5, 5], [-5, 5], [-5, -5]]] } };
+    s.setRequestTransform((url) => (url.startsWith("app://")
+      ? { url: `data:application/json,${encodeURIComponent(JSON.stringify(square))}`, headers: { "X-Orbis": "1" } }
+      : undefined));
+    await s.shows(s.map.edit((tx) => tx
+      .addSource("remote", { type: "geojson", data: "app://square.json" })
+      .addLayer({ id: "remote", type: "fill", source: "remote", paint: { "fill-color": "#00ffff" } })));
+    await s.idle();
+    s.setRequestTransform(undefined);
+  });
+  image = await pixels();
+  assert.deepEqual(pixel(image, CENTER), [0, 255, 255], "the transformed source");
 
   // A source the app feeds: the map asks for its tile, the app answers.
   await scenario(async (s) => {

@@ -25,6 +25,15 @@ pub(crate) fn service() -> Arc<dyn Fetch> {
     FETCH.with(|f| f.clone())
 }
 
+/// Transforms every request this JS context fetches (the page's or a job
+/// worker's; GL JS `transformRequest`): `hook(url)` answers `{url,
+/// headers}` or a promise of it, `null` to refuse, or `undefined` to leave
+/// it. No hook, none.
+#[wasm_bindgen(js_name = setRequestHook)]
+pub fn set_request_hook(hook: Option<js_sys::Function>) {
+    orb_host_web::set_request_hook(hook);
+}
+
 /// Reads the regions again, after another context changed them.
 #[wasm_bindgen(js_name = reloadRegions)]
 pub fn reload_regions() {

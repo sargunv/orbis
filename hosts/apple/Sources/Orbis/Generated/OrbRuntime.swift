@@ -70,6 +70,37 @@ public final class OrbRuntime {
         return OrbRuntime(handle: result.ok!)
     }
 
+    /// Rewrites every request the runtime makes from here on (GL JS
+    /// `transformRequest`), by rules as JSON: `{"rewrites": [[from,
+    /// to], …], "headers": [[prefix, name, value], …]}`. The first
+    /// rewrite whose `from` prefixes a URL replaces that prefix with
+    /// `to`, before the HTTP cache; every header whose `prefix` starts
+    /// the URL so rewritten is sent with it (a tile server's token,
+    /// say). Empty clears the rules.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func setRequestRules(rules: String) throws {
+        let result = withStringView(rules) { rulesView in OrbRuntime_set_request_rules(live(), rulesView) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Off, nothing goes to the network: requests answer from the HTTP
+    /// cache and offline regions, stale or not, and fail without them.
+    ///
+    /// Contract: `command`.
+    public func setOnline(online: Bool) {
+        OrbRuntime_set_online(live(), online)
+    }
+
+    /// Contract: `snapshot`.
+    public func online() -> Bool {
+        return OrbRuntime_online(live())
+    }
+
     /// What the runtime's device is and has done, now.
     ///
     /// Contract: `snapshot`.

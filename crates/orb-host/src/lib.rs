@@ -21,6 +21,18 @@ pub trait Fetch: Send + Sync {
     fn get_range(&self, url: &str, offset: u64, length: u64, done: FetchDone);
 }
 
+/// What a [`RequestTransform`] makes of a URL: the URL to fetch, and
+/// headers to send with it (an auth token, say).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Request {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+}
+
+/// Rewrites every request a host's fetch makes (GL JS `transformRequest`):
+/// the request to send, or `None` to refuse it.
+pub type RequestTransform = dyn Fn(&str) -> Option<Request> + Send + Sync;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FetchError {
     /// The resource doesn't exist (HTTP 404, a missing file). HTTP 204 is

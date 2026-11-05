@@ -141,6 +141,32 @@ mod ffi {
             .map_err(fail)
         }
 
+        /// Rewrites every request the runtime makes from here on (GL JS
+        /// `transformRequest`), by rules as JSON: `{"rewrites": [[from,
+        /// to], …], "headers": [[prefix, name, value], …]}`. The first
+        /// rewrite whose `from` prefixes a URL replaces that prefix with
+        /// `to`, before the HTTP cache; every header whose `prefix` starts
+        /// the URL so rewritten is sent with it (a tile server's token,
+        /// say). Empty clears the rules.
+        #[diplomat::attr(contract, command)]
+        pub fn set_request_rules(&mut self, rules: &DiplomatStr) -> Result<(), OrbError> {
+            let transform = crate::request_rules(&text(rules))?;
+            self.0.set_request_transform(transform);
+            Ok(())
+        }
+
+        /// Off, nothing goes to the network: requests answer from the HTTP
+        /// cache and offline regions, stale or not, and fail without them.
+        #[diplomat::attr(contract, command)]
+        pub fn set_online(&mut self, online: bool) {
+            self.0.set_online(online);
+        }
+
+        #[diplomat::attr(contract, snapshot)]
+        pub fn online(&self) -> bool {
+            self.0.online()
+        }
+
         /// What the runtime's device is and has done, now.
         #[diplomat::attr(contract, snapshot)]
         pub fn stats(&self) -> Box<OrbStats> {
@@ -2034,6 +2060,48 @@ fn fail(error: orb_api::Error) -> OrbError {
     };
     LAST_ERROR.with(|e| *e.borrow_mut() = error.message().to_owned());
     status
+}
+
+/// [`OrbRuntime::set_request_rules`]'s rules as a transform; `None` for
+/// empty rules.
+#[allow(clippy::type_complexity)]
+fn request_rules(
+    text: &str,
+) -> Result<Option<std::sync::Arc<orb_api::RequestTransform>>, OrbError> {
+    let Some(rules) = json(text.as_bytes())? else {
+        return Ok(None);
+    };
+    let strings = |key: &str, n: usize| -> Result<Vec<Vec<String>>, OrbError> {
+        let bad = || invalid(format!("request rules: {key} are arrays of {n} strings"));
+        let Some(list) = rules.get(key) else {
+            return Ok(Vec::new());
+        };
+        let list = list.as_array().ok_or_else(bad)?;
+        list.iter()
+            .map(|rule| {
+                let rule = rule.as_array().filter(|r| r.len() == n).ok_or_else(bad)?;
+                rule.iter()
+                    .map(|s| s.as_str().map(str::to_string).ok_or_else(bad))
+                    .collect()
+            })
+            .collect()
+    };
+    let (rewrites, headers) = (strings("rewrites", 2)?, strings("headers", 3)?);
+    Ok(Some(std::sync::Arc::new(move |url: &str| {
+        let url = rewrites
+            .iter()
+            .find_map(|r| {
+                url.strip_prefix(r[0].as_str())
+                    .map(|rest| format!("{}{rest}", r[1]))
+            })
+            .unwrap_or_else(|| url.to_string());
+        let headers = headers
+            .iter()
+            .filter(|h| url.starts_with(h[0].as_str()))
+            .map(|h| (h[1].clone(), h[2].clone()))
+            .collect();
+        Some(orb_api::Request { url, headers })
+    })))
 }
 
 fn invalid(message: String) -> OrbError {

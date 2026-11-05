@@ -2,7 +2,7 @@
 // package; `pnpm -C web e2e` drives it on each renderer. The
 // page makes the map and records its events and frames; the driver reads
 // pixels off screenshots and moves the pointer.
-import { createMap } from "orbis";
+import { createMap, setRequestTransform } from "orbis";
 
 /** A red background and a blue box around the origin, with a feature id. */
 const STYLE = {
@@ -44,6 +44,7 @@ window.scenario = (async () => {
   await map.once("idle");
   return {
     map,
+    setRequestTransform,
     /** The events since the last call. */
     events: () => events.splice(0),
     idle: () => (map.stats?.idle && !map.camera.moving ? Promise.resolve() : map.once("idle")),

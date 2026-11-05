@@ -828,3 +828,48 @@ fn a_map_draws_on_the_thread_that_made_its_runtime() {
         .expect("the render thread");
     assert_eq!(drawn, [0, 0, 255, 255]);
 }
+
+#[test]
+fn request_transforms_rewrite_what_the_map_fetches() {
+    let dir = std::env::temp_dir().join(format!("orb-api-requests-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("style.json"), STYLE).unwrap();
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let base = format!("file://{}/", dir.display());
+    runtime.set_request_transform(Some(std::sync::Arc::new(move |url: &str| {
+        let path = url.strip_prefix("app://")?;
+        Some(orb_api::Request {
+            url: format!("{base}{path}"),
+            headers: vec![("Authorization".into(), "Bearer token".into())],
+        })
+    })));
+    // Files read offline too.
+    runtime.set_online(false);
+    assert!(!runtime.online());
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.load_style_url("app://style.json");
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    assert_eq!(
+        pixel(&pixels, SIZE / 2, SIZE / 2),
+        [0, 0, 255, 255],
+        "the rewritten style"
+    );
+    // The transform refuses what it doesn't rewrite.
+    map.load_style_url("https://example.com/style.json");
+    let started = std::time::Instant::now();
+    let refused = loop {
+        map.render(&mut target, now()).unwrap();
+        if let Some(message) = std::iter::from_fn(|| map.poll_event()).find_map(|e| match e {
+            Event::Map(MapEvent::Error { message }) => Some(message),
+            _ => None,
+        }) {
+            break message;
+        }
+        assert!(started.elapsed().as_secs() < 10, "no error");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    };
+    assert!(refused.contains("refused"), "{refused}");
+    std::fs::remove_dir_all(dir).unwrap();
+}

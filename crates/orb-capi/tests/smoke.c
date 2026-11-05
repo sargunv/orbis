@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <orbis.h>
 
@@ -51,8 +52,20 @@ int main(void) {
     CHECK(diplomat_buffer_write_len(message) > 0);
     diplomat_buffer_write_destroy(message);
 
-    /* Draws until the blue box shows in the middle. */
-    CHECK(OrbMap_set_style_json(map, view(STYLE)).is_ok);
+    /* Draws until the blue box shows in the middle, from a style a request
+     * rule finds on disk (files read offline). */
+    char dir[] = "/tmp/orb-smoke-XXXXXX";
+    CHECK(mkdtemp(dir) != NULL);
+    char path[256], rules[512];
+    snprintf(path, sizeof path, "%s/style.json", dir);
+    FILE* file = fopen(path, "w");
+    CHECK(file && fputs(STYLE, file) >= 0 && fclose(file) == 0);
+    snprintf(rules, sizeof rules, "{\"rewrites\": [[\"smoke://\", \"file://%s/\"]]}", dir);
+    CHECK(!OrbRuntime_set_request_rules(rt.ok, view("{bad")).is_ok);
+    CHECK(OrbRuntime_set_request_rules(rt.ok, view(rules)).is_ok);
+    OrbRuntime_set_online(rt.ok, false);
+    CHECK(!OrbRuntime_online(rt.ok));
+    OrbMap_load_style_url(map, view("smoke://style.json"));
     time_t start = time(NULL);
     for (;;) {
         CHECK(OrbMap_render(map, target, 0).is_ok);
@@ -96,6 +109,8 @@ int main(void) {
     CHECK(fabs(camera.lon) < 1e-9 && fabs(camera.lat) < 1e-9 && fabs(camera.zoom) < 1e-9);
     CHECK(camera.padding.top == 32 && fabs(camera.fov - 36.87) < 0.01);
 
+    remove(path);
+    rmdir(dir);
     OrbMap_destroy(map);
     OrbTarget_destroy(target);
     OrbRuntime_destroy(rt.ok);

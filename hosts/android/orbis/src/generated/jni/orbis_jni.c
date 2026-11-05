@@ -1026,6 +1026,33 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeCreateWith(JNIEnv* 
     return (jlong)(intptr_t)(result.ok);
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeSetRequestRules(JNIEnv* env, jclass cls, jlong self, jbyteArray rules) {
+    (void)env;
+    (void)cls;
+    jbyte* rules_bytes = (*env)->GetByteArrayElements(env, rules, NULL);
+    if (!rules_bytes) return;
+    DiplomatStringView rules_view = { (const char*)rules_bytes, (size_t)(*env)->GetArrayLength(env, rules) };
+    OrbRuntime_set_request_rules_result result = OrbRuntime_set_request_rules((OrbRuntime*)(intptr_t)self, rules_view);
+    (*env)->ReleaseByteArrayElements(env, rules, rules_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbRuntimeSetOnline(JNIEnv* env, jclass cls, jlong self, jboolean online) {
+    (void)env;
+    (void)cls;
+    OrbRuntime_set_online((OrbRuntime*)(intptr_t)self, (bool)(online));
+}
+
+JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbRuntimeOnline(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    bool result = OrbRuntime_online((const OrbRuntime*)(intptr_t)self);
+    return (result) ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbRuntimeStats(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;

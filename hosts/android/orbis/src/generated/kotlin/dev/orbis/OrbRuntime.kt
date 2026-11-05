@@ -33,6 +33,40 @@ class OrbRuntime internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Rewrites every request the runtime makes from here on (GL JS
+     * `transformRequest`), by rules as JSON: `{"rewrites": [[from,
+     * to], …], "headers": [[prefix, name, value], …]}`. The first
+     * rewrite whose `from` prefixes a URL replaces that prefix with
+     * `to`, before the HTTP cache; every header whose `prefix` starts
+     * the URL so rewritten is sent with it (a tile server's token,
+     * say). Empty clears the rules.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun setRequestRules(rules: String) {
+        OrbisNative.orbRuntimeSetRequestRules(live(), rules.encodeToByteArray())
+    }
+
+    /**
+     * Off, nothing goes to the network: requests answer from the HTTP
+     * cache and offline regions, stale or not, and fail without them.
+     *
+     * Contract: `command`.
+     */
+    fun setOnline(online: Boolean) {
+        OrbisNative.orbRuntimeSetOnline(live(), online)
+    }
+
+    /**
+     * Contract: `snapshot`.
+     */
+    fun online(): Boolean {
+        return OrbisNative.orbRuntimeOnline(live())
+    }
+
+    /**
      * What the runtime's device is and has done, now.
      *
      * Contract: `snapshot`.

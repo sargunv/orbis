@@ -31,7 +31,16 @@ private let style = """
     #expect(bad?.message.isEmpty == false)
 
     // Draws until the blue box shows in the middle.
-    try map.setStyleJson(json: style)
+    // From a style a request rule finds on disk (files read offline).
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("orb-smoke-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try style.write(to: dir.appendingPathComponent("style.json"), atomically: true, encoding: .utf8)
+    #expect(throws: OrbErrorFailure.self) { try runtime.setRequestRules(rules: "{bad") }
+    try runtime.setRequestRules(rules: "{\"rewrites\": [[\"smoke://\", \"file://\(dir.path)/\"]]}")
+    runtime.setOnline(online: false)
+    #expect(!runtime.online())
+    map.loadStyleUrl(url: "smoke://style.json")
     let started = Date()
     let i = (32 * 64 + 32) * 4
     while true {

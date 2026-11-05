@@ -13,16 +13,27 @@ pub use fonts::SystemFonts;
 pub use orb_host::FontFileFaces;
 pub use storage::{FileStorage, wait};
 
-use orb_host::{Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
+use orb_host::{Fetch, FetchDone, FetchError, ImageDecode, ImageDone, Request, RequestTransform};
 use orb_jobs::{Executor, ThreadPool};
 
 /// Fetches `http(s)://` URLs with ureq and `file://` URLs from disk, on a
 /// small pool of I/O threads, through an [`HttpCache`] when it has one.
-#[derive(Debug)]
 pub struct NativeFetch {
     agent: ureq::Agent,
     pool: ThreadPool,
     cache: Option<Arc<HttpCache>>,
+    transform: std::sync::RwLock<Option<Arc<RequestTransform>>>,
+    /// Off, requests answer from the cache alone.
+    online: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl std::fmt::Debug for NativeFetch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeFetch")
+            .field("cache", &self.cache)
+            .field("online", &self.online)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Largest response body accepted.
@@ -58,7 +69,26 @@ impl NativeFetch {
             agent,
             pool: ThreadPool::new("fetch", 8),
             cache,
+            transform: Default::default(),
+            online: Arc::new(true.into()),
         })
+    }
+
+    /// Rewrites every request from here on: its URL, before the cache, and
+    /// headers to send (`None` for none).
+    pub fn set_transform(&self, transform: Option<Arc<RequestTransform>>) {
+        *self.transform.write().expect("transform poisoned") = transform;
+    }
+
+    /// Off, nothing goes to the network: requests answer from the cache,
+    /// stale or not, and fail without it. `file://` URLs still read.
+    pub fn set_online(&self, online: bool) {
+        self.online
+            .store(online, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn online(&self) -> bool {
+        self.online.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The cache fetches go through.
@@ -69,17 +99,26 @@ impl NativeFetch {
     fn get_blocking(
         agent: &ureq::Agent,
         cache: Option<&HttpCache>,
-        url: &str,
+        request: &Request,
         range: Option<(u64, u64)>,
+        online: bool,
     ) -> Result<Vec<u8>, FetchError> {
+        let url = request.url.as_str();
         if let Some(path) = url.strip_prefix("file://") {
             return read_file(path, range);
         }
         if !orb_host::cache::cacheable(url) {
             return Err(FetchError::UnsupportedUrl(url.to_string()));
         }
+        let http = |validators| http(agent, request, range, validators);
+        if !online {
+            let cached = cache.and_then(|c| c.lookup(&orb_host::cache::key(url, range)));
+            return cached
+                .map(|c| c.bytes)
+                .ok_or_else(|| FetchError::Network("offline".into()));
+        }
         let Some(cache) = cache else {
-            return match http(agent, url, range, None)? {
+            return match http(None)? {
                 Response::Body { bytes, .. } => Ok(bytes),
                 Response::NotModified { .. } => Err(FetchError::Status(304)),
             };
@@ -92,7 +131,7 @@ impl NativeFetch {
         let validators = cached
             .as_ref()
             .map(|c| (c.etag.as_deref(), c.last_modified.as_deref()));
-        match (http(agent, url, range, validators), cached) {
+        match (http(validators), cached) {
             (
                 Ok(Response::Body {
                     bytes,
@@ -161,11 +200,14 @@ fn read_file(path: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, FetchErro
 /// One HTTP GET, conditional on `validators` (ETag, Last-Modified).
 fn http(
     agent: &ureq::Agent,
-    url: &str,
+    req: &Request,
     range: Option<(u64, u64)>,
     validators: Option<(Option<&str>, Option<&str>)>,
 ) -> Result<Response, FetchError> {
-    let mut request = agent.get(encode_url(url).as_ref());
+    let mut request = agent.get(encode_url(&req.url).as_ref());
+    for (name, value) in &req.headers {
+        request = request.header(name, value);
+    }
     if let Some((offset, length)) = range {
         let end = orb_host::range_end(offset, length)?;
         request = request
@@ -253,11 +295,26 @@ impl Fetch for NativeFetch {
 
 impl NativeFetch {
     fn get_range_opt(&self, url: &str, range: Option<(u64, u64)>, done: FetchDone) {
-        let agent = self.agent.clone();
-        let cache = self.cache.clone();
-        let url = url.to_string();
+        let transform = self.transform.read().expect("transform poisoned").clone();
+        let request = match transform {
+            Some(transform) => match transform(url) {
+                Some(request) => request,
+                None => return done(Err(FetchError::UnsupportedUrl(format!("{url}: refused")))),
+            },
+            None => Request {
+                url: url.to_string(),
+                headers: Vec::new(),
+            },
+        };
+        let (agent, cache, online) = (self.agent.clone(), self.cache.clone(), self.online());
         self.pool.spawn(Box::new(move || {
-            done(Self::get_blocking(&agent, cache.as_deref(), &url, range))
+            done(Self::get_blocking(
+                &agent,
+                cache.as_deref(),
+                &request,
+                range,
+                online,
+            ))
         }));
     }
 }
@@ -314,6 +371,15 @@ fn encode_url(url: &str) -> std::borrow::Cow<'_, str> {
         }
     }
     out.into()
+}
+
+/// A request for `url` alone.
+#[cfg(test)]
+fn plain(url: &str) -> Request {
+    Request {
+        url: url.into(),
+        headers: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -400,8 +466,13 @@ mod range_tests {
             stream.write_all(reply.as_bytes()).unwrap();
             let _ = stream.write_all(&body);
         });
-        let result =
-            NativeFetch::get_blocking(&ureq::Agent::new_with_defaults(), None, &url, Some((2, 3)));
+        let result = NativeFetch::get_blocking(
+            &ureq::Agent::new_with_defaults(),
+            None,
+            &plain(&url),
+            Some((2, 3)),
+            true,
+        );
         thread.join().unwrap();
         result
     }
@@ -443,11 +514,13 @@ mod range_tests {
         let url = format!("file://{}", path.display());
         let agent = ureq::Agent::new_with_defaults();
         assert_eq!(
-            NativeFetch::get_blocking(&agent, None, &url, Some((2, 3))).unwrap(),
+            NativeFetch::get_blocking(&agent, None, &plain(&url), Some((2, 3)), true).unwrap(),
             b"cde"
         );
         for range in [(4, 3), (0, 0), (0, MAX_BODY + 1), (u64::MAX, 2)] {
-            assert!(NativeFetch::get_blocking(&agent, None, &url, Some(range)).is_err());
+            assert!(
+                NativeFetch::get_blocking(&agent, None, &plain(&url), Some(range), true).is_err()
+            );
         }
         std::fs::remove_file(path).unwrap();
     }
@@ -539,7 +612,7 @@ mod cache_tests {
             ),
             format!("HTTP/1.1 304 Not Modified\r\n{close}Cache-Control: max-age=60\r\n\r\n"),
         ]);
-        let get = || NativeFetch::get_blocking(&agent, Some(&cache), &url, None);
+        let get = || NativeFetch::get_blocking(&agent, Some(&cache), &plain(&url), None, true);
         assert_eq!(get().unwrap(), b"tile");
         assert_eq!(get().unwrap(), b"tile");
         // Fresh after the 304: no request.
@@ -554,6 +627,51 @@ mod cache_tests {
         cache.refresh(&orb_host::cache::key(&url, None), 0);
         assert_eq!(get().unwrap(), b"tile");
         drop(cache);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn transforms_rewrite_and_sign_requests_and_offline_answers_from_the_cache() {
+        let dir = std::env::temp_dir().join(format!("orb-fetch-hooks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = HttpCache::open(Arc::new(FileStorage::new(&dir)), 1 << 20).unwrap();
+        let fetch = NativeFetch::with_cache(Some(cache));
+        let (url, server) = serve(vec![
+            "HTTP/1.1 200 OK\r\nConnection: close\r\nCache-Control: max-age=0\r\nContent-Length: 4\r\n\r\ntile"
+                .into(),
+        ]);
+        let base = url.trim_end_matches("tile").to_string();
+        fetch.set_transform(Some(Arc::new(move |url: &str| {
+            let path = url.strip_prefix("tiles://")?;
+            Some(Request {
+                url: format!("{base}{path}"),
+                headers: vec![("Authorization".into(), "Bearer token".into())],
+            })
+        })));
+        let get = |url: &str| {
+            let (send, receive) = std::sync::mpsc::channel();
+            fetch.get(url, Box::new(move |r| send.send(r).unwrap()));
+            receive.recv().unwrap()
+        };
+        assert_eq!(get("tiles://tile").unwrap(), b"tile");
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("get /tile "), "{}", requests[0]);
+        assert!(
+            requests[0].contains("authorization: bearer token"),
+            "{}",
+            requests[0]
+        );
+        assert!(matches!(
+            get("https://elsewhere/"),
+            Err(FetchError::UnsupportedUrl(_))
+        ));
+        // Offline: the cached copy, stale as it is, and nothing else.
+        fetch.set_online(false);
+        assert_eq!(get("tiles://tile").unwrap(), b"tile");
+        assert_eq!(
+            get("tiles://other"),
+            Err(FetchError::Network("offline".into()))
+        );
+        drop(fetch);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

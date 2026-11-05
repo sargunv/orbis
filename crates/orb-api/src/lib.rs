@@ -30,6 +30,7 @@ pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
 pub use orb_hal::Tier;
 pub use orb_hal_gl::egl::EglWindow;
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes};
+pub use orb_host::{Request, RequestTransform};
 pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_runtime::batteries::{Location, Marker};
 pub use orb_runtime::{
@@ -101,44 +102,6 @@ pub struct RuntimeOptions {
     pub android_api_level: u32,
     /// The libEGL Compat loads (ANGLE's, say); the platform's by default.
     pub egl_library: Option<String>,
-    /// Rewrites every URL the runtime's maps fetch, before the HTTP cache.
-    pub url_transform: Option<UrlTransform>,
-}
-
-/// Rewrites a URL before it's fetched (GL JS `transformRequest`'s URL): the
-/// URL to fetch, or `None` to refuse it.
-#[derive(Clone)]
-pub struct UrlTransform(pub Arc<UrlRewrite>);
-
-/// A [`UrlTransform`]'s function.
-pub type UrlRewrite = dyn Fn(&str) -> Option<String> + Send + Sync;
-
-impl std::fmt::Debug for UrlTransform {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("UrlTransform")
-    }
-}
-
-/// Fetches through a [`UrlTransform`].
-struct Transformed {
-    fetch: Arc<dyn orb_host::Fetch>,
-    transform: UrlTransform,
-}
-
-impl orb_host::Fetch for Transformed {
-    fn get(&self, url: &str, done: orb_host::FetchDone) {
-        match (self.transform.0)(url) {
-            Some(url) => self.fetch.get(&url, done),
-            None => done(Err(orb_host::FetchError::UnsupportedUrl(url.into()))),
-        }
-    }
-
-    fn get_range(&self, url: &str, offset: u64, length: u64, done: orb_host::FetchDone) {
-        match (self.transform.0)(url) {
-            Some(url) => self.fetch.get_range(&url, offset, length, done),
-            None => done(Err(orb_host::FetchError::UnsupportedUrl(url.into()))),
-        }
-    }
 }
 
 /// Which GPU tier a runtime draws at (plan §4.2).
@@ -280,6 +243,24 @@ impl Runtime {
         };
         runtime.start_pipeline_cache()?;
         Ok(runtime)
+    }
+
+    /// Rewrites every request the runtime's maps and region downloads make
+    /// from here on (GL JS `transformRequest`): its URL, before the HTTP
+    /// cache, and headers to send, such as a tile server's token; `None`
+    /// from the transform refuses the request.
+    pub fn set_request_transform(&self, transform: Option<Arc<orb_host::RequestTransform>>) {
+        self.shared.fetch.set_transform(transform);
+    }
+
+    /// Off, nothing goes to the network: requests answer from the HTTP
+    /// cache and offline regions, stale or not, and fail without them.
+    pub fn set_online(&self, online: bool) {
+        self.shared.fetch.set_online(online);
+    }
+
+    pub fn online(&self) -> bool {
+        self.shared.fetch.online()
     }
 
     /// What the runtime's device is and has done: for diagnostics and
@@ -539,16 +520,10 @@ impl Runtime {
     }
 
     fn services(&self, wake: Arc<dyn Fn() + Send + Sync>) -> orb_runtime::Services {
-        let mut fetch: Arc<dyn orb_host::Fetch> = match &self.shared.regions {
+        let fetch: Arc<dyn orb_host::Fetch> = match &self.shared.regions {
             Some(regions) => regions.fetch.clone(),
             None => self.shared.fetch.clone(),
         };
-        if let Some(transform) = &self.shared.options.url_transform {
-            fetch = Arc::new(Transformed {
-                fetch,
-                transform: transform.clone(),
-            });
-        }
         let jobs = orb_runtime::PoolJobs::new(
             fetch.clone(),
             Arc::new(NativeImageDecode),

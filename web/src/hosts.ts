@@ -2,8 +2,9 @@
 // placement worker (plan §7.1, workers.ts), and its recovery from a lost
 // GPU (plan §8.8): the same tier again where it works, else WebGL2.
 
-import init, { createMap as createCoreMap, reloadRegions, type OrbisMap as Core } from "../pkg/core.js";
+import init, { createMap as createCoreMap, reloadRegions, setRequestHook, type OrbisMap as Core } from "../pkg/core.js";
 import { onRegionsChanged } from "./regions.ts";
+import { answerWorker, connectModule, connectWorker } from "./requests.ts";
 import { spawnWorkers } from "./workers.ts";
 
 export type { Core };
@@ -16,10 +17,12 @@ const COMPAT = new URL("../pkg/compat_bg.wasm", import.meta.url);
 async function rendererModule(tier: "modern" | "compat", module: WebAssembly.Module) {
   if (tier === "modern") {
     await init({ module_or_path: module });
+    connectModule(setRequestHook);
     return { create: createCoreMap, reload: reloadRegions };
   }
   const compat = await import("../pkg/compat.js");
   await compat.default({ module_or_path: COMPAT });
+  connectModule(compat.setRequestHook);
   return { create: compat.createMap as unknown as typeof createCoreMap, reload: compat.reloadRegions };
 }
 
@@ -76,17 +79,18 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
     // A job worker whose wasm trapped says so and closes; one that dies
     // fires `error`. Either way its requests fail and are retried on the
     // others.
+    const released = ports.map(connectWorker);
     ports.forEach((port, i) => {
       port.onmessage = receive((data) => {
         const lost = (data as { lost?: string }).lost;
         if (lost !== undefined) core.jobWorkerLost(i, lost);
-        else core.receiveJob(data);
+        else if (!answerWorker(port, data)) core.receiveJob(data);
       });
       workers[i].addEventListener("error", (e) => { e.preventDefault(); core.jobWorkerLost(i, e.message || "the worker died"); });
     });
     const regions = onRegionsChanged(reload);
     callbacks.setup(core);
-    return { core, stop: () => { regions(); for (const w of workers) w.terminate(); core.free(); } };
+    return { core, stop: () => { regions(); for (const r of released) r(); for (const w of workers) w.terminate(); core.free(); } };
   };
   let { core, stop } = await start(tier, canvas, style);
   let size: [number, number, number] | undefined;
