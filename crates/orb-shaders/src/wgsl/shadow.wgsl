@@ -38,15 +38,19 @@ fn shadow_cascade(c: ShadowCascades, depth: f32) -> u32 {
     return c.count;
 }
 
-// How lit a receiver is in cascade `i`, 0 to 1, outside the map lit: four
-// bilinear comparisons half a texel either way of its place in the map,
-// a tent over the 3×3 texels around it.
-fn shadow_lit(map: texture_depth_2d_array, cmp: sampler_comparison, c: ShadowCascades, i: u32, world: vec3<f32>, normal: vec3<f32>) -> f32 {
+// How lit a receiver is in cascade `i`, 0 to 1, outside the map lit: with
+// `taps` 4, four bilinear comparisons half a texel either way of its place
+// in the map, a tent over the 3×3 texels around it; with 1, one bilinear
+// comparison there, over 2×2.
+fn shadow_lit(map: texture_depth_2d_array, cmp: sampler_comparison, c: ShadowCascades, i: u32, world: vec3<f32>, normal: vec3<f32>, taps: u32) -> f32 {
     let p = c.view_proj[i] * vec4<f32>(world + (normal * 1.5 + c.light) * c.texel[i], 1.0);
     let ndc = p.xyz / p.w;
     let uv = ndc.xy * vec2<f32>(0.5, -0.5) + 0.5;
     if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z > 1.0 {
         return 1.0;
+    }
+    if taps == 1u {
+        return textureSampleCompareLevel(map, cmp, uv, i32(i), ndc.z);
     }
     let half = 0.5 / vec2<f32>(textureDimensions(map));
     var lit = 0.0;
@@ -61,19 +65,19 @@ fn shadow_lit(map: texture_depth_2d_array, cmp: sampler_comparison, c: ShadowCas
 // `world`, with unit `normal` and view depth `depth`: 1 lit, `1 − strength`
 // in full shadow. Near a cascade's far end it blends into the next, and
 // past the last it fades out, so no edge shows as the camera moves.
-fn shadow_visibility(map: texture_depth_2d_array, cmp: sampler_comparison, c: ShadowCascades, world: vec3<f32>, normal: vec3<f32>, depth: f32) -> f32 {
+fn shadow_visibility(map: texture_depth_2d_array, cmp: sampler_comparison, c: ShadowCascades, world: vec3<f32>, normal: vec3<f32>, depth: f32, taps: u32) -> f32 {
     let i = shadow_cascade(c, depth);
     if i >= c.count {
         return 1.0;
     }
-    var lit = shadow_lit(map, cmp, c, i, world, normal);
+    var lit = shadow_lit(map, cmp, c, i, world, normal, taps);
     var start = 0.0;
     if i > 0u {
         start = c.splits[i - 1u];
     }
     let edge = clamp((depth - mix(start, c.splits[i], 0.9)) / (0.1 * (c.splits[i] - start)), 0.0, 1.0);
     if edge > 0.0 {
-        let next = select(1.0, shadow_lit(map, cmp, c, i + 1u, world, normal), i + 1u < c.count);
+        let next = select(1.0, shadow_lit(map, cmp, c, i + 1u, world, normal, taps), i + 1u < c.count);
         lit = mix(lit, next, edge);
     }
     return 1.0 - c.strength * (1.0 - lit);

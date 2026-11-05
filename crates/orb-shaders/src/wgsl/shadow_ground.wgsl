@@ -33,6 +33,6 @@ fn fs_shadow_ground(in: GroundOut) -> @location(0) vec4<f32> {
         world = mix(a, b, a.z / (a.z - b.z));
     }
     let depth = (frame.view_proj * vec4<f32>(world, 1.0)).w;
-    let lit = shadow_at(world, vec3<f32>(0.0, 0.0, 1.0), depth);
+    let lit = shadow_at_ground(world, depth);
     return vec4<f32>(vec3<f32>(1.0 - shadow.cascades.ground * (1.0 - lit)), 1.0);
 }

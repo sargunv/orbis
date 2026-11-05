@@ -75,7 +75,10 @@ The scene group binds the shadow uniform, the map and a comparison sampler
 - **Models:** `shadow_at` at the geometric normal is `PbrLights.shadow`, which
   scales `pbr_light`'s directional term: the lighting path the whole map's
   materials take (#91), not a separate one.
-- **The ground:** one full-screen draw in the main pass at the first 3D
+- **The ground:** one bilinear comparison (a 2×2 filter), where walls take
+  four: the full-screen pass pays for each tap over every pixel, and at
+  Manhattan's views the difference doesn't show (0.45 and 0.4 ms of a
+  14.7 ms frame at z14.52 pitch 61 and z15.6 pitch 70). One full-screen draw in the main pass at the first 3D
   layer's place, blended multiplicatively (`BlendState::Multiply`). It
   rebuilds each pixel's ground point from the terrain's depth, or the view
   ray on the ground plane, and multiplies by `1 − share · (1 − lit)`. Here
