@@ -101,6 +101,99 @@ impl Target {
     }
 }
 
+/// A node drawn apart from the map: its target and composite once sized,
+/// the opacity the composite applies (a 3D layer's, a heatmap's), and its
+/// recorded draw.
+#[derive(Debug)]
+pub(crate) struct Apart {
+    pub(crate) offscreen: Option<Offscreen>,
+    pub(crate) opacity: f32,
+    pub(crate) bundle: Option<RenderBundleId>,
+}
+
+impl Default for Apart {
+    fn default() -> Self {
+        Self {
+            offscreen: None,
+            opacity: 1.0,
+            bundle: None,
+        }
+    }
+}
+
+impl Apart {
+    /// Drops the recorded draw, so the next frame records it over the
+    /// current bind groups.
+    pub(crate) fn forget_bundle(&mut self, gpu: &mut dyn Gpu) {
+        if let Some(bundle) = self.bundle.take() {
+            gpu.destroy_render_bundle(bundle);
+        }
+    }
+
+    pub(crate) fn set_opacity(&mut self, gpu: &mut dyn Gpu, opacity: f32) {
+        self.opacity = opacity;
+        if let Some(o) = &mut self.offscreen {
+            o.set_opacity(gpu, opacity);
+        }
+    }
+
+    pub(crate) fn release(mut self, gpu: &mut dyn Gpu) {
+        self.forget_bundle(gpu);
+        if let Some(offscreen) = self.offscreen {
+            offscreen.release(gpu);
+        }
+    }
+}
+
+/// A target with its composite into the map, made again at another size
+/// or sample count.
+#[derive(Debug)]
+pub(crate) struct Offscreen {
+    pub(crate) target: Target,
+    pub(crate) composite: Composite,
+    made: ([u32; 2], u32),
+}
+
+impl Offscreen {
+    /// Makes `slot` a `label` target of `formats` at `size` and `samples`,
+    /// composited by `mode` (over `backdrop`) at `opacity`, unless it is
+    /// one; whether it changed.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fit(
+        slot: &mut Option<Self>,
+        gpu: &mut dyn Gpu,
+        composites: &mut Composites,
+        (label, formats): (&'static str, &[TextureFormat]),
+        (size, samples): ([u32; 2], u32),
+        (mode, backdrop): (Mode, Option<TextureId>),
+        opacity: f32,
+    ) -> bool {
+        if slot.as_ref().is_some_and(|o| o.made == (size, samples)) {
+            return false;
+        }
+        if let Some(old) = slot.take() {
+            old.release(gpu);
+        }
+        let target = Target::new(gpu, label, formats, size, samples);
+        let composite = composites.composite(gpu, target.texture(0), backdrop, mode, opacity);
+        *slot = Some(Self {
+            target,
+            composite,
+            made: (size, samples),
+        });
+        true
+    }
+
+    pub(crate) fn set_opacity(&mut self, gpu: &mut dyn Gpu, opacity: f32) {
+        Composites::set_opacity(gpu, &mut self.composite, opacity);
+    }
+
+    pub(crate) fn release(self, gpu: &mut dyn Gpu) {
+        self.target.destroy(gpu);
+        Composites::release(gpu, self.composite);
+    }
+}
+
 /// How a composite combines its source with the map.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mode {

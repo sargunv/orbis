@@ -742,7 +742,7 @@ impl Renderer {
         for node in old.into_iter().flatten() {
             gpu.destroy_bind_group(node.group);
             if let Some(extrusion) = node.extrusion {
-                extrusion::Extrusions::release(gpu, extrusion);
+                extrusion.release(gpu);
             }
             if let Some(heatmap) = node.heatmap {
                 heatmap::Heatmaps::release(gpu, heatmap);
@@ -762,7 +762,7 @@ impl Renderer {
                     // Groups bind the uniform at the node's index.
                     gpu.destroy_bind_group(node.group);
                     if let Some(extrusion) = node.extrusion {
-                        extrusion::Extrusions::release(gpu, extrusion);
+                        extrusion.release(gpu);
                     }
                     if let Some(heatmap) = node.heatmap {
                         heatmap::Heatmaps::release(gpu, heatmap);
@@ -1341,29 +1341,17 @@ impl Renderer {
             self.paints_written += 1;
         }
         // Layers drawn apart apply their opacity as they composite.
-        match paint {
-            NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
-                if let Some(e) = &mut entry.extrusion {
-                    e.opacity = p.opacity;
-                    if let Some(c) = &mut e.composite {
-                        offscreen::Composites::set_opacity(gpu, c, p.opacity);
-                    }
-                }
-            }
-            NodePaint::Model(p) => {
-                if let Some(e) = &mut entry.extrusion {
-                    e.opacity = p.opacity;
-                    if let Some(c) = &mut e.composite {
-                        offscreen::Composites::set_opacity(gpu, c, p.opacity);
-                    }
-                }
-            }
-            NodePaint::Heatmap(p) => {
-                if let Some(h) = &mut entry.heatmap {
-                    h.opacity = p.opacity;
-                }
-            }
-            _ => {}
+        if let (
+            NodePaint::Extrusion(ExtrusionPaint { opacity, .. })
+            | NodePaint::ExtrusionPattern(ExtrusionPaint { opacity, .. }, _)
+            | NodePaint::Model(ModelPaint { opacity, .. }),
+            Some(e),
+        ) = (paint, &mut entry.extrusion)
+        {
+            e.set_opacity(gpu, *opacity);
+        }
+        if let (NodePaint::Heatmap(p), Some(h)) = (paint, &mut entry.heatmap) {
+            h.apart.opacity = p.opacity;
         }
         let margin = paint.cull_margin_px();
         let elevation = match paint {
@@ -1705,7 +1693,7 @@ impl Renderer {
                     extrusion.forget_bundle(gpu);
                 }
                 if let Some(heatmap) = &mut node.heatmap {
-                    heatmap.forget_bundle(gpu);
+                    heatmap.apart.forget_bundle(gpu);
                 }
             }
         }
@@ -1736,11 +1724,11 @@ impl Renderer {
         // A heatmap hidden, or with nothing to draw, composites nothing.
         for (i, node) in self.nodes.iter_mut().enumerate() {
             if let Some(heatmap) = &mut node.heatmap
-                && let Some(composite) = &mut heatmap.composite
+                && let Some(offscreen) = &mut heatmap.apart.offscreen
             {
                 let shown = node.cull.visible && self.scene.node_candidates(i as u32) > 0;
-                let opacity = if shown { heatmap.opacity } else { 0.0 };
-                offscreen::Composites::set_opacity(gpu, composite, opacity);
+                let opacity = if shown { heatmap.apart.opacity } else { 0.0 };
+                offscreen.set_opacity(gpu, opacity);
             }
         }
         // Preparing may have grown the compacted index buffer.
@@ -2350,7 +2338,8 @@ impl Renderer {
             if !compiled {
                 return false;
             }
-            if let Some(composite) = &extrusion.composite {
+            if let Some(o) = &extrusion.offscreen {
+                let composite = &o.composite;
                 commands.extend(if ready.lit {
                     self.composites.lit_commands(composite)
                 } else {
@@ -2363,7 +2352,8 @@ impl Renderer {
             if !self.heatmaps.ready(gpu, &self.composites) {
                 return false;
             }
-            if let Some(composite) = &heatmap.composite {
+            if let Some(o) = &heatmap.apart.offscreen {
+                let composite = &o.composite;
                 commands.extend(if ready.lit {
                     self.composites.lit_commands(composite)
                 } else {

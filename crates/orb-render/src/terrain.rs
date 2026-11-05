@@ -17,7 +17,7 @@ use crate::TargetFormat;
 use orb_hal::*;
 use orb_shaders::{DRAPE_SHADER, Shader, TERRAIN_SHADE_SHADER, TERRAIN_SHADER};
 
-use crate::offscreen::{Composite, Composites, Mode, Target};
+use crate::offscreen::{Composite, Composites, Mode, Offscreen};
 
 /// Drape texels per terrain tile side: twice the 512 logical pixels a
 /// terrain tile covers at its zoom, GL JS's quality factor.
@@ -138,13 +138,6 @@ struct Atlas {
     level_uniforms: BufferId,
 }
 
-/// A terrain layer's texture and its composite into the map.
-#[derive(Debug)]
-struct StackTarget {
-    target: Target,
-    composite: Composite,
-}
-
 #[derive(Debug)]
 pub(crate) struct Terrain {
     target: TargetFormat,
@@ -180,7 +173,8 @@ pub(crate) struct Terrain {
     dem: Option<(TextureId, u32)>,
     /// The group, and the frame and property buffers it binds.
     group: Option<(BindGroupId, [BufferId; 2])>,
-    targets: Vec<StackTarget>,
+    /// Each terrain layer's texture and its composite into the map.
+    targets: Vec<Offscreen>,
     /// The terrain's depth as a colour, and the depth it's drawn with: what
     /// hides symbols and circles (#40).
     occlusion: Option<[TextureId; 2]>,
@@ -732,7 +726,7 @@ impl Terrain {
             return false;
         }
         for target in self.targets.drain(..) {
-            release_target(gpu, target);
+            target.release(gpu);
         }
         self.release_occlusion(gpu);
         let texture = |gpu: &mut dyn Gpu, label, format, usage| {
@@ -765,9 +759,18 @@ impl Terrain {
         self.target_size = size;
         self.target_samples = samples;
         for _ in 0..layers {
-            let target = Target::new(gpu, "terrain layer", &[self.target.color], size, samples);
-            let composite = composites.composite(gpu, target.texture(0), None, Mode::Over, 1.0);
-            self.targets.push(StackTarget { target, composite });
+            let mut slot = None;
+            let target = ("terrain layer", &[self.target.color][..]);
+            Offscreen::fit(
+                &mut slot,
+                gpu,
+                composites,
+                target,
+                (size, samples),
+                (Mode::Over, None),
+                1.0,
+            );
+            self.targets.extend(slot);
         }
         true
     }
@@ -1127,7 +1130,7 @@ impl Terrain {
         self.release_atlas(gpu);
         self.forget_group(gpu);
         for target in self.targets.drain(..) {
-            release_target(gpu, target);
+            target.release(gpu);
         }
         self.release_occlusion(gpu);
         self.target_size = [0; 2];
@@ -1197,11 +1200,6 @@ impl Terrain {
         self.occlusion_pipeline = Some(pipeline);
         pipeline
     }
-}
-
-fn release_target(gpu: &mut dyn Gpu, target: StackTarget) {
-    target.target.destroy(gpu);
-    Composites::release(gpu, target.composite);
 }
 
 /// The shared tile mesh: `(GRID + 1)²` vertices, then a skirt copy of

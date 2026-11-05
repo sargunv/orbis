@@ -1,7 +1,7 @@
 //! 3D layers (extrusions and models) draw into a target of their own,
 //! resolve it, then composite it at their layer opacity once. The shared
 //! depth attachment keeps occlusion between 3D layers.
-use crate::offscreen::{Composite, Composites, Mode, Target};
+use crate::offscreen::{Apart, Composites, Mode, Offscreen};
 use orb_hal::*;
 use orb_scene::SceneBuffers;
 use orb_shaders::EXTRUSION_SHADER;
@@ -18,38 +18,8 @@ pub(crate) struct Extrusions {
     /// The depth is kept and read after the 3D passes (`occlusion`).
     sampled: bool,
 }
-#[derive(Debug)]
-pub(crate) struct NodeExtrusion {
-    target: Option<Target>,
-    pub(crate) composite: Option<Composite>,
-    size: [u32; 2],
-    samples: u32,
-    /// `fill-extrusion-opacity`, which the composite applies once.
-    pub(crate) opacity: f32,
-    bundle: Option<RenderBundleId>,
-}
-
-impl Default for NodeExtrusion {
-    fn default() -> Self {
-        Self {
-            target: None,
-            composite: None,
-            size: [0; 2],
-            samples: 0,
-            opacity: 1.0,
-            bundle: None,
-        }
-    }
-}
-impl NodeExtrusion {
-    /// Drops the recorded draw, so the next frame records it over the
-    /// current bind groups.
-    pub(crate) fn forget_bundle(&mut self, gpu: &mut dyn Gpu) {
-        if let Some(bundle) = self.bundle.take() {
-            gpu.destroy_render_bundle(bundle);
-        }
-    }
-}
+/// A 3D layer's node, drawn apart.
+pub(crate) type NodeExtrusion = Apart;
 
 impl Extrusions {
     pub(crate) fn new(scene: BindGroupLayoutId, node: BindGroupLayoutId) -> Self {
@@ -181,18 +151,6 @@ impl Extrusions {
         true
     }
 
-    pub(crate) fn release(gpu: &mut dyn Gpu, node: NodeExtrusion) {
-        if let Some(bundle) = node.bundle {
-            gpu.destroy_render_bundle(bundle);
-        }
-        if let Some(composite) = node.composite {
-            Composites::release(gpu, composite);
-        }
-        if let Some(target) = node.target {
-            target.destroy(gpu);
-        }
-    }
-
     /// Gives a node its target of `size` and its composite, unless it has
     /// them at this size and sample count; whether it changed.
     pub(crate) fn resize_node(
@@ -202,28 +160,19 @@ impl Extrusions {
         node: &mut NodeExtrusion,
         size: [u32; 2],
     ) -> bool {
-        if node.size == size && node.samples == self.samples {
-            return false;
-        }
-        let opacity = node.opacity;
-        Self::release(gpu, std::mem::take(node));
-        let target = Target::new(
+        let changed = Offscreen::fit(
+            &mut node.offscreen,
             gpu,
-            "extrusion",
-            &[TextureFormat::Rgba8Unorm],
-            size,
-            self.samples,
+            composites,
+            ("extrusion", &[TextureFormat::Rgba8Unorm]),
+            (size, self.samples),
+            (Mode::Over, None),
+            node.opacity,
         );
-        let composite = composites.composite(gpu, target.texture(0), None, Mode::Over, opacity);
-        *node = NodeExtrusion {
-            target: Some(target),
-            composite: Some(composite),
-            samples: self.samples,
-            size,
-            opacity,
-            bundle: None,
-        };
-        true
+        if changed {
+            node.forget_bundle(gpu);
+        }
+        changed
     }
 
     pub(crate) fn prepare(
@@ -280,9 +229,10 @@ impl Extrusions {
         RenderPass {
             label: "3d layer".into(),
             colors: vec![
-                node.target
+                node.offscreen
                     .as_ref()
                     .expect("sized")
+                    .target
                     .attachment(0, LoadOp::Clear([0.0; 4])),
             ],
             depth: Some(DepthAttachment {

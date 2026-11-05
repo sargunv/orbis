@@ -2,7 +2,7 @@
 //! the main pass; its fullscreen composite occupies the layer's bundle slot.
 //! Targets persist until viewport resize or node replacement.
 
-use crate::offscreen::{Composite, Composites, Mode, Target};
+use crate::offscreen::{Apart, Composites, Mode, Offscreen};
 use orb_hal::*;
 use orb_shaders::HEATMAP_SHADER;
 
@@ -19,23 +19,9 @@ pub(crate) struct Heatmaps {
 pub(crate) struct NodeHeatmap {
     ramp: TextureId,
     colors: Vec<u32>,
-    target: Option<Target>,
-    size: [u32; 2],
-    pub(crate) composite: Option<Composite>,
-    /// `heatmap-opacity`; the composite draws nothing while the node is
-    /// hidden or has nothing to draw.
-    pub(crate) opacity: f32,
-    pub(crate) bundle: Option<RenderBundleId>,
-}
-
-impl NodeHeatmap {
-    /// Drops the recorded draw, so the next frame records it over the
-    /// current bind groups.
-    pub(crate) fn forget_bundle(&mut self, gpu: &mut dyn Gpu) {
-        if let Some(bundle) = self.bundle.take() {
-            gpu.destroy_render_bundle(bundle);
-        }
-    }
+    /// Its density, drawn apart; the composite draws nothing while the
+    /// node is hidden or has nothing to draw.
+    pub(crate) apart: Apart,
 }
 
 impl Heatmaps {
@@ -107,24 +93,12 @@ impl Heatmaps {
         NodeHeatmap {
             ramp,
             colors: Vec::new(),
-            target: None,
-            size: [0; 2],
-            composite: None,
-            opacity: 1.0,
-            bundle: None,
+            apart: Apart::default(),
         }
     }
 
     pub(crate) fn release(gpu: &mut dyn Gpu, node: NodeHeatmap) {
-        if let Some(bundle) = node.bundle {
-            gpu.destroy_render_bundle(bundle);
-        }
-        if let Some(composite) = node.composite {
-            Composites::release(gpu, composite);
-        }
-        if let Some(target) = node.target {
-            target.destroy(gpu);
-        }
+        node.apart.release(gpu);
         gpu.destroy_texture(node.ramp);
     }
 
@@ -157,32 +131,16 @@ impl Heatmaps {
         node: &mut NodeHeatmap,
         size: [u32; 2],
     ) -> bool {
-        if !self.density || node.size == size {
-            return false;
-        }
-        if let Some(composite) = node.composite.take() {
-            Composites::release(gpu, composite);
-        }
-        if let Some(target) = node.target.take() {
-            target.destroy(gpu);
-        }
-        let target = Target::new(
-            gpu,
-            "heatmap density",
-            &[TextureFormat::Rgba16Float],
-            size,
-            1,
-        );
-        node.composite = Some(composites.composite(
-            gpu,
-            target.texture(0),
-            Some(node.ramp),
-            Mode::Ramp,
-            node.opacity,
-        ));
-        node.target = Some(target);
-        node.size = size;
-        true
+        self.density
+            && Offscreen::fit(
+                &mut node.apart.offscreen,
+                gpu,
+                composites,
+                ("heatmap density", &[TextureFormat::Rgba16Float]),
+                (size, 1),
+                (Mode::Ramp, Some(node.ramp)),
+                node.apart.opacity,
+            )
     }
 
     pub(crate) fn prepare(
@@ -195,8 +153,8 @@ impl Heatmaps {
         index: u32,
     ) -> Option<RenderPass> {
         let pipeline = self.pipeline?;
-        let target = node.target.as_ref()?;
-        let bundle = *node.bundle.get_or_insert_with(|| {
+        let target = &node.apart.offscreen.as_ref()?.target;
+        let bundle = *node.apart.bundle.get_or_insert_with(|| {
             gpu.create_render_bundle(
                 &RenderBundleDesc {
                     label: "heatmap density",
