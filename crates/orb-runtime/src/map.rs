@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -295,9 +295,6 @@ pub(crate) struct LoadedStyle {
     pub(crate) draws: Vec<Option<Vec<Draw>>>,
     /// The terrain, once its DEM source is ready.
     pub(crate) terrain: Option<crate::terrain::Terrain>,
-    /// The terrain's DEM is on another tile matrix set than the surface;
-    /// warned once.
-    pub(crate) terrain_unusable: bool,
     /// Whether the background and image tiles' meshes are grids for a
     /// globe to bend.
     pub(crate) globe_meshes: bool,
@@ -307,8 +304,6 @@ pub(crate) struct LoadedStyle {
     /// The renderer the models load for, and how many are loading.
     pub(crate) models_for: Option<u64>,
     pub(crate) models_loading: u32,
-    /// Compat said once that the scene's lights don't light the map.
-    pub(crate) unlit_warned: bool,
 }
 
 /// What tiles and styles let go of between frames, released from the
@@ -404,8 +399,6 @@ pub struct Map {
     /// A scene document whose style is loading, which the style parses
     /// under (models resolved against the scene).
     pub(crate) pending_scene: Option<orb_v8::SceneDocument>,
-    /// Compat's lack of `symbol-occlusion` was reported.
-    pub(crate) occlusion_warned: bool,
     /// The first frame's time: frames' time counts from it (decision 0042:
     /// fades, transitions and the shaders' time run on frame time).
     pub(crate) born: Option<f64>,
@@ -448,8 +441,9 @@ pub struct Map {
     pub(crate) sender: Sender<Message>,
     pub(crate) receiver: Receiver<Message>,
     pub(crate) warnings: Vec<String>,
-    /// Why the shadows the lights cast aren't drawn, once said.
-    pub(crate) shadows_off: Option<&'static str>,
+    /// The warnings given since the style's last revision: each is given
+    /// once.
+    pub(crate) warned: HashSet<String>,
     pub(crate) events: crate::events::EventQueue,
     /// Terrain pages of a replaced style, to destroy with the next
     /// frame's GPU.
@@ -582,7 +576,6 @@ impl Map {
             globe_warps: crate::globe::GlobeWarps::new(*surface.projection()),
             surface,
             pending_scene: None,
-            occlusion_warned: false,
             transitions: Default::default(),
             style_request: 0,
             style_error: None,
@@ -605,7 +598,7 @@ impl Map {
             sender,
             receiver,
             warnings: Vec::new(),
-            shadows_off: None,
+            warned: HashSet::new(),
             events: Default::default(),
             retired_pages: Vec::new(),
             retired_images: Vec::new(),
@@ -779,9 +772,10 @@ impl Map {
 
     /// What the map did since the last call, in order: style and source
     /// data, load, idle, errors, the camera's moves and clicks, then the
-    /// warnings since.
+    /// warnings since, each once per style revision.
     pub fn take_events(&mut self) -> Vec<MapEvent> {
-        let warnings = self.warnings.drain(..);
+        let warned = &mut self.warned;
+        let warnings = self.warnings.drain(..).filter(|w| warned.insert(w.clone()));
         let mut events = std::mem::take(&mut self.events.queue);
         events.extend(warnings.map(|message| MapEvent::Warning { message }));
         events
@@ -960,6 +954,7 @@ impl Map {
     /// cached tile frames.
     fn install_revision(&mut self, doc: StyleDoc, previous: Option<(u64, &Arc<TileWorker>)>) {
         self.version += 1;
+        self.warned.clear();
         self.labels.invalidate();
         self.surface = Surface::of(doc.style());
         let worker = Arc::new(revise(
@@ -1041,12 +1036,10 @@ impl Map {
             symbol_tiles: Vec::new(),
             draws: Vec::new(),
             terrain: None,
-            terrain_unusable: false,
             globe_meshes: self.surface.globe().is_some(),
             models: Vec::new(),
             models_for: None,
             models_loading: 0,
-            unlit_warned: false,
         });
         self.nodes_stale = true;
     }
@@ -1208,11 +1201,7 @@ impl Map {
         // A scene's lights light the whole map (decision 0048), on Modern.
         let lit = lights.is_some_and(|l| l.terrain);
         renderer.set_lit_map(gpu, lit);
-        if lit
-            && gpu.caps().tier != orb_hal::Tier::Modern
-            && let Some(style) = &mut self.style
-            && !std::mem::replace(&mut style.unlit_warned, true)
-        {
+        if lit && gpu.caps().tier != orb_hal::Tier::Modern {
             self.warnings.push(crate::COMPAT_UNLIT.into());
         }
         // The sky over a sphere; a low-zoom plane's is a plane's.
@@ -1381,8 +1370,7 @@ impl Map {
         }
 
         let globe = view.globe().map(|globe| frame_globe(globe, &view));
-        // Say once, as they turn off, why shadows the lights cast aren't
-        // drawn.
+        // Why shadows the lights cast aren't drawn.
         let shadows_off = frame_lights.and_then(|l| l.shadow).and_then(|_| {
             if gpu.caps().tier == orb_hal::Tier::Compat {
                 Some(crate::COMPAT_NO_SHADOWS)
@@ -1390,9 +1378,7 @@ impl Map {
                 globe.map(|_| crate::GLOBE_NO_SHADOWS)
             }
         });
-        if shadows_off != std::mem::replace(&mut self.shadows_off, shadows_off) {
-            self.warnings.extend(shadows_off.map(String::from));
-        }
+        self.warnings.extend(shadows_off.map(String::from));
         let frame = FrameBlock {
             camera: view.camera_world().to_array(),
             world_span: self
@@ -1427,10 +1413,7 @@ impl Map {
             globe,
         };
         let occluded = scene.as_deref().is_some_and(|s| s.symbol_occlusion);
-        if occluded
-            && gpu.caps().tier == orb_hal::Tier::Compat
-            && !std::mem::replace(&mut self.occlusion_warned, true)
-        {
+        if occluded && gpu.caps().tier == orb_hal::Tier::Compat {
             self.warnings
                 .push("symbol-occlusion: Compat hides labels behind the terrain alone".into());
         }
@@ -1983,9 +1966,7 @@ impl Map {
             _ => None,
         };
         if let Some(warning) = unusable {
-            if !std::mem::replace(&mut style.terrain_unusable, true) {
-                self.warnings.push(warning);
-            }
+            self.warnings.push(warning);
             wanted = None;
         }
         let same = match (&style.terrain, wanted) {
