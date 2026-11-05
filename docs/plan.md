@@ -783,7 +783,7 @@ offline Tokyo extract, whose camera is constrained to the extract); an
 attribution control built from the active style's sources; feature popups
 and hover and selection highlights through feature state; a debug overlay
 (`?debug`) with the frame counters, the thread mode and the build. Its
-style editor (`?edit`, which `playground.html` now redirects to) lists the
+style editor (`?edit`) lists the
 style's layers by source layer, with visibility toggles and paint controls
 generated from the v8 spec's property types; each change is one
 `map.edit` transaction, and the editor reports how many frames it took to

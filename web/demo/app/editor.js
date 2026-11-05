@@ -47,7 +47,7 @@ function range(name, min, max, value) {
   return { lo, hi, step: hi - lo <= 2 ? 0.01 : hi - lo <= 40 ? 0.1 : 1 };
 }
 
-export function editor({ onClose, onReplaced, onTall }) {
+export function editor({ onClose, onReplaced }) {
   const root = document.getElementById("editor");
   let map;
   let style;
@@ -86,7 +86,7 @@ export function editor({ onClose, onReplaced, onTall }) {
   const tabList = h("div", { class: "tabs", role: "tablist" }, tabButton("layers", "Layers"), tabButton("json", "JSON"));
   root.replaceChildren(
     h("button", { class: "editor-grip", type: "button", "aria-label": "Resize the editor",
-      onclick: () => onTall(root.classList.toggle("tall")) }),
+      onclick: () => root.classList.toggle("tall") }),
     h("header", { class: "editor-head" },
       h("h2", {}, "Style"),
       h("button", { class: "text-button", type: "button", onclick: () => reset() }, "Reset"),

@@ -2,21 +2,19 @@
 // map to go idle and writes a screenshot.
 //
 //   pnpm snapshot <out.png> [#zoom/lat/lon[/bearing/pitch]] [--thread=main|worker]
-//     [--format=mvt|mlt] [--style=<key>|URL] [--page=playground.html|cities.html]
+//     [--format=mvt|mlt] [--style=<key>|URL]
 //     [--size=WxH] [--compare=reference-map.png] [--renderer=webgpu|webgl2] [--lose=<ms> [--switch]]
 //
 // `--lose` loses the GPU that long after the map loads and waits for it to
 // recover (plan §8.8); with `--switch`, onto WebGL2.
 //
 // The map app draws the Tokyo extract (MVT by default) unless `--style`
-// names another; `--page` follows an old page's redirect into the app.
+// names another.
 // Besides <out.png>, it writes <out>-map.png without the app's chrome.
 import { readFile } from "node:fs/promises";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const args = process.argv.slice(2);
-const entry = args.find((a) => a.startsWith("--page="))?.slice(7) ?? "";
-if (!["", "playground.html", "cities.html"].includes(entry)) throw new Error("unsupported page");
 const thread = args.find((a) => a.startsWith("--thread="))?.slice("--thread=".length);
 const format = args.find((a) => a.startsWith("--format="))?.slice("--format=".length);
 const compare = args.find((a) => a.startsWith("--compare="))?.slice("--compare=".length);
@@ -35,9 +33,9 @@ if (lose) params.set("lose", lose);
 if (switchTier) params.set("switch", "");
 // Snapshots draw the committed extract unless told otherwise.
 if (style) params.set("style", style);
-else if (entry === "") params.set("style", `tokyo-${format ?? "mvt"}`);
+else params.set("style", `tokyo-${format ?? "mvt"}`);
 const query = `?${params}`;
-const url = `${server.url}${entry}${query}${hash}`;
+const url = `${server.url}${query}${hash}`;
 
 const browser = await launchChromium();
 try {

@@ -85,7 +85,6 @@ const hudControl = createHud({
 const editor = createEditor({
   onClose: () => setEditing(false),
   onReplaced: () => { highlighter?.reset(); clearPopup(); },
-  onTall: () => {},
 });
 
 function setEditing(on) {
