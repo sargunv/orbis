@@ -125,6 +125,9 @@ struct PathResult {
     name: &'static str,
     /// `Map::render` per frame, sorted.
     cpu: Vec<Duration>,
+    /// The render thread's placement work per frame
+    /// (`FrameReport::placement_us`), sorted.
+    placement: Vec<Duration>,
     /// `Map::render` until the GPU finished the frame, sorted; empty with
     /// timestamps, which don't wait for each frame.
     done: Vec<Duration>,
@@ -217,7 +220,18 @@ pub(crate) async fn run(
         let start = (path.camera)(settings, 0.0);
         let mut map = new_map(start)?;
         *renderer.borrow_mut() = None;
-        settle(gpu, &mut map, &|g, m| render(g, m, 0.0).0, &mut warnings).await?;
+        // Frames' times: the wall clock while the view loads, then 60 Hz
+        // from there, so fades and transitions run on.
+        let epoch = clock::now();
+        let since = || (clock::now() - epoch).as_secs_f64() * 1000.0;
+        settle(
+            gpu,
+            &mut map,
+            &|g, m| render(g, m, since()).0,
+            &mut warnings,
+        )
+        .await?;
+        let base = since();
         let mut legs = if path.flight {
             flight_legs()
         } else {
@@ -226,15 +240,15 @@ pub(crate) async fn run(
         legs.reverse();
         progress(&format!("{}: moving", path.name));
         let (mut cpu, mut done, mut peak_bytes, mut loading) = (Vec::new(), Vec::new(), 0, 0);
+        let mut placement = Vec::new();
         // Per label text: shown in full, and since which frame it is gone.
         let mut labels: std::collections::HashMap<Box<str>, Option<usize>> = Default::default();
         let (mut blinks, mut blink_frames) = (0, 0);
         let (mut rebuilds, mut rows) = (0, 0);
         let started = clock::now();
-        // Frames' times, at 60 Hz.
-        let mut now = 0.0;
+        let mut now = base;
         for f in 1.. {
-            now = (FRAME * f).as_secs_f64() * 1000.0;
+            now = base + (FRAME * f).as_secs_f64() * 1000.0;
             // A flight's camera stands on the terrain, as the demos' do.
             if path.flight {
                 if !map.is_moving() {
@@ -264,6 +278,7 @@ pub(crate) async fn run(
                 gpu.take_frames().await;
             }
             cpu.push(time);
+            placement.push(Duration::from_micros(u64::from(report.placement_us)));
             peak_bytes = peak_bytes.max(uploaded(gpu) - before);
             loading += usize::from(report.tiles_loading > 0);
             rebuilds += usize::from(report.frame.candidates_rebuilt);
@@ -309,10 +324,12 @@ pub(crate) async fn run(
         gpu.take_frames().await;
         cpu.sort_unstable();
         done.sort_unstable();
+        placement.sort_unstable();
         paths.push(PathResult {
             done,
             name: path.name,
             cpu,
+            placement,
             peak_bytes,
             loading,
             rebuilds,
@@ -355,16 +372,16 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | to GPU done p50 | p95 | frames > 16.7 ms | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | settle ms | label blinks (frames) |"
+            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | to GPU done p50 | p95 | frames > 16.7 ms | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | settle ms | label blinks (frames) | placement p50 | p95 | max |"
         )?;
         writeln!(
             out,
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         )?;
         for p in &self.paths {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} | {} ({}) |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} | {} ({}) | {} | {} | {} |",
                 p.name,
                 ms(p.at(0.5)),
                 ms(p.at(0.95)),
@@ -385,6 +402,9 @@ impl GesturesReport {
                 p.settle.as_secs_f64() * 1000.0,
                 p.blinks,
                 p.blink_frames,
+                ms(percentile(&p.placement, 0.5)),
+                ms(percentile(&p.placement, 0.95)),
+                ms(percentile(&p.placement, 1.0)),
             )?;
         }
         writeln!(out)?;
@@ -395,7 +415,9 @@ impl GesturesReport {
              path's end until the map is idle; candidate rebuilds: frames that laid the cull's \
              candidates out again; label blinks: labels shown in full that all but \
              vanished (opacity under 0.1) and were back in full within {FLASH_FRAMES} frames (no \
-             fade is that quick), and the frames they were gone."
+             fade is that quick), and the frames they were gone; placement: the render thread's \
+             share of it (building the frame the lane places, applying commits; plan §6.1 \
+             step 10's 0.2 ms)."
         )?;
         for warning in &self.warnings {
             writeln!(out, "- warning: {warning}")?;

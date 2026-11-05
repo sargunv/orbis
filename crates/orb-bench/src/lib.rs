@@ -351,13 +351,16 @@ pub async fn run(
         }
         Experiment::Frames => {}
     }
-    // The one map's renderer.
+    // The one map's renderer, and the frames' clock: fades and transitions
+    // run on frame times.
     let renderer = std::cell::RefCell::new(None);
+    let epoch = clock::now();
     let render = |gpu: &mut TimedGpu, map: &mut Map| {
         let started = clock::now();
         let mut renderer = renderer.borrow_mut();
         let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
-        let report = map.render(gpu, renderer, target, viewport, settings.ratio, 0.0);
+        let time = (started - epoch).as_secs_f64() * 1000.0;
+        let report = map.render(gpu, renderer, target, viewport, settings.ratio, time);
         (report, started, clock::now() - started)
     };
 
