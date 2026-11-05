@@ -99,7 +99,19 @@ fn assert_matches_fresh(offscreen: &mut Offscreen) {
     settle(offscreen);
     let (a, b) = (offscreen.pixels(), fresh.pixels());
     let differing = crate::common::differing_pixels(&a, &b);
-    assert_eq!(differing, 0, "edited and fresh pixels differ");
+    if differing > 0 {
+        // Both pictures, for the hunt.
+        let dir = std::env::temp_dir().join(format!("orb-edits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, pixels) in [("edited", &a), ("fresh", &b)] {
+            let path = dir.join(format!("{name}.png"));
+            crate::common::write_png(path.to_str().unwrap(), pixels).unwrap();
+        }
+        panic!(
+            "{differing} edited and fresh pixels differ; see {}",
+            dir.display()
+        );
+    }
 }
 
 #[test]
