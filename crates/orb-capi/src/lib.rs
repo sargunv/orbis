@@ -96,6 +96,9 @@ mod ffi {
     }
 
     /// A GPU device and host services, shared by the maps made from it.
+    /// A runtime and its maps and targets belong to the thread that made
+    /// it, which needn't be the main thread: an embedder that draws on a
+    /// render thread of its own makes them there.
     #[diplomat::opaque_mut]
     #[diplomat::attr(contract, thread = "owner")]
     #[derive(Debug)]
@@ -308,7 +311,10 @@ mod ffi {
 
         /// A surface on a `CAMetalLayer*` (macOS, iOS), passed as an
         /// address. The layer must outlive the target. `Unsupported` on
-        /// other platforms.
+        /// other platforms. Frames may draw on any one thread, but on macOS
+        /// a layer inside a window's view must draw on the main thread for
+        /// now: wgpu-hal asks the view for its window when it acquires a
+        /// frame.
         #[diplomat::attr(contract, lifecycle)]
         pub fn create_metal_layer(
             runtime: &OrbRuntime,

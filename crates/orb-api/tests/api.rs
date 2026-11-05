@@ -807,3 +807,24 @@ fn app_sources_draw_the_tiles_the_app_hands_in() {
             .is_err()
     );
 }
+
+#[test]
+fn a_map_draws_on_the_thread_that_made_its_runtime() {
+    // Not the main thread: a runtime and everything made with it belong to
+    // the thread that made them, the embedder's render thread.
+    let drawn = std::thread::Builder::new()
+        .name("render".into())
+        .spawn(|| {
+            let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+            let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+            let mut map = Map::new(&runtime, MapOptions::default());
+            map.set_style_json(STYLE).expect("style");
+            settle(&mut map, &mut target);
+            let pixels = target.read_pixels().unwrap();
+            pixel(&pixels, SIZE / 2, SIZE / 2)
+        })
+        .unwrap()
+        .join()
+        .expect("the render thread");
+    assert_eq!(drawn, [0, 0, 255, 255]);
+}

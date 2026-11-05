@@ -8,6 +8,9 @@ import Glibc
 import OrbisC
 
 /// A GPU device and host services, shared by the maps made from it.
+/// A runtime and its maps and targets belong to the thread that made
+/// it, which needn't be the main thread: an embedder that draws on a
+/// render thread of its own makes them there.
 ///
 /// Use it only on the thread that created it, and release it there.
 public final class OrbRuntime {

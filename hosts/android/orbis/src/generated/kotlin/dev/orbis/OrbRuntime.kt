@@ -3,6 +3,9 @@ package dev.orbis
 
 /**
  * A GPU device and host services, shared by the maps made from it.
+ * A runtime and its maps and targets belong to the thread that made
+ * it, which needn't be the main thread: an embedder that draws on a
+ * render thread of its own makes them there.
  *
  * Use it only on the thread that created it. Release it with [close]; owned objects that are never closed leak.
  */

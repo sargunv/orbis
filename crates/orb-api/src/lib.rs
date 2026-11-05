@@ -156,7 +156,12 @@ pub enum Backend {
     Compat,
 }
 
-/// A GPU device and host services, shared by the maps made from it.
+/// A GPU device and host services, shared by the maps made from it. A
+/// runtime and its maps and targets belong to the thread that made it,
+/// which needn't be the main thread: an embedder draws on a render thread
+/// of its own by making them there. On macOS a `CAMetalLayer` inside a
+/// window's view must still present from the main thread: wgpu-hal asks
+/// the view for its window when it acquires a frame (#35).
 #[derive(Clone, Debug)]
 pub struct Runtime {
     shared: Rc<Shared>,

@@ -45,7 +45,10 @@ public final class OrbTarget {
 
     /// A surface on a `CAMetalLayer*` (macOS, iOS), passed as an
     /// address. The layer must outlive the target. `Unsupported` on
-    /// other platforms.
+    /// other platforms. Frames may draw on any one thread, but on macOS
+    /// a layer inside a window's view must draw on the main thread for
+    /// now: wgpu-hal asks the view for its window when it acquires a
+    /// frame.
     ///
     /// Contract: `lifecycle`.
     ///
