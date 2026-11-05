@@ -47,6 +47,11 @@ pub struct Target {
     generation: u64,
 }
 
+/// Frames a texture target lets the GPU queue before the next one waits,
+/// as a display's swapchain does: offscreen hosts never queue without
+/// bound, and the GPU never idles between frames.
+const IN_FLIGHT: usize = 2;
+
 #[derive(Debug)]
 enum Kind {
     Surface(Box<Surface>),
@@ -233,6 +238,9 @@ impl Target {
     /// Shows the frame on a surface, on the device that began it.
     pub(crate) fn end(&mut self, device: &mut Device) -> Result<(), Error> {
         let Kind::Surface(surface) = &mut self.kind else {
+            if let Device::Modern(gpu) = device {
+                gpu.end_frame(IN_FLIGHT);
+            }
             return Ok(());
         };
         match (&mut **surface, device) {

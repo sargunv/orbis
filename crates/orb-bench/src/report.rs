@@ -3,7 +3,7 @@
 use std::fmt::Write;
 use std::time::Duration;
 
-use crate::{Settings, Timing};
+use crate::Settings;
 
 /// Clocks at least this fine give medians; coarser ones give means, which
 /// quantization does not bias.
@@ -90,7 +90,6 @@ pub struct FramesReport {
     pub(crate) settings: Settings,
     /// The target in physical pixels.
     pub(crate) size: (u32, u32),
-    pub(crate) timing: Timing,
     /// The timestamps' resolution, if any were taken.
     pub(crate) gpu_resolution: Option<Duration>,
     pub(crate) cpu_resolution: Duration,
@@ -100,10 +99,7 @@ pub struct FramesReport {
 
 impl FramesReport {
     fn gpu_stat(&self) -> Stat {
-        match self.timing {
-            Timing::Timestamps => Stat::for_clock(self.gpu_resolution),
-            Timing::WorkDone => Stat::for_clock(Some(self.cpu_resolution)),
-        }
+        Stat::for_clock(self.gpu_resolution)
     }
 
     fn cpu_stat(&self) -> Stat {
@@ -134,18 +130,12 @@ impl FramesReport {
             s.frames,
             s.warmup,
         )?;
-        match self.timing {
-            Timing::Timestamps => writeln!(
-                out,
-                "- GPU: timestamp queries around every pass, two frames in flight; resolution {}{}",
-                resolution(self.gpu_resolution),
-                coarse_note(gpu_stat),
-            )?,
-            Timing::WorkDone => writeln!(
-                out,
-                "- GPU: **no timestamp queries; the GPU column is a proxy, not GPU time**: wall time from the start of each frame until the GPU reports its work done, one frame in flight. It adds the frame's CPU work and the queue's latency.",
-            )?,
-        }
+        writeln!(
+            out,
+            "- GPU: timestamp queries around every pass, two frames in flight; resolution {}{}",
+            resolution(self.gpu_resolution),
+            coarse_note(gpu_stat),
+        )?;
         writeln!(
             out,
             "- CPU clock resolution {}{}",
@@ -154,13 +144,9 @@ impl FramesReport {
         )?;
         writeln!(out)?;
 
-        let gpu_label = match self.timing {
-            Timing::Timestamps => format!("GPU {g}"),
-            Timing::WorkDone => format!("proxy (work done) {g}"),
-        };
         writeln!(
             out,
-            "| view | {gpu_label} | p90 | cull pass {g} | main pass {g} | CPU render {c} | CPU encode+submit {c} | draws | dispatches |"
+            "| view | GPU {g} | p90 | cull pass {g} | main pass {g} | CPU render {c} | CPU encode+submit {c} | draws | dispatches |"
         )?;
         writeln!(out, "|---|---|---|---|---|---|---|---|---|")?;
         let pass = |p: &Option<Summary>| p.as_ref().map_or("—".into(), |m| ms(gpu_stat.of(m)));

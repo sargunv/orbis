@@ -16,7 +16,7 @@ use std::time::Duration;
 use orb_api::{CameraState, CameraTarget, FlyOptions, Map, Runtime, Target};
 
 use crate::report::{ms, resolution};
-use crate::{GesturePaths, Settings, Timing, clock, frame, settle};
+use crate::{GesturePaths, Settings, clock, frame, settle};
 
 /// A 60 Hz display's frame.
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -126,9 +126,6 @@ struct PathResult {
     /// The render thread's placement work per frame
     /// (`FrameReport::placement_us`), sorted.
     placement: Vec<Duration>,
-    /// `Map::render` until the GPU finished the frame, sorted; empty with
-    /// timestamps, which don't wait for each frame.
-    done: Vec<Duration>,
     /// Bytes uploaded in the frame that uploaded most.
     peak_bytes: u64,
     /// Frames that drew with tiles still loading.
@@ -148,15 +145,6 @@ struct PathResult {
 impl PathResult {
     fn at(&self, p: f64) -> Duration {
         percentile(&self.cpu, p)
-    }
-}
-
-/// A column of the frames to GPU completion, or – without them.
-fn done(times: &[Duration], f: impl Fn(&[Duration]) -> String) -> String {
-    if times.is_empty() {
-        "–".into()
-    } else {
-        f(times)
     }
 }
 
@@ -182,7 +170,6 @@ fn uploaded(runtime: &Runtime) -> u64 {
 
 pub(crate) fn run(
     runtime: &Runtime,
-    timing: Timing,
     (target, size): (&mut Target, (u32, u32)),
     settings: &Settings,
     about: Vec<String>,
@@ -214,7 +201,7 @@ pub(crate) fn run(
         };
         legs.reverse();
         progress(&format!("{}: moving", path.name));
-        let (mut cpu, mut done, mut peak_bytes, mut loading) = (Vec::new(), Vec::new(), 0, 0);
+        let (mut cpu, mut peak_bytes, mut loading) = (Vec::new(), 0, 0);
         let mut placement = Vec::new();
         // Per label text: shown in full, and since which frame it is gone.
         let mut labels: std::collections::HashMap<Box<str>, Option<usize>> = Default::default();
@@ -238,13 +225,8 @@ pub(crate) fn run(
                 map.jump_to_state((path.camera)(settings, f64::from(f) / PATH_FRAMES as f64));
             }
             let before = uploaded(runtime);
-            let start = clock::now();
+            // The target keeps two frames in flight, as a swapchain does.
             let (report, time) = frame(&mut map, target, now)?;
-            // Each frame finishes before the next, as a display's would.
-            runtime.finish();
-            if timing == Timing::WorkDone {
-                done.push(clock::now() - start);
-            }
             cpu.push(time);
             placement.push(Duration::from_micros(u64::from(report.placement_us)));
             peak_bytes = peak_bytes.max(uploaded(runtime) - before);
@@ -279,7 +261,6 @@ pub(crate) fn run(
         loop {
             now += FRAME.as_secs_f64() * 1000.0;
             let (report, _) = frame(&mut map, target, now)?;
-            runtime.finish();
             warnings.extend(crate::take_warnings(&mut map));
             if report.idle {
                 break;
@@ -290,10 +271,8 @@ pub(crate) fn run(
             std::thread::sleep(FRAME);
         }
         cpu.sort_unstable();
-        done.sort_unstable();
         placement.sort_unstable();
         paths.push(PathResult {
-            done,
             name: path.name,
             cpu,
             placement,
@@ -339,29 +318,22 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | to GPU done p50 | p95 | frames > 16.7 ms | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | settle ms | label blinks (frames) | placement p50 | p95 | max |"
+            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | settle ms | label blinks (frames) | placement p50 | p95 | max |"
         )?;
         writeln!(
             out,
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         )?;
         for p in &self.paths {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} | {} ({}) | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} | {} ({}) | {} | {} | {} |",
                 p.name,
                 ms(p.at(0.5)),
                 ms(p.at(0.95)),
                 ms(p.at(0.99)),
                 ms(p.at(1.0)),
                 p.cpu.iter().filter(|&&t| t > FRAME).count(),
-                done(&p.done, |d| ms(percentile(d, 0.5))),
-                done(&p.done, |d| ms(percentile(d, 0.95))),
-                done(&p.done, |d| d
-                    .iter()
-                    .filter(|&&t| t > FRAME)
-                    .count()
-                    .to_string()),
                 p.loading,
                 p.rebuilds,
                 p.rows as f64 / p.cpu.len().max(1) as f64,
@@ -377,8 +349,8 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "Times in ms of `Map::render` (applying arrived tiles, uploads, placement, encoding), \
-             and with `--timing work-done` until the GPU finished the frame; settle: from the \
+            "Times in ms of `Map::render` (applying arrived tiles, uploads, placement, encoding); \
+             settle: from the \
              path's end until the map is idle; candidate rebuilds: frames that laid the cull's \
              candidates out again; label blinks: labels shown in full that all but \
              vanished (opacity under 0.1) and were back in full within {FLASH_FRAMES} frames (no \

@@ -64,6 +64,10 @@ pub struct WgpuGpu {
     render_bundles: Slots<wgpu::RenderBundle>,
     /// Submissions' times, while timing ([`WgpuGpu::set_timing`]).
     timing: Option<timing::Timing>,
+    /// The last submission, and each unfinished frame's
+    /// ([`WgpuGpu::end_frame`]).
+    last: Option<wgpu::SubmissionIndex>,
+    frames: std::collections::VecDeque<wgpu::SubmissionIndex>,
     samplers: Slots<wgpu::Sampler>,
     host_bytes: Slots<HostBytes>,
     /// `ImageBitmap`s and video elements for
@@ -248,6 +252,8 @@ impl WgpuGpu {
             compiled: Vec::new(),
             render_bundles: Slots::default(),
             timing: None,
+            last: None,
+            frames: Default::default(),
             samplers: Slots::default(),
             host_bytes: Slots::default(),
             #[cfg(target_arch = "wasm32")]
@@ -498,6 +504,19 @@ impl WgpuGpu {
     /// The wgpu buffer behind an id.
     pub fn buffer(&self, id: BufferId) -> &wgpu::Buffer {
         &self.buffers[id.0]
+    }
+
+    /// Ends a frame drawn into a texture: waits until no more than
+    /// `in_flight` frames are unfinished, as a swapchain does.
+    pub fn end_frame(&mut self, in_flight: usize) {
+        self.frames.extend(self.last.take());
+        while self.frames.len() > in_flight {
+            let index = self.frames.pop_front();
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: index,
+                timeout: None,
+            });
+        }
     }
 
     /// Nanoseconds per timestamp tick in resolved query sets.
@@ -1276,7 +1295,7 @@ impl Gpu for WgpuGpu {
                 }
             }
         }
-        self.queue.submit([encoder.finish()]);
+        self.last = Some(self.queue.submit([encoder.finish()]));
         if let Some(timing) = &mut self.timing {
             timing.end(timing::now() - started);
         }

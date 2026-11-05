@@ -81,19 +81,6 @@ impl Report {
     }
 }
 
-/// How GPU time is measured.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Timing {
-    /// Timestamp queries at the beginning and end of every pass, two frames
-    /// in flight.
-    Timestamps,
-    /// A proxy for devices without timestamp queries: wall time from the
-    /// start of each frame until the GPU reports its work done, one frame
-    /// in flight. It includes the CPU's work and the queue's latency, so it
-    /// is not GPU time.
-    WorkDone,
-}
-
 /// What to measure, and how.
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -107,8 +94,6 @@ pub struct Settings {
     pub height: u32,
     pub ratio: f32,
     pub center: Geodetic,
-    /// `None` uses timestamps where the device has them.
-    pub timing: Option<Timing>,
     pub experiment: Experiment,
     pub paths: GesturePaths,
     /// The frames bench's views as `(zoom, pitch, bearing)`, in place of
@@ -126,7 +111,6 @@ impl Default for Settings {
             height: 768,
             ratio: 2.0,
             center: Geodetic::new(TOKYO.0, TOKYO.1),
-            timing: None,
             experiment: Experiment::Frames,
             paths: GesturePaths::City,
             views: Vec::new(),
@@ -136,8 +120,7 @@ impl Default for Settings {
 
 impl Settings {
     /// Sets one option by name, as the tool's `--name value` gives it: `frames`, `warmup`, `rounds`, `size`
-    /// (`WxH`), `ratio`, `at` (`lon,lat`), `timing` (`timestamps` or
-    /// `work-done`), `experiment` (`frames` or `gestures`), `paths` (`city` or `alps`,
+    /// (`WxH`), `ratio`, `at` (`lon,lat`), `experiment` (`frames` or `gestures`), `paths` (`city` or `alps`,
     /// the gestures bench's) or `view` (`zoom,pitch,bearing`, adding a view
     /// to measure instead of the frames bench's own).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
@@ -174,13 +157,6 @@ impl Settings {
                 let (lon, lat) = value.split_once(',').ok_or("at needs lon,lat")?;
                 self.center = Geodetic::new(number(lon)?, number(lat)?);
             }
-            "timing" => {
-                self.timing = Some(match value {
-                    "timestamps" => Timing::Timestamps,
-                    "work-done" => Timing::WorkDone,
-                    _ => return Err("timing needs timestamps or work-done".into()),
-                })
-            }
             "experiment" => {
                 self.experiment = match value {
                     "frames" => Experiment::Frames,
@@ -205,19 +181,6 @@ impl Settings {
             (self.width as f32 * self.ratio).round() as u32,
             (self.height as f32 * self.ratio).round() as u32,
         )
-    }
-}
-
-/// How `runtime` times the GPU: `asked`, or timestamps where it has them.
-fn timing(runtime: &Runtime, asked: Option<Timing>) -> Result<Timing, String> {
-    let timestamps = runtime.stats().gpu_timestamps;
-    match asked {
-        Some(Timing::Timestamps) if !timestamps => {
-            Err("the device has no timestamp queries".into())
-        }
-        Some(timing) => Ok(timing),
-        None if timestamps => Ok(Timing::Timestamps),
-        None => Ok(Timing::WorkDone),
     }
 }
 
@@ -247,7 +210,9 @@ pub fn run(
     mut new_map: impl FnMut(CameraState) -> Map,
     mut progress: impl FnMut(&str),
 ) -> Result<Report, String> {
-    let timing = timing(runtime, settings.timing)?;
+    if !runtime.stats().gpu_timestamps {
+        return Err("the device has no timestamp queries".into());
+    }
     let cpu_resolution = clock::resolution();
     let (width, height) = settings.physical_size();
     let mut target = Target::texture(runtime, width, height, f64::from(settings.ratio));
@@ -255,7 +220,6 @@ pub fn run(
     if settings.experiment == Experiment::Gestures {
         return gestures::run(
             runtime,
-            timing,
             (&mut target, size),
             settings,
             about,
@@ -317,20 +281,11 @@ pub fn run(
                 settings.rounds
             ));
             let count = settings.warmup + settings.frames;
-            let (mut cpu, mut wall) = (Vec::with_capacity(count), Vec::with_capacity(count));
-            for f in 0..count {
-                let started = clock::now();
-                let time = (started - epoch).as_secs_f64() * 1000.0;
+            let mut cpu = Vec::with_capacity(count);
+            // The target keeps two frames in flight, as a swapchain does.
+            for _ in 0..count {
+                let time = (clock::now() - epoch).as_secs_f64() * 1000.0;
                 let (report, time) = frame(map, &mut target, time)?;
-                // The proxy waits for each frame; timestamps let two
-                // queue, as a display's swapchain does, so the GPU keeps
-                // its clocks.
-                if timing == Timing::WorkDone || f % 2 == 1 {
-                    runtime.finish();
-                }
-                if timing == Timing::WorkDone {
-                    wall.push(clock::now() - started);
-                }
                 s.report = report;
                 cpu.push(time);
             }
@@ -339,10 +294,7 @@ pub fn run(
                 return Err(format!("{} submissions for {count} frames", times.len()));
             }
             for f in settings.warmup..count {
-                s.gpu.push(match timing {
-                    Timing::Timestamps => times[f].gpu(),
-                    Timing::WorkDone => wall[f],
-                });
+                s.gpu.push(times[f].gpu());
                 for (label, samples) in [("cull", &mut s.cull), ("main", &mut s.main)] {
                     samples.extend(times[f].pass(label));
                 }
@@ -368,7 +320,6 @@ pub fn run(
         about,
         settings: settings.clone(),
         size: (width, height),
-        timing,
         gpu_resolution,
         cpu_resolution,
         views,

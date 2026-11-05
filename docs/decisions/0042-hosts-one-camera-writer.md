@@ -201,3 +201,18 @@ answer by making another surface. `Error::DeviceLost`, the public
 the device-loss branches of the Android and Apple views and `orb-demo`. On
 the Android emulator (Compat) a forced loss shows a complete frame again
 1.9 s later; natively a texture target redraws in 10 ms.
+
+Texture targets keep two frames in flight (a frame waits for the one two
+before it, `WgpuGpu::end_frame`), as a display's swapchain does, and the
+bench no longer waits for the GPU itself; its work-done proxy for devices
+without timestamp queries goes with `Runtime::finish`, since every native
+backend has them. Its earlier wait, the whole GPU after every second
+frame, idled it between frames. Same-session medians of five runs each
+(GPU ms, z12 and z17, M6 under load): the old bench 0.982 and 0.994; the
+bench through `orb-api` with that wait 0.978 and 1.157; two in flight on
+today's `main` 0.981 and 1.004 (again under heavier load: the old bench
+1.423 and 1.769, the new 1.335 and 1.878). The z12 and z17 rise reported above was
+the wait, not the renderer. The full bench at load average 23: z12 0.476,
+z15 1.087, z15 pitch 60 1.527, z17 1.271, z16 pitch 60 with buildings
+4.194. The cull counters stay out: the cull shader writes them on the GPU,
+and a frame's stats would need a readback of them every frame.

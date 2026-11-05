@@ -345,13 +345,6 @@ impl Runtime {
         }
     }
 
-    /// Blocks until the GPU has finished the work submitted so far.
-    pub fn finish(&self) {
-        if let Device::Modern(gpu) = &*self.shared.gpu.borrow() {
-            pollster::block_on(gpu.work_done());
-        }
-    }
-
     /// Whether the GPU was lost; the next frame drawn makes another.
     pub fn lost(&self) -> bool {
         self.shared.gpu.borrow().lost()
