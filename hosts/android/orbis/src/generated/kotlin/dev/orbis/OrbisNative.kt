@@ -81,6 +81,9 @@ internal object OrbisNative {
     external fun orbMapNeedsFrame(self: Long): Boolean
 
     @JvmStatic
+    external fun orbMapRetryFailedTiles(self: Long): Unit
+
+    @JvmStatic
     external fun orbMapLoadStyleUrl(self: Long, url: ByteArray): Unit
 
     @JvmStatic

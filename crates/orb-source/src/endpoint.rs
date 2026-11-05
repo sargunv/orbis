@@ -11,34 +11,42 @@ use orb_v8::{
 /// JS's default `tileSize`.
 const VECTOR_TILE_PX: f64 = 512.0;
 
+/// Where a tile's bytes are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TileLocation {
+    Url(String),
+    /// The archive URL without the `pmtiles://` protocol prefix.
+    Pmtiles(String),
+}
+
 /// Where a source's tile jobs get their data (merged TileJSON for tiled
 /// sources).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct TileEndpoint {
+pub struct TileEndpoint {
     archive: Option<String>,
-    pub(crate) bounds: Option<[f64; 4]>,
-    pub(crate) templates: Vec<String>,
+    pub bounds: Option<[f64; 4]>,
+    pub templates: Vec<String>,
     /// A whole GeoJSON document; an empty URL denotes inline source data.
     data_url: Option<String>,
-    pub(crate) scheme: Scheme,
-    pub(crate) minzoom: u8,
-    pub(crate) maxzoom: u8,
-    pub(crate) encoding: Encoding,
+    pub scheme: Scheme,
+    pub minzoom: u8,
+    pub maxzoom: u8,
+    pub encoding: Encoding,
     /// The tile size the view is covered with, in logical pixels.
-    pub(crate) cover_px: f64,
+    pub cover_px: f64,
     /// A `raster-dem` source's unpack vector.
-    pub(crate) dem_unpack: Option<[f64; 4]>,
+    pub dem_unpack: Option<[f64; 4]>,
     /// The tile matrix set its tiles are in.
-    pub(crate) tms: TileMatrixSet,
+    pub tms: TileMatrixSet,
     /// An `image` source's quad on the surface's plane: its one tile draws
     /// the image warped onto it.
-    pub(crate) quad: Option<orb_crs::ImageQuad>,
+    pub quad: Option<orb_crs::ImageQuad>,
 }
 
 impl TileEndpoint {
     /// The endpoint of a tiled source, with the style's keys taking
     /// precedence over its TileJSON's, as in GL JS.
-    pub(crate) fn resolve(
+    pub fn resolve(
         source: &SourceKind,
         tilejson: Option<&str>,
         tms: TileMatrixSet,
@@ -152,7 +160,7 @@ impl TileEndpoint {
 
     /// GeoJSON uses one source URL (or no URL for inline data); the tile
     /// worker supplies geometry rather than decoding a vector tile response.
-    pub(crate) fn geojson(source: &GeoJsonSource, tms: TileMatrixSet) -> Self {
+    pub fn geojson(source: &GeoJsonSource, tms: TileMatrixSet) -> Self {
         Self {
             archive: None,
             bounds: None,
@@ -174,7 +182,7 @@ impl TileEndpoint {
 
     /// An `image` source on `projection`'s plane: one tile, the image at
     /// its URL, in a one-tile set around its quad.
-    pub(crate) fn image(source: &orb_v8::ImageSource, projection: &orb_crs::Projection) -> Self {
+    pub fn image(source: &orb_v8::ImageSource, projection: &orb_crs::Projection) -> Self {
         let corners = source
             .coordinates
             .map(|[lon, lat]| projection.forward(orb_crs::Geodetic::new(lon, lat)));
@@ -201,7 +209,7 @@ impl TileEndpoint {
         }
     }
 
-    pub(crate) fn cover_zoom(&self) -> u8 {
+    pub fn cover_zoom(&self) -> u8 {
         if self.data_url.is_some() {
             self.maxzoom
         } else {
@@ -209,21 +217,21 @@ impl TileEndpoint {
         }
     }
 
-    pub(crate) fn data_tile(&self, mut tile: TileIndex) -> TileIndex {
+    pub fn data_tile(&self, mut tile: TileIndex) -> TileIndex {
         while tile.z > self.maxzoom {
             tile = tile.parent().expect("ancestor");
         }
         tile
     }
 
-    pub(crate) fn location(&self, tile: TileIndex) -> crate::TileLocation {
+    pub fn location(&self, tile: TileIndex) -> TileLocation {
         match &self.archive {
-            Some(url) => crate::TileLocation::Pmtiles(url.clone()),
-            None => crate::TileLocation::Url(self.url(tile)),
+            Some(url) => TileLocation::Pmtiles(url.clone()),
+            None => TileLocation::Url(self.url(tile)),
         }
     }
 
-    pub(crate) fn contains(&self, tile: TileIndex) -> bool {
+    pub fn contains(&self, tile: TileIndex) -> bool {
         if !self.tms.contains(tile) {
             return false;
         }
@@ -237,7 +245,7 @@ impl TileEndpoint {
     }
 
     /// The URL of a tile, spreading tiles over the templates.
-    pub(crate) fn url(&self, tile: TileIndex) -> String {
+    pub fn url(&self, tile: TileIndex) -> String {
         if let Some(url) = &self.data_url {
             return url.clone();
         }
@@ -269,7 +277,7 @@ impl TileEndpoint {
 /// `relative` resolved against `base`, as a browser resolves a link:
 /// absolute URLs stay, `/path` keeps the origin, others replace `base`'s
 /// last segment with `./` and `../` applied.
-pub(crate) fn join_url(base: &str, relative: &str) -> String {
+pub fn join_url(base: &str, relative: &str) -> String {
     if relative.contains("://") || relative.starts_with("data:") {
         return relative.to_string();
     }
@@ -299,12 +307,12 @@ pub(crate) fn join_url(base: &str, relative: &str) -> String {
 }
 
 /// Header metadata has the same precedence as TileJSON keys.
-pub(crate) fn archive_tilejson(bytes: &[u8]) -> Result<String, String> {
-    let header = orb_source::pmtiles::Header::parse(bytes)?;
+pub fn archive_tilejson(bytes: &[u8]) -> Result<String, String> {
+    let header = crate::pmtiles::Header::parse(bytes)?;
     let [west, south, east, north] = header.bounds;
     let encoding = match header.tile_type {
-        orb_source::pmtiles::TileType::Mvt => r#","encoding":"mvt""#,
-        orb_source::pmtiles::TileType::Mlt => r#","encoding":"mlt""#,
+        crate::pmtiles::TileType::Mvt => r#","encoding":"mvt""#,
+        crate::pmtiles::TileType::Mlt => r#","encoding":"mlt""#,
         _ => "",
     };
     Ok(format!(
@@ -414,7 +422,7 @@ mod tests {
         assert_eq!(endpoint.bounds, Some([139.725, 35.677, 139.755, 35.697]));
         assert_eq!(
             endpoint.location(TileIndex::new(10, 909, 403)),
-            crate::TileLocation::Pmtiles("https://x/tokyo.pmtiles".into())
+            TileLocation::Pmtiles("https://x/tokyo.pmtiles".into())
         );
         assert!(endpoint.contains(TileIndex::new(10, 909, 403)));
         assert!(!endpoint.contains(TileIndex::new(10, 0, 0)));
@@ -426,7 +434,7 @@ mod tests {
         assert!(endpoint.contains(TileIndex::new(10, 0, 1)));
         assert!(matches!(
             endpoint.location(TileIndex::new(10, 909, 403)),
-            crate::TileLocation::Url(_)
+            TileLocation::Url(_)
         ));
     }
 

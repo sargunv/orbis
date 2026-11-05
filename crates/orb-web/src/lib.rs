@@ -463,6 +463,13 @@ impl OrbisMap {
         }
     }
 
+    /// Requests the tiles that failed again now, as when the browser comes
+    /// back online.
+    #[wasm_bindgen(js_name = retryFailedTiles)]
+    pub fn retry_failed_tiles(&mut self) {
+        self.map.retry_failed_tiles();
+    }
+
     /// Loses the GPU on purpose (`GPUDevice.destroy()`, or WebGL's
     /// `WEBGL_lose_context`), to exercise recovery.
     #[wasm_bindgen(js_name = loseDevice)]

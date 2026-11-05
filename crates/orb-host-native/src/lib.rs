@@ -203,7 +203,15 @@ fn http(
         cache::now(),
     );
     match response.status().as_u16() {
-        204 => return Err(FetchError::NotFound),
+        // No content: a valid, empty tile.
+        204 => {
+            return Ok(Response::Body {
+                bytes: Vec::new(),
+                fresh_until,
+                etag,
+                last_modified,
+            });
+        }
         304 => return Ok(Response::NotModified { fresh_until }),
         _ => {}
     }

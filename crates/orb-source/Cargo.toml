@@ -9,6 +9,9 @@ version.workspace = true
 [dependencies]
 miniz_oxide.workspace = true
 orb-crs.workspace = true
+orb-expr.workspace = true
+orb-geo.workspace = true
+orb-v8.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true

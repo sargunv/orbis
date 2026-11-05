@@ -43,6 +43,8 @@ void OrbMap_set_wake(OrbMap* self, DiplomatCallback_OrbMap_set_wake_wake wake_cb
 
 bool OrbMap_needs_frame(const OrbMap* self);
 
+void OrbMap_retry_failed_tiles(OrbMap* self);
+
 void OrbMap_load_style_url(OrbMap* self, DiplomatStringView url);
 
 typedef struct OrbMap_set_style_json_result {union { OrbError err;}; bool is_ok;} OrbMap_set_style_json_result;

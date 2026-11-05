@@ -35,7 +35,7 @@ export interface HostCallbacks {
 
 /** Calls the renderer answers asynchronously, by name. */
 export type RequestMethod = "getStyle" | "semanticSnapshot" | "queryRendered" | "querySource"
-  | "addImage" | "updateImage" | "removeImage" | "hasImage";
+  | "addImage" | "updateImage" | "removeImage" | "hasImage" | "retryFailedTiles";
 
 export interface Host {
   readonly thread: "main" | "worker";

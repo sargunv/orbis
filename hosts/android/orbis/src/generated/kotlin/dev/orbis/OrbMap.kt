@@ -52,6 +52,17 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Requests the tiles that failed again now: call it when the
+     * network comes back. Until then each is retried after a backoff
+     * while frames are drawn, with coarser tiles standing in.
+     *
+     * Contract: `command`.
+     */
+    fun retryFailedTiles() {
+        OrbisNative.orbMapRetryFailedTiles(live())
+    }
+
+    /**
      * Loads a style from a URL (`http(s)://`, `file://`).
      *
      * Contract: `command`.

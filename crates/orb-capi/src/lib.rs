@@ -753,6 +753,14 @@ mod ffi {
             self.0.needs_frame()
         }
 
+        /// Requests the tiles that failed again now: call it when the
+        /// network comes back. Until then each is retried after a backoff
+        /// while frames are drawn, with coarser tiles standing in.
+        #[diplomat::attr(contract, command)]
+        pub fn retry_failed_tiles(&mut self) {
+            self.0.retry_failed_tiles();
+        }
+
         /// Loads a style from a URL (`http(s)://`, `file://`).
         #[diplomat::attr(contract, command)]
         pub fn load_style_url(&mut self, url: &DiplomatStr) {

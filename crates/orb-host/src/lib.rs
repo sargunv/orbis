@@ -23,7 +23,8 @@ pub trait Fetch: Send + Sync {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FetchError {
-    /// The resource doesn't exist (HTTP 404 or 204, a missing file).
+    /// The resource doesn't exist (HTTP 404, a missing file). HTTP 204 is
+    /// a valid empty body.
     NotFound,
     /// Invalid range, oversized body, or a server ignoring Range.
     Range(String),

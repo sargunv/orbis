@@ -22,9 +22,9 @@ use orb_v8::{LayerKind, SourceKind, TranslateAnchor};
 use crate::MapEvent;
 use crate::image::{self, ResidentImage};
 use crate::jobs::{Jobs, ResultMesh, Stream, StyleUpdate, TileRequest, TileResult, TileWorker};
-use crate::source::TileEndpoint;
 use crate::state::FeatureStates;
 use crate::style::{PaintProperty, StylePlan};
+use orb_source::endpoint::TileEndpoint;
 
 /// Logical pixel size of vector/background tiles and pattern origins.
 const TILE_PX: f64 = 512.0;
@@ -789,6 +789,24 @@ impl Map {
         self.budget = bytes;
     }
 
+    /// Requests every tile that failed (the network, say) again now, as
+    /// when the host learns the network is back; until then each waits out
+    /// its backoff, retried while frames are drawn.
+    pub fn retry_failed_tiles(&mut self) {
+        let Some(style) = &mut self.style else {
+            return;
+        };
+        for source in &mut style.sources {
+            if let SourceState::Ready { pyramid, .. } = source {
+                pyramid.retry_failed(f64::INFINITY);
+            }
+        }
+        if let Some(terrain) = &mut style.terrain {
+            terrain.pyramid.retry_failed(f64::INFINITY);
+        }
+        (self.services.wake)();
+    }
+
     /// The last placement commit's semantic snapshot (plan §13): the
     /// labels and icons it shows, a reading order and a region summary.
     /// `None` before labels are first placed.
@@ -980,7 +998,7 @@ impl Map {
                 orb_v8::StyleRef::Inline(style) => self.set_document(&style, base, true),
                 orb_v8::StyleRef::Url(url) => {
                     let url = match base {
-                        Some(base) => crate::source::join_url(base, &url),
+                        Some(base) => orb_source::endpoint::join_url(base, &url),
                         None => url,
                     };
                     self.fetch_style(&url, true);
@@ -1154,7 +1172,7 @@ impl Map {
                             orb_source::pmtiles::HEADER_LEN,
                             Box::new(move |result| {
                                 let result = result.and_then(|bytes| {
-                                    crate::source::archive_tilejson(&bytes)
+                                    orb_source::endpoint::archive_tilejson(&bytes)
                                         .map_err(FetchError::Range)
                                 });
                                 let _ = sender.send(Message::TileJson {
@@ -1942,6 +1960,7 @@ impl Map {
         };
         let endpoint = Arc::clone(endpoint);
         let tms = &endpoint.tms;
+        pyramid.retry_failed(self.services.clock.now());
         let cover = match warp {
             None => view.cover_volume(
                 tms,
@@ -1963,6 +1982,8 @@ impl Map {
             let unwarped = vector
                 && warp.as_mut().is_some_and(|w| w.series(tile).is_none())
                 && (self.surface.globe().is_none() || self.globe_warps.series(tms, tile).is_none());
+            // Outside the source's bounds there is no data, as in GL JS:
+            // nothing draws there, not even an ancestor.
             if !endpoint.contains(tile) || unwarped {
                 pyramid.insert_empty(tile);
                 continue;
@@ -2307,6 +2328,7 @@ impl Map {
             return;
         };
         let endpoint = Arc::clone(endpoint);
+        terrain.pyramid.retry_failed(self.services.clock.now());
         let requests = terrain.update(view, self.surface.tms());
         for retired in terrain.evict() {
             if let Some(page) = terrain.page {
@@ -2458,7 +2480,9 @@ impl Map {
             }
             Err(e) => {
                 self.warnings.push(format!("terrain tile {tile:?}: {e}"));
-                terrain.pyramid.insert_empty(tile);
+                terrain
+                    .pyramid
+                    .insert_failed(tile, self.services.clock.now());
                 return;
             }
         };
@@ -3023,7 +3047,7 @@ impl Map {
                     message: message.clone(),
                 });
                 self.warnings.push(message);
-                pyramid.insert_empty(tile);
+                pyramid.insert_failed(tile, self.services.clock.now());
                 return None;
             }
         };

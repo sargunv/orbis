@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod endpoint;
 mod gzip;
 pub mod pmtiles;
 
@@ -40,12 +41,24 @@ pub struct Update {
 enum State<T> {
     Loading,
     Ready(T),
-    /// Failed or empty: counts as ready and draws nothing.
+    /// Loaded with nothing to draw (HTTP 204, outside the source's
+    /// bounds): counts as ready.
     Empty,
     /// Not in the tileset (HTTP 404): ancestors or children stand in, as
     /// for a loading tile.
     Missing,
+    /// Failed for a reason that may pass, such as the network: ancestors or
+    /// children stand in, as for a loading tile, and it is requested again
+    /// once [`TilePyramid::retry_failed`] finds `retry_at` (ms) has passed.
+    Failed {
+        retry_at: f64,
+    },
 }
+
+/// The first retry's delay after a failure; each further failure doubles
+/// it, up to [`RETRY_MAX_MS`].
+const RETRY_MS: f64 = 1000.0;
+const RETRY_MAX_MS: f64 = 60_000.0;
 
 #[derive(Debug)]
 struct Entry<T> {
@@ -62,6 +75,8 @@ pub struct TilePyramid<T> {
     /// Ready tiles kept beyond those in use.
     cache_size: usize,
     frame: u64,
+    /// Failures in a row of tiles that last failed, for their backoff.
+    failures: HashMap<TileIndex, u32>,
 }
 
 impl<T> TilePyramid<T> {
@@ -72,6 +87,7 @@ impl<T> TilePyramid<T> {
             max_zoom,
             cache_size,
             frame: 0,
+            failures: HashMap::new(),
         }
     }
 
@@ -173,7 +189,7 @@ impl<T> TilePyramid<T> {
                     continue;
                 }
                 State::Empty => continue,
-                State::Loading => false,
+                State::Loading | State::Failed { .. } => false,
                 State::Missing => true,
             };
 
@@ -224,20 +240,54 @@ impl<T> TilePyramid<T> {
         match self.tiles.get_mut(&tile) {
             Some(entry) if matches!(entry.state, State::Loading) => {
                 entry.state = State::Ready(value);
+                self.failures.remove(&tile);
                 None
             }
             _ => Some(value),
         }
     }
 
-    /// Marks a loading tile as loaded with nothing to draw, such as a 404
-    /// or an error.
+    /// Marks a loading tile as loaded with nothing to draw.
     pub fn insert_empty(&mut self, tile: TileIndex) {
         if let Some(entry) = self.tiles.get_mut(&tile)
             && matches!(entry.state, State::Loading)
         {
             entry.state = State::Empty;
+            self.failures.remove(&tile);
         }
+    }
+
+    /// Marks a loading tile as failed at `now` (ms) for a reason that may
+    /// pass: ancestors or children stand in until it's retried, after a
+    /// delay that doubles with each failure in a row.
+    pub fn insert_failed(&mut self, tile: TileIndex, now: f64) {
+        if let Some(entry) = self.tiles.get_mut(&tile)
+            && matches!(entry.state, State::Loading)
+        {
+            let failures = self.failures.entry(tile).or_default();
+            let delay = (RETRY_MS * 2f64.powi(*failures as i32)).min(RETRY_MAX_MS);
+            *failures = failures.saturating_add(1);
+            entry.state = State::Failed {
+                retry_at: now + delay,
+            };
+        }
+    }
+
+    /// Forgets failed tiles due for a retry at `now` (ms), so the next
+    /// [`update`](Self::update) requests those it covers again; every
+    /// failed tile with `now` infinite, as when the network returns.
+    /// Whether any failed tile remains.
+    pub fn retry_failed(&mut self, now: f64) -> bool {
+        let mut waiting = false;
+        self.tiles.retain(|_, entry| match entry.state {
+            State::Failed { retry_at } if retry_at <= now => false,
+            State::Failed { .. } => {
+                waiting = true;
+                true
+            }
+            _ => true,
+        });
+        waiting
     }
 
     /// Marks a loading tile as absent from the tileset: it draws nothing,
@@ -247,6 +297,7 @@ impl<T> TilePyramid<T> {
             && matches!(entry.state, State::Loading)
         {
             entry.state = State::Missing;
+            self.failures.remove(&tile);
         }
     }
 
@@ -271,9 +322,12 @@ impl<T> TilePyramid<T> {
         let excess = unused.len() - self.cache_size;
         unused[..excess]
             .iter()
-            .filter_map(|(_, t)| match self.tiles.remove(t)?.state {
-                State::Ready(value) => Some(value),
-                _ => None,
+            .filter_map(|(_, t)| {
+                self.failures.remove(t);
+                match self.tiles.remove(t)?.state {
+                    State::Ready(value) => Some(value),
+                    _ => None,
+                }
             })
             .collect()
     }
@@ -337,6 +391,7 @@ impl<T> TilePyramid<T> {
 
     /// Forgets every tile, returning the ready values.
     pub fn drain(&mut self) -> Vec<T> {
+        self.failures.clear();
         self.tiles
             .drain()
             .filter_map(|(_, entry)| match entry.state {
@@ -648,6 +703,31 @@ mod tests {
         p.update(&cover(&[(1, 0, 0)]));
         p.insert_empty(t(1, 0, 0));
         assert!(p.update(&cover(&[(1, 0, 0)])).draw.is_empty());
+    }
+
+    #[test]
+    fn failed_tiles_fall_back_and_retry_with_backoff() {
+        let mut p = TilePyramid::new(0, 14, 8);
+        p.update(&cover(&[(0, 0, 0)]));
+        p.insert(t(0, 0, 0), "world");
+        p.update(&cover(&[(1, 0, 0)]));
+        p.insert_failed(t(1, 0, 0), 0.0);
+        assert_eq!(p.loading(), 0, "a failed tile doesn't keep the map loading");
+        let update = p.update(&cover(&[(1, 0, 0)]));
+        assert_eq!(update.draw[0].tile, t(0, 0, 0), "the ancestor stands in");
+        assert!(update.request.is_empty());
+        assert!(p.retry_failed(999.0), "not due before a second");
+        assert!(p.update(&cover(&[(1, 0, 0)])).request.is_empty());
+        assert!(!p.retry_failed(1000.0));
+        assert_eq!(p.update(&cover(&[(1, 0, 0)])).request, [t(1, 0, 0)]);
+        // The second failure waits twice as long; the network's return
+        // retries at once.
+        p.insert_failed(t(1, 0, 0), 1000.0);
+        assert!(p.retry_failed(2999.0));
+        assert!(!p.retry_failed(f64::INFINITY));
+        assert_eq!(p.update(&cover(&[(1, 0, 0)])).request, [t(1, 0, 0)]);
+        p.insert(t(1, 0, 0), "tile");
+        assert!(p.failures.is_empty());
     }
 
     #[test]

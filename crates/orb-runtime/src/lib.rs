@@ -22,7 +22,6 @@ mod placement_wire;
 mod point;
 mod queries;
 mod query;
-mod source;
 mod sprite;
 mod state;
 mod style;

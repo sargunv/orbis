@@ -269,7 +269,14 @@ async fn network(
         .map_err(network)?;
     let stream = response.body();
     let valid = match response.status() {
-        204 | 404 => Err(FetchError::NotFound),
+        404 => Err(FetchError::NotFound),
+        // No content: a valid, empty tile.
+        204 => {
+            if let Some(stream) = stream {
+                let _ = stream.cancel();
+            }
+            return Ok((Vec::new(), None));
+        }
         200..=299 => {
             if let Some((offset, length)) = range {
                 let header = response.headers().get("content-range").map_err(network)?;

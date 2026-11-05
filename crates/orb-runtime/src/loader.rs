@@ -9,12 +9,7 @@ use orb_host::{Fetch, FetchError};
 use orb_source::pmtiles::{Lookup, Reader, TileType};
 use orb_v8::Encoding;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TileLocation {
-    Url(String),
-    /// The archive URL without the `pmtiles://` protocol prefix.
-    Pmtiles(String),
-}
+pub use orb_source::endpoint::TileLocation;
 
 pub type LoadDone = Box<dyn FnOnce(Result<(Vec<u8>, Encoding), FetchError>) + Send + 'static>;
 type Archives = VecDeque<(String, Arc<Mutex<Reader>>)>;

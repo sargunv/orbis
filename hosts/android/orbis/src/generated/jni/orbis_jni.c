@@ -286,6 +286,12 @@ JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapNeedsFrame(JNIEnv* e
     return (result) ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapRetryFailedTiles(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbMap_retry_failed_tiles((OrbMap*)(intptr_t)self);
+}
+
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapLoadStyleUrl(JNIEnv* env, jclass cls, jlong self, jbyteArray url) {
     (void)env;
     (void)cls;

@@ -184,6 +184,10 @@ export class OrbisMap {
     this.#observer = new ResizeObserver(() => this.#resize());
     this.#attach();
     this.#detach.push(() => { this.#detachInput?.(); this.#observer?.disconnect(); });
+    // Tiles that failed while offline load again when the network returns.
+    const online = () => void this.#host.request("retryFailedTiles");
+    addEventListener("online", online);
+    this.#detach.push(() => removeEventListener("online", online));
     this.#loop.request();
   }
 

@@ -2564,6 +2564,9 @@ dependencies = [
  "flate2",
  "miniz_oxide 0.9.1",
  "orb-crs",
+ "orb-expr",
+ "orb-geo",
+ "orb-v8",
 ]
 
 [[package]]
