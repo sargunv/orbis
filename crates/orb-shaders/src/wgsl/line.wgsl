@@ -61,6 +61,10 @@ struct LineOut {
     @location(10) opacity: f32,
     @location(11) progress: f32,
     @location(12) @interpolate(flat) ramp: u32,
+    // Where the placement owns the line: where it lands, but where it was
+    // in a drape slot, so a translated line moves whole into it, bounded
+    // by the slot where it lands (`tile_pos`).
+    @location(13) owner_pos: vec2<f32>,
 };
 
 fn line_prop(row: u32, state: u32, bit: u32, constant: f32, tile_zoom: f32) -> f32 {
@@ -176,6 +180,7 @@ fn line_vertex(v: Pulled) -> LineOut {
     out.width2 = vec2<f32>(outset, inset);
     out.blur = blur;
     out.tile_pos = extruded;
+    out.owner_pos = select(extruded, extruded - vec2<f32>(shift.x, -shift.y) / tile.scale, draped_placement(tile));
     out.tile = v.tile;
     return out;
 }
@@ -183,7 +188,7 @@ fn line_vertex(v: Pulled) -> LineOut {
 @fragment
 fn fs_line(in: LineOut) -> MapOut {
     let ground = ground_point(tile_at(in.tile), in.tile_pos);
-    if !inside_clips(tile_at(in.tile), in.tile_pos) {
+    if !owned(tile_at(in.tile), in.owner_pos) || !landed(tile_at(in.tile), in.tile_pos) {
         discard;
     }
     let dist = length(in.normal) * in.width2.x;

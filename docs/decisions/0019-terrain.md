@@ -125,6 +125,14 @@ each value at eight integer zooms, from five below the camera's to two
 above, so a slot reads its own zoom's state values (#85); only a slot past
 them, which takes their first or last, keys on where they start.
 
+A translated fill or line moves whole into a slot, on a plane's terrain
+as on a globe's: a drape placement's rows own the content where it was and
+bound it to the slot where it lands (the row's `bound`), and a slot takes
+rows from the drawn tiles within the largest draped translate around it,
+whose content moves in (#100). Before, it was clipped where it landed to
+the tile it came from, so a translate past the tile buffer (a globe at a
+low zoom) left only the pieces that stayed in their own tile.
+
 ### Viewport-anchored hillshades are shaded, not draped
 
 A viewport-anchored hillshade (v8's default anchor) is lit from the

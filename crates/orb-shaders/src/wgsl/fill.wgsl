@@ -35,6 +35,10 @@ struct FillOut {
     @location(4) opacity: f32,
     @location(5) pattern_pos: vec2<f32>,
     @location(6) @interpolate(flat) images: vec2<u32>,
+    // Where the placement owns the fill: where it lands on the map's plane,
+    // where it was on a globe and in a drape slot (`tile_pos` is where it
+    // lands there), so a translated fill moves whole.
+    @location(7) owner_pos: vec2<f32>,
 };
 
 @vertex
@@ -100,30 +104,35 @@ fn fill_vertex(v: Pulled) -> FillOut {
     out.images = pattern_ids(row, FILL_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
     // Translated geometry is clipped where it lands, as GL JS's stencil
     // does on a plane; on a globe, where GL JS clips no tile, where it was,
-    // so a fill crossing tiles moves whole.
+    // so a fill crossing tiles moves whole, as it does into a drape slot,
+    // bounded by the slot where it lands.
     out.tile_pos = pos;
     if frame.globe_amount <= 0.0 {
         out.tile_pos += vec2<f32>(shift.x, -shift.y) / tile.scale;
     }
+    out.owner_pos = select(out.tile_pos, pos, draped_placement(tile));
     out.tile = v.tile;
     return out;
 }
 
-// A fill's position for its clip test. A warped tile's fills interpolate
-// their tile position across mapped triangles and can stray just past the
-// tile's edge, where no other placement draws; there it belongs to the edge.
-fn fill_clip_pos(in: FillOut) -> vec2<f32> {
+// Whether the placement draws a fill's fragment: it owns where the fill
+// was or lands (`owner_pos`), and it lands in the placement's bound. A
+// warped tile's fills interpolate their tile position across mapped
+// triangles and can stray just past the tile's edge, where no other
+// placement draws; there it belongs to the edge.
+fn fill_drawn(in: FillOut) -> bool {
     let tile = tile_at(in.tile);
-    if tile.warp_cells == 0u {
-        return in.tile_pos;
+    var owner = in.owner_pos;
+    if tile.warp_cells != 0u {
+        owner = clamp(owner, vec2<f32>(0.0), vec2<f32>(tile.extent - 0.5));
     }
-    return clamp(in.tile_pos, vec2<f32>(0.0), vec2<f32>(tile.extent - 0.5));
+    return owned(tile, owner) && landed(tile, in.tile_pos);
 }
 
 @fragment
 fn fs_fill(in: FillOut) -> MapOut {
     let ground = ground_point(tile_at(in.tile), in.tile_pos);
-    if !inside_clips(tile_at(in.tile), fill_clip_pos(in)) {
+    if !fill_drawn(in) {
         discard;
     }
     if node.pattern.enabled == 1u {
@@ -135,7 +144,7 @@ fn fs_fill(in: FillOut) -> MapOut {
 @fragment
 fn fs_fill_outline(in: FillOut) -> MapOut {
     let ground = ground_point(tile_at(in.tile), in.tile_pos);
-    if !inside_clips(tile_at(in.tile), in.tile_pos) {
+    if !owned(tile_at(in.tile), in.owner_pos) || !landed(tile_at(in.tile), in.tile_pos) {
         discard;
     }
     let dist = length(in.screen - in.position.xy);

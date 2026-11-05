@@ -336,6 +336,10 @@ pub struct TileRow {
     /// Rectangles in data units the placement draws in; unused entries are
     /// [`ClipRect::EMPTY`].
     pub clips: [ClipRect; 4],
+    /// Where its content may land, in data units: a drape placement's slot,
+    /// [`ClipRect::EVERYWHERE`] for a map placement. Content translated into
+    /// a slot is owned where it was (`clips`) and bounded where it lands.
+    pub bound: ClipRect,
     /// Global pixel origin at the integer camera zoom, modulo 2^32.
     pub pattern_origin: [u32; 2],
     pub extent: f32,
@@ -379,6 +383,7 @@ impl TileRow {
         for (i, clip) in self.clips.iter().enumerate() {
             put(t::CLIPS + 2 * i, &[pack(clip.min), pack(clip.max)]);
         }
+        put(t::BOUND, &[pack(self.bound.min), pack(self.bound.max)]);
         put(t::PATTERN_ORIGIN, &self.pattern_origin);
         put(t::EXTENT, &[self.extent.to_bits(), self.wrap as u32]);
         put(t::PX_SCALE, &[self.px_scale.to_bits()]);
@@ -493,6 +498,12 @@ impl ClipRect {
     pub const EMPTY: Self = Self {
         min: [i16::MAX; 2],
         max: [i16::MIN; 2],
+    };
+
+    /// Every position a data unit can name.
+    pub const EVERYWHERE: Self = Self {
+        min: [i16::MIN; 2],
+        max: [i16::MAX; 2],
     };
 
     pub const fn new(min: [i16; 2], max: [i16; 2]) -> Self {

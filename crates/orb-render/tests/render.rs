@@ -167,6 +167,7 @@ fn full_view_tile(offset_x: f32) -> TileRow {
         origin: [f64::from(-1.0 + offset_x), 1.0],
         scale: 2.0 / 4096.0,
         zoom: 0.0,
+        bound: ClipRect::EVERYWHERE,
         clips: [
             WHOLE_TILE,
             ClipRect::EMPTY,
@@ -1220,6 +1221,7 @@ fn fading_raster(ancestor: bool) -> Harness {
     let row = TileRow {
         extent: 8192.0,
         scale: 2.0 / 8192.0,
+        bound: ClipRect::EVERYWHERE,
         clips: [
             ClipRect::new([0, 0], [8192, 8192]),
             ClipRect::EMPTY,

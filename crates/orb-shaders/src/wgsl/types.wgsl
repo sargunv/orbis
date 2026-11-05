@@ -111,6 +111,10 @@ struct Tile {
     // Up to four rectangles in data units as packed i16 pairs (min, max);
     // empty when min > max.
     clips: array<vec2<u32>, 4>,
+    // Where its content may land, packed as a clip rectangle: a drape
+    // placement's slot, everywhere for a map placement. Content translated
+    // into a slot is owned where it was and bounded where it lands.
+    bound: vec2<u32>,
     pattern_origin: vec2<u32>,
     extent: f32,
     // The world copy it draws.
@@ -288,6 +292,11 @@ fn discarded_vertex() -> vec4<f32> {
 // The maximum edge is excluded so adjacent regions never double-blend.
 // Fragments outside belong to a neighbour or a finer tile.
 fn inside_clips(tile: Tile, p: vec2<f32>) -> bool {
+    return owned(tile, p) && landed(tile, p);
+}
+
+// Whether the placement draws data at `p`, in its clip rectangles.
+fn owned(tile: Tile, p: vec2<f32>) -> bool {
     for (var i = 0u; i < 4u; i++) {
         let lo = unpack_i16x2(tile.clips[i].x);
         let hi = unpack_i16x2(tile.clips[i].y);
@@ -297,3 +306,15 @@ fn inside_clips(tile: Tile, p: vec2<f32>) -> bool {
     }
     return false;
 }
+
+// Whether `p` lies where the placement's content may land (`bound`).
+fn landed(tile: Tile, p: vec2<f32>) -> bool {
+    return all(p >= unpack_i16x2(tile.bound.x)) && all(p < unpack_i16x2(tile.bound.y));
+}
+
+// Whether the placement draws into a drape slot, bounded by it.
+fn draped_placement(tile: Tile) -> bool {
+    return tile.bound.x != BOUND_EVERYWHERE_MIN;
+}
+// `ClipRect::EVERYWHERE`'s packed minimum.
+const BOUND_EVERYWHERE_MIN: u32 = 0x80008000u;

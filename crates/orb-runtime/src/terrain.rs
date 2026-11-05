@@ -617,9 +617,22 @@ impl Drawn {
         }
     }
 
-    /// Whether it overlaps a terrain tile of the surface's matrix set.
-    pub(crate) fn overlaps(&self, surface: &TileMatrixSet, terrain: CoveredTile) -> bool {
-        let (a, b) = (self.bounds, terrain_bounds(surface, terrain));
+    /// Whether it overlaps a terrain tile of the surface's matrix set, or
+    /// comes within `reach_px` of it, in the tile's logical pixels: what a
+    /// translation that far moves into the tile's slots.
+    pub(crate) fn overlaps(
+        &self,
+        surface: &TileMatrixSet,
+        terrain: CoveredTile,
+        reach_px: f64,
+    ) -> bool {
+        let b = terrain_bounds(surface, terrain);
+        let reach = DVec2::splat(reach_px * b.size().x / TERRAIN_TILE_PX);
+        let b = WorldRect {
+            min: b.min - reach,
+            max: b.max + reach,
+        };
+        let a = self.bounds;
         let eps = 1e-9 * surface.tile_span(0);
         a.min.x < b.max.x - eps
             && b.min.x < a.max.x - eps
@@ -640,14 +653,17 @@ fn terrain_bounds(surface: &TileMatrixSet, terrain: CoveredTile) -> WorldRect {
 /// by its map placements `map_rows`, placed at the terrain tile's
 /// [`drape_zoom`]) for a terrain tile and its tile slot: one row set per
 /// drape stack, each mapping the tile's data into the stack's slot,
-/// clipped to the terrain tile, with pixel sizes in slot texels at the
-/// drape zoom.
+/// clipped to the terrain tile and the `reach_px` (logical pixels) a
+/// translation moves content into it from, bounded by the terrain tile,
+/// with pixel sizes in slot texels at the drape zoom.
+#[expect(clippy::too_many_arguments, reason = "one placement's terms")]
 pub(crate) fn drape_rows(
     surface: &TileMatrixSet,
     drawn: Drawn,
     extent: u32,
     (terrain, slot): (CoveredTile, u32),
     layout: &DrapeLayout,
+    reach_px: f64,
     map_rows: impl Iterator<Item = TileRow>,
     out: &mut Vec<TileRow>,
 ) {
@@ -660,6 +676,9 @@ pub(crate) fn drape_rows(
     let lo = (t_origin - origin) / scale * DVec2::new(1.0, -1.0);
     let hi = lo + DVec2::splat(span / scale);
     let clamp = |v: f64| v.round().clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16;
+    let bound = ClipRect::new([clamp(lo.x), clamp(lo.y)], [clamp(hi.x), clamp(hi.y)]);
+    let reach = DVec2::splat(reach_px * span / TERRAIN_TILE_PX / scale);
+    let (lo, hi) = (lo - reach, hi + reach);
     let (lo, hi) = ([clamp(lo.x), clamp(lo.y)], [clamp(hi.x), clamp(hi.y)]);
     let k = f64::from(DRAPE_SLOT_PX) / span;
     let zoom = drape_zoom(surface, terrain.index);
@@ -689,6 +708,7 @@ pub(crate) fn drape_rows(
                 origin: o.to_array(),
                 scale: (scale * k) as f32,
                 clips,
+                bound,
                 px_scale: px_scale as f32,
                 drape_zoom: f32::from(zoom),
                 target: PlacementTarget::Drape(stack as u8),
@@ -1244,11 +1264,12 @@ mod tests {
             regions: vec![TileIndex::new(4, 5, 5)],
         };
         let drawn = Drawn::of(&tms, &draw, None, 0.0);
-        assert!(drawn.overlaps(&tms, terrain));
+        assert!(drawn.overlaps(&tms, terrain, 0.0));
         let row = TileRow {
             origin: [0.0; 2],
             scale: 1.0,
             zoom: 4.0,
+            bound: ClipRect::EVERYWHERE,
             clips: [
                 ClipRect::new([0, 0], [4096, 4096]),
                 ClipRect::EMPTY,
@@ -1273,6 +1294,7 @@ mod tests {
             4096,
             (terrain, 1),
             &layout,
+            0.0,
             [row].into_iter(),
             &mut rows,
         );
@@ -1298,6 +1320,6 @@ mod tests {
             wrap: 0,
             regions: vec![TileIndex::new(4, 7, 5)],
         };
-        assert!(!Drawn::of(&tms, &away, None, 0.0).overlaps(&tms, terrain));
+        assert!(!Drawn::of(&tms, &away, None, 0.0).overlaps(&tms, terrain, 0.0));
     }
 }
