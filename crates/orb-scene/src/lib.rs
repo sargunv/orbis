@@ -1442,6 +1442,12 @@ impl Scene {
         std::mem::take(&mut self.placements_written)
     }
 
+    /// How many candidates render `node` had at the last layout.
+    pub fn node_candidates(&self, node: u32) -> u32 {
+        let at = node as usize * NODE_CULL_WORDS + layout::node_cull::CANDIDATE_COUNT;
+        self.node_rows.get(at).copied().unwrap_or(0)
+    }
+
     /// Keeps only a tile's labels drawing: its map placements become
     /// [`PlacementTarget::Labels`] ones, and its drape placements go.
     pub fn hold_symbols(&mut self, tile: TileId) {

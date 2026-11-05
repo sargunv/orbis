@@ -11,9 +11,11 @@
 //! a compute pass downsamples their mip levels. Each stack's terrain draws into a layer of its own with the depth
 //! extrusions share, composited in the map at the stack's place.
 
-use crate::{TargetFormat, draw_pipeline};
+use crate::TargetFormat;
 use orb_hal::*;
-use orb_shaders::{DRAPE_SHADER, TERRAIN_SHADER, TERRAIN_STACK_SHADER};
+use orb_shaders::{DRAPE_SHADER, TERRAIN_SHADER};
+
+use crate::offscreen::{Composite, Composites, Mode, Target};
 
 /// Drape texels per terrain tile side: twice the 512 logical pixels a
 /// terrain tile covers at its zoom, GL JS's quality factor.
@@ -114,11 +116,11 @@ struct Atlas {
     level_uniforms: BufferId,
 }
 
-#[derive(Debug, Default)]
+/// A stack's terrain layer and its composite into the map.
+#[derive(Debug)]
 struct StackTarget {
-    color: Option<TextureId>,
-    multisample: Option<TextureId>,
-    group: Option<BindGroupId>,
+    target: Target,
+    composite: Composite,
 }
 
 #[derive(Debug)]
@@ -128,12 +130,10 @@ pub(crate) struct Terrain {
     stack_layout: BindGroupLayoutId,
     clear_layout: BindGroupLayoutId,
     mip_layout: BindGroupLayoutId,
-    composite_layout: BindGroupLayoutId,
     /// At one sample and at four.
     pipelines: [Option<RenderPipelineId>; 2],
     clear: RenderPipelineId,
     downsample: ComputePipelineId,
-    pub(crate) composite: RenderPipelineId,
     grid: BufferId,
     grid_indices: BufferId,
     index_count: u32,
@@ -250,10 +250,6 @@ impl Terrain {
                 },
             ],
         });
-        let composite_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "terrain composite",
-            entries: &[texture(0, fs, false)],
-        });
         let drape_module = gpu.create_shader_module(&ShaderModuleDesc {
             label: DRAPE_SHADER.label,
             source: ShaderSource::Wgsl(DRAPE_SHADER.source().into()),
@@ -289,13 +285,6 @@ impl Terrain {
                 constants: &[],
             },
         });
-        let composite = draw_pipeline(
-            gpu,
-            &TERRAIN_STACK_SHADER,
-            PrimitiveTopology::TriangleList,
-            target,
-            &[composite_layout],
-        );
 
         let (grid, indices) = grid();
         let grid_buffer = gpu.create_buffer(&BufferDesc {
@@ -329,11 +318,9 @@ impl Terrain {
             stack_layout,
             clear_layout,
             mip_layout,
-            composite_layout,
             pipelines: [None; 2],
             clear,
             downsample,
-            composite,
             grid: grid_buffer,
             grid_indices,
             index_count: indices.len() as u32,
@@ -656,7 +643,13 @@ impl Terrain {
 
     /// Sizes the stacks' layers to the target.
     /// Returns whether they changed.
-    pub(crate) fn resize(&mut self, gpu: &mut dyn Gpu, size: [u32; 2], samples: u32) -> bool {
+    pub(crate) fn resize(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        composites: &mut Composites,
+        size: [u32; 2],
+        samples: u32,
+    ) -> bool {
         let stacks = self.layout_state.stacks as usize;
         if self.target_size == size
             && self.target_samples == samples
@@ -698,46 +691,9 @@ impl Terrain {
         self.target_size = size;
         self.target_samples = samples;
         for _ in 0..stacks {
-            let color = gpu.create_texture(&TextureDesc {
-                label: "terrain layer",
-                width: size[0],
-                height: size[1],
-                array_layers: 1,
-                dimension: TextureViewDimension::D2,
-                format: self.target.color,
-                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-                sample_count: 1,
-                mip_levels: 1,
-            });
-            let multisample = (samples > 1).then(|| {
-                gpu.create_texture(&TextureDesc {
-                    label: "terrain layer multisample",
-                    width: size[0],
-                    height: size[1],
-                    array_layers: 1,
-                    dimension: TextureViewDimension::D2,
-                    format: self.target.color,
-                    usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
-                    sample_count: samples,
-                    mip_levels: 1,
-                })
-            });
-            let group = gpu.create_bind_group(&BindGroupDesc {
-                label: "terrain composite",
-                layout: self.composite_layout,
-                entries: &[BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::Texture {
-                        texture: color,
-                        dimension: TextureViewDimension::D2,
-                    },
-                }],
-            });
-            self.targets.push(StackTarget {
-                color: Some(color),
-                multisample,
-                group: Some(group),
-            });
+            let target = Target::new(gpu, "terrain layer", &[self.target.color], size, samples);
+            let composite = composites.composite(gpu, target.texture(0), None, Mode::Over, 1.0);
+            self.targets.push(StackTarget { target, composite });
         }
         true
     }
@@ -746,21 +702,12 @@ impl Terrain {
     /// The colour texture stack `stack`'s terrain layer draws into, once
     /// sized.
     pub(crate) fn stack_texture(&self, stack: u32) -> Option<TextureId> {
-        self.targets.get(stack as usize)?.color
+        Some(self.targets.get(stack as usize)?.target.texture(0))
     }
 
-    pub(crate) fn composite_commands(&self, stack: u32) -> Vec<RenderCommand> {
-        let Some(group) = self.targets.get(stack as usize).and_then(|t| t.group) else {
-            return Vec::new();
-        };
-        vec![
-            RenderCommand::SetPipeline(self.composite),
-            RenderCommand::SetBindGroup { index: 0, group },
-            RenderCommand::Draw {
-                vertices: 0..3,
-                instances: 0..1,
-            },
-        ]
+    /// Stack `stack`'s composite into the map, once sized.
+    pub(crate) fn stack_composite(&self, stack: u32) -> Option<&Composite> {
+        Some(&self.targets.get(stack as usize)?.composite)
     }
 
     /// Whether every terrain pipeline at the current sample count
@@ -769,23 +716,14 @@ impl Terrain {
     pub(crate) fn ready(&mut self, gpu: &mut dyn Gpu) -> bool {
         let pipeline = self.pipeline(gpu, self.target_samples.max(1));
         let occlusion = self.occlusion.map(|_| self.occlusion_pipeline(gpu));
-        [
-            pipeline.into(),
-            self.clear.into(),
-            self.downsample.into(),
-            self.composite.into(),
-        ]
-        .into_iter()
-        .chain(occlusion.map(PipelineId::from))
-        .all(|p| gpu.pipeline_ready(p))
+        [pipeline.into(), self.clear.into(), self.downsample.into()]
+            .into_iter()
+            .chain(occlusion.map(PipelineId::from))
+            .all(|p| gpu.pipeline_ready(p))
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        let mut out: Vec<PipelineId> = vec![
-            self.clear.into(),
-            self.downsample.into(),
-            self.composite.into(),
-        ];
+        let mut out: Vec<PipelineId> = vec![self.clear.into(), self.downsample.into()];
         out.extend(
             self.pipelines
                 .iter()
@@ -1023,19 +961,9 @@ impl Terrain {
             draws += 1;
         }
         for (stack, target) in self.targets.iter().enumerate() {
-            let color = target.color.expect("sized");
             passes.push(Pass::Render(RenderPass {
                 label: "terrain".into(),
-                color: Some(ColorAttachment {
-                    target: target.multisample.unwrap_or(color),
-                    resolve: target.multisample.map(|_| color),
-                    store: if target.multisample.is_some() {
-                        StoreOp::Discard
-                    } else {
-                        StoreOp::Store
-                    },
-                    load: LoadOp::Clear([0.0; 4]),
-                }),
+                color: Some(target.target.attachment(0, LoadOp::Clear([0.0; 4]))),
                 depth: Some(DepthAttachment {
                     target: depth,
                     load: if stack == 0 {
@@ -1170,12 +1098,8 @@ impl Terrain {
 }
 
 fn release_target(gpu: &mut dyn Gpu, target: StackTarget) {
-    for texture in [target.color, target.multisample].into_iter().flatten() {
-        gpu.destroy_texture(texture);
-    }
-    if let Some(group) = target.group {
-        gpu.destroy_bind_group(group);
-    }
+    target.target.destroy(gpu);
+    Composites::release(gpu, target.composite);
 }
 
 /// The shared tile mesh: `(GRID + 1)²` vertices, then a skirt copy of

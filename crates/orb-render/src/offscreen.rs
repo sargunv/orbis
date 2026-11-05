@@ -1,0 +1,339 @@
+//! Drawing apart from the map (decision 0043). A layer composited once, a
+//! 3D layer, a heatmap's density and a terrain stack each draw into an
+//! offscreen [`Target`]; one full-screen draw then composites it into the
+//! map ([`Composites`]).
+//!
+//! A target is a list of colour attachments, each with a multisampled
+//! attachment when it draws multisampled. A material buffer (albedo,
+//! normal, roughness and the rest, which one lighting pass reads at once)
+//! is a target like these, and its lighting pass a composite between the
+//! opaque draws and the translucent ones.
+
+use orb_hal::*;
+use orb_shaders::{COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER};
+
+use crate::{Blend, TargetFormat, draw_pipeline_blending};
+
+/// Colour attachments to draw into and sample.
+#[derive(Debug)]
+pub(crate) struct Target {
+    colors: Vec<Attachment>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Attachment {
+    color: TextureId,
+    multisample: Option<TextureId>,
+}
+
+impl Target {
+    /// Attachments of `formats`, `size` texels, drawn at `samples`.
+    pub(crate) fn new(
+        gpu: &mut dyn Gpu,
+        label: &'static str,
+        formats: &[TextureFormat],
+        size: [u32; 2],
+        samples: u32,
+    ) -> Self {
+        let texture = |gpu: &mut dyn Gpu, format, samples, usage| {
+            gpu.create_texture(&TextureDesc {
+                label,
+                width: size[0],
+                height: size[1],
+                array_layers: 1,
+                dimension: TextureViewDimension::D2,
+                format,
+                usage,
+                sample_count: samples,
+                mip_levels: 1,
+            })
+        };
+        let colors = formats
+            .iter()
+            .map(|&format| Attachment {
+                color: texture(
+                    gpu,
+                    format,
+                    1,
+                    TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                ),
+                multisample: (samples > 1).then(|| {
+                    texture(
+                        gpu,
+                        format,
+                        samples,
+                        TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
+                    )
+                }),
+            })
+            .collect();
+        Self { colors }
+    }
+
+    /// Attachment `i`'s texture, to sample.
+    pub(crate) fn texture(&self, i: usize) -> TextureId {
+        self.colors[i].color
+    }
+
+    /// Attachment `i` as a pass draws it: into the multisampled texture,
+    /// resolved, when there is one.
+    pub(crate) fn attachment(&self, i: usize, load: LoadOp<[f64; 4]>) -> ColorAttachment {
+        let a = self.colors[i];
+        ColorAttachment {
+            target: a.multisample.unwrap_or(a.color),
+            resolve: a.multisample.map(|_| a.color),
+            store: if a.multisample.is_some() {
+                StoreOp::Discard
+            } else {
+                StoreOp::Store
+            },
+            load,
+        }
+    }
+
+    pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {
+        for a in self.colors {
+            gpu.destroy_texture(a.color);
+            if let Some(m) = a.multisample {
+                gpu.destroy_texture(m);
+            }
+        }
+    }
+}
+
+/// How a composite combines its source with the map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    /// The source at an opacity, by premultiplied blending.
+    Over,
+    /// Against the map beneath, read from a canvas, written in place.
+    Blend(Blend),
+    /// The source's red channel through a colour ramp.
+    Ramp,
+}
+
+impl Mode {
+    /// `composite.wgsl`'s mode number.
+    fn number(self) -> f32 {
+        match self {
+            Mode::Over => 0.0,
+            Mode::Blend(blend) => blend.mode(),
+            Mode::Ramp => 7.0,
+        }
+    }
+
+    /// Whether it writes over the map rather than blending.
+    fn replaces(self) -> bool {
+        matches!(self, Mode::Blend(b) if b != Blend::Normal)
+    }
+}
+
+/// The composite pipelines and what their groups share.
+#[derive(Debug)]
+pub(crate) struct Composites {
+    layout: BindGroupLayoutId,
+    /// Made for the first composite that needs each.
+    over: Option<RenderPipelineId>,
+    replace: Option<RenderPipelineId>,
+    target: TargetFormat,
+    linear: SamplerId,
+    /// Bound where a composite has no ramp or backdrop.
+    blank: TextureId,
+}
+
+/// One composite: its uniform and bind group.
+#[derive(Debug)]
+pub(crate) struct Composite {
+    mode: Mode,
+    opacity: f32,
+    uniform: BufferId,
+    group: BindGroupId,
+}
+
+impl Composites {
+    pub(crate) fn new(gpu: &mut dyn Gpu, target: TargetFormat) -> Self {
+        let fragment = ShaderStages::FRAGMENT;
+        let texture = |binding| BindGroupLayoutEntry {
+            binding,
+            visibility: fragment,
+            ty: BindingType::Texture {
+                sample: TextureSampleType::Float { filterable: true },
+                dimension: TextureViewDimension::D2,
+            },
+        };
+        let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
+            label: "composite",
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: fragment,
+                    ty: BindingType::Uniform,
+                },
+                texture(1),
+                texture(2),
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: fragment,
+                    ty: BindingType::Sampler { filtering: true },
+                },
+            ],
+        });
+        let linear = gpu.create_sampler(&SamplerDesc {
+            label: "composite",
+            filter: FilterMode::Linear,
+            address: AddressMode::ClampToEdge,
+            mipmap_filter: FilterMode::Nearest,
+            anisotropy: 1,
+            compare: None,
+        });
+        let blank = gpu.create_texture(&TextureDesc {
+            label: "composite blank",
+            width: 1,
+            height: 1,
+            array_layers: 1,
+            dimension: TextureViewDimension::D2,
+            format: TextureFormat::Rgba8Unorm,
+            usage: TextureUsages::TEXTURE_BINDING,
+            sample_count: 1,
+            mip_levels: 1,
+        });
+        Self {
+            layout,
+            over: None,
+            replace: None,
+            target,
+            linear,
+            blank,
+        }
+    }
+
+    /// A composite of `source` in `mode` at `opacity`, with `aux` its ramp
+    /// or the canvas beneath; makes the pipeline it needs.
+    pub(crate) fn composite(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        source: TextureId,
+        aux: Option<TextureId>,
+        mode: Mode,
+        opacity: f32,
+    ) -> Composite {
+        let target = self.target;
+        let (slot, shader, blend) = if mode.replaces() {
+            (&mut self.replace, &COMPOSITE_REPLACE_SHADER, None)
+        } else {
+            (
+                &mut self.over,
+                &COMPOSITE_OVER_SHADER,
+                Some(BlendState::PremultipliedAlpha),
+            )
+        };
+        if slot.is_none() {
+            *slot = Some(draw_pipeline_blending(
+                gpu,
+                shader,
+                PrimitiveTopology::TriangleList,
+                target,
+                &[self.layout],
+                blend,
+            ));
+        }
+        let uniform = gpu.create_buffer(&BufferDesc {
+            label: "composite",
+            size: 16,
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+        gpu.write_buffer(
+            uniform,
+            0,
+            bytemuck::cast_slice(&[opacity, mode.number(), 0.0, 0.0]),
+        );
+        let texture = |texture| BindingResource::Texture {
+            texture,
+            dimension: TextureViewDimension::D2,
+        };
+        let group = gpu.create_bind_group(&BindGroupDesc {
+            label: "composite",
+            layout: self.layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::buffer(uniform),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: texture(source),
+                },
+                BindGroupEntry {
+                    binding: 2,
+                    resource: texture(aux.unwrap_or(self.blank)),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: BindingResource::Sampler(self.linear),
+                },
+            ],
+        });
+        Composite {
+            mode,
+            opacity,
+            uniform,
+            group,
+        }
+    }
+
+    /// Writes a composite's opacity, if it changed; its draw stays
+    /// recorded.
+    pub(crate) fn set_opacity(gpu: &mut dyn Gpu, composite: &mut Composite, opacity: f32) {
+        if composite.opacity != opacity {
+            composite.opacity = opacity;
+            gpu.write_buffer(
+                composite.uniform,
+                0,
+                bytemuck::cast_slice(&[opacity, composite.mode.number(), 0.0, 0.0]),
+            );
+        }
+    }
+
+    /// Whether the pipeline of a composite in `mode` compiled.
+    pub(crate) fn ready(&self, gpu: &mut dyn Gpu, mode: Mode) -> bool {
+        let pipeline = if mode.replaces() {
+            self.replace
+        } else {
+            self.over
+        };
+        pipeline.is_some_and(|p| gpu.pipeline_ready(p.into()))
+    }
+
+    pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
+        [self.over, self.replace]
+            .into_iter()
+            .flatten()
+            .map(PipelineId::from)
+            .collect()
+    }
+
+    /// A composite's draw, for a bundle or the pass it opens.
+    pub(crate) fn commands(&self, composite: &Composite) -> [RenderCommand; 3] {
+        let pipeline = if composite.mode.replaces() {
+            self.replace
+        } else {
+            self.over
+        };
+        [
+            RenderCommand::SetPipeline(pipeline.expect("made with the composite")),
+            RenderCommand::SetBindGroup {
+                index: 0,
+                group: composite.group,
+            },
+            RenderCommand::Draw {
+                vertices: 0..3,
+                instances: 0..1,
+            },
+        ]
+    }
+
+    pub(crate) fn release(gpu: &mut dyn Gpu, composite: Composite) {
+        gpu.destroy_bind_group(composite.group);
+        gpu.destroy_buffer(composite.uniform);
+    }
+}

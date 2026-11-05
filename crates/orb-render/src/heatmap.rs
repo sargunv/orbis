@@ -2,30 +2,29 @@
 //! the main pass; its fullscreen composite occupies the layer's bundle slot.
 //! Targets persist until viewport resize or node replacement.
 
-use crate::{TargetFormat, draw_pipeline};
+use crate::offscreen::{Composite, Composites, Mode, Target};
 use orb_hal::*;
-use orb_shaders::{HEATMAP_COLOR_SHADER, HEATMAP_SHADER};
+use orb_shaders::HEATMAP_SHADER;
 
 #[derive(Debug)]
 pub(crate) struct Heatmaps {
-    /// Density and colour, made for the first heatmap node; no density
-    /// without blendable half-float targets.
-    pipelines: Option<(Option<RenderPipelineId>, RenderPipelineId)>,
-    target: TargetFormat,
-    /// Density targets are half-float and blended: Compat may lack them.
+    /// The density pipeline, made for the first heatmap node; none without
+    /// blendable half-float targets, which Compat may lack.
+    pipeline: Option<RenderPipelineId>,
     density: bool,
     layouts: [BindGroupLayoutId; 2],
-    layout: BindGroupLayoutId,
-    sampler: SamplerId,
 }
 
 #[derive(Debug)]
 pub(crate) struct NodeHeatmap {
     ramp: TextureId,
     colors: Vec<u32>,
-    target: Option<TextureId>,
+    target: Option<Target>,
     size: [u32; 2],
-    pub(crate) group: Option<BindGroupId>,
+    pub(crate) composite: Option<Composite>,
+    /// `heatmap-opacity`; the composite draws nothing while the node is
+    /// hidden or has nothing to draw.
+    pub(crate) opacity: f32,
     pub(crate) bundle: Option<RenderBundleId>,
 }
 
@@ -42,111 +41,55 @@ impl NodeHeatmap {
 impl Heatmaps {
     pub(crate) fn new(
         gpu: &mut dyn Gpu,
-        target: TargetFormat,
         scene: BindGroupLayoutId,
         node: BindGroupLayoutId,
     ) -> Self {
-        let fragment = ShaderStages::FRAGMENT;
-        let texture = |binding| BindGroupLayoutEntry {
-            binding,
-            visibility: fragment,
-            ty: BindingType::Texture {
-                sample: TextureSampleType::Float { filterable: true },
-                dimension: TextureViewDimension::D2,
-            },
-        };
-        let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "heatmap composite",
-            entries: &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::VERTEX | fragment,
-                    ty: BindingType::Uniform,
-                },
-                texture(1),
-                texture(2),
-                BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: fragment,
-                    ty: BindingType::Sampler { filtering: true },
-                },
-            ],
-        });
-        let sampler = gpu.create_sampler(&SamplerDesc {
-            label: "heatmap linear",
-            filter: FilterMode::Linear,
-            address: AddressMode::ClampToEdge,
-            mipmap_filter: FilterMode::Nearest,
-            anisotropy: 1,
-            compare: None,
-        });
         Self {
-            pipelines: None,
-            target,
+            pipeline: None,
             density: gpu.caps().rgba16float_blendable,
             layouts: [scene, node],
-            layout,
-            sampler,
         }
     }
 
-    /// Makes the pipelines, for the first heatmap node.
+    /// Makes the density pipeline, for the first heatmap node.
     pub(crate) fn make(&mut self, gpu: &mut dyn Gpu) {
-        if self.pipelines.is_some() {
+        if self.pipeline.is_some() || !self.density {
             return;
         }
-        let ([scene, node], layout, target) = (self.layouts, self.layout, self.target);
-        let density_pipeline = if self.density {
-            let shader = HEATMAP_SHADER;
-            let module = crate::shader_module(gpu, &shader);
-            Some(gpu.create_render_pipeline(&RenderPipelineDesc {
-                cull_mode: None,
-                label: shader.label,
-                bind_group_layouts: &[scene, node],
-                vertex: ShaderStage {
-                    module,
-                    entry_point: shader.vertex,
-                    constants: &[],
-                },
-                fragment: ShaderStage {
-                    module,
-                    entry_point: shader.fragment,
-                    constants: &[],
-                },
-                targets: &[ColorTargetState {
-                    format: TextureFormat::Rgba16Float,
-                    blend: Some(BlendState::Additive),
-                }],
-                depth: None,
-                topology: PrimitiveTopology::TriangleList,
-                sample_count: 1,
-            }))
-        } else {
-            None
-        };
-        let color_pipeline = draw_pipeline(
-            gpu,
-            &HEATMAP_COLOR_SHADER,
-            PrimitiveTopology::TriangleList,
-            target,
-            &[scene, layout],
-        );
-        self.pipelines = Some((density_pipeline, color_pipeline));
+        let shader = HEATMAP_SHADER;
+        let module = crate::shader_module(gpu, &shader);
+        self.pipeline = Some(gpu.create_render_pipeline(&RenderPipelineDesc {
+            cull_mode: None,
+            label: shader.label,
+            bind_group_layouts: &self.layouts,
+            vertex: ShaderStage {
+                module,
+                entry_point: shader.vertex,
+                constants: &[],
+            },
+            fragment: ShaderStage {
+                module,
+                entry_point: shader.fragment,
+                constants: &[],
+            },
+            targets: &[ColorTargetState {
+                format: TextureFormat::Rgba16Float,
+                blend: Some(BlendState::Additive),
+            }],
+            depth: None,
+            topology: PrimitiveTopology::TriangleList,
+            sample_count: 1,
+        }));
     }
 
-    /// The colour pipeline, once made and compiled with the density's.
-    pub(crate) fn color_pipeline(&self, gpu: &mut dyn Gpu) -> Option<RenderPipelineId> {
-        let (density, color) = self.pipelines?;
-        let ready = density.is_none_or(|d| gpu.pipeline_ready(d.into()))
-            && gpu.pipeline_ready(color.into());
-        ready.then_some(color)
+    /// Whether the density pipeline and the composites' compiled.
+    pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
+        self.pipeline.is_some_and(|p| gpu.pipeline_ready(p.into()))
+            && composites.ready(gpu, Mode::Ramp)
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        self.pipelines
-            .iter()
-            .flat_map(|(d, c)| d.iter().chain([c]).map(|&p| p.into()))
-            .collect()
+        self.pipeline.iter().map(|&p| p.into()).collect()
     }
 
     pub(crate) fn node(gpu: &mut dyn Gpu) -> NodeHeatmap {
@@ -166,7 +109,8 @@ impl Heatmaps {
             colors: Vec::new(),
             target: None,
             size: [0; 2],
-            group: None,
+            composite: None,
+            opacity: 1.0,
             bundle: None,
         }
     }
@@ -175,11 +119,11 @@ impl Heatmaps {
         if let Some(bundle) = node.bundle {
             gpu.destroy_render_bundle(bundle);
         }
-        if let Some(group) = node.group {
-            gpu.destroy_bind_group(group);
+        if let Some(composite) = node.composite {
+            Composites::release(gpu, composite);
         }
         if let Some(target) = node.target {
-            gpu.destroy_texture(target);
+            target.destroy(gpu);
         }
         gpu.destroy_texture(node.ramp);
     }
@@ -203,62 +147,40 @@ impl Heatmaps {
         node.colors = colors.to_vec();
     }
 
-    /// Returns true if the main bundle's texture bindings changed.
+    /// Gives a node its density target of `size` and its composite;
+    /// whether the main bundle's bindings changed.
     pub(crate) fn resize(
         &self,
         gpu: &mut dyn Gpu,
+        composites: &mut Composites,
         node: &mut NodeHeatmap,
-        uniform: BindingResource,
         size: [u32; 2],
     ) -> bool {
         if !self.density || node.size == size {
             return false;
         }
-        if let Some(group) = node.group.take() {
-            gpu.destroy_bind_group(group);
+        if let Some(composite) = node.composite.take() {
+            Composites::release(gpu, composite);
         }
         if let Some(target) = node.target.take() {
-            gpu.destroy_texture(target);
+            target.destroy(gpu);
         }
-        let target = gpu.create_texture(&TextureDesc {
-            label: "heatmap density",
-            width: size[0],
-            height: size[1],
-            array_layers: 1,
-            dimension: TextureViewDimension::D2,
-            format: TextureFormat::Rgba16Float,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            sample_count: 1,
-            mip_levels: 1,
-        });
+        let target = Target::new(
+            gpu,
+            "heatmap density",
+            &[TextureFormat::Rgba16Float],
+            size,
+            1,
+        );
+        node.composite = Some(composites.composite(
+            gpu,
+            target.texture(0),
+            Some(node.ramp),
+            Mode::Ramp,
+            node.opacity,
+        ));
         node.target = Some(target);
         node.size = size;
-        let texture = |texture| BindingResource::Texture {
-            texture,
-            dimension: TextureViewDimension::D2,
-        };
-        node.group = Some(gpu.create_bind_group(&BindGroupDesc {
-            label: "heatmap composite",
-            layout: self.layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: uniform,
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: texture(target),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: texture(node.ramp),
-                },
-                BindGroupEntry {
-                    binding: 3,
-                    resource: BindingResource::Sampler(self.sampler),
-                },
-            ],
-        }));
         true
     }
 
@@ -271,9 +193,8 @@ impl Heatmaps {
         args: BufferId,
         index: u32,
     ) -> Option<RenderPass> {
-        self.color_pipeline(gpu)?;
-        let pipeline = self.pipelines?.0?;
-        let target = node.target?;
+        let pipeline = self.pipeline?;
+        let target = node.target.as_ref()?;
         let bundle = *node.bundle.get_or_insert_with(|| {
             gpu.create_render_bundle(
                 &RenderBundleDesc {
@@ -298,12 +219,7 @@ impl Heatmaps {
         });
         Some(RenderPass {
             label: "heatmap density".into(),
-            color: Some(ColorAttachment {
-                store: StoreOp::Store,
-                target,
-                resolve: None,
-                load: LoadOp::Clear([0.0; 4]),
-            }),
+            color: Some(target.attachment(0, LoadOp::Clear([0.0; 4]))),
             depth: None,
             timestamps: None,
             commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],

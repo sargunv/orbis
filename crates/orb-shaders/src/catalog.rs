@@ -28,7 +28,6 @@ const SHADOW_GROUND: &str = include_str!("wgsl/shadow_ground.wgsl");
 const EXTRUSION_CASTER: &str = include_str!("wgsl/extrusion_caster.wgsl");
 const PATTERN: &str = include_str!("wgsl/pattern.wgsl");
 const EXTRUSION: &str = include_str!("wgsl/extrusion.wgsl");
-const EXTRUSION_COMPOSITE: &str = include_str!("wgsl/extrusion_composite.wgsl");
 
 const FILL: &str = include_str!("wgsl/fill.wgsl");
 const LINE: &str = include_str!("wgsl/line.wgsl");
@@ -37,7 +36,7 @@ const CIRCLE: &str = include_str!("wgsl/circle.wgsl");
 const MODEL: &str = include_str!("wgsl/model.wgsl");
 const SYMBOL: &str = include_str!("wgsl/symbol.wgsl");
 const HEATMAP: &str = include_str!("wgsl/heatmap.wgsl");
-const HEATMAP_COLOR: &str = include_str!("wgsl/heatmap_color.wgsl");
+const COMPOSITE: &str = include_str!("wgsl/composite.wgsl");
 pub(crate) const CULL: &str = include_str!("wgsl/cull.wgsl");
 const IMAGE: &str = include_str!("wgsl/image.wgsl");
 const DEM: &str = include_str!("wgsl/dem.wgsl");
@@ -120,14 +119,6 @@ pub const DRAPE_SHADER: Shader = Shader {
     compute: "downsample",
 };
 
-pub const TERRAIN_STACK_SHADER: Shader = Shader {
-    label: "terrain stack",
-    parts: &[include_str!("wgsl/terrain_stack.wgsl")],
-    vertex: "vs_stack",
-    fragment: "fs_stack",
-    compute: "",
-};
-
 pub const SKY_SHADER: Shader = Shader {
     label: "sky",
     parts: &[TYPES, ATMOSPHERE, include_str!("wgsl/sky.wgsl")],
@@ -136,21 +127,22 @@ pub const SKY_SHADER: Shader = Shader {
     compute: "",
 };
 
-/// A layer's composite at its layer opacity, blending normally.
-pub const LAYER_COMPOSITE_SHADER: Shader = Shader {
-    label: "layer composite",
-    parts: &[include_str!("wgsl/layer_composite.wgsl")],
-    vertex: "vs_layer_composite",
-    fragment: "fs_layer_composite",
+/// Composites (`composite.wgsl`): over the map by premultiplied blending,
+/// a source at an opacity or a density through a ramp.
+pub const COMPOSITE_OVER_SHADER: Shader = Shader {
+    label: "composite over",
+    parts: &[COMPOSITE],
+    vertex: "vs_composite",
+    fragment: "fs_over",
     compute: "",
 };
 
-/// A layer's composite in another blend mode, over the backdrop it reads.
-pub const LAYER_BLEND_SHADER: Shader = Shader {
-    label: "layer blend",
-    parts: &[include_str!("wgsl/layer_composite.wgsl")],
-    vertex: "vs_layer_composite",
-    fragment: "fs_layer_blend",
+/// A layer blended into the map beneath in a W3C mode, written in place.
+pub const COMPOSITE_REPLACE_SHADER: Shader = Shader {
+    label: "composite replace",
+    parts: &[COMPOSITE],
+    vertex: "vs_composite",
+    fragment: "fs_replace",
     compute: "",
 };
 
@@ -214,13 +206,6 @@ pub const HEATMAP_SHADER: Shader = Shader {
     parts: &[TYPES, DRAW, POINT, HEATMAP],
     vertex: "vs_heatmap",
     fragment: "fs_heatmap",
-    compute: "",
-};
-pub const HEATMAP_COLOR_SHADER: Shader = Shader {
-    label: "heatmap color",
-    parts: &[TYPES, DRAW, POINT, HEATMAP, HEATMAP_COLOR],
-    vertex: "vs_heatmap_color",
-    fragment: "fs_heatmap_color",
     compute: "",
 };
 
@@ -377,40 +362,23 @@ pub const SHADOW_GROUND_SHADER: Shader = Shader {
     fragment: "fs_shadow_ground",
     compute: "",
 };
-pub const EXTRUSION_COMPOSITE_SHADER: Shader = Shader {
-    label: "extrusion composite",
-    parts: &[
-        TYPES,
-        DRAW,
-        PATTERN,
-        LIGHTING,
-        SHADOW_RECEIVE,
-        EXTRUSION,
-        EXTRUSION_COMPOSITE,
-    ],
-    vertex: "vs_extrusion_composite",
-    fragment: "fs_extrusion_composite",
-    compute: "",
-};
 
 /// The shaders Compat draws with (plan §8.7): all but terrain's, the
 /// drape's and compute.
 pub const COMPAT_SHADERS: &[Shader] = &[
     SKY_SHADER,
-    LAYER_COMPOSITE_SHADER,
-    LAYER_BLEND_SHADER,
+    COMPOSITE_OVER_SHADER,
+    COMPOSITE_REPLACE_SHADER,
     FILL_SHADER,
     FILL_OUTLINE_SHADER,
     LINE_SHADER,
     CIRCLE_SHADER,
     SYMBOL_SHADER,
     HEATMAP_SHADER,
-    HEATMAP_COLOR_SHADER,
     RASTER_SHADER,
     HILLSHADE_SHADER,
     COLOR_RELIEF_SHADER,
     EXTRUSION_SHADER,
-    EXTRUSION_COMPOSITE_SHADER,
     PREPARE_PAD_DRAW_SHADER,
     PREPARE_SLOPE_DRAW_SHADER,
 ];

@@ -19,9 +19,9 @@
 
 use std::ops::Range;
 
-use crate::{TargetFormat, draw_pipeline_blending};
 use orb_hal::*;
-use orb_shaders::{LAYER_BLEND_SHADER, LAYER_COMPOSITE_SHADER};
+
+use crate::offscreen::{Composite, Composites, Mode, Target};
 
 /// How a layer composited once combines with the map beneath it: W3C
 /// Compositing 1's modes, as `fill-layer-blend` and `line-layer-blend`
@@ -40,7 +40,7 @@ pub enum Blend {
 
 impl Blend {
     /// The shader's mode number (`blend_mix` in `layer_composite.wgsl`).
-    fn mode(self) -> f32 {
+    pub(crate) fn mode(self) -> f32 {
         match self {
             Blend::Normal => 0.0,
             Blend::Multiply => 1.0,
@@ -53,41 +53,12 @@ impl Blend {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct LayerComposites {
-    /// Made for the first group that needs each.
-    composite: Option<RenderPipelineId>,
-    blend: Option<RenderPipelineId>,
-    composite_layout: BindGroupLayoutId,
-    blend_layout: BindGroupLayoutId,
-    target: TargetFormat,
     pub(crate) groups: Vec<Group>,
     /// The two canvases the main pass splits into, while a group blends
     /// in a mode other than normal.
-    canvases: Vec<Attachment>,
-}
-
-/// A colour texture to draw into and sample, with its multisampled
-/// attachment when the target has one.
-#[derive(Debug, Clone, Copy)]
-struct Attachment {
-    color: TextureId,
-    multisample: Option<TextureId>,
-}
-
-impl Attachment {
-    fn color_attachment(self, load: LoadOp<[f64; 4]>) -> ColorAttachment {
-        ColorAttachment {
-            target: self.multisample.unwrap_or(self.color),
-            resolve: self.multisample.map(|_| self.color),
-            store: if self.multisample.is_some() {
-                StoreOp::Discard
-            } else {
-                StoreOp::Store
-            },
-            load,
-        }
-    }
+    canvases: Vec<Target>,
 }
 
 /// A run of one layer's nodes that composites once.
@@ -105,11 +76,9 @@ pub(crate) struct Run {
 pub(crate) struct Group {
     pub(crate) nodes: Range<usize>,
     pub(crate) blend: Blend,
-    uniform: BufferId,
-    opacity: f32,
-    /// Its own texture, unless another pass draws the layer.
-    layer: Option<Attachment>,
-    group: BindGroupId,
+    /// Its own target, unless another pass draws the layer.
+    layer: Option<Target>,
+    composite: Composite,
     pub(crate) bundle: Option<RenderBundleId>,
 }
 
@@ -119,118 +88,36 @@ impl Group {
     pub(crate) fn drawn_elsewhere(&self) -> bool {
         self.layer.is_none()
     }
+
+    fn mode(&self) -> Mode {
+        match self.blend {
+            Blend::Normal => Mode::Over,
+            blend => Mode::Blend(blend),
+        }
+    }
 }
 
 impl LayerComposites {
-    pub(crate) fn new(gpu: &mut dyn Gpu, target: TargetFormat) -> Self {
-        let entry = |binding, ty| BindGroupLayoutEntry {
-            binding,
-            visibility: ShaderStages::FRAGMENT,
-            ty,
-        };
-        let texture = BindingType::Texture {
-            sample: TextureSampleType::Float { filterable: false },
-            dimension: TextureViewDimension::D2,
-        };
-        let composite_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "layer composite",
-            entries: &[entry(0, BindingType::Uniform), entry(1, texture)],
-        });
-        let blend_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "layer blend",
-            entries: &[
-                entry(0, BindingType::Uniform),
-                entry(1, texture),
-                entry(2, texture),
-            ],
-        });
-        Self {
-            composite: None,
-            blend: None,
-            composite_layout,
-            blend_layout,
-            target,
-            groups: Vec::new(),
-            canvases: Vec::new(),
-        }
-    }
-
-    fn attachment(&self, gpu: &mut dyn Gpu, label: &'static str, size: [u32; 2]) -> Attachment {
-        let texture = |gpu: &mut dyn Gpu, samples, usage| {
-            gpu.create_texture(&TextureDesc {
-                label,
-                width: size[0],
-                height: size[1],
-                array_layers: 1,
-                dimension: TextureViewDimension::D2,
-                format: self.target.color,
-                usage,
-                sample_count: samples,
-                mip_levels: 1,
-            })
-        };
-        Attachment {
-            color: texture(
-                gpu,
-                1,
-                TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            ),
-            multisample: (self.target.sample_count > 1).then(|| {
-                texture(
-                    gpu,
-                    self.target.sample_count,
-                    TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
-                )
-            }),
-        }
-    }
-
     /// Whether the pipelines the groups composite with compiled.
-    pub(crate) fn ready(&self, gpu: &mut dyn Gpu) -> bool {
-        let needs = |blending: bool| {
-            self.groups
-                .iter()
-                .any(|g| (g.blend != Blend::Normal) == blending)
-        };
-        [(needs(false), self.composite), (needs(true), self.blend)]
-            .into_iter()
-            .filter(|&(needed, _)| needed)
-            .all(|(_, p)| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
+    pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
+        self.groups.iter().all(|g| composites.ready(gpu, g.mode()))
     }
 
-    /// Replaces the groups with `runs`, each drawn into a texture of
-    /// `size` of its own unless it has a source, making the pipelines
-    /// they composite with.
-    pub(crate) fn regroup(&mut self, gpu: &mut dyn Gpu, runs: Vec<Run>, size: [u32; 2]) {
+    /// Replaces the groups with `runs`, each drawn into a target of `size`
+    /// in the map's `format` of its own unless it has a source.
+    pub(crate) fn regroup(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        composites: &mut Composites,
+        runs: Vec<Run>,
+        (size, format): ([u32; 2], crate::TargetFormat),
+    ) {
         self.clear(gpu);
-        let target = self.target;
-        let pipeline = |gpu: &mut dyn Gpu, shader, blend, layout| {
-            draw_pipeline_blending(
-                gpu,
-                shader,
-                PrimitiveTopology::TriangleList,
-                target,
-                &[layout],
-                blend,
-            )
+        let target = |gpu: &mut dyn Gpu, label| {
+            Target::new(gpu, label, &[format.color], size, format.sample_count)
         };
-        if self.composite.is_none() && runs.iter().any(|r| r.blend == Blend::Normal) {
-            self.composite = Some(pipeline(
-                gpu,
-                &LAYER_COMPOSITE_SHADER,
-                Some(BlendState::PremultipliedAlpha),
-                self.composite_layout,
-            ));
-        }
-        // The blend writes the composited result over the canvas.
-        if self.blend.is_none() && runs.iter().any(|r| r.blend != Blend::Normal) {
-            self.blend = Some(pipeline(gpu, &LAYER_BLEND_SHADER, None, self.blend_layout));
-        }
         if runs.iter().any(|r| r.blend != Blend::Normal) {
-            self.canvases = vec![
-                self.attachment(gpu, "map canvas", size),
-                self.attachment(gpu, "map canvas", size),
-            ];
+            self.canvases = vec![target(gpu, "map canvas"), target(gpu, "map canvas")];
         }
         let mut backdrops = 0;
         for Run {
@@ -240,60 +127,25 @@ impl LayerComposites {
             source,
         } in runs
         {
-            let layer = source
-                .is_none()
-                .then(|| self.attachment(gpu, "layer composite", size));
-            let texture = source.unwrap_or_else(|| layer.expect("made above").color);
-            let uniform = gpu.create_buffer(&BufferDesc {
-                label: "layer composite",
-                size: 16,
-                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-            });
-            gpu.write_buffer(
-                uniform,
-                0,
-                bytemuck::cast_slice(&[opacity, blend.mode(), 0.0, 0.0]),
-            );
-            let mut entries = vec![
-                BindGroupEntry {
-                    binding: 0,
-                    resource: BindingResource::buffer(uniform),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Texture {
-                        texture,
-                        dimension: TextureViewDimension::D2,
-                    },
-                },
-            ];
+            let layer = source.is_none().then(|| target(gpu, "layer composite"));
+            let texture = source.unwrap_or_else(|| layer.as_ref().expect("made above").texture(0));
             // The k-th blending group reads the canvas pass k drew.
-            if blend != Blend::Normal {
-                entries.push(BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::Texture {
-                        texture: self.canvases[backdrops % 2].color,
-                        dimension: TextureViewDimension::D2,
-                    },
-                });
-                backdrops += 1;
-            }
-            let group = gpu.create_bind_group(&BindGroupDesc {
-                label: "layer composite",
-                layout: if blend == Blend::Normal {
-                    self.composite_layout
-                } else {
-                    self.blend_layout
-                },
-                entries: &entries,
-            });
+            let (mode, backdrop) = match blend {
+                Blend::Normal => (Mode::Over, None),
+                blend => {
+                    backdrops += 1;
+                    (
+                        Mode::Blend(blend),
+                        Some(self.canvases[(backdrops - 1) % 2].texture(0)),
+                    )
+                }
+            };
+            let composite = composites.composite(gpu, texture, backdrop, mode, opacity);
             self.groups.push(Group {
                 nodes,
                 blend,
-                uniform,
-                opacity,
                 layer,
-                group,
+                composite,
                 bundle: None,
             });
         }
@@ -301,15 +153,8 @@ impl LayerComposites {
 
     /// Writes a group's opacity, if it changed.
     pub(crate) fn set_opacity(&mut self, gpu: &mut dyn Gpu, node: usize, opacity: f32) {
-        if let Some(group) = self.groups.iter_mut().find(|g| g.nodes.contains(&node))
-            && group.opacity != opacity
-        {
-            group.opacity = opacity;
-            gpu.write_buffer(
-                group.uniform,
-                0,
-                bytemuck::cast_slice(&[opacity, group.blend.mode(), 0.0, 0.0]),
-            );
+        if let Some(group) = self.groups.iter_mut().find(|g| g.nodes.contains(&node)) {
+            Composites::set_opacity(gpu, &mut group.composite, opacity);
         }
     }
 
@@ -323,33 +168,20 @@ impl LayerComposites {
 
     /// A group's composite into the map: in the main pass's bundle for
     /// normal blending, or opening the canvas pass after a split.
-    pub(crate) fn composite_commands(&self, group: &Group) -> [RenderCommand; 3] {
-        [
-            RenderCommand::SetPipeline(
-                if group.blend == Blend::Normal {
-                    self.composite
-                } else {
-                    self.blend
-                }
-                .expect("made with the group"),
-            ),
-            RenderCommand::SetBindGroup {
-                index: 0,
-                group: group.group,
-            },
-            RenderCommand::Draw {
-                vertices: 0..3,
-                instances: 0..1,
-            },
-        ]
+    pub(crate) fn composite_commands(
+        &self,
+        composites: &Composites,
+        group: &Group,
+    ) -> [RenderCommand; 3] {
+        composites.commands(&group.composite)
     }
 
-    /// Each group's pass: its nodes' draws into its texture.
+    /// Each group's pass: its nodes' draws into its target.
     pub(crate) fn passes(&self) -> impl Iterator<Item = Pass> + '_ {
         self.groups.iter().filter_map(|g| {
             Some(Pass::Render(RenderPass {
                 label: "layer composite".into(),
-                color: Some(g.layer?.color_attachment(LoadOp::Clear([0.0; 4]))),
+                color: Some(g.layer.as_ref()?.attachment(0, LoadOp::Clear([0.0; 4]))),
                 depth: None,
                 timestamps: None,
                 commands: vec![RenderCommand::ExecuteBundles(vec![g.bundle?])],
@@ -362,9 +194,8 @@ impl LayerComposites {
     /// `last` (the scattering), ending in `target`.
     pub(crate) fn main_passes(
         &self,
-        mut first: Vec<RenderCommand>,
-        segments: &[RenderBundleId],
-        last: Vec<RenderCommand>,
+        composites: &Composites,
+        (mut first, segments, last): (Vec<RenderCommand>, &[RenderBundleId], Vec<RenderCommand>),
         target: TextureId,
         clear: [f64; 4],
     ) -> Vec<Pass> {
@@ -378,7 +209,7 @@ impl LayerComposites {
                     std::mem::take(&mut first)
                 } else {
                     let group = blending.next().expect("a segment per blending group");
-                    self.composite_commands(group).to_vec()
+                    self.composite_commands(composites, group).to_vec()
                 };
                 commands.push(RenderCommand::ExecuteBundles(vec![segment]));
                 // The blend draw covers every pixel: only the first clears.
@@ -392,7 +223,7 @@ impl LayerComposites {
                         load,
                     }
                 } else {
-                    self.canvases[k % 2].color_attachment(load)
+                    self.canvases[k % 2].attachment(0, load)
                 };
                 Pass::Render(RenderPass {
                     label: "main".into(),
@@ -410,23 +241,13 @@ impl LayerComposites {
             if let Some(bundle) = g.bundle {
                 gpu.destroy_render_bundle(bundle);
             }
-            gpu.destroy_bind_group(g.group);
-            gpu.destroy_buffer(g.uniform);
+            Composites::release(gpu, g.composite);
             if let Some(layer) = g.layer {
-                destroy(gpu, layer);
+                layer.destroy(gpu);
             }
         }
         for canvas in self.canvases.drain(..) {
-            destroy(gpu, canvas);
+            canvas.destroy(gpu);
         }
-    }
-}
-
-fn destroy(gpu: &mut dyn Gpu, attachment: Attachment) {
-    for texture in [Some(attachment.color), attachment.multisample]
-        .into_iter()
-        .flatten()
-    {
-        gpu.destroy_texture(texture);
     }
 }

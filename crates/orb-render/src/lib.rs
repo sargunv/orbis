@@ -24,6 +24,7 @@ mod heatmap;
 mod image;
 mod layer_composite;
 mod occlusion;
+mod offscreen;
 mod paint;
 mod shadow;
 mod terrain;
@@ -250,7 +251,10 @@ pub struct Renderer {
     /// The shadow casters' scene group, without the map they draw.
     caster_group: Option<BindGroupId>,
     /// Layers drawn whole and composited at their layer opacity.
-    composites: layer_composite::LayerComposites,
+    /// Runs of nodes composited once (`*-layer-opacity`, `-blend`).
+    layers: layer_composite::LayerComposites,
+    /// What draws apart from the map composites through these.
+    composites: offscreen::Composites,
     /// Made for the first terrain.
     terrain: Option<terrain::Terrain>,
     /// The drape passes of each style zoom slots are drawn at.
@@ -508,9 +512,9 @@ impl Renderer {
 
         let image_bindings = images;
         let images = image::Images::new(gpu, target, draw_layout);
-        let heatmaps = heatmap::Heatmaps::new(gpu, target, draw_layout, node_layout);
-        let composites = layer_composite::LayerComposites::new(gpu, target);
-        let extrusions = extrusion::Extrusions::new(gpu, target, draw_layout, node_layout);
+        let heatmaps = heatmap::Heatmaps::new(gpu, draw_layout, node_layout);
+        let composites = offscreen::Composites::new(gpu, target);
+        let extrusions = extrusion::Extrusions::new(draw_layout, node_layout);
         let occlusion = occlusion::Occlusion::new(gpu);
         let node_stride = NODE_UNIFORM_SIZE.max(u64::from(
             gpu.caps().limits.min_uniform_buffer_offset_alignment,
@@ -550,6 +554,7 @@ impl Renderer {
             paints_written: 0,
             images,
             heatmaps,
+            layers: Default::default(),
             composites,
             extrusions,
             occlusion,
@@ -976,7 +981,7 @@ impl Renderer {
             }
             self.invalidate_bundle(gpu);
         } else if before.is_some() {
-            self.composites.set_opacity(gpu, node as usize, opacity);
+            self.layers.set_opacity(gpu, node as usize, opacity);
         }
     }
 
@@ -1120,6 +1125,23 @@ impl Renderer {
             entry.written = words;
             self.paints_written += 1;
         }
+        // Layers drawn apart apply their opacity as they composite.
+        match paint {
+            NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
+                if let Some(e) = &mut entry.extrusion {
+                    e.opacity = p.opacity;
+                    if let Some(c) = &mut e.composite {
+                        offscreen::Composites::set_opacity(gpu, c, p.opacity);
+                    }
+                }
+            }
+            NodePaint::Heatmap(p) => {
+                if let Some(h) = &mut entry.heatmap {
+                    h.opacity = p.opacity;
+                }
+            }
+            _ => {}
+        }
         let margin = paint.cull_margin_px();
         let elevation = match paint {
             NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
@@ -1252,6 +1274,9 @@ impl Renderer {
                         .map(PipelineId::from),
                 );
             }
+        }
+        if node.stack.is_some() || node.heatmap.is_some() || node.extrusion.is_some() {
+            out.extend(self.composites.pipelines());
         }
         match node.family {
             Family::Heatmap => out.extend(self.heatmaps.pipelines()),
@@ -1435,6 +1460,16 @@ impl Renderer {
         cast: Option<(FrameShadow, [f32; 3])>,
     ) -> FrameStats {
         let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame);
+        // A heatmap hidden, or with nothing to draw, composites nothing.
+        for (i, node) in self.nodes.iter_mut().enumerate() {
+            if let Some(heatmap) = &mut node.heatmap
+                && let Some(composite) = &mut heatmap.composite
+            {
+                let shown = node.cull.visible && self.scene.node_candidates(i as u32) > 0;
+                let opacity = if shown { heatmap.opacity } else { 0.0 };
+                offscreen::Composites::set_opacity(gpu, composite, opacity);
+            }
+        }
         // Preparing may have grown the compacted index buffer.
         self.bind_scene(gpu);
         self.refresh_image_groups(gpu);
@@ -1470,15 +1505,18 @@ impl Renderer {
             self.nodes.iter().filter(|n| n.extrusion.is_some()).count() + stacks as usize,
         );
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
-            resized |= terrain.resize(gpu, size, self.extrusions.samples);
+            resized |= terrain.resize(gpu, &mut self.composites, size, self.extrusions.samples);
         }
-        for i in 0..self.nodes.len() {
-            let uniform = self.node_uniform(i as u32);
-            if let Some(extrusion) = &mut self.nodes[i].extrusion {
-                resized |= self.extrusions.resize_node(gpu, extrusion, uniform, size);
+        for node in &mut self.nodes {
+            if let Some(extrusion) = &mut node.extrusion {
+                resized |= self
+                    .extrusions
+                    .resize_node(gpu, &mut self.composites, extrusion, size);
             }
-            if let Some(heatmap) = &mut self.nodes[i].heatmap {
-                resized |= self.heatmaps.resize(gpu, heatmap, uniform, density_size);
+            if let Some(heatmap) = &mut node.heatmap {
+                resized |= self
+                    .heatmaps
+                    .resize(gpu, &mut self.composites, heatmap, density_size);
             }
         }
         if self.occlusion.resize(gpu, size) {
@@ -1531,16 +1569,17 @@ impl Renderer {
                     }),
                 }
             }
-            self.composites.regroup(gpu, runs, size);
+            self.layers
+                .regroup(gpu, &mut self.composites, runs, (size, self.target));
             // Until the composites compile, nothing draws: a split main
             // pass needs its blend draw.
-            if !self.composites.ready(gpu) {
-                self.composites.clear(gpu);
+            if !self.layers.ready(gpu, &self.composites) {
+                self.layers.clear(gpu);
                 ready.cull = false;
             }
             self.waiting = 0;
-            for g in 0..self.composites.groups.len() {
-                if self.composites.groups[g].drawn_elsewhere() {
+            for g in 0..self.layers.groups.len() {
+                if self.layers.groups[g].drawn_elsewhere() {
                     continue;
                 }
                 let mut group = vec![RenderCommand::SetIndexBuffer {
@@ -1548,13 +1587,13 @@ impl Renderer {
                     format: IndexFormat::Uint32,
                     offset: 0,
                 }];
-                for i in self.composites.groups[g].nodes.clone() {
+                for i in self.layers.groups[g].nodes.clone() {
                     let groups = (self.draw_group, self.nodes[i].group);
                     if !self.node_commands(gpu, &ready, i, groups, &mut group) {
                         self.waiting += 1;
                     }
                 }
-                self.composites.groups[g].bundle = Some(gpu.create_render_bundle(
+                self.layers.groups[g].bundle = Some(gpu.create_render_bundle(
                     &RenderBundleDesc {
                         label: "layer composite",
                         color_formats: &[self.target.color],
@@ -1575,7 +1614,7 @@ impl Renderer {
                 cast.and_then(|_| self.nodes.iter().position(|n| n.extrusion.is_some()));
             self.ground_waiting = false;
             for i in 0..self.nodes.len() {
-                let (start, member) = self.composites.at(i);
+                let (start, member) = self.layers.at(i);
                 match start {
                     // The main pass splits here: its blend draw opens the
                     // next pass, before the next bundle.
@@ -1588,7 +1627,7 @@ impl Renderer {
                         }
                     }
                     Some(group) => {
-                        commands.extend(self.composites.composite_commands(group));
+                        commands.extend(self.layers.composite_commands(&self.composites, group));
                         // The composite changed the pipeline and bindings.
                         if indexed {
                             commands.push(index_buffer.clone());
@@ -1677,6 +1716,7 @@ impl Renderer {
         for (index, node) in self.nodes.iter_mut().enumerate() {
             if let Some(heatmap) = &mut node.heatmap
                 && cull_ready
+                && self.heatmaps.ready(gpu, &self.composites)
                 && let Some(pass) = self.heatmaps.prepare(
                     gpu,
                     heatmap,
@@ -1696,7 +1736,7 @@ impl Renderer {
             stats.draws += terrain.passes(gpu, (b.frame, b.props), &drape, depth, &mut passes);
         }
         let mut first = !terrain_on;
-        let extrusions_ready = cull_ready && self.extrusions.composite(gpu).is_some();
+        let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
         let shadowed = cast.filter(|_| extrusions_ready && self.shadows.ready(gpu));
         self.shadows.write(gpu, frame, shadowed);
         if shadowed.is_some() {
@@ -1748,11 +1788,14 @@ impl Renderer {
             passes.push(pass);
             stats.draws += 1;
         }
-        passes.extend(self.composites.passes());
-        passes.extend(self.composites.main_passes(
-            self.atmosphere.commands(gpu),
-            &self.bundles,
-            self.atmosphere.commands_after(gpu),
+        passes.extend(self.layers.passes());
+        passes.extend(self.layers.main_passes(
+            &self.composites,
+            (
+                self.atmosphere.commands(gpu),
+                &self.bundles,
+                self.atmosphere.commands_after(gpu),
+            ),
             target,
             clear,
         ));
@@ -1781,7 +1824,8 @@ impl Renderer {
                 .terrain
                 .as_mut()
                 .filter(|_| terrain_on)
-                .is_some_and(|t| t.ready(gpu)),
+                .is_some_and(|t| t.ready(gpu))
+                && self.composites.ready(gpu, offscreen::Mode::Over),
             prepare: self.images.prepare_ready(gpu),
             mips: self.images.mips_ready(gpu),
         }
@@ -1894,48 +1938,31 @@ impl Renderer {
             if !ready.terrain {
                 return false;
             }
-            if let Some(terrain) = self.terrain.as_ref().filter(|_| first) {
-                commands.extend(terrain.composite_commands(u32::from(stack)));
+            if let Some(composite) = self
+                .terrain
+                .as_ref()
+                .filter(|_| first)
+                .and_then(|t| t.stack_composite(u32::from(stack)))
+            {
+                commands.extend(self.composites.commands(composite));
             }
             return true;
         }
         if let Some(extrusion) = &node.extrusion {
-            let Some(composite) = self.extrusions.composite(gpu) else {
+            if !self.extrusions.ready(gpu, &self.composites) {
                 return false;
-            };
-            if let Some(group) = extrusion.group {
-                commands.extend([
-                    RenderCommand::SetPipeline(composite),
-                    RenderCommand::SetBindGroup {
-                        index: 0,
-                        group: scene,
-                    },
-                    RenderCommand::SetBindGroup { index: 1, group },
-                    RenderCommand::Draw {
-                        vertices: 0..3,
-                        instances: 0..1,
-                    },
-                ]);
+            }
+            if let Some(composite) = &extrusion.composite {
+                commands.extend(self.composites.commands(composite));
             }
             return true;
         }
-        if node.family == Family::Heatmap {
-            let Some(color) = self.heatmaps.color_pipeline(gpu) else {
+        if let Some(heatmap) = &node.heatmap {
+            if !self.heatmaps.ready(gpu, &self.composites) {
                 return false;
-            };
-            if let Some(group) = node.heatmap.as_ref().and_then(|h| h.group) {
-                commands.extend([
-                    RenderCommand::SetPipeline(color),
-                    RenderCommand::SetBindGroup {
-                        index: 0,
-                        group: scene,
-                    },
-                    RenderCommand::SetBindGroup { index: 1, group },
-                    RenderCommand::Draw {
-                        vertices: 0..3,
-                        instances: 0..1,
-                    },
-                ]);
+            }
+            if let Some(composite) = &heatmap.composite {
+                commands.extend(self.composites.commands(composite));
             }
             return true;
         }

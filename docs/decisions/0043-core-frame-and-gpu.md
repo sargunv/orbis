@@ -120,9 +120,33 @@ otherwise lets a coarser tile stand in.
     room first (decision 0037's order). With pools that start small,
     evicting first would have left no cache at all.
 
+## One way to draw apart from the map
+
+A layer composited once (`*-layer-opacity`, `-blend`), a 3D layer, a
+heatmap's density and a terrain stack each drew into textures of their own
+and composited back through their own layouts, pipelines and shaders. They
+now share `offscreen::Target`, a list of colour attachments with their
+multisampled ones, and `Composites`: one bind layout and one shader
+(`composite.wgsl`) in two pipelines. *Over* blends a source at an opacity,
+or a density through a ramp. *Replace* writes a W3C blend mode over the
+canvas beneath. Opacity is each composite's uniform, written when paint,
+visibility or a node's candidates change, so no draw is recorded again for
+it. Four shaders went, and the module is net −87 lines.
+
+**How a physically based map would slot in (#91).** Opaque layers would
+draw into a material-buffer `Target`: albedo, normal, roughness and
+metalness, emissive, and height as attachments of one target. That needs
+one extension, a list of colour attachments in a HAL `RenderPass`; the
+target already holds one. One lighting composite would then read the
+attachments with the frame's lights, the atmosphere's image-based light
+and the shadow map. It would draw into the map between the opaque segment
+of the main pass and the translucent one, as a blend-mode composite opens
+a segment today. Translucent layers, labels and the layers composited
+once would follow unchanged.
+
 ## Still to land
 
-The Map/Renderer split (`plan_frame`, a narrow `Renderer` that owns all
-residency), reflected layouts, one offscreen group, one slot allocator,
-lazy pools and atlases, one warp per tile, one native thread pool, and
-pipeline failures as map errors. Each step updates this record.
+`plan_frame` as a pure function of the camera and the resident set (with
+one warp per tile made at arrival, and #32's T-junction snapping), one DEM
+prepare path and one downsampler, one slot allocator, one native thread
+pool, and pipeline failures as map errors. Each step updates this record.

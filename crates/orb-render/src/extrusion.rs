@@ -1,9 +1,9 @@
 //! Extrusion surfaces resolve opaque nearest samples, then apply layer opacity
 //! once. The shared depth attachment preserves occlusion between 3D layers.
-use crate::{TargetFormat, draw_pipeline};
+use crate::offscreen::{Composite, Composites, Mode, Target};
 use orb_hal::*;
 use orb_scene::SceneBuffers;
-use orb_shaders::{EXTRUSION_COMPOSITE_SHADER, EXTRUSION_SHADER};
+use orb_shaders::EXTRUSION_SHADER;
 
 #[derive(Debug)]
 pub(crate) struct Extrusions {
@@ -11,24 +11,34 @@ pub(crate) struct Extrusions {
     pipelines: [Option<RenderPipelineId>; 2],
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,
-    /// Made for the first extrusion node.
-    composite: Option<RenderPipelineId>,
-    target: TargetFormat,
-    layout: BindGroupLayoutId,
     depth: Option<TextureId>,
     size: [u32; 2],
     single_layer: bool,
     /// The depth is kept and read after the 3D passes (`occlusion`).
     sampled: bool,
 }
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct NodeExtrusion {
-    color: Option<TextureId>,
-    multisample: Option<TextureId>,
+    target: Option<Target>,
+    pub(crate) composite: Option<Composite>,
     size: [u32; 2],
     samples: u32,
-    pub(crate) group: Option<BindGroupId>,
+    /// `fill-extrusion-opacity`, which the composite applies once.
+    pub(crate) opacity: f32,
     bundle: Option<RenderBundleId>,
+}
+
+impl Default for NodeExtrusion {
+    fn default() -> Self {
+        Self {
+            target: None,
+            composite: None,
+            size: [0; 2],
+            samples: 0,
+            opacity: 1.0,
+            bundle: None,
+        }
+    }
 }
 impl NodeExtrusion {
     /// Drops the recorded draw, so the next frame records it over the
@@ -41,71 +51,34 @@ impl NodeExtrusion {
 }
 
 impl Extrusions {
-    pub(crate) fn new(
-        gpu: &mut dyn Gpu,
-        target: TargetFormat,
-        scene: BindGroupLayoutId,
-        node: BindGroupLayoutId,
-    ) -> Self {
-        let layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "extrusion composite",
-            entries: &[
-                BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
-                    ty: BindingType::Uniform,
-                },
-                BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Float { filterable: false },
-                        dimension: TextureViewDimension::D2,
-                    },
-                },
-            ],
-        });
+    pub(crate) fn new(scene: BindGroupLayoutId, node: BindGroupLayoutId) -> Self {
         Self {
             pipelines: [None; 2],
             layouts: [scene, node],
             samples: 4,
-            composite: None,
-            target,
-            layout,
             depth: None,
             size: [0; 2],
             single_layer: false,
             sampled: false,
         }
     }
-    /// Makes the composite and the pipeline at the current sample count,
-    /// for the first extrusion node.
+
+    /// Makes the pipeline at the current sample count, for the first
+    /// extrusion node.
     pub(crate) fn make(&mut self, gpu: &mut dyn Gpu) {
-        if self.composite.is_none() {
-            self.composite = Some(draw_pipeline(
-                gpu,
-                &EXTRUSION_COMPOSITE_SHADER,
-                PrimitiveTopology::TriangleList,
-                self.target,
-                &[self.layouts[0], self.layout],
-            ));
-        }
         self.pipeline(gpu);
     }
 
-    /// The composite, once it and the pipeline at the current sample count
-    /// compiled.
-    pub(crate) fn composite(&self, gpu: &mut dyn Gpu) -> Option<RenderPipelineId> {
-        let pipeline = self.pipelines[usize::from(self.samples == 4)]?;
-        let composite = self.composite?;
-        (gpu.pipeline_ready(pipeline.into()) && gpu.pipeline_ready(composite.into()))
-            .then_some(composite)
+    /// Whether the pipeline at the current sample count, and the
+    /// composites', compiled.
+    pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
+        self.pipelines[usize::from(self.samples == 4)].is_some_and(|p| gpu.pipeline_ready(p.into()))
+            && composites.ready(gpu, Mode::Over)
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        self.composite
+        self.pipelines[usize::from(self.samples == 4)]
             .iter()
-            .chain(&self.pipelines[usize::from(self.samples == 4)])
             .map(|&p| p.into())
             .collect()
     }
@@ -211,78 +184,47 @@ impl Extrusions {
         if let Some(bundle) = node.bundle {
             gpu.destroy_render_bundle(bundle);
         }
-        if let Some(group) = node.group {
-            gpu.destroy_bind_group(group);
+        if let Some(composite) = node.composite {
+            Composites::release(gpu, composite);
         }
-        if let Some(color) = node.color {
-            gpu.destroy_texture(color);
-        }
-        if let Some(msaa) = node.multisample {
-            gpu.destroy_texture(msaa);
+        if let Some(target) = node.target {
+            target.destroy(gpu);
         }
     }
+
+    /// Gives a node its target of `size` and its composite, unless it has
+    /// them at this size and sample count; whether it changed.
     pub(crate) fn resize_node(
         &self,
         gpu: &mut dyn Gpu,
+        composites: &mut Composites,
         node: &mut NodeExtrusion,
-        uniform: BindingResource,
         size: [u32; 2],
     ) -> bool {
         if node.size == size && node.samples == self.samples {
             return false;
         }
+        let opacity = node.opacity;
         Self::release(gpu, std::mem::take(node));
-        let color = gpu.create_texture(&TextureDesc {
-            label: "extrusion color",
-            width: size[0],
-            height: size[1],
-            array_layers: 1,
-            dimension: TextureViewDimension::D2,
-            format: TextureFormat::Rgba8Unorm,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-            sample_count: 1,
-            mip_levels: 1,
-        });
-        let multisample = (self.samples > 1).then(|| {
-            gpu.create_texture(&TextureDesc {
-                label: "extrusion multisample",
-                width: size[0],
-                height: size[1],
-                array_layers: 1,
-                dimension: TextureViewDimension::D2,
-                format: TextureFormat::Rgba8Unorm,
-                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
-                sample_count: self.samples,
-                mip_levels: 1,
-            })
-        });
-        let group = gpu.create_bind_group(&BindGroupDesc {
-            label: "extrusion composite",
-            layout: self.layout,
-            entries: &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: uniform,
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::Texture {
-                        texture: color,
-                        dimension: TextureViewDimension::D2,
-                    },
-                },
-            ],
-        });
+        let target = Target::new(
+            gpu,
+            "extrusion",
+            &[TextureFormat::Rgba8Unorm],
+            size,
+            self.samples,
+        );
+        let composite = composites.composite(gpu, target.texture(0), None, Mode::Over, opacity);
         *node = NodeExtrusion {
-            color: Some(color),
-            multisample,
+            target: Some(target),
+            composite: Some(composite),
             samples: self.samples,
             size,
-            group: Some(group),
+            opacity,
             bundle: None,
         };
         true
     }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "one recorded draw and its attachments"
@@ -328,16 +270,12 @@ impl Extrusions {
         });
         RenderPass {
             label: "extrusion".into(),
-            color: Some(ColorAttachment {
-                store: if node.multisample.is_some() {
-                    StoreOp::Discard
-                } else {
-                    StoreOp::Store
-                },
-                target: node.multisample.or(node.color).unwrap(),
-                resolve: node.multisample.and(node.color),
-                load: LoadOp::Clear([0.0; 4]),
-            }),
+            color: Some(
+                node.target
+                    .as_ref()
+                    .expect("sized")
+                    .attachment(0, LoadOp::Clear([0.0; 4])),
+            ),
             depth: Some(DepthAttachment {
                 store: self.depth().expect("sized").1,
                 target: self.depth.unwrap(),
