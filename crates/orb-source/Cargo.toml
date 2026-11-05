@@ -10,7 +10,6 @@ version.workspace = true
 miniz_oxide.workspace = true
 orb-crs.workspace = true
 orb-expr.workspace = true
-orb-geo.workspace = true
 orb-v8.workspace = true
 
 [dev-dependencies]
