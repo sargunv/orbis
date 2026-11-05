@@ -296,6 +296,12 @@ mod native {
         compiled: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
         /// Per worker, the job it compiles and since when.
         busy: Mutex<Vec<Option<(String, Instant)>>>,
+        /// Signalled when a worker takes a job, and when the compiler
+        /// closes: the watchdog thread waits on it.
+        started: Condvar,
+        /// How long a compile may run before its driver is taken to have
+        /// hung.
+        limit: Mutex<Duration>,
     }
 
     impl std::fmt::Debug for Shared {
@@ -320,6 +326,8 @@ mod native {
                     hang: Default::default(),
                     compiled: Mutex::default(),
                     busy: Mutex::default(),
+                    started: Condvar::new(),
+                    limit: Mutex::new(orb_hal::device::COMPILE_WATCHDOG),
                 }),
                 done_tx,
                 done,
@@ -363,6 +371,13 @@ mod native {
         }
 
         fn spawn(&mut self, device: &wgpu::Device) {
+            if self.started == 0 {
+                let shared = self.shared.clone();
+                std::thread::Builder::new()
+                    .name("orbis pipeline watchdog".into())
+                    .spawn(move || watchdog(&shared))
+                    .expect("spawn the pipeline watchdog");
+            }
             let index = self.started;
             self.started += 1;
             self.shared
@@ -379,7 +394,14 @@ mod native {
                 .expect("spawn a pipeline thread");
         }
 
-        /// Calls `wake` from a worker whenever a compile finishes.
+        /// How long a compile may run before its driver is taken to have
+        /// hung.
+        pub(crate) fn set_watchdog(&self, limit: Duration) {
+            *self.shared.limit.lock().expect("compile watch poisoned") = limit;
+        }
+
+        /// Calls `wake` from a worker whenever a compile finishes, and from
+        /// the watchdog when one runs past its limit.
         pub(crate) fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
             *self.shared.compiled.lock().expect("compile wake poisoned") = Some(wake);
         }
@@ -420,13 +442,27 @@ mod native {
             }
         }
 
-        /// A compile that has run longer than `limit`: its label.
-        pub(crate) fn hung(&self, limit: Duration) -> Option<String> {
-            let busy = self.shared.busy.lock().expect("compile watch poisoned");
+        /// A compile that has run past the watchdog's limit: its label.
+        pub(crate) fn hung(&self) -> Option<String> {
+            self.shared.hung()
+        }
+    }
+
+    impl Shared {
+        fn hung(&self) -> Option<String> {
+            let limit = *self.limit.lock().expect("compile watch poisoned");
+            let busy = self.busy.lock().expect("compile watch poisoned");
             busy.iter()
                 .flatten()
                 .find(|(_, since)| since.elapsed() > limit)
                 .map(|(label, since)| format!("{label} ({:.1} s)", since.elapsed().as_secs_f64()))
+        }
+
+        fn wake(&self) {
+            let wake = self.compiled.lock().expect("compile wake poisoned").clone();
+            if let Some(wake) = wake {
+                wake();
+            }
         }
     }
 
@@ -439,6 +475,37 @@ mod native {
             queue.jobs.clear();
             drop(queue);
             self.shared.wake.notify_all();
+            let _busy = self.shared.busy.lock().expect("compile watch poisoned");
+            self.shared.started.notify_all();
+        }
+    }
+
+    /// Wakes the host once when a compile runs past the limit: a map that
+    /// waits only for pipelines draws no frames, and the frame after the
+    /// wake finds the compile hung. The device is lost then, so once is
+    /// enough.
+    fn watchdog(shared: &Shared) {
+        let mut busy = shared.busy.lock().expect("compile watch poisoned");
+        loop {
+            if shared.queue.lock().expect("compile queue poisoned").closed {
+                return;
+            }
+            let limit = *shared.limit.lock().expect("compile watch poisoned");
+            let Some(since) = busy.iter().flatten().map(|(_, since)| *since).min() else {
+                busy = shared.started.wait(busy).expect("compile watch poisoned");
+                continue;
+            };
+            let left = limit.saturating_sub(since.elapsed());
+            if left.is_zero() {
+                drop(busy);
+                shared.wake();
+                return;
+            }
+            busy = shared
+                .started
+                .wait_timeout(busy, left)
+                .expect("compile watch poisoned")
+                .0;
         }
     }
 
@@ -464,6 +531,7 @@ mod native {
             let started = Instant::now();
             shared.busy.lock().expect("compile watch poisoned")[index] =
                 Some((job.label().to_owned(), started));
+            shared.started.notify_all();
             while shared.hang.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::park();
             }
@@ -477,14 +545,7 @@ mod native {
             if done.send(finished).is_err() {
                 return;
             }
-            let wake = shared
-                .compiled
-                .lock()
-                .expect("compile wake poisoned")
-                .clone();
-            if let Some(wake) = wake {
-                wake();
-            }
+            shared.wake();
         }
     }
 }

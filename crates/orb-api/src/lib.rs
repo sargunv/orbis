@@ -162,8 +162,9 @@ pub struct RuntimeStats {
     /// Each pipeline compiled so far and how long it took, in the order
     /// they finished (plan §8.9: pipelines created cold and warm).
     pub pipeline_timings: Vec<(String, std::time::Duration)>,
-    /// The compile the watchdog found hung, if one was (plan §8.8 3): the
-    /// GPU is then lost, and [`Runtime::recover`] demotes it.
+    /// The compile the watchdog found hung, or the pipeline the driver
+    /// couldn't make, if one was (plan §8.8 3): a Modern GPU is then lost,
+    /// and [`Runtime::recover`] demotes it.
     pub hung_compile: Option<String>,
     /// What the HTTP cache holds, if there is one.
     pub http_cache: Option<CacheStats>,

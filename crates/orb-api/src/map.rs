@@ -763,8 +763,8 @@ impl Map {
         if self.shared.sentinel.borrow().is_some() {
             crate::device::before_pipelines();
         }
-        let mut gpu = self.shared.gpu.borrow_mut();
-        let gpu = gpu.gpu();
+        let mut device = self.shared.gpu.borrow_mut();
+        let gpu = device.gpu();
         let map = &mut self.map;
         let renderer = self
             .renderer
@@ -778,6 +778,12 @@ impl Map {
             frame_time,
         );
         target.end();
+        // The frame found the device lost (a compile the watchdog found
+        // hung): no frame follows to say so.
+        if device.lost() {
+            return Err(Error::DeviceLost);
+        }
+        drop(device);
         // Every pipeline the map asked for compiled, and the driver
         // survived them.
         if report.frame.pipelines_pending == 0 {

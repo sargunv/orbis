@@ -104,7 +104,6 @@ impl Device {
             .as_deref()
             .map(|dir| arm(dir, &key))
             .transpose()?;
-        let mut modern = modern;
         if std::env::var_os(FAULT).is_some_and(|f| f == "hang") {
             modern.inject_compile_hang();
             if let Some(ms) = std::env::var("ORB_COMPILE_WATCHDOG_MS")
@@ -161,8 +160,8 @@ impl Device {
         }
     }
 
-    /// The compile the watchdog found hung, if one was: the device is
-    /// lost, and the sentinel stays armed so the next device demotes.
+    /// The compile the watchdog found hung, or failed, if one was: the
+    /// device is lost, and the sentinel stays armed so the next device demotes.
     pub(crate) fn hung(&self) -> Option<String> {
         match self {
             Self::Modern(gpu) => gpu.hung().map(str::to_owned),

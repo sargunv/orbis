@@ -144,9 +144,25 @@ of the main pass and the translucent one, as a blend-mode composite opens
 a segment today. Translucent layers, labels and the layers composited
 once would follow unchanged.
 
+## Pipelines that fail or hang
+
+A pipeline the driver can't make no longer panics. On Modern it goes the
+way of a compile the watchdog found hung: the device is lost, the crash
+sentinel stays armed and recovery demotes to Compat. Compat is the last
+tier, so there the pipeline stays unready, its nodes draw nothing, and the
+failure is reported as a hung compile would be (`RuntimeStats::hung_compile`).
+
+The native watchdog ran only when a frame polled the compiler, and a map
+waiting only for pipelines asks for no frames: a hung last compile left it
+waiting for good. A watchdog thread beside the compile workers now wakes
+the host once a compile runs past the limit, and the frame that finds the
+device lost reports it rather than the frame after, which no host draws.
+With a 300 ms limit the test map draws 2 frames, idles, and is lost after
+314 ms.
+
 ## Still to land
 
 `plan_frame` as a pure function of the camera and the resident set (with
 one warp per tile made at arrival, and #32's T-junction snapping), one DEM
-prepare path and one downsampler, one slot allocator, one native thread
-pool, and pipeline failures as map errors. Each step updates this record.
+prepare path and one downsampler, one slot allocator and one native thread
+pool. Each step updates this record.

@@ -53,10 +53,9 @@ pub struct WgpuGpu {
     compiler: compile::Compiler,
     /// Pipelines asked for and not yet compiled.
     pending: u32,
-    /// A compile that ran past the watchdog's limit: the device is lost.
+    /// A compile that ran past the watchdog's limit, or failed: the device
+    /// is lost.
     hung: Option<String>,
-    #[cfg(not(target_arch = "wasm32"))]
-    watchdog: std::time::Duration,
     /// Each pipeline compiled, how long it took, in the order they
     /// finished.
     compiled: Vec<(String, std::time::Duration)>,
@@ -224,8 +223,6 @@ impl WgpuGpu {
             compiler: compile::Compiler::new(),
             pending: 0,
             hung: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            watchdog: orb_hal::device::COMPILE_WATCHDOG,
             compiled: Vec::new(),
             render_bundles: Slots::default(),
             query_sets: Slots::default(),
@@ -292,13 +289,13 @@ impl WgpuGpu {
     /// How long a compile may run before the driver is taken to have hung
     /// (by default [`orb_hal::device::COMPILE_WATCHDOG`]).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_compile_watchdog(&mut self, limit: std::time::Duration) {
-        self.watchdog = limit;
+    pub fn set_compile_watchdog(&self, limit: std::time::Duration) {
+        self.compiler.set_watchdog(limit);
     }
 
     /// The compile that ran past the watchdog's limit
-    /// ([`orb_hal::device::COMPILE_WATCHDOG`]), if one did: the driver is
-    /// taken to have hung, and the device is lost.
+    /// ([`orb_hal::device::COMPILE_WATCHDOG`]), or failed, if one did: the
+    /// driver is taken to have hung, and the device is lost.
     pub fn hung(&self) -> Option<&str> {
         self.hung.as_deref()
     }
@@ -309,21 +306,30 @@ impl WgpuGpu {
         #[cfg(target_arch = "wasm32")]
         let done: Vec<_> = self.compiler.take(&self.device).collect();
         for done in done {
-            let built = done
-                .built
-                .unwrap_or_else(|e| panic!("pipeline {}: {e}", done.label));
+            self.pending -= 1;
+            let built = match done.built {
+                Ok(built) => built,
+                // A pipeline the driver can't make goes the way of a hung
+                // compile: the device is lost, and recovery demotes it.
+                Err(e) => {
+                    self.hung
+                        .get_or_insert_with(|| format!("pipeline {}: {e}", done.label));
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                    continue;
+                }
+            };
             match built {
                 compile::Built::Render(slot, p) => self.render_pipelines.set(slot, Some(p)),
                 compile::Built::Compute(slot, p) => self.compute_pipelines.set(slot, Some(p)),
             }
-            self.pending -= 1;
             self.pipelines_created += 1;
             self.compiled.push((done.label, done.took));
         }
         #[cfg(not(target_arch = "wasm32"))]
         if self.hung.is_none()
             && self.pending > 0
-            && let Some(label) = self.compiler.hung(self.watchdog)
+            && let Some(label) = self.compiler.hung()
         {
             self.hung = Some(label);
             self.lost.store(true, std::sync::atomic::Ordering::Relaxed);

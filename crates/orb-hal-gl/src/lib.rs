@@ -55,7 +55,7 @@ pub struct GlGpu {
     pipelines: Slots<Pipeline>,
     /// Programs compiling, in the order they finish in blocking mode.
     pending: std::collections::VecDeque<Pending>,
-    /// A compile past the watchdog's limit.
+    /// A compile past the watchdog's limit, or one that failed.
     hung: Option<String>,
     compiler: Compiler,
     /// Each program linked, how long from its request.
@@ -482,7 +482,7 @@ impl GlGpu {
 
     /// A module's program: from the program cache, or compiled and linked
     /// (and then cached).
-    fn link(&mut self, module: ShaderModuleId) -> glow::Program {
+    fn link(&mut self, module: ShaderModuleId) -> Result<glow::Program, String> {
         let key = {
             let m = &self.modules[module.0];
             cache::key(&m.vertex_source, &m.fragment_source)
@@ -493,7 +493,7 @@ impl GlGpu {
             if let Some(binary) = self.programs.as_ref().and_then(|c| c.get(key)) {
                 self.gl.program_binary(program, &binary);
                 if self.gl.get_program_link_status(program) {
-                    return program;
+                    return Ok(program);
                 }
                 // The driver turned it down (it changed): compile.
             }
@@ -519,18 +519,18 @@ impl GlGpu {
             }
             self.gl.link_program(program);
             if !self.gl.get_program_link_status(program) {
-                panic!(
+                return Err(format!(
                     "{}: GLSL link failed: {}",
                     m.label,
                     self.gl.get_program_info_log(program)
-                );
+                ));
             }
             if let Some(cache) = &mut self.programs
                 && let Some(binary) = self.gl.get_program_binary(program)
             {
                 cache.insert(key, binary);
             }
-            program
+            Ok(program)
         }
     }
 
@@ -606,9 +606,9 @@ impl GlGpu {
         }
     }
 
-    /// The compile that ran past the watchdog's limit, if one did: its
-    /// driver is taken to have hung. Compat is the last tier, so the
-    /// device isn't lost for it.
+    /// The compile that ran past the watchdog's limit, or failed, if one
+    /// did: its driver is taken to have hung. Compat is the last tier, so
+    /// the device isn't lost for it.
     pub fn hung(&self) -> Option<&str> {
         self.hung.as_deref()
     }
@@ -673,7 +673,10 @@ impl GlGpu {
             .expect("a pending program");
         let pending = self.pending.remove(at).expect("found");
         let label = self.modules[pending.module.0].label.clone();
-        let (program, binary) = done.result.unwrap_or_else(|e| panic!("{label}: {e}"));
+        let (program, binary) = match done.result {
+            Ok(done) => done,
+            Err(e) => return self.fail(format!("{label}: {e}")),
+        };
         if let (Some(cache), Some(binary)) = (&mut self.programs, binary) {
             let m = &self.modules[pending.module.0];
             cache.insert(cache::key(&m.vertex_source, &m.fragment_source), binary);
@@ -703,7 +706,10 @@ impl GlGpu {
                     // The driver turned the binary down (it changed).
                     // SAFETY: a program of this context.
                     unsafe { self.gl.delete_program(program) };
-                    self.link(pending.module)
+                    match self.link(pending.module) {
+                        Ok(program) => program,
+                        Err(e) => return self.fail(e),
+                    }
                 } else {
                     let m = &self.modules[pending.module.0];
                     let mut log = String::new();
@@ -715,7 +721,8 @@ impl GlGpu {
                     }
                     // SAFETY: a program of this context.
                     log += &unsafe { self.gl.get_program_info_log(program) };
-                    panic!("{}: GLSL link failed: {log}", m.label);
+                    let label = m.label.clone();
+                    return self.fail(format!("{label}: GLSL link failed: {log}"));
                 }
             }
             (None, None) => unreachable!("a program links somewhere"),
@@ -726,6 +733,13 @@ impl GlGpu {
         let label = self.modules[pending.module.0].label.clone();
         self.compiled
             .push((label, took.unwrap_or_else(|| pending.since.elapsed())));
+    }
+
+    /// A pipeline that failed to compile or link stays unready: the nodes
+    /// that draw with it draw nothing, and the first failure is reported
+    /// as [`hung`](Self::hung) is.
+    fn fail(&mut self, error: String) {
+        self.hung.get_or_insert(error);
     }
 
     /// Keeps a program's binary for the cache, if one is kept.

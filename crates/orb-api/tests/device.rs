@@ -100,9 +100,11 @@ const HANG_CHILD: &str = "ORB_TEST_HANG_CHILD";
 
 /// Plan §8.8 3: a driver that hangs in its compiler, rather than crashing,
 /// demotes the device too. Compiles run off the drawing thread, so frames go
-/// on; the watchdog finds the compile hung, the device is lost, the sentinel
-/// stays armed, and the device made next, now and at the next start, is
-/// Compat. In a child process: the fault is set from the environment.
+/// on; a map waiting only for the compile asks for none, and the watchdog
+/// wakes it when the compile runs past its limit. The next frame finds the
+/// compile hung, the device is lost, the sentinel stays armed, and the
+/// device made next, now and at the next start, is Compat. In a child
+/// process: the fault is set from the environment.
 #[test]
 fn a_hung_compile_demotes_the_device() {
     if let Some(dir) = std::env::var_os(HANG_CHILD) {
@@ -114,25 +116,34 @@ fn a_hung_compile_demotes_the_device() {
         let mut map = Map::new(&runtime, MapOptions::default());
         map.set_style_json(STYLE).unwrap();
         let started = Instant::now();
-        let mut frames = 0;
+        let (mut frames, mut idle) = (0, 0);
         let lost = loop {
+            assert!(started.elapsed().as_secs() < 20, "the watchdog never fired");
+            // As a host draws: only the frames the map asks for.
+            if !map.needs_frame() {
+                idle += 1;
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
             match map.render(&mut target, 0.0) {
                 Err(Error::DeviceLost) => break started.elapsed(),
                 Err(e) => panic!("{e}"),
                 Ok(report) => assert!(report.is_none_or(|r| !r.idle), "nothing compiles"),
             }
             frames += 1;
-            assert!(started.elapsed().as_secs() < 20, "the watchdog never fired");
-            std::thread::sleep(Duration::from_millis(5));
         };
         let hung = runtime
             .stats()
             .hung_compile
             .expect("the watchdog names the compile");
-        eprintln!("{frames} frames drawn while {hung} compiled; lost after {lost:?}");
+        eprintln!(
+            "{frames} frames drawn and {idle} polls idle while {hung} compiled; \
+             lost after {lost:?}"
+        );
         // A compile that blocked the drawing thread would hold the first
-        // frame until the watchdog fired; more than one frame is enough.
-        assert!(frames > 1, "frames go on while a compile hangs");
+        // frame until the watchdog fired.
+        assert!(frames > 0, "frames go on while a compile hangs");
+        assert!(idle > 0, "the map waits for the watchdog's wake");
         runtime.recover().unwrap();
         let selection = runtime.stats().selection;
         assert!(selection.contains("crash sentinel"), "{selection}");
