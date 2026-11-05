@@ -2097,7 +2097,7 @@ use std::ptr::NonNull;
 use ffi::{OrbError, OrbEventKind};
 
 /// Bumped on every incompatible change to the C ABI while it is 0.x.
-const ABI_VERSION: u32 = 8;
+const ABI_VERSION: u32 = 9;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
