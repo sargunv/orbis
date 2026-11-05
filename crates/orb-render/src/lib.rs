@@ -67,7 +67,7 @@ use std::collections::BTreeMap;
 use orb_hal::*;
 use orb_scene::Scene;
 use orb_shaders::{
-    CIRCLE_SHADER, CULL_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, SYMBOL_SHADER,
+    CIRCLE_SHADER, CULL_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, SYMBOL_SHADERS,
     Shader,
 };
 
@@ -208,6 +208,8 @@ struct Node {
     extrusion: Option<extrusion::NodeExtrusion>,
     /// A symbol node draws its halos in a pass of their own.
     separate_halo: bool,
+    /// A symbol node places its labels along lines.
+    along_line: bool,
     /// On terrain, the drape stack a draped node draws into, and the
     /// terrain layer that composites it.
     stack: Option<u8>,
@@ -251,8 +253,9 @@ pub struct Renderer {
     /// The vector families' pipelines, each made for the family's first
     /// node.
     paint: PaintPipelines,
-    /// Symbols, made for the first symbol node.
-    symbol_pipeline: Option<RenderPipelineId>,
+    /// Point and line labels' symbol pipelines, each made for the first
+    /// node that draws with it.
+    symbol_pipelines: [Option<RenderPipelineId>; 2],
     /// The symbol shader's pass (group 2): halo and fill together, halo
     /// only, fill only.
     symbol_passes: [BindGroupId; 3],
@@ -593,7 +596,7 @@ impl Renderer {
             draw_layout,
             node_layout,
             paint: PaintPipelines::default(),
-            symbol_pipeline: None,
+            symbol_pipelines: [None; 2],
             symbol_passes,
             symbol_pass_layout,
             pipelines_stale: false,
@@ -835,6 +838,7 @@ impl Renderer {
                 written: Vec::new(),
                 image,
                 separate_halo: false,
+                along_line: false,
                 stack: None,
                 terrain_layer: None,
                 shaded: false,
@@ -1316,8 +1320,12 @@ impl Renderer {
             words[14] = self.glyphs.table_base();
             words[15] = (GLYPH_PAGE as f32).to_bits();
             words[18] = (self.image_bindings.size as f32).to_bits();
-            if entry.separate_halo != p.separate_halo {
+            if entry.separate_halo != p.separate_halo || entry.along_line != p.along_line {
+                if entry.along_line != p.along_line {
+                    self.pipelines_stale = true;
+                }
                 entry.separate_halo = p.separate_halo;
+                entry.along_line = p.along_line;
                 for bundle in self.bundles.drain(..) {
                     gpu.destroy_render_bundle(bundle);
                 }
@@ -1432,7 +1440,7 @@ impl Renderer {
                 // Into the drape atlas, with its format's pipelines if
                 // the target's differs.
                 if !own_drape {
-                    self.make_node_pipeline(gpu, family);
+                    self.make_node_pipeline(gpu, i);
                     continue;
                 }
                 let drape = self
@@ -1451,20 +1459,27 @@ impl Renderer {
                 }
                 continue;
             }
-            self.make_node_pipeline(gpu, family);
+            self.make_node_pipeline(gpu, i);
         }
     }
 
-    fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, family: Family) {
+    fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, i: usize) {
         let layouts = [self.draw_layout, self.node_layout];
+        let family = self.nodes[i].family;
         match family {
             Family::Fill | Family::FillOutline | Family::Line | Family::Circle => {
                 self.paint.make(gpu, self.target, &layouts, family);
             }
             Family::SymbolIcon | Family::SymbolText => {
                 let layouts = [self.draw_layout, self.node_layout, self.symbol_pass_layout];
-                if self.symbol_pipeline.is_none() {
-                    self.symbol_pipeline = Some(symbol_pipeline(gpu, self.target, &layouts));
+                let line = usize::from(self.nodes[i].along_line);
+                if self.symbol_pipelines[line].is_none() {
+                    self.symbol_pipelines[line] = Some(symbol_pipeline(
+                        gpu,
+                        self.target,
+                        &layouts,
+                        &SYMBOL_SHADERS[line],
+                    ));
                 }
             }
             Family::Raster | Family::Hillshade | Family::ColorRelief => {
@@ -1515,7 +1530,9 @@ impl Renderer {
                 out.extend(self.shadows.pipelines());
             }
             Family::SymbolIcon | Family::SymbolText => {
-                out.extend(self.symbol_pipeline.map(PipelineId::from));
+                out.extend(
+                    self.symbol_pipelines[usize::from(node.along_line)].map(PipelineId::from),
+                );
             }
             family if family.is_image() => {
                 out.extend(self.images.pipeline(family).map(PipelineId::from));
@@ -2285,8 +2302,7 @@ impl Renderer {
             return true;
         }
         if node.family.is_symbol() {
-            let Some(pipeline) = self
-                .symbol_pipeline
+            let Some(pipeline) = self.symbol_pipelines[usize::from(node.along_line)]
                 .filter(|&p| gpu.pipeline_ready(p.into()))
             else {
                 return false;
@@ -2642,25 +2658,26 @@ fn scene_group(
     })
 }
 
-/// The symbol pipeline: over the scene, node and pass groups.
+/// A symbol pipeline: over the scene, node and pass groups.
 fn symbol_pipeline(
     gpu: &mut dyn Gpu,
     target: TargetFormat,
     layouts: &[BindGroupLayoutId],
+    shader: &Shader,
 ) -> RenderPipelineId {
-    let module = shader_module(gpu, &SYMBOL_SHADER);
+    let module = shader_module(gpu, shader);
     gpu.create_render_pipeline(&RenderPipelineDesc {
         cull_mode: None,
-        label: SYMBOL_SHADER.label,
+        label: shader.label,
         bind_group_layouts: layouts,
         vertex: ShaderStage {
             module,
-            entry_point: SYMBOL_SHADER.vertex,
+            entry_point: shader.vertex,
             constants: &[],
         },
         fragment: ShaderStage {
             module,
-            entry_point: SYMBOL_SHADER.fragment,
+            entry_point: shader.fragment,
             constants: &[],
         },
         targets: &[ColorTargetState {

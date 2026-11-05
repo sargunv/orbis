@@ -35,6 +35,8 @@ const POINT: &str = include_str!("wgsl/point.wgsl");
 const CIRCLE: &str = include_str!("wgsl/circle.wgsl");
 const MODEL: &str = include_str!("wgsl/model.wgsl");
 const SYMBOL: &str = include_str!("wgsl/symbol.wgsl");
+const SYMBOL_POINT: &str = include_str!("wgsl/symbol_point.wgsl");
+const SYMBOL_LINE: &str = include_str!("wgsl/symbol_line.wgsl");
 const HEATMAP: &str = include_str!("wgsl/heatmap.wgsl");
 const COMPOSITE: &str = include_str!("wgsl/composite.wgsl");
 pub(crate) const CULL: &str = include_str!("wgsl/cull.wgsl");
@@ -204,14 +206,26 @@ pub const MODEL_SHADER: Shader = Shader {
     fragment: "fs_model",
     compute: "",
 };
-/// Symbol quads: glyphs and icons, with their halos (decision 0009).
-pub const SYMBOL_SHADER: Shader = Shader {
-    label: "symbol",
-    parts: &[TYPES, DRAW, POINT, SYMBOL],
-    vertex: "vs_symbol",
-    fragment: "fs_symbol",
-    compute: "",
-};
+/// Symbol quads: glyphs and icons, with their halos (decision 0009), of
+/// point labels and of line labels (`symbol-placement: line` and
+/// `line-center`): two variants, so point labels' pipeline doesn't compile
+/// line placement (#69).
+pub const SYMBOL_SHADERS: [Shader; 2] = [
+    Shader {
+        label: "symbol",
+        parts: &[TYPES, DRAW, POINT, SYMBOL, SYMBOL_POINT],
+        vertex: "vs_symbol",
+        fragment: "fs_symbol",
+        compute: "",
+    },
+    Shader {
+        label: "symbol line",
+        parts: &[TYPES, DRAW, POINT, SYMBOL, SYMBOL_LINE],
+        vertex: "vs_symbol",
+        fragment: "fs_symbol",
+        compute: "",
+    },
+];
 pub const HEATMAP_SHADER: Shader = Shader {
     label: "heatmap density",
     parts: &[TYPES, DRAW, POINT, HEATMAP],
@@ -370,7 +384,8 @@ pub const COMPAT_SHADERS: &[Shader] = &[
     FILL_OUTLINE_SHADER,
     LINE_SHADER,
     CIRCLE_SHADER,
-    SYMBOL_SHADER,
+    SYMBOL_SHADERS[0],
+    SYMBOL_SHADERS[1],
     HEATMAP_SHADER,
     RASTER_SHADER,
     HILLSHADE_SHADER,

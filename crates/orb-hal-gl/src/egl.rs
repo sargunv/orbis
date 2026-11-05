@@ -242,11 +242,13 @@ impl Drop for EglContext {
     }
 }
 
-/// A thread that compiles and links programs on a context of its own that
-/// shares this one's objects (plan §8.4: no compile blocks the thread that
-/// draws). GLES has no async compile without `KHR_parallel_shader_compile`,
-/// which Android's drivers and ANGLE on SwiftShader lack; a shared context
-/// works on every EGL.
+/// Threads that compile and link programs, each on a context of its own
+/// that shares this one's objects (plan §8.4: no compile blocks the thread
+/// that draws). GLES has no async compile without
+/// `KHR_parallel_shader_compile`, which Android's drivers and ANGLE on
+/// SwiftShader lack; a shared context works on every EGL. Several
+/// contexts compile at once, as wgpu's workers do (#69): one style's
+/// largest program then no longer waits behind the others.
 pub struct CompileThread {
     shared: std::sync::Arc<crate::compile::Queue>,
     done: std::sync::mpsc::Receiver<crate::compile::Done>,
@@ -258,7 +260,7 @@ impl std::fmt::Debug for CompileThread {
     }
 }
 
-/// What the thread needs of EGL: handles are plain pointers, usable from
+/// What a thread needs of EGL: handles are plain pointers, usable from
 /// any thread.
 struct Handles {
     egl: Instance,
@@ -268,14 +270,36 @@ struct Handles {
 }
 
 // SAFETY: EGL displays, contexts and surfaces may be used from any thread;
-// a context is current on at most one, which the compile thread ensures by
+// a context is current on at most one, which each compile thread ensures by
 // owning its context alone.
 unsafe impl Send for Handles {}
 
 impl EglContext {
-    /// Starts a compile thread on a new context sharing this one's objects:
-    /// surfaceless where EGL allows it, else on a 1 × 1 pbuffer.
+    /// Starts compile threads (half the cores, at most four), each on a
+    /// new context sharing this one's objects: surfaceless where EGL
+    /// allows it, else on a 1 × 1 pbuffer. Fails only if not even one
+    /// starts.
     pub fn compile_thread(&self) -> Result<CompileThread, String> {
+        let shared = std::sync::Arc::new(crate::compile::Queue::default());
+        let (tx, done) = std::sync::mpsc::channel();
+        let count = std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 4));
+        for worker in 0..count {
+            match self.start_compile_worker(worker, &shared, &tx) {
+                Ok(()) => {}
+                Err(e) if worker == 0 => return Err(e),
+                // Fewer threads compile.
+                Err(_) => break,
+            }
+        }
+        Ok(CompileThread { shared, done })
+    }
+
+    fn start_compile_worker(
+        &self,
+        worker: usize,
+        queue: &std::sync::Arc<crate::compile::Queue>,
+        tx: &std::sync::mpsc::Sender<crate::compile::Done>,
+    ) -> Result<(), String> {
         let context = self
             .egl
             .create_context(
@@ -318,10 +342,9 @@ impl EglContext {
             context,
             surface,
         };
-        let shared = std::sync::Arc::new(crate::compile::Queue::default());
-        let (tx, done) = std::sync::mpsc::channel();
+        let queue = queue.clone();
+        let tx = tx.clone();
         let (started_tx, started) = std::sync::mpsc::channel();
-        let queue = shared.clone();
         std::thread::Builder::new()
             .name("orbis programs".into())
             .spawn(move || {
@@ -345,7 +368,7 @@ impl EglContext {
                                 .map_or(std::ptr::null(), |f| f as *const c_void)
                         })
                     };
-                    crate::compile::work(&gl, &queue, &tx);
+                    crate::compile::work(&gl, &queue, &tx, worker);
                     let _ = handles.egl.make_current(handles.display, None, None, None);
                 }
                 let _ = handles
@@ -358,8 +381,7 @@ impl EglContext {
             .map_err(|e| format!("compile thread: {e}"))?;
         started
             .recv()
-            .map_err(|_| "the compile thread exited".to_string())??;
-        Ok(CompileThread { shared, done })
+            .map_err(|_| "the compile thread exited".to_string())?
     }
 }
 

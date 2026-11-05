@@ -1,6 +1,6 @@
 //! Programs compile off the thread that draws (plan §8.4, decision 0038).
 //!
-//! Natively a compile thread links them on a context that shares the
+//! Natively compile threads link them, each on a context that shares the
 //! executor's objects (`egl::CompileThread`); the executor then sets each
 //! linked program's uniform bindings on its own context. In the browser,
 //! `KHR_parallel_shader_compile` lets the executor compile and link without
@@ -33,12 +33,12 @@ pub(crate) struct Done {
     pub(crate) took: Duration,
 }
 
-/// The compile thread's queue, front first, and what it works on.
+/// The compile threads' queue, front first, and what each works on.
 #[derive(Default)]
 pub(crate) struct Queue {
     jobs: Mutex<(VecDeque<Job>, bool)>,
     wake: Condvar,
-    busy: Mutex<Option<(String, Instant)>>,
+    busy: Mutex<HashMap<usize, (String, Instant)>>,
     /// Called from the thread when a program links.
     linked: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -76,8 +76,8 @@ impl Queue {
 
     pub(crate) fn hung(&self, limit: Duration) -> Option<String> {
         let busy = self.busy.lock().expect("compile watch poisoned");
-        busy.as_ref()
-            .filter(|(_, since)| since.elapsed() > limit)
+        busy.values()
+            .find(|(_, since)| since.elapsed() > limit)
             .map(|(label, since)| format!("{label} ({:.1} s)", since.elapsed().as_secs_f64()))
     }
 
@@ -95,16 +95,24 @@ impl Queue {
     }
 }
 
-/// The compile thread's loop, on its own context.
-pub(crate) fn work(gl: &glow::Context, queue: &Queue, done: &mpsc::Sender<Done>) {
+/// Compile thread `worker`'s loop, on its own context.
+pub(crate) fn work(gl: &glow::Context, queue: &Queue, done: &mpsc::Sender<Done>, worker: usize) {
     let mut stages = HashMap::new();
     while let Some(job) = queue.next() {
         let started = Instant::now();
-        *queue.busy.lock().expect("compile watch poisoned") = Some((job.label.clone(), started));
+        queue
+            .busy
+            .lock()
+            .expect("compile watch poisoned")
+            .insert(worker, (job.label.clone(), started));
         // SAFETY: objects of the context current on this thread, which
         // shares them with the executor's.
         let result = unsafe { link(gl, &mut stages, &job) };
-        *queue.busy.lock().expect("compile watch poisoned") = None;
+        queue
+            .busy
+            .lock()
+            .expect("compile watch poisoned")
+            .remove(&worker);
         let finished = Done {
             slot: job.slot,
             result,

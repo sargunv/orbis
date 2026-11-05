@@ -575,9 +575,9 @@ impl GlGpu {
         self.compiler = Compiler::Thread(thread);
     }
 
-    /// Calls `wake` from the compile thread whenever a program links, so a
+    /// Calls `wake` from a compile thread whenever a program links, so a
     /// host that stopped drawing draws the layers that waited for it.
-    /// `false` without a compile thread: programs then link as frames ask.
+    /// `false` without compile threads: programs then link as frames ask.
     #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
     pub fn set_compile_wake(&self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) -> bool {
         match &self.compiler {
@@ -597,7 +597,7 @@ impl GlGpu {
             if let Compiler::Thread(thread) = &self.compiler {
                 match thread.wait() {
                     Some(done) => self.finish_threaded(done),
-                    None => panic!("the compile thread exited"),
+                    None => panic!("the compile threads exited"),
                 }
                 continue;
             }
@@ -612,7 +612,7 @@ impl GlGpu {
         self.hung.as_deref()
     }
 
-    /// Takes programs that finished: from the compile thread, those
+    /// Takes programs that finished: from the compile threads, those
     /// `KHR_parallel_shader_compile` reports done, or with `block`, the
     /// next in line.
     fn take_linked(&mut self, block: bool) {
