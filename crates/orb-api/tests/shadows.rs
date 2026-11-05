@@ -110,9 +110,11 @@ fn models_receive_shadows() {
     let [lit] = red(&scene(false, 40.0, &layers), [-4.0]);
     let [shadowed] = red(&scene(true, 40.0, &layers), [-4.0]);
     // In full shadow the roof keeps the ambient light alone: 0.8 of
-    // white (its metal takes the rest) at 0.5, 170 in sRGB.
+    // white (its metal takes the rest) at 0.5, and the sky it mirrors
+    // (0.232 at its roughness of 0.55, 0.62 of it, at 0.5): 0.471, 183 in
+    // sRGB.
     assert!(
-        shadowed.abs_diff(170) <= 4 && lit > shadowed + 20,
+        shadowed.abs_diff(183) <= 4 && lit > shadowed + 20,
         "the roof in shadow ({shadowed}) keeps the ambient light, darker than lit ({lit})"
     );
 }

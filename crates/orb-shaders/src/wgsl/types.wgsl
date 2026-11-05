@@ -239,6 +239,22 @@ fn tile_origin(tile: Tile) -> vec2<f32> {
         + (tile.origin_rest - frame.camera_rest);
 }
 
+// The ground under a fragment, for detail anchored to it (lit water's
+// waves): where tile point `pos` (data units) lies in a square of
+// GROUND_CELL quanta the world tiles with, so it is exact at any distance
+// from the origin and the same at every camera, and its change across a
+// pixel. Take it where control flow is uniform.
+const GROUND_CELL: i32 = 64;
+struct GroundPoint {
+    at: vec2<f32>,
+    width: vec2<f32>,
+};
+fn ground_point(tile: Tile, pos: vec2<f32>) -> GroundPoint {
+    let whole = vec2<f32>(tile.origin & vec2<i32>(GROUND_CELL - 1));
+    let at = whole * frame.quantum + tile.origin_rest + vec2<f32>(pos.x, -pos.y) * tile.scale;
+    return GroundPoint(at, fwidth(at));
+}
+
 // The anchor of the tile's patches in space, camera-relative.
 fn tile_globe_origin(tile: Tile) -> vec3<f32> {
     let whole = vec3<i32>(tile.globe_origin[0], tile.globe_origin[1], tile.globe_origin[2]);

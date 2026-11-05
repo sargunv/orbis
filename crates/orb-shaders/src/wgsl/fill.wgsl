@@ -122,17 +122,19 @@ fn fill_clip_pos(in: FillOut) -> vec2<f32> {
 
 @fragment
 fn fs_fill(in: FillOut) -> MapOut {
+    let ground = ground_point(tile_at(in.tile), in.tile_pos);
     if !inside_clips(tile_at(in.tile), fill_clip_pos(in)) {
         discard;
     }
     if node.pattern.enabled == 1u {
-        return map_out(fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity), node.index, in.position);
+        return map_out_at(fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity), node.index, ground);
     }
-    return map_out(in.color, node.index, in.position);
+    return map_out_at(in.color, node.index, ground);
 }
 
 @fragment
 fn fs_fill_outline(in: FillOut) -> MapOut {
+    let ground = ground_point(tile_at(in.tile), in.tile_pos);
     if !inside_clips(tile_at(in.tile), in.tile_pos) {
         discard;
     }
@@ -141,5 +143,5 @@ fn fs_fill_outline(in: FillOut) -> MapOut {
     if node.pattern.enabled == 1u {
         color = fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity);
     }
-    return map_out(color * (1.0 - smoothstep(0.0, 1.0, dist)), node.index, in.position);
+    return map_out_at(color * (1.0 - smoothstep(0.0, 1.0, dist)), node.index, ground);
 }

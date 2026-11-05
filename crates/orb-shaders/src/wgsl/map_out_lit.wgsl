@@ -13,6 +13,8 @@ struct NodeMaterial {
     self_lit: f32,
     // An extrusion's windows: the share of them lit.
     windows: f32,
+    // A fill's or line's waves: the water's slope.
+    waves: f32,
 };
 @group(2) @binding(0) var<storage, read> node_materials: array<NodeMaterial>;
 
@@ -20,7 +22,9 @@ struct MapOut {
     @location(0) color: vec4<f32>,
 };
 
-fn map_out(color: vec4<f32>, node: u32, position: vec4<f32>) -> MapOut {
+// A flat layer's colour shaded with its node's material, facing `normal`,
+// its glint widened by a slope variance `spread`.
+fn map_lit(color: vec4<f32>, node: u32, normal: vec3<f32>, spread: f32) -> MapOut {
     let a = color.a;
     if a <= 0.0 {
         return MapOut(vec4<f32>(0.0));
@@ -29,13 +33,65 @@ fn map_out(color: vec4<f32>, node: u32, position: vec4<f32>) -> MapOut {
     var m: Material;
     m.albedo = srgb_to_linear(color.rgb / a);
     m.alpha = a;
-    m.roughness = clamp(n.roughness, 0.04, 1.0);
+    // GGX's α² takes the slopes' variance twice (as Beckmann's does).
+    let r = clamp(n.roughness, 0.04, 1.0);
+    m.roughness = min(sqrt(sqrt(r * r * r * r + 2.0 * spread)), 1.0);
     m.metallic = n.metalness;
     m.self_lit = n.self_lit;
     m.occlusion = 1.0;
     m.emitted = vec3<f32>(0.0);
-    m.normal = vec3<f32>(0.0, 0.0, 1.0);
+    m.normal = normal;
     return MapOut(vec4<f32>(linear_to_srgb(pbr_light(m, scene_lights())) * a, a));
+}
+
+fn map_out(color: vec4<f32>, node: u32) -> MapOut {
+    return map_lit(color, node, vec3<f32>(0.0, 0.0, 1.0), 0.0);
+}
+
+fn map_out_at(color: vec4<f32>, node: u32, ground: GroundPoint) -> MapOut {
+    let steepness = node_materials[node].waves;
+    if steepness <= 0.0 {
+        return map_out(color, node);
+    }
+    let w = waves(ground, steepness);
+    return map_lit(color, node, w.normal, w.spread);
+}
+
+// Water's surface at a ground point: its normal (east, north, up) and the
+// variance of the slopes too fine to show.
+struct Waves {
+    normal: vec3<f32>,
+    spread: f32,
+};
+
+// Wave vectors in whole cycles per ground cell, so the waves tile it:
+// wavelengths from under half to a fifteenth of it, every way.
+const WAVE_VECTORS = array<vec2<f32>, 6>(
+    vec2<f32>(2.0, 1.0), vec2<f32>(-1.0, 3.0), vec2<f32>(4.0, -3.0),
+    vec2<f32>(-5.0, -6.0), vec2<f32>(9.0, 4.0), vec2<f32>(-8.0, 13.0));
+
+// Sines whose slopes add to an RMS `steepness`, running with time alone at
+// deep water's speed (taking the cell as 128 m, which the quantum makes it
+// on Earth in any unit to within a factor of two). A wave shorter than a
+// few pixels fades out and its slope widens the glint instead, so far
+// water doesn't alias.
+fn waves(g: GroundPoint, steepness: f32) -> Waves {
+    let cell = f32(GROUND_CELL) * frame.quantum;
+    let px = max(max(g.width.x, g.width.y), 1e-12);
+    let seconds = frame.time * 0.001;
+    let amplitude = steepness * sqrt(2.0 / 6.0);
+    var slope = vec2<f32>(0.0);
+    var spread = 0.0;
+    for (var i = 0u; i < 6u; i++) {
+        let k = WAVE_VECTORS[i];
+        let cycles = length(k);
+        let shown = smoothstep(2.0, 6.0, cell / cycles / px);
+        let speed = sqrt(9.81 * 2.0 * PBR_PI * cycles / 128.0);
+        let phase = 2.0 * PBR_PI * dot(k, g.at) / cell - speed * seconds + f32(i) * 1.7;
+        slope += k / cycles * amplitude * shown * cos(phase);
+        spread += 0.5 * amplitude * amplitude * (1.0 - shown * shown);
+    }
+    return Waves(normalize(vec3<f32>(-slope, 1.0)), spread);
 }
 
 // A surface that isn't the flat map (an extrusion's): its colour as the

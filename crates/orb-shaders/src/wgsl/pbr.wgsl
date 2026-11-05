@@ -111,8 +111,8 @@ struct Material {
 };
 
 // A material's linear colour under `lights`: Lambert diffuse for its
-// non-metal part, GGX specular toward the eye, and the ambient light
-// reaching metals as a dim reflection rougher surfaces blur away. The
+// non-metal part, GGX specular toward the eye, and the sky (the ambient
+// light) mirrored by Fresnel's share, which rougher surfaces blur away. The
 // levels add: a matte face toward the light gets the ambient and the
 // directional light's levels of its colour, a face away the ambient's.
 // Then its self-lit share of the albedo, and the light it gives off.
@@ -124,8 +124,12 @@ fn pbr_light(m: Material, lights: PbrLights) -> vec3<f32> {
     let f0 = mix(vec3<f32>(0.04), m.albedo, m.metallic);
     let diffuse = m.albedo * (1.0 - m.metallic);
     let ambient = lights.ambient * m.occlusion;
+    // Schlick's Fresnel with roughness: rough surfaces mirror little of
+    // the sky even at grazing angles.
+    let nv = max(dot(n, lights.toward_eye), 0.0);
+    let sky = f0 + (max(vec3<f32>(1.0 - m.roughness), f0) - f0) * pow(1.0 - nv, 5.0);
     let lit = diffuse * (ambient + direct)
         + pbr_specular(n, lights.toward_eye, l, f0, m.roughness) * direct
-        + f0 * ambient * (1.0 - m.roughness * 0.7) * m.metallic;
+        + sky * ambient * (1.0 - m.roughness * 0.7);
     return mix(lit, m.albedo, m.self_lit) + m.emitted;
 }

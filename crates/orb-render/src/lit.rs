@@ -20,6 +20,8 @@ pub struct NodeMaterial {
     pub self_lit: f32,
     /// An extrusion's windows: the share of them lit.
     pub windows: f32,
+    /// A fill's or line's waves: the water's RMS slope.
+    pub waves: f32,
 }
 
 impl Default for NodeMaterial {
@@ -29,15 +31,20 @@ impl Default for NodeMaterial {
             metalness: 0.0,
             self_lit: 0.0,
             windows: 0.0,
+            waves: 0.0,
         }
     }
 }
+
+/// `map_out_lit.wgsl`'s `NodeMaterial`.
+const MATERIAL_WORDS: usize = 5;
+const MATTE: [f32; MATERIAL_WORDS] = [1.0, 0.0, 0.0, 0.0, 0.0];
 
 #[derive(Debug)]
 pub(crate) struct Lit {
     /// Lit pipelines' group 2: the nodes' materials, by node index.
     layout: BindGroupLayoutId,
-    materials: Vec<[f32; 4]>,
+    materials: Vec<[f32; MATERIAL_WORDS]>,
     buffer: Option<(BufferId, BindGroupId, usize)>,
     dirty: bool,
     /// The fill, outline, line and circle pipelines, then the image
@@ -67,20 +74,25 @@ impl Lit {
     /// Node `node`'s material; written with the next frame.
     pub(crate) fn set_material(&mut self, node: usize, m: NodeMaterial) {
         if self.materials.len() <= node {
-            self.materials.resize(node + 1, [1.0, 0.0, 0.0, 0.0]);
+            self.materials.resize(node + 1, MATTE);
         }
-        let words = [m.roughness, m.metalness, m.self_lit, m.windows];
+        let words = [m.roughness, m.metalness, m.self_lit, m.windows, m.waves];
         if self.materials[node] != words {
             self.materials[node] = words;
             self.dirty = true;
         }
     }
 
+    /// Whether node `node`'s material moves with time: waves.
+    pub(crate) fn animates(&self, node: usize) -> bool {
+        self.materials.get(node).is_some_and(|m| m[4] > 0.0)
+    }
+
     /// Writes the materials of `nodes` nodes; whether the group changed,
     /// so the bundles record again.
     pub(crate) fn upload(&mut self, gpu: &mut dyn Gpu, nodes: usize) -> bool {
         if self.materials.len() < nodes {
-            self.materials.resize(nodes, [1.0, 0.0, 0.0, 0.0]);
+            self.materials.resize(nodes, MATTE);
             self.dirty = true;
         }
         let mut regrouped = false;
@@ -95,7 +107,7 @@ impl Lit {
             let capacity = nodes.max(1).next_power_of_two();
             let buffer = gpu.create_buffer(&BufferDesc {
                 label: "node materials",
-                size: capacity as u64 * 16,
+                size: (capacity * MATERIAL_WORDS * 4) as u64,
                 usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             });
             let group = gpu.create_bind_group(&BindGroupDesc {

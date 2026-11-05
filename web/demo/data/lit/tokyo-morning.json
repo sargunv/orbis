@@ -23,10 +23,12 @@
  ],
  "layers": {
   "water": {
-   "roughness": 0.15
+   "roughness": 0.15,
+   "waves": 0.15
   },
   "waterway_river": {
-   "roughness": 0.15
+   "roughness": 0.15,
+   "waves": 0.15
   },
   "waterway_other": {
    "roughness": 0.15

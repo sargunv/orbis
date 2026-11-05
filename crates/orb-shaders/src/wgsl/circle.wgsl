@@ -102,5 +102,5 @@ fn fs_circle(in: CircleOut) -> MapOut {
     let stroke = select(smoothstep(-aa, 0.0, distance - in.radius_ratio), 0.0, in.stroke_width < 0.01);
     let color = coverage * mix(in.color, in.stroke_color, stroke);
     if all(color < vec4<f32>(0.5 / 255.0)) { discard; }
-    return map_out(color, node.index, in.position);
+    return map_out(color, node.index);
 }

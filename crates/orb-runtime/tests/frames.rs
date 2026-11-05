@@ -576,11 +576,12 @@ mod tests {
             pixels[at]
         };
         // The lit map's material model (decision 0048): #808080 is 0.216
-        // linear. Overhead the roof gets both levels, 1, of it, and a
-        // matte specular glint (0.002): 128 in sRGB.
-        assert!(roof("[0, 0]", 0.0).abs_diff(128) <= 1);
-        // At the horizon only the ambient level, 0.5: 0.108, 92 in sRGB.
-        assert!(roof("[90, 90]", 0.0).abs_diff(92) <= 1);
+        // linear. Overhead the roof gets both levels, 1, of it, a matte
+        // specular glint (0.002) and the sky it mirrors (0.04 of the
+        // ambient level, 0.3 of it at its roughness: 0.006): 130 in sRGB.
+        assert!(roof("[0, 0]", 0.0).abs_diff(130) <= 1);
+        // At the horizon only the ambient level, 0.5: 0.114, 95 in sRGB.
+        assert!(roof("[90, 90]", 0.0).abs_diff(95) <= 1);
         // Fully emissive: its own colour.
         assert!(roof("[90, 90]", 1.0).abs_diff(128) <= 1);
     }

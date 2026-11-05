@@ -272,8 +272,9 @@ impl Map {
     }
 
     /// Whether drawing a frame would show something new: data arrived, the
-    /// camera moves, a gesture or animation runs, or loads and fades are
-    /// under way. An idle map needs no frames.
+    /// camera moves, a gesture or animation runs, loads and fades are under
+    /// way, or it shows something that moves with time (lit water's
+    /// waves). An idle map needs no frames.
     pub fn needs_frame(&self) -> bool {
         self.dirty || self.busy || self.woken.load(Ordering::Acquire) || self.map.is_moving()
     }
@@ -959,7 +960,8 @@ impl Map {
         self.dirty = lost;
         // A map waiting only for pipelines draws again when one compiles.
         let waiting = report.compiling && self.runtime.compile_wakes();
-        self.busy = !report.idle && !waiting;
+        // Waves move with time: a map showing them draws on.
+        self.busy = (!report.idle && !waiting) || report.frame.animated;
         if report.idle {
             // A failed write costs the next run its warm start, nothing else.
             let _ = self.runtime.save_pipeline_cache();

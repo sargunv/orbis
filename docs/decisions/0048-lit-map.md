@@ -13,7 +13,8 @@ their v8 colours. Decision 0043 left room for a material buffer.
   still lights only extrusions, so v8 styles look as they did.
 - **Materials are scene-document properties, by layer.** The scene's
   `layers` member takes `roughness` and `metalness` (0 to 1) beside
-  `emissive-strength`, and `windows` for extrusions; a layer's v8 colours are its albedo. The default is
+  `emissive-strength`, `windows` for extrusions and `waves` for fills and
+  lines; a layer's v8 colours are its albedo. The default is
   matte paint: roughness 1, metalness 0.
 - **Forward, in the main pass.** A lit layer's fragment fills the
   `Material` of its colour and its node's material and shades it with
@@ -42,6 +43,21 @@ their v8 colours. Decision 0043 left room for a material buffer.
   building) emits a warm light, its edges a pixel wide so far walls blend
   to the share rather than alias. It depends on the wall alone, so every
   frame shows the same windows lit.
+- **Water's waves are a material property too.** A fill's or line's
+  `waves` is its water's RMS slope: six sines whose wave vectors are
+  whole cycles per ground cell (64 quanta, about 128 m on Earth whatever
+  the surface's unit), so they tile the world exactly at any distance
+  from the origin and stay put under every camera
+  (`ground_point`). They run at deep water's speed with the frame's time
+  alone. A wave shorter than a few pixels fades out and its slope widens
+  the glint (GGX's α² takes twice the variance), so far water glitters
+  rather than aliases. A map showing waves draws frames continuously:
+  the frame report's `animated` keeps `needs_frame` set, while `idle`
+  still means loaded, so snapshots settle.
+- **Every material mirrors the sky.** `pbr_light` adds the ambient light
+  mirrored by Schlick's Fresnel with roughness, for dielectrics as for
+  metals: smooth water takes the sky's colour toward grazing angles,
+  matte paint about 1% of the ambient.
 - 3D layers, heatmaps and layers composited once arrive shaded and
   composite as they do unlit; draped layers on terrain draw into the drape
   unlit, which the terrain's own lighting shades. Compat draws unlit and
@@ -76,4 +92,4 @@ machine.
 
 ## Next
 
-Procedural detail: water, then the day–night globe.
+The day–night globe.

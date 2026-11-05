@@ -182,6 +182,7 @@ fn line_vertex(v: Pulled) -> LineOut {
 
 @fragment
 fn fs_line(in: LineOut) -> MapOut {
+    let ground = ground_point(tile_at(in.tile), in.tile_pos);
     if !inside_clips(tile_at(in.tile), in.tile_pos) {
         discard;
     }
@@ -199,7 +200,7 @@ fn fs_line(in: LineOut) -> MapOut {
         let y = in.normal.y * 0.5 + 0.5;
         let ca = pattern_sample(a, vec2<f32>(x_a, y), 1.0);
         let cb = pattern_sample(b, vec2<f32>(x_b, y), 1.0);
-        return map_out(mix(ca, cb, node.pattern.fade) * alpha * in.opacity, node.index, in.position);
+        return map_out_at(mix(ca, cb, node.pattern.fade) * alpha * in.opacity, node.index, ground);
     }
     if node.dashed != 0u {
         let a = image_at(in.images.x);
@@ -211,9 +212,9 @@ fn fs_line(in: LineOut) -> MapOut {
         alpha *= smoothstep(0.5 - gamma, 0.5 + gamma, mix(ca, cb, node.dash_fade));
     }
     if node.gradient != 0u {
-        return map_out(gradient_sample(image_at(in.ramp), in.progress) * alpha * in.opacity, node.index, in.position);
+        return map_out_at(gradient_sample(image_at(in.ramp), in.progress) * alpha * in.opacity, node.index, ground);
     }
-    return map_out(in.color * alpha, node.index, in.position);
+    return map_out_at(in.color * alpha, node.index, ground);
 }
 
 // GL JS LineAtlas: center row and 14-texel span for round dashes, one row

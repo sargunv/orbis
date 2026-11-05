@@ -53,8 +53,9 @@ sprites once served.
   `cargo xtask demo-data models`; both are written for this repository.
 - `lit/tokyo-*.json`: scene documents over OpenFreeMap's Liberty (data as
   above) that light the whole map (decision 0048) over central Tokyo at
-  morning, noon, dusk and night: glossy water, and at night streets that
-  light themselves and buildings with lit windows. Written for this repository; `?style=lit-noon` and so on.
+  morning, noon, dusk and night: glossy water with waves, and at night
+  streets that light themselves and buildings with lit windows. Written
+  for this repository; `?style=lit-noon` and so on.
 - `scripts.json`: the Cairo, Delhi and Bangkok entries' style
   (`?style=cairo|delhi|bangkok`, or `scripts`), written for this repository. It draws OpenFreeMap's
   planet tiles with labels in Arabic, Devanagari, Thai and Latin from

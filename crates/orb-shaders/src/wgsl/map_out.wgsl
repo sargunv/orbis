@@ -1,10 +1,15 @@
 // A map layer's fragment as the map's colour (`map_out_lit.wgsl` lights
-// it for a scene's lights).
+// it for a scene's lights); `map_out_at` for a fragment that knows the
+// ground under it, for detail anchored there.
 struct MapOut {
     @location(0) color: vec4<f32>,
 };
 
-fn map_out(color: vec4<f32>, node: u32, position: vec4<f32>) -> MapOut {
+fn map_out(color: vec4<f32>, node: u32) -> MapOut {
+    return MapOut(color);
+}
+
+fn map_out_at(color: vec4<f32>, node: u32, ground: GroundPoint) -> MapOut {
     return MapOut(color);
 }
 

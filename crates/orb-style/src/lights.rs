@@ -35,6 +35,9 @@ pub struct LayerMaterial {
     pub metalness: f64,
     /// An extrusion's lit windows, the share of them that glow: 0 none.
     pub windows: f64,
+    /// A fill's or line's waves, as water: their RMS slope, 0 flat. They
+    /// move with time, so a map showing them draws frames continuously.
+    pub waves: f64,
 }
 
 impl Default for LayerMaterial {
@@ -45,6 +48,7 @@ impl Default for LayerMaterial {
             roughness: 1.0,
             metalness: 0.0,
             windows: 0.0,
+            waves: 0.0,
         }
     }
 }

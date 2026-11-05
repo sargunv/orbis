@@ -312,6 +312,7 @@ fn write_paint(
                 metalness: material.metalness as f32,
                 self_lit: material.emissive as f32,
                 windows: material.windows as f32,
+                waves: material.waves as f32,
             },
         );
         if node.family.is_symbol() {

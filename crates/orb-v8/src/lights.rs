@@ -13,8 +13,9 @@
 //!
 //! A layer's v8 colours are its albedo; `roughness` and `metalness` (0 to
 //! 1, matte paint by default), `emissive-strength` (how much of it shows
-//! unlit) and, for extrusions, `windows` (the share of their windows that
-//! glow) complete its material.
+//! unlit), for extrusions `windows` (the share of their windows that glow)
+//! and for fills and lines `waves` (water's slope, animated) complete its
+//! material.
 //!
 //! A `directional` light takes `direction`, `[azimuth, polar]` in degrees
 //! (clockwise from north, from the zenith); a `sun` takes a UTC `time`
@@ -154,7 +155,8 @@ pub(crate) fn parse_lights(cx: &mut Cx, json: &Json) -> Lights {
 }
 
 /// `layers`: per layer id, its material: `emissive-strength`,
-/// `roughness`, `metalness` and an extrusion's lit `windows`, each 0 to 1.
+/// `roughness`, `metalness`, an extrusion's lit `windows` and a fill's or
+/// line's `waves`, each 0 to 1.
 pub(crate) fn parse_layers(cx: &mut Cx, json: &Json) -> Vec<(String, LayerMaterial)> {
     let mut materials = Vec::new();
     for layer in cx.object(json, "layers").unwrap_or(&[]) {
@@ -166,6 +168,7 @@ pub(crate) fn parse_layers(cx: &mut Cx, json: &Json) -> Vec<(String, LayerMateri
                 "roughness" => &mut material.roughness,
                 "metalness" => &mut material.metalness,
                 "windows" => &mut material.windows,
+                "waves" => &mut material.waves,
                 key => {
                     cx.warn(&path, m.key_span, format!("unknown property \"{key}\""));
                     continue;

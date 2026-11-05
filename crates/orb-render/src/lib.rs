@@ -133,6 +133,9 @@ pub struct FrameStats {
     /// Something in the frame waited for a pipeline (nodes, terrain, the
     /// DEM prepare, the sky): the frame isn't complete.
     pub waited: bool,
+    /// A visible layer moves with time (lit water's waves): the next
+    /// frame differs however still the map is.
+    pub animated: bool,
 }
 
 /// A render node: its family, the source an image node draws the tiles
@@ -1981,6 +1984,12 @@ impl Renderer {
             paints_written: std::mem::take(&mut self.paints_written),
             pipelines_pending: compiling.pending,
             nodes_waiting: self.waiting,
+            animated: self.lit_on
+                && self
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .any(|(i, n)| n.cull.visible && self.lit.animates(i)),
             ..FrameStats::default()
         };
         if let Some((prepare, prepared)) = self.images.prepare_pass(gpu) {
