@@ -35,7 +35,8 @@ pub struct HitFeature {
     pub id: Option<String>,
     /// The feature's index in its source layer, for queries.
     pub feature: u32,
-    /// 0: polygons, 1: lines, 2: points.
+    /// 0: polygons, 1: lines, 2: points, [`LABEL`]: a label's feature,
+    /// with no geometry (labels pick from placement).
     pub kind: u32,
     pub extent: u32,
     /// Circles: the radius; lines: half the width.
@@ -46,6 +47,10 @@ pub struct HitFeature {
     pub base: f32,
     pub parts: Vec<Vec<Vec<[i32; 2]>>>,
 }
+
+/// [`HitFeature::kind`] of a symbol node's feature: its id, by feature
+/// index, for the labels placement shows of it.
+pub(crate) const LABEL: u32 = 3;
 
 /// Where a hit's feature lives, for queries to its owner worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -107,6 +112,8 @@ pub struct MeshHits {
     /// Per feature: its record's first word and world bounds, worked out
     /// on first use.
     bounds: OnceLock<Vec<Bounds>>,
+    /// Records by feature index, worked out on first use.
+    by_feature: OnceLock<HashMap<u32, u32>>,
 }
 
 impl MeshHits {
@@ -271,6 +278,7 @@ impl MeshHits {
         Self {
             words,
             bounds: OnceLock::new(),
+            by_feature: OnceLock::new(),
         }
     }
 
@@ -294,6 +302,7 @@ impl MeshHits {
         Ok(Self {
             words,
             bounds: OnceLock::new(),
+            by_feature: OnceLock::new(),
         })
     }
 
@@ -329,6 +338,20 @@ impl MeshHits {
     fn record(&self, at: u32) -> &[u32] {
         let at = at as usize;
         &self.words[at + 1..at + 1 + self.words[at] as usize]
+    }
+
+    /// The id of the feature at index `feature` of its source layer.
+    fn id_of(&self, feature: u32) -> Option<String> {
+        let by_feature = self.by_feature.get_or_init(|| {
+            self.records()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(at, record)| Some((FeatureRef::parse(record).ok()?.feature, at)))
+                .collect()
+        });
+        FeatureRef::parse(self.record(*by_feature.get(&feature)?))
+            .ok()?
+            .id()
     }
 
     /// The features, unpacked.
@@ -552,10 +575,12 @@ pub(crate) struct LabelHit {
     pub(crate) key: FeatureKey,
     /// Its anchor in world space, in the copy placement drew.
     pub(crate) anchor: DVec2,
-    /// Its text and icon boxes `[x1, y1, x2, y2]`, shown ones only.
+    /// Its text and icon boxes `[x1, y1, x2, y2]`, shown ones only, in
+    /// tile units at 512 pixels a tile side from its anchor.
     pub(crate) boxes: Vec<[f64; 4]>,
-    /// A line label's collision circle radius, for one with no box.
-    pub(crate) circle: Option<f64>,
+    /// A line label's collision circles along its line, `[dx, dy, radius]`
+    /// in pixels from its anchor, as placement placed them.
+    pub(crate) circles: Vec<[f64; 3]>,
 }
 
 /// What a node's features take from its layer's paint to pick.
@@ -904,7 +929,8 @@ impl Scene<'_> {
         let (mut pad, mut top) = (0f32, 0f64);
         for tile in self.tiles.iter().flatten() {
             for (node, mesh) in &tile.meshes {
-                let Some(layer) = layer_at(*node) else {
+                let Some(layer) = layer_at(*node).filter(|l| !matches!(l.paint, HitPaint::Other))
+                else {
                     continue;
                 };
                 let at = layers.entry(*node).or_insert_with(|| q.layer(layer));
@@ -1028,33 +1054,45 @@ impl Scene<'_> {
                 // perspective ratio.
                 let scale =
                     512.0 / orb_symbol::EXTENT * (0.5 + 0.5 * q.local_scale(label.anchor)?);
-                let mut bounds = [
-                    f64::INFINITY,
-                    f64::INFINITY,
-                    f64::NEG_INFINITY,
-                    f64::NEG_INFINITY,
-                ];
-                for b in &label.boxes {
-                    bounds = [
-                        bounds[0].min(anchor.x + b[0] * scale),
-                        bounds[1].min(anchor.y + b[1] * scale),
-                        bounds[2].max(anchor.x + b[2] * scale),
-                        bounds[3].max(anchor.y + b[3] * scale),
-                    ];
-                }
-                if !bounds.iter().all(|b| b.is_finite()) {
-                    // A line label collides by circles along its line; its
-                    // anchor's stands for them.
-                    let r = label.circle?;
-                    bounds = [anchor.x - r, anchor.y - r, anchor.x + r, anchor.y + r];
-                }
+                let boxes = label
+                    .boxes
+                    .iter()
+                    .map(|b| {
+                        [
+                            anchor.x + b[0] * scale,
+                            anchor.y + b[1] * scale,
+                            anchor.x + b[2] * scale,
+                            anchor.y + b[3] * scale,
+                        ]
+                    })
+                    .collect();
+                let circles = label
+                    .circles
+                    .iter()
+                    .map(|&[dx, dy, r]| [anchor.x + dx, anchor.y + dy, r])
+                    .collect();
                 Some((
-                    ScreenHit::label(bounds),
-                    layer.hit(None, self.generation),
+                    ScreenHit::label(boxes, circles),
+                    layer.hit(self.label_id(label), self.generation),
                     label.key,
                 ))
             }
         }
+    }
+
+    /// A label's feature id, from its tile's records of the symbol layer's
+    /// features (on its icon node or its text node).
+    fn label_id(&self, label: &LabelHit) -> Option<String> {
+        let key = label.key;
+        let at = self
+            .drawn
+            .iter()
+            .position(|d| d.source == key.source && d.tile == key.tile)?;
+        self.tiles[at]?
+            .meshes
+            .iter()
+            .filter(|(node, _)| *node / 2 == label.node / 2)
+            .find_map(|(_, mesh)| mesh.id_of(key.feature))
     }
 
     /// The topmost feature under `point`, in pixels of `view`.
@@ -1147,6 +1185,8 @@ struct ScreenHit {
     kind: u32,
     radius: f32,
     parts: Vec<Vec<Vec<Vec2>>>,
+    /// A line label's collision circles: centre and radius.
+    circles: Vec<(Vec2, f32)>,
     clips: Vec<Vec<Vec2>>,
     min: Vec2,
     max: Vec2,
@@ -1228,29 +1268,47 @@ impl ScreenHit {
             kind: feature.kind,
             radius,
             parts,
+            circles: Vec::new(),
             min,
             max,
             clips,
         })
     }
 
-    /// A label's or icon's box `[x1, y1, x2, y2]` in pixels.
-    fn label(bounds: [f64; 4]) -> Self {
-        let [x1, y1, x2, y2] = bounds.map(|v| v as f32);
-        let ring = vec![
-            Vec2::new(x1, y1),
-            Vec2::new(x2, y1),
-            Vec2::new(x2, y2),
-            Vec2::new(x1, y2),
-        ];
+    /// A label's text and icon boxes `[x1, y1, x2, y2]` and collision
+    /// circles `[x, y, radius]`, in pixels.
+    fn label(boxes: Vec<[f64; 4]>, circles: Vec<[f64; 3]>) -> Self {
+        let mut min = Vec2::splat(f32::INFINITY);
+        let mut max = Vec2::splat(f32::NEG_INFINITY);
+        let mut parts = Vec::new();
+        for b in boxes {
+            let [x1, y1, x2, y2] = b.map(|v| v as f32);
+            parts.push(vec![vec![
+                Vec2::new(x1, y1),
+                Vec2::new(x2, y1),
+                Vec2::new(x2, y2),
+                Vec2::new(x1, y2),
+            ]]);
+            min = min.min(Vec2::new(x1, y1));
+            max = max.max(Vec2::new(x2, y2));
+        }
+        let circles: Vec<(Vec2, f32)> = circles
+            .into_iter()
+            .map(|[x, y, r]| (Vec2::new(x as f32, y as f32), r as f32))
+            .collect();
+        for &(c, r) in &circles {
+            min = min.min(c - r);
+            max = max.max(c + r);
+        }
         Self {
             clipped: false,
-            kind: 3,
+            kind: LABEL,
             radius: 0.0,
-            parts: vec![vec![ring]],
+            parts,
+            circles,
             clips: Vec::new(),
-            min: Vec2::new(x1, y1),
-            max: Vec2::new(x2, y2),
+            min,
+            max,
         }
     }
 
@@ -1263,6 +1321,13 @@ impl ScreenHit {
         {
             return false;
         }
+        if self
+            .circles
+            .iter()
+            .any(|&(c, r)| c.distance_squared(p) <= r * r)
+        {
+            return true;
+        }
         self.parts.iter().any(|part| match self.kind {
             2 => part
                 .iter()
@@ -1272,7 +1337,7 @@ impl ScreenHit {
                 ring.windows(2)
                     .any(|pair| distance(p, pair[0], pair[1]) <= self.radius)
             }),
-            3 => part.first().is_some_and(|outer| inside(p, outer)),
+            LABEL => part.first().is_some_and(|outer| inside(p, outer)),
             _ => {
                 part.first().is_some_and(|outer| inside(p, outer))
                     && !part.iter().skip(1).any(|hole| inside(p, hole))
@@ -1300,6 +1365,13 @@ impl ScreenHit {
                 segment_box_distance(a, b, min, max) <= radius
             }) || (n == 1 && point_box_distance(ring[0], min, max) <= radius)
         };
+        if self
+            .circles
+            .iter()
+            .any(|&(c, r)| point_box_distance(c, min, max) <= r)
+        {
+            return true;
+        }
         if self.clipped
             && !self.clips.is_empty()
             && !self.clips.iter().any(|clip| {

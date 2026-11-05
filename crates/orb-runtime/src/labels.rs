@@ -1379,22 +1379,49 @@ impl Labels {
                 };
                 let shift = glam::DVec2::new(f64::from(id.wrap) * period, 0.0);
                 for instance in &meshes.tables.instances {
-                    let text = instance.text.iter().any(|&p| shown(&states.text, p));
-                    let icon = instance.icon.iter().any(|&p| shown(&states.icon, p));
-                    if !(text || icon) {
+                    let text = instance.text.iter().find(|&&p| shown(&states.text, p));
+                    let icon = instance.icon.iter().find(|&&p| shown(&states.icon, p));
+                    if text.is_none() && icon.is_none() {
                         continue;
                     }
-                    let boxes: Vec<[f64; 4]> = [(text, 0), (icon, 2)]
-                        .into_iter()
-                        .map(|(shown, i)| (shown, instance.boxes[i].map(f64::from)))
-                        .filter(|(shown, b)| *shown && !(b[0] == b[2] && b[1] == b[3]))
-                        .map(|(_, b)| b)
-                        .collect();
-                    let circle = (instance.flags
-                        & orb_symbol::instance_flags::RUNTIME_COLLISION_CIRCLES
-                        != 0)
-                        .then(|| f64::from(instance.collision_circle_diameter) / 2.0);
-                    if boxes.is_empty() && circle.is_none() {
+                    // A variable anchor's shift, in the boxes' units (GL JS
+                    // `calculateVariableLayoutShift`), for the text and an
+                    // icon shifted with it.
+                    let anchor_shift = |words: &[u32], placed: u32| {
+                        let at = placed as usize * state::WORDS;
+                        (words[at] & state::SHIFTED != 0).then(|| {
+                            let scale = f64::from(instance.text_box_scale);
+                            [1, 2].map(|i| f64::from(f32::from_bits(words[at + i])) * scale)
+                        })
+                    };
+                    let boxes: Vec<[f64; 4]> = [
+                        (text.map(|&p| anchor_shift(&states.text, p)), 0),
+                        (icon.map(|&p| anchor_shift(&states.icon, p)), 2),
+                    ]
+                    .into_iter()
+                    .filter_map(|(shown, i)| {
+                        let [dx, dy] = shown?.unwrap_or([0.0; 2]);
+                        let b = instance.boxes[i].map(f64::from);
+                        (!(b[0] == b[2] && b[1] == b[3])).then_some([
+                            b[0] + dx,
+                            b[1] + dy,
+                            b[2] + dx,
+                            b[3] + dy,
+                        ])
+                    })
+                    .collect();
+                    let circles = if text.is_some() {
+                        orb_symbol::label_circles(
+                            frame,
+                            &layer.params,
+                            tile,
+                            &meshes.tables,
+                            instance,
+                        )
+                    } else {
+                        Vec::new()
+                    };
+                    if boxes.is_empty() && circles.is_empty() {
                         continue;
                     }
                     let [ax, ay] = instance.anchor.map(f64::from);
@@ -1407,7 +1434,7 @@ impl Labels {
                         },
                         anchor: to_world.transform_point2(glam::DVec2::new(ax, ay)) + shift,
                         boxes,
-                        circle,
+                        circles,
                     });
                 }
             }

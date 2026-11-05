@@ -54,7 +54,10 @@ fn markers_and_the_location_draw_over_any_style() {
     // The pin's head is above the point: its tip is at the centre.
     let pin = DVec2::new(128.0, 112.0);
     let hit = map.hit_test(pin).expect("the pin");
-    assert_eq!(hit.layer, "orbis-markers");
+    assert_eq!(
+        (hit.layer.as_str(), hit.id),
+        ("orbis-markers", Some(id.to_string()))
+    );
     // Rendered queries name the marker by its id.
     let query = map.query_rendered(pin, pin);
     let started = Instant::now();

@@ -110,6 +110,20 @@ impl CollisionIndex {
         }
     }
 
+    /// Where a tile-unit anchor projects, in padded viewport pixels, on
+    /// the ground if there is one.
+    pub(crate) fn anchor_px(
+        &self,
+        tile: &TileView,
+        anchor: [i16; 2],
+        ground: Option<&dyn super::Ground>,
+    ) -> Point {
+        let (x, y) = (f64::from(anchor[0]), f64::from(anchor[1]));
+        let elevation = ground.map(|g| g.elevation(tile.id, x, y));
+        let p = self.project(tile, x, y, elevation);
+        Point::new(p.x, p.y)
+    }
+
     /// Whether a tile-unit anchor lies in the viewport, without its
     /// padding: right and bottom edges excluded, so that tiles of a grid
     /// share each anchor out.

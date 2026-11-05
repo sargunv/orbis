@@ -111,3 +111,38 @@ fn hits_land_where_features_draw_on_terrain() {
     assert_eq!((hit.layer.as_str(), hit.id.as_deref()), ("c", Some("4")));
     assert!(map.hit_test(drawn + DVec2::new(0.0, 30.0)).is_none());
 }
+
+#[test]
+fn labels_pick_where_their_variable_anchor_puts_them() {
+    let glyphs = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../web/demo/data/glyphs")
+        .canonicalize()
+        .unwrap();
+    let style = format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 3,
+        "glyphs": "file://{}/{{fontstack}}/{{range}}.pbf",
+        "sources": {{"p": {{"type": "geojson", "data": {{"type": "Feature", "id": 5, "properties": {{}},
+            "geometry": {{"type": "Point", "coordinates": [0, 0]}}}}}}}},
+        "layers": [
+          {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+          {{"id": "t", "type": "symbol", "source": "p",
+           "layout": {{"text-field": "WWWWWWWWWW", "text-font": ["Noto Sans Regular"], "text-size": 20,
+             "text-variable-anchor": ["left"]}}}}]}}"##,
+        glyphs.display()
+    );
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, 400, 300, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    settle(&mut map, &mut target);
+    // Anchored on its left, the text runs east of the point (200, 150):
+    // well past half its width.
+    let hit = map
+        .hit_test(DVec2::new(330.0, 150.0))
+        .expect("the shifted label");
+    assert_eq!((hit.layer.as_str(), hit.id.as_deref()), ("t", Some("5")));
+    assert!(
+        map.hit_test(DVec2::new(70.0, 150.0)).is_none(),
+        "where it isn't"
+    );
+}

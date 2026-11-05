@@ -756,6 +756,22 @@ pub(crate) fn build(
                         }
                     })
                     .collect()
+            } else if matches!(node.family, Family::SymbolIcon | Family::SymbolText) {
+                // Labels pick from placement; their features' ids come from
+                // here, by feature index.
+                features
+                    .iter()
+                    .map(|&f| crate::HitFeature {
+                        id: promote
+                            .unwrap_or(layer.ids())
+                            .get(f as usize)
+                            .map(id_string),
+                        feature: origin.map_or(f, |origin| origin[f as usize]),
+                        kind: crate::query::LABEL,
+                        extent: layer.extent(),
+                        ..crate::HitFeature::default()
+                    })
+                    .collect()
             } else {
                 Vec::new()
             };

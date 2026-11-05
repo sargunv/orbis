@@ -364,6 +364,51 @@ fn render_shift(o: &VariableOffset) -> Point {
     )
 }
 
+/// The collision circles of a line label `frame` shows, as placement
+/// places them for its camera, each `[dx, dy, radius]` in viewport pixels
+/// from the label's projected anchor: GL JS's queries test a line label
+/// by these. Empty for labels without collision circles.
+pub fn label_circles(
+    frame: &Frame,
+    params: &LayerParams,
+    tile: &PlacedTile,
+    tables: &PlacementTables,
+    instance: &SymbolInstance,
+) -> Vec<[f64; 3]> {
+    let center = instance.text[justification::CENTER];
+    if instance.flags & instance_flags::RUNTIME_COLLISION_CIRCLES == 0 || center == NONE {
+        return Vec::new();
+    }
+    let symbol = &tables.text_placed[center as usize];
+    let mut index = CollisionIndex::new(frame.camera);
+    let ground = frame.ground.as_ref().map(|g| &*g.0);
+    let anchor = index.anchor_px(&tile.view, instance.anchor, ground);
+    let placed = index.place_circles(
+        Overlap::Always,
+        symbol,
+        &tables.lines,
+        &tables.text_glyph_offsets,
+        feature_size(tables.text_size, tile.text_size, symbol),
+        &tile.view,
+        params.pitch_with_map,
+        params.rotate_with_map,
+        None,
+        f64::from(instance.collision_circle_diameter),
+        params.text_padding,
+        translation(&frame.camera, &tile.view, params.text_translate),
+        (
+            ground,
+            f64::from(instance.height_offset),
+            params.height_anchor_ground,
+        ),
+    );
+    placed
+        .circles
+        .into_iter()
+        .map(|[x, y, r]| [x - anchor.x, y - anchor.y, r])
+        .collect()
+}
+
 /// GL JS `getAnchorJustification` as a [`justification`] slot.
 fn anchor_slot(anchor: Anchor) -> usize {
     match anchor {
