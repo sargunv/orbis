@@ -5,16 +5,18 @@
 #
 # ANDROID_SERIAL wins when it is set. Otherwise devices-cli gives this worktree
 # its own emulator at ORB_ANDROID_EMULATOR_API, booted on demand, which keeps
-# running until `devices-cli release`. Every functional Android check runs
-# there, so no script needs a real phone. The image is the Google APIs variant
-# of the AOSP release: the bench and measure scripts drive Chrome, which the
-# plain AOSP image lacks, and the reference app runs there too.
+# running until `devices-cli release`. Functional Android checks run there,
+# though its Vulkan (gfxstream) currently loses the device while the reference
+# app's map loads (#76), so checks that draw need a phone until that is fixed.
+# The image is the Google APIs variant of the AOSP release: the bench and
+# measure scripts drive Chrome, which the plain AOSP image lacks.
 #
 # --physical is for measuring a real phone's performance, which is rarely
-# needed: it fails rather than fall back to the emulator, so the caller first
-# assigns a connected phone to this worktree with `devices-cli assign <serial>`
-# and runs `devices-cli release` right after the measurement, which serializes
-# the phones across agents.
+# needed: it gives the connected phone assigned to this worktree, at whatever
+# API level it runs, and fails rather than fall back to the emulator. The
+# caller first assigns a phone with `devices-cli assign <serial>` and runs
+# `devices-cli release` right after the measurement, which serializes the
+# phones across agents.
 set -euo pipefail
 
 usage="usage: scripts/android-serial [--physical]"
@@ -37,6 +39,26 @@ api=${ORB_ANDROID_EMULATOR_API:?ORB_ANDROID_EMULATOR_API must name the Android A
 
 if [[ -n "${ANDROID_SERIAL:-}" ]]; then
   serial=$ANDROID_SERIAL
+elif [[ -n "$physical" ]]; then
+  # The phones assigned to this worktree; the first connected one, asked for at
+  # its own API level, which devices-cli then hands out before any emulator.
+  owner=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+  serial=
+  for pinned in $(devices-cli ls --json | node -e '
+    const { pins = [] } = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    for (const p of pins) if (p.kind === "android" && p.owner === process.argv[1]) console.log(p.id);
+  ' "$owner"); do
+    if [[ $(adb -s "$pinned" get-state 2>/dev/null) == device ]]; then
+      level=$(adb -s "$pinned" shell getprop ro.build.version.sdk | tr -d '\r')
+      serial=$(devices-cli get android --api "$level" --wait 0)
+      break
+    fi
+  done
+  if [[ -z "$serial" ]]; then
+    echo "No phone assigned to this worktree is connected." >&2
+    echo "Connect one, then: devices-cli assign <serial>; measure; devices-cli release." >&2
+    exit 1
+  fi
 else
   serial=$(devices-cli get android --api "$api" --variant google_apis)
 fi
