@@ -90,7 +90,6 @@ impl TileSet {
     pub const DEFAULT_MINZOOM: f64 = 0.0;
     pub const DEFAULT_MAXZOOM: f64 = 22.0;
     pub const DEFAULT_SCHEME: Scheme = Scheme::Xyz;
-    pub const DEFAULT_BOUNDS: [f64; 4] = [-180.0, -85.051129, 180.0, 85.051129];
 }
 /// A `vector` source.
 #[derive(Clone, Debug, PartialEq)]

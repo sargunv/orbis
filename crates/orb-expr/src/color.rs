@@ -27,10 +27,6 @@ impl Color {
         premultiplied: [0.0, 0.0, 0.0, 1.0],
         straight: [0.0, 0.0, 0.0, 1.0],
     };
-    pub const WHITE: Self = Self {
-        premultiplied: [1.0; 4],
-        straight: [1.0; 4],
-    };
 
     /// A colour from straight (not premultiplied) components in `0..=1`.
     pub fn new(r: f64, g: f64, b: f64, a: f64) -> Self {
