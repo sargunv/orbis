@@ -1595,9 +1595,15 @@ fn a_model_layer_draws_each_model_once_per_point_into_one_target() {
     let (args, _) = h.renderer.draw_args();
     let bytes = pollster::block_on(h.gpu.read_buffer(args));
     let words: &[u32] = bytemuck::cast_slice(&bytes);
+    // The square is double-sided: of the four draw classes' draws, every
+    // 8 words, only the second draws.
     for node in 0..2 {
         let at = node * orb_render::ARGS_WORDS;
-        assert_eq!(words[at..at + 2], [6, 1], "node {node}'s solid draw");
-        assert_eq!(words[at + 8..at + 10], [0, 0], "node {node} blends nothing");
+        let draws: Vec<_> = (0..4).map(|c| &words[at + 8 * c..][..2]).collect();
+        assert_eq!(
+            draws,
+            [[0, 0], [6, 1], [0, 0], [0, 0]],
+            "node {node}'s draws"
+        );
     }
 }

@@ -217,12 +217,13 @@ struct NodeCull {
     elevation: f32,
     // Indexed nodes: their slots in the compacted index buffer, and the
     // bits of a compacted index that address the run's vertex. Instanced
-    // nodes: their model's first index and its solid indices' count.
+    // nodes: their model's first index and its first draw class's indices'
+    // count (orb_3d's `DrawClass`).
     index_base: u32,
     index_count: u32,
     run_shift: u32,
-    // Instanced nodes: the model's blended indices, after its solid ones.
-    blend_count: u32,
+    // Instanced nodes: the other draw classes' counts, in order after it.
+    class_counts: array<u32, 3>,
 };
 
 // A compacted index that draws nothing; no run reaches it.

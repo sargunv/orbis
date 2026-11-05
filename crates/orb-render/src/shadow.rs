@@ -15,8 +15,8 @@ use glam::{DMat4, DVec3};
 use orb_hal::*;
 use orb_scene::{FrameBlock, FrameShadow, SceneBuffers};
 use orb_shaders::{
-    EXTRUSION_CASTER_CUT_SHADER, EXTRUSION_CASTER_SHADER, MODEL_CASTER_SHADER,
-    SHADOW_GROUND_SHADER, Shader,
+    EXTRUSION_CASTER_CUT_SHADER, EXTRUSION_CASTER_SHADER, MODEL_CASTER_MASKED_SHADER,
+    MODEL_CASTER_SHADER, SHADOW_GROUND_SHADER, Shader,
 };
 
 use crate::{TargetFormat, draw_pipeline_blending, shader_module};
@@ -42,8 +42,9 @@ pub(crate) struct Shadows {
     /// Each cascade's caster group: which cascade it draws.
     passes: [BindGroupId; CASCADES],
     pass_buffer: BufferId,
-    /// Made when extrusions, then models, first cast.
-    casters: [Option<RenderPipelineId>; 3],
+    /// Made when extrusions (whole, cut), then models (opaque, masked)
+    /// first cast.
+    casters: [Option<RenderPipelineId>; 4],
     /// Made when shadows are first cast.
     ground: Option<RenderPipelineId>,
     /// The caster passes' bundles, recorded with the main pass's.
@@ -119,7 +120,7 @@ impl Shadows {
             pass_layout,
             passes,
             pass_buffer,
-            casters: [None; 3],
+            casters: [None; 4],
             ground: None,
             bundles: Vec::new(),
         }
@@ -159,9 +160,13 @@ impl Shadows {
                 &MODEL_CASTER_SHADER,
                 vec![scene, node, model, self.pass_layout],
             ),
+            (
+                &MODEL_CASTER_MASKED_SHADER,
+                vec![scene, node, model, self.pass_layout],
+            ),
         ];
         let [extrusions, models] = casters;
-        let casts = [extrusions, extrusions, models];
+        let casts = [extrusions, extrusions, models, models];
         for ((made, casts), (shader, layouts)) in self.casters.iter_mut().zip(casts).zip(shaders) {
             if casts && made.is_none() {
                 *made = Some(caster_pipeline(gpu, shader, &layouts));
@@ -215,11 +220,14 @@ impl Shadows {
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, casters: [bool; 2]) -> bool {
         let [extrusions, models] = casters;
         self.map.is_some()
-            && (self.casters.iter().zip([extrusions, extrusions, models]))
-                .filter(|&(_, casts)| casts)
-                .map(|(&p, _)| p)
-                .chain([self.ground])
-                .all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
+            && (self
+                .casters
+                .iter()
+                .zip([extrusions, extrusions, models, models]))
+            .filter(|&(_, casts)| casts)
+            .map(|(&p, _)| p)
+            .chain([self.ground])
+            .all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
     }
 
     /// GPU bytes of the map.
@@ -272,7 +280,8 @@ impl Shadows {
 
     /// The caster passes, one per cascade, recording their bundles if
     /// they aren't: the `extrusions`' draws (node index and group), then
-    /// the `models`' (their groups, index buffers and draws, as
+    /// the `models`' opaque and masked materials' (their groups, index
+    /// buffers and draws, as
     /// [`Models::caster_commands`](crate::model::Models::caster_commands)
     /// records them).
     pub(crate) fn passes(
@@ -280,7 +289,7 @@ impl Shadows {
         gpu: &mut dyn Gpu,
         scene: BindGroupId,
         extrusions: &[(u32, BindGroupId)],
-        models: &[RenderCommand],
+        models: &[Vec<RenderCommand>; 2],
         buffers: &SceneBuffers,
     ) -> Vec<Pass> {
         let Some((_, layers)) = self.map else {
@@ -321,7 +330,10 @@ impl Shadows {
                         ]);
                     }
                 }
-                if let Some(caster) = self.casters[2].filter(|_| !models.is_empty()) {
+                for (caster, models) in self.casters[2..].iter().zip(models) {
+                    let Some(caster) = caster.filter(|_| !models.is_empty()) else {
+                        continue;
+                    };
                     commands.extend([
                         RenderCommand::SetPipeline(caster),
                         RenderCommand::SetBindGroup {

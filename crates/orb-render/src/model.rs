@@ -10,10 +10,13 @@
 use crate::release::Release;
 use std::collections::HashMap;
 
-use orb_3d::gpu::GpuModel;
+use orb_3d::gpu::{DrawClass, GpuModel};
 use orb_hal::*;
 use orb_scene::SceneBuffers;
-use orb_shaders::MODEL_SHADER;
+use orb_shaders::{MODEL_MASKED_SHADER, MODEL_SHADER};
+
+/// Bytes between a model node's draws, one per [`DrawClass`].
+const CLASS_ARGS: u64 = 32;
 
 /// A model's GPU residency.
 #[derive(Debug)]
@@ -25,8 +28,8 @@ struct Resident {
     /// `model.wgsl`'s `ModelDraw`: where its materials start.
     draw: BufferId,
     group: BindGroupId,
-    /// Its first index, then its solid and blended indices' counts.
-    draws: [u32; 3],
+    /// Its first index, then its indices' counts per [`DrawClass`].
+    draws: (u32, [u32; 4]),
     bytes: u64,
 }
 
@@ -37,8 +40,8 @@ pub(crate) struct Models {
     layout: BindGroupLayoutId,
     /// Scene, node and model groups.
     layouts: [BindGroupLayoutId; 3],
-    /// Solid then blended, at one sample and at four.
-    pipelines: [[Option<RenderPipelineId>; 2]; 2],
+    /// Per [`DrawClass`], at one sample and at four.
+    pipelines: [[Option<RenderPipelineId>; 4]; 2],
     sampler: SamplerId,
     /// Bound for models without textures.
     blank: TextureId,
@@ -103,15 +106,14 @@ impl Models {
             resident: HashMap::new(),
             layout,
             layouts: [scene, node, layout],
-            pipelines: [[None; 2]; 2],
+            pipelines: [[None; 4]; 2],
             sampler,
             blank,
         }
     }
 
-    /// Uploads model `index`, replacing what was there. Returns its first
-    /// index and its solid and blended indices' counts.
-    pub(crate) fn set(&mut self, gpu: &mut dyn Gpu, index: u32, model: &GpuModel) -> [u32; 3] {
+    /// Uploads model `index`, replacing what was there.
+    pub(crate) fn set(&mut self, gpu: &mut dyn Gpu, index: u32, model: &GpuModel) {
         self.remove(gpu, index);
         let mut words = model.vertices.clone();
         let material_base = words.len() as u32;
@@ -209,13 +211,10 @@ impl Models {
                 },
             ],
         });
-        // Opaque and double-sided indices are contiguous, then blended.
-        let [opaque, double_sided, blend] = &model.draws;
-        let draws = [
-            opaque.start,
-            double_sided.end - opaque.start,
-            blend.end - blend.start,
-        ];
+        let draws = (
+            model.draws[0].start,
+            model.draws.clone().map(|r| r.end - r.start),
+        );
         self.resident.insert(
             index,
             Resident {
@@ -228,7 +227,6 @@ impl Models {
                 bytes,
             },
         );
-        draws
     }
 
     pub(crate) fn remove(&mut self, gpu: &mut dyn Gpu, index: u32) {
@@ -237,9 +235,9 @@ impl Models {
         }
     }
 
-    /// Model `index`'s first index and its solid and blended counts, when
-    /// it is resident.
-    pub(crate) fn draws(&self, index: u32) -> Option<[u32; 3]> {
+    /// Model `index`'s first index and its indices' counts per
+    /// [`DrawClass`], when it is resident.
+    pub(crate) fn draws(&self, index: u32) -> Option<(u32, [u32; 4])> {
         self.resident.get(&index).map(|r| r.draws)
     }
 
@@ -248,33 +246,43 @@ impl Models {
         self.resident.values().map(|r| r.bytes).sum()
     }
 
-    /// Makes the pipelines at `samples`, for the first model node.
+    /// Makes the pipelines at `samples`, for the first model node: one
+    /// per [`DrawClass`]. Opaque classes shade with `fs_model`, which never
+    /// discards, so a tile-based GPU keeps hidden-surface removal; single-
+    /// sided opaque materials' back faces are culled by the rasterizer.
     pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, samples: u32) {
         let slot = usize::from(samples == 4);
         if self.pipelines[slot][0].is_some() {
             return;
         }
+        // The two shaders differ only in their fragment entry point.
         let module = crate::shader_module(gpu, &MODEL_SHADER);
-        for (pass, blended) in [false, true].into_iter().enumerate() {
-            self.pipelines[slot][pass] = Some(gpu.create_render_pipeline(&RenderPipelineDesc {
-                label: MODEL_SHADER.label,
+        for (made, class) in self.pipelines[slot].iter_mut().zip(DrawClass::ALL) {
+            let shader = match class {
+                DrawClass::Opaque | DrawClass::DoubleSided => &MODEL_SHADER,
+                DrawClass::Mask | DrawClass::Blend => &MODEL_MASKED_SHADER,
+            };
+            let blended = class == DrawClass::Blend;
+            *made = Some(gpu.create_render_pipeline(&RenderPipelineDesc {
+                label: shader.label,
                 bind_group_layouts: &self.layouts,
                 vertex: ShaderStage {
                     module,
-                    entry_point: MODEL_SHADER.vertex,
+                    entry_point: shader.vertex,
                     constants: &[],
                 },
                 fragment: ShaderStage {
                     module,
-                    entry_point: MODEL_SHADER.fragment,
+                    entry_point: shader.fragment,
                     constants: &[],
                 },
                 targets: &[ColorTargetState {
                     format: TextureFormat::Rgba8Unorm,
                     blend: blended.then_some(BlendState::PremultipliedAlpha),
                 }],
-                // Both faces: single-sided materials discard their backs.
-                cull_mode: None,
+                // The other classes draw both faces: masked and blended
+                // single-sided materials discard their backs.
+                cull_mode: (class == DrawClass::Opaque).then_some(Face::Back),
                 depth: Some(DepthState {
                     format: TextureFormat::Depth32Float,
                     write: !blended,
@@ -311,22 +319,37 @@ impl Models {
 
     /// Model node `index`'s draws of model `model` (node group `group`)
     /// into a shadow cascade, after the caster's pipeline and scene and
-    /// pass groups: its solid and masked materials, none while the model
-    /// isn't resident.
+    /// pass groups: its opaque materials, or with `masked` its masked ones,
+    /// which alone discard; none while the model isn't resident.
     pub(crate) fn caster_commands(
         &self,
         group: BindGroupId,
         buffers: &SceneBuffers,
         index: u32,
         model: Option<u32>,
+        masked: bool,
     ) -> Vec<RenderCommand> {
-        let Some(r) = model
-            .and_then(|m| self.resident.get(&m))
-            .filter(|r| r.draws[1] > 0)
-        else {
+        let classes = if masked {
+            [DrawClass::Mask].as_slice()
+        } else {
+            &[DrawClass::Opaque, DrawClass::DoubleSided]
+        };
+        let Some(r) = model.and_then(|m| self.resident.get(&m)) else {
             return Vec::new();
         };
-        vec![
+        let draws: Vec<RenderCommand> = classes
+            .iter()
+            .map(|&c| c as usize)
+            .filter(|&c| r.draws.1[c] > 0)
+            .map(|c| RenderCommand::DrawIndexedIndirect {
+                buffer: buffers.args,
+                offset: crate::args_offset(index) + c as u64 * CLASS_ARGS,
+            })
+            .collect();
+        if draws.is_empty() {
+            return Vec::new();
+        }
+        let mut commands = vec![
             RenderCommand::SetBindGroup { index: 1, group },
             RenderCommand::SetBindGroup {
                 index: 2,
@@ -337,11 +360,9 @@ impl Models {
                 format: IndexFormat::Uint32,
                 offset: 0,
             },
-            RenderCommand::DrawIndexedIndirect {
-                buffer: buffers.args,
-                offset: crate::args_offset(index),
-            },
-        ]
+        ];
+        commands.extend(draws);
+        commands
     }
 
     /// Model node `index`'s draws of model `model`, as its 3D pass records
@@ -357,7 +378,7 @@ impl Models {
         let Some(r) = model.and_then(|m| self.resident.get(&m)) else {
             return Vec::new();
         };
-        let [solid, blend] = self.pipelines[usize::from(samples == 4)]
+        let pipelines = self.pipelines[usize::from(samples == 4)]
             .map(|p| p.expect("made before its nodes prepare"));
         let mut commands = vec![
             RenderCommand::SetBindGroup {
@@ -376,7 +397,11 @@ impl Models {
             },
         ];
         let args = crate::args_offset(index);
-        for (pipeline, count, offset) in [(solid, r.draws[1], 0), (blend, r.draws[2], 32)] {
+        for ((pipeline, count), offset) in pipelines
+            .into_iter()
+            .zip(r.draws.1)
+            .zip((0..).step_by(CLASS_ARGS as usize))
+        {
             if count > 0 {
                 commands.extend([
                     RenderCommand::SetPipeline(pipeline),

@@ -152,7 +152,8 @@ fn packs_vertices_materials_and_draw_classes_and_round_trips() {
     model.indices.extend([3, 4, 5]);
     let packed = gpu::pack(&model, &[]);
     assert_eq!(packed.vertex_count(), 6);
-    assert_eq!(packed.draws, [0..3, 3..3, 3..6]);
+    // The masked triangle draws in the mask class, the copy blended.
+    assert_eq!(packed.draws, [0..0, 0..0, 0..3, 3..6]);
     assert_eq!(packed.materials.len(), 2 * gpu::MATERIAL_WORDS);
     // A south-facing normal: octahedral (0, −1).
     assert_eq!(packed.vertices[3], 0x8001_0000);

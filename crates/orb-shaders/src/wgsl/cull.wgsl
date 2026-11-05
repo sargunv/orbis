@@ -39,13 +39,13 @@ struct Candidate {
 // first instance), then the cull's counters: at word 5 the chunks kept,
 // at 6 the indices it wrote, at 7 the vertex inputs it draws (vertex
 // pulling's padded vertices, or the visible chunks' indices). Instanced
-// nodes draw twice, their solid indices from word 0 and their blended
-// ones from word 8.
+// nodes draw once per draw class of their model, from words 0, 8, 16 and
+// 24.
 @group(0) @binding(6) var<storage, read_write> args: array<atomic<u32>>;
 @group(0) @binding(7) var<storage, read> indices: array<u32>;
 @group(0) @binding(8) var<storage, read_write> compacted: array<u32>;
 
-const ARGS_WORDS: u32 = 16u;
+const ARGS_WORDS: u32 = 32u;
 // Candidates per workgroup of an indexed node (orb-scene's INDEXED_BATCH).
 const INDEXED_BATCH: u32 = 64u;
 // The view-volume planes a clip-space corner lies outside, a bit each:
@@ -266,15 +266,19 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
     }
 }
 
-// An instanced node's two indexed draws of `instances` instances, its
-// solid and its blended indices.
+// An instanced node's indexed draws of `instances` instances, one per
+// draw class of its model's indices.
 fn write_instanced(index: u32, node: NodeCull, chunks_kept: u32, instances: u32) {
     let at = index * ARGS_WORDS;
-    write_indexed_args(at, node.index_count, instances, node.index_base);
-    write_indexed_args(at + 8u, node.blend_count, instances, node.index_base + node.index_count);
+    let counts = vec4<u32>(node.index_count, node.class_counts[0], node.class_counts[1], node.class_counts[2]);
+    let firsts = node.index_base + vec4<u32>(0u, counts.x, counts.x + counts.y, counts.x + counts.y + counts.z);
+    write_indexed_args(at, counts.x, instances, firsts.x);
+    write_indexed_args(at + 8u, counts.y, instances, firsts.y);
+    write_indexed_args(at + 16u, counts.z, instances, firsts.z);
+    write_indexed_args(at + 24u, counts.w, instances, firsts.w);
     atomicStore(&args[at + 5u], chunks_kept);
     atomicStore(&args[at + 6u], 0u);
-    atomicStore(&args[at + 7u], instances * (node.index_count + node.blend_count));
+    atomicStore(&args[at + 7u], instances * dot(counts, vec4<u32>(1u)));
 }
 
 // `drawIndexedIndirect` arguments at word `at`: all zero for a draw of

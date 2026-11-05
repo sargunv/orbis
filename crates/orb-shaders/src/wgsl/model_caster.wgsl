@@ -1,6 +1,6 @@
 // Models into one shadow cascade (decision 0046): depth only, from the
-// light, their solid and masked materials. Masked texels below their
-// cutoff cast nothing.
+// light, their opaque and masked materials, in two pipelines so only the
+// masked one discards. Masked texels below their cutoff cast nothing.
 struct ShadowPass { cascade: u32, };
 @group(3) @binding(0) var<uniform> shadow_pass: ShadowPass;
 struct ModelCasterOut {
@@ -21,11 +21,15 @@ fn vs_model_caster(@builtin(vertex_index) vertex: u32, @builtin(instance_index) 
     out.material = model_words[p.w + 7u];
     return out;
 }
+// Opaque materials: depth alone, nothing discarded.
 @fragment
-fn fs_model_caster(in: ModelCasterOut) {
+fn fs_model_caster(in: ModelCasterOut) {}
+// Masked materials: texels under the cutoff cast nothing.
+@fragment
+fn fs_model_caster_masked(in: ModelCasterOut) {
     let uv = ModelUv(in.uv, dpdx(in.uv), dpdy(in.uv));
     let m = model_draw.material_base + in.material * MODEL_MATERIAL_WORDS;
-    if (model_words[m + 13u] & MODEL_MASK) != 0u && model_base(m, uv, in.color).a < model_word_f(m + 7u) {
+    if model_base(m, uv, in.color).a < model_word_f(m + 7u) {
         discard;
     }
 }

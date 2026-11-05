@@ -5,8 +5,8 @@
 // metallic-roughness material and the paint, and lights it under the
 // style's lights (pbr.wgsl, decision 0026), with the shadows it receives
 // (decision 0046) in the directional term. Model words are
-// `orb_3d::gpu`'s. Both faces draw; a single-sided material's back faces
-// are discarded.
+// `orb_3d::gpu`'s. Opaque materials shade in a pipeline that never
+// discards (`fs_model`), masked and blended ones in `fs_model_masked`.
 
 struct ModelNode {
     // Premultiplied, in the style's (sRGB) space.
@@ -220,12 +220,24 @@ fn model_lights(world: vec3<f32>, n: vec3<f32>, depth: f32) -> PbrLights {
     return lights;
 }
 
+// Opaque materials (orb_3d's `DrawClass::Opaque` and `DoubleSided`):
+// nothing discards, so a tile-based GPU keeps hidden-surface removal; the
+// rasterizer culls a single-sided material's back faces.
 @fragment
 fn fs_model(in: ModelOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let uv = ModelUv(in.uv, dpdx(in.uv), dpdy(in.uv));
     let dp = mat2x3<f32>(dpdx(in.local), dpdy(in.local));
     let m = model_draw.material_base + in.material * MODEL_MATERIAL_WORDS;
-    let layers = model_words[m + 12u];
+    return model_shade(in, front, uv, dp, m, model_base(m, uv, in.color));
+}
+
+// Masked and blended materials, both faces drawn: a single-sided
+// material's back faces and texels under a mask's cutoff are discarded.
+@fragment
+fn fs_model_masked(in: ModelOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let uv = ModelUv(in.uv, dpdx(in.uv), dpdy(in.uv));
+    let dp = mat2x3<f32>(dpdx(in.local), dpdy(in.local));
+    let m = model_draw.material_base + in.material * MODEL_MATERIAL_WORDS;
     let flags = model_words[m + 13u];
     if !front && (flags & MODEL_DOUBLE_SIDED) == 0u {
         discard;
@@ -234,6 +246,15 @@ fn fs_model(in: ModelOut, @builtin(front_facing) front: bool) -> @location(0) ve
     if (flags & MODEL_MASK) != 0u && base.a < model_word_f(m + 7u) {
         discard;
     }
+    return model_shade(in, front, uv, dp, m, base);
+}
+
+// Material `m` at a fragment, its base colour `base`, lit: `uv` and `dp`
+// the texture coordinates' and the position's screen derivatives, taken
+// where control flow is uniform.
+fn model_shade(in: ModelOut, front: bool, uv: ModelUv, dp: mat2x3<f32>, m: u32, base: vec4<f32>) -> vec4<f32> {
+    let layers = model_words[m + 12u];
+    let flags = model_words[m + 13u];
     var material: Material;
     material.albedo = mix(base.rgb, in.paint.rgb, in.mix_emissive.x);
     material.alpha = select(1.0, base.a, (flags & MODEL_BLEND) != 0u);

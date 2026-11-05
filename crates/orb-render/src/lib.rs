@@ -90,8 +90,7 @@ fn draw_of(family: Family) -> NodeDraw {
         // Its model's ranges once it is resident.
         Family::Model => NodeDraw::Instances {
             first: 0,
-            solid: 0,
-            blend: 0,
+            counts: [0; 4],
         },
     }
 }
@@ -1163,11 +1162,7 @@ impl Renderer {
     /// the model is resident.
     fn node_draw(&self, family: Family, model: Option<u32>) -> NodeDraw {
         match (family, model.and_then(|m| self.models.draws(m))) {
-            (Family::Model, Some([first, solid, blend])) => NodeDraw::Instances {
-                first,
-                solid,
-                blend,
-            },
+            (Family::Model, Some((first, counts))) => NodeDraw::Instances { first, counts },
             _ => draw_of(family),
         }
     }
@@ -2098,13 +2093,18 @@ impl Renderer {
                 .filter(|(_, n)| n.family == Family::FillExtrusion)
                 .map(|(i, n)| (i as u32, n.group))
                 .collect();
-            let models: Vec<RenderCommand> = (self.nodes.iter().enumerate())
-                .filter(|(_, n)| n.family == Family::Model)
-                .flat_map(|(i, n)| {
-                    self.models
-                        .caster_commands(n.group, &b, i as u32, n.model.map(|m| m.0))
-                })
-                .collect();
+            // Opaque materials, then masked ones, whose caster alone
+            // discards.
+            let models = [false, true].map(|masked| {
+                (self.nodes.iter().enumerate())
+                    .filter(|(_, n)| n.family == Family::Model)
+                    .flat_map(|(i, n)| {
+                        let model = n.model.map(|m| m.0);
+                        self.models
+                            .caster_commands(n.group, &b, i as u32, model, masked)
+                    })
+                    .collect::<Vec<RenderCommand>>()
+            });
             let scene = *self.caster_group.get_or_insert_with(|| {
                 scene_group(
                     gpu,

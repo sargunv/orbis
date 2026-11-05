@@ -18,11 +18,19 @@ renderer (decision 0043) and the shape its materials take.
   (placements fit 16 bits) and fills the list's tail with a sentinel; the
   vertex shader finds its point by binary search (`pull_instance`). Point
   families' 256 padded instances per chunk would run a heavy model's
-  vertices 255 times for a lone landmark. A node draws twice, its solid
-  indices (opaque and double-sided, contiguous) and its blended ones,
-  from 16 draw-argument words per node (was 8): the cull's storage
-  bindings are all in use, so both draws' arguments live in the args
-  buffer.
+  vertices 255 times for a lone landmark. A node draws once per draw
+  class of its model's indices (`orb_3d::gpu::DrawClass`: opaque, opaque
+  double-sided, alpha-masked, blended), from 32 draw-argument words per
+  node (was 8): the cull's storage bindings are all in use, so every
+  draw's arguments live in the args buffer. Only the masked and blended
+  classes' pipelines discard (a single-sided material's back faces,
+  texels under a mask's cutoff), as only the masked caster does: a
+  pipeline that may discard loses a tile-based GPU's hidden-surface
+  removal. Single-sided opaque materials' back faces are culled by the
+  rasterizer. A pagoda at every POI around Tokyo Station under the noon
+  sun (Apple M6, 2048×1536, GPU median) went from 17.1 to 13.1 ms at z16
+  pitch 60 and from 8.6 to 6.6 ms at z17, its 3D pass 6.8 → 5.3 ms and
+  its shadow casters 6.7 → 4.9 ms.
 - **One 3D target per layer.** A layer's model nodes draw into one colour
   target over the depth 3D layers share, and composite once at
   `model-opacity`, as an extrusion layer does. A target per node cost a

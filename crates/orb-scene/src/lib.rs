@@ -512,8 +512,9 @@ const CANDIDATE_WORDS: usize = layout::candidate::WORDS;
 const VISIBLE_WORDS: usize = layout::visible::WORDS;
 const NODE_CULL_WORDS: usize = layout::node_cull::WORDS;
 /// Words per node of [`SceneBuffers::args`]: a draw's indirect arguments,
-/// the cull's counters, and an instanced node's second draw.
-pub const ARGS_WORDS: usize = 16;
+/// the cull's counters, and an instanced node's further draws, every 8
+/// words.
+pub const ARGS_WORDS: usize = 32;
 /// Candidates per cull workgroup of an indexed node (`cull.wgsl`).
 const INDEXED_BATCH: u32 = 64;
 /// A candidate's `drawn` word before its first cull: neither drawn (1) nor
@@ -915,12 +916,12 @@ pub enum NodeDraw {
     /// one `drawIndexedIndirect` covers the node's slots. Indices are
     /// `run << run_shift | vertex`, a run being a mesh in one placement.
     Indexed,
-    /// A model's indices once per visible point, as instances: its solid
-    /// indices (`first..first + solid`), then its blended ones, in two
-    /// `drawIndexedIndirect`s, the second's arguments at word 8. The
-    /// visible list counts the points before each chunk
-    /// (`point.wgsl`'s `pull_instance`).
-    Instances { first: u32, solid: u32, blend: u32 },
+    /// A model's indices once per visible point, as instances: from
+    /// `first`, `counts` indices of each of its draw classes in turn
+    /// (`orb_3d::gpu::DrawClass`), each a `drawIndexedIndirect` whose
+    /// arguments start every 8 words. The visible list counts the points
+    /// before each chunk (`point.wgsl`'s `pull_instance`).
+    Instances { first: u32, counts: [u32; 4] },
 }
 
 impl NodeCull {
@@ -1944,13 +1945,9 @@ impl Scene {
                 }
                 runs.extend((base..).zip(order));
             }
-            let (index_base, index_count, blend) = match node.cull.draw {
-                NodeDraw::Instances {
-                    first,
-                    solid,
-                    blend,
-                } => (first, solid, blend),
-                _ => (index_base, compacted - index_base, 0),
+            let (index_base, index_count, [_, more @ ..]) = match node.cull.draw {
+                NodeDraw::Instances { first, counts } => (first, counts[0], counts),
+                _ => (index_base, compacted - index_base, [0; 4]),
             };
             node_cull.extend([
                 base,
@@ -1961,8 +1958,8 @@ impl Scene {
                 index_base,
                 index_count,
                 if indexed { run_shift } else { 0 },
-                blend,
             ]);
+            node_cull.extend(more);
         }
         self.candidate_count = (rows.len() / CANDIDATE_WORDS) as u32;
         self.candidates_dropped = dropped;

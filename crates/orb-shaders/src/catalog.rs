@@ -246,6 +246,13 @@ pub const MODEL_SHADER: Shader = Shader {
     compute: "",
     lit: false,
 };
+/// Alpha-masked and blended model materials, which discard: apart from
+/// opaque ones, whose pipelines never do.
+pub const MODEL_MASKED_SHADER: Shader = Shader {
+    label: "model masked",
+    fragment: "fs_model_masked",
+    ..MODEL_SHADER
+};
 /// Symbol quads: glyphs and icons, with their halos (decision 0009), of
 /// point labels and of line labels (`symbol-placement: line` and
 /// `line-center`): two variants, so point labels' pipeline doesn't compile
@@ -436,6 +443,13 @@ pub const MODEL_CASTER_SHADER: Shader = Shader {
     compute: "",
     lit: false,
 };
+/// Alpha-masked models into a shadow cascade, their texels under the
+/// cutoff discarded.
+pub const MODEL_CASTER_MASKED_SHADER: Shader = Shader {
+    label: "model caster masked",
+    fragment: "fs_model_caster_masked",
+    ..MODEL_CASTER_SHADER
+};
 /// Shadows on the ground, multiplied over the main pass. Modern only.
 pub const SHADOW_GROUND_SHADER: Shader = Shader {
     label: "shadow ground",
@@ -490,7 +504,9 @@ pub const SHADERS: &[Shader] = &[
     LINE_SHADER,
     CIRCLE_SHADER,
     MODEL_SHADER,
+    MODEL_MASKED_SHADER,
     MODEL_CASTER_SHADER,
+    MODEL_CASTER_MASKED_SHADER,
     FILL_SHADER.lit(),
     FILL_OUTLINE_SHADER.lit(),
     LINE_SHADER.lit(),

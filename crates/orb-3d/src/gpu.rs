@@ -26,19 +26,24 @@ pub const MASK: u32 = 1 << 9;
 pub const BLEND: u32 = 1 << 10;
 pub const DOUBLE_SIDED: u32 = 1 << 11;
 
-/// How a range of triangles draws.
+/// How a range of triangles draws. Opaque classes never discard a
+/// fragment, which keeps a tile-based GPU's hidden-surface removal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawClass {
-    /// Opaque or alpha-masked, back faces culled.
+    /// Opaque, back faces culled by the rasterizer.
     Opaque,
-    /// Opaque or masked, both faces.
+    /// Opaque, both faces.
     DoubleSided,
-    /// Blended over what's behind, without writing depth, both faces.
+    /// Alpha-masked: texels under the cutoff, and a single-sided
+    /// material's back faces, discarded.
+    Mask,
+    /// Blended over what's behind, without writing depth; a single-sided
+    /// material's back faces discarded.
     Blend,
 }
 
 impl DrawClass {
-    pub const ALL: [Self; 3] = [Self::Opaque, Self::DoubleSided, Self::Blend];
+    pub const ALL: [Self; 4] = [Self::Opaque, Self::DoubleSided, Self::Mask, Self::Blend];
 }
 
 /// A model ready to upload.
@@ -56,7 +61,7 @@ pub struct GpuModel {
     /// Model-local vertex indices, the [`DrawClass`] ranges in order.
     pub indices: Vec<u32>,
     /// Index ranges per [`DrawClass::ALL`].
-    pub draws: [Range<u32>; 3],
+    pub draws: [Range<u32>; 4],
     /// Texture layers' side (0 without textures), and each layer's RGBA8
     /// texels with their mips.
     pub texture_size: u32,
@@ -167,12 +172,13 @@ pub fn pack(model: &Model, images: &[Option<(u32, u32, Vec<u8>)>]) -> GpuModel {
     let class = |material: u32| {
         let m = list.get(material as usize).unwrap_or(&defaults[0]);
         match (m.alpha, m.double_sided) {
-            (Alpha::Blend, _) => 2,
+            (Alpha::Blend, _) => 3,
+            (Alpha::Mask(_), _) => 2,
             (_, true) => 1,
             _ => 0,
         }
     };
-    let mut buckets: [Vec<u32>; 3] = Default::default();
+    let mut buckets: [Vec<u32>; 4] = Default::default();
     for t in model.indices.as_chunks::<3>().0 {
         let material = model.vertices[t[0] as usize].material;
         buckets[class(material)].extend_from_slice(t);
@@ -259,10 +265,10 @@ impl GpuModel {
             at += n;
             Ok(part)
         };
-        let header = take(14)?.to_vec();
+        let header = take(15)?.to_vec();
         let [v, m, i, size, layers] = [0, 1, 2, 3, 4].map(|k| header[k] as usize);
-        let ends = [header[5], header[6], header[7]];
-        let b: Vec<f32> = header[8..14].iter().map(|w| f32::from_bits(*w)).collect();
+        let ends = [header[5], header[6], header[7], header[8]];
+        let b: Vec<f32> = header[9..15].iter().map(|w| f32::from_bits(*w)).collect();
         let vertices = take(v)?.to_vec();
         let materials = take(m)?.to_vec();
         let indices = take(i)?.to_vec();
@@ -271,14 +277,19 @@ impl GpuModel {
             let texels = take(1)?[0] as usize;
             out_layers.push(take(texels)?.iter().flat_map(|w| w.to_le_bytes()).collect());
         }
-        if ends[2] as usize != indices.len() || ends[0] > ends[1] || ends[1] > ends[2] {
+        if ends[3] as usize != indices.len() || !ends.is_sorted() {
             return Err(bad());
         }
         Ok(Self {
             vertices,
             materials,
             indices,
-            draws: [0..ends[0], ends[0]..ends[1], ends[1]..ends[2]],
+            draws: [
+                0..ends[0],
+                ends[0]..ends[1],
+                ends[1]..ends[2],
+                ends[2]..ends[3],
+            ],
             texture_size: size as u32,
             layers: out_layers,
             bounds: [[b[0], b[1], b[2]], [b[3], b[4], b[5]]],
