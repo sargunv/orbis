@@ -168,6 +168,12 @@ internal object OrbisNative {
     external fun orbMapCamera(self: Long): OrbCamera
 
     @JvmStatic
+    external fun orbMapFreeCamera(self: Long): OrbFreeCamera
+
+    @JvmStatic
+    external fun orbMapJumpToFree(self: Long, camera_lon: Double, camera_lat: Double, camera_altitude: Double, camera_bearing: Double, camera_pitch: Double, camera_roll: Double): Unit
+
+    @JvmStatic
     external fun orbMapSetCenterClampedToGround(self: Long, clamped: Boolean): Unit
 
     @JvmStatic
@@ -177,13 +183,13 @@ internal object OrbisNative {
     external fun orbMapSetCenterElevation(self: Long, elevation: Double): Unit
 
     @JvmStatic
-    external fun orbMapJumpTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, target_roll: Double, target_elevation: Double): Unit
+    external fun orbMapJumpTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, target_roll: Double, target_elevation: Double, target_fov: Double, target_padding_top: Double, target_padding_right: Double, target_padding_bottom: Double, target_padding_left: Double): Unit
 
     @JvmStatic
-    external fun orbMapEaseTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, target_roll: Double, target_elevation: Double, durationMs: Double): Long
+    external fun orbMapEaseTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, target_roll: Double, target_elevation: Double, target_fov: Double, target_padding_top: Double, target_padding_right: Double, target_padding_bottom: Double, target_padding_left: Double, durationMs: Double): Long
 
     @JvmStatic
-    external fun orbMapFlyTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, target_roll: Double, target_elevation: Double, durationMs: Double): Long
+    external fun orbMapFlyTo(self: Long, target_lon: Double, target_lat: Double, target_zoom: Double, target_bearing: Double, target_pitch: Double, target_roll: Double, target_elevation: Double, target_fov: Double, target_padding_top: Double, target_padding_right: Double, target_padding_bottom: Double, target_padding_left: Double, durationMs: Double): Long
 
     @JvmStatic
     external fun orbMapFitBounds(self: Long, bounds_west: Double, bounds_south: Double, bounds_east: Double, bounds_north: Double, padding: Double, durationMs: Double): Long
@@ -226,6 +232,12 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbMapProject(self: Long, lon: Double, lat: Double): OrbPoint
+
+    @JvmStatic
+    external fun orbMapProjectWith(self: Long, camera_lon: Double, camera_lat: Double, camera_zoom: Double, camera_bearing: Double, camera_pitch: Double, camera_roll: Double, camera_elevation: Double, camera_fov: Double, camera_padding_top: Double, camera_padding_right: Double, camera_padding_bottom: Double, camera_padding_left: Double, lon: Double, lat: Double): OrbPoint
+
+    @JvmStatic
+    external fun orbMapUnprojectWith(self: Long, camera_lon: Double, camera_lat: Double, camera_zoom: Double, camera_bearing: Double, camera_pitch: Double, camera_roll: Double, camera_elevation: Double, camera_fov: Double, camera_padding_top: Double, camera_padding_right: Double, camera_padding_bottom: Double, camera_padding_left: Double, x: Double, y: Double): OrbLngLat
 
     @JvmStatic
     external fun orbMapUnproject(self: Long, x: Double, y: Double): OrbLngLat
@@ -345,10 +357,10 @@ internal object OrbisNative {
     fun newOrbBounds(west: Double, south: Double, east: Double, north: Double): OrbBounds = OrbBounds(west, south, east, north)
 
     @JvmStatic
-    fun newOrbCamera(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double): OrbCamera = OrbCamera(lon, lat, zoom, bearing, pitch, roll, elevation)
+    fun newOrbCamera(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double, fov: Double, padding_top: Double, padding_right: Double, padding_bottom: Double, padding_left: Double): OrbCamera = OrbCamera(lon, lat, zoom, bearing, pitch, roll, elevation, fov, OrbPadding(padding_top, padding_right, padding_bottom, padding_left))
 
     @JvmStatic
-    fun newOrbCameraTarget(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double): OrbCameraTarget = OrbCameraTarget(lon, lat, zoom, bearing, pitch, roll, elevation)
+    fun newOrbCameraTarget(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double, fov: Double, padding_top: Double, padding_right: Double, padding_bottom: Double, padding_left: Double): OrbCameraTarget = OrbCameraTarget(lon, lat, zoom, bearing, pitch, roll, elevation, fov, OrbPadding(padding_top, padding_right, padding_bottom, padding_left))
 
     @JvmStatic
     fun newOrbConstraints(min_zoom: Double, max_zoom: Double, min_pitch: Double, max_pitch: Double, bounded: Boolean, west: Double, south: Double, east: Double, north: Double): OrbConstraints = OrbConstraints(min_zoom, max_zoom, min_pitch, max_pitch, bounded, west, south, east, north)
@@ -357,10 +369,16 @@ internal object OrbisNative {
     fun newOrbFrame(drawn: Boolean, generation: Long, idle: Boolean, loaded: Boolean, tiles_drawn: Int, tiles_loading: Int, draws: Int, dispatches: Int, pipelines_pending: Int, layers_waiting: Int): OrbFrame = OrbFrame(drawn, generation.toULong(), idle, loaded, tiles_drawn.toUInt(), tiles_loading.toUInt(), draws.toUInt(), dispatches.toUInt(), pipelines_pending.toUInt(), layers_waiting.toUInt())
 
     @JvmStatic
+    fun newOrbFreeCamera(lon: Double, lat: Double, altitude: Double, bearing: Double, pitch: Double, roll: Double): OrbFreeCamera = OrbFreeCamera(lon, lat, altitude, bearing, pitch, roll)
+
+    @JvmStatic
     fun newOrbLngLat(lon: Double, lat: Double, valid: Boolean): OrbLngLat = OrbLngLat(lon, lat, valid)
 
     @JvmStatic
     fun newOrbModifiers(shift: Boolean, ctrl: Boolean, alt: Boolean, meta: Boolean): OrbModifiers = OrbModifiers(shift, ctrl, alt, meta)
+
+    @JvmStatic
+    fun newOrbPadding(top: Double, right: Double, bottom: Double, left: Double): OrbPadding = OrbPadding(top, right, bottom, left)
 
     @JvmStatic
     fun newOrbPoint(x: Double, y: Double, valid: Boolean): OrbPoint = OrbPoint(x, y, valid)

@@ -26,6 +26,16 @@ impl Padding {
             left: p,
         }
     }
+
+    pub(crate) fn lerp(self, to: Self, k: f64) -> Self {
+        let at = |a: f64, b: f64| a + (b - a) * k;
+        Self {
+            top: at(self.top, to.top),
+            right: at(self.right, to.right),
+            bottom: at(self.bottom, to.bottom),
+            left: at(self.left, to.left),
+        }
+    }
 }
 
 /// GL JS's `CameraForBoundsOptions`.
@@ -45,8 +55,9 @@ pub struct FitOptions {
 }
 
 impl CameraState {
-    /// The camera that shows `bounds` inside the padded viewport, or `None`
-    /// when the padding leaves no room.
+    /// The camera that shows `bounds` inside the padded viewport (the
+    /// fit's padding inside the camera's own), or `None` when the padding
+    /// leaves no room.
     pub fn for_bounds(
         &self,
         bounds: Bounds,
@@ -56,9 +67,10 @@ impl CameraState {
     ) -> Option<CameraTarget> {
         let projection = &surface.projection;
         let pad = options.padding;
+        let own = self.padding;
         let available = DVec2::new(
-            viewport.width - pad.left - pad.right,
-            viewport.height - pad.top - pad.bottom,
+            viewport.width - pad.left - pad.right - own.left - own.right,
+            viewport.height - pad.top - pad.bottom - own.top - own.bottom,
         );
         if available.x <= 0.0 || available.y <= 0.0 {
             return None;
@@ -130,9 +142,11 @@ fn fit_pitched(
     available: DVec2,
 ) {
     let projection = &surface.projection;
-    let pad = options.padding;
-    let goal =
-        DVec2::new(pad.left + available.x / 2.0, pad.top + available.y / 2.0) + options.offset;
+    let (pad, own) = (options.padding, camera.padding);
+    let goal = DVec2::new(
+        pad.left + own.left + available.x / 2.0,
+        pad.top + own.top + available.y / 2.0,
+    ) + options.offset;
     for _ in 0..16 {
         let view = View::new(camera, viewport, surface);
         let Some(points) = corners
@@ -152,7 +166,7 @@ fn fit_pitched(
             return;
         }
         camera.pan(surface, viewport, middle, goal);
-        let center = DVec2::new(viewport.width, viewport.height) / 2.0;
+        let center = camera.center(viewport);
         camera.zoom_around(
             surface,
             viewport,

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use glam::DVec2;
 use orb_camera::{
     AnimationId, Bounds, CameraTarget, Constraints, EaseOptions, FitOptions, FlyOptions,
+    FreeCamera, Padding,
 };
 use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
@@ -435,7 +436,21 @@ impl Map {
         self.dirty = true;
     }
 
-    /// The camera that shows `bounds` in the current viewport.
+    /// The camera's eye and orientation now (GL JS
+    /// `getFreeCameraOptions`).
+    pub fn free_camera(&self) -> FreeCamera {
+        self.map.free_camera()
+    }
+
+    /// Puts the eye at `free` at once (GL JS `setFreeCameraOptions`),
+    /// ending any animation; the field of view and padding stay.
+    pub fn jump_to_free(&mut self, free: &FreeCamera) {
+        self.map.jump_to_free(free);
+        self.dirty = true;
+    }
+
+    /// The camera that shows `bounds` in the current viewport, inside the
+    /// camera's padding.
     pub fn camera_for_bounds(&self, bounds: Bounds, options: &FitOptions) -> Option<CameraTarget> {
         self.map.camera_for_bounds(bounds, options)
     }
@@ -501,6 +516,19 @@ impl Map {
     /// the horizon.
     pub fn unproject(&self, point: DVec2) -> Option<Geodetic> {
         self.map.unproject(point)
+    }
+
+    /// [`project`](Self::project) for the camera a jump to `camera` would
+    /// make, in this map's viewport, on its surface and terrain: where a
+    /// move would put a point, before making it.
+    pub fn project_with(&self, camera: &CameraTarget, point: Geodetic) -> Option<DVec2> {
+        self.map.project_with(&self.map.camera_for(camera), point)
+    }
+
+    /// [`unproject`](Self::unproject) for the camera a jump to `camera`
+    /// would make.
+    pub fn unproject_with(&self, camera: &CameraTarget, point: DVec2) -> Option<Geodetic> {
+        self.map.unproject_with(&self.map.camera_for(camera), point)
     }
 
     /// Draws the frame shown at `frame_time` (milliseconds, on the clock
@@ -658,6 +686,7 @@ impl Map {
                     roll: 0.0,
                     fov: CameraState::DEFAULT_FOV,
                     elevation: 0.0,
+                    padding: Padding::default(),
                 },
                 viewport,
                 center,

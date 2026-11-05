@@ -18,7 +18,7 @@ val STYLE = """
 """.trimIndent()
 
 fun main() {
-    check(OrbRuntime.abiVersion() == 5u)
+    check(OrbRuntime.abiVersion() == 6u)
     OrbRuntime.create(0u).use { runtime ->
         OrbTarget.createTexture(runtime, 64u, 64u, 1.0).use { target ->
             OrbMap.create(runtime, OrbFeel.Desktop, 0.0, 0.0, 0.0, 0.0).use { map ->
@@ -38,6 +38,19 @@ fun main() {
                     Thread.sleep(2)
                 }
                 map.hitTest(32.0, 32.0)!!.use { hit -> check(hit.layer() == "box" && hit.id() == "7") }
+
+                // Padding moves the centre down; a camera's projection
+                // answers before any move; the eye round-trips.
+                val nan = Double.NaN
+                val keep = OrbPadding(nan, nan, nan, nan)
+                map.jumpTo(OrbCameraTarget(nan, nan, nan, nan, nan, nan, nan, nan, keep.copy(top = 32.0)))
+                val centre = map.project(0.0, 0.0)
+                check(centre.valid && Math.abs(centre.y - 48.0) < 1e-6) { "$centre" }
+                val east = map.projectWith(OrbCameraTarget(nan, nan, 1.0, nan, nan, nan, nan, nan, keep), 10.0, 0.0)
+                check(Math.abs(east.x - 32.0 - 1024.0 * 10 / 360) < 1e-6) { "$east" }
+                map.jumpToFree(map.freeCamera())
+                val camera = map.camera()
+                check(Math.abs(camera.lon) < 1e-9 && Math.abs(camera.zoom) < 1e-9 && camera.padding.top == 32.0) { "$camera" }
             }
         }
     }

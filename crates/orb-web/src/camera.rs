@@ -33,6 +33,48 @@ pub struct Camera {
     pub roll: f64,
     #[wasm_bindgen(readonly)]
     pub elevation: f64,
+    #[wasm_bindgen(readonly)]
+    pub fov: f64,
+    padding: Padding,
+}
+
+#[wasm_bindgen]
+impl Camera {
+    /// `{top, right, bottom, left}`.
+    #[wasm_bindgen(getter)]
+    pub fn padding(&self) -> JsValue {
+        padding_object(self.padding)
+    }
+}
+
+fn padding_object(p: Padding) -> JsValue {
+    let object = js_sys::Object::new();
+    for (key, value) in [
+        ("top", p.top),
+        ("right", p.right),
+        ("bottom", p.bottom),
+        ("left", p.left),
+    ] {
+        let _ = js_sys::Reflect::set(&object, &key.into(), &value.into());
+    }
+    object.into()
+}
+
+/// A `padding`: a number for every side, or `{top, right, bottom, left}`
+/// with the sides left out as in `current`; `None` when absent.
+fn padding(value: &JsValue, current: Padding) -> Option<Padding> {
+    if let Some(all) = value.as_f64() {
+        return Some(Padding::uniform(all));
+    }
+    if !value.is_object() {
+        return None;
+    }
+    Some(Padding {
+        top: number(value, "top").unwrap_or(current.top),
+        right: number(value, "right").unwrap_or(current.right),
+        bottom: number(value, "bottom").unwrap_or(current.bottom),
+        left: number(value, "left").unwrap_or(current.left),
+    })
 }
 
 fn get(object: &JsValue, key: &str) -> JsValue {
@@ -53,9 +95,12 @@ fn lng_lat(value: &JsValue) -> Option<Geodetic> {
     pair(value).map(|[lon, lat]| Geodetic::new(lon, lat))
 }
 
-/// A `CameraOptions` object.
-fn target(options: &JsValue) -> CameraTarget {
+/// A `CameraOptions` object; its padding's sides left out keep
+/// `padding`'s.
+fn target(options: &JsValue, current: Padding) -> CameraTarget {
     CameraTarget {
+        fov: number(options, "fov"),
+        padding: padding(&get(options, "padding"), current),
         center: lng_lat(&get(options, "center")),
         zoom: number(options, "zoom"),
         bearing: number(options, "bearing"),
@@ -90,6 +135,16 @@ fn modifiers(bits: u32) -> Modifiers {
         ctrl: bits & 2 != 0,
         alt: bits & 4 != 0,
         meta: bits & 8 != 0,
+    }
+}
+
+impl OrbisMap {
+    fn target(&self, options: &JsValue) -> CameraTarget {
+        target(options, self.map.camera().padding)
+    }
+
+    fn camera_for(&self, options: &JsValue) -> orb_camera::CameraState {
+        self.map.camera_for(&self.target(options))
     }
 }
 
@@ -240,13 +295,52 @@ impl OrbisMap {
             pitch: c.pitch,
             roll: c.roll,
             elevation: c.elevation,
+            fov: c.fov,
+            padding: c.padding,
         }
+    }
+
+    /// The eye now, as a `FreeCamera` (GL JS `getFreeCameraOptions`).
+    #[wasm_bindgen(js_name = freeCamera)]
+    pub fn free_camera(&self) -> JsValue {
+        let f = self.map.free_camera();
+        let object = js_sys::Object::new();
+        let set = |key: &str, value: JsValue| {
+            let _ = js_sys::Reflect::set(&object, &key.into(), &value);
+        };
+        set(
+            "position",
+            js_sys::Array::of2(&f.position.lon.into(), &f.position.lat.into()).into(),
+        );
+        for (key, value) in [
+            ("altitude", f.altitude),
+            ("bearing", f.bearing),
+            ("pitch", f.pitch),
+            ("roll", f.roll),
+        ] {
+            set(key, value.into());
+        }
+        object.into()
+    }
+
+    /// Puts the eye at a `FreeCamera` at once (GL JS
+    /// `setFreeCameraOptions`); what it leaves out stays.
+    #[wasm_bindgen(js_name = jumpToFree)]
+    pub fn jump_to_free(&mut self, camera: &JsValue) {
+        let now = self.map.free_camera();
+        self.map.jump_to_free(&orb_camera::FreeCamera {
+            position: lng_lat(&get(camera, "position")).unwrap_or(now.position),
+            altitude: number(camera, "altitude").unwrap_or(now.altitude),
+            bearing: number(camera, "bearing").unwrap_or(now.bearing),
+            pitch: number(camera, "pitch").unwrap_or(now.pitch),
+            roll: number(camera, "roll").unwrap_or(now.roll),
+        });
     }
 
     /// GL JS `jumpTo` with a `CameraOptions` object.
     #[wasm_bindgen(js_name = jumpTo)]
     pub fn jump_to(&mut self, options: &JsValue) {
-        self.map.jump_to(&target(options));
+        self.map.jump_to(&self.target(options));
     }
 
     /// GL JS `easeTo` with an `EaseOptions` object, from the next frame;
@@ -257,7 +351,7 @@ impl OrbisMap {
             duration: number(options, "duration").unwrap_or(500.0),
             easing: easing(options),
         };
-        self.map.ease_to(&target(options), ease).0 as f64
+        self.map.ease_to(&self.target(options), ease).0 as f64
     }
 
     /// GL JS `flyTo` with a `FlyOptions` object, from the next frame;
@@ -274,7 +368,7 @@ impl OrbisMap {
             min_zoom: number(options, "minZoom"),
             easing: easing(options),
         };
-        self.map.fly_to(&target(options), &fly).0 as f64
+        self.map.fly_to(&self.target(options), &fly).0 as f64
     }
 
     /// GL JS `cameraForBounds`: `[west, south, east, north]` and a
@@ -285,18 +379,8 @@ impl OrbisMap {
         let [west, south, east, north] = *bounds else {
             return JsValue::NULL;
         };
-        let padding = get(options, "padding");
-        let side = |key| match padding.as_f64() {
-            Some(all) => all,
-            None => number(&padding, key).unwrap_or(0.0),
-        };
         let fit = FitOptions {
-            padding: Padding {
-                top: side("top"),
-                right: side("right"),
-                bottom: side("bottom"),
-                left: side("left"),
-            },
+            padding: padding(&get(options, "padding"), Padding::default()).unwrap_or_default(),
             offset: pair(&get(options, "offset")).map_or(DVec2::ZERO, DVec2::from),
             max_zoom: number(options, "maxZoom"),
             bearing: number(options, "bearing"),
@@ -366,19 +450,26 @@ impl OrbisMap {
     }
 
     /// The CSS pixel showing a point, on the terrain, or none behind the
-    /// eye.
-    pub fn project(&self, lon: f64, lat: f64) -> Option<Vec<f64>> {
-        self.map
-            .project(Geodetic::new(lon, lat))
-            .map(|p| vec![p.x, p.y])
+    /// eye: for the camera now, or with `CameraOptions` the one a jump
+    /// there would make.
+    pub fn project(&self, lon: f64, lat: f64, camera: &JsValue) -> Option<Vec<f64>> {
+        let point = Geodetic::new(lon, lat);
+        match camera.is_object() {
+            true => self.map.project_with(&self.camera_for(camera), point),
+            false => self.map.project(point),
+        }
+        .map(|p| vec![p.x, p.y])
     }
 
     /// The ground point under a CSS pixel, on the terrain, or none above
-    /// the horizon.
-    pub fn unproject(&self, x: f64, y: f64) -> Option<Vec<f64>> {
-        self.map
-            .unproject(DVec2::new(x, y))
-            .map(|g| vec![g.lon, g.lat])
+    /// the horizon, for the camera now or the one `CameraOptions` make.
+    pub fn unproject(&self, x: f64, y: f64, camera: &JsValue) -> Option<Vec<f64>> {
+        let point = DVec2::new(x, y);
+        match camera.is_object() {
+            true => self.map.unproject_with(&self.camera_for(camera), point),
+            false => self.map.unproject(point),
+        }
+        .map(|g| vec![g.lon, g.lat])
     }
 
     /// Projects `[lon, lat, …]` pairs into `[x, y, …]` CSS pixels, NaN

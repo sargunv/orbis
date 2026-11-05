@@ -24,7 +24,7 @@ use std::sync::Arc;
 pub use map::{Event, Image, Map, MapOptions, STILL_TIMEOUT, TileRequest};
 pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints, EaseOptions, Easing,
-    FitOptions, FlyOptions, Padding, Phase,
+    FitOptions, FlyOptions, FreeCamera, Padding, Phase,
 };
 pub use orb_crs::Geodetic;
 pub use orb_crs::TileMatrixSet;

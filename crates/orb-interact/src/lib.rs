@@ -850,8 +850,7 @@ impl Interaction {
 }
 
 fn center(camera: &Camera) -> DVec2 {
-    let viewport = camera.viewport();
-    DVec2::new(viewport.width, viewport.height) / 2.0
+    camera.state().center(camera.viewport())
 }
 
 /// The clockwise angle from `a` to `b` on screen, in degrees.

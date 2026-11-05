@@ -11,7 +11,7 @@ use orb_crs::Projection;
 use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion, Track};
 use crate::fit::FitOptions;
 use crate::moves::{Bounds, Constraints, wrap_bearing};
-use crate::{CameraState, Elevation, Surface, View, Viewport};
+use crate::{CameraState, Elevation, FreeCamera, Surface, View, Viewport};
 
 /// Identifies an animation in [`CameraEvent::AnimationEnd`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -210,16 +210,27 @@ impl Camera {
     }
 
     pub fn view(&self) -> View {
+        self.view_of(&self.state)
+    }
+
+    /// The view `camera` would have in this one's viewport, on its surface
+    /// and terrain.
+    pub fn view_of(&self, camera: &CameraState) -> View {
         match self.terrain.as_deref() {
-            Some(terrain) => View::over(&self.state, self.viewport, &self.surface, terrain),
-            None => View::new(&self.state, self.viewport, &self.surface),
+            Some(terrain) => View::over(camera, self.viewport, &self.surface, terrain),
+            None => View::new(camera, self.viewport, &self.surface),
         }
     }
 
     /// The logical pixel showing `point`, on the terrain if there is one,
     /// or `None` behind the eye.
     pub fn project(&self, point: Geodetic) -> Option<DVec2> {
-        let view = self.view();
+        self.project_with(&self.state, point)
+    }
+
+    /// [`project`](Self::project) for `camera` in this one's viewport.
+    pub fn project_with(&self, camera: &CameraState, point: Geodetic) -> Option<DVec2> {
+        let view = self.view_of(camera);
         let world = self.surface.projection.forward(point);
         // The copy of a wrapping world nearest the view's centre.
         let world = self
@@ -240,12 +251,34 @@ impl Camera {
     /// ui role, the approximate elevation pyramid), or `None` above the
     /// horizon.
     pub fn unproject(&self, px: DVec2) -> Option<Geodetic> {
-        let view = self.view();
+        self.unproject_with(&self.state, px)
+    }
+
+    /// [`unproject`](Self::unproject) for `camera` in this one's viewport.
+    pub fn unproject_with(&self, camera: &CameraState, px: DVec2) -> Option<Geodetic> {
+        let view = self.view_of(camera);
         let world = match self.terrain.as_deref() {
             Some(terrain) => view.unproject_terrain(px, terrain).map(|(world, _)| world),
             None => view.unproject(px),
         };
         world.map(|world| self.surface.projection.inverse(world))
+    }
+
+    /// Where a jump to `target` would put the camera, without moving it.
+    pub fn state_for(&self, target: &CameraTarget) -> CameraState {
+        self.resolve(target).0
+    }
+
+    /// The camera's eye and orientation now.
+    pub fn free(&self) -> FreeCamera {
+        self.state.free(self.viewport, &self.surface)
+    }
+
+    /// Moves the eye to `free` at once (GL JS `setFreeCameraOptions`),
+    /// keeping the field of view and padding.
+    pub fn jump_to_free(&mut self, free: &FreeCamera) {
+        let state = self.state.from_free(free, self.viewport, &self.surface);
+        self.jump_to_state(state);
     }
 
     /// Moves to `target` at once (GL JS `jumpTo`).
@@ -573,8 +606,14 @@ impl Camera {
     fn resolve(&self, target: &CameraTarget) -> (CameraState, Option<(Geodetic, DVec2)>) {
         let (surface, viewport) = (&self.surface, self.viewport);
         let projection = &surface.projection;
-        let center = DVec2::new(viewport.width, viewport.height) / 2.0;
         let mut to = self.state;
+        if let Some(fov) = target.fov {
+            to.fov = fov.clamp(0.01, 179.0);
+        }
+        if let Some(padding) = target.padding {
+            to.padding = padding;
+        }
+        let center = to.center(viewport);
         // Limits bound the scale at the destination.
         let zoom = target.zoom.map(|z| {
             let mut at = CameraState {

@@ -6,7 +6,7 @@
 use glam::DVec2;
 use orb_camera::{
     AnimationId, Bounds, CameraState, CameraTarget, Constraints, EaseOptions, FitOptions,
-    FlyOptions, Viewport,
+    FlyOptions, FreeCamera, Viewport,
 };
 use orb_crs::Geodetic;
 use orb_interact::{Feel, Input, InteractEvent};
@@ -104,6 +104,33 @@ impl Map {
     /// is one, or `None` above the horizon.
     pub fn unproject(&self, point: DVec2) -> Option<Geodetic> {
         self.camera.unproject(point)
+    }
+
+    /// [`project`](Self::project) for `camera` in this map's viewport, on
+    /// its surface and terrain.
+    pub fn project_with(&self, camera: &CameraState, point: Geodetic) -> Option<DVec2> {
+        self.camera.project_with(camera, point)
+    }
+
+    /// [`unproject`](Self::unproject) for `camera` in this map's viewport.
+    pub fn unproject_with(&self, camera: &CameraState, point: DVec2) -> Option<Geodetic> {
+        self.camera.unproject_with(camera, point)
+    }
+
+    /// Where a jump to `target` would put the camera, without moving it.
+    pub fn camera_for(&self, target: &CameraTarget) -> CameraState {
+        self.camera.state_for(target)
+    }
+
+    /// The camera's eye and orientation now (GL JS `getFreeCameraOptions`).
+    pub fn free_camera(&self) -> FreeCamera {
+        self.camera.free()
+    }
+
+    /// Moves the eye to `free` at once (GL JS `setFreeCameraOptions`),
+    /// ending any animation.
+    pub fn jump_to_free(&mut self, free: &FreeCamera) {
+        self.camera.jump_to_free(free);
     }
 
     /// The viewport the camera and gestures use: the last frame's, in

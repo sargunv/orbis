@@ -10,12 +10,14 @@
 
 mod animate;
 mod fit;
+mod free;
 mod moves;
 mod store;
 mod terrain;
 
 pub use animate::{CameraTarget, EaseOptions, Easing, FlyOptions, Glide, Track};
 pub use fit::{FitOptions, Padding};
+pub use free::FreeCamera;
 pub use moves::{Bounds, Constraints, wrap_bearing};
 pub use store::{AnimationId, Camera, CameraEvent, Change, Phase};
 pub use terrain::Elevation;
@@ -49,6 +51,10 @@ pub struct CameraState {
     /// elevation): the camera orbits a point this high. On terrain it is
     /// the ground's elevation under the target.
     pub elevation: f64,
+    /// Space the map keeps clear at the viewport's edges (GL JS's
+    /// `padding`): the target and the vanishing point sit at the middle
+    /// of what is left.
+    pub padding: Padding,
 }
 
 /// Size of one tile side at its own zoom in the style zoom convention, in
@@ -74,9 +80,20 @@ impl CameraState {
             roll: 0.0,
             fov: Self::DEFAULT_FOV,
             elevation: 0.0,
+            padding: Padding::default(),
         };
         camera.set_zoom(projection, zoom);
         camera
+    }
+
+    /// Where the target shows in `viewport`: the middle of its padded
+    /// area, in logical pixels.
+    pub fn center(&self, viewport: Viewport) -> DVec2 {
+        let p = self.padding;
+        DVec2::new(
+            (viewport.width + p.left - p.right) / 2.0,
+            (viewport.height + p.top - p.bottom) / 2.0,
+        )
     }
 
     /// The view's style zoom on `projection`'s plane (decision 0022), which
@@ -160,6 +177,8 @@ impl GlobeView {
 #[derive(Clone, Debug)]
 pub struct View {
     viewport: Viewport,
+    /// Where the target shows, logical pixels: the padded area's middle.
+    center: DVec2,
     pitch: f64,
     /// Degrees about the view axis.
     roll: f64,
@@ -233,8 +252,12 @@ impl View {
         // GL JS's `zfov`: a rolled view's vertical extent spans some of its
         // width, so the far plane reaches farther.
         let (roll_sin, roll_cos) = camera.roll.to_radians().sin_cos();
+        // Padding moves the target down from the middle: more shows above.
+        let center = camera.center(viewport);
+        let offset = center - DVec2::new(viewport.width, viewport.height) / 2.0;
         let above_center = half_fov
-            * (roll_cos.abs() * viewport.height + roll_sin.abs() * viewport.width)
+            * (roll_cos.abs() * (viewport.height + 2.0 * offset.y)
+                + roll_sin.abs() * (viewport.width + 2.0 * offset.x.abs()))
             / viewport.height;
         let top_half_surface = above_center.sin() * lowest_plane_px
             / (PI - ground_angle - above_center)
@@ -261,12 +284,20 @@ impl View {
             * DMat4::from_rotation_z(camera.bearing.to_radians())
             * to_px
             * DMat4::from_translation(DVec3::new(0.0, 0.0, -target_z));
-        let proj = glam::dcamera::rh::proj::directx::perspective(
-            fov,
-            viewport.width / viewport.height,
-            near_px,
-            far_px,
-        );
+        // The eye looks at the target; the picture shifts it to the padded
+        // area's middle (GL JS's `centerOffset`).
+        let shift = DMat4::from_translation(DVec3::new(
+            2.0 * offset.x / viewport.width,
+            -2.0 * offset.y / viewport.height,
+            0.0,
+        ));
+        let proj = shift
+            * glam::dcamera::rh::proj::directx::perspective(
+                fov,
+                viewport.width / viewport.height,
+                near_px,
+                far_px,
+            );
         let eye = view.inverse().transform_point3(DVec3::ZERO);
 
         let view_proj = proj * view;
@@ -295,12 +326,13 @@ impl View {
                 * DMat4::from_scale(DVec3::splat(1.0 / camera.resolution))
                 * local;
             let radius_px = sphere::RADIUS / camera.resolution;
-            let proj = glam::dcamera::rh::proj::directx::perspective(
-                fov,
-                viewport.width / viewport.height,
-                near_px,
-                eye_distance_px + 2.0 * radius_px,
-            );
+            let proj = shift
+                * glam::dcamera::rh::proj::directx::perspective(
+                    fov,
+                    viewport.width / viewport.height,
+                    near_px,
+                    eye_distance_px + 2.0 * radius_px,
+                );
             GlobeView {
                 amount,
                 target: sphere::ecef(target, camera.elevation),
@@ -313,6 +345,7 @@ impl View {
 
         Self {
             viewport,
+            center,
             pitch: camera.pitch,
             roll: camera.roll,
             fov: camera.fov,
@@ -364,32 +397,30 @@ impl View {
         let ndc_y = (1.0 - self.eye_distance_px / self.far_px)
             / pitch.tan()
             / (self.fov.to_radians() / 2.0).tan();
-        ((1.0 - ndc_y) * 0.5 * self.viewport.height).max(0.0)
+        ((1.0 - ndc_y) * 0.5 * self.viewport.height + self.center.y - self.viewport.height / 2.0)
+            .max(0.0)
     }
 
     /// Top logical row of the apparent horizon, including the reference's
     /// finite planar horizon adjustment. Sky starts here and extends upward.
     /// Without roll it is [`sky_horizon_line`](Self::sky_horizon_line)'s.
     pub fn sky_horizon(&self) -> f64 {
-        self.viewport.height / 2.0 - self.horizon_offset()
+        self.center.y - self.horizon_offset()
     }
 
     /// The apparent horizon as a line: a point on it and its unit normal
     /// toward the sky, logical pixels with y down. Roll turns it about the
-    /// viewport's centre (GL JS's `u_horizon`, `u_horizon_normal`).
+    /// target's place (GL JS's `u_horizon`, `u_horizon_normal`).
     pub fn sky_horizon_line(&self) -> (DVec2, DVec2) {
         let (sin, cos) = self.roll.to_radians().sin_cos();
         let h = self.horizon_offset();
         (
-            DVec2::new(
-                self.viewport.width / 2.0 - h * sin,
-                self.viewport.height / 2.0 - h * cos,
-            ),
+            DVec2::new(self.center.x - h * sin, self.center.y - h * cos),
             DVec2::new(-sin, -cos),
         )
     }
 
-    /// The horizon's distance from the viewport's centre, logical pixels
+    /// The horizon's distance from the target's place, logical pixels
     /// (GL JS's `getMercatorHorizon`).
     fn horizon_offset(&self) -> f64 {
         let pitch = self.pitch.to_radians();
@@ -399,6 +430,11 @@ impl View {
 
     pub fn viewport(&self) -> Viewport {
         self.viewport
+    }
+
+    /// Where the target shows, logical pixels: the padded area's middle.
+    pub fn center(&self) -> DVec2 {
+        self.center
     }
 
     /// The camera target's world position: the origin of camera-relative
@@ -1003,6 +1039,45 @@ mod tests {
             .projection()
     }
     use orb_crs::TileIndex;
+
+    #[test]
+    fn padding_moves_the_target_and_the_horizon_to_the_padded_middle() {
+        let viewport = Viewport {
+            width: 800.0,
+            height: 600.0,
+        };
+        let surface = Surface::plane(mercator());
+        let plain = CameraState {
+            pitch: 60.0,
+            ..CameraState::new(Geodetic::new(139.7, 35.7), 12.0, &mercator())
+        };
+        let padded = CameraState {
+            padding: Padding {
+                top: 200.0,
+                left: 100.0,
+                ..Padding::default()
+            },
+            ..plain
+        };
+        let (a, b) = (
+            View::new(&plain, viewport, &surface),
+            View::new(&padded, viewport, &surface),
+        );
+        let target = mercator().forward(plain.target);
+        let moved = DVec2::new(50.0, 100.0);
+        assert!((b.center() - DVec2::new(450.0, 400.0)).length() < 1e-9);
+        assert!((b.project(target).unwrap() - b.center()).length() < 1e-6);
+        // The same picture, shifted.
+        let ahead = target + DVec2::new(0.0, 2000.0);
+        let shifted = a.project(ahead).unwrap() + moved;
+        assert!((b.project(ahead).unwrap() - shifted).length() < 1e-6);
+        assert!((b.unproject(shifted).unwrap() - ahead).length() < 1e-3);
+        assert!((b.sky_horizon() - a.sky_horizon() - moved.y).abs() < 1e-9);
+        // More shows above the target, so the far plane reaches farther and
+        // the ground with it.
+        assert!(b.ground_horizon() < a.ground_horizon() + moved.y);
+        assert_eq!(a.eye(), b.eye());
+    }
 
     #[test]
     fn mercator_cameras_keep_to_the_world_vertically() {

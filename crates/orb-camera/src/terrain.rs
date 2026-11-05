@@ -180,8 +180,7 @@ impl CameraState {
     ) -> bool {
         let projection = &surface.projection;
         let view = View::over(self, viewport, surface, terrain);
-        let center = DVec2::new(viewport.width, viewport.height) / 2.0;
-        let Some((world, elevation)) = view.unproject_terrain(center, terrain) else {
+        let Some((world, elevation)) = view.unproject_terrain(view.center(), terrain) else {
             return false;
         };
         let hit = (world - view.camera_world()).extend(elevation * view.height_scale());

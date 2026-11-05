@@ -11,7 +11,7 @@ import { attachInput } from "./input.ts";
 import { defaultJobWorkers } from "./workers.ts";
 import { transaction, type FeatureTarget, type Transaction } from "./transaction.ts";
 import type {
-  Bounds, Camera, CameraOptions, Constraints, EaseOptions, Feature, FitOptions, FlyOptions,
+  Bounds, Camera, CameraOptions, Constraints, EaseOptions, Feature, FitOptions, FlyOptions, FreeCamera, Padding,
   FrameStats, Hit, LngLat, MapEvents, MapOptions, Point, QueryGeometry, QueryOptions,
   LocationFix, MarkerOptions, SourceQueryOptions, StyleImageData, StyleImageOptions,
 } from "./types.ts";
@@ -51,10 +51,21 @@ export class CameraControl {
   get current(): Camera {
     const c = this.#core().camera();
     const camera: Camera = {
-      center: [c.lon, c.lat], zoom: c.zoom, bearing: c.bearing, pitch: c.pitch, roll: c.roll, elevation: c.elevation,
+      center: [c.lon, c.lat], zoom: c.zoom, bearing: c.bearing, pitch: c.pitch, roll: c.roll,
+      elevation: c.elevation, fov: c.fov, padding: c.padding as Padding,
     };
     c.free();
     return camera;
+  }
+
+  /** The eye now (GL JS `getFreeCameraOptions`). */
+  get free(): FreeCamera { return this.#core().freeCamera() as FreeCamera; }
+
+  /** Puts the eye there at once (GL JS `setFreeCameraOptions`), keeping the
+   * field of view and padding; what `camera` leaves out stays. */
+  jumpToFree(camera: Partial<FreeCamera>): void {
+    this.#core().jumpToFree(camera);
+    this.#changed();
   }
 
   /** Whether the center stands on the terrain at rest (GL JS
@@ -233,15 +244,17 @@ export class OrbisMap {
   /** `for await (const e of map.events("idle"))`. */
   events<K extends keyof MapEvents>(type: K): AsyncGenerator<MapEvents[K]> { return this.#events.events(type); }
 
-  /** The pixel showing a point now, on the terrain, or null behind the eye. */
-  project(lngLat: LngLat): Point | null {
-    const p = this.#host.core.project(lngLat[0], lngLat[1]);
+  /** The pixel showing a point, on the terrain, or null behind the eye: now,
+   * or after a jump to `camera` (without making it). */
+  project(lngLat: LngLat, camera?: CameraOptions): Point | null {
+    const p = this.#host.core.project(lngLat[0], lngLat[1], camera);
     return p ? [p[0], p[1]] : null;
   }
 
-  /** The ground point under a pixel now, on the terrain, or null above the horizon. */
-  unproject(point: Point): LngLat | null {
-    const g = this.#host.core.unproject(point[0], point[1]);
+  /** The ground point under a pixel, on the terrain, or null above the
+   * horizon: now, or after a jump to `camera`. */
+  unproject(point: Point, camera?: CameraOptions): LngLat | null {
+    const g = this.#host.core.unproject(point[0], point[1], camera);
     return g ? [g[0], g[1]] : null;
   }
 

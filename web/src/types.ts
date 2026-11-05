@@ -21,6 +21,22 @@ export interface Camera {
   /** Metres the center stands above sea level: the terrain's, unless
    * the center isn't clamped to the ground. */
   elevation: number;
+  /** The vertical field of view, degrees. */
+  fov: number;
+  /** CSS pixels the map keeps clear at its edges (GL JS `padding`): the
+   * center and the vanishing point sit in the middle of the rest. */
+  padding: Padding;
+}
+
+/** A camera given by its eye (GL JS `FreeCameraOptions`). */
+export interface FreeCamera {
+  /** The point under the eye. */
+  position: LngLat;
+  /** Metres above sea level. */
+  altitude: number;
+  bearing: number;
+  pitch: number;
+  roll: number;
 }
 
 /** Where a camera move ends; what is left out stays. */
@@ -35,8 +51,12 @@ export interface CameraOptions {
   elevation?: number;
   /** Without `center`: the point a zoom or rotation keeps in place. */
   around?: LngLat;
-  /** Pixels the center ends up from the viewport's middle. */
+  /** Pixels the center ends up from the padded viewport's middle. */
   offset?: Point;
+  /** The vertical field of view, degrees. */
+  fov?: number;
+  /** The camera's padding from here on; sides left out stay. */
+  padding?: number | Partial<Padding>;
 }
 
 /** A cubic Bézier's control points, or "linear". GL JS's ease by default. */

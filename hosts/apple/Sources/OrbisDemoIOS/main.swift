@@ -57,7 +57,7 @@ final class ViewController: UIViewController {
         mapView = MapView(runtime: runtime)
         view = mapView
         let map = mapView.map
-        map.jumpTo(target: OrbCameraTarget(lon: 139.767, lat: 35.681, zoom: 13, bearing: .nan, pitch: .nan, roll: .nan, elevation: .nan))
+        map.jumpTo(target: OrbCameraTarget(lon: 139.767, lat: 35.681, zoom: 13, bearing: .nan, pitch: .nan, roll: .nan, elevation: .nan, fov: .nan, padding: OrbPadding(top: .nan, right: .nan, bottom: .nan, left: .nan)))
         map.loadStyleUrl(url: "https://tiles.openfreemap.org/styles/liberty")
         status.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         status.backgroundColor = UIColor.white.withAlphaComponent(0.8)

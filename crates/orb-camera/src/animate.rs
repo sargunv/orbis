@@ -93,6 +93,10 @@ pub struct CameraTarget {
     pub pitch: Option<f64>,
     /// Degrees about the view axis (GL JS `roll`).
     pub roll: Option<f64>,
+    /// The vertical field of view, degrees.
+    pub fov: Option<f64>,
+    /// The camera's padding from here on (GL JS `padding`).
+    pub padding: Option<crate::Padding>,
     /// Metres the target stands above the surface (GL JS `elevation`).
     /// While the target is clamped to the ground, the terrain takes it.
     pub elevation: Option<f64>,
@@ -468,6 +472,8 @@ impl Motion {
                 next.pitch = lerp(from.pitch, to.pitch, k);
                 next.roll = wrap_bearing(lerp(from.roll, nearest_bearing(from.roll, to.roll), k));
                 next.elevation = lerp(from.elevation, to.elevation, k);
+                next.fov = lerp(from.fov, to.fov, k);
+                next.padding = from.padding.lerp(to.padding, k);
                 match around {
                     Some((ground, at)) => {
                         let world = projection.forward(*ground);
@@ -510,13 +516,15 @@ impl Motion {
                 next.pitch = lerp(from.pitch, to.pitch, k);
                 next.roll = wrap_bearing(lerp(from.roll, nearest_bearing(from.roll, to.roll), k));
                 next.elevation = lerp(from.elevation, to.elevation, k);
+                next.fov = lerp(from.fov, to.fov, k);
+                next.padding = from.padding.lerp(to.padding, k);
                 let start = from.target_world(projection);
                 let world_per_px = next.world_per_px(projection);
                 next.set_target_world(projection, start + (*to_world - start) * u, world_per_px);
                 *camera = next;
             }
             Self::Glide { glide, done } => {
-                let center = DVec2::new(viewport.width, viewport.height) / 2.0;
+                let center = camera.center(viewport);
                 let around = glide.around.unwrap_or(center);
                 let p = [
                     progress(&glide.pan, elapsed),

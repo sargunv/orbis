@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include "diplomat_runtime.h"
 
+#include "OrbPadding.d.h"
 
 
 
@@ -19,6 +20,8 @@ typedef struct OrbCamera {
   double pitch;
   double roll;
   double elevation;
+  double fov;
+  OrbPadding padding;
 } OrbCamera;
 
 typedef struct OrbCamera_option {union { OrbCamera ok; }; bool is_ok; } OrbCamera_option;

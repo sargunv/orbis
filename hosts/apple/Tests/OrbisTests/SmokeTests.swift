@@ -21,7 +21,7 @@ private let style = """
     """
 
 @Test func smoke() throws {
-    #expect(OrbRuntime.abiVersion() == 5)
+    #expect(OrbRuntime.abiVersion() == 6)
     let runtime = try OrbRuntime.create(jobThreads: 0)
     let target = OrbTarget.createTexture(runtime: runtime, width: 64, height: 64, scale: 1)
     let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
@@ -43,6 +43,21 @@ private let style = """
     }
     let hit = try #require(map.hitTest(x: 32, y: 32))
     #expect(hit.layer() == "box" && hit.id() == "7")
+
+    // Padding moves the centre down; a camera's projection answers before
+    // any move; the eye round-trips.
+    let keep = OrbPadding(top: .nan, right: .nan, bottom: .nan, left: .nan)
+    var padding = keep
+    padding.top = 32
+    map.jumpTo(target: OrbCameraTarget(lon: .nan, lat: .nan, zoom: .nan, bearing: .nan, pitch: .nan, roll: .nan, elevation: .nan, fov: .nan, padding: padding))
+    let centre = map.project(lon: 0, lat: 0)
+    #expect(centre.valid && abs(centre.y - 48) < 1e-6)
+    let closer = OrbCameraTarget(lon: .nan, lat: .nan, zoom: 1, bearing: .nan, pitch: .nan, roll: .nan, elevation: .nan, fov: .nan, padding: keep)
+    let east = map.projectWith(camera: closer, lon: 10, lat: 0)
+    #expect(abs(east.x - 32 - 1024 * 10 / 360) < 1e-6)
+    map.jumpToFree(camera: map.freeCamera())
+    let camera = map.camera()
+    #expect(abs(camera.lon) < 1e-9 && abs(camera.zoom) < 1e-9 && camera.padding.top == 32)
 }
 
 /// A window-style target: a CAMetalLayer, presented frame by frame, as

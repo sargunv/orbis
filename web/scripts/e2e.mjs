@@ -4,7 +4,7 @@
 //   on web/dist/scenario.html, on WebGPU and WebGL2: an inline style,
 //   pixels, a hit test, a rendered-features query, an edit's generation,
 //   style images, camera moves with roll and elevation, project and
-//   unproject, a drag, a click, idle drawing nothing, and an error.
+//   unproject (for the camera now and another), padding, the free camera, a drag, a click, idle drawing nothing, and an error.
 // - `edits`: every edit class through the map app's edit API
 //   (`globalThis.orbis`, web/demo/expose.js) must resolve and settle, and
 //   the cost of a feature-state write (plan §10.2's ≤0.05 ms target) over
@@ -100,6 +100,22 @@ async function scenario(browser, server, config) {
   const projected = await scenario((s, c) => ({ p: s.map.project([0, 0]), g: s.map.unproject(c) }), CENTER);
   assert.ok(Math.hypot(projected.p[0] - CENTER[0], projected.p[1] - CENTER[1]) < 1e-6, String(projected.p));
   assert.ok(Math.hypot(...projected.g) < 1e-6, String(projected.g));
+
+  // Padding moves the center; a camera's projection answers before any
+  // move; the eye round-trips.
+  const camera = await scenario((s) => {
+    s.map.camera.jumpTo({ padding: { top: 40 } });
+    const padded = s.map.project([0, 0]);
+    const closer = s.map.project([10, 0], { zoom: s.map.camera.current.zoom + 1 });
+    const zoom = s.map.camera.current.zoom;
+    s.map.camera.jumpToFree(s.map.camera.free);
+    const after = s.map.camera.current;
+    s.map.camera.jumpTo({ padding: 0 });
+    return { padded, closer, zoom, after };
+  });
+  assert.ok(Math.abs(camera.padded[1] - CENTER[1] - 20) < 1e-6, String(camera.padded));
+  assert.ok(Math.abs(camera.closer[0] - CENTER[0] - 2 ** camera.zoom * 1024 * 10 / 360) < 1e-6, String(camera.closer));
+  assert.ok(Math.abs(camera.after.zoom - camera.zoom) < 1e-9 && camera.after.padding.top === 40, JSON.stringify(camera.after));
 
   // An edit resolves to the generation whose frames show it.
   const generation = await scenario(async (s) => {

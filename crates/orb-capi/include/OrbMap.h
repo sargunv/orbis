@@ -17,6 +17,7 @@
 #include "OrbFeature.d.h"
 #include "OrbFeel.d.h"
 #include "OrbFrame.d.h"
+#include "OrbFreeCamera.d.h"
 #include "OrbImage.d.h"
 #include "OrbKey.d.h"
 #include "OrbLngLat.d.h"
@@ -99,6 +100,10 @@ uint64_t OrbMap_generation(const OrbMap* self);
 
 OrbCamera OrbMap_camera(const OrbMap* self);
 
+OrbFreeCamera OrbMap_free_camera(const OrbMap* self);
+
+void OrbMap_jump_to_free(OrbMap* self, OrbFreeCamera camera);
+
 void OrbMap_set_center_clamped_to_ground(OrbMap* self, bool clamped);
 
 bool OrbMap_center_clamped_to_ground(const OrbMap* self);
@@ -138,6 +143,10 @@ OrbFeature* OrbMap_hit_test(const OrbMap* self, double x, double y);
 uint64_t OrbMap_query_rendered(OrbMap* self, double x0, double y0, double x1, double y1);
 
 OrbPoint OrbMap_project(const OrbMap* self, double lon, double lat);
+
+OrbPoint OrbMap_project_with(const OrbMap* self, OrbCameraTarget camera, double lon, double lat);
+
+OrbLngLat OrbMap_unproject_with(const OrbMap* self, OrbCameraTarget camera, double x, double y);
 
 OrbLngLat OrbMap_unproject(const OrbMap* self, double x, double y);
 

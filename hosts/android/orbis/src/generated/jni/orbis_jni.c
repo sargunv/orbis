@@ -17,8 +17,10 @@ static jmethodID g_new_OrbCamera;
 static jmethodID g_new_OrbCameraTarget;
 static jmethodID g_new_OrbConstraints;
 static jmethodID g_new_OrbFrame;
+static jmethodID g_new_OrbFreeCamera;
 static jmethodID g_new_OrbLngLat;
 static jmethodID g_new_OrbModifiers;
+static jmethodID g_new_OrbPadding;
 static jmethodID g_new_OrbPoint;
 static jmethodID g_new_OrbError_exception;
 
@@ -108,12 +110,14 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     if (!function0) return JNI_ERR;
     g_function0_invoke = (*env)->GetMethodID(env, function0, "invoke", "()Ljava/lang/Object;");
     g_new_OrbBounds = (*env)->GetStaticMethodID(env, g_native, "newOrbBounds", "(DDDD)Ldev/orbis/OrbBounds;");
-    g_new_OrbCamera = (*env)->GetStaticMethodID(env, g_native, "newOrbCamera", "(DDDDDDD)Ldev/orbis/OrbCamera;");
-    g_new_OrbCameraTarget = (*env)->GetStaticMethodID(env, g_native, "newOrbCameraTarget", "(DDDDDDD)Ldev/orbis/OrbCameraTarget;");
+    g_new_OrbCamera = (*env)->GetStaticMethodID(env, g_native, "newOrbCamera", "(DDDDDDDDDDDD)Ldev/orbis/OrbCamera;");
+    g_new_OrbCameraTarget = (*env)->GetStaticMethodID(env, g_native, "newOrbCameraTarget", "(DDDDDDDDDDDD)Ldev/orbis/OrbCameraTarget;");
     g_new_OrbConstraints = (*env)->GetStaticMethodID(env, g_native, "newOrbConstraints", "(DDDDZDDDD)Ldev/orbis/OrbConstraints;");
     g_new_OrbFrame = (*env)->GetStaticMethodID(env, g_native, "newOrbFrame", "(ZJZZIIIIII)Ldev/orbis/OrbFrame;");
+    g_new_OrbFreeCamera = (*env)->GetStaticMethodID(env, g_native, "newOrbFreeCamera", "(DDDDDD)Ldev/orbis/OrbFreeCamera;");
     g_new_OrbLngLat = (*env)->GetStaticMethodID(env, g_native, "newOrbLngLat", "(DDZ)Ldev/orbis/OrbLngLat;");
     g_new_OrbModifiers = (*env)->GetStaticMethodID(env, g_native, "newOrbModifiers", "(ZZZZ)Ldev/orbis/OrbModifiers;");
+    g_new_OrbPadding = (*env)->GetStaticMethodID(env, g_native, "newOrbPadding", "(DDDD)Ldev/orbis/OrbPadding;");
     g_new_OrbPoint = (*env)->GetStaticMethodID(env, g_native, "newOrbPoint", "(DDZ)Ldev/orbis/OrbPoint;");
     g_new_OrbError_exception = (*env)->GetStaticMethodID(env, g_native, "newOrbErrorException", "(I[B)Ljava/lang/Throwable;");
     if ((*env)->ExceptionCheck(env)) return JNI_ERR;
@@ -602,7 +606,20 @@ JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapCamera(JNIEnv* env, j
     (void)env;
     (void)cls;
     OrbCamera result = OrbMap_camera((const OrbMap*)(intptr_t)self);
-    return (*env)->CallStaticObjectMethod(env, g_native, g_new_OrbCamera, (jdouble)((result).lon), (jdouble)((result).lat), (jdouble)((result).zoom), (jdouble)((result).bearing), (jdouble)((result).pitch), (jdouble)((result).roll), (jdouble)((result).elevation));
+    return (*env)->CallStaticObjectMethod(env, g_native, g_new_OrbCamera, (jdouble)((result).lon), (jdouble)((result).lat), (jdouble)((result).zoom), (jdouble)((result).bearing), (jdouble)((result).pitch), (jdouble)((result).roll), (jdouble)((result).elevation), (jdouble)((result).fov), (jdouble)((result).padding.top), (jdouble)((result).padding.right), (jdouble)((result).padding.bottom), (jdouble)((result).padding.left));
+}
+
+JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapFreeCamera(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbFreeCamera result = OrbMap_free_camera((const OrbMap*)(intptr_t)self);
+    return (*env)->CallStaticObjectMethod(env, g_native, g_new_OrbFreeCamera, (jdouble)((result).lon), (jdouble)((result).lat), (jdouble)((result).altitude), (jdouble)((result).bearing), (jdouble)((result).pitch), (jdouble)((result).roll));
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapJumpToFree(JNIEnv* env, jclass cls, jlong self, jdouble camera_lon, jdouble camera_lat, jdouble camera_altitude, jdouble camera_bearing, jdouble camera_pitch, jdouble camera_roll) {
+    (void)env;
+    (void)cls;
+    OrbMap_jump_to_free((OrbMap*)(intptr_t)self, (OrbFreeCamera){ .lon = (double)(camera_lon), .lat = (double)(camera_lat), .altitude = (double)(camera_altitude), .bearing = (double)(camera_bearing), .pitch = (double)(camera_pitch), .roll = (double)(camera_roll) });
 }
 
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetCenterClampedToGround(JNIEnv* env, jclass cls, jlong self, jboolean clamped) {
@@ -624,23 +641,23 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetCenterElevation(JNIEn
     OrbMap_set_center_elevation((OrbMap*)(intptr_t)self, (double)(elevation));
 }
 
-JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapJumpTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble target_roll, jdouble target_elevation) {
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapJumpTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble target_roll, jdouble target_elevation, jdouble target_fov, jdouble target_padding_top, jdouble target_padding_right, jdouble target_padding_bottom, jdouble target_padding_left) {
     (void)env;
     (void)cls;
-    OrbMap_jump_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch), .roll = (double)(target_roll), .elevation = (double)(target_elevation) });
+    OrbMap_jump_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch), .roll = (double)(target_roll), .elevation = (double)(target_elevation), .fov = (double)(target_fov), .padding = (OrbPadding){ .top = (double)(target_padding_top), .right = (double)(target_padding_right), .bottom = (double)(target_padding_bottom), .left = (double)(target_padding_left) } });
 }
 
-JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapEaseTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble target_roll, jdouble target_elevation, jdouble durationMs) {
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapEaseTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble target_roll, jdouble target_elevation, jdouble target_fov, jdouble target_padding_top, jdouble target_padding_right, jdouble target_padding_bottom, jdouble target_padding_left, jdouble durationMs) {
     (void)env;
     (void)cls;
-    uint64_t result = OrbMap_ease_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch), .roll = (double)(target_roll), .elevation = (double)(target_elevation) }, (double)(durationMs));
+    uint64_t result = OrbMap_ease_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch), .roll = (double)(target_roll), .elevation = (double)(target_elevation), .fov = (double)(target_fov), .padding = (OrbPadding){ .top = (double)(target_padding_top), .right = (double)(target_padding_right), .bottom = (double)(target_padding_bottom), .left = (double)(target_padding_left) } }, (double)(durationMs));
     return (jlong)(result);
 }
 
-JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapFlyTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble target_roll, jdouble target_elevation, jdouble durationMs) {
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapFlyTo(JNIEnv* env, jclass cls, jlong self, jdouble target_lon, jdouble target_lat, jdouble target_zoom, jdouble target_bearing, jdouble target_pitch, jdouble target_roll, jdouble target_elevation, jdouble target_fov, jdouble target_padding_top, jdouble target_padding_right, jdouble target_padding_bottom, jdouble target_padding_left, jdouble durationMs) {
     (void)env;
     (void)cls;
-    uint64_t result = OrbMap_fly_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch), .roll = (double)(target_roll), .elevation = (double)(target_elevation) }, (double)(durationMs));
+    uint64_t result = OrbMap_fly_to((OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(target_lon), .lat = (double)(target_lat), .zoom = (double)(target_zoom), .bearing = (double)(target_bearing), .pitch = (double)(target_pitch), .roll = (double)(target_roll), .elevation = (double)(target_elevation), .fov = (double)(target_fov), .padding = (OrbPadding){ .top = (double)(target_padding_top), .right = (double)(target_padding_right), .bottom = (double)(target_padding_bottom), .left = (double)(target_padding_left) } }, (double)(durationMs));
     return (jlong)(result);
 }
 
@@ -739,6 +756,20 @@ JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapProject(JNIEnv* env, 
     (void)cls;
     OrbPoint result = OrbMap_project((const OrbMap*)(intptr_t)self, (double)(lon), (double)(lat));
     return (*env)->CallStaticObjectMethod(env, g_native, g_new_OrbPoint, (jdouble)((result).x), (jdouble)((result).y), ((result).valid) ? JNI_TRUE : JNI_FALSE);
+}
+
+JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapProjectWith(JNIEnv* env, jclass cls, jlong self, jdouble camera_lon, jdouble camera_lat, jdouble camera_zoom, jdouble camera_bearing, jdouble camera_pitch, jdouble camera_roll, jdouble camera_elevation, jdouble camera_fov, jdouble camera_padding_top, jdouble camera_padding_right, jdouble camera_padding_bottom, jdouble camera_padding_left, jdouble lon, jdouble lat) {
+    (void)env;
+    (void)cls;
+    OrbPoint result = OrbMap_project_with((const OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(camera_lon), .lat = (double)(camera_lat), .zoom = (double)(camera_zoom), .bearing = (double)(camera_bearing), .pitch = (double)(camera_pitch), .roll = (double)(camera_roll), .elevation = (double)(camera_elevation), .fov = (double)(camera_fov), .padding = (OrbPadding){ .top = (double)(camera_padding_top), .right = (double)(camera_padding_right), .bottom = (double)(camera_padding_bottom), .left = (double)(camera_padding_left) } }, (double)(lon), (double)(lat));
+    return (*env)->CallStaticObjectMethod(env, g_native, g_new_OrbPoint, (jdouble)((result).x), (jdouble)((result).y), ((result).valid) ? JNI_TRUE : JNI_FALSE);
+}
+
+JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapUnprojectWith(JNIEnv* env, jclass cls, jlong self, jdouble camera_lon, jdouble camera_lat, jdouble camera_zoom, jdouble camera_bearing, jdouble camera_pitch, jdouble camera_roll, jdouble camera_elevation, jdouble camera_fov, jdouble camera_padding_top, jdouble camera_padding_right, jdouble camera_padding_bottom, jdouble camera_padding_left, jdouble x, jdouble y) {
+    (void)env;
+    (void)cls;
+    OrbLngLat result = OrbMap_unproject_with((const OrbMap*)(intptr_t)self, (OrbCameraTarget){ .lon = (double)(camera_lon), .lat = (double)(camera_lat), .zoom = (double)(camera_zoom), .bearing = (double)(camera_bearing), .pitch = (double)(camera_pitch), .roll = (double)(camera_roll), .elevation = (double)(camera_elevation), .fov = (double)(camera_fov), .padding = (OrbPadding){ .top = (double)(camera_padding_top), .right = (double)(camera_padding_right), .bottom = (double)(camera_padding_bottom), .left = (double)(camera_padding_left) } }, (double)(x), (double)(y));
+    return (*env)->CallStaticObjectMethod(env, g_native, g_new_OrbLngLat, (jdouble)((result).lon), (jdouble)((result).lat), ((result).valid) ? JNI_TRUE : JNI_FALSE);
 }
 
 JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbMapUnproject(JNIEnv* env, jclass cls, jlong self, jdouble x, jdouble y) {

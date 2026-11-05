@@ -4,6 +4,7 @@
  * (`orb-api`'s tests); the emitters' tests cover every API shape.
  * `cargo xtask bindings --test` builds it against the installed library. */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +38,7 @@ static DiplomatStringView view(const char* text) {
 }
 
 int main(void) {
-    CHECK(OrbRuntime_abi_version() == 5);
+    CHECK(OrbRuntime_abi_version() == 6);
     OrbRuntime_create_result rt = OrbRuntime_create(0);
     CHECK(rt.is_ok);
     OrbTarget* target = OrbTarget_create_texture(rt.ok, SIZE, SIZE, 1.0);
@@ -68,6 +69,21 @@ int main(void) {
     OrbFeature* hit = OrbMap_hit_test(map, SIZE / 2.0, SIZE / 2.0);
     CHECK(hit && OrbFeature_has_id(hit));
     OrbFeature_destroy(hit);
+
+    /* Padding moves the centre down; a camera's projection answers before
+     * any move; the eye round-trips. */
+    OrbCameraTarget padded = {NAN, NAN, NAN, NAN, NAN, NAN, NAN, NAN, {32, NAN, NAN, NAN}};
+    OrbMap_jump_to(map, padded);
+    OrbPoint centre = OrbMap_project(map, 0, 0);
+    CHECK(centre.valid && fabs(centre.x - 32) < 1e-6 && fabs(centre.y - 48) < 1e-6);
+    OrbCameraTarget closer = {NAN, NAN, 1, NAN, NAN, NAN, NAN, NAN, {NAN, NAN, NAN, NAN}};
+    OrbPoint east = OrbMap_project_with(map, closer, 10, 0);
+    CHECK(east.valid && fabs(east.x - 32 - 1024.0 * 10 / 360) < 1e-6);
+    CHECK(OrbMap_camera(map).zoom == 0);
+    OrbMap_jump_to_free(map, OrbMap_free_camera(map));
+    OrbCamera camera = OrbMap_camera(map);
+    CHECK(fabs(camera.lon) < 1e-9 && fabs(camera.lat) < 1e-9 && fabs(camera.zoom) < 1e-9);
+    CHECK(camera.padding.top == 32 && fabs(camera.fov - 36.87) < 0.01);
 
     OrbMap_destroy(map);
     OrbTarget_destroy(target);

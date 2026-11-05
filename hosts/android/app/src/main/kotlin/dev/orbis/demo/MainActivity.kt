@@ -13,6 +13,7 @@ import android.widget.TextView
 import android.os.Build
 import dev.orbis.OrbBackend
 import dev.orbis.OrbCameraTarget
+import dev.orbis.OrbPadding
 import dev.orbis.OrbEventKind
 import dev.orbis.OrbMap
 import dev.orbis.OrbRuntime
@@ -92,7 +93,7 @@ class MainActivity : Activity() {
         if (intent.getStringExtra("style") == "tokyo") {
             view.map.loadStyleUrl("file://${File(data, "tokyo-mvt.json").path}")
         } else {
-            view.map.jumpTo(OrbCameraTarget(139.767, 35.681, 13.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN))
+            view.map.jumpTo(OrbCameraTarget(139.767, 35.681, 13.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, OrbPadding(Double.NaN, Double.NaN, Double.NaN, Double.NaN)))
             view.map.loadStyleUrl("https://tiles.openfreemap.org/styles/liberty")
         }
 

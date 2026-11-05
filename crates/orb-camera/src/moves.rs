@@ -172,7 +172,7 @@ impl CameraState {
         change: impl FnOnce(&mut Self),
     ) {
         let projection = &surface.projection;
-        let center = DVec2::new(viewport.width, viewport.height) / 2.0;
+        let center = self.center(viewport);
         if at.distance_squared(center) < 1e-4 {
             // The centre is the target already. A projection round trip
             // could move it by an ULP and change the ideal cover at a zoom

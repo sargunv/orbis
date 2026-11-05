@@ -393,10 +393,23 @@ mod ffi {
         Android = 2,
     }
 
-    /// The camera: the point at the viewport's centre, the style zoom, the
-    /// bearing (degrees clockwise from north), the pitch (degrees from
-    /// looking straight down), the roll (degrees about the view axis) and
-    /// the centre's elevation (metres above sea level).
+    /// Space at the viewport's edges, logical pixels.
+    #[diplomat::attr(contract, thread = "any")]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct OrbPadding {
+        pub top: f64,
+        pub right: f64,
+        pub bottom: f64,
+        pub left: f64,
+    }
+
+    /// The camera: the point at the middle of the padded viewport, the
+    /// style zoom, the bearing (degrees clockwise from north), the pitch
+    /// (degrees from looking straight down), the roll (degrees about the
+    /// view axis), the centre's elevation (metres above sea level), the
+    /// vertical field of view (degrees) and the padding the map keeps
+    /// clear (GL JS `padding`: the centre and the vanishing point sit in
+    /// the middle of the rest).
     #[diplomat::attr(contract, thread = "any")]
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub struct OrbCamera {
@@ -407,10 +420,13 @@ mod ffi {
         pub pitch: f64,
         pub roll: f64,
         pub elevation: f64,
+        pub fov: f64,
+        pub padding: OrbPadding,
     }
 
-    /// Where a camera move ends; NaN keeps a value as it is. While the
-    /// centre is clamped to the ground, the terrain takes the elevation.
+    /// Where a camera move ends; NaN keeps a value as it is (each side of
+    /// the padding apart). While the centre is clamped to the ground, the
+    /// terrain takes the elevation.
     #[diplomat::attr(contract, thread = "any")]
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub struct OrbCameraTarget {
@@ -421,6 +437,22 @@ mod ffi {
         pub pitch: f64,
         pub roll: f64,
         pub elevation: f64,
+        pub fov: f64,
+        pub padding: OrbPadding,
+    }
+
+    /// A camera given by its eye (GL JS's free camera): the point under
+    /// it, its height above sea level in metres, and the bearing, pitch and
+    /// roll it looks with, degrees.
+    #[diplomat::attr(contract, thread = "any")]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct OrbFreeCamera {
+        pub lon: f64,
+        pub lat: f64,
+        pub altitude: f64,
+        pub bearing: f64,
+        pub pitch: f64,
+        pub roll: f64,
     }
 
     /// A geographic box, degrees.
@@ -1163,6 +1195,7 @@ mod ffi {
         #[diplomat::attr(contract, snapshot)]
         pub fn camera(&self) -> OrbCamera {
             let c = self.0.camera();
+            let p = c.padding;
             OrbCamera {
                 lon: c.target.lon,
                 lat: c.target.lat,
@@ -1171,7 +1204,41 @@ mod ffi {
                 pitch: c.pitch,
                 roll: c.roll,
                 elevation: c.elevation,
+                fov: c.fov,
+                padding: OrbPadding {
+                    top: p.top,
+                    right: p.right,
+                    bottom: p.bottom,
+                    left: p.left,
+                },
             }
+        }
+
+        /// The camera's eye and orientation now.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn free_camera(&self) -> OrbFreeCamera {
+            let f = self.0.free_camera();
+            OrbFreeCamera {
+                lon: f.position.lon,
+                lat: f.position.lat,
+                altitude: f.altitude,
+                bearing: f.bearing,
+                pitch: f.pitch,
+                roll: f.roll,
+            }
+        }
+
+        /// Puts the eye there at once, keeping the field of view and
+        /// padding.
+        #[diplomat::attr(contract, command)]
+        pub fn jump_to_free(&mut self, camera: OrbFreeCamera) {
+            self.0.jump_to_free(&orb_api::FreeCamera {
+                position: orb_api::Geodetic::new(camera.lon, camera.lat),
+                altitude: camera.altitude,
+                bearing: camera.bearing,
+                pitch: camera.pitch,
+                roll: camera.roll,
+            });
         }
 
         /// Whether the centre stands on the terrain at rest (GL JS
@@ -1197,7 +1264,8 @@ mod ffi {
         /// Moves the camera at once.
         #[diplomat::attr(contract, command)]
         pub fn jump_to(&mut self, target: OrbCameraTarget) {
-            self.0.jump_to(&crate::camera_target(target));
+            self.0
+                .jump_to(&crate::camera_target(target, self.0.camera().padding));
         }
 
         /// Eases the camera there over `duration_ms`; returns the
@@ -1208,7 +1276,12 @@ mod ffi {
                 duration: duration_ms.max(0.0),
                 ..Default::default()
             };
-            self.0.ease_to(&crate::camera_target(target), &options).0
+            self.0
+                .ease_to(
+                    &crate::camera_target(target, self.0.camera().padding),
+                    &options,
+                )
+                .0
         }
 
         /// Flies the camera there, zooming out on the way; NaN
@@ -1219,7 +1292,12 @@ mod ffi {
                 duration: (!duration_ms.is_nan()).then_some(duration_ms.max(0.0)),
                 ..Default::default()
             };
-            self.0.fly_to(&crate::camera_target(target), &options).0
+            self.0
+                .fly_to(
+                    &crate::camera_target(target, self.0.camera().padding),
+                    &options,
+                )
+                .0
         }
 
         /// Eases the camera to show `bounds` with `padding` logical pixels
@@ -1418,35 +1496,35 @@ mod ffi {
         /// Where a point is in the viewport, in logical pixels.
         #[diplomat::attr(contract, query)]
         pub fn project(&self, lon: f64, lat: f64) -> OrbPoint {
-            match self.0.project(orb_api::Geodetic::new(lon, lat)) {
-                Some(p) => OrbPoint {
-                    x: p.x,
-                    y: p.y,
-                    valid: true,
-                },
-                None => OrbPoint {
-                    x: f64::NAN,
-                    y: f64::NAN,
-                    valid: false,
-                },
-            }
+            crate::point(self.0.project(orb_api::Geodetic::new(lon, lat)))
+        }
+
+        /// Where a point would be in the viewport after a jump to
+        /// `camera`, without moving.
+        #[diplomat::attr(contract, query)]
+        pub fn project_with(&self, camera: OrbCameraTarget, lon: f64, lat: f64) -> OrbPoint {
+            let at = self.0.project_with(
+                &crate::camera_target(camera, self.0.camera().padding),
+                orb_api::Geodetic::new(lon, lat),
+            );
+            crate::point(at)
+        }
+
+        /// The point under a viewport position after a jump to `camera`,
+        /// without moving.
+        #[diplomat::attr(contract, query)]
+        pub fn unproject_with(&self, camera: OrbCameraTarget, x: f64, y: f64) -> OrbLngLat {
+            let at = self.0.unproject_with(
+                &crate::camera_target(camera, self.0.camera().padding),
+                glam::DVec2::new(x, y),
+            );
+            crate::lng_lat(at)
         }
 
         /// The point under a viewport position in logical pixels.
         #[diplomat::attr(contract, query)]
         pub fn unproject(&self, x: f64, y: f64) -> OrbLngLat {
-            match self.0.unproject(glam::DVec2::new(x, y)) {
-                Some(p) => OrbLngLat {
-                    lon: p.lon,
-                    lat: p.lat,
-                    valid: true,
-                },
-                None => OrbLngLat {
-                    lon: f64::NAN,
-                    lat: f64::NAN,
-                    valid: false,
-                },
-            }
+            crate::lng_lat(self.0.unproject(glam::DVec2::new(x, y)))
         }
 
         /// Draws what the camera shows in a `width × height` view (logical
@@ -1549,7 +1627,7 @@ use std::ptr::NonNull;
 use ffi::{OrbError, OrbEventKind};
 
 /// Bumped on every incompatible change to the C ABI while it is 0.x.
-const ABI_VERSION: u32 = 5;
+const ABI_VERSION: u32 = 6;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -1629,8 +1707,11 @@ fn raw_target(
     }))
 }
 
-fn camera_target(t: ffi::OrbCameraTarget) -> orb_api::CameraTarget {
+/// A move's target; NaN keeps a value, each side of `padding` apart.
+fn camera_target(t: ffi::OrbCameraTarget, padding: orb_api::Padding) -> orb_api::CameraTarget {
     let some = |v: f64| (!v.is_nan()).then_some(v);
+    let p = t.padding;
+    let side = |v: f64, now: f64| if v.is_nan() { now } else { v };
     orb_api::CameraTarget {
         center: (!t.lon.is_nan() && !t.lat.is_nan()).then(|| orb_api::Geodetic::new(t.lon, t.lat)),
         zoom: some(t.zoom),
@@ -1638,7 +1719,47 @@ fn camera_target(t: ffi::OrbCameraTarget) -> orb_api::CameraTarget {
         pitch: some(t.pitch),
         roll: some(t.roll),
         elevation: some(t.elevation),
+        fov: some(t.fov),
+        padding: [p.top, p.right, p.bottom, p.left]
+            .iter()
+            .any(|v| !v.is_nan())
+            .then(|| orb_api::Padding {
+                top: side(p.top, padding.top),
+                right: side(p.right, padding.right),
+                bottom: side(p.bottom, padding.bottom),
+                left: side(p.left, padding.left),
+            }),
         ..Default::default()
+    }
+}
+
+fn point(p: Option<glam::DVec2>) -> ffi::OrbPoint {
+    match p {
+        Some(p) => ffi::OrbPoint {
+            x: p.x,
+            y: p.y,
+            valid: true,
+        },
+        None => ffi::OrbPoint {
+            x: f64::NAN,
+            y: f64::NAN,
+            valid: false,
+        },
+    }
+}
+
+fn lng_lat(p: Option<orb_api::Geodetic>) -> ffi::OrbLngLat {
+    match p {
+        Some(p) => ffi::OrbLngLat {
+            lon: p.lon,
+            lat: p.lat,
+            valid: true,
+        },
+        None => ffi::OrbLngLat {
+            lon: f64::NAN,
+            lat: f64::NAN,
+            valid: false,
+        },
     }
 }
 

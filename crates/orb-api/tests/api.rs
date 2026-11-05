@@ -457,3 +457,38 @@ fn a_camera_given_keeps_its_pitch_and_bearing() {
         }
     }
 }
+
+#[test]
+fn padding_draws_the_center_where_it_projects() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(STYLE).expect("style");
+    settle(&mut map, &mut target);
+    // The box is 28 pixels a side: padding at the top moves it down, off
+    // the top rows.
+    map.jump_to(&CameraTarget {
+        padding: Some(orb_api::Padding {
+            top: 40.0,
+            ..Default::default()
+        }),
+        ..CameraTarget::default()
+    });
+    settle(&mut map, &mut target);
+    let center = map
+        .project(orb_api::Geodetic::new(0.0, 0.0))
+        .expect("in view");
+    assert!(
+        (center - glam::DVec2::new(32.0, 52.0)).length() < 1e-9,
+        "{center}"
+    );
+    let pixels = target.read_pixels().unwrap();
+    assert_eq!(pixel(&pixels, 32, 24), [255, 0, 0, 255], "above the box");
+    assert_eq!(
+        pixel(&pixels, 32, 62),
+        [0, 0, 255, 255],
+        "the box, moved down"
+    );
+    let hit = map.hit_test(center).expect("the box");
+    assert_eq!(hit.layer, "box");
+}

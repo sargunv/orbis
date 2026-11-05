@@ -7,10 +7,13 @@ import Glibc
 #endif
 import OrbisC
 
-/// The camera: the point at the viewport's centre, the style zoom, the
-/// bearing (degrees clockwise from north), the pitch (degrees from
-/// looking straight down), the roll (degrees about the view axis) and
-/// the centre's elevation (metres above sea level).
+/// The camera: the point at the middle of the padded viewport, the
+/// style zoom, the bearing (degrees clockwise from north), the pitch
+/// (degrees from looking straight down), the roll (degrees about the
+/// view axis), the centre's elevation (metres above sea level), the
+/// vertical field of view (degrees) and the padding the map keeps
+/// clear (GL JS `padding`: the centre and the vanishing point sit in
+/// the middle of the rest).
 public struct OrbCamera: Equatable, Sendable {
     public var lon: Double
     public var lat: Double
@@ -19,8 +22,10 @@ public struct OrbCamera: Equatable, Sendable {
     public var pitch: Double
     public var roll: Double
     public var elevation: Double
+    public var fov: Double
+    public var padding: OrbPadding
 
-    public init(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double) {
+    public init(lon: Double, lat: Double, zoom: Double, bearing: Double, pitch: Double, roll: Double, elevation: Double, fov: Double, padding: OrbPadding) {
         self.lon = lon
         self.lat = lat
         self.zoom = zoom
@@ -28,6 +33,8 @@ public struct OrbCamera: Equatable, Sendable {
         self.pitch = pitch
         self.roll = roll
         self.elevation = elevation
+        self.fov = fov
+        self.padding = padding
     }
 
     init(_ c: OrbisC.OrbCamera) {
@@ -38,9 +45,11 @@ public struct OrbCamera: Equatable, Sendable {
         self.pitch = c.pitch
         self.roll = c.roll
         self.elevation = c.elevation
+        self.fov = c.fov
+        self.padding = OrbPadding(c.padding)
     }
 
     var c: OrbisC.OrbCamera {
-        OrbisC.OrbCamera(lon: self.lon, lat: self.lat, zoom: self.zoom, bearing: self.bearing, pitch: self.pitch, roll: self.roll, elevation: self.elevation)
+        OrbisC.OrbCamera(lon: self.lon, lat: self.lat, zoom: self.zoom, bearing: self.bearing, pitch: self.pitch, roll: self.roll, elevation: self.elevation, fov: self.fov, padding: self.padding.c)
     }
 }

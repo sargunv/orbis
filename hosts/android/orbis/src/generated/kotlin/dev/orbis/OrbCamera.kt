@@ -2,10 +2,13 @@
 package dev.orbis
 
 /**
- * The camera: the point at the viewport's centre, the style zoom, the
- * bearing (degrees clockwise from north), the pitch (degrees from
- * looking straight down), the roll (degrees about the view axis) and
- * the centre's elevation (metres above sea level).
+ * The camera: the point at the middle of the padded viewport, the
+ * style zoom, the bearing (degrees clockwise from north), the pitch
+ * (degrees from looking straight down), the roll (degrees about the
+ * view axis), the centre's elevation (metres above sea level), the
+ * vertical field of view (degrees) and the padding the map keeps
+ * clear (GL JS `padding`: the centre and the vanishing point sit in
+ * the middle of the rest).
  */
 data class OrbCamera(
     val lon: Double,
@@ -15,4 +18,6 @@ data class OrbCamera(
     val pitch: Double,
     val roll: Double,
     val elevation: Double,
+    val fov: Double,
+    val padding: OrbPadding,
 )

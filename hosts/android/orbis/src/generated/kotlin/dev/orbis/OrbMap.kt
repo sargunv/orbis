@@ -283,6 +283,25 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * The camera's eye and orientation now.
+     *
+     * Contract: `snapshot`.
+     */
+    fun freeCamera(): OrbFreeCamera {
+        return OrbisNative.orbMapFreeCamera(live())
+    }
+
+    /**
+     * Puts the eye there at once, keeping the field of view and
+     * padding.
+     *
+     * Contract: `command`.
+     */
+    fun jumpToFree(camera: OrbFreeCamera) {
+        OrbisNative.orbMapJumpToFree(live(), camera.lon, camera.lat, camera.altitude, camera.bearing, camera.pitch, camera.roll)
+    }
+
+    /**
      * Whether the centre stands on the terrain at rest (GL JS
      * `centerClampedToGround`, on by default). Off, it keeps the
      * elevation it is given and the camera orbits a point in the air.
@@ -316,7 +335,7 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      * Contract: `command`.
      */
     fun jumpTo(target: OrbCameraTarget) {
-        OrbisNative.orbMapJumpTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, target.roll, target.elevation)
+        OrbisNative.orbMapJumpTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, target.roll, target.elevation, target.fov, target.padding.top, target.padding.right, target.padding.bottom, target.padding.left)
     }
 
     /**
@@ -326,7 +345,7 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      * Contract: `command`.
      */
     fun easeTo(target: OrbCameraTarget, durationMs: Double): ULong {
-        return OrbisNative.orbMapEaseTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, target.roll, target.elevation, durationMs).toULong()
+        return OrbisNative.orbMapEaseTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, target.roll, target.elevation, target.fov, target.padding.top, target.padding.right, target.padding.bottom, target.padding.left, durationMs).toULong()
     }
 
     /**
@@ -336,7 +355,7 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      * Contract: `command`.
      */
     fun flyTo(target: OrbCameraTarget, durationMs: Double): ULong {
-        return OrbisNative.orbMapFlyTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, target.roll, target.elevation, durationMs).toULong()
+        return OrbisNative.orbMapFlyTo(live(), target.lon, target.lat, target.zoom, target.bearing, target.pitch, target.roll, target.elevation, target.fov, target.padding.top, target.padding.right, target.padding.bottom, target.padding.left, durationMs).toULong()
     }
 
     /**
@@ -465,6 +484,26 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
      */
     fun project(lon: Double, lat: Double): OrbPoint {
         return OrbisNative.orbMapProject(live(), lon, lat)
+    }
+
+    /**
+     * Where a point would be in the viewport after a jump to
+     * `camera`, without moving.
+     *
+     * Contract: `query`.
+     */
+    fun projectWith(camera: OrbCameraTarget, lon: Double, lat: Double): OrbPoint {
+        return OrbisNative.orbMapProjectWith(live(), camera.lon, camera.lat, camera.zoom, camera.bearing, camera.pitch, camera.roll, camera.elevation, camera.fov, camera.padding.top, camera.padding.right, camera.padding.bottom, camera.padding.left, lon, lat)
+    }
+
+    /**
+     * The point under a viewport position after a jump to `camera`,
+     * without moving.
+     *
+     * Contract: `query`.
+     */
+    fun unprojectWith(camera: OrbCameraTarget, x: Double, y: Double): OrbLngLat {
+        return OrbisNative.orbMapUnprojectWith(live(), camera.lon, camera.lat, camera.zoom, camera.bearing, camera.pitch, camera.roll, camera.elevation, camera.fov, camera.padding.top, camera.padding.right, camera.padding.bottom, camera.padding.left, x, y)
     }
 
     /**

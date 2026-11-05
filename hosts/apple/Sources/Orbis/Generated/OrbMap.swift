@@ -288,6 +288,21 @@ public final class OrbMap {
         return OrbCamera(OrbMap_camera(live()))
     }
 
+    /// The camera's eye and orientation now.
+    ///
+    /// Contract: `snapshot`.
+    public func freeCamera() -> OrbFreeCamera {
+        return OrbFreeCamera(OrbMap_free_camera(live()))
+    }
+
+    /// Puts the eye there at once, keeping the field of view and
+    /// padding.
+    ///
+    /// Contract: `command`.
+    public func jumpToFree(camera: OrbFreeCamera) {
+        OrbMap_jump_to_free(live(), camera.c)
+    }
+
     /// Whether the centre stands on the terrain at rest (GL JS
     /// `centerClampedToGround`, on by default). Off, it keeps the
     /// elevation it is given and the camera orbits a point in the air.
@@ -431,6 +446,22 @@ public final class OrbMap {
     /// Contract: `query`.
     public func project(lon: Double, lat: Double) -> OrbPoint {
         return OrbPoint(OrbMap_project(live(), lon, lat))
+    }
+
+    /// Where a point would be in the viewport after a jump to
+    /// `camera`, without moving.
+    ///
+    /// Contract: `query`.
+    public func projectWith(camera: OrbCameraTarget, lon: Double, lat: Double) -> OrbPoint {
+        return OrbPoint(OrbMap_project_with(live(), camera.c, lon, lat))
+    }
+
+    /// The point under a viewport position after a jump to `camera`,
+    /// without moving.
+    ///
+    /// Contract: `query`.
+    public func unprojectWith(camera: OrbCameraTarget, x: Double, y: Double) -> OrbLngLat {
+        return OrbLngLat(OrbMap_unproject_with(live(), camera.c, x, y))
     }
 
     /// The point under a viewport position in logical pixels.
