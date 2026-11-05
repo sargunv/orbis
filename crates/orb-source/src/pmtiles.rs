@@ -236,6 +236,158 @@ pub fn directory(mut bytes: &[u8]) -> Result<Vec<Entry>, String> {
     Ok(entries)
 }
 
+/// What an archive's header says of its tiles.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Contents {
+    pub tile_type: TileType,
+    pub tile_compression: Compression,
+    pub minzoom: u8,
+    pub maxzoom: u8,
+    /// West, south, east, north.
+    pub bounds: [f64; 4],
+    /// The JSON metadata object.
+    pub metadata: String,
+}
+
+/// The bytes of an archive that come before its tile data: the header, the
+/// root directory, the metadata and leaf directories. `tiles` place each
+/// tile's body by `offset` and `length` within the tile data, in any order
+/// (they are sorted here; `run` is ignored), so bodies can be appended as
+/// they arrive and the archive is this head followed by them. Directories
+/// that don't fit the first 16 KiB split into leaves.
+pub fn write_head(tiles: &mut [Entry], contents: &Contents) -> Result<Vec<u8>, String> {
+    tiles.sort_unstable_by_key(|t| t.id);
+    for tile in tiles.iter_mut() {
+        tile.run = 1;
+    }
+    if tiles.windows(2).any(|w| w[0].id == w[1].id) {
+        return Err("a tile twice in one archive".into());
+    }
+    let metadata = crate::gzip::encode(contents.metadata.as_bytes());
+    let room = 16384 - HEADER_LEN as usize;
+    let (root, leaves) = {
+        let root = crate::gzip::encode(&write_directory(tiles));
+        if root.len() <= room {
+            (root, Vec::new())
+        } else {
+            let mut per_leaf = 4096;
+            loop {
+                let mut leaves = Vec::new();
+                let mut pointers = Vec::new();
+                for chunk in tiles.chunks(per_leaf) {
+                    let leaf = crate::gzip::encode(&write_directory(chunk));
+                    pointers.push(Entry {
+                        id: chunk[0].id,
+                        offset: leaves.len() as u64,
+                        length: leaf.len() as u64,
+                        run: 0,
+                    });
+                    leaves.extend(leaf);
+                }
+                let root = crate::gzip::encode(&write_directory(&pointers));
+                if root.len() <= room {
+                    break (root, leaves);
+                }
+                per_leaf *= 2;
+            }
+        }
+    };
+    let root_at = HEADER_LEN;
+    let metadata_at = root_at + root.len() as u64;
+    let leaves_at = metadata_at + metadata.len() as u64;
+    let tiles_at = leaves_at + leaves.len() as u64;
+    let tiles_length = tiles.iter().map(|t| t.offset + t.length).max().unwrap_or(0);
+    let mut head = vec![0u8; HEADER_LEN as usize];
+    head[..8].copy_from_slice(b"PMTiles\x03");
+    let count = tiles.len() as u64;
+    for (at, value) in [
+        (8, root_at),
+        (16, root.len() as u64),
+        (24, metadata_at),
+        (32, metadata.len() as u64),
+        (40, leaves_at),
+        (48, leaves.len() as u64),
+        (56, tiles_at),
+        (64, tiles_length),
+        (72, count),
+        (80, count),
+        (88, count),
+    ] {
+        head[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    let compression = |c: Compression| match c {
+        Compression::None => 1,
+        Compression::Gzip => 2,
+    };
+    let tile_type = match contents.tile_type {
+        TileType::Mvt => 1,
+        TileType::Png => 2,
+        TileType::Jpeg => 3,
+        TileType::Webp => 4,
+        TileType::Mlt => 6,
+    };
+    // Clustered when the bodies are contiguous in tile id order.
+    let clustered = tiles
+        .iter()
+        .try_fold(0, |end, t| (t.offset == end).then_some(end + t.length));
+    head[96] = u8::from(clustered.is_some());
+    head[97] = compression(Compression::Gzip);
+    head[98] = compression(contents.tile_compression);
+    head[99] = tile_type;
+    head[100] = contents.minzoom;
+    head[101] = contents.maxzoom;
+    let [west, south, east, north] = contents.bounds;
+    let e7 = |v: f64| ((v * 1e7).round() as i32).to_le_bytes();
+    for (i, v) in [west, south, east, north].into_iter().enumerate() {
+        head[102 + i * 4..106 + i * 4].copy_from_slice(&e7(v));
+    }
+    head[118] = contents.minzoom;
+    head[119..123].copy_from_slice(&e7((west + east) / 2.0));
+    head[123..127].copy_from_slice(&e7((south + north) / 2.0));
+    head.extend(root);
+    head.extend(metadata);
+    head.extend(leaves);
+    Ok(head)
+}
+
+/// A directory's bytes, before compression.
+fn write_directory(entries: &[Entry]) -> Vec<u8> {
+    fn varint(mut value: u64, out: &mut Vec<u8>) {
+        while value >= 128 {
+            out.push(value as u8 | 128);
+            value >>= 7;
+        }
+        out.push(value as u8);
+    }
+    let mut out = Vec::new();
+    varint(entries.len() as u64, &mut out);
+    let mut previous = 0;
+    for e in entries {
+        varint(e.id - previous, &mut out);
+        previous = e.id;
+    }
+    for e in entries {
+        varint(e.run, &mut out);
+    }
+    for e in entries {
+        varint(e.length, &mut out);
+    }
+    let mut end = None;
+    for e in entries {
+        // Zero continues from the previous entry's end.
+        varint(
+            if end == Some(e.offset) {
+                0
+            } else {
+                e.offset + 1
+            },
+            &mut out,
+        );
+        end = Some(e.offset + e.length);
+    }
+    out
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lookup {
     Read(Range),
@@ -356,6 +508,64 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes an archive whose bodies arrived out of order, then reads
+    /// every tile back through the reader, small and with leaf directories.
+    #[test]
+    fn written_archives_read_back() {
+        for z in [3u8, 9] {
+            let side = 1u32 << z;
+            let mut tiles = Vec::new();
+            let mut data = Vec::new();
+            // Reverse order, as tiles may arrive; some tiles left out.
+            for row in (0..side).rev() {
+                for col in (0..side).rev().filter(|c| (c + row) % 7 != 3) {
+                    let body = format!("{z}/{col}/{row}").into_bytes();
+                    tiles.push(Entry {
+                        id: tile_id(TileIndex::new(z, col, row)).unwrap(),
+                        offset: data.len() as u64,
+                        length: body.len() as u64,
+                        run: 0,
+                    });
+                    data.extend(body);
+                }
+            }
+            let contents = Contents {
+                tile_type: TileType::Mvt,
+                tile_compression: Compression::None,
+                minzoom: z,
+                maxzoom: z,
+                bounds: [-180.0, -85.0, 180.0, 85.0],
+                metadata: "{}".into(),
+            };
+            let mut archive = write_head(&mut tiles, &contents).unwrap();
+            archive.extend(data);
+            let header = Header::parse(&archive[..HEADER_LEN as usize]).unwrap();
+            assert_eq!(header.leaves_length > 0, z == 9, "leaves only when needed");
+            let mut reader = Reader::default();
+            for (col, row) in [(0, 0), (side - 1, side - 1), (5, 2), (2, 5), (side / 2, 1)] {
+                let tile = TileIndex::new(z, col, row);
+                let found = loop {
+                    match reader.lookup(tile).unwrap() {
+                        Lookup::Read(range) => {
+                            let at = range.offset as usize;
+                            reader
+                                .insert(range, &archive[at..at + range.length as usize])
+                                .unwrap();
+                        }
+                        Lookup::Tile { range, .. } => {
+                            let at = range.offset as usize;
+                            break Some(archive[at..at + range.length as usize].to_vec());
+                        }
+                        Lookup::Missing => break None,
+                    }
+                };
+                let expected =
+                    ((col + row) % 7 != 3).then(|| format!("{z}/{col}/{row}").into_bytes());
+                assert_eq!(found, expected, "{z}/{col}/{row}");
+            }
+        }
+    }
 
     #[test]
     fn hilbert_ids() {

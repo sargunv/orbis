@@ -244,6 +244,30 @@ impl TileEndpoint {
         (overlaps_lon(0.0) || overlaps_lon(360.0) || overlaps_lon(-360.0)) && s < north && n > south
     }
 
+    /// The tiles a map draws of the area `bounds` (west, south, east,
+    /// north, in degrees) between map zooms `zooms`, as a view's cover
+    /// picks them: an offline region's tiles of this source.
+    pub fn region_tiles(&self, bounds: [f64; 4], zooms: [f64; 2]) -> Vec<TileIndex> {
+        let offset = (VECTOR_TILE_PX / self.cover_px).log2();
+        let zoom = |z: f64| ((z + offset).floor().max(0.0) as u8).clamp(self.minzoom, self.maxzoom);
+        let [west, south, east, north] = bounds;
+        let corner = |lon: f64, lat: f64| {
+            let lat = lat.clamp(-85.051_128_78, 85.051_128_78);
+            self.tms
+                .projection()
+                .forward(orb_crs::Geodetic::new(lon, lat))
+        };
+        let (a, b) = (corner(west, south), corner(east, north));
+        let rect = orb_crs::WorldRect {
+            min: a.min(b),
+            max: a.max(b),
+        };
+        (zoom(zooms[0])..=zoom(zooms[1]))
+            .flat_map(|z| self.tms.tiles_in(rect, z))
+            .filter(|&tile| self.contains(tile))
+            .collect()
+    }
+
     /// The URL of a tile, spreading tiles over the templates.
     pub fn url(&self, tile: TileIndex) -> String {
         if let Some(url) = &self.data_url {
@@ -436,6 +460,23 @@ mod tests {
             endpoint.location(TileIndex::new(10, 909, 403)),
             TileLocation::Url(_)
         ));
+    }
+
+    #[test]
+    fn region_tiles_follow_the_cover_zoom() {
+        let source = orb_v8::parse_source(
+            "s",
+            &json::parse(r#"{"type": "raster", "tiles": ["https://x/{z}/{x}/{y}.png"], "tileSize": 256, "maxzoom": 3}"#).unwrap(),
+        )
+        .unwrap()
+        .0;
+        let endpoint = TileEndpoint::resolve(&source.kind, None, mercator()).unwrap();
+        // 256-pixel rasters draw from a zoom deeper than the map's, to
+        // the source's maxzoom.
+        let tiles = endpoint.region_tiles([0.1, 0.1, 10.0, 10.0], [0.0, 5.0]);
+        let zooms: Vec<u8> = tiles.iter().map(|t| t.z).collect();
+        assert_eq!(zooms, [1, 2, 3]);
+        assert_eq!(tiles[0], TileIndex::new(1, 1, 0));
     }
 
     #[test]

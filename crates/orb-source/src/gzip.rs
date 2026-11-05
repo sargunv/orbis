@@ -53,6 +53,15 @@ pub(crate) fn decode(bytes: &[u8], limit: usize) -> Result<Vec<u8>, &'static str
 }
 
 /// CRC-32 (ISO-HDLC, gzip's), a byte at a time.
+/// `bytes` as one gzip member.
+pub(crate) fn encode(bytes: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 255];
+    out.extend(miniz_oxide::deflate::compress_to_vec(bytes, 6));
+    out.extend(crc32(bytes).to_le_bytes());
+    out.extend((bytes.len() as u32).to_le_bytes());
+    out
+}
+
 fn crc32(bytes: &[u8]) -> u32 {
     const TABLE: [u32; 256] = {
         let mut table = [0; 256];
@@ -125,6 +134,12 @@ mod tests {
         for len in 0..good.len() {
             assert!(decode(&good[..len], body.len()).is_err());
         }
+    }
+
+    #[test]
+    fn encodes_what_it_decodes() {
+        let body = b"the quick brown fox jumps over the lazy dog".repeat(20);
+        assert_eq!(decode(&encode(&body), body.len()).unwrap(), body);
     }
 
     #[test]

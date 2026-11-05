@@ -3,7 +3,7 @@
 use std::io::Write;
 
 use orb_crs::TileIndex;
-use orb_source::pmtiles::{HEADER_LEN, Lookup, Range, Reader, tile_id};
+use orb_source::pmtiles::{Compression, Contents, Entry, Lookup, Range, Reader, TileType, tile_id};
 
 const SOURCE: &str = "https://btrfs.openfreemap.com/areas/planet/20261101_080013_pt/tiles.pmtiles";
 const OUT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/demo/data");
@@ -61,7 +61,7 @@ pub(crate) fn extract() -> Result<(), String> {
             }
         }
     }
-    write_archive(&tiles, 1, &format!("{OUT}/tokyo-mvt.pmtiles"))?;
+    write_archive(&tiles, TileType::Mvt, &format!("{OUT}/tokyo-mvt.pmtiles"))?;
     let manifest = serde_json::json!({"source": SOURCE, "bounds": BOUNDS,
         "tiles": coordinates.iter().map(|t| [u32::from(t.z), t.col, t.row]).collect::<Vec<_>>(),
         "attribution": "© OpenStreetMap contributors (ODbL 1.0), © OpenMapTiles; OpenFreeMap"});
@@ -173,7 +173,7 @@ fn transcode() -> Result<(), String> {
         }
         tiles.push((entry.id, encoded));
     }
-    write_archive(&tiles, 6, &format!("{OUT}/tokyo-mlt.pmtiles"))
+    write_archive(&tiles, TileType::Mlt, &format!("{OUT}/tokyo-mlt.pmtiles"))
 }
 
 fn remote(agent: &ureq::Agent, range: Range) -> Result<Vec<u8>, String> {
@@ -202,81 +202,35 @@ fn remote(agent: &ureq::Agent, range: Range) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())
 }
 
-fn varint(mut value: u64, out: &mut Vec<u8>) {
-    while value >= 128 {
-        out.push(value as u8 | 128);
-        value >>= 7;
-    }
-    out.push(value as u8);
-}
-
 fn gzip(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let mut writer = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     writer.write_all(bytes).map_err(|e| e.to_string())?;
     writer.finish().map_err(|e| e.to_string())
 }
 
-fn write_archive(tiles: &[(u64, Vec<u8>)], kind: u8, path: &str) -> Result<(), String> {
-    let bodies = tiles
-        .iter()
-        .map(|(_, bytes)| gzip(bytes))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut dir = Vec::new();
-    varint(tiles.len() as u64, &mut dir);
-    let mut previous = 0;
-    for (id, _) in tiles {
-        varint(id - previous, &mut dir);
-        previous = *id;
+fn write_archive(tiles: &[(u64, Vec<u8>)], kind: TileType, path: &str) -> Result<(), String> {
+    let mut entries = Vec::new();
+    let mut data = Vec::new();
+    for (id, bytes) in tiles {
+        let body = gzip(bytes)?;
+        entries.push(Entry {
+            id: *id,
+            offset: data.len() as u64,
+            length: body.len() as u64,
+            run: 1,
+        });
+        data.extend(body);
     }
-    for _ in tiles {
-        varint(1, &mut dir);
-    }
-    for bytes in &bodies {
-        varint(bytes.len() as u64, &mut dir);
-    }
-    for i in 0..tiles.len() {
-        varint(u64::from(i == 0), &mut dir);
-    }
-    let dir = gzip(&dir)?;
-    if dir.len() + HEADER_LEN as usize > 16384 {
-        return Err("extract root exceeds first 16 KiB".into());
-    }
-    let metadata = gzip(r#"{"name":"Tokyo demo","attribution":"© OpenStreetMap contributors, © OpenMapTiles; OpenFreeMap","description":"OpenFreeMap planet extract; ODbL 1.0"}"#.as_bytes())?;
-    let mut header = vec![0u8; HEADER_LEN as usize];
-    header[..8].copy_from_slice(b"PMTiles\x03");
-    let root = HEADER_LEN;
-    let meta = root + dir.len() as u64;
-    let data = meta + metadata.len() as u64;
-    let total: u64 = bodies.iter().map(|b| b.len() as u64).sum();
-    for (offset, value) in [
-        (8, root),
-        (16, dir.len() as u64),
-        (24, meta),
-        (32, metadata.len() as u64),
-        (40, data),
-        (48, 0),
-        (56, data),
-        (64, total),
-        (72, tiles.len() as u64),
-        (80, tiles.len() as u64),
-        (88, tiles.len() as u64),
-    ] {
-        header[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-    }
-    header[96..102].copy_from_slice(&[1, 2, 2, kind, MIN_ZOOM, MAX_ZOOM]);
-    for (i, bound) in BOUNDS.into_iter().enumerate() {
-        header[102 + i * 4..106 + i * 4]
-            .copy_from_slice(&((bound * 1e7).round() as i32).to_le_bytes());
-    }
-    header[118] = 14;
-    header[119..123].copy_from_slice(&(1397350000i32).to_le_bytes());
-    header[123..127].copy_from_slice(&(356850000i32).to_le_bytes());
-    let mut out = header;
-    out.extend(dir);
-    out.extend(metadata);
-    for bytes in bodies {
-        out.extend(bytes);
-    }
+    let contents = Contents {
+        tile_type: kind,
+        tile_compression: Compression::Gzip,
+        minzoom: MIN_ZOOM,
+        maxzoom: MAX_ZOOM,
+        bounds: BOUNDS,
+        metadata: r#"{"name":"Tokyo demo","attribution":"© OpenStreetMap contributors, © OpenMapTiles; OpenFreeMap","description":"OpenFreeMap planet extract; ODbL 1.0"}"#.into(),
+    };
+    let mut out = orb_source::pmtiles::write_head(&mut entries, &contents)?;
+    out.extend(data);
     if out.len() > 10_000_000 {
         return Err("extract exceeds 10 MB".into());
     }
