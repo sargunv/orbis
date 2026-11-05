@@ -164,6 +164,20 @@ impl Terrain {
                 })
             })
             .collect();
+        // The ground under the eye and its near plane, which the camera
+        // keeps above (`View::clearance`), at the nearest tiles' detail.
+        if let Some(z) = self
+            .tiles
+            .iter()
+            .map(|t| t.index.z)
+            .max()
+            .and_then(|z| self.dem_zoom(z))
+        {
+            wanted.extend(
+                tms.tiles_in(view.near_footprint(), z)
+                    .map(|index| CoveredTile { index, wrap: 0 }),
+            );
+        }
         wanted.sort();
         wanted.dedup();
         let update = self.pyramid.update(&wanted);

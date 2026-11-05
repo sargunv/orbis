@@ -103,7 +103,18 @@ the map publishes (`Map::elevation`, `Map::elevation_revision`):
 - Gestures hold the elevation; when they end the target moves to the
   terrain along the view with the eye in place (`recenter_on`, GL JS's
   `recalculateZoomAndCenter`), so the picture doesn't move.
-- The eye keeps 50 m above the terrain (`keep_above`).
+- An app's ease or flight lerps the elevation toward the terrain under its
+  destination, re-aimed whenever that changes as DEM data lands, with the
+  elevation now kept (GL JS's `_updateElevation`): data landing mid-flight
+  bends the path instead of moving the camera.
+- The eye and its near plane keep 50 m above the terrain (`keep_above`,
+  `View::clearance`): the ground under the eye and a 5×5 grid across the
+  near plane, which reaches about 16 pixels ahead, where a slope would
+  show cut open. The camera rises straight up by the shortfall, over the
+  same ground, so one step suffices and the lift is continuous as the
+  camera moves. Every writer goes through it: gestures, animations, API
+  calls and new terrain. The terrain requests the DEM tiles under that
+  footprint at the nearest tiles' detail, though it lies behind the view.
 - The far plane reaches the lowest elevation of the DEM tile under the
   target, as GL JS's `minElevationForCurrentTile` makes it; without it the
   Dead Sea fixtures lost their far terrain.
@@ -120,8 +131,11 @@ f32s beside the tile's `ImageBitmap`.
 
 Threads without the map's DEM tiles get the elevation pyramid (plan §7.1):
 each DEM tile resampled to 128² samples at pixel centres, quantized to 16
-bits per tile, with the drawn tiles. The render worker publishes it with a
-frame once the camera settles after the terrain changed; the ui role's
+bits per tile, with the drawn tiles. The map's thread publishes it with a
+frame when the terrain changed: at once when the ui role has none, then
+at most every 30 frames while the camera moves, and once it settles. (It
+published only once the camera settled at first, so a flight that never
+paused flew with the target at sea level, through the Alps.) The ui role's
 camera stands on it, and its `project`/`unproject` go through it, so the
 synchronous `unproject` is approximate. The placement worker receives it
 when it changes, before the frames that use it.

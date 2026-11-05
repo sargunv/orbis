@@ -57,6 +57,8 @@ struct Running {
     id: AnimationId,
     motion: Motion,
     started: f64,
+    /// Milliseconds in at the last frame.
+    elapsed: f64,
     user: bool,
 }
 
@@ -385,22 +387,35 @@ impl Camera {
     /// events. Returns whether the camera is still moving on its own, so
     /// the host keeps drawing frames.
     pub fn frame(&mut self, now: f64) -> bool {
-        if let Some(mut running) = self.running.take() {
-            let mut next = self.state;
-            let elapsed = now - running.started;
-            running
-                .motion
-                .apply(&mut next, elapsed, &self.projection, self.viewport);
-            self.user = running.user;
-            self.write(next);
-            if elapsed >= running.motion.duration() {
-                self.events.push(CameraEvent::AnimationEnd {
-                    id: running.id,
-                    interrupted: false,
-                });
-            } else {
-                self.running = Some(running);
-            }
+        let Some(running) = self.running.as_mut() else {
+            self.report();
+            return false;
+        };
+        // An app's move ends on the terrain under its destination, known
+        // once its DEM data lands; a gesture holds the elevation.
+        if let Some(terrain) = self.terrain.as_deref().filter(|_| !running.user)
+            && let Some(ground) = running.motion.destination().and_then(|w| terrain.at(w))
+        {
+            running.motion.aim_elevation(ground, running.elapsed);
+        }
+        let mut next = self.state;
+        let elapsed = now - running.started;
+        running.elapsed = elapsed;
+        running
+            .motion
+            .apply(&mut next, elapsed, &self.projection, self.viewport);
+        self.user = running.user;
+        let done = elapsed >= running.motion.duration();
+        // Written while the move still runs, so its elevation stays its own.
+        self.write(next);
+        if done {
+            let running = self.running.take().expect("running");
+            self.events.push(CameraEvent::AnimationEnd {
+                id: running.id,
+                interrupted: false,
+            });
+            // At rest: on the terrain.
+            self.write(self.state);
         }
         self.report();
         self.running.is_some()
@@ -463,6 +478,7 @@ impl Camera {
             id,
             motion,
             started: now,
+            elapsed: 0.0,
             user,
         });
         id

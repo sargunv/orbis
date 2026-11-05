@@ -254,6 +254,27 @@ impl Offscreen {
         options: &Options,
         capacity: SceneCapacity,
     ) -> Result<(Self, orb_runtime::FrameReport, u32), String> {
+        let mut this = Self::new(options, capacity)?;
+        let started = Instant::now();
+        let mut frames = 0;
+        loop {
+            let report = this.frame();
+            frames += 1;
+            for warning in this.map.take_warnings() {
+                eprintln!("orb-demo: {warning}");
+            }
+            if report.idle {
+                return Ok((this, report, frames));
+            }
+            if started.elapsed().as_secs() > 60 {
+                return Err("timed out waiting for tiles".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// The map with its style set, before anything has loaded.
+    fn new(options: &Options, capacity: SceneCapacity) -> Result<Self, String> {
         let mut gpu = pollster::block_on(WgpuGpu::offscreen())?;
         let format = TargetFormat {
             color: orb_hal::TextureFormat::Rgba8Unorm,
@@ -276,7 +297,7 @@ impl Offscreen {
         map.set_clear_color([1.0; 4]);
         map.set_scene_capacity(capacity);
         load_style(&mut map, options)?;
-        let mut this = Self {
+        Ok(Self {
             gpu,
             target,
             format,
@@ -285,23 +306,7 @@ impl Offscreen {
                 height: f64::from(Self::HEIGHT),
             },
             map,
-        };
-        let started = Instant::now();
-        let mut frames = 0;
-        loop {
-            let report = this.frame();
-            frames += 1;
-            for warning in this.map.take_warnings() {
-                eprintln!("orb-demo: {warning}");
-            }
-            if report.idle {
-                return Ok((this, report, frames));
-            }
-            if started.elapsed().as_secs() > 60 {
-                return Err("timed out waiting for tiles".into());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        })
     }
 
     fn frame(&mut self) -> orb_runtime::FrameReport {
@@ -977,6 +982,96 @@ mod tests {
             offscreen.map.elevation_pyramid().len()
         );
         assert!(p.1 < 8.0, "p95 {} px", p.1);
+    }
+
+    /// The Alps flight through a camera store, as the demos
+    /// fly them from the moment the style loads, with tiles loading in wall
+    /// time: how far the eye and its near plane stay above the map's
+    /// full-resolution terrain. The store takes the terrain as the native
+    /// demo does (each revision) and as the web ui role does (the pyramid,
+    /// at once and then every 30 frames). Needs the network: `cargo test
+    /// --release -p orb-demo -- --ignored flight`.
+    #[test]
+    #[ignore = "fetches tiles over the network"]
+    fn the_alps_flight_stays_above_the_terrain() {
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+        let options = super::Options {
+            style: Some(format!("file://{root}/web/demo/data/alps.json")),
+            at: None,
+            ..tokyo(0.0)
+        };
+        let flight =
+            super::Flight::read(&format!("{root}/web/demo/data/alps-flight.json")).unwrap();
+        for web in [false, true] {
+            let mut offscreen =
+                super::Offscreen::new(&options, orb_runtime::SceneCapacity::default()).unwrap();
+            // The style's camera.
+            while offscreen.map.elevation_revision() == 0 {
+                offscreen.frame();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let (viewport, projection) = (offscreen.viewport, offscreen.map.projection());
+            let mut camera = orb_camera::Camera::new(*offscreen.map.camera(), projection, viewport);
+            let (mut published, mut age) = (0, 0);
+            let started = std::time::Instant::now();
+            let (mut lowest, mut under, mut frames) = (f64::INFINITY, 0, 0);
+            let (mut last, mut steps) = (None, Vec::new());
+            for (target, fly) in &flight.legs {
+                let now = started.elapsed().as_secs_f64() * 1000.0;
+                camera.fly_to(target, fly, now);
+                while camera.is_animating() {
+                    let now = started.elapsed().as_secs_f64() * 1000.0;
+                    camera.frame(now);
+                    *offscreen.map.camera_mut() = *camera.state();
+                    offscreen.map.render(
+                        &mut offscreen.gpu,
+                        offscreen.target,
+                        offscreen.format,
+                        viewport,
+                        1.0,
+                    );
+                    age += 1;
+                    let revision = offscreen.map.elevation_revision();
+                    if revision != published && (!web || published == 0 || age >= 30) {
+                        (published, age) = (revision, 0);
+                        camera.set_terrain(if web {
+                            orb_runtime::TerrainElevation::from_pyramid(
+                                &offscreen.map.elevation_pyramid(),
+                            )
+                            .ok()
+                            .map(|t| Arc::new(t) as _)
+                        } else {
+                            offscreen.map.elevation().map(|t| t as _)
+                        });
+                    }
+                    let Some(full) = offscreen.map.elevation() else {
+                        continue;
+                    };
+                    let view = orb_camera::View::new(camera.state(), viewport, &projection);
+                    let Some(clearance) = view.clearance(&*full) else {
+                        continue;
+                    };
+                    frames += 1;
+                    lowest = lowest.min(clearance);
+                    under += usize::from(clearance < 0.0);
+                    // The camera's elevation step per frame, for jumps: the
+                    // first DEM data under it moves it once.
+                    let elevation = camera.state().elevation;
+                    if let Some(previous) = last.replace(elevation) {
+                        steps.push((elevation - previous).abs());
+                    }
+                }
+            }
+            steps.sort_by(f64::total_cmp);
+            println!(
+                "{} store: {frames} frames, lowest clearance {lowest:.1} m, {under} frames cut into the terrain; elevation steps per frame: p99 {:.1} m, largest {:.1} m, second {:.1} m",
+                if web { "web" } else { "native" },
+                steps[steps.len() * 99 / 100],
+                steps[steps.len() - 1],
+                steps[steps.len() - 2],
+            );
+            assert_eq!(under, 0);
+        }
     }
 
     /// Zooms by `delta` levels around a pixel, as the gestures do.

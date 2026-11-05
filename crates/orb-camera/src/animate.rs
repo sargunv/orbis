@@ -382,6 +382,38 @@ impl Motion {
         }
     }
 
+    /// Where an ease or a flight ends, in world coordinates.
+    pub(crate) fn destination(&self) -> Option<DVec2> {
+        match self {
+            Self::Ease { to_world, .. } | Self::Fly { to_world, .. } => Some(*to_world),
+            Self::Glide { .. } => None,
+        }
+    }
+
+    /// Aims an ease's or a flight's elevation at `ground`, the terrain
+    /// under its destination once that is known, keeping the elevation
+    /// `elapsed` milliseconds in where it is: GL JS's `_updateElevation`,
+    /// so DEM data landing mid-flight bends the path instead of moving the
+    /// camera.
+    pub(crate) fn aim_elevation(&mut self, ground: f64, elapsed: f64) {
+        let t = elapsed / self.duration().max(f64::MIN_POSITIVE);
+        let (from, to, k) = match self {
+            Self::Ease {
+                from, to, options, ..
+            } => (from, to, options.easing.at(t)),
+            Self::Fly {
+                from, to, easing, ..
+            } => (from, to, easing.at(t)),
+            Self::Glide { .. } => return,
+        };
+        if ground == to.elevation || !(0.0..1.0).contains(&k) {
+            return;
+        }
+        let now = lerp(from.elevation, to.elevation, k);
+        from.elevation = (now - ground * k) / (1.0 - k);
+        to.elevation = ground;
+    }
+
     /// What a glide has still to move, for a glide that continues it.
     pub(crate) fn remaining_glide(&self) -> Option<Glide> {
         let Self::Glide { glide, done } = self else {

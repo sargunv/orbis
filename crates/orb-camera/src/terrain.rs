@@ -78,6 +78,52 @@ impl View {
 }
 
 impl View {
+    /// How far the eye and its near plane stand above `terrain`, in
+    /// metres: the least height over the ground of the eye and a grid of
+    /// points across the near plane, where the terrain would show cut open.
+    /// `None` where no DEM data has loaded under any of them.
+    pub fn clearance(&self, terrain: &dyn Elevation) -> Option<f64> {
+        self.near_points()
+            .filter_map(|p| {
+                let ground = terrain.at(p.truncate() + self.camera_world())?;
+                Some(p.z / self.height_scale() - ground)
+            })
+            .min_by(f64::total_cmp)
+    }
+
+    /// The ground [`clearance`](Self::clearance) reads, in world
+    /// coordinates: the terrain must have DEM data there too, though it
+    /// lies outside the view.
+    pub fn near_footprint(&self) -> WorldRect {
+        let mut points = self
+            .near_points()
+            .map(|p| p.truncate() + self.camera_world());
+        let first = points.next().expect("the eye");
+        points.fold(
+            WorldRect {
+                min: first,
+                max: first,
+            },
+            |r, p| WorldRect {
+                min: r.min.min(p),
+                max: r.max.max(p),
+            },
+        )
+    }
+
+    /// The eye and a grid across the near plane, camera-relative.
+    fn near_points(&self) -> impl Iterator<Item = DVec3> + '_ {
+        const GRID: usize = 5;
+        let size = DVec2::new(self.viewport().width, self.viewport().height);
+        let near = (0..GRID * GRID).map(move |k| {
+            let cell = DVec2::new((k % GRID) as f64, (k / GRID) as f64);
+            self.ray(cell / (GRID - 1) as f64 * size).0
+        });
+        std::iter::once(self.eye()).chain(near)
+    }
+}
+
+impl View {
     /// The view of `camera` over `terrain`: its far plane reaches the
     /// lowest elevation of the DEM tile under the target, as GL JS's
     /// `minElevationForCurrentTile` makes it.
@@ -140,8 +186,11 @@ impl CameraState {
         *self != before
     }
 
-    /// Raises the target until the eye clears the terrain under it by a
-    /// few tens of metres. Returns whether it moved.
+    /// Raises the camera until the eye and its near plane clear the
+    /// terrain by a few tens of metres ([`View::clearance`]). Raising moves
+    /// them straight up, over the same ground, so one step suffices, and
+    /// the lift follows the ground continuously as the camera moves.
+    /// Returns whether it moved.
     pub fn keep_above(
         &mut self,
         terrain: &dyn Elevation,
@@ -149,12 +198,10 @@ impl CameraState {
         viewport: Viewport,
     ) -> bool {
         let view = View::new(self, viewport, projection);
-        let eye = view.eye();
-        let Some(ground) = terrain.at(eye.truncate() + view.camera_world()) else {
+        let Some(clearance) = view.clearance(terrain) else {
             return false;
         };
-        let eye_m = eye.z / view.height_scale();
-        let short = ground + CLEARANCE_M - eye_m;
+        let short = CLEARANCE_M - clearance;
         if short <= 0.0 {
             return false;
         }
@@ -260,6 +307,190 @@ mod tests {
         let view = View::new(&camera, viewport, &projection);
         let eye_m = view.eye().z / view.height_scale();
         assert!(eye_m >= 1000.0 + CLEARANCE_M - 1e-6);
+    }
+
+    /// A cone 3000 m high with 45° slopes, its summit at the origin.
+    #[derive(Debug)]
+    struct Peak;
+
+    impl Elevation for Peak {
+        fn at(&self, world: DVec2) -> Option<f64> {
+            // World units are metres on the equator.
+            Some((3000.0 - world.length()).max(0.0))
+        }
+        fn range(&self, _: WorldRect, _: u8) -> Option<(f64, f64)> {
+            Some((0.0, 3000.0))
+        }
+    }
+
+    /// Follows a store's camera over the peak: after each step the eye and
+    /// its near plane clear the slope by the margin, and during a move the
+    /// camera's elevation changes no faster than the slope under the
+    /// moving eye and near plane allows (no jumps).
+    struct Watch {
+        projection: Projection,
+        viewport: Viewport,
+        /// Elevation, footprint centre and eye of the last step.
+        last: Option<(f64, DVec2, DVec3)>,
+        steps: usize,
+    }
+
+    impl Watch {
+        fn check(&mut self, store: &Camera, what: &str) {
+            let (view, clearance) = self.clearance(store, what);
+            let footprint = view.near_footprint();
+            let (elevation, at) = (store.state().elevation, footprint.center());
+            if let Some((before, was, _)) = self.last {
+                // 45° slopes: the ground under the samples moves at most as
+                // far as they do, which is at most the footprint's centre
+                // shift plus its extent.
+                let moved = at.distance(was) + footprint.size().length();
+                assert!(
+                    (elevation - before).abs() <= moved + 1.0,
+                    "{what}, step {}: elevation {before} -> {elevation} over {moved} m ({clearance} m clear)",
+                    self.steps
+                );
+            }
+            self.last = Some((elevation, at, Self::eye(&view)));
+        }
+
+        /// A gesture ended: the target moved onto the terrain along the
+        /// view, the eye stayed where it was.
+        fn released(&mut self, store: &Camera, what: &str) {
+            let (view, _) = self.clearance(store, what);
+            let (_, _, eye) = self.last.expect("a step before");
+            let now = Self::eye(&view);
+            assert!(
+                eye.distance(now) < 1.0,
+                "{what}: the eye moved {eye} -> {now}"
+            );
+            self.last = Some((store.state().elevation, view.near_footprint().center(), now));
+        }
+
+        fn clearance(&mut self, store: &Camera, what: &str) -> (View, f64) {
+            let view = View::new(store.state(), self.viewport, &self.projection);
+            let clearance = view.clearance(&Peak).unwrap();
+            assert!(
+                clearance >= CLEARANCE_M - 1e-6,
+                "{what}, step {}: {clearance} m",
+                self.steps
+            );
+            self.steps += 1;
+            (view, clearance)
+        }
+
+        /// The eye in world units, its height in metres.
+        fn eye(view: &View) -> DVec3 {
+            (view.eye().truncate() + view.camera_world()).extend(view.eye().z / view.height_scale())
+        }
+    }
+
+    #[test]
+    fn gestures_and_flights_into_a_slope_keep_the_eye_above_it() {
+        let (projection, viewport, _) = setup();
+        // 4 km west of the summit, low, looking east at the slope.
+        let mut state = CameraState::new(
+            projection.inverse(DVec2::new(-4000.0, 0.0)),
+            15.0,
+            &projection,
+        );
+        state.pitch = 75.0;
+        state.bearing = 90.0;
+        let mut store = Camera::new(state, projection, viewport);
+        store.set_terrain(Some(Arc::new(Peak)));
+        let mut watch = Watch {
+            projection,
+            viewport,
+            last: None,
+            steps: 0,
+        };
+        watch.check(&store, "start");
+        let center = DVec2::new(400.0, 300.0);
+        // Drag the slope toward the eye, through the summit and beyond.
+        store.hold();
+        for _ in 0..400 {
+            store.pan(center, center + DVec2::new(0.0, 20.0));
+            watch.check(&store, "pan");
+        }
+        store.release();
+        watch.released(&store, "pan end");
+        // Zoom into a point low on the screen, on the slope.
+        store.hold();
+        for _ in 0..100 {
+            store.zoom_by(DVec2::new(400.0, 500.0), 0.05);
+            watch.check(&store, "zoom");
+        }
+        // Turn and tilt toward the horizon there.
+        for _ in 0..90 {
+            store.rotate_by(center, 4.0);
+            store.pitch_by(0.1);
+            watch.check(&store, "rotate");
+        }
+        store.release();
+        watch.released(&store, "gesture end");
+        // Fly low across the summit to its far side.
+        let mut now = 0.0;
+        store.fly_to(
+            &CameraTarget {
+                center: Some(projection.inverse(DVec2::new(3500.0, 200.0))),
+                zoom: Some(16.5),
+                pitch: Some(80.0),
+                bearing: Some(270.0),
+                ..CameraTarget::default()
+            },
+            &crate::FlyOptions {
+                duration: Some(4000.0),
+                ..crate::FlyOptions::default()
+            },
+            now,
+        );
+        while store.is_animating() {
+            now += 16.0;
+            store.frame(now);
+            watch.check(&store, "flight");
+        }
+        assert!(watch.steps > 800);
+    }
+
+    #[test]
+    fn dem_landing_mid_flight_bends_the_path() {
+        let (projection, viewport, state) = setup();
+        let mut store = Camera::new(state, projection, viewport);
+        let destination = Geodetic::new(0.05, 0.0);
+        store.fly_to(
+            &CameraTarget {
+                center: Some(destination),
+                ..CameraTarget::default()
+            },
+            &crate::FlyOptions {
+                duration: Some(2000.0),
+                ..crate::FlyOptions::default()
+            },
+            0.0,
+        );
+        let (mut now, mut last, mut largest) = (0.0, 0.0, 0.0f64);
+        while store.is_animating() {
+            now += 16.0;
+            if now == 1008.0 {
+                store.set_terrain(Some(Arc::new(Ridge {
+                    loaded_until: f64::INFINITY,
+                })));
+            }
+            store.frame(now);
+            let elevation = store.state().elevation;
+            largest = largest.max((elevation - last).abs());
+            last = elevation;
+        }
+        // Halfway, 1000 m of ground land under a camera at sea level: the
+        // rest of the flight climbs to it, about 1000 m over 62 frames
+        // with the easing's steepest frames above the mean.
+        assert!(largest < 60.0, "{largest} m in one frame");
+        let ground = Ridge {
+            loaded_until: f64::INFINITY,
+        }
+        .at(projection.forward(destination))
+        .unwrap();
+        assert!((store.state().elevation - ground).abs() < 1e-6);
     }
 
     #[test]

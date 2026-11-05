@@ -81,6 +81,8 @@ pub struct OrbisMap {
     last_camera: Option<(CameraState, u32)>,
     /// The terrain revision last published to the ui role.
     elevation_revision: u64,
+    /// Frames since the pyramid was last published.
+    elevation_age: u32,
 }
 
 /// Frame counters, for the page's HUD.
@@ -270,6 +272,7 @@ async fn create(
         hits_published: None,
         last_camera: None,
         elevation_revision: 0,
+        elevation_age: 0,
     })
 }
 
@@ -487,12 +490,17 @@ impl OrbisMap {
             self.hits_published = Some(revision);
             self.map.hit_snapshot()
         });
-        // The pyramid publishes once the camera settles too: DEM tiles
-        // arrive in bursts, and the ui role's camera keeps its elevation
-        // meanwhile.
+        // The ui role's camera keeps above the terrain the pyramid shows,
+        // and an animation ends on it, so it publishes while the camera
+        // moves too: at once when the ui role has none, then at most every
+        // `PUBLISH_FRAMES` while DEM tiles arrive in bursts, and once the
+        // camera settles.
         let revision = self.map.elevation_revision();
-        let elevation = (settled && revision != self.elevation_revision).then(|| {
+        self.elevation_age = self.elevation_age.saturating_add(1);
+        let due = settled || self.elevation_revision == 0 || self.elevation_age >= PUBLISH_FRAMES;
+        let elevation = (due && revision != self.elevation_revision).then(|| {
             self.elevation_revision = revision;
+            self.elevation_age = 0;
             self.map.elevation_pyramid()
         });
         Ok(FrameInfo {
@@ -532,6 +540,10 @@ impl OrbisMap {
 
 /// Frames a camera rests before the render worker publishes picking.
 const SETTLE_FRAMES: u32 = 3;
+
+/// How often, in frames, the elevation pyramid may publish while the camera
+/// moves: about twice a second.
+const PUBLISH_FRAMES: u32 = 30;
 
 /// A promise of a query's features as JSON text.
 fn features_promise(
