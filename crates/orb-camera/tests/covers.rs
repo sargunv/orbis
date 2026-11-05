@@ -65,32 +65,6 @@ fn covers_match_pinned_gl_js() {
     );
 }
 
-#[test]
-fn manhattan_cover_counts() {
-    let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
-    for pitch in [60., 80., 85.] {
-        let mut camera =
-            CameraState::new(Geodetic::new(-74.0113, 40.7075), 14.48, tms.projection());
-        camera.bearing = 30.;
-        camera.pitch = pitch;
-        let view = View::new(
-            &camera,
-            Viewport {
-                width: 1024.,
-                height: 768.,
-            },
-            &Surface::from(tms.projection()),
-        );
-        for maxzoom in [14, 24] {
-            let mut counts = std::collections::BTreeMap::new();
-            for tile in view.cover(&tms, 512., maxzoom) {
-                *counts.entry(tile.index.z).or_insert(0) += 1;
-            }
-            println!("Manhattan pitch {pitch}, maxzoom {maxzoom}: {counts:?}");
-        }
-    }
-}
-
 /// The globe's cover against Web Mercator's for the same cameras (plan
 /// §18's budget: globe cover within 1.5× Mercator's time). Prints counts and
 /// times; run with `--release -- --nocapture`.
