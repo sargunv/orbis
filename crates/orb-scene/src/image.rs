@@ -59,8 +59,9 @@ pub struct ImageUpload<'a> {
     pub pattern: bool,
 }
 
-/// All tiles bind these resources once per pass.
-#[derive(Clone, Copy, Debug)]
+/// All tiles bind these resources once per pass. The texture changes when
+/// the atlas grows a page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ImageBindings {
     pub table: BufferId,
     pub texture: TextureId,
@@ -93,6 +94,8 @@ pub struct ImageAtlas {
     size: u32,
     capacity: u32,
     pages: Vec<Shelves>,
+    /// The most pages it grows to.
+    max_pages: u32,
     names: HashMap<(u64, Slot), u32>,
     entries: Vec<Option<Entry>>,
     free: Vec<u32>,
@@ -108,19 +111,11 @@ impl ImageAtlas {
         u64::from(self.size) * u64::from(self.size) * 4 * self.pages.len() as u64
     }
 
-    pub fn new(gpu: &mut dyn Gpu, size: u32, pages: u32, capacity: u32) -> Self {
-        assert!(size > 2 && pages > 0 && capacity > 0);
-        let texture = gpu.create_texture(&TextureDesc {
-            label: "images",
-            width: size,
-            height: size,
-            array_layers: pages,
-            dimension: orb_hal::TextureViewDimension::D2Array,
-            format: TextureFormat::Rgba8Unorm,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-            sample_count: 1,
-            mip_levels: 1,
-        });
+    /// An atlas of `size`² pages, one at first and up to `max_pages` as
+    /// images need, and `capacity` image rows.
+    pub fn new(gpu: &mut dyn Gpu, size: u32, max_pages: u32, capacity: u32) -> Self {
+        assert!(size > 2 && max_pages > 0 && capacity > 0);
+        let texture = page_texture(gpu, size, 1);
         let table = gpu.create_buffer(&BufferDesc {
             label: "image rects",
             size: u64::from(capacity) * 32,
@@ -144,7 +139,8 @@ impl ImageAtlas {
             },
             size,
             capacity,
-            pages: (0..pages).map(|_| Shelves::default()).collect(),
+            pages: vec![Shelves::default()],
+            max_pages,
             names: HashMap::new(),
             entries: vec![None],
             free: Vec::new(),
@@ -331,20 +327,26 @@ impl ImageAtlas {
         }
         let entry = self
             .entries
-            .get_mut(id as usize)
-            .and_then(Option::as_mut)
+            .get(id as usize)
+            .and_then(Option::as_ref)
             .ok_or("unknown image")?;
         if entry.page.is_some() {
             return Err("image already uploaded");
         }
         let w = width + border;
         let h = height + border;
-        let (layer, [x0, y0]) = self
-            .pages
-            .iter_mut()
-            .enumerate()
-            .find_map(|(i, p)| p.allocate(self.size, w, h).map(|pos| (i, pos)))
-            .ok_or("image atlas is full")?;
+        let size = self.size;
+        let place = |pages: &mut Vec<Shelves>| {
+            pages
+                .iter_mut()
+                .enumerate()
+                .find_map(|(i, p)| p.allocate(size, w, h).map(|pos| (i, pos)))
+        };
+        let (layer, [x0, y0]) = match place(&mut self.pages) {
+            Some(found) => found,
+            None if self.add_page(gpu) => place(&mut self.pages).ok_or("image atlas is full")?,
+            None => return Err("image atlas is full"),
+        };
         let padded = padded(width, height, rgba, pattern, premultiplied);
         let pixels = if margin == 0 {
             padded
@@ -384,12 +386,31 @@ impl ImageAtlas {
             u64::from(id) * 32,
             bytemuck::cast_slice(&words),
         );
+        let entry = self.entries[id as usize].as_mut().expect("checked above");
         entry.page = Some(layer);
         entry.origin = [x, y];
         entry.margin = margin;
         entry.metadata = Some(metadata);
         entry.size = Some([width, height]);
         Ok(())
+    }
+
+    /// Adds a page, its pages so far copied into a texture one larger;
+    /// whether there was room for one.
+    fn add_page(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let pages = self.pages.len() as u32;
+        if pages >= self.max_pages {
+            return false;
+        }
+        let grown = page_texture(gpu, self.size, pages + 1);
+        gpu.submit(&[orb_hal::Pass::CopyTextureLayers {
+            source: self.bindings.texture,
+            destination: grown,
+            layers: pages,
+        }]);
+        gpu.destroy_texture(std::mem::replace(&mut self.bindings.texture, grown));
+        self.pages.push(Shelves::default());
+        true
     }
 
     /// Holds a generated ramp while a resident tile references its row.
@@ -475,6 +496,21 @@ impl ImageAtlas {
             }
         }
     }
+}
+
+/// The pages' texture array.
+fn page_texture(gpu: &mut dyn Gpu, size: u32, pages: u32) -> orb_hal::TextureId {
+    gpu.create_texture(&TextureDesc {
+        label: "images",
+        width: size,
+        height: size,
+        array_layers: pages,
+        dimension: orb_hal::TextureViewDimension::D2Array,
+        format: TextureFormat::Rgba8Unorm,
+        usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::COPY_SRC,
+        sample_count: 1,
+        mip_levels: 1,
+    })
 }
 
 fn padded(width: u32, height: u32, rgba: &[u8], pattern: bool, premultiplied: bool) -> Vec<u8> {

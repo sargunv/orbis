@@ -45,6 +45,9 @@ impl Harness {
         max_vertex_words: 0,
         max_index_words: 0,
         max_compacted_words: 0,
+        max_prop_words: 0,
+        max_chunks: 0,
+        max_candidates: 0,
     };
 
     /// Pipelines compile on `threads` workers, or (`None`) before their
@@ -110,6 +113,9 @@ impl Harness {
 
     fn render_stats_at_ratio(&mut self, pixel_ratio: f32) -> FrameStats {
         let frame = Self::frame(pixel_ratio);
+        // The atlas grows pages as images arrive, as a map tells its
+        // renderer.
+        self.renderer.set_images(self.images.bindings());
         self.renderer
             .render(&mut self.gpu, &frame, self.target, [0.0, 0.0, 1.0, 1.0])
     }
@@ -957,7 +963,8 @@ fn image_rows_fill_late_span_pages_and_recycle_without_recording_commands() {
         )
         .unwrap();
     assert_eq!(pixel(&h.render(), 4, 32), CLEAR);
-    // The first 4x4 padded image fills page zero; this upload uses page one.
+    // The first 4x4 padded image fills page zero; this upload adds page
+    // one, which the next frame binds.
     h.images
         .upload(&mut h.gpu, late, upload(&RED.repeat(4)))
         .unwrap();

@@ -296,8 +296,7 @@ impl Renderer {
             .filter(|&i| self.nodes[i as usize].source == Some(key.source))
             .collect();
         let sizes = vec![image_mesh_size(build.mesh.as_deref()); nodes.len()];
-        let fits =
-            self.scene.fits(sizes.iter().copied()) || (grow && self.scene.grow_for(gpu, &sizes));
+        let fits = self.scene.fits(sizes.iter().copied()) || (grow && self.grow_for(gpu, &sizes));
         if !fits {
             return Err(UploadError::NoRoom);
         }
@@ -556,12 +555,16 @@ impl Renderer {
     /// Grows the pools, within their limits, until meshes of these sizes
     /// fit; whether they do.
     pub fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
-        self.scene.grow_for(gpu, meshes)
+        let fits = self.scene.grow_for(gpu, meshes);
+        self.glyphs.set_table(self.scene.buffers().props);
+        fits
     }
 
     /// Grows the pools once, within their limits; whether they grew.
     pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
-        self.scene.grow(gpu)
+        let grew = self.scene.grow(gpu);
+        self.glyphs.set_table(self.scene.buffers().props);
+        grew
     }
 
     /// How many world copies a symbol mesh keeps state words for.

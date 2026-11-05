@@ -265,6 +265,8 @@ pub struct Renderer {
     cull_layout: BindGroupLayoutId,
     /// What the scene group binds besides the scene's buffers.
     image_bindings: ImageBindings,
+    /// The image texture the scene group binds.
+    images_bound: TextureId,
     nearest: SamplerId,
 }
 
@@ -536,8 +538,15 @@ impl Renderer {
             cull_layout,
             nearest,
             glyphs,
+            images_bound: image_bindings.texture,
             image_bindings,
         }
+    }
+
+    /// The image atlas's bindings as they are now: the atlas grows pages,
+    /// which the next frame binds.
+    pub fn set_images(&mut self, bindings: ImageBindings) {
+        self.image_bindings = bindings;
     }
 
     /// The format of the targets it draws into.
@@ -1315,7 +1324,9 @@ impl Renderer {
             || dem != self.dem_bound
             || occlusion != self.occlusion_bound
             || buffers != self.buffers_bound
+            || self.image_bindings.texture != self.images_bound
         {
+            self.images_bound = self.image_bindings.texture;
             if buffers != self.buffers_bound {
                 self.buffers_bound = buffers;
                 if let Some((_, group)) = &mut self.cull {

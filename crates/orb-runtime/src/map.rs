@@ -1567,6 +1567,17 @@ impl Map {
                 .push("symbol-occlusion: Compat hides labels behind the terrain alone".into());
         }
         renderer.set_symbol_occlusion(gpu, occluded);
+        // The shared atlas grows pages as images arrive.
+        if let Some(atlas) = &self
+            .services
+            .images
+            .0
+            .lock()
+            .expect("images poisoned")
+            .atlas
+        {
+            renderer.set_images(atlas.bindings());
+        }
         report.frame = renderer.render(gpu, &frame, target, clear);
         // A frame that left something out for a compiling pipeline isn't
         // complete (plan §8.4).

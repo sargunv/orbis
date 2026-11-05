@@ -394,7 +394,7 @@ Everything a frame needs lives in persistent buffers; a camera-only frame writes
 | Chunk table | per chunk (≤256 triangles, ≤256 instances or one line run): `{arena_page, first_index, index_count, tile_slot, bbox_tile[4], feature_slot_base, flags, lod}`, 24–32 B | tile arrival/eviction |
 | Node candidate lists | per render node: chunk ids of resident tiles, and a node row of cull parameters (margin, elevation, visibility) | lists: tile arrival and eviction, placements coming or going, a node changing how it draws; parameters: in place, without laying the lists out again |
 | Visible lists + indirect args | per node, GPU-written | every frame, by compute |
-| Arenas | per (source, family, stream kind): vertex and u32 index pages of 16–64 MB, segregated-fit suballocator | upload |
+| Arenas | vertex, index, compacted-index and property pools that start at 1 MB and double, contents copied, as the tiles in view need (the glyph table is the property pool's first block); chunk and candidate tables grow alike; first-fit suballocator. Tokyo takes 26–47 MB where fixed sizes took 110 MB (decision 0043) | upload |
 | Property tables | per (tile, layer) columns by `feature_slot`; f16 with `shader-f16` | upload; paint edits |
 | Feature/global state | 24 B rows by `state_index`; per-tile slot → state remap | state writes |
 | Symbol tables | instances, glyph quads, one u32 state word per symbol `{opacity, target, anchor, orientation, flags}`, glyph-rect table | upload; placement diffs |
@@ -402,8 +402,8 @@ Everything a frame needs lives in persistent buffers; a camera-only frame writes
 
 **"Bindless enough" on core WebGPU:** shaders index `(layer, rect)` through tables, so one bind group per pass serves every tile of a family and layout never waits for atlas allocation. Atlases are shared per Runtime, keeping Native's #3198 win (7–8 MB → 1.88 MB on an iPhone 16 Pro Max) [verified]. **M+:** partially bound binding arrays (Vulkan, Metal, D3D12 via wgpu) for mixed compressed raster formats and more pages than one array holds.
 
-The initial icon/pattern atlas has eight 1024² RGBA8 pages (32 MiB), a shelf
-packer, one-texel padding, and 8192 stable 32-byte image rows. Jobs return names
+The icon/pattern atlas starts with one 1024² RGBA8 page (4 MiB) and adds pages
+as images need them, up to eight (decision 0043), with a shelf packer, one-texel padding, and 8192 stable 32-byte image rows. Jobs return names
 and property-word offsets; scene upload resolves ids even before pixels arrive.
 Style namespaces retire independently and recycle rows and empty pages. Host
 services fetch sprite JSON/PNG (including namespaced sheets and `@2x`) and

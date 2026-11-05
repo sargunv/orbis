@@ -502,8 +502,9 @@ pub struct SceneCapacity {
     /// Slots of indexed nodes' candidates in the compacted index buffer:
     /// each candidate's chunk indices once per placement.
     pub compacted_words: u32,
+    /// The property arena's first size, past the glyph table at its start.
     pub prop_words: u32,
-    /// Rows of the glyph atlas's table, which follows the property arena.
+    /// Rows of the glyph atlas's table, the property arena's first block.
     pub glyph_rows: u32,
     /// Ceilings of the growable pools, which the device's buffer limits
     /// lower further. Growth is for the tiles in view: the map evicts
@@ -511,20 +512,29 @@ pub struct SceneCapacity {
     pub max_vertex_words: u32,
     pub max_index_words: u32,
     pub max_compacted_words: u32,
+    pub max_prop_words: u32,
+    pub max_chunks: u32,
+    pub max_candidates: u32,
 }
 
 impl SceneCapacity {
-    /// Pools that start at 16 MB and grow to the device's limits as the
-    /// tiles in view need.
+    /// Pools that start at 1 MB and grow to the device's limits as the
+    /// tiles in view need (plan §8).
     pub fn growable() -> Self {
-        let start = 4 << 20;
+        let start = 1 << 18;
         Self {
             vertex_words: start,
             index_words: start,
             compacted_words: start,
+            prop_words: start,
+            chunks: 1 << 13,
+            candidates: 1 << 14,
             max_vertex_words: u32::MAX,
             max_index_words: u32::MAX,
             max_compacted_words: u32::MAX,
+            max_prop_words: u32::MAX,
+            max_chunks: 1 << 20,
+            max_candidates: 1 << 20,
             ..Self::fixed()
         }
     }
@@ -547,6 +557,9 @@ impl SceneCapacity {
             max_vertex_words: 0,
             max_index_words: 0,
             max_compacted_words: 0,
+            max_prop_words: 0,
+            max_chunks: 0,
+            max_candidates: 0,
         }
     }
 }
@@ -935,7 +948,8 @@ pub struct Scene {
     /// On Compat, what the CPU cull reads.
     cull: Option<CullTables>,
     revision: u64,
-    /// Changes whenever a pool moves into a larger buffer: bind groups and
+    /// Changes whenever a pool or table moves into a larger buffer: bind
+    /// groups and
     /// recorded commands over the old one must be made again.
     buffers_revision: u64,
     /// Placement rows that changed since the last `take_placements_written`.
@@ -973,6 +987,10 @@ impl Scene {
             / 4)
         .min(u64::from(u32::MAX)) as u32;
         let mut capacity = capacity;
+        // The glyph table is the property arena's first block.
+        let glyph_words = capacity.glyph_rows * GLYPH_ROW_WORDS as u32;
+        capacity.prop_words += glyph_words;
+        capacity.max_prop_words = capacity.max_prop_words.saturating_add(glyph_words);
         for (start, max) in [
             (&mut capacity.vertex_words, &mut capacity.max_vertex_words),
             (&mut capacity.index_words, &mut capacity.max_index_words),
@@ -980,6 +998,7 @@ impl Scene {
                 &mut capacity.compacted_words,
                 &mut capacity.max_compacted_words,
             ),
+            (&mut capacity.prop_words, &mut capacity.max_prop_words),
         ] {
             *start = (*start).min(largest);
             *max = (*max).min(largest).max(*start);
@@ -1009,7 +1028,7 @@ impl Scene {
                 BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             ),
             tiles: buffer("tiles", words(c.placements, TILE_WORDS), storage),
-            chunks: buffer("chunks", words(c.chunks, CHUNK_WORDS), storage),
+            chunks: buffer("chunks", words(c.chunks, CHUNK_WORDS), POOL_USAGE),
             candidates: buffer(
                 "candidates",
                 words(c.candidates, CANDIDATE_WORDS),
@@ -1032,12 +1051,11 @@ impl Scene {
                 u64::from(c.compacted_words),
                 compacted_usage(compat),
             ),
-            props: buffer(
-                "props",
-                u64::from(c.prop_words) + u64::from(c.glyph_rows) * GLYPH_ROW_WORDS as u64,
-                storage,
-            ),
+            props: buffer("props", u64::from(c.prop_words), POOL_USAGE),
         };
+        let mut prop_arena = Arena::new(c.prop_words);
+        let glyphs = prop_arena.alloc(glyph_words).expect("the glyph table fits");
+        debug_assert_eq!(glyphs.start, 0);
         Self {
             buffers,
             capacity,
@@ -1045,7 +1063,7 @@ impl Scene {
             chunk_slots: Slots::new(c.chunks),
             vertex_arena: Arena::new(c.vertex_words),
             index_arena: Arena::new(c.index_words),
-            prop_arena: Arena::new(c.prop_words),
+            prop_arena,
             tiles: Vec::new(),
             free_tiles: Vec::new(),
             meshes: Vec::new(),
@@ -1083,9 +1101,9 @@ impl Scene {
     }
 
     /// The first word of the glyph table in the property buffer: its
-    /// [`SceneCapacity::glyph_rows`] rows follow the arena.
+    /// [`SceneCapacity::glyph_rows`] rows are the arena's first block.
     pub fn glyph_table(&self) -> u32 {
-        self.capacity.prop_words
+        0
     }
 
     /// Counts changes to meshes and placement counts; equal revisions mean
@@ -1685,10 +1703,13 @@ impl Scene {
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
             self.candidates_dirty = false;
-            let short = self.rebuild_candidates(gpu);
-            // The cull rewrites every compacted slot: a larger buffer needs
-            // no copy, only the candidates laid out again.
-            if short > 0 && self.grow_compacted(gpu, short) {
+            let (compacted, candidates) = self.rebuild_candidates(gpu);
+            // The cull rewrites every compacted slot, and every list is
+            // written whole: larger buffers need no copy, only the
+            // candidates laid out again.
+            let grew = (compacted > 0 && self.grow_compacted(gpu, compacted))
+                | (candidates > 0 && self.grow_candidates(gpu, candidates));
+            if grew {
                 self.rebuild_candidates(gpu);
             }
         } else if std::mem::take(&mut self.params_dirty) && !self.node_rows.is_empty() {
@@ -1712,9 +1733,10 @@ impl Scene {
     /// compacted index buffer, to be written by the next cull.
     /// Returns the compacted index words the candidates left out for want
     /// of room there.
-    fn rebuild_candidates(&mut self, gpu: &mut dyn Gpu) -> u64 {
+    fn rebuild_candidates(&mut self, gpu: &mut dyn Gpu) -> (u64, u64) {
         let limit = self.capacity.candidates as usize;
         let mut compacted_short = 0u64;
+        let mut candidates_short = 0u64;
         let mut rows: Vec<u32> = Vec::new();
         let mut runs: Vec<(u32, [u32; 2])> = Vec::new();
         let mut node_cull = Vec::with_capacity(self.nodes.len() * NODE_CULL_WORDS);
@@ -1780,6 +1802,9 @@ impl Scene {
                 if !fits {
                     if indexed && !room {
                         compacted_short += u64::from(index_count);
+                    }
+                    if (rows.len() / CANDIDATE_WORDS) >= limit {
+                        candidates_short += 1;
                     }
                     dropped += 1;
                     continue;
@@ -1850,7 +1875,7 @@ impl Scene {
             );
             at = end;
         }
-        compacted_short
+        (compacted_short, candidates_short)
     }
 
     /// Grows the vertex and index pools, each doubling to its ceiling (the
@@ -1867,12 +1892,20 @@ impl Scene {
             };
             let vertices = short(&self.vertex_arena, |m| m.vertices);
             let indices = short(&self.index_arena, |m| m.indices);
+            let props = short(&self.prop_arena, |m| m.props);
             let mut grew = false;
             if vertices {
                 grew |= self.grow_pool(gpu, Pool::Vertices);
             }
             if indices {
                 grew |= self.grow_pool(gpu, Pool::Indices);
+            }
+            if props {
+                grew |= self.grow_pool(gpu, Pool::Props);
+            }
+            let chunks: u64 = meshes.iter().map(|m| u64::from(m.chunks)).sum();
+            if chunks > u64::from(self.chunk_slots.available()) {
+                grew |= self.grow_chunks(gpu);
             }
             if !grew {
                 return false;
@@ -1885,7 +1918,8 @@ impl Scene {
     /// grew.
     pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
         let vertices = self.grow_pool(gpu, Pool::Vertices);
-        self.grow_pool(gpu, Pool::Indices) || vertices
+        let props = self.grow_pool(gpu, Pool::Props);
+        self.grow_pool(gpu, Pool::Indices) || vertices || props
     }
 
     /// Moves a pool into a buffer twice its size (or its ceiling's): the
@@ -1906,6 +1940,13 @@ impl Scene {
                 &mut self.buffers.indices,
                 &mut self.index_arena,
                 "indices",
+            ),
+            Pool::Props => (
+                &mut c.prop_words,
+                c.max_prop_words,
+                &mut self.buffers.props,
+                &mut self.prop_arena,
+                "props",
             ),
         };
         let old = *words;
@@ -1929,6 +1970,70 @@ impl Scene {
         *buffer = grown;
         arena.grow(old, new);
         *words = new;
+        self.buffers_revision += 1;
+        true
+    }
+
+    /// Moves the chunk table into a buffer twice its size, to its ceiling,
+    /// its rows copied over.
+    fn grow_chunks(&mut self, gpu: &mut dyn Gpu) -> bool {
+        let old = self.capacity.chunks;
+        let new = old.saturating_mul(2).min(self.capacity.max_chunks);
+        if new <= old {
+            return false;
+        }
+        let bytes = |count: u32| u64::from(count) * CHUNK_WORDS as u64 * 4;
+        let grown = gpu.create_buffer(&BufferDesc {
+            label: "chunks",
+            size: bytes(new),
+            usage: POOL_USAGE,
+        });
+        gpu.submit(&[orb_hal::Pass::CopyBuffer {
+            source: self.buffers.chunks,
+            source_offset: 0,
+            destination: grown,
+            destination_offset: 0,
+            size: bytes(old),
+        }]);
+        gpu.destroy_buffer(self.buffers.chunks);
+        self.buffers.chunks = grown;
+        self.chunk_slots.grow(new);
+        self.capacity.chunks = new;
+        self.buffers_revision += 1;
+        true
+    }
+
+    /// Makes the candidate and visible lists room for at least `short`
+    /// more candidates, to their ceiling. The next layout writes them
+    /// whole.
+    fn grow_candidates(&mut self, gpu: &mut dyn Gpu, short: u64) -> bool {
+        let old = self.capacity.candidates;
+        let need = u64::from(old) + short;
+        let mut new = u64::from(old.max(1));
+        while new < need {
+            new *= 2;
+        }
+        let new = new.min(u64::from(self.capacity.max_candidates)) as u32;
+        if new <= old {
+            return false;
+        }
+        let candidates = gpu.create_buffer(&BufferDesc {
+            label: "candidates",
+            size: u64::from(new) * CANDIDATE_WORDS as u64 * 4,
+            usage: if self.cull.is_some() {
+                BufferUsages::COPY_DST
+            } else {
+                BufferUsages::STORAGE | BufferUsages::COPY_DST
+            },
+        });
+        let visible = gpu.create_buffer(&BufferDesc {
+            label: "visible",
+            size: u64::from(new) * VISIBLE_WORDS as u64 * 4,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        });
+        gpu.destroy_buffer(std::mem::replace(&mut self.buffers.candidates, candidates));
+        gpu.destroy_buffer(std::mem::replace(&mut self.buffers.visible, visible));
+        self.capacity.candidates = new;
         self.buffers_revision += 1;
         true
     }
@@ -1986,7 +2091,7 @@ impl Scene {
             ceiling: bytes(ceiling.max(allocated)),
             largest_free: bytes(arena.largest_free()),
         };
-        let props = bytes(c.prop_words) + u64::from(c.glyph_rows) * GLYPH_ROW_WORDS as u64 * 4;
+        let props = bytes(c.prop_words);
         SceneMemory {
             vertices: pool(&self.vertex_arena, c.vertex_words, c.max_vertex_words),
             indices: pool(&self.index_arena, c.index_words, c.max_index_words),
@@ -2001,7 +2106,7 @@ impl Scene {
             props: PoolMemory {
                 used: bytes(self.prop_arena.used()),
                 allocated: props,
-                ceiling: props,
+                ceiling: bytes(c.max_prop_words.max(c.prop_words)),
                 largest_free: bytes(self.prop_arena.largest_free()),
             },
             tables: (u64::from(c.placements) * TILE_WORDS as u64
@@ -2018,6 +2123,7 @@ impl Scene {
 enum Pool {
     Vertices,
     Indices,
+    Props,
 }
 
 /// The vertex and index pools: storage that a larger buffer copies from.

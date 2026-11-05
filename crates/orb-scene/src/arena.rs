@@ -107,6 +107,12 @@ impl Slots {
     pub(crate) fn available(&self) -> u32 {
         self.capacity - self.next + self.free.len() as u32
     }
+
+    /// Extends to `capacity` slots.
+    pub(crate) fn grow(&mut self, capacity: u32) {
+        assert!(capacity > self.capacity, "slots only grow");
+        self.capacity = capacity;
+    }
 }
 
 #[cfg(test)]

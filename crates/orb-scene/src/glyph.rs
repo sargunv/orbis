@@ -84,6 +84,11 @@ impl GlyphAtlas {
         self.page.texture(0)
     }
 
+    /// The row table moved, at the same offset, into a larger buffer.
+    pub fn set_table(&mut self, table: BufferId) {
+        self.table = table;
+    }
+
     /// The row table's first word in its buffer: [`GLYPH_ROW_WORDS`] per
     /// row.
     pub fn table_base(&self) -> u32 {

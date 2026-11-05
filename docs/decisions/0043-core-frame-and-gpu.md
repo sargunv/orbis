@@ -105,6 +105,16 @@ otherwise lets a coarser tile stand in.
   are, and the tile is released when they have. Still output holds
   nothing. Zoom z12 → z16 → z12 on Tokyo: label blinks 42–64 → 0 a run.
 
+- **Memory follows what the map draws.** The vertex, index, compacted
+  and property pools start at 1 MB and double as tiles need, contents
+  copied. The glyph table is the property pool's first block, so it keeps
+  its offset as the pool grows. The chunk table grows alike, and the
+  candidate and visible lists grow when a layout outgrows them. The image
+  atlas starts with one page and adds pages up to eight; a map hands its
+  renderer the atlas's bindings each frame. Tokyo at z12, z15 and z16
+  pitched: 115.5 MB → 26–47 MB allocated, guarded by
+  `crates/orb-api/tests/memory.rs`.
+
 ## Still to land
 
 The Map/Renderer split (`plan_frame`, a narrow `Renderer` that owns all
