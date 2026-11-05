@@ -13,6 +13,7 @@ glam.workspace = true
 orb-hal.workspace = true
 orb-hal-wgpu.workspace = true
 orb-runtime.workspace = true
+orb-style.workspace = true
 orb-v8.workspace = true
 serde_json.workspace = true
 wgpu.workspace = true

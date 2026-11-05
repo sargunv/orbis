@@ -3,23 +3,23 @@
 
 use orb_hal::Gpu;
 use orb_render::{ImageAtlas, ImageKey, NodePaint, PatternPaint, pack_color};
-use orb_tile::Layer;
-use orb_v8::{
+use orb_style::{
     Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH, LayerType, LineCap,
 };
+use orb_tile::Layer;
 
 use crate::map::Crossfade;
 use crate::tile::ImageRef;
 
 /// Whether a line layer's property rows carry dash or gradient textures.
-pub(crate) fn has_textures(layer: &orb_v8::Layer) -> bool {
+pub(crate) fn has_textures(layer: &orb_style::Layer) -> bool {
     layer.ty == LayerType::Line
         && (layer.get(LINE_DASHARRAY).constant() != Some(None)
             || layer.ramp(LINE_GRADIENT).is_some())
 }
 
 pub(crate) fn textures(
-    line: &orb_v8::Layer,
+    line: &orb_style::Layer,
     layer: &Layer,
     features: &[u32],
     zoom: f64,
@@ -124,7 +124,7 @@ pub(crate) fn textures(
 pub(crate) fn paint(
     gpu: &mut dyn Gpu,
     paint: NodePaint,
-    line: &orb_v8::Layer,
+    line: &orb_style::Layer,
     atlas: &mut ImageAtlas,
     namespace: u64,
     zoom: f64,

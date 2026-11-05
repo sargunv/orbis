@@ -229,33 +229,37 @@ pub(crate) struct SymbolTile {
     pub(crate) globe: Option<Arc<orb_crs::Series<glam::DVec3>>>,
 }
 
-fn overlap(mode: Option<orb_v8::Overlap>, allow: bool) -> orb_symbol::Overlap {
+fn overlap(mode: Option<orb_style::Overlap>, allow: bool) -> orb_symbol::Overlap {
     match mode {
-        Some(orb_v8::Overlap::Never) => orb_symbol::Overlap::Never,
-        Some(orb_v8::Overlap::Always) => orb_symbol::Overlap::Always,
-        Some(orb_v8::Overlap::Cooperative) => orb_symbol::Overlap::Cooperative,
+        Some(orb_style::Overlap::Never) => orb_symbol::Overlap::Never,
+        Some(orb_style::Overlap::Always) => orb_symbol::Overlap::Always,
+        Some(orb_style::Overlap::Cooperative) => orb_symbol::Overlap::Cooperative,
         None if allow => orb_symbol::Overlap::Always,
         None => orb_symbol::Overlap::Never,
     }
 }
 
 /// `text-rotation-alignment` is `map`, after `auto` (GL JS `recalculate`).
-pub(crate) fn text_rotates_with_map(symbol: &orb_v8::Layer, zoom: f64) -> bool {
-    match symbol.get(orb_v8::TEXT_ROTATION_ALIGNMENT).evaluate(zoom) {
-        orb_v8::TextRotationAlignment::Map => true,
-        orb_v8::TextRotationAlignment::Auto => {
-            symbol.get(orb_v8::SYMBOL_PLACEMENT).evaluate(zoom) != orb_v8::SymbolPlacement::Point
+pub(crate) fn text_rotates_with_map(symbol: &orb_style::Layer, zoom: f64) -> bool {
+    match symbol
+        .get(orb_style::TEXT_ROTATION_ALIGNMENT)
+        .evaluate(zoom)
+    {
+        orb_style::TextRotationAlignment::Map => true,
+        orb_style::TextRotationAlignment::Auto => {
+            symbol.get(orb_style::SYMBOL_PLACEMENT).evaluate(zoom)
+                != orb_style::SymbolPlacement::Point
         }
         _ => false,
     }
 }
 
 /// `text-pitch-alignment` is `map`, after `auto`.
-pub(crate) fn text_pitches_with_map(symbol: &orb_v8::Layer, zoom: f64) -> bool {
-    match symbol.get(orb_v8::TEXT_PITCH_ALIGNMENT).evaluate(zoom) {
-        orb_v8::Alignment::Map => true,
-        orb_v8::Alignment::Viewport => false,
-        orb_v8::Alignment::Auto => text_rotates_with_map(symbol, zoom),
+pub(crate) fn text_pitches_with_map(symbol: &orb_style::Layer, zoom: f64) -> bool {
+    match symbol.get(orb_style::TEXT_PITCH_ALIGNMENT).evaluate(zoom) {
+        orb_style::Alignment::Map => true,
+        orb_style::Alignment::Viewport => false,
+        orb_style::Alignment::Auto => text_rotates_with_map(symbol, zoom),
     }
 }
 
@@ -268,18 +272,19 @@ fn layer_params(
     let layer = &plan.style.layers[node.layer];
     let symbol = layer;
     let l = symbol;
-    let z_order = l.get(orb_v8::SYMBOL_Z_ORDER).evaluate(zoom);
-    let point = l.get(orb_v8::SYMBOL_PLACEMENT).evaluate(zoom) == orb_v8::SymbolPlacement::Point;
+    let z_order = l.get(orb_style::SYMBOL_Z_ORDER).evaluate(zoom);
+    let point =
+        l.get(orb_style::SYMBOL_PLACEMENT).evaluate(zoom) == orb_style::SymbolPlacement::Point;
     let writing_modes = if point {
         let mut modes = Vec::new();
         for m in l
-            .get(orb_v8::TEXT_WRITING_MODE)
+            .get(orb_style::TEXT_WRITING_MODE)
             .evaluate(zoom)
             .unwrap_or_default()
         {
             let m = match m {
-                orb_v8::WritingMode::Horizontal => orb_text::WritingMode::Horizontal,
-                orb_v8::WritingMode::Vertical => orb_text::WritingMode::Vertical,
+                orb_style::WritingMode::Horizontal => orb_text::WritingMode::Horizontal,
+                orb_style::WritingMode::Vertical => orb_text::WritingMode::Vertical,
             };
             if !modes.contains(&m) {
                 modes.push(m);
@@ -292,11 +297,11 @@ fn layer_params(
     } else {
         Vec::new()
     };
-    let translate = |p: orb_v8::SymbolPart| {
+    let translate = |p: orb_style::SymbolPart| {
         let t = l.get(p.translate).evaluate(zoom);
         (
             [f64::from(t[0]), f64::from(t[1])],
-            l.get(p.translate_anchor).evaluate(zoom) == orb_v8::TranslateAnchor::Viewport,
+            l.get(p.translate_anchor).evaluate(zoom) == orb_style::TranslateAnchor::Viewport,
         )
     };
     orb_symbol::LayerParams {
@@ -309,32 +314,33 @@ fn layer_params(
             0.0
         },
         text_overlap: overlap(
-            l.get(orb_v8::TEXT_OVERLAP).evaluate(zoom),
-            l.get(orb_v8::TEXT_ALLOW_OVERLAP).evaluate(zoom),
+            l.get(orb_style::TEXT_OVERLAP).evaluate(zoom),
+            l.get(orb_style::TEXT_ALLOW_OVERLAP).evaluate(zoom),
         ),
         icon_overlap: overlap(
-            l.get(orb_v8::ICON_OVERLAP).evaluate(zoom),
-            l.get(orb_v8::ICON_ALLOW_OVERLAP).evaluate(zoom),
+            l.get(orb_style::ICON_OVERLAP).evaluate(zoom),
+            l.get(orb_style::ICON_ALLOW_OVERLAP).evaluate(zoom),
         ),
-        text_optional: l.get(orb_v8::TEXT_OPTIONAL).evaluate(zoom),
-        icon_optional: l.get(orb_v8::ICON_OPTIONAL).evaluate(zoom),
-        text_ignore_placement: l.get(orb_v8::TEXT_IGNORE_PLACEMENT).evaluate(zoom),
-        icon_ignore_placement: l.get(orb_v8::ICON_IGNORE_PLACEMENT).evaluate(zoom),
+        text_optional: l.get(orb_style::TEXT_OPTIONAL).evaluate(zoom),
+        icon_optional: l.get(orb_style::ICON_OPTIONAL).evaluate(zoom),
+        text_ignore_placement: l.get(orb_style::TEXT_IGNORE_PLACEMENT).evaluate(zoom),
+        icon_ignore_placement: l.get(orb_style::ICON_IGNORE_PLACEMENT).evaluate(zoom),
         rotate_with_map: text_rotates_with_map(symbol, zoom),
         pitch_with_map: text_pitches_with_map(symbol, zoom),
-        icon_text_fit: l.get(orb_v8::ICON_TEXT_FIT).evaluate(zoom) != orb_v8::IconTextFit::None,
-        z_order_viewport_y: z_order == orb_v8::SymbolZOrder::ViewportY,
+        icon_text_fit: l.get(orb_style::ICON_TEXT_FIT).evaluate(zoom)
+            != orb_style::IconTextFit::None,
+        z_order_viewport_y: z_order == orb_style::SymbolZOrder::ViewportY,
         draw_by_viewport_y: draws_by_viewport_y(symbol, zoom),
-        sort_across_tiles: z_order != orb_v8::SymbolZOrder::ViewportY
+        sort_across_tiles: z_order != orb_style::SymbolZOrder::ViewportY
             && matches!(
-                l.get(orb_v8::SYMBOL_SORT_KEY).kind(),
-                orb_v8::Kind::Source | orb_v8::Kind::Composite
+                l.get(orb_style::SYMBOL_SORT_KEY).kind(),
+                orb_style::Kind::Source | orb_style::Kind::Composite
             ),
-        height_anchor_ground: l.get(orb_v8::SYMBOL_HEIGHT_ANCHOR).evaluate(zoom)
-            == orb_v8::HeightAnchor::Ground,
-        text_padding: l.get(orb_v8::TEXT_PADDING).evaluate(zoom),
-        text_translate: translate(orb_v8::TEXT_PART),
-        icon_translate: translate(orb_v8::ICON_PART),
+        height_anchor_ground: l.get(orb_style::SYMBOL_HEIGHT_ANCHOR).evaluate(zoom)
+            == orb_style::HeightAnchor::Ground,
+        text_padding: l.get(orb_style::TEXT_PADDING).evaluate(zoom),
+        text_translate: translate(orb_style::TEXT_PART),
+        icon_translate: translate(orb_style::ICON_PART),
         writing_modes,
         variable_placement: has_variable_placement(symbol),
     }
@@ -343,44 +349,44 @@ fn layer_params(
 /// GL JS `sortFeaturesByY`: symbols that may overlap draw ordered by
 /// viewport y, unless the layer sorts by key.
 /// GL JS `sortFeaturesByKey`.
-fn draws_by_key(symbol: &orb_v8::Layer, zoom: f64) -> bool {
+fn draws_by_key(symbol: &orb_style::Layer, zoom: f64) -> bool {
     let l = symbol;
-    l.get(orb_v8::SYMBOL_Z_ORDER).evaluate(zoom) != orb_v8::SymbolZOrder::ViewportY
+    l.get(orb_style::SYMBOL_Z_ORDER).evaluate(zoom) != orb_style::SymbolZOrder::ViewportY
         && matches!(
-            l.get(orb_v8::SYMBOL_SORT_KEY).kind(),
-            orb_v8::Kind::Source | orb_v8::Kind::Composite
+            l.get(orb_style::SYMBOL_SORT_KEY).kind(),
+            orb_style::Kind::Source | orb_style::Kind::Composite
         )
 }
 
-fn draws_by_viewport_y(symbol: &orb_v8::Layer, zoom: f64) -> bool {
+fn draws_by_viewport_y(symbol: &orb_style::Layer, zoom: f64) -> bool {
     let l = symbol;
-    let z_order = l.get(orb_v8::SYMBOL_Z_ORDER).evaluate(zoom);
+    let z_order = l.get(orb_style::SYMBOL_Z_ORDER).evaluate(zoom);
     let by_key = draws_by_key(symbol, zoom);
-    let by_y = z_order == orb_v8::SymbolZOrder::ViewportY
-        || (z_order == orb_v8::SymbolZOrder::Auto && !by_key);
+    let by_y = z_order == orb_style::SymbolZOrder::ViewportY
+        || (z_order == orb_style::SymbolZOrder::Auto && !by_key);
     let can_overlap = overlap(
-        l.get(orb_v8::TEXT_OVERLAP).evaluate(zoom),
-        l.get(orb_v8::TEXT_ALLOW_OVERLAP).evaluate(zoom),
+        l.get(orb_style::TEXT_OVERLAP).evaluate(zoom),
+        l.get(orb_style::TEXT_ALLOW_OVERLAP).evaluate(zoom),
     ) != orb_symbol::Overlap::Never
         || overlap(
-            l.get(orb_v8::ICON_OVERLAP).evaluate(zoom),
-            l.get(orb_v8::ICON_ALLOW_OVERLAP).evaluate(zoom),
+            l.get(orb_style::ICON_OVERLAP).evaluate(zoom),
+            l.get(orb_style::ICON_ALLOW_OVERLAP).evaluate(zoom),
         ) != orb_symbol::Overlap::Never
-        || l.get(orb_v8::TEXT_IGNORE_PLACEMENT).evaluate(zoom)
-        || l.get(orb_v8::ICON_IGNORE_PLACEMENT).evaluate(zoom);
+        || l.get(orb_style::TEXT_IGNORE_PLACEMENT).evaluate(zoom)
+        || l.get(orb_style::ICON_IGNORE_PLACEMENT).evaluate(zoom);
     by_y && can_overlap
 }
 
 /// The layer sets `text-variable-anchor` or `text-variable-anchor-offset`.
-pub(crate) fn has_variable_placement(symbol: &orb_v8::Layer) -> bool {
+pub(crate) fn has_variable_placement(symbol: &orb_style::Layer) -> bool {
     let l = symbol;
-    l.get(orb_v8::TEXT_VARIABLE_ANCHOR).constant() != Some(None)
-        || l.get(orb_v8::TEXT_VARIABLE_ANCHOR_OFFSET).constant() != Some(None)
+    l.get(orb_style::TEXT_VARIABLE_ANCHOR).constant() != Some(None)
+        || l.get(orb_style::TEXT_VARIABLE_ANCHOR_OFFSET).constant() != Some(None)
 }
 
 /// A bucket's text size at the camera's zoom (GL JS `evaluateSizeForZoom`).
 fn zoom_size(
-    property: &orb_v8::PropertyRef<'_, f64>,
+    property: &orb_style::PropertyRef<'_, f64>,
     kind: SizeKind,
     tile_zoom: f64,
     zoom: f64,
@@ -477,7 +483,7 @@ fn rows<T: bytemuck::Pod>(words: &[u32]) -> Vec<T> {
 
 /// The layer's size at `zoom + 1`, the size collision boxes are built for
 /// and camera sizes are capped at (GL JS `layoutSize`).
-fn layout_size(property: &orb_v8::PropertyRef<'_, f64>, tile_zoom: f64) -> f32 {
+fn layout_size(property: &orb_style::PropertyRef<'_, f64>, tile_zoom: f64) -> f32 {
     property.evaluate(tile_zoom + 1.0) as f32
 }
 
@@ -668,8 +674,8 @@ impl Labels {
             .collect();
 
         let meta = &s.meta;
-        let text_layout = layout_size(&symbol.get(orb_v8::TEXT_SIZE), tile_zoom);
-        let icon_layout = layout_size(&symbol.get(orb_v8::ICON_SIZE), tile_zoom);
+        let text_layout = layout_size(&symbol.get(orb_style::TEXT_SIZE), tile_zoom);
+        let icon_layout = layout_size(&symbol.get(orb_style::ICON_SIZE), tile_zoom);
         let zooms = |kind: SizeKind| match kind {
             SizeKind::Composite { zooms } => zooms.map(|z| z as f32),
             _ => [0.0; 2],
@@ -855,7 +861,7 @@ impl Labels {
         atlas: &mut GlyphAtlas,
         jobs: &dyn Jobs,
         raster_done: &dyn Fn(Vec<RasterRow>) -> crate::RasterDone,
-        faces: &orb_v8::FontFaces,
+        faces: &orb_style::FontFaces,
     ) {
         self.retire(gpu, atlas);
         // Each job's glyphs, deduplicated, with every row by its index.
@@ -1219,7 +1225,7 @@ impl Labels {
                                 }),
                             },
                             text_size: zoom_size(
-                                &symbol.get(orb_v8::TEXT_SIZE),
+                                &symbol.get(orb_style::TEXT_SIZE),
                                 b.text_size,
                                 b.tile_zoom,
                                 zoom,
@@ -1362,12 +1368,12 @@ impl Labels {
                 continue;
             };
             let style_layer = &plan.style.layers[plan.nodes[node].layer];
-            if style_layer.ty != orb_v8::LayerType::Symbol {
+            if style_layer.ty != orb_style::LayerType::Symbol {
                 continue;
             }
             let symbol = style_layer;
-            let along_line = symbol.get(orb_v8::SYMBOL_PLACEMENT).evaluate(zoom)
-                != orb_v8::SymbolPlacement::Point;
+            let along_line = symbol.get(orb_style::SYMBOL_PLACEMENT).evaluate(zoom)
+                != orb_style::SymbolPlacement::Point;
             for tile in &layer.tiles {
                 let Some(meshes) = self.buckets.get(&tile.bucket) else {
                     continue;
@@ -1460,7 +1466,7 @@ impl Labels {
 }
 
 /// How a size property is drawn per frame.
-fn size_paint(property: &orb_v8::PropertyRef<'_, f64>) -> orb_render::SymbolSize {
+fn size_paint(property: &orb_style::PropertyRef<'_, f64>) -> orb_render::SymbolSize {
     let curve = || {
         let interpolation = property
             .as_expression()
@@ -1478,10 +1484,12 @@ fn size_paint(property: &orb_v8::PropertyRef<'_, f64>) -> orb_render::SymbolSize
         }
     };
     match property.kind() {
-        orb_v8::Kind::Constant => orb_render::SymbolSize::Constant(property.evaluate(0.0) as f32),
-        orb_v8::Kind::Source => orb_render::SymbolSize::Source,
-        orb_v8::Kind::Composite => orb_render::SymbolSize::Composite { curve: curve() },
-        orb_v8::Kind::Camera => {
+        orb_style::Kind::Constant => {
+            orb_render::SymbolSize::Constant(property.evaluate(0.0) as f32)
+        }
+        orb_style::Kind::Source => orb_render::SymbolSize::Source,
+        orb_style::Kind::Composite => orb_render::SymbolSize::Composite { curve: curve() },
+        orb_style::Kind::Camera => {
             let zooms = property
                 .as_expression()
                 .and_then(|e| e.zoom_curve())
@@ -1511,49 +1519,50 @@ pub(crate) fn paint(
     let symbol = &plan.style.layers[node.layer];
     let is_text = node.family == orb_render::Family::SymbolText;
     let part = if is_text {
-        orb_v8::TEXT_PART
+        orb_style::TEXT_PART
     } else {
-        orb_v8::ICON_PART
+        orb_style::ICON_PART
     };
     // GL JS skips a part whose constant opacity is 0.
     if symbol.get(part.opacity).constant() == Some(0.0) {
         return None;
     }
     let l = symbol;
-    let point = l.get(orb_v8::SYMBOL_PLACEMENT).evaluate(zoom) == orb_v8::SymbolPlacement::Point;
+    let point =
+        l.get(orb_style::SYMBOL_PLACEMENT).evaluate(zoom) == orb_style::SymbolPlacement::Point;
     let (rotate, pitch, keep_upright) = if is_text {
         (
             text_rotates_with_map(symbol, zoom),
             text_pitches_with_map(symbol, zoom),
-            l.get(orb_v8::TEXT_KEEP_UPRIGHT).evaluate(zoom),
+            l.get(orb_style::TEXT_KEEP_UPRIGHT).evaluate(zoom),
         )
     } else {
-        let rotate = match l.get(orb_v8::ICON_ROTATION_ALIGNMENT).constant() {
-            Some(orb_v8::Alignment::Map) => true,
-            Some(orb_v8::Alignment::Viewport) => false,
+        let rotate = match l.get(orb_style::ICON_ROTATION_ALIGNMENT).constant() {
+            Some(orb_style::Alignment::Map) => true,
+            Some(orb_style::Alignment::Viewport) => false,
             _ => !point,
         };
-        let pitch = match l.get(orb_v8::ICON_PITCH_ALIGNMENT).evaluate(zoom) {
-            orb_v8::Alignment::Map => true,
-            orb_v8::Alignment::Viewport => false,
-            orb_v8::Alignment::Auto => rotate,
+        let pitch = match l.get(orb_style::ICON_PITCH_ALIGNMENT).evaluate(zoom) {
+            orb_style::Alignment::Map => true,
+            orb_style::Alignment::Viewport => false,
+            orb_style::Alignment::Auto => rotate,
         };
         (
             rotate,
             pitch,
-            l.get(orb_v8::ICON_KEEP_UPRIGHT).evaluate(zoom),
+            l.get(orb_style::ICON_KEEP_UPRIGHT).evaluate(zoom),
         )
     };
     let viewport_aligned = if is_text {
-        l.get(orb_v8::TEXT_ROTATION_ALIGNMENT).evaluate(zoom)
-            == orb_v8::TextRotationAlignment::Viewport
+        l.get(orb_style::TEXT_ROTATION_ALIGNMENT).evaluate(zoom)
+            == orb_style::TextRotationAlignment::Viewport
             || (!rotate && point)
     } else {
         !rotate
     };
     let along_line = !viewport_aligned && !point;
     let variable = has_variable_placement(symbol);
-    let fitted = l.get(orb_v8::ICON_TEXT_FIT).evaluate(zoom) != orb_v8::IconTextFit::None;
+    let fitted = l.get(orb_style::ICON_TEXT_FIT).evaluate(zoom) != orb_style::IconTextFit::None;
 
     let mut paint = orb_render::SymbolPaint {
         color: [0.0; 4],
@@ -1566,29 +1575,29 @@ pub(crate) fn paint(
         translate: orb_render::Translate {
             px: l.get(part.translate).evaluate(zoom),
             viewport: l.get(part.translate_anchor).evaluate(zoom)
-                == orb_v8::TranslateAnchor::Viewport,
+                == orb_style::TranslateAnchor::Viewport,
         },
         size: size_paint(&l.get(if is_text {
-            orb_v8::TEXT_SIZE
+            orb_style::TEXT_SIZE
         } else {
-            orb_v8::ICON_SIZE
+            orb_style::ICON_SIZE
         })),
-        text_size: size_paint(&l.get(orb_v8::TEXT_SIZE)),
+        text_size: size_paint(&l.get(orb_style::TEXT_SIZE)),
         is_text,
         pitch_with_map: pitch,
         rotate_with_map: rotate,
         along_line,
         rotate_in_shader: rotate && !pitch && !along_line,
         variable_anchor: variable && (is_text || fitted),
-        is_offset: l.get(orb_v8::ICON_OFFSET).is_set(),
+        is_offset: l.get(orb_style::ICON_OFFSET).is_set(),
         keep_upright,
-        height_anchor_ground: l.get(orb_v8::SYMBOL_HEIGHT_ANCHOR).evaluate(zoom)
-            == orb_v8::HeightAnchor::Ground,
+        height_anchor_ground: l.get(orb_style::SYMBOL_HEIGHT_ANCHOR).evaluate(zoom)
+            == orb_style::HeightAnchor::Ground,
         // GL JS draws halos, then fills, per sort-key segment of a tile;
         // a layer sorted by key draws them per quad instead.
         separate_halo: !draws_by_key(symbol, zoom)
             && (l
-                .get(orb_v8::TEXT_LETTER_SPACING)
+                .get(orb_style::TEXT_LETTER_SPACING)
                 .constant()
                 .is_some_and(|s| s * orb_text::ONE_EM < 0.0)
                 || l.get(part.halo_width).constant().is_none_or(|w| w > 1.0)),
@@ -1599,10 +1608,10 @@ pub(crate) fn paint(
         linear_icons: pitch
             || (is_text
                 && matches!(
-                    l.get(orb_v8::TEXT_SIZE).kind(),
-                    orb_v8::Kind::Camera | orb_v8::Kind::Composite
+                    l.get(orb_style::TEXT_SIZE).kind(),
+                    orb_style::Kind::Camera | orb_style::Kind::Composite
                 ))
-            || (!is_text && l.get(orb_v8::ICON_SIZE).constant() != Some(1.0)),
+            || (!is_text && l.get(orb_style::ICON_SIZE).constant() != Some(1.0)),
     };
     for (slot, property) in plan.paint_properties(node).iter().enumerate() {
         if property.per_feature() {
@@ -1640,9 +1649,9 @@ pub(crate) fn paint(
         orb_render::SymbolSize::Constant(s) => s,
         _ => {
             (if is_text {
-                l.get(orb_v8::TEXT_SIZE).evaluate(zoom)
+                l.get(orb_style::TEXT_SIZE).evaluate(zoom)
             } else {
-                l.get(orb_v8::ICON_SIZE).evaluate(zoom)
+                l.get(orb_style::ICON_SIZE).evaluate(zoom)
             }) as f32
         }
     };

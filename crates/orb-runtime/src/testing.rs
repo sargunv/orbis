@@ -1,7 +1,7 @@
 //! Test inputs shared across modules.
 
 use orb_crs::TileIndex;
-use orb_v8::Encoding;
+use orb_style::Encoding;
 
 use crate::jobs::{Built, TileRequest, TileResult, TileWorker};
 use crate::loader::TileLocation;

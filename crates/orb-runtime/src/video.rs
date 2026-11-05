@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use orb_crs::TileIndex;
 use orb_hal::HostImageId;
-use orb_v8::{ImageContent, SourceKind};
+use orb_style::{ImageContent, SourceKind};
 
 use crate::MapEvent;
 use crate::jobs::{ImagePixels, TileImage};

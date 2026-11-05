@@ -2,7 +2,7 @@
 
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json;
-use orb_v8::{
+use orb_style::{
     DemEncoding, Encoding, GeoJsonData, GeoJsonSource, RasterSource, Scheme, SourceKind, TileSet,
     VectorSource,
 };
@@ -126,9 +126,9 @@ impl TileEndpoint {
         let dem_unpack = match source {
             SourceKind::RasterDem(dem) => {
                 let encoding = dem.encoding.unwrap_or(
-                    match text("encoding").and_then(<DemEncoding as orb_v8::Enum>::from_name) {
+                    match text("encoding").and_then(<DemEncoding as orb_style::Enum>::from_name) {
                         Some(encoding) => encoding,
-                        None => orb_v8::RasterDemSource::DEFAULT_ENCODING,
+                        None => orb_style::RasterDemSource::DEFAULT_ENCODING,
                     },
                 );
                 Some(encoding.unpack(dem.factors))
@@ -182,7 +182,7 @@ impl TileEndpoint {
 
     /// An `image` source on `projection`'s plane: one tile, the image at
     /// its URL, in a one-tile set around its quad.
-    pub fn image(source: &orb_v8::ImageSource, projection: &orb_crs::Projection) -> Self {
+    pub fn image(source: &orb_style::ImageSource, projection: &orb_crs::Projection) -> Self {
         let corners = source
             .coordinates
             .map(|[lon, lat]| projection.forward(orb_crs::Geodetic::new(lon, lat)));
@@ -198,8 +198,8 @@ impl TileEndpoint {
             bounds: None,
             // A video's frames come from its host, not a fetch.
             templates: match &source.content {
-                orb_v8::ImageContent::Image(url) => vec![url.clone()],
-                orb_v8::ImageContent::Video(_) => Vec::new(),
+                orb_style::ImageContent::Image(url) => vec![url.clone()],
+                orb_style::ImageContent::Video(_) => Vec::new(),
             },
             data_url: None,
             scheme: Scheme::Xyz,

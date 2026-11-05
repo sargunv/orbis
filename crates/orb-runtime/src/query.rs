@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use glam::{DVec2, DVec3, DVec4, Vec2};
 use orb_camera::{CameraState, View};
 use orb_crs::{TileIndex, TileMatrixSet};
-use orb_v8::{Kind, LayerType, Property, TranslateAnchor};
+use orb_style::{Kind, LayerType, Property, TranslateAnchor};
 
 use crate::jobs::{read_text, write_text};
 
@@ -591,8 +591,8 @@ fn per_feature(kind: Kind) -> bool {
 }
 
 impl HitPaint {
-    fn of(l: &orb_v8::Layer) -> Self {
-        use orb_v8::{
+    fn of(l: &orb_style::Layer) -> Self {
+        use orb_style::{
             CIRCLE_RADIUS, CIRCLE_STROKE_WIDTH, CIRCLE_TRANSLATE, CIRCLE_TRANSLATE_ANCHOR,
             EXTRUSION_BASE, EXTRUSION_HEIGHT, EXTRUSION_TRANSLATE, EXTRUSION_TRANSLATE_ANCHOR,
             FILL_TRANSLATE, FILL_TRANSLATE_ANCHOR, LINE_TRANSLATE, LINE_TRANSLATE_ANCHOR,
@@ -656,7 +656,7 @@ struct HitLayer {
 }
 
 impl HitLayer {
-    /// [`orb_v8::Layer::is_visible_at`].
+    /// [`orb_style::Layer::is_visible_at`].
     fn visible_at(&self, zoom: f64) -> bool {
         let above_min = self.minzoom == 0.0 || zoom >= self.minzoom;
         let below_max = self.maxzoom == 0.0 || zoom < self.maxzoom;
@@ -699,7 +699,7 @@ impl HitLayers {
                         source_layer: plan.source_layer(node).map(str::to_string),
                         minzoom: layer.minzoom,
                         maxzoom: layer.maxzoom,
-                        visible: layer.visibility == orb_v8::Visibility::Visible,
+                        visible: layer.visibility == orb_style::Visibility::Visible,
                         paint: HitPaint::of(layer),
                     },
                 )

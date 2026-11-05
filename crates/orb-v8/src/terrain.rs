@@ -2,18 +2,7 @@
 //! surface, and how far.
 use crate::{Cx, Source, SourceKind};
 use orb_expr::json::Json;
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Terrain {
-    /// The id of a `raster-dem` source.
-    pub source: String,
-    /// Multiplies elevations; 0 is flat.
-    pub exaggeration: f64,
-}
-
-impl Terrain {
-    pub const DEFAULT_EXAGGERATION: f64 = 1.0;
-}
+use orb_style::*;
 
 pub(crate) fn parse(cx: &mut Cx, json: &Json, sources: &[Source]) -> Option<Terrain> {
     let members = cx.object(json, "terrain")?;
@@ -62,7 +51,7 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json, sources: &[Source]) -> Option<Terr
 
 #[cfg(test)]
 mod tests {
-    fn parse(terrain: &str) -> Result<crate::Style, crate::Diagnostics> {
+    fn parse(terrain: &str) -> Result<crate::Scene, crate::Diagnostics> {
         crate::parse(&format!(
             r#"{{"version":8,"sources":{{"dem":{{"type":"raster-dem","tiles":["x/{{z}}/{{x}}/{{y}}.png"]}},"v":{{"type":"vector","tiles":["x"]}}}},"layers":[],"terrain":{terrain}}}"#
         ))

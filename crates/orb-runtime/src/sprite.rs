@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use orb_expr::json::{self, Json};
 use orb_host::{DecodedImage, Fetch, ImageDecode};
 use orb_render::ImageMetadata;
-use orb_v8::Sprite;
+use orb_style::Sprite;
 
 #[derive(Debug)]
 pub(crate) struct SpriteImage {

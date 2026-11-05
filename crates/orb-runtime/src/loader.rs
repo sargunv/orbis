@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use orb_crs::TileIndex;
 use orb_host::{Fetch, FetchError};
 use orb_source::pmtiles::{Lookup, Reader, TileType};
-use orb_v8::Encoding;
+use orb_style::Encoding;
 
 pub use orb_source::endpoint::TileLocation;
 

@@ -16,11 +16,8 @@ pub(crate) struct Surface {
     tms: TileMatrixSet,
     /// Sources' tile matrix sets by source id, from the scene document.
     sources: Vec<(String, TileMatrixSet)>,
-    /// The low-zoom surface the plane's tiles draw on: the scene
-    /// document's, else the style's (v8 `projection`).
+    /// The low-zoom surface the plane's tiles draw on.
     globe: Option<orb_crs::Globe>,
-    /// The scene document's low-zoom plane, which the style's can't replace.
-    scene_globe: Option<orb_crs::Globe>,
 }
 
 /// What job workers need of the surface: the plane GeoJSON tiles in, and
@@ -65,16 +62,25 @@ impl Default for Surface {
             tms,
             sources: Vec::new(),
             globe: None,
-            scene_globe: None,
         }
     }
 }
 
 impl Surface {
+    /// The scene's surface: its plane, its sources' tile matrix sets and
+    /// its low-zoom surface.
+    pub(crate) fn of(scene: &orb_style::Scene) -> Self {
+        Self::new(
+            scene.projection,
+            scene.tile_matrix_sets.clone(),
+            scene.globe,
+        )
+    }
+
     /// A surface on `projection` (Web Mercator if `None`) with the scene
     /// document's tile matrix sets and low-zoom plane. The plane's extent
     /// is that of the first source set on it, or else the projection's own.
-    pub(crate) fn new(
+    fn new(
         projection: Option<Projection>,
         sources: Vec<(String, TileMatrixSet)>,
         globe: Option<orb_crs::Globe>,
@@ -97,7 +103,6 @@ impl Surface {
             tms,
             sources,
             globe,
-            scene_globe: globe,
         }
     }
 
@@ -115,12 +120,6 @@ impl Surface {
 
     pub(crate) fn globe(&self) -> Option<orb_crs::Globe> {
         self.globe
-    }
-
-    /// Draws the plane's tiles on the style's low-zoom surface (a globe,
-    /// or another plane), or not, unless the scene document chose one.
-    pub(crate) fn set_globe(&mut self, globe: Option<orb_crs::Globe>) {
-        self.globe = self.scene_globe.or(globe);
     }
 
     /// The tile matrix set backgrounds and GeoJSON use.
@@ -173,15 +172,6 @@ impl Surface {
     /// The x period of a wrapping plane; 0 if it doesn't wrap.
     pub(crate) fn period(&self) -> f64 {
         self.projection.wrap_period().unwrap_or(0.0)
-    }
-
-    /// The surface with another projection, keeping the sources' sets and
-    /// the globe.
-    pub(crate) fn with_projection(&self, projection: Projection) -> Self {
-        Self {
-            globe: self.globe,
-            ..Self::new(Some(projection), self.sources.clone(), self.scene_globe)
-        }
     }
 
     /// A source's tile matrix set: the scene document's, else the
@@ -436,8 +426,7 @@ mod tests {
         }
         // A globe draws sources on other planes too: on the sphere, and
         // through their planar warp as it hands over.
-        let mut globe = Surface::default();
-        globe.set_globe(Some(orb_crs::Globe::V8));
+        let globe = Surface::new(None, Vec::new(), Some(orb_crs::Globe::V8));
         let crs84 = TileMatrixSet::by_id("WorldCRS84Quad").unwrap();
         assert!(matches!(
             globe.plan(&crs84, Some(ImageKind::Raster)),

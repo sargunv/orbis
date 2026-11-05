@@ -2,14 +2,14 @@
 //! https://tiles.openfreemap.org/styles/liberty).
 
 use orb_expr::Interpolation;
+use orb_style::*;
 use orb_tile::{GeometryType, LayerBuilder};
-use orb_v8::*;
 
-fn liberty() -> Style {
+fn liberty() -> Scene {
     orb_v8::parse(include_str!("data/liberty.json")).unwrap_or_else(|d| panic!("{d}"))
 }
 
-fn layer<'a>(style: &'a Style, id: &str) -> &'a orb_v8::Layer {
+fn layer<'a>(style: &'a Scene, id: &str) -> &'a Layer {
     style.layers.iter().find(|l| l.id == id).expect(id)
 }
 

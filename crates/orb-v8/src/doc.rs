@@ -1,10 +1,11 @@
 //! The persistent document.
 
+use orb_style::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::{Diagnostic, Diagnostics};
 use orb_expr::json::{self, Json, JsonValue, Member, Span};
-use orb_v8::{Diagnostic, Diagnostics, Style, Value};
 
 use crate::diff::{self, Patch};
 use crate::tx::{FeatureStateOp, FeatureTarget, Op, Transaction};
@@ -42,8 +43,37 @@ pub struct StyleDoc {
     pub(crate) layers: Vec<LayerEntry>,
     /// Global state set by transactions, over the root `state` defaults.
     pub(crate) overrides: Vec<(String, Value<'static>)>,
-    style: Arc<Style>,
+    style: Arc<Scene>,
     next_key: u32,
+    /// What the scene document sets over the style.
+    decoration: Arc<Decoration>,
+}
+
+/// What a scene document sets over the style it extends (plan §11.1, S0):
+/// it decorates the style's v8 meaning, never edits it, so every snapshot
+/// of the style gets it again.
+#[derive(Clone, Debug, Default)]
+struct Decoration {
+    projection: Option<orb_crs::Projection>,
+    globe: Option<orb_crs::Globe>,
+    tile_matrix_sets: Vec<(String, orb_crs::TileMatrixSet)>,
+    lights: Option<Lights>,
+    atmosphere: Option<Atmosphere>,
+}
+
+impl Decoration {
+    fn apply(&self, mut scene: Scene) -> Scene {
+        scene.projection = self.projection;
+        scene.globe = self.globe.or(scene.globe);
+        scene.tile_matrix_sets = self.tile_matrix_sets.clone();
+        if let Some(lights) = &self.lights {
+            scene.lights = lights.clone();
+        }
+        if let Some(atmosphere) = &self.atmosphere {
+            scene.atmosphere = Some(atmosphere.clone());
+        }
+        scene
+    }
 }
 
 /// The working copy a transaction edits.
@@ -107,19 +137,17 @@ fn layer_id(json: &Json) -> Option<&str> {
 impl StyleDoc {
     /// Parses a v8 document.
     pub fn parse(text: &str) -> Result<Self, Diagnostics> {
-        let style = orb_v8::parse(text)?;
+        let style = crate::parse(text)?;
         let root = json::parse(text).map_err(|e| error(e.to_string()))?;
         Ok(Self::from_parts(style, &root))
     }
 
     /// A v8 document as a scene document extends it (plan §11.1, S0):
     /// with the scene's `models` (resolved URLs) and its added layers, in
-    /// the scene dialect.
-    pub fn parse_extended(
-        text: &str,
-        models: &[(String, String)],
-        added: &[orb_v8::AddedLayer],
-    ) -> Result<Self, Diagnostics> {
+    /// the scene dialect, under the scene's projection, tile matrix sets,
+    /// low-zoom surface, lights and atmosphere.
+    pub fn parse_extended(text: &str, scene: &crate::SceneDocument) -> Result<Self, Diagnostics> {
+        let (models, added) = (&scene.models, &scene.layers);
         let root = json::parse(text).map_err(|e| error(e.to_string()))?;
         let mut members = root
             .as_object()
@@ -164,11 +192,28 @@ impl StyleDoc {
             );
         }
         let merged = synthetic(JsonValue::Object(members));
-        let style = orb_v8::parse_dialect(&merged.to_string(), &[], orb_v8::Dialect::Scene)?;
-        Ok(Self::from_parts(style, &merged))
+        let style = crate::parse_dialect(&merged.to_string(), &[], Dialect::Scene)?;
+        let mut doc = Self::from_parts(style, &merged);
+        doc.decoration = Arc::new(Decoration {
+            projection: scene.projection,
+            globe: scene.globe,
+            tile_matrix_sets: scene.sources.clone(),
+            lights: scene.lights.clone(),
+            atmosphere: scene.atmosphere.clone(),
+        });
+        doc.style = Arc::new(doc.decoration.apply((*doc.style).clone()));
+        Ok(doc)
     }
 
-    fn from_parts(style: Style, root: &Json) -> Self {
+    /// Draws the scene on another plane, keeping the sources' tile matrix
+    /// sets and the low-zoom surface: a new version.
+    pub fn set_projection(&mut self, projection: orb_crs::Projection) {
+        Arc::make_mut(&mut self.decoration).projection = Some(projection);
+        self.style = Arc::new(self.decoration.apply((*self.style).clone()));
+        self.version += 1;
+    }
+
+    fn from_parts(style: Scene, root: &Json) -> Self {
         let mut next_key = 0;
         let mut key = || {
             next_key += 1;
@@ -207,6 +252,7 @@ impl StyleDoc {
             overrides: Vec::new(),
             style: Arc::new(style),
             next_key,
+            decoration: Arc::default(),
         }
     }
 
@@ -216,7 +262,7 @@ impl StyleDoc {
     }
 
     /// The current snapshot.
-    pub fn style(&self) -> &Arc<Style> {
+    pub fn style(&self) -> &Arc<Scene> {
         &self.style
     }
 
@@ -255,7 +301,7 @@ impl StyleDoc {
 
     /// The global state: root defaults with transactions' values over them.
     pub fn global_state(&self) -> Vec<(String, Value<'static>)> {
-        orb_v8::resolve_state(&self.style.state, &self.overrides)
+        crate::resolve_state(&self.style.state, &self.overrides)
     }
 
     /// The document as v8 JSON, with the global state written as its
@@ -337,7 +383,7 @@ impl StyleDoc {
         self.layers = draft.layers;
         self.overrides = draft.overrides;
         self.next_key = draft.next_key;
-        self.style = Arc::new(style);
+        self.style = Arc::new(self.decoration.apply(style));
         Ok(patch)
     }
 }
@@ -596,7 +642,7 @@ impl Draft {
         for (id, json) in new_sources {
             let kept = old_sources
                 .remove(&id)
-                .filter(|(_, old)| crate::same(old, &json))
+                .filter(|(_, old)| same(old, &json))
                 .map(|(key, _)| key);
             let key = match kept {
                 Some(key) => key,
@@ -627,7 +673,7 @@ impl Draft {
             });
             let key = match kept {
                 Some(old) => {
-                    if !crate::same(&old.json, json) {
+                    if !same(&old.json, json) {
                         self.dirty.push(old.key);
                     }
                     old.key
@@ -650,5 +696,30 @@ impl Draft {
         self.layers = layers;
         self.overrides.clear();
         Ok(())
+    }
+}
+
+/// JSON equality ignoring spans: two documents mean the same value.
+pub(crate) fn same(a: &Json, b: &Json) -> bool {
+    match (&a.value, &b.value) {
+        (JsonValue::Array(a), JsonValue::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b))
+        }
+        (JsonValue::Object(a), JsonValue::Object(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(a, b)| a.key == b.key && same(&a.value, &b.value))
+        }
+        (a, b) => a == b,
+    }
+}
+
+/// [`same`] for optional members, an absent value matching only another.
+pub(crate) fn same_opt(a: Option<&Json>, b: Option<&Json>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => same(a, b),
+        (None, None) => true,
+        _ => false,
     }
 }

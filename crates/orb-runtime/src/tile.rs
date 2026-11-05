@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use orb_layout::{Mesh, extrusion, fill, line, point};
 use orb_render::{Family, pack_color};
+use orb_style::{Kind, LayerType, SourceKind};
 use orb_tile::{Layer, LayerBuilder, TileFrame, ValueRef};
-use orb_v8::{Kind, LayerType, SourceKind};
 
 use crate::glyphs::GlyphCatalog;
 use crate::style::{NodePlan, PaintProperty, StylePlan};
@@ -216,9 +216,9 @@ fn features(plan: &StylePlan, node: &NodePlan, layer: &Layer, zoom: f64) -> Vec<
     };
     // GL JS's buckets draw features by their sort key.
     let sort_key = match style_layer.ty {
-        LayerType::Circle => Some(orb_v8::CIRCLE_SORT_KEY),
-        LayerType::Fill => Some(orb_v8::FILL_SORT_KEY),
-        LayerType::Line => Some(orb_v8::LINE_SORT_KEY),
+        LayerType::Circle => Some(orb_style::CIRCLE_SORT_KEY),
+        LayerType::Fill => Some(orb_style::FILL_SORT_KEY),
+        LayerType::Line => Some(orb_style::LINE_SORT_KEY),
         _ => None,
     }
     .map(|key| style_layer.get(key));
@@ -239,7 +239,7 @@ fn features(plan: &StylePlan, node: &NodePlan, layer: &Layer, zoom: f64) -> Vec<
 fn layout(
     layer: &Layer,
     features: &[u32],
-    style_layer: &orb_v8::Layer,
+    style_layer: &orb_style::Layer,
     family: Family,
     zoom: f64,
     bend: Option<orb_layout::fill::Bend>,
@@ -252,32 +252,32 @@ fn layout(
             _ => fill::layout_subdivided(layer, features, bend),
         },
         LayerType::FillExtrusion => {
-            let rounding =
-                f64::from(l.get(orb_v8::EXTRUSION_ROUNDED_CORNER).evaluate(zoom)) * units_per_metre;
+            let rounding = f64::from(l.get(orb_style::EXTRUSION_ROUNDED_CORNER).evaluate(zoom))
+                * units_per_metre;
             extrusion::layout_in_extent(layer, features, 8192, rounding, bend)
         }
         LayerType::Circle => {
-            let key = l.get(orb_v8::CIRCLE_SORT_KEY).bind(layer);
+            let key = l.get(orb_style::CIRCLE_SORT_KEY).bind(layer);
             point::layout_sorted(layer, features, |feature| {
                 key.evaluate(zoom, feature as usize)
             })
         }
         LayerType::Heatmap => point::layout(layer, features),
         LayerType::Line => {
-            let join = l.get(orb_v8::LINE_JOIN).bind(layer);
-            let cap = l.get(orb_v8::LINE_CAP).bind(layer);
-            let miter_limit = l.get(orb_v8::LINE_MITER_LIMIT).bind(layer);
-            let round_limit = l.get(orb_v8::LINE_ROUND_LIMIT).bind(layer);
+            let join = l.get(orb_style::LINE_JOIN).bind(layer);
+            let cap = l.get(orb_style::LINE_CAP).bind(layer);
+            let miter_limit = l.get(orb_style::LINE_MITER_LIMIT).bind(layer);
+            let round_limit = l.get(orb_style::LINE_ROUND_LIMIT).bind(layer);
             let params = |feature: u32| line::LineLayout {
                 join: match join.evaluate(zoom, feature as usize) {
-                    orb_v8::LineJoin::Bevel => line::LineJoin::Bevel,
-                    orb_v8::LineJoin::Round => line::LineJoin::Round,
-                    orb_v8::LineJoin::Miter => line::LineJoin::Miter,
+                    orb_style::LineJoin::Bevel => line::LineJoin::Bevel,
+                    orb_style::LineJoin::Round => line::LineJoin::Round,
+                    orb_style::LineJoin::Miter => line::LineJoin::Miter,
                 },
                 cap: match cap.evaluate(zoom, feature as usize) {
-                    orb_v8::LineCap::Butt => line::LineCap::Butt,
-                    orb_v8::LineCap::Round => line::LineCap::Round,
-                    orb_v8::LineCap::Square => line::LineCap::Square,
+                    orb_style::LineCap::Butt => line::LineCap::Butt,
+                    orb_style::LineCap::Round => line::LineCap::Round,
+                    orb_style::LineCap::Square => line::LineCap::Square,
                 },
                 miter_limit: miter_limit.evaluate(zoom, feature as usize),
                 round_limit: round_limit.evaluate(zoom, feature as usize),
@@ -319,7 +319,7 @@ fn wants_symbols(select: Select<'_>, icon_node: u32) -> bool {
 
 /// The column of stable ids symbol keys use: the promoted id, when the
 /// source has `promoteId` (GL JS `keyWithFeatureId`).
-fn stable_ids<'l>(source: &orb_v8::Source, layer: &'l Layer) -> Option<&'l orb_tile::Column> {
+fn stable_ids<'l>(source: &orb_style::Source, layer: &'l Layer) -> Option<&'l orb_tile::Column> {
     match &source.kind {
         SourceKind::Vector(v) => v
             .promote_id
@@ -699,16 +699,19 @@ pub(crate) fn build(
                     .map(|&f| {
                         let i = f as usize;
                         let l = style_layer;
-                        let at = |key: orb_v8::Key<f32>| l.get(key).bind(layer).evaluate(zoom, i);
+                        let at =
+                            |key: orb_style::Key<f32>| l.get(key).bind(layer).evaluate(zoom, i);
                         let (kind, radius, stroke, height) = match l.ty {
                             LayerType::Circle => (
                                 2,
-                                at(orb_v8::CIRCLE_RADIUS),
-                                at(orb_v8::CIRCLE_STROKE_WIDTH),
+                                at(orb_style::CIRCLE_RADIUS),
+                                at(orb_style::CIRCLE_STROKE_WIDTH),
                                 0.0,
                             ),
-                            LayerType::Line => (1, at(orb_v8::LINE_WIDTH) / 2.0, 0.0, 0.0),
-                            LayerType::FillExtrusion => (0, 0.0, 0.0, at(orb_v8::EXTRUSION_HEIGHT)),
+                            LayerType::Line => (1, at(orb_style::LINE_WIDTH) / 2.0, 0.0, 0.0),
+                            LayerType::FillExtrusion => {
+                                (0, 0.0, 0.0, at(orb_style::EXTRUSION_HEIGHT))
+                            }
                             _ => (0, 0.0, 0.0, 0.0),
                         };
                         crate::HitFeature {
@@ -720,7 +723,7 @@ pub(crate) fn build(
                             stroke,
                             height,
                             base: match l.ty {
-                                LayerType::FillExtrusion => at(orb_v8::EXTRUSION_BASE),
+                                LayerType::FillExtrusion => at(orb_style::EXTRUSION_BASE),
                                 _ => 0.0,
                             },
                             extent: layer.extent(),

@@ -4,7 +4,7 @@
 
 use orb_crs::Geodetic;
 use orb_render::FrameLights;
-use orb_v8::{Direction, Lights, TranslateAnchor};
+use orb_style::{Direction, Lights, TranslateAnchor};
 
 /// The lights at `zoom` for a camera turned `bearing` degrees over `target`.
 pub(crate) fn frame_lights(
@@ -13,7 +13,7 @@ pub(crate) fn frame_lights(
     bearing: f64,
     target: Geodetic,
 ) -> FrameLights {
-    let rgb = |c: orb_v8::Color| {
+    let rgb = |c: orb_style::Color| {
         let [r, g, b, _] = c.premultiplied();
         [r, g, b]
     };
@@ -207,10 +207,10 @@ mod tests {
         let target = Geodetic::new(7.75, 46.02);
         // v8's default light: ambient 1 − 0.5, directional 2 · 0.5, at
         // [1.15, 210, 30], turning with the map.
-        let v8 = frame_lights(&Lights::default(), 0.0, 0.0, target);
+        let v8 = frame_lights(&orb_v8::default_lights(), 0.0, 0.0, target);
         assert_eq!((v8.ambient_level, v8.directional_level), (0.5, 1.0));
         assert!(!v8.terrain);
-        let turned = frame_lights(&Lights::default(), 0.0, 90.0, target);
+        let turned = frame_lights(&orb_v8::default_lights(), 0.0, 90.0, target);
         assert!((v8.position[2] - turned.position[2]).abs() < 1e-6);
         assert!(
             (v8.position[0] - turned.position[1]).abs() < 1e-5,

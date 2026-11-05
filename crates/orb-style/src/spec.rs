@@ -19,37 +19,37 @@ use crate::property::{
 
 /// One property's spec entry.
 #[derive(Debug)]
-pub(crate) struct Prop {
-    pub(crate) name: &'static str,
-    pub(crate) ty: PropertyType,
+pub struct Prop {
+    pub name: &'static str,
+    pub ty: PropertyType,
     /// The spec default as JSON text.
-    pub(crate) default: Option<&'static str>,
+    pub default: Option<&'static str>,
     /// `zoom` is an expression parameter.
-    pub(crate) zoom: bool,
+    pub zoom: bool,
     /// Data-driven.
-    pub(crate) feature: bool,
-    pub(crate) interpolated: bool,
-    pub(crate) minimum: Option<f64>,
-    pub(crate) maximum: Option<f64>,
+    pub feature: bool,
+    pub interpolated: bool,
+    pub minimum: Option<f64>,
+    pub maximum: Option<f64>,
     /// Strings expand `{token}`s.
-    pub(crate) tokens: bool,
+    pub tokens: bool,
     /// The layer type of a layer property.
-    pub(crate) layer: LayerType,
+    pub layer: LayerType,
     /// A `paint` property, else `layout`.
-    pub(crate) paint: bool,
+    pub paint: bool,
     /// One value per light source (`hillshade-*`), given as an array.
-    pub(crate) list: bool,
+    pub list: bool,
     /// A colour ramp over `heatmap-density`, `line-progress` or
     /// `elevation`, kept as an expression.
-    pub(crate) ramp: bool,
+    pub ramp: bool,
 }
 
 impl Prop {
     /// The fields a scene-level property (light, sky, terrain) leaves at
     /// their defaults.
-    pub(crate) const SCENE: Self = prop("", PropertyType::Number, None);
+    pub const SCENE: Self = prop("", PropertyType::Number, None);
 
-    pub(crate) fn spec(&self) -> PropertySpec {
+    pub fn spec(&self) -> PropertySpec {
         PropertySpec {
             ty: self.ty.clone(),
             default: self.default_json(),
@@ -60,13 +60,13 @@ impl Prop {
         }
     }
 
-    pub(crate) fn default_json(&self) -> Option<Json> {
+    pub fn default_json(&self) -> Option<Json> {
         self.default
             .map(|text| json::parse(text).expect("spec defaults are JSON"))
     }
 }
 
-const fn prop(name: &'static str, ty: PropertyType, default: Option<&'static str>) -> Prop {
+pub const fn prop(name: &'static str, ty: PropertyType, default: Option<&'static str>) -> Prop {
     Prop {
         name,
         ty,
@@ -131,7 +131,7 @@ const fn enumeration<E: Enum>() -> PropertyType {
 }
 
 /// `visibility`: a constant, which only `global-state` could vary.
-pub(crate) const VISIBILITY: Prop = prop(
+pub const VISIBILITY: Prop = prop(
     "visibility",
     enumeration::<Visibility>(),
     Some("\"visible\""),
@@ -233,7 +233,7 @@ impl LayerType {
 pub struct PropertyId(u16);
 
 impl PropertyId {
-    pub(crate) fn prop(self) -> &'static Prop {
+    pub fn prop(self) -> &'static Prop {
         &PROPS[self.0 as usize]
     }
 

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use orb_expr::{Interpolation, Kind};
 use orb_render::{Curve, Family};
-use orb_v8::{Color, LayerType, PropertyRef, SourceKind, Style, Value};
+use orb_style::{Color, LayerType, PropertyRef, Scene, SourceKind, Value};
 
 /// A style ready to render: one revision of it. Clones are shallow, as a
 /// frame's paint transitions overlay it.
@@ -18,7 +18,7 @@ use orb_v8::{Color, LayerType, PropertyRef, SourceKind, Style, Value};
 pub(crate) struct StylePlan {
     /// The map's style version this plan is of.
     pub(crate) revision: u64,
-    pub(crate) style: Arc<Style>,
+    pub(crate) style: Arc<Scene>,
     /// Keys of the style's layers, in order.
     pub(crate) layer_keys: Vec<u32>,
     /// Keys of the style's sources, in order.
@@ -180,14 +180,14 @@ impl StylePlan {
     /// A plan with layer and source keys counted from one, for a style that
     /// is never edited.
     #[cfg(test)]
-    pub(crate) fn of(style: Style) -> Self {
+    pub(crate) fn of(style: Scene) -> Self {
         let layers = (1..=style.layers.len() as u32).collect();
         let sources = (1..=style.sources.len() as u32).collect();
         Self::new(Arc::new(style), layers, sources, 0)
     }
 
     pub(crate) fn new(
-        style: Arc<Style>,
+        style: Arc<Scene>,
         layer_keys: Vec<u32>,
         source_keys: Vec<u32>,
         revision: u64,
@@ -255,10 +255,10 @@ impl StylePlan {
             }
             if layer.ty == LayerType::Hillshade {
                 let lights = [
-                    orb_v8::HILLSHADE_ILLUMINATION_DIRECTION.id(),
-                    orb_v8::HILLSHADE_ILLUMINATION_ALTITUDE.id(),
-                    orb_v8::HILLSHADE_SHADOW_COLOR.id(),
-                    orb_v8::HILLSHADE_HIGHLIGHT_COLOR.id(),
+                    orb_style::HILLSHADE_ILLUMINATION_DIRECTION.id(),
+                    orb_style::HILLSHADE_ILLUMINATION_ALTITUDE.id(),
+                    orb_style::HILLSHADE_SHADOW_COLOR.id(),
+                    orb_style::HILLSHADE_HIGHLIGHT_COLOR.id(),
                 ]
                 .map(|id| layer.slot(id).items().len());
                 if lights.into_iter().max().unwrap_or(1) > orb_render::MAX_LIGHTS {
@@ -299,7 +299,7 @@ impl StylePlan {
                 });
             }
             // GL JS antialiases fills by drawing their outlines after them.
-            if layer.ty == LayerType::Fill && layer.get(orb_v8::FILL_ANTIALIAS).evaluate(0.0) {
+            if layer.ty == LayerType::Fill && layer.get(orb_style::FILL_ANTIALIAS).evaluate(0.0) {
                 nodes.push(NodePlan {
                     layer: index,
                     family: Family::FillOutline,
@@ -362,7 +362,7 @@ impl StylePlan {
     }
 
     /// A drawn source's definition.
-    pub(crate) fn source_def(&self, index: usize) -> &orb_v8::Source {
+    pub(crate) fn source_def(&self, index: usize) -> &orb_style::Source {
         self.style
             .source(&self.sources[index].id)
             .expect("plan sources exist")
@@ -397,7 +397,7 @@ impl StylePlan {
     /// A node's paint properties in property-row order.
     pub(crate) fn paint_properties(&self, node: &NodePlan) -> Vec<PaintProperty<'_>> {
         use PaintProperty::{Color as C, Number as N};
-        use orb_v8::{
+        use orb_style::{
             BACKGROUND_COLOR, BACKGROUND_OPACITY, CIRCLE_BLUR, CIRCLE_COLOR, CIRCLE_OPACITY,
             CIRCLE_RADIUS, CIRCLE_STROKE_COLOR, CIRCLE_STROKE_OPACITY, CIRCLE_STROKE_WIDTH,
             EXTRUSION_BASE, EXTRUSION_COLOR, EXTRUSION_HEIGHT, FILL_COLOR, FILL_OPACITY,
@@ -471,15 +471,15 @@ impl StylePlan {
     pub(crate) fn pattern(&self, node: &NodePlan) -> Option<PropertyRef<'_, Option<String>>> {
         let l = &self.style.layers[node.layer];
         let key = match l.ty {
-            LayerType::Background => orb_v8::BACKGROUND_PATTERN,
+            LayerType::Background => orb_style::BACKGROUND_PATTERN,
             LayerType::Fill
                 if node.family != Family::FillOutline
-                    || l.get(orb_v8::FILL_OUTLINE_COLOR).constant() == Some(None) =>
+                    || l.get(orb_style::FILL_OUTLINE_COLOR).constant() == Some(None) =>
             {
-                orb_v8::FILL_PATTERN
+                orb_style::FILL_PATTERN
             }
-            LayerType::Line => orb_v8::LINE_PATTERN,
-            LayerType::FillExtrusion => orb_v8::EXTRUSION_PATTERN,
+            LayerType::Line => orb_style::LINE_PATTERN,
+            LayerType::FillExtrusion => orb_style::EXTRUSION_PATTERN,
             _ => return None,
         };
         let p = l.get(key);

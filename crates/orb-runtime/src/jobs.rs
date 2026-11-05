@@ -22,8 +22,8 @@ use orb_hal::{HostBytesId, HostImageId};
 use orb_host::{DecodedImage, Fetch, FetchError, ImageDecode};
 use orb_jobs::Executor;
 use orb_layout::{Chunk, TileBox};
+use orb_style::{Encoding, GeoJsonData, Scene, SourceKind, Value};
 use orb_tile::TileFrame;
-use orb_v8::{Encoding, GeoJsonData, SourceKind, Style, Value};
 
 use crate::glyphs::{GlyphCatalog, GlyphRaster, LocalGlyphs, RasterDone};
 use crate::style::{ImageKind, StylePlan};
@@ -159,7 +159,7 @@ impl TileWorker {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_style(
         previous: Option<&TileWorker>,
-        style: Arc<Style>,
+        style: Arc<Scene>,
         layer_keys: Vec<u32>,
         source_keys: Vec<u32>,
         new_data: &[u32],
@@ -281,8 +281,8 @@ impl TileWorker {
             sources.push(source);
         }
         let dialect = match update.models {
-            Some(_) => orb_v8::Dialect::Scene,
-            None => orb_v8::Dialect::V8,
+            Some(_) => orb_style::Dialect::Scene,
+            None => orb_style::Dialect::V8,
         };
         let mut layers = Vec::with_capacity(update.layers.len());
         for (index, key) in update.layers.iter().enumerate() {
@@ -301,7 +301,7 @@ impl TileWorker {
             };
             layers.push(layer);
         }
-        let style = Style {
+        let style = Scene {
             dialect,
             models: update
                 .models
@@ -319,10 +319,12 @@ impl TileWorker {
             sprites: Vec::new(),
             glyphs: update.glyphs.clone(),
             font_faces: update.font_faces.clone(),
-            lights: Default::default(),
+            lights: orb_v8::default_lights(),
             atmosphere: None,
             terrain: None,
             globe: None,
+            projection: None,
+            tile_matrix_sets: Vec::new(),
             state: Vec::new(),
             sources,
             layers,
@@ -385,13 +387,15 @@ impl TileWorker {
     pub fn image_kind(&self, source: u32) -> Option<ImageKind> {
         let at = self.plan.source_keys.iter().position(|&k| k == source)?;
         match self.plan.style.sources[at].kind {
-            orb_v8::SourceKind::Raster(_) | orb_v8::SourceKind::Image(_) => Some(ImageKind::Raster),
-            orb_v8::SourceKind::RasterDem(_) => Some(ImageKind::Dem),
+            orb_style::SourceKind::Raster(_) | orb_style::SourceKind::Image(_) => {
+                Some(ImageKind::Raster)
+            }
+            orb_style::SourceKind::RasterDem(_) => Some(ImageKind::Dem),
             _ => None,
         }
     }
 
-    fn geojson_source(&self, source: u32) -> Option<&orb_v8::GeoJsonSource> {
+    fn geojson_source(&self, source: u32) -> Option<&orb_style::GeoJsonSource> {
         match &self.plan.source_def(self.plan.source(source)?).kind {
             SourceKind::GeoJson(source) => Some(source),
             _ => None,
@@ -604,7 +608,7 @@ pub struct StyleUpdate {
     /// The style's glyph PBF URL template.
     pub glyphs: Option<String>,
     /// The style's declared font files.
-    pub font_faces: orb_v8::FontFaces,
+    pub font_faces: orb_style::FontFaces,
     /// The map's `localIdeographFontFamily`: ideographs draw with it.
     pub local_ideographs: Option<String>,
     /// The plane GeoJSON sources tile in and the tile matrix sets of
@@ -617,8 +621,8 @@ pub struct StyleUpdate {
 
 impl StyleUpdate {
     /// The update's dialect and model ids from `doc`.
-    pub(crate) fn models_of(style: &Style) -> Option<Vec<String>> {
-        (style.dialect == orb_v8::Dialect::Scene)
+    pub(crate) fn models_of(style: &Scene) -> Option<Vec<String>> {
+        (style.dialect == orb_style::Dialect::Scene)
             .then(|| style.models.iter().map(|(id, _)| id.clone()).collect())
     }
 
@@ -811,7 +815,7 @@ impl StyleUpdate {
                                     .iter()
                                     .map(|v| v.as_f64().map(|v| v as u32).ok_or_else(bad))
                                     .collect::<Result<Vec<u32>, String>>()?;
-                                Ok(orb_v8::FontFace {
+                                Ok(orb_style::FontFace {
                                     url: url.as_str().ok_or_else(bad)?.to_string(),
                                     ranges: bounds
                                         .chunks(2)
@@ -2053,7 +2057,7 @@ pub(crate) mod tests {
             glyphs: Some("test://glyphs/{fontstack}/{range}.pbf".into()),
             font_faces: vec![(
                 "Noto Sans".into(),
-                vec![orb_v8::FontFace {
+                vec![orb_style::FontFace {
                     url: "test://noto.woff2".into(),
                     ranges: vec![[0, 0x24F], [0x600, 0x6FF]],
                 }],

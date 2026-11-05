@@ -11,7 +11,7 @@ use orb_render::{
     ColorReliefPaint, HillshadeMethod, HillshadePaint, IMAGE_EXTENT, ImageMesh, MAX_LIGHTS,
     NodePaint, RasterPaint, Renderer,
 };
-use orb_v8::{Color, IlluminationAnchor, LayerType, PropertyRef, PropertyValue, Resampling};
+use orb_style::{Color, IlluminationAnchor, LayerType, PropertyRef, PropertyValue, Resampling};
 
 use crate::style::{NodePlan, StylePlan};
 
@@ -186,7 +186,7 @@ pub(crate) fn paint(
     unpack: Option<[f64; 4]>,
     ramp: &mut Option<u32>,
 ) -> Option<NodePaint> {
-    use orb_v8::{
+    use orb_style::{
         COLOR_RELIEF_COLOR, COLOR_RELIEF_OPACITY, COLOR_RELIEF_RESAMPLE, HILLSHADE_ACCENT_COLOR,
         HILLSHADE_EXAGGERATION, HILLSHADE_HIGHLIGHT_COLOR, HILLSHADE_ILLUMINATION_ALTITUDE,
         HILLSHADE_ILLUMINATION_ANCHOR, HILLSHADE_ILLUMINATION_DIRECTION, HILLSHADE_METHOD,
@@ -201,7 +201,7 @@ pub(crate) fn paint(
         LayerType::Raster => {
             let image_source = matches!(
                 plan.source_def(node.source).kind,
-                orb_v8::SourceKind::Image(_)
+                orb_style::SourceKind::Image(_)
             );
             NodePaint::Raster(RasterPaint {
                 opacity: number(RASTER_OPACITY),
@@ -260,11 +260,13 @@ pub(crate) fn paint(
                 azimuths: per_light(&directions, zoom, |d| d.to_radians() + turn),
                 exaggeration: number(HILLSHADE_EXAGGERATION),
                 method: match l.get(HILLSHADE_METHOD).evaluate(zoom) {
-                    orb_v8::HillshadeMethod::Standard => HillshadeMethod::Standard,
-                    orb_v8::HillshadeMethod::Basic => HillshadeMethod::Basic,
-                    orb_v8::HillshadeMethod::Combined => HillshadeMethod::Combined,
-                    orb_v8::HillshadeMethod::Igor => HillshadeMethod::Igor,
-                    orb_v8::HillshadeMethod::Multidirectional => HillshadeMethod::Multidirectional,
+                    orb_style::HillshadeMethod::Standard => HillshadeMethod::Standard,
+                    orb_style::HillshadeMethod::Basic => HillshadeMethod::Basic,
+                    orb_style::HillshadeMethod::Combined => HillshadeMethod::Combined,
+                    orb_style::HillshadeMethod::Igor => HillshadeMethod::Igor,
+                    orb_style::HillshadeMethod::Multidirectional => {
+                        HillshadeMethod::Multidirectional
+                    }
                 },
                 lights: lights as u32,
                 nearest: nearest(HILLSHADE_RESAMPLE),
@@ -298,7 +300,7 @@ pub(crate) fn paint(
 /// that isn't a top-level `interpolate` is transparent; ramps longer than
 /// `max` keep `max` evenly spaced stops.
 fn color_ramp(
-    ramp: Option<&orb_v8::PropertyExpression>,
+    ramp: Option<&orb_style::PropertyExpression>,
     unpack: [f64; 4],
     max: usize,
 ) -> (Vec<u32>, Vec<u32>) {
@@ -383,7 +385,7 @@ mod tests {
 
     #[test]
     fn packs_elevations_like_gl_js() {
-        let mapbox = orb_v8::DemEncoding::Mapbox.unpack([0.0; 4]);
+        let mapbox = orb_style::DemEncoding::Mapbox.unpack([0.0; 4]);
         // (v + 10000) / 0.1 = 110000 = 1·65536 + 173·256 + 176.
         assert_eq!(pack_dem(1000.0, mapbox), [1, 173, 176]);
         assert_eq!(pack_dem(5.0, [0.0, 0.0, 0.0, 1.0]), [0, 0, 0]);
@@ -408,7 +410,7 @@ mod tests {
             interpolated: true,
             tokens: false,
         };
-        let ramp = orb_v8::PropertyExpression::parse(&json, &spec).unwrap();
+        let ramp = orb_style::PropertyExpression::parse(&json, &spec).unwrap();
         let (colors, _) = color_ramp(Some(&ramp), [6553.6, 25.6, 0.1, 10000.0], 8192);
         // Half-transparent red: 255 straight, alpha 128, premultiplied 128.
         assert_eq!(colors, [128 | 128 << 24, 0xffff_0000]);

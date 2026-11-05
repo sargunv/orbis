@@ -2,7 +2,7 @@ use orb_tile::{GeometryType, LayerBuilder};
 
 use crate::*;
 
-fn style(layers: &str) -> Result<Style, Diagnostics> {
+fn style(layers: &str) -> Result<Scene, Diagnostics> {
     parse(&format!(
         r#"{{
             "version": 8,
@@ -358,7 +358,7 @@ fn global_state_resolves_at_parse() {
             "filter": ["==", ["get", "class"], ["global-state", "cls"]],
             "paint": {"line-color": ["global-state", "c"],
                       "line-width": ["coalesce", ["feature-state", "w"], ["global-state", "w"]]}}]}"#;
-    let line = |s: &Style| s.layers[0].clone();
+    let line = |s: &Scene| s.layers[0].clone();
     let s = parse(text).unwrap();
     assert!(s.warnings.is_empty(), "{:?}", s.warnings);
     let l = line(&s);

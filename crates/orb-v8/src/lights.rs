@@ -18,88 +18,9 @@
 
 use orb_expr::Color;
 use orb_expr::json::{Json, JsonValue};
+use orb_style::*;
 
 use crate::{Cx, Property, TranslateAnchor};
-
-/// The style's lights: what v8's `light` lowers into (an ambient and a
-/// directional term of GL JS's flat extrusion response) and what the scene
-/// document's `lights` replace it with. Shadows and glTF's materials extend
-/// this model; they don't add another.
-#[derive(Clone, Debug)]
-pub struct Lights {
-    pub ambient: Option<AmbientLight>,
-    pub directional: Option<DirectionalLight>,
-    /// Whether the lights shade the terrain surface too (the scene's) or
-    /// only extrusions (v8's `light`, as in GL JS).
-    pub terrain: bool,
-    /// Emissive strength by layer id: 0 lit fully, 1 not at all.
-    pub emissive: Vec<(String, f64)>,
-}
-
-/// v8's default `light`, lowered.
-impl Default for Lights {
-    fn default() -> Self {
-        crate::light::Light::default().lower()
-    }
-}
-
-impl Lights {
-    /// A layer's emissive strength; 0 unless the scene sets it.
-    pub fn emissive(&self, layer: &str) -> f64 {
-        self.emissive
-            .iter()
-            .find(|(id, _)| id == layer)
-            .map_or(0.0, |&(_, e)| e)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct AmbientLight {
-    pub color: Property<Color>,
-    pub level: Level,
-}
-
-#[derive(Clone, Debug)]
-pub struct DirectionalLight {
-    pub color: Property<Color>,
-    pub level: Level,
-    /// Viewport-anchored lights turn with the map's bearing.
-    pub anchor: Property<TranslateAnchor>,
-    pub direction: Direction,
-}
-
-#[derive(Clone, Debug)]
-pub enum Direction {
-    /// Radius, azimuth clockwise from north and polar angle from the
-    /// zenith, in degrees: v8's `position`, whose radius scales the light.
-    Position(Property<[f32; 3]>),
-    /// The sun over the camera's target at a UTC time (Unix seconds).
-    Sun { time: f64 },
-}
-
-/// A light's level, `offset + scale · intensity`: lowering maps v8's
-/// single intensity onto both terms (ambient `1 − i`, directional `2i`);
-/// scene lights take theirs as declared.
-#[derive(Clone, Debug)]
-pub struct Level {
-    pub intensity: Property<f32>,
-    pub offset: f32,
-    pub scale: f32,
-}
-
-impl Level {
-    pub fn declared(intensity: f32) -> Self {
-        Self {
-            intensity: Property::constant(intensity),
-            offset: 0.0,
-            scale: 1.0,
-        }
-    }
-
-    pub fn evaluate(&self, zoom: f64) -> f32 {
-        self.offset + self.scale * self.intensity.evaluate(zoom)
-    }
-}
 
 /// The scene document's `lights`: at most one ambient and one directional
 /// or sun light.
@@ -349,7 +270,7 @@ mod tests {
 
     #[test]
     fn v8_light_lowers_to_an_ambient_and_a_directional_term() {
-        let lights = Lights::default();
+        let lights = crate::light::default_lights();
         assert_eq!(lights.ambient.unwrap().level.evaluate(0.0), 0.5);
         let directional = lights.directional.unwrap();
         assert_eq!(directional.level.evaluate(0.0), 1.0);

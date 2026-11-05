@@ -2,8 +2,8 @@
 //! and geometry from the worker's decoded `TileFrame`, as GeoJSON, with no
 //! re-decode on the render side and no re-encode.
 
+use orb_style::{Encoding, SourceKind};
 use orb_tile::{GeometryType, Layer, ValueRef};
-use orb_v8::{Encoding, SourceKind};
 
 use crate::jobs::{TileRequest, TileWorker};
 

@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
-use orb_style::{Binding, Change, Class, Transaction};
+use orb_v8::{Binding, Change, Class, Transaction};
 
 use crate::jobs::{StyleUpdate, TileResult};
 use crate::map::{
@@ -32,9 +32,9 @@ use crate::map::{
 /// The class a paint change costs this renderer for one node:
 /// `orb-style`'s, raised where property rows hold more than the property
 /// (line dash and gradient textures, and the width that scales dashes).
-fn paint_class(layer: &orb_v8::Layer, name: &str, from: Binding, to: Binding) -> Class {
+fn paint_class(layer: &orb_style::Layer, name: &str, from: Binding, to: Binding) -> Class {
     let class = Change::Paint {
-        layer: orb_style::LayerKey(0),
+        layer: orb_v8::LayerKey(0),
         name: String::new(),
         from,
         to,
@@ -77,7 +77,7 @@ impl Map {
         // next frame regrids image tiles (nothing loads again).
         let reproject = patch.changes.contains(&Change::Projection);
         if reproject {
-            self.surface.set_globe(style.doc.style().globe);
+            self.surface = crate::surface::Surface::of(style.doc.style());
         }
         self.version += 1;
         let version = self.version;
@@ -170,7 +170,7 @@ impl Map {
                     t.over(plan.style.transition)
                 });
             let old = &old_plan.style.layers[before];
-            if let Some(id) = orb_v8::PropertyId::find(old.ty, true, name) {
+            if let Some(id) = orb_style::PropertyId::find(old.ty, true, name) {
                 self.transitions
                     .start(&new.id, id, old.slot(id), transition, (now, zoom));
             }

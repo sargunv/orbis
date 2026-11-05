@@ -1,100 +1,45 @@
-//! MapLibre v8 style documents (plan §11.1, S1): parse and validate a v8
-//! style into typed sources and layers, with errors and warnings located by
-//! JSON path (`layers[3].paint.line-width`) and byte span.
-//!
-//! A layer's properties are table-driven: [`PropertyId`] indexes one table
-//! of every layer property's type, default and section, and a layer holds
-//! a [`Slot`] per property of its type, read typed through a [`Key`].
-//! Defaults and coercions follow GL JS.
+//! The front end of the native scene (plan §11.1, S0–S1): parses and
+//! validates v8 styles and the scene documents that extend them into an
+//! `orb_style::Scene`, with errors and warnings located by JSON path
+//! (`layers[3].paint.line-width`) and byte span; keeps the documents of
+//! record ([`StyleDoc`]) and applies GL JS-style edits to them as
+//! transactions, diffed into classified changes. Defaults and coercions
+//! follow GL JS.
 
 #![forbid(unsafe_code)]
 
+mod diff;
+mod doc;
 mod font_faces;
 mod geojson;
 mod layer;
 mod light;
-pub mod lights;
+mod lights;
 mod paint;
-mod property;
 mod scene;
 mod sky;
 mod source;
-mod spec;
 mod sprite;
 mod terrain;
+mod tx;
 
 use std::collections::HashSet;
 use std::fmt;
 
-pub use font_faces::{FontFace, FontFaces};
+pub use diff::{Binding, Change, Class, LayoutChange, Patch};
+pub use doc::{LayerKey, SourceKey, StyleDoc};
 pub use geojson::parse_geojson;
-pub use layer::Layer;
-pub use lights::{AmbientLight, Direction, DirectionalLight, Level, Lights, parse_time};
+pub use light::default_lights;
+pub use lights::parse_time;
 pub use orb_expr::json::Span;
-pub use orb_expr::{Color, Diagnostic, Filter, Kind, PropertyExpression, Value};
-pub use paint::{Transition, TransitionOverride};
-pub use property::{
-    Alignment, Anchor, AnchorOffsets, BoundProperty, DemEncoding, Encoding, Enum, HeightAnchor,
-    HillshadeMethod, IconTextFit, IlluminationAnchor, LayerBlend, LineCap, LineJoin, Overlap,
-    Padding, Property, PropertyRef, PropertyValue, Resampling, Scheme, Slot, SymbolPlacement,
-    SymbolZOrder, TextJustify, TextRotationAlignment, TextTransform, TranslateAnchor, Visibility,
-    WritingMode,
-};
-pub use scene::{AddedLayer, Scene, StyleRef, is_scene, parse_scene, tms_definition};
-pub use sky::Atmosphere;
-pub use source::{
-    GeoJsonData, GeoJsonSource, ImageContent, ImageSource, PromoteId, RasterDemSource,
-    RasterSource, Source, SourceKind, TileSet, VectorSource,
-};
-pub use spec::*;
-pub use sprite::Sprite;
-pub use terrain::Terrain;
+pub use orb_expr::{Diagnostic, Filter};
+pub use scene::{AddedLayer, SceneDocument, StyleRef, is_scene, parse_scene, tms_definition};
+pub use tx::{FeatureStateOp, FeatureTarget, Op, Transaction};
+
+// The native model this front end builds.
+use orb_style::*;
 
 use orb_expr::json::{self, Json, JsonValue, Member};
-
-/// A parsed style.
-#[derive(Clone, Debug)]
-pub struct Style {
-    pub dialect: Dialect,
-    /// glTF models `model` layers draw, by id: their URLs (scene dialect).
-    pub models: Vec<(String, String)>,
-    pub name: Option<String>,
-    /// The default camera: `[longitude, latitude]`.
-    pub center: Option<[f64; 2]>,
-    pub zoom: Option<f64>,
-    pub bearing: f64,
-    pub pitch: f64,
-    /// The default camera's roll about the view axis, degrees.
-    pub roll: f64,
-    /// How paint changes animate unless a property says otherwise.
-    pub transition: Transition,
-    pub sprites: Vec<Sprite>,
-    /// The glyph PBF URL template, with `{fontstack}` and `{range}`.
-    pub glyphs: Option<String>,
-    /// Font files for `text-font` names (the root `font-faces`).
-    pub font_faces: FontFaces,
-    /// The lights: v8's `light` lowered (decision 0026).
-    pub lights: Lights,
-    /// The root `state`: each global state property's default.
-    pub state: Vec<(String, Value<'static>)>,
-    /// The atmosphere: v8's `sky` lowered (decision 0025).
-    pub atmosphere: Option<Atmosphere>,
-    pub terrain: Option<Terrain>,
-    /// The root `projection`: a globe (`globe`, `vertical-perspective` or
-    /// a zoom interpolation from one to `mercator`), or `None` for Web
-    /// Mercator.
-    pub globe: Option<orb_crs::Globe>,
-    pub sources: Vec<Source>,
-    pub layers: Vec<Layer>,
-    /// What parsed but isn't supported or rendered yet.
-    pub warnings: Vec<Diagnostic>,
-}
-
-impl Style {
-    pub fn source(&self, id: &str) -> Option<&Source> {
-        self.sources.iter().find(|s| s.id == id)
-    }
-}
 
 /// Everything a failed parse found: any error rejects the style, as GL JS's
 /// validation does.
@@ -120,7 +65,7 @@ impl std::error::Error for Diagnostics {}
 
 /// Parses and validates a v8 style document, its `global-state` reads
 /// resolved to the root `state` defaults.
-pub fn parse(text: &str) -> Result<Style, Diagnostics> {
+pub fn parse(text: &str) -> Result<Scene, Diagnostics> {
     parse_with_state(text, &[])
 }
 
@@ -131,19 +76,8 @@ pub fn parse(text: &str) -> Result<Style, Diagnostics> {
 pub fn parse_with_state(
     text: &str,
     overrides: &[(String, Value<'static>)],
-) -> Result<Style, Diagnostics> {
+) -> Result<Scene, Diagnostics> {
     parse_dialect(text, overrides, Dialect::V8)
-}
-
-/// Which document a style is: v8 as it is, or a style a scene document
-/// extends (plan §11.1), whose layers may be the scene's types (`model`)
-/// and whose root may declare `models`. v8 documents never mean more than
-/// v8 says.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Dialect {
-    #[default]
-    V8,
-    Scene,
 }
 
 /// [`parse_with_state`] in `dialect`.
@@ -151,7 +85,7 @@ pub fn parse_dialect(
     text: &str,
     overrides: &[(String, Value<'static>)],
     dialect: Dialect,
-) -> Result<Style, Diagnostics> {
+) -> Result<Scene, Diagnostics> {
     let mut cx = Cx {
         scene: dialect == Dialect::Scene,
         ..Cx::default()
@@ -183,7 +117,7 @@ pub fn parse_dialect(
 /// Root keys v8 defines that Orbis does not model yet.
 const UNMODELED_ROOT: &[&str] = &["centerAltitude"];
 
-fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -> Option<Style> {
+fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -> Option<Scene> {
     let root = cx.object(doc, "")?;
     for m in root {
         match m.key.as_str() {
@@ -291,7 +225,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             })
             .collect(),
     };
-    Some(Style {
+    Some(Scene {
         dialect: if cx.scene {
             Dialect::Scene
         } else {
@@ -310,6 +244,8 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         font_faces: font_faces::parse(cx, doc.get("font-faces")),
         lights: light::parse(cx, doc.get("light")).lower(),
         globe: doc.get("projection").and_then(|p| parse_globe(cx, p)),
+        projection: None,
+        tile_matrix_sets: Vec::new(),
         state,
         atmosphere: doc
             .get("sky")
@@ -700,5 +636,7 @@ impl Cx {
     }
 }
 
+#[cfg(test)]
+mod doc_tests;
 #[cfg(test)]
 mod tests;

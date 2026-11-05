@@ -1,14 +1,15 @@
 [package]
 name = "orb-style"
-description = "The persistent style document: transactions and diff to classified patches"
+description = "The native scene document: table-driven layers, sources, lights, atmosphere and terrain"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 version.workspace = true
 
 [dependencies]
+orb-crs.workspace = true
 orb-expr.workspace = true
-orb-v8.workspace = true
+orb-tile.workspace = true
 
 [lints]
 workspace = true

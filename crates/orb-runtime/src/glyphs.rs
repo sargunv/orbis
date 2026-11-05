@@ -148,7 +148,7 @@ impl GlyphCatalog {
     /// yet.
     fn font_file<'a>(
         &self,
-        faces: &'a orb_v8::FontFaces,
+        faces: &'a orb_style::FontFaces,
         request: &orb_text::GlyphRequest,
     ) -> Result<Option<&'a str>, &'a str> {
         if faces.is_empty() || request.variant != orb_text::Variant::Default {
@@ -243,7 +243,7 @@ impl GlyphCatalog {
         requests: &GlyphRequests,
         template: Option<&str>,
         policy: FontPolicy,
-        faces: &orb_v8::FontFaces,
+        faces: &orb_style::FontFaces,
     ) -> Vec<String> {
         let mut missing: Vec<String> = Vec::new();
         let mut pbf = Vec::new();
@@ -284,7 +284,7 @@ impl GlyphCatalog {
         template: Option<&str>,
         policy: FontPolicy,
         ideographs: Option<&str>,
-        faces: &orb_v8::FontFaces,
+        faces: &orb_style::FontFaces,
     ) -> Resolved {
         let files = self.files.lock().expect("glyph catalog poisoned").clone();
         let mut file_measured = self.file_measured.lock().expect("glyph catalog poisoned");
@@ -656,9 +656,9 @@ mod tests {
             glyphs_url: true,
             local_ideographs: false,
         };
-        let faces: orb_v8::FontFaces = vec![(
+        let faces: orb_style::FontFaces = vec![(
             "Noto Sans Regular".into(),
-            vec![orb_v8::FontFace {
+            vec![orb_style::FontFace {
                 url: "test://latin.woff2".into(),
                 ranges: vec![[0x41, 0x5A]],
             }],

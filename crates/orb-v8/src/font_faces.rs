@@ -3,28 +3,9 @@
 //! `FontFaceManager`).
 
 use orb_expr::json::Json;
+use orb_style::*;
 
 use crate::Cx;
-
-/// A declared font file.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FontFace {
-    pub url: String,
-    /// The inclusive code point ranges it may draw (all, without a
-    /// `unicode-range`).
-    pub ranges: Vec<[u32; 2]>,
-}
-
-impl FontFace {
-    pub fn covers(&self, code_point: u32) -> bool {
-        self.ranges
-            .iter()
-            .any(|&[start, end]| (start..=end).contains(&code_point))
-    }
-}
-
-/// The declared files by font name, in the style's order.
-pub type FontFaces = Vec<(String, Vec<FontFace>)>;
 
 const MAX_CODE_POINT: u32 = 0x10FFFF;
 

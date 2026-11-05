@@ -19,8 +19,8 @@ use std::ops::Range;
 use orb_expr::FeatureData;
 use orb_hal::Gpu;
 use orb_render::{Renderer, StateLookup};
-use orb_style::FeatureStateOp;
-use orb_v8::Value;
+use orb_style::Value;
+use orb_v8::FeatureStateOp;
 
 use crate::style::{PaintProperty, StylePlan};
 
@@ -259,7 +259,7 @@ impl FeatureStates {
             .filter(|e| !e.state.is_empty())
             .filter_map(|e| {
                 let key = e.key.as_ref().filter(|k| sources.contains(&k.source))?;
-                let object = orb_v8::Value::Object(std::borrow::Cow::Owned(e.state.clone()));
+                let object = orb_style::Value::Object(std::borrow::Cow::Owned(e.state.clone()));
                 Some((
                     (key.source, key.layer.clone(), key.id.clone()),
                     object.to_json_string(),
@@ -285,7 +285,7 @@ impl FeatureStates {
                 .collect();
             self.zoom_dependent |= slots
                 .iter()
-                .any(|&s| properties[s].kind() != orb_v8::Kind::Source);
+                .any(|&s| properties[s].kind() != orb_style::Kind::Source);
             let block = Block {
                 offset,
                 mask: slots.iter().map(|&s| 1 << s).sum(),
@@ -417,7 +417,7 @@ impl FeatureStates {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orb_style::SourceKey;
+    use orb_v8::SourceKey;
 
     #[test]
     fn indices_are_counted_and_states_survive_unloads() {

@@ -1,16 +1,9 @@
+use orb_style::*;
 use std::collections::HashSet;
 
 use orb_expr::json::Json;
 
 use crate::Cx;
-
-/// One sprite sheet. The default namespace exposes unprefixed image names;
-/// other namespaces expose `id:name`, following GL JS.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Sprite {
-    pub id: String,
-    pub url: String,
-}
 
 pub(crate) fn parse(cx: &mut Cx, value: Option<&Json>) -> Vec<Sprite> {
     let Some(value) = value else {

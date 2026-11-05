@@ -364,7 +364,7 @@ enum Inner {
 }
 
 impl Slot {
-    pub(crate) fn constant(value: Value<'static>, set: bool) -> Self {
+    pub fn constant(value: Value<'static>, set: bool) -> Self {
         Self {
             value: Inner::Constant(value),
             set,
@@ -373,7 +373,7 @@ impl Slot {
 
     /// A slot backed by an expression: one that isn't constant, or one
     /// that reads `image`.
-    pub(crate) fn expression(expression: PropertyExpression) -> Self {
+    pub fn expression(expression: PropertyExpression) -> Self {
         debug_assert!(
             expression.kind() != Kind::Constant || expression.expression().reads_images()
         );
@@ -384,14 +384,14 @@ impl Slot {
     }
 
     /// A colour ramp's expression, whatever its kind.
-    pub(crate) fn expression_any(expression: PropertyExpression, set: bool) -> Self {
+    pub fn expression_any(expression: PropertyExpression, set: bool) -> Self {
         Self {
             value: Inner::Expression(Box::new(expression)),
             set,
         }
     }
 
-    pub(crate) fn list(items: Vec<Slot>) -> Self {
+    pub fn list(items: Vec<Slot>) -> Self {
         Self {
             value: Inner::List(items.into()),
             set: true,
@@ -477,7 +477,7 @@ pub struct PropertyRef<'a, T> {
 }
 
 impl<'a, T: PropertyValue> PropertyRef<'a, T> {
-    pub(crate) fn new(slot: &'a Slot, default: T) -> Self {
+    pub fn new(slot: &'a Slot, default: T) -> Self {
         Self { slot, default }
     }
 
@@ -593,7 +593,7 @@ impl<T: PropertyValue> Property<T> {
         }
     }
 
-    pub(crate) fn from_slot(slot: Slot, default: T) -> Self {
+    pub fn from_slot(slot: Slot, default: T) -> Self {
         Self { slot, default }
     }
 
@@ -620,7 +620,7 @@ impl<T: PropertyValue> Property<T> {
 
 /// GL JS's fallback: `null`, `NaN`, an evaluation error or a value of the
 /// wrong shape yields the default.
-pub(crate) fn fit<T: PropertyValue>(value: Option<Value<'_>>, default: &T) -> T {
+pub fn fit<T: PropertyValue>(value: Option<Value<'_>>, default: &T) -> T {
     match value {
         None | Some(Value::Null) => default.clone(),
         Some(Value::Number(n)) if n.is_nan() => default.clone(),

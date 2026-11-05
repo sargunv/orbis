@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use orb_expr::Kind;
-use orb_v8::{PropertyId, Slot, Transition, Value};
+use orb_style::{PropertyId, Slot, Transition, Value};
 
 use crate::style::StylePlan;
 

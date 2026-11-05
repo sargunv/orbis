@@ -17,6 +17,7 @@ orb-jobs.workspace = true
 orb-crs.workspace = true
 orb-runtime = { workspace = true, features = ["compat"] }
 orb-text = { workspace = true, features = ["fonts"] }
+orb-style.workspace = true
 orb-v8.workspace = true
 png.workspace = true
 pollster.workspace = true

@@ -6,7 +6,7 @@ use orb_hal::Gpu;
 use orb_render::{
     CirclePaint, Curve, HeatmapPaint, NodePaint, Renderer, StateLookup, Translate, pack_color,
 };
-use orb_v8::{LayerType, TranslateAnchor};
+use orb_style::{LayerType, TranslateAnchor};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint(
@@ -47,7 +47,7 @@ pub(crate) fn paint(
     }
     let paint = match l.ty {
         LayerType::Circle => {
-            use orb_v8::{
+            use orb_style::{
                 CIRCLE_PITCH_ALIGNMENT, CIRCLE_PITCH_SCALE, CIRCLE_TRANSLATE,
                 CIRCLE_TRANSLATE_ANCHOR,
             };
@@ -74,7 +74,7 @@ pub(crate) fn paint(
         }
         LayerType::Heatmap => {
             let ramp = l
-                .ramp(orb_v8::HEATMAP_COLOR)
+                .ramp(orb_style::HEATMAP_COLOR)
                 .expect("heatmaps have a default ramp");
             let colors: Vec<u32> = (0..256)
                 .map(|i| {
@@ -95,8 +95,8 @@ pub(crate) fn paint(
             NodePaint::Heatmap(HeatmapPaint {
                 radius: numbers[0],
                 weight: numbers[1],
-                intensity: l.get(orb_v8::HEATMAP_INTENSITY).evaluate(zoom),
-                opacity: l.get(orb_v8::HEATMAP_OPACITY).evaluate(zoom),
+                intensity: l.get(orb_style::HEATMAP_INTENSITY).evaluate(zoom),
+                opacity: l.get(orb_style::HEATMAP_OPACITY).evaluate(zoom),
                 table_mask,
                 curves: [curves[0], curves[1]],
             })

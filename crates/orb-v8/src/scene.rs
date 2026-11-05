@@ -25,7 +25,7 @@ use crate::{Cx, Diagnostics};
 
 /// A parsed scene document.
 #[derive(Clone, Debug)]
-pub struct Scene {
+pub struct SceneDocument {
     pub style: StyleRef,
     /// The surface's projection; Web Mercator when absent.
     pub projection: Option<Projection>,
@@ -74,7 +74,7 @@ pub fn is_scene(text: &str) -> bool {
 }
 
 /// Parses a scene document.
-pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
+pub fn parse_scene(text: &str) -> Result<SceneDocument, Diagnostics> {
     let mut cx = Cx::default();
     let doc = match json::parse(text) {
         Ok(doc) => doc,
@@ -232,7 +232,7 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
         Some((plane, None)) => (Some(plane), None),
         None => (None, None),
     };
-    Ok(Scene {
+    Ok(SceneDocument {
         style,
         projection,
         globe,

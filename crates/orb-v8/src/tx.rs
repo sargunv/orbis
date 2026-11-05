@@ -1,7 +1,7 @@
 //! Transactions: edits to apply to a [`StyleDoc`](crate::StyleDoc) as one.
 
 use orb_expr::json::{self, Json, JsonValue};
-use orb_v8::Value;
+use orb_style::*;
 
 /// One edit. Layer and source ids are as in the style.
 #[derive(Clone, Debug)]

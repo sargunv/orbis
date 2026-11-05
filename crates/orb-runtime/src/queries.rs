@@ -207,7 +207,7 @@ impl crate::Map {
                 let def = plan.source_def(*index);
                 let mut members = String::new();
                 write_member(&mut members, "source", &def.id);
-                let geojson = matches!(def.kind, orb_v8::SourceKind::GeoJson(_));
+                let geojson = matches!(def.kind, orb_style::SourceKind::GeoJson(_));
                 (*index, (members, plan.sources[*index].key, geojson))
             })
             .collect();

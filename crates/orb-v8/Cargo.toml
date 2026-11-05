@@ -1,6 +1,6 @@
 [package]
 name = "orb-v8"
-description = "MapLibre v8 style documents: parse and validate with JSON-path diagnostics"
+description = "MapLibre v8 and scene documents: parse, validate and edit them into the native scene, with JSON-path diagnostics"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -9,6 +9,7 @@ version.workspace = true
 [dependencies]
 orb-crs.workspace = true
 orb-expr.workspace = true
+orb-style.workspace = true
 orb-tile.workspace = true
 
 [lints]

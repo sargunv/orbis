@@ -47,6 +47,7 @@ orb-runtime.workspace = true
 orb-symbol.workspace = true
 orb-text.workspace = true
 orb-tile.workspace = true
+orb-style.workspace = true
 orb-v8.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true

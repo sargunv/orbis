@@ -2309,6 +2309,7 @@ dependencies = [
  "orb-host-native",
  "orb-jobs",
  "orb-runtime",
+ "orb-style",
  "orb-v8",
  "pollster",
  "serde_json",
@@ -2343,6 +2344,7 @@ dependencies = [
  "orb-api",
  "orb-crs",
  "orb-expr",
+ "orb-style",
  "orb-v8",
  "png",
 ]
@@ -2397,6 +2399,7 @@ dependencies = [
  "orb-host-native",
  "orb-jobs",
  "orb-runtime",
+ "orb-style",
  "orb-text",
  "orb-v8",
  "png",
@@ -2566,6 +2569,7 @@ dependencies = [
  "miniz_oxide 0.9.1",
  "orb-crs",
  "orb-expr",
+ "orb-style",
  "orb-v8",
 ]
 
@@ -2573,8 +2577,9 @@ dependencies = [
 name = "orb-style"
 version = "0.0.0"
 dependencies = [
+ "orb-crs",
  "orb-expr",
- "orb-v8",
+ "orb-tile",
 ]
 
 [[package]]
@@ -2621,6 +2626,7 @@ version = "0.0.0"
 dependencies = [
  "orb-crs",
  "orb-expr",
+ "orb-style",
  "orb-tile",
 ]
 
@@ -2643,6 +2649,7 @@ dependencies = [
  "orb-interact",
  "orb-jobs",
  "orb-runtime",
+ "orb-style",
  "orb-symbol",
  "orb-text",
  "orb-tile",

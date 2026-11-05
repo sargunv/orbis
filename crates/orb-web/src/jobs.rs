@@ -45,7 +45,7 @@ use orb_runtime::{
     TileDone, TileImage, TileLoader, TileLocation, TileRequest, TileResult, TileWorker, pack,
     unpack,
 };
-use orb_v8::Encoding;
+use orb_style::Encoding;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 

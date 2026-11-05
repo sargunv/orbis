@@ -169,15 +169,15 @@ fn global_state_changes_reach_the_layers_that_read_it() {
     );
     let line = &doc.style().layers[2];
     assert_eq!(
-        line.get(orb_v8::LINE_COLOR).constant(),
-        Some(orb_v8::Color::parse("green").unwrap())
+        line.get(crate::LINE_COLOR).constant(),
+        Some(crate::Color::parse("green").unwrap())
     );
     // Loading the written document fresh gives the same values.
     let fresh = StyleDoc::parse(&doc.to_json()).unwrap();
     let fresh = &fresh.style().layers[2];
     assert_eq!(
-        fresh.get(orb_v8::LINE_COLOR).constant(),
-        line.get(orb_v8::LINE_COLOR).constant()
+        fresh.get(crate::LINE_COLOR).constant(),
+        line.get(crate::LINE_COLOR).constant()
     );
     // Resetting returns to the default.
     let patch = commands(&mut doc, r#"[["setGlobalStateProperty", "accent", null]]"#);
@@ -236,7 +236,7 @@ fn feature_state_is_validated_and_passed_through() {
             source: doc.source_key("g").unwrap(),
             source_layer: None,
             id: "1".into(),
-            state: vec![("hover".into(), orb_v8::Value::Bool(true))],
+            state: vec![("hover".into(), crate::Value::Bool(true))],
         }]
     );
     let vector = Transaction::from_commands(
@@ -324,13 +324,17 @@ fn terrain_switches_without_a_reload_and_follows_its_source() {
 
 #[test]
 fn a_scene_extends_its_style_in_the_scene_dialect() {
-    let scene = orb_v8::parse_scene(
+    let scene = crate::parse_scene(
         r#"{"style": "s.json", "models": {"tower": "t.glb"},
             "layers+": [{"id": "towers", "type": "model", "source": "g", "after": "water"}]}"#,
     )
     .unwrap();
     let models = [("tower".to_string(), "https://example.com/t.glb".to_string())];
-    let mut doc = StyleDoc::parse_extended(STYLE, &models, &scene.layers).unwrap();
+    let scene = crate::SceneDocument {
+        models: models.to_vec(),
+        ..scene
+    };
+    let mut doc = StyleDoc::parse_extended(STYLE, &scene).unwrap();
     let ids: Vec<&str> = doc.style().layers.iter().map(|l| l.id.as_str()).collect();
     assert_eq!(ids, ["bg", "water", "towers", "roads", "points"]);
     assert_eq!(doc.style().models, models);
@@ -341,7 +345,7 @@ fn a_scene_extends_its_style_in_the_scene_dialect() {
     );
     assert_eq!(
         doc.style().layers.last().unwrap().ty,
-        orb_v8::LayerType::Model
+        crate::LayerType::Model
     );
     // The v8 document alone has none.
     let mut plain = StyleDoc::parse(STYLE).unwrap();
@@ -364,10 +368,10 @@ fn source_data_is_a_new_revision_of_the_same_source() {
     assert_eq!(patch.changes, [Change::SourceData(keys[1])]);
     assert_eq!(classes(&patch), [Class::Relayout]);
     assert_eq!(doc.source_keys().collect::<Vec<_>>(), keys);
-    let orb_v8::SourceKind::GeoJson(g) = &doc.style().sources[1].kind else {
+    let crate::SourceKind::GeoJson(g) = &doc.style().sources[1].kind else {
         panic!("a GeoJSON source");
     };
-    assert!(matches!(&g.data, orb_v8::GeoJsonData::Inline(f) if f.len() == 1));
+    assert!(matches!(&g.data, crate::GeoJsonData::Inline(f) if f.len() == 1));
     assert!(doc.source_json(1).to_string().contains("[1,2]"));
     for bad in [
         r#"[["setSourceData", "v", {}]]"#,

@@ -23,7 +23,7 @@ use orb_expr::json::{self, Json, JsonValue};
 use orb_host::{Fetch, FetchDone, FetchError, Storage, StorageDone};
 use orb_source::endpoint::TileEndpoint;
 use orb_source::pmtiles::{self, Contents, Entry, Lookup, Reader};
-use orb_v8::{GeoJsonData, Scheme, SourceKind};
+use orb_style::{GeoJsonData, Scheme, SourceKind};
 
 /// What a region holds: a style's map of `bounds` (west, south, east,
 /// north, degrees) between map zooms `zooms`.
@@ -284,7 +284,7 @@ struct State {
     pumping: bool,
     again: bool,
     /// The style, parsed, once it arrives.
-    style: Option<Arc<orb_v8::Style>>,
+    style: Option<Arc<orb_style::Scene>>,
     /// Keys of resources already kept: `resources` offset and length.
     resources: HashMap<String, (u64, u64)>,
     resources_len: u64,
@@ -627,7 +627,7 @@ impl Job {
 
     /// Queues everything the style needs but tiles, which follow their
     /// sources' TileJSON.
-    fn style(self: &Arc<Self>, style: orb_v8::Style, text: &str) {
+    fn style(self: &Arc<Self>, style: orb_style::Scene, text: &str) {
         let style = Arc::new(style);
         self.lock().style = Some(style.clone());
         for sprite in &style.sprites {
@@ -671,7 +671,7 @@ impl Job {
                 }
                 SourceKind::Image(image) => {
                     // A video streams from its host's player: not stored.
-                    if let orb_v8::ImageContent::Image(url) = &image.content {
+                    if let orb_style::ImageContent::Image(url) = &image.content {
                         self.resource(url.clone(), Then::Nothing);
                     }
                 }
@@ -687,7 +687,7 @@ impl Job {
         });
     }
 
-    fn tileset(self: &Arc<Self>, source: &str, tileset: &orb_v8::TileSet) {
+    fn tileset(self: &Arc<Self>, source: &str, tileset: &orb_style::TileSet) {
         match (&tileset.tiles, &tileset.url) {
             (Some(_), _) | (None, None) => self.tiles(source, None, None),
             (None, Some(url)) => match url.strip_prefix("pmtiles://") {
@@ -751,8 +751,8 @@ impl Job {
         }
         let tile_type = match def.kind {
             SourceKind::Vector(_) => match endpoint.encoding {
-                orb_v8::Encoding::Mvt => pmtiles::TileType::Mvt,
-                orb_v8::Encoding::Mlt => pmtiles::TileType::Mlt,
+                orb_style::Encoding::Mvt => pmtiles::TileType::Mvt,
+                orb_style::Encoding::Mlt => pmtiles::TileType::Mlt,
             },
             _ => pmtiles::TileType::Png,
         };

@@ -1,101 +1,13 @@
 //! Layers: a v8 layer's source and selection, and its properties in the
 //! order of the property table ([`PropertyId`]).
 
+use orb_style::*;
 use std::collections::HashSet;
 
 use orb_expr::json::{Json, JsonValue, Member};
 use orb_expr::{Filter, Kind, PropertyExpression, Value};
 
 use crate::Cx;
-use crate::property::{PropertyRef, PropertyValue, Slot, Visibility};
-use crate::source::{Source, SourceKind};
-use crate::spec::{self, Key, LayerType, List, Prop, PropertyId, Ramp};
-
-/// A style layer.
-#[derive(Clone, Debug)]
-pub struct Layer {
-    pub id: String,
-    pub ty: LayerType,
-    /// The source drawn; `None` for a background.
-    pub source: Option<String>,
-    /// The vector source layer; `None` for GeoJSON and image sources.
-    pub source_layer: Option<String>,
-    /// Which features a feature layer draws.
-    pub filter: Option<Filter>,
-    /// The layer draws from this zoom, inclusive.
-    pub minzoom: f64,
-    /// The layer draws up to this zoom, exclusive. GL JS ignores a
-    /// `maxzoom` of 0, which reads as unset.
-    pub maxzoom: f64,
-    pub visibility: Visibility,
-    /// The layer type's properties, in table order.
-    props: Box<[Slot]>,
-    /// Paint properties' own `*-transition`, by property name; the rest
-    /// take the style's.
-    pub transitions: Vec<(String, crate::TransitionOverride)>,
-}
-
-impl Layer {
-    /// Whether the layer draws at `zoom`, as GL JS's `isHidden` decides: a
-    /// zero `minzoom` or `maxzoom` sets no bound, so default layers draw at
-    /// the negative zooms a map can reach.
-    pub fn is_visible_at(&self, zoom: f64) -> bool {
-        let above_min = self.minzoom == 0.0 || zoom >= self.minzoom;
-        let below_max = self.maxzoom == 0.0 || zoom < self.maxzoom;
-        self.visibility == Visibility::Visible && above_min && below_max
-    }
-
-    fn at(&self, id: PropertyId) -> usize {
-        assert_eq!(
-            id.layer_type(),
-            self.ty,
-            "{} is not a {} property",
-            id.name(),
-            self.ty.name()
-        );
-        usize::from(id.index() - self.ty.first())
-    }
-
-    /// A property, read as its type.
-    pub fn get<T: PropertyValue>(&self, key: Key<T>) -> PropertyRef<'_, T> {
-        let slot = self.slot(key.id());
-        let default = T::from_value(key.id().default_value())
-            .or(T::UNSET)
-            .unwrap_or_else(|| panic!("{} has no default", key.id().name()));
-        PropertyRef::new(slot, default)
-    }
-
-    /// A per-light property's values.
-    pub fn list<T: PropertyValue>(&self, key: Key<List<T>>) -> Vec<PropertyRef<'_, T>> {
-        let default = T::from_value(key.id().default_value())
-            .unwrap_or_else(|| panic!("{} has no default", key.id().name()));
-        self.slot(key.id())
-            .items()
-            .iter()
-            .map(|slot| PropertyRef::new(slot, default.clone()))
-            .collect()
-    }
-
-    /// A colour ramp, if the layer has one.
-    pub fn ramp(&self, key: Key<Ramp>) -> Option<&PropertyExpression> {
-        self.slot(key.id()).as_expression()
-    }
-
-    /// A property, untyped.
-    pub fn slot(&self, id: PropertyId) -> &Slot {
-        &self.props[self.at(id)]
-    }
-
-    pub fn slot_mut(&mut self, id: PropertyId) -> &mut Slot {
-        let at = self.at(id);
-        &mut self.props[at]
-    }
-
-    /// The layer's properties and their slots, in table order.
-    pub fn slots(&self) -> impl Iterator<Item = (PropertyId, &Slot)> {
-        self.ty.properties().zip(self.props.iter())
-    }
-}
 
 const LAYER_KEYS: &[&str] = &[
     "id",
@@ -470,15 +382,15 @@ pub(crate) fn parse_layer(
     let visibility = {
         let slot = property_at(
             cx,
-            layout.get(spec::VISIBILITY.name),
+            layout.get(orb_style::VISIBILITY.name),
             &format!("{}.visibility", layout.path),
-            &spec::VISIBILITY,
+            &orb_style::VISIBILITY,
         );
         slot.as_constant()
             .and_then(Visibility::from_value)
             .unwrap_or(Visibility::Visible)
     };
-    let props = ty
+    let props: Vec<Slot> = ty
         .properties()
         .map(|id| {
             let prop = id.prop();
@@ -516,16 +428,13 @@ pub(crate) fn parse_layer(
             }
         })
         .collect();
-    (cx.diagnostics.errors.len() == errors).then_some(Layer {
-        id,
-        ty,
-        source,
-        source_layer,
-        filter,
-        minzoom,
-        maxzoom,
-        visibility,
-        props,
-        transitions,
-    })
+    let mut layer = Layer::new(id, ty, props);
+    layer.source = source;
+    layer.source_layer = source_layer;
+    layer.filter = filter;
+    layer.minzoom = minzoom;
+    layer.maxzoom = maxzoom;
+    layer.visibility = visibility;
+    layer.transitions = transitions;
+    (cx.diagnostics.errors.len() == errors).then_some(layer)
 }

@@ -2,26 +2,9 @@
 //! one sky and fog model, which the scene document's `atmosphere` sets
 //! with the same names and two of its own, `star-intensity` and
 //! `backdrop-color` (decision 0035).
-use crate::{Color, Cx, Property, layer::typed_property_at, spec::Prop};
+use crate::{Color, Cx, Property, layer::typed_property_at};
 use orb_expr::{PropertyType, json::Json};
-
-#[derive(Clone, Debug)]
-/// The style's atmosphere: the sky above the horizon and the fog over
-/// terrain.
-pub struct Atmosphere {
-    pub sky_color: Property<Color>,
-    pub horizon_color: Property<Color>,
-    pub fog_color: Property<Color>,
-    pub fog_ground_blend: Property<f32>,
-    pub horizon_fog_blend: Property<f32>,
-    pub sky_horizon_blend: Property<f32>,
-    pub atmosphere_blend: Property<f32>,
-    /// The stars' brightness, 0 (none) to 1, behind the sky.
-    pub stars: Property<f32>,
-    /// The colour behind everything, stars before it: where neither the
-    /// map nor the sky covers it. Transparent shows the host's backing.
-    pub backdrop: Property<Color>,
-}
+use orb_style::*;
 
 /// Where an atmosphere is declared: v8's `sky`, or the scene document's
 /// `atmosphere`, which adds the stars and the backdrop.

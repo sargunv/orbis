@@ -402,7 +402,7 @@ pub async fn run(
                 .style_doc()
                 .into_iter()
                 .flat_map(|doc| doc.style().layers.iter())
-                .find(|l| l.ty == orb_v8::LayerType::Symbol)
+                .find(|l| l.ty == orb_style::LayerType::Symbol)
                 .map(|l| l.id.replace('\\', "\\\\").replace('"', "\\\""));
             let call = match before {
                 Some(before) => format!("[[\"addLayer\", {BUILDINGS_3D}, \"{before}\"]]"),

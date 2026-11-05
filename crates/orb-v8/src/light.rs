@@ -1,8 +1,9 @@
 //! v8's `light`, lowered into the style's [`Lights`] (decision 0026): an
 //! ambient and a directional term of GL JS's flat extrusion response.
-use crate::lights::{AmbientLight, Direction, DirectionalLight, Level, Lights};
-use crate::{Color, Cx, Property, TranslateAnchor, layer::typed_property_at, spec::Prop};
+use crate::{Color, Cx, Property, TranslateAnchor, layer::typed_property_at};
 use orb_expr::{PropertyType, Type, json::Json};
+use orb_style::*;
+use orb_style::{AmbientLight, Direction, DirectionalLight, Level, Lights};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Light {
@@ -44,11 +45,9 @@ impl Light {
     }
 }
 
-/// The spec's light: every property at its default.
-impl Default for Light {
-    fn default() -> Self {
-        parse(&mut Cx::default(), None)
-    }
+/// v8's default `light`, lowered: every property at its spec default.
+pub fn default_lights() -> Lights {
+    parse(&mut Cx::default(), None).lower()
 }
 
 pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {

@@ -182,8 +182,8 @@ LOC are CI-enforced ceilings [inferred]; "From" is the milestone that introduces
 | Crate | Responsibility | LOC | From |
 |---|---|---|---|
 | `orb-schema` | style schema (JSON Schema + expression signatures) from a pinned `v8.json` and the scene-document schema | 2k + gen | M0 |
-| `orb-v8` | v8 parse/validate with JSON-path diagnostics, legacy migration, lowering, deviation flags; scene-document merge | 6k | M0 |
-| `orb-style` | Style IR, persistent `StyleDoc` with dirty bits, transactions, diff → patch, transitions, composition | 8k | M1 |
+| `orb-v8` | the front end: v8 and scene-document parse/validate with JSON-path diagnostics, legacy migration, lowering, deviation flags, the scene-document merge; the JSON documents of record (`StyleDoc`), GL JS edit calls as transactions, diff → patch | 6k | M0 |
+| `orb-style` | the native document: `Scene` (surface, sources and their TMS, table-driven layers by `PropertyId`, lights, atmosphere, terrain, globe, state, sprites, glyphs), transitions, composition | 8k | M1 |
 | `orb-expr` | SSA expression IR; VM; SIMD column evaluator; binding-mask classifier | 9k | M0 |
 | ~~`orb-geo`~~ | folded into `orb-crs` (WGS84 and `Geodetic`) | — | M0 |
 | `orb-crs` | `Surface`, projection families + WGSL, descriptors, EPSG table, OGC TMS registry, DataToWorld planner, subdivision, tile cover | 9k | M0 |
@@ -681,7 +681,7 @@ IR (internal, versioned, CBOR-cacheable, buildable from Rust without JSON): **So
 
 Pipeline: S0 merge (v8 + scene document; the scene document decorates, never edits v8 semantics) → S1 parse/validate (JSON-path diagnostics, also as standalone wasm/C) → S2 resolve (imports, state defaults, sprites, fonts, TMS and projection descriptors) → S3 lower (legacy functions/filters → expressions in one place) → S4 plan (render graph, pipeline classes, tier-specific nodes) → S5 prepare (async pipelines in first-visible order) → S6 diff (paint → block/table write; filter/layout → relayout of one family; source → reload). Expressions compile once and ship to workers as bytecode; GL JS parses each at validation, on main and in every worker, and Native clears every source on a new style and has no validator [verified]. `map.edit(tx => …)` publishes one snapshot, giving wrapper reconcilers a diff target (removing the flutter#477 class) [verified].
 
-[implemented at M1, decision 0015] `orb-style`'s `StyleDoc` keeps the document as JSON and typed IR with stable layer and source keys; a transaction (also parsed from GL JS map calls) re-parses only the layers it touches and diffs them into changes classed `Block`, `State`, `Column`, `Relayout`, `Nodes`, `Reload` or `Restyle`. Global state resolves at S2: `orb-expr` folds `global-state` reads at parse, so a global-state write is an edit of the layers that read it. Jobs receive each revision's new layers and sources; results carry their revision and per-node epochs decide staleness; node renumbering keeps every other node's meshes.
+[implemented at M1, decision 0015; moved to `orb-v8` by decision 0044, which builds `orb_style::Scene`] `StyleDoc` keeps the document as JSON and typed IR with stable layer and source keys; a transaction (also parsed from GL JS map calls) re-parses only the layers it touches and diffs them into changes classed `Block`, `State`, `Column`, `Relayout`, `Nodes`, `Reload` or `Restyle`. Global state resolves at S2: `orb-expr` folds `global-state` reads at parse, so a global-state write is an edit of the layers that read it. Jobs receive each revision's new layers and sources; results carry their revision and per-node epochs decide staleness; node renumbering keeps every other node's meshes.
 
 ### 11.3 Expressions
 

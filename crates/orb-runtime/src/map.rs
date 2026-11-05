@@ -18,8 +18,8 @@ use orb_render::{
 };
 use orb_render::{ImageAtlas, ImageUpload};
 use orb_source::{Draw, TilePyramid};
-use orb_style::StyleDoc;
-use orb_v8::{LayerType, SourceKind, TranslateAnchor};
+use orb_style::{LayerType, SourceKind, TranslateAnchor};
+use orb_v8::StyleDoc;
 
 use crate::MapEvent;
 use crate::image::{self, ResidentImage};
@@ -75,13 +75,6 @@ impl std::fmt::Debug for Services {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Services")
     }
-}
-
-/// A scene document's models (URLs resolved against it) and added layers.
-#[derive(Debug)]
-struct SceneExtension {
-    models: Vec<(String, String)>,
-    layers: Vec<orb_v8::AddedLayer>,
 }
 
 /// What a frame did.
@@ -511,16 +504,12 @@ pub struct Map {
     /// Terrain tiles hang skirts ([`Map::set_terrain_skirts`]).
     terrain_skirts: bool,
     antialias_3d: bool,
-    /// The plane the map draws on and its sources' tile matrix sets, from
-    /// the scene document.
+    /// The plane the map draws on and its sources' tile matrix sets: the
+    /// scene's, planned for its tiles.
     pub(crate) surface: Surface,
-    /// The scene document's lights, which replace the style's.
-    lights: Option<orb_v8::Lights>,
-    /// A scene document's atmosphere, which replaces the style's `sky`.
-    atmosphere: Option<orb_v8::Atmosphere>,
-    /// What the scene document adds to its style. A scene's style parses
-    /// in the scene dialect.
-    scene: Option<SceneExtension>,
+    /// A scene document whose style is loading, which the style parses
+    /// under (models resolved against the scene).
+    pending_scene: Option<orb_v8::SceneDocument>,
     /// When the map began, by its clock: frames' time counts from it.
     born: f64,
     /// When the last raster tile to arrive finishes fading in.
@@ -748,9 +737,7 @@ impl Map {
             camera_seen: 0,
             terrain_seen: 0,
             surface,
-            lights: None,
-            atmosphere: None,
-            scene: None,
+            pending_scene: None,
             transitions: Default::default(),
             style_request: 0,
             generation: 0,
@@ -924,9 +911,9 @@ impl Map {
     /// tile matrix sets and the camera's target and resolution. Tiles load
     /// again.
     pub fn set_projection(&mut self, projection: orb_crs::Projection) {
-        self.surface = self.surface.with_projection(projection);
         if let Some(style) = &self.style {
-            let doc = style.doc.clone();
+            let mut doc = style.doc.clone();
+            doc.set_projection(projection);
             self.install(doc);
         }
     }
@@ -1026,25 +1013,20 @@ impl Map {
             let parsed = orb_v8::parse_scene(json).map_err(|d| d.to_string())?;
             self.warnings
                 .extend(parsed.warnings.iter().map(ToString::to_string));
-            self.surface = Surface::new(parsed.projection, parsed.sources, parsed.globe);
-            self.lights = parsed.lights;
-            self.atmosphere = parsed.atmosphere;
             let models = parsed
                 .models
-                .into_iter()
+                .iter()
                 .map(|(id, url)| {
                     let url = match base {
-                        Some(base) => orb_source::endpoint::join_url(base, &url),
-                        None => url,
+                        Some(base) => orb_source::endpoint::join_url(base, url),
+                        None => url.clone(),
                     };
-                    (id, url)
+                    (id.clone(), url)
                 })
                 .collect();
-            self.scene = Some(SceneExtension {
-                models,
-                layers: parsed.layers,
-            });
-            return match parsed.style {
+            let style = parsed.style.clone();
+            self.pending_scene = Some(orb_v8::SceneDocument { models, ..parsed });
+            return match style {
                 orb_v8::StyleRef::Inline(style) => self.set_document(&style, base, true),
                 orb_v8::StyleRef::Url(url) => {
                     let url = match base {
@@ -1059,19 +1041,12 @@ impl Map {
         // A fetched style's relative URLs are relative to it.
         let resolved = base.map(|base| orb_source::endpoint::resolve_style_urls(json, base));
         let text = resolved.as_deref().unwrap_or(json);
-        if !scene {
-            self.scene = None;
-        }
-        let doc = match &self.scene {
-            Some(e) => StyleDoc::parse_extended(text, &e.models, &e.layers),
+        let pending = std::mem::take(&mut self.pending_scene).filter(|_| scene);
+        let doc = match &pending {
+            Some(scene) => StyleDoc::parse_extended(text, scene),
             None => StyleDoc::parse(text),
         }
         .map_err(|d| d.to_string())?;
-        if !scene {
-            self.surface = Surface::default();
-            self.lights = None;
-            self.atmosphere = None;
-        }
         // A style URL still loading is superseded.
         self.style_request += 1;
         self.install(doc);
@@ -1125,6 +1100,7 @@ impl Map {
     fn install_revision(&mut self, doc: StyleDoc, previous: Option<(u64, &Arc<TileWorker>)>) {
         self.version += 1;
         self.labels.invalidate();
+        self.surface = Surface::of(doc.style());
         let worker = Arc::new(revise(
             previous.map(|(_, worker)| &**worker),
             &doc,
@@ -1134,7 +1110,6 @@ impl Map {
             self.surface.tiles(),
         ));
         let plan = worker.plan();
-        self.surface.set_globe(plan.style.globe);
         self.warnings
             .extend(plan.style.warnings.iter().map(ToString::to_string));
         self.warnings.extend(plan.warnings.iter().cloned());
@@ -1372,10 +1347,11 @@ impl Map {
         // limb), fog on terrain, scattering over a globe.
         let (fog_near, fog_far) = view.fog_range_px();
         let (horizon, horizon_normal) = view.sky_horizon_line();
-        let lights = self
-            .lights
+        let scene = self
+            .style
             .as_ref()
-            .or(self.style.as_ref().map(|s| &s.worker.plan().style.lights));
+            .map(|s| Arc::clone(&s.worker.plan().style));
+        let lights = scene.as_deref().map(|s| &s.lights);
         // The sky over a sphere; a low-zoom plane's is a plane's.
         let globe = view
             .globe()
@@ -1383,13 +1359,9 @@ impl Map {
             .map(|g| crate::lights::globe_sky(g, &view, self.camera.state(), lights, zoom));
         renderer.set_atmosphere(
             gpu,
-            self.atmosphere
-                .as_ref()
-                .or_else(|| {
-                    self.style
-                        .as_ref()
-                        .and_then(|style| style.worker.plan().style.atmosphere.as_ref())
-                })
+            scene
+                .as_deref()
+                .and_then(|s| s.atmosphere.as_ref())
                 .map(|atmosphere| orb_render::AtmospherePaint {
                     sky_color: atmosphere.sky_color.evaluate(zoom).premultiplied(),
                     horizon_color: atmosphere.horizon_color.evaluate(zoom).premultiplied(),
@@ -1426,7 +1398,7 @@ impl Map {
                     plan.pattern(n).is_some() || {
                         let l = &plan.style.layers[n.layer];
                         l.ty == LayerType::Line
-                            && l.get(orb_v8::LINE_DASHARRAY).constant() != Some(None)
+                            && l.get(orb_style::LINE_DASHARRAY).constant() != Some(None)
                     }
                 });
             // Paint transitions write from the style overlaid with their
@@ -1444,7 +1416,6 @@ impl Map {
                 (zoom, self.camera.state().bearing),
                 crossfade,
                 images.atlas.as_mut().expect("initialized"),
-                self.lights.as_ref(),
             );
             drop(images);
             for name in missing {
@@ -1563,18 +1534,14 @@ impl Map {
                 ),
             },
             terrain: self.frame_terrain,
-            lights: self
-                .lights
-                .as_ref()
-                .or(self.style.as_ref().map(|s| &s.worker.plan().style.lights))
-                .map(|lights| {
-                    crate::lights::frame_lights(
-                        lights,
-                        zoom,
-                        self.camera.state().bearing,
-                        self.camera.state().target,
-                    )
-                }),
+            lights: lights.map(|lights| {
+                crate::lights::frame_lights(
+                    lights,
+                    zoom,
+                    self.camera.state().bearing,
+                    self.camera.state().target,
+                )
+            }),
             globe,
         };
         report.frame = renderer.render(gpu, &frame, target, clear);
@@ -2036,9 +2003,9 @@ impl Map {
                 let e = &plan.style.layers[node.layer];
                 let maxima = style.nodes.get(&node.key).map_or(&[][..], |n| &n.maxima);
                 let max = |i: usize| maxima.get(i).copied().unwrap_or(0.0);
-                e.get(orb_v8::EXTRUSION_HEIGHT)
+                e.get(orb_style::EXTRUSION_HEIGHT)
                     .evaluate(zoom)
-                    .max(e.get(orb_v8::EXTRUSION_BASE).evaluate(zoom))
+                    .max(e.get(orb_style::EXTRUSION_BASE).evaluate(zoom))
                     .max(max(1))
                     .max(max(2))
             })
@@ -3384,8 +3351,11 @@ impl Map {
                 .filter_map(|n| {
                     let r = &plan.style.layers[n.layer];
                     (r.ty == LayerType::Raster
-                        && !matches!(plan.source_def(source).kind, orb_v8::SourceKind::Image(_)))
-                    .then(|| f64::from(r.get(orb_v8::RASTER_FADE_DURATION).evaluate(tile_zoom)))
+                        && !matches!(
+                            plan.source_def(source).kind,
+                            orb_style::SourceKind::Image(_)
+                        ))
+                    .then(|| f64::from(r.get(orb_style::RASTER_FADE_DURATION).evaluate(tile_zoom)))
                 })
                 .fold(0.0, f64::max);
             // Still output shows tiles at once.
@@ -4219,7 +4189,6 @@ fn write_paint(
     (zoom, bearing): (f64, f64),
     crossfade: Crossfade,
     atlas: &mut ImageAtlas,
-    lights: Option<&orb_v8::Lights>,
 ) -> Vec<String> {
     let mut missing = Vec::new();
     if style.painted.is_none() {
@@ -4249,12 +4218,12 @@ fn write_paint(
         }
         let visible = layer.is_visible_at(zoom)
             && (layer.ty != LayerType::FillExtrusion
-                || layer.get(orb_v8::EXTRUSION_OPACITY).evaluate(zoom) > 0.0);
+                || layer.get(orb_style::EXTRUSION_OPACITY).evaluate(zoom) > 0.0);
         let draped = draping && node.family.is_draped();
         renderer.set_visible(
             index,
             if draped {
-                layer.visibility == orb_v8::Visibility::Visible
+                layer.visibility == orb_style::Visibility::Visible
             } else {
                 visible
             },
@@ -4282,7 +4251,7 @@ fn write_paint(
             bearing,
             crossfade,
         };
-        let Some(paint) = node_paint(gpu, renderer, (style, plan), index, at, atlas, lights) else {
+        let Some(paint) = node_paint(gpu, renderer, (style, plan), index, at, atlas) else {
             continue;
         };
         renderer.set_paint(gpu, index, &paint);
@@ -4306,8 +4275,8 @@ fn write_paint(
         // A fill or line layer below layer opacity 1, or blending other
         // than normally, composites once.
         let composite = match layer.ty {
-            LayerType::Fill => Some((orb_v8::FILL_LAYER_OPACITY, orb_v8::FILL_LAYER_BLEND)),
-            LayerType::Line => Some((orb_v8::LINE_LAYER_OPACITY, orb_v8::LINE_LAYER_BLEND)),
+            LayerType::Fill => Some((orb_style::FILL_LAYER_OPACITY, orb_style::FILL_LAYER_BLEND)),
+            LayerType::Line => Some((orb_style::LINE_LAYER_OPACITY, orb_style::LINE_LAYER_BLEND)),
             _ => None,
         };
         if let Some((opacity, blend)) = composite {
@@ -4353,7 +4322,7 @@ fn write_drape_paint(
         let layer = &plan.style.layers[node.layer];
         let paint = layer
             .is_visible_at(at.zoom)
-            .then(|| node_paint(gpu, renderer, (style, plan), index as u32, at, atlas, None))
+            .then(|| node_paint(gpu, renderer, (style, plan), index as u32, at, atlas))
             .flatten();
         turns |= paint.is_some() && turns_with_bearing(layer, at.zoom);
         changed |= renderer.set_drape_paint(gpu, index as u32, zoom, paint.as_ref());
@@ -4363,18 +4332,19 @@ fn write_drape_paint(
 
 /// Whether a layer drawn at `zoom` turns with the map's bearing: a
 /// viewport-anchored hillshade's light, or a viewport-anchored translate.
-fn turns_with_bearing(l: &orb_v8::Layer, zoom: f64) -> bool {
-    let translates = |px: orb_v8::Key<[f32; 2]>, anchor: orb_v8::Key<TranslateAnchor>| {
+fn turns_with_bearing(l: &orb_style::Layer, zoom: f64) -> bool {
+    let translates = |px: orb_style::Key<[f32; 2]>, anchor: orb_style::Key<TranslateAnchor>| {
         l.get(anchor).evaluate(zoom) == TranslateAnchor::Viewport
             && l.get(px).evaluate(zoom) != [0.0; 2]
     };
     match l.ty {
         LayerType::Hillshade => {
-            l.get(orb_v8::HILLSHADE_ILLUMINATION_ANCHOR).evaluate(zoom)
-                == orb_v8::IlluminationAnchor::Viewport
+            l.get(orb_style::HILLSHADE_ILLUMINATION_ANCHOR)
+                .evaluate(zoom)
+                == orb_style::IlluminationAnchor::Viewport
         }
-        LayerType::Fill => translates(orb_v8::FILL_TRANSLATE, orb_v8::FILL_TRANSLATE_ANCHOR),
-        LayerType::Line => translates(orb_v8::LINE_TRANSLATE, orb_v8::LINE_TRANSLATE_ANCHOR),
+        LayerType::Fill => translates(orb_style::FILL_TRANSLATE, orb_style::FILL_TRANSLATE_ANCHOR),
+        LayerType::Line => translates(orb_style::LINE_TRANSLATE, orb_style::LINE_TRANSLATE_ANCHOR),
         _ => false,
     }
 }
@@ -4388,7 +4358,6 @@ fn node_paint(
     index: u32,
     at: PaintAt,
     atlas: &mut ImageAtlas,
-    lights: Option<&orb_v8::Lights>,
 ) -> Option<NodePaint> {
     let PaintAt {
         zoom,
@@ -4443,11 +4412,11 @@ fn node_paint(
     }
     let layer = &plan.style.layers[node.layer];
     let translate = match layer.ty {
-        LayerType::Fill => Some((orb_v8::FILL_TRANSLATE, orb_v8::FILL_TRANSLATE_ANCHOR)),
-        LayerType::Line => Some((orb_v8::LINE_TRANSLATE, orb_v8::LINE_TRANSLATE_ANCHOR)),
+        LayerType::Fill => Some((orb_style::FILL_TRANSLATE, orb_style::FILL_TRANSLATE_ANCHOR)),
+        LayerType::Line => Some((orb_style::LINE_TRANSLATE, orb_style::LINE_TRANSLATE_ANCHOR)),
         LayerType::FillExtrusion => Some((
-            orb_v8::EXTRUSION_TRANSLATE,
-            orb_v8::EXTRUSION_TRANSLATE_ANCHOR,
+            orb_style::EXTRUSION_TRANSLATE,
+            orb_style::EXTRUSION_TRANSLATE_ANCHOR,
         )),
         _ => None,
     }
@@ -4470,11 +4439,13 @@ fn node_paint(
                 color,
                 height: numbers[1],
                 base: numbers[2],
-                opacity: e.get(orb_v8::EXTRUSION_OPACITY).evaluate(zoom),
+                opacity: e.get(orb_style::EXTRUSION_OPACITY).evaluate(zoom),
                 translate,
-                vertical_gradient: e.get(orb_v8::EXTRUSION_VERTICAL_GRADIENT).evaluate(zoom),
-                emissive: lights.map_or(0.0, |l| l.emissive(&plan.style.layers[node.layer].id))
-                    as f32,
+                vertical_gradient: e.get(orb_style::EXTRUSION_VERTICAL_GRADIENT).evaluate(zoom),
+                emissive: plan
+                    .style
+                    .lights
+                    .emissive(&plan.style.layers[node.layer].id) as f32,
                 table_mask,
                 curves: [curves[0], curves[1], curves[2]],
                 state: lookup,
@@ -4513,7 +4484,7 @@ fn node_paint(
         zoom,
         crossfade,
         match layer.ty {
-            LayerType::Line => layer.get(orb_v8::LINE_WIDTH).evaluate(zoom.floor()),
+            LayerType::Line => layer.get(orb_style::LINE_WIDTH).evaluate(zoom.floor()),
             _ => 0.0,
         },
     );
@@ -4529,9 +4500,9 @@ fn node_paint(
 }
 
 /// The renderer's blend for a v8 layer blend.
-fn layer_blend(blend: orb_v8::LayerBlend) -> orb_render::Blend {
+fn layer_blend(blend: orb_style::LayerBlend) -> orb_render::Blend {
     use orb_render::Blend;
-    use orb_v8::LayerBlend;
+    use orb_style::LayerBlend;
     match blend {
         LayerBlend::Normal => Blend::Normal,
         LayerBlend::Multiply => Blend::Multiply,
@@ -4711,7 +4682,7 @@ fn make_background(
 
 fn pattern_paint(
     paint: NodePaint,
-    property: Option<&orb_v8::PropertyRef<'_, Option<String>>>,
+    property: Option<&orb_style::PropertyRef<'_, Option<String>>>,
     namespace: u64,
     atlas: &mut ImageAtlas,
     zoom: f64,
@@ -5004,7 +4975,8 @@ mod tests {
             r#"{"style": "styles/b.json", "projection": {"type": "EPSG:3413"},
                 "sources": {"s": {"tileMatrixSet": "UPSArcticWGS84Quad"}}}"#,
         );
-        assert_eq!(map.projection().descriptor().kind, "EPSG:3413");
+        // The surface comes with the scene's style, as one scene.
+        assert_eq!(map.projection().descriptor().kind, "web-mercator");
         // The scene's relative style URL loads next, onto its surface.
         assert_eq!(
             deliver(&mut map, &style("b")),

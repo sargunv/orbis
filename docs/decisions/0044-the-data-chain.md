@@ -67,3 +67,30 @@ entry (`FILL_COLOR: Key<Color>`).
 A constant that doesn't fit its type, NaN included, now falls back to the
 default, as an evaluated value does: `text-size/nan` passes. Reviewed with
 two Sol rounds.
+
+## One native document: `orb_style::Scene`
+
+The style lived in `orb-v8` as the typed IR, with `orb-style`'s `StyleDoc`
+on top of it, and the scene document's projection, tile matrix sets, lights
+and atmosphere held as fields on `Map` and merged into what each frame drew.
+Now:
+
+- `orb-style` is the native document: `Scene` (the IR, renamed, with the
+  scene's `projection` and `tile_matrix_sets`), its table-driven layers,
+  sources, lights, atmosphere, terrain, sprites and fonts. It depends on no
+  front end.
+- `orb-v8` is the front end. It parses v8 and scene documents into a
+  `Scene`, and keeps the JSON documents of record: `StyleDoc`, its
+  transactions and its diff moved here from `orb-style`.
+- A scene document decorates its style: `StyleDoc` keeps what it sets
+  (projection, low-zoom surface, tile matrix sets, lights, atmosphere) and
+  applies it to every snapshot, on parse and after each transaction. The
+  style's globe stays under the scene's, as before.
+- `Map` keeps no scene fields: its `Surface` is derived from the scene at
+  install, and frames read the scene's lights and atmosphere. A scene's
+  surface now arrives with its style, at `StyleLoad`, rather than when the
+  scene document alone has loaded. `set_projection` edits the document.
+
+Render fixtures are unchanged (1196 / 99 / 50 natively against the same
+base), and the alps terrain demo's snapshot matches a base run byte for
+byte (label fades vary between runs on both).
