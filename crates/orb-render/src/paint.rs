@@ -22,6 +22,30 @@ pub const SYMBOL_ROW_WORDS: usize = 10;
 pub const CIRCLE_ROW_WORDS: usize = 14;
 /// Radius and weight.
 pub const HEATMAP_ROW_WORDS: usize = 4;
+/// Colour, colour mix, emissive strength, then scale, rotation and
+/// translation by component.
+pub const MODEL_ROW_WORDS: usize = 24;
+
+/// A model node's paint (`model.wgsl`'s `ModelNode`). Slots: colour,
+/// colour mix, emissive strength, scale, rotation and translation by
+/// component.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModelPaint {
+    pub color: [f32; 4],
+    pub color_mix: f32,
+    pub emissive: f32,
+    pub scale: [f32; 3],
+    pub rotation: [f32; 3],
+    pub translation: [f32; 3],
+    /// Applied by the 3D composite.
+    pub opacity: f32,
+    pub table_mask: u32,
+    pub curves: [Curve; 12],
+    /// How far a model reaches from its point on screen and above the
+    /// ground (metres), for culling.
+    pub reach_px: f32,
+    pub height: f32,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CirclePaint {
@@ -248,6 +272,7 @@ pub enum NodePaint {
     FillPattern(FillPaint, PatternPaint),
     LinePattern(LinePaint, PatternPaint),
     Symbol(SymbolPaint),
+    Model(ModelPaint),
 }
 
 /// How a node draws its symbols' sizes per frame (GL JS `SizeData` with
@@ -375,6 +400,7 @@ impl NodePaint {
                 | (Self::Hillshade(_), Family::Hillshade)
                 | (Self::ColorRelief(_), Family::ColorRelief)
                 | (Self::Symbol(_), Family::SymbolIcon | Family::SymbolText)
+                | (Self::Model(_), Family::Model)
         )
     }
 
@@ -436,6 +462,17 @@ impl NodePaint {
                     0,
                     0,
                 ]);
+                (words, &p.curves)
+            }
+            Self::Model(p) => {
+                let mut words = p.color.map(f).to_vec();
+                words.extend([f(p.color_mix), f(p.emissive), node, p.table_mask]);
+                words.extend(p.scale.map(f));
+                words.push(f(p.opacity));
+                words.extend(p.rotation.map(f));
+                words.push(0);
+                words.extend(p.translation.map(f));
+                words.push(0);
                 (words, &p.curves)
             }
             Self::Heatmap(p) => (
@@ -652,6 +689,7 @@ impl NodePaint {
             }
             Self::Raster(_) | Self::Hillshade(_) | Self::ColorRelief(_) => 0.0,
             Self::Symbol(p) => p.reach_px + p.translate.length(),
+            Self::Model(p) => p.reach_px,
         }
     }
 }
@@ -714,6 +752,29 @@ mod tests {
         let words = raster.uniform_words(0);
         let spin: Vec<f32> = words[..3].iter().map(|&w| f32::from_bits(w)).collect();
         assert!((spin[0] - 1.0).abs() < 1e-6 && spin[1].abs() < 1e-6 && spin[2].abs() < 1e-6);
+    }
+
+    #[test]
+    fn model_uniform_matches_its_struct() {
+        let model = NodePaint::Model(ModelPaint {
+            color: [1.0; 4],
+            color_mix: 0.0,
+            emissive: 0.0,
+            scale: [1.0; 3],
+            rotation: [0.0; 3],
+            translation: [0.0; 3],
+            opacity: 1.0,
+            table_mask: 0,
+            curves: [Curve::Step; 12],
+            reach_px: 0.0,
+            height: 0.0,
+        });
+        // `ModelNode`: colour, four scalars, three vec3s each padded to 16
+        // bytes (the scale's padding is the opacity), 12 curves.
+        let words = model.uniform_words(7);
+        assert_eq!(words.len() * 4, 80 + 12 * 32);
+        assert_eq!(words[6], 7);
+        assert_eq!(f32::from_bits(words[11]), 1.0);
     }
 
     #[test]

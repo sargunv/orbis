@@ -1154,14 +1154,14 @@ impl Gpu for GlGpu {
         );
         let (_, format, ty) = gl_format(t.format);
         let target = t.target();
-        // SAFETY: a write inside the texture's level 0.
+        // SAFETY: a write inside one of the texture's levels.
         unsafe {
             self.state.bind_texture(&self.gl, 0, target, Some(texture));
             let pixels = glow::PixelUnpackData::Slice(Some(data));
             if target == glow::TEXTURE_2D {
                 self.gl.tex_sub_image_2d(
                     target,
-                    0,
+                    region.level as i32,
                     region.x as i32,
                     region.y as i32,
                     region.width as i32,
@@ -1173,7 +1173,7 @@ impl Gpu for GlGpu {
             } else {
                 self.gl.tex_sub_image_3d(
                     target,
-                    0,
+                    region.level as i32,
                     region.x as i32,
                     region.y as i32,
                     region.layer as i32,

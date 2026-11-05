@@ -91,19 +91,41 @@ fn pbr_specular(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, f0: vec3<f32>, roughne
     return d * vis * f;
 }
 
-// A surface's linear colour under `lights`: Lambert diffuse for its
+// A surface's material: all its shading needs besides the lights, as a
+// material buffer would hold it per pixel for one lighting pass over the
+// whole map (#91). Colours are linear; the normal is a unit vector in
+// east, north and up.
+struct Material {
+    albedo: vec3<f32>,
+    alpha: f32,
+    metallic: f32,
+    roughness: f32,
+    // Ambient light reaching it, 0 to 1.
+    occlusion: f32,
+    // How much of its albedo shows whatever the lights (glTF's unlit is 1;
+    // a model layer's `model-emissive-strength`).
+    self_lit: f32,
+    // Light it gives off, added after shading.
+    emitted: vec3<f32>,
+    normal: vec3<f32>,
+};
+
+// A material's linear colour under `lights`: Lambert diffuse for its
 // non-metal part, GGX specular toward the eye, and the ambient light
 // reaching metals as a dim reflection rougher surfaces blur away. The
 // levels add: a matte face toward the light gets the ambient and the
 // directional light's levels of its colour, a face away the ambient's.
-fn pbr_shade(base: vec3<f32>, metallic: f32, roughness: f32, occlusion: f32, n: vec3<f32>, lights: PbrLights) -> vec3<f32> {
+// Then its self-lit share of the albedo, and the light it gives off.
+fn pbr_light(m: Material, lights: PbrLights) -> vec3<f32> {
+    let n = m.normal;
     let l = lights.toward_light;
     let nl = max(dot(n, l), 0.0);
     let direct = lights.directional * nl * lights.shadow;
-    let f0 = mix(vec3<f32>(0.04), base, metallic);
-    let diffuse = base * (1.0 - metallic);
-    let ambient = lights.ambient * occlusion;
-    return diffuse * (ambient + direct)
-        + pbr_specular(n, lights.toward_eye, l, f0, roughness) * direct
-        + f0 * ambient * (1.0 - roughness * 0.7) * metallic;
+    let f0 = mix(vec3<f32>(0.04), m.albedo, m.metallic);
+    let diffuse = m.albedo * (1.0 - m.metallic);
+    let ambient = lights.ambient * m.occlusion;
+    let lit = diffuse * (ambient + direct)
+        + pbr_specular(n, lights.toward_eye, l, f0, m.roughness) * direct
+        + f0 * ambient * (1.0 - m.roughness * 0.7) * m.metallic;
+    return mix(lit, m.albedo, m.self_lit) + m.emitted;
 }

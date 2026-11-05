@@ -32,6 +32,7 @@ harness = [
 futures-channel.workspace = true
 glam.workspace = true
 js-sys.workspace = true
+orb-3d.workspace = true
 orb-bench = { workspace = true, optional = true }
 orb-camera.workspace = true
 orb-crs.workspace = true

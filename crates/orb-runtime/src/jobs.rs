@@ -777,6 +777,11 @@ pub enum JobRequest {
         id: u32,
         request: GlyphRaster,
     },
+    /// [`Jobs::model`].
+    Model {
+        id: u32,
+        url: String,
+    },
 }
 
 /// A job host's answer to the request with `id`. Its large parts travel
@@ -810,6 +815,12 @@ pub enum JobReply {
         id: u32,
         bitmaps: Vec<crate::GlyphBitmap>,
     },
+    /// A model: its words ([`GpuModel::to_words`]) are the buffer.
+    ///
+    /// [`GpuModel::to_words`]: orb_3d::gpu::GpuModel::to_words
+    Model {
+        id: u32,
+    },
     Error {
         id: u32,
         message: String,
@@ -825,6 +836,7 @@ impl JobReply {
             | Self::Missing { id }
             | Self::Features { id, .. }
             | Self::Glyphs { id, .. }
+            | Self::Model { id }
             | Self::Error { id, .. } => *id,
         }
     }
@@ -850,6 +862,9 @@ pub trait Jobs: Send + Sync {
     /// Reads features of a tile for a query, in the worker that loaded it
     /// (plan §13), from its cached frame or from the tile fetched again.
     fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone);
+    /// Loads the glTF model at `url`, packed for the GPU
+    /// ([`model::load`](crate::model::load)).
+    fn model(&self, url: String, done: crate::model::ModelDone);
 }
 
 type PendingSources = HashMap<(u64, u32), Vec<(TileRequest, TileDone)>>;
@@ -1081,6 +1096,15 @@ impl Jobs for PoolJobs {
 
     fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone) {
         self.query(request, done);
+    }
+
+    fn model(&self, url: String, done: crate::model::ModelDone) {
+        crate::model::load(
+            Arc::clone(&self.fetch),
+            Arc::clone(&self.executor),
+            url,
+            done,
+        );
     }
 
     fn load(&self, request: TileRequest, done: TileDone) {
@@ -1609,14 +1633,14 @@ pub(crate) mod tests {
                 &[],
                 Encoding::Mvt,
                 &TileRequest {
-                    nodes: Some(vec![2]),
+                    nodes: Some(vec![crate::style::node_key(1, 0)]),
                     rows_only: true,
                     ..request(tile)
                 },
             )
             .unwrap()
             .tile();
-        assert_eq!(rows.nodes, [2]);
+        assert_eq!(rows.nodes, [crate::style::node_key(1, 0)]);
         assert_eq!(rows.meshes.len(), 1);
         assert!(rows.meshes[0].mesh.is_empty());
         assert_eq!(rows.meshes[0].props, build.meshes[0].props);
@@ -2046,7 +2070,7 @@ pub(crate) mod tests {
         // The text node carries per-feature colour rows; the icon node has
         // no icons, so no mesh.
         let nodes: Vec<u32> = build.meshes.iter().map(|m| m.node).collect();
-        assert_eq!(nodes, [3]);
+        assert_eq!(nodes, [crate::style::node_key(1, 1)]);
         assert_eq!(
             build.meshes[0].props.len() % orb_render::SYMBOL_ROW_WORDS,
             0

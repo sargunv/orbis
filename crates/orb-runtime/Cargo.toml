@@ -15,6 +15,7 @@ postcard.workspace = true
 serde.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
+orb-3d.workspace = true
 orb-camera.workspace = true
 orb-crs.workspace = true
 orb-expr.workspace = true

@@ -368,6 +368,7 @@ impl ImageAtlas {
                 layer: layer as u32,
                 width: w,
                 height: h,
+                level: 0,
             },
             &pixels,
         );

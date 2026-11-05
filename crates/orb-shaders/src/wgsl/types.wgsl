@@ -155,7 +155,9 @@ const NO_STATE: u32 = 0xffffffffu;
 
 // A chunk to draw, and the tile placement to draw it with. An indexed
 // node's slice of the visible list holds its runs instead: a chunk of the
-// run's mesh, for the mesh's bases, and the placement.
+// run's mesh, for the mesh's bases, and the placement. An instanced
+// node's `tile` holds the placement in its low 16 bits and, above, the
+// node's instances before the chunk's first point (`pull_instance`).
 struct Visible {
     chunk: u32,
     tile: u32,
@@ -166,6 +168,12 @@ const DRAW_IMAGES: u32 = 0u;
 // Points clip anchors, then expand the whole footprint.
 const DRAW_POINTS: u32 = 1u;
 const DRAW_INDEXED: u32 = 2u;
+// A model's indexed draw once per visible point, as instances: the visible
+// list counts points before each chunk (`Visible`).
+const DRAW_INSTANCES: u32 = 3u;
+// Instances an instanced node draws at most: the count before a chunk
+// fits 16 bits, and the list's unused tail holds this.
+const MAX_INSTANCES: u32 = 65535u;
 // On a node's draw word: its candidates are drape placements, kept by
 // their clip rectangles alone.
 const DRAPED: u32 = 256u;
@@ -183,10 +191,13 @@ struct NodeCull {
     draw: u32,
     elevation: f32,
     // Indexed nodes: their slots in the compacted index buffer, and the
-    // bits of a compacted index that address the run's vertex.
+    // bits of a compacted index that address the run's vertex. Instanced
+    // nodes: their model's first index and its solid indices' count.
     index_base: u32,
     index_count: u32,
     run_shift: u32,
+    // Instanced nodes: the model's blended indices, after its solid ones.
+    blend_count: u32,
 };
 
 // A compacted index that draws nothing; no run reaches it.

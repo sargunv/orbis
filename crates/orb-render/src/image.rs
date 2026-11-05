@@ -680,6 +680,7 @@ impl Images {
                 layer: 0,
                 width,
                 height: 2,
+                level: 0,
             },
             bytemuck::cast_slice(&texels),
         );

@@ -121,6 +121,8 @@ pub struct Memory {
     pub image_atlas: u64,
     /// The shadow cascades' depth map, while the lights cast shadows.
     pub shadow_map: u64,
+    /// The style's glTF models: their words, indices and textures.
+    pub models: u64,
     /// Tiles kept beyond those in view, and their cost: GPU memory and
     /// picking data.
     pub cached_tiles: u32,
@@ -142,6 +144,7 @@ impl Memory {
             + self.glyph_textures
             + self.image_atlas
             + self.shadow_map
+            + self.models
     }
 }
 
@@ -194,6 +197,13 @@ enum Message {
         /// The source's key.
         source: u32,
         result: Result<String, FetchError>,
+    },
+    /// The style's model `index` loaded, for renderer `renderer`.
+    Model {
+        generation: u64,
+        renderer: u64,
+        index: usize,
+        result: Result<orb_3d::gpu::GpuModel, String>,
     },
     Tile {
         generation: u64,
@@ -406,6 +416,14 @@ pub(crate) struct LoadedStyle {
     /// Whether the background and image tiles' meshes are grids for a
     /// globe to bend.
     globe_meshes: bool,
+    /// The style's models by index: their bounds once the renderer holds
+    /// them.
+    pub(crate) models: Vec<Option<[[f32; 3]; 2]>>,
+    /// The renderer the models load for, and how many are loading.
+    models_for: Option<u64>,
+    models_loading: u32,
+    /// The ground resolution model nodes' reach was painted at.
+    models_painted: f64,
 }
 
 /// The host data a tile result holds until it's uploaded or dropped.
@@ -543,6 +561,9 @@ pub struct Map {
     /// The renderer whose tiles the map holds, by its id: a frame with
     /// another one forgets them.
     renderer: Option<u64>,
+    /// Model indices the renderer holds below: a new style's models
+    /// replace them.
+    models_resident: u32,
     /// What tiles and styles let go of between frames, for the next frame
     /// to release from the renderer.
     retired: Retired,
@@ -766,6 +787,7 @@ impl Map {
             tile_generation: 0,
             style: None,
             renderer: None,
+            models_resident: 0,
             retired: Retired::default(),
             terrain_skirts: true,
             antialias_3d: true,
@@ -1111,6 +1133,7 @@ impl Map {
         }
         // What the old renderer held went with it.
         self.retired = Retired::default();
+        self.models_resident = 0;
     }
 
     /// Replaces the style with a document, every tile loaded fresh.
@@ -1217,6 +1240,10 @@ impl Map {
             terrain: None,
             terrain_unusable: false,
             globe_meshes: self.surface.globe().is_some(),
+            models: Vec::new(),
+            models_for: None,
+            models_loading: 0,
+            models_painted: 0.0,
         });
         self.nodes_stale = true;
     }
@@ -1350,6 +1377,7 @@ impl Map {
         self.retired.release(renderer);
         renderer.set_antialias_3d(gpu, self.antialias_3d);
         self.start_sprites(gpu, pixel_ratio);
+        self.start_models(gpu, renderer);
         self.apply_image_edits(gpu);
         // Bring the scene's nodes to the plan before results for it apply.
         self.sync_nodes(gpu, renderer);
@@ -1357,6 +1385,7 @@ impl Map {
         self.apply_messages(gpu, renderer);
         // A URL style may have arrived while applying messages.
         self.start_sprites(gpu, pixel_ratio);
+        self.start_models(gpu, renderer);
         self.sync_nodes(gpu, renderer);
         self.apply_videos(gpu, renderer);
         // The camera moves for this frame on what has arrived.
@@ -1436,12 +1465,20 @@ impl Map {
             if overlay.is_some() || std::mem::take(&mut self.transitions.ran) {
                 style.painted = None;
             }
+            // Model nodes' reach in pixels follows the ground resolution,
+            // which panning changes at one zoom: within its slack.
+            let resolution = self.camera.state().resolution;
+            if plan.nodes.iter().any(|n| n.family == Family::Model)
+                && (resolution / style.models_painted - 1.0).abs() > 0.05
+            {
+                style.painted = None;
+            }
             let mut images = self.services.images.0.lock().expect("images poisoned");
             let missing = write_paint(
                 gpu,
                 renderer,
                 (style, overlay.as_ref().unwrap_or(worker.plan())),
-                (zoom, self.camera.state().bearing),
+                (zoom, self.camera.state().bearing, resolution),
                 crossfade,
                 images.atlas.as_mut().expect("initialized"),
             );
@@ -1506,6 +1543,7 @@ impl Map {
         }
         report.loaded = self.style.as_ref().is_some_and(|s| {
             s.sprites_loading == 0
+                && s.models_loading == 0
                 && s.sources
                     .iter()
                     .all(|source| !matches!(source, SourceState::Resolving))
@@ -1718,7 +1756,9 @@ impl Map {
                 continue;
             };
             for (_, resident) in pyramid.ready_mut() {
-                resident.symbols.retain(|s| keys.contains(&(s.layer * 2)));
+                resident
+                    .symbols
+                    .retain(|s| keys.contains(&crate::style::node_key(s.layer, 0)));
                 // The renderer drops the meshes of nodes that leave.
                 resident.meshes.retain_mut(|mesh| {
                     if keys.contains(&mesh.node) {
@@ -1747,6 +1787,7 @@ impl Map {
             .map(|n| RenderNode {
                 family: n.family,
                 source: n.family.is_image().then(|| plan.sources[n.source].key),
+                model: n.model.map(|m| (m as u32, crate::style::layer_key(n.key))),
             })
             .collect();
         if !gpu.caps().rgba16float_blendable
@@ -1772,6 +1813,46 @@ impl Map {
         style.painted = None;
         for placed in &mut style.placed {
             placed.clear();
+        }
+    }
+
+    /// Loads the style's models for `renderer`, once per style and
+    /// renderer; a new style's replace the last one's there. Compat draws
+    /// no models (plan §8.7).
+    fn start_models(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
+        let Some(style) = &mut self.style else { return };
+        if style.models_for == Some(renderer.id()) {
+            return;
+        }
+        style.models_for = Some(renderer.id());
+        for index in 0..std::mem::take(&mut self.models_resident) {
+            renderer.remove_model(gpu, index);
+        }
+        let models = &style.worker.plan().style.models;
+        style.models = vec![None; models.len()];
+        if models.is_empty() {
+            return;
+        }
+        if gpu.caps().tier != orb_hal::Tier::Modern {
+            self.warnings.push(crate::COMPAT_NO_MODELS.into());
+            return;
+        }
+        style.models_loading = models.len() as u32;
+        for (index, (_, url)) in models.iter().enumerate() {
+            let (sender, wake) = (self.sender.clone(), self.services.wake.clone());
+            let (generation, id) = (self.generation, renderer.id());
+            self.services.jobs.model(
+                url.clone(),
+                Box::new(move |result| {
+                    let _ = sender.send(Message::Model {
+                        generation,
+                        renderer: id,
+                        index,
+                        result,
+                    });
+                    wake();
+                }),
+            );
         }
     }
 
@@ -2466,6 +2547,7 @@ impl Map {
             glyph_textures,
             image_atlas: images.atlas.as_ref().map_or(0, ImageAtlas::bytes),
             shadow_map: renderer.shadow_bytes(),
+            models: renderer.model_bytes(),
             cached_tiles,
             cached,
             cache_budget: self.budget / 4,
@@ -3121,6 +3203,35 @@ impl Map {
                                 &Arc::new(style.icons.clone()),
                                 &style.worker,
                             );
+                        }
+                    }
+                }
+                Message::Model {
+                    generation,
+                    renderer: id,
+                    index,
+                    result,
+                } => {
+                    let Some(style) = self
+                        .style
+                        .as_mut()
+                        .filter(|_| generation == self.generation && id == renderer.id())
+                    else {
+                        continue;
+                    };
+                    style.models_loading -= 1;
+                    match result {
+                        Ok(model) => {
+                            renderer.set_model(gpu, index as u32, &model);
+                            self.models_resident = self.models_resident.max(index as u32 + 1);
+                            if let Some(bounds) = style.models.get_mut(index) {
+                                *bounds = Some(model.bounds);
+                            }
+                            style.painted = None;
+                        }
+                        Err(e) => {
+                            let message = format!("model: {e}");
+                            self.events.push(MapEvent::Error { message });
                         }
                     }
                 }
@@ -3842,7 +3953,10 @@ fn drop_stale(build: &mut TileResult, plan: &StylePlan, stale: &[u32]) {
         .meshes
         .retain(|m| plan.node(m.node).is_some() && !stale.contains(&m.node));
     build.symbols.retain(|s| {
-        let keys = [s.layer * 2, s.layer * 2 + 1];
+        let keys = [
+            crate::style::node_key(s.layer, 0),
+            crate::style::node_key(s.layer, 1),
+        ];
         plan.node(keys[0]).is_some() && !keys.iter().any(|k| stale.contains(k))
     });
 }
@@ -4392,7 +4506,7 @@ fn write_paint(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     (style, plan): (&mut LoadedStyle, &StylePlan),
-    (zoom, bearing): (f64, f64),
+    (zoom, bearing, resolution): (f64, f64, f64),
     crossfade: Crossfade,
     atlas: &mut ImageAtlas,
 ) -> Vec<String> {
@@ -4448,6 +4562,21 @@ fn write_paint(
         }
         if camera_free(plan, node) {
             state.painted = Some(style.paint_epoch);
+        }
+        if node.family == Family::Model {
+            let bounds = node
+                .model
+                .and_then(|m| style.models.get(m).copied().flatten());
+            crate::model::paint(
+                gpu,
+                renderer,
+                (plan, node, index),
+                zoom,
+                &state.maxima,
+                (bounds, resolution),
+            );
+            style.models_painted = resolution;
+            continue;
         }
         if matches!(node.family, Family::Circle | Family::Heatmap) {
             let properties = plan.paint_properties(node).len();
@@ -4979,7 +5108,7 @@ mod tests {
     fn stale_results_drop_symbol_buckets_with_their_meshes() {
         let (worker, mut result) = crate::testing::symbol_tile();
         assert!(!result.symbols.is_empty());
-        let text = result.symbols[0].layer * 2 + 1;
+        let text = crate::style::node_key(result.symbols[0].layer, 1);
         drop_stale(&mut result, worker.plan(), &[text]);
         assert!(result.symbols.is_empty());
         assert!(result.meshes.iter().all(|m| m.node != text));

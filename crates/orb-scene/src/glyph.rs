@@ -177,6 +177,7 @@ impl GlyphAtlas {
                 layer,
                 width: allocated[0],
                 height: allocated[1],
+                level: 0,
             },
             &texels,
         );

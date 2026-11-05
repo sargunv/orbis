@@ -11,6 +11,7 @@ mod capi;
 mod expression_fixtures;
 mod fixtures;
 mod labels;
+mod models;
 mod pmtiles;
 mod unicode;
 mod web;
@@ -47,8 +48,9 @@ cargo xtask <task>
   fixtures [expressions]  fetch and verify the pinned GL JS fixture mirror
                (fixtures/gl-js, not committed); with `expressions`, bundle the
                pinned style-spec expression fixtures into orb-expr
-  demo-data    reproduce the committed Tokyo MVT/MLT PMTiles extracts, then
-               add Liberty's labels, sprite and glyph subsets to their styles
+  demo-data [models]  reproduce the committed Tokyo MVT/MLT PMTiles extracts,
+               then add Liberty's labels, sprite and glyph subsets to their
+               styles; `models` writes the landmarks' glTF models instead
   unicode      regenerate orb-text's character tables from the UCD
 ";
 
@@ -72,6 +74,9 @@ fn main() -> ExitCode {
             expression_fixtures::bundle()
         }
         Some("fixtures") => fixtures::ensure(),
+        Some("demo-data") if args.get(1).map(String::as_str) == Some("models") => {
+            models::generate()
+        }
         Some("demo-data") => pmtiles::extract().and_then(|()| labels::generate()),
         Some("unicode") => unicode::generate(),
         Some("help") | None => {

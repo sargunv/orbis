@@ -145,6 +145,7 @@ impl TilePage {
             layer,
             width: desc.width,
             height: desc.height,
+            level: 0,
         };
         match pixels {
             Pixels::Core(bytes) => gpu.write_texture(&region, bytes),

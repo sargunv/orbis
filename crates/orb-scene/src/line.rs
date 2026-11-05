@@ -61,6 +61,7 @@ impl LineAtlas {
                 layer: 0,
                 width: WIDTH,
                 height: height as u32,
+                level: 0,
             },
             &pixels,
         );

@@ -18,6 +18,7 @@ mod lights;
 mod line;
 mod loader;
 mod map;
+pub mod model;
 pub mod offline;
 mod placement;
 mod point;
@@ -53,6 +54,8 @@ pub const GLOBE_NO_SHADOWS: &str =
 /// The warning heatmap layers get on devices without float render
 /// targets (Compat without EXT_color_buffer_float).
 pub const COMPAT_NO_HEATMAP: &str = "heatmap requires filterable, blendable rgba16float render attachments (Compat: EXT_color_buffer_float); heatmap layers are skipped";
+/// Compat's warning for a style with models (plan §8.7).
+pub const COMPAT_NO_MODELS: &str = "model layers draw on WebGPU and native GPUs only (Compat: WebGL2 and GLES); model layers are skipped";
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use jobs::{

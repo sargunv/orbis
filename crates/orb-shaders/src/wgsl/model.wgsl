@@ -1,9 +1,11 @@
-// glTF models at point features (plan §9.4): each instance is a point of a
-// resident tile, as circles pull theirs (point.wgsl); the draw's vertices
-// are its model's, in metres east, north and up of the point, scaled,
-// turned and moved by the layer's paint, and shaded with glTF's
-// metallic-roughness model under the style's lights (pbr.wgsl, decision
-// 0026). Model words are `orb_3d::gpu`'s.
+// glTF models at point features (plan §9.4): each instance is a visible
+// point of the node (`pull_instance`); the draw's vertices are its
+// model's, in metres east, north and up of the point, scaled, turned and
+// moved by the layer's paint. A fragment fills a `Material` from glTF's
+// metallic-roughness material and the paint, and lights it under the
+// style's lights (pbr.wgsl, decision 0026). Model words are
+// `orb_3d::gpu`'s. Both faces draw; a single-sided material's back faces
+// are discarded.
 
 struct ModelNode {
     // Premultiplied, in the style's (sRGB) space.
@@ -43,6 +45,7 @@ const MODEL_NO_LAYER: u32 = 255u;
 const MODEL_UNLIT: u32 = 256u;
 const MODEL_MASK: u32 = 512u;
 const MODEL_BLEND: u32 = 1024u;
+const MODEL_DOUBLE_SIDED: u32 = 2048u;
 
 struct ModelOut {
     @builtin(position) position: vec4<f32>,
@@ -110,7 +113,7 @@ fn vs_model(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instanc
     var out: ModelOut;
     out.position = discarded_vertex();
     var v: Pulled;
-    if !pull_point(node.index, instance, &v) { return out; }
+    if !pull_instance(node.index, instance, &v) { return out; }
     let tile = tile_at(v.tile);
     let anchor = unpack_i16x2(vertex_at(v.vertex));
     if !point_owned(tile, anchor) { return out; }
@@ -141,15 +144,23 @@ fn vs_model(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instanc
     return out;
 }
 
+// The texture coordinates and their screen derivatives, taken where
+// control flow is uniform: samples then need none of it.
+struct ModelUv {
+    uv: vec2<f32>,
+    dx: vec2<f32>,
+    dy: vec2<f32>,
+};
+
 // A material's texture `slot` (0–4: base colour, metallic-roughness,
 // normal, occlusion, emissive) at `uv`, wrapped as its sampler says, or
 // `fallback` without one.
-fn model_texel(m: u32, layer: u32, slot: u32, uv: vec2<f32>, fallback: vec4<f32>) -> vec4<f32> {
+fn model_texel(m: u32, layer: u32, slot: u32, uv: ModelUv, fallback: vec4<f32>) -> vec4<f32> {
     if layer == MODEL_NO_LAYER {
         return fallback;
     }
     let wrap = (model_words[m + 14u] >> (4u * slot)) & 15u;
-    return textureSample(model_textures, model_sampler, wrap_uv(uv, wrap), layer);
+    return textureSampleGrad(model_textures, model_sampler, wrap_uv(uv.uv, wrap), layer, uv.dx, uv.dy);
 }
 
 // The style's lights in east, north and up, and the direction toward the
@@ -167,36 +178,40 @@ fn model_lights() -> PbrLights {
 
 @fragment
 fn fs_model(in: ModelOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let uv = ModelUv(in.uv, dpdx(in.uv), dpdy(in.uv));
+    let dp = mat2x3<f32>(dpdx(in.local), dpdy(in.local));
     let m = model_draw.material_base + in.material * MODEL_MATERIAL_WORDS;
     let layers = model_words[m + 12u];
     let flags = model_words[m + 13u];
+    if !front && (flags & MODEL_DOUBLE_SIDED) == 0u {
+        discard;
+    }
     let factor = vec4<f32>(model_word_f(m), model_word_f(m + 1u), model_word_f(m + 2u), model_word_f(m + 3u));
-    let texel = model_texel(m, layers & 255u, 0u, in.uv, vec4<f32>(1.0));
-    var base = factor * vec4<f32>(srgb_to_linear(texel.rgb), texel.a) * in.color;
+    let texel = model_texel(m, layers & 255u, 0u, uv, vec4<f32>(1.0));
+    let base = factor * vec4<f32>(srgb_to_linear(texel.rgb), texel.a) * in.color;
     if (flags & MODEL_MASK) != 0u && base.a < model_word_f(m + 7u) {
         discard;
     }
-    let alpha = select(1.0, base.a, (flags & MODEL_BLEND) != 0u);
-    let albedo = mix(base.rgb, in.paint.rgb, in.mix_emissive.x);
-    if (flags & MODEL_UNLIT) != 0u {
-        return vec4<f32>(linear_to_srgb(albedo) * alpha, alpha);
-    }
-    let mr = model_texel(m, (layers >> 8u) & 255u, 1u, in.uv, vec4<f32>(1.0));
-    let metallic = clamp(model_word_f(m + 8u) * mr.b, 0.0, 1.0);
-    let roughness = clamp(model_word_f(m + 9u) * mr.g, 0.04, 1.0);
+    var material: Material;
+    material.albedo = mix(base.rgb, in.paint.rgb, in.mix_emissive.x);
+    material.alpha = select(1.0, base.a, (flags & MODEL_BLEND) != 0u);
+    let mr = model_texel(m, (layers >> 8u) & 255u, 1u, uv, vec4<f32>(1.0));
+    material.metallic = clamp(model_word_f(m + 8u) * mr.b, 0.0, 1.0);
+    material.roughness = clamp(model_word_f(m + 9u) * mr.g, 0.04, 1.0);
     var n = normalize(in.normal);
     if !front {
         n = -n;
     }
     let normal_layer = (layers >> 16u) & 255u;
     if normal_layer != MODEL_NO_LAYER {
-        let sampled = model_texel(m, normal_layer, 2u, in.uv, vec4<f32>(0.5, 0.5, 1.0, 1.0)).xyz;
-        n = perturb_normal(n, mat2x3<f32>(dpdx(in.local), dpdy(in.local)), mat2x2<f32>(dpdx(in.uv), dpdy(in.uv)), sampled, model_word_f(m + 10u));
+        let sampled = model_texel(m, normal_layer, 2u, uv, vec4<f32>(0.5, 0.5, 1.0, 1.0)).xyz;
+        n = perturb_normal(n, dp, mat2x2<f32>(uv.dx, uv.dy), sampled, model_word_f(m + 10u));
     }
-    let occlusion = mix(1.0, model_texel(m, (layers >> 24u) & 255u, 3u, in.uv, vec4<f32>(1.0)).r, model_word_f(m + 11u));
-    let lit = pbr_shade(albedo, metallic, roughness, occlusion, n, model_lights());
-    let emitted = vec3<f32>(model_word_f(m + 4u), model_word_f(m + 5u), model_word_f(m + 6u))
-        * srgb_to_linear(model_texel(m, flags & 255u, 4u, in.uv, vec4<f32>(1.0)).rgb);
-    let color = mix(lit, albedo, in.mix_emissive.y) + emitted;
-    return vec4<f32>(linear_to_srgb(color) * alpha, alpha);
+    material.normal = n;
+    material.occlusion = mix(1.0, model_texel(m, (layers >> 24u) & 255u, 3u, uv, vec4<f32>(1.0)).r, model_word_f(m + 11u));
+    material.self_lit = select(in.mix_emissive.y, 1.0, (flags & MODEL_UNLIT) != 0u);
+    material.emitted = vec3<f32>(model_word_f(m + 4u), model_word_f(m + 5u), model_word_f(m + 6u))
+        * srgb_to_linear(model_texel(m, flags & 255u, 4u, uv, vec4<f32>(1.0)).rgb);
+    let color = pbr_light(material, model_lights());
+    return vec4<f32>(linear_to_srgb(color) * material.alpha, material.alpha);
 }

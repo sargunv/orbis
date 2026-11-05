@@ -38,12 +38,14 @@ struct Candidate {
 // indexed nodes: index count, instance count, first index, base vertex,
 // first instance), then the cull's counters: at word 5 the chunks kept,
 // at 6 the indices it wrote, at 7 the vertex inputs it draws (vertex
-// pulling's padded vertices, or the visible chunks' indices).
+// pulling's padded vertices, or the visible chunks' indices). Instanced
+// nodes draw twice, their solid indices from word 0 and their blended
+// ones from word 8.
 @group(0) @binding(6) var<storage, read_write> args: array<atomic<u32>>;
 @group(0) @binding(7) var<storage, read> indices: array<u32>;
 @group(0) @binding(8) var<storage, read_write> compacted: array<u32>;
 
-const ARGS_WORDS: u32 = 8u;
+const ARGS_WORDS: u32 = 16u;
 // Candidates per workgroup of an indexed node (orb-scene's INDEXED_BATCH).
 const INDEXED_BATCH: u32 = 64u;
 // The view-volume planes a clip-space corner lies outside, a bit each:
@@ -177,15 +179,46 @@ fn cull(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_index
 
 fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
     let points = draw == DRAW_POINTS;
+    let instanced = draw == DRAW_INSTANCES;
     let count = workgroupUniformLoad(&node_count);
     var written = 0u;
+    // Instanced nodes: the points before the next chunk.
+    var instances = 0u;
     for (var start = 0u; start < count; start += WORKGROUP) {
         let i = start + lane;
         var keep = 0u;
         var candidate: Candidate;
         if i < count {
             candidate = candidates[node.visible_base + i];
-            keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, draw, node.elevation, (node.draw & DRAPED) != 0u));
+            keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, select(draw, DRAW_POINTS, instanced), node.elevation, (node.draw & DRAPED) != 0u));
+        }
+        if instanced {
+            // Points before each kept chunk, by a scan of their counts;
+            // chunks past MAX_INSTANCES are left out.
+            var points_kept = 0u;
+            if keep == 1u {
+                points_kept = chunks[candidate.chunk].index_count;
+            }
+            scan[lane] = points_kept;
+            workgroupBarrier();
+            for (var offset = 1u; offset < WORKGROUP; offset *= 2u) {
+                var add = 0u;
+                if lane >= offset {
+                    add = scan[lane - offset];
+                }
+                workgroupBarrier();
+                scan[lane] += add;
+                workgroupBarrier();
+            }
+            let before = instances + scan[lane] - points_kept;
+            if before >= MAX_INSTANCES {
+                keep = 0u;
+            }
+            instances += workgroupUniformLoad(&scan[WORKGROUP - 1u]);
+            workgroupBarrier();
+            if keep == 1u {
+                candidate.tile = candidate.tile | (before << 16u);
+            }
         }
         // Inclusive Hillis–Steele scan of `keep` across the workgroup.
         scan[lane] = keep;
@@ -207,6 +240,17 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
         workgroupBarrier();
     }
 
+    if instanced {
+        // The tail counts as past every instance, for `pull_instance`'s
+        // search.
+        for (var i = written + lane; i < count; i += WORKGROUP) {
+            visible_out[node.visible_base + i] = Visible(0u, MAX_INSTANCES << 16u);
+        }
+        if lane == 0u {
+            write_instanced(index, node, written, min(instances, MAX_INSTANCES));
+        }
+        return;
+    }
     if lane == 0u {
         let at = index * ARGS_WORDS;
         let vertices = select(0u, select(CHUNK_VERTICES, 6u, points), written > 0u);
@@ -220,6 +264,28 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
         atomicStore(&args[at + 6u], 0u);
         atomicStore(&args[at + 7u], vertices * instances);
     }
+}
+
+// An instanced node's two indexed draws of `instances` instances, its
+// solid and its blended indices.
+fn write_instanced(index: u32, node: NodeCull, chunks_kept: u32, instances: u32) {
+    let at = index * ARGS_WORDS;
+    write_indexed_args(at, node.index_count, instances, node.index_base);
+    write_indexed_args(at + 8u, node.blend_count, instances, node.index_base + node.index_count);
+    atomicStore(&args[at + 5u], chunks_kept);
+    atomicStore(&args[at + 6u], 0u);
+    atomicStore(&args[at + 7u], instances * (node.index_count + node.blend_count));
+}
+
+// `drawIndexedIndirect` arguments at word `at`: all zero for a draw of
+// nothing (see `cull_indexed`).
+fn write_indexed_args(at: u32, count: u32, instances: u32, first: u32) {
+    let drawn = instances > 0u && count > 0u;
+    atomicStore(&args[at], select(0u, count, drawn));
+    atomicStore(&args[at + 1u], select(0u, instances, drawn));
+    atomicStore(&args[at + 2u], select(0u, first, drawn));
+    atomicStore(&args[at + 3u], 0u);
+    atomicStore(&args[at + 4u], 0u);
 }
 
 fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {

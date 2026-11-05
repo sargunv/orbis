@@ -141,6 +141,7 @@ impl Heatmaps {
                 layer: 0,
                 width: 256,
                 height: 1,
+                level: 0,
             },
             bytemuck::cast_slice(colors),
         );

@@ -131,7 +131,8 @@ pub struct TextureDesc<'a> {
     pub mip_levels: u32,
 }
 
-/// A rectangle of one layer of a texture, for writes.
+/// A rectangle of one layer of a texture's mip level, for writes; its
+/// position and size are in that level's texels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextureRegion {
     pub texture: TextureId,
@@ -140,6 +141,7 @@ pub struct TextureRegion {
     pub layer: u32,
     pub width: u32,
     pub height: u32,
+    pub level: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

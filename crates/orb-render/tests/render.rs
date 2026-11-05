@@ -1177,6 +1177,7 @@ fn fading_raster(ancestor: bool) -> Harness {
     let node = RenderNode {
         family: Family::Raster,
         source: Some(source),
+        model: None,
     };
     assert!(h.renderer.remap_nodes(&mut h.gpu, &[node], &[None]));
     let mut upload = |tile: orb_crs::TileIndex, rgba: [u8; 4], fade_from: Option<f32>| {
@@ -1503,4 +1504,99 @@ fn default_capacity_holds_a_large_basemaps_nodes() {
         SceneCapacity::default(),
     );
     renderer.set_nodes(&mut gpu, &[Family::Line; 400]);
+}
+
+/// A square `half` metres either side of its point, flat on the ground,
+/// unlit in `color`.
+fn square_model(half: f32, color: [f32; 4]) -> orb_3d::gpu::GpuModel {
+    let vertex = |x: f32, y: f32| orb_3d::Vertex {
+        position: [x, y, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        color: [255; 4],
+        ..Default::default()
+    };
+    let model = orb_3d::Model {
+        vertices: vec![
+            vertex(-half, -half),
+            vertex(half, -half),
+            vertex(half, half),
+            vertex(-half, half),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        materials: vec![orb_3d::Material {
+            base_color: color,
+            unlit: true,
+            double_sided: true,
+            ..Default::default()
+        }],
+        bounds: [[-half, -half, 0.0], [half, half, 0.0]],
+        ..Default::default()
+    };
+    orb_3d::gpu::pack(&model, &[])
+}
+
+fn model_paint() -> NodePaint {
+    NodePaint::Model(orb_render::ModelPaint {
+        color: [1.0; 4],
+        color_mix: 0.0,
+        emissive: 0.0,
+        scale: [1.0; 3],
+        rotation: [0.0; 3],
+        translation: [0.0; 3],
+        opacity: 1.0,
+        table_mask: 0,
+        curves: [Curve::Step; 12],
+        reach_px: 16.0,
+        height: 0.0,
+    })
+}
+
+#[test]
+fn a_model_layer_draws_each_model_once_per_point_into_one_target() {
+    use orb_render::RenderNode;
+    let mut h = Harness::new();
+    // One layer (key 9) picking two models, red and green.
+    let nodes = [0, 1].map(|model| RenderNode {
+        family: Family::Model,
+        source: None,
+        model: Some((model, 9)),
+    });
+    assert!(h.renderer.remap_nodes(&mut h.gpu, &nodes, &[None, None]));
+    h.renderer
+        .set_model(&mut h.gpu, 0, &square_model(0.25, [1.0, 0.0, 0.0, 1.0]));
+    h.renderer
+        .set_model(&mut h.gpu, 1, &square_model(0.25, [0.0, 1.0, 0.0, 1.0]));
+    for node in 0..2 {
+        h.renderer.set_paint(&mut h.gpu, node, &model_paint());
+    }
+    let tile = h.tile();
+    h.renderer
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .unwrap();
+    // Each node's point: the left and the right quarter of the view.
+    for (node, x) in [(0, 1024), (1, 3072)] {
+        let mesh = orb_layout::point::layout(&point_at([x, 2048]), &[0]);
+        h.renderer
+            .add_mesh(
+                &mut h.gpu,
+                tile,
+                (node, EXTENT),
+                &MeshData::new(&mesh, &[], 0),
+                &Default::default(),
+            )
+            .unwrap();
+    }
+    let pixels = h.render();
+    assert_eq!(pixel(&pixels, 16, 32), [255, 0, 0, 255]);
+    assert_eq!(pixel(&pixels, 48, 32), [0, 255, 0, 255]);
+    assert_eq!(pixel(&pixels, 32, 32), CLEAR);
+    // Exactly one instance each, where point families pad chunks to 256.
+    let (args, _) = h.renderer.draw_args();
+    let bytes = pollster::block_on(h.gpu.read_buffer(args));
+    let words: &[u32] = bytemuck::cast_slice(&bytes);
+    for node in 0..2 {
+        let at = node * orb_render::ARGS_WORDS;
+        assert_eq!(words[at..at + 2], [6, 1], "node {node}'s solid draw");
+        assert_eq!(words[at + 8..at + 10], [0, 0], "node {node} blends nothing");
+    }
 }

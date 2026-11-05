@@ -47,6 +47,7 @@ fn samples_written_layers_of_a_texture_array() {
                 layer,
                 width: 2,
                 height: 2,
+                level: 0,
             },
             texels,
         );

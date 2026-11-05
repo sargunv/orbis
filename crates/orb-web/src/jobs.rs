@@ -68,6 +68,7 @@ struct State {
     pending: HashMap<u32, TileDone>,
     rasters: HashMap<u32, RasterDone>,
     features: HashMap<u32, orb_runtime::FeaturesDone>,
+    models: HashMap<u32, orb_runtime::model::ModelDone>,
     /// Bytes of packed headers copied into this worker's wasm memory.
     header_bytes: u64,
     /// Replies received.
@@ -128,6 +129,24 @@ impl WorkerJobs {
                 JobReply::Features { features, .. } => Ok(features),
                 JobReply::Error { message, .. } => Err(message),
                 _ => Err("malformed features reply".into()),
+            });
+            return Ok(());
+        }
+        if let Some(done) = state.models.remove(&id) {
+            drop(state);
+            done(match (message, buffer) {
+                (JobReply::Model { .. }, Some(buffer)) => {
+                    let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+                    let words: Vec<u32> = bytes
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|&w| u32::from_le_bytes(w))
+                        .collect();
+                    orb_3d::gpu::GpuModel::from_words(&words)
+                }
+                (JobReply::Error { message, .. }, _) => Err(message),
+                _ => Err("malformed model reply".into()),
             });
             return Ok(());
         }
@@ -292,6 +311,19 @@ impl Jobs for WorkerJobs {
             &bytes(&wire::encode(&JobRequest::Features { id, request })),
         );
     }
+
+    fn model(&self, url: String, done: orb_runtime::model::ModelDone) {
+        let id = self.next_id(|state, id| {
+            state.models.insert(id, done);
+        });
+        let mut hasher = DefaultHasher::new();
+        url.hash(&mut hasher);
+        let worker = (hasher.finish() % u64::from(self.workers)) as u32;
+        self.post(
+            worker,
+            &bytes(&wire::encode(&JobRequest::Model { id, url })),
+        );
+    }
 }
 
 /// A job worker: fetches and lays out tiles for the render worker.
@@ -389,6 +421,7 @@ impl JobWorker {
                 let worker = worker(&self.styles, request.style);
                 Ok(Some(self.load(worker, id, request)))
             }
+            JobRequest::Model { id, url } => Ok(Some(model(id, url))),
         }
     }
 }
@@ -562,6 +595,39 @@ fn reply(message: &JobReply, buffer: Option<ArrayBuffer>, image: Option<JsValue>
         ("buffer", buffer.map_or(JsValue::UNDEFINED, Into::into)),
         ("image", image.unwrap_or(JsValue::UNDEFINED)),
     ])
+}
+
+/// Loads a model in this job worker; its words are the reply's buffer.
+fn model(id: u32, url: String) -> js_sys::Promise {
+    let (sender, loaded) = futures_channel::oneshot::channel();
+    orb_runtime::model::load(
+        crate::regions::service(),
+        Arc::new(orb_jobs::Inline),
+        url,
+        Box::new(move |r| drop(sender.send(r))),
+    );
+    wasm_bindgen_futures::future_to_promise(async move {
+        Ok(match loaded.await {
+            Ok(Ok(model)) => {
+                let bytes: Vec<u8> = model
+                    .to_words()
+                    .iter()
+                    .flat_map(|w| w.to_le_bytes())
+                    .collect();
+                let buffer = js_sys::Uint8Array::from(bytes.as_slice()).buffer();
+                reply(&JobReply::Model { id }, Some(buffer), None)
+            }
+            Ok(Err(message)) => reply(&JobReply::Error { id, message }, None, None),
+            Err(_) => reply(
+                &JobReply::Error {
+                    id,
+                    message: "model load dropped".into(),
+                },
+                None,
+                None,
+            ),
+        })
+    })
 }
 
 /// A packed tile's reply.

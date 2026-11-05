@@ -314,7 +314,7 @@ fn layer_params(
         )
     };
     orb_symbol::LayerParams {
-        layer: node.key / 2,
+        layer: crate::style::layer_key(node.key),
         source: plan.sources[node.source].key,
         minzoom: layer.minzoom,
         maxzoom: if layer.maxzoom.is_finite() {
@@ -615,7 +615,10 @@ impl Labels {
         states: &mut FeatureStates,
         tile_zoom: f64,
     ) -> Result<(), OutOfSpace> {
-        let (icon_key, text_key) = (s.layer * 2, s.layer * 2 + 1);
+        let (icon_key, text_key) = (
+            crate::style::node_key(s.layer, 0),
+            crate::style::node_key(s.layer, 1),
+        );
         // What the tile held of the layer goes.
         resident.symbols.retain(|r| r.layer != s.layer);
         resident.meshes.retain(|m| {
@@ -1204,8 +1207,10 @@ impl Labels {
             .filter(|n| n.family == orb_render::Family::SymbolIcon)
             .map(|node| {
                 let symbol = &plan.style.layers[node.layer];
-                let mut drawn: Vec<&SymbolTile> =
-                    tiles.iter().filter(|t| t.layer == node.key / 2).collect();
+                let mut drawn: Vec<&SymbolTile> = tiles
+                    .iter()
+                    .filter(|t| t.layer == crate::style::layer_key(node.key))
+                    .collect();
                 // Frames compare equal for the same tiles in any order.
                 drawn.sort_by_key(|t| (t.tile, t.wrap, t.bucket));
                 let tiles = drawn
@@ -1308,7 +1313,7 @@ impl Labels {
         let period = planes.period;
         let mut hits = Vec::new();
         for layer in &frame.layers {
-            let key = layer.params.layer * 2;
+            let key = crate::style::node_key(layer.params.layer, 0);
             let Some(node) = plan.node(key) else {
                 continue;
             };
@@ -1412,7 +1417,7 @@ impl Labels {
         let mut nodes = Vec::new();
         // Frames list symbol layers in style order; the topmost places first.
         for (rank, layer) in frame.layers.iter().rev().enumerate() {
-            let Some(node) = plan.node(layer.params.layer * 2) else {
+            let Some(node) = plan.node(crate::style::node_key(layer.params.layer, 0)) else {
                 continue;
             };
             let style_layer = &plan.style.layers[plan.nodes[node].layer];

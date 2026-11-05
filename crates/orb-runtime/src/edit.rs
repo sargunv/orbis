@@ -507,7 +507,9 @@ impl Map {
                     .node(key)
                     .is_some_and(|i| plan.nodes[i].family.is_symbol())
                 {
-                    resident.symbols.retain(|s| s.layer != key / 2);
+                    resident
+                        .symbols
+                        .retain(|s| s.layer != crate::style::layer_key(key));
                     continue;
                 }
                 for mesh in build.meshes.iter().filter(|m| m.node == key) {
@@ -541,7 +543,7 @@ impl Map {
             build.symbols.retain(|s| {
                 style
                     .nodes
-                    .get(&(s.layer * 2))
+                    .get(&crate::style::node_key(s.layer, 0))
                     .is_some_and(|state| build.revision >= state.layout_epoch)
             });
             if self

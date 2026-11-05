@@ -2488,6 +2488,7 @@ version = "0.0.0"
 dependencies = [
  "bytemuck",
  "glam",
+ "orb-3d",
  "orb-crs",
  "orb-hal",
  "orb-hal-wgpu",
@@ -2505,6 +2506,7 @@ version = "0.0.0"
 dependencies = [
  "bytemuck",
  "glam",
+ "orb-3d",
  "orb-a11y",
  "orb-camera",
  "orb-crs",
@@ -2637,6 +2639,7 @@ dependencies = [
  "futures-channel",
  "glam",
  "js-sys",
+ "orb-3d",
  "orb-bench",
  "orb-camera",
  "orb-crs",

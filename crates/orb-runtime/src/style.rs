@@ -2,15 +2,29 @@
 //! render node per drawable layer, in style order.
 //!
 //! Layers and sources carry the stable keys `orb-style` gives them, so a
-//! node keeps its key across edits that move it (`layer key × 2`, plus one
-//! for a fill's outline node), and tile jobs and results name nodes and
-//! sources by key.
+//! node keeps its key across edits that move it ([`node_key`]: a layer's
+//! nodes are its fill and outline, its icons and text, or its models), and
+//! tile jobs and results name nodes and sources by key.
 
 use std::sync::Arc;
 
 use orb_expr::{Interpolation, Kind};
 use orb_render::{Curve, Family};
 use orb_style::{Color, LayerType, PropertyRef, Scene, SourceKind, Value};
+
+/// Node keys a layer has: a model layer's node per model its `model-id`
+/// can pick takes one each.
+pub(crate) const LAYER_NODES: u32 = 64;
+
+/// The key of a layer's `n`th node.
+pub(crate) fn node_key(layer_key: u32, n: u32) -> u32 {
+    layer_key * LAYER_NODES + n
+}
+
+/// The key of the layer a node is of.
+pub(crate) fn layer_key(node_key: u32) -> u32 {
+    node_key / LAYER_NODES
+}
 
 /// A style ready to render: one revision of it. Clones are shallow, as a
 /// frame's paint transitions overlay it.
@@ -56,6 +70,8 @@ pub(crate) struct NodePlan {
     pub(crate) source: usize,
     /// Stable across revisions.
     pub(crate) key: u32,
+    /// A model node's model: its index in the style's models.
+    pub(crate) model: Option<usize>,
 }
 
 /// A paint property as the renderer packs it.
@@ -66,6 +82,8 @@ pub(crate) enum PaintProperty<'a> {
     /// expression; unset draws transparent.
     OptionalColor(PropertyRef<'a, Option<Color>>),
     Number(PropertyRef<'a, f32>),
+    /// One component of a vector, such as `model-scale`'s.
+    Component(PropertyRef<'a, [f32; 3]>, usize),
 }
 
 impl PaintProperty<'_> {
@@ -74,6 +92,16 @@ impl PaintProperty<'_> {
             Self::Color(p) => p.kind(),
             Self::OptionalColor(p) => p.kind(),
             Self::Number(p) => p.kind(),
+            Self::Component(p, _) => p.kind(),
+        }
+    }
+
+    /// A number or vector component's value at `zoom`.
+    pub(crate) fn number(&self, zoom: f64) -> f32 {
+        match self {
+            Self::Number(p) => p.evaluate(zoom),
+            Self::Component(p, i) => p.evaluate(zoom)[*i],
+            _ => unreachable!("not a number"),
         }
     }
 
@@ -82,7 +110,7 @@ impl PaintProperty<'_> {
         match self {
             Self::Color(p) => p.evaluate(zoom).premultiplied(),
             Self::OptionalColor(p) => p.evaluate(zoom).map_or([0.0; 4], |c| c.premultiplied()),
-            Self::Number(_) => unreachable!("not a colour"),
+            Self::Number(_) | Self::Component(..) => unreachable!("not a colour"),
         }
     }
 
@@ -98,6 +126,7 @@ impl PaintProperty<'_> {
             Self::Color(p) => p.is_state_lookup(),
             Self::OptionalColor(p) => p.is_state_lookup(),
             Self::Number(p) => p.is_state_lookup(),
+            Self::Component(p, _) => p.is_state_lookup(),
         }
     }
 
@@ -119,6 +148,7 @@ impl PaintProperty<'_> {
             Self::Color(p) => p.as_expression(),
             Self::OptionalColor(p) => p.as_expression(),
             Self::Number(p) => p.as_expression(),
+            Self::Component(p, _) => p.as_expression(),
         }
     }
 
@@ -139,6 +169,7 @@ impl PaintProperty<'_> {
                     .map_or([0.0; 4], |c| c.premultiplied()),
             ),
             Self::Number(p) => p.evaluate_state(zoom, state, data).to_bits(),
+            Self::Component(p, i) => p.evaluate_state(zoom, state, data)[*i].to_bits(),
         }
     }
 
@@ -146,6 +177,7 @@ impl PaintProperty<'_> {
     pub(crate) fn default_number(&self, zoom: f64) -> f32 {
         match self {
             Self::Number(p) => p.evaluate_state(zoom, &[], None),
+            Self::Component(p, i) => p.evaluate_state(zoom, &[], None)[*i],
             _ => unreachable!("not a number"),
         }
     }
@@ -156,7 +188,7 @@ impl PaintProperty<'_> {
             Self::OptionalColor(p) => p
                 .evaluate_state(zoom, &[], None)
                 .map_or([0.0; 4], |c| c.premultiplied()),
-            Self::Number(_) => unreachable!("not a colour"),
+            Self::Number(_) | Self::Component(..) => unreachable!("not a colour"),
         }
     }
 
@@ -203,7 +235,7 @@ impl StylePlan {
         };
 
         for (index, layer) in style.layers.iter().enumerate() {
-            let key = layer_keys[index] * 2;
+            let key = node_key(layer_keys[index], 0);
             let family = match layer.ty {
                 LayerType::Background => {
                     nodes.push(NodePlan {
@@ -211,6 +243,7 @@ impl StylePlan {
                         family: Family::Fill,
                         source: usize::MAX,
                         key,
+                        model: None,
                     });
                     continue;
                 }
@@ -223,10 +256,7 @@ impl StylePlan {
                 LayerType::Hillshade => Family::Hillshade,
                 LayerType::ColorRelief => Family::ColorRelief,
                 LayerType::Symbol => Family::SymbolIcon,
-                LayerType::Model => {
-                    warn(index, "model layers are not drawn yet");
-                    continue;
-                }
+                LayerType::Model => Family::Model,
             };
             let source = layer.source.as_deref().expect("drawn layers have sources");
             match style.source(source).map(|s| &s.kind) {
@@ -282,11 +312,49 @@ impl StylePlan {
                     sources.len() - 1
                 }
             };
+            if layer.ty == LayerType::Model {
+                // A node per model its `model-id` can pick.
+                let id = layer.get(orb_style::MODEL_ID);
+                let models: Vec<usize> = match id.constant() {
+                    Some(Some(id)) => style
+                        .models
+                        .iter()
+                        .position(|(m, _)| *m == id)
+                        .into_iter()
+                        .collect(),
+                    Some(None) => Vec::new(),
+                    None => (0..style.models.len()).collect(),
+                };
+                if models.is_empty() {
+                    warn(index, "the layer's model-id names no model of the document");
+                }
+                if models.len() >= LAYER_NODES as usize {
+                    warn(
+                        index,
+                        &format!("a model layer draws at most {} models", LAYER_NODES - 1),
+                    );
+                }
+                for (n, model) in models
+                    .into_iter()
+                    .take(LAYER_NODES as usize - 1)
+                    .enumerate()
+                {
+                    nodes.push(NodePlan {
+                        layer: index,
+                        family,
+                        source,
+                        key: key + n as u32,
+                        model: Some(model),
+                    });
+                }
+                continue;
+            }
             nodes.push(NodePlan {
                 layer: index,
                 family,
                 source,
                 key,
+                model: None,
             });
             // A symbol layer draws its icons, then its text (GL JS
             // `drawSymbols`).
@@ -296,6 +364,7 @@ impl StylePlan {
                     family: Family::SymbolText,
                     source,
                     key: key + 1,
+                    model: None,
                 });
             }
             // GL JS antialiases fills by drawing their outlines after them.
@@ -305,6 +374,7 @@ impl StylePlan {
                     family: Family::FillOutline,
                     source,
                     key: key + 1,
+                    model: None,
                 });
             }
         }
@@ -340,6 +410,7 @@ impl StylePlan {
             Family::Circle => orb_render::CIRCLE_ROW_WORDS,
             Family::Heatmap => orb_render::HEATMAP_ROW_WORDS,
             Family::SymbolIcon | Family::SymbolText => orb_render::SYMBOL_ROW_WORDS,
+            Family::Model => orb_render::MODEL_ROW_WORDS,
             image => unreachable!("{image:?} nodes have no property rows"),
         }
     }
@@ -438,6 +509,21 @@ impl StylePlan {
                 N(l.get(CIRCLE_STROKE_OPACITY)),
             ],
             LayerType::Heatmap => vec![N(l.get(HEATMAP_RADIUS)), N(l.get(HEATMAP_WEIGHT))],
+            LayerType::Model => {
+                use orb_style::{
+                    MODEL_COLOR, MODEL_COLOR_MIX, MODEL_EMISSIVE, MODEL_ROTATION, MODEL_SCALE,
+                    MODEL_TRANSLATION,
+                };
+                let mut properties = vec![
+                    C(l.get(MODEL_COLOR)),
+                    N(l.get(MODEL_COLOR_MIX)),
+                    N(l.get(MODEL_EMISSIVE)),
+                ];
+                for key in [MODEL_SCALE, MODEL_ROTATION, MODEL_TRANSLATION] {
+                    properties.extend((0..3).map(|i| PaintProperty::Component(l.get(key), i)));
+                }
+                properties
+            }
             LayerType::Background => vec![C(l.get(BACKGROUND_COLOR)), N(l.get(BACKGROUND_OPACITY))],
             LayerType::Symbol => {
                 let part = match node.family {

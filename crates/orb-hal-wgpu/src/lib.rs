@@ -818,7 +818,7 @@ impl Gpu for WgpuGpu {
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture,
-                mip_level: 0,
+                mip_level: region.level,
                 origin: wgpu::Origin3d {
                     x: region.x,
                     y: region.y,

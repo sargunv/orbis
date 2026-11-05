@@ -219,6 +219,12 @@ fn features(
         Some(filter) => filter.select(layer, zoom, canonical),
         None => (0..layer.len() as u32).collect(),
     };
+    // A model node draws the features whose `model-id` picks its model.
+    if let Some(model) = node.model {
+        let id = &plan.style.models[model].0;
+        let picks = style_layer.get(orb_style::MODEL_ID).bind(layer);
+        features.retain(|&f| picks.evaluate(zoom, f as usize).as_deref() == Some(id.as_str()));
+    }
     // GL JS's buckets draw features by their sort key.
     let sort_key = match style_layer.ty {
         LayerType::Circle => Some(orb_style::CIRCLE_SORT_KEY),
@@ -267,7 +273,7 @@ fn layout(
                 key.evaluate(zoom, feature as usize)
             })
         }
-        LayerType::Heatmap => point::layout(layer, features),
+        LayerType::Heatmap | LayerType::Model => point::layout(layer, features),
         LayerType::Line => {
             let join = l.get(orb_style::LINE_JOIN).bind(layer);
             let cap = l.get(orb_style::LINE_CAP).bind(layer);
@@ -410,7 +416,7 @@ fn build_symbols(
             .enumerate()
             .map(|(slot, &f)| (f, slot as u32))
             .collect();
-        let layer_key = node.key / 2;
+        let layer_key = crate::style::layer_key(node.key);
         built.push((
             layer_key,
             crate::symbol::layout(
@@ -498,7 +504,10 @@ pub(crate) fn build(
                 _ if select.rows_only => Mesh::default(),
                 // Symbol geometry is the layer's bucket; its nodes carry rows.
                 family @ (Family::SymbolIcon | Family::SymbolText) => {
-                    let bucket = build.symbols.iter().find(|(k, _)| *k == node.key / 2);
+                    let bucket = build
+                        .symbols
+                        .iter()
+                        .find(|(k, _)| *k == crate::style::layer_key(node.key));
                     let stream = bucket.map(|(_, b)| match family {
                         Family::SymbolIcon => &b.bucket.icon,
                         _ => &b.bucket.text,
@@ -589,6 +598,20 @@ pub(crate) fn build(
                                     start
                                 };
                                 maxima[slot] = maxima[slot].max(start).max(end);
+                                write(i, [start.to_bits(), end.to_bits()]);
+                            }
+                        }
+                        PaintProperty::Component(p, c) => {
+                            let bound = p.bind(layer);
+                            for (i, &feature) in features.iter().enumerate() {
+                                let start = bound.evaluate(zoom, feature as usize)[*c];
+                                let end = if composite {
+                                    bound.evaluate(next, feature as usize)[*c]
+                                } else {
+                                    start
+                                };
+                                // Reaches count either way.
+                                maxima[slot] = maxima[slot].max(start.abs()).max(end.abs());
                                 write(i, [start.to_bits(), end.to_bits()]);
                             }
                         }
@@ -1128,7 +1151,11 @@ mod tests {
         .unwrap();
         let nodes: Vec<u32> = build.meshes.iter().map(|m| m.node).collect();
         // Keys of the second and third layers' nodes.
-        assert_eq!(nodes, [4, 6], "the minzoom 12 layer is skipped at z10");
+        assert_eq!(
+            nodes,
+            [crate::style::node_key(2, 0), crate::style::node_key(3, 0)],
+            "the minzoom 12 layer is skipped at z10"
+        );
         // The camera-only width needs no rows.
         assert!(build.meshes[0].props.is_empty());
     }

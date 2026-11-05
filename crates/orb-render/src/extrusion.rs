@@ -1,5 +1,6 @@
-//! Extrusion surfaces resolve opaque nearest samples, then apply layer opacity
-//! once. The shared depth attachment preserves occlusion between 3D layers.
+//! 3D layers (extrusions and models) draw into a target of their own,
+//! resolve it, then composite it at their layer opacity once. The shared
+//! depth attachment keeps occlusion between 3D layers.
 use crate::offscreen::{Composite, Composites, Mode, Target};
 use orb_hal::*;
 use orb_scene::SceneBuffers;
@@ -225,23 +226,18 @@ impl Extrusions {
         true
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one recorded draw and its attachments"
-    )]
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
         node: &mut NodeExtrusion,
-        scene: BindGroupId,
-        group: BindGroupId,
+        (scene, group): (BindGroupId, BindGroupId),
         buffers: &SceneBuffers,
         index: u32,
         first: bool,
     ) -> RenderPass {
-        let bundle = *node.bundle.get_or_insert_with(|| {
-            let pipeline = self.pipelines[usize::from(self.samples == 4)];
-            let commands = [
+        let pipeline = self.pipelines[usize::from(self.samples == 4)];
+        self.pass(gpu, node, first, || {
+            vec![
                 RenderCommand::SetPipeline(pipeline.expect("made before its nodes prepare")),
                 RenderCommand::SetBindGroup {
                     index: 0,
@@ -257,19 +253,32 @@ impl Extrusions {
                     buffer: buffers.args,
                     offset: crate::args_offset(index),
                 },
-            ];
+            ]
+        })
+    }
+
+    /// A 3D layer's pass into its target over the shared depth, replaying
+    /// its draws, recorded once from `commands`.
+    pub(crate) fn pass(
+        &self,
+        gpu: &mut dyn Gpu,
+        node: &mut NodeExtrusion,
+        first: bool,
+        commands: impl FnOnce() -> Vec<RenderCommand>,
+    ) -> RenderPass {
+        let bundle = *node.bundle.get_or_insert_with(|| {
             gpu.create_render_bundle(
                 &RenderBundleDesc {
-                    label: "extrusion",
+                    label: "3d layer",
                     color_formats: &[TextureFormat::Rgba8Unorm],
                     depth_format: Some(TextureFormat::Depth32Float),
                     sample_count: self.samples,
                 },
-                &commands,
+                &commands(),
             )
         });
         RenderPass {
-            label: "extrusion".into(),
+            label: "3d layer".into(),
             color: Some(
                 node.target
                     .as_ref()
