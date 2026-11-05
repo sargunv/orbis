@@ -159,6 +159,9 @@ pub struct Caps {
     /// `rgba16float` render attachments with additive blending and filtering.
     /// Core WebGPU guarantees this; Compat needs EXT_color_buffer_float.
     pub rgba16float_blendable: bool,
+    /// Clip distances in vertex shaders (`clip-distances`): a placement's
+    /// clip rectangle as planes, where a fragment would otherwise discard.
+    pub clip_distances: bool,
 }
 
 /// The two render configurations (plan §4.2).

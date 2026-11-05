@@ -346,8 +346,10 @@ impl Modern {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
-                // Timestamps time passes for measurements (`setGpuTiming`).
-                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
+                // Timestamps time passes for measurements (`setGpuTiming`);
+                // clip distances clip cut buildings without discarding.
+                required_features: adapter.features()
+                    & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::CLIP_DISTANCES),
                 ..Default::default()
             })
             .await

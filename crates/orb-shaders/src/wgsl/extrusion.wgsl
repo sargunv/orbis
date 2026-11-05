@@ -20,6 +20,7 @@ struct ExtrusionNode {
 @group(1) @binding(0) var<uniform> node: ExtrusionNode;
 struct ExtrusionOut {
     @builtin(position) position: vec4<f32>,
+    //planes @builtin(clip_distances) clip: array<f32, 4>,
     // Lit, and with none of the directional light (in shadow).
     @location(0) color: vec4<f32>,
     @location(7) unlit: vec4<f32>,
@@ -44,33 +45,72 @@ struct ExtrusionOut {
 // for every building it drew: a quarter of a dense 3D frame.
 @vertex
 fn vs_extrusion(@builtin(vertex_index) index: u32) -> ExtrusionOut {
-    return extrusion_part(index, EXTRUSION_WHOLE);
+    return extrusion_part(index, 1u << EXTRUSION_WHOLE);
 }
+// Every cut building, clipped per fragment: where clip distances aren't.
 @vertex
 fn vs_extrusion_cut(@builtin(vertex_index) index: u32) -> ExtrusionOut {
-    return extrusion_part(index, EXTRUSION_CUT);
+    return extrusion_part(index, (1u << EXTRUSION_CUT) | (1u << EXTRUSION_CUT_SPLIT));
+}
+// Where they are (`CLIP_PLANES`): cut buildings of a placement with one clip
+// rectangle, clipped by its four planes, which needs no discard...
+@vertex
+fn vs_extrusion_cut_planes(@builtin(vertex_index) index: u32) -> ExtrusionOut {
+    return extrusion_part(index, 1u << EXTRUSION_CUT);
+}
+// ...and those of a placement with several, clipped per fragment.
+@vertex
+fn vs_extrusion_cut_split(@builtin(vertex_index) index: u32) -> ExtrusionOut {
+    return extrusion_part(index, 1u << EXTRUSION_CUT_SPLIT);
 }
 const EXTRUSION_WHOLE: u32 = 1u;
 const EXTRUSION_CUT: u32 = 2u;
-// Vertex `index` if its building is drawn here as `part`.
-fn extrusion_part(index: u32, part: u32) -> ExtrusionOut {
+const EXTRUSION_CUT_SPLIT: u32 = 3u;
+// Vertex `index` if its building is drawn here as one of `parts` (bits).
+fn extrusion_part(index: u32, parts: u32) -> ExtrusionOut {
     var v: Pulled;
-    if !pull_indexed(node.index, index, 4u, &v) || extrusion_drawn(v) != part {
+    if !pull_indexed(node.index, index, 4u, &v) || (parts & (1u << extrusion_drawn(v))) == 0u {
         var out: ExtrusionOut;
         out.position = discarded_vertex();
         return out;
     }
-    return extrusion_vertex(v);
+    var out = extrusion_vertex(v);
+    //planes out.clip = extrusion_planes(tile_at(v.tile), out.tile_pos);
+    return out;
 }
-// How a building draws from this placement: 0 not at all, EXTRUSION_WHOLE
-// or EXTRUSION_CUT. A whole building belongs to the one placement holding
+// The distances inside a placement's one clip rectangle from position `p`,
+// for clip planes: both bounds count, as `extrusion_inside`'s do.
+fn extrusion_planes(tile: Tile, p: vec2<f32>) -> array<f32, 4> {
+    var lo = vec2<f32>(0.0);
+    var hi = vec2<f32>(0.0);
+    for (var i = 0u; i < 4u; i++) {
+        let l = unpack_i16x2(tile.clips[i].x);
+        let h = unpack_i16x2(tile.clips[i].y);
+        if all(l < h) {
+            lo = l;
+            hi = h;
+        }
+    }
+    return array<f32, 4>(p.x - lo.x, hi.x - p.x, p.y - lo.y, hi.y - p.y);
+}
+// Whether a placement clips to more than one rectangle.
+fn clips_split(tile: Tile) -> bool {
+    var count = 0u;
+    for (var i = 0u; i < 4u; i++) {
+        count += u32(all(unpack_i16x2(tile.clips[i].x) < unpack_i16x2(tile.clips[i].y)));
+    }
+    return count > 1u;
+}
+// How a building draws from this placement: 0 not at all, EXTRUSION_WHOLE,
+// or cut: EXTRUSION_CUT, or EXTRUSION_CUT_SPLIT where the placement clips to
+// several rectangles. A whole building belongs to the one placement holding
 // its centroid (half open, as points are owned), which draws all of it,
 // past its clip rectangles: its walls and their pattern run on unbroken. A
 // building cut at the source's buffer draws from every placement.
 fn extrusion_drawn(v: Pulled) -> u32 {
     let row = prop_row(v, vertex_at(v.vertex + 1u), v.row_words);
     if prop_at(row + EXTRUSION_ROW_WHOLE) == 0u {
-        return EXTRUSION_CUT;
+        return select(EXTRUSION_CUT, EXTRUSION_CUT_SPLIT, clips_split(tile_at(v.tile)));
     }
     return select(0u, EXTRUSION_WHOLE, inside_clips(tile_at(v.tile), unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID))));
 }
@@ -160,16 +200,6 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     out.color = vec4<f32>(light_surface(color.rgb, normal, gradient, node.emissive, 1.0), 1.0);
     out.unlit = vec4<f32>(light_surface(color.rgb, normal, gradient, node.emissive, 0.0), 1.0);
     return out;
-}
-@fragment
-fn fs_extrusion(in: ExtrusionOut) -> @location(0) vec4<f32> {
-    return extrusion_shade(in, fwidth(in.wall));
-}
-@fragment
-fn fs_extrusion_cut(in: ExtrusionOut) -> @location(0) vec4<f32> {
-    let wall_width = fwidth(in.wall);
-    if !extrusion_inside(tile_at(in.tile), in.tile_pos) { discard; }
-    return extrusion_shade(in, wall_width);
 }
 fn extrusion_shade(in: ExtrusionOut, wall_width: vec2<f32>) -> vec4<f32> {
     let tile = tile_at(in.tile);

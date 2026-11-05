@@ -219,6 +219,7 @@ impl WgpuGpu {
                 min_uniform_buffer_offset_alignment: limits.min_uniform_buffer_offset_alignment,
             },
             timestamp_query: device.features().contains(wgpu::Features::TIMESTAMP_QUERY),
+            clip_distances: device.features().contains(wgpu::Features::CLIP_DISTANCES),
             rgba16float_blendable: {
                 let format =
                     wgpu::TextureFormat::Rgba16Float.guaranteed_format_features(device.features());

@@ -32,8 +32,10 @@ const SHADOW_RECEIVE: &str = concat!(
 const SHADOW_NONE: &str = include_str!("wgsl/shadow_none.wgsl");
 const SHADOW_GROUND: &str = include_str!("wgsl/shadow_ground.wgsl");
 const EXTRUSION_CASTER: &str = include_str!("wgsl/extrusion_caster.wgsl");
+const EXTRUSION_CASTER_FRAGMENT: &str = include_str!("wgsl/extrusion_caster_fragment.wgsl");
 const PATTERN: &str = include_str!("wgsl/pattern.wgsl");
 const EXTRUSION: &str = include_str!("wgsl/extrusion.wgsl");
+const EXTRUSION_FRAGMENT: &str = include_str!("wgsl/extrusion_fragment.wgsl");
 
 const FILL: &str = include_str!("wgsl/fill.wgsl");
 const LINE: &str = include_str!("wgsl/line.wgsl");
@@ -58,6 +60,11 @@ const TERRAIN: &str = include_str!("wgsl/terrain.wgsl");
 const COLOR_RELIEF: &str = include_str!("wgsl/color_relief.wgsl");
 const PREPARE: &str = include_str!("wgsl/prepare.wgsl");
 const PREPARE_PAD: &str = include_str!("wgsl/prepare_pad.wgsl");
+/// First of a vertex-only shader's parts where clip distances are (wgpu's
+/// `CLIP_DISTANCES`, WebGPU's `clip-distances`): it enables them, and the
+/// parts' lines marked `//planes ` become code. A fragment stage can't take
+/// clip distances, so such a shader leaves its fragment stages out.
+const CLIP_PLANES: &str = "enable clip_distances;\n";
 const PREPARE_SLOPE: &str = include_str!("wgsl/prepare_slope.wgsl");
 
 /// A composed shader module and its entry points.
@@ -98,6 +105,9 @@ impl Shader {
                 part => part,
             })
             .collect();
+        if self.parts.contains(&CLIP_PLANES) {
+            source = source.replace("//planes ", "");
+        }
         if self.parts.contains(&DRAW) {
             source.push_str(if compat { FETCH_COMPAT } else { FETCH });
             if compat {
@@ -361,18 +371,47 @@ pub const CULL_SHADER: Shader = Shader {
 /// Lit roofs and walls with reversed-Z depth.
 pub const EXTRUSION_SHADER: Shader = Shader {
     label: "extrusion",
-    parts: &[TYPES, DRAW, PATTERN, LIGHTING, SHADOW_RECEIVE, EXTRUSION],
+    parts: &[
+        TYPES,
+        DRAW,
+        PATTERN,
+        LIGHTING,
+        SHADOW_RECEIVE,
+        EXTRUSION,
+        EXTRUSION_FRAGMENT,
+    ],
     vertex: "vs_extrusion",
     fragment: "fs_extrusion",
     compute: "",
     lit: false,
 };
-/// Extrusions cut at the source's buffer, clipped per fragment: apart from
-/// whole ones, whose pipeline never discards.
+/// Extrusions cut at the source's buffer, clipped per fragment, apart from
+/// whole ones, whose pipeline never discards: every one, or where clip
+/// distances are ([`EXTRUSION_PLANES_SHADER`]) those of placements with
+/// several clip rectangles (`vs_extrusion_cut_split`).
 pub const EXTRUSION_CUT_SHADER: Shader = Shader {
     label: "extrusion cut",
     vertex: "vs_extrusion_cut",
     fragment: "fs_extrusion_cut",
+    ..EXTRUSION_SHADER
+};
+/// Cut extrusions of a placement with one clip rectangle, clipped by its
+/// four planes: no discard. Where clip distances are. Vertex only: its
+/// pipeline draws `EXTRUSION_SHADER`'s `fs_extrusion`, as a fragment stage
+/// can't take the clip distances its vertex output carries.
+pub const EXTRUSION_PLANES_SHADER: Shader = Shader {
+    label: "extrusion planes",
+    parts: &[
+        CLIP_PLANES,
+        TYPES,
+        DRAW,
+        PATTERN,
+        LIGHTING,
+        SHADOW_RECEIVE,
+        EXTRUSION,
+    ],
+    vertex: "vs_extrusion_cut_planes",
+    fragment: "",
     ..EXTRUSION_SHADER
 };
 /// The 3D depth resolved for the symbols it hides, from one sample and
@@ -412,17 +451,39 @@ pub const EXTRUSION_CASTER_SHADER: Shader = Shader {
         SHADOW_RECEIVE,
         EXTRUSION,
         EXTRUSION_CASTER,
+        EXTRUSION_CASTER_FRAGMENT,
     ],
     vertex: "vs_caster",
     fragment: "fs_caster",
     compute: "",
     lit: false,
 };
-/// Cut extrusions into a shadow cascade, clipped per fragment.
+/// Cut extrusions into a shadow cascade, clipped per fragment: every one,
+/// or where clip distances are ([`EXTRUSION_CASTER_PLANES_SHADER`]) those of
+/// placements with several clip rectangles (`vs_caster_cut_split`).
 pub const EXTRUSION_CASTER_CUT_SHADER: Shader = Shader {
     label: "extrusion caster cut",
     vertex: "vs_caster_cut",
     fragment: "fs_caster_cut",
+    ..EXTRUSION_CASTER_SHADER
+};
+/// Cut extrusions of a placement with one clip rectangle into a shadow
+/// cascade, clipped by its planes. Where clip distances are; vertex only,
+/// drawn with `EXTRUSION_CASTER_SHADER`'s `fs_caster`.
+pub const EXTRUSION_CASTER_PLANES_SHADER: Shader = Shader {
+    label: "extrusion caster planes",
+    parts: &[
+        CLIP_PLANES,
+        TYPES,
+        DRAW,
+        PATTERN,
+        LIGHTING,
+        SHADOW_RECEIVE,
+        EXTRUSION,
+        EXTRUSION_CASTER,
+    ],
+    vertex: "vs_caster_cut_planes",
+    fragment: "",
     ..EXTRUSION_CASTER_SHADER
 };
 /// Models' depth from the light, into a shadow cascade. Modern only.
@@ -494,8 +555,10 @@ pub const SHADERS: &[Shader] = &[
     DRAPE_SHADER,
     EXTRUSION_SHADER,
     EXTRUSION_CUT_SHADER,
+    EXTRUSION_PLANES_SHADER,
     EXTRUSION_CASTER_SHADER,
     EXTRUSION_CASTER_CUT_SHADER,
+    EXTRUSION_CASTER_PLANES_SHADER,
     SHADOW_GROUND_SHADER,
     OCCLUSION_SHADERS[0],
     OCCLUSION_SHADERS[1],

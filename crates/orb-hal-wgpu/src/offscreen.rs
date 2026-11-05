@@ -64,9 +64,12 @@ impl WgpuGpu {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
                 // Natively, warm starts reuse pipelines through a cache;
-                // timestamps time passes for measurements (`set_timing`).
+                // timestamps time passes for measurements (`set_timing`);
+                // clip distances clip cut buildings without discarding.
                 required_features: adapter.features()
-                    & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::TIMESTAMP_QUERY),
+                    & (wgpu::Features::PIPELINE_CACHE
+                        | wgpu::Features::TIMESTAMP_QUERY
+                        | wgpu::Features::CLIP_DISTANCES),
                 // WebGPU's defaults, lowered where the adapter falls short
                 // of them: the iOS simulator has 15 inter-stage variables.
                 required_limits: wgpu::Limits::default().or_worse_values_from(&adapter.limits()),

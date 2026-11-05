@@ -15,8 +15,8 @@ use glam::{DMat4, DVec3};
 use orb_hal::*;
 use orb_scene::{FrameBlock, FrameShadow, SceneBuffers};
 use orb_shaders::{
-    EXTRUSION_CASTER_CUT_SHADER, EXTRUSION_CASTER_SHADER, MODEL_CASTER_MASKED_SHADER,
-    MODEL_CASTER_SHADER, SHADOW_GROUND_SHADER, Shader,
+    EXTRUSION_CASTER_CUT_SHADER, EXTRUSION_CASTER_PLANES_SHADER, EXTRUSION_CASTER_SHADER,
+    MODEL_CASTER_MASKED_SHADER, MODEL_CASTER_SHADER, SHADOW_GROUND_SHADER, Shader,
 };
 
 use crate::{TargetFormat, draw_pipeline_blending, shader_module};
@@ -44,7 +44,7 @@ pub(crate) struct Shadows {
     pass_buffer: BufferId,
     /// Made when extrusions (whole, cut), then models (opaque, masked)
     /// first cast.
-    casters: [Option<RenderPipelineId>; 4],
+    casters: [Option<RenderPipelineId>; CASTERS],
     /// Made when shadows are first cast.
     ground: Option<RenderPipelineId>,
     /// The caster passes' bundles, recorded with the main pass's.
@@ -120,7 +120,7 @@ impl Shadows {
             pass_layout,
             passes,
             pass_buffer,
-            casters: [None; 4],
+            casters: [None; CASTERS],
             ground: None,
             bundles: Vec::new(),
         }
@@ -153,23 +153,44 @@ impl Shadows {
     ) {
         let casting = casters.contains(&true);
         let extrusions = vec![scene, node, self.pass_layout];
-        let shaders = [
-            (&EXTRUSION_CASTER_SHADER, extrusions.clone()),
-            (&EXTRUSION_CASTER_CUT_SHADER, extrusions),
-            (
-                &MODEL_CASTER_SHADER,
-                vec![scene, node, model, self.pass_layout],
-            ),
-            (
-                &MODEL_CASTER_MASKED_SHADER,
-                vec![scene, node, model, self.pass_layout],
-            ),
+        let models = vec![scene, node, model, self.pass_layout];
+        let stage = |shader: &'static Shader| (shader, shader.vertex, shader, shader.fragment);
+        // With clip distances, the cut caster keeps the buildings of
+        // placements with several clip rectangles, and the planes caster
+        // the rest, with the whole caster's fragment stage.
+        let planes = gpu.caps().clip_distances;
+        let cut = &EXTRUSION_CASTER_CUT_SHADER;
+        let stages = [
+            Some((stage(&EXTRUSION_CASTER_SHADER), &extrusions)),
+            Some((
+                (
+                    cut,
+                    if planes {
+                        "vs_caster_cut_split"
+                    } else {
+                        cut.vertex
+                    },
+                    cut,
+                    cut.fragment,
+                ),
+                &extrusions,
+            )),
+            planes.then_some((
+                (
+                    &EXTRUSION_CASTER_PLANES_SHADER,
+                    EXTRUSION_CASTER_PLANES_SHADER.vertex,
+                    &EXTRUSION_CASTER_SHADER,
+                    EXTRUSION_CASTER_SHADER.fragment,
+                ),
+                &extrusions,
+            )),
+            Some((stage(&MODEL_CASTER_SHADER), &models)),
+            Some((stage(&MODEL_CASTER_MASKED_SHADER), &models)),
         ];
-        let [extrusions, models] = casters;
-        let casts = [extrusions, extrusions, models, models];
-        for ((made, casts), (shader, layouts)) in self.casters.iter_mut().zip(casts).zip(shaders) {
-            if casts && made.is_none() {
-                *made = Some(caster_pipeline(gpu, shader, &layouts));
+        let casts = caster_kinds(casters);
+        for ((made, casts), stages) in self.casters.iter_mut().zip(casts).zip(stages) {
+            if let (true, None, Some((stages, layouts))) = (casts, *made, stages) {
+                *made = Some(caster_pipeline(gpu, stages, layouts));
             }
         }
         if casting && self.ground.is_none() {
@@ -218,16 +239,13 @@ impl Shadows {
     /// Whether the map exists and the pipelines `casters` (extrusions',
     /// models') need compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, casters: [bool; 2]) -> bool {
-        let [extrusions, models] = casters;
+        let planes = gpu.caps().clip_distances;
         self.map.is_some()
-            && (self
-                .casters
-                .iter()
-                .zip([extrusions, extrusions, models, models]))
-            .filter(|&(_, casts)| casts)
-            .map(|(&p, _)| p)
-            .chain([self.ground])
-            .all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
+            && (self.casters.iter().zip(caster_kinds(casters)).enumerate())
+                .filter(|&(kind, (_, casts))| casts && (kind != PLANES || planes))
+                .map(|(_, (&p, _))| p)
+                .chain([self.ground])
+                .all(|p| p.is_some_and(|p| gpu.pipeline_ready(p.into())))
     }
 
     /// GPU bytes of the map.
@@ -298,9 +316,9 @@ impl Shadows {
         if self.bundles.is_empty() {
             for &group in &self.passes {
                 let mut commands = Vec::new();
-                // Whole buildings, then cut ones, whose pipeline alone
-                // discards.
-                for caster in self.casters[..2].iter().flatten() {
+                // Whole buildings, then cut ones: clipped per fragment, the
+                // pipeline that alone discards, and by planes.
+                for caster in self.casters[..=PLANES].iter().flatten() {
                     if extrusions.is_empty() {
                         break;
                     }
@@ -330,7 +348,7 @@ impl Shadows {
                         ]);
                     }
                 }
-                for (caster, models) in self.casters[2..].iter().zip(models) {
+                for (caster, models) in self.casters[PLANES + 1..].iter().zip(models) {
                     let Some(caster) = caster.filter(|_| !models.is_empty()) else {
                         continue;
                     };
@@ -398,21 +416,27 @@ impl Shadows {
 /// alone leave a box's middle unshadowed from a high light).
 fn caster_pipeline(
     gpu: &mut dyn Gpu,
-    shader: &Shader,
+    (vertex, vertex_entry, fragment, fragment_entry): CasterStages,
     layouts: &[BindGroupLayoutId],
 ) -> RenderPipelineId {
-    let module = shader_module(gpu, shader);
+    let vertex_module = shader_module(gpu, vertex);
+    let apart = vertex.label != fragment.label;
+    let fragment_module = if apart {
+        shader_module(gpu, fragment)
+    } else {
+        vertex_module
+    };
     let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
-        label: shader.label,
+        label: vertex.label,
         bind_group_layouts: layouts,
         vertex: ShaderStage {
-            module,
-            entry_point: shader.vertex,
+            module: vertex_module,
+            entry_point: vertex_entry,
             constants: &[],
         },
         fragment: ShaderStage {
-            module,
-            entry_point: shader.fragment,
+            module: fragment_module,
+            entry_point: fragment_entry,
             constants: &[],
         },
         targets: &[],
@@ -425,8 +449,26 @@ fn caster_pipeline(
         cull_mode: None,
         sample_count: 1,
     });
-    gpu.destroy_shader_module(module);
+    gpu.destroy_shader_module(vertex_module);
+    if apart {
+        gpu.destroy_shader_module(fragment_module);
+    }
     pipeline
+}
+
+/// A caster pipeline's vertex shader and entry point, then its fragment
+/// shader and entry point.
+type CasterStages = (&'static Shader, &'static str, &'static Shader, &'static str);
+
+/// Extrusions' whole, cut and planes casters, then models' solid and
+/// masked ones.
+const CASTERS: usize = 5;
+/// The extrusion planes caster's place among them.
+const PLANES: usize = 2;
+
+/// Which casters a style needs, from whether it has extrusions and models.
+fn caster_kinds([extrusions, models]: [bool; 2]) -> [bool; CASTERS] {
+    [extrusions, extrusions, extrusions, models, models]
 }
 
 /// One cascade as fitted: camera-relative world → the light's clip

@@ -274,6 +274,17 @@ Manhattan at z15.6 that raises whole buildings from 81.5% to 88.4%
 Manhattan under the demo's sun, 2048×1536 at 2× on an Apple M6, GPU time:
 z14.52 pitch 61 21.7 → 19.7 ms, z15.6 pitch 70 22.4 → 17.7 ms; the bench's
 z16 pitch 60 with buildings 1.51 → 1.38 ms, and with the sun and shadows
-3.07 → 2.79 ms. The cut buildings' discard still costs about 2.2 and 1.4
-ms of the Manhattan frames (#102). Fixtures are unchanged (fill-extrusion
-and extrusion: 51 of 64 pass, natively and in Chrome).
+3.07 → 2.79 ms. Fixtures are unchanged (fill-extrusion and extrusion: 51
+of 64 pass, natively and in Chrome).
+
+Where the device has clip distances (`clip-distances`: Metal, Vulkan,
+WebGPU in Chrome), cut buildings of a placement with one clip rectangle,
+the tile square, are clipped by its four planes in a third pipeline, with
+the whole buildings' fragment stage: no discard (#102). Only those of a
+placement clipping to several rectangles (an ancestor standing in for
+some children) still clip per fragment; Compat clips them all so. The
+planes pipeline's vertex stage comes from a vertex-only module
+(`CLIP_PLANES`), as a fragment stage can't take clip distances. The
+bench's z16 pitch 60 with buildings: 1.44 → 1.17 ms; Manhattan at
+z14.52 pitch 61 about 1–1.7 ms less, at z15.6 pitch 70 unchanged within
+noise. Fixtures unchanged.

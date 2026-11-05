@@ -334,6 +334,7 @@ impl GlGpu {
                 limits,
                 timestamp_query: false,
                 rgba16float_blendable: float_targets,
+                clip_distances: false,
             },
             info,
             buffers: Slots::default(),

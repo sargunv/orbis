@@ -70,7 +70,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::empty(),
+            naga::valid::Capabilities::CLIP_DISTANCES,
         )
         .validate(&module)
         .unwrap_or_else(|e| panic!("{label}: {}", e.emit_to_string(source)));
