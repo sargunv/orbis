@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use glam::{DVec2, DVec3, DVec4, Vec2};
+use glam::{DVec2, Vec2};
 use orb_camera::{CameraState, View};
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_style::{Kind, LayerType, Property, TranslateAnchor};
@@ -709,8 +709,8 @@ impl HitLayers {
     }
 }
 
-/// What a query reads: the layers, the drawn tiles with their geometry
-/// and the labels, from a map or a [`HitIndex`].
+/// What a query reads: the layers, the drawn tiles with their geometry,
+/// the labels and the terrain they stand on.
 pub(crate) struct Scene<'a> {
     pub(crate) layers: &'a HitLayers,
     pub(crate) drawn: &'a [DrawnTile],
@@ -720,6 +720,8 @@ pub(crate) struct Scene<'a> {
     /// The surface's wrap period, 0 if it doesn't wrap.
     pub(crate) period: f64,
     pub(crate) generation: u64,
+    /// The terrain's elevations, metres, as the frame drew them.
+    pub(crate) elevation: Option<&'a dyn orb_camera::Elevation>,
 }
 
 /// A feature a query may report, in the order that puts upper ones last:
@@ -753,9 +755,34 @@ struct Query<'a> {
     view: &'a View,
     camera: &'a CameraState,
     zoom: f64,
+    elevation: Option<&'a dyn orb_camera::Elevation>,
 }
 
 impl Query<'_> {
+    /// Where a world position `height` world units above the ground draws,
+    /// in logical pixels, as the renderer places it: on the terrain, on the
+    /// globe or its low-zoom plane. `None` behind the eye or the horizon.
+    fn project(&self, world: DVec2, height: f64) -> Option<Vec2> {
+        let ground = self
+            .elevation
+            .and_then(|e| e.at(world))
+            .map_or(0.0, |metres| metres * self.view.height_scale());
+        self.view
+            .project_3d(world, ground + height)
+            .map(|p| p.as_vec2())
+    }
+
+    /// Pixels per pixel at the view's centre, at a world position: the
+    /// perspective ratio GL JS scales labels by.
+    fn local_scale(&self, world: DVec2) -> Option<f64> {
+        let step = self.view.world_per_px();
+        let (a, b) = (
+            self.project(world, 0.0)?,
+            self.project(world + DVec2::new(step, 0.0), 0.0)?,
+        );
+        Some(f64::from(a.distance(b)))
+    }
+
     fn layer(&self, layer: &HitLayer) -> LayerAt {
         let zoom = self.zoom;
         let uniform = |p: &Property<f32>| (!per_feature(p.kind())).then(|| p.evaluate(zoom));
@@ -841,7 +868,17 @@ impl Query<'_> {
         let (min, max) = (min - pad, max + pad);
         let corners = [min, DVec2::new(max.x, min.y), max, DVec2::new(min.x, max.y)];
         let (mut lo, mut hi) = (DVec2::INFINITY, DVec2::NEG_INFINITY);
-        for z in [0.0, top] {
+        // On terrain, features stand anywhere in its range of heights.
+        let (low, high) = match self.elevation {
+            None => (0.0, 0.0),
+            Some(e) => {
+                let world = self.view.projection().world_bounds();
+                let (low, high) = e.range(world, 0)?;
+                let scale = self.view.height_scale();
+                (low.min(0.0) * scale, high.max(0.0) * scale)
+            }
+        };
+        for z in [low, top + high] {
             for c in corners {
                 let world = self.view.unproject_at(c, z)?;
                 lo = lo.min(world);
@@ -972,7 +1009,7 @@ impl Scene<'_> {
                     layer.source_layer.is_some(),
                     mapping,
                     copy,
-                    q.view,
+                    q,
                     self.period,
                     f64::from(radius),
                     elevation,
@@ -986,17 +1023,11 @@ impl Scene<'_> {
                 Some((screen, layer.hit(f.id(), self.generation), key))
             }
             Candidate::Label { layer, label } => {
-                let view = q.view;
-                let center_w = (view.view_proj() * DVec4::new(0.0, 0.0, 0.0, 1.0)).w;
-                let relative = label.anchor - view.camera_world();
-                let clip = view.view_proj() * relative.extend(0.0).extend(1.0);
-                if clip.w <= 0.0 {
-                    return None;
-                }
-                let anchor = view.project(label.anchor)?;
+                let anchor = q.project(label.anchor, 0.0)?.as_dvec2();
                 // GL JS: tile units at 512 px per tile side, scaled by the
                 // perspective ratio.
-                let scale = 512.0 / orb_symbol::EXTENT * (0.5 + 0.5 * center_w / clip.w);
+                let scale =
+                    512.0 / orb_symbol::EXTENT * (0.5 + 0.5 * q.local_scale(label.anchor)?);
                 let mut bounds = [
                     f64::INFINITY,
                     f64::INFINITY,
@@ -1037,7 +1068,12 @@ impl Scene<'_> {
         if !point.is_finite() {
             return None;
         }
-        let q = Query { view, camera, zoom };
+        let q = Query {
+            view,
+            camera,
+            zoom,
+            elevation: self.elevation,
+        };
         self.candidates(&q, point, point)
             .iter()
             .filter_map(|(_, c)| self.project(&q, c))
@@ -1060,7 +1096,12 @@ impl Scene<'_> {
         if !(min.is_finite() && max.is_finite()) {
             return Vec::new();
         }
-        let q = Query { view, camera, zoom };
+        let q = Query {
+            view,
+            camera,
+            zoom,
+            elevation: self.elevation,
+        };
         let mut seen = std::collections::HashSet::new();
         let mut out = Vec::new();
         for (order, c) in self.candidates(&q, min, max) {
@@ -1118,7 +1159,7 @@ impl ScreenHit {
         clipped: bool,
         mapping: &TileMapping,
         copy: &DrawnCopy,
-        view: &View,
+        q: &Query<'_>,
         period: f64,
         radius: f64,
         elevation: (f64, f64),
@@ -1129,18 +1170,10 @@ impl ScreenHit {
         let mut min = Vec2::splat(f32::INFINITY);
         let mut max = Vec2::splat(f32::NEG_INFINITY);
         let project = |p: [i32; 2], height: f64| {
-            let world = transform(DVec2::new(p[0] as f64, p[1] as f64)) + wrap + shift;
-            let relative = world - view.camera_world();
-            let clip = view.view_proj() * DVec3::new(relative.x, relative.y, height).extend(1.0);
-            if clip.w <= 0.0 {
-                return None;
-            }
-            let ndc = clip.truncate() / clip.w;
-            let viewport = view.viewport();
-            Some(Vec2::new(
-                ((ndc.x + 1.0) * viewport.width / 2.0) as f32,
-                ((1.0 - ndc.y) * viewport.height / 2.0) as f32,
-            ))
+            q.project(
+                transform(DVec2::new(p[0] as f64, p[1] as f64)) + wrap + shift,
+                height,
+            )
         };
         let mut parts = Vec::new();
         for part in feature.parts().ok()? {
@@ -1186,7 +1219,7 @@ impl ScreenHit {
             .map(|corners| {
                 corners
                     .iter()
-                    .filter_map(|&p| view.project(p + wrap + shift).map(|p| p.as_vec2()))
+                    .filter_map(|&p| q.project(p + wrap + shift, 0.0))
                     .collect()
             })
             .collect();
@@ -1410,6 +1443,7 @@ impl crate::Map {
             .iter()
             .map(|d| self.tile_hits(d.source, d.tile))
             .collect();
+        let elevation = self.elevation();
         let scene = Scene {
             layers: &picking.layers,
             drawn: &picking.drawn,
@@ -1417,6 +1451,7 @@ impl crate::Map {
             labels: &labels,
             period: self.surface.period(),
             generation: picking.generation,
+            elevation: elevation.as_deref(),
         };
         Some(f(
             &scene,
