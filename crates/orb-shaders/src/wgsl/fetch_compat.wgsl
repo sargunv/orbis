@@ -35,7 +35,7 @@ fn prop_at(i: u32) -> u32 { return textureLoad(props, data_texel(i), 0).x; }
 
 // Rows as orb-scene writes them (`types.wgsl` documents the fields).
 fn tile_at(i: u32) -> Tile {
-    let b = i * 22u;
+    let b = i * TILE_WORDS;
     var t: Tile;
     t.origin = vec2<f32>(bitcast<f32>(tile_word(b)), bitcast<f32>(tile_word(b + 1u)));
     t.scale = bitcast<f32>(tile_word(b + 2u));
@@ -53,6 +53,12 @@ fn tile_at(i: u32) -> Tile {
     t.terrain_range = tile_word(b + 19u);
     t.warp_base = tile_word(b + 20u);
     t.warp_cells = tile_word(b + 21u);
+    t.globe_origin[0] = bitcast<f32>(tile_word(b + 22u));
+    t.globe_origin[1] = bitcast<f32>(tile_word(b + 23u));
+    t.globe_origin[2] = bitcast<f32>(tile_word(b + 24u));
+    t.globe_base = tile_word(b + 25u);
+    t.globe_cells = tile_word(b + 26u);
+    t.globe_flags = tile_word(b + 27u);
     return t;
 }
 

@@ -102,7 +102,7 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
     // pass too: its patches aren't bound here (the stage's storage buffers
     // are all in use), and cover already kept only tiles whose footprints
     // meet the view.
-    if draped || tile.warp_cells != 0u {
+    if draped || tile.warp_cells != 0u || tile.globe_cells != 0u {
         return true;
     }
     let after_clip = select(0.0, margin, point_instances);

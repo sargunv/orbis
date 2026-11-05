@@ -1324,7 +1324,7 @@ impl Map {
                     pyramid,
                     endpoint,
                     page: Some(_),
-                    warp: None,
+                    warp,
                     ..
                 } = source
                 else {
@@ -1335,7 +1335,15 @@ impl Map {
                     .map(|(i, n)| (i as u32, n.key))
                     .collect();
                 for (tile, resident) in pyramid.ready_mut() {
-                    let grid = globe_grid(&mut self.globe_warps, globe, &endpoint.tms, tile);
+                    let Ok(grid) = image_mesh(
+                        &mut self.globe_warps,
+                        globe,
+                        warp.as_deref_mut(),
+                        &endpoint.tms,
+                        tile,
+                    ) else {
+                        continue;
+                    };
                     let Some(image) = resident.image.as_mut() else {
                         continue;
                     };
@@ -1345,6 +1353,15 @@ impl Map {
                     image.warped = grid;
                     for mesh in resident.meshes.drain(..) {
                         renderer.scene().remove_mesh(mesh.mesh);
+                    }
+                    // A warped image draws through planar patches only on a
+                    // globe surface; elsewhere through its warp's mesh.
+                    renderer
+                        .scene()
+                        .remove_warp(std::mem::take(&mut resident.warp));
+                    resident.series = None;
+                    if let Some(warp) = warp.as_mut().filter(|_| globe) {
+                        planar_patches(gpu, renderer, warp, tile, resident, &mut self.warnings);
                     }
                     for &(i, key) in &nodes {
                         if image::add_node(gpu, renderer, resident, tile, i, key).is_err() {
@@ -1704,8 +1721,11 @@ impl Map {
         let mut requests = Vec::new();
         let vector = plan.image_kind(index).is_none();
         for &tile in &update.request {
-            // Vector tiles on another plane need a series to draw through.
-            let unwarped = vector && warp.as_mut().is_some_and(|w| w.series(tile).is_none());
+            // Vector tiles on another plane need a series to draw through:
+            // planar patches, or the sphere's on a globe.
+            let unwarped = vector
+                && warp.as_mut().is_some_and(|w| w.series(tile).is_none())
+                && (self.surface.globe().is_none() || self.globe_warps.series(tms, tile).is_none());
             if !endpoint.contains(tile) || unwarped {
                 pyramid.insert_empty(tile);
                 continue;
@@ -1745,7 +1765,10 @@ impl Map {
         let terrain = style.terrain.as_ref();
         let source_key = style.worker.plan().sources[index].key;
         let SourceState::Ready {
-            pyramid, endpoint, ..
+            pyramid,
+            endpoint,
+            warp: source_warp,
+            ..
         } = &mut style.sources[index]
         else {
             return;
@@ -1811,17 +1834,27 @@ impl Map {
                 .map(|warped| warped.frame);
             let ground = terrain.map(|t| t.ground(tile));
             let series = resident.series.clone();
+            // A tile on another plane has a place on the surface's plane
+            // through its planar patches; without them (one at a pole, say)
+            // it draws on the globe alone.
+            let on_plane = source_warp.is_none() || series.is_some();
             // On a globe, a tile draws through its patches on the sphere.
             let globe = match view.globe() {
-                Some(globe) => {
-                    let Some((warp, anchor)) =
-                        self.globe_warps.warp(gpu, renderer.scene(), tms, tile)
-                    else {
-                        continue;
-                    };
-                    Some((warp, anchor - globe.target))
+                Some(globe) => self
+                    .globe_warps
+                    .warp(gpu, renderer.scene(), tms, tile)
+                    .map(|(warp, anchor)| Some((warp, anchor - globe.target))),
+                None => on_plane.then_some(None),
+            };
+            // Nowhere to draw it this frame: no placements.
+            let Some(globe) = globe else {
+                for &(_, scene_tile) in &resident.parts {
+                    renderer
+                        .scene()
+                        .place_tile(gpu, scene_tile, &[])
+                        .expect("removing placements always fits");
                 }
-                None => None,
+                continue;
             };
             for &(extent, scene_tile) in &resident.parts {
                 let at = Placement {
@@ -1834,6 +1867,7 @@ impl Map {
                     series: series.as_deref(),
                     warp: resident.warp,
                     globe,
+                    on_plane,
                     tile_zoom: resident.zoom,
                 };
                 let map_rows = |draw: &Draw| -> Vec<TileRow> {
@@ -2299,6 +2333,7 @@ impl Map {
             series: None,
             warp: TileWarp::NONE,
             globe: None,
+            on_plane: true,
             tile_zoom: 0.0,
         };
         let globe_warps = &mut self.globe_warps;
@@ -2657,21 +2692,17 @@ impl Map {
                 tile,
                 warp.as_mut().and_then(|w| w.footprint(tile)),
             );
-            let warped = match warp {
-                Some(warp) => match image::Warped::new(&warp.warp, tile) {
-                    Some(mesh) => Some(Arc::new(mesh)),
-                    None => {
-                        // Nothing of the tile reaches the surface.
-                        pyramid.insert_empty(tile);
-                        return None;
-                    }
-                },
-                None => globe_grid(
-                    &mut self.globe_warps,
-                    self.surface.globe().is_some(),
-                    &endpoint.tms,
-                    tile,
-                ),
+            let globe = self.surface.globe().is_some();
+            let Ok(warped) = image_mesh(
+                &mut self.globe_warps,
+                globe,
+                warp.as_deref_mut(),
+                &endpoint.tms,
+                tile,
+            ) else {
+                // Nothing of the tile reaches the surface.
+                pyramid.insert_empty(tile);
+                return None;
             };
             let upload = image::Upload {
                 plan,
@@ -2684,7 +2715,19 @@ impl Map {
                 zoom: tile_zoom,
             };
             match image::upload(gpu, renderer, page, pyramid, &upload) {
-                Ok(resident) => {
+                Ok(mut resident) => {
+                    // On a globe, a warped image draws in its own space:
+                    // through planar patches on the plane.
+                    if let Some(warp) = warp.as_mut().filter(|_| globe) {
+                        planar_patches(
+                            gpu,
+                            renderer,
+                            warp,
+                            tile,
+                            &mut resident,
+                            &mut self.warnings,
+                        );
+                    }
                     if let Some(unwanted) = pyramid.insert(tile, resident) {
                         self.retired_ramps.extend(remove_resident(
                             renderer,
@@ -2802,19 +2845,8 @@ impl Map {
             return None;
         };
         // A tile on another plane draws through its series' patches.
-        if let Some(series) = warp.as_mut().and_then(|warp| warp.series(tile)) {
-            let patches: Vec<f32> = series
-                .patches
-                .iter()
-                .flat_map(|p| p.points.iter().flat_map(|v| [v.x as f32, v.y as f32]))
-                .collect();
-            match renderer.scene().add_warp(gpu, series.cells, &patches) {
-                Ok(warp) => resident.warp = warp,
-                Err(OutOfSpace) => self.warnings.push(format!(
-                    "tile {tile:?}: out of property memory for its warp"
-                )),
-            }
-            resident.series = Some(series);
+        if let Some(warp) = warp.as_mut() {
+            planar_patches(gpu, renderer, warp, tile, &mut resident, &mut self.warnings);
         }
         self.counts.meshes_uploaded += build.meshes.len() as u32;
         record_maxima(&mut style.nodes, &build.meshes, &mut style.painted);
@@ -3259,6 +3291,9 @@ struct Placement<'a> {
     /// On a globe: the tile's patches on the sphere, and their anchor's
     /// camera-relative position.
     globe: Option<(TileWarp, glam::DVec3)>,
+    /// Whether the tile has a place on the plane (on a globe, a warped
+    /// tile without planar patches draws on the sphere alone).
+    on_plane: bool,
     /// The style zoom the tile laid out at.
     tile_zoom: f64,
 }
@@ -3278,6 +3313,7 @@ fn placements<'a>(
         series,
         warp,
         globe,
+        on_plane,
         tile_zoom,
     } = at;
     let world_per_px = world_per_px as f32;
@@ -3347,8 +3383,12 @@ fn placements<'a>(
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,
-            warp: globe.map_or(warp, |(warp, _)| warp),
-            globe_origin: globe.map_or([0.0; 3], |(_, origin)| origin.as_vec3().to_array()),
+            warp,
+            globe: globe.map(|(warp, origin)| orb_render::RowGlobe {
+                warp,
+                origin: origin.as_vec3().to_array(),
+                on_plane,
+            }),
         }
     })
 }
@@ -3591,6 +3631,52 @@ fn bend_of(cells: u32, [north, south]: [bool; 2]) -> crate::Bend {
         cells,
         north,
         south,
+    }
+}
+
+/// Gives a tile on another plane its planar patches, if the warp has them
+/// (it draws through them on the plane, and as a globe hands over).
+fn planar_patches(
+    gpu: &mut dyn Gpu,
+    renderer: &mut Renderer,
+    warp: &mut WarpState,
+    tile: TileIndex,
+    resident: &mut ResidentTile,
+    warnings: &mut Vec<String>,
+) {
+    let Some(series) = warp.series(tile) else {
+        return;
+    };
+    let patches: Vec<f32> = series
+        .patches
+        .iter()
+        .flat_map(|p| p.points.iter().flat_map(|v| [v.x as f32, v.y as f32]))
+        .collect();
+    match renderer.scene().add_warp(gpu, series.cells, &patches) {
+        Ok(warp) => resident.warp = warp,
+        Err(OutOfSpace) => warnings.push(format!(
+            "tile {tile:?}: out of property memory for its warp"
+        )),
+    }
+    resident.series = Some(series);
+}
+
+/// An image tile's mesh: on a globe, a grid in the tile's own space that
+/// the sphere and the plane's patches bend; on another plane, the warp's
+/// mesh; else `None` for its quad. `Err` when nothing of it reaches the
+/// surface.
+fn image_mesh(
+    globe_warps: &mut crate::globe::GlobeWarps,
+    globe: bool,
+    warp: Option<&mut WarpState>,
+    tms: &TileMatrixSet,
+    tile: TileIndex,
+) -> Result<Option<Arc<image::Warped>>, ()> {
+    match warp {
+        Some(warp) if !globe => image::Warped::new(&warp.warp, tile)
+            .map(|mesh| Some(Arc::new(mesh)))
+            .ok_or(()),
+        _ => Ok(globe_grid(globe_warps, globe, tms, tile)),
     }
 }
 
@@ -3908,6 +3994,7 @@ mod tests {
             series: None,
             warp: TileWarp::NONE,
             globe: None,
+            on_plane: true,
             tile_zoom: 0.0,
         };
         let rows: Vec<_> = placements(&tms, &draw, at).collect();

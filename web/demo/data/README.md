@@ -103,7 +103,8 @@ them; they are never silently stringified. The real extract has none.
 
 Scene documents (plan §11.4) with their v8 styles inline, written for this
 repository; the web demo opens them as `?style=arctic`, `?style=nz`,
-`?style=equal-earth` and `?style=greenland`, the native demo as
+`?style=equal-earth`, `?style=blue-marble` and `?style=greenland`, the
+native demo as
 `file://$PWD/web/demo/data/crs/arctic.json`.
 
 - `arctic.json` draws on an EPSG:3413 (NSIDC polar stereographic) surface:
@@ -115,6 +116,10 @@ repository; the web demo opens them as `?style=arctic`, `?style=nz`,
   Web Mercator (the `GpuPerVertex` plan).
 - `nz.json` draws OpenFreeMap's planet tiles on an NZTM2000 (EPSG:2193)
   surface, reprojected from Web Mercator.
+- `blue-marble.json` draws a v8 globe: GIBS Blue Marble shaded relief from
+  its EPSG:4326 tiles (declared inline from level 3, where its matrices
+  become a quadtree of 36° tiles), to the poles, with OpenFreeMap's planet
+  tiles' boundaries and labels.
 - `equal-earth.json` draws OpenFreeMap's Liberty style (by URL) on an Equal
   Earth (EPSG:8857) world map, reprojected from Web Mercator.
 - `greenland.json` keeps Web Mercator: OpenFreeMap's planet tiles under the

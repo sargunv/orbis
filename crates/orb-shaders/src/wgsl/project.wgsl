@@ -8,18 +8,19 @@
 // polynomials in parameters s (right) and t (down) in [-1, 1]. Neighbours
 // share their edges' nodes, so tiles and patches meet exactly.
 
-// The point's patch (its index) and its parameters there.
-fn warp_cell(tile: Tile, p: vec2<f32>) -> vec3<f32> {
-    let cells = f32(tile.warp_cells);
+// The point's patch among `count` per side (its index) and its
+// parameters there.
+fn warp_cell(tile: Tile, count: u32, p: vec2<f32>) -> vec3<f32> {
+    let cells = f32(count);
     let u = p / tile.extent * cells;
     let cell = clamp(floor(u), vec2<f32>(0.0), vec2<f32>(cells - 1.0));
     let st = (u - cell) * 2.0 - 1.0;
-    return vec3<f32>(st, f32(u32(cell.y) * tile.warp_cells + u32(cell.x)));
+    return vec3<f32>(st, f32(u32(cell.y) * count + u32(cell.x)));
 }
 
 // The point's planar patch (its first word in `props`) and its parameters.
 fn warp_patch(tile: Tile, p: vec2<f32>) -> vec3<f32> {
-    let c = warp_cell(tile, p);
+    let c = warp_cell(tile, tile.warp_cells, p);
     return vec3<f32>(c.xy, f32(tile.warp_base + u32(c.z) * 18u));
 }
 
@@ -58,19 +59,28 @@ fn tile_to_world(tile: Tile, p: vec2<f32>) -> vec2<f32> {
 // World units per data unit at `p`: the tile's scale, or a warp's local
 // scale there (the square root of its area scale).
 fn tile_scale_at(tile: Tile, p: vec2<f32>) -> f32 {
+    let flat = plane_scale_at(tile, p);
+    if frame.globe_amount <= 0.0 || tile.globe_cells == 0u {
+        return flat;
+    }
+    // The sphere's metres per data unit, in plane world units at the
+    // target: pixels there and here are the same size.
+    let w = globe_patch(tile, p);
+    let ds = globe_sum(w.z, lagrange_slope(w.x), lagrange(w.y));
+    let dt = globe_sum(w.z, lagrange(w.x), lagrange_slope(w.y));
+    let metres = sqrt(length(cross(ds, dt))) * 2.0 * f32(tile.globe_cells) / tile.extent;
+    let globe = metres / frame.globe_metres;
+    if (tile.globe_flags & 1u) != 0u {
+        return globe;
+    }
+    return mix(flat, globe, frame.globe_amount);
+}
+
+fn plane_scale_at(tile: Tile, p: vec2<f32>) -> f32 {
     if tile.warp_cells == 0u {
         return tile.scale;
     }
     let per_unit = 2.0 * f32(tile.warp_cells) / tile.extent;
-    if frame.globe_amount > 0.0 {
-        // The sphere's metres per data unit, in plane world units at the
-        // target: pixels there and here are the same size.
-        let w = globe_patch(tile, p);
-        let ds = globe_sum(w.z, lagrange_slope(w.x), lagrange(w.y));
-        let dt = globe_sum(w.z, lagrange(w.x), lagrange_slope(w.y));
-        let metres = sqrt(length(cross(ds, dt))) * per_unit;
-        return mix(tile.scale, metres / frame.globe_metres, frame.globe_amount);
-    }
     let w = warp_patch(tile, p);
     let ds = warp_sum(w.z, lagrange_slope(w.x), lagrange(w.y));
     let dt = warp_sum(w.z, lagrange(w.x), lagrange_slope(w.y));
@@ -82,8 +92,8 @@ fn tile_scale_at(tile: Tile, p: vec2<f32>) -> f32 {
 // nine nodes' camera-relative ECEF metres, 27 f32, around its row's
 // `globe_origin`.
 fn globe_patch(tile: Tile, p: vec2<f32>) -> vec3<f32> {
-    let c = warp_cell(tile, p);
-    return vec3<f32>(c.xy, f32(tile.warp_base + u32(c.z) * 27u));
+    let c = warp_cell(tile, tile.globe_cells, p);
+    return vec3<f32>(c.xy, f32(tile.globe_base + u32(c.z) * 27u));
 }
 
 fn globe_node(at: f32, k: u32) -> vec3<f32> {
@@ -102,10 +112,12 @@ fn globe_sum(at: f32, a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
 }
 
 // A point of a tile's data on the view's surfaces: camera-relative world on
-// the plane and, on a globe, camera-relative ECEF metres on the sphere.
+// the plane and, on a globe, camera-relative ECEF metres on the sphere. A
+// tile with no place on the plane draws on the globe alone.
 struct Ground {
     flat: vec2<f32>,
     globe: vec3<f32>,
+    on_plane: bool,
 };
 
 // Vertices at y -32768 and 32767 are at the North and South Pole (caps,
@@ -139,14 +151,11 @@ fn tile_ground(tile: Tile, p: vec2<f32>) -> Ground {
 
 fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
     var g: Ground;
-    if frame.globe_amount <= 0.0 {
+    g.on_plane = (tile.globe_flags & 1u) == 0u;
+    if g.on_plane {
         g.flat = tile_to_world(tile, p);
-        return g;
     }
-    // A globe's rows place the plane affinely (warped sources only
-    // approximately, as they hand over).
-    g.flat = tile_affine(tile, p);
-    if tile.warp_cells > 0u {
+    if frame.globe_amount > 0.0 && tile.globe_cells > 0u {
         let w = globe_patch(tile, p);
         let origin = vec3<f32>(tile.globe_origin[0], tile.globe_origin[1], tile.globe_origin[2]);
         g.globe = origin + globe_sum(w.z, lagrange(w.x), lagrange(w.y));
@@ -172,5 +181,8 @@ fn ground_clip(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
     // beyond the far plane.
     let facing = dot(frame.globe_horizon.xyz, p) + frame.globe_horizon.w;
     clip.z = (1.0 - facing * 0.5) * clip.w;
+    if !g.on_plane {
+        return clip;
+    }
     return mix(flat, clip, frame.globe_amount);
 }

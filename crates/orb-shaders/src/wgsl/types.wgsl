@@ -77,15 +77,20 @@ struct Tile {
     // Lowest and highest terrain elevation under it as two i16s, in
     // units of TERRAIN_RANGE_UNIT metres.
     terrain_range: u32,
-    // A warped tile's quadratic patches: first word in `props` and patches
-    // per side; 0 patches for an affine tile. On a globe, every tile's
-    // patches are in space (27 words each), around `globe_origin`.
+    // A warped tile's quadratic patches on the plane: first word in
+    // `props` and patches per side; 0 patches for an affine tile.
     warp_base: u32,
     warp_cells: u32,
+    // On a globe, its patches in space (27 words each) around
+    // `globe_origin`, and flags: bit 0, no position on the plane.
     globe_origin: array<f32, 3>,
-    // The row's stride is a multiple of its 8-byte alignment.
-    _pad: u32,
+    globe_base: u32,
+    globe_cells: u32,
+    globe_flags: u32,
 };
+
+// Words per tile row (orb-scene's `TILE_WORDS`).
+const TILE_WORDS: u32 = 28u;
 
 const TERRAIN_RANGE_UNIT: f32 = 4.0;
 

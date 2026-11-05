@@ -199,12 +199,6 @@ impl Surface {
         if tms.projection().same_plane(&self.projection) {
             return Ok(Plan::Affine);
         }
-        if self.globe.is_some() {
-            return Err(format!(
-                "tile matrix set `{}` is not on the surface's plane; a globe draws only its plane's sources yet",
-                tms.id()
-            ));
-        }
         match image {
             Some(ImageKind::Dem) => Err(format!(
                 "tile matrix set `{}` is not on the surface's plane; DEM sources can't be warped yet",
@@ -408,6 +402,15 @@ mod tests {
             };
             assert_eq!(surface_from_json(&surface_to_json(&mercator)), Ok(mercator));
         }
+        // A globe draws sources on other planes too: on the sphere, and
+        // through their planar warp as it hands over.
+        let mut globe = Surface::default();
+        globe.set_globe(Some(orb_crs::Globe::V8));
+        let crs84 = TileMatrixSet::by_id("WorldCRS84Quad").unwrap();
+        assert!(matches!(
+            globe.plan(&crs84, Some(ImageKind::Raster)),
+            Ok(Plan::Warp(_))
+        ));
         assert_eq!(surface.plan(&nztm, None), Ok(Plan::Affine));
         let mercator = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
         assert!(matches!(surface.plan(&mercator, None), Ok(Plan::Warp(_))));

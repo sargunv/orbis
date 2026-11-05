@@ -35,8 +35,8 @@ pub use orb_scene::Pixels;
 pub use orb_scene::{
     ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLights, FrameTerrain,
     GLOBE_PATCH_WORDS, ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData,
-    MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace, PlacementTarget, Scene, SceneCapacity,
-    SceneStats, TileId, TileRow, TileWarp, WARP_PATCH_WORDS, Words,
+    MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, Scene,
+    SceneCapacity, SceneStats, TileId, TileRow, TileWarp, WARP_PATCH_WORDS, Words,
 };
 pub use orb_scene::{
     GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas, PLACED_WORDS, QUAD_WORDS, SYMBOL_HEADER_WORDS,

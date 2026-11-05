@@ -9,6 +9,7 @@ import arctic from "./data/crs/arctic.json?url";
 import greenland from "./data/crs/greenland.json?url";
 import nz from "./data/crs/nz.json?url";
 import equalEarth from "./data/crs/equal-earth.json?url";
+import blueMarble from "./data/crs/blue-marble.json?url";
 import alps from "./data/alps.json?url";
 import alpsSunlitScene from "./data/alps-sunlit.json";
 import osmCarto from "./data/osm-carto.json?url";
@@ -71,6 +72,8 @@ export const GROUPS = [
       { key: "globe", name: "Globe", detail: "Liberty on the v8 globe, Web Mercator from zoom 12", url: LIVE,
         projection: { type: "globe" }, camera: { center: [10, 30], zoom: 1.5 },
         swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
+      { key: "blue-marble", name: "Blue Marble globe", detail: "NASA imagery in EPSG:4326 tiles, to the poles",
+        url: blueMarble, dark: true, swatch: ["#2f4a2a", "#0b2a5c", "#d8d0b8"] },
       { key: "alps", name: "Alps terrain flight", detail: "3D terrain, sky and a looping camera flight", url: alps,
         flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
       { key: "alps-sunlit", name: "Alps in morning sun", detail: "The same flight, lit by the sun at a time and place", url: alpsSunlit,

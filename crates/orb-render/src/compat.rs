@@ -265,7 +265,7 @@ fn candidate_visible(
     }
     // As on Modern, warped tiles' chunks pass: cover kept only tiles whose
     // footprints meet the view.
-    if node.draped || t[21] != 0 {
+    if node.draped || t[21] != 0 || t[26] != 0 {
         return true;
     }
     let after = if points { margin } else { 0.0 };

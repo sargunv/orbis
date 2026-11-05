@@ -273,11 +273,21 @@ pub struct TileRow {
     pub terrain_range: [f32; 2],
     /// Which render nodes draw it.
     pub target: PlacementTarget,
-    /// Its patches (`project.wgsl`), or [`TileWarp::NONE`].
+    /// Its planar patches (`project.wgsl`), or [`TileWarp::NONE`].
     pub warp: TileWarp,
-    /// On a globe, the camera-relative position of its warp's anchor, in
-    /// metres.
-    pub globe_origin: [f32; 3],
+    /// On a globe view, where it is on the sphere.
+    pub globe: Option<RowGlobe>,
+}
+
+/// A placement on a globe: its patches in space, their anchor less the
+/// camera target in metres, and whether it also has a position on the
+/// plane (a tile the plane can't hold, such as one at a pole, draws only
+/// on the globe).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowGlobe {
+    pub warp: TileWarp,
+    pub origin: [f32; 3],
+    pub on_plane: bool,
 }
 
 /// A tile's biquadratic patches in the property arena (plan §9.2's
@@ -358,7 +368,8 @@ impl ClipRect {
     }
 }
 
-const TILE_WORDS: usize = 26;
+/// Words of a tile row (`types.wgsl`'s `Tile`, `TILE_WORDS` there).
+const TILE_WORDS: usize = 28;
 /// Words per biquadratic patch of a planar warp: nine nodes' positions
 /// (`project.wgsl`).
 pub const WARP_PATCH_WORDS: usize = 18;
@@ -1083,7 +1094,12 @@ impl Scene {
             words[19] = pack_range(row.terrain_range);
             words[20] = row.warp.base;
             words[21] = row.warp.cells;
-            words[22..25].copy_from_slice(&row.globe_origin.map(f32::to_bits));
+            if let Some(globe) = row.globe {
+                words[22..25].copy_from_slice(&globe.origin.map(f32::to_bits));
+                words[25] = globe.warp.base;
+                words[26] = globe.warp.cells;
+                words[27] = u32::from(!globe.on_plane);
+            }
             for (i, clip) in row.clips.iter().enumerate() {
                 words[4 + i * 2] = pack(clip.min);
                 words[5 + i * 2] = pack(clip.max);
@@ -1530,5 +1546,19 @@ impl Scene {
             );
             at = end;
         }
+    }
+}
+
+#[cfg(test)]
+mod row_layout {
+    /// `types.wgsl` reads tile rows with orb-scene's stride.
+    #[test]
+    fn shaders_share_the_tile_row_stride() {
+        let types = include_str!("../../orb-shaders/src/wgsl/types.wgsl");
+        let declared = format!("const TILE_WORDS: u32 = {}u;", super::TILE_WORDS);
+        assert!(
+            types.contains(&declared),
+            "types.wgsl must declare {declared}"
+        );
     }
 }

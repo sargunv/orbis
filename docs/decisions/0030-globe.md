@@ -33,8 +33,8 @@ runtime keeps them per tile matrix set and tile and uploads them when a
 placement first needs them. Patches now belong to placement rows rather
 than scene tiles, so the background's one mesh places on every covered tile
 with each tile's patches. A row carries its patches and the camera-relative
-position of their anchor; rows are 104 bytes (26 words), the same for the
-plane and the globe.
+position of their anchor; rows carry them beside any planar patches (see
+below).
 
 Shaders place everything through one function, `ground_clip`: a tile point
 on the plane and on the sphere, moved by a map offset along east and north
@@ -96,14 +96,22 @@ clip rectangles reach past the world's edge (the placement extends an edge
 region's rectangle to the pole), and on the tile's edge, as a degenerate
 triangle, everywhere else and on the plane.
 
+## Sources on other planes
+
+On a globe surface every tile draws in its own tile space: on the sphere
+through its patches in space (the `Geodetic` plan for geodetic sets), and
+on the plane, at and past the handover, through its planar patches. Rows
+carry both (112 bytes, 28 words); image tiles of warped sources draw as
+grids then, rather than as the plane's `RasterWarp` mesh. A tile without
+planar patches (one holding a pole, which Web Mercator lacks) has no place
+on the plane: it draws on the globe alone and drops out when the globe
+hands over. The demo's Blue Marble globe draws GIBS's EPSG:4326 tiles this
+way, to the poles.
+
 ## Left for later
 - Terrain on the globe, and extrusions' depth (the horizon plane's depth is
   GL JS's, not perspective depth).
 - Globe gestures: panning drags plane coordinates, which behaves near the
   target but not as GL JS's rotation near the poles.
-- Sources on other planes on a globe (`Geodetic` for `WorldCRS84Quad`, and
-  any set's tiles): the sphere series takes any set, but the plane half of
-  the handover needs their planar warp too, so the planner refuses them on
-  a globe for now.
 - The mirror has no `projection/globe` fixtures yet; GL JS's directory
   needs a prefix in `xtask/src/fixtures.rs`.
