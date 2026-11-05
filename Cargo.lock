@@ -2268,7 +2268,9 @@ version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
  "glam",
+ "image",
  "orb-expr",
+ "orb-host",
 ]
 
 [[package]]

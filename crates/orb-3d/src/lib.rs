@@ -7,6 +7,8 @@
 #![forbid(unsafe_code)]
 
 pub mod gltf;
+pub mod gpu;
+pub mod load;
 
 /// A model: triangles in metres, east, north and up from its origin.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -28,7 +30,7 @@ pub struct Vertex {
     /// Unit, or zero where the model gives none.
     pub normal: [f32; 3],
     pub uv: [f32; 2],
-    /// sRGB-encoded RGBA, multiplying the base colour.
+    /// Linear RGBA, multiplying the base colour (glTF `COLOR_0`).
     pub color: [u8; 4],
     /// Index into [`Model::materials`].
     pub material: u32,

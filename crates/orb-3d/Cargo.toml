@@ -11,5 +11,10 @@ base64.workspace = true
 glam.workspace = true
 orb-expr.workspace = true
 
+[dev-dependencies]
+# JPEG as native hosts decode it (orb-host-native enables it).
+image = { workspace = true, features = ["jpeg"] }
+orb-host = { workspace = true, features = ["decode"] }
+
 [lints]
 workspace = true

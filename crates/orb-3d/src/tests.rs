@@ -132,3 +132,138 @@ fn images_become_square_power_of_two_layers_with_mips() {
     assert_eq!(&layers[0][..4], &[255, 0, 0, 255]);
     assert_eq!(&layers[1][layers[1].len() - 4..], &[0, 0, 255, 255]);
 }
+
+#[test]
+fn packs_vertices_materials_and_draw_classes_and_round_trips() {
+    let mut model = Gltf::parse(triangle("", true).as_bytes())
+        .unwrap()
+        .build(&HashMap::new())
+        .unwrap();
+    // A second, blended material on a copy of the triangle.
+    let mut blended = model.materials[0];
+    blended.alpha = Alpha::Blend;
+    model.materials.push(blended);
+    let copies: Vec<Vertex> = model
+        .vertices
+        .iter()
+        .map(|v| Vertex { material: 1, ..*v })
+        .collect();
+    model.vertices.extend(copies);
+    model.indices.extend([3, 4, 5]);
+    let packed = gpu::pack(&model, &[]);
+    assert_eq!(packed.vertex_count(), 6);
+    assert_eq!(packed.draws, [0..3, 3..3, 3..6]);
+    assert_eq!(packed.materials.len(), 2 * gpu::MATERIAL_WORDS);
+    // A south-facing normal: octahedral (0, −1).
+    assert_eq!(packed.vertices[3], 0x8001_0000);
+    assert_eq!(packed.materials[13] & gpu::MASK, gpu::MASK);
+    assert_eq!(packed.materials[16 + 13] & gpu::BLEND, gpu::BLEND);
+    assert_eq!(packed.materials[12], 0xffff_ffff, "no textures");
+    let back = gpu::GpuModel::from_words(&packed.to_words()).unwrap();
+    assert_eq!(back, packed);
+}
+
+#[test]
+fn urls_resolve_against_the_document() {
+    use crate::load::join;
+    let base = "https://host.example/models/tower/scene.gltf?v=2";
+    assert_eq!(
+        join(base, "scene.bin"),
+        "https://host.example/models/tower/scene.bin"
+    );
+    assert_eq!(
+        join(base, "../tex/a.png"),
+        "https://host.example/models/tex/a.png"
+    );
+    assert_eq!(join(base, "/b.png"), "https://host.example/b.png");
+    assert_eq!(
+        join(base, "https://cdn.example/c.png"),
+        "https://cdn.example/c.png"
+    );
+    assert_eq!(join("file:///data/m.glb", "m.bin"), "file:///data/m.bin");
+}
+
+#[test]
+fn a_load_fetches_buffers_then_images_and_packs() {
+    // The triangle with its buffer in a file of its own and a base colour
+    // texture from an image file.
+    let json = triangle("", true);
+    let start = json.find("data:").unwrap();
+    let end = start + json[start..].find('"').unwrap();
+    let bin = base64::engine::general_purpose::STANDARD
+        .decode(&json[json.find("base64,").unwrap() + 7..end])
+        .unwrap();
+    let json = format!("{}tri.bin{}", &json[..start], &json[end..]).replace(
+        r#""metallicFactor": 0}"#,
+        r#""metallicFactor": 0, "baseColorTexture": {"index": 0}}"#,
+    );
+    let json = json.replacen(
+        r#""buffers""#,
+        r#""images": [{"uri": "tex.png"}], "textures": [{"source": 0}], "buffers""#,
+        1,
+    );
+    let mut load = crate::load::Load::new("https://h.example/m/a.gltf", json.as_bytes()).unwrap();
+    assert_eq!(load.wanted(), ["https://h.example/m/tri.bin"]);
+    assert_eq!(load.images().unwrap(), None);
+    load.fetched("https://h.example/m/tri.bin", bin);
+    // Built: the image is wanted next.
+    assert_eq!(load.images().unwrap(), None);
+    assert_eq!(load.wanted(), ["https://h.example/m/tex.png"]);
+    load.fetched("https://h.example/m/tex.png", b"png".to_vec());
+    assert_eq!(load.images().unwrap(), Some(vec![Some(b"png".to_vec())]));
+    let packed = load.finish(&[Some((1, 1, vec![255, 0, 0, 255]))]).unwrap();
+    assert_eq!(
+        (
+            packed.vertex_count(),
+            packed.texture_size,
+            packed.layers.len()
+        ),
+        (3, 1, 1)
+    );
+    // The base colour samples layer 0.
+    assert_eq!(packed.materials[12] & 0xff, 0);
+}
+
+/// Every Khronos sample in the fixtures (`cargo xtask fixtures`) loads,
+/// decodes and packs; skipped without them.
+#[test]
+fn khronos_samples_load_and_pack() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/gltf");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        eprintln!("no glTF fixtures: run `cargo xtask fixtures`");
+        return;
+    };
+    let mut names: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    names.sort();
+    for path in names
+        .iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "glb"))
+    {
+        let bytes = std::fs::read(path).unwrap();
+        let name = path.file_name().unwrap().to_string_lossy();
+        let mut load = crate::load::Load::new(&format!("file:///{name}"), &bytes).unwrap();
+        assert!(load.wanted().is_empty(), "{name}: a .glb holds its data");
+        let images = load.images().unwrap().expect("nothing to fetch");
+        let decoded: Vec<_> = images
+            .iter()
+            .map(|bytes| {
+                let image = orb_host::decode_image(bytes.as_ref()?).ok()?;
+                Some((image.width, image.height, image.pixels))
+            })
+            .collect();
+        assert!(
+            decoded.iter().all(Option::is_some),
+            "{name}: every image decodes"
+        );
+        let packed = load.finish(&decoded).unwrap();
+        let triangles: u32 = packed.draws.iter().map(|r| r.len() as u32 / 3).sum();
+        assert!(triangles > 0, "{name}");
+        eprintln!(
+            "{name}: {} vertices, {triangles} triangles, {} layers of {}², {:.1} MiB",
+            packed.vertex_count(),
+            packed.layers.len(),
+            packed.texture_size,
+            packed.gpu_bytes() as f64 / f64::from(1 << 20)
+        );
+    }
+}
