@@ -26,6 +26,10 @@ for (const [method, key] of [["createShaderModule", "shaders"], ["createRenderPi
   GPUDevice.prototype[method] = function (...args) {
     counts[key]++;
     const started = performance.now();
+    // A hidden page gets few animation frames (Firefox gives one every few
+    // seconds), so its timings don't count.
+    let visible = document.visibilityState === "visible";
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState !== "visible") visible = false; });
     const result = original.apply(this, args);
     counts.createMs += performance.now() - started;
     return result;
@@ -56,7 +60,7 @@ window.pipelines = (async () => {
     const idleMs = performance.now() - started;
     const done = await Promise.all(waits);
     const result = {
-      ...counts, firstDrawMs, compiledMs, idleMs, submissions: done.length,
+      visible, ...counts, firstDrawMs, compiledMs, idleMs, submissions: done.length,
       waitTotalMs: done.reduce((a, b) => a + b, 0), waitMaxMs: Math.max(...done),
       firstWaitMs: done[0],
       adapter: await navigator.gpu.requestAdapter().then((a) => [a?.info?.vendor, a?.info?.architecture].filter(Boolean).join(" ")),
