@@ -17,14 +17,18 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,editor,offline] [--configs=webgpu,webgl2]
+// - `batteries`: the map app's "My location" and "Drop pins" switches on the
+//   Tokyo extract with a granted geolocation: the dot shows, a click drops a
+//   pin and a click on it lifts it.
+//
+//   pnpm e2e [--only=scenario,edits,editor,batteries,offline] [--configs=webgpu,webgl2]
 //     [--writes=500] [--at=#13/35.6830/139.7520]
 import assert from "node:assert/strict";
 import { decodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor").split(",");
+const only = arg("only", "scenario,edits,editor,batteries").split(",");
 const configs = arg("configs", "webgpu,webgl2").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
@@ -375,11 +379,44 @@ async function offline(browser, server) {
   await page.close();
 }
 
+/** Markers and the location layer from the map app's menu, on the Tokyo
+ * extract: the location follows a fix, a click drops a pin, another lifts it. */
+async function batteries(browser, server) {
+  const context = await browser.newContext({ viewport: { width: 600, height: 400 },
+    permissions: ["geolocation"], geolocation: { latitude: 35.684, longitude: 139.75, accuracy: 120 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+  const idle = () => page.waitForFunction(() => document.getElementById("app")?.dataset.map === "idle",
+    null, { timeout: 60_000 });
+  await page.goto(`${server.url}?style=tokyo-mvt#15/35.684/139.75`);
+  await idle();
+  // The menu stays open over its switches.
+  await page.click("#menu-button");
+  await page.click("#location-toggle");
+  await page.click("#pins-toggle");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(async () => (await globalThis.orbis.map.queryRenderedFeatures(
+    [[0, 0], [600, 400]], { layers: ["orbis-location"] })).length === 1, null, { timeout: 30_000 });
+  await page.mouse.click(450, 120);
+  await page.waitForFunction(async () => (await globalThis.orbis.map.queryRenderedFeatures(
+    [[0, 0], [600, 400]], { layers: ["orbis-markers"] })).length === 1, null, { timeout: 30_000 });
+  // The pin's head, above the point clicked: it lifts.
+  await page.mouse.click(450, 108);
+  await page.waitForFunction(async () => (await globalThis.orbis.map.queryRenderedFeatures(
+    [[0, 0], [600, 400]], { layers: ["orbis-markers"] })).length === 0, null, { timeout: 30_000 });
+  console.log("batteries: location shown, pin dropped and lifted");
+  assert.deepEqual(errors, []);
+  await context.close();
+}
+
 const CHECKS = {
   scenario: async (browser, server) => { for (const config of configs) await scenario(browser, server, config); },
   edits,
   editor,
   offline,
+  batteries,
 };
 const server = await serveDemo();
 const browser = await launchChromium();

@@ -14,6 +14,7 @@ use orb_camera::{
 use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_interact::{Feel, Input};
+use orb_runtime::batteries::{Location, Marker};
 use orb_runtime::{
     CameraState, FrameReport, GridTile, Hit, MapEvent, RenderMode, StyleImage, Transaction,
     VideoRequest, Viewport,
@@ -114,6 +115,8 @@ pub struct Map {
     dirty: bool,
     /// How the map renders now.
     mode: RenderMode,
+    /// Markers and the location layer.
+    batteries: orb_runtime::batteries::Batteries,
 }
 
 impl std::fmt::Debug for Map {
@@ -185,6 +188,7 @@ impl Map {
             busy: true,
             dirty: true,
             mode: RenderMode::Continuous,
+            batteries: Default::default(),
         }
     }
 
@@ -243,6 +247,37 @@ impl Map {
         self.map
             .add_image(name, image)
             .map_err(Error::InvalidArgument)
+    }
+
+    /// Adds a marker, drawn by the map over the style: an image at a point.
+    /// Its id names it to [`update_marker`](Self::update_marker),
+    /// [`remove_marker`](Self::remove_marker) and in hits, in the
+    /// `orbis-markers` layer.
+    pub fn add_marker(&mut self, marker: Marker) -> u64 {
+        self.dirty = true;
+        self.batteries.add_marker(&mut self.map, marker)
+    }
+
+    /// Moves or changes a marker.
+    pub fn update_marker(&mut self, id: u64, marker: Marker) -> Result<(), Error> {
+        self.dirty = true;
+        self.batteries
+            .update_marker(&mut self.map, id, marker)
+            .map_err(Error::InvalidArgument)
+    }
+
+    pub fn remove_marker(&mut self, id: u64) -> Result<(), Error> {
+        self.dirty = true;
+        self.batteries
+            .remove_marker(&mut self.map, id)
+            .map_err(Error::InvalidArgument)
+    }
+
+    /// Shows the device's location: a dot, its accuracy circle and its
+    /// heading; `None` hides them. The app pushes each fix.
+    pub fn set_location(&mut self, location: Option<Location>) {
+        self.dirty = true;
+        self.batteries.set_location(&mut self.map, location);
     }
 
     /// Whether this host plays `video` sources: it then gets
@@ -706,6 +741,8 @@ impl Map {
             )));
         }
         let viewport = target.viewport();
+        // Markers and the location layer come back with a new style.
+        self.batteries.sync(&mut self.map);
         let Some(texture) = target.begin()? else {
             return Ok(None);
         };

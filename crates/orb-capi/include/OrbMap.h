@@ -44,6 +44,18 @@ void OrbMap_set_wake(OrbMap* self, DiplomatCallback_OrbMap_set_wake_wake wake_cb
 
 bool OrbMap_needs_frame(const OrbMap* self);
 
+uint64_t OrbMap_add_marker(OrbMap* self, double lon, double lat, DiplomatStringView image, DiplomatStringView anchor);
+
+typedef struct OrbMap_update_marker_result {union { OrbError err;}; bool is_ok;} OrbMap_update_marker_result;
+OrbMap_update_marker_result OrbMap_update_marker(OrbMap* self, uint64_t id, double lon, double lat, DiplomatStringView image, DiplomatStringView anchor);
+
+typedef struct OrbMap_remove_marker_result {union { OrbError err;}; bool is_ok;} OrbMap_remove_marker_result;
+OrbMap_remove_marker_result OrbMap_remove_marker(OrbMap* self, uint64_t id);
+
+void OrbMap_set_location(OrbMap* self, double lon, double lat, double accuracy, double heading);
+
+void OrbMap_clear_location(OrbMap* self);
+
 void OrbMap_retry_failed_tiles(OrbMap* self);
 
 void OrbMap_load_style_url(OrbMap* self, DiplomatStringView url);

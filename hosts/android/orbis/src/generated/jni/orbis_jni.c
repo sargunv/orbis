@@ -334,6 +334,61 @@ JNIEXPORT jboolean JNICALL Java_dev_orbis_OrbisNative_orbMapNeedsFrame(JNIEnv* e
     return (result) ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapAddMarker(JNIEnv* env, jclass cls, jlong self, jdouble lon, jdouble lat, jbyteArray image, jbyteArray anchor) {
+    (void)env;
+    (void)cls;
+    jbyte* image_bytes = (*env)->GetByteArrayElements(env, image, NULL);
+    if (!image_bytes) return 0;
+    DiplomatStringView image_view = { (const char*)image_bytes, (size_t)(*env)->GetArrayLength(env, image) };
+    jbyte* anchor_bytes = (*env)->GetByteArrayElements(env, anchor, NULL);
+    if (!anchor_bytes) return 0;
+    DiplomatStringView anchor_view = { (const char*)anchor_bytes, (size_t)(*env)->GetArrayLength(env, anchor) };
+    uint64_t result = OrbMap_add_marker((OrbMap*)(intptr_t)self, (double)(lon), (double)(lat), image_view, anchor_view);
+    (*env)->ReleaseByteArrayElements(env, image, image_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, anchor, anchor_bytes, JNI_ABORT);
+    return (jlong)(result);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapUpdateMarker(JNIEnv* env, jclass cls, jlong self, jlong id, jdouble lon, jdouble lat, jbyteArray image, jbyteArray anchor) {
+    (void)env;
+    (void)cls;
+    jbyte* image_bytes = (*env)->GetByteArrayElements(env, image, NULL);
+    if (!image_bytes) return;
+    DiplomatStringView image_view = { (const char*)image_bytes, (size_t)(*env)->GetArrayLength(env, image) };
+    jbyte* anchor_bytes = (*env)->GetByteArrayElements(env, anchor, NULL);
+    if (!anchor_bytes) return;
+    DiplomatStringView anchor_view = { (const char*)anchor_bytes, (size_t)(*env)->GetArrayLength(env, anchor) };
+    OrbMap_update_marker_result result = OrbMap_update_marker((OrbMap*)(intptr_t)self, (uint64_t)(id), (double)(lon), (double)(lat), image_view, anchor_view);
+    (*env)->ReleaseByteArrayElements(env, image, image_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, anchor, anchor_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapRemoveMarker(JNIEnv* env, jclass cls, jlong self, jlong id) {
+    (void)env;
+    (void)cls;
+    OrbMap_remove_marker_result result = OrbMap_remove_marker((OrbMap*)(intptr_t)self, (uint64_t)(id));
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetLocation(JNIEnv* env, jclass cls, jlong self, jdouble lon, jdouble lat, jdouble accuracy, jdouble heading) {
+    (void)env;
+    (void)cls;
+    OrbMap_set_location((OrbMap*)(intptr_t)self, (double)(lon), (double)(lat), (double)(accuracy), (double)(heading));
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapClearLocation(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbMap_clear_location((OrbMap*)(intptr_t)self);
+}
+
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapRetryFailedTiles(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;

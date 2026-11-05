@@ -75,6 +75,8 @@ pub struct OrbisMap {
     worker_jobs: Arc<WorkerJobs>,
     /// A snapshot being drawn ([`snapshot`]).
     snapshot: Option<snapshot::Snapshot>,
+    /// Markers and the location layer.
+    batteries: orb_runtime::batteries::Batteries,
 }
 
 impl Drop for OrbisMap {
@@ -272,6 +274,7 @@ pub async fn create_map(
         pixel_ratio: 1.0,
         worker_jobs,
         snapshot: None,
+        batteries: Default::default(),
     })
 }
 
@@ -605,6 +608,66 @@ impl OrbisMap {
         }
     }
 
+    /// Adds a marker drawn over the style: the style's image `image` (the
+    /// built-in pin when absent) at `lon`, `lat`, `anchor` (`icon-anchor`)
+    /// on the point. Rendered queries name it by the returned id, in the
+    /// `orbis-markers` layer.
+    #[wasm_bindgen(js_name = addMarker)]
+    pub fn add_marker(
+        &mut self,
+        lon: f64,
+        lat: f64,
+        image: Option<String>,
+        anchor: Option<String>,
+    ) -> f64 {
+        let marker = orb_runtime::batteries::Marker {
+            position: [lon, lat],
+            image,
+            anchor,
+        };
+        self.batteries.add_marker(&mut self.map, marker) as f64
+    }
+
+    /// Moves or changes a marker.
+    #[wasm_bindgen(js_name = updateMarker)]
+    pub fn update_marker(
+        &mut self,
+        id: f64,
+        lon: f64,
+        lat: f64,
+        image: Option<String>,
+        anchor: Option<String>,
+    ) -> Result<(), JsError> {
+        let marker = orb_runtime::batteries::Marker {
+            position: [lon, lat],
+            image,
+            anchor,
+        };
+        self.batteries
+            .update_marker(&mut self.map, id as u64, marker)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    #[wasm_bindgen(js_name = removeMarker)]
+    pub fn remove_marker(&mut self, id: f64) -> Result<(), JsError> {
+        self.batteries
+            .remove_marker(&mut self.map, id as u64)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// Shows the device's location: a dot, a circle of `accuracy` metres
+    /// and a cone toward `heading` (degrees from north) when given; hides
+    /// it with `lon` NaN.
+    #[wasm_bindgen(js_name = setLocation)]
+    pub fn set_location(&mut self, lon: f64, lat: f64, accuracy: f64, heading: Option<f64>) {
+        let location = (!lon.is_nan()).then_some(orb_runtime::batteries::Location {
+            position: [lon, lat],
+            accuracy,
+            heading,
+        });
+        self.batteries.set_location(&mut self.map, location);
+    }
+
     /// Requests the tiles that failed again now, as when the browser comes
     /// back online.
     #[wasm_bindgen(js_name = retryFailedTiles)]
@@ -646,6 +709,8 @@ impl OrbisMap {
             });
         }
         let started = orb_host::Clock::now(&orb_host_web::WebClock);
+        // Markers and the location layer come back with a new style.
+        self.batteries.sync(&mut self.map);
         let viewport = self.viewport();
         let (map, ratio, renderer) = (&mut self.map, self.pixel_ratio as f32, &mut self.renderer);
         let report = self

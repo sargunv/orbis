@@ -62,6 +62,55 @@ public final class OrbMap {
         return OrbMap_needs_frame(live())
     }
 
+    /// Adds a marker drawn by the map over the style: the image `image`
+    /// of the style (the built-in pin when empty) at `lon`, `lat`, with
+    /// `anchor` (`icon-anchor`: "center", "bottom" and so on; the
+    /// image's default when empty) on the point. Rendered queries name
+    /// it by the returned id, in the `orbis-markers` layer.
+    ///
+    /// Contract: `command`.
+    public func addMarker(lon: Double, lat: Double, image: String, anchor: String) -> UInt64 {
+        return withStringView(image) { imageView in withStringView(anchor) { anchorView in OrbMap_add_marker(live(), lon, lat, imageView, anchorView) } }
+    }
+
+    /// Moves or changes a marker.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func updateMarker(id: UInt64, lon: Double, lat: Double, image: String, anchor: String) throws {
+        let result = withStringView(image) { imageView in withStringView(anchor) { anchorView in OrbMap_update_marker(live(), id, lon, lat, imageView, anchorView) } }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func removeMarker(id: UInt64) throws {
+        let result = OrbMap_remove_marker(live(), id)
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Shows the device's location: a dot at `lon`, `lat`, a circle of
+    /// `accuracy` metres and, unless it is NaN, a cone toward
+    /// `heading` (degrees clockwise from north). Push each fix.
+    ///
+    /// Contract: `command`.
+    public func setLocation(lon: Double, lat: Double, accuracy: Double, heading: Double) {
+        OrbMap_set_location(live(), lon, lat, accuracy, heading)
+    }
+
+    /// Hides the location layer.
+    ///
+    /// Contract: `command`.
+    public func clearLocation() {
+        OrbMap_clear_location(live())
+    }
+
     /// Requests the tiles that failed again now: call it when the
     /// network comes back. Until then each is retried after a backoff
     /// while frames are drawn, with coarser tiles standing in.

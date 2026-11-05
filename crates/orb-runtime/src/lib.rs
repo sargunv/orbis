@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod batteries;
 mod camera;
 mod edit;
 mod events;

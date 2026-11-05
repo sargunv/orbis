@@ -102,6 +102,21 @@ internal object OrbisNative {
     external fun orbMapNeedsFrame(self: Long): Boolean
 
     @JvmStatic
+    external fun orbMapAddMarker(self: Long, lon: Double, lat: Double, image: ByteArray, anchor: ByteArray): Long
+
+    @JvmStatic
+    external fun orbMapUpdateMarker(self: Long, id: Long, lon: Double, lat: Double, image: ByteArray, anchor: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapRemoveMarker(self: Long, id: Long): Unit
+
+    @JvmStatic
+    external fun orbMapSetLocation(self: Long, lon: Double, lat: Double, accuracy: Double, heading: Double): Unit
+
+    @JvmStatic
+    external fun orbMapClearLocation(self: Long): Unit
+
+    @JvmStatic
     external fun orbMapRetryFailedTiles(self: Long): Unit
 
     @JvmStatic

@@ -52,6 +52,59 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Adds a marker drawn by the map over the style: the image `image`
+     * of the style (the built-in pin when empty) at `lon`, `lat`, with
+     * `anchor` (`icon-anchor`: "center", "bottom" and so on; the
+     * image's default when empty) on the point. Rendered queries name
+     * it by the returned id, in the `orbis-markers` layer.
+     *
+     * Contract: `command`.
+     */
+    fun addMarker(lon: Double, lat: Double, image: String, anchor: String): ULong {
+        return OrbisNative.orbMapAddMarker(live(), lon, lat, image.encodeToByteArray(), anchor.encodeToByteArray()).toULong()
+    }
+
+    /**
+     * Moves or changes a marker.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun updateMarker(id: ULong, lon: Double, lat: Double, image: String, anchor: String) {
+        OrbisNative.orbMapUpdateMarker(live(), id.toLong(), lon, lat, image.encodeToByteArray(), anchor.encodeToByteArray())
+    }
+
+    /**
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun removeMarker(id: ULong) {
+        OrbisNative.orbMapRemoveMarker(live(), id.toLong())
+    }
+
+    /**
+     * Shows the device's location: a dot at `lon`, `lat`, a circle of
+     * `accuracy` metres and, unless it is NaN, a cone toward
+     * `heading` (degrees clockwise from north). Push each fix.
+     *
+     * Contract: `command`.
+     */
+    fun setLocation(lon: Double, lat: Double, accuracy: Double, heading: Double) {
+        OrbisNative.orbMapSetLocation(live(), lon, lat, accuracy, heading)
+    }
+
+    /**
+     * Hides the location layer.
+     *
+     * Contract: `command`.
+     */
+    fun clearLocation() {
+        OrbisNative.orbMapClearLocation(live())
+    }
+
+    /**
      * Requests the tiles that failed again now: call it when the
      * network comes back. Until then each is retried after a backoff
      * while frames are drawn, with coarser tiles standing in.

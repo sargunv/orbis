@@ -14,6 +14,7 @@ import { editor as createEditor } from "./app/editor.js";
 import { Highlighter, targetOf } from "./app/highlight.js";
 import { hud as createHud } from "./app/hud.js";
 import { picker as createPicker } from "./app/picker.js";
+import { batteries as createBatteries } from "./app/batteries.js";
 import { offline as createOffline } from "./app/offline.js";
 import { featurePopup } from "./app/popup.js";
 
@@ -109,6 +110,7 @@ menu.addEventListener("beforetoggle", (e) => {
   menu.style.setProperty("--menu-top", `${rect.bottom + 8}px`);
   menu.style.setProperty("--menu-right", `${innerWidth - rect.right}px`);
 });
+const batteryDemo = createBatteries({ map: () => map, say });
 const offlineAreas = createOffline({
   view() {
     if (!map) return null;
@@ -298,6 +300,7 @@ async function load(next, { camera }) {
 function wireFeatures(target) {
   target.on("click", async ({ point, lngLat }) => {
     clearPopup();
+    if (await batteryDemo.click(point, lngLat)) return;
     const [feature] = await target.queryRenderedFeatures(point);
     if (!feature || !lngLat) return;
     const element = featurePopup(feature, {
