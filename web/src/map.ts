@@ -397,6 +397,7 @@ export class OrbisMap {
   #recover(): void {
     if (this.#lostAt !== undefined) return;
     this.#lostAt = performance.now();
+    this.#events.emit("lost", {});
     const replace = (canvas: HTMLCanvasElement) => {
       this.#detachInput?.();
       this.#observer.unobserve(this.#canvas);

@@ -207,6 +207,9 @@ export interface MapEvents {
    * loss.
    */
   capability: { tier: "modern" | "compat"; recoveredMs?: number };
+  /** The GPU was lost (GL JS `webglcontextlost`): the map draws nothing
+   * until it has another, then reports `capability`. Failing that, `error`. */
+  lost: Record<string, never>;
   /** A frame was drawn. */
   render: FrameStats;
 }
