@@ -31,7 +31,7 @@ Playwright.
 
 | Command | What it does |
 | --- | --- |
-| `cargo xtask check` | fmt, clippy (native and wasm32), tests, generated bindings up to date, boundary rules; offline, no fixture mirror needed |
+| `cargo xtask check [--affected [--base <rev>]]` | fmt, clippy (native and wasm32), tests, generated bindings up to date, boundary rules; offline, no fixture mirror needed; `--affected` scopes it to the packages changed since `<rev>` (default `origin/main`) and their dependents |
 | `cargo xtask bindings` | regenerate the C header (`crates/orb-capi/include`), Kotlin/JNI and Swift bindings from `orb-capi`'s bridge; run after changing it |
 | `mise x -- cargo xtask bindings test` | the emitters' Swift and Kotlin compile-and-run tests |
 | `mise x -- cargo xtask android [--run[=serial]]` | `liborbis.so` (arm64-v8a, NDK), the AAR and the Android reference app; `--run` installs and starts it (logcat tag `Orbis`) |
@@ -73,8 +73,7 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
 - **Keep the loop fast.** Validate what you touched and what it plausibly
   affects downstream, not everything every time: fmt, clippy (native and
   wasm32) and tests for the crates you changed and their dependents
-  (`cargo xtask check --affected`; until it lands, `cargo clippy -p` and
-  `cargo test -p` for those crates), plus the specific check your change needs
+  (`cargo xtask check --affected`), plus the specific check your change needs
   (a web build and a browser screenshot for web UI; a device run only for
   device-specific code such as GPU paths, hosts and drivers). Then rebase and
   push. Don't re-run checks after a clean rebase or a rejected push; rebase
