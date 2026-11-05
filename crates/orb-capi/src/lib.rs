@@ -250,6 +250,13 @@ mod ffi {
             self.0.pipelines_created
         }
 
+        /// GPU resources the device held: buffers, textures, pipelines
+        /// and the rest, for leak checks.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn live_resources(&self) -> u32 {
+            self.0.live_resources as u32
+        }
+
         /// Milliseconds spent compiling pipelines, summed over the threads
         /// that compiled them: translation and the driver's compiles.
         #[diplomat::attr(contract, snapshot)]

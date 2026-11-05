@@ -1123,6 +1123,13 @@ JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbStatsPipelinesCreated(JNIEn
     return (jint)(result);
 }
 
+JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbStatsLiveResources(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    uint32_t result = OrbStats_live_resources((const OrbStats*)(intptr_t)self);
+    return (jint)(result);
+}
+
 JNIEXPORT jdouble JNICALL Java_dev_orbis_OrbisNative_orbStatsPipelineMs(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;

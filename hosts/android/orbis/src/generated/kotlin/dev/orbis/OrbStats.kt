@@ -61,6 +61,18 @@ class OrbStats internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * GPU resources the device held: buffers, textures, pipelines
+     * and the rest, for leak checks.
+     *
+     * Contract: `snapshot`.
+     */
+    fun liveResources(): UInt {
+        synchronized(this) {
+            return OrbisNative.orbStatsLiveResources(live()).toUInt()
+        }
+    }
+
+    /**
      * Milliseconds spent compiling pipelines, summed over the threads
      * that compiled them: translation and the driver's compiles.
      *

@@ -42,6 +42,14 @@ public final class OrbStats: @unchecked Sendable {
         return OrbStats_pipelines_created(handle)
     }
 
+    /// GPU resources the device held: buffers, textures, pipelines
+    /// and the rest, for leak checks.
+    ///
+    /// Contract: `snapshot`.
+    public func liveResources() -> UInt32 {
+        return OrbStats_live_resources(handle)
+    }
+
     /// Milliseconds spent compiling pipelines, summed over the threads
     /// that compiled them: translation and the driver's compiles.
     ///

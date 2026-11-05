@@ -345,6 +345,9 @@ internal object OrbisNative {
     external fun orbStatsPipelinesCreated(self: Long): Int
 
     @JvmStatic
+    external fun orbStatsLiveResources(self: Long): Int
+
+    @JvmStatic
     external fun orbStatsPipelineMs(self: Long): Double
 
     @JvmStatic

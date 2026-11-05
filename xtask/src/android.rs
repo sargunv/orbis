@@ -4,7 +4,9 @@
 //! `hosts/android/orbis/src/main/jniLibs`, then the AAR and the reference app
 //! with Gradle (plan §17: Gradle only packages). `--run` installs the app on
 //! the Android device `scripts/android-serial` names (this worktree's emulator
-//! from devices-cli, or `ANDROID_SERIAL`) and starts it.
+//! from devices-cli, or `ANDROID_SERIAL`) and starts it. `--run --leakcheck`
+//! starts it on Compat to make, draw and drop 20 maps, and fails unless the
+//! device's live GPU resources stay flat (#79).
 //!
 //! Needs `ANDROID_HOME` with an NDK (`mise x --` provides it here).
 
@@ -20,10 +22,11 @@ const API: u32 = 24;
 const PROJECT: &str = "hosts/android";
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
-    let install_app = match args {
-        [] => false,
-        [flag] if flag == "--run" => true,
-        _ => return Err("android: usage: cargo xtask android [--run]".into()),
+    let (install_app, leakcheck) = match args {
+        [] => (false, false),
+        [run] if run == "--run" => (true, false),
+        [run, leak] if run == "--run" && leak == "--leakcheck" => (true, true),
+        _ => return Err("android: usage: cargo xtask android [--run [--leakcheck]]".into()),
     };
     let root = root();
     let sdk = PathBuf::from(
@@ -126,7 +129,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         );
     }
     if install_app {
-        install(&root, &apk)?;
+        install(&root, &apk, leakcheck)?;
     }
     Ok(())
 }
@@ -150,7 +153,7 @@ fn ndk_bin(sdk: &Path) -> Result<PathBuf, String> {
 
 /// Installs the reference app on the device `scripts/android-serial` names and
 /// starts it: the worktree's emulator from devices-cli, or `ANDROID_SERIAL`.
-fn install(root: &Path, apk: &Path) -> Result<(), String> {
+fn install(root: &Path, apk: &Path, leakcheck: bool) -> Result<(), String> {
     let serial = android_serial(root)?;
     eprintln!("android: installing on {serial}");
     let adb = |args: &[&str]| {
@@ -159,14 +162,42 @@ fn install(root: &Path, apk: &Path) -> Result<(), String> {
         command
     };
     check(adb(&["install", "-r"]).arg(apk))?;
-    check(&mut adb(&[
+    let start = [
         "shell",
         "am",
         "start",
         "-W",
         "-n",
         "dev.orbis.demo/.MainActivity",
-    ]))
+    ];
+    if !leakcheck {
+        return check(&mut adb(&start));
+    }
+    check(&mut adb(&["logcat", "-c"]))?;
+    let extras = ["--es", "backend", "compat", "--ez", "leakcheck", "true"];
+    check(adb(&start).args(extras))?;
+    for _ in 0..120 {
+        let log = adb(&["logcat", "-d", "-s", "Orbis"])
+            .output()
+            .map_err(|e| format!("adb logcat: {e}"))?;
+        let log = String::from_utf8_lossy(&log.stdout);
+        if let Some(line) = log.lines().find(|l| l.contains("leakcheck:")) {
+            eprintln!("android: {line}");
+            let counts: Vec<&str> = line
+                .rsplit('[')
+                .next()
+                .unwrap_or("")
+                .trim_end_matches(']')
+                .split(", ")
+                .collect();
+            return match counts.windows(2).all(|w| w[0] == w[1]) {
+                true => Ok(()),
+                false => Err("android: live GPU resources grew as maps were dropped".into()),
+            };
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    Err("android: no leakcheck line in two minutes".into())
 }
 
 /// The adb serial `scripts/android-serial` prints for a functional check: this

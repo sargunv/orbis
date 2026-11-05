@@ -15,6 +15,7 @@ import dev.orbis.OrbBackend
 import dev.orbis.OrbCameraTarget
 import dev.orbis.OrbPadding
 import dev.orbis.OrbEventKind
+import dev.orbis.OrbFeel
 import dev.orbis.OrbMap
 import dev.orbis.OrbRuntime
 import dev.orbis.android.MapView
@@ -76,6 +77,20 @@ class MainActivity : Activity() {
             0u, backend, File(noBackupFilesDir, "orbis-state").path, Build.VERSION.SDK_INT.toUInt(),
         )
         Log.i("Orbis", runtime.stats().use { it.selection() })
+        // `--ez leakcheck true`: maps made, drawn and dropped one after
+        // another leave the device holding what one leaves (#79).
+        if (intent.getBooleanExtra("leakcheck", false)) {
+            val style = "file://${File(data, "tokyo-mvt.json").path}"
+            val live = (1..20).map {
+                OrbMap.create(runtime, OrbFeel.Android, 1.0, 1.0, 1.0, 1.0).use { map ->
+                    map.jumpTo(OrbCameraTarget(139.74, 35.685, 15.0, Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, OrbPadding(Double.NaN, Double.NaN, Double.NaN, Double.NaN)))
+                    map.loadStyleUrl(style)
+                    map.snapshot(256u, 256u, 1.0).close()
+                }
+                runtime.stats().use { it.liveResources().toInt() }
+            }
+            Log.i("Orbis", "leakcheck: live resources after each map $live")
+        }
         val deviceMs = SystemClock.elapsedRealtime() - started
         view = MapView(this, runtime)
         status = TextView(this).apply {
