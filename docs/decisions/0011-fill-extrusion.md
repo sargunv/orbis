@@ -230,3 +230,11 @@ pattern` differ from it by phase (8.6%, 2.0% and 3.5% of pixels); the rest
 of the directory is unchanged (fill-extrusion 50 pass, 13 fail, 1 skip
 natively), and Manhattan under Liberty draws as before with 0.5% more
 vertex words.
+
+`fill-extrusion-height/steep-pitch-near-horizon` (1.34% of pixels, 3,505)
+serves one MVT tile at every tile position, so neighbouring tiles' data
+disagrees at their edges. GL JS draws each tile's whole buffered copy, so
+its buildings in the buffer show past the edge over a neighbour with other
+data. Here each building belongs to the tile holding its centroid, so they
+don't, and the fixture keeps a seam along a z14 edge that real tiles,
+whose neighbours agree, never show.
