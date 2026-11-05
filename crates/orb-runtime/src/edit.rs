@@ -377,7 +377,7 @@ impl Map {
     }
 
     /// The ready tiles of a source, or those with a mesh of one of `nodes`.
-    fn resident_tiles(&self, source: usize, nodes: Option<&[u32]>) -> Vec<TileIndex> {
+    pub(crate) fn resident_tiles(&self, source: usize, nodes: Option<&[u32]>) -> Vec<TileIndex> {
         let style = self.style.as_ref().expect("edits need a style");
         let SourceState::Ready { pyramid, .. } = &style.sources[source] else {
             return Vec::new();

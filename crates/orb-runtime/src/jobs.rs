@@ -506,7 +506,10 @@ impl TileWorker {
     /// cached, or its source is inline or already indexed GeoJSON. Job
     /// hosts use this to avoid fetching again; `build` ignores bytes then.
     pub fn has_data(&self, request: &TileRequest) -> bool {
-        if self.plan.source(request.source).is_none() {
+        // An app's tile comes with the request.
+        if self.plan.source(request.source).is_none()
+            || matches!(request.location, crate::TileLocation::Host(_))
+        {
             return false;
         }
         let (began, data) = self.data_at(request.source, None);
@@ -659,6 +662,25 @@ impl TileWorker {
             .source(source)
             .ok_or_else(|| format!("source {source} was removed"))?;
         let (began, data) = self.data_at(source, revision);
+        // An app's tile: decoded from its answer, which a later one
+        // replaces, rather than kept.
+        if let crate::TileLocation::Host(answer) = &request.location {
+            let data_tile = request.data_tile();
+            let frame = match answer {
+                orb_source::endpoint::HostTile::GeoJson(text) => {
+                    crate::geojson::host_frame(text, data_tile)?
+                }
+                _ => self.decode(bytes, encoding, index, &data, data_tile, data_tile.z)?,
+            };
+            let frame = if data_zoom < tile.z {
+                let depth = tile.z - data_zoom;
+                let mask = (1u32 << depth) - 1;
+                frame.overzoom(depth, tile.col & mask, tile.row & mask)
+            } else {
+                frame
+            };
+            return Ok(Arc::new(frame));
+        }
         let key = (source, began, tile);
         let frames = &self.data.frames;
         let cached = frames.lock().expect("frames poisoned").get(key);

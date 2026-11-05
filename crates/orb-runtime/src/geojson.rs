@@ -117,6 +117,30 @@ impl Index {
     }
 }
 
+/// An app's tile of a source it feeds, given as GeoJSON: a JSON object of
+/// source layer names and GeoJSON documents, each tiled at `tile` (on Web
+/// Mercator's grid) as a GeoJSON source's data is.
+pub(crate) fn host_frame(text: &str, tile: orb_crs::TileIndex) -> Result<TileFrame, String> {
+    let doc = orb_expr::json::parse(text).map_err(|e| e.to_string())?;
+    let layers = doc
+        .as_object()
+        .ok_or("an app's GeoJSON tile is an object of source layers")?;
+    let mut frame = TileFrame::default();
+    for layer in layers {
+        let features = orb_v8::parse_geojson(&layer.value.to_string())?;
+        let options = geojson::Options {
+            max_zoom: tile.z,
+            layer: layer.key.clone(),
+            ..geojson::Options::default()
+        };
+        let mut index = geojson::Index::new(features, options)?;
+        if let Some(tiled) = index.tile(tile.z, tile.col as i32, tile.row) {
+            frame.layers.extend(tiled.layers);
+        }
+    }
+    Ok(frame)
+}
+
 fn point(out: &mut String, feature: &Feature) {
     let position = match &feature.geometry {
         Some(geojson::Geometry::Points(points)) => points.first().copied(),

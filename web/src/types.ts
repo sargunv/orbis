@@ -230,6 +230,9 @@ export interface MapEvents {
   pitchstart: CameraEventData; pitch: CameraEventData; pitchend: CameraEventData;
   click: PointerEventData;
   dblclick: PointerEventData;
+  /** The map needs a tile of a source the app feeds (`"tiles":
+   * ["orbis-host:"]`): answer with `setHostTile`. Once per tile until answered. */
+  tilerequest: { source: string; z: number; x: number; y: number };
   /** The style is in (GL JS `style.load`). */
   styleload: Record<string, never>;
   /** The style changed; frames show it in full from `generation`. */

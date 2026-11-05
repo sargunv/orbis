@@ -11,6 +11,7 @@
 #include "OrbChange.d.h"
 #include "OrbEventKind.d.h"
 #include "OrbPhase.d.h"
+#include "OrbTile.d.h"
 
 #include "OrbEvent.d.h"
 
@@ -38,6 +39,8 @@ OrbPhase OrbEvent_phase(const OrbEvent* self);
 OrbButton OrbEvent_button(const OrbEvent* self);
 
 void OrbEvent_urls(const OrbEvent* self, DiplomatWrite* write);
+
+OrbTile OrbEvent_tile(const OrbEvent* self);
 
 double OrbEvent_seconds(const OrbEvent* self);
 

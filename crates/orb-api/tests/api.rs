@@ -736,3 +736,74 @@ fn geojson_diffs_change_what_queries_find() {
     found.dedup();
     assert_eq!(found, [(1, 10), (3, 3)]);
 }
+
+/// Draws frames until the map asks for a tile of an app's source.
+fn tile_request(map: &mut Map, target: &mut Target) -> (String, orb_api::TileIndex) {
+    let started = std::time::Instant::now();
+    loop {
+        map.render(target, now()).unwrap();
+        while let Some(event) = map.poll_event() {
+            if let Event::Map(MapEvent::TileRequest { source, tile }) = event {
+                return (source, tile);
+            }
+        }
+        assert!(started.elapsed().as_secs() < 10, "no tile request");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn app_sources_draw_the_tiles_the_app_hands_in() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(
+        r##"{"version": 8, "center": [0, 0], "zoom": 0,
+            "sources": {"app": {"type": "vector", "tiles": ["orbis-host:"], "maxzoom": 0}},
+            "layers": [
+                {"id": "background", "type": "background", "paint": {"background-color": "#ff0000"}},
+                {"id": "shapes", "type": "fill", "source": "app", "source-layer": "shapes",
+                 "paint": {"fill-color": "#0000ff"}}]}"##,
+    )
+    .expect("style");
+    let (source, tile) = tile_request(&mut map, &mut target);
+    assert_eq!(
+        (source.as_str(), tile),
+        ("app", orb_api::TileIndex::new(0, 0, 0))
+    );
+    let shapes = r#"{"shapes": {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon",
+        "coordinates": [[[-20, -20], [20, -20], [20, 20], [-20, 20], [-20, -20]]]}}}"#;
+    map.host_tile("app", tile, orb_api::HostTile::GeoJson(shapes.into()))
+        .expect("an answer");
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    assert_eq!(
+        pixel(&pixels, SIZE / 2, SIZE / 2),
+        [0, 0, 255, 255],
+        "the app's shape"
+    );
+
+    // New data: asked again; until answered, the old tile stays.
+    map.reload_host_tiles("app").expect("a reload");
+    let (_, again) = tile_request(&mut map, &mut target);
+    assert_eq!(again, tile);
+    let pixels = target.read_pixels().unwrap();
+    assert_eq!(
+        pixel(&pixels, SIZE / 2, SIZE / 2),
+        [0, 0, 255, 255],
+        "the drawn tile stays"
+    );
+    map.host_tile("app", tile, orb_api::HostTile::Empty)
+        .expect("an answer");
+    settle(&mut map, &mut target);
+    let pixels = target.read_pixels().unwrap();
+    assert_eq!(
+        pixel(&pixels, SIZE / 2, SIZE / 2),
+        [255, 0, 0, 255],
+        "an empty tile"
+    );
+    assert!(
+        map.host_tile("nope", tile, orb_api::HostTile::Empty)
+            .is_err()
+    );
+}

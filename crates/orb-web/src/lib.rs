@@ -485,6 +485,13 @@ impl OrbisMap {
                     set(&object, "id", name.into());
                     "styleimagemissing"
                 }
+                MapEvent::TileRequest { source, tile } => {
+                    set(&object, "source", source.into());
+                    set(&object, "z", tile.z.into());
+                    set(&object, "x", tile.col.into());
+                    set(&object, "y", tile.row.into());
+                    "tilerequest"
+                }
                 MapEvent::Video { source, request } => {
                     set(&object, "source", source.into());
                     let request = match request {
@@ -601,6 +608,37 @@ impl OrbisMap {
         };
         self.map
             .source_frame(id, frame)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// The app's answer for tile `z/x/y` of source `source`, which it
+    /// feeds: `bytes` in the source's encoding, or `geojson` (an object of
+    /// source layers and GeoJSON documents), or neither for an empty tile.
+    #[wasm_bindgen(js_name = hostTile)]
+    pub fn host_tile(
+        &mut self,
+        source: &str,
+        z: u8,
+        x: u32,
+        y: u32,
+        bytes: Option<Vec<u8>>,
+        geojson: Option<String>,
+    ) -> Result<(), JsError> {
+        let answer = match (bytes, geojson) {
+            (Some(bytes), _) => orb_runtime::HostTile::Encoded(bytes),
+            (None, Some(text)) => orb_runtime::HostTile::GeoJson(text),
+            (None, None) => orb_runtime::HostTile::Empty,
+        };
+        self.map
+            .host_tile(source, orb_crs::TileIndex::new(z, x, y), answer)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// Asks for every tile of the app's source `source` again.
+    #[wasm_bindgen(js_name = reloadHostTiles)]
+    pub fn reload_host_tiles(&mut self, source: &str) -> Result<(), JsError> {
+        self.map
+            .reload_host_tiles(source)
             .map_err(|e| JsError::new(&e))
     }
 

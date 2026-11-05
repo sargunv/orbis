@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use orb_crs::TileIndex;
 use orb_host::{Fetch, FetchError};
+use orb_source::endpoint::HostTile;
 use orb_source::pmtiles::{Lookup, Reader, TileType};
 use orb_style::Encoding;
 
@@ -41,6 +42,15 @@ impl TileLoader {
         done: LoadDone,
     ) {
         match location {
+            // The app answered: its tile, or none.
+            TileLocation::Host(HostTile::Encoded(bytes)) => done(Ok((bytes, encoding))),
+            TileLocation::Host(HostTile::GeoJson(_) | HostTile::Empty) => {
+                done(Ok((Vec::new(), encoding)))
+            }
+            // A query's refetch of an app's tile the map no longer holds.
+            TileLocation::Url(url) if url.starts_with(orb_source::endpoint::HOST_TILES) => {
+                done(Err(FetchError::NotFound))
+            }
             TileLocation::Url(url) => self.fetch.get(
                 &url,
                 Box::new(move |r| done(r.map(|bytes| (bytes, encoding)))),

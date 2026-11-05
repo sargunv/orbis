@@ -69,6 +69,14 @@ pub enum MapEvent {
     DoubleClick {
         position: DVec2,
     },
+    /// The map needs a tile of a source the app feeds
+    /// ([`HOST_TILES`](crate::HOST_TILES)): answer with
+    /// [`Map::host_tile`](crate::Map::host_tile). Once per tile until
+    /// answered.
+    TileRequest {
+        source: String,
+        tile: orb_crs::TileIndex,
+    },
 }
 
 #[derive(Debug, Default)]

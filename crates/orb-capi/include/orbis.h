@@ -34,6 +34,7 @@
 #include "OrbRuntime.h"
 #include "OrbStats.h"
 #include "OrbTarget.h"
+#include "OrbTile.h"
 #include "OrbTransaction.h"
 #include "OrbWheelUnit.h"
 

@@ -11,12 +11,30 @@ use orb_style::{
 /// JS's default `tileSize`.
 const VECTOR_TILE_PX: f64 = 512.0;
 
+/// The tile URL template of a vector source the app feeds: the map asks
+/// the app for each tile instead of fetching it.
+pub const HOST_TILES: &str = "orbis-host:";
+
 /// Where a tile's bytes are.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TileLocation {
     Url(String),
     /// The archive URL without the `pmtiles://` protocol prefix.
     Pmtiles(String),
+    /// The app's answer for a tile of a source it feeds.
+    Host(HostTile),
+}
+
+/// What the app hands in for a tile of a source it feeds.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HostTile {
+    /// The tile in the source's encoding (MVT or MLT).
+    Encoded(Vec<u8>),
+    /// Its source layers as GeoJSON: a JSON object of layer names and
+    /// GeoJSON documents in longitude and latitude, which the map tiles.
+    GeoJson(String),
+    /// The tile has nothing in it.
+    Empty,
 }
 
 /// Where a source's tile jobs get their data (merged TileJSON for tiled
@@ -228,6 +246,11 @@ impl TileEndpoint {
             tile = tile.parent().expect("ancestor");
         }
         tile
+    }
+
+    /// Whether the app feeds the source's tiles ([`HOST_TILES`]).
+    pub fn host(&self) -> bool {
+        self.archive.is_none() && self.templates.iter().any(|t| t.starts_with(HOST_TILES))
     }
 
     pub fn location(&self, tile: TileIndex) -> TileLocation {

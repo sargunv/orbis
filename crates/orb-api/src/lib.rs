@@ -26,15 +26,15 @@ pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints, EaseOptions, Easing,
     FitOptions, FlyOptions, FreeCamera, Padding, Phase,
 };
-pub use orb_crs::{Geodetic, Projection, TileMatrixSet};
+pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
 pub use orb_hal::Tier;
 pub use orb_hal_gl::egl::EglWindow;
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes};
 pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_runtime::batteries::{Location, Marker};
 pub use orb_runtime::{
-    CameraState, ClusterQuery, FeatureTarget, FrameReport, Hit, MapEvent, Op, StyleImage,
-    Transaction, VideoRequest, json,
+    CameraState, ClusterQuery, FeatureTarget, FrameReport, HOST_TILES, Hit, HostTile, MapEvent, Op,
+    StyleImage, Transaction, VideoRequest, json,
 };
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Surface;

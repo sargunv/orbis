@@ -369,6 +369,7 @@ pub struct Map {
     pub(crate) candidates_dropped: u32,
     pub(crate) services: Services,
     pub(crate) videos: crate::video::Videos,
+    pub(crate) host_tiles: crate::host_tiles::HostTiles,
     /// The camera's only writer: the app's moves, the style's camera and
     /// gestures all go through it (decision 0042).
     pub(crate) camera: orb_camera::Camera,
@@ -559,6 +560,7 @@ impl Map {
             candidates_dropped: 0,
             services,
             videos: Default::default(),
+            host_tiles: Default::default(),
             camera: store,
             input: orb_interact::Interaction::default(),
             camera_seen: 0,
@@ -1736,7 +1738,8 @@ impl Map {
             }
         }
         let key = style.worker.plan().sources[index].key;
-        let request = TileRequest {
+        let host = endpoint.host();
+        let mut request = TileRequest {
             style: style.id,
             source: key,
             tile,
@@ -1757,7 +1760,81 @@ impl Map {
         if let Some(edit) = edit {
             *self.pending.entry(edit).or_default() += 1;
         }
+        // A tile of a source the app feeds goes with the app's answer.
+        if host {
+            let data_tile = request.data_tile();
+            match self.host_tiles.answer(key, data_tile) {
+                Some(answer) => request.location = crate::TileLocation::Host(answer.clone()),
+                None => {
+                    if self.host_tiles.wait(key, data_tile, request, edit) {
+                        let style = self.style.as_ref().expect("checked above");
+                        let source = style.worker.plan().source_def(index).id.clone();
+                        self.events.push(crate::MapEvent::TileRequest {
+                            source,
+                            tile: data_tile,
+                        });
+                    }
+                    return;
+                }
+            }
+        }
         self.load(request, edit, false);
+    }
+
+    /// The app's answer for a tile of source `id`, a source it feeds
+    /// ([`HOST_TILES`](crate::HOST_TILES)), at the tile a
+    /// [`MapEvent::TileRequest`](crate::MapEvent::TileRequest) named.
+    pub fn host_tile(
+        &mut self,
+        id: &str,
+        tile: TileIndex,
+        answer: crate::HostTile,
+    ) -> Result<(), String> {
+        let style = self.style.as_ref().ok_or("no style is loaded")?;
+        let plan = style.worker.plan();
+        let index = plan
+            .sources
+            .iter()
+            .position(|s| s.id == id)
+            .ok_or_else(|| format!("no source {id}"))?;
+        let SourceState::Ready { endpoint, .. } = &style.sources[index] else {
+            return Err(format!("{id} hasn't loaded"));
+        };
+        if !endpoint.host() {
+            return Err(format!("{id} isn't a source the app feeds"));
+        }
+        let (key, current) = (plan.sources[index].key, style.id);
+        for (mut request, edit) in self.host_tiles.answered(key, tile, answer.clone()) {
+            // Jobs of a replaced style have nothing to lay out.
+            if request.style == current {
+                request.location = crate::TileLocation::Host(answer.clone());
+                self.load(request, edit, false);
+            }
+        }
+        self.events.wake();
+        Ok(())
+    }
+
+    /// Asks the app for every tile of source `id` again: its data changed.
+    /// The drawn tiles stay until the new answers replace them.
+    pub fn reload_host_tiles(&mut self, id: &str) -> Result<(), String> {
+        let style = self.style.as_ref().ok_or("no style is loaded")?;
+        let plan = style.worker.plan();
+        let index = plan
+            .sources
+            .iter()
+            .position(|s| s.id == id)
+            .ok_or_else(|| format!("no source {id}"))?;
+        let key = plan.sources[index].key;
+        self.host_tiles.forget(key);
+        // Relayouts of the resident tiles, as an edit's: each replaces its
+        // tile's layers when it arrives.
+        let version = self.version;
+        for tile in self.resident_tiles(index, None) {
+            self.send_job(index, tile, None, false, Some(version));
+        }
+        self.events.wake();
+        Ok(())
     }
 
     /// Sends a request to the jobs; its result comes back as a message.

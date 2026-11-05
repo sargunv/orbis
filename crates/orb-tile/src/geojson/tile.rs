@@ -1,4 +1,4 @@
-use super::{Key, LAYER_NAME, Line, Options, Point, Projected, Shape};
+use super::{Key, Line, Options, Point, Projected, Shape};
 use crate::{GeometryType, LayerBuilder, TileFrame, Value};
 
 pub(super) fn create(features: &[Projected], (z, x, y): Key, options: &Options) -> TileFrame {
@@ -15,7 +15,7 @@ pub(super) fn create(features: &[Projected], (z, x, y): Key, options: &Options) 
             ((p.xy[1] * scale - f64::from(y)) * extent + 0.5).floor() as i32,
         ]
     };
-    let mut b = LayerBuilder::new(LAYER_NAME, options.extent);
+    let mut b = LayerBuilder::new(&options.layer, options.extent);
     b.clipped_at(options.buffer.round() as i32);
     for f in features {
         let ty = match f.shape {

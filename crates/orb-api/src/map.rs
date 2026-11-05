@@ -17,8 +17,8 @@ use orb_crs::{TileIndex, TileMatrixSet};
 use orb_interact::{Feel, Input};
 use orb_runtime::batteries::{Location, Marker};
 use orb_runtime::{
-    CameraState, ClusterQuery, FrameReport, GridTile, Hit, MapEvent, RenderMode, StyleImage,
-    Transaction, VideoRequest, Viewport,
+    CameraState, ClusterQuery, FrameReport, GridTile, Hit, HostTile, MapEvent, RenderMode,
+    StyleImage, Transaction, VideoRequest, Viewport,
 };
 
 use crate::{Error, Runtime, Shared, Target};
@@ -376,6 +376,25 @@ impl Map {
         };
         self.map
             .source_frame(id, frame)
+            .map_err(Error::InvalidArgument)
+    }
+
+    /// The app's answer for `tile` of source `id`, a vector source it
+    /// feeds (`"tiles": ["orbis-host:"]`), as a [`MapEvent::TileRequest`]
+    /// asked: the tile encoded, its layers as GeoJSON, or empty.
+    pub fn host_tile(&mut self, id: &str, tile: TileIndex, answer: HostTile) -> Result<(), Error> {
+        self.dirty = true;
+        self.map
+            .host_tile(id, tile, answer)
+            .map_err(Error::InvalidArgument)
+    }
+
+    /// Asks for every tile of the app's source `id` again, as its data
+    /// changed; drawn tiles stay until the new ones replace them.
+    pub fn reload_host_tiles(&mut self, id: &str) -> Result<(), Error> {
+        self.dirty = true;
+        self.map
+            .reload_host_tiles(id)
             .map_err(Error::InvalidArgument)
     }
 

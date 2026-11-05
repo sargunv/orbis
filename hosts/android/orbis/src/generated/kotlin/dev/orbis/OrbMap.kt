@@ -176,6 +176,55 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * The app's tile of source `source`, which it feeds, in the
+     * source's encoding (MVT or MLT), for the tile a `TileRequest`
+     * named.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun hostTile(source: String, tile: OrbTile, bytes: ByteArray) {
+        OrbisNative.orbMapHostTile(live(), source.encodeToByteArray(), tile.z.toByte(), tile.x.toInt(), tile.y.toInt(), bytes)
+    }
+
+    /**
+     * The app's tile as GeoJSON: a JSON object of source layer names
+     * and GeoJSON documents in longitude and latitude, which the map
+     * tiles (a custom geometry source).
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun hostTileGeojson(source: String, tile: OrbTile, layers: String) {
+        OrbisNative.orbMapHostTileGeojson(live(), source.encodeToByteArray(), tile.z.toByte(), tile.x.toInt(), tile.y.toInt(), layers.encodeToByteArray())
+    }
+
+    /**
+     * The app's tile has nothing in it.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun hostTileEmpty(source: String, tile: OrbTile) {
+        OrbisNative.orbMapHostTileEmpty(live(), source.encodeToByteArray(), tile.z.toByte(), tile.x.toInt(), tile.y.toInt())
+    }
+
+    /**
+     * Asks for every tile of the app's source `source` again, as its
+     * data changed; drawn tiles stay until the new ones replace them.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun reloadHostTiles(source: String) {
+        OrbisNative.orbMapReloadHostTiles(live(), source.encodeToByteArray())
+    }
+
+    /**
      * The video of source `id` can't play here: it draws nothing.
      *
      * Contract: `command`.

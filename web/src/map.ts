@@ -32,6 +32,7 @@ type CoreEvent =
   | { type: "animationend"; id: number; interrupted: boolean }
   | { type: "click"; x: number; y: number; button: number }
   | { type: "dblclick"; x: number; y: number }
+  | { type: "tilerequest"; source: string; z: number; x: number; y: number }
   | VideoEventObject;
 
 /** The camera: its state, moves and limits. */
@@ -367,6 +368,25 @@ export class OrbisMap {
     this.#request();
   }
 
+  /** The app's answer for a `tilerequest` of a source it feeds
+   * (`{"type": "vector", "tiles": ["orbis-host:"]}`): the tile in the
+   * source's encoding, or its source layers as GeoJSON (`{"roads": {...}}`,
+   * which the map tiles), or null for an empty tile. */
+  setHostTile(source: string, tile: { z: number; x: number; y: number },
+    data: Uint8Array | ArrayBuffer | Record<string, object> | null): void {
+    const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data instanceof Uint8Array ? data : undefined;
+    const geojson = data && !bytes ? JSON.stringify(data) : undefined;
+    this.#host.core.hostTile(source, tile.z, tile.x, tile.y, bytes, geojson);
+    this.#request();
+  }
+
+  /** Asks for every tile of the app's source again: its data changed. Drawn
+   * tiles stay until the new ones replace them. */
+  reloadHostTiles(source: string): void {
+    this.#host.core.reloadHostTiles(source);
+    this.#request();
+  }
+
   /** The picture a `canvas` source shows now ({"type": "canvas", "canvas":
    * name, "coordinates": …}): the app draws it, and hands each new one in. */
   setSourceFrame(source: string, image: StyleImageData): void {
@@ -506,6 +526,9 @@ export class OrbisMap {
         case "animationend":
           this.#animations.get(event.id)?.(!event.interrupted);
           this.#animations.delete(event.id);
+          break;
+        case "tilerequest":
+          this.#events.emit("tilerequest", { source: event.source, z: event.z, x: event.x, y: event.y });
           break;
         case "click": case "dblclick": {
           if (!this.#events.has(event.type)) break;

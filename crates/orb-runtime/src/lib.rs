@@ -14,6 +14,7 @@ mod frame;
 mod geojson;
 mod globe;
 mod glyphs;
+mod host_tiles;
 mod image;
 mod job_host;
 mod jobs;
@@ -88,6 +89,7 @@ pub use orb_render::{
     ARGS_WORDS, DESKTOP_BUDGET, ImageMetadata, MOBILE_BUDGET, PoolMemory, SceneCapacity,
     SceneMemory, TargetFormat,
 };
+pub use orb_source::endpoint::{HOST_TILES, HostTile};
 pub use orb_v8::{FeatureTarget, Op, Transaction};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};
 pub use queries::QueryDone;

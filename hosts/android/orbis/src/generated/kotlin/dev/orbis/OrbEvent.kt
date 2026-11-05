@@ -136,6 +136,17 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Tile requests: the tile (zeros otherwise).
+     *
+     * Contract: `snapshot`.
+     */
+    fun tile(): OrbTile {
+        synchronized(this) {
+            return OrbisNative.orbEventTile(live())
+        }
+    }
+
+    /**
      * Video seeks: the time in seconds (0 otherwise).
      *
      * Contract: `snapshot`.

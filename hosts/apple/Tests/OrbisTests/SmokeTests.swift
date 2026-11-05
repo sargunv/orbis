@@ -21,7 +21,7 @@ private let style = """
     """
 
 @Test func smoke() throws {
-    #expect(OrbRuntime.abiVersion() == 7)
+    #expect(OrbRuntime.abiVersion() == 8)
     let runtime = try OrbRuntime.create(jobThreads: 0)
     let target = OrbTarget.createTexture(runtime: runtime, width: 64, height: 64, scale: 1)
     let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)

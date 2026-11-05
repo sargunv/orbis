@@ -620,6 +620,20 @@ mod ffi {
         /// Something in the style or its data the map can't draw as
         /// written; `text` says what.
         Warning = 18,
+        /// The map needs `tile` of source `text`, a vector source the app
+        /// feeds (`"tiles": ["orbis-host:"]`): answer with `host_tile`,
+        /// `host_tile_geojson` or `host_tile_empty`. Once per tile until
+        /// answered.
+        TileRequest = 19,
+    }
+
+    /// A tile: its zoom, column and row on its source's grid.
+    #[diplomat::attr(contract, thread = "any")]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct OrbTile {
+        pub z: u8,
+        pub x: u32,
+        pub y: u32,
     }
 
     /// For camera events: what changed.
@@ -838,6 +852,19 @@ mod ffi {
             }
         }
 
+        /// Tile requests: the tile (zeros otherwise).
+        #[diplomat::attr(contract, snapshot)]
+        pub fn tile(&self) -> OrbTile {
+            match &self.0 {
+                orb_api::Event::Map(orb_api::MapEvent::TileRequest { tile, .. }) => OrbTile {
+                    z: tile.z,
+                    x: tile.col,
+                    y: tile.row,
+                },
+                _ => OrbTile { z: 0, x: 0, y: 0 },
+            }
+        }
+
         /// Video seeks: the time in seconds (0 otherwise).
         #[diplomat::attr(contract, snapshot)]
         pub fn seconds(&self) -> f64 {
@@ -862,7 +889,8 @@ mod ffi {
                 },
                 orb_api::Event::Map(
                     orb_api::MapEvent::SourceData { source, .. }
-                    | orb_api::MapEvent::Video { source, .. },
+                    | orb_api::MapEvent::Video { source, .. }
+                    | orb_api::MapEvent::TileRequest { source, .. },
                 ) => source,
                 orb_api::Event::Map(
                     orb_api::MapEvent::Error { message } | orb_api::MapEvent::Warning { message },
@@ -1348,6 +1376,58 @@ mod ffi {
             self.0
                 .source_frame(&text(id), width, height, pixels.to_vec())
                 .map_err(fail)
+        }
+
+        /// The app's tile of source `source`, which it feeds, in the
+        /// source's encoding (MVT or MLT), for the tile a `TileRequest`
+        /// named.
+        #[diplomat::attr(contract, command)]
+        pub fn host_tile(
+            &mut self,
+            source: &DiplomatStr,
+            tile: OrbTile,
+            bytes: &[u8],
+        ) -> Result<(), OrbError> {
+            let answer = orb_api::HostTile::Encoded(bytes.to_vec());
+            self.0
+                .host_tile(&text(source), crate::tile(tile), answer)
+                .map_err(fail)
+        }
+
+        /// The app's tile as GeoJSON: a JSON object of source layer names
+        /// and GeoJSON documents in longitude and latitude, which the map
+        /// tiles (a custom geometry source).
+        #[diplomat::attr(contract, command)]
+        pub fn host_tile_geojson(
+            &mut self,
+            source: &DiplomatStr,
+            tile: OrbTile,
+            layers: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            let answer = orb_api::HostTile::GeoJson(text(layers).into_owned());
+            self.0
+                .host_tile(&text(source), crate::tile(tile), answer)
+                .map_err(fail)
+        }
+
+        /// The app's tile has nothing in it.
+        #[diplomat::attr(contract, command)]
+        pub fn host_tile_empty(
+            &mut self,
+            source: &DiplomatStr,
+            tile: OrbTile,
+        ) -> Result<(), OrbError> {
+            let answer = orb_api::HostTile::Empty;
+            self.0
+                .host_tile(&text(source), crate::tile(tile), answer)
+                .map_err(fail)
+        }
+
+        /// Asks for every tile of the app's source `source` again, as its
+        /// data changed; drawn tiles stay until the new ones replace them.
+        #[diplomat::attr(contract, command)]
+        pub fn reload_host_tiles(&mut self, source: &DiplomatStr) -> Result<(), OrbError> {
+            self.0.reload_host_tiles(&text(source)).map_err(fail)
         }
 
         /// The video of source `id` can't play here: it draws nothing.
@@ -1931,7 +2011,7 @@ use std::ptr::NonNull;
 use ffi::{OrbError, OrbEventKind};
 
 /// Bumped on every incompatible change to the C ABI while it is 0.x.
-const ABI_VERSION: u32 = 7;
+const ABI_VERSION: u32 = 8;
 
 thread_local! {
     static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
@@ -2066,6 +2146,10 @@ fn camera_target(t: ffi::OrbCameraTarget, padding: orb_api::Padding) -> orb_api:
     }
 }
 
+fn tile(t: ffi::OrbTile) -> orb_api::TileIndex {
+    orb_api::TileIndex::new(t.z, t.x, t.y)
+}
+
 fn point(p: Option<glam::DVec2>) -> ffi::OrbPoint {
     match p {
         Some(p) => ffi::OrbPoint {
@@ -2139,6 +2223,7 @@ fn event_kind(event: &orb_api::Event) -> OrbEventKind {
         }
         Event::Map(MapEvent::Click { .. }) => OrbEventKind::Click,
         Event::Map(MapEvent::DoubleClick { .. }) => OrbEventKind::DoubleClick,
+        Event::Map(MapEvent::TileRequest { .. }) => OrbEventKind::TileRequest,
         Event::Query { .. } => OrbEventKind::QueryResult,
     }
 }

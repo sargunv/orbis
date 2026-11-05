@@ -82,7 +82,14 @@ enum class OrbEventKind(val value: Int) {
      * Something in the style or its data the map can't draw as
      * written; `text` says what.
      */
-    Warning(18);
+    Warning(18),
+    /**
+     * The map needs `tile` of source `text`, a vector source the app
+     * feeds (`"tiles": ["orbis-host:"]`): answer with `host_tile`,
+     * `host_tile_geojson` or `host_tile_empty`. Once per tile until
+     * answered.
+     */
+    TileRequest(19);
 
     companion object {
         @JvmStatic

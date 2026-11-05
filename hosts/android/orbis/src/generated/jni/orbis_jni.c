@@ -22,6 +22,7 @@ static jmethodID g_new_OrbLngLat;
 static jmethodID g_new_OrbModifiers;
 static jmethodID g_new_OrbPadding;
 static jmethodID g_new_OrbPoint;
+static jmethodID g_new_OrbTile;
 static jmethodID g_new_OrbError_exception;
 
 /* The calling thread's JNIEnv, attaching the thread if the JVM doesn't
@@ -119,6 +120,7 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     g_new_OrbModifiers = (*env)->GetStaticMethodID(env, g_native, "newOrbModifiers", "(ZZZZ)Ldev/orbis/OrbModifiers;");
     g_new_OrbPadding = (*env)->GetStaticMethodID(env, g_native, "newOrbPadding", "(DDDD)Ldev/orbis/OrbPadding;");
     g_new_OrbPoint = (*env)->GetStaticMethodID(env, g_native, "newOrbPoint", "(DDZ)Ldev/orbis/OrbPoint;");
+    g_new_OrbTile = (*env)->GetStaticMethodID(env, g_native, "newOrbTile", "(BII)Ldev/orbis/OrbTile;");
     g_new_OrbError_exception = (*env)->GetStaticMethodID(env, g_native, "newOrbErrorException", "(I[B)Ljava/lang/Throwable;");
     if ((*env)->ExceptionCheck(env)) return JNI_ERR;
     return JNI_VERSION_1_6;
@@ -247,6 +249,13 @@ JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbEventUrls(JNIEnv* env
     DiplomatWrite* write = diplomat_buffer_write_create(0);
     OrbEvent_urls((const OrbEvent*)(intptr_t)self, write);
     return write_to_bytes(env, write);
+}
+
+JNIEXPORT jobject JNICALL Java_dev_orbis_OrbisNative_orbEventTile(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    OrbTile result = OrbEvent_tile((const OrbEvent*)(intptr_t)self);
+    return (*env)->CallStaticObjectMethod(env, g_native, g_new_OrbTile, (jbyte)((result).z), (jint)((result).x), (jint)((result).y));
 }
 
 JNIEXPORT jdouble JNICALL Java_dev_orbis_OrbisNative_orbEventSeconds(JNIEnv* env, jclass cls, jlong self) {
@@ -466,6 +475,70 @@ JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSourceFrame(JNIEnv* env,
     OrbMap_source_frame_result result = OrbMap_source_frame((OrbMap*)(intptr_t)self, id_view, (uint32_t)(width), (uint32_t)(height), pixels_view);
     (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
     (*env)->ReleaseByteArrayElements(env, pixels, pixels_items, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapHostTile(JNIEnv* env, jclass cls, jlong self, jbyteArray source, jbyte tile_z, jint tile_x, jint tile_y, jbyteArray bytes) {
+    (void)env;
+    (void)cls;
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    jbyte* bytes_items = (*env)->GetByteArrayElements(env, bytes, NULL);
+    if (!bytes_items) return;
+    DiplomatU8View bytes_view = { (const uint8_t*)bytes_items, (size_t)(*env)->GetArrayLength(env, bytes) };
+    OrbMap_host_tile_result result = OrbMap_host_tile((OrbMap*)(intptr_t)self, source_view, (OrbTile){ .z = (uint8_t)(tile_z), .x = (uint32_t)(tile_x), .y = (uint32_t)(tile_y) }, bytes_view);
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, bytes, bytes_items, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapHostTileGeojson(JNIEnv* env, jclass cls, jlong self, jbyteArray source, jbyte tile_z, jint tile_x, jint tile_y, jbyteArray layers) {
+    (void)env;
+    (void)cls;
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    jbyte* layers_bytes = (*env)->GetByteArrayElements(env, layers, NULL);
+    if (!layers_bytes) return;
+    DiplomatStringView layers_view = { (const char*)layers_bytes, (size_t)(*env)->GetArrayLength(env, layers) };
+    OrbMap_host_tile_geojson_result result = OrbMap_host_tile_geojson((OrbMap*)(intptr_t)self, source_view, (OrbTile){ .z = (uint8_t)(tile_z), .x = (uint32_t)(tile_x), .y = (uint32_t)(tile_y) }, layers_view);
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, layers, layers_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapHostTileEmpty(JNIEnv* env, jclass cls, jlong self, jbyteArray source, jbyte tile_z, jint tile_x, jint tile_y) {
+    (void)env;
+    (void)cls;
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    OrbMap_host_tile_empty_result result = OrbMap_host_tile_empty((OrbMap*)(intptr_t)self, source_view, (OrbTile){ .z = (uint8_t)(tile_z), .x = (uint32_t)(tile_x), .y = (uint32_t)(tile_y) });
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapReloadHostTiles(JNIEnv* env, jclass cls, jlong self, jbyteArray source) {
+    (void)env;
+    (void)cls;
+    jbyte* source_bytes = (*env)->GetByteArrayElements(env, source, NULL);
+    if (!source_bytes) return;
+    DiplomatStringView source_view = { (const char*)source_bytes, (size_t)(*env)->GetArrayLength(env, source) };
+    OrbMap_reload_host_tiles_result result = OrbMap_reload_host_tiles((OrbMap*)(intptr_t)self, source_view);
+    (*env)->ReleaseByteArrayElements(env, source, source_bytes, JNI_ABORT);
     if (!result.is_ok) {
         throw_OrbError(env, result.err);
         return;

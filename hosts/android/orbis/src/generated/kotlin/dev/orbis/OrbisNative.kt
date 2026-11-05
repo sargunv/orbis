@@ -66,6 +66,9 @@ internal object OrbisNative {
     external fun orbEventUrls(self: Long): ByteArray
 
     @JvmStatic
+    external fun orbEventTile(self: Long): OrbTile
+
+    @JvmStatic
     external fun orbEventSeconds(self: Long): Double
 
     @JvmStatic
@@ -139,6 +142,18 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbMapSourceFrame(self: Long, id: ByteArray, width: Int, height: Int, pixels: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapHostTile(self: Long, source: ByteArray, tile_z: Byte, tile_x: Int, tile_y: Int, bytes: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapHostTileGeojson(self: Long, source: ByteArray, tile_z: Byte, tile_x: Int, tile_y: Int, layers: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapHostTileEmpty(self: Long, source: ByteArray, tile_z: Byte, tile_x: Int, tile_y: Int): Unit
+
+    @JvmStatic
+    external fun orbMapReloadHostTiles(self: Long, source: ByteArray): Unit
 
     @JvmStatic
     external fun orbMapVideoFailed(self: Long, id: ByteArray, message: ByteArray): Unit
@@ -451,6 +466,9 @@ internal object OrbisNative {
 
     @JvmStatic
     fun newOrbPoint(x: Double, y: Double, valid: Boolean): OrbPoint = OrbPoint(x, y, valid)
+
+    @JvmStatic
+    fun newOrbTile(z: Byte, x: Int, y: Int): OrbTile = OrbTile(z.toUByte(), x.toUInt(), y.toUInt())
 
     @JvmStatic
     fun newOrbErrorException(value: Int, message: ByteArray): Throwable =

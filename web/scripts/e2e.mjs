@@ -5,7 +5,8 @@
 //   pixels, a hit test, a rendered-features query, an edit's generation,
 //   style images, camera moves with roll and elevation, project and
 //   unproject (for the camera now and another), padding, the free camera, a
-//   clustered source's queries, a GeoJSON diff, a canvas source, a drag, a click, idle drawing nothing, and an error.
+//   clustered source's queries, a GeoJSON diff, a canvas source, a source
+//   the app feeds, a drag, a click, idle drawing nothing, and an error.
 // - `edits`: every edit class through the map app's edit API
 //   (`globalThis.orbis`, web/demo/expose.js) must resolve and settle, and
 //   the cost of a feature-state write (plan §10.2's ≤0.05 ms target) over
@@ -258,6 +259,21 @@ async function scenario(browser, server, config) {
     return (await s.map.queryRenderedFeatures(c, { layers: ["box"] }))[0]?.properties;
   }, CENTER);
   assert.deepEqual(updated, { name: "seven" });
+
+  // A source the app feeds: the map asks for its tile, the app answers.
+  await scenario(async (s) => {
+    s.map.on("tilerequest", ({ source, z, x, y }) => {
+      if (source !== "app") return;
+      s.map.setHostTile("app", { z, x, y }, { shapes: { type: "Feature", properties: {}, geometry: { type: "Polygon",
+        coordinates: [[[-20, -20], [20, -20], [20, 20], [-20, 20], [-20, -20]]] } } });
+    });
+    await s.shows(s.map.edit((tx) => tx
+      .addSource("app", { type: "vector", tiles: ["orbis-host:"], maxzoom: 0 })
+      .addLayer({ id: "app", type: "fill", source: "app", "source-layer": "shapes", paint: { "fill-color": "#ff00ff" } })));
+    await s.idle();
+  });
+  image = await pixels();
+  assert.deepEqual(pixel(image, CENTER), [255, 0, 255], "the app's tile");
   assert.deepEqual(errors, []);
   console.log(`scenario: ${config} passed`);
   await page.close();

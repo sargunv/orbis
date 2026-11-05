@@ -37,6 +37,9 @@ pub struct Options {
     /// The plane to tile in: a one-tile quadtree whose zoom-0 tile is the
     /// index's unit square. `None` is Web Mercator, as GL JS tiles.
     pub plane: Option<std::sync::Arc<orb_crs::TileMatrixSet>>,
+    /// The tiles' layer: [`LAYER_NAME`], or a source layer an app's tile
+    /// names.
+    pub layer: String,
 }
 
 impl Default for Options {
@@ -52,6 +55,7 @@ impl Default for Options {
             index_max_zoom: 5,
             index_max_points: 100_000,
             plane: None,
+            layer: LAYER_NAME.into(),
         }
     }
 }

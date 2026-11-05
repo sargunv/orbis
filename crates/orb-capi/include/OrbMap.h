@@ -26,6 +26,7 @@
 #include "OrbPointerKind.d.h"
 #include "OrbRuntime.d.h"
 #include "OrbTarget.d.h"
+#include "OrbTile.d.h"
 #include "OrbTransaction.d.h"
 #include "OrbWheelUnit.d.h"
 
@@ -73,6 +74,18 @@ void OrbMap_set_plays_video(OrbMap* self, bool plays);
 
 typedef struct OrbMap_source_frame_result {union { OrbError err;}; bool is_ok;} OrbMap_source_frame_result;
 OrbMap_source_frame_result OrbMap_source_frame(OrbMap* self, DiplomatStringView id, uint32_t width, uint32_t height, DiplomatU8View pixels);
+
+typedef struct OrbMap_host_tile_result {union { OrbError err;}; bool is_ok;} OrbMap_host_tile_result;
+OrbMap_host_tile_result OrbMap_host_tile(OrbMap* self, DiplomatStringView source, OrbTile tile, DiplomatU8View bytes);
+
+typedef struct OrbMap_host_tile_geojson_result {union { OrbError err;}; bool is_ok;} OrbMap_host_tile_geojson_result;
+OrbMap_host_tile_geojson_result OrbMap_host_tile_geojson(OrbMap* self, DiplomatStringView source, OrbTile tile, DiplomatStringView layers);
+
+typedef struct OrbMap_host_tile_empty_result {union { OrbError err;}; bool is_ok;} OrbMap_host_tile_empty_result;
+OrbMap_host_tile_empty_result OrbMap_host_tile_empty(OrbMap* self, DiplomatStringView source, OrbTile tile);
+
+typedef struct OrbMap_reload_host_tiles_result {union { OrbError err;}; bool is_ok;} OrbMap_reload_host_tiles_result;
+OrbMap_reload_host_tiles_result OrbMap_reload_host_tiles(OrbMap* self, DiplomatStringView source);
 
 typedef struct OrbMap_video_failed_result {union { OrbError err;}; bool is_ok;} OrbMap_video_failed_result;
 OrbMap_video_failed_result OrbMap_video_failed(OrbMap* self, DiplomatStringView id, DiplomatStringView message);

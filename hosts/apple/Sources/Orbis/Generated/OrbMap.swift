@@ -178,6 +178,59 @@ public final class OrbMap {
         }
     }
 
+    /// The app's tile of source `source`, which it feeds, in the
+    /// source's encoding (MVT or MLT), for the tile a `TileRequest`
+    /// named.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func hostTile(source: String, tile: OrbTile, bytes: [UInt8]) throws {
+        let result = withStringView(source) { sourceView in withSliceView(bytes) { bytesView in OrbMap_host_tile(live(), sourceView, tile.c, bytesView) } }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// The app's tile as GeoJSON: a JSON object of source layer names
+    /// and GeoJSON documents in longitude and latitude, which the map
+    /// tiles (a custom geometry source).
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func hostTileGeojson(source: String, tile: OrbTile, layers: String) throws {
+        let result = withStringView(source) { sourceView in withStringView(layers) { layersView in OrbMap_host_tile_geojson(live(), sourceView, tile.c, layersView) } }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// The app's tile has nothing in it.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func hostTileEmpty(source: String, tile: OrbTile) throws {
+        let result = withStringView(source) { sourceView in OrbMap_host_tile_empty(live(), sourceView, tile.c) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Asks for every tile of the app's source `source` again, as its
+    /// data changed; drawn tiles stay until the new ones replace them.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func reloadHostTiles(source: String) throws {
+        let result = withStringView(source) { sourceView in OrbMap_reload_host_tiles(live(), sourceView) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
     /// The video of source `id` can't play here: it draws nothing.
     ///
     /// Contract: `command`.

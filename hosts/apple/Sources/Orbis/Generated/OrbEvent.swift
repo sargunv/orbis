@@ -89,6 +89,13 @@ public final class OrbEvent: @unchecked Sendable {
         return withWrite { write in OrbEvent_urls(handle, write) }.text
     }
 
+    /// Tile requests: the tile (zeros otherwise).
+    ///
+    /// Contract: `snapshot`.
+    public func tile() -> OrbTile {
+        return OrbTile(OrbEvent_tile(handle))
+    }
+
     /// Video seeks: the time in seconds (0 otherwise).
     ///
     /// Contract: `snapshot`.
