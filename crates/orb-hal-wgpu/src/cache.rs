@@ -1,5 +1,5 @@
-//! Native pipeline caches (plan §8.4: warm starts use native pipeline
-//! caches). Where the driver supports them (Vulkan), pipelines are made
+//! Native pipeline caches: warm starts use native pipeline caches. Where
+//! the driver supports them (Vulkan), pipelines are made
 //! through one cache, whose data the host keeps between runs; browsers and
 //! Metal keep their own.
 //!

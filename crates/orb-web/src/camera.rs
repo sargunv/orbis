@@ -1,4 +1,4 @@
-//! The map's camera and input on the page (plan §7.1): DOM input with its
+//! The map's camera and input on the page: DOM input with its
 //! event times, camera moves, and synchronous `project` and `unproject`.
 //! Camera targets and options cross as the package's own objects
 //! (`CameraOptions`, `FlyOptions`, `FitOptions` in `web/src/types.ts`),

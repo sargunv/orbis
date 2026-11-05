@@ -1,5 +1,5 @@
 //! The map's canvas and the GPU drawing into it: WebGPU (the Modern tier,
-//! `core.wasm`) or WebGL2 (Compat, `compat.wasm`; plan §8.7). A build with
+//! `core.wasm`) or WebGL2 (Compat, `compat.wasm`). A build with
 //! both tries WebGPU first.
 
 use orb_hal::{Gpu, HostBytesId, HostImageId, TextureId};

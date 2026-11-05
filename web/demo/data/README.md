@@ -27,7 +27,7 @@ sprites once served.
   CC BY design licences; see [STYLE-LICENSE.md](STYLE-LICENSE.md).
   Upstream style SHA-256: `408245464e76791801a64393c403433d09e8110eb9516040f8dc2b62584eee2a`.
 - `alps.json` and `alps-flight.json`: the terrain demo (`?style=alps&flight`
-  on the web, `--flight` natively; decision 0019), written for this
+  on the web, `--flight` natively), written for this
   repository. It draws OpenFreeMap's planet tiles (data as above) over
   [Mapterhorn](https://mapterhorn.com/)'s terrain tiles, fetched at run time
   and not committed: Terrarium-encoded WebP from open elevation data,
@@ -39,24 +39,24 @@ sprites once served.
   The flight's legs are `flyTo` options looped until the user takes the
   camera.
 - `alps-sunlit.json`: a scene document over `alps.json` that lights it by a
-  morning sun over Zermatt and an ambient sky (decision 0026), written for
+  morning sun over Zermatt and an ambient sky, written for
   this repository; `?style=alps-sunlit&flight`.
 - `alps-hiking.json`: a scene document over `alps.json` under a summer
   morning sun, adding `contour` lines (worked out on the GPU from the
   same DEM) and dashed trails. Written for this repository;
   `?style=alps-hiking`.
 - `manhattan.json`: a scene document over OpenFreeMap's Liberty (data as
-  above): Midtown lit by an October afternoon sun that casts shadows
-  (decision 0046), labels hidden behind buildings, written for this
+  above): Midtown lit by an October afternoon sun that casts shadows,
+  labels hidden behind buildings, written for this
   repository; `?style=manhattan`.
 - `tokyo-landmarks.json` and `models/`: a scene document over OpenFreeMap's
   Liberty (data as above): Shiba Park lit by a November afternoon sun, with
   three glTF landmarks (a lattice tower, a torii and a pagoda) that the
-  demo's entry places at GeoJSON points in a `model` layer (decision 0047);
+  demo's entry places at GeoJSON points in a `model` layer;
   `?style=landmarks`. The models are built from boxes, frusta and prisms by
   `cargo xtask demo-data models`; both are written for this repository.
 - `lit/tokyo-*.json`: scene documents over OpenFreeMap's Liberty (data as
-  above) that light the whole map (decision 0048) over central Tokyo at
+  above) that light the whole map over central Tokyo at
   morning, noon, dusk and night: glossy water with waves, and at night
   streets that light themselves and buildings with lit windows. They
   repaint Liberty's buildings solid and a warmer mid-tone. Written
@@ -64,7 +64,7 @@ sprites once served.
 - `lit/earth.json`: a scene document with its own low-zoom globe style
   (OpenFreeMap's Natural Earth relief and OpenMapTiles water, borders and
   country names) under the sun on a November afternoon, NASA's Black
-  Marble (VIIRS, via NASA GIBS) as its night lights (decision 0048).
+  Marble (VIIRS, via NASA GIBS) as its night lights.
   Written for this repository; `?style=lit-earth`.
 - `scripts.json`: the Cairo, Delhi and Bangkok entries' style
   (`?style=cairo|delhi|bangkok`, or `scripts`), written for this repository. It draws OpenFreeMap's
@@ -125,7 +125,7 @@ them; they are never silently stringified. The real extract has none.
 
 ## Other projections (`crs/`)
 
-Scene documents (plan §11.4) with their v8 styles inline, written for this
+Scene documents with their v8 styles inline, written for this
 repository; the web demo opens them as `?style=arctic`, `?style=nz`,
 `?style=equal-earth`, `?style=blue-marble` and `?style=greenland`, the
 native demo as

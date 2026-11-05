@@ -7,7 +7,7 @@ use orb_expr::{Diagnostic, Value};
 use crate::{Atmosphere, FontFaces, Layer, Lights, Source, Sprite, Terrain, Transition};
 
 /// Which document a style is: v8 as it is, or a style a scene document
-/// extends (plan §11.1), whose layers may be the scene's types (`model`)
+/// extends, whose layers may be the scene's types (`model`)
 /// and whose root may declare `models`. v8 documents never mean more than
 /// v8 says.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -17,7 +17,7 @@ pub enum Dialect {
     Scene,
 }
 
-/// The native scene document (plan §11.2): what a v8 style and a scene
+/// The native scene document: what a v8 style and a scene
 /// document that extends it parse into, merged.
 #[derive(Clone, Debug)]
 pub struct Scene {
@@ -39,11 +39,11 @@ pub struct Scene {
     pub glyphs: Option<String>,
     /// Font files for `text-font` names (the root `font-faces`).
     pub font_faces: FontFaces,
-    /// The lights: v8's `light` lowered (decision 0026).
+    /// The lights: v8's `light` lowered.
     pub lights: Lights,
     /// The root `state`: each global state property's default.
     pub state: Vec<(String, Value<'static>)>,
-    /// The atmosphere: v8's `sky` lowered (decision 0025).
+    /// The atmosphere: v8's `sky` lowered.
     pub atmosphere: Option<Atmosphere>,
     pub terrain: Option<Terrain>,
     /// The low-zoom surface the plane's tiles draw on: the scene

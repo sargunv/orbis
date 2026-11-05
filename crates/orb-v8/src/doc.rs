@@ -40,7 +40,7 @@ pub struct StyleDoc {
     decoration: Arc<Decoration>,
 }
 
-/// What a scene document sets over the style it extends (plan §11.1, S0):
+/// What a scene document sets over the style it extends:
 /// it decorates the style's v8 meaning, never edits it, so every snapshot
 /// of the style gets it again.
 #[derive(Clone, Debug, Default)]
@@ -137,7 +137,7 @@ impl StyleDoc {
         Ok(Self::from_parts(style, &root))
     }
 
-    /// A v8 document as a scene document extends it (plan §11.1, S0):
+    /// A v8 document as a scene document extends it:
     /// with the scene's `models` (resolved URLs), the paint it sets on
     /// the style's layers and its added layers, in
     /// the scene dialect, under the scene's projection, tile matrix sets,

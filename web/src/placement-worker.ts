@@ -1,4 +1,4 @@
-// The placement worker: places the map's labels (decision 0009),
+// The placement worker: places the map's labels,
 // answering each frame with its commit, transferred, or with `{error}`
 // when it couldn't place it; a trapped one says it is lost and closes.
 //

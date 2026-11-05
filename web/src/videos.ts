@@ -1,4 +1,4 @@
-// The page's video player (decision 0039): the map asks for each video
+// The page's video player: the map asks for each video
 // source's playback with `video` events, and each frame the element
 // presents goes to the map, which copies the element's current frame into
 // its texture (`copyExternalImageToTexture`).

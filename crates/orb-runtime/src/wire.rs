@@ -1,4 +1,4 @@
-//! The one codec for messages between workers (decision 0044): postcard
+//! The one codec for messages between workers: postcard
 //! over serde, for style updates, sprite icons, tile requests and replies,
 //! placement messages and glyph bitmaps. Mesh and table streams travel
 //! beside a message, raw, so they can be transferred.

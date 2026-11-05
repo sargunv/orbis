@@ -1,6 +1,6 @@
-// The wasm map on the page's thread (plan §7.2), with its job workers and
-// placement worker (plan §7.1, workers.ts), and its recovery from a lost
-// GPU (plan §8.8): the same tier again where it works, else WebGL2.
+// The wasm map on the page's thread, with its job workers and
+// placement worker (workers.ts), and its recovery from a lost
+// GPU: the same tier again where it works, else WebGL2.
 
 import init, { createMap as createCoreMap, reloadRegions, setRequestHook, type OrbisMap as Core } from "../pkg/core.js";
 import { onRegionsChanged } from "./regions.ts";

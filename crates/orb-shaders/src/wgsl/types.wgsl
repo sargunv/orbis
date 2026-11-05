@@ -52,7 +52,7 @@ struct Frame {
     pitch: f32,
     roll: f32,
     // Where a caster's shadow falls on the ground per world unit of its
-    // height, when the directional light casts shadows (decision 0046).
+    // height, when the directional light casts shadows.
     shadow_reach: vec2<f32>,
     // The terrain's DEM unpack vector (metres = r·x + g·y + b·z − w),
     // its exaggeration (0 without terrain) and DEM pixels per side.
@@ -62,7 +62,7 @@ struct Frame {
     // The target's clip w (orb-camera's `View::camera_to_center`).
     camera_to_center: f32,
     _pad4: f32,
-    // The style's lights (decision 0026; see lighting.wgsl): the ambient
+    // The style's lights (see lighting.wgsl): the ambient
     // and directional colours with their levels in w, and the vector
     // toward the directional light in tile axes, w = 1 when terrain is lit.
     light_ambient: vec4<f32>,

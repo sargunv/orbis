@@ -11,7 +11,7 @@ use orb_shaders::{EXTRUSION_CUT_SHADER, EXTRUSION_PLANES_SHADER, EXTRUSION_SHADE
 pub(crate) struct Extrusions {
     /// Whole buildings; cut ones clipped per fragment, which alone discard;
     /// and where clip distances are, cut ones clipped by planes. Unlit then
-    /// lit (decision 0048), at one sample and at four.
+    /// lit, at one sample and at four.
     pipelines: [[[Option<RenderPipelineId>; 2]; 2]; 3],
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,

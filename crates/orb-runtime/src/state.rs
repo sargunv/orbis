@@ -1,4 +1,4 @@
-//! Feature state (plan §10.2): per source and source layer, feature id →
+//! Feature state: per source and source layer, feature id →
 //! state index; the states set on them; and the GPU table the shaders read
 //! through each mesh's slot → index remap.
 //!

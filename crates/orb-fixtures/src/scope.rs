@@ -19,7 +19,7 @@ pub(crate) fn parse_reason(message: &str) -> String {
 }
 
 pub(crate) fn runtime_reason(message: &str) -> Option<&'static str> {
-    // Compat's declared gaps (plan §8.7): warnings, so their fixtures
+    // Compat's declared gaps: warnings, so their fixtures
     // leave the Compat subset with the gap as the reason.
     if message == orb_runtime::COMPAT_NO_TERRAIN {
         Some("compat:terrain")

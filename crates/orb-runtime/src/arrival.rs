@@ -1,4 +1,4 @@
-//! What arrives between frames (plan §7.4): the replies the map's jobs,
+//! What arrives between frames: the replies the map's jobs,
 //! fetches and lanes send, applied at the start of a frame within its
 //! budget, and arrived tiles made resident.
 

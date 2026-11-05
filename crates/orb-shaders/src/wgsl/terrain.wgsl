@@ -1,4 +1,4 @@
-// The terrain surface (plan §9.4): one instance per terrain tile of a
+// The terrain surface: one instance per terrain tile of a
 // shared grid, raised by its DEM tile, coloured from the tile's drape slots
 // for the terrain layer being drawn, lit and fogged by the atmosphere like
 // GL JS's `terrain.fragment.glsl`. On a globe it lies on the sphere through the
@@ -211,7 +211,7 @@ fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
 fn lit_surface(in: TerrainOut, color: vec4<f32>) -> vec4<f32> {
     var surface = color;
     if frame.light_position.w > 0.0 {
-        // The scene's lights shade the terrain too (decision 0026).
+        // The scene's lights shade the terrain too.
         surface = vec4<f32>(light_surface(surface.rgb, normalize(in.normal), 1.0, 0.0, 1.0), surface.a);
     }
     return atmosphere_fog(atmosphere, surface, in.fog_depth);

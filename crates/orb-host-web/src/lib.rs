@@ -61,7 +61,7 @@ fn read_bitmap(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
 /// Decodes an image into an `ImageBitmap` with straight alpha and no colour
 /// conversion, on the page or in a worker. Its pixels stay with the
 /// browser: a job worker transfers the bitmap to the render worker, which
-/// copies it to a texture (plan §10.1).
+/// copies it to a texture.
 pub async fn decode_bitmap(bytes: &[u8]) -> Result<web_sys::ImageBitmap, JsValue> {
     let parts = js_sys::Array::of1(&Uint8Array::from(bytes));
     let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)?;
@@ -331,7 +331,7 @@ impl orb_host::LocalGlyphs for CanvasGlyphs {
     }
 }
 
-/// `font-faces` files drawn by `shaper.wasm` (decision 0009), which the job
+/// `font-faces` files drawn by `shaper.wasm`, which the job
 /// worker loads the first time a style declares a file: HarfRust and
 /// skrifa, as natively, outside `core.wasm`.
 #[derive(Debug, Clone, Copy, Default)]

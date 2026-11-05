@@ -283,7 +283,7 @@ impl WgpuGpu {
         self.uploaded
     }
 
-    /// Render and compute pipelines compiled so far (plan §16).
+    /// Render and compute pipelines compiled so far.
     pub fn pipelines_created(&self) -> u32 {
         self.pipelines_created
     }

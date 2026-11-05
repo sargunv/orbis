@@ -31,7 +31,7 @@ pub(crate) struct ResidentTile {
     pub(crate) image: Option<ResidentImage>,
     /// A tile drawn through a warp's patches: its series.
     pub(crate) series: Option<Arc<orb_crs::Series>>,
-    /// The style zoom it laid out at (decision 0022).
+    /// The style zoom it laid out at.
     pub(crate) zoom: f64,
     /// Its symbol layers' buckets; their meshes are among `meshes`.
     pub(crate) symbols: Vec<crate::labels::ResidentSymbols>,

@@ -1,4 +1,4 @@
-//! The lit map under a sun (decision 0048): each point sees the sun from
+//! The lit map under a sun: each point sees the sun from
 //! where it stands, so a globe has a day side and a night side whatever
 //! the camera, and night lights show only where the sun is down.
 

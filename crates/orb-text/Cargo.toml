@@ -9,7 +9,7 @@ version.workspace = true
 [features]
 default = ["sea-dictionaries"]
 # ICU4X's Thai, Lao, Khmer and Burmese dictionaries (≈1 MB), compiled in.
-# The web loads them lazily instead (decision 0009).
+# The web loads them lazily instead.
 sea-dictionaries = ["dep:icu_provider"]
 # Reads those dictionaries from bytes (`WordBreaker::from_bytes`), as the web
 # loads them; `sea_dictionary_bytes` writes them with `sea-dictionaries`.

@@ -12,7 +12,7 @@ import dev.orbis.OrbEventKind
 import dev.orbis.OrbMap
 
 /**
- * Video sources' players (decision 0039): `MediaPlayer` (MediaCodec
+ * Video sources' players: `MediaPlayer` (MediaCodec
  * underneath) plays each video the map asks for into an [ImageReader] on a
  * video thread, and each frame goes to the map as RGBA rows on the main
  * thread. Android reads MP4 and WebM (H.264, HEVC, VP8, VP9).

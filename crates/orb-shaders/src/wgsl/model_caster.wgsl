@@ -1,4 +1,4 @@
-// Models into one shadow cascade (decision 0046): depth only, from the
+// Models into one shadow cascade: depth only, from the
 // light, their opaque and masked materials, in two pipelines so only the
 // masked one discards. Masked texels below their cutoff cast nothing.
 struct ShadowPass { cascade: u32, };

@@ -1,4 +1,4 @@
-//! MapLibre v8 expressions (plan §11.3): a strict JSON parser, expression
+//! MapLibre v8 expressions: a strict JSON parser, expression
 //! parsing with GL JS's type checking, legacy filter and function lowering,
 //! property classification, and evaluation against `orb_tile` rows.
 //!

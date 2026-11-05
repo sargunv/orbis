@@ -1,7 +1,7 @@
 //! `cargo xtask apple [--test]`: `liborbis.a` for macOS, iOS and the iOS
 //! simulator (arm64, `dist` profile) as `hosts/apple/OrbisC.xcframework`
 //! with the C headers and a Clang module map, then the Swift package with
-//! SwiftPM (plan §17: SwiftPM only packages). `--test` also runs the
+//! SwiftPM. `--test` also runs the
 //! package's Swift smoke test.
 //! `--ios-sim[=name]` builds the iOS reference app for the simulator,
 //! wraps it in an app bundle, and installs and launches it on a booted

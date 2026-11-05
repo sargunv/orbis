@@ -1,5 +1,5 @@
-// The `fetch` module, Compat: the scene's tables as data textures (plan
-// §8.7). orb-hal-gl mirrors each storage buffer a pipeline binds into an
+// The `fetch` module, Compat: the scene's tables as data textures.
+// orb-hal-gl mirrors each storage buffer a pipeline binds into an
 // R32UI texture DATA_WIDTH words wide, word i at texel
 // (i % DATA_WIDTH, i / DATA_WIDTH); rows are reassembled here.
 

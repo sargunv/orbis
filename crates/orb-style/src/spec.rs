@@ -141,8 +141,8 @@ pub const VISIBILITY: Prop = prop(
 const OFFSET: PropertyType = PropertyType::Array(Type::Number, Some(2));
 const ANCHOR: PropertyType = enumeration::<Anchor>();
 const ANCHORS: PropertyType = PropertyType::Array(Type::String, None);
-// The scene document's `model` layer (plan §11.4; its names follow the
-// layer Mapbox GL JS ships, where it has them).
+// The scene document's `model` layer (its names follow the layer Mapbox
+// GL JS ships, where it has them).
 const VEC3: PropertyType = PropertyType::Array(Type::Number, Some(3));
 
 /// A v8 layer type.
@@ -287,7 +287,7 @@ impl PropertyId {
         })[self.0 as usize]
     }
 
-    /// Whether a paint change eases from the prior value (decision 0031):
+    /// Whether a paint change eases from the prior value:
     /// interpolated numbers, colours and pairs.
     pub fn transitions(self) -> bool {
         let p = self.prop();

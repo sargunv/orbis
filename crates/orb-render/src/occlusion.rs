@@ -1,5 +1,5 @@
-//! Symbols hidden by 3D content (plan §8.5 `Symbols`, depth-tested with
-//! `symbol-occlusion`). After the 3D passes, the depth they share (terrain
+//! Symbols hidden by 3D content (depth-tested with `symbol-occlusion`).
+//! After the 3D passes, the depth they share (terrain
 //! and 3D layers, reversed-Z) is resolved to its nearest sample in a colour
 //! texture, which symbols and circles read where they otherwise read the
 //! terrain's own depth (`terrain_visibility`).

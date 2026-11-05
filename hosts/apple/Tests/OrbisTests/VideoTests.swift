@@ -1,4 +1,4 @@
-// The AVFoundation video player (decision 0039) end to end: a map asks
+// The AVFoundation video player end to end: a map asks
 // for a video source, `Videos` plays an MP4 written here, and its frames
 // draw.
 

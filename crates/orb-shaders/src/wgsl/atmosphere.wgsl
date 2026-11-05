@@ -1,4 +1,4 @@
-// The atmosphere (plan §8.6, decision 0025): one sky and fog model for
+// The atmosphere: one sky and fog model for
 // every surface, from the style's `sky`. The sky shader draws it above the
 // horizon; the terrain shader fogs its surface with it. Shaders bind the
 // uniform themselves as `atmosphere`.

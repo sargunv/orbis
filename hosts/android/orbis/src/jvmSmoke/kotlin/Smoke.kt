@@ -1,4 +1,4 @@
-// The generated Kotlin's smoke test on the host's JVM (plan §14.1): the JNI
+// The generated Kotlin's smoke test on the host's JVM: the JNI
 // shim links and loads, a map draws a style into a texture target, and
 // errors throw with their message. The full binding scenario runs in Rust;
 // the emitters' tests cover every API shape. `cargo xtask bindings --test`

@@ -1,5 +1,5 @@
 //! Image families: raster, hillshade and color-relief layers, the tile
-//! pages they sample, and the DEM prepare pass (plan §8.5's `Prepare`).
+//! pages they sample, and the DEM prepare pass (`Prepare`).
 //!
 //! Each image tile is a one-chunk quad mesh whose property row
 //! ([`IMAGE_ROW_WORDS`]) names its layer in the source's [`TilePage`], so
@@ -393,7 +393,7 @@ impl Images {
             }],
             PageKind::Raster => vec![texture("raster tiles", 0, uploaded)],
             // Slopes are mipmapped on Modern too, for the terrain pass's
-            // shaded hillshades in the distance (decision 0019).
+            // shaded hillshades in the distance.
             PageKind::Dem => vec![
                 texture("dem tiles", 0, uploaded),
                 texture("padded dem tiles", 2, uploaded),
@@ -725,7 +725,7 @@ impl Images {
     }
 }
 
-/// The prepare (plan §8.5's render-to-texture `Prepare`): for each pending
+/// The prepare (render-to-texture `Prepare`): for each pending
 /// job a draw into its padded layer, then one into its slope layer, the job
 /// read from a uniform slot of its own.
 mod prepare {

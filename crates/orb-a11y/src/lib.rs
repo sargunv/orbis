@@ -1,4 +1,4 @@
-//! The semantic snapshot (plan §13, M2): what a placement commit shows, as
+//! The semantic snapshot: what a placement commit shows, as
 //! assistive technology needs it. Each shown label or icon becomes a
 //! [`Node`]: its text, a role, its importance, its bounds in the viewport,
 //! and its bearing and distance from the view's center. A reading order and

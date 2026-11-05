@@ -7,7 +7,7 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-# Renders on Compat devices too (plan §8.7).
+# Renders on Compat devices too.
 compat = ["orb-render/compat"]
 
 [dependencies]

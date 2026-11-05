@@ -24,7 +24,7 @@ pub(crate) struct ResidentImage {
     pub(crate) globe: bool,
 }
 
-/// A tile's warp mesh as its nodes draw it (plan §9.2, `RasterWarp`).
+/// A tile's warp mesh as its nodes draw it (`RasterWarp`).
 #[derive(Debug, PartialEq)]
 pub(crate) struct Warped {
     /// The square of the drawing plane its positions span `IMAGE_EXTENT`

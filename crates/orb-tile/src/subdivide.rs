@@ -1,5 +1,5 @@
 //! Subdivision along a grid, for tiles drawn through a curved warp onto
-//! another plane (plan §9.2, `GpuPerVertex`): mapped vertices then follow the
+//! another plane (`GpuPerVertex`): mapped vertices then follow the
 //! curve between them, and the vertices on a tile's edges fall on grid lines
 //! its neighbours share.
 

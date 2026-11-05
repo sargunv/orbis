@@ -12,19 +12,19 @@ const FETCH: &str = include_str!("wgsl/fetch.wgsl");
 const FETCH_COMPAT: &str = include_str!("wgsl/fetch_compat.wgsl");
 const BUILTINS: &str = include_str!("wgsl/builtins.wgsl");
 const BUILTINS_COMPAT: &str = include_str!("wgsl/builtins_compat.wgsl");
-/// glTF's metallic-roughness shading, functions without bindings (plan
-/// §9.4): for the model pipelines to compose.
+/// glTF's metallic-roughness shading, functions without bindings, for the
+/// model pipelines to compose.
 const PBR_MODULE: &str = include_str!("wgsl/pbr.wgsl");
 /// The style's lights as `pbr.wgsl` takes them.
 const SCENE_LIGHTS: &str = include_str!("wgsl/scene_lights.wgsl");
-/// A map layer's output: its colour, or lit by a scene's lights (#91,
-/// decision 0048), as [`Shader::lit`] composes.
+/// A map layer's output: its colour, or lit by a scene's lights (#91),
+/// as [`Shader::lit`] composes.
 const MAP_OUT: &str = include_str!("wgsl/map_out.wgsl");
 const MAP_OUT_LIT: &str = include_str!("wgsl/map_out_lit.wgsl");
 
-/// The shadows a surface receives (decision 0046): the cascades, their
+/// The shadows a surface receives: the cascades, their
 /// maps in the scene group and `shadow_at`. Compat composes
-/// `shadow_none.wgsl` in its place: no shadows (plan §8.7).
+/// `shadow_none.wgsl` in its place: no shadows.
 const SHADOW_RECEIVE: &str = concat!(
     include_str!("wgsl/shadow.wgsl"),
     include_str!("wgsl/shadow_receive.wgsl")
@@ -49,9 +49,9 @@ const COMPOSITE: &str = include_str!("wgsl/composite.wgsl");
 pub(crate) const CULL: &str = include_str!("wgsl/cull.wgsl");
 const IMAGE: &str = include_str!("wgsl/image.wgsl");
 const DEM: &str = include_str!("wgsl/dem.wgsl");
-/// The atmosphere's sky and fog (decision 0025).
+/// The atmosphere's sky and fog.
 const ATMOSPHERE: &str = include_str!("wgsl/atmosphere.wgsl");
-/// The style's lights on a surface (decision 0026).
+/// The style's lights on a surface.
 const LIGHTING: &str = include_str!("wgsl/lighting.wgsl");
 const RASTER: &str = include_str!("wgsl/raster.wgsl");
 const HILLSHADE: &str = include_str!("wgsl/hillshade.wgsl");
@@ -89,7 +89,7 @@ impl Shader {
         self.compose(false)
     }
 
-    /// The Compat composition (plan §8.7): scene tables from data
+    /// The Compat composition: scene tables from data
     /// textures, no builtins GLSL ES 3.00 lacks. The `glsl` feature has
     /// these translated offline; see [`glsl`](crate::glsl).
     pub fn compat_source(&self) -> String {
@@ -196,7 +196,7 @@ pub const COMPOSITE_REPLACE_SHADER: Shader = Shader {
     lit: false,
 };
 
-/// The globe atmosphere's scattering over the map (decision 0025).
+/// The globe atmosphere's scattering over the map.
 pub const SCATTER_SHADER: Shader = Shader {
     label: "atmosphere scattering",
     fragment: "fs_scatter",
@@ -238,7 +238,7 @@ pub const CIRCLE_SHADER: Shader = Shader {
     compute: "",
     lit: false,
 };
-/// glTF models at point features, lit by the style's lights (plan §9.4).
+/// glTF models at point features, lit by the style's lights.
 /// Modern only: Compat warns for the gap.
 pub const MODEL_SHADER: Shader = Shader {
     label: "model",
@@ -263,7 +263,7 @@ pub const MODEL_MASKED_SHADER: Shader = Shader {
     fragment: "fs_model_masked",
     ..MODEL_SHADER
 };
-/// Symbol quads: glyphs and icons, with their halos (decision 0009), of
+/// Symbol quads: glyphs and icons, with their halos, of
 /// point labels and of line labels (`symbol-placement: line` and
 /// `line-center`): two variants, so point labels' pipeline doesn't compile
 /// line placement (#69).
@@ -501,7 +501,7 @@ pub const SHADOW_GROUND_SHADER: Shader = Shader {
     lit: false,
 };
 
-/// The shaders Compat draws with (plan §8.7): all but terrain's, the
+/// The shaders Compat draws with: all but terrain's, the
 /// drape's and compute.
 pub const COMPAT_SHADERS: &[Shader] = &[
     SKY_SHADER,

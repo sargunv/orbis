@@ -1,4 +1,4 @@
-//! The front end of the native scene (plan §11.1, S0–S1): parses and
+//! The front end of the native scene: parses and
 //! validates v8 styles and the scene documents that extend them into an
 //! `orb_style::Scene`, with errors and warnings located by JSON path
 //! (`layers[3].paint.line-width`) and byte span; keeps the documents of
@@ -69,7 +69,7 @@ pub fn parse(text: &str) -> Result<Scene, Diagnostics> {
 }
 
 /// Parses a style whose global state is its root `state` defaults
-/// overridden by `overrides` (plan §11.2, S2): `global-state` reads fold to
+/// overridden by `overrides`: `global-state` reads fold to
 /// those values, so they classify as constants where they are the only
 /// input.
 pub fn parse_with_state(

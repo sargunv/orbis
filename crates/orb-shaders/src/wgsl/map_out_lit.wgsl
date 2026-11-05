@@ -1,4 +1,4 @@
-// A map layer's fragment lit by a scene's lights (#91, decision 0048): its
+// A map layer's fragment lit by a scene's lights (#91): its
 // colour is the albedo of its node's material (the scene document's
 // `roughness`, `metalness` and `emissive-strength`), shaded in place with
 // `pbr_light`. Map layers face up; blending lit colours equals lighting

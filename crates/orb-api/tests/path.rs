@@ -35,7 +35,7 @@ fn tokyo(extra: &str, sources: &str) -> String {
 }
 
 /// Tokyo's buildings standing, under a low sun that casts shadows
-/// (decision 0046): a scene document over the extract.
+/// a scene document over the extract.
 fn shadowed_tokyo() -> String {
     let style = tokyo("", "").replacen(
         "{\n      \"id\": \"building\",",

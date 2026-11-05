@@ -3,8 +3,8 @@
 //! loaded once when the cache opens and rewritten whole, at most every
 //! [`FLUSH_EVERY`], by a thread of its own. Nothing is fsynced: a crash
 //! loses at most the last batch of index changes, and the blobs those
-//! changes named are swept on the next open (plan §18 row 15: Native's
-//! cold open spends 1,011 ms of 1,327 ms in fsync).
+//! changes named are swept on the next open (Native's cold open spends
+//! 1,011 ms of 1,327 ms in fsync).
 //!
 //! Entries beyond the size limit go least recently used first.
 

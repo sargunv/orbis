@@ -1,4 +1,4 @@
-//! `shaper.wasm` (decision 0009): the `font-faces` files of a style, drawn
+//! `shaper.wasm`: the `font-faces` files of a style, drawn
 //! with HarfRust and skrifa as natively, so labels lay out identically.
 //! Job workers load it the first time a style declares a file, and
 //! `orb-host-web`'s `ShaperFiles` calls it as the map's

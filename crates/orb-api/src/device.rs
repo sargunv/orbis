@@ -1,5 +1,5 @@
 //! The runtime's GPU: Modern (wgpu) or Compat (a GLES 3 context through
-//! EGL), chosen by the device policy (plan §4.2, §8.8): the Android
+//! EGL), chosen by the device policy: the Android
 //! allowlist and the crash sentinel, with Compat where no Modern adapter
 //! is found.
 
@@ -207,7 +207,7 @@ fn make_compat(options: &RuntimeOptions) -> Result<(Device, String), Error> {
     let (egl, gl) =
         EglContext::headless(options.egl_library.as_deref()).map_err(Error::Unsupported)?;
     let mut gpu = GlGpu::new(gl).map_err(Error::Unsupported)?;
-    // Programs link on a thread of their own (plan §8.4); without one,
+    // Programs link on a thread of their own; without one,
     // one links per frame.
     let note = match egl.compile_thread() {
         Ok(thread) => {

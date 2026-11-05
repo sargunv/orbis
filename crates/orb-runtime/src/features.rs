@@ -1,4 +1,4 @@
-//! Feature queries in a tile's owner worker (plan §13): full properties
+//! Feature queries in a tile's owner worker: full properties
 //! and geometry from the worker's decoded `TileFrame`, as GeoJSON, with no
 //! re-decode on the render side and no re-encode.
 

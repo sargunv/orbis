@@ -1,4 +1,4 @@
-//! Asynchronous feature queries (plan §13): `queryRenderedFeatures` over
+//! Asynchronous feature queries: `queryRenderedFeatures` over
 //! the last frame's picking scene (labels included) and
 //! `querySourceFeatures` over a source's drawn tiles. Properties and
 //! geometry come from each tile's owner worker; no tile is decoded again

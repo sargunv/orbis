@@ -1,4 +1,4 @@
-//! A map's events (plan §7.5, GL JS's map events as reference): style and
+//! A map's events (GL JS's map events as reference): style and
 //! source data, load, idle, errors and warnings, the camera's moves and
 //! clicks.
 
@@ -48,7 +48,7 @@ pub enum MapEvent {
     },
     /// The map renders at `tier`: on its first frame, and on its first
     /// frame on a new GPU (after device loss, perhaps on another tier).
-    /// What the tier gives up arrives as warnings (plan §8.7).
+    /// What the tier gives up arrives as warnings.
     Capability {
         tier: orb_hal::Tier,
     },

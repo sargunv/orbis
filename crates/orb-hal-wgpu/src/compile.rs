@@ -1,4 +1,4 @@
-//! Pipelines compile off the thread that draws (plan §8.4, decision 0038).
+//! Pipelines compile off the thread that draws.
 //!
 //! A pipeline request becomes a [`Job`] that owns everything it needs.
 //! Natively, the host's job executor takes jobs from a queue, front first,

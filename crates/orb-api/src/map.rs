@@ -200,7 +200,7 @@ impl Map {
         };
         runtime.add_wake(&wake);
         let mut map = orb_runtime::Map::new(runtime.services(wake.clone()), options.camera);
-        // Plan §8's budgets: phones and tablets hold less than desktops.
+        // Phones and tablets hold less than desktops.
         if cfg!(any(target_os = "android", target_os = "ios")) {
             map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
         }
@@ -261,7 +261,7 @@ impl Map {
         self.map.style_doc().map(|doc| doc.to_json())
     }
 
-    /// Whether a paint transition runs (decision 0031).
+    /// Whether a paint transition runs.
     pub fn transitioning(&self) -> bool {
         self.map.transitioning()
     }
@@ -476,7 +476,7 @@ impl Map {
         *self.map.camera()
     }
 
-    /// The view's style zoom on the map's surface (decision 0022).
+    /// The view's style zoom on the map's surface.
     pub fn zoom(&self) -> f64 {
         self.map.zoom()
     }
@@ -906,7 +906,7 @@ impl Map {
                 "the target belongs to another runtime".into(),
             ));
         }
-        // A lost GPU is replaced before the frame (plan §8.8): texture
+        // A lost GPU is replaced before the frame: texture
         // targets are made again, and window targets fail with
         // `TargetLost` for the host to make on the new one.
         if self.runtime.lost() {
@@ -916,7 +916,7 @@ impl Map {
             self.runtime.recover()?;
         }
         // The runtime replaced its device: draw on the new one, laying the
-        // tiles out again (plan §8.8).
+        // tiles out again.
         if self.device != self.shared.generation.get() {
             self.device = self.shared.generation.get();
             self.renderer = None;
@@ -984,8 +984,8 @@ impl Map {
         Ok(Some(report))
     }
 
-    /// What the labels on screen say, for assistive technology (plan
-    /// §13): the last placement's labels and icons, a reading order and a
+    /// What the labels on screen say, for assistive technology: the
+    /// last placement's labels and icons, a reading order and a
     /// summary; `None` before labels are first placed.
     pub fn semantic_snapshot(&self) -> Option<orb_runtime::SemanticSnapshot> {
         self.map.semantic_snapshot()

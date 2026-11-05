@@ -1,5 +1,5 @@
 // The `fetch` module, Modern: draw pipelines read the scene's tables from
-// storage buffers (plan §8.4). `fetch_compat.wgsl` reads the same words
+// storage buffers. `fetch_compat.wgsl` reads the same words
 // from data textures.
 
 @group(0) @binding(1) var<storage, read> tiles: array<Tile>;

@@ -1,4 +1,4 @@
-// Hover and selection highlights through feature state (decision 0016):
+// Hover and selection highlights through feature state:
 // for each source layer a feature is picked from, three layers drawn in
 // the accent where `hover` or `selected` state is set, added before the
 // style's first symbol layer. Picking a feature is then one feature-state

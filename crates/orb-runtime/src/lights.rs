@@ -1,4 +1,4 @@
-//! The scene's lights for a frame (decision 0026): the scene document's
+//! The scene's lights for a frame: the scene document's
 //! lights folded into what shaders take, the sun placed for the camera's
 //! target.
 

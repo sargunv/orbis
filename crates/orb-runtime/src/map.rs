@@ -32,7 +32,7 @@ use orb_source::endpoint::TileEndpoint;
 pub(crate) const TILE_PX: f64 = 512.0;
 
 /// Milliseconds a frame spends applying arrived tiles before it leaves the
-/// rest for the next frame (plan §7.4's upload budget at 60 Hz).
+/// rest for the next frame (upload budget at 60 Hz).
 pub(crate) const TILE_APPLY_MS: f64 = 1.5;
 
 /// GPU images shared by the maps in one Runtime / host-service set. The
@@ -87,7 +87,7 @@ pub struct FrameReport {
     /// Tiles drawn, counting world copies and fallbacks.
     pub tiles_drawn: u32,
     /// The style generation the frame shows in full: every edit up to it
-    /// has all its jobs applied (plan §7.1).
+    /// has all its jobs applied.
     pub generation: u64,
     /// Nothing is loading: the style, its sources and every tile the view
     /// needs have arrived, so the frame is complete.
@@ -95,20 +95,20 @@ pub struct FrameReport {
     /// As `idle`, but fades may still run: labels are placed for this
     /// view and cross-fades need only time (GL JS `loaded()`).
     pub loaded: bool,
-    /// GPU memory by pool, and the tile cache (plan §8's budget).
+    /// GPU memory by pool, and the tile cache.
     pub memory: Memory,
     /// Microseconds this thread spent on placement: building the frame the
-    /// placement lane places and applying its commits (plan §6.1 step 10),
+    /// placement lane places and applying its commits,
     /// not the placement itself, which is the lane's (inline on a host
     /// without a placement thread or worker).
     pub placement_us: u32,
     /// Only compiling pipelines keep the frame from being complete: a
     /// host whose GPU wakes it when a pipeline compiles needs no frames
-    /// until then (plan §8.4).
+    /// until then.
     pub compiling: bool,
 }
 
-/// The map's memory against its budget (plan §8), in bytes.
+/// The map's memory against its budget, in bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Memory {
     /// The GPU memory budget the scene's pools are sized from.
@@ -329,7 +329,7 @@ impl Retired {
     }
 }
 
-/// How a map renders (plan §14.2): interactively, or the still output of
+/// How a map renders: interactively, or the still output of
 /// servers and snapshots.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum RenderMode {
@@ -388,7 +388,7 @@ pub struct Map {
     /// App state to set again once the style loads ([`Map::restore`]).
     pub(crate) restoring: Option<crate::AppState>,
     /// The camera's only writer: the app's moves, the style's camera and
-    /// gestures all go through it (decision 0042).
+    /// gestures all go through it.
     pub(crate) camera: orb_camera::Camera,
     pub(crate) input: orb_interact::Interaction,
     /// The camera and terrain revisions the last frame saw.
@@ -403,14 +403,14 @@ pub struct Map {
     /// A scene document whose style is loading, which the style parses
     /// under (models resolved against the scene).
     pub(crate) pending_scene: Option<orb_v8::SceneDocument>,
-    /// The first frame's time: frames' time counts from it (decision 0042:
-    /// fades, transitions and the shaders' time run on frame time).
+    /// The first frame's time: frames' time counts from it (fades,
+    /// transitions and the shaders' time run on frame time).
     pub(crate) born: Option<f64>,
     /// The time of the frame being drawn, or the last one.
     pub(crate) frame_time: f64,
     /// When the last raster tile to arrive finishes fading in.
     pub(crate) image_fades_until: f64,
-    /// Paint edits easing in (decision 0031).
+    /// Paint edits easing in.
     pub(crate) transitions: crate::transitions::Transitions,
     /// The latest `load_style_url` request; earlier ones are ignored.
     pub(crate) style_request: u64,
@@ -432,7 +432,7 @@ pub struct Map {
     /// The renderer's nodes are of a replaced style.
     pub(crate) nodes_stale: bool,
     pub(crate) capacity: SceneCapacity,
-    /// The GPU memory budget (plan §8).
+    /// The GPU memory budget.
     pub(crate) budget: u64,
     /// The last style id given to the jobs.
     pub(crate) style_id: u64,
@@ -679,8 +679,8 @@ impl Map {
         self.capacity = capacity;
     }
 
-    /// Sets the GPU memory the map aims to stay within (plan §8:
-    /// [`DESKTOP_BUDGET`](orb_render::DESKTOP_BUDGET), the default, or
+    /// Sets the GPU memory the map aims to stay within
+    /// ([`DESKTOP_BUDGET`](orb_render::DESKTOP_BUDGET), the default, or
     /// [`MOBILE_BUDGET`](orb_render::MOBILE_BUDGET)). Tiles out of view stay
     /// cached within a quarter of it and give way first: the scene's pools
     /// and tile pages grow only as the tiles in view need, to the device's
@@ -707,7 +707,7 @@ impl Map {
         (self.services.wake)();
     }
 
-    /// The last placement commit's semantic snapshot (plan §13): the
+    /// The last placement commit's semantic snapshot: the
     /// labels and icons it shows, a reading order and a region summary.
     /// `None` before labels are first placed.
     pub fn semantic_snapshot(&self) -> Option<orb_a11y::Snapshot> {
@@ -727,7 +727,7 @@ impl Map {
         self.labels.shown(self.frame_time)
     }
 
-    /// The view's style zoom (decision 0022): GL JS's in Web Mercator,
+    /// The view's style zoom: GL JS's in Web Mercator,
     /// measured at the plane's reference latitude on other planes.
     pub fn zoom(&self) -> f64 {
         self.camera.state().zoom(self.surface.projection())
@@ -770,7 +770,7 @@ impl Map {
         }
     }
 
-    /// Whether a paint transition is running (decision 0031).
+    /// Whether a paint transition is running.
     pub fn transitioning(&self) -> bool {
         self.transitions.running()
     }
@@ -914,7 +914,7 @@ impl Map {
     }
 
     /// Forgets the GPU state of another renderer: after a device loss, or
-    /// to draw on another device (plan §8.8). This frame lays the style's
+    /// to draw on another device. This frame lays the style's
     /// tiles out again, from the jobs' cached tile frames where they have
     /// them (refetched where not); labels place afresh, and sprites and
     /// glyphs load again.
@@ -1196,7 +1196,7 @@ impl Map {
             .as_ref()
             .map(|s| Arc::clone(&s.worker.plan().style));
         let lights = scene.as_deref().map(|s| &s.lights);
-        // A scene's lights light the whole map (decision 0048), on Modern.
+        // A scene's lights light the whole map, on Modern.
         let lit = lights.is_some_and(|l| l.terrain);
         renderer.set_lit_map(gpu, lit);
         if lit && gpu.caps().tier != orb_hal::Tier::Modern {
@@ -1400,7 +1400,7 @@ impl Map {
         }
         report.frame = renderer.render(gpu, &frame, target, clear);
         // A frame that left something out for a compiling pipeline isn't
-        // complete (plan §8.4).
+        // complete.
         report.compiling = report.idle && report.frame.waited;
         report.loaded &= !report.frame.waited;
         report.idle &= !report.frame.waited;
@@ -1520,7 +1520,7 @@ impl Map {
 
     /// Loads the style's models for `renderer`, once per style and
     /// renderer; a new style's replace the last one's there. Compat draws
-    /// no models (plan §8.7).
+    /// no models.
     fn start_models(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
         let Some(style) = &mut self.style else { return };
         if style.models_for == Some(renderer.id()) {
@@ -2049,7 +2049,7 @@ impl Map {
     }
 
     /// [`elevation`](Self::elevation) at reduced resolution, as bytes for a
-    /// camera on another thread (plan §7.1's elevation pyramid; read with
+    /// camera on another thread (the elevation pyramid; read with
     /// [`TerrainElevation::from_pyramid`](crate::TerrainElevation::from_pyramid));
     /// empty without terrain.
     pub fn elevation_pyramid(&self) -> Arc<[u8]> {

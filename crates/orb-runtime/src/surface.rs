@@ -1,5 +1,5 @@
 //! The surface a map draws on, from its scene document, and the planner
-//! (plan §9.2) that decides how each source's tiles reach it.
+//! that decides how each source's tiles reach it.
 
 use orb_crs::{Descriptor, Projection, TileMatrixSet, TileMatrixSetDefinition, WorldRect};
 
@@ -175,7 +175,7 @@ impl Surface {
         (!self.projection.same_plane(&mercator.projection)).then(|| self.tms.clone())
     }
 
-    /// The style zoom a tile lays out at (decision 0022): the view's style
+    /// The style zoom a tile lays out at: the view's style
     /// zoom where the tile spans 512 pixels. A tile on the surface's plane
     /// has its set's; a warped tile's comes from its footprint's scale on
     /// the surface.

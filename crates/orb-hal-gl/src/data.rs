@@ -1,4 +1,4 @@
-//! Storage buffers as data textures (plan §8.7's data-texture mirrors).
+//! Storage buffers as data textures.
 //!
 //! WebGL2 and GLES 3.0 have no storage buffers. A buffer with storage use
 //! is an R32UI texture [`DATA_WIDTH`] words wide, word `i` at texel

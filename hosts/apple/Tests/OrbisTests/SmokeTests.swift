@@ -1,4 +1,4 @@
-// The generated Swift's smoke test (plan §14.1): the package links, a map
+// The generated Swift's smoke test: the package links, a map
 // draws a style into a texture target and into a CAMetalLayer, and errors
 // throw with their message.
 // The full binding scenario runs in Rust; the emitters' tests cover every

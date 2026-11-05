@@ -11,7 +11,7 @@ fn covers_match_pinned_gl_js() {
     for case in golden["cases"].as_array().unwrap() {
         let n = |key: &str| case[key].as_f64().unwrap();
         // GL JS switches its distance LOD on past 60° of pitch; Orbis eases
-        // it in over the 5° after (decision 0011), so just past 60° it has
+        // it in over the 5° after, so just past 60° it has
         // little of the LOD GL JS takes in full.
         if n("pitch") > 60.0 && n("pitch") < 65.0 {
             continue;
@@ -75,8 +75,8 @@ fn covers_match_pinned_gl_js() {
     );
 }
 
-/// The globe's cover against Web Mercator's for the same cameras (plan
-/// §18's budget: globe cover within 1.5× Mercator's time). Prints counts and
+/// The globe's cover against Web Mercator's for the same cameras: within
+/// 1.5× Mercator's time. Prints counts and
 /// times; run with `--release -- --nocapture`.
 #[test]
 fn globe_cover_cost() {

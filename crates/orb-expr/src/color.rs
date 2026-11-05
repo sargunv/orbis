@@ -1,5 +1,5 @@
 //! Colours: CSS colour strings to RGBA in the style's sRGB space, stored as
-//! GL JS stores them (plan §11.1: defaults match GL JS).
+//! GL JS stores them (defaults match GL JS).
 
 use std::fmt;
 

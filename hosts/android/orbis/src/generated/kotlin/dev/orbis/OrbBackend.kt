@@ -2,7 +2,7 @@
 package dev.orbis
 
 /**
- * The GPU tier a runtime draws at (plan §4.2).
+ * The GPU tier a runtime draws at.
  */
 enum class OrbBackend(val value: Int) {
     /**

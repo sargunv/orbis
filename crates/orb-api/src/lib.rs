@@ -1,10 +1,10 @@
-//! The Rust embedding API for native hosts (plan §5.4, §14): a [`Runtime`]
+//! The Rust embedding API for native hosts: a [`Runtime`]
 //! owns a GPU device and the host services, a [`Map`] owns a style, its
 //! camera store and its gestures, and a [`Target`] is what a map draws
 //! into: a window surface or a texture the runtime owns.
 //!
-//! Everything here belongs to the thread that created the runtime (plan
-//! §7.1's Owned mode with the host's thread as the scene thread): jobs,
+//! Everything here belongs to the thread that created the runtime, with
+//! the host's thread as the scene thread: jobs,
 //! fetches and placement run on the runtime's pools, and a map's
 //! [`Map::set_wake`] callback tells the host, from any thread, that a frame
 //! is needed. `orb-capi` exports this API to C, Kotlin and Swift.
@@ -91,8 +91,8 @@ pub struct RuntimeOptions {
     pub job_threads: Option<usize>,
     /// The GPU tier to draw at.
     pub backend: Backend,
-    /// Where the runtime keeps state between runs: the crash sentinel
-    /// (plan §8.8), the driver's compiled pipelines (`pipelines/`), the
+    /// Where the runtime keeps state between runs: the crash sentinel, the
+    /// driver's compiled pipelines (`pipelines/`), the
     /// HTTP cache (`http/`, [`HTTP_CACHE_BYTES`]) and offline regions.
     /// Without one, a device that crashed its driver last time is tried on
     /// Modern again, pipelines compile on every start, and nothing fetched
@@ -104,7 +104,7 @@ pub struct RuntimeOptions {
     pub egl_library: Option<String>,
 }
 
-/// Which GPU tier a runtime draws at (plan §4.2).
+/// Which GPU tier a runtime draws at.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Backend {
     /// Modern where the device policy allows it (the Android allowlist,
@@ -169,10 +169,10 @@ pub struct RuntimeStats {
     /// Time spent making shader modules and pipelines so far.
     pub pipeline_time: std::time::Duration,
     /// Each pipeline compiled so far and how long it took, in the order
-    /// they finished (plan §8.9: pipelines created cold and warm).
+    /// they finished (pipelines created cold and warm).
     pub pipeline_timings: Vec<(String, std::time::Duration)>,
     /// The compile the watchdog found hung, or the pipeline the driver
-    /// couldn't make, if one was (plan §8.8 3): a Modern GPU is then lost,
+    /// couldn't make, if one was: a Modern GPU is then lost,
     /// and the next frame demotes it.
     pub hung_compile: Option<String>,
     /// What the HTTP cache holds, if there is one.
@@ -341,7 +341,7 @@ impl Runtime {
         self.shared.gpu.borrow_mut().lose();
     }
 
-    /// Makes a new device after a loss (plan §8.8), on the tier the
+    /// Makes a new device after a loss, on the tier the
     /// policy chooses again, with the pipeline cache started again. Maps
     /// lay their tiles out again on their next frame from cached data;
     /// texture targets are made again, window targets fail with
@@ -349,7 +349,7 @@ impl Runtime {
     pub(crate) fn recover(&self) -> Result<Tier, Error> {
         // A loss mid-compile isn't a crash in it: only a compile the
         // watchdog found hung keeps the sentinel armed, so the device
-        // chosen now demotes as at the next start (plan §8.8 3).
+        // chosen now demotes as at the next start.
         let hung = self.shared.gpu.borrow().hung();
         if let Some(marker) = self.shared.sentinel.borrow_mut().take()
             && hung.is_none()

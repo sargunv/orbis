@@ -128,7 +128,7 @@ pub struct Frame {
     pub scope: Scope,
 }
 
-/// Where a placement collides labels (plan §10's placement scopes).
+/// Where a placement collides labels.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Scope {
     /// Against the view, continuing the last placement: fades, variable
@@ -172,7 +172,7 @@ impl PartialEq for GroundRef {
     }
 }
 
-/// Bits of a placed symbol's state word (decision 0009). The two words
+/// Bits of a placed symbol's state word. The two words
 /// after it are the variable-anchor shift, in ems of the label's size.
 pub mod state {
     /// Opacity at commit, 0 to 127.

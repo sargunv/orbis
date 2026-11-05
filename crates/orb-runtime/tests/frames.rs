@@ -234,7 +234,7 @@ mod tests {
         );
     }
 
-    /// Raster tiles make room as vector tiles do (decision 0032): with the
+    /// Raster tiles make room as vector tiles do: with the
     /// scene full of cached vector tiles the view no longer uses, arriving
     /// raster tiles evict them rather than being dropped, which on the
     /// globe left Liberty's ocean (its shaded-relief raster) with
@@ -313,7 +313,7 @@ mod tests {
         assert!(report.tiles_drawn > 0);
     }
 
-    /// Plan §8: tiles out of view stay cached by their memory, within a
+    /// Tiles out of view stay cached by their memory, within a
     /// quarter of the budget, the least recently used giving way first.
     #[test]
     fn tile_cache_stays_within_its_memory_budget() {
@@ -351,7 +351,7 @@ mod tests {
         }
     }
 
-    /// Plan §7.5: once idle, a map, its camera and its gestures ask for no
+    /// Once idle, a map, its camera and its gestures ask for no
     /// frames: no wake-ups, no animation, nothing that redraws.
     #[test]
     fn idle_maps_ask_for_no_frames() {
@@ -457,7 +457,7 @@ mod tests {
             job();
         }
         assert_eq!(wakes.load(Ordering::SeqCst), first.tiles_loading as usize);
-        // Each frame applies at least one arrived tile (plan §7.4's budget).
+        // Each frame applies at least one arrived tile.
         let published = (0..first.tiles_loading)
             .map(|_| offscreen.frame())
             .find(|report| report.idle)
@@ -575,7 +575,7 @@ mod tests {
                 * 4;
             pixels[at]
         };
-        // The lit map's material model (decision 0048): #808080 is 0.216
+        // The lit map's material model: #808080 is 0.216
         // linear. Overhead the roof gets both levels, 1, of it, a matte
         // specular glint (0.002) and the sky it mirrors (0.04 of the
         // ambient level, 0.3 of it at its roughness: 0.006): 130 in sRGB.
@@ -658,8 +658,7 @@ mod tests {
 
     /// A style with a symbol layer loads, places and goes idle. Without a
     /// glyphs URL its text needs local fonts, which warn.
-    /// Plan §13: a placement commit's semantic snapshot reads the labels it
-    /// shows.
+    /// A placement commit's semantic snapshot reads the labels it shows.
     #[test]
     fn semantic_snapshots_read_shown_labels() {
         let options = crate::common::Options {

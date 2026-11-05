@@ -7,7 +7,7 @@ publish.workspace = true
 version.workspace = true
 
 [features]
-# The Compat path (plan §8.7): the CPU cull and offline GLSL programs.
+# The Compat path: the CPU cull and offline GLSL programs.
 compat = ["orb-shaders/glsl"]
 
 [dependencies]

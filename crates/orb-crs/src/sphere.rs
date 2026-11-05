@@ -1,4 +1,4 @@
-//! The globe's sphere (plan §9.1): tiles of any tile matrix set wrapped
+//! The globe's sphere: tiles of any tile matrix set wrapped
 //! around a sphere of the WGS84 semi-major axis, as v8 `globe` draws them.
 //! Positions are Earth-centred, Earth-fixed metres: x towards (0°, 0°),
 //! y towards (90°E, 0°), z towards the North Pole.

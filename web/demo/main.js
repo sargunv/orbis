@@ -4,7 +4,7 @@
 //
 // URL: `?style=<key|url>` (styles.js), `&flight` (the Alps),
 // `&renderer=webgpu|webgl2` (the package's default otherwise), `&debug`, `&edit`, `&lose=<ms>[&switch]` (lose the GPU that
-// long after loading, to show recovery, plan §8.8; `switch` onto WebGL2),
+// long after loading, to show recovery; `switch` onto WebGL2),
 // and the camera as `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
 import { GROUPS, LIVE_CAMERA, sceneFor, sceneUrl } from "./styles.js";

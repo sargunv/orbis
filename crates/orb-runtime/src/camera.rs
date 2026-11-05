@@ -1,4 +1,4 @@
-//! The map's camera and gestures (decision 0042): the map is the camera's
+//! The map's camera and gestures: the map is the camera's
 //! only writer. The app's moves, the style's camera and input all go
 //! through its `orb_camera::Camera`; each frame applies arrived data, then
 //! advances gestures and animations at the frame's timestamp, then draws.

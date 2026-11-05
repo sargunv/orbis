@@ -1,4 +1,4 @@
-// Composites (decision 0043): what drew apart from the map, into a target
+// Composites: what drew apart from the map, into a target
 // of its own, drawn into the map by one full-screen triangle. Texels are
 // premultiplied.
 //

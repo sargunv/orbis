@@ -172,7 +172,7 @@ pub struct ShaderModuleDesc<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShaderSource<'a> {
     Wgsl(Cow<'a, str>),
-    /// A Compat program translated offline (plan §8.4), its overrides
+    /// A Compat program translated offline, its overrides
     /// already specialized; pipelines ignore entry points and constants.
     Glsl(&'a GlslProgram<'a>),
 }

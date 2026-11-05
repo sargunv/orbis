@@ -1,4 +1,4 @@
-//! Glyph metrics on the job side (decision 0009): the PBF ranges a worker
+//! Glyph metrics on the job side: the PBF ranges a worker
 //! has fetched, and the resolution of a tile's glyph requests through them.
 //!
 //! A range is keyed by its URL. Workers keep metrics only; the scene's
@@ -353,7 +353,7 @@ impl GlyphCatalog {
     }
 }
 
-/// A raster job (decision 0009): bitmaps of some glyphs of one unit, a
+/// A raster job: bitmaps of some glyphs of one unit, a
 /// glyph PBF range or a font stack's local glyphs. The scene asks each
 /// unit's owner worker, once per glyph.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -390,7 +390,7 @@ pub struct GlyphBitmap {
 pub type RasterDone = Box<dyn FnOnce(Result<Vec<GlyphBitmap>, String>) + Send + 'static>;
 
 impl GlyphRaster {
-    /// The worker that owns the unit, of `workers` (§7.3 affinity).
+    /// The worker that owns the unit, of `workers`.
     pub fn owner(&self, workers: u32) -> u32 {
         use std::hash::{Hash, Hasher};
         let mut h = std::hash::DefaultHasher::new();

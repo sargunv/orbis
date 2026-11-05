@@ -1,5 +1,5 @@
-//! `TileFrame`: the single in-memory representation of a vector tile (plan
-//! §10.1), and the decoders that produce it.
+//! `TileFrame`: the single in-memory representation of a vector tile, and
+//! the decoders that produce it.
 //!
 //! A [`TileFrame`] is a list of [`Layer`]s. Each layer stores its features as
 //! columns: ids, geometry types, geometry as nested offsets into one vertex

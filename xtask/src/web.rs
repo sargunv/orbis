@@ -1,7 +1,7 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
 //! `web/pkg/`, reports its size by crate (twiggy) and warns when it
-//! grows past plan §14.3's numbers; then `compat.wasm`, the renderer on
-//! WebGL2 that pages without WebGPU load instead (plan §8.7).
+//! grows past its size targets; then `compat.wasm`, the renderer on
+//! WebGL2 that pages without WebGPU load instead.
 //!
 //! `cargo xtask pages`: the above, then the Vite build of the site
 //! `.github/workflows/pages.yml` deploys, into `web/dist/`.
@@ -14,10 +14,10 @@ use crate::cargo;
 
 const OUT_DIR: &str = "web/pkg";
 
-/// Plan §14.3's initial-payload target. Size is watched, not a gate: above
+/// The initial-payload target. Size is watched, not a gate: above
 /// it, and above the ceiling, the build only warns.
 const BROTLI_TARGET: usize = 450 * 1024;
-/// Plan §14.3's ceiling for the first release.
+/// The ceiling for the first release.
 const BROTLI_CEILING: usize = 550 * 1024;
 
 /// Crates whose code the size report attributes separately.
@@ -58,7 +58,7 @@ pub(crate) fn build() -> Result<(), String> {
     for (limit, what) in [(BROTLI_CEILING, "ceiling"), (BROTLI_TARGET, "target")] {
         if core.brotli > limit {
             eprintln!(
-                "warning: core.wasm is {} KiB brotli, over the {} KiB {what} (plan §14.3)",
+                "warning: core.wasm is {} KiB brotli, over the {} KiB {what}",
                 core.brotli / 1024,
                 limit / 1024
             );
@@ -162,7 +162,7 @@ fn sizes(bytes: &[u8]) -> Result<Sizes, String> {
 }
 
 /// Writes the Southeast Asian word data the job workers fetch when labels
-/// first need it (decision 0009).
+/// first need it.
 fn word_data(out: &Path) -> Result<(), String> {
     let bytes = orb_text::sea_dictionary_bytes();
     let path = out.join("seasia.bin");

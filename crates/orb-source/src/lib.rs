@@ -1,4 +1,4 @@
-//! Tile sources (plan §7.3, §9.3): given the ideal cover of a view, decide
+//! Tile sources: given the ideal cover of a view, decide
 //! which tiles to load and what to draw while they load.
 //!
 //! A [`TilePyramid`] caches one source's tiles. Each frame,

@@ -45,7 +45,7 @@ const PREFIXES: [&str; 25] = [
     "image",
     "light",
     "line-",
-    // The globe and its vertical perspective (decision 0030), and the
+    // The globe and its vertical perspective, and the
     // identity and Mercator projections' tests beside them.
     "projection",
     "raster-",

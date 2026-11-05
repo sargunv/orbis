@@ -1,4 +1,4 @@
-// Style edits as transactions of GL JS map calls (plan §11.2): one style
+// Style edits as transactions of GL JS map calls: one style
 // generation per transaction.
 
 /** The calls a style edit can make, as GL JS names them. */

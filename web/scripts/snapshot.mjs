@@ -7,12 +7,12 @@
 //     [--reopen[=offline]] [--still]
 //
 // `--reopen` loads the page again once it is idle, in the same browser
-// profile, and times the reopen from the browser's cache (plan §18 row 15);
+// profile, and times the reopen from the browser's cache;
 // `=offline` fails every request but the demo server's (the browser logs
 // the stale entries' failed revalidations; they aren't counted as errors).
 //
 // `--lose` loses the GPU that long after the map loads and waits for it to
-// recover (plan §8.8); with `--switch`, onto WebGL2.
+// recover; with `--switch`, onto WebGL2.
 //
 // The map app draws the Tokyo extract (MVT by default) unless `--style`
 // names another.

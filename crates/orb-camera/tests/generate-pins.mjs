@@ -1,4 +1,4 @@
-// The 4,000-camera Web Mercator pin (plan §20, M6's CRS suite): cameras from a
+// The 4,000-camera Web Mercator pin: cameras from a
 // seeded generator, resolved by the unmodified GL JS transform at the commit
 // pinned in xtask/src/fixtures.rs, with screen points it unprojects and, for
 // every tenth camera, its tile cover. See README.md for setup.

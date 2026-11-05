@@ -1,4 +1,4 @@
-//! Tile jobs across workers (plan §7.1, §7.3, §10.4): both ends of the
+//! Tile jobs across workers: both ends of the
 //! protocol between the page and its job workers.
 //!
 //! The page's JS owns the transport, one `MessagePort` per job worker, and
@@ -369,7 +369,7 @@ impl Jobs for WorkerJobs {
     }
 
     fn raster(&self, request: GlyphRaster, done: RasterDone) {
-        // A unit's owner worker rasterizes it (plan §7.3 affinity).
+        // A unit's owner worker rasterizes it.
         self.send(
             request.owner(self.workers),
             |state, id| drop(state.rasters.insert(id, done)),
@@ -430,14 +430,14 @@ impl JobWorker {
     }
 
     /// Fetches the Southeast Asian word data from `url` when labels first
-    /// need it, rather than compiling it into `core.wasm` (decision 0009).
+    /// need it, rather than compiling it into `core.wasm`.
     #[wasm_bindgen(js_name = setWordDataUrl)]
     pub fn set_word_data_url(&mut self, url: String) {
         self.host.set_word_data_url(&url);
     }
 
     /// How this worker loads `shaper.wasm` for `font-faces` files:
-    /// `loader()` returns a promise of a `Shaper` (decision 0009).
+    /// `loader()` returns a promise of a `Shaper`.
     #[wasm_bindgen(js_name = setShaperLoader)]
     pub fn set_shaper_loader(&mut self, loader: js_sys::Function) {
         orb_host_web::ShaperFiles::set_loader(loader);

@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 default = ["modern"]
 # WebGPU through wgpu: the Modern tier, `core.wasm`.
 modern = ["dep:orb-hal-wgpu", "dep:wgpu"]
-# WebGL2 through orb-hal-gl: the Compat tier, `compat.wasm` (plan §8.7).
+# WebGL2 through orb-hal-gl: the Compat tier, `compat.wasm`.
 compat = ["dep:orb-hal-gl", "orb-runtime/compat"]
 
 [dependencies]

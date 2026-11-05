@@ -1,4 +1,4 @@
-//! The GPU scene (plan §8.2): persistent tables a frame reads, the arenas
+//! The GPU scene: persistent tables a frame reads, the arenas
 //! that hold tile streams, and the bookkeeping that keeps them consistent.
 //!
 //! A camera-only frame writes the frame block and the tile rows; everything
@@ -71,7 +71,7 @@ fn write_words(
 }
 
 /// CPU copies of the tables the cull reads, kept on Compat for its CPU
-/// cull (plan §8.3): rows as the GPU tables hold them.
+/// cull: rows as the GPU tables hold them.
 #[derive(Debug, Default)]
 pub struct CullTables {
     /// Tile placement rows by slot.
@@ -130,14 +130,14 @@ pub struct FrameBlock {
     pub time: f32,
     /// The terrain elevated content stands on, if any.
     pub terrain: Option<FrameTerrain>,
-    /// The style's lights (decision 0026); without them lit surfaces are
+    /// The style's lights; without them lit surfaces are
     /// black.
     pub lights: Option<FrameLights>,
     /// The view's globe, when it is one at its zoom.
     pub globe: Option<FrameGlobe>,
 }
 
-/// The style's lights as shaders take them (decision 0026): the ambient
+/// The style's lights as shaders take them: the ambient
 /// and directional terms of GL JS's flat response, each a premultiplied
 /// colour and a level.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -157,7 +157,7 @@ pub struct FrameLights {
     pub shadow: Option<FrameShadow>,
 }
 
-/// How the directional light casts shadows (decision 0046).
+/// How the directional light casts shadows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameShadow {
     /// How much of the directional light a shadow takes away, 0 to 1.
@@ -438,8 +438,7 @@ pub struct RowGlobe {
     pub on_plane: bool,
 }
 
-/// A tile's biquadratic patches in the property arena (plan §9.2's
-/// `GpuPerVertex`): `cells`² of them over the tile, row by row, with
+/// A tile's biquadratic patches in the property arena (`GpuPerVertex`): `cells`² of them over the tile, row by row, with
 /// [`WARP_PATCH_WORDS`] f32 each on a plane and [`GLOBE_PATCH_WORDS`] on a
 /// globe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -591,7 +590,7 @@ pub struct SceneCapacity {
 
 impl SceneCapacity {
     /// Pools that start at 1 MB and grow to the device's limits as the
-    /// tiles in view need (plan §8).
+    /// tiles in view need.
     pub fn growable() -> Self {
         let start = 1 << 18;
         Self {
@@ -666,9 +665,9 @@ impl Default for SceneCapacity {
     }
 }
 
-/// Plan §8's GPU memory budget on desktops, in bytes.
+/// The GPU memory budget on desktops, in bytes.
 pub const DESKTOP_BUDGET: u64 = 512 << 20;
-/// Plan §8's GPU memory budget on phones, in bytes.
+/// The GPU memory budget on phones, in bytes.
 pub const MOBILE_BUDGET: u64 = 192 << 20;
 
 /// The scene's GPU buffers, for binding.
@@ -700,8 +699,8 @@ pub struct SceneBuffers {
 }
 
 /// A stream of u32 words to upload: in core memory, or held by the host
-/// (plan §10.4: payloads reach the GPU without entering the render
-/// worker's wasm memory).
+/// (payloads reach the GPU without entering the render worker's wasm
+/// memory).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Words<'a> {
     Core(&'a [u32]),
@@ -888,8 +887,8 @@ const CHUNK_ROW_WORDS_WORD: u64 = layout::chunk::ROW_WORDS as u64;
 /// No feature-state remap: every feature has the default state.
 pub const NO_STATE: u32 = u32::MAX;
 
-/// A resident mesh as CPU-side culling reads it (the Compat path of plan
-/// §8.3, and benchmarks).
+/// A resident mesh as CPU-side culling reads it (the Compat path, and
+/// benchmarks).
 #[derive(Clone, Copy, Debug)]
 pub struct ResidentMesh<'a> {
     /// The mesh's words in the vertex arena.
@@ -935,7 +934,7 @@ pub struct NodeCull {
 }
 
 /// How a render node draws its visible chunks, which the cull pass
-/// prepares (plan §8.3, decision 0002).
+/// prepares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeDraw {
     /// Image meshes, by vertex pulling: one instance of 768 vertices per

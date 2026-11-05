@@ -1,5 +1,5 @@
 //! Native window surfaces: a window, a `CAMetalLayer` or an Android
-//! `ANativeWindow` as a render target (plan §5.4's Target).
+//! `ANativeWindow` as a render target.
 //!
 //! A [`Surface`] is made from the device's own instance, configured to a
 //! non-sRGB 8-bit format (GL JS blends in the style's colour space) and

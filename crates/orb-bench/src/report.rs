@@ -111,7 +111,7 @@ impl FramesReport {
         let s = &self.settings;
         let (gpu_stat, cpu_stat) = (self.gpu_stat(), self.cpu_stat());
         let (g, c) = (gpu_stat.name(), cpu_stat.name());
-        writeln!(out, "### Frame bench (decision 0002)")?;
+        writeln!(out, "### Frame bench")?;
         writeln!(out)?;
         for line in &self.about {
             writeln!(out, "- {line}")?;

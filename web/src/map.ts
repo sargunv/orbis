@@ -1,5 +1,5 @@
-// The map (plan §14.3): one wasm map on the page's thread owns the camera,
-// its gestures, drawing and synchronous queries (decision 0042); tile jobs
+// The map: one wasm map on the page's thread owns the camera,
+// its gestures, drawing and synchronous queries; tile jobs
 // and labels run in workers.
 
 import { Annotations } from "./annotations.ts";
@@ -441,7 +441,7 @@ export class OrbisMap {
   getLayersOrder(): string[] { return this.#host.core.layerIds(); }
   getSourceIds(): string[] { return this.#host.core.sourceIds(); }
 
-  /** What the labels on screen say, for assistive technology (plan §13); null before labels place. */
+  /** What the labels on screen say, for assistive technology; null before labels place. */
   semanticSnapshot(): object | null {
     const json = this.#host.core.semanticSnapshot();
     return json ? JSON.parse(json) : null;
@@ -489,7 +489,7 @@ export class OrbisMap {
     return stats.needsFrame;
   }
 
-  /** Gets a new GPU after a loss (plan §8.8) and draws on. */
+  /** Gets a new GPU after a loss and draws on. */
   #recover(): void {
     if (this.#lostAt !== undefined) return;
     this.#lostAt = performance.now();

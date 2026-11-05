@@ -1,4 +1,4 @@
-//! `cargo xtask capi`: the C library for this host (plan §17), in
+//! `cargo xtask capi`: the C library for this host, in
 //! `target/capi`:
 //!
 //! - `lib/liborbis.a`, built with the `dist` profile;

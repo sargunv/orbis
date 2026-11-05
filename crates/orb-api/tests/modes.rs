@@ -1,4 +1,4 @@
-//! Still and Tile output (plan §14.2): the same inputs draw the same bytes,
+//! Still and Tile output: the same inputs draw the same bytes,
 //! and tiles drawn apart agree on the labels across their edges.
 
 use std::path::PathBuf;

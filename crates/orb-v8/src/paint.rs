@@ -1,4 +1,4 @@
-//! Paint transitions (decision 0031): how a paint change animates.
+//! Paint transitions: how a paint change animates.
 
 use orb_style::*;
 /// A `{duration, delay}` object's members, or `None` where it isn't one.

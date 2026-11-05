@@ -1,5 +1,5 @@
-//! A tile matrix set's tiles on another plane (plan §9.2, the `RasterWarp`
-//! plan): where each tile lands, for cover, and an error-bounded mesh that
+//! A tile matrix set's tiles on another plane (the `RasterWarp` plan):
+//! where each tile lands, for cover, and an error-bounded mesh that
 //! carries the tile's image there.
 
 use std::collections::HashMap;
@@ -397,7 +397,7 @@ impl Warp {
     }
 
     /// The tile's position on the target plane as quadratic patches (the
-    /// `GpuPerVertex` plan's precision series, plan §9.3): the fewest of
+    /// `GpuPerVertex` plan's precision series): the fewest of
     /// 1, 4, … 256 equal patches whose quadratics stay within `tolerance` of
     /// the tile's side of the true position, or `None` where the tile
     /// leaves the target plane's domain, crosses a wrapping plane's seam or

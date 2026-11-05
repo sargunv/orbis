@@ -1,4 +1,4 @@
-//! Device policy (plan §8.8): which GPUs get the Modern tier, the quirks
+//! Device policy: which GPUs get the Modern tier, the quirks
 //! table, and the crash sentinel's decision. Data and pure logic: hosts
 //! bring the adapter's facts and keep the sentinel's marker.
 
@@ -39,7 +39,7 @@ pub enum Api {
     Gl,
 }
 
-/// The Android allowlist (plan §8.8 1): Vulkan is Modern only on Android
+/// The Android allowlist: Vulkan is Modern only on Android
 /// 12+ with GPUs and drivers known to work, seeded from Chrome's WebGPU
 /// rollout on Android (Qualcomm, ARM and Intel from 12, Imagination from
 /// 16, Samsung Xclipse pending). Everything else draws on GLES (Compat).
@@ -84,7 +84,7 @@ pub struct Quirk {
     pub evidence: &'static str,
 }
 
-/// The quirks table (plan §8.8 2).
+/// The quirks table.
 pub const QUIRKS: &[Quirk] = &[
     Quirk {
         name: "qualcomm_vulkan_indirect_validation",
@@ -117,7 +117,7 @@ pub fn needs(adapter: &Adapter<'_>, workaround: Workaround) -> bool {
         .any(|q| q.workaround == workaround && q.applies.is_some_and(|applies| applies(adapter)))
 }
 
-/// The crash sentinel (plan §8.8 3): a marker naming the device is written
+/// The crash sentinel: a marker naming the device is written
 /// before the first pipelines are made and cleared once they are. A marker
 /// found at the next start for the same device means its driver crashed
 /// compiling them, so it draws on Compat; a driver update (a new key)
@@ -142,9 +142,9 @@ impl Sentinel {
 }
 
 /// How long one pipeline may compile before its driver is taken to have
-/// hung in its compiler (plan §8.8 3): the sentinel then trips as for a
+/// hung in its compiler: the sentinel then trips as for a
 /// crash, and the device is lost. Set from M4's slowest cold compile on an
-/// Adreno 619 (decision 0038) with a wide margin.
+/// Adreno 619 with a wide margin.
 pub const COMPILE_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// A sentinel key for a device: its identity and driver.

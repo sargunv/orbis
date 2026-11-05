@@ -121,7 +121,7 @@ class MainActivity : Activity() {
                 if (frame.pipelinesPending > 0u) " · %d pipelines compiling".format(frame.pipelinesPending.toInt()) else "",
             )
             // Load to the first frame that draws a layer, and to the last
-            // pipeline (plan §18's pipeline-load gate).
+            // pipeline.
             if (!firstDrawLogged && frame.tilesDrawn > 0u && frame.draws > 0u) {
                 firstDrawLogged = true
                 Log.i("Orbis", "first draw %d ms after start; %d pipelines compiling, %d layers waiting".format(

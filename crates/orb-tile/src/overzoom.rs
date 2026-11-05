@@ -9,7 +9,7 @@
 //! on each side of it.) Such a line splits where it crosses the buffer's
 //! square: the pieces inside are GL JS's slice of it, so dash phase and
 //! line-label anchors start where GL JS's do, and the pieces outside only
-//! carry the stroke on across the edge (decision 0009).
+//! carry the stroke on across the edge.
 //!
 //! A polygon whole in the source tile (`Layer::is_whole`) stays whole in a
 //! child its bounds meet, unclipped, while it reaches no further than one

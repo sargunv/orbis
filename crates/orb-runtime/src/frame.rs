@@ -1,4 +1,4 @@
-//! The frame's plan (decision 0040's `plan_frame`): which tiles cover the
+//! The frame's plan: which tiles cover the
 //! view and stand in where they haven't arrived, where they are placed,
 //! the background's quads, and which drape slots draw again.
 
@@ -18,7 +18,7 @@ use crate::resident::*;
 
 impl Map {
     /// What a frame draws and loads of each source, over the terrain's
-    /// `elevation` (decision 0040's `plan_frame`): a function of the view
+    /// `elevation`: a function of the view
     /// and the resident tiles, which changes nothing.
     pub(crate) fn plan_frame(
         &self,
@@ -496,7 +496,7 @@ impl Map {
 
     /// Plans this frame's drape: makes room for the terrain tiles' slots,
     /// writes the draped paint at their drape zooms and picks the slots to
-    /// redraw, by what is draped under each tile (decision 0019). Nothing
+    /// redraw, by what is draped under each tile. Nothing
     /// here depends on the camera but which tiles there are, and the
     /// bearing under a viewport-anchored translate. Viewport-anchored
     /// hillshades turn with the map too: the terrain pass shades them

@@ -1,4 +1,4 @@
-//! Tiles the renderer holds (plan §5.4): what an upload made of a tile,
+//! Tiles the renderer holds: what an upload made of a tile,
 //! behind a handle the map keeps in its pyramid.
 //!
 //! A vector tile holds one scene tile per layer extent, its meshes in

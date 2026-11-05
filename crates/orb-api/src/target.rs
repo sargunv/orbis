@@ -1,4 +1,4 @@
-//! What a map draws into (plan §5.4): a window surface, or a texture the
+//! What a map draws into: a window surface, or a texture the
 //! runtime owns and the host reads back or composites.
 
 use std::rc::Rc;

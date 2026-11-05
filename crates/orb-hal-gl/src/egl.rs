@@ -243,7 +243,7 @@ impl Drop for EglContext {
 }
 
 /// Threads that compile and link programs, each on a context of its own
-/// that shares this one's objects (plan §8.4: no compile blocks the thread
+/// that shares this one's objects (no compile blocks the thread
 /// that draws). GLES has no async compile without
 /// `KHR_parallel_shader_compile`, which Android's drivers and ANGLE on
 /// SwiftShader lack; a shared context works on every EGL. Several

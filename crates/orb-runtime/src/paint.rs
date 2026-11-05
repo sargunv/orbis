@@ -1,4 +1,4 @@
-//! Node paint for a frame (plan §10.2): each node's paint and visibility
+//! Node paint for a frame: each node's paint and visibility
 //! at the frame's zoom and bearing, and the draped nodes' at their drape
 //! zooms, written to the renderer when they change.
 
@@ -94,7 +94,7 @@ pub(crate) fn frame(
 }
 
 /// Writes the draped nodes' paint at each of `zooms` not written since it
-/// changed, for drape layout `generation` (decision 0019): evaluated there,
+/// changed, for drape layout `generation`: evaluated there,
 /// with the cross-fade of a zoom at rest, and left out where their layers
 /// don't draw.
 pub(crate) fn drape(
@@ -178,8 +178,8 @@ pub(crate) struct Crossfade {
     pub(crate) mix: f32,
 }
 
-/// The draped nodes' paint at the drape zooms slots are drawn at
-/// (decision 0019), and what tells a slot's content changed with it.
+/// The draped nodes' paint at the drape zooms slots are drawn at,
+/// and what tells a slot's content changed with it.
 #[derive(Debug, Default)]
 struct DrapePaint {
     /// Zooms written since the paint last changed.
@@ -303,7 +303,7 @@ fn write_paint(
         let state = style.nodes.entry(node.key).or_default();
         let index = index as u32;
         let layer = &plan.style.layers[node.layer];
-        // Its material under a scene's lights (decision 0048).
+        // Its material under a scene's lights.
         let material = plan.style.lights.material(&layer.id);
         renderer.set_material(
             index,

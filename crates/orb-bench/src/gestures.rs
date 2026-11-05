@@ -372,8 +372,7 @@ impl GesturesReport {
              candidates out again; label blinks: labels shown in full that all but \
              vanished (opacity under 0.1) and were back in full within {FLASH_FRAMES} frames (no \
              fade is that quick), and the frames they were gone; placement: the render thread's \
-             share of it (building the frame the lane places, applying commits; plan §6.1 \
-             step 10's 0.2 ms)."
+             share of it (building the frame the lane places, applying commits; 0.2 ms)."
         )?;
         for warning in &self.warnings {
             writeln!(out, "- warning: {warning}")?;

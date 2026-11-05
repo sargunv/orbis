@@ -1,4 +1,4 @@
-//! The glyph atlas (decision 0009): SDF bitmaps in R8 array-texture pages,
+//! The glyph atlas: SDF bitmaps in R8 array-texture pages,
 //! shelf packed, and a stable table of glyph rows that symbol shaders read.
 //!
 //! Rows are reserved before their bitmaps exist, so a tile's quads can name

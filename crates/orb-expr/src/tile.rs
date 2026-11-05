@@ -70,7 +70,7 @@ impl<'a> Bound<'a> {
 
 /// What paint expressions read of one tile feature, held apart from its
 /// tile: the scene re-evaluates paint that reads both feature state and
-/// feature data from it when the feature's state changes (plan §10.2).
+/// feature data from it when the feature's state changes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeatureData {
     pub id: Value<'static>,

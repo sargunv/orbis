@@ -1,4 +1,4 @@
-//! Tile jobs (plan §7.3): what a map asks of its job executor, and the
+//! Tile jobs: what a map asks of its job executor, and the
 //! results it uploads. A map hands its jobs each style revision as a
 //! [`StyleUpdate`] (the layers and sources new in it), then requests tiles.
 //! Natively [`PoolJobs`] runs a [`TileWorker`](crate::TileWorker) on an
@@ -136,10 +136,10 @@ pub trait Jobs: Send + Sync {
     /// result.
     fn load(&self, request: TileRequest, done: TileDone);
     /// Rasterizes glyphs for the atlas: one deduplicated job per unit, run
-    /// by the unit's owner worker (decision 0009).
+    /// by the unit's owner worker.
     fn raster(&self, request: GlyphRaster, done: RasterDone);
-    /// Reads features of a tile for a query, in the worker that loaded it
-    /// (plan §13), from its cached frame or from the tile fetched again.
+    /// Reads features of a tile for a query, in the worker that loaded it,
+    /// from its cached frame or from the tile fetched again.
     fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone);
     /// Loads the glTF model at `url`, packed for the GPU
     /// ([`JobHost::model`](crate::JobHost::model)).
@@ -176,7 +176,7 @@ impl PoolJobs {
         })
     }
 
-    /// Draws local glyphs (decision 0009) with the host's fonts.
+    /// Draws local glyphs with the host's fonts.
     pub fn set_local_glyphs(&self, local: Arc<dyn LocalGlyphs>) {
         self.host.set_local_glyphs(local);
     }

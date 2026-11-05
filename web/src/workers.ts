@@ -1,6 +1,6 @@
-// The job workers and the placement worker (plan §7.1), spawned by the map.
+// The job workers and the placement worker, spawned by the map.
 
-/** Plan §7.1's default: `clamp(hardwareConcurrency − 2, 1, 4)`. */
+/** The default: `clamp(hardwareConcurrency − 2, 1, 4)`. */
 export function defaultJobWorkers(): number {
   return Math.min(Math.max((navigator.hardwareConcurrency ?? 4) - 2, 1), 4);
 }

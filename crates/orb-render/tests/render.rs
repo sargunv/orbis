@@ -216,7 +216,7 @@ fn tables_grow_the_property_pool() {
     );
 }
 
-/// Plan §8: a pool that runs out moves into a buffer twice its size, its
+/// A pool that runs out moves into a buffer twice its size, its
 /// meshes copied over on the GPU, and the frame binds the new buffer.
 #[test]
 fn pools_grow_into_larger_buffers_keeping_their_meshes() {

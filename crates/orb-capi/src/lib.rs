@@ -1,4 +1,4 @@
-//! The C ABI, 0.x (plan §14.1, decision 0018): `orb-api` as a Diplomat
+//! The C ABI, 0.x: `orb-api` as a Diplomat
 //! bridge. This module is the annotated API: Diplomat's C backend writes
 //! the header from it, `diplomat-swift-kotlin` the Kotlin and Swift
 //! bindings (`cargo xtask bindings`).
@@ -72,7 +72,7 @@ mod ffi {
         TargetLost = 5,
     }
 
-    /// The GPU tier a runtime draws at (plan §4.2).
+    /// The GPU tier a runtime draws at.
     #[diplomat::attr(contract, thread = "any")]
     #[derive(Debug, PartialEq, Eq)]
     pub enum OrbBackend {
@@ -1771,8 +1771,8 @@ mod ffi {
             Ok(())
         }
 
-        /// What the labels on screen say, for assistive technology (plan
-        /// §13), as JSON; empty before labels are first placed.
+        /// What the labels on screen say, for assistive technology, as
+        /// JSON; empty before labels are first placed.
         #[diplomat::attr(contract, snapshot)]
         pub fn semantic_snapshot(&self, out: &mut DiplomatWrite) {
             if let Some(snapshot) = self.0.semantic_snapshot() {

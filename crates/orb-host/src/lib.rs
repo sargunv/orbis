@@ -1,4 +1,4 @@
-//! Host service traits (plan §5.1): what the core asks of its platform.
+//! Host service traits: what the core asks of its platform.
 //! Implementations live in `orb-host-native` and, for the browser,
 //! `orb-host-web`.
 
@@ -102,7 +102,7 @@ pub fn check_range(
 pub type StorageDone<T> = Box<dyn FnOnce(Result<T, String>) + Send + 'static>;
 
 /// Keeps bytes by key between runs: the HTTP cache's entries and offline
-/// regions (plan D24). Files in a directory natively, the origin private
+/// regions. Files in a directory natively, the origin private
 /// file system on the web. Keys are `/`-separated relative paths.
 pub trait Storage: Send + Sync + fmt::Debug {
     /// Reads `key` whole, or `length` bytes at `offset` of it; `None` when
@@ -147,8 +147,8 @@ pub fn decode_image(bytes: &[u8]) -> Result<DecodedImage, String> {
 /// Called once with the outcome of a decode, on any thread.
 pub type ImageDone = Box<dyn FnOnce(Result<DecodedImage, String>) + Send + 'static>;
 
-/// Decodes PNG, JPEG and WebP images (plan §10.1: the platform's decoder,
-/// not one bundled in core).
+/// Decodes PNG, JPEG and WebP images (the platform's decoder, not one
+/// bundled in core).
 pub trait ImageDecode: Send + Sync {
     fn decode(&self, bytes: Vec<u8>, done: ImageDone);
 }
@@ -191,8 +191,7 @@ pub struct InkRect {
     pub height: u32,
 }
 
-/// Draws glyphs with fonts only the host can read (decision 0009's "local"
-/// provider): the browser's canvas on the web, system fonts natively.
+/// Draws glyphs with fonts only the host can read (the "local" provider): the browser's canvas on the web, system fonts natively.
 pub trait LocalGlyphs: Send + Sync + std::fmt::Debug {
     /// Canvas `measureText` of `text` in `font`.
     fn measure(&self, font: &LocalFace<'_>, text: &str) -> TextMetrics;

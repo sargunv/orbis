@@ -1,4 +1,4 @@
-//! The lit map (#91, decision 0048): under a scene's lights, the map's
+//! The lit map (#91): under a scene's lights, the map's
 //! layers shade their fragments in place (`map_out_lit.wgsl`), each with
 //! its node's material, in the main pass where they draw unlit otherwise.
 //! Their lit pipelines take the nodes' materials as a group of their own.

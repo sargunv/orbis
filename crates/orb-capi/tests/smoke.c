@@ -1,4 +1,4 @@
-/* The C ABI's smoke test (plan §14.1): the installed headers and library
+/* The C ABI's smoke test: the installed headers and library
  * link, a map draws a style into a texture target, and errors carry a
  * status and a message. The full binding scenario runs in Rust
  * (`orb-api`'s tests); the emitters' tests cover every API shape.

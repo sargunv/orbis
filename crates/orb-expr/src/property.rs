@@ -168,7 +168,7 @@ impl PropertyExpression {
         Self::parse_inner(json, spec, locale, None)
     }
 
-    /// Parses with the style's global state resolved (plan §11.2, S2):
+    /// Parses with the style's global state resolved:
     /// `global-state` reads fold to `state`'s values, so a value that reads
     /// only global state classifies as a constant.
     pub fn parse_with_state(

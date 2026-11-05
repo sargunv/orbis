@@ -1,4 +1,4 @@
-//! The Modern GPU-driven path (plan §8.3, §8.5).
+//! The Modern GPU-driven path.
 //!
 //! A frame has a cull and main pass: one cull/compact dispatch, a workgroup per render
 //! node that keeps its visible `(chunk, tile placement)` candidates in draw
@@ -12,7 +12,7 @@
 //! Fill, line and extrusion nodes draw compacted indices, which the cull
 //! dispatch keeps in each candidate's slot of one index buffer, with one
 //! `drawIndexedIndirect` per node; point families and image tiles pull
-//! their vertices (decision 0002). Model nodes draw their model's indices
+//! their vertices. Model nodes draw their model's indices
 //! once per visible point (`model`).
 
 #![forbid(unsafe_code)]
@@ -76,7 +76,7 @@ use orb_shaders::{
     Shader,
 };
 
-/// How a family's nodes draw (decision 0002): meshes from compacted
+/// How a family's nodes draw: meshes from compacted
 /// indices, instanced quads by vertex pulling.
 fn draw_of(family: Family) -> NodeDraw {
     match family {
@@ -109,7 +109,7 @@ pub struct TargetFormat {
     pub sample_count: u32,
 }
 
-/// Counters for one frame (plan §16).
+/// Counters for one frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameStats {
     pub dispatches: u32,
@@ -121,14 +121,14 @@ pub struct FrameStats {
     /// The cull's candidates were laid out again: tiles or placements came
     /// or went, or nodes changed how they draw.
     pub candidates_rebuilt: bool,
-    /// Objects the CPU wrote since the last frame (plan §16): tile
+    /// Objects the CPU wrote since the last frame: tile
     /// placement rows and node uniforms. A camera-only frame rewrites only
     /// the placements in view.
     pub placements_written: u32,
     pub paints_written: u32,
     /// DEM tiles the prepare pass processed.
     pub prepared: u32,
-    /// Pipelines the device is still compiling (plan §8.4).
+    /// Pipelines the device is still compiling.
     pub pipelines_pending: u32,
     /// Nodes not drawn because a pipeline they need is still compiling.
     pub nodes_waiting: u32,
@@ -580,7 +580,7 @@ impl Renderer {
                 }],
             })
         });
-        // The cull pipeline first: nothing draws without it (plan §8.4).
+        // The cull pipeline first: nothing draws without it.
         let cull = cull_group.map(|group| {
             let module = gpu.create_shader_module(&ShaderModuleDesc {
                 label: CULL_SHADER.label,
@@ -982,7 +982,7 @@ impl Renderer {
         gpu: &mut dyn Gpu,
         terrain: Option<(Option<PageId>, TerrainPaint)>,
     ) {
-        // Compat draws no terrain (plan §8.7).
+        // Compat draws no terrain.
         let terrain = terrain.filter(|_| gpu.caps().tier == Tier::Modern);
         let was = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
         match terrain {
@@ -1146,7 +1146,7 @@ impl Renderer {
         }
     }
 
-    /// Lights the whole map (#91, decision 0048): the map's layers shade
+    /// Lights the whole map (#91): the map's layers shade
     /// their fragments with their materials under the frame's lights.
     /// Modern only: otherwise the map draws unlit. Draped layers draw into
     /// the drape unlit, which the terrain lights.
@@ -1460,7 +1460,7 @@ impl Renderer {
     }
 
     /// Asks for the pipelines the nodes need and counts those compiling:
-    /// a frame is complete only once none are (plan §8.4).
+    /// a frame is complete only once none are.
     pub fn pipelines(&mut self, gpu: &mut dyn Gpu) -> PipelineCounts {
         if std::mem::take(&mut self.pipelines_stale) {
             self.make_pipelines(gpu);
@@ -2519,7 +2519,7 @@ struct DrapePipelines {
     images: image::ImagePipelines,
 }
 
-/// The drape pass of one style zoom (decision 0019): a slot draws its
+/// The drape pass of one style zoom: a slot draws its
 /// terrain tile's content at that zoom whatever the camera's, so draped
 /// nodes' paint at it is written once, not per frame. Its bundle replays
 /// the draped nodes over its frame and their paint at that zoom; their

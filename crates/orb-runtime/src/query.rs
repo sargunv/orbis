@@ -1,4 +1,4 @@
-//! Picking, independent of the camera (decision 0024). Tile jobs write each
+//! Picking, independent of the camera. Tile jobs write each
 //! node's hit-testable features in tile-local data units ([`MeshHits`]); a
 //! tile's [`TileMapping`] places them in world space. A frame records the
 //! tiles it drew and their clip regions ([`DrawnTile`]), placement commits

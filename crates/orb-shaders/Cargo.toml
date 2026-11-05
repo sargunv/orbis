@@ -8,7 +8,7 @@ version.workspace = true
 
 [features]
 # The Compat programs: every Compat composition translated to GLSL ES 3.00
-# by naga at build time (plan §8.4), for orb-hal-gl.
+# by naga at build time, for orb-hal-gl.
 glsl = ["dep:orb-hal"]
 
 [dependencies]

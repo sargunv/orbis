@@ -1,4 +1,4 @@
-//! Symbol layout (plan §12, decision 0009): a tile layer's labels and
+//! Symbol layout: a tile layer's labels and
 //! icons as anchors, glyph and icon quads, collision features and stable
 //! keys, at parity with the pinned GL JS's `symbol_layout.ts`.
 //!

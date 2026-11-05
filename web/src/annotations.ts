@@ -1,4 +1,4 @@
-// View annotations as DOM elements anchored to the map (plan §7.2): markers
+// View annotations as DOM elements anchored to the map: markers
 // and popups. They move in the frame the canvas draws, on the terrain.
 
 import type { LngLat, Point } from "./types.ts";

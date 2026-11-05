@@ -125,7 +125,7 @@ export async function runGestures({ style, center, paths, jobWorkers, size, abou
     "Times in ms. Interval: between frames reaching the page while the camera moves; render CPU: the frame's " +
       "`render`; long tasks: the page's, over 50 ms; idle after: " +
       "from the path's end until the map's `idle` event; after: the frames and the page's long tasks from the path's end to `idle`; " +
-      "placement: the page thread's share of render CPU (building the placement worker's frame, applying commits; plan §6.1's 0.2 ms).",
+      "placement: the page thread's share of render CPU (building the placement worker's frame, applying commits; 0.2 ms).",
   ];
   return `${lines.join("\n")}\n`;
 }

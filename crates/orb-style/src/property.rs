@@ -563,7 +563,7 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
     }
 
     /// Whether the value reads `feature-state`, but no feature properties:
-    /// plan §11.3's `StateLookup` class.
+    /// a `StateLookup`.
     pub fn is_state_lookup(&self) -> bool {
         self.as_expression()
             .is_some_and(|e| e.reads_feature_state() && !e.reads_feature_properties())

@@ -1,4 +1,4 @@
-//! How a paint change animates (decision 0031).
+//! How a paint change animates.
 
 /// How a paint change animates (v8's `transition`), in milliseconds.
 #[derive(Clone, Copy, Debug, PartialEq)]

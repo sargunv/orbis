@@ -1,4 +1,4 @@
-// The scene's shadows (decision 0046): the cascades the shadow passes drew
+// The scene's shadows: the cascades the shadow passes drew
 // this frame (none: count 0) and their depth maps, in the scene group.
 struct Shadow {
     cascades: ShadowCascades,

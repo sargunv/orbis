@@ -1,6 +1,6 @@
 //! DEM tiles on the CPU: a tile's elevations, decoded once in its job, for
-//! the terrain's camera, queries and culling (plan §9.4: a CPU DEM, never
-//! a GPU readback).
+//! the terrain's camera, queries and culling (a CPU DEM, never a GPU
+//! readback).
 
 /// A square DEM tile's elevations in metres, without exaggeration, rows
 /// top to bottom. Pixel `(i, j)` describes the cell centred at tile

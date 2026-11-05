@@ -534,7 +534,7 @@ fn circle_hits_cover_the_stroke_however_each_part_is_bound() {
     assert!(map.map.hit_test(probe).is_some(), "uniform stroke edit");
 }
 
-/// Plan §18 budget 20: a projection switch shows on the next frame and
+/// A projection switch shows on the next frame and
 /// fetches nothing again. Resident vector tiles lay out again for the
 /// globe's curvature from cached data; only tiles the new surface's cover
 /// alone wants load. (Pixels aren't compared with a fresh load: the two

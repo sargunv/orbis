@@ -1,4 +1,4 @@
-//! Gestures (plan §13): pointer, touch, wheel and keyboard input turned into
+//! Gestures: pointer, touch, wheel and keyboard input turned into
 //! camera moves, with inertia and feel profiles. Host-independent: hosts
 //! feed [`Input`]s with their timestamps and call [`Interaction::frame`]
 //! once a display frame; every move goes through the

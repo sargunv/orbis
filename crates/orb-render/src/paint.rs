@@ -50,7 +50,7 @@ pub struct CirclePaint {
     pub state: StateLookup,
 }
 
-/// Where a node's feature-state lookups read (plan §10.2): bit `i` of
+/// Where a node's feature-state lookups read: bit `i` of
 /// `mask` takes property slot `i` from a feature's state block when the
 /// feature has state, else from the node's constant. The node's block of
 /// state row `s` starts at word `base + s * stride` of the property arena;

@@ -9,7 +9,7 @@
 //! `file://`, `pmtiles://`) or a path. `render` draws one picture in Still
 //! mode (`--at`'s zoom is Web Mercator's, as the style's own plane is known
 //! only once it loads); `--a11y` also writes the picture's semantic
-//! snapshot (plan §13) as JSON. `tiles` draws every tile of a tile matrix set on the
+//! snapshot as JSON. `tiles` draws every tile of a tile matrix set on the
 //! scene's plane in Tile mode, `dir/z/col/row.png`, rows in the set's own
 //! order; `--bbox` (degrees) limits them to the tiles it touches.
 

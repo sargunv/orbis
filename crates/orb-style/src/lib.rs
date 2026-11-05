@@ -1,4 +1,4 @@
-//! The native scene document (plan §11.2): the [`Scene`] that a v8 style
+//! The native scene document: the [`Scene`] that a v8 style
 //! and a scene document parse into, with table-driven layers. A layer holds
 //! a [`Slot`] per property of its type, indexed by [`PropertyId`] in one
 //! table of every layer property's type, default and section, and read

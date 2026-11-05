@@ -1,4 +1,4 @@
-//! Style edits on a live map (plan §11.2, S6): a transaction's patch
+//! Style edits on a live map: a transaction's patch
 //! applied without a reload.
 //!
 //! - Uniform paint (constant and camera values, visibility) is a node
@@ -53,7 +53,7 @@ fn paint_class(layer: &orb_style::Layer, id: PropertyId, from: Binding, to: Bind
 }
 
 impl Map {
-    /// Applies a transaction to the style (plan §11.2): every edit or, on
+    /// Applies a transaction to the style: every edit or, on
     /// an error, none. Returns the style generation at which the frame
     /// shows it in full ([`FrameReport::generation`](crate::FrameReport));
     /// paint and feature-state edits show on the next frame.

@@ -1,4 +1,4 @@
-//! A small WebGPU-shaped GPU interface (plan §8.1).
+//! A small WebGPU-shaped GPU interface.
 //!
 //! Core crates talk to the GPU only through [`Gpu`]: they create resources
 //! from descriptors, receive opaque ids, and describe work as plain lists of
@@ -22,7 +22,7 @@ pub use resource::*;
 /// The GPU as core crates see it.
 ///
 /// Creation is synchronous, except for pipelines: those compile
-/// asynchronously (plan §8.4), and commands may name one only once
+/// asynchronously, and commands may name one only once
 /// [`pipeline_ready`](Self::pipeline_ready) says it compiled. Ids are never
 /// reused, and using a destroyed id is a bug that implementations may panic
 /// on.
@@ -34,8 +34,8 @@ pub trait Gpu {
     /// Queues a write that lands before the next submitted pass.
     fn write_buffer(&mut self, id: BufferId, offset: u64, data: &[u8]);
     /// Like [`write_buffer`](Self::write_buffer), from a byte range of
-    /// host-held bytes, which never pass through core memory (plan §8.1's
-    /// web upload path).
+    /// host-held bytes, which never pass through core memory (the web
+    /// upload path).
     fn write_buffer_from_host(
         &mut self,
         id: BufferId,
@@ -102,7 +102,7 @@ pub trait Gpu {
     fn poll_pipelines(&mut self) -> PipelineCounts;
     /// Compiles a pending pipeline before those queued ahead of it, where
     /// the implementation keeps a queue: what the current view needs
-    /// first (plan §8.4's first-visible order).
+    /// first.
     fn prioritize_pipeline(&mut self, id: PipelineId);
 
     /// Records render commands once for replay with
@@ -164,7 +164,7 @@ pub struct Caps {
     pub clip_distances: bool,
 }
 
-/// The two render configurations (plan §4.2).
+/// The two render configurations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
     /// Storage buffers in every stage, compute and indirect draws.

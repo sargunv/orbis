@@ -1,4 +1,4 @@
-//! The text stage of a tile job (decision 0009, step 2): one symbol
+//! The text stage of a tile job: one symbol
 //! layer's features evaluated into `orb-symbol` inputs, its glyph requests,
 //! and its layout.
 //!
@@ -484,7 +484,7 @@ pub(crate) fn layout(
         TileParams {
             source_layer,
             // Orbis slices overzoomed tiles to their own extent, so every
-            // tile lays out at its own scale (decision 0009).
+            // tile lays out at its own scale.
             overscaling: 1.0,
             pixel_ratio: icons.pixel_ratio,
         },

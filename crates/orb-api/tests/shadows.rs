@@ -1,4 +1,4 @@
-//! Shadows from the scene's directional light (decision 0046): a building
+//! Shadows from the scene's directional light: a building
 //! or a model lit from the east darkens the ground west of it, away from
 //! the light, and not east of it; a building's shadow darkens a model.
 
@@ -77,7 +77,7 @@ fn red<const N: usize>(scene: &str, at: [f64; N]) -> [u8; N] {
 /// from the building's centre and 30 m from the pagoda's: past their
 /// roofs, which stand nearer the camera, and inside their shadows.
 ///
-/// The scene's lights shade the white ground (decision 0048): both lights
+/// The scene's lights shade the white ground: both lights
 /// give it 0.5 + 0.5 cos 45° = 0.85 (238 in sRGB), the ambient alone 0.5
 /// (188).
 fn falls_away(layer: &str, away: f64) {
@@ -139,7 +139,7 @@ fn casters_out_of_view_cast_into_it() {
     };
     let [lit] = red(&low(false), [0.0]);
     let [shadowed] = red(&low(true), [0.0]);
-    // The ground is lit (decision 0026): in shadow it keeps the ambient
+    // The ground is lit: in shadow it keeps the ambient
     // light alone.
     assert!(
         shadowed + 20 < lit,

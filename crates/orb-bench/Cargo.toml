@@ -1,6 +1,6 @@
 [package]
 name = "orb-bench"
-description = "GPU and CPU frame timings of the render submissions (decision 0002), through orb-api"
+description = "GPU and CPU frame timings of the render submissions, through orb-api"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

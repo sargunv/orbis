@@ -1,4 +1,4 @@
-//! Text for map labels (plan §12, decision 0009): itemization and bidi,
+//! Text for map labels: itemization and bidi,
 //! grapheme and word segmentation, the glyph chain, advance shaping and
 //! line breaking at parity with the pinned GL JS, and glyph SDFs.
 //!

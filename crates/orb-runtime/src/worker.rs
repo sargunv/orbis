@@ -1,6 +1,6 @@
-//! The tile worker (plan §7.3): lays out tiles for one revision of a
+//! The tile worker: lays out tiles for one revision of a
 //! style, pure, on any job thread or web worker. Workers keep each tile's
-//! decoded [`TileFrame`] (plan §10.4: the owner job worker keeps them), so
+//! decoded [`TileFrame`] (the owner job worker keeps them), so
 //! a request for some of a tile's nodes, or only their property rows, lays
 //! them out again without fetching or decoding. This side of the jobs names
 //! no renderer or GPU type.
@@ -100,7 +100,7 @@ pub(crate) struct WorkerData {
 }
 
 /// The data labels in scripts written without spaces (Thai, Lao, Khmer,
-/// Burmese) break lines with (decision 0009).
+/// Burmese) break lines with.
 #[derive(Clone, Debug)]
 enum Words {
     Ready(Arc<orb_text::WordBreaker>),

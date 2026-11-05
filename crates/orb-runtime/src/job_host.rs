@@ -1,4 +1,4 @@
-//! One job host for every platform (decision 0044): what a map's tile,
+//! One job host for every platform: what a map's tile,
 //! query and glyph jobs need beyond a worker's CPU work. It keeps the style
 //! revisions requests name, shares fetches between the requests that need
 //! them (a source's data document, glyph ranges, word data, font files), and
@@ -58,7 +58,7 @@ pub struct JobHost {
     local: Mutex<Option<Arc<dyn LocalGlyphs>>>,
     files: Mutex<Option<Arc<dyn FontFiles>>>,
     /// Where the Southeast Asian word data is, for hosts that load it
-    /// lazily (decision 0009).
+    /// lazily.
     word_data_url: Mutex<Option<String>>,
 }
 
@@ -207,7 +207,7 @@ impl JobHost {
         })
     }
 
-    /// Draws local glyphs (decision 0009) with the host's fonts: system
+    /// Draws local glyphs with the host's fonts: system
     /// fonts natively, the canvas on the web.
     pub fn set_local_glyphs(&self, local: Arc<dyn LocalGlyphs>) {
         *self.local.lock().expect("local glyphs poisoned") = Some(local);
@@ -220,7 +220,7 @@ impl JobHost {
     }
 
     /// Fetches the Southeast Asian word data from `url` when labels first
-    /// need it, rather than compiling it in (decision 0009).
+    /// need it, rather than compiling it in.
     pub fn set_word_data_url(&self, url: &str) {
         *self.word_data_url.lock().expect("word data poisoned") = Some(url.to_string());
     }
@@ -449,7 +449,7 @@ impl JobHost {
         );
     }
 
-    /// Rasterizes glyphs for the atlas (decision 0009).
+    /// Rasterizes glyphs for the atlas.
     pub fn raster(&self, request: GlyphRaster, done: RasterDone) {
         let executor = Arc::clone(&self.executor);
         match &request {

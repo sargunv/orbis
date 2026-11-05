@@ -1,4 +1,4 @@
-//! Model layers (plan §9.4): glTF models drawn once per visible point of a
+//! Model layers: glTF models drawn once per visible point of a
 //! model node ([`NodeDraw::Instances`]), into the node's own 3D target over
 //! the depth 3D layers share, then composited at the layer's opacity as
 //! extrusions are (`offscreen`). A node draws one model: the map gives each a model

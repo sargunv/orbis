@@ -502,8 +502,8 @@ public final class OrbMap {
         return text
     }
 
-    /// What the labels on screen say, for assistive technology (plan
-    /// §13), as JSON; empty before labels are first placed.
+    /// What the labels on screen say, for assistive technology, as
+    /// JSON; empty before labels are first placed.
     ///
     /// Contract: `snapshot`.
     public func semanticSnapshot() -> String {

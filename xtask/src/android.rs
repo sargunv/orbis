@@ -2,7 +2,7 @@
 //! API 24, the D9 floor): `liborbis.a` linked with the generated JNI shim and
 //! the ANativeWindow glue by the NDK's clang into
 //! `hosts/android/orbis/src/main/jniLibs`, then the AAR and the reference app
-//! with Gradle (plan §17: Gradle only packages). `--run` installs the app on
+//! with Gradle. `--run` installs the app on
 //! the Android device `scripts/android-serial` names (this worktree's emulator
 //! from devices-cli, or `ANDROID_SERIAL`) and starts it. `--run --leakcheck`
 //! starts it on Compat to make, draw and drop 20 maps, and fails unless the

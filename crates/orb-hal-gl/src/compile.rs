@@ -1,4 +1,4 @@
-//! Programs compile off the thread that draws (plan §8.4, decision 0038).
+//! Programs compile off the thread that draws.
 //!
 //! Natively compile threads link them, each on a context that shares the
 //! executor's objects (`egl::CompileThread`); the executor then sets each

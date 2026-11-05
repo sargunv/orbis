@@ -1,6 +1,6 @@
 //! Edits as the renderer sees them: a transaction's changes, keyed by
 //! layer and source identity and by [`PropertyId`], each in a class of
-//! what it costs (plan §11.2's S6).
+//! what it costs.
 
 use orb_expr::{Diagnostic, PropertyExpression, Value};
 
@@ -32,7 +32,7 @@ pub enum FeatureStateOp {
     },
 }
 
-/// How a paint value binds to the renderer (plan §11.3's binding plans).
+/// How a paint value binds to the renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Binding {
     /// The same everywhere: a node uniform.
@@ -116,7 +116,7 @@ pub enum Change {
     },
 }
 
-/// Plan §11.2's S6 classes: what a change costs the renderer.
+/// What a change costs the renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Class {
     /// Node uniforms (the frame block).

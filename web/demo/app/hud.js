@@ -5,7 +5,7 @@ const kib = (bytes) => `${(bytes / 1024).toFixed(1)} KiB`;
 const COMMIT = __ORBIS_COMMIT__;
 const mib = (bytes) => `${(bytes / 1048576).toFixed(1)} MiB`;
 
-/** Plan §8's budget: GPU memory allocated, the scene's growable pools
+/** The budget: GPU memory allocated, the scene's growable pools
  * (used / allocated / ceiling) and the tile cache. */
 function memoryRows(m) {
   if (!m?.budget) return [];

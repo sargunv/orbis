@@ -1,4 +1,4 @@
-//! Terrain on the scene side (plan §9.4, decision 0019): the DEM tiles the
+//! Terrain on the scene side: the DEM tiles the
 //! terrain stands on, its cover of terrain tiles, their drape slots, and
 //! the CPU elevations the camera, cover and queries read.
 //!
@@ -113,7 +113,7 @@ struct Slot {
 
 /// The style zoom a terrain tile's drape slots are drawn at, whatever the
 /// camera's: the tile's own, where it spans its 512 logical pixels, at
-/// [`DRAPE_SLOT_PX`] texels (GL JS's quality factor 2; decision 0019).
+/// [`DRAPE_SLOT_PX`] texels (GL JS's quality factor 2).
 pub(crate) fn drape_zoom(tms: &TileMatrixSet, tile: TileIndex) -> u8 {
     tms.style_zoom(tile).round().clamp(0.0, 255.0) as u8
 }
@@ -548,7 +548,7 @@ fn within(tile: TileIndex, at: TileIndex) -> ([f32; 2], f32) {
 }
 
 /// Where a hillshade the terrain shades reads the slopes over `tile`, a
-/// quarter of a terrain tile (decision 0019): the tile its source draws
+/// quarter of a terrain tile: the tile its source draws
 /// there, itself or an ancestor, as a slot would draw it; where the source
 /// draws deeper, the nearest resident tile at the quarter's zoom or above.
 /// None outside the source's bounds, as nothing draws there. The source's
@@ -757,7 +757,7 @@ pub(crate) fn hash(value: impl Hash) -> u64 {
 }
 
 /// The terrain's elevations on the CPU: a snapshot of the ready DEM tiles
-/// the camera and queries hold while the map moves on (plan §9.4). It
+/// the camera and queries hold while the map moves on. It
 /// follows DEM arrival and eviction, never the view.
 #[derive(Debug)]
 pub struct TerrainElevation {
@@ -883,7 +883,7 @@ impl TerrainElevation {
 const PYRAMID_DIM: u32 = 128;
 
 impl TerrainElevation {
-    /// The elevation pyramid (plan §7.1): these elevations with each DEM
+    /// The elevation pyramid: these elevations with each DEM
     /// tile resampled to 128² samples quantized to 16 bits, as bytes, for
     /// a camera or placement on another thread (the web's ui role and
     /// placement worker). [`from_pyramid`](Self::from_pyramid) reads them

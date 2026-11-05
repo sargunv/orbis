@@ -1,6 +1,6 @@
 //! The browser build of Orbis: `core.wasm` and its wasm-bindgen surface.
 //!
-//! One module, two places (plan §7.1), chosen by the page's JS:
+//! One module, two places, chosen by the page's JS:
 //! - **the page** ([`create_map`]): the map draws into a canvas on the
 //!   page's thread, with its camera, gestures and synchronous `project`,
 //!   `unproject` and `hitTest`.
@@ -103,7 +103,7 @@ pub struct FrameStats {
     /// The style and every tile in view are in (GL JS `loaded()`).
     #[wasm_bindgen(readonly)]
     pub loaded: bool,
-    /// A paint transition runs (decision 0031).
+    /// A paint transition runs.
     #[wasm_bindgen(readonly)]
     pub transitioning: bool,
     /// Whether the map needs another frame: it isn't idle, and isn't only
@@ -157,7 +157,7 @@ pub struct FrameStats {
     /// Layers not drawn while their pipelines compile.
     #[wasm_bindgen(readonly, js_name = layersWaiting)]
     pub layers_waiting: u32,
-    /// GPU memory against plan §8's budget.
+    /// GPU memory against the budget.
     #[wasm_bindgen(readonly)]
     pub memory: FrameMemory,
 }
@@ -364,7 +364,7 @@ impl OrbisMap {
             .collect()
     }
 
-    /// The last placement commit's semantic snapshot (plan §13) as JSON,
+    /// The last placement commit's semantic snapshot as JSON,
     /// or null before labels are first placed.
     #[wasm_bindgen(js_name = semanticSnapshot)]
     pub fn semantic_snapshot(&self) -> Option<String> {
@@ -703,7 +703,7 @@ impl OrbisMap {
             .map_err(|e| JsError::new(&e))
     }
 
-    /// Applies GL JS map calls as one transaction (plan §11.2): a JSON array
+    /// Applies GL JS map calls as one transaction: a JSON array
     /// such as `[["setPaintProperty", "water", "fill-color", "blue"],
     /// ["setFeatureState", {"source": "s", "id": 1}, {"hover": true}]]`.
     /// Every call applies or, on an error, none. Resolves to the style
@@ -937,7 +937,7 @@ impl OrbisMap {
         self.canvas.lose();
     }
 
-    /// Draws on a new GPU in `canvas` after a loss (plan §8.8): the same
+    /// Draws on a new GPU in `canvas` after a loss: the same
     /// canvas again, or a fresh one. The map keeps its style, camera and
     /// cached tiles; the next frames lay the visible tiles out again.
     /// Resolves to the new tier.
@@ -1025,8 +1025,8 @@ impl OrbisMap {
     }
 }
 
-/// Whether this browser is a phone's or a tablet's, for plan §8's mobile
-/// memory budget: `navigator.userAgentData.mobile` where there is one
+/// Whether this browser is a phone's or a tablet's, for the mobile memory
+/// budget: `navigator.userAgentData.mobile` where there is one
 /// (Chromium, pages and workers), else the user agent string.
 fn mobile() -> bool {
     let get = |object: &JsValue, key: &str| js_sys::Reflect::get(object, &key.into()).ok();

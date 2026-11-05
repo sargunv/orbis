@@ -1,4 +1,4 @@
-// Shadows on the ground (decision 0046): one full-screen draw in the main
+// Shadows on the ground: one full-screen draw in the main
 // pass at the first 3D layer's place, multiplying what lies below by how
 // much of the directional light each pixel's ground point keeps. The point
 // is the terrain's, from its depth, else the view ray's on the ground

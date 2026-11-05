@@ -96,7 +96,7 @@ impl CameraState {
         )
     }
 
-    /// The view's style zoom on `projection`'s plane (decision 0022), which
+    /// The view's style zoom on `projection`'s plane, which
     /// v8 stops, `minzoom` and `maxzoom` evaluate at. In Web Mercator (and
     /// on the v8 globe) it is GL JS's: ground resolution at the target
     /// against the parallel's length. On other planes it is the zoom at

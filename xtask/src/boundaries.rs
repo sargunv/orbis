@@ -1,4 +1,4 @@
-//! Plan §5.3 boundary rules, checked against `cargo metadata`.
+//! Boundary rules, checked against `cargo metadata`.
 //!
 //! Crates are classified by name; a crate not named in any list is a core
 //! crate: no threads, no I/O, no GPU handles, no `unsafe`, buildable for
@@ -48,7 +48,7 @@ const PLATFORM_DEPS: &[&str] = &[
     "wasm-bindgen",
 ];
 
-/// Crates allowed to use `unsafe` (plan §5.3). Every other crate root must
+/// Crates allowed to use `unsafe`. Every other crate root must
 /// carry `#![forbid(unsafe_code)]`.
 const UNSAFE_ALLOWED: &[&str] = &[
     "orb-hal-wgpu",
@@ -73,7 +73,7 @@ const SCENE_SIDE: &[&str] = &[
 ];
 
 /// orb-runtime's tile-job modules, which name no scene-side crate, so the
-/// job side keeps apart within the crate (decision 0040).
+/// job side keeps apart within the crate.
 const JOB_MODULES: &[&str] = &[
     "features", "geojson", "glyphs", "job_host", "line", "loader", "style", "symbol", "tile",
     "wire", "worker",

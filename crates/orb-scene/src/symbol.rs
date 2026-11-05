@@ -1,4 +1,4 @@
-//! Symbol meshes (decision 0009): one stream of a symbol layer's tile, its
+//! Symbol meshes: one stream of a symbol layer's tile, its
 //! tables back to back in the vertex arena behind a header, and the state
 //! words placement writes, in the property arena.
 //!

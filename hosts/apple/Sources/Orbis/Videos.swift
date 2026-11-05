@@ -1,4 +1,4 @@
-// Video sources' players (decision 0039): AVFoundation plays each video
+// Video sources' players: AVFoundation plays each video
 // the map asks for, and the map view hands each new frame to the map as
 // RGBA rows. AVFoundation reads MP4 and QuickTime (H.264, HEVC), not WebM.
 

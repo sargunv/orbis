@@ -14,7 +14,7 @@ pub mod wgs84 {
 }
 
 /// The parallel's length per unit of style zoom's scale at a latitude, in
-/// degrees: cos φ. Style zoom (plan §9.3) measures ground resolution along
+/// degrees: cos φ. Style zoom measures ground resolution along
 /// the parallel, as Web Mercator tiles do; past the latitude where those
 /// tiles end (±85.0511°) it keeps that latitude's scale, so zoom stays
 /// finite at the poles of other planes.

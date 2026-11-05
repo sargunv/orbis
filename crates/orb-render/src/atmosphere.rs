@@ -1,4 +1,4 @@
-//! The atmosphere (plan §8.6's `Atmosphere`, decision 0025): one sky and
+//! The atmosphere (`Atmosphere`): one sky and
 //! fog model from the style's `sky`. The sky draws before the map layers;
 //! terrain fogs its surface through the same uniform, and on a globe a
 //! scattering pass tints the limb after them. The surface gives the
@@ -120,7 +120,7 @@ impl Atmosphere {
             let (layout, group) = sky_group(gpu, frame, self.uniform);
             self.sky = Some((layout, group, pipeline(gpu, &SKY_SHADER, target, layout)));
         }
-        // Compat draws no scattering (plan §8.7).
+        // Compat draws no scattering.
         let modern = gpu.caps().tier != Tier::Compat;
         if let Some((layout, ..)) = self.sky
             && modern

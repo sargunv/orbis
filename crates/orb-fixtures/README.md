@@ -289,4 +289,4 @@ its `operations` metadata. Warm suite wall times: Metal 2.6 s, Chrome 4.7 s
 (1.2 s before, rendering no image fixtures). The Chrome runner uses
 the main-thread decode path; worker mode, checked separately with a raster +
 hillshade + color-relief style, gives identical pixels with every texel copied
-from transferred `ImageBitmap`s (decision 0007).
+from transferred `ImageBitmap`s.

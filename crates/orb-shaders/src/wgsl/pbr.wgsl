@@ -1,5 +1,5 @@
-// glTF's metallic-roughness shading under the style's lights (plan §9.4,
-// decision 0026), as functions of their inputs alone: no bindings, so any
+// glTF's metallic-roughness shading under the style's lights, as
+// functions of their inputs alone: no bindings, so any
 // pipeline composes it. Directions are in east, north and up; colours are
 // linear.
 
@@ -92,8 +92,8 @@ fn pbr_specular(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, f0: vec3<f32>, roughne
 }
 
 // A surface's material: all its shading needs besides the lights, the one
-// model the lit map's layers (`map_out_lit.wgsl`) and models fill (#91,
-// decision 0048). Colours are linear; the normal is a unit vector in
+// model the lit map's layers (`map_out_lit.wgsl`) and models fill (#91).
+// Colours are linear; the normal is a unit vector in
 // east, north and up.
 struct Material {
     albedo: vec3<f32>,

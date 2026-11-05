@@ -1,4 +1,4 @@
-//! Model layers (plan §9.4): a model node's paint.
+//! Model layers: a model node's paint.
 //!
 //! A model layer draws as one node per model its `model-id` can pick, each
 //! with the layer's points that pick it (`style`, `tile`). The map loads

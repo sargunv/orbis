@@ -1,4 +1,4 @@
-//! The placement lane (plan §7.1 [P], decision 0009): `orb-symbol`'s
+//! The placement lane: `orb-symbol`'s
 //! [`Placer`] off the scene thread. The scene hands it buckets as their
 //! tiles become resident and camera snapshots as the view changes; it
 //! answers each snapshot with the state words that changed.

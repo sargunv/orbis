@@ -1,5 +1,4 @@
-//! Shadows from the directional light (plan §8.5's `Shadow`, decision
-//! 0046).
+//! Shadows from the directional light.
 //!
 //! Each frame fits two cascades of a depth map to slices of the view, as
 //! orthographic views along the light. The extrusions and models draw into
@@ -8,7 +7,7 @@
 //! (`shadow_receive.wgsl`): extrusions and models per fragment (models in
 //! `pbr_light`'s directional term), and the ground in one
 //! full-screen multiply at the first 3D layer's place. Planes only, and
-//! Modern only (plan §8.7).
+//! Modern only.
 
 use crate::release::Release;
 use glam::{DMat4, DVec3};
@@ -527,8 +526,7 @@ fn clip_heights(a: DVec3, b: DVec3, low: f64, high: f64) -> Option<[DVec3; 2]> {
 }
 
 /// The directional light's share of the light on level ground: what a
-/// shadow there takes away at full intensity (decision 0026's response,
-/// at mid luminance).
+/// shadow there takes away at full intensity (at mid luminance).
 fn ground_share(frame: &FrameBlock) -> f32 {
     let Some(l) = frame.lights else {
         return 0.0;

@@ -1,5 +1,5 @@
-//! The scene document's lighting module (plan §9.4 and §11.4, decisions
-//! 0026 and 0048): lights that shade the whole map, in the shape of the
+//! The scene document's lighting module: lights that shade the whole map,
+//! in the shape of the
 //! style spec's lights proposal (style-spec#1797), and what each layer is
 //! made of under them.
 //!

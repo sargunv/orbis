@@ -30,8 +30,8 @@ const CLEARANCE_M: f64 = 2.0;
 
 impl View {
     /// The terrain point under a logical pixel, as `(world, elevation in
-    /// metres)`, found by walking the view ray (plan §9.4: a CPU DEM ray
-    /// walk, never a GPU readback). Where no DEM data has loaded the
+    /// metres)`, found by walking the view ray (a CPU DEM ray walk,
+    /// never a GPU readback). Where no DEM data has loaded the
     /// ground is at sea level. `None` above the horizon.
     pub fn unproject_terrain(&self, px: DVec2, terrain: &dyn Elevation) -> Option<(DVec2, f64)> {
         let (near, far) = self.ray(px, &self.view_proj);

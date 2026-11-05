@@ -7,7 +7,7 @@ import Glibc
 #endif
 import OrbisC
 
-/// The GPU tier a runtime draws at (plan §4.2).
+/// The GPU tier a runtime draws at.
 public enum OrbBackend: Int, Sendable, CaseIterable {
     /// Modern where the device policy allows it (the Android
     /// allowlist, the crash sentinel), else Compat.

@@ -1,5 +1,4 @@
-//! Layout families: turn a tile layer's selected features into GPU streams
-//! (plan §10.1, §8.2).
+//! Layout families: turn a tile layer's selected features into GPU streams.
 //!
 //! Layout is purely geometric. The caller decides which features a style
 //! layer draws (its filter) and evaluates their paint values; layout gets the

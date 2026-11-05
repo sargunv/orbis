@@ -1,4 +1,4 @@
-//! Model layers (decision 0047) through the embedding API.
+//! Model layers through the embedding API.
 
 use std::path::PathBuf;
 

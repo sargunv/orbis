@@ -1,4 +1,4 @@
-// Tile data units → camera-relative world (plan §9.3, `project_tile`).
+// Tile data units → camera-relative world (`project_tile`).
 //
 // An affine tile is `origin + (x, -y) * scale`. A warped tile (the planner's
 // `GpuPerVertex` plan) is `origin` plus one of its `warp_cells`² biquadratic

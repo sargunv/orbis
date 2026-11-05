@@ -1,4 +1,4 @@
-//! Paint transitions (v8 `transition`, `*-transition`; decision 0031): a
+//! Paint transitions (v8 `transition`, `*-transition`): a
 //! paint edit eases from the property's prior value to its new one. Each
 //! frame a transition runs, the plan's style is overlaid with the eased
 //! values as constants, by [`PropertyId`]: the overlay copies only the

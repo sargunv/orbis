@@ -1,6 +1,6 @@
 // End-to-end checks in headless Chromium:
 //
-// - `scenario`: the binding scenario (plan §14.1) through the orbis package
+// - `scenario`: the binding scenario through the orbis package
 //   on web/dist/scenario.html, on WebGPU and WebGL2: an inline style,
 //   pixels, a hit test, a rendered-features query, an edit's generation,
 //   style images, camera moves with roll and elevation, project and
@@ -9,7 +9,7 @@
 //   transform, a source the app feeds, a drag, a click, idle drawing nothing, and an error.
 // - `edits`: every edit class through the map app's edit API
 //   (`globalThis.orbis`, web/demo/expose.js) must resolve and settle, and
-//   the cost of a feature-state write (plan §10.2's ≤0.05 ms target) over
+//   the cost of a feature-state write (≤0.05 ms target) over
 //   `--writes` writes.
 // - `editor`: the map app's style editor, queries and hover state on the
 //   editor sample (`?style=playground&edit`), and frames per edit.

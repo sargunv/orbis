@@ -1,6 +1,6 @@
-//! Terrain (plan §9.4, render graph `Terrain`/`Drape`): the map's 2D
+//! Terrain (render graph `Terrain`/`Drape`): the map's 2D
 //! layers draped over a DEM-raised surface, after GL JS's render to
-//! texture (decision 0019).
+//! texture.
 //!
 //! Each terrain tile has a block of drape slots, one per drape stack (a run
 //! of draped layers between layers that draw in 3D or on screen, or a
@@ -93,7 +93,7 @@ pub struct TerrainSlopes {
     pub scale: f32,
 }
 
-/// A terrain tile on a globe (decision 0030's surface): its patches in
+/// A terrain tile on a globe: its patches in
 /// space around `origin`, the anchor less the camera target in metres, and
 /// which poles, north then south, its edge skirts close (a top or bottom
 /// row of a set that stops short of the pole).

@@ -47,7 +47,7 @@ impl WgpuGpu {
         ) {
             (instance, adapter) = self::adapter(true).await?;
         }
-        // The Modern tier draws indirectly from compute (plan §4.2); devices
+        // The Modern tier draws indirectly from compute; devices
         // without that (the iOS simulator's Metal) are Compat's, from M4.
         let downlevel = adapter.get_downlevel_capabilities().flags;
         let modern = wgpu::DownlevelFlags::COMPUTE_SHADERS

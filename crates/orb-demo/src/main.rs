@@ -45,7 +45,7 @@ struct Options {
     /// Target, zoom, bearing and pitch.
     at: Option<(Geodetic, f64, f64, f64)>,
     /// Count the frames drawn this many seconds after the map first goes
-    /// idle, print them and exit: idle means zero frames (plan §7.5).
+    /// idle, print them and exit: idle means zero frames.
     count_frames: Option<f64>,
     /// A flight file to fly in a loop (`web/demo/data/alps-flight.json`).
     flight: Option<String>,

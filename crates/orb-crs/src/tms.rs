@@ -487,7 +487,7 @@ impl TileMatrixSet {
     }
 
     /// The style zoom a tile lays out at on its own plane: the zoom of a
-    /// view in which it spans 512 pixels (decision 0022). On a plane with a
+    /// view in which it spans 512 pixels. On a plane with a
     /// zoom reference it is the plane's; in Web Mercator, ground resolution
     /// at the tile's centre in GL JS's convention, which is the tile's own
     /// zoom in `WebMercatorQuad`.
@@ -760,7 +760,7 @@ mod tests {
             .unwrap();
         // Its tiles are a quarter of Mercator's, measured at its natural
         // origin on the equator with its 0.9996 scale: two zooms deeper
-        // than their matrix, everywhere on the plane (decision 0022).
+        // than their matrix, everywhere on the plane.
         let expected = 10.0 + 0.9996f64.log2();
         assert!((nztm.style_zoom(tile) - expected).abs() < 1e-6);
         assert_eq!(

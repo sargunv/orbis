@@ -1,5 +1,5 @@
-//! Tiles on the low-zoom surface (plan §9.2's `GpuPerVertex` on a sphere
-//! or on a low-zoom plane): each tile's quadratic patches there, kept by
+//! Tiles on the low-zoom surface (`GpuPerVertex` on a sphere or on a
+//! low-zoom plane): each tile's quadratic patches there, kept by
 //! tile matrix set and tile; the renderer uploads them when a placement
 //! first needs them.
 

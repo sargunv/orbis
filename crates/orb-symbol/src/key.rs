@@ -1,4 +1,4 @@
-//! Stable symbol keys `(source-layer, id | promoteId, text)` (plan §12).
+//! Stable symbol keys `(source-layer, id | promoteId, text)`.
 //!
 //! GL JS keys a symbol by `murmur3(text)`, mixed with the promoted id when
 //! the source has one, truncated to 16 bits. Orbis keeps 64 bits and the

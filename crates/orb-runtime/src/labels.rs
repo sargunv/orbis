@@ -1,4 +1,4 @@
-//! Labels on the scene side (decision 0009): resident tiles' symbol
+//! Labels on the scene side: resident tiles' symbol
 //! meshes, the glyph rows they lease, rasterization of new glyphs, and the
 //! placement lane's inputs and results.
 
@@ -1408,7 +1408,7 @@ impl Labels {
         hits
     }
 
-    /// The last commit's semantic snapshot (plan §13): every shown label
+    /// The last commit's semantic snapshot: every shown label
     /// and icon with its text, role, layer, sort key, viewport bounds (its
     /// collision box at layout size) and bearing and distance from
     /// `center` (longitude, latitude).

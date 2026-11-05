@@ -1,4 +1,4 @@
-//! Plan §8: the GPU memory a map holds follows what it draws.
+//! The GPU memory a map holds follows what it draws.
 
 use std::path::PathBuf;
 use std::time::Duration;

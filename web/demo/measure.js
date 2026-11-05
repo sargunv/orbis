@@ -1,4 +1,4 @@
-// The plan §7.2 measurement page (`web/scripts/measure.mjs` drives it): the
+// The measurement page (`web/scripts/measure.mjs` drives it): the
 // demo's Tokyo map with a blue circle drawn by the map and a cyan DOM
 // annotation at the same point, in Orbis (`?engine=orbis`) or the
 // pinned GL JS (`?engine=gljs`). It logs, for every input, where the

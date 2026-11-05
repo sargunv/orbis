@@ -1,4 +1,4 @@
-//! Labels placed in a worker of their own (decision 0009): both ends of the
+//! Labels placed in a worker of their own: both ends of the
 //! protocol between the render worker and the placement worker.
 //!
 //! The page's JS owns the transport, a `MessagePort`, and passes messages

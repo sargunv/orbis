@@ -98,7 +98,7 @@ impl Family {
         }
     }
 
-    /// The position whose scale style zoom is measured at (decision 0022):
+    /// The position whose scale style zoom is measured at:
     /// where the family is true to scale, else its natural origin; `None`
     /// for Web Mercator, whose style zoom is its own convention.
     pub(crate) fn zoom_reference(&self) -> Option<(f64, f64)> {

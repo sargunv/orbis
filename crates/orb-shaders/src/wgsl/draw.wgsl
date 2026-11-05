@@ -2,7 +2,7 @@
 // render node; the scene's tables are read through `fetch`.
 
 @group(0) @binding(0) var<uniform> frame: Frame;
-// The terrain's DEM page: padded elevations (decision 0019).
+// The terrain's DEM page: padded elevations.
 @group(0) @binding(14) var dem_pages: texture_2d_array<f32>;
 // The terrain's depth (reversed-Z) from its pre-pass, for what it hides;
 // 0, the far plane, without terrain.
@@ -80,7 +80,7 @@ struct Pulled {
 };
 
 // Whether this pass draws placement `tile`: a drape placement only in the
-// drape pass of its zoom, whose frame has that zoom (decision 0019).
+// drape pass of its zoom, whose frame has that zoom.
 fn drawn_in_pass(tile: u32) -> bool {
     let zoom = tile_at(tile).drape_zoom;
     return zoom == 0.0 || zoom == frame.zoom;
@@ -126,7 +126,7 @@ fn prop_row(v: Pulled, slot: u32, stride: u32) -> u32 {
     return v.prop_base + slot * stride;
 }
 
-// A node's feature-state lookups (plan §10.2, §11.3 StateLookup): bit i of
+// A node's feature-state lookups (StateLookup): bit i of
 // `mask` reads property slot i from the feature's state row when it has
 // one. Rows live in the property arena: the node's block of state row s
 // starts at `base + s * stride` with a word that is non-zero once the

@@ -1,4 +1,4 @@
-//! Lights (decision 0026): what v8's `light` lowers into and what the
+//! Lights: what v8's `light` lowers into and what the
 //! scene document's `lights` replace it with.
 
 use orb_expr::Color;

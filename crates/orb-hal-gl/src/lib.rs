@@ -1,5 +1,5 @@
 //! [`orb_hal::Gpu`] on one hand-written `glow` executor: WebGL2 and GLES
-//! 3.0, the Compat tier (plan §8.1, §8.7).
+//! 3.0, the Compat tier.
 //!
 //! Shaders arrive as offline GLSL ES 3.00 (`orb-shaders`' `glsl`
 //! feature). What WebGL2-class GL lacks is emulated here, beneath the
@@ -576,7 +576,7 @@ impl GlGpu {
     }
 
     /// Links later programs on `thread`, a context sharing this one's
-    /// objects (plan §8.4).
+    /// objects.
     #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
     pub fn set_compile_thread(&mut self, thread: egl::CompileThread) {
         self.compiler = Compiler::Thread(thread);

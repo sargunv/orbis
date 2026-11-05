@@ -1,5 +1,5 @@
 // A typed event emitter with GL JS-style `on`/`off`/`once` and an async
-// iterator per event type (plan §14.3: `for await (const e of map.events("idle"))`).
+// iterator per event type (`for await (const e of map.events("idle"))`).
 
 export type Listener<T> = (event: T) => void;
 

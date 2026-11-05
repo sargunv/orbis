@@ -1,4 +1,4 @@
-//! Batteries (decision 0040): engine-drawn markers and the location layer,
+//! Batteries: engine-drawn markers and the location layer,
 //! built on the map's public API alone. Each is a managed GeoJSON source
 //! with symbol and circle layers on top of the style, and images of its
 //! own; data changes are `setSourceData` edits, so nothing blinks, and

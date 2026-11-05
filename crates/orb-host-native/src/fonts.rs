@@ -1,4 +1,4 @@
-//! Local glyphs from system fonts (decision 0009): fontdb finds a face for
+//! Local glyphs from system fonts: fontdb finds a face for
 //! the CSS family list GL JS would hand a canvas, falling back per code
 //! point as a browser does, and `orb-text` draws it as TinySDF draws a
 //! canvas glyph.

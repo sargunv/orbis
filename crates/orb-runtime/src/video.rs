@@ -1,5 +1,5 @@
 //! `video` and `canvas` sources, whose frames the host hands in with
-//! [`Map::source_frame`](crate::Map::source_frame) (decision 0039). The core
+//! [`Map::source_frame`](crate::Map::source_frame). The core
 //! has no decoder: the host plays each video, which the map asks for with
 //! [`MapEvent::Video`]; a canvas is the app's to draw. The newest frame
 //! fills the source's one tile, and later frames are written over its

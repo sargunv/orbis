@@ -1,4 +1,4 @@
-//! Drawing apart from the map (decision 0043). A layer composited once, a
+//! Drawing apart from the map. A layer composited once, a
 //! 3D layer, a heatmap's density and a terrain stack each draw into an
 //! offscreen [`Target`]; one full-screen draw then composites it into the
 //! map ([`Composites`]).

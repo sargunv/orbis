@@ -1,8 +1,8 @@
-//! What a view draws on (plan §9.1).
+//! What a view draws on.
 
 use crate::Projection;
 
-/// What a view draws on (plan §9.1): its projection's plane or, at low
+/// What a view draws on: its projection's plane or, at low
 /// zoom, a globe the plane's tiles wrap around. Style zoom is always the
 /// plane's (on Web Mercator, GL JS's convention on its globe too).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -40,7 +40,7 @@ impl From<&Projection> for Surface {
 }
 
 /// What a view draws on at low zoom before it hands over to the plane
-/// between two zooms (plan §9.3's adaptive projections): a sphere the
+/// between two zooms (adaptive projections): a sphere the
 /// plane's tiles wrap around ([`sphere`](crate::sphere)), or another plane
 /// they are drawn on, such as Equal Earth's for the whole world. Views mix
 /// the two surfaces' clip positions as a pure function of zoom.

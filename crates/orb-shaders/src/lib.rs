@@ -1,4 +1,4 @@
-//! WGSL modules and their composition (plan §8.4).
+//! WGSL modules and their composition.
 //!
 //! Each pipeline's source is the shared scene types, the bindings of its
 //! kind (draw or cull) and its own module, concatenated.
@@ -47,7 +47,7 @@ mod glsl {
     include!(concat!(env!("OUT_DIR"), "/glsl.rs"));
 }
 
-/// A Compat shader's offline GLSL ES 3.00 program (plan §8.4).
+/// A Compat shader's offline GLSL ES 3.00 program.
 #[cfg(feature = "glsl")]
 pub fn glsl(shader: &Shader) -> &'static orb_hal::GlslProgram<'static> {
     glsl::PROGRAMS

@@ -1,4 +1,4 @@
-//! The Compat cull (plan §8.3, §8.7): `cull.wgsl` on the CPU, over the
+//! The Compat cull: `cull.wgsl` on the CPU, over the
 //! scene's CPU copies of its tables, writing what the dispatch writes on
 //! Modern: pulled and point nodes' visible lists, indexed nodes' slots of
 //! the compacted index buffer, and every node's draw arguments and
@@ -49,7 +49,7 @@ pub(crate) fn cull(gpu: &mut dyn Gpu, scene: &mut Scene, frame: &FrameBlock) -> 
         let n = &tables.node_cull[node * nc::WORDS..][..nc::WORDS];
         let node_args = &mut args[node * ARGS_WORDS..][..ARGS_WORDS];
         let draw = n[nc::DRAW] & 255;
-        // Compat draws no models (plan §8.7).
+        // Compat draws no models.
         if n[nc::DRAW] & HIDDEN != 0 || draw == DRAW_INSTANCES {
             continue;
         }

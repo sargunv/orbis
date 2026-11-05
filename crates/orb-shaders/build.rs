@@ -2,7 +2,7 @@
 //! layouts for Rust (`layout.rs`) and Compat's reassembly of rows from
 //! data textures (`rows_compat.wgsl`), so neither side mirrors the other by
 //! hand. With the `glsl` feature, also translates every Compat
-//! composition to GLSL ES 3.00 (plan §8.4): one program per shader, with
+//! composition to GLSL ES 3.00: one program per shader, with
 //! the uniforms naga named for each WGSL binding.
 
 fn main() {

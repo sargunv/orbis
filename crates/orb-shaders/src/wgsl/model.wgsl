@@ -1,10 +1,10 @@
-// glTF models at point features (plan §9.4): each instance is a visible
+// glTF models at point features: each instance is a visible
 // point of the node (`pull_instance`); the draw's vertices are its
 // model's, in metres east, north and up of the point, scaled, turned and
 // moved by the layer's paint. A fragment fills a `Material` from glTF's
 // metallic-roughness material and the paint, and lights it under the
-// style's lights (pbr.wgsl, decision 0026), with the shadows it receives
-// (decision 0046) in the directional term. Model words are
+// style's lights (pbr.wgsl), with the shadows it receives
+// in the directional term. Model words are
 // `orb_3d::gpu`'s. Opaque materials shade in a pipeline that never
 // discards (`fs_model`), masked and blended ones in `fs_model_masked`.
 
@@ -155,7 +155,7 @@ fn model_placed(vertex: u32, instance: u32, out: ptr<function, ModelPlaced>) -> 
 }
 
 // Camera-relative world (x east, y north, z up) of a placed vertex, on
-// the plane, where shadows fall (decision 0046).
+// the plane, where shadows fall.
 fn model_world(p: ModelPlaced) -> vec3<f32> {
     let s = frame.extrusion_scale;
     return vec3<f32>(p.ground.flat + p.standing.xy * s, p.standing.z * s);

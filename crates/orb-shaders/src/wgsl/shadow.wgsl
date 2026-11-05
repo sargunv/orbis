@@ -1,5 +1,5 @@
-// Cascaded shadows from the directional light (plan §8.5 `Shadow`,
-// decision 0046), as functions of the cascades and their depth maps: no
+// Cascaded shadows from the directional light, as functions of the
+// cascades and their depth maps: no
 // bindings, so casters and receivers compose it.
 //
 // Each cascade is a depth layer the casters drew from the light: camera-

@@ -1,4 +1,4 @@
-// Frame scheduling (plan §7.5): frames run on the display's refresh
+// Frame scheduling: frames run on the display's refresh
 // (requestAnimationFrame) and only while something asks for them: no
 // frames when idle. Each frame gets its animation frame's timestamp, on
 // the clock input events' `timeStamp`s use.

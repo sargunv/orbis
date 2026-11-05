@@ -1,6 +1,6 @@
 //! Character properties text layout asks about, as GL JS asks them
 //! (`script_detection.ts` and the generated `unicode_properties.g.ts` of the
-//! pinned GL JS). The tables come from UCD 17.0.0 (decision 0009).
+//! pinned GL JS). The tables come from UCD 17.0.0.
 
 #[rustfmt::skip]
 mod tables;
@@ -48,7 +48,7 @@ pub fn is_format(c: char) -> bool {
 }
 
 /// In a script written right to left. Like GL JS, this includes every code
-/// point without a script (unassigned and private use; decision 0009).
+/// point without a script (unassigned and private use).
 pub fn is_rtl(c: char) -> bool {
     contains(RTL_SCRIPT, c)
 }
@@ -220,7 +220,7 @@ mod tests {
         for ch in [c(0x105c0), c(0x13000), 'a', 'Я', '三'] {
             assert!(!is_rtl(ch), "{ch}");
         }
-        // The GL JS quirk reproduced (decision 0009): private use counts as RTL.
+        // The GL JS quirk reproduced: private use counts as RTL.
         assert!(is_rtl('\u{E000}'));
     }
 

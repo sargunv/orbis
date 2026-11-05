@@ -1,5 +1,5 @@
 //! What symbol layout produces: plain tables of `Pod` rows, grouped by the
-//! lane that reads them (decision 0009, plan §10.4).
+//! lane that reads them.
 //!
 //! - The placement lane reads [`SymbolInstance`]s (anchors, collision boxes,
 //!   circle diameters, keys), [`PlacedSymbol`]s, line vertices, glyph

@@ -1,5 +1,5 @@
 //! Glyph identity, the glyphs a tile asks for, and the provider each comes
-//! from (decision 0009).
+//! from.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;

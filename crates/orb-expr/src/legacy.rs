@@ -1,4 +1,4 @@
-//! Legacy syntax, lowered to expressions in one place (plan §11.2, S3).
+//! Legacy syntax, lowered to expressions in one place.
 //!
 //! Legacy filters become GL JS's internal `filter-*` operators
 //! (`feature_filter/index.ts`), which keep legacy semantics: a missing

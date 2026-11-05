@@ -1,4 +1,4 @@
-//! Texture-array pages for image tiles (plan §8.2): raster images and DEM
+//! Texture-array pages for image tiles: raster images and DEM
 //! elevations, one tile per array layer, so one binding serves every tile
 //! of a source and shaders find a tile's layer through its property row.
 //!
@@ -37,8 +37,8 @@ pub struct PageTexture {
 pub enum Pixels<'a> {
     /// Tightly packed rows in core memory, ready to store.
     Core(&'a [u8]),
-    /// A host-held image, written without entering core memory (plan
-    /// §10.4); `premultiply` multiplies its colour by alpha on the way.
+    /// A host-held image, written without entering core memory;
+    /// `premultiply` multiplies its colour by alpha on the way.
     Host {
         image: HostImageId,
         premultiply: bool,

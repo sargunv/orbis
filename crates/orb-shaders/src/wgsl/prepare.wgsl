@@ -1,4 +1,4 @@
-// The DEM prepare pass (plan §8.5's `Prepare` node), run when DEM tiles
+// The DEM prepare pass (`Prepare` node), run when DEM tiles
 // arrive rather than every frame. For each tile, `pad` draws its elevations
 // into a (dim + 4)² layer with a two-texel border taken from the eight
 // neighbouring tiles, or from its own edge where a neighbour isn't resident,

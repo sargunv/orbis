@@ -1,4 +1,4 @@
-// Extrusions into one shadow cascade (decision 0046): depth only, from the
+// Extrusions into one shadow cascade: depth only, from the
 // light, the placements that draw a building in the view drawing it here.
 // A cut building isn't clipped: where two tiles' parts of it overlap they
 // write the same depths, so one pipeline draws every building, without the

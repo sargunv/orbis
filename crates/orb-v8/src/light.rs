@@ -1,4 +1,4 @@
-//! v8's `light`, lowered into the style's [`Lights`] (decision 0026): an
+//! v8's `light`, lowered into the style's [`Lights`]: an
 //! ambient and a directional term of GL JS's flat extrusion response.
 use crate::{Color, Cx, Property, TranslateAnchor, layer::typed_property_at};
 use orb_expr::{PropertyType, Type, json::Json};

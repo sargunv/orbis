@@ -66,7 +66,7 @@ fn cameras_match_pinned_gl_js() {
             }
         }
         // GL JS switches its distance LOD on past its pitch threshold;
-        // Orbis eases it in over the 5° after (decision 0011), where the
+        // Orbis eases it in over the 5° after, where the
         // covers differ by design.
         let threshold = (78.5 - camera.fov / 2.0).clamp(0.0, 60.0);
         let eased = camera.pitch > threshold && camera.pitch < threshold + 5.0;

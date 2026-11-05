@@ -1,4 +1,4 @@
-//! Job executors (plan §7.3).
+//! Job executors.
 //!
 //! Core work is split into share-nothing jobs; an [`Executor`] runs them.
 //! Natively that's a [`ThreadPool`]; [`Inline`] runs jobs on the caller's

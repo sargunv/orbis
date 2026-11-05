@@ -2,7 +2,7 @@
 //! scoped to the workspace packages that changed since a base revision (its
 //! merge base with `HEAD`, plus working-tree and untracked files) and to every
 //! package that depends on them, transitively. Changes outside every package
-//! (`docs/`, `web/`, `AGENTS.md`) select nothing.
+//! (`web/`, `AGENTS.md`) select nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

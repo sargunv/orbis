@@ -1,4 +1,4 @@
-//! 3D content (plan §9.4, M8): glTF models as one stream of triangles in
+//! 3D content: glTF models as one stream of triangles in
 //! metres on a local east, north, up frame, their materials and images,
 //! ready for the renderer. Below the runtime: no I/O, threads or GPU; the
 //! runtime fetches documents, buffers and images, and the host decodes the

@@ -28,7 +28,7 @@ cargo xtask <task>
                (default origin/main), the working tree and untracked files,
                and every package depending on those
   bindings [--check | --test]  the C header, Kotlin and Swift bindings from
-               orb-capi (decision 0018); --check fails when they're stale;
+               orb-capi; --check fails when they're stale;
                --test runs the emitters' tests and the C, Kotlin and Swift
                smoke tests
   capi         the C library for this host: static library, headers,

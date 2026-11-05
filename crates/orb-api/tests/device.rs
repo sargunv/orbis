@@ -1,4 +1,4 @@
-//! Device robustness (plan §8.8): the crash sentinel demotes a device whose
+//! Device robustness: the crash sentinel demotes a device whose
 //! driver crashed making pipelines, and a lost device is replaced with the
 //! map drawing the same pixels again.
 //!
@@ -98,7 +98,7 @@ fn sentinel_demotes_after_a_crash_in_pipelines() {
 /// The child's role in [`a_hung_compile_demotes_the_device`].
 const HANG_CHILD: &str = "ORB_TEST_HANG_CHILD";
 
-/// Plan §8.8 3: a driver that hangs in its compiler, rather than crashing,
+/// A driver that hangs in its compiler, rather than crashing,
 /// demotes the device too. Compiles run off the drawing thread, so frames go
 /// on; a map waiting only for the compile asks for none, and the watchdog
 /// wakes it when the compile runs past its limit. The next frame finds the

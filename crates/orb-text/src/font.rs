@@ -1,4 +1,4 @@
-//! Glyphs drawn from font bytes (decision 0009): HarfRust shapes a cluster,
+//! Glyphs drawn from font bytes: HarfRust shapes a cluster,
 //! skrifa outlines it, and its coverage goes through TinySDF as GL JS's
 //! local path draws a canvas glyph. Declared `font-faces` files and, on
 //! native hosts, system fonts draw this way; every platform computes the

@@ -111,8 +111,8 @@ export interface MapOptions {
   /** A v8 style URL, or a style object. */
   style: string | object;
   /**
-   * What draws the map: "webgpu" (the Modern tier), "webgl2" (Compat, plan
-   * §8.7, from the lazily loaded compat.wasm), or "auto" (the default):
+   * What draws the map: "webgpu" (the Modern tier), "webgl2" (Compat,
+   * from the lazily loaded compat.wasm), or "auto" (the default):
    * WebGPU where it works, else WebGL2. A lost device is
    * replaced on the same tier where possible, else on WebGL2.
    */
@@ -141,7 +141,7 @@ export interface MapOptions {
    * different detail; translucent terrain shows them. True by default. */
   terrainSkirts?: boolean;
   /** How many job workers lay out tiles; by default
-   * `clamp(hardwareConcurrency − 2, 1, 4)` (plan §7.1). */
+   * `clamp(hardwareConcurrency − 2, 1, 4)`. */
   jobWorkers?: number;
 }
 

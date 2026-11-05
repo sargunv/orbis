@@ -1,4 +1,4 @@
-// Plan §7.2's measurements in Chrome: input-to-photon latency for pan,
+// Input-latency measurements in Chrome: input-to-photon latency for pan,
 // pinch and rotate, DOM overlay skew, main-thread busy time and frames when
 // idle, for Orbis and the pinned GL JS, on
 // web/dist/measure.html. In headless Chromium, or in Chrome on Android (keep

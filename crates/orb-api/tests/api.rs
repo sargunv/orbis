@@ -1,4 +1,4 @@
-//! The binding scenario (plan §14.1) through the Rust API: a style, a
+//! The binding scenario through the Rust API: a style, a
 //! frame, a query, an edit, a style image, camera moves, a gesture and
 //! idle, into a texture target.
 
@@ -874,7 +874,7 @@ fn request_transforms_rewrite_what_the_map_fetches() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// Lit water's waves move with time (decision 0048): settled, a map
+/// Lit water's waves move with time: settled, a map
 /// showing them still needs frames, and frames half a second apart differ;
 /// the same lit water without waves settles, as does a view without the
 /// water.

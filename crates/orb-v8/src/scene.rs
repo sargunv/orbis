@@ -1,4 +1,4 @@
-//! The scene document, v0 (plan §11.4): what v8 can't say about a map,
+//! The scene document, v0: what v8 can't say about a map,
 //! next to an unmodified v8 style. v0 carries the CRS/TMS module (a
 //! projection for the surface and a tile matrix set per source), the
 //! lighting module (`lights`, and per layer its material and the `paint`

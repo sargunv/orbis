@@ -109,7 +109,7 @@ export async function runFrames({ style, center, size, ratio, frames, warmup, ro
   }
   const [w, h] = [Math.round(size[0] * ratio), Math.round(size[1] * ratio)];
   const lines = [
-    "### Frame bench (page, decision 0002)", "",
+    "### Frame bench (page)", "",
     ...about.map((line) => `- ${line}`),
     `- ${w}×${h} px (${size[0]}×${size[1]} @${ratio}x) at ${center[0]}, ${center[1]}; ${rounds} rounds × ${frames} ` +
       `repaints after ${warmup} warm-up per view, one a display frame`,

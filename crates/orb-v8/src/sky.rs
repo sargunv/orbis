@@ -1,7 +1,7 @@
-//! v8's `sky`, lowered into the style's [`Atmosphere`] (decision 0025):
+//! v8's `sky`, lowered into the style's [`Atmosphere`]:
 //! one sky and fog model, which the scene document's `atmosphere` sets
 //! with the same names and two of its own, `star-intensity` and
-//! `backdrop-color` (decision 0035).
+//! `backdrop-color`.
 use crate::{Color, Cx, Property, layer::typed_property_at};
 use orb_expr::{PropertyType, json::Json};
 use orb_style::*;

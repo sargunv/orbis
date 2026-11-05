@@ -953,7 +953,7 @@ mod tests {
     }
 
     /// Dragging across the pole of a polar plane keeps the map's scale and
-    /// its style zoom (decision 0022): world units per pixel and the zoom
+    /// its style zoom: world units per pixel and the zoom
     /// stay put, past a minimum zoom the old latitude-bound zoom would
     /// have crossed, and ground resolution at the target moves only with
     /// the plane's own scale factor (a rigid drag can't hold both on a

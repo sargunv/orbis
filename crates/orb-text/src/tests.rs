@@ -1141,7 +1141,7 @@ fn thai_breaks_at_dictionary_words() {
 
 /// One digest of every bit of layout over a right-to-left and
 /// complex-script matrix. The same constant natively and in wasm is the
-/// byte-identity check of decision 0009.
+/// byte-identity check.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 fn layout_is_bit_identical_across_targets() {

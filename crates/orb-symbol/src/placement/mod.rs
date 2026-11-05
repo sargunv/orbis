@@ -1,4 +1,4 @@
-//! The placement lane (decision 0009, step 4): GL JS's collision detection,
+//! The placement lane: GL JS's collision detection,
 //! cross-tile symbol index and fades, run against an immutable camera
 //! snapshot. It reads instances, placed symbols, lines, glyph offsets,
 //! anchor offsets and sort-key ranges, never quads, and writes the state

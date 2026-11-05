@@ -2,7 +2,7 @@
   "version": 8,
   "name": "Orbis scripts",
   "metadata": {
-    "orbis:about": "Labels in Arabic, Devanagari, Thai and Latin from font-faces files, so web and native lay them out identically (decision 0009). Planet tiles by OpenFreeMap; fonts are Noto Sans from @fontsource 5.3.0 (SIL OFL 1.1)."
+    "orbis:about": "Labels in Arabic, Devanagari, Thai and Latin from font-faces files, so web and native lay them out identically. Planet tiles by OpenFreeMap; fonts are Noto Sans from @fontsource 5.3.0 (SIL OFL 1.1)."
   },
   "center": [31.2357, 30.0444],
   "zoom": 13,
