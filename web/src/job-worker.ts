@@ -18,7 +18,7 @@ self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAs
   port.onmessage = async ({ data }) => {
     try {
       const reply = await jobs.receive(data);
-      if (reply) port.postMessage(reply, [reply.buffer, reply.image, reply.dem, reply.glyphs].filter(Boolean));
+      if (reply) port.postMessage(reply, [reply.buffer, reply.image, reply.pixels, reply.dem, reply.glyphs].filter(Boolean));
     } catch (e) {
       console.error(e);
     }

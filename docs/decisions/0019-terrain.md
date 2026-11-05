@@ -123,9 +123,14 @@ the map publishes (`Map::elevation`, `Map::elevation_revision`):
 
 CPU elevations are decoded once in the DEM tile's job (`DemGrid`) and
 sampled as GL JS's `TerrainCoverage` does: bilinear in the DEM tile the
-drawn terrain tile reads, past tile edges in its neighbours. On the web a
-job worker reads a DEM tile's texels once for this and transfers them as
-f32s beside the tile's `ImageBitmap`.
+drawn terrain tile reads, past tile edges in its neighbours. DEM tiles are
+data: on every platform the core decodes them itself
+(`orb_host::decode_image`, PNG and WebP), and the GPU and the CPU take the
+same texels; on the web the job worker transfers them with their f32
+elevations. A browser's decode read back through a canvas can differ by a
+bit here and there (Brave's fingerprinting protection perturbs readbacks),
+which a Terrarium DEM turns into 256 m spikes. The decoders add 87 KiB
+brotli to core.wasm (720 to 807).
 
 ## The web's ui role and placement worker
 

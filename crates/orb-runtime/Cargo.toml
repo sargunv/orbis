@@ -18,7 +18,7 @@ orb-crs.workspace = true
 orb-expr.workspace = true
 orb-geo.workspace = true
 orb-hal.workspace = true
-orb-host.workspace = true
+orb-host = { workspace = true, features = ["decode"] }
 orb-jobs.workspace = true
 orb-layout.workspace = true
 orb-render.workspace = true

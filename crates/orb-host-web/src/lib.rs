@@ -36,16 +36,6 @@ async fn decode_image(bytes: &[u8]) -> Result<DecodedImage, JsValue> {
     image
 }
 
-/// Decodes an image into an `ImageBitmap`, as [`decode_bitmap`] does, and
-/// reads its texels too: a terrain DEM tile goes to the GPU and the CPU.
-pub async fn decode_bitmap_and_pixels(
-    bytes: &[u8],
-) -> Result<(web_sys::ImageBitmap, DecodedImage), JsValue> {
-    let bitmap = decode_bitmap(bytes).await?;
-    let image = read_bitmap(&bitmap)?;
-    Ok((bitmap, image))
-}
-
 /// Reads a bitmap's straight RGBA8 texels through an `OffscreenCanvas`.
 fn read_bitmap(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
     let (width, height) = (bitmap.width(), bitmap.height());

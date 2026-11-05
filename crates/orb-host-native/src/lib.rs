@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub use fonts::SystemFonts;
 pub use orb_host::FontFileFaces;
 
-use orb_host::{DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
+use orb_host::{Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
 use orb_jobs::{Executor, ThreadPool};
 
 /// Fetches `http(s)://` URLs with ureq and `file://` URLs from disk, on a
@@ -125,24 +125,15 @@ impl Fetch for NativeFetch {
     }
 }
 
-/// Decodes images with the `image` crate on the caller's thread (tile and
-/// sprite decodes already run on job threads).
+/// Decodes images with the core's decoder ([`orb_host::decode_image`]),
+/// JPEG included here, on the caller's thread (tile and sprite decodes
+/// already run on job threads).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeImageDecode;
 
 impl ImageDecode for NativeImageDecode {
     fn decode(&self, bytes: Vec<u8>, done: ImageDone) {
-        let decoded = image::load_from_memory(&bytes)
-            .map_err(|e| e.to_string())
-            .map(|image| {
-                let rgba = image.into_rgba8();
-                DecodedImage {
-                    width: rgba.width(),
-                    height: rgba.height(),
-                    pixels: rgba.into_raw(),
-                }
-            });
-        done(decoded);
+        done(orb_host::decode_image(&bytes));
     }
 }
 

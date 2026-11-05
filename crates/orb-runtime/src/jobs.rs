@@ -1218,6 +1218,15 @@ impl Jobs for PoolJobs {
                 request.encoding,
                 Box::new(move |fetched| match fetched {
                     Ok((bytes, _)) if bytes.is_empty() => done(Ok(TileResult::default())),
+                    // DEM tiles are data: the core decodes them exactly.
+                    Ok((bytes, _)) if kind == ImageKind::Dem => {
+                        executor.spawn(Box::new(move || {
+                            done(
+                                orb_host::decode_image(&bytes)
+                                    .and_then(|i| image_result(kind, i, dem_unpack)),
+                            );
+                        }))
+                    }
                     Ok((bytes, _)) => executor.spawn(Box::new(move || {
                         decode.decode(
                             bytes,

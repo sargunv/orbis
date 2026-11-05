@@ -92,6 +92,23 @@ pub struct DecodedImage {
     pub pixels: Vec<u8>,
 }
 
+/// Decodes a PNG or WebP image (and JPEG where a native host enables it)
+/// with the core's own decoder, exactly: DEM
+/// tiles are data, and a browser's readback of an image it decoded can
+/// differ by a bit here and there (privacy features perturb it), which a
+/// Terrarium DEM turns into spikes of 256 m.
+#[cfg(feature = "decode")]
+pub fn decode_image(bytes: &[u8]) -> Result<DecodedImage, String> {
+    let rgba = image::load_from_memory(bytes)
+        .map_err(|e| e.to_string())?
+        .into_rgba8();
+    Ok(DecodedImage {
+        width: rgba.width(),
+        height: rgba.height(),
+        pixels: rgba.into_raw(),
+    })
+}
+
 /// Called once with the outcome of a decode, on any thread.
 pub type ImageDone = Box<dyn FnOnce(Result<DecodedImage, String>) + Send + 'static>;
 
