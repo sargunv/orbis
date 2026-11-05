@@ -163,9 +163,9 @@ impl PaintProperty<'_> {
     ) -> u32 {
         match self {
             Self::Color(p) => {
-                orb_render::pack_color(p.evaluate_state(zoom, state, data).premultiplied())
+                orb_layout::pack_color(p.evaluate_state(zoom, state, data).premultiplied())
             }
-            Self::OptionalColor(p) => orb_render::pack_color(
+            Self::OptionalColor(p) => orb_layout::pack_color(
                 p.evaluate_state(zoom, state, data)
                     .map_or([0.0; 4], |c| c.premultiplied()),
             ),

@@ -1341,8 +1341,8 @@ pub(crate) mod tests {
         assert_eq!(
             &build.meshes[0].props[..2],
             &[
-                orb_render::pack_color([1.0, 0.0, 0.0, 1.0]),
-                orb_render::pack_color([1.0, 0.0, 0.0, 1.0])
+                orb_layout::pack_color([1.0, 0.0, 0.0, 1.0]),
+                orb_layout::pack_color([1.0, 0.0, 0.0, 1.0])
             ]
         );
         // Subsequent bytes are ignored: the per-source index is authoritative.
@@ -1645,18 +1645,18 @@ pub(crate) mod tests {
                     images: vec![
                         ImageRef {
                             word: 0,
-                            key: orb_render::ImageKey::Name("extra:pattern-é".into()),
+                            key: orb_layout::ImageKey::Name("extra:pattern-é".into()),
                         },
                         ImageRef {
                             word: 3,
-                            key: orb_render::ImageKey::Dash {
+                            key: orb_layout::ImageKey::Dash {
                                 array: vec![1.0f32.to_bits(), 2.0f32.to_bits()],
                                 round: true,
                             },
                         },
                         ImageRef {
                             word: 4,
-                            key: orb_render::ImageKey::Ramp {
+                            key: orb_layout::ImageKey::Ramp {
                                 colors: vec![0xff0000ff; 256],
                                 nearest: true,
                             },
@@ -1863,7 +1863,7 @@ pub(crate) mod tests {
         icons.add(
             "extra:pill",
             [40, 20],
-            &orb_render::ImageMetadata {
+            &orb_layout::ImageMetadata {
                 pixel_ratio: 2.0,
                 sdf: true,
                 stretch_x: vec![[4.0, 36.0]],
@@ -1873,7 +1873,7 @@ pub(crate) mod tests {
                 text_fit_height: None,
             },
         );
-        icons.add("dot", [8, 8], &orb_render::ImageMetadata::default());
+        icons.add("dot", [8, 8], &orb_layout::ImageMetadata::default());
         assert_eq!(
             crate::wire::decode::<SpriteIcons>(&crate::wire::encode(&icons)).unwrap(),
             icons

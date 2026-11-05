@@ -39,6 +39,7 @@ pub use terrain::{
 };
 
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
+pub use orb_layout::{Family, pack_color};
 pub use orb_scene::Pixels;
 pub use orb_scene::{
     ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLights, FrameShadow, FrameTerrain,
@@ -54,7 +55,7 @@ pub use orb_scene::{
 pub use paint::{
     CirclePaint, ColorReliefPaint, Curve, ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod,
     HillshadePaint, LinePaint, MAX_LIGHTS, ModelPaint, NodePaint, PatternPaint, RasterPaint,
-    StateLookup, SymbolPaint, SymbolSize, Translate, pack_color,
+    StateLookup, SymbolPaint, SymbolSize, Translate,
 };
 pub use tiles::{
     GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, TileBuild, TileKey, UploadError, WarpKey,
@@ -70,70 +71,23 @@ use orb_shaders::{
     Shader,
 };
 
-/// The layout family a render node draws.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Family {
-    FillExtrusion,
-    Fill,
-    /// A fill's antialiasing outline: 1 px line segments, drawn with fill
-    /// paint (outline colour and opacity).
-    FillOutline,
-    Line,
-    Circle,
-    Heatmap,
-    /// Image tiles of a `raster` source.
-    Raster,
-    /// Slopes of a `raster-dem` source's tiles.
-    Hillshade,
-    /// Elevations of a `raster-dem` source's tiles through a colour ramp.
-    ColorRelief,
-    /// A symbol layer's icons.
-    SymbolIcon,
-    /// A symbol layer's text.
-    SymbolText,
-    /// glTF models at a layer's points, one model per node.
-    Model,
-}
-
-impl Family {
-    /// Whether the family draws image tiles from a page.
-    pub fn is_image(self) -> bool {
-        matches!(self, Self::Raster | Self::Hillshade | Self::ColorRelief)
-    }
-
-    /// Whether the family draws symbol quads.
-    pub fn is_symbol(self) -> bool {
-        matches!(self, Self::SymbolIcon | Self::SymbolText)
-    }
-
-    /// Whether terrain drapes the family's layers over its surface rather
-    /// than drawing them in 3D or on screen (GL JS's render to texture).
-    pub fn is_draped(self) -> bool {
-        matches!(
-            self,
-            Self::Fill
-                | Self::FillOutline
-                | Self::Line
-                | Self::Raster
-                | Self::Hillshade
-                | Self::ColorRelief
-        )
-    }
-
-    /// How the family's nodes draw (decision 0002): meshes from compacted
-    /// indices, instanced quads by vertex pulling.
-    fn draw(self) -> NodeDraw {
-        match self {
-            Self::Fill | Self::FillOutline | Self::Line | Self::FillExtrusion => NodeDraw::Indexed,
-            Self::Circle | Self::Heatmap | Self::SymbolIcon | Self::SymbolText => NodeDraw::Points,
-            Self::Raster | Self::Hillshade | Self::ColorRelief => NodeDraw::Images,
-            // Its model's ranges once it is resident.
-            Self::Model => NodeDraw::Instances {
-                first: 0,
-                solid: 0,
-                blend: 0,
-            },
+/// How a family's nodes draw (decision 0002): meshes from compacted
+/// indices, instanced quads by vertex pulling.
+fn draw_of(family: Family) -> NodeDraw {
+    match family {
+        Family::Fill | Family::FillOutline | Family::Line | Family::FillExtrusion => {
+            NodeDraw::Indexed
         }
+        Family::Circle | Family::Heatmap | Family::SymbolIcon | Family::SymbolText => {
+            NodeDraw::Points
+        }
+        Family::Raster | Family::Hillshade | Family::ColorRelief => NodeDraw::Images,
+        // Its model's ranges once it is resident.
+        Family::Model => NodeDraw::Instances {
+            first: 0,
+            solid: 0,
+            blend: 0,
+        },
     }
 }
 
@@ -1121,7 +1075,7 @@ impl Renderer {
                 solid,
                 blend,
             },
-            _ => family.draw(),
+            _ => draw_of(family),
         }
     }
 

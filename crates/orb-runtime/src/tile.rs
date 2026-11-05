@@ -3,11 +3,11 @@
 
 use std::collections::HashMap;
 
+use orb_layout::{Family, ImageKey, pack_color};
 use orb_layout::{Mesh, extrusion, fill, line, point};
-use orb_render::{Family, pack_color};
 use orb_shaders::layout;
 use orb_style::{Kind, LayerType, SourceKind};
-use orb_tile::{Layer, LayerBuilder, TileFrame, ValueRef};
+use orb_tile::{Layer, LayerBuilder, TileFrame};
 
 use crate::glyphs::GlyphCatalog;
 use crate::style::{NodePlan, PaintProperty, StylePlan};
@@ -96,18 +96,7 @@ pub(crate) const NO_ID: u32 = u32::MAX;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ImageRef {
     pub word: u32,
-    pub key: orb_render::ImageKey,
-}
-
-/// The feature-state key of a value: GL JS's `String(id)`.
-fn id_string(value: ValueRef<'_>) -> String {
-    match value {
-        ValueRef::Str(s) | ValueRef::Json(s) => s.to_string(),
-        ValueRef::Bool(b) => b.to_string(),
-        ValueRef::I64(n) => orb_expr::js_number_string(n as f64),
-        ValueRef::U64(n) => orb_expr::js_number_string(n as f64),
-        ValueRef::F64(n) => orb_expr::js_number_string(n),
-    }
+    pub key: ImageKey,
 }
 
 /// The features a node draws from `layer`, in slot order.
@@ -628,7 +617,7 @@ pub(crate) fn build(
                                         _ => layout::FILL_ROW_PATTERN,
                                     }
                                     + j) as u32,
-                                key: orb_render::ImageKey::Name(name),
+                                key: ImageKey::Name(name),
                             });
                         }
                     }
@@ -645,25 +634,22 @@ pub(crate) fn build(
                 };
                 crate::line::textures(l, layer, &features, zoom, maxzoom, &mut props, &mut images);
             }
+            let promote = match &source_def.kind {
+                SourceKind::Vector(v) => v
+                    .promote_id
+                    .as_ref()
+                    .and_then(|p| p.key(name))
+                    .and_then(|key| layer.property(key)),
+                _ => None,
+            };
             let state_ids = plan.reads_state(node).then(|| {
-                let promote = match &source_def.kind {
-                    SourceKind::Vector(v) => v
-                        .promote_id
-                        .as_ref()
-                        .and_then(|p| p.key(name))
-                        .and_then(|key| layer.property(key)),
-                    _ => None,
-                };
                 features
                     .iter()
                     .map(|&feature| {
-                        let value = match promote {
-                            Some(column) => column.get(feature as usize),
-                            None => layer.ids().get(feature as usize),
-                        };
+                        let value = promote.unwrap_or(layer.ids()).get(feature as usize);
                         value.map_or(NO_ID, |value| {
                             let next = ids.len() as u32;
-                            *ids.entry(id_string(value)).or_insert(next)
+                            *ids.entry(crate::features::state_key(value)).or_insert(next)
                         })
                     })
                     .collect()
@@ -682,14 +668,6 @@ pub(crate) fn build(
                         orb_expr::FeatureData::capture(layer, f as usize, mixed.iter().copied())
                     })
                     .collect()
-            };
-            let promote = match &source_def.kind {
-                SourceKind::Vector(v) => v
-                    .promote_id
-                    .as_ref()
-                    .and_then(|p| p.key(name))
-                    .and_then(|key| layer.property(key)),
-                _ => None,
             };
             let hits: Vec<crate::HitFeature> = if matches!(
                 node.family,
@@ -725,7 +703,10 @@ pub(crate) fn build(
                             _ => (0, 0.0, 0.0, 0.0),
                         };
                         crate::HitFeature {
-                            id: promote.unwrap_or(layer.ids()).get(i).map(id_string),
+                            id: promote
+                                .unwrap_or(layer.ids())
+                                .get(i)
+                                .map(crate::features::state_key),
                             // Queries read the feature from the tile's layer.
                             feature: origin.map_or(f, |origin| origin[i]),
                             kind,
@@ -775,7 +756,7 @@ pub(crate) fn build(
                         id: promote
                             .unwrap_or(layer.ids())
                             .get(f as usize)
-                            .map(id_string),
+                            .map(crate::features::state_key),
                         feature: origin.map_or(f, |origin| origin[f as usize]),
                         kind: crate::query::LABEL,
                         extent: layer.extent(),
@@ -1087,14 +1068,14 @@ mod tests {
             mesh.images[0],
             ImageRef {
                 word: 12,
-                key: orb_render::ImageKey::Name("primary".into())
+                key: ImageKey::Name("primary".into())
             }
         );
         assert_eq!(
             mesh.images[3],
             ImageRef {
                 word: 32,
-                key: orb_render::ImageKey::Name("minor".into())
+                key: ImageKey::Name("minor".into())
             }
         );
         assert!(mesh.images.iter().all(|i| mesh.props[i.word as usize] == 0));

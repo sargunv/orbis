@@ -136,7 +136,7 @@ impl TileWorker {
 }
 
 /// GL JS's `String(id)`, the feature-state key of an id.
-fn state_key(value: ValueRef<'_>) -> String {
+pub(crate) fn state_key(value: ValueRef<'_>) -> String {
     match value {
         ValueRef::Str(s) | ValueRef::Json(s) => s.to_string(),
         ValueRef::Bool(b) => b.to_string(),

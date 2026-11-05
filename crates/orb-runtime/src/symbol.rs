@@ -49,7 +49,7 @@ impl SpriteIcons {
     }
 
     /// Adds an image's icon, or replaces it.
-    pub(crate) fn add(&mut self, name: &str, size: [u32; 2], m: &orb_render::ImageMetadata) {
+    pub(crate) fn add(&mut self, name: &str, size: [u32; 2], m: &orb_layout::ImageMetadata) {
         if let Err(i) = self.names.binary_search_by(|n| n.as_str().cmp(name)) {
             self.names.insert(i, name.to_owned());
         }
@@ -356,7 +356,7 @@ pub(crate) fn prepare(
                     .map(|s| {
                         s.text_color
                             .as_ref()
-                            .map(|c| orb_render::pack_color(c.premultiplied()))
+                            .map(|c| orb_layout::pack_color(c.premultiplied()))
                     })
                     .collect();
                 section_colors.insert(index, colors);

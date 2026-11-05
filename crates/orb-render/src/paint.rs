@@ -354,12 +354,6 @@ pub struct PatternPaint {
     pub floor_width: f32,
 }
 
-/// Packs a premultiplied colour into a property row word (rgba8).
-pub fn pack_color(color: [f32; 4]) -> u32 {
-    let [r, g, b, a] = color.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u32);
-    r | g << 8 | b << 16 | a << 24
-}
-
 impl NodePaint {
     /// Whether this paint fits a node of `family`.
     pub(crate) fn fits(&self, family: Family) -> bool {
@@ -759,10 +753,5 @@ mod tests {
         assert_eq!(words.len() * 4, 80 + 12 * 32 + 16);
         assert_eq!(words[6], 7);
         assert_eq!(f32::from_bits(words[11]), 1.0);
-    }
-
-    #[test]
-    fn packs_colors_as_rgba8() {
-        assert_eq!(pack_color([1.0, 0.0, 0.5, 1.0]), 0xff80_00ff);
     }
 }

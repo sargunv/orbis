@@ -6,41 +6,7 @@ use std::collections::HashMap;
 use orb_hal::*;
 
 use crate::shelf::Shelves;
-
-/// Deferred image identity, resolved only on the scene side. Generated
-/// textures cannot collide with sprite names. Dash values are f32 bits.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum ImageKey {
-    Name(String),
-    Dash { array: Vec<u32>, round: bool },
-    Ramp { colors: Vec<u32>, nearest: bool },
-}
-
-/// Sprite metadata retained for symbol layout as well as pattern sampling.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ImageMetadata {
-    pub pixel_ratio: f32,
-    pub sdf: bool,
-    pub stretch_x: Vec<[f32; 2]>,
-    pub stretch_y: Vec<[f32; 2]>,
-    pub content: Option<[f32; 4]>,
-    pub text_fit_width: Option<String>,
-    pub text_fit_height: Option<String>,
-}
-
-impl Default for ImageMetadata {
-    fn default() -> Self {
-        Self {
-            pixel_ratio: 1.0,
-            sdf: false,
-            stretch_x: Vec::new(),
-            stretch_y: Vec::new(),
-            content: None,
-            text_fit_width: None,
-            text_fit_height: None,
-        }
-    }
-}
+pub use orb_layout::{ImageKey, ImageMetadata};
 
 /// What a table row holds: an image as patterns and layers sample it, or
 /// a sprite image as symbol icons sample it, with transparent padding.

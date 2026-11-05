@@ -18,12 +18,14 @@
 
 mod clip;
 pub mod extrusion;
+mod family;
 pub mod fill;
 pub mod line;
 mod mesh;
 pub mod point;
 mod round_corners;
 
+pub use family::{Family, ImageKey, ImageMetadata, pack_color};
 pub use mesh::{
     CHUNK_INDICES, Chunk, MAX_CHUNK_INSTANCES, MAX_CHUNK_TRIANGLES, Mesh, MeshBuilder, TileBox,
 };
