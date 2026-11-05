@@ -28,13 +28,15 @@ pub struct Draw {
     pub regions: Vec<TileIndex>,
 }
 
-/// The outcome of [`TilePyramid::update`].
+/// A frame's plan for one source ([`TilePyramid::plan`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Update {
     /// Tiles to draw, ancestors before descendants.
     pub draw: Vec<Draw>,
     /// Tiles to start loading, in cover order.
     pub request: Vec<TileIndex>,
+    /// Tiles the plan uses, drawn or standing by: the cache keeps them.
+    pub used: Vec<TileIndex>,
 }
 
 #[derive(Debug)]
@@ -151,14 +153,22 @@ impl<T> TilePyramid<T> {
         )
     }
 
-    /// Plans a frame. `cover` holds the ideal tiles, deepest at most
-    /// `max_zoom`; tiles below `min_zoom` are not drawn. Requested tiles are
-    /// marked loading until [`insert`](Self::insert) or
-    /// [`insert_empty`](Self::insert_empty).
+    /// Plans a frame and records it ([`plan`](Self::plan), then
+    /// [`commit`](Self::commit)).
     pub fn update(&mut self, cover: &[CoveredTile]) -> Update {
-        self.frame += 1;
-        let frame = self.frame;
+        let update = self.plan(cover);
+        self.commit(&update);
+        update
+    }
+
+    /// What a frame draws for `cover`, the ideal tiles (deepest at most
+    /// `max_zoom`; tiles below `min_zoom` are not drawn), from the tiles
+    /// resident now, and what it needs loaded: a function of the cover
+    /// and the pyramid alone.
+    pub fn plan(&self, cover: &[CoveredTile]) -> Update {
         let mut update = Update::default();
+        // Tiles this plan requests, loading from here on.
+        let mut requested = HashSet::new();
         // (tile, wrap) → regions, ordered so ancestors draw first.
         let mut draws: BTreeMap<(u8, TileIndex, i32), Vec<TileIndex>> = BTreeMap::new();
 
@@ -185,27 +195,24 @@ impl<T> TilePyramid<T> {
                 continue;
             }
             debug_assert!(ideal.z <= self.max_zoom, "cover deeper than the source");
-            let entry = self.tiles.entry(ideal).or_insert_with(|| {
-                update.request.push(ideal);
-                Entry {
-                    state: State::Loading,
-                    last_used: frame,
+            update.used.push(ideal);
+            match self.tiles.get(&ideal).map(|e| &e.state) {
+                None => {
+                    if requested.insert(ideal) {
+                        update.request.push(ideal);
+                    }
                 }
-            });
-            entry.last_used = frame;
-            match entry.state {
-                State::Ready(_) => {
+                Some(State::Ready(_)) => {
                     draws.insert((ideal.z, ideal, covered.wrap), vec![ideal]);
                     continue;
                 }
-                State::Empty => continue,
-                State::Loading | State::Failed { .. } => {}
+                Some(State::Empty) => continue,
+                Some(State::Loading | State::Failed { .. }) => {}
                 // A missing tile's nearest ancestor in the tileset stands
                 // in for it, whatever else is resident: other tiles stand
                 // in only while that ancestor loads.
-                State::Missing => match self.stand_in(ideal, &mut update.request) {
+                Some(State::Missing) => match self.stand_in(ideal, &mut requested, &mut update) {
                     StandIn::Ready(ancestor) => {
-                        self.touch(ancestor);
                         draws
                             .entry((ancestor.z, ancestor, covered.wrap))
                             .or_default()
@@ -221,7 +228,7 @@ impl<T> TilePyramid<T> {
             let mut missing = Vec::new();
             self.descendant_coverage(ideal, &branches, &mut descendants, &mut missing);
             for tile in descendants {
-                self.touch(tile);
+                update.used.push(tile);
                 if self.is_ready(tile) {
                     draws.insert((tile.z, tile, covered.wrap), vec![tile]);
                 }
@@ -229,7 +236,7 @@ impl<T> TilePyramid<T> {
             if !missing.is_empty()
                 && let Some(ancestor) = self.ready_ancestor(ideal)
             {
-                self.touch(ancestor);
+                update.used.push(ancestor);
                 draws
                     .entry((ancestor.z, ancestor, covered.wrap))
                     .or_default()
@@ -253,6 +260,24 @@ impl<T> TilePyramid<T> {
             })
             .collect();
         update
+    }
+
+    /// Records a frame's plan: its requests load from now on, and the tiles
+    /// it used are the cache's most recent.
+    pub fn commit(&mut self, update: &Update) {
+        self.frame += 1;
+        let frame = self.frame;
+        for &tile in &update.request {
+            self.tiles.entry(tile).or_insert(Entry {
+                state: State::Loading,
+                last_used: frame,
+            });
+        }
+        for tile in &update.used {
+            if let Some(entry) = self.tiles.get_mut(tile) {
+                entry.last_used = frame;
+            }
+        }
     }
 
     /// Stores a loaded tile. Absent or already completed entries return
@@ -466,25 +491,28 @@ impl<T> TilePyramid<T> {
     /// The nearest ancestor of a missing tile that isn't missing, as GL JS
     /// loads the parents of tiles that failed: requested when not yet
     /// known. Ancestors on the way stay in use.
-    fn stand_in(&mut self, mut tile: TileIndex, request: &mut Vec<TileIndex>) -> StandIn {
-        let frame = self.frame;
+    fn stand_in(
+        &self,
+        mut tile: TileIndex,
+        requested: &mut HashSet<TileIndex>,
+        update: &mut Update,
+    ) -> StandIn {
         while let Some(parent) = tile.parent() {
             if parent.z < self.min_zoom {
                 break;
             }
-            let entry = self.tiles.entry(parent).or_insert_with(|| {
-                request.push(parent);
-                Entry {
-                    state: State::Loading,
-                    last_used: frame,
+            update.used.push(parent);
+            match self.tiles.get(&parent).map(|e| &e.state) {
+                None => {
+                    if requested.insert(parent) {
+                        update.request.push(parent);
+                    }
+                    return StandIn::Loading;
                 }
-            });
-            entry.last_used = frame;
-            match entry.state {
-                State::Missing => tile = parent,
-                State::Loading | State::Failed { .. } => return StandIn::Loading,
-                State::Ready(_) => return StandIn::Ready(parent),
-                State::Empty => break,
+                Some(State::Missing) => tile = parent,
+                Some(State::Loading | State::Failed { .. }) => return StandIn::Loading,
+                Some(State::Ready(_)) => return StandIn::Ready(parent),
+                Some(State::Empty) => break,
             }
         }
         StandIn::Nothing
@@ -501,12 +529,6 @@ impl<T> TilePyramid<T> {
             tile = parent;
         }
         None
-    }
-
-    fn touch(&mut self, tile: TileIndex) {
-        if let Some(entry) = self.tiles.get_mut(&tile) {
-            entry.last_used = self.frame;
-        }
     }
 }
 

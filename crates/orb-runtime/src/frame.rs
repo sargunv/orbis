@@ -16,30 +16,38 @@ use crate::map::*;
 use crate::resident::*;
 
 impl Map {
-    /// Covers the view with one source's tiles: requests missing ones,
-    /// places the drawable ones and evicts the rest.
-    /// Covers the view for source `index` over the terrain's
-    /// `elevation`, requests its missing tiles and keeps what to draw for
-    /// [`place_source`](Self::place_source).
-    pub(crate) fn update_source(
-        &mut self,
+    /// What a frame draws and loads of each source, over the terrain's
+    /// `elevation` (decision 0040's `plan_frame`): a function of the view
+    /// and the resident tiles, which changes nothing.
+    pub(crate) fn plan_frame(
+        &self,
+        renderer: &Renderer,
+        view: &View,
+        elevation: Option<&crate::terrain::TerrainElevation>,
+        shadow: glam::DVec2,
+    ) -> Vec<Option<orb_source::Update>> {
+        let sources = self.style.as_ref().map_or(0, |s| s.sources.len());
+        let at = |index| self.plan_source(renderer, view, index, elevation, shadow);
+        (0..sources).map(at).collect()
+    }
+
+    /// Source `index`'s plan: the tiles covering the view, what of them is
+    /// resident to draw and what to load; `None` for a source that draws
+    /// nothing this frame.
+    fn plan_source(
+        &self,
         renderer: &Renderer,
         view: &View,
         index: usize,
         elevation: Option<&crate::terrain::TerrainElevation>,
         shadow: glam::DVec2,
-        report: &mut FrameReport,
-    ) {
-        let elevation_scale = self.extrusion_scale();
-        let style = self.style.as_mut().expect("called with a style");
-        style.draws.resize_with(style.sources.len(), || None);
-        style.draws[index] = None;
-        if !style.worker.plan().nodes.iter().any(|n| n.source == index) {
-            // A source only the terrain reads.
-            return;
-        }
-        let zoom = self.camera.state().zoom(self.surface.projection());
+    ) -> Option<orb_source::Update> {
+        let style = self.style.as_ref()?;
         let plan = style.worker.plan();
+        // A source only the terrain reads.
+        if !plan.nodes.iter().any(|n| n.source == index) {
+            return None;
+        }
         // Symbol layout needs the sprites' metadata, so a source with symbol
         // layers waits for them (GL JS's worker awaits `getImages` alike).
         if style.sprites_loading > 0
@@ -48,8 +56,9 @@ impl Map {
                 .iter()
                 .any(|n| n.source == index && n.family == Family::SymbolIcon)
         {
-            return;
+            return None;
         }
+        let zoom = self.camera.state().zoom(self.surface.projection());
         // The tallest extrusion or model, as this frame's paint has it.
         let height = (plan.nodes.iter().enumerate())
             .filter(|(_, n)| n.source == index)
@@ -71,16 +80,13 @@ impl Map {
         let SourceState::Ready {
             endpoint,
             pyramid,
-            loading,
             warped,
             ..
-        } = &mut style.sources[index]
+        } = &style.sources[index]
         else {
-            return;
+            return None;
         };
-        let endpoint = Arc::clone(endpoint);
         let tms = &endpoint.tms;
-        pyramid.retry_failed(self.services.clock.now());
         // Where the source's visible layers are shown, their tiles hold
         // their data: the cover keeps to the least zoom all of them have
         // data at, wherever that detail still shows (orb_camera's
@@ -95,11 +101,12 @@ impl Map {
             .max()
             .unwrap_or(0)
             .clamp(pyramid.min_zoom(), pyramid.max_zoom());
+        let warps = &self.globe_warps;
         let cover = match (view.low_plane(), *warped) {
             // On a low-zoom plane every set's tiles land through its warp.
             (Some(low), _) => {
                 low.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
-                    self.globe_warps.footprint(tms, tile)
+                    warps.footprint(tms, tile)
                 })
             }
             (None, false) => view.cover_volume(
@@ -107,19 +114,48 @@ impl Map {
                 endpoint.cover_px,
                 data_zoom..=pyramid.max_zoom(),
                 orb_camera::Standing {
-                    height: f64::from(height) * elevation_scale,
+                    height: f64::from(height) * self.extrusion_scale(),
                     shadow,
                 },
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
                 f64::from(reach),
             ),
             (None, true) => view.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
-                self.globe_warps.surface_footprint(tms, tile)
+                warps.surface_footprint(tms, tile)
             }),
         };
-        let update = pyramid.update(&cover);
+        Some(pyramid.plan(&cover))
+    }
+
+    /// Applies source `index`'s plan: its pyramid records it, its requests
+    /// load (those with nothing to draw are empty at once), and its draws
+    /// wait for [`place_source`](Self::place_source).
+    pub(crate) fn apply_source(
+        &mut self,
+        index: usize,
+        update: Option<orb_source::Update>,
+        report: &mut FrameReport,
+    ) {
+        let style = self.style.as_mut().expect("called with a style");
+        style.draws.resize_with(style.sources.len(), || None);
+        style.draws[index] = None;
+        let Some(update) = update else {
+            return;
+        };
+        let vector = style.worker.plan().image_kind(index).is_none();
+        let SourceState::Ready {
+            endpoint,
+            pyramid,
+            loading,
+            warped,
+            ..
+        } = &mut style.sources[index]
+        else {
+            return;
+        };
+        pyramid.commit(&update);
+        let tms = &endpoint.tms;
         let mut requests = Vec::new();
-        let vector = plan.image_kind(index).is_none();
         for &tile in &update.request {
             // Vector tiles on another plane need a series to draw through:
             // planar patches, or the sphere's on a globe.

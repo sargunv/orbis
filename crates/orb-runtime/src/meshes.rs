@@ -60,7 +60,7 @@ pub(crate) fn image_mesh(
         ))));
     }
     match warped {
-        true if !globe => image::Warped::new(globe_warps.surface_warp(tms), tile)
+        true if !globe => image::Warped::new(&globe_warps.surface_warp(tms), tile)
             .map(|mesh| Some(Arc::new(mesh)))
             .ok_or(()),
         _ => Ok(globe_grid(globe_warps, globe, tms, tile)),

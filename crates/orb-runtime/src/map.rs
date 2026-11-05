@@ -1285,9 +1285,16 @@ impl Map {
                 .map_or(glam::DVec2::ZERO, |[x, y]| {
                     glam::DVec2::new(x.into(), y.into())
                 });
-            for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
-                let elevation = elevation.as_deref();
-                self.update_source(renderer, &view, index, elevation, shadow, &mut report);
+            // Failed tiles due for a retry go, so the plan asks for them.
+            let now = self.services.clock.now();
+            for source in self.style.iter_mut().flat_map(|s| &mut s.sources) {
+                if let SourceState::Ready { pyramid, .. } = source {
+                    pyramid.retry_failed(now);
+                }
+            }
+            let plan = self.plan_frame(renderer, &view, elevation.as_deref(), shadow);
+            for (index, update) in plan.into_iter().enumerate() {
+                self.apply_source(index, update, &mut report);
             }
             let drape = self.plan_drape(gpu, renderer, &view);
             self.place_background(
