@@ -7,19 +7,16 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use orb_hal_wgpu::WgpuGpu;
-use orb_jobs::ThreadPool;
-use orb_runtime::{Map, PoolJobs, Services};
+use orb_runtime::Map;
 use serde_json::{Value, json};
 
-use crate::fetch::FixtureFetch;
 use crate::metadata::Metadata;
 use crate::{
-    Counts, chrome, discover, finish_skip, record_warnings, render_native, scope, test_id,
-    write_json,
+    Backend, Counts, Harness, chrome, discover, finish_skip, record_warnings, render_native, scope,
+    test_id, write_json,
 };
 
 /// Metadata keys only the query harness reads.
@@ -51,148 +48,26 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     let output = root.join("docs/scratch/rt/query").join(name);
     std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
     let started = Instant::now();
-    let mut chrome = if name == "chrome" {
-        Some(chrome::Chrome::new(root, "webgpu")?)
+    let mut backend = if name == "chrome" {
+        Backend::Chrome(chrome::Chrome::new(root, "webgpu")?)
     } else {
-        None
-    };
-    let device = if chrome.is_none() {
-        Some(pollster::block_on(WgpuGpu::offscreen())?)
-    } else {
-        None
+        Backend::Native(Box::new(pollster::block_on(WgpuGpu::offscreen())?))
     };
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
     paths.sort();
     paths.retain(|path| test_id(path, &fixtures).contains(filter));
-    let assets = root.join("fixtures/gl-js/assets");
-    let fetch = Arc::new(FixtureFetch::new(assets.clone()));
-    let executor = Arc::new(ThreadPool::new("fixtures", ThreadPool::default_size()));
-    let current = std::thread::current();
-    let wake = Arc::new(move || current.unpark());
+    let harness = Harness::new(root);
     let mut totals = Counts::default();
     let mut ordered = 0;
     let mut prefixes: BTreeMap<String, Counts> = BTreeMap::new();
     let mut results = Vec::new();
     for path in paths {
         let id = test_id(&path, &fixtures);
-        let test_started = Instant::now();
-        let text =
-            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let style: Value = serde_json::from_str(&text).map_err(|e| format!("{id}: {e}"))?;
-        let test = style
-            .pointer("/metadata/test")
-            .cloned()
-            .unwrap_or(json!({}));
-        let mut stripped = style.clone();
-        if let Some(t) = stripped
-            .pointer_mut("/metadata/test")
-            .and_then(Value::as_object_mut)
-        {
-            for key in QUERY_KEYS {
-                t.remove(*key);
-            }
-        }
-        let metadata = Metadata::read(&stripped);
-        let mut reasons = metadata.skips.clone();
-        let mut result = json!({"id": id});
-        let Some(query) = geometry(&test) else {
-            reasons.insert("query:geometry".into());
-            finish_skip(&mut result, &reasons, test_started);
-            prefixes.entry(prefix(&id)).or_default().add("skip");
-            totals.add("skip");
-            results.push(result);
-            continue;
-        };
-        if test.get("queryOptions").is_some() {
-            reasons.insert("query:options".into());
-        }
-        if let Ok(parsed) = orb_v8::parse(&text) {
-            // The query tests' layers carry GL JS's long-gone `interactive`
-            // flag, which nothing reads.
-            reasons.extend(
-                scope::reasons(&parsed)
-                    .into_iter()
-                    .filter(|r| r != "property:interactive"),
-            );
-        }
-        if !reasons.is_empty() {
-            finish_skip(&mut result, &reasons, test_started);
-            prefixes.entry(prefix(&id)).or_default().add("skip");
-            totals.add("skip");
-            results.push(result);
-            continue;
-        }
-        let mut diagnostics = Vec::new();
-        let actual = match (&mut chrome, &device) {
-            (Some(chrome), _) => chrome.query(&text, &metadata, query)?,
-            (None, Some(device)) => {
-                let jobs = PoolJobs::new(
-                    fetch.clone(),
-                    Arc::new(orb_host_native::NativeImageDecode),
-                    executor.clone(),
-                );
-                jobs.set_local_glyphs(orb_host_native::SystemFonts::shared());
-                jobs.set_font_files(Arc::new(orb_host_native::FontFileFaces::new()));
-                let services = Services {
-                    clock: Arc::new(orb_host_native::NativeClock::default()),
-                    image_decode: Arc::new(orb_host_native::NativeImageDecode),
-                    images: Default::default(),
-                    fetch: fetch.clone(),
-                    jobs,
-                    wake: wake.clone(),
-                };
-                let mut map = Map::new(services, None);
-                map.set_antialias_3d(false);
-                map.set_fade_duration(metadata.fade_duration);
-                map.set_cross_source_collisions(metadata.cross_source_collisions);
-                map.set_terrain_skirts(metadata.terrain_skirts);
-                map.set_style_json(&text)
-                    .map_err(|e| format!("{id}: {e}"))?;
-                record_warnings(&mut map, &mut reasons, &mut diagnostics);
-                let mut gpu = WgpuGpu::new(device.device().clone(), device.queue().clone());
-                render_native(
-                    &mut gpu,
-                    &mut map,
-                    &metadata,
-                    &assets,
-                    &mut reasons,
-                    &mut diagnostics,
-                );
-                query_native(&map, query)?
-            }
-            _ => unreachable!("one backend"),
-        };
-        let expected: Value = serde_json::from_slice(
-            &std::fs::read(path.with_file_name("expected.json"))
-                .map_err(|e| format!("{id}: {e}"))?,
-        )
-        .map_err(|e| format!("{id}: {e}"))?;
-        let mut actual = actual;
-        for feature in actual.as_array_mut().into_iter().flatten() {
-            if let Some(f) = feature.as_object_mut() {
-                f.remove("layer");
-            }
-        }
-        let (same, in_order) = compare(&actual, &expected);
-        let status = if same { "pass" } else { "fail" };
-        if same && in_order {
+        let result = run_test(&path, &id, &output, name, &harness, &mut backend)?;
+        let status = result["status"].as_str().expect("our status");
+        if status == "pass" && result["in_order"] == true {
             ordered += 1;
-        }
-        result["status"] = json!(status);
-        result["in_order"] = json!(in_order);
-        result["actual"] = json!(actual.as_array().map_or(0, Vec::len));
-        result["expected"] = json!(expected.as_array().map_or(0, Vec::len));
-        result["diagnostics"] = json!(diagnostics);
-        result["seconds"] = json!(test_started.elapsed().as_secs_f64());
-        if !same {
-            eprintln!(
-                "FAIL query {name} {id}: {} features, expected {}",
-                result["actual"], result["expected"]
-            );
-            let dir = output.join("failures").join(&id);
-            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-            write_json(&dir.join("actual.json"), &actual)?;
         }
         prefixes.entry(prefix(&id)).or_default().add(status);
         totals.add(status);
@@ -216,6 +91,106 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     totals.print("TOTAL");
     println!("  {ordered} of {} passes in GL JS's order", totals.pass);
     Ok(summary)
+}
+
+/// One query test: skipped, or its features compared with `expected.json`.
+fn run_test(
+    path: &Path,
+    id: &str,
+    output: &Path,
+    name: &str,
+    harness: &Harness,
+    backend: &mut Backend,
+) -> Result<Value, String> {
+    let started = Instant::now();
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let style: Value = serde_json::from_str(&text).map_err(|e| format!("{id}: {e}"))?;
+    let test = style
+        .pointer("/metadata/test")
+        .cloned()
+        .unwrap_or(json!({}));
+    let mut stripped = style.clone();
+    if let Some(t) = stripped
+        .pointer_mut("/metadata/test")
+        .and_then(Value::as_object_mut)
+    {
+        for key in QUERY_KEYS {
+            t.remove(*key);
+        }
+    }
+    let metadata = Metadata::read(&stripped);
+    let mut reasons = metadata.skips.clone();
+    let mut result = json!({"id": id});
+    let query = geometry(&test);
+    if query.is_none() {
+        reasons.insert("query:geometry".into());
+    }
+    if test.get("queryOptions").is_some() {
+        reasons.insert("query:options".into());
+    }
+    if let Ok(parsed) = orb_v8::parse(&text) {
+        // The query tests' layers carry GL JS's long-gone `interactive`
+        // flag, which nothing reads.
+        reasons.extend(
+            scope::reasons(&parsed)
+                .into_iter()
+                .filter(|r| r != "property:interactive"),
+        );
+    }
+    let mut diagnostics = Vec::new();
+    let actual = match (query.filter(|_| reasons.is_empty()), backend) {
+        (None, _) => None,
+        (Some(query), Backend::Chrome(chrome)) => Some(chrome.query(&text, &metadata, query)?),
+        (Some(query), Backend::Native(device)) => {
+            let mut map = harness.map(&metadata);
+            map.set_style_json(&text)
+                .map_err(|e| format!("{id}: {e}"))?;
+            record_warnings(&mut map, &mut reasons, &mut diagnostics);
+            let mut gpu = WgpuGpu::new(device.device().clone(), device.queue().clone());
+            let assets = &harness.assets;
+            render_native(
+                &mut gpu,
+                &mut map,
+                &metadata,
+                assets,
+                &mut reasons,
+                &mut diagnostics,
+            )
+            .map(|_| query_native(&map, query))
+            .transpose()?
+        }
+        (Some(_), Backend::Gl(_)) => unreachable!("the query suite runs natively and in Chrome"),
+    };
+    let Some(mut actual) = actual else {
+        finish_skip(&mut result, &reasons, started);
+        return Ok(result);
+    };
+    let expected: Value = serde_json::from_slice(
+        &std::fs::read(path.with_file_name("expected.json")).map_err(|e| format!("{id}: {e}"))?,
+    )
+    .map_err(|e| format!("{id}: {e}"))?;
+    for feature in actual.as_array_mut().into_iter().flatten() {
+        if let Some(f) = feature.as_object_mut() {
+            f.remove("layer");
+        }
+    }
+    let (same, in_order) = compare(&actual, &expected);
+    result["status"] = json!(if same { "pass" } else { "fail" });
+    result["in_order"] = json!(in_order);
+    result["actual"] = json!(actual.as_array().map_or(0, Vec::len));
+    result["expected"] = json!(expected.as_array().map_or(0, Vec::len));
+    result["diagnostics"] = json!(diagnostics);
+    result["seconds"] = json!(started.elapsed().as_secs_f64());
+    if !same {
+        eprintln!(
+            "FAIL query {name} {id}: {} features, expected {}",
+            result["actual"], result["expected"]
+        );
+        let dir = output.join("failures").join(id);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        write_json(&dir.join("actual.json"), &actual)?;
+    }
+    Ok(result)
 }
 
 fn prefix(id: &str) -> String {

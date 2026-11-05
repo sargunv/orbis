@@ -158,32 +158,13 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     discover(&fixtures, &mut paths)?;
     paths.sort();
     paths.retain(|path| test_id(path, &fixtures).contains(filter));
-    let current = std::thread::current();
-    let assets = root.join("fixtures/gl-js/assets");
-    let fetch = Arc::new(FixtureFetch::new(assets.clone()));
-    let executor = Arc::new(ThreadPool::new("fixtures", ThreadPool::default_size()));
-    let wake = Arc::new(move || current.unpark());
+    let harness = Harness::new(root);
     let mut results = Vec::new();
     let mut prefixes: BTreeMap<String, Counts> = BTreeMap::new();
     let mut skip_counts: BTreeMap<String, usize> = BTreeMap::new();
     for path in paths {
         let id = test_id(&path, &fixtures);
-        let jobs = PoolJobs::new(
-            fetch.clone(),
-            Arc::new(orb_host_native::NativeImageDecode),
-            executor.clone(),
-        );
-        jobs.set_local_glyphs(orb_host_native::SystemFonts::shared());
-        jobs.set_font_files(Arc::new(orb_host_native::FontFileFaces::new()));
-        let services = Services {
-            clock: Arc::new(orb_host_native::NativeClock::default()),
-            image_decode: Arc::new(orb_host_native::NativeImageDecode),
-            images: Default::default(),
-            fetch: fetch.clone(),
-            jobs,
-            wake: wake.clone(),
-        };
-        let result = run_test(&path, &id, &output, &assets, &mut backend, services)?;
+        let result = run_test(&path, &id, &output, &harness, &mut backend)?;
         let status = result["status"].as_str().expect("our status");
         prefixes.entry(prefix(&id).into()).or_default().add(status);
         if let Some(reasons) = result["skip_reasons"].as_array() {
@@ -297,14 +278,60 @@ fn prefix(id: &str) -> &str {
         .unwrap_or("other")
 }
 
+/// What every fixture's map shares: the mirror's assets, its fetch and the
+/// job pool.
+pub(crate) struct Harness {
+    pub(crate) assets: PathBuf,
+    fetch: Arc<FixtureFetch>,
+    executor: Arc<ThreadPool>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Harness {
+    pub(crate) fn new(root: &Path) -> Self {
+        let assets = root.join("fixtures/gl-js/assets");
+        let current = std::thread::current();
+        Self {
+            fetch: Arc::new(FixtureFetch::new(assets.clone())),
+            assets,
+            executor: Arc::new(ThreadPool::new("fixtures", ThreadPool::default_size())),
+            wake: Arc::new(move || current.unpark()),
+        }
+    }
+
+    /// A map with fresh services, set up as GL JS's harness runs a test.
+    pub(crate) fn map(&self, metadata: &Metadata) -> Map {
+        let decode = Arc::new(orb_host_native::NativeImageDecode);
+        let jobs = PoolJobs::new(self.fetch.clone(), decode.clone(), self.executor.clone());
+        jobs.set_local_glyphs(orb_host_native::SystemFonts::shared());
+        jobs.set_font_files(Arc::new(orb_host_native::FontFileFaces::new()));
+        let services = Services {
+            clock: Arc::new(orb_host_native::NativeClock::default()),
+            image_decode: decode,
+            images: Default::default(),
+            fetch: self.fetch.clone(),
+            jobs,
+            wake: self.wake.clone(),
+        };
+        let mut map = Map::new(services, None);
+        map.set_antialias_3d(false);
+        // GL JS's render tests run with `fadeDuration: 0` unless they say.
+        map.set_fade_duration(metadata.fade_duration);
+        map.set_cross_source_collisions(metadata.cross_source_collisions);
+        map.set_terrain_skirts(metadata.terrain_skirts);
+        map.set_local_ideograph_font_family(metadata.local_ideographs.as_deref());
+        map
+    }
+}
+
 fn run_test(
     path: &Path,
     id: &str,
     output: &Path,
-    assets: &Path,
+    harness: &Harness,
     backend: &mut Backend,
-    services: Services,
 ) -> Result<Value, String> {
+    let assets = &harness.assets;
     let started = Instant::now();
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let value: Value =
@@ -312,13 +339,7 @@ fn run_test(
     let metadata = Metadata::read(&value);
     let mut reasons = metadata.skips.clone();
     let mut diagnostics = Vec::new();
-    let mut map = Map::new(services, None);
-    map.set_antialias_3d(false);
-    // GL JS's render tests run with `fadeDuration: 0` unless they say.
-    map.set_fade_duration(metadata.fade_duration);
-    map.set_cross_source_collisions(metadata.cross_source_collisions);
-    map.set_terrain_skirts(metadata.terrain_skirts);
-    map.set_local_ideograph_font_family(metadata.local_ideographs.as_deref());
+    let mut map = harness.map(&metadata);
     match orb_v8::parse(&text) {
         Ok(style) => {
             reasons.extend(scope::reasons(&style));
@@ -358,14 +379,8 @@ fn run_test(
     }
     let (width, height) = metadata.physical_size();
     let mut failure = None;
-    let (mut actual, rendered) = match backend {
+    let rendered = match backend {
         Backend::Native(device) => {
-            let max_size = device.caps().limits.max_texture_dimension_2d;
-            if width > max_size || height > max_size {
-                reasons.insert("device:canvas-size".into());
-                finish_skip(&mut result, &reasons, started);
-                return Ok(result);
-            }
             let mut gpu = WgpuGpu::new(device.device().clone(), device.queue().clone());
             render_native(
                 &mut gpu,
@@ -378,12 +393,6 @@ fn run_test(
         }
         Backend::Gl(context) => {
             let mut gpu = orb_hal_gl::GlGpu::new(context.glow())?;
-            let max_size = gpu.caps().limits.max_texture_dimension_2d;
-            if width > max_size || height > max_size {
-                reasons.insert("device:canvas-size".into());
-                finish_skip(&mut result, &reasons, started);
-                return Ok(result);
-            }
             render_native(
                 &mut gpu,
                 &mut map,
@@ -393,12 +402,11 @@ fn run_test(
                 &mut diagnostics,
             )
         }
+        Backend::Chrome(chrome) if width.max(height) > chrome.max_size => {
+            reasons.insert("device:canvas-size".into());
+            None
+        }
         Backend::Chrome(chrome) => {
-            if width > chrome.max_size || height > chrome.max_size {
-                reasons.insert("device:canvas-size".into());
-                finish_skip(&mut result, &reasons, started);
-                return Ok(result);
-            }
             let (image, rendered) =
                 chrome.render(&text, &metadata, &output.join("readback.rgba"))?;
             let Some(image) = image else {
@@ -410,18 +418,14 @@ fn run_test(
             };
             for warning in rendered["warnings"].as_array().expect("Chrome warnings") {
                 let warning = warning.as_str().expect("warning string");
-                if let Some(reason) = scope::runtime_reason(warning) {
-                    reasons.insert(reason.into());
-                }
-                if let Some(reason) = scope::edit_reason(warning) {
-                    reasons.insert(reason);
-                }
-                if !scope::mirrors_gl_js(warning) {
-                    diagnostics.push(warning.to_string());
-                }
+                note_warning(warning.to_string(), &mut reasons, &mut diagnostics);
             }
-            (image, rendered)
+            Some((image, rendered))
         }
+    };
+    let Some((mut actual, rendered)) = rendered else {
+        finish_skip(&mut result, &reasons, started);
+        return Ok(result);
     };
     result["frames"] = rendered["frames"].clone();
     result["tiles_drawn"] = rendered["tiles_drawn"].clone();
@@ -512,6 +516,8 @@ fn run_test(
     Ok(result)
 }
 
+/// Renders the test natively and reads it back; `None` with a skip reason
+/// when its canvas is larger than the device's textures.
 fn render_native(
     gpu: &mut impl FixtureGpu,
     map: &mut Map,
@@ -519,8 +525,12 @@ fn render_native(
     assets: &Path,
     reasons: &mut BTreeSet<String>,
     diagnostics: &mut Vec<String>,
-) -> (Image, Value) {
+) -> Option<(Image, Value)> {
     let (width, height) = metadata.physical_size();
+    if width.max(height) > gpu.caps().limits.max_texture_dimension_2d {
+        reasons.insert("device:canvas-size".into());
+        return None;
+    }
     let format = TargetFormat {
         color: TextureFormat::Rgba8Unorm,
         sample_count: 1,
@@ -618,28 +628,31 @@ fn render_native(
         height,
         pixels: gpu.read_rgba8(target),
     };
-    (
-        image,
-        json!({"frames":frames,"tiles_drawn":tiles_drawn,"timed_out":failure.is_some()}),
-    )
+    let report = json!({"frames":frames,"tiles_drawn":tiles_drawn,"timed_out":failure.is_some()});
+    Some((image, report))
 }
 
 fn record_warnings(map: &mut Map, reasons: &mut BTreeSet<String>, diagnostics: &mut Vec<String>) {
     for warning in map.take_warnings() {
-        if let Some(reason) = scope::runtime_reason(&warning) {
-            reasons.insert(reason.into());
-        }
-        // Edits re-parse layers: their parser warnings skip as the initial
-        // style's do.
-        if let Some(reason) = scope::edit_reason(&warning) {
-            reasons.insert(reason);
-        }
-        // Parser warnings were classified before constructing the map. Keep all
-        // original messages for diagnosis, including load errors (which fail),
-        // but those GL JS gives too.
-        if !scope::mirrors_gl_js(&warning) {
-            diagnostics.push(warning);
-        }
+        note_warning(warning, reasons, diagnostics);
+    }
+}
+
+/// A runtime warning's skip reason, if any, and the diagnostic it adds.
+fn note_warning(warning: String, reasons: &mut BTreeSet<String>, diagnostics: &mut Vec<String>) {
+    if let Some(reason) = scope::runtime_reason(&warning) {
+        reasons.insert(reason.into());
+    }
+    // Edits re-parse layers: their parser warnings skip as the initial
+    // style's do.
+    if let Some(reason) = scope::edit_reason(&warning) {
+        reasons.insert(reason);
+    }
+    // Parser warnings were classified before constructing the map. Keep all
+    // original messages for diagnosis, including load errors (which fail),
+    // but those GL JS gives too.
+    if !scope::mirrors_gl_js(&warning) {
+        diagnostics.push(warning);
     }
 }
 
