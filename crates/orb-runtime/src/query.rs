@@ -601,6 +601,9 @@ enum HitPaint {
     Circle {
         radius: Property<f32>,
         stroke: Property<f32>,
+        /// `circle-pitch-scale` and `circle-pitch-alignment`.
+        scale: Property<TranslateAnchor>,
+        alignment: Property<TranslateAnchor>,
         translate: Property<[f32; 2]>,
         anchor: Property<TranslateAnchor>,
     },
@@ -621,10 +624,10 @@ fn per_feature(kind: Kind) -> bool {
 impl HitPaint {
     fn of(l: &orb_style::Layer) -> Self {
         use orb_style::{
-            CIRCLE_RADIUS, CIRCLE_STROKE_WIDTH, CIRCLE_TRANSLATE, CIRCLE_TRANSLATE_ANCHOR,
-            EXTRUSION_BASE, EXTRUSION_HEIGHT, EXTRUSION_TRANSLATE, EXTRUSION_TRANSLATE_ANCHOR,
-            FILL_TRANSLATE, FILL_TRANSLATE_ANCHOR, LINE_GAP_WIDTH, LINE_OFFSET, LINE_TRANSLATE,
-            LINE_TRANSLATE_ANCHOR, LINE_WIDTH,
+            CIRCLE_PITCH_ALIGNMENT, CIRCLE_PITCH_SCALE, CIRCLE_RADIUS, CIRCLE_STROKE_WIDTH,
+            CIRCLE_TRANSLATE, CIRCLE_TRANSLATE_ANCHOR, EXTRUSION_BASE, EXTRUSION_HEIGHT,
+            EXTRUSION_TRANSLATE, EXTRUSION_TRANSLATE_ANCHOR, FILL_TRANSLATE, FILL_TRANSLATE_ANCHOR,
+            LINE_GAP_WIDTH, LINE_OFFSET, LINE_TRANSLATE, LINE_TRANSLATE_ANCHOR, LINE_WIDTH,
         };
         match l.ty {
             LayerType::Fill => Self::Fill {
@@ -641,6 +644,8 @@ impl HitPaint {
             LayerType::Circle => Self::Circle {
                 radius: l.get(CIRCLE_RADIUS).to_owned(),
                 stroke: l.get(CIRCLE_STROKE_WIDTH).to_owned(),
+                scale: l.get(CIRCLE_PITCH_SCALE).to_owned(),
+                alignment: l.get(CIRCLE_PITCH_ALIGNMENT).to_owned(),
                 translate: l.get(CIRCLE_TRANSLATE).to_owned(),
                 anchor: l.get(CIRCLE_TRANSLATE_ANCHOR).to_owned(),
             },
@@ -794,12 +799,13 @@ fn live(p: &Property<f32>, zoom: f64, state: FeatureState<'_>, fallback: f32) ->
 }
 
 /// A feature a query may report, in the order that puts upper ones last:
-/// its layer, then tiles before labels, then the frame's drawing order.
+/// its layer, then tiles before labels, then its tile's rank (GL JS's
+/// tile order, [`tile_rank`]) or a label's, then the drawing order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Order {
     layer: usize,
     label: bool,
-    tile: u32,
+    tile: u64,
     mesh: u32,
     copy: u32,
     feature: u32,
@@ -818,6 +824,9 @@ struct LayerAt {
     /// Lines' gap width and offset in pixels; `None` where per feature.
     gap: Option<f32>,
     offset: Option<f32>,
+    /// Circles: whether they scale with the map under pitch, and whether
+    /// they lie on it.
+    circle_pitch: (bool, bool),
     /// The translation in world units.
     shift: DVec2,
 }
@@ -875,6 +884,15 @@ impl Query<'_> {
             HitPaint::Line { gap, offset, .. } => (uniform(gap), uniform(offset)),
             _ => (Some(0.0), Some(0.0)),
         };
+        let circle_pitch = match &layer.paint {
+            HitPaint::Circle {
+                scale, alignment, ..
+            } => (
+                scale.evaluate(zoom) == TranslateAnchor::Map,
+                alignment.evaluate(zoom) == TranslateAnchor::Map,
+            ),
+            _ => (false, false),
+        };
         let shift = match layer.paint.translate() {
             Some((translate, anchor)) => {
                 let [x, y] = translate.evaluate(zoom);
@@ -896,6 +914,7 @@ impl Query<'_> {
             height,
             gap,
             offset,
+            circle_pitch,
             shift,
         }
     }
@@ -1061,7 +1080,7 @@ impl Scene<'_> {
                             Order {
                                 layer: layer.order,
                                 label: false,
-                                tile: i as u32,
+                                tile: tile_rank(drawn.tile, i),
                                 mesh: m as u32,
                                 copy: d as u32,
                                 feature: f as u32,
@@ -1088,7 +1107,7 @@ impl Scene<'_> {
                 Order {
                     layer: layer.order,
                     label: true,
-                    tile: i as u32,
+                    tile: i as u64,
                     mesh: 0,
                     copy: 0,
                     feature: 0,
@@ -1130,7 +1149,7 @@ impl Scene<'_> {
                     self.period,
                     (f64::from(radius), f64::from(offset)),
                     elevation,
-                    at.shift,
+                    (at.shift, at.circle_pitch),
                 )?;
                 let key = FeatureKey {
                     source: drawn.source,
@@ -1278,7 +1297,13 @@ struct ScreenHit {
     parts: Vec<Vec<Vec<Vec2>>>,
     /// A line label's collision circles: centre and radius.
     circles: Vec<(Vec2, f32)>,
+    /// The regions its tile draws in, and how far past them in pixels a
+    /// query still finds it: GL JS queries every tile within the layer's
+    /// query radius (its translation and width) of the query, and a
+    /// tile's features run into its buffer, so a feature near a tile
+    /// edge can answer from both tiles.
     clips: Vec<Vec<Vec2>>,
+    clip_pad: f32,
     min: Vec2,
     max: Vec2,
 }
@@ -1294,8 +1319,21 @@ impl ScreenHit {
         period: f64,
         (radius, offset): (f64, f64),
         elevation: (f64, f64),
-        shift: DVec2,
+        (shift, (scale_with_map, on_map)): (DVec2, (bool, bool)),
     ) -> Option<Self> {
+        if feature.kind == 2 && q.camera.pitch > 0.0 && (scale_with_map || on_map) {
+            return Self::pitched_circles(
+                feature,
+                clipped,
+                mapping,
+                copy,
+                q,
+                period,
+                radius,
+                shift,
+                (scale_with_map, on_map),
+            );
+        }
         let transform = mapping.mapper(feature.extent);
         // A line's offset in its data units, as GL JS offsets it in tile
         // units before projecting.
@@ -1367,10 +1405,11 @@ impl ScreenHit {
             .map(|corners| {
                 corners
                     .iter()
-                    .filter_map(|&p| q.project(p + wrap + shift, 0.0))
+                    .filter_map(|&p| q.project(p + wrap, 0.0))
                     .collect()
             })
             .collect();
+        let clip_pad = (shift.length() / q.view.world_per_px()) as f32 + radius;
         Some(Self {
             clipped,
             kind: feature.kind,
@@ -1380,6 +1419,83 @@ impl ScreenHit {
             min,
             max,
             clips,
+            clip_pad,
+        })
+    }
+
+    /// Circles under pitch, as GL JS queries them: with
+    /// `circle-pitch-scale: map` a viewport-aligned circle's radius scales
+    /// by the perspective at its centre; a map-aligned one is a circle on
+    /// the ground, `radius` pixels at the view's centre (or at its own,
+    /// with `circle-pitch-scale: viewport`), projected.
+    #[allow(clippy::too_many_arguments)]
+    fn pitched_circles(
+        feature: &FeatureRef<'_>,
+        clipped: bool,
+        mapping: &TileMapping,
+        copy: &DrawnCopy,
+        q: &Query<'_>,
+        period: f64,
+        radius: f64,
+        shift: DVec2,
+        (scale_with_map, on_map): (bool, bool),
+    ) -> Option<Self> {
+        const SIDES: usize = 32;
+        let transform = mapping.mapper(feature.extent);
+        let wrap = DVec2::new(f64::from(copy.wrap) * period, 0.0);
+        let (mut parts, mut circles) = (Vec::new(), Vec::new());
+        let mut min = Vec2::splat(f32::INFINITY);
+        let mut max = Vec2::splat(f32::NEG_INFINITY);
+        for ring in feature.parts().ok()?.into_iter().flatten() {
+            for p in ring.as_chunks::<2>().0 {
+                let [x, y] = point(p);
+                let world = transform(DVec2::new(f64::from(x), f64::from(y))) + wrap + shift;
+                let ratio = q.local_scale(world)?;
+                if on_map {
+                    let scale = if scale_with_map { 1.0 } else { 1.0 / ratio };
+                    // Circumscribed, so the polygon holds the circle.
+                    let r = radius * q.view.world_per_px() * scale
+                        / (std::f64::consts::PI / SIDES as f64).cos();
+                    let ring = (0..SIDES)
+                        .map(|i| {
+                            let a = i as f64 * std::f64::consts::TAU / SIDES as f64;
+                            q.project(world + DVec2::new(a.cos(), a.sin()) * r, 0.0)
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    for &v in &ring {
+                        min = min.min(v);
+                        max = max.max(v);
+                    }
+                    parts.push(vec![ring]);
+                } else {
+                    let r = (radius * ratio) as f32;
+                    let c = q.project(world, 0.0)?;
+                    min = min.min(c - r);
+                    max = max.max(c + r);
+                    circles.push((c, r));
+                }
+            }
+        }
+        let clips = copy
+            .clips
+            .iter()
+            .map(|corners| {
+                corners
+                    .iter()
+                    .filter_map(|&p| q.project(p + wrap, 0.0))
+                    .collect()
+            })
+            .collect();
+        Some(Self {
+            clipped,
+            kind: 0,
+            radius: 0.0,
+            parts,
+            circles,
+            min,
+            max,
+            clips,
+            clip_pad: (shift.length() / q.view.world_per_px() + radius) as f32,
         })
     }
 
@@ -1415,6 +1531,7 @@ impl ScreenHit {
             parts,
             circles,
             clips: Vec::new(),
+            clip_pad: 0.0,
             min,
             max,
         }
@@ -1425,8 +1542,12 @@ impl ScreenHit {
         if !p.is_finite() || !p.cmpge(self.min).all() || !p.cmple(self.max).all() {
             return false;
         }
-        if self.clipped && !self.clips.is_empty() && !self.clips.iter().any(|clip| inside(p, clip))
-        {
+        let near = |clip: &[Vec2]| {
+            inside(p, clip)
+                || (0..clip.len())
+                    .any(|i| distance(p, clip[i], clip[(i + 1) % clip.len()]) <= self.clip_pad)
+        };
+        if self.clipped && !self.clips.is_empty() && !self.clips.iter().any(|clip| near(clip)) {
             return false;
         }
         if self
@@ -1473,22 +1594,22 @@ impl ScreenHit {
                 segment_box_distance(a, b, min, max) <= radius
             }) || (n == 1 && point_box_distance(ring[0], min, max) <= radius)
         };
+        if self.clipped
+            && !self.clips.is_empty()
+            && !self.clips.iter().any(|clip| {
+                clip.iter().copied().any(in_box)
+                    || corners.iter().any(|&c| inside(c, clip))
+                    || edges_touch(clip, self.clip_pad, true)
+            })
+        {
+            return false;
+        }
         if self
             .circles
             .iter()
             .any(|&(c, r)| point_box_distance(c, min, max) <= r)
         {
             return true;
-        }
-        if self.clipped
-            && !self.clips.is_empty()
-            && !self.clips.iter().any(|clip| {
-                clip.iter().copied().any(in_box)
-                    || corners.iter().any(|&c| inside(c, clip))
-                    || edges_touch(clip, 0.0, true)
-            })
-        {
-            return false;
         }
         self.parts.iter().any(|part| match self.kind {
             2 => part
@@ -1508,6 +1629,15 @@ impl ScreenHit {
             }
         })
     }
+}
+
+/// A tile's rank among a layer's features, highest first: GL JS answers a
+/// query tile by tile in `compareTileId` order (lower zooms first, then
+/// rows and columns from the last), so a feature two tiles hold comes
+/// from each in that order. `drawn` breaks ties between world copies.
+fn tile_rank(tile: TileIndex, drawn: usize) -> u64 {
+    let z = u64::from(31u8.saturating_sub(tile.z));
+    (z << 58) | (u64::from(tile.row) << 30) | (u64::from(tile.col) << 2) | (drawn as u64 & 3)
 }
 
 /// GL JS `offsetLine`: a line moved `offset` to its right (y down), with
