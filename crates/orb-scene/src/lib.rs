@@ -128,6 +128,9 @@ pub struct FrameBlock {
     pub pitch: f32,
     /// Camera roll about the view axis, radians.
     pub roll: f32,
+    /// Milliseconds since the map began, which image fades measure from
+    /// (their rows hold when each tile arrived).
+    pub time: f32,
     /// The terrain elevated content stands on, if any.
     pub terrain: Option<FrameTerrain>,
     /// The style's lights (decision 0026); without them lit surfaces are
@@ -209,6 +212,7 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     words[23] = frame.align[1].to_bits();
     words[24] = frame.extrusion_scale.to_bits();
     words[25] = frame.ground_horizon.to_bits();
+    words[26] = frame.time.to_bits();
     words[27] = frame.symbol_fade_change.to_bits();
     words[28] = frame.pitch.to_bits();
     words[29] = frame.roll.to_bits();

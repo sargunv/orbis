@@ -32,7 +32,7 @@ pub use terrain::{
     TerrainGlobe, TerrainPaint, TerrainTile,
 };
 
-pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, PageId, PageKind};
+pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
 pub use orb_scene::Pixels;
 pub use orb_scene::{
     ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLights, FrameTerrain,

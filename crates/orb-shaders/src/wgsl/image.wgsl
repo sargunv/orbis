@@ -7,8 +7,11 @@
 // units interpolate as units · weight over weight), then the image's own
 // tile units, which it samples at (the clip units but for an image
 // source, whose grid sits in its one tile). Property row
-// (`IMAGE_ROW_WORDS`): the tile's layer in the node's texture array, then
-// the latitudes of its top and bottom edges.
+// (`IMAGE_ROW_WORDS`): the tile's layer in the node's texture array, the
+// latitudes of its top and bottom edges, then its fade (orb-render's
+// `ImageFade`): when it arrived (f32 ms, the frame's clock), its ancestor's
+// layer (or none), and that ancestor's depth and the tile's offsets in it
+// (8, 12 and 12 bits).
 //
 // Group 1 is the node: its uniform at binding 0, its texture array at 1,
 // linear and nearest samplers at 2 and 3.
@@ -32,7 +35,11 @@ struct ImageOut {
     @location(2) @interpolate(flat) layer: u32,
     // Latitudes of the tile's top and bottom edges, in degrees.
     @location(3) @interpolate(flat) latitudes: vec2<f32>,
+    // Its fade's three row words.
+    @location(6) @interpolate(flat) fade: vec3<u32>,
 };
+
+const NO_ANCESTOR: u32 = 0xffffffffu;
 
 fn image_vertex(node_index: u32, instance: u32, index: u32) -> ImageOut {
     var out: ImageOut;
@@ -51,7 +58,30 @@ fn image_vertex(node_index: u32, instance: u32, index: u32) -> ImageOut {
     out.tile = v.tile;
     out.layer = prop_at(v.prop_base);
     out.latitudes = bitcast<vec2<f32>>(vec2<u32>(prop_at(v.prop_base + 1u), prop_at(v.prop_base + 2u)));
+    out.fade = vec3<u32>(prop_at(v.prop_base + 3u), prop_at(v.prop_base + 4u), prop_at(v.prop_base + 5u));
     return out;
+}
+
+// GL JS's fade values over `duration` ms at the frame's time: (opacity,
+// mix toward the ancestor). With an ancestor the tile cross-fades from it;
+// without, it fades in.
+fn image_fade(in: ImageOut, duration: f32) -> vec2<f32> {
+    if duration <= 0.0 {
+        return vec2<f32>(1.0, 0.0);
+    }
+    let since = clamp((frame.time - bitcast<f32>(in.fade.x)) / duration, 0.0, 1.0);
+    if in.fade.y != NO_ANCESTOR {
+        return vec2<f32>(1.0, 1.0 - since);
+    }
+    return vec2<f32>(since, 0.0);
+}
+
+// Where `uv` (0–1 over the tile) falls in its ancestor, and the scale.
+fn image_ancestor_uv(in: ImageOut, uv: vec2<f32>) -> vec3<f32> {
+    let depth = in.fade.z & 255u;
+    let offset = vec2<f32>(f32((in.fade.z >> 8u) & 4095u), f32(in.fade.z >> 20u));
+    let scale = 1.0 / f32(1u << depth);
+    return vec3<f32>((offset + uv) * scale, scale);
 }
 
 // The fragment's position in the image's tile units.

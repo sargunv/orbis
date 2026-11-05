@@ -22,9 +22,45 @@ use orb_shaders::{
 
 use crate::{Family, OutOfSpace, TargetFormat};
 
-/// Words per image tile property row: texture layer, then the latitudes
-/// of the tile's top and bottom edges as f32, then padding.
-pub const IMAGE_ROW_WORDS: usize = 4;
+/// Words per image tile property row: texture layer; the latitudes of the
+/// tile's top and bottom edges as f32; then its fade ([`ImageFade::words`]):
+/// when it arrived, and the ancestor it cross-fades from.
+pub const IMAGE_ROW_WORDS: usize = 6;
+
+/// How an image tile fades in (`raster-fade-duration`, GL JS's
+/// `getFadeValues`): from the loaded ancestor that covered it, by
+/// cross-fading, or without one by its opacity, over the duration from
+/// when it arrived. Shaders measure the time against the frame's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageFade {
+    /// When it arrived, in the frame's milliseconds; [`ImageFade::NONE`]'s
+    /// is long past.
+    pub arrived: f32,
+    /// The ancestor's layer in the same page, how many zooms up it is, and
+    /// the tile's column and row offsets within it at the tile's zoom.
+    pub ancestor: Option<(u32, u8, [u16; 2])>,
+}
+
+impl ImageFade {
+    /// Shown at once: a tile that replaced resident descendants, or one
+    /// added to a node later.
+    pub const NONE: Self = Self {
+        arrived: f32::MIN,
+        ancestor: None,
+    };
+
+    /// The row's last three words.
+    pub fn words(self) -> [u32; 3] {
+        let (layer, at) = match self.ancestor {
+            Some((layer, depth, [x, y])) => (
+                layer,
+                u32::from(depth) | u32::from(x & 0xfff) << 8 | u32::from(y & 0xfff) << 20,
+            ),
+            None => (u32::MAX, 0),
+        };
+        [self.arrived.to_bits(), layer, at]
+    }
+}
 
 /// Tile units per side of an image quad (GL JS's `EXTENT`).
 pub const IMAGE_EXTENT: u32 = 8192;

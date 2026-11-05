@@ -9,8 +9,8 @@ use orb_hal::Gpu;
 use orb_layout::{Chunk, TileBox};
 use orb_render::{
     ColorReliefPaint, DemPrepare, HillshadeMethod, HillshadePaint, IMAGE_EXTENT, IMAGE_ROW_WORDS,
-    MAX_LIGHTS, MeshData, MeshSize, NodePaint, PageId, PageKind, Pixels, RasterPaint, Renderer,
-    Words,
+    ImageFade, MAX_LIGHTS, MeshData, MeshSize, NodePaint, PageId, PageKind, Pixels, RasterPaint,
+    Renderer, Words,
 };
 use orb_source::TilePyramid;
 use orb_v8::{Color, IlluminationAnchor, LayerKind, Property, PropertyValue, Resampling};
@@ -26,6 +26,8 @@ pub(crate) struct ResidentImage {
     pub(crate) page: PageId,
     pub(crate) layer: u32,
     pub(crate) warped: Option<Arc<Warped>>,
+    /// How it fades in, decided when it arrived.
+    pub(crate) fade: ImageFade,
 }
 
 /// A tile's warp mesh as its nodes draw it (plan §9.2, `RasterWarp`).
@@ -193,6 +195,47 @@ pub(crate) struct Upload<'a> {
     pub(crate) warped: Option<Arc<Warped>>,
     /// The style zoom it draws at (decision 0022).
     pub(crate) zoom: f64,
+    /// Now, in the frame's milliseconds, and whether the tile fades in
+    /// (a raster source with a fade duration).
+    pub(crate) time: f32,
+    pub(crate) fades: bool,
+}
+
+/// How many zooms up a fading tile looks for the ancestor it cross-fades
+/// from: the row packs the tile's offsets in it in 12 bits.
+const FADE_DEPTH: u8 = 12;
+
+/// How a tile arriving at `time` fades in, by what of its source was
+/// resident (GL JS's `getFadeValues`, its tile retention reduced to what
+/// the pyramid holds): where descendants covered it (zooming out) it shows
+/// at once; otherwise it cross-fades from the nearest resident ancestor, or
+/// without one fades in.
+fn fade_in(pyramid: &TilePyramid<ResidentTile>, tile: TileIndex, time: f32) -> ImageFade {
+    let image = |t: TileIndex| pyramid.get(t).and_then(|r| r.image.as_ref());
+    let children = tile.children();
+    if children
+        .iter()
+        .any(|&c| image(c).is_some() || c.children().iter().any(|&g| image(g).is_some()))
+    {
+        return ImageFade::NONE;
+    }
+    let mut ancestor = tile.parent();
+    let mut depth = 1;
+    while let Some(at) = ancestor.filter(|_| depth <= FADE_DEPTH) {
+        if let Some(image) = image(at) {
+            let offset = |v: u32| (v - (v >> depth << depth)) as u16;
+            return ImageFade {
+                arrived: time,
+                ancestor: Some((image.layer, depth, [offset(tile.col), offset(tile.row)])),
+            };
+        }
+        ancestor = at.parent();
+        depth += 1;
+    }
+    ImageFade {
+        arrived: time,
+        ancestor: None,
+    }
 }
 
 /// The quad an image tile on its own plane draws: its corners in tile
@@ -334,6 +377,11 @@ pub(crate) fn upload(
             page,
             layer,
             warped: upload.warped.clone(),
+            fade: if upload.fades {
+                fade_in(pyramid, tile, upload.time)
+            } else {
+                ImageFade::NONE
+            },
         }),
         symbols: Vec::new(),
     };
@@ -407,6 +455,7 @@ pub(crate) fn add_node(
     let [top, bottom] = [tile.row, tile.row + 1].map(|row| latitude(tile.z, row));
     let mut row = [0; IMAGE_ROW_WORDS];
     row[..3].copy_from_slice(&[image.layer, top.to_bits(), bottom.to_bits()]);
+    row[3..].copy_from_slice(&image.fade.words());
     let mesh = match &image.warped {
         Some(warped) => MeshData {
             vertices: Words::Core(&warped.vertices),
@@ -501,6 +550,10 @@ pub(crate) fn paint(
     Some(match &plan.style.layers[node.layer].kind {
         LayerKind::Raster(raster) => {
             let p = &raster.paint;
+            let image_source = matches!(
+                plan.source_def(node.source).kind,
+                orb_v8::SourceKind::Image(_)
+            );
             NodePaint::Raster(RasterPaint {
                 opacity: p.opacity.evaluate(zoom),
                 hue_rotate: p.hue_rotate.evaluate(zoom),
@@ -509,11 +562,14 @@ pub(crate) fn paint(
                 saturation: p.saturation.evaluate(zoom),
                 contrast: p.contrast.evaluate(zoom),
                 nearest: nearest(&p.resampling) || nearest(&p.raster_resampling),
-                // Image sources are one texture without mip levels in GL JS.
-                mipmapped: !matches!(
-                    plan.source_def(node.source).kind,
-                    orb_v8::SourceKind::Image(_)
-                ),
+                // Image sources are one texture without mip levels in GL JS,
+                // and don't fade.
+                mipmapped: !image_source,
+                fade_duration: if image_source {
+                    0.0
+                } else {
+                    p.fade_duration.evaluate(zoom).max(0.0)
+                },
             })
         }
         LayerKind::Hillshade(hillshade) => {

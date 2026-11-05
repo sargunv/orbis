@@ -1003,6 +1003,9 @@ impl Terrain {
             pitch: 0.0,
             // Slots are flat: the terrain carries them onto a globe.
             globe: None,
+            // Slots are cached: tiles draw into them as they settle, as GL
+            // JS doesn't fade what it renders to texture.
+            time: f32::MAX,
             ..*frame
         }
     }

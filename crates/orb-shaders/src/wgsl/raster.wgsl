@@ -1,6 +1,6 @@
 // Raster layers, after GL JS's `raster` shaders. Textures hold
-// premultiplied colour. Tiles appear without fading, so GL JS's parent
-// cross-fade (`u_fade_t`) is always 0.
+// premultiplied colour. Arriving tiles cross-fade from the ancestor that
+// covered them, or fade in (`image_fade`), over `raster-fade-duration`.
 
 struct RasterNode {
     // GL JS's `u_spin_weights` in xyz.
@@ -15,6 +15,8 @@ struct RasterNode {
     nearest: u32,
     // 1 to read the full-size level alone, without mip levels.
     level0: u32,
+    // `raster-fade-duration`, milliseconds; 0 for none.
+    fade_duration: f32,
 };
 
 @group(1) @binding(0) var<uniform> node: RasterNode;
@@ -39,6 +41,16 @@ fn fs_raster(in: ImageOut) -> @location(0) vec4<f32> {
     } else {
         color = sample_image_grad(in, uv, node.nearest, ddx, ddy);
     }
+    let fade = image_fade(in, node.fade_duration);
+    if fade.y > 0.0 {
+        // The ancestor's texels at this point, in the same page.
+        let a = image_ancestor_uv(in, uv);
+        var ancestor = in;
+        ancestor.layer = in.fade.y;
+        let older = sample_image_grad(ancestor, a.xy, node.nearest, ddx * a.z, ddy * a.z);
+        color = mix(color, older, fade.y);
+    }
+    color *= fade.x;
     if color.a > 0.0 {
         color = vec4<f32>(color.rgb / color.a, color.a);
     }

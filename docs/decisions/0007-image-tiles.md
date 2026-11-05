@@ -64,7 +64,27 @@ goes from 19% to 1% of pixels off: the blended levels differ slightly from
 WebGL's `generateMipmap`. Compat keeps one level: WebGL2 has no storage
 textures for the pass.
 
-Deviations: tiles appear without fading (`raster-fade-duration` parses and
-validates; GL JS's fixtures run with it at 0; #4); hillshades
+Raster tiles fade in over `raster-fade-duration`, as GL JS's
+`getFadeValues` does. The fade is decided once, when a tile arrives, and
+written into its row: the time it arrived (the frame block's clock,
+milliseconds since the map began) and the resident ancestor it cross-fades
+from. The shader computes the fade from the frame's time, so frames that
+only move the camera write nothing.
+- **An ancestor covered the tile** (zooming in): it cross-fades from the
+  ancestor's texels, in the same page.
+- **Nothing covered it**: it fades in by opacity.
+- **Resident descendants covered it** (zooming out): it shows at once.
+  GL JS keeps the children drawn under a fading parent, and the pyramid
+  holds no such retention, so a fade-in there would flash the background.
+- **Exempt:** image sources don't fade, as in GL JS. Neither do drape
+  slots: the drape frame's time is past every fade, as GL JS doesn't fade
+  what it renders to texture.
+
+The map isn't idle until the last fade ends. The render test
+`raster_tiles_cross_fade_from_their_ancestor_or_fade_in` checks both
+paths halfway and at the end. The fixtures run with the duration at 0, or
+draped, and are unchanged.
+
+Deviations: hillshades
 draw at most four light sources, with a warning; a 204 response is treated as
 a missing tile (parents show through) rather than a blank one.

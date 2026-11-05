@@ -103,6 +103,7 @@ impl Harness {
             extrusion_scale: 1.0,
             ground_horizon: 0.0,
             symbol_fade_change: 1.0,
+            time: 0.0,
             pitch: 0.0,
             roll: 0.0,
             terrain: None,
@@ -935,6 +936,124 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
     assert!(!stats.bundle_recorded);
     assert_eq!(stats.paints_written, 0);
     assert_eq!(stats.placements_written, 0);
+}
+
+/// A raster node drawing one image tile over the whole view, sampling
+/// layer `child` of a page whose layer `parent` is its ancestor a zoom up
+/// (the tile is its north-west child), fading over 1000 ms from time 0.
+fn fading_raster(ancestor: bool) -> Harness {
+    use orb_render::{ImageFade, PageKind, Pixels, RasterPaint};
+    let mut h = Harness::new();
+    h.renderer.set_nodes(&mut h.gpu, &[Family::Raster]);
+    let page = h.renderer.create_page(&mut h.gpu, PageKind::Raster, [2, 2]);
+    h.renderer.bind_page(0, page);
+    let mut layer = |rgba: [u8; 4]| {
+        let layer = h.renderer.alloc_layer(&mut h.gpu, page).unwrap();
+        h.renderer
+            .write_layer(&mut h.gpu, page, layer, Pixels::Core(&rgba.repeat(4)));
+        layer
+    };
+    let parent = layer([0, 0, 255, 255]);
+    let child = layer([255, 0, 0, 255]);
+    h.renderer.set_paint(
+        &mut h.gpu,
+        0,
+        &NodePaint::Raster(RasterPaint {
+            opacity: 1.0,
+            hue_rotate: 0.0,
+            brightness_min: 0.0,
+            brightness_max: 1.0,
+            saturation: 0.0,
+            contrast: 0.0,
+            nearest: true,
+            mipmapped: false,
+            fade_duration: 1000.0,
+        }),
+    );
+    let tile = h.renderer.scene().insert_tile();
+    let row = TileRow {
+        extent: 8192.0,
+        scale: 2.0 / 8192.0,
+        clips: [
+            ClipRect::new([0, 0], [8192, 8192]),
+            ClipRect::EMPTY,
+            ClipRect::EMPTY,
+            ClipRect::EMPTY,
+        ],
+        ..full_view_tile(0.0)
+    };
+    h.renderer
+        .scene()
+        .place_tile(&mut h.gpu, tile, &[row])
+        .unwrap();
+    // The runtime's image quad: f32 position, clip units, weight, image
+    // units.
+    let (e, one) = (8192u32, 1f32.to_bits());
+    let corner = |x: u32, y: u32| {
+        [
+            (x as f32).to_bits(),
+            (y as f32).to_bits(),
+            x | y << 16,
+            one,
+            x | y << 16,
+        ]
+    };
+    let vertices: Vec<u32> = [corner(0, 0), corner(e, 0), corner(0, e), corner(e, e)].concat();
+    let fade = ImageFade {
+        arrived: 0.0,
+        ancestor: ancestor.then_some((parent, 1, [0, 0])),
+    };
+    let mut props = vec![child, 0, 0];
+    props.extend(fade.words());
+    let chunk = orb_layout::Chunk {
+        sort_key: None,
+        first_index: 0,
+        index_count: 6,
+        bounds: orb_layout::TileBox {
+            min: [0, 0],
+            max: [8192, 8192],
+        },
+    };
+    h.renderer
+        .scene()
+        .insert_mesh(
+            &mut h.gpu,
+            tile,
+            0,
+            &MeshData {
+                vertices: Words::Core(&vertices),
+                indices: Words::Core(&[0, 1, 2, 2, 1, 3]),
+                props: Words::Core(&props),
+                row_words: orb_render::IMAGE_ROW_WORDS as u32,
+                chunks: &[chunk],
+            },
+        )
+        .unwrap();
+    h
+}
+
+fn render_at(h: &mut Harness, time: f32) -> [u8; 4] {
+    let frame = FrameBlock {
+        time,
+        ..Harness::frame(1.0)
+    };
+    h.renderer.render(&mut h.gpu, &frame, h.target, [0.0; 4]);
+    pixel(&pollster::block_on(h.gpu.read_texture(h.target)), 16, 16)
+}
+
+#[test]
+fn raster_tiles_cross_fade_from_their_ancestor_or_fade_in() {
+    let close = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(&x, y)| x.abs_diff(y) <= 2);
+    // Halfway, half the ancestor's blue; then the tile alone.
+    let mut h = fading_raster(true);
+    let half = render_at(&mut h, 500.0);
+    assert!(close(half, [128, 0, 127, 255]), "{half:?}");
+    assert_eq!(render_at(&mut h, 1500.0), RED);
+    // Without an ancestor it fades in over what's beneath.
+    let mut h = fading_raster(false);
+    let half = render_at(&mut h, 250.0);
+    assert!(close(half, [64, 0, 0, 64]), "{half:?}");
+    assert_eq!(render_at(&mut h, 1000.0), RED);
 }
 
 /// W3C Compositing 1: `source` (premultiplied) over `backdrop` in `mode`.

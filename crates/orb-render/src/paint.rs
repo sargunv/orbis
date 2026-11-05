@@ -186,6 +186,8 @@ pub struct RasterPaint {
     /// Sample mip levels for the texture's footprint; `false` reads the
     /// full-size level alone, as GL JS samples image sources.
     pub mipmapped: bool,
+    /// `raster-fade-duration`, milliseconds.
+    pub fade_duration: f32,
 }
 
 /// The most light sources a hillshade node holds.
@@ -500,6 +502,7 @@ impl NodePaint {
                     node,
                     u32::from(p.nearest),
                     u32::from(!p.mipmapped),
+                    f(p.fade_duration),
                 ]);
                 (words, &[][..])
             }
@@ -741,8 +744,9 @@ mod tests {
             contrast: 0.0,
             nearest: false,
             mipmapped: true,
+            fade_duration: 300.0,
         });
-        assert_eq!(raster.uniform_words(0).len() * 4, 48);
+        assert_eq!(raster.uniform_words(0).len() * 4, 52);
         // No hue rotation is the identity.
         let words = raster.uniform_words(0);
         let spin: Vec<f32> = words[..3].iter().map(|&w| f32::from_bits(w)).collect();

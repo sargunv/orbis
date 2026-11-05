@@ -371,6 +371,10 @@ pub struct Map {
     lights: Option<orb_v8::Lights>,
     /// A scene document's atmosphere, which replaces the style's `sky`.
     atmosphere: Option<orb_v8::Atmosphere>,
+    /// When the map began, by its clock: frames' time counts from it.
+    born: f64,
+    /// When the last raster tile to arrive finishes fading in.
+    image_fades_until: f64,
     /// Paint edits easing in (decision 0031).
     pub(crate) transitions: crate::transitions::Transitions,
     /// The latest `load_style_url` request; earlier ones are ignored.
@@ -548,7 +552,10 @@ impl Map {
             let mercator = *Surface::default().projection();
             CameraState::new(orb_geo::Geodetic::new(0.0, 0.0), 0.0, &mercator)
         });
+        let born = services.clock.now();
         Self {
+            born,
+            image_fades_until: born,
             picking: Default::default(),
             placement_ms: 0.0,
             tiles_deferred: false,
@@ -1275,8 +1282,11 @@ impl Map {
             && self.waiting.is_empty()
             && self.pending.is_empty()
             && labels_settled;
-        report.idle =
-            report.loaded && !fading && !self.labels.fading(now) && !self.transitions.running();
+        report.idle = report.loaded
+            && !fading
+            && !self.labels.fading(now)
+            && !self.transitions.running()
+            && now >= self.image_fades_until;
         if let Some(style) = &self.style {
             let plan = style.worker.plan();
             for index in std::mem::take(&mut self.events.sources) {
@@ -1302,6 +1312,7 @@ impl Map {
             extrusion_scale: self.extrusion_scale() as f32,
             ground_horizon: view.ground_horizon() as f32,
             symbol_fade_change: self.labels.fade_change(now),
+            time: (now - self.born) as f32,
             pitch: self.camera.pitch.to_radians() as f32,
             roll: self.camera.roll.to_radians() as f32,
             align: match globe {
@@ -2775,6 +2786,24 @@ impl Map {
                 pyramid.insert_empty(tile);
                 return None;
             };
+            // Raster tiles fade in over their layers' longest duration.
+            let fade_ms = plan
+                .nodes
+                .iter()
+                .filter(|n| n.source == source)
+                .filter_map(|n| match &plan.style.layers[n.layer].kind {
+                    LayerKind::Raster(r)
+                        if !matches!(
+                            plan.source_def(source).kind,
+                            orb_v8::SourceKind::Image(_)
+                        ) =>
+                    {
+                        Some(f64::from(r.paint.fade_duration.evaluate(tile_zoom)))
+                    }
+                    _ => None,
+                })
+                .fold(0.0, f64::max);
+            let now = self.services.clock.now();
             let upload = image::Upload {
                 plan,
                 source,
@@ -2784,6 +2813,8 @@ impl Map {
                 unpack: endpoint.dem_unpack,
                 warped,
                 zoom: tile_zoom,
+                time: (now - self.born) as f32,
+                fades: fade_ms > 0.0,
             };
             // Room as for vector tiles: unused tiles of any source go first;
             // while other tiles load, this one waits for theirs to go; then
@@ -2821,6 +2852,9 @@ impl Map {
             };
             match uploaded {
                 Ok(mut resident) => {
+                    if fade_ms > 0.0 {
+                        self.image_fades_until = self.image_fades_until.max(now + fade_ms);
+                    }
                     image_patches(
                         gpu,
                         renderer,

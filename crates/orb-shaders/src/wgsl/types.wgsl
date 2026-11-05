@@ -19,7 +19,8 @@ struct Frame {
     align: vec2<f32>,
     extrusion_scale: f32,
     ground_horizon: f32,
-    _pad2: f32,
+    // Milliseconds since the map began, for image fades.
+    time: f32,
     // How far symbol fades have run since the last placement commit.
     symbol_fade_change: f32,
     // Camera pitch and roll, radians.
