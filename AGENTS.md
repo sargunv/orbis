@@ -70,13 +70,18 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
   forward.
 - **Keep module interfaces neat and narrow**, so that a later bug squash can go
   module by module.
-- **Keep the loop fast.** Run `cargo xtask check` (fmt, clippy natively and
-  for wasm32, tests, and the plan §5.3 boundary rules) once on your work, then
-  rebase and push. Don't re-run it after a clean rebase or a rejected push;
-  rebase and push again. Re-check only if you resolved a conflict in code. If
-  `main` breaks, fix it forward. Run the heavier checks (fixture runs,
-  lavapipe, size budgets, other platforms) occasionally and at milestone ends,
-  not on every push.
+- **Keep the loop fast.** Validate what you touched and what it plausibly
+  affects downstream, not everything every time: fmt, clippy (native and
+  wasm32) and tests for the crates you changed and their dependents
+  (`cargo xtask check --affected`; until it lands, `cargo clippy -p` and
+  `cargo test -p` for those crates), plus the specific check your change needs
+  (a web build and a browser screenshot for web UI; a device run only for
+  device-specific code such as GPU paths, hosts and drivers). Then rebase and
+  push. Don't re-run checks after a clean rebase or a rejected push; rebase
+  and push again. Re-check only if you resolved a conflict in code. If `main`
+  breaks, fix it forward. The full `cargo xtask check` and the heavier checks
+  (fixture runs, lavapipe, size budgets, other platforms) run occasionally and
+  at milestone ends.
 - **Commit and push straight to `main`.** No PRs, no CI; the one workflow
   only publishes the demo.
 - **GL JS is a reference, not a pixel target.** What matters is that the map
