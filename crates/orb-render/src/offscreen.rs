@@ -135,6 +135,9 @@ pub(crate) struct Composites {
     /// Made for the first composite that needs each.
     over: Option<RenderPipelineId>,
     replace: Option<RenderPipelineId>,
+    /// Over, into the lit map's material buffer as what shows as it is,
+    /// and its samples (`lit`).
+    lit: Option<(RenderPipelineId, u32)>,
     target: TargetFormat,
     linear: SamplerId,
     /// Bound where a composite has no ramp or backdrop.
@@ -201,6 +204,7 @@ impl Composites {
             layout,
             over: None,
             replace: None,
+            lit: None,
             target,
             linear,
             blank,
@@ -305,11 +309,35 @@ impl Composites {
     }
 
     pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        [self.over, self.replace]
+        [self.over, self.replace, self.lit.map(|(p, _)| p)]
             .into_iter()
             .flatten()
             .map(PipelineId::from)
             .collect()
+    }
+
+    /// Makes the composite into the lit map's material buffer at
+    /// `samples`, unless made; whether it compiled.
+    pub(crate) fn lit_ready(&mut self, gpu: &mut dyn Gpu, samples: u32) -> bool {
+        if self.lit.is_none_or(|(_, s)| s != samples) {
+            let pipeline = crate::lit::material_pipeline(
+                gpu,
+                &COMPOSITE_OVER_SHADER.lit(),
+                PrimitiveTopology::TriangleList,
+                samples,
+                &[self.layout],
+            );
+            self.lit = Some((pipeline, samples));
+        }
+        self.lit.is_some_and(|(p, _)| gpu.pipeline_ready(p.into()))
+    }
+
+    /// A composite's draw into the lit map's material buffer: a blend mode
+    /// composites normally there.
+    pub(crate) fn lit_commands(&self, composite: &Composite) -> [RenderCommand; 3] {
+        let [_, group, draw] = self.commands_with(composite, self.over);
+        let (lit, _) = self.lit.expect("made before the surface records");
+        [RenderCommand::SetPipeline(lit), group, draw]
     }
 
     /// A composite's draw, for a bundle or the pass it opens.
@@ -319,6 +347,14 @@ impl Composites {
         } else {
             self.over
         };
+        self.commands_with(composite, pipeline)
+    }
+
+    fn commands_with(
+        &self,
+        composite: &Composite,
+        pipeline: Option<RenderPipelineId>,
+    ) -> [RenderCommand; 3] {
         [
             RenderCommand::SetPipeline(pipeline.expect("made with the composite")),
             RenderCommand::SetBindGroup {

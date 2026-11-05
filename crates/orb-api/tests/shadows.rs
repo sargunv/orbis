@@ -76,11 +76,15 @@ fn red<const N: usize>(scene: &str, at: [f64; N]) -> [u8; N] {
 /// without casting both sides are lit alike. The ground is sampled 50 m
 /// from the building's centre and 30 m from the pagoda's: past their
 /// roofs, which stand nearer the camera, and inside their shadows.
+///
+/// The scene's lights shade the white ground (decision 0048): both lights
+/// give it 0.5 + 0.5 cos 45° = 0.85 (238 in sRGB), the ambient alone 0.5
+/// (188).
 fn falls_away(layer: &str, away: f64) {
     let [west, east] = red(&scene(true, 0.0, layer), [-away, away]);
-    assert!(east > 240, "the ground toward the light is lit: {east}");
+    assert!(east > 230, "the ground toward the light is lit: {east}");
     assert!(
-        west < 160,
+        west < 195,
         "the ground away from the light is in shadow: {west}"
     );
     let [west, east] = red(&scene(false, 0.0, layer), [-away, away]);

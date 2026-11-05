@@ -95,12 +95,12 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
 }
 
 @fragment
-fn fs_circle(in: CircleOut) -> @location(0) vec4<f32> {
+fn fs_circle(in: CircleOut) -> MapOut {
     let distance = length(in.data.xy);
     let aa = in.data.z;
     let coverage = 1.0 - smoothstep(-aa, 0.0, distance - 1.0);
     let stroke = select(smoothstep(-aa, 0.0, distance - in.radius_ratio), 0.0, in.stroke_width < 0.01);
     let color = coverage * mix(in.color, in.stroke_color, stroke);
     if all(color < vec4<f32>(0.5 / 255.0)) { discard; }
-    return color;
+    return map_out(color, node.index);
 }

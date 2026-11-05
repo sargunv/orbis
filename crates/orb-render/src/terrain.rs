@@ -910,12 +910,12 @@ impl Terrain {
             commands.push(RenderCommand::ExecuteBundles(drape.to_vec()));
             passes.push(Pass::Render(RenderPass {
                 label: "drape".into(),
-                color: Some(ColorAttachment {
+                colors: vec![ColorAttachment {
                     target: atlas.levels[0],
                     resolve: None,
                     store: StoreOp::Store,
                     load: LoadOp::Load,
-                }),
+                }],
                 depth: None,
                 commands,
             }));
@@ -1046,12 +1046,12 @@ impl Terrain {
         ) {
             passes.push(Pass::Render(RenderPass {
                 label: "terrain depth".into(),
-                color: Some(ColorAttachment {
+                colors: vec![ColorAttachment {
                     target: color,
                     resolve: None,
                     store: StoreOp::Store,
                     load: LoadOp::Clear([0.0; 4]),
-                }),
+                }],
                 depth: Some(DepthAttachment {
                     target: occlusion_depth,
                     load: LoadOp::Clear(0.0),
@@ -1066,7 +1066,7 @@ impl Terrain {
             let pipeline = pipelines[usize::from(shade.is_some())].expect("made above");
             passes.push(Pass::Render(RenderPass {
                 label: "terrain".into(),
-                color: Some(target.target.attachment(0, LoadOp::Clear([0.0; 4]))),
+                colors: vec![target.target.attachment(0, LoadOp::Clear([0.0; 4]))],
                 depth: Some(DepthAttachment {
                     target: depth,
                     load: if layer == 0 {

@@ -1178,30 +1178,32 @@ impl Gpu for WgpuGpu {
                     }
                 }
                 Pass::Render(render) => {
-                    let color = render.color.map(|color| wgpu::RenderPassColorAttachment {
-                        view: &self.textures[color.target.0].view,
-                        depth_slice: None,
-                        resolve_target: color.resolve.map(|id| &self.textures[id.0].view),
-                        ops: wgpu::Operations {
-                            load: match color.load {
-                                LoadOp::Clear([r, g, b, a]) => {
-                                    wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a })
-                                }
-                                LoadOp::Load => wgpu::LoadOp::Load,
-                            },
-                            store: match color.store {
-                                StoreOp::Store => wgpu::StoreOp::Store,
-                                StoreOp::Discard => wgpu::StoreOp::Discard,
-                            },
-                        },
-                    });
+                    let colors: Vec<Option<wgpu::RenderPassColorAttachment>> = render
+                        .colors
+                        .iter()
+                        .map(|color| {
+                            Some(wgpu::RenderPassColorAttachment {
+                                view: &self.textures[color.target.0].view,
+                                depth_slice: None,
+                                resolve_target: color.resolve.map(|id| &self.textures[id.0].view),
+                                ops: wgpu::Operations {
+                                    load: match color.load {
+                                        LoadOp::Clear([r, g, b, a]) => {
+                                            wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a })
+                                        }
+                                        LoadOp::Load => wgpu::LoadOp::Load,
+                                    },
+                                    store: match color.store {
+                                        StoreOp::Store => wgpu::StoreOp::Store,
+                                        StoreOp::Discard => wgpu::StoreOp::Discard,
+                                    },
+                                },
+                            })
+                        })
+                        .collect();
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some(&render.label),
-                        color_attachments: if color.is_some() {
-                            std::slice::from_ref(&color)
-                        } else {
-                            &[]
-                        },
+                        color_attachments: &colors,
                         depth_stencil_attachment: render.depth.as_ref().map(|depth| {
                             wgpu::RenderPassDepthStencilAttachment {
                                 view: &self.textures[depth.target.0].view,

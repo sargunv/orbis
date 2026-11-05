@@ -1,0 +1,88 @@
+{
+ "style": "https://tiles.openfreemap.org/styles/liberty",
+ "symbol-occlusion": true,
+ "lights": [
+  {
+   "id": "sky",
+   "type": "ambient",
+   "properties": {
+    "color": "#5a6aa0",
+    "intensity": 0.32
+   }
+  },
+  {
+   "id": "sun",
+   "type": "sun",
+   "properties": {
+    "time": "2024-11-05T11:00:00Z",
+    "color": "#ffffff",
+    "intensity": 0.0,
+    "cast-shadows": true
+   }
+  }
+ ],
+ "layers": {
+  "water": {
+   "roughness": 0.15
+  },
+  "waterway_river": {
+   "roughness": 0.15
+  },
+  "waterway_other": {
+   "roughness": 0.15
+  },
+  "road_motorway": {
+   "emissive-strength": 0.85
+  },
+  "road_trunk_primary": {
+   "emissive-strength": 0.85
+  },
+  "road_secondary_tertiary": {
+   "emissive-strength": 0.85
+  },
+  "road_motorway_link": {
+   "emissive-strength": 0.85
+  },
+  "road_link": {
+   "emissive-strength": 0.85
+  },
+  "bridge_motorway": {
+   "emissive-strength": 0.85
+  },
+  "bridge_trunk_primary": {
+   "emissive-strength": 0.85
+  },
+  "bridge_secondary_tertiary": {
+   "emissive-strength": 0.85
+  },
+  "bridge_motorway_link": {
+   "emissive-strength": 0.85
+  },
+  "bridge_link": {
+   "emissive-strength": 0.85
+  },
+  "road_minor": {
+   "emissive-strength": 0.5
+  },
+  "road_service_track": {
+   "emissive-strength": 0.5
+  },
+  "bridge_street": {
+   "emissive-strength": 0.5
+  },
+  "bridge_service_track": {
+   "emissive-strength": 0.5
+  },
+  "building-3d": {
+   "emissive-strength": 0.12
+  }
+ },
+ "atmosphere": {
+  "sky-color": "#070b1c",
+  "horizon-color": "#1c2440",
+  "fog-color": "#151b30",
+  "sky-horizon-blend": 0.6,
+  "horizon-fog-blend": 0.5,
+  "fog-ground-blend": 0.7
+ }
+}

@@ -25,7 +25,7 @@ fn elevation_stop(stop: i32) -> f32 {
 }
 
 @fragment
-fn fs_color_relief(in: ImageOut) -> @location(0) vec4<f32> {
+fn fs_color_relief(in: ImageOut) -> MapOut {
     if image_clipped(in) {
         discard;
     }
@@ -53,5 +53,5 @@ fn fs_color_relief(in: ImageOut) -> @location(0) vec4<f32> {
     }
 
     let x = (f32(l) + (el - el_l) / (el_r - el_l) + 0.5) / f32(node.ramp_size);
-    return node.opacity * textureSampleLevel(ramp, linear_sampler, vec2<f32>(x, 0.25), 0.0);
+    return map_out(node.opacity * textureSampleLevel(ramp, linear_sampler, vec2<f32>(x, 0.25), 0.0), node.index);
 }

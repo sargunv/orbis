@@ -361,6 +361,14 @@ impl Images {
         self.image_layout
     }
 
+    /// The node group's layout `family`'s pipelines take.
+    pub(crate) fn node_layout(&self, family: Family) -> BindGroupLayoutId {
+        match family {
+            Family::ColorRelief => self.relief_layout,
+            _ => self.image_layout,
+        }
+    }
+
     pub(crate) fn pipeline(&self, family: Family) -> Option<RenderPipelineId> {
         self.pipelines.get(family)
     }
@@ -1009,12 +1017,12 @@ mod prepare {
                 ] {
                     passes.push(Pass::Render(RenderPass {
                         label: "prepare".into(),
-                        color: Some(ColorAttachment {
+                        colors: vec![ColorAttachment {
                             target,
                             resolve: None,
                             store: StoreOp::Store,
                             load: LoadOp::Load,
-                        }),
+                        }],
                         depth: None,
                         commands: vec![
                             RenderCommand::SetPipeline(pipeline),

@@ -134,12 +134,12 @@ fn samples_written_layers_of_a_texture_array() {
     assert!(gpu.pipeline_ready(pipeline.into()));
     gpu.submit(&[Pass::Render(RenderPass {
         label: "sample".into(),
-        color: Some(ColorAttachment {
+        colors: vec![ColorAttachment {
             store: StoreOp::Store,
             target,
             resolve: None,
             load: LoadOp::Clear([0.0; 4]),
-        }),
+        }],
         depth: None,
         commands: vec![
             RenderCommand::SetPipeline(pipeline),

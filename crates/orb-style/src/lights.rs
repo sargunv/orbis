@@ -13,19 +13,51 @@ use crate::{Property, TranslateAnchor};
 pub struct Lights {
     pub ambient: Option<AmbientLight>,
     pub directional: Option<DirectionalLight>,
-    /// Whether the lights shade the terrain surface too (the scene's) or
-    /// only extrusions (v8's `light`, as in GL JS).
+    /// Whether the lights shade the whole map, its layers by their
+    /// materials, and the terrain (a scene's), or only extrusions (v8's
+    /// `light`, as in GL JS).
     pub terrain: bool,
-    /// Emissive strength by layer id: 0 lit fully, 1 not at all.
-    pub emissive: Vec<(String, f64)>,
+    /// Layers' materials by layer id; the rest are [`LayerMaterial`]'s
+    /// default.
+    pub materials: Vec<(String, LayerMaterial)>,
 }
+
+/// What a layer is made of, under the scene's lights: its v8 colours are
+/// its albedo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerMaterial {
+    /// How much of its own colour shows whatever the lights: 0 lit fully,
+    /// 1 not at all.
+    pub emissive: f64,
+    /// 0 mirror-smooth to 1 matte.
+    pub roughness: f64,
+    /// 0 a dielectric to 1 a metal.
+    pub metalness: f64,
+}
+
+impl Default for LayerMaterial {
+    /// Matte paint: lit as a Lambertian surface.
+    fn default() -> Self {
+        Self {
+            emissive: 0.0,
+            roughness: 1.0,
+            metalness: 0.0,
+        }
+    }
+}
+
 impl Lights {
-    /// A layer's emissive strength; 0 unless the scene sets it.
-    pub fn emissive(&self, layer: &str) -> f64 {
-        self.emissive
+    /// A layer's material.
+    pub fn material(&self, layer: &str) -> LayerMaterial {
+        self.materials
             .iter()
             .find(|(id, _)| id == layer)
-            .map_or(0.0, |&(_, e)| e)
+            .map_or_else(LayerMaterial::default, |&(_, m)| m)
+    }
+
+    /// A layer's emissive strength; 0 unless the scene sets it.
+    pub fn emissive(&self, layer: &str) -> f64 {
+        self.material(layer).emissive
     }
 }
 #[derive(Clone, Debug)]

@@ -241,9 +241,9 @@ impl GlGpu {
     }
 
     fn render_pass(&mut self, pass: &RenderPass) {
-        let attachment = pass
-            .color
-            .unwrap_or_else(|| panic!("{}: Compat draws no depth-only passes", pass.label));
+        let [attachment] = pass.colors[..] else {
+            panic!("{}: Compat draws one colour attachment a pass", pass.label);
+        };
         let color = self.textures[attachment.target.0];
         let depth = pass.depth.map(|d| self.textures[d.target.0]);
         let fbo = self.framebuffers.get(

@@ -1,0 +1,43 @@
+{
+ "style": "https://tiles.openfreemap.org/styles/liberty",
+ "symbol-occlusion": true,
+ "lights": [
+  {
+   "id": "sky",
+   "type": "ambient",
+   "properties": {
+    "color": "#e6ecff",
+    "intensity": 0.55
+   }
+  },
+  {
+   "id": "sun",
+   "type": "sun",
+   "properties": {
+    "time": "2024-11-05T03:00:00Z",
+    "color": "#fff6e8",
+    "intensity": 0.7,
+    "cast-shadows": true
+   }
+  }
+ ],
+ "layers": {
+  "water": {
+   "roughness": 0.15
+  },
+  "waterway_river": {
+   "roughness": 0.15
+  },
+  "waterway_other": {
+   "roughness": 0.15
+  }
+ },
+ "atmosphere": {
+  "sky-color": "#4f8fd9",
+  "horizon-color": "#d6e8fb",
+  "fog-color": "#e4eef8",
+  "sky-horizon-blend": 0.7,
+  "horizon-fog-blend": 0.6,
+  "fog-ground-blend": 0.7
+ }
+}

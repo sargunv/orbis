@@ -63,6 +63,8 @@ pub const GLOBE_NO_SHADOWS: &str =
 pub const COMPAT_NO_HEATMAP: &str = "heatmap requires filterable, blendable rgba16float render attachments (Compat: EXT_color_buffer_float); heatmap layers are skipped";
 /// Compat's warning for a style with models (plan §8.7).
 pub const COMPAT_NO_MODELS: &str = "model layers draw on WebGPU and native GPUs only (Compat: WebGL2 and GLES); model layers are skipped";
+/// Compat's warning for a scene's lights over the whole map (decision 0048).
+pub const COMPAT_UNLIT: &str = "a scene's lights shade the whole map on WebGPU and native GPUs only (Compat: WebGL2 and GLES); its layers draw unlit";
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};

@@ -279,12 +279,12 @@ impl Extrusions {
         });
         RenderPass {
             label: "3d layer".into(),
-            color: Some(
+            colors: vec![
                 node.target
                     .as_ref()
                     .expect("sized")
                     .attachment(0, LoadOp::Clear([0.0; 4])),
-            ),
+            ],
             depth: Some(DepthAttachment {
                 store: self.depth().expect("sized").1,
                 target: self.depth.unwrap(),

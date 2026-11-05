@@ -176,12 +176,21 @@ impl LayerComposites {
         composites.commands(&group.composite)
     }
 
+    /// A group's composite into the lit map's material buffer.
+    pub(crate) fn lit_composite_commands(
+        &self,
+        composites: &Composites,
+        group: &Group,
+    ) -> [RenderCommand; 3] {
+        composites.lit_commands(&group.composite)
+    }
+
     /// Each group's pass: its nodes' draws into its target.
     pub(crate) fn passes(&self) -> impl Iterator<Item = Pass> + '_ {
         self.groups.iter().filter_map(|g| {
             Some(Pass::Render(RenderPass {
                 label: "layer composite".into(),
-                color: Some(g.layer.as_ref()?.attachment(0, LoadOp::Clear([0.0; 4]))),
+                colors: vec![g.layer.as_ref()?.attachment(0, LoadOp::Clear([0.0; 4]))],
                 depth: None,
                 commands: vec![RenderCommand::ExecuteBundles(vec![g.bundle?])],
             }))
@@ -226,7 +235,7 @@ impl LayerComposites {
                 };
                 Pass::Render(RenderPass {
                     label: "main".into(),
-                    color: Some(color),
+                    colors: vec![color],
                     depth: None,
                     commands,
                 })

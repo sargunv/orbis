@@ -289,6 +289,8 @@ pub(crate) struct LoadedStyle {
     /// The renderer the models load for, and how many are loading.
     pub(crate) models_for: Option<u64>,
     pub(crate) models_loading: u32,
+    /// Compat said once that the scene's lights don't light the map.
+    pub(crate) unlit_warned: bool,
 }
 
 /// What tiles and styles let go of between frames, released from the
@@ -1031,6 +1033,7 @@ impl Map {
             models: Vec::new(),
             models_for: None,
             models_loading: 0,
+            unlit_warned: false,
         });
         self.nodes_stale = true;
     }
@@ -1189,6 +1192,16 @@ impl Map {
             .as_ref()
             .map(|s| Arc::clone(&s.worker.plan().style));
         let lights = scene.as_deref().map(|s| &s.lights);
+        // A scene's lights light the whole map (decision 0048), on Modern.
+        let lit = lights.is_some_and(|l| l.terrain);
+        renderer.set_lit_map(gpu, lit);
+        if lit
+            && gpu.caps().tier != orb_hal::Tier::Modern
+            && let Some(style) = &mut self.style
+            && !std::mem::replace(&mut style.unlit_warned, true)
+        {
+            self.warnings.push(crate::COMPAT_UNLIT.into());
+        }
         // The sky over a sphere; a low-zoom plane's is a plane's.
         let globe = view
             .globe()

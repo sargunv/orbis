@@ -18,6 +18,10 @@ import globe from "./data/globe.json?url";
 import manhattan from "./data/manhattan.json?url";
 import video from "./data/video.json?url";
 import landmarksScene from "./data/tokyo-landmarks.json";
+import litMorning from "./data/lit/tokyo-morning.json?url";
+import litNoon from "./data/lit/tokyo-noon.json?url";
+import litDusk from "./data/lit/tokyo-dusk.json?url";
+import litNight from "./data/lit/tokyo-night.json?url";
 import tower from "./data/models/tower.glb?url";
 import torii from "./data/models/torii.glb?url";
 import pagoda from "./data/models/pagoda.glb?url";
@@ -171,6 +175,19 @@ export const GROUPS = [
         formats: { mvt, mlt }, constraints: { bounds: TOKYO_BOUNDS, maxPitch: 0 },
         swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
     ],
+  },
+  {
+    name: "Lit Tokyo",
+    scenes: [
+      ["lit-morning", "Morning", "Liberty lit as one surface by a low eastern sun", litMorning,
+        ["#e8dcc8", "#8fb4d8", "#f0a868"]],
+      ["lit-noon", "Noon", "The whole map under the midday sun, its buildings' shadows on the ground", litNoon,
+        ["#f2efe8", "#9cc4ec", "#f6d27a"]],
+      ["lit-dusk", "Dusk", "A low orange sun, glossy water", litDusk, ["#c9a990", "#6a7fb8", "#ff9d4d"]],
+      ["lit-night", "Night", "Streets that light themselves under a dark sky", litNight,
+        ["#20253a", "#0f1a38", "#f6d27a"], true],
+    ].map(([key, name, detail, url, swatch, dark]) => ({ key, name, detail, url, swatch, dark,
+      camera: { center: [139.7655, 35.6795], zoom: 15.6, bearing: -20, pitch: 60 } })),
   },
   {
     name: "OpenFreeMap",

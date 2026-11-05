@@ -341,7 +341,7 @@ impl Shadows {
             .map(|(&layer, &bundle)| {
                 Pass::Render(RenderPass {
                     label: "shadow".into(),
-                    color: None,
+                    colors: Vec::new(),
                     depth: Some(DepthAttachment {
                         target: layer,
                         load: LoadOp::Clear(1.0),

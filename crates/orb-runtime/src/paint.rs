@@ -299,6 +299,16 @@ fn write_paint(
         let state = style.nodes.entry(node.key).or_default();
         let index = index as u32;
         let layer = &plan.style.layers[node.layer];
+        // Its material under a scene's lights (decision 0048).
+        let material = plan.style.lights.material(&layer.id);
+        renderer.set_material(
+            index,
+            orb_render::NodeMaterial {
+                roughness: material.roughness as f32,
+                metalness: material.metalness as f32,
+                self_lit: material.emissive as f32,
+            },
+        );
         if node.family.is_symbol() {
             let lookup = style.states.lookup(index as usize);
             let paint = crate::labels::paint(plan, node, zoom, &state.maxima, lookup);

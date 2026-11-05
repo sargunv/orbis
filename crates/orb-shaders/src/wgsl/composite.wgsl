@@ -33,12 +33,12 @@ fn vs_composite(@builtin(vertex_index) index: u32) -> CompositeOut {
 }
 
 @fragment
-fn fs_over(in: CompositeOut) -> @location(0) vec4<f32> {
+fn fs_over(in: CompositeOut) -> MapOut {
     if u32(composite.y) == 7u {
         let t = textureSample(source, linear, in.uv).r;
-        return textureSample(aux, linear, vec2<f32>(t, 0.5)) * composite.x;
+        return map_out_self_lit(textureSample(aux, linear, vec2<f32>(t, 0.5)) * composite.x);
     }
-    return textureLoad(source, vec2<i32>(in.position.xy), 0) * composite.x;
+    return map_out_self_lit(textureLoad(source, vec2<i32>(in.position.xy), 0) * composite.x);
 }
 
 fn blend_lum(c: vec3<f32>) -> f32 {
@@ -91,18 +91,18 @@ fn blend_mix(mode: u32, cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
 }
 
 @fragment
-fn fs_replace(in: CompositeOut) -> @location(0) vec4<f32> {
+fn fs_replace(in: CompositeOut) -> MapOut {
     let texel = vec2<i32>(in.position.xy);
     let s = textureLoad(source, texel, 0) * composite.x;
     let b = textureLoad(aux, texel, 0);
     let mode = u32(composite.y);
     if mode == 6u {
         // plus-lighter: the Porter-Duff plus operator, clamped.
-        return min(s + b, vec4<f32>(1.0));
+        return map_out_self_lit(min(s + b, vec4<f32>(1.0)));
     }
     let cs = s.rgb / max(s.a, 1e-6);
     let cb = b.rgb / max(b.a, 1e-6);
     let mixed = blend_mix(mode, clamp(cb, vec3<f32>(0.0), vec3<f32>(1.0)), clamp(cs, vec3<f32>(0.0), vec3<f32>(1.0)));
     let rgb = s.rgb * (1.0 - b.a) + b.rgb * (1.0 - s.a) + s.a * b.a * mixed;
-    return vec4<f32>(rgb, s.a + b.a * (1.0 - s.a));
+    return map_out_self_lit(vec4<f32>(rgb, s.a + b.a * (1.0 - s.a)));
 }

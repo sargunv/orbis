@@ -52,8 +52,9 @@ pub enum ComputeCommand {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderPass {
     pub label: String,
-    /// `None` draws depth only (Modern; Compat draws no such pass).
-    pub color: Option<ColorAttachment>,
+    /// Colour attachments, at the pipelines' target locations; none draws
+    /// depth only (Modern; Compat draws one attachment).
+    pub colors: Vec<ColorAttachment>,
     pub depth: Option<DepthAttachment>,
     pub commands: Vec<RenderCommand>,
 }

@@ -22,7 +22,7 @@ pub use change::{
     Binding, Change, Class, FeatureStateOp, LayerKey, LayoutChange, Patch, SourceKey,
 };
 pub use layer::Layer;
-pub use lights::{AmbientLight, Direction, DirectionalLight, Level, Lights};
+pub use lights::{AmbientLight, Direction, DirectionalLight, LayerMaterial, Level, Lights};
 pub use orb_expr::{Color, Kind, PropertyExpression, Value};
 pub use property::*;
 pub use resources::{FontFace, FontFaces, Sprite, Terrain};

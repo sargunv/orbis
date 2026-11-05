@@ -1,15 +1,19 @@
-//! The scene document's lighting module (plan §9.4 and §11.4, decision
-//! 0026): lights for the scene's 3D content, in the shape of the style
-//! spec's lights proposal (style-spec#1797), and how strongly layers emit
-//! their own colour.
+//! The scene document's lighting module (plan §9.4 and §11.4, decisions
+//! 0026 and 0048): lights that shade the whole map, in the shape of the
+//! style spec's lights proposal (style-spec#1797), and what each layer is
+//! made of under them.
 //!
 //! ```json
 //! "lights": [
 //!   {"id": "sky", "type": "ambient", "properties": {"color": "#e8f0ff", "intensity": 0.45}},
 //!   {"id": "sun", "type": "sun", "properties": {"time": "2025-06-21T15:30:00Z", "intensity": 0.7}}
 //! ],
-//! "layers": {"buildings": {"emissive-strength": 0.2}}
+//! "layers": {"water": {"roughness": 0.15}, "buildings": {"emissive-strength": 0.2}}
 //! ```
+//!
+//! A layer's v8 colours are its albedo; `roughness` and `metalness` (0 to
+//! 1, matte paint by default) and `emissive-strength` (how much of it shows
+//! unlit) complete its material.
 //!
 //! A `directional` light takes `direction`, `[azimuth, polar]` in degrees
 //! (clockwise from north, from the zenith); a `sun` takes a UTC `time`
@@ -31,7 +35,7 @@ pub(crate) fn parse_lights(cx: &mut Cx, json: &Json) -> Lights {
         ambient: None,
         directional: None,
         terrain: true,
-        emissive: Vec::new(),
+        materials: Vec::new(),
     };
     let Some(items) = json.as_array() else {
         cx.error("lights", json.span, "expected an array of lights");
@@ -148,25 +152,35 @@ pub(crate) fn parse_lights(cx: &mut Cx, json: &Json) -> Lights {
     lights
 }
 
-/// `layers`: per layer id, its `emissive-strength`.
-pub(crate) fn parse_layers(cx: &mut Cx, json: &Json) -> Vec<(String, f64)> {
-    let mut emissive = Vec::new();
+/// `layers`: per layer id, its material: `emissive-strength`,
+/// `roughness` and `metalness`, each 0 to 1.
+pub(crate) fn parse_layers(cx: &mut Cx, json: &Json) -> Vec<(String, LayerMaterial)> {
+    let mut materials = Vec::new();
     for layer in cx.object(json, "layers").unwrap_or(&[]) {
         let path = format!("layers.{}", layer.key);
+        let mut material = LayerMaterial::default();
         for m in cx.object(&layer.value, &path).unwrap_or(&[]) {
-            match (m.key.as_str(), &m.value.value) {
-                ("emissive-strength", JsonValue::Number(n)) if (0.0..=1.0).contains(n) => {
-                    emissive.push((layer.key.clone(), *n));
+            let field = match m.key.as_str() {
+                "emissive-strength" => &mut material.emissive,
+                "roughness" => &mut material.roughness,
+                "metalness" => &mut material.metalness,
+                key => {
+                    cx.warn(&path, m.key_span, format!("unknown property \"{key}\""));
+                    continue;
                 }
-                (key, _) => cx.warn(
-                    &path,
-                    m.key_span,
-                    format!("unknown or invalid property \"{key}\""),
+            };
+            match m.value.value {
+                JsonValue::Number(n) if (0.0..=1.0).contains(&n) => *field = n,
+                _ => cx.warn(
+                    format!("{path}.{}", m.key),
+                    m.value.span,
+                    "expected a number from 0 to 1",
                 ),
             }
         }
+        materials.push((layer.key.clone(), material));
     }
-    emissive
+    materials
 }
 
 /// Seconds since the Unix epoch of an RFC 3339 date-time:

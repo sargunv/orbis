@@ -15,6 +15,13 @@ const BUILTINS_COMPAT: &str = include_str!("wgsl/builtins_compat.wgsl");
 /// glTF's metallic-roughness shading, functions without bindings (plan
 /// §9.4): for the model pipelines to compose.
 const PBR_MODULE: &str = include_str!("wgsl/pbr.wgsl");
+/// The style's lights as `pbr.wgsl` takes them.
+const SCENE_LIGHTS: &str = include_str!("wgsl/scene_lights.wgsl");
+/// A map layer's output: its colour, or for the lit map its material
+/// (#91, decision 0048), as [`Shader::lit`] composes.
+const MAP_OUT: &str = include_str!("wgsl/map_out.wgsl");
+const MAP_OUT_MATERIAL: &str = include_str!("wgsl/map_out_material.wgsl");
+const MAP_LIGHT: &str = include_str!("wgsl/map_light.wgsl");
 
 /// The shadows a surface receives (decision 0046): the cascades, their
 /// maps in the scene group and `shadow_at`. Compat composes
@@ -62,9 +69,16 @@ pub struct Shader {
     pub vertex: &'static str,
     pub fragment: &'static str,
     pub compute: &'static str,
+    /// Its map layers draw into the lit map's material buffer.
+    pub lit: bool,
 }
 
 impl Shader {
+    /// The same shader drawing into the lit map's material buffer.
+    pub const fn lit(self) -> Self {
+        Self { lit: true, ..self }
+    }
+
     pub fn source(&self) -> String {
         self.compose(false)
     }
@@ -92,6 +106,9 @@ impl Shader {
             }
             source.push_str(if compat { BUILTINS_COMPAT } else { BUILTINS });
         }
+        if source.contains("MapOut") {
+            source.push_str(if self.lit { MAP_OUT_MATERIAL } else { MAP_OUT });
+        }
         source
     }
 }
@@ -102,6 +119,7 @@ pub const TERRAIN_SHADER: Shader = Shader {
     vertex: "vs_terrain",
     fragment: "fs_terrain",
     compute: "",
+    lit: false,
 };
 
 /// A terrain layer that shades a hillshade between its stacks.
@@ -120,6 +138,7 @@ pub const TERRAIN_SHADE_SHADER: Shader = Shader {
     vertex: "vs_terrain",
     fragment: "fs_terrain_shaded",
     compute: "",
+    lit: false,
 };
 
 /// Clears drape slots (`vs_slot`, `fs_clear`) and builds their mip levels
@@ -130,6 +149,7 @@ pub const DRAPE_SHADER: Shader = Shader {
     vertex: "vs_slot",
     fragment: "fs_clear",
     compute: "downsample",
+    lit: false,
 };
 
 pub const SKY_SHADER: Shader = Shader {
@@ -138,6 +158,7 @@ pub const SKY_SHADER: Shader = Shader {
     vertex: "vs_sky",
     fragment: "fs_sky",
     compute: "",
+    lit: false,
 };
 
 /// Composites (`composite.wgsl`): over the map by premultiplied blending,
@@ -148,6 +169,7 @@ pub const COMPOSITE_OVER_SHADER: Shader = Shader {
     vertex: "vs_composite",
     fragment: "fs_over",
     compute: "",
+    lit: false,
 };
 
 /// A layer blended into the map beneath in a W3C mode, written in place.
@@ -157,6 +179,7 @@ pub const COMPOSITE_REPLACE_SHADER: Shader = Shader {
     vertex: "vs_composite",
     fragment: "fs_replace",
     compute: "",
+    lit: false,
 };
 
 /// The globe atmosphere's scattering over the map (decision 0025).
@@ -172,6 +195,7 @@ pub const FILL_SHADER: Shader = Shader {
     vertex: "vs_fill",
     fragment: "fs_fill",
     compute: "",
+    lit: false,
 };
 
 pub const FILL_OUTLINE_SHADER: Shader = Shader {
@@ -180,6 +204,7 @@ pub const FILL_OUTLINE_SHADER: Shader = Shader {
     vertex: "vs_fill_outline",
     fragment: "fs_fill_outline",
     compute: "",
+    lit: false,
 };
 
 pub const LINE_SHADER: Shader = Shader {
@@ -188,6 +213,7 @@ pub const LINE_SHADER: Shader = Shader {
     vertex: "vs_line",
     fragment: "fs_line",
     compute: "",
+    lit: false,
 };
 
 pub const CIRCLE_SHADER: Shader = Shader {
@@ -196,15 +222,42 @@ pub const CIRCLE_SHADER: Shader = Shader {
     vertex: "vs_circle",
     fragment: "fs_circle",
     compute: "",
+    lit: false,
 };
 /// glTF models at point features, lit by the style's lights (plan §9.4).
 /// Modern only: Compat warns for the gap.
 pub const MODEL_SHADER: Shader = Shader {
     label: "model",
-    parts: &[TYPES, DRAW, POINT, PBR_MODULE, SHADOW_RECEIVE, MODEL],
+    parts: &[
+        TYPES,
+        DRAW,
+        POINT,
+        PBR_MODULE,
+        SHADOW_RECEIVE,
+        SCENE_LIGHTS,
+        MODEL,
+    ],
     vertex: "vs_model",
     fragment: "fs_model",
     compute: "",
+    lit: false,
+};
+/// The lit map's lighting pass (#91, decision 0048): the material buffer
+/// shaded under the style's lights, with the ground's shadows.
+pub const MAP_LIGHT_SHADER: Shader = Shader {
+    label: "map light",
+    parts: &[
+        TYPES,
+        DRAW,
+        SHADOW_RECEIVE,
+        PBR_MODULE,
+        SCENE_LIGHTS,
+        MAP_LIGHT,
+    ],
+    vertex: "vs_map_light",
+    fragment: "fs_map_light",
+    compute: "",
+    lit: false,
 };
 /// Symbol quads: glyphs and icons, with their halos (decision 0009), of
 /// point labels and of line labels (`symbol-placement: line` and
@@ -217,6 +270,7 @@ pub const SYMBOL_SHADERS: [Shader; 2] = [
         vertex: "vs_symbol",
         fragment: "fs_symbol",
         compute: "",
+        lit: false,
     },
     Shader {
         label: "symbol line",
@@ -224,6 +278,7 @@ pub const SYMBOL_SHADERS: [Shader; 2] = [
         vertex: "vs_symbol",
         fragment: "fs_symbol",
         compute: "",
+        lit: false,
     },
 ];
 pub const HEATMAP_SHADER: Shader = Shader {
@@ -232,6 +287,7 @@ pub const HEATMAP_SHADER: Shader = Shader {
     vertex: "vs_heatmap",
     fragment: "fs_heatmap",
     compute: "",
+    lit: false,
 };
 
 pub const RASTER_SHADER: Shader = Shader {
@@ -240,6 +296,7 @@ pub const RASTER_SHADER: Shader = Shader {
     vertex: "vs_raster",
     fragment: "fs_raster",
     compute: "",
+    lit: false,
 };
 
 pub const HILLSHADE_SHADER: Shader = Shader {
@@ -254,6 +311,7 @@ pub const HILLSHADE_SHADER: Shader = Shader {
     vertex: "vs_hillshade",
     fragment: "fs_hillshade",
     compute: "",
+    lit: false,
 };
 
 pub const COLOR_RELIEF_SHADER: Shader = Shader {
@@ -262,6 +320,7 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
     vertex: "vs_color_relief",
     fragment: "fs_color_relief",
     compute: "",
+    lit: false,
 };
 
 /// A raster page's mip levels for its new layers (`downsample`).
@@ -271,6 +330,7 @@ pub const IMAGE_MIPS_SHADER: Shader = Shader {
     vertex: "",
     fragment: "",
     compute: "downsample",
+    lit: false,
 };
 
 /// The DEM prepare pass's border fill, from a raw tile into its padded
@@ -281,6 +341,7 @@ pub const PREPARE_PAD_SHADER: Shader = Shader {
     vertex: "vs_prepare",
     fragment: "fs_pad",
     compute: "",
+    lit: false,
 };
 
 /// The DEM prepare pass's hillshade slopes, from a padded tile into its
@@ -291,6 +352,7 @@ pub const PREPARE_SLOPE_SHADER: Shader = Shader {
     vertex: "vs_prepare",
     fragment: "fs_slope",
     compute: "",
+    lit: false,
 };
 
 pub const CULL_SHADER: Shader = Shader {
@@ -299,6 +361,7 @@ pub const CULL_SHADER: Shader = Shader {
     vertex: "",
     fragment: "",
     compute: "cull",
+    lit: false,
 };
 
 /// Lit roofs and walls with reversed-Z depth.
@@ -308,6 +371,7 @@ pub const EXTRUSION_SHADER: Shader = Shader {
     vertex: "vs_extrusion",
     fragment: "fs_extrusion",
     compute: "",
+    lit: false,
 };
 /// The 3D depth resolved for the symbols it hides, from one sample and
 /// from several.
@@ -321,6 +385,7 @@ pub const OCCLUSION_SHADERS: [Shader; 2] = [
         vertex: "vs_occlusion",
         fragment: "fs_occlusion",
         compute: "",
+        lit: false,
     },
     Shader {
         label: "occlusion multisampled",
@@ -331,6 +396,7 @@ pub const OCCLUSION_SHADERS: [Shader; 2] = [
         vertex: "vs_occlusion",
         fragment: "fs_occlusion",
         compute: "",
+        lit: false,
     },
 ];
 /// Extrusions' depth from the light, into a shadow cascade. Modern only.
@@ -348,6 +414,7 @@ pub const EXTRUSION_CASTER_SHADER: Shader = Shader {
     vertex: "vs_caster",
     fragment: "fs_caster",
     compute: "",
+    lit: false,
 };
 /// Models' depth from the light, into a shadow cascade. Modern only.
 pub const MODEL_CASTER_SHADER: Shader = Shader {
@@ -358,12 +425,14 @@ pub const MODEL_CASTER_SHADER: Shader = Shader {
         POINT,
         PBR_MODULE,
         SHADOW_RECEIVE,
+        SCENE_LIGHTS,
         MODEL,
         include_str!("wgsl/model_caster.wgsl"),
     ],
     vertex: "vs_model_caster",
     fragment: "fs_model_caster",
     compute: "",
+    lit: false,
 };
 /// Shadows on the ground, multiplied over the main pass. Modern only.
 pub const SHADOW_GROUND_SHADER: Shader = Shader {
@@ -372,6 +441,7 @@ pub const SHADOW_GROUND_SHADER: Shader = Shader {
     vertex: "vs_shadow_ground",
     fragment: "fs_shadow_ground",
     compute: "",
+    lit: false,
 };
 
 /// The shaders Compat draws with (plan §8.7): all but terrain's, the
@@ -416,6 +486,15 @@ pub const SHADERS: &[Shader] = &[
     CIRCLE_SHADER,
     MODEL_SHADER,
     MODEL_CASTER_SHADER,
+    MAP_LIGHT_SHADER,
+    FILL_SHADER.lit(),
+    FILL_OUTLINE_SHADER.lit(),
+    LINE_SHADER.lit(),
+    CIRCLE_SHADER.lit(),
+    RASTER_SHADER.lit(),
+    HILLSHADE_SHADER.lit(),
+    COLOR_RELIEF_SHADER.lit(),
+    COMPOSITE_OVER_SHADER.lit(),
     SYMBOL_SHADERS[0],
     SYMBOL_SHADERS[1],
     HEATMAP_SHADER,

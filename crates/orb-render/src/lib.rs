@@ -24,6 +24,7 @@ mod extrusion;
 mod heatmap;
 mod image;
 mod layer_composite;
+mod lit;
 mod model;
 mod occlusion;
 mod offscreen;
@@ -33,6 +34,7 @@ mod terrain;
 mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
+pub use lit::NodeMaterial;
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
     TerrainGlobe, TerrainPaint, TerrainSlopes, TerrainTile,
@@ -242,6 +244,14 @@ pub struct Renderer {
     heatmaps: heatmap::Heatmaps,
     extrusions: extrusion::Extrusions,
     models: model::Models,
+    /// The lit map: its material buffer and lighting, and the nodes'
+    /// materials.
+    lit: lit::Lit,
+    /// Whether the map is lit (on Modern, without terrain).
+    lit_on: bool,
+    /// The main bundle drew the map unlit, waiting for the lit map's
+    /// pipelines.
+    lit_waiting: bool,
     /// The 3D depth resolved for the symbols it hides, when they are.
     occlusion: occlusion::Occlusion,
     shadows: shadow::Shadows,
@@ -527,6 +537,7 @@ impl Renderer {
         let composites = offscreen::Composites::new(gpu, target);
         let extrusions = extrusion::Extrusions::new(draw_layout, node_layout);
         let models = model::Models::new(gpu, draw_layout, node_layout);
+        let lit = lit::Lit::new(gpu);
         let occlusion = occlusion::Occlusion::new(gpu);
         let node_stride = NODE_UNIFORM_SIZE.max(u64::from(
             gpu.caps().limits.min_uniform_buffer_offset_alignment,
@@ -572,6 +583,9 @@ impl Renderer {
             composites,
             extrusions,
             models,
+            lit,
+            lit_on: false,
+            lit_waiting: false,
             occlusion,
             shadow_bound: shadows.bindings().1,
             caster_group: None,
@@ -1066,6 +1080,30 @@ impl Renderer {
         }
     }
 
+    /// Lights the whole map (#91, decision 0048): the map's surface layers
+    /// draw their colours as albedo, and their materials, into a material
+    /// buffer that one pass shades under the frame's lights; labels draw
+    /// after it, unlit. Modern only, and not with terrain yet: otherwise
+    /// the map draws unlit.
+    pub fn set_lit_map(&mut self, gpu: &mut dyn Gpu, lit: bool) {
+        let lit = lit && gpu.caps().tier == Tier::Modern;
+        if lit != self.lit_on {
+            self.lit_on = lit;
+            self.pipelines_stale = true;
+            self.invalidate_bundle(gpu);
+        }
+    }
+
+    /// Whether the map draws lit this frame.
+    fn lit_active(&self) -> bool {
+        self.lit_on && !self.terrain_on()
+    }
+
+    /// A node's material under the lit map's lights.
+    pub fn set_material(&mut self, node: u32, material: NodeMaterial) {
+        self.lit.set_material(node as usize, material);
+    }
+
     /// How a node of `family` draws: a model node, its model's ranges once
     /// the model is resident.
     fn node_draw(&self, family: Family, model: Option<u32>) -> NodeDraw {
@@ -1157,6 +1195,7 @@ impl Renderer {
 
     fn invalidate_bundle(&mut self, gpu: &mut dyn Gpu) {
         self.drop_bundles(gpu);
+        self.lit.forget_surface(gpu);
         self.shadows.forget_bundles(gpu);
         for zoom in self.drape_zooms.values_mut() {
             zoom.forget_bundle(gpu);
@@ -1420,6 +1459,17 @@ impl Renderer {
     fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, i: usize) {
         let layouts = [self.draw_layout, self.node_layout];
         let family = self.nodes[i].family;
+        if self.lit_on {
+            let node_layout = match family {
+                f if f.is_image() => self.images.node_layout(f),
+                _ => self.node_layout,
+            };
+            let samples = self.target.sample_count;
+            self.lit
+                .pipeline(gpu, family, samples, [self.draw_layout, node_layout]);
+            self.lit.make_light(gpu, self.target, self.draw_layout);
+            self.composites.lit_ready(gpu, samples);
+        }
         match family {
             Family::Fill | Family::FillOutline | Family::Line | Family::Circle => {
                 self.paint.make(gpu, self.target, &layouts, family);
@@ -1497,6 +1547,9 @@ impl Renderer {
                 }
             }
             family => out.extend(self.paint.get(family).map(PipelineId::from)),
+        }
+        if self.lit_on {
+            out.extend(self.lit.get(node.family).map(PipelineId::from));
         }
     }
 
@@ -1692,7 +1745,8 @@ impl Renderer {
         if compiling.made != self.made_seen {
             // Pipelines arrived: record again what waited for them.
             self.made_seen = compiling.made;
-            if self.waiting > 0 || self.drape_waiting > 0 || self.ground_waiting {
+            if self.waiting > 0 || self.drape_waiting > 0 || self.ground_waiting || self.lit_waiting
+            {
                 self.invalidate_bundle(gpu);
             }
             if self.drape_waiting > 0
@@ -1743,6 +1797,12 @@ impl Renderer {
             self.bind_scene(gpu);
             resized = true;
         }
+        let lit = self.lit_active();
+        if lit {
+            // The surface's bundle binds the materials' group.
+            resized |= self.lit.upload(gpu, self.nodes.len());
+            self.lit.resize(gpu, size, self.target.sample_count);
+        }
         if resized {
             self.invalidate_bundle(gpu);
         }
@@ -1755,9 +1815,17 @@ impl Renderer {
                 offset: 0,
             };
             let mut ready = self.ready(gpu, terrain_on);
+            ready.lit = lit
+                && self.lit.material_group().is_some()
+                && self.composites.lit_ready(gpu, self.target.sample_count);
             let mut commands = Vec::with_capacity(self.nodes.len() * 4 + 1);
             if indexed {
                 commands.push(index_buffer.clone());
+            }
+            // The lit map's surface: every node but the labels.
+            let mut surface = Vec::new();
+            if ready.lit && indexed {
+                surface.push(index_buffer.clone());
             }
             // Runs of one layer's nodes below layer opacity 1 or blending
             // other than normally draw into a texture of their own; draped
@@ -1782,7 +1850,8 @@ impl Renderer {
                     _ => runs.push(layer_composite::Run {
                         nodes: i..i + 1,
                         opacity,
-                        blend,
+                        // The lit map's material buffer takes no blend modes.
+                        blend: if lit { Blend::Normal } else { blend },
                         source: terrain_layer.and_then(|l| self.terrain.as_ref()?.layer_texture(l)),
                     }),
                 }
@@ -1805,9 +1874,15 @@ impl Renderer {
                     format: IndexFormat::Uint32,
                     offset: 0,
                 }];
+                // A group draws into a target of its own, unlit; it
+                // composites into the lit map's surface.
+                let unlit = Ready {
+                    lit: false,
+                    ..ready
+                };
                 for i in self.layers.groups[g].nodes.clone() {
                     let groups = (self.draw_group, self.nodes[i].group);
-                    if !self.node_commands(gpu, &ready, i, groups, &mut group) {
+                    if !self.node_commands(gpu, &unlit, i, groups, &mut group) {
                         self.waiting += 1;
                     }
                 }
@@ -1835,39 +1910,61 @@ impl Renderer {
             self.ground_waiting = false;
             for i in 0..self.nodes.len() {
                 let (start, member) = self.layers.at(i);
-                match start {
-                    // The main pass splits here: its blend draw opens the
-                    // next pass, before the next bundle.
-                    Some(group) if group.blend != Blend::Normal => {
-                        let segment = std::mem::take(&mut commands);
-                        self.bundles
-                            .push(gpu.create_render_bundle(&layers, &segment));
-                        if indexed {
-                            commands.push(index_buffer.clone());
-                        }
+                // The main pass splits here: its blend draw opens the next
+                // pass, before the next bundle (never on the lit map).
+                if let Some(group) = start
+                    && group.blend != Blend::Normal
+                {
+                    let segment = std::mem::take(&mut commands);
+                    self.bundles
+                        .push(gpu.create_render_bundle(&layers, &segment));
+                    if indexed {
+                        commands.push(index_buffer.clone());
                     }
-                    Some(group) => {
-                        commands.extend(self.layers.composite_commands(&self.composites, group));
-                        // The composite changed the pipeline and bindings.
-                        if indexed {
-                            commands.push(index_buffer.clone());
-                        }
-                    }
-                    None => {}
                 }
-                if !member && first_extrusion == Some(i) {
+                let commands = if ready.lit && !self.nodes[i].family.is_symbol() {
+                    &mut surface
+                } else {
+                    &mut commands
+                };
+                if let Some(group) = start.filter(|g| g.blend == Blend::Normal) {
+                    commands.extend(if ready.lit {
+                        self.layers.lit_composite_commands(&self.composites, group)
+                    } else {
+                        self.layers.composite_commands(&self.composites, group)
+                    });
+                    // The composite changed the pipeline and bindings.
+                    if indexed {
+                        commands.push(index_buffer.clone());
+                    }
+                }
+                // The lit map's lighting shades the ground's shadows.
+                if !member && !ready.lit && first_extrusion == Some(i) {
                     match self.shadows.ground_commands(gpu, self.draw_group) {
                         Some(ground) => commands.extend(ground),
                         None => self.ground_waiting = true,
                     }
                 }
                 let groups = (self.draw_group, self.nodes[i].group);
-                if !member && !self.node_commands(gpu, &ready, i, groups, &mut commands) {
+                if !member && !self.node_commands(gpu, &ready, i, groups, commands) {
                     self.waiting += 1;
                 }
             }
             self.bundles
                 .push(gpu.create_render_bundle(&layers, &commands));
+            if ready.lit {
+                self.lit.surface = Some(gpu.create_render_bundle(
+                    &RenderBundleDesc {
+                        label: "lit surface",
+                        color_formats: &lit::MATERIAL_FORMATS,
+                        depth_format: None,
+                        sample_count: self.target.sample_count,
+                    },
+                    &surface,
+                ));
+            }
+            // Until the lit map's pipelines compile, it draws unlit.
+            self.lit_waiting = lit && !ready.lit;
         }
         let zooms = match self.terrain.as_ref().filter(|_| terrain_on) {
             Some(terrain) => terrain.pending_zooms().to_vec(),
@@ -2068,13 +2165,17 @@ impl Renderer {
             stats.draws += 1;
         }
         passes.extend(self.layers.passes());
+        let mut first = self.atmosphere.commands(gpu);
+        if lit
+            && let Some(surface) = self.lit.surface_pass()
+            && let Some(light) = self.lit.light_commands(gpu, self.draw_group)
+        {
+            passes.push(surface);
+            first.extend(light);
+        }
         passes.extend(self.layers.main_passes(
             &self.composites,
-            (
-                self.atmosphere.commands(gpu),
-                &self.bundles,
-                self.atmosphere.commands_after(gpu),
-            ),
+            (first, &self.bundles, self.atmosphere.commands_after(gpu)),
             target,
             clear,
         ));
@@ -2088,6 +2189,7 @@ impl Renderer {
             || end.made != made
             || self.waiting > 0
             || self.ground_waiting
+            || self.lit_waiting
             || cast.is_some() != shadowed.is_some();
         stats
     }
@@ -2096,6 +2198,7 @@ impl Renderer {
     /// pipelines.
     fn ready(&mut self, gpu: &mut dyn Gpu, terrain_on: bool) -> Ready {
         Ready {
+            lit: false,
             cull: self
                 .cull
                 .is_none_or(|(cull, _)| gpu.pipeline_ready(cull.into())),
@@ -2231,18 +2334,22 @@ impl Renderer {
             return true;
         }
         if let Some(extrusion) = &node.extrusion {
-            let ready = match node.family {
+            let compiled = match node.family {
                 Family::Model => {
                     self.models.ready(gpu, self.extrusions.samples)
                         && self.composites.ready(gpu, offscreen::Mode::Over)
                 }
                 _ => self.extrusions.ready(gpu, &self.composites),
             };
-            if !ready {
+            if !compiled {
                 return false;
             }
             if let Some(composite) = &extrusion.composite {
-                commands.extend(self.composites.commands(composite));
+                commands.extend(if ready.lit {
+                    self.composites.lit_commands(composite)
+                } else {
+                    self.composites.commands(composite)
+                });
             }
             return true;
         }
@@ -2251,7 +2358,11 @@ impl Renderer {
                 return false;
             }
             if let Some(composite) = &heatmap.composite {
-                commands.extend(self.composites.commands(composite));
+                commands.extend(if ready.lit {
+                    self.composites.lit_commands(composite)
+                } else {
+                    self.composites.commands(composite)
+                });
             }
             return true;
         }
@@ -2298,6 +2409,7 @@ impl Renderer {
             .as_ref()
             .filter(|_| scene != self.draw_group && self.target.color != DRAPE_FORMAT);
         let pipeline = match (drape, node.family.is_image()) {
+            _ if ready.lit => self.lit.get(node.family),
             (Some(d), true) => d.images.get(node.family),
             (Some(d), false) => d.paint.get(node.family),
             (None, true) => self.images.pipeline(node.family),
@@ -2306,6 +2418,14 @@ impl Renderer {
         let Some(pipeline) = pipeline.filter(|&p| gpu.pipeline_ready(p.into())) else {
             return false;
         };
+        if ready.lit
+            && let Some(materials) = self.lit.material_group()
+        {
+            commands.push(RenderCommand::SetBindGroup {
+                index: 2,
+                group: materials,
+            });
+        }
         commands.extend([
             RenderCommand::SetPipeline(pipeline),
             RenderCommand::SetBindGroup {
@@ -2348,7 +2468,11 @@ fn composite_group(composite: Option<(u32, f32, Blend)>) -> Option<u32> {
 
 /// What one bundle record found compiled besides the nodes' own
 /// pipelines.
+#[derive(Clone, Copy)]
 struct Ready {
+    /// Recording the lit map's surface: its nodes draw into the material
+    /// buffer.
+    lit: bool,
     cull: bool,
     terrain: bool,
     /// The DEM prepare's, which hillshade and color relief wait for.

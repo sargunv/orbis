@@ -42,7 +42,7 @@ impl Light {
                 shadow: None,
             }),
             terrain: false,
-            emissive: Vec::new(),
+            materials: Vec::new(),
         }
     }
 }

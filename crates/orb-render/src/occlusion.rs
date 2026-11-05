@@ -145,12 +145,12 @@ impl Occlusion {
         let (_, group) = self.group.expect("made above");
         Some(Pass::Render(RenderPass {
             label: "3d occlusion".into(),
-            color: Some(ColorAttachment {
+            colors: vec![ColorAttachment {
                 target,
                 resolve: None,
                 store: StoreOp::Store,
                 load: LoadOp::Clear([0.0; 4]),
-            }),
+            }],
             depth: None,
             commands: vec![
                 RenderCommand::SetPipeline(pipeline),

@@ -96,7 +96,7 @@ pub fn parse_scene(text: &str) -> Result<SceneDocument, Diagnostics> {
     let mut style = None;
     let mut projection = None;
     let mut sources = Vec::new();
-    let (mut lights, mut emissive) = (None, Vec::new());
+    let (mut lights, mut materials) = (None, Vec::new());
     let mut atmosphere = None;
     let mut models = Vec::new();
     let mut added = Vec::new();
@@ -151,7 +151,7 @@ pub fn parse_scene(text: &str) -> Result<SceneDocument, Diagnostics> {
                 }
             }
             "lights" => lights = Some(crate::lights::parse_lights(&mut cx, &m.value)),
-            "layers" => emissive = crate::lights::parse_layers(&mut cx, &m.value),
+            "layers" => materials = crate::lights::parse_layers(&mut cx, &m.value),
             "symbol-occlusion" => match m.value.as_bool() {
                 Some(b) => symbol_occlusion = b,
                 None => cx.error("symbol-occlusion", m.value.span, "expected a boolean"),
@@ -213,11 +213,11 @@ pub fn parse_scene(text: &str) -> Result<SceneDocument, Diagnostics> {
         }
     }
     match &mut lights {
-        Some(lights) => lights.emissive = emissive,
-        None if !emissive.is_empty() => cx.warn(
+        Some(lights) => lights.materials = materials,
+        None if !materials.is_empty() => cx.warn(
             "layers",
             doc.span,
-            "emissive-strength takes effect with the scene's lights",
+            "layers' materials take effect with the scene's lights",
         ),
         None => {}
     }
