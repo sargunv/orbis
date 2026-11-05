@@ -27,6 +27,10 @@ pub struct FeatureRequest {
     /// The tile's load request (`nodes` and `rows_only` unused).
     pub tile: TileRequest,
     pub select: FeatureSelect,
+    /// The style revision the drawn tile's features were laid out with:
+    /// they are read from the source's data as of then, not newer data
+    /// a `setSourceData` brought since. `None` for the newest.
+    pub revision: Option<u64>,
 }
 
 /// One feature read from a tile.
@@ -56,7 +60,7 @@ impl TileWorker {
         encoding: Encoding,
         request: &FeatureRequest,
     ) -> Result<Vec<TileFeature>, String> {
-        let frame = self.frame(bytes, encoding, &request.tile)?;
+        let frame = self.frame_at(bytes, encoding, &request.tile, request.revision)?;
         let tile = request.tile.tile;
         let index = self
             .plan()

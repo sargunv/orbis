@@ -77,3 +77,53 @@ fn data_replaced_every_frame_never_blanks() {
         "circle at {mean}, data at {expected}"
     );
 }
+
+/// A rendered query answers for what's drawn (#89): right after new data,
+/// before its tiles replace the drawn ones, a query at the old feature
+/// gets the old feature, not the new data's at its index.
+#[test]
+fn queries_answer_from_the_drawn_data() {
+    let feature = |lon: f64, name: &str| {
+        format!(
+            r#"{{"type":"Feature","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[{lon},0]}}}}"#
+        )
+    };
+    let style = format!(
+        r##"{{"version": 8, "center": [0, 0], "zoom": 2,
+            "sources": {{"p": {{"type": "geojson", "data": {}}}}},
+            "layers": [{{"id": "c", "type": "circle", "source": "p", "paint": {{"circle-radius": 10}}}}]}}"##,
+        feature(0.0, "a")
+    );
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, 256, 256, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    map.snapshot(256, 256, 1.0).unwrap();
+    for _ in 0..50 {
+        map.render(&mut target, 0.0).unwrap();
+        if map.hit_test(glam::DVec2::splat(128.0)).is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    map.edit(&format!(
+        r#"[["setSourceData", "p", {}]]"#,
+        feature(40.0, "b")
+    ))
+    .unwrap();
+    // The jobs have the new data; the frame still draws the old.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let centre = glam::DVec2::splat(128.0);
+    let id = map.query_rendered(centre, centre);
+    let started = std::time::Instant::now();
+    let features = loop {
+        if let Some(orb_api::Event::Query { id: got, result }) = map.poll_event()
+            && got == id
+        {
+            break result.unwrap();
+        }
+        assert!(started.elapsed().as_secs() < 10, "no answer");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert!(features.contains(r#""name":"a""#), "{features}");
+}

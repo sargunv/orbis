@@ -114,6 +114,7 @@ impl crate::Map {
                 Some((
                     (source, tile, layer.clone()),
                     FeatureRequest {
+                        revision: self.drawn_revision(source, tile),
                         tile: request,
                         select: FeatureSelect::Indices { layer, features },
                     },
@@ -147,6 +148,7 @@ impl crate::Map {
                 Some((
                     (index, tile, String::new()),
                     FeatureRequest {
+                        revision: None,
                         tile: request,
                         select: FeatureSelect::Filter {
                             layer: source_layer.map(str::to_string),
@@ -160,6 +162,16 @@ impl crate::Map {
     }
 
     /// How tile `tile` of plan source `index` was loaded.
+    /// The oldest style revision a drawn tile's meshes were laid out with:
+    /// its features are read from the data of then.
+    fn drawn_revision(&self, index: usize, tile: TileIndex) -> Option<u64> {
+        let style = self.style.as_ref()?;
+        let SourceState::Ready { pyramid, .. } = &style.sources[index] else {
+            return None;
+        };
+        pyramid.get(tile)?.meshes.iter().map(|m| m.layout_rev).min()
+    }
+
     fn tile_request(&self, index: usize, tile: TileIndex) -> Option<TileRequest> {
         let style = self.style.as_ref()?;
         let SourceState::Ready {

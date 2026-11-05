@@ -69,11 +69,20 @@ impl Frames {
     }
 }
 
+/// A source's data revisions a worker keeps, oldest first: the style
+/// revision each began at, and its index and decoded tiles. Queries read
+/// the revision a drawn tile was laid out from (#89).
+type SourceRevisions = Vec<(u64, Arc<SourceData>)>;
+
+/// How many data revisions of a source a worker keeps: the drawn tiles'
+/// and those coming.
+const DATA_REVISIONS: usize = 3;
+
 /// What a worker keeps across a style's revisions.
 #[derive(Debug, Default)]
 struct WorkerData {
     /// Per source key, kept while the source is.
-    sources: Mutex<HashMap<u32, Arc<SourceData>>>,
+    sources: Mutex<HashMap<u32, SourceRevisions>>,
     /// Glyph metrics of the PBF ranges fetched so far.
     glyphs: GlyphCatalog,
     /// Sprite metadata for icon layout.
@@ -171,10 +180,16 @@ impl TileWorker {
         let data = match previous {
             Some(previous) => {
                 let data = Arc::clone(&previous.data);
-                data.sources
-                    .lock()
-                    .expect("worker data poisoned")
-                    .retain(|key, _| plan.source(*key).is_some() && !new_data.contains(key));
+                let mut sources = data.sources.lock().expect("worker data poisoned");
+                sources.retain(|key, _| plan.source(*key).is_some());
+                for key in new_data {
+                    let revisions = sources.entry(*key).or_default();
+                    revisions.push((revision, Arc::default()));
+                    if revisions.len() > DATA_REVISIONS {
+                        revisions.remove(0);
+                    }
+                }
+                drop(sources);
                 data
             }
             None => Arc::default(),
@@ -379,9 +394,23 @@ impl TileWorker {
         self.plan.revision
     }
 
+    /// A source's newest data.
     fn data(&self, source: u32) -> Arc<SourceData> {
+        self.data_at(source, None)
+    }
+
+    /// A source's data as of style revision `revision`: the newest that
+    /// began by then, or the newest of all.
+    fn data_at(&self, source: u32, revision: Option<u64>) -> Arc<SourceData> {
         let mut data = self.data.sources.lock().expect("worker data poisoned");
-        Arc::clone(data.entry(source).or_default())
+        let revisions = data.entry(source).or_default();
+        if revisions.is_empty() {
+            revisions.push((0, Arc::default()));
+        }
+        let at = revision
+            .and_then(|r| revisions.iter().rposition(|(began, _)| *began <= r))
+            .unwrap_or(revisions.len() - 1);
+        Arc::clone(&revisions[at].1)
     }
 
     /// Whether `source` (a source key) has image tiles to decode rather
@@ -507,6 +536,18 @@ impl TileWorker {
         encoding: Encoding,
         request: &TileRequest,
     ) -> Result<Arc<TileFrame>, String> {
+        self.frame_at(bytes, encoding, request, None)
+    }
+
+    /// [`frame`](Self::frame) from the source's data as of style revision
+    /// `revision` (the newest when `None`).
+    pub(crate) fn frame_at(
+        &self,
+        bytes: &[u8],
+        encoding: Encoding,
+        request: &TileRequest,
+        revision: Option<u64>,
+    ) -> Result<Arc<TileFrame>, String> {
         let TileRequest {
             source,
             tile,
@@ -520,7 +561,7 @@ impl TileWorker {
             .plan
             .source(source)
             .ok_or_else(|| format!("source {source} was removed"))?;
-        let data = self.data(source);
+        let data = self.data_at(source, revision);
         let cached = data.frames.lock().expect("frames poisoned").get(tile);
         Ok(match cached {
             Some(frame) => frame,

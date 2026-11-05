@@ -437,7 +437,16 @@ impl Jobs for WorkerJobs {
         let tile = &request.tile;
         let worker = owner(tile.source, tile.tile, self.workers);
         let mut fields = tile_fields(tile);
-        fields.extend([("id", id.into()), ("features", true.into())]);
+        fields.extend([
+            ("id", id.into()),
+            ("features", true.into()),
+            (
+                "revision",
+                request
+                    .revision
+                    .map_or(JsValue::UNDEFINED, |r| (r as f64).into()),
+            ),
+        ]);
         match request.select {
             orb_runtime::FeatureSelect::Indices { layer, features } => fields.extend([
                 ("layer", layer.into()),
@@ -772,6 +781,7 @@ fn query(
     loader: &Arc<TileLoader>,
     id: f64,
 ) -> js_sys::Promise {
+    let revision = field(message, "revision").as_f64().map(|r| r as u64);
     let layer = field(message, "layer").as_string();
     let select = match field(message, "indices").dyn_into::<js_sys::Uint32Array>() {
         Ok(indices) => orb_runtime::FeatureSelect::Indices {
@@ -814,7 +824,11 @@ fn query(
                 Err(_) => return error("tile loader dropped".into()),
             },
         };
-        let request = orb_runtime::FeatureRequest { tile, select };
+        let request = orb_runtime::FeatureRequest {
+            tile,
+            select,
+            revision,
+        };
         match worker.features(&bytes, encoding, &request) {
             Ok(features) => {
                 let strings = |f: &dyn Fn(&orb_runtime::TileFeature) -> Option<&str>| {
