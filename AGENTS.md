@@ -81,6 +81,9 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
   breaks, fix it forward. The full `cargo xtask check` and the heavier checks
   (fixture runs, lavapipe, size budgets, other platforms) run occasionally and
   at milestone ends.
+  Run long commands (checks, benches, fixture runs) in the foreground and
+  wait for them: an agent that ends its turn while a background command runs
+  is not woken when it finishes, and stalls.
 - **Commit and push straight to `main`.** No PRs, no CI; the one workflow
   only publishes the demo.
 - **GL JS is a reference, not a pixel target.** What matters is that the map
