@@ -163,6 +163,11 @@ function go(next) {
   const keep = current.scene.basemap && next.scene.basemap && map;
   const camera = keep ? map.camera.current : next.scene.camera ?? (next.scene.basemap ? LIVE_CAMERA : undefined);
   if (map && sceneUrl(current.scene, current.format) === sceneUrl(next.scene, next.format) && !next.scene.flight) {
+    // The same style on another surface switches in place: no tile loads.
+    const projection = (scene) => scene.projection ?? { type: "mercator" };
+    if (JSON.stringify(projection(current.scene)) !== JSON.stringify(projection(next.scene))) {
+      map.edit((tx) => tx.setProjection(projection(next.scene)));
+    }
     current = next;
     picker.show(next.scene, next.format);
     history.replaceState(history.state, "", urlFor(next, camera ?? map.camera.current));
@@ -204,6 +209,7 @@ async function load(next, { camera }) {
     if (app.dataset.map === "loading") say(message, { error: true });
   });
   map.on("styleload", async () => {
+    if (next.scene.projection) await map.edit((tx) => tx.setProjection(next.scene.projection));
     await editor.attach(map);
     attributionControl.update(editor.style);
   });

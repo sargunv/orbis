@@ -200,7 +200,7 @@ pub(crate) struct BucketPlanes {
 }
 
 /// A drawn tile's bucket of a symbol layer, for this frame's placement.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct SymbolTile {
     /// Tile units ([`orb_symbol::EXTENT`]) to world in the primary copy:
     /// the tile's bounds, or a warped tile's linear approximation at its
@@ -212,6 +212,9 @@ pub(crate) struct SymbolTile {
     pub(crate) bucket: u64,
     pub(crate) tile: orb_crs::TileIndex,
     pub(crate) wrap: i32,
+    /// On a globe, the tile's patches on the sphere, which placement
+    /// projects through.
+    pub(crate) globe: Option<Arc<orb_crs::Series<glam::DVec3>>>,
 }
 
 fn overlap(mode: Option<orb_v8::Overlap>, allow: bool) -> orb_symbol::Overlap {
@@ -1100,6 +1103,14 @@ impl Labels {
                                     wrap: t.wrap,
                                 },
                                 matrix: (view_proj * tile).to_cols_array(),
+                                globe: view.globe().zip(t.globe.clone()).map(|(globe, series)| {
+                                    orb_symbol::TileGlobe {
+                                        series,
+                                        target: globe.target,
+                                        view_proj: globe.view_proj,
+                                        eye: globe.target + globe.eye,
+                                    }
+                                }),
                             },
                             text_size: zoom_size(
                                 &symbol.layout.text_size,
@@ -1593,6 +1604,7 @@ mod tests {
                         wrap,
                     },
                     matrix: [0.0; 16],
+                    globe: None,
                 },
                 text_size: orb_symbol::ZoomSize::default(),
             };

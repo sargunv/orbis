@@ -133,7 +133,7 @@ impl Map {
         map.set_clear_color(options.clear_color);
         let camera = Camera::new(
             *map.camera(),
-            map.projection(),
+            map.surface(),
             Viewport {
                 width: 512.0,
                 height: 512.0,
@@ -374,8 +374,9 @@ impl Map {
         self.runtime.pipelines_made();
         let mut jumped = false;
         for event in self.map.take_events() {
-            if let MapEvent::StyleLoad { .. } = event {
-                self.camera.set_projection(self.map.projection());
+            // Loads and projection edits move the camera's surface.
+            if let MapEvent::StyleData { .. } | MapEvent::StyleLoad { .. } = event {
+                self.camera.set_surface(self.map.surface());
             }
             if let MapEvent::StyleLoad {
                 camera: Some(style),

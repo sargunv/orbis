@@ -42,7 +42,31 @@ impl Warped {
     /// The tile's mesh from `warp`, its linear interpolation within a
     /// quarter of a pixel at 512 pixels per tile side.
     pub(crate) fn new(warp: &orb_crs::Warp, tile: TileIndex) -> Option<Self> {
-        let mesh = warp.mesh(tile, 1.0 / 2048.0, 1.0)?;
+        Some(Self::of(warp.mesh(tile, 1.0 / 2048.0, 1.0)?))
+    }
+
+    /// A tile's own square (`frame`) as a grid of `cells` per side, for a
+    /// globe to bend.
+    pub(crate) fn grid(frame: orb_crs::WorldRect, cells: u32) -> Self {
+        let n = cells + 1;
+        let positions: Vec<glam::DVec2> = (0..n * n)
+            .map(|k| glam::DVec2::new(f64::from(k % n), f64::from(k / n)) / f64::from(cells))
+            .collect();
+        let triangles = (0..cells * cells)
+            .flat_map(|c| {
+                let k = c / cells * n + c % cells;
+                [[k, k + 1, k + n + 1], [k, k + n + 1, k + n]]
+            })
+            .collect();
+        Self::of(orb_crs::WarpMesh {
+            frame,
+            sources: positions.clone(),
+            positions,
+            triangles,
+        })
+    }
+
+    fn of(mesh: orb_crs::WarpMesh) -> Self {
         let units = |v: f64| (v * f64::from(IMAGE_EXTENT)).round() as i16 as u16 as u32;
         let position = |v: f64| ((v * f64::from(IMAGE_EXTENT)) as f32).to_bits();
         let vertices = mesh
@@ -75,12 +99,12 @@ impl Warped {
                 }
             })
             .collect();
-        Some(Self {
+        Self {
             frame: mesh.frame,
             vertices,
             indices,
             chunks,
-        })
+        }
     }
 }
 
@@ -190,6 +214,7 @@ pub(crate) fn upload(
         parts: vec![(IMAGE_EXTENT, scene_tile)],
         meshes: Vec::new(),
         series: None,
+        warp: orb_render::TileWarp::NONE,
         zoom: upload.zoom,
         image: Some(ResidentImage {
             page,

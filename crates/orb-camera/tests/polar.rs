@@ -4,6 +4,7 @@
 
 use glam::DVec2;
 use orb_camera::{CameraState, View, Viewport};
+use orb_crs::Surface;
 use orb_crs::{Projection, TileMatrixSet};
 use orb_geo::Geodetic;
 
@@ -19,7 +20,7 @@ fn check(tms: &TileMatrixSet, target: Geodetic) {
                 let mut camera = CameraState::new(target, zoom, projection);
                 camera.bearing = bearing;
                 camera.pitch = pitch;
-                let view = View::new(&camera, viewport, projection);
+                let view = View::new(&camera, viewport, &Surface::from(projection));
                 let cover = view.cover(tms, 512.0, 16);
                 assert!(!cover.is_empty());
                 let case = format!("{} {target:?} z{zoom} b{bearing} p{pitch}", tms.id());

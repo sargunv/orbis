@@ -7,7 +7,7 @@ use crate::lines::{Lines, clip_line};
 use crate::placement::along_line::{Elevation, LabelPlane, LineContext, first_and_last_glyph};
 use crate::placement::grid::{GridIndex, GridKey, Group, Overlap};
 use crate::placement::view::{
-    Camera, Ground, TileView, pitched_label_plane, project, symbol_elevation, tile_skew_vectors,
+    Camera, Ground, TileView, pitched_label_plane, symbol_elevation, tile_skew_vectors,
 };
 use orb_text::ONE_EM;
 
@@ -101,7 +101,7 @@ impl CollisionIndex {
 
     /// GL JS `projectAndGetPerspectiveRatio`, in padded viewport pixels.
     fn project(&self, tile: &TileView, x: f64, y: f64, elevation: Option<f64>) -> Projected {
-        let p = project(&tile.matrix, x, y, elevation);
+        let p = tile.project(x, y, elevation);
         Projected {
             x: (p.point.x + 1.0) / 2.0 * self.camera.width + VIEWPORT_PADDING,
             y: (-p.point.y + 1.0) / 2.0 * self.camera.height + VIEWPORT_PADDING,
@@ -298,7 +298,7 @@ impl CollisionIndex {
         let mut cx = LineContext::new(
             line,
             plane,
-            &tile.matrix,
+            tile,
             &camera,
             anchor,
             translation,

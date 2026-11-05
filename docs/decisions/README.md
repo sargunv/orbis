@@ -34,3 +34,4 @@ in code and commit messages.
 - [0027](0027-dense-tiles-in-a-full-scene.md): Dense tiles in a full scene
 - [0028](0028-compat.md): The Compat tier: Modern's commands beneath the HAL, a whole compat.wasm, and the device policy
 - [0029](0029-device-access.md): Android device access through devices-cli
+- [0030](0030-globe.md): The globe: v8 `projection` on a sphere, through patches in space

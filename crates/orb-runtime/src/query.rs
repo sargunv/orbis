@@ -1887,9 +1887,9 @@ impl HitIndex {
         point: DVec2,
         camera: &CameraState,
         viewport: Viewport,
-        projection: &orb_crs::Projection,
+        surface: &orb_crs::Surface,
     ) -> Option<Hit> {
-        let view = View::new(camera, viewport, projection);
+        let view = View::new(camera, viewport, surface);
         let scene = Scene {
             layers: &self.layers,
             drawn: &self.drawn,
@@ -1902,7 +1902,7 @@ impl HitIndex {
             period: self.period,
             generation: self.generation,
         };
-        scene.hit_test(&view, camera, camera.zoom(projection), point)
+        scene.hit_test(&view, camera, camera.zoom(&surface.projection), point)
     }
 
     pub fn set_generation(&mut self, generation: u64) {

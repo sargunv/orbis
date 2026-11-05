@@ -7,6 +7,7 @@ use orb_geo::Geodetic;
 
 use crate::moves::wrap_bearing;
 use crate::{CameraState, View, Viewport};
+use orb_crs::Surface;
 
 /// How an animation's progress follows time, from 0 to 1.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -440,9 +441,10 @@ impl Motion {
         &mut self,
         camera: &mut CameraState,
         elapsed: f64,
-        projection: &Projection,
+        surface: &Surface,
         viewport: Viewport,
     ) {
+        let projection = &surface.projection;
         let t = if self.duration() > 0.0 {
             elapsed / self.duration()
         } else {
@@ -478,7 +480,7 @@ impl Motion {
                 match around {
                     Some((ground, at)) => {
                         let world = projection.forward(*ground);
-                        let view = View::new(&next, viewport, projection);
+                        let view = View::new(&next, viewport, surface);
                         if let Some(now) = view.unproject(*at) {
                             let target =
                                 view.camera_world() + nearest_copy(world, now, projection) - now;
@@ -532,15 +534,15 @@ impl Motion {
                 ];
                 if let Some(pan) = glide.pan {
                     let delta = pan.amount * (p[0] - done[0]);
-                    camera.pan(projection, viewport, center, center + delta);
+                    camera.pan(surface, viewport, center, center + delta);
                 }
                 if let Some(zoom) = glide.zoom {
                     let to = camera.zoom(projection) + zoom.amount * (p[1] - done[1]);
-                    camera.zoom_around(projection, viewport, around, to);
+                    camera.zoom_around(surface, viewport, around, to);
                 }
                 if let Some(bearing) = glide.bearing {
                     let to = camera.bearing + bearing.amount * (p[2] - done[2]);
-                    camera.rotate_around(projection, viewport, around, to);
+                    camera.rotate_around(surface, viewport, around, to);
                 }
                 if let Some(pitch) = glide.pitch {
                     camera.pitch += pitch.amount * (p[3] - done[3]);

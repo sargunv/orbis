@@ -114,6 +114,16 @@ impl Family {
         })
     }
 
+    /// The central meridian of a plane cut along its antimeridian, in
+    /// radians: the cut's two sides lie at opposite edges of the world.
+    pub(crate) fn seam(&self) -> Option<f64> {
+        match self {
+            Self::Pseudo(f) => Some(f.lon0()),
+            Self::Conic(f) => Some(f.lon0()),
+            _ => None,
+        }
+    }
+
     /// The x period after which the world repeats, if it wraps.
     pub(crate) fn wrap_period(&self) -> Option<f64> {
         match self {

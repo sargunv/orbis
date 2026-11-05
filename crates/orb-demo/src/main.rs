@@ -526,7 +526,7 @@ impl State {
             width: f64::from(config.width) / scale,
             height: f64::from(config.height) / scale,
         };
-        let camera = Camera::new(initial.unwrap_or(*map.camera()), map.projection(), viewport);
+        let camera = Camera::new(initial.unwrap_or(*map.camera()), map.surface(), viewport);
 
         Self {
             window,
@@ -631,8 +631,9 @@ impl State {
 
     fn map_events(&mut self) {
         for event in self.map.take_events() {
-            if let MapEvent::StyleLoad { .. } = event {
-                self.camera.set_projection(self.map.projection());
+            // Loads and projection edits move the camera's surface.
+            if let MapEvent::StyleData { .. } | MapEvent::StyleLoad { .. } = event {
+                self.camera.set_surface(self.map.surface());
             }
             match event {
                 MapEvent::StyleLoad {
@@ -943,8 +944,8 @@ mod tests {
             orb_runtime::TerrainElevation::from_pyramid(&offscreen.map.elevation_pyramid())
                 .unwrap();
         let viewport = offscreen.viewport;
-        let projection = offscreen.map.projection();
-        let view = orb_camera::View::over(offscreen.map.camera(), viewport, &projection, &*full);
+        let surface = offscreen.map.surface();
+        let view = orb_camera::View::over(offscreen.map.camera(), viewport, &surface, &*full);
         let (mut metres, mut pixels) = (Vec::new(), Vec::new());
         for i in 0..40 {
             for j in 0..30 {
@@ -1010,8 +1011,8 @@ mod tests {
                 offscreen.frame();
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            let (viewport, projection) = (offscreen.viewport, offscreen.map.projection());
-            let mut camera = orb_camera::Camera::new(*offscreen.map.camera(), projection, viewport);
+            let (viewport, surface) = (offscreen.viewport, offscreen.map.surface());
+            let mut camera = orb_camera::Camera::new(*offscreen.map.camera(), surface, viewport);
             let (mut published, mut age) = (0, 0);
             let started = std::time::Instant::now();
             let (mut lowest, mut under, mut frames) = (f64::INFINITY, 0, 0);
@@ -1047,7 +1048,7 @@ mod tests {
                     let Some(full) = offscreen.map.elevation() else {
                         continue;
                     };
-                    let view = orb_camera::View::new(camera.state(), viewport, &projection);
+                    let view = orb_camera::View::new(camera.state(), viewport, &surface);
                     let Some(clearance) = view.clearance(&*full) else {
                         continue;
                     };
@@ -1081,10 +1082,9 @@ mod tests {
         at: glam::DVec2,
         delta: f64,
     ) {
-        let projection = map.projection();
+        let surface = map.surface();
         let zoom = map.zoom() + delta;
-        map.camera_mut()
-            .zoom_around(&projection, viewport, at, zoom);
+        map.camera_mut().zoom_around(&surface, viewport, at, zoom);
         map.constrain_camera(viewport);
     }
 
@@ -1095,8 +1095,8 @@ mod tests {
         from: glam::DVec2,
         to: glam::DVec2,
     ) {
-        let projection = map.projection();
-        map.camera_mut().pan(&projection, viewport, from, to);
+        let surface = map.surface();
+        map.camera_mut().pan(&surface, viewport, from, to);
         map.constrain_camera(viewport);
     }
 
@@ -1347,7 +1347,7 @@ mod tests {
         );
         let mut camera = super::Camera::new(
             *offscreen.map.camera(),
-            offscreen.map.projection(),
+            offscreen.map.surface(),
             offscreen.viewport,
         );
         let mut input = super::Interaction::default();

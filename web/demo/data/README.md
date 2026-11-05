@@ -102,8 +102,8 @@ them; they are never silently stringified. The real extract has none.
 ## Other projections (`crs/`)
 
 Scene documents (plan §11.4) with their v8 styles inline, written for this
-repository; the web demo opens them as `?style=arctic`, `?style=nz` and
-`?style=greenland`, the native demo as
+repository; the web demo opens them as `?style=arctic`, `?style=nz`,
+`?style=equal-earth` and `?style=greenland`, the native demo as
 `file://$PWD/web/demo/data/crs/arctic.json`.
 
 - `arctic.json` draws on an EPSG:3413 (NSIDC polar stereographic) surface:
@@ -115,10 +115,12 @@ repository; the web demo opens them as `?style=arctic`, `?style=nz` and
   Web Mercator (the `GpuPerVertex` plan).
 - `nz.json` draws OpenFreeMap's planet tiles on an NZTM2000 (EPSG:2193)
   surface, reprojected from Web Mercator.
+- `equal-earth.json` draws OpenFreeMap's Liberty style (by URL) on an Equal
+  Earth (EPSG:8857) world map, reprojected from Web Mercator.
 - `greenland.json` keeps Web Mercator: OpenFreeMap's planet tiles under the
   same ice velocity raster, warped from EPSG:3413 (the `RasterWarp` plan).
 
-Both fetch their tiles at run time; nothing here is extracted or committed.
+They fetch their tiles at run time; nothing here is extracted or committed.
 GIBS imagery is NASA's and free of use restrictions; GIBS asks to be credited.
 OpenFreeMap's tiles and glyphs are as above (© OpenMapTiles, © OpenStreetMap
 contributors, ODbL).

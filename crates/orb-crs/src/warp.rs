@@ -40,28 +40,112 @@ pub struct WarpMesh {
     pub triangles: Vec<[u32; 3]>,
 }
 
-/// A tile on the target plane as quadratic patches over an even grid.
+/// A tile on the target plane (or, as `Series<DVec3>`, on a sphere) as
+/// quadratic patches over an even grid.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Series {
-    /// The tile centre's position on the target plane; patches are
-    /// relative to it.
-    pub anchor: DVec2,
+pub struct Series<V = DVec2> {
+    /// The tile centre's position on the target; patches are relative to
+    /// it.
+    pub anchor: V,
     /// Patches per side.
     pub cells: u32,
     /// Row by row, top to bottom, relative to `anchor`.
-    pub patches: Vec<Patch>,
+    pub patches: Vec<Patch<V>>,
     /// The longest straight segment, as a fraction of the tile's side, whose
     /// image stays within the tolerance of its curve: the tile's geometry
     /// is subdivided to it.
     pub max_segment: f64,
-    /// Target world units per tile side at the centre.
+    /// Target units per tile side at the centre.
     pub scale: f64,
 }
 
-impl Series {
+/// A position a series interpolates: on a plane or in space.
+pub trait Node:
+    Copy
+    + std::ops::Add<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::ops::Mul<f64, Output = Self>
+    + std::ops::AddAssign
+{
+    const ZERO: Self;
+    fn length(self) -> f64;
+    fn distance(self, other: Self) -> f64 {
+        (self - other).length()
+    }
+}
+
+impl Node for DVec2 {
+    const ZERO: Self = DVec2::ZERO;
+    fn length(self) -> f64 {
+        DVec2::length(self)
+    }
+}
+
+impl Node for glam::DVec3 {
+    const ZERO: Self = glam::DVec3::ZERO;
+    fn length(self) -> f64 {
+        glam::DVec3::length(self)
+    }
+}
+
+impl<V: Node> Series<V> {
+    /// Fits the fewest of 1, 4, … 256 equal patches whose quadratics stay
+    /// within `limit` of `map` (tile fractions, y down, to positions), or
+    /// `None` where `map` doesn't reach or the tile needs more. `map`
+    /// returns positions continuous across the tile (unwrapped).
+    pub(crate) fn fit(map: impl Fn(DVec2) -> Option<V>, limit: f64, scale: f64) -> Option<Self> {
+        let anchor = map(DVec2::splat(0.5))?;
+        let mut cells = 1u32;
+        loop {
+            let side = 1.0 / f64::from(cells);
+            let mut patches = Vec::with_capacity((cells * cells) as usize);
+            let mut error: f64 = 0.0;
+            for j in 0..cells {
+                for i in 0..cells {
+                    let center = (DVec2::new(f64::from(i), f64::from(j)) + 0.5) * side;
+                    let patch = Patch::through(&map, center, side, anchor)?;
+                    // Its worst point among a 6×6 sample between its nodes.
+                    for b in 0..6 {
+                        for a in 0..6 {
+                            let st = DVec2::new(f64::from(a), f64::from(b)) / 2.5 - 1.0;
+                            let exact = map(center + st * side / 2.0)?;
+                            error = error.max((anchor + patch.eval(st)).distance(exact));
+                        }
+                    }
+                    patches.push(patch);
+                }
+            }
+            if error <= limit {
+                // Second derivatives in tile fractions: a patch's in its
+                // `[-1, 1]` parameters, times (2 / side)².
+                let curvature = patches
+                    .iter()
+                    .map(|p| p.curvature() * 4.0 / (side * side))
+                    .fold(0.0, f64::max);
+                return Some(Self {
+                    anchor,
+                    cells,
+                    patches,
+                    // A chord of `len` bows by `curvature·len²/8`; keep that
+                    // within the limit.
+                    max_segment: if curvature > 0.0 {
+                        (8.0 * limit / curvature).sqrt().min(1.0)
+                    } else {
+                        1.0
+                    },
+                    scale,
+                });
+            }
+            if cells >= MAX_SERIES_CELLS {
+                return None;
+            }
+            cells *= 2;
+        }
+    }
+
     /// The patch holding a tile position (fractions) and the position's
     /// parameters in it, each in `[-1, 1]`.
-    pub fn locate(&self, uv: DVec2) -> (&Patch, DVec2) {
+    pub fn locate(&self, uv: DVec2) -> (&Patch<V>, DVec2) {
         let cells = f64::from(self.cells);
         let cell = (uv * cells)
             .floor()
@@ -81,21 +165,29 @@ impl Series {
         1u32 << (cells as u32).min(8)
     }
 
-    /// A tile position (fractions) on the target plane.
-    pub fn position(&self, uv: DVec2) -> DVec2 {
+    /// A tile position (fractions) on the target.
+    pub fn position(&self, uv: DVec2) -> V {
         let (patch, st) = self.locate(uv);
         self.anchor + patch.eval(st)
     }
 
+    /// The derivatives of the position along a tile's x and y (fractions)
+    /// at `uv`.
+    pub fn derivatives(&self, uv: DVec2) -> [V; 2] {
+        let (patch, st) = self.locate(uv);
+        // Parameters run over a patch's side: 2 · cells per tile side.
+        patch
+            .derivatives(st)
+            .map(|d| d * (2.0 * f64::from(self.cells)))
+    }
+}
+
+impl Series<DVec2> {
     /// The tile's linear approximation at its centre, from data units
     /// (`extent` per side, y down) to the target plane.
     pub fn linear(&self, extent: f64) -> glam::DAffine2 {
-        let (patch, st) = self.locate(DVec2::splat(0.5));
-        // Parameters run over a patch's side: 2 · cells per tile side.
-        let [ds, dt] = patch
-            .derivatives(st)
-            .map(|d| d * 2.0 * f64::from(self.cells));
-        let center = self.anchor + patch.eval(st);
+        let [ds, dt] = self.derivatives(DVec2::splat(0.5));
+        let center = self.position(DVec2::splat(0.5));
         glam::DAffine2::from_mat2_translation(
             glam::DMat2::from_cols(ds / extent, dt / extent),
             center - (ds + dt) * 0.5,
@@ -109,8 +201,8 @@ impl Series {
 /// `[-1, 1]`. Neighbouring patches share their edges' three nodes, so they
 /// meet exactly.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Patch {
-    pub points: [DVec2; 9],
+pub struct Patch<V = DVec2> {
+    pub points: [V; 9],
 }
 
 /// Quadratic Lagrange basis at nodes -1, 0, 1, and its derivative.
@@ -121,23 +213,40 @@ fn basis(s: f64) -> ([f64; 3], [f64; 3]) {
     )
 }
 
-impl Patch {
-    pub fn eval(&self, st: DVec2) -> DVec2 {
+impl<V: Node> Patch<V> {
+    /// The patch over the square of `side` about `center` (tile fractions)
+    /// through `map`'s positions at its corners, edge midpoints and
+    /// centre, relative to `anchor`.
+    fn through(
+        map: impl Fn(DVec2) -> Option<V>,
+        center: DVec2,
+        side: f64,
+        anchor: V,
+    ) -> Option<Self> {
+        let mut points = [V::ZERO; 9];
+        for (k, point) in points.iter_mut().enumerate() {
+            let offset = DVec2::new((k % 3) as f64 - 1.0, (k / 3) as f64 - 1.0) * side / 2.0;
+            *point = map(center + offset)? - anchor;
+        }
+        Some(Self { points })
+    }
+
+    pub fn eval(&self, st: DVec2) -> V {
         let ((bs, _), (bt, _)) = (basis(st.x), basis(st.y));
-        let mut p = DVec2::ZERO;
+        let mut p = V::ZERO;
         for (k, point) in self.points.iter().enumerate() {
-            p += *point * bs[k % 3] * bt[k / 3];
+            p += *point * (bs[k % 3] * bt[k / 3]);
         }
         p
     }
 
     /// The derivatives along `s` and `t` at `st`.
-    pub fn derivatives(&self, st: DVec2) -> [DVec2; 2] {
+    pub fn derivatives(&self, st: DVec2) -> [V; 2] {
         let ((bs, ds), (bt, dt)) = (basis(st.x), basis(st.y));
-        let (mut ps, mut pt) = (DVec2::ZERO, DVec2::ZERO);
+        let (mut ps, mut pt) = (V::ZERO, V::ZERO);
         for (k, point) in self.points.iter().enumerate() {
-            ps += *point * ds[k % 3] * bt[k / 3];
-            pt += *point * bs[k % 3] * dt[k / 3];
+            ps += *point * (ds[k % 3] * bt[k / 3]);
+            pt += *point * (bs[k % 3] * dt[k / 3]);
         }
         [ps, pt]
     }
@@ -149,11 +258,11 @@ impl Patch {
         (0..3)
             .flat_map(|i| {
                 [
-                    p[3 * i] - 2.0 * p[3 * i + 1] + p[3 * i + 2],
-                    p[i] - 2.0 * p[3 + i] + p[6 + i],
+                    p[3 * i] - p[3 * i + 1] * 2.0 + p[3 * i + 2],
+                    p[i] - p[3 + i] * 2.0 + p[6 + i],
                 ]
             })
-            .map(|d| d.length())
+            .map(Node::length)
             .fold(0.0, f64::max)
     }
 }
@@ -183,9 +292,23 @@ impl Warp {
     pub fn map(&self, tile: TileIndex, uv: DVec2) -> Option<DVec2> {
         let b = self.from.tile_bounds(tile);
         let world = DVec2::new(b.min.x + uv.x * b.size().x, b.max.y - uv.y * b.size().y);
-        let g = self.from.projection().inverse(world);
+        let mut g = self.from.projection().inverse(world);
         if !g.lon.is_finite() || !g.lat.is_finite() || !self.to.contains(g) {
             return None;
+        }
+        // On a plane cut along a meridian, a tile's points on the cut (Web
+        // Mercator's ±180° edges) take the side of the tile just inside them.
+        if let Some(lon0) = self.to.seam() {
+            let wrap = |lon: f64| (lon - lon0 + 540.0).rem_euclid(360.0) - 180.0;
+            if (wrap(g.lon).abs() - 180.0).abs() < 1e-6 {
+                let inside = uv + (DVec2::splat(0.5) - uv) * 1e-3;
+                let world = DVec2::new(
+                    b.min.x + inside.x * b.size().x,
+                    b.max.y - inside.y * b.size().y,
+                );
+                let near = self.from.projection().inverse(world);
+                g.lon = lon0 + 180.0f64.copysign(wrap(near.lon));
+            }
         }
         let p = self.to.forward(g);
         p.is_finite().then_some(p)
@@ -283,67 +406,14 @@ impl Warp {
             return None;
         }
         let anchor = self.map(tile, DVec2::splat(0.5))?;
-        let limit = tolerance * footprint.span;
-        let mut cells = 1u32;
-        loop {
-            let side = 1.0 / f64::from(cells);
-            let mut patches = Vec::with_capacity((cells * cells) as usize);
-            let mut error: f64 = 0.0;
-            for j in 0..cells {
-                for i in 0..cells {
-                    let center = (DVec2::new(f64::from(i), f64::from(j)) + 0.5) * side;
-                    let patch = self.patch(tile, center, side, anchor)?;
-                    // Its worst point among a 6×6 sample between its nodes.
-                    for b in 0..6 {
-                        for a in 0..6 {
-                            let st = DVec2::new(f64::from(a), f64::from(b)) / 2.5 - 1.0;
-                            let exact = self.map(tile, center + st * side / 2.0)?;
-                            let exact = DVec2::new(self.unwrap(exact.x, anchor.x), exact.y);
-                            error = error.max((anchor + patch.eval(st)).distance(exact));
-                        }
-                    }
-                    patches.push(patch);
-                }
-            }
-            if error <= limit {
-                // Second derivatives in tile fractions: a patch's in its
-                // `[-1, 1]` parameters, times (2 / side)².
-                let curvature = patches
-                    .iter()
-                    .map(|p| p.curvature() * 4.0 / (side * side))
-                    .fold(0.0, f64::max);
-                return Some(Series {
-                    anchor,
-                    cells,
-                    patches,
-                    // A chord of `len` bows by `curvature·len²/8`; keep that
-                    // within the limit.
-                    max_segment: if curvature > 0.0 {
-                        (8.0 * limit / curvature).sqrt().min(1.0)
-                    } else {
-                        1.0
-                    },
-                    scale: footprint.span,
-                });
-            }
-            if cells >= MAX_SERIES_CELLS {
-                return None;
-            }
-            cells *= 2;
-        }
-    }
-
-    /// The biquadratic patch over the square of `side` about `center`
-    /// (tile fractions) through the exact positions at its corners, edge
-    /// midpoints and centre, relative to `anchor`.
-    fn patch(&self, tile: TileIndex, center: DVec2, side: f64, anchor: DVec2) -> Option<Patch> {
-        let mut points = [DVec2::ZERO; 9];
-        for (k, point) in points.iter_mut().enumerate() {
-            let offset = DVec2::new((k % 3) as f64 - 1.0, (k / 3) as f64 - 1.0) * side / 2.0;
-            let p = self.map(tile, center + offset)?;
-            *point = DVec2::new(self.unwrap(p.x, anchor.x), p.y) - anchor;
-        }
-        Some(Patch { points })
+        Series::fit(
+            |uv| {
+                let p = self.map(tile, uv)?;
+                Some(DVec2::new(self.unwrap(p.x, anchor.x), p.y))
+            },
+            tolerance * footprint.span,
+            footprint.span,
+        )
     }
 
     /// The tile's mesh: a grid fine enough that its linear interpolation
@@ -722,5 +792,26 @@ mod tests {
         assert_eq!(mesh.triangles.len(), 4 * 2 + 4 * 64 + 32);
         let footprint = same.footprint(tile).unwrap();
         assert!((footprint.span - mercator().tile_span(5)).abs() < 1e-6 * footprint.span);
+    }
+
+    /// Web Mercator's tiles on Equal Earth: those on the antimeridian keep
+    /// their edges on their own side of the cut.
+    #[test]
+    fn tiles_on_the_seam_keep_their_side() {
+        let ee = Projection::from_descriptor("EPSG:8857").unwrap();
+        let warp = Warp::new(mercator(), ee);
+        // Each tile's west and east edges at its middle row, on the cut.
+        for (tile, west_cut, east_cut) in [
+            (TileIndex::new(0, 0, 0), true, true),
+            (TileIndex::new(3, 0, 3), true, false),
+            (TileIndex::new(3, 7, 4), false, true),
+        ] {
+            let series = warp.series(tile, 1.0 / 2048.0).unwrap();
+            let [left, right] = [0.0, 1.0].map(|u| series.position(DVec2::new(u, 0.5)));
+            assert!(left.x < right.x, "{tile:?}: {left} .. {right}");
+            let on_cut = |p: DVec2| (ee.inverse(p).lon.abs() - 180.0).abs() < 1e-3;
+            assert_eq!(on_cut(left), west_cut, "{tile:?} west {left}");
+            assert_eq!(on_cut(right), east_cut, "{tile:?} east {right}");
+        }
     }
 }

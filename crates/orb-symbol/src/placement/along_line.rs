@@ -5,7 +5,7 @@
 use crate::bucket::PlacedSymbol;
 use crate::geometry::Point;
 
-use super::view::{Camera, Ground, Mat4, TileId, project, symbol_elevation};
+use super::view::{Camera, Ground, TileId, TileView, symbol_elevation};
 
 /// The plane labels are laid out in: screen pixels, or a pitched map
 /// plane in pixels.
@@ -22,7 +22,7 @@ pub(crate) struct LineContext<'a> {
     /// The symbol's line: its vertices of the bucket's lines.
     pub(crate) lines: &'a [[i16; 2]],
     pub(crate) plane: LabelPlane,
-    pub(crate) tile_matrix: &'a Mat4,
+    pub(crate) tile: &'a TileView,
     pub(crate) camera: &'a Camera,
     pub(crate) anchor: Point,
     pub(crate) translation: [f64; 2],
@@ -68,7 +68,7 @@ impl<'a> LineContext<'a> {
     pub(crate) fn new(
         lines: &'a [[i16; 2]],
         plane: LabelPlane,
-        tile_matrix: &'a Mat4,
+        tile: &'a TileView,
         camera: &'a Camera,
         anchor: Point,
         translation: [f64; 2],
@@ -77,7 +77,7 @@ impl<'a> LineContext<'a> {
         Self {
             lines,
             plane,
-            tile_matrix,
+            tile,
             camera,
             anchor,
             translation,
@@ -108,7 +108,7 @@ impl<'a> LineContext<'a> {
     /// Tile units to screen pixels, untranslated (GL JS
     /// `projectTileCoordinates` as `projectPathSpecialProjection` uses it).
     pub(crate) fn to_screen(&self, x: f64, y: f64) -> PlanePoint {
-        let p = project(self.tile_matrix, x, y, self.elevation.at(x, y));
+        let p = self.tile.project(x, y, self.elevation.at(x, y));
         PlanePoint {
             point: Point::new(
                 (p.point.x * 0.5 + 0.5) * self.camera.width,
@@ -402,9 +402,18 @@ mod tests {
             pitch: 0.0,
             camera_to_center_distance: 1.0,
         };
-        let identity = [
-            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-        ];
+        let identity = TileView {
+            id: TileId {
+                z: 0,
+                x: 0,
+                y: 0,
+                wrap: 0,
+            },
+            matrix: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+            ],
+            globe: None,
+        };
         let lines = [[0, 0], [100, 0], [200, 0]];
         let plane = LabelPlane::Pitched([1.0, 0.0, 0.0, 1.0]);
         let mut cx = LineContext::new(

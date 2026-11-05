@@ -140,7 +140,13 @@ pub(crate) fn tau_from_taup(taup: f64) -> f64 {
 }
 
 /// An angle wrapped into [-π, π).
+/// An angle in `[-π, π]`; ±π stay as they are, so a seam's two sides keep
+/// apart.
 pub(crate) fn wrap_pi(a: f64) -> f64 {
     use std::f64::consts::PI;
-    (a + PI).rem_euclid(2.0 * PI) - PI
+    if (-PI..=PI).contains(&a) {
+        a
+    } else {
+        (a + PI).rem_euclid(2.0 * PI) - PI
+    }
 }

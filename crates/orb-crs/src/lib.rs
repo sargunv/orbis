@@ -12,15 +12,18 @@ mod cover;
 mod epsg;
 mod family;
 mod projection;
+pub mod sphere;
+mod surface;
 mod tms;
 mod warp;
 
 pub use cover::{CoverDecision, CoveredTile};
 pub use projection::{Descriptor, Projection, UnknownProjection};
+pub use surface::{Globe, Surface};
 pub use tms::{
     TileIndex, TileMatrix, TileMatrixSet, TileMatrixSetDefinition, UnknownTileMatrixSet,
 };
-pub use warp::{Footprint, Patch, Series, Warp, WarpMesh};
+pub use warp::{Footprint, Node, Patch, Series, Warp, WarpMesh};
 
 use glam::DVec2;
 

@@ -2,11 +2,11 @@
 //! pitch.
 
 use glam::DVec2;
-use orb_crs::Projection;
 
 use crate::animate::CameraTarget;
 use crate::moves::Bounds;
 use crate::{CameraState, View, Viewport};
+use orb_crs::Surface;
 
 /// Space to leave at the viewport's edges, in logical pixels.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -51,9 +51,10 @@ impl CameraState {
         &self,
         bounds: Bounds,
         options: &FitOptions,
-        projection: &Projection,
+        surface: &Surface,
         viewport: Viewport,
     ) -> Option<CameraTarget> {
+        let projection = &surface.projection;
         let pad = options.padding;
         let available = DVec2::new(
             viewport.width - pad.left - pad.right,
@@ -107,14 +108,7 @@ impl CameraState {
         camera.pitch = pitch;
         camera.set_target_world(projection, center, final_world_per_px);
         if pitch > 0.0 {
-            fit_pitched(
-                &mut camera,
-                &outline,
-                options,
-                projection,
-                viewport,
-                available,
-            );
+            fit_pitched(&mut camera, &outline, options, surface, viewport, available);
             camera.set_zoom(projection, camera.zoom(projection).min(max_zoom));
         }
         Some(CameraTarget {
@@ -135,15 +129,16 @@ fn fit_pitched(
     camera: &mut CameraState,
     corners: &[DVec2],
     options: &FitOptions,
-    projection: &Projection,
+    surface: &Surface,
     viewport: Viewport,
     available: DVec2,
 ) {
+    let projection = &surface.projection;
     let pad = options.padding;
     let goal =
         DVec2::new(pad.left + available.x / 2.0, pad.top + available.y / 2.0) + options.offset;
     for _ in 0..16 {
-        let view = View::new(camera, viewport, projection);
+        let view = View::new(camera, viewport, surface);
         let Some(points) = corners
             .iter()
             .map(|&c| view.project(c))
@@ -161,13 +156,13 @@ fn fit_pitched(
         if scale.log2().abs() < 1e-4 && middle.distance(goal) < 0.05 {
             return;
         }
-        camera.pan(projection, viewport, middle, goal);
+        camera.pan(surface, viewport, middle, goal);
         let center = DVec2::new(viewport.width, viewport.height) / 2.0;
         camera.zoom_around(
-            projection,
+            surface,
             viewport,
             center,
-            camera.zoom(projection) + scale.log2(),
+            camera.zoom(&surface.projection) + scale.log2(),
         );
     }
 }
@@ -189,13 +184,13 @@ mod tests {
         height: 600.0,
     };
 
-    fn on_screen(camera: &CameraState, target: &CameraTarget, projection: &Projection) -> View {
+    fn on_screen(camera: &CameraState, target: &CameraTarget, surface: &Surface) -> View {
         let mut fitted = *camera;
         fitted.target = target.center.unwrap();
         fitted.set_zoom(&mercator(), target.zoom.unwrap());
         fitted.bearing = target.bearing.unwrap();
         fitted.pitch = target.pitch.unwrap();
-        View::new(&fitted, VIEWPORT, projection)
+        View::new(&fitted, VIEWPORT, surface)
     }
 
     #[test]
@@ -224,9 +219,9 @@ mod tests {
                 ..FitOptions::default()
             };
             let target = camera
-                .for_bounds(bounds, &options, &projection, VIEWPORT)
+                .for_bounds(bounds, &options, &Surface::from(&projection), VIEWPORT)
                 .unwrap();
-            let view = on_screen(&camera, &target, &projection);
+            let view = on_screen(&camera, &target, &Surface::from(&projection));
             let points: Vec<_> = bounds
                 .corners()
                 .iter()
@@ -258,7 +253,7 @@ mod tests {
         let camera = CameraState::new(Geodetic::new(0.0, 0.0), 2.0, &mercator());
         assert!(
             camera
-                .for_bounds(bounds, &cramped, &projection, VIEWPORT)
+                .for_bounds(bounds, &cramped, &Surface::from(&projection), VIEWPORT)
                 .is_none()
         );
     }

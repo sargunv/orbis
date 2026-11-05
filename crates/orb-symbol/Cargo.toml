@@ -8,7 +8,9 @@ version.workspace = true
 
 [dependencies]
 bytemuck = { workspace = true, features = ["derive"] }
+glam.workspace = true
 libm.workspace = true
+orb-crs.workspace = true
 orb-text.workspace = true
 orb-tile.workspace = true
 

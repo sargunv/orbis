@@ -16,4 +16,4 @@ pub use place::{
     BucketStates, Committed, Frame, GroundRef, LayerFrame, LayerParams, PlacedTile,
     PlacementTables, Placer, ZoomSize, state,
 };
-pub use view::{Camera, Ground, Mat4, TileId, TileView};
+pub use view::{Camera, Ground, Mat4, TileGlobe, TileId, TileView};

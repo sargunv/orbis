@@ -24,7 +24,8 @@ use std::f64::consts::{FRAC_PI_2, PI};
 
 use glam::{DMat4, DVec2, DVec3, DVec4};
 use orb_crs::{
-    CoverDecision, CoveredTile, Footprint, Projection, TileIndex, TileMatrixSet, WorldRect,
+    CoverDecision, CoveredTile, Footprint, Projection, Surface, TileIndex, TileMatrixSet,
+    WorldRect, sphere,
 };
 use orb_geo::{Geodetic, wgs84};
 
@@ -110,6 +111,38 @@ pub struct Viewport {
     pub height: f64,
 }
 
+/// A view's globe: its matrices in camera-relative globe space, ECEF
+/// metres (`orb_crs::sphere`) less the target's position.
+#[derive(Clone, Debug)]
+pub struct GlobeView {
+    /// How much of a globe the view is, in (0, 1].
+    pub amount: f64,
+    /// The target's position on (or above) the sphere: the origin of
+    /// camera-relative globe space.
+    pub target: DVec3,
+    /// Camera-relative globe space → clip space.
+    pub view_proj: DMat4,
+    /// The eye, camera-relative.
+    pub eye: DVec3,
+    /// Metres per logical pixel at the target.
+    pub metres_per_px: f64,
+}
+
+impl GlobeView {
+    /// Whether a camera-relative point on the sphere faces the eye.
+    pub fn faces_eye(&self, p: DVec3) -> bool {
+        let eye = self.target + self.eye;
+        (p + self.target).dot(eye) >= sphere::RADIUS * sphere::RADIUS
+    }
+
+    /// The angle from the point under the eye to the horizon, in radians.
+    pub fn horizon_angle(&self) -> f64 {
+        (sphere::RADIUS / (self.target + self.eye).length())
+            .min(1.0)
+            .acos()
+    }
+}
+
 /// A camera resolved against a viewport and a projection for one frame.
 #[derive(Clone, Debug)]
 pub struct View {
@@ -136,11 +169,13 @@ pub struct View {
     frustum_min: DVec3,
     frustum_max: DVec3,
     height_scale: f64,
+    projection: Projection,
+    globe: Option<GlobeView>,
 }
 
 impl View {
-    pub fn new(camera: &CameraState, viewport: Viewport, projection: &Projection) -> Self {
-        Self::on_ground(camera, viewport, projection, camera.elevation)
+    pub fn new(camera: &CameraState, viewport: Viewport, surface: &Surface) -> Self {
+        Self::on_ground(camera, viewport, surface, camera.elevation)
     }
 
     /// A view over ground whose lowest elevation near the target is
@@ -150,9 +185,10 @@ impl View {
     pub fn on_ground(
         camera: &CameraState,
         viewport: Viewport,
-        projection: &Projection,
+        surface: &Surface,
         lowest: f64,
     ) -> Self {
+        let projection = &surface.projection;
         let target = camera.target.wrapped();
         let camera_world = projection.forward(target);
         let world_per_px = camera.resolution * projection.scale_factor(target);
@@ -225,6 +261,32 @@ impl View {
             frustum_max = frustum_max.max(corner);
         }
 
+        let amount = surface.globe_amount(camera.zoom(projection));
+        let globe = (amount > 0.0).then(|| {
+            // The plane's view, turned from the target's east, north and up
+            // to the sphere's axes, in metres.
+            let local = DMat4::from_mat3(sphere::frame(target).transpose());
+            let view = DMat4::from_translation(DVec3::new(0.0, 0.0, -eye_distance_px))
+                * DMat4::from_rotation_x(-pitch)
+                * DMat4::from_rotation_z(camera.bearing.to_radians())
+                * DMat4::from_scale(DVec3::splat(1.0 / camera.resolution))
+                * local;
+            let radius_px = sphere::RADIUS / camera.resolution;
+            let proj = glam::dcamera::rh::proj::directx::perspective(
+                fov,
+                viewport.width / viewport.height,
+                near_px,
+                eye_distance_px + 2.0 * radius_px,
+            );
+            GlobeView {
+                amount,
+                target: sphere::ecef(target, camera.elevation),
+                view_proj: proj * view,
+                eye: view.inverse().transform_point3(DVec3::ZERO),
+                metres_per_px: camera.resolution,
+            }
+        });
+
         Self {
             viewport,
             pitch: camera.pitch,
@@ -241,7 +303,14 @@ impl View {
             frustum_min,
             frustum_max,
             height_scale,
+            projection: *projection,
+            globe,
         }
+    }
+
+    /// The view's globe, when it is one at its zoom.
+    pub fn globe(&self) -> Option<&GlobeView> {
+        self.globe.as_ref()
     }
 
     /// Top logical pixel row where the ground plane enters the finite frustum.
@@ -297,9 +366,20 @@ impl View {
         self.project_3d(world, self.target_z)
     }
 
-    /// Projects a world position `z` world units above the datum.
+    /// Projects a world position `z` world units above the datum. On a
+    /// globe, positions beyond the horizon are `None` too.
     pub fn project_3d(&self, world: DVec2, z: f64) -> Option<DVec2> {
-        let clip = self.view_proj * (world - self.camera_world).extend(z).extend(1.0);
+        let clip = match &self.globe {
+            Some(globe) => {
+                let g = self.projection.inverse(world);
+                let p = sphere::ecef(g, z / self.height_scale) - globe.target;
+                if !globe.faces_eye(sphere::ecef(g, 0.0) - globe.target) {
+                    return None;
+                }
+                globe.view_proj * p.extend(1.0)
+            }
+            None => self.view_proj * (world - self.camera_world).extend(z).extend(1.0),
+        };
         (clip.w > 0.0).then(|| {
             let ndc = clip.truncate().truncate() / clip.w;
             DVec2::new(
@@ -320,7 +400,31 @@ impl View {
     /// The world position under a point in logical pixels on the level
     /// plane `z` world units above the datum, or `None` above its horizon.
     pub fn unproject_at(&self, px: DVec2, z: f64) -> Option<DVec2> {
-        let (near, far) = self.ray(px);
+        if let Some(globe) = &self.globe {
+            // The ray's nearest meeting with the sphere `z` above it.
+            let (near, far) = self.ray(px, &globe.view_proj);
+            let (origin, dir) = (near + globe.target, (far - near).normalize());
+            let radius = sphere::RADIUS + z / self.height_scale;
+            let b = origin.dot(dir);
+            let disc = b * b - (origin.length_squared() - radius * radius);
+            if disc < 0.0 {
+                return None;
+            }
+            let t = -b - disc.sqrt();
+            if t < 0.0 {
+                return None;
+            }
+            let world = self.projection.forward(sphere::geodetic(origin + dir * t));
+            // The copy of a wrapping world nearest the target.
+            return Some(match self.wrap_period {
+                Some(period) => DVec2::new(
+                    world.x - ((world.x - self.camera_world.x) / period).round() * period,
+                    world.y,
+                ),
+                None => world,
+            });
+        }
+        let (near, far) = self.ray(px, &self.view_proj);
         let t = (near.z - z) / (near.z - far.z);
         (far.z < near.z && t >= 0.0)
             .then(|| (near + (far - near) * t).truncate() + self.camera_world)
@@ -328,12 +432,12 @@ impl View {
 
     /// The near and far ends of the view ray through a point in logical
     /// pixels, in camera-relative world space.
-    fn ray(&self, px: DVec2) -> (DVec3, DVec3) {
+    fn ray(&self, px: DVec2, view_proj: &DMat4) -> (DVec3, DVec3) {
         let ndc = DVec2::new(
             px.x / self.viewport.width * 2.0 - 1.0,
             1.0 - px.y / self.viewport.height * 2.0,
         );
-        let inverse = self.view_proj.inverse();
+        let inverse = view_proj.inverse();
         (
             inverse.project_point3(ndc.extend(0.0)),
             inverse.project_point3(ndc.extend(1.0)),
@@ -377,6 +481,9 @@ impl View {
         height: f64,
         terrain: Option<&dyn Elevation>,
     ) -> Vec<CoveredTile> {
+        if let Some(globe) = &self.globe {
+            return Self::cover_globe(globe, tms, tile_px, max_zoom);
+        }
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
         self.cover_tiles(tms, max_zoom, height, terrain, |index, offset| {
             let bounds = tms.tile_bounds(index).translated(DVec2::new(offset, 0.0));
@@ -393,6 +500,10 @@ impl View {
         max_zoom: u8,
         mut footprint: impl FnMut(TileIndex) -> Option<Footprint>,
     ) -> Vec<CoveredTile> {
+        // Any set's tiles wrap the globe directly.
+        if let Some(globe) = &self.globe {
+            return Self::cover_globe(globe, tms, tile_px, max_zoom);
+        }
         let scale = self.world_per_px * tile_px;
         self.cover_tiles(tms, max_zoom, 0.0, None, |index, offset| {
             let f = footprint(index)?;
@@ -493,6 +604,99 @@ impl View {
         )
     }
 
+    /// The tiles of `tms` that cover a globe view: those on the eye's side
+    /// of the horizon and in the frustum, each at the zoom whose tiles span
+    /// `tile_px` pixels at its distance (so tiles coarsen toward the
+    /// horizon and, being smaller on the sphere, toward the poles).
+    fn cover_globe(
+        globe: &GlobeView,
+        tms: &TileMatrixSet,
+        tile_px: f64,
+        max_zoom: u8,
+    ) -> Vec<CoveredTile> {
+        let eye = globe.target + globe.eye;
+        let eye_dir = eye.normalize();
+        let horizon = globe.horizon_angle();
+        let scale = globe.metres_per_px * tile_px;
+        let center_distance = globe.eye.length();
+        let projection = tms.projection();
+        tms.cover_with(0..=0, None, max_zoom, |index, _| {
+            let b = tms.tile_bounds(index);
+            // A grid of the tile's points on the sphere, row by row: 5×5
+            // for the widest tiles, 3×3 below.
+            let steps = if index.z < 3 { 4 } else { 2 };
+            let n = steps + 1;
+            let mut points = [DVec3::NAN; 25];
+            for (k, point) in points.iter_mut().enumerate().take(n * n) {
+                let uv = DVec2::new((k % n) as f64, (k / n) as f64) / steps as f64;
+                let world = DVec2::new(b.min.x + uv.x * b.size().x, b.max.y - uv.y * b.size().y);
+                let g = projection.inverse(world);
+                if g.lon.is_finite() && g.lat.is_finite() {
+                    *point = sphere::ecef(g, 0.0);
+                }
+            }
+            let points = &points[..n * n];
+            let center = points[points.len() / 2];
+            if !center.is_finite() {
+                return CoverDecision::Skip;
+            }
+            // Its cap: the widest angle from its centre to a point, plus
+            // the widest gap between neighbouring points.
+            let finite = || points.iter().copied().filter(|p| p.is_finite());
+            let pair = |a: usize, b: usize| {
+                let (a, b) = (points[a], points[b]);
+                (a.is_finite() && b.is_finite()).then(|| a.angle_between(b))
+            };
+            let mut gap: f64 = 0.0;
+            for k in 0..points.len() {
+                if k % n != steps {
+                    gap = gap.max(pair(k, k + 1).unwrap_or(0.0));
+                }
+                if k + n < points.len() {
+                    gap = gap.max(pair(k, k + n).unwrap_or(0.0));
+                }
+            }
+            let radius = finite()
+                .map(|p| center.angle_between(p))
+                .fold(0.0, f64::max)
+                + gap;
+            if center.angle_between(eye_dir) - radius > horizon {
+                return CoverDecision::Skip;
+            }
+            // Its box, bulged by the sagitta between points.
+            let bulge = sphere::RADIUS * (1.0 - (gap / 2.0).min(FRAC_PI_2).cos());
+            let (mut lo, mut hi) = (DVec3::INFINITY, DVec3::NEG_INFINITY);
+            let mut nearest = f64::INFINITY;
+            for p in finite() {
+                lo = lo.min(p - globe.target);
+                hi = hi.max(p - globe.target);
+                nearest = nearest.min(p.distance(eye));
+            }
+            if !box_in_frustum(&globe.view_proj, lo - bulge, hi + bulge) {
+                return CoverDecision::Skip;
+            }
+            // Its side at the centre, along its middle row and column.
+            let mid = steps / 2;
+            let length = |at: &dyn Fn(usize) -> usize| {
+                (0..steps)
+                    .map(|i| (points[at(i)], points[at(i + 1)]))
+                    .filter(|(a, b)| a.is_finite() && b.is_finite())
+                    .map(|(a, b)| a.distance(b))
+                    .sum::<f64>()
+            };
+            let side = length(&|i| mid * n + i).max(length(&|j| j * n + mid));
+            // The nearest point lies within half a gap of a sample.
+            let distance = (nearest - sphere::RADIUS * gap / 2.0).max(center_distance * 1e-3);
+            let desired =
+                f64::from(index.z) + (side / scale).log2() + (center_distance / distance).log2();
+            if f64::from(index.z) < desired.floor().max(0.0) {
+                CoverDecision::Refine
+            } else {
+                CoverDecision::Accept
+            }
+        })
+    }
+
     /// Conservative test of a camera-relative ground rectangle against the
     /// view frustum.
     fn intersects_frustum(&self, rect: &WorldRect, lo: f64, hi: f64) -> bool {
@@ -507,25 +711,32 @@ impl View {
         {
             return false;
         }
-        let corners: [_; 8] = std::array::from_fn(|i| {
-            let x = if i & 1 == 0 { rect.min.x } else { rect.max.x };
-            let y = if i & 2 == 0 { rect.min.y } else { rect.max.y };
-            let z = if i & 4 == 0 { lo } else { hi };
-            self.view_proj * DVec4::new(x, y, z, 1.0)
-        });
-        let all = |f: &dyn Fn(&DVec4) -> bool| corners.iter().all(f);
-        !(all(&|c| c.x > c.w)
-            || all(&|c| c.x < -c.w)
-            || all(&|c| c.y > c.w)
-            || all(&|c| c.y < -c.w)
-            || all(&|c| c.z > c.w)
-            || all(&|c| c.z < 0.0))
+        box_in_frustum(&self.view_proj, rect.min.extend(lo), rect.max.extend(hi))
     }
+}
+
+/// Whether a box may meet the frustum of `view_proj`: no clip plane has
+/// all eight corners outside.
+fn box_in_frustum(view_proj: &DMat4, lo: DVec3, hi: DVec3) -> bool {
+    let corners: [_; 8] = std::array::from_fn(|i| {
+        let x = if i & 1 == 0 { lo.x } else { hi.x };
+        let y = if i & 2 == 0 { lo.y } else { hi.y };
+        let z = if i & 4 == 0 { lo.z } else { hi.z };
+        *view_proj * DVec4::new(x, y, z, 1.0)
+    });
+    let all = |f: &dyn Fn(&DVec4) -> bool| corners.iter().all(f);
+    !(all(&|c| c.x > c.w)
+        || all(&|c| c.x < -c.w)
+        || all(&|c| c.y > c.w)
+        || all(&|c| c.y < -c.w)
+        || all(&|c| c.z > c.w)
+        || all(&|c| c.z < 0.0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orb_crs::Globe;
 
     fn mercator() -> Projection {
         *TileMatrixSet::by_id("WebMercatorQuad")
@@ -546,7 +757,7 @@ mod tests {
         // Near the pole, the target moves south until the top edge is the
         // world's (GL JS `getConstrained`).
         let mut camera = CameraState::new(Geodetic::new(0.0, 85.0), 4.0, &mercator());
-        camera.constrain(&world, p, viewport);
+        camera.constrain(&world, &Surface::from(p), viewport);
         assert!((camera.zoom(&mercator()) - 4.0).abs() < 1e-9);
         assert!(camera.target.lat < 85.0 && camera.target.lat > 84.0);
         // A world shorter than the viewport zooms in to fill it.
@@ -555,13 +766,13 @@ mod tests {
             height: 1024.0,
         };
         let mut camera = CameraState::new(Geodetic::new(10.0, 30.0), 0.0, &mercator());
-        camera.constrain(&world, p, tall);
+        camera.constrain(&world, &Surface::from(p), tall);
         assert!((camera.zoom(&mercator()) - 1.0).abs() < 1e-9);
         assert!(camera.target.lat.abs() < 1e-9);
         // A view inside the world is left alone.
         let mut camera = CameraState::new(Geodetic::new(10.0, 30.0), 6.0, &mercator());
         let before = camera;
-        camera.constrain(&world, p, viewport);
+        camera.constrain(&world, &Surface::from(p), viewport);
         assert_eq!(camera, before);
     }
 
@@ -573,7 +784,10 @@ mod tests {
             width: 1000.0,
             height: 500.0,
         };
-        (View::new(&camera, viewport, tms.projection()), tms)
+        (
+            View::new(&camera, viewport, &Surface::from(tms.projection())),
+            tms,
+        )
     }
 
     #[test]
@@ -607,7 +821,7 @@ mod tests {
                         width: 1024.0,
                         height: 768.0,
                     },
-                    tms.projection(),
+                    &Surface::from(tms.projection()),
                 );
                 assert!(view.view_proj().is_finite());
                 assert!(view.far_px > view.eye_distance_px);
@@ -739,5 +953,138 @@ mod tests {
         let tiles = view.cover(&tms, 512.0, 22);
         assert!(tiles.iter().any(|t| t.wrap == -1));
         assert!(tiles.iter().any(|t| t.wrap == 1));
+    }
+
+    fn globe_view(target: Geodetic, zoom: f64, pitch: f64, bearing: f64) -> View {
+        let mut camera = CameraState::new(target, zoom, &mercator());
+        camera.pitch = pitch;
+        camera.bearing = bearing;
+        let surface = Surface {
+            projection: mercator(),
+            globe: Some(Globe::V8),
+        };
+        View::new(
+            &camera,
+            Viewport {
+                width: 1000.0,
+                height: 700.0,
+            },
+            &surface,
+        )
+    }
+
+    #[test]
+    fn globe_hands_over_to_the_plane() {
+        assert_eq!(Globe::V8.amount(3.0), 1.0);
+        assert_eq!(Globe::V8.amount(11.5), 0.5);
+        assert_eq!(Globe::V8.amount(12.0), 0.0);
+        assert!(
+            globe_view(Geodetic::new(0.0, 0.0), 12.0, 0.0, 0.0)
+                .globe()
+                .is_none()
+        );
+        assert!(
+            globe_view(Geodetic::new(0.0, 0.0), 11.9, 0.0, 0.0)
+                .globe()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn globe_projects_and_unprojects() {
+        for (target, zoom, pitch, bearing) in [
+            (Geodetic::new(0.0, 0.0), 1.0, 0.0, 0.0),
+            (Geodetic::new(139.7, 35.7), 3.3, 40.0, 30.0),
+            (Geodetic::new(-170.0, -60.0), 6.0, 60.0, -100.0),
+            (Geodetic::new(20.0, 84.0), 2.0, 20.0, 180.0),
+        ] {
+            let view = globe_view(target, zoom, pitch, bearing);
+            let center = DVec2::new(500.0, 350.0);
+            let p = view.project(view.camera_world()).unwrap();
+            assert!(p.distance(center) < 1e-6, "{target:?}: {p}");
+            // Points on the globe: within half its radius of the centre.
+            let radius_px = sphere::RADIUS / view.globe().unwrap().metres_per_px;
+            let reach = (radius_px / 2.0).min(300.0);
+            for offset in [
+                DVec2::new(0.0, 1.0),
+                DVec2::new(-1.0, 0.5),
+                DVec2::new(0.9, 0.1),
+            ] {
+                let px = center + offset * reach;
+                let world = view.unproject(px).unwrap();
+                // Past ±85.0511°, Web Mercator holds no position to return.
+                if world.y.abs() >= mercator().world_bounds().max.y {
+                    continue;
+                }
+                let back = view.project(world).unwrap();
+                assert!(back.distance(px) < 1e-5, "{target:?} {px}: {back}");
+            }
+            // The far side of the globe is hidden.
+            let antipode = Geodetic::new(target.lon + 180.0, -target.lat);
+            assert!(view.project(mercator().forward(antipode)).is_none());
+        }
+        // Space around a small globe unprojects to nothing.
+        let view = globe_view(Geodetic::new(0.0, 0.0), 0.5, 0.0, 0.0);
+        assert!(view.unproject(DVec2::new(5.0, 5.0)).is_none());
+    }
+
+    /// At the target, the globe shows the plane's scale, as GL JS's does.
+    #[test]
+    fn globe_keeps_the_planes_scale_at_the_target() {
+        for (lat, zoom) in [(0.0, 4.0), (60.0, 7.0), (-35.0, 10.5)] {
+            let target = Geodetic::new(30.0, lat);
+            let globe = globe_view(target, zoom, 0.0, 0.0);
+            let camera = CameraState::new(target, zoom, &mercator());
+            let plane = View::new(&camera, globe.viewport(), &Surface::plane(mercator()));
+            let step = DVec2::new(1.0, 1.0) * plane.world_per_px() * 20.0;
+            let world = plane.camera_world() + step;
+            let (a, b) = (plane.project(world).unwrap(), globe.project(world).unwrap());
+            assert!(a.distance(b) < 0.05, "lat {lat}: {a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn globe_covers_every_visible_point() {
+        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        for (target, zoom, pitch) in [
+            (Geodetic::new(0.0, 0.0), 0.5, 0.0),
+            (Geodetic::new(10.0, 50.0), 2.5, 50.0),
+            (Geodetic::new(-120.0, 75.0), 4.0, 70.0),
+            (Geodetic::new(150.0, -30.0), 8.0, 0.0),
+            (Geodetic::new(5.0, 5.0), 11.5, 60.0),
+        ] {
+            let view = globe_view(target, zoom, pitch, 25.0);
+            let cover = view.cover(&tms, 512.0, 22);
+            assert!(
+                !cover.is_empty() && cover.len() < 400,
+                "{} tiles",
+                cover.len()
+            );
+            let mut seen = 0;
+            for i in 0..=40 {
+                for j in 0..=40 {
+                    let px = DVec2::new(f64::from(i) * 25.0, f64::from(j) * 17.5);
+                    let Some(world) = view.unproject(px) else {
+                        continue;
+                    };
+                    seen += 1;
+                    let period = tms.tile_span(0);
+                    let x = world.x
+                        - ((world.x - tms.tile_bounds(TileIndex::new(0, 0, 0)).center().x)
+                            / period)
+                            .round()
+                            * period;
+                    let world = DVec2::new(x, world.y);
+                    assert!(
+                        cover.iter().any(|t| {
+                            let b = tms.tile_bounds(t.index);
+                            b.min.cmple(world).all() && world.cmple(b.max).all()
+                        }) || world.y.abs() >= tms.projection().world_bounds().max.y,
+                        "z{zoom} {px}: no tile"
+                    );
+                }
+            }
+            assert!(seen > 50, "{seen} points on the globe");
+        }
     }
 }

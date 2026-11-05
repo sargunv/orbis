@@ -391,6 +391,13 @@ impl Projection {
     pub fn wrap_period(&self) -> Option<f64> {
         self.family.wrap_period()
     }
+
+    /// The central meridian of a plane cut along its antimeridian (Equal
+    /// Earth's, a conic's), in degrees: longitudes on the cut lie on either
+    /// edge of the world.
+    pub(crate) fn seam(&self) -> Option<f64> {
+        self.family.seam().map(f64::to_degrees)
+    }
 }
 
 /// Logical pixels per tile side at its own style zoom.

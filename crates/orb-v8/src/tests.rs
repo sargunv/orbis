@@ -505,3 +505,32 @@ fn glyphs_urls_need_their_tokens() {
         "glyphs: \"glyphs\" url must include a \"{fontstack}\" token"
     );
 }
+
+#[test]
+fn projections_parse_to_globes() {
+    let globe = |projection: &str| {
+        let style = parse(&format!(
+            r#"{{"version": 8, "projection": {projection}, "sources": {{}}, "layers": []}}"#
+        ))
+        .unwrap();
+        (style.globe, style.warnings.len())
+    };
+    assert_eq!(globe(r#"{"type": "mercator"}"#), (None, 0));
+    assert_eq!(globe(r#"{"type": "globe"}"#), (Some(orb_crs::Globe::V8), 0));
+    assert_eq!(
+        globe(r#"{"type": "vertical-perspective"}"#),
+        (Some(orb_crs::Globe { handover: None }), 0)
+    );
+    assert_eq!(
+        globe(
+            r#"{"type": ["interpolate", ["linear"], ["zoom"], 5, "vertical-perspective", 7, "mercator"]}"#
+        ),
+        (
+            Some(orb_crs::Globe {
+                handover: Some([5.0, 7.0])
+            }),
+            0
+        )
+    );
+    assert_eq!(globe(r#"{"type": "equal-earth"}"#), (None, 1));
+}

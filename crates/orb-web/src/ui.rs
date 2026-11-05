@@ -142,7 +142,7 @@ impl UiRole {
         UiRole {
             camera: Camera::new(
                 CameraState::new(Geodetic::new(0.0, 0.0), 0.0, tms.projection()),
-                *tms.projection(),
+                tms.projection().into(),
                 Viewport { width, height },
             ),
             input: Interaction::default(),
@@ -387,13 +387,12 @@ impl UiRole {
     }
 
     /// Takes a style's camera if nothing moved the camera yet.
-    /// Moves the camera onto the map's surface: the `projection` of a
-    /// `styleload` event.
-    #[wasm_bindgen(js_name = setProjection)]
-    pub fn set_projection(&mut self, projection: &str) -> Result<(), JsError> {
-        let projection =
-            orb_runtime::projection_from_json(projection).map_err(|e| JsError::new(&e))?;
-        self.camera.set_projection(projection);
+    /// Moves the camera onto the map's surface: the `surface` of a
+    /// `styledata` event.
+    #[wasm_bindgen(js_name = setSurface)]
+    pub fn set_surface(&mut self, surface: &str) -> Result<(), JsError> {
+        let surface = orb_runtime::surface_from_json(surface).map_err(|e| JsError::new(&e))?;
+        self.camera.set_surface(surface);
         Ok(())
     }
 
@@ -524,7 +523,7 @@ impl UiRole {
     pub fn project_with(&self, camera: &[f64], points: &[f64]) -> Result<Vec<f64>, JsError> {
         let state = camera_from(camera)?;
         let projection = *self.camera.projection();
-        let view = orb_camera::View::new(&state, self.camera.viewport(), &projection);
+        let view = orb_camera::View::new(&state, self.camera.viewport(), self.camera.surface());
         let near = view.camera_world();
         let period = projection.wrap_period();
         let mut out = Vec::with_capacity(points.len());
@@ -575,7 +574,7 @@ impl UiRole {
             DVec2::new(x, y),
             self.camera.state(),
             self.camera.viewport(),
-            self.camera.projection(),
+            self.camera.surface(),
         ))
     }
 }

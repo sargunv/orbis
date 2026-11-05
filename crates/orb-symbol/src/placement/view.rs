@@ -50,14 +50,53 @@ impl TileId {
 }
 
 /// One tile as drawn this frame.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TileView {
     pub id: TileId,
-    /// Tile units ([`EXTENT`] per side) and metres up → clip space.
+    /// Tile units ([`EXTENT`] per side) and metres up → clip space, on a
+    /// plane.
     pub matrix: Mat4,
+    /// On a globe, where the tile is instead.
+    pub globe: Option<TileGlobe>,
+}
+
+/// A tile on a globe: its patches on the sphere (`orb_crs::sphere`) and the
+/// globe's camera.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TileGlobe {
+    pub series: std::sync::Arc<orb_crs::Series<glam::DVec3>>,
+    /// The camera target's ECEF position, which camera-relative globe space
+    /// is relative to.
+    pub target: glam::DVec3,
+    /// Camera-relative globe space → clip space.
+    pub view_proj: glam::DMat4,
+    /// The eye's ECEF position: positions beyond its horizon are hidden.
+    pub eye: glam::DVec3,
 }
 
 impl TileView {
+    /// Tile units and metres up → clip `x, y` over `w`, and `w`. Positions
+    /// beyond a globe's horizon land far off screen.
+    pub(crate) fn project(&self, x: f64, y: f64, z: Option<f64>) -> Projected {
+        let Some(globe) = &self.globe else {
+            return project(&self.matrix, x, y, z);
+        };
+        let ground = globe.series.position(glam::DVec2::new(x, y) / EXTENT);
+        let radius = orb_crs::sphere::RADIUS;
+        if ground.dot(globe.eye) < radius * radius {
+            return Projected {
+                point: Point::new(-10.0, -10.0),
+                w: 1.0,
+            };
+        }
+        let p = ground + ground.normalize() * z.unwrap_or(0.0) - globe.target;
+        let clip = globe.view_proj * p.extend(1.0);
+        Projected {
+            point: Point::new(clip.x / clip.w, clip.y / clip.w),
+            w: clip.w,
+        }
+    }
+
     /// GL JS `pixelsToTileUnits(tile, 1, zoom)`.
     pub(crate) fn tile_units_per_pixel(&self, camera: &Camera) -> f64 {
         EXTENT / (512.0 * 2f64.powf(camera.zoom - f64::from(self.id.z)))

@@ -76,6 +76,10 @@ pub struct Style {
     /// The atmosphere: v8's `sky` lowered (decision 0025).
     pub atmosphere: Option<Atmosphere>,
     pub terrain: Option<Terrain>,
+    /// The root `projection`: a globe (`globe`, `vertical-perspective` or
+    /// a zoom interpolation from one to `mercator`), or `None` for Web
+    /// Mercator.
+    pub globe: Option<orb_crs::Globe>,
     pub sources: Vec<Source>,
     pub layers: Vec<Layer>,
     /// What parsed but isn't supported or rendered yet.
@@ -150,7 +154,7 @@ pub fn parse_with_state(
 }
 
 /// Root keys v8 defines that Orbis does not model yet.
-const UNMODELED_ROOT: &[&str] = &["centerAltitude", "roll", "projection", "transition"];
+const UNMODELED_ROOT: &[&str] = &["centerAltitude", "roll", "transition"];
 
 fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -> Option<Style> {
     let root = cx.object(doc, "")?;
@@ -158,7 +162,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         match m.key.as_str() {
             "version" | "name" | "metadata" | "center" | "zoom" | "bearing" | "pitch"
             | "sources" | "layers" | "sprite" | "glyphs" | "font-faces" | "light" | "state"
-            | "sky" | "terrain" => {}
+            | "sky" | "terrain" | "projection" => {}
             // Edits apply at once: what a zero-duration transition asks.
             "transition" if m.value.get("duration").and_then(Json::as_f64) == Some(0.0) => {}
             key if UNMODELED_ROOT.contains(&key) => {
@@ -241,6 +245,19 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         glyphs,
         font_faces: font_faces::parse(cx, doc.get("font-faces")),
         lights: light::parse(cx, doc.get("light")).lower(),
+        globe: doc
+            .get("projection")
+            .and_then(|p| parse_globe(cx, p))
+            .inspect(|_| {
+                // The globe's atmosphere joins the sky as decision 0025 records.
+                if let Some(blend) = doc.get("sky").and_then(|s| s.get("atmosphere-blend")) {
+                    cx.warn(
+                        "sky.atmosphere-blend",
+                        blend.span,
+                        "\"atmosphere-blend\" is not drawn yet: a globe has no atmosphere",
+                    );
+                }
+            }),
         state,
         atmosphere: doc.get("sky").map(|json| sky::parse(cx, json)),
         terrain: doc
@@ -359,6 +376,73 @@ pub fn parse_terrain(
     match terrain::parse(&mut cx, json, sources) {
         Some(terrain) if cx.diagnostics.errors.is_empty() => Ok((terrain, cx.diagnostics.warnings)),
         _ => Err(cx.diagnostics),
+    }
+}
+
+/// Parses a root `projection`, returning its globe (`None` for Web
+/// Mercator) and its warnings.
+pub fn parse_projection(json: &Json) -> (Option<orb_crs::Globe>, Vec<Diagnostic>) {
+    let mut cx = Cx::default();
+    let globe = parse_globe(&mut cx, json);
+    (globe, cx.diagnostics.warnings)
+}
+
+/// v8 `projection.type`: `mercator`, `globe` (GL JS's interpolation from
+/// a vertical perspective through zoom 11 to Mercator from zoom 12) or
+/// `vertical-perspective`, or that interpolation with other zooms. Others
+/// warn and stay Web Mercator.
+fn parse_globe(cx: &mut Cx, json: &Json) -> Option<orb_crs::Globe> {
+    let path = "projection.type";
+    let ty = json.get("type")?;
+    let unsupported = |cx: &mut Cx| {
+        cx.warn(
+            path,
+            ty.span,
+            "only \"mercator\", \"globe\", \"vertical-perspective\" and zoom interpolations between the last and \"mercator\" are supported; drawing Web Mercator",
+        );
+        None
+    };
+    if let Some(name) = ty.as_str() {
+        return match name {
+            "mercator" => None,
+            "globe" => Some(orb_crs::Globe::V8),
+            "vertical-perspective" => Some(orb_crs::Globe { handover: None }),
+            _ => unsupported(cx),
+        };
+    }
+    // ["interpolate", ["linear"], ["zoom"], z0, "vertical-perspective", z1, "mercator"]
+    let items = ty.as_array()?;
+    let text = |k: usize| items.get(k).and_then(Json::as_str);
+    let number = |k: usize| items.get(k).and_then(Json::as_f64);
+    let linear = items
+        .get(1)
+        .and_then(Json::as_array)
+        .is_some_and(|a| a.first().and_then(Json::as_str) == Some("linear"));
+    let zoom = items
+        .get(2)
+        .and_then(Json::as_array)
+        .is_some_and(|a| a.len() == 1 && a[0].as_str() == Some("zoom"));
+    match (
+        text(0),
+        linear,
+        zoom,
+        number(3),
+        text(4),
+        number(5),
+        text(6),
+    ) {
+        (
+            Some("interpolate"),
+            true,
+            true,
+            Some(from),
+            Some("vertical-perspective"),
+            Some(to),
+            Some("mercator"),
+        ) if items.len() == 7 && from < to => Some(orb_crs::Globe {
+            handover: Some([from, to]),
+        }),
+        _ => unsupported(cx),
     }
 }
 

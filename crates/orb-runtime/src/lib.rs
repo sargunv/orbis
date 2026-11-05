@@ -7,6 +7,7 @@
 mod edit;
 mod events;
 mod features;
+mod globe;
 mod glyphs;
 mod gpu;
 mod image;
@@ -60,7 +61,8 @@ pub use queries::QueryDone;
 pub use query::{Hit, HitFeature, HitIndex, HitPublication, MeshHits};
 pub use style::ImageKind;
 pub use surface::{
-    SurfaceTiles, projection_from_json, projection_to_json, tms_from_json, tms_to_json,
+    SurfaceTiles, projection_from_json, projection_to_json, surface_from_json, surface_to_json,
+    tms_from_json, tms_to_json,
 };
 pub use symbol::{ResultSymbols, SYMBOL_TABLES, SpriteIcons, SymbolMeta, SymbolTable};
 pub use terrain::TerrainElevation;

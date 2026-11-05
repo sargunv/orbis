@@ -296,6 +296,10 @@ impl Op {
                 key: "sky".into(),
                 value: arg(1).cloned(),
             },
+            "setProjection" => Op::SetRoot {
+                key: "projection".into(),
+                value: arg(1).cloned(),
+            },
             "setLight" => Op::SetRoot {
                 key: "light".into(),
                 value: arg(1).cloned(),

@@ -332,12 +332,13 @@ impl OrbisMap {
                         .into()
                     });
                     set(&object, "camera", camera);
-                    let projection = orb_runtime::projection_to_json(&self.map.projection());
-                    set(&object, "projection", projection.into());
                     "styleload"
                 }
                 MapEvent::StyleData { generation } => {
                     set(&object, "generation", (generation as f64).into());
+                    // Loads and projection edits move the camera's surface.
+                    let surface = orb_runtime::surface_to_json(&self.map.surface());
+                    set(&object, "surface", surface.into());
                     "styledata"
                 }
                 MapEvent::SourceData { source, loaded } => {

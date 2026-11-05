@@ -16,6 +16,8 @@ export interface Transaction {
   setFeatureState(feature: FeatureTarget, state: Record<string, unknown>): Transaction;
   removeFeatureState(feature: Partial<FeatureTarget>, key?: string): Transaction;
   setStyle(style: object): Transaction;
+  /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"`, `"mercator"`. */
+  setProjection(projection: object): Transaction;
 }
 
 export interface FeatureTarget {
@@ -28,6 +30,7 @@ const CALLS = [
   "setPaintProperty", "setLayoutProperty", "setFilter", "setLayerZoomRange",
   "addLayer", "removeLayer", "moveLayer", "addSource", "removeSource",
   "setGlobalStateProperty", "setFeatureState", "removeFeatureState", "setStyle",
+  "setProjection",
 ] as const;
 
 /** A transaction's calls as the JSON array the core applies. */

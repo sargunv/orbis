@@ -93,7 +93,7 @@ impl PartialEq for ZoomSize {
 }
 
 /// One drawn tile of a layer.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlacedTile {
     pub bucket: u64,
     pub view: TileView,
@@ -442,7 +442,7 @@ impl Placer {
                     .tiles
                     .iter()
                     .filter(|t| self.buckets.contains_key(&copy_key(t)))
-                    .copied()
+                    .cloned()
                     .collect();
                 tiles.sort_by_key(|t| {
                     let id = t.view.id;
@@ -1191,6 +1191,7 @@ mod tests {
             matrix: [
                 s, 0.0, 0.0, 0.0, 0.0, -s, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0,
             ],
+            globe: None,
         }
     }
 

@@ -12,7 +12,7 @@ use orb_host::{Fetch, FetchError, ImageDecode};
 use orb_render::{
     ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameStats, LinePaint, MeshData,
     MeshId, MeshSize, NodePaint, OutOfSpace, PageId, PatternPaint, PlacementTarget, Renderer,
-    SceneCapacity, SceneStats, TargetFormat, TileId, TileRow, Translate, Words,
+    SceneCapacity, SceneStats, TargetFormat, TileId, TileRow, TileWarp, Translate, Words,
 };
 use orb_render::{ImageAtlas, ImageUpload};
 use orb_source::{Draw, TilePyramid};
@@ -172,8 +172,10 @@ pub(crate) struct ResidentTile {
     pub(crate) parts: Vec<(u32, TileId)>,
     pub(crate) meshes: Vec<Resident>,
     pub(crate) image: Option<ResidentImage>,
-    /// A vector tile drawn through a warp: its series.
+    /// A vector tile drawn through a warp: its series, and its patches in
+    /// the scene.
     pub(crate) series: Option<Arc<orb_crs::Series>>,
+    pub(crate) warp: TileWarp,
     /// The style zoom it laid out at (decision 0022).
     pub(crate) zoom: f64,
     /// Its symbol layers' buckets; their meshes are among `meshes`.
@@ -314,6 +316,9 @@ pub(crate) struct LoadedStyle {
     /// The terrain's DEM is on another tile matrix set than the surface;
     /// warned once.
     terrain_unusable: bool,
+    /// Whether the background and image tiles' meshes are grids for a
+    /// globe to bend.
+    globe_meshes: bool,
 }
 
 /// A tile result waiting for room in the scene (`Map::apply_tile`).
@@ -384,6 +389,8 @@ pub struct Map {
     crossfade: Crossfade,
     /// What elevated content reads of the terrain this frame.
     frame_terrain: Option<orb_render::FrameTerrain>,
+    /// Tiles' patches on the globe.
+    globe_warps: crate::globe::GlobeWarps,
     /// Terrains made so far: each new one's id.
     terrains: u64,
 }
@@ -562,6 +569,7 @@ impl Map {
                 mix: 1.0,
             },
             frame_terrain: None,
+            globe_warps: Default::default(),
             terrains: 0,
             labels: crate::labels::Labels::new(default_lane()),
         }
@@ -679,6 +687,13 @@ impl Map {
         *self.surface.projection()
     }
 
+    /// What views draw on: the plane, or the globe the style's `projection`
+    /// wraps it around. Camera stores follow it on
+    /// [`MapEvent::StyleData`].
+    pub fn surface(&self) -> orb_crs::Surface {
+        self.surface.view_surface()
+    }
+
     /// Draws the map on another plane, keeping the style, the sources'
     /// tile matrix sets and the camera's target and resolution. Tiles load
     /// again.
@@ -693,10 +708,13 @@ impl Map {
     /// The view the camera gives for a viewport.
     pub fn view(&self, viewport: Viewport) -> View {
         match self.elevation() {
-            Some(terrain) => {
-                View::over(&self.camera, viewport, self.surface.projection(), &*terrain)
-            }
-            None => View::new(&self.camera, viewport, self.surface.projection()),
+            Some(terrain) => View::over(
+                &self.camera,
+                viewport,
+                &self.surface.view_surface(),
+                &*terrain,
+            ),
+            None => View::new(&self.camera, viewport, &self.surface.view_surface()),
         }
     }
 
@@ -706,13 +724,13 @@ impl Map {
     /// hosts that write the camera directly call this, since rendering
     /// never writes the camera.
     pub fn constrain_camera(&mut self, viewport: Viewport) {
-        let projection = *self.surface.projection();
+        let surface = self.surface.view_surface();
         self.camera
-            .constrain(&orb_camera::Constraints::WORLD, &projection, viewport);
+            .constrain(&orb_camera::Constraints::WORLD, &surface, viewport);
         match self.elevation() {
             Some(terrain) => {
-                self.camera.settle_on(&*terrain, &projection);
-                self.camera.keep_above(&*terrain, &projection, viewport);
+                self.camera.settle_on(&*terrain, &surface.projection);
+                self.camera.keep_above(&*terrain, &surface, viewport);
             }
             None => self.camera.elevation = 0.0,
         }
@@ -832,6 +850,7 @@ impl Map {
     /// sprites and glyphs load again.
     pub fn reset_gpu(&mut self) {
         self.renderer = None;
+        self.globe_warps = Default::default();
         *self.services.images.0.lock().expect("images poisoned") = ImageState::default();
         self.retired_pages.clear();
         self.retired_images.clear();
@@ -869,6 +888,7 @@ impl Map {
             self.surface.tiles(),
         ));
         let plan = worker.plan();
+        self.surface.set_globe(plan.style.globe);
         self.warnings
             .extend(plan.style.warnings.iter().map(ToString::to_string));
         self.warnings.extend(plan.warnings.iter().cloned());
@@ -946,6 +966,7 @@ impl Map {
             draws: Vec::new(),
             terrain: None,
             terrain_unusable: false,
+            globe_meshes: self.surface.globe().is_some(),
         });
         self.nodes_stale = true;
     }
@@ -1088,8 +1109,10 @@ impl Map {
         let mut report = FrameReport::default();
         let clear = self.clear_color;
         // The atmosphere over a flat surface: the sky above its horizon,
-        // fog on terrain.
+        // fog on terrain. A globe has no flat sky; its atmosphere joins as
+        // decision 0025 records.
         let (fog_near, fog_far) = view.fog_range_px();
+        let flat = view.globe().is_none();
         self.renderer
             .as_mut()
             .expect("created above")
@@ -1099,6 +1122,7 @@ impl Map {
                 self.style
                     .as_ref()
                     .and_then(|style| style.worker.plan().style.atmosphere.as_ref())
+                    .filter(|_| flat)
                     .map(|atmosphere| orb_render::AtmospherePaint {
                         sky_color: atmosphere.sky_color.evaluate(zoom).premultiplied(),
                         horizon_color: atmosphere.horizon_color.evaluate(zoom).premultiplied(),
@@ -1209,6 +1233,7 @@ impl Map {
         }
         self.events.frame(report.loaded, report.idle);
 
+        let globe = view.globe().map(|globe| frame_globe(globe, &view));
         let frame = FrameBlock {
             view_proj: view.view_proj().as_mat4().to_cols_array_2d(),
             viewport: [viewport.width as f32, viewport.height as f32],
@@ -1220,7 +1245,10 @@ impl Map {
             ground_horizon: view.ground_horizon() as f32,
             symbol_fade_change: self.labels.fade_change(now),
             pitch: self.camera.pitch.to_radians() as f32,
-            align: pixel_alignment(&view, self.surface.projection(), self.camera.bearing),
+            align: match globe {
+                Some(_) => [0.0; 2],
+                None => pixel_alignment(&view, self.surface.projection(), self.camera.bearing),
+            },
             terrain: self.frame_terrain,
             lights: self
                 .lights
@@ -1234,9 +1262,11 @@ impl Map {
                         self.camera.target,
                     )
                 }),
+            globe,
         };
         let (renderer, _) = self.renderer.as_mut().expect("created above");
         report.frame = renderer.render(gpu, &frame, target, clear);
+        self.globe_warps.end_frame(renderer.scene());
         report.scene = renderer.scene().stats();
         // Chunks the cull has no room for don't draw: say so when it starts.
         let dropped = report.scene.candidates_dropped;
@@ -1274,6 +1304,51 @@ impl Map {
             }
         }
         let plan = style.worker.plan();
+        // A projection edit put the map on or off a globe: the background
+        // and image tiles take the meshes it bends.
+        let globe = self.surface.globe().is_some();
+        if style.globe_meshes != globe {
+            style.globe_meshes = globe;
+            if let Some(tile) = style.background.take() {
+                renderer.scene().remove_tile(tile);
+                style.background = make_background(gpu, renderer, plan, globe);
+            }
+            for (index, source) in style.sources.iter_mut().enumerate() {
+                let SourceState::Ready {
+                    pyramid,
+                    endpoint,
+                    page: Some(_),
+                    warp: None,
+                    ..
+                } = source
+                else {
+                    continue;
+                };
+                let nodes: Vec<(u32, u32)> = (plan.nodes.iter().enumerate())
+                    .filter(|(_, n)| n.source == index)
+                    .map(|(i, n)| (i as u32, n.key))
+                    .collect();
+                for (tile, resident) in pyramid.ready_mut() {
+                    let grid = globe_grid(&mut self.globe_warps, globe, &endpoint.tms, tile);
+                    let Some(image) = resident.image.as_mut() else {
+                        continue;
+                    };
+                    if image.warped == grid {
+                        continue;
+                    }
+                    image.warped = grid;
+                    for mesh in resident.meshes.drain(..) {
+                        renderer.scene().remove_mesh(mesh.mesh);
+                    }
+                    for &(i, key) in &nodes {
+                        if image::add_node(gpu, renderer, resident, tile, i, key).is_err() {
+                            self.warnings
+                                .push("out of scene memory; an image layer misses tiles".into());
+                        }
+                    }
+                }
+            }
+        }
         let keys: Vec<u32> = plan.nodes.iter().map(|n| n.key).collect();
         let fresh = std::mem::take(&mut self.nodes_stale);
         if !fresh && keys == style.drawn {
@@ -1343,7 +1418,7 @@ impl Map {
                 }
             }
         }
-        style.background = make_background(gpu, renderer, plan);
+        style.background = make_background(gpu, renderer, plan, style.globe_meshes);
         style.drawn = keys;
         style.painted = None;
         for placed in &mut style.placed {
@@ -1416,11 +1491,18 @@ impl Map {
         let SourceState::Ready { endpoint, warp, .. } = &mut style.sources[index] else {
             return;
         };
-        let subdivision = warp
+        let mut subdivision = warp
             .as_mut()
             .filter(|_| vector)
             .and_then(|warp| warp.series(tile))
             .map(|series| series.grid());
+        // On a globe, geometry bends with the sphere.
+        if vector && self.surface.globe().is_some() {
+            let grid = self.globe_warps.grid(&endpoint.tms, tile);
+            if grid > 1 {
+                subdivision = Some(subdivision.map_or(grid, |g| g.max(grid)));
+            }
+        }
         let footprint = warp.as_mut().and_then(|warp| warp.footprint(tile));
         let zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
         let key = style.worker.plan().sources[index].key;
@@ -1690,6 +1772,9 @@ impl Map {
         let placed = &mut style.placed[index];
         for (&tile, draws) in &rows {
             let resident = pyramid.get(tile).expect("drawn tiles are ready");
+            let globe = view
+                .globe()
+                .and_then(|_| self.globe_warps.series(tms, tile));
             // Each world copy places its labels, as GL JS's wrapped tiles do.
             for symbols in &resident.symbols {
                 let mut wraps: Vec<i32> = draws.iter().map(|d| d.wrap).collect();
@@ -1706,6 +1791,7 @@ impl Map {
                         bucket: symbols.bucket,
                         tile,
                         wrap,
+                        globe: globe.clone(),
                     });
                 }
             }
@@ -1716,6 +1802,18 @@ impl Map {
                 .map(|warped| warped.frame);
             let ground = terrain.map(|t| t.ground(tile));
             let series = resident.series.clone();
+            // On a globe, a tile draws through its patches on the sphere.
+            let globe = match view.globe() {
+                Some(globe) => {
+                    let Some((warp, anchor)) =
+                        self.globe_warps.warp(gpu, renderer.scene(), tms, tile)
+                    else {
+                        continue;
+                    };
+                    Some((warp, anchor - globe.target))
+                }
+                None => None,
+            };
             for &(extent, scene_tile) in &resident.parts {
                 let at = Placement {
                     extent,
@@ -1725,6 +1823,8 @@ impl Map {
                     frame,
                     world_per_px: view.world_per_px(),
                     series: series.as_deref(),
+                    warp: resident.warp,
+                    globe,
                     tile_zoom: resident.zoom,
                 };
                 let map_rows = |draw: &Draw| -> Vec<TileRow> {
@@ -2188,23 +2288,33 @@ impl Map {
             frame: None,
             world_per_px: view.world_per_px(),
             series: None,
+            warp: TileWarp::NONE,
+            globe: None,
             tile_zoom: 0.0,
         };
+        let globe_warps = &mut self.globe_warps;
         let mut rows: Vec<TileRow> = cover
             .iter()
-            .map(|covered| {
+            .filter_map(|covered| {
                 let draw = Draw {
                     tile: covered.index,
                     wrap: covered.wrap,
                     regions: vec![covered.index],
                 };
+                let globe = match view.globe() {
+                    Some(globe) => {
+                        let (warp, anchor) =
+                            globe_warps.warp(gpu, renderer.scene(), tms, covered.index)?;
+                        Some((warp, anchor - globe.target))
+                    }
+                    None => None,
+                };
                 let at = Placement {
                     tile_zoom: tms.style_zoom(covered.index),
+                    globe,
                     ..at
                 };
-                placements(tms, &draw, at)
-                    .next()
-                    .expect("one background region")
+                placements(tms, &draw, at).next()
             })
             .collect();
         report.tiles_drawn += rows.len() as u32;
@@ -2547,7 +2657,12 @@ impl Map {
                         return None;
                     }
                 },
-                None => None,
+                None => globe_grid(
+                    &mut self.globe_warps,
+                    self.surface.globe().is_some(),
+                    &endpoint.tms,
+                    tile,
+                ),
             };
             let upload = image::Upload {
                 plan,
@@ -2684,16 +2799,11 @@ impl Map {
                 .iter()
                 .flat_map(|p| p.points.iter().flat_map(|v| [v.x as f32, v.y as f32]))
                 .collect();
-            for &(_, part) in &resident.parts {
-                if renderer
-                    .scene()
-                    .set_tile_warp(gpu, part, series.cells, &patches)
-                    .is_err()
-                {
-                    self.warnings.push(format!(
-                        "tile {tile:?}: out of property memory for its warp"
-                    ));
-                }
+            match renderer.scene().add_warp(gpu, series.cells, &patches) {
+                Ok(warp) => resident.warp = warp,
+                Err(OutOfSpace) => self.warnings.push(format!(
+                    "tile {tile:?}: out of property memory for its warp"
+                )),
             }
             resident.series = Some(series);
         }
@@ -3078,6 +3188,7 @@ pub(crate) fn remove_resident(
     for (_, id) in tile.parts {
         renderer.scene().remove_tile(id);
     }
+    renderer.scene().remove_warp(tile.warp);
     if let Some(image) = tile.image {
         renderer.free_layer(image.page, image.layer);
     }
@@ -3133,8 +3244,12 @@ struct Placement<'a> {
     /// World units per logical pixel at the camera target.
     world_per_px: f64,
     /// A vector tile drawn through a warp's patches, relative to its
-    /// anchor.
+    /// anchor, and the patches in the scene.
     series: Option<&'a orb_crs::Series>,
+    warp: TileWarp,
+    /// On a globe: the tile's patches on the sphere, and their anchor's
+    /// camera-relative position.
+    globe: Option<(TileWarp, glam::DVec3)>,
     /// The style zoom the tile laid out at.
     tile_zoom: f64,
 }
@@ -3152,6 +3267,8 @@ fn placements<'a>(
         frame,
         world_per_px,
         series,
+        warp,
+        globe,
         tile_zoom,
     } = at;
     let world_per_px = world_per_px as f32;
@@ -3201,8 +3318,35 @@ fn placements<'a>(
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,
+            warp: globe.map_or(warp, |(warp, _)| warp),
+            globe_origin: globe.map_or([0.0; 3], |(_, origin)| origin.as_vec3().to_array()),
         }
     })
+}
+
+/// A globe view's frame terms: its matrix, the target, and the horizon
+/// plane that depth and the far side's clipping come from.
+fn frame_globe(globe: &orb_camera::GlobeView, view: &View) -> orb_render::FrameGlobe {
+    let radius = orb_crs::sphere::RADIUS;
+    let eye = globe.target + globe.eye;
+    let distance = eye.length();
+    let toward = eye / distance;
+    // `facing` is 1 under the eye and 0 at the horizon circle.
+    let horizon = radius * radius / distance;
+    let scale = 1.0 / (radius - horizon).max(1e-9);
+    let n = toward * scale;
+    orb_render::FrameGlobe {
+        view_proj: globe.view_proj.as_mat4().to_cols_array_2d(),
+        target: globe.target.as_vec3().to_array(),
+        amount: globe.amount as f32,
+        horizon: [
+            n.x as f32,
+            n.y as f32,
+            n.z as f32,
+            ((globe.target.dot(toward) - horizon) * scale) as f32,
+        ],
+        metres_per_unit: (globe.metres_per_px / view.world_per_px()) as f32,
+    }
 }
 
 /// Removes a terrain's DEM page; the renderer's terrain is off.
@@ -3413,25 +3557,68 @@ fn write_paint(
     }
 }
 
-/// One scene tile with a tile-sized quad for every background layer.
+/// An image tile's mesh on a globe: a grid fine enough for the sphere to
+/// bend, or `None` for its quad.
+fn globe_grid(
+    globe_warps: &mut crate::globe::GlobeWarps,
+    globe: bool,
+    tms: &TileMatrixSet,
+    tile: TileIndex,
+) -> Option<Arc<image::Warped>> {
+    let cells = if globe {
+        globe_warps.grid(tms, tile)
+    } else {
+        1
+    };
+    (cells > 1).then(|| Arc::new(image::Warped::grid(tms.tile_bounds(tile), cells)))
+}
+
+/// Cells per side of the background's grid on a globe: fine enough for a
+/// whole-world tile.
+const BACKGROUND_GLOBE_CELLS: u32 = 32;
+
+/// One scene tile with a tile-sized quad for every background layer, or on
+/// a globe a grid the sphere bends.
 fn make_background(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     plan: &crate::style::StylePlan,
+    globe: bool,
 ) -> Option<TileId> {
     let mut tile = None;
+    let cells = if globe { BACKGROUND_GLOBE_CELLS } else { 1 };
+    let n = cells + 1;
+    let step = 8192 / cells;
+    let vertices = (0..n * n)
+        .flat_map(|k| [(k % n * step) | (k / n * step) << 16, 0])
+        .collect();
+    let triangles: Vec<[u32; 3]> = (0..cells * cells)
+        .flat_map(|c| {
+            let k = c / cells * n + c % cells;
+            [[k, k + 1, k + n + 1], [k, k + n + 1, k + n]]
+        })
+        .collect();
+    let chunks = triangles
+        .chunks(256)
+        .enumerate()
+        .map(|(c, run)| {
+            let rows = (c * 256 / 2) as u32 / cells;
+            let last = ((c * 256 + run.len() - 1) / 2) as u32 / cells;
+            orb_layout::Chunk {
+                sort_key: None,
+                first_index: (c * 256 * 3) as u32,
+                index_count: (run.len() * 3) as u32,
+                bounds: orb_layout::TileBox {
+                    min: [0, (rows * step) as i16],
+                    max: [8192, ((last + 1) * step).min(8192) as i16],
+                },
+            }
+        })
+        .collect();
     let mesh = orb_layout::Mesh {
-        vertices: vec![0, 0, 8192, 0, 8192 | 8192 << 16, 0, 8192 << 16, 0],
-        indices: vec![0, 1, 2, 0, 2, 3],
-        chunks: vec![orb_layout::Chunk {
-            sort_key: None,
-            first_index: 0,
-            index_count: 6,
-            bounds: orb_layout::TileBox {
-                min: [0, 0],
-                max: [8192, 8192],
-            },
-        }],
+        vertices,
+        indices: triangles.into_iter().flatten().collect(),
+        chunks,
     };
     for (i, _) in plan
         .nodes
@@ -3622,9 +3809,9 @@ mod tests {
             let mut map = Map::new(services.clone(), Some(camera));
             for delta in [-0.5; 6].into_iter().chain([0.5; 6]) {
                 let zoom = map.zoom() + delta;
-                let projection = map.projection();
+                let surface = map.surface();
                 map.camera_mut()
-                    .zoom_around(&projection, viewport, center, zoom);
+                    .zoom_around(&surface, viewport, center, zoom);
                 let fresh = CameraState {
                     bearing,
                     pitch,
@@ -3637,11 +3824,7 @@ mod tests {
                 );
                 assert_eq!(
                     map.view(viewport).cover(map.surface.tms(), 512.0, 14),
-                    View::new(&fresh, viewport, map.surface.projection()).cover(
-                        map.surface.tms(),
-                        512.0,
-                        14
-                    )
+                    View::new(&fresh, viewport, &map.surface()).cover(map.surface.tms(), 512.0, 14)
                 );
             }
         }
@@ -3663,6 +3846,8 @@ mod tests {
             frame: None,
             world_per_px: 1.0,
             series: None,
+            warp: TileWarp::NONE,
+            globe: None,
             tile_zoom: 0.0,
         };
         let rows: Vec<_> = placements(&tms, &draw, at).collect();

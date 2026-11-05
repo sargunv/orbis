@@ -1096,6 +1096,8 @@ mod tests {
             dem: DemRef::NONE,
             terrain_range: [0.0; 2],
             target: PlacementTarget::Map,
+            warp: orb_render::TileWarp::NONE,
+            globe_origin: [0.0; 3],
         };
         let mut rows = Vec::new();
         drape_rows(

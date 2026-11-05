@@ -75,8 +75,8 @@ export function frameStats(ack: FrameAck): FrameStats {
 }
 
 export type MapEventObject =
-  | { type: "styleload"; camera: Float64Array | null; projection: string }
-  | { type: "styledata"; generation: number }
+  | { type: "styleload"; camera: Float64Array | null }
+  | { type: "styledata"; generation: number; surface: string }
   | { type: "sourcedata"; source: string; loaded: boolean }
   | { type: "load" } | { type: "idle" }
   | { type: "error"; message: string }

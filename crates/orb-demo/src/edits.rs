@@ -445,7 +445,7 @@ fn published_hits_follow_layer_order_visibility_and_camera() {
     published.set_generation(hit.generation);
     let viewport = map.viewport;
     let ui_hit = |index: &orb_runtime::HitIndex, map: &Offscreen, point| {
-        index.hit_test(point, map.map.camera(), viewport, &map.map.projection())
+        index.hit_test(point, map.map.camera(), viewport, &map.map.surface())
     };
     assert_eq!(ui_hit(&published, &map, center), Some(hit.clone()));
     map.map.camera_mut().bearing = 30.0;
@@ -554,4 +554,35 @@ fn circle_hits_cover_the_stroke_however_each_part_is_bound() {
         r#"[["setPaintProperty", "dots", "circle-stroke-width", 20]]"#,
     );
     assert!(map.map.hit_test(probe).is_some(), "uniform stroke edit");
+}
+
+/// Plan §18 budget 20: a projection switch shows on the next frame and
+/// loads nothing. Vector tiles lay out again for the globe's curvature from
+/// cached data; the result equals the style loaded with the globe.
+#[test]
+fn projection_switches_load_nothing() {
+    let mut map = tokyo();
+    let surface = map.map.surface();
+    let mut camera = *map.map.camera();
+    camera.set_zoom(&surface.projection, 9.0);
+    *map.map.camera_mut() = camera;
+    settle(&mut map);
+    for (commands, globe) in [
+        (r#"[["setProjection", {"type": "globe"}]]"#, true),
+        (r#"[["setProjection", {"type": "mercator"}]]"#, false),
+    ] {
+        let started = Instant::now();
+        let (frames, first, jobs) = measure(&mut map, commands);
+        eprintln!(
+            "{commands}: {frames} frames to settle, {:.1} ms, {jobs:?}",
+            started.elapsed().as_secs_f64() * 1e3
+        );
+        assert_eq!(map.map.surface().globe.is_some(), globe);
+        assert!(
+            first.tiles_drawn > 0,
+            "the first frame draws the new surface"
+        );
+        assert_eq!(jobs.loads, 0, "{commands}");
+        assert_matches_fresh(&mut map);
+    }
 }

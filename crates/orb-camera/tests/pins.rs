@@ -4,6 +4,7 @@
 
 use glam::DVec2;
 use orb_camera::{CameraState, View, Viewport};
+use orb_crs::Surface;
 use orb_crs::TileMatrixSet;
 use orb_geo::Geodetic;
 
@@ -30,7 +31,7 @@ fn cameras_match_pinned_gl_js() {
             width: n("width"),
             height: n("height"),
         };
-        let view = View::new(&camera, viewport, projection);
+        let view = View::new(&camera, viewport, &Surface::from(projection));
         let points = case["points"].as_array().unwrap();
         assert_eq!(points.len(), FRACTIONS.len());
         for (point, [u, v]) in points.iter().zip(FRACTIONS) {

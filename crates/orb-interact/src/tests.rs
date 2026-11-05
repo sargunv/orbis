@@ -11,7 +11,7 @@ fn camera() -> Camera {
         .projection();
     Camera::new(
         CameraState::new(Geodetic::new(139.7, 35.68), 12.0, &projection),
-        projection,
+        projection.into(),
         Viewport {
             width: 800.0,
             height: 600.0,

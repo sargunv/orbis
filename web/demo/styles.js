@@ -8,6 +8,7 @@ import scripts from "./data/scripts.json?url";
 import arctic from "./data/crs/arctic.json?url";
 import greenland from "./data/crs/greenland.json?url";
 import nz from "./data/crs/nz.json?url";
+import equalEarth from "./data/crs/equal-earth.json?url";
 import alps from "./data/alps.json?url";
 import alpsSunlitScene from "./data/alps-sunlit.json";
 import osmCarto from "./data/osm-carto.json?url";
@@ -53,11 +54,13 @@ const CITIES = {
  * A picker entry. `basemap` entries keep the camera when switched to; the
  * rest open at their own. `swatch` is [land, water, line] for the picker's
  * chip; `dark` styles turn the app's chrome dark. `constraints` keep the
- * camera where a bounded dataset has data.
+ * camera where a bounded dataset has data. `projection` is a v8 projection
+ * the map switches to once the style loads.
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, basemap?: boolean, camera?: object,
- *   constraints?: object, flight?: object[], formats?: Record<string, string> }} Scene
+ *   constraints?: object, flight?: object[], formats?: Record<string, string>,
+ *   projection?: object }} Scene
  */
 
 /** @type {{ name: string, scenes: Scene[] }[]} */
@@ -65,12 +68,17 @@ export const GROUPS = [
   {
     name: "Orbis showcases",
     scenes: [
+      { key: "globe", name: "Globe", detail: "Liberty on the v8 globe, Web Mercator from zoom 12", url: LIVE,
+        projection: { type: "globe" }, camera: { center: [10, 30], zoom: 1.5 },
+        swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
       { key: "alps", name: "Alps terrain flight", detail: "3D terrain, sky and a looping camera flight", url: alps,
         flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
       { key: "alps-sunlit", name: "Alps in morning sun", detail: "The same flight, lit by the sun at a time and place", url: alpsSunlit,
         flight: alpsFlight.legs, swatch: ["#c9cdb8", "#8fa9bd", "#6b7660"] },
       { key: "arctic", name: "Arctic", detail: "Polar stereographic, EPSG:3413", url: arctic, dark: true,
         swatch: ["#24476b", "#e9eef2", "#9aa6ad"] },
+      { key: "equal-earth", name: "Equal Earth", detail: "The world on EPSG:8857, from Web Mercator tiles",
+        url: equalEarth, camera: { center: [0, 10], zoom: 0.5 }, swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
       { key: "nz", name: "New Zealand", detail: "Transverse Mercator, NZTM2000", url: nz,
         swatch: ["#f8f4f0", "#a0c8f0", "#bfd6a8"] },
       { key: "greenland", name: "Greenland ice flow", detail: "Polar imagery warped onto Web Mercator", url: greenland,

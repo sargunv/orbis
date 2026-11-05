@@ -11,7 +11,7 @@ use orb_geo::Geodetic;
 use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion};
 use crate::fit::FitOptions;
 use crate::moves::{Bounds, Constraints, wrap_bearing};
-use crate::{CameraState, Elevation, View, Viewport};
+use crate::{CameraState, Elevation, Surface, View, Viewport};
 
 /// Identifies an animation in [`CameraEvent::AnimationEnd`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -66,7 +66,7 @@ struct Running {
 #[derive(Debug)]
 pub struct Camera {
     state: CameraState,
-    projection: Projection,
+    surface: Surface,
     viewport: Viewport,
     constraints: Constraints,
     running: Option<Running>,
@@ -89,10 +89,10 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn new(state: CameraState, projection: Projection, viewport: Viewport) -> Self {
+    pub fn new(state: CameraState, surface: Surface, viewport: Viewport) -> Self {
         Self {
             state,
-            projection,
+            surface,
             viewport,
             constraints: Constraints::default(),
             running: None,
@@ -143,24 +143,29 @@ impl Camera {
         self.viewport
     }
 
+    pub fn surface(&self) -> &Surface {
+        &self.surface
+    }
+
+    /// The surface's plane, which style zoom is measured on.
     pub fn projection(&self) -> &Projection {
-        &self.projection
+        &self.surface.projection
     }
 
     /// The view's style zoom on the camera's plane (see
     /// [`CameraState::zoom`]).
     pub fn zoom(&self) -> f64 {
-        self.state.zoom(&self.projection)
+        self.state.zoom(&self.surface.projection)
     }
 
-    /// Moves on the surface's new plane (a scene document loaded, or the
-    /// map's projection changed): the target and ground resolution stay,
-    /// running animations stop, and the camera keeps to the new world.
-    pub fn set_projection(&mut self, projection: Projection) {
-        if projection == self.projection {
+    /// Moves to a new surface (a scene document loaded, or the map's
+    /// projection changed): the target and ground resolution stay, running
+    /// animations stop, and the camera keeps to the new world.
+    pub fn set_surface(&mut self, surface: Surface) {
+        if surface == self.surface {
             return;
         }
-        self.projection = projection;
+        self.surface = surface;
         self.running = None;
         self.write(self.state);
     }
@@ -182,8 +187,8 @@ impl Camera {
 
     pub fn view(&self) -> View {
         match self.terrain.as_deref() {
-            Some(terrain) => View::over(&self.state, self.viewport, &self.projection, terrain),
-            None => View::new(&self.state, self.viewport, &self.projection),
+            Some(terrain) => View::over(&self.state, self.viewport, &self.surface, terrain),
+            None => View::new(&self.state, self.viewport, &self.surface),
         }
     }
 
@@ -191,9 +196,9 @@ impl Camera {
     /// or `None` behind the eye.
     pub fn project(&self, point: Geodetic) -> Option<DVec2> {
         let view = self.view();
-        let world = self.projection.forward(point);
+        let world = self.surface.projection.forward(point);
         // The copy of a wrapping world nearest the view's centre.
-        let world = match self.projection.wrap_period() {
+        let world = match self.surface.projection.wrap_period() {
             Some(period) => DVec2::new(
                 world.x - ((world.x - view.camera_world().x) / period).round() * period,
                 world.y,
@@ -219,7 +224,7 @@ impl Camera {
             Some(terrain) => view.unproject_terrain(px, terrain).map(|(world, _)| world),
             None => view.unproject(px),
         };
-        world.map(|world| self.projection.inverse(world))
+        world.map(|world| self.surface.projection.inverse(world))
     }
 
     /// Moves to `target` at once (GL JS `jumpTo`).
@@ -241,7 +246,7 @@ impl Camera {
     ) -> AnimationId {
         self.stop();
         let (to, around) = self.resolve(target);
-        let motion = Motion::ease(self.state, to, around, options, &self.projection);
+        let motion = Motion::ease(self.state, to, around, options, &self.surface.projection);
         self.start(motion, now, false)
     }
 
@@ -255,7 +260,7 @@ impl Camera {
     ) -> AnimationId {
         self.stop();
         let (to, around) = self.resolve(target);
-        let motion = Motion::ease(self.state, to, around, options, &self.projection);
+        let motion = Motion::ease(self.state, to, around, options, &self.surface.projection);
         self.start(motion, now, true)
     }
 
@@ -268,7 +273,7 @@ impl Camera {
             to,
             options,
             self.constraints.min_zoom,
-            &self.projection,
+            &self.surface.projection,
             self.viewport,
         );
         self.start(motion, now, false)
@@ -280,19 +285,19 @@ impl Camera {
     pub fn camera_for_bounds(&self, bounds: Bounds, options: &FitOptions) -> Option<CameraTarget> {
         let mut target = self
             .state
-            .for_bounds(bounds, options, &self.projection, self.viewport)?;
+            .for_bounds(bounds, options, &self.surface, self.viewport)?;
         if let (Some(center), Some(zoom)) = (target.center, target.zoom) {
             let mut at = CameraState {
                 target: center,
                 ..self.state
             };
-            at.set_zoom(&self.projection, zoom);
+            at.set_zoom(&self.surface.projection, zoom);
             at.limit_zoom(
                 f64::NEG_INFINITY,
                 self.constraints.max_zoom,
-                &self.projection,
+                &self.surface.projection,
             );
-            target.zoom = Some(at.zoom(&self.projection));
+            target.zoom = Some(at.zoom(&self.surface.projection));
         }
         Some(target)
     }
@@ -356,23 +361,23 @@ impl Camera {
     /// Moves the ground under `from` to `to` (logical pixels).
     pub fn pan(&mut self, from: DVec2, to: DVec2) {
         let mut next = self.state;
-        next.pan(&self.projection, self.viewport, from, to);
+        next.pan(&self.surface, self.viewport, from, to);
         self.user_write(next);
     }
 
     /// Zooms by `delta` levels around a pixel.
     pub fn zoom_by(&mut self, at: DVec2, delta: f64) {
         let mut next = self.state;
-        let zoom = (next.zoom(&self.projection) + delta)
+        let zoom = (next.zoom(&self.surface.projection) + delta)
             .clamp(self.constraints.min_zoom, self.constraints.max_zoom);
-        next.zoom_around(&self.projection, self.viewport, at, zoom);
+        next.zoom_around(&self.surface, self.viewport, at, zoom);
         self.user_write(next);
     }
 
     /// Turns the map clockwise by `delta` degrees around a pixel.
     pub fn rotate_by(&mut self, at: DVec2, delta: f64) {
         let mut next = self.state;
-        next.rotate_around(&self.projection, self.viewport, at, next.bearing + delta);
+        next.rotate_around(&self.surface, self.viewport, at, next.bearing + delta);
         self.user_write(next);
     }
 
@@ -403,7 +408,7 @@ impl Camera {
         running.elapsed = elapsed;
         running
             .motion
-            .apply(&mut next, elapsed, &self.projection, self.viewport);
+            .apply(&mut next, elapsed, &self.surface, self.viewport);
         self.user = running.user;
         let done = elapsed >= running.motion.duration();
         // Written while the move still runs, so its elevation stays its own.
@@ -430,7 +435,7 @@ impl Camera {
         let (a, b) = (self.reported, self.state);
         let changed = [
             a != b,
-            a.zoom(&self.projection) != b.zoom(&self.projection),
+            a.zoom(&self.surface.projection) != b.zoom(&self.surface.projection),
             a.bearing != b.bearing,
             a.pitch != b.pitch,
         ];
@@ -494,7 +499,7 @@ impl Camera {
     /// whoever makes them.
     fn write(&mut self, mut next: CameraState) {
         next.bearing = wrap_bearing(next.bearing);
-        next.constrain(&self.constraints, &self.projection, self.viewport);
+        next.constrain(&self.constraints, &self.surface, self.viewport);
         if let Some(terrain) = self.terrain.as_deref() {
             // Gestures hold the target's elevation, as GL JS's do; at rest
             // it stands on the terrain.
@@ -503,12 +508,12 @@ impl Camera {
                 self.elevation_held = true;
             } else if self.running.is_none() {
                 if std::mem::take(&mut self.elevation_held) {
-                    next.recenter_on(terrain, &self.projection, self.viewport);
+                    next.recenter_on(terrain, &self.surface, self.viewport);
                 } else {
-                    next.settle_on(terrain, &self.projection);
+                    next.settle_on(terrain, &self.surface.projection);
                 }
             }
-            next.keep_above(terrain, &self.projection, self.viewport);
+            next.keep_above(terrain, &self.surface, self.viewport);
         }
         if next != self.state {
             self.state = next;
@@ -519,7 +524,8 @@ impl Camera {
     /// The end state of a move to `target`, and the pixel and ground point
     /// a zoom or rotation keeps in place.
     fn resolve(&self, target: &CameraTarget) -> (CameraState, Option<(Geodetic, DVec2)>) {
-        let (projection, viewport) = (&self.projection, self.viewport);
+        let (surface, viewport) = (&self.surface, self.viewport);
+        let projection = &surface.projection;
         let center = DVec2::new(viewport.width, viewport.height) / 2.0;
         let mut to = self.state;
         // Limits bound the scale at the destination.
@@ -551,7 +557,7 @@ impl Camera {
             (None, Some(ground)) => {
                 let at = self.project(ground).unwrap_or(center);
                 around = Some((ground, at));
-                to.holding(projection, viewport, at, |c| {
+                to.holding(surface, viewport, at, |c| {
                     if let Some(zoom) = zoom {
                         c.set_zoom(projection, zoom);
                     }
@@ -565,7 +571,7 @@ impl Camera {
         }
         if let Some(bearing) = target.bearing {
             match around {
-                Some((_, at)) => to.rotate_around(projection, viewport, at, bearing),
+                Some((_, at)) => to.rotate_around(surface, viewport, at, bearing),
                 None => to.bearing = wrap_bearing(bearing),
             }
         }
@@ -573,10 +579,10 @@ impl Camera {
             to.pitch = pitch;
         }
         if target.offset != DVec2::ZERO {
-            to.pan(projection, viewport, center, center + target.offset);
+            to.pan(surface, viewport, center, center + target.offset);
         }
         to.bearing = wrap_bearing(to.bearing);
-        to.constrain(&self.constraints, projection, viewport);
+        to.constrain(&self.constraints, surface, viewport);
         if let Some(terrain) = self.terrain.as_deref() {
             to.settle_on(terrain, projection);
         }
@@ -602,7 +608,7 @@ mod tests {
             .projection();
         Camera::new(
             CameraState::new(Geodetic::new(139.7, 35.68), 10.0, &mercator()),
-            projection,
+            Surface::from(projection),
             Viewport {
                 width: 800.0,
                 height: 600.0,
@@ -808,7 +814,7 @@ mod tests {
             height: 768.0,
         };
         let start = CameraState::new(Geodetic::new(-45.0, 72.0), 2.0, &projection);
-        let mut camera = Camera::new(start, projection, viewport);
+        let mut camera = Camera::new(start, Surface::from(projection), viewport);
         camera.set_constraints(Constraints {
             min_zoom: 1.9,
             ..Constraints::default()

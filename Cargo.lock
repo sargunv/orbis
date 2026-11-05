@@ -2568,7 +2568,9 @@ name = "orb-symbol"
 version = "0.0.0"
 dependencies = [
  "bytemuck",
+ "glam",
  "libm",
+ "orb-crs",
  "orb-text",
  "orb-tile",
  "serde_json",

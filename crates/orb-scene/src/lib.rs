@@ -131,6 +131,8 @@ pub struct FrameBlock {
     /// The style's lights (decision 0026); without them lit surfaces are
     /// black.
     pub lights: Option<FrameLights>,
+    /// The view's globe, when it is one at its zoom.
+    pub globe: Option<FrameGlobe>,
 }
 
 /// The style's lights as shaders take them (decision 0026): the ambient
@@ -151,6 +153,26 @@ pub struct FrameLights {
     pub terrain: bool,
 }
 
+/// A globe view's terms (`project.wgsl`): positions on the sphere are
+/// camera-relative ECEF metres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameGlobe {
+    /// Camera-relative globe space → clip, column-major.
+    pub view_proj: [[f32; 4]; 4],
+    /// The target's ECEF position, for directions on the sphere.
+    pub target: [f32; 3],
+    /// How much of a globe the view is: clip positions mix the plane's
+    /// (0) and the globe's (1).
+    pub amount: f32,
+    /// The horizon plane as `(n, w)`: a camera-relative position `p` on
+    /// the sphere faces the eye where `dot(n, p) + w >= 0`, rising to 1
+    /// under the eye. Depth comes from it, as in GL JS.
+    pub horizon: [f32; 4],
+    /// Metres on the globe per plane world unit at the target: offsets and
+    /// heights in world units scale by it.
+    pub metres_per_unit: f32,
+}
+
 /// What elevated content reads of the terrain's DEM page.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameTerrain {
@@ -161,7 +183,7 @@ pub struct FrameTerrain {
     pub dem_dim: f32,
 }
 
-const FRAME_WORDS: usize = 52;
+const FRAME_WORDS: usize = 80;
 
 /// Bytes of a frame block's uniform buffer.
 pub const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 4;
@@ -204,13 +226,27 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
         put(44, l.directional, l.directional_level);
         put(48, l.position, if l.terrain { 1.0 } else { 0.0 });
     }
+    if let Some(g) = frame.globe {
+        for (i, v) in g.view_proj.iter().flatten().enumerate() {
+            words[52 + i] = v.to_bits();
+        }
+        for (word, v) in words[68..72].iter_mut().zip(g.horizon) {
+            *word = v.to_bits();
+        }
+        for (word, v) in words[72..75].iter_mut().zip(g.target) {
+            *word = v.to_bits();
+        }
+        words[75] = g.amount.to_bits();
+        words[76] = g.metres_per_unit.to_bits();
+    }
     gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&words));
 }
 
 /// One placement of a tile's data: its transform into camera-relative world
-/// space, `origin + (x, -y) · scale` (or, for a tile with a warp, `origin`
-/// plus the warp's quadratic patches; `scale` is then its local scale at the
-/// centre), and where it may draw.
+/// space, `origin + (x, -y) · scale` (or, with a planar warp, `origin` plus
+/// the warp's quadratic patches; `scale` is then its local scale at the
+/// centre), and where it may draw. On a globe, its position on the sphere
+/// is `globe_origin` plus its warp's patches in space.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TileRow {
     pub origin: [f32; 2],
@@ -237,6 +273,37 @@ pub struct TileRow {
     pub terrain_range: [f32; 2],
     /// Which render nodes draw it.
     pub target: PlacementTarget,
+    /// Its patches (`project.wgsl`), or [`TileWarp::NONE`].
+    pub warp: TileWarp,
+    /// On a globe, the camera-relative position of its warp's anchor, in
+    /// metres.
+    pub globe_origin: [f32; 3],
+}
+
+/// A tile's biquadratic patches in the property arena (plan §9.2's
+/// `GpuPerVertex`): `cells`² of them over the tile, row by row, with
+/// [`WARP_PATCH_WORDS`] f32 each on a plane and [`GLOBE_PATCH_WORDS`] on a
+/// globe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TileWarp {
+    base: u32,
+    cells: u32,
+    words: u32,
+}
+
+impl Default for TileWarp {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl TileWarp {
+    /// No warp: an affine tile.
+    pub const NONE: Self = Self {
+        base: 0,
+        cells: 0,
+        words: 0,
+    };
 }
 
 /// Where a placement draws: on the map, or into the terrain's drape
@@ -291,10 +358,12 @@ impl ClipRect {
     }
 }
 
-const TILE_WORDS: usize = 22;
-/// Words per biquadratic patch of a tile's warp: nine nodes' positions
+const TILE_WORDS: usize = 26;
+/// Words per biquadratic patch of a planar warp: nine nodes' positions
 /// (`project.wgsl`).
 pub const WARP_PATCH_WORDS: usize = 18;
+/// Words per biquadratic patch on a globe: nine nodes' positions in space.
+pub const GLOBE_PATCH_WORDS: usize = 27;
 const CHUNK_WORDS: usize = 8;
 const CANDIDATE_WORDS: usize = 5;
 const VISIBLE_WORDS: usize = 2;
@@ -512,8 +581,6 @@ pub struct OutOfSpace;
 struct TileEntry {
     meshes: Vec<MeshId>,
     placements: Vec<Placement>,
-    /// Its warp's patches in the property buffer, and patches per side.
-    warp: Option<(Range<u32>, u32)>,
 }
 
 /// A tile placement: its row in the placement table, and the row's values.
@@ -929,9 +996,6 @@ impl Scene {
         for placement in entry.placements {
             self.placement_slots.free(placement.slot);
         }
-        if let Some((range, _)) = entry.warp {
-            self.prop_arena.free(range);
-        }
         for mesh in entry.meshes {
             self.drop_mesh(mesh);
         }
@@ -939,29 +1003,37 @@ impl Scene {
         self.revision += 1;
     }
 
-    /// Draws a tile through a warp onto the surface (plan §9.2's
-    /// `GpuPerVertex`): `cells`² biquadratic patches over the tile, row by
-    /// row, [`WARP_PATCH_WORDS`] f32 each (`project.wgsl`). Its placements
-    /// take it from their next write.
-    pub fn set_tile_warp(
+    /// Uploads a warp's patches (`cells`² of them, row by row) for tile
+    /// rows to draw through: [`WARP_PATCH_WORDS`] f32 each on a plane,
+    /// [`GLOBE_PATCH_WORDS`] on a globe.
+    pub fn add_warp(
         &mut self,
         gpu: &mut dyn Gpu,
-        tile: TileId,
         cells: u32,
         patches: &[f32],
-    ) -> Result<(), OutOfSpace> {
-        debug_assert_eq!(patches.len(), (cells * cells) as usize * WARP_PATCH_WORDS);
+    ) -> Result<TileWarp, OutOfSpace> {
+        let count = (cells * cells) as usize;
+        debug_assert!(
+            patches.len() == count * WARP_PATCH_WORDS || patches.len() == count * GLOBE_PATCH_WORDS
+        );
         let range = self
             .prop_arena
             .alloc(patches.len() as u32)
             .ok_or(OutOfSpace)?;
         let words: Vec<u32> = patches.iter().map(|v| v.to_bits()).collect();
         Words::Core(&words).write(gpu, self.buffers.props, range.start);
-        let entry = self.tiles[tile.0 as usize].as_mut().expect("unknown tile");
-        if let Some((old, _)) = entry.warp.replace((range, cells)) {
-            self.prop_arena.free(old);
+        Ok(TileWarp {
+            base: range.start,
+            cells,
+            words: patches.len() as u32,
+        })
+    }
+
+    /// Frees a warp no row draws through any more.
+    pub fn remove_warp(&mut self, warp: TileWarp) {
+        if warp.cells > 0 {
+            self.prop_arena.free(warp.base..warp.base + warp.words);
         }
-        Ok(())
     }
 
     /// Sets where a tile draws this frame: one row per placement, none to
@@ -992,10 +1064,6 @@ impl Scene {
             self.revision += 1;
         }
         self.placements_written += rows.len() as u32;
-        let (warp_base, warp_cells) = entry
-            .warp
-            .as_ref()
-            .map_or((0, 0), |(range, cells)| (range.start, *cells));
         for (placement, row) in entry.placements.iter_mut().zip(rows) {
             placement.row = *row;
             let slot = placement.slot;
@@ -1013,8 +1081,9 @@ impl Scene {
             words[16] = row.world_per_px.to_bits();
             words[17..19].copy_from_slice(&row.dem.words());
             words[19] = pack_range(row.terrain_range);
-            words[20] = warp_base;
-            words[21] = warp_cells;
+            words[20] = row.warp.base;
+            words[21] = row.warp.cells;
+            words[22..25].copy_from_slice(&row.globe_origin.map(f32::to_bits));
             for (i, clip) in row.clips.iter().enumerate() {
                 words[4 + i * 2] = pack(clip.min);
                 words[5 + i * 2] = pack(clip.max);

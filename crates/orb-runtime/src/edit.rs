@@ -85,6 +85,13 @@ impl Map {
             self.install(doc);
             return Ok(self.version);
         }
+        // A new projection: the globe changes at once; vector tiles lay
+        // out again for its curvature from the jobs' cached data, and the
+        // next frame regrids image tiles (nothing loads again).
+        let reproject = patch.changes.contains(&Change::Projection);
+        if reproject {
+            self.surface.set_globe(style.doc.style().globe);
+        }
         self.version += 1;
         let version = self.version;
         let mut style = self.style.take().expect("checked above");
@@ -245,6 +252,18 @@ impl Map {
                     }
                     _ => {}
                 }
+            }
+        }
+        if reproject {
+            for node in &plan.nodes {
+                let image = node.source == usize::MAX || plan.image_kind(node.source).is_some();
+                let state = style.nodes.get_mut(&node.key).expect("added above");
+                if image || state.layout_epoch == version {
+                    continue;
+                }
+                state.layout_epoch = version;
+                state.rows_epoch = version;
+                relayout.entry(node.source).or_default().push(node.key);
             }
         }
         style.painted = None;

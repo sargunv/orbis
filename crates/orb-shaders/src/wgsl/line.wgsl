@@ -150,9 +150,9 @@ fn line_vertex(v: Pulled) -> LineOut {
 
     let shift = translate_world(node.translate, node.translate_anchor, tile);
     let center = pos + offset2 * px_to_data + vec2<f32>(shift.x, -shift.y) / tile.scale;
-    let projected_no_extrude = frame.view_proj * vec4<f32>(tile_to_world(tile, center), 0.0, 1.0);
+    let projected_no_extrude = ground_clip(tile_ground(tile, center), vec2<f32>(0.0), 0.0);
     let extruded = center + dist * px_to_data;
-    out.position = frame.view_proj * vec4<f32>(tile_to_world(tile, extruded), 0.0, 1.0);
+    out.position = ground_clip(tile_ground(tile, extruded), vec2<f32>(0.0), 0.0);
 
     // How much perspective squishes or stretches the extrusion, after both
     // tile positions have been projected (as in GL JS).

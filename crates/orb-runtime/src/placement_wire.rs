@@ -5,9 +5,77 @@
 use bytemuck::Pod;
 use orb_symbol::{
     BucketStates, Camera, Committed, Frame, LayerFrame, LayerParams, Overlap, PlacedTile,
-    PlacementTables, SizeKind, TileId, TileView, ZoomSize,
+    PlacementTables, SizeKind, TileGlobe, TileId, TileView, ZoomSize,
 };
 use orb_text::WritingMode;
+
+/// A tile's globe: a flag, then its series and camera.
+fn write_globe(w: &mut Writer, globe: Option<&TileGlobe>) {
+    let Some(g) = globe else {
+        w.bool(false);
+        return;
+    };
+    w.bool(true);
+    let s = &*g.series;
+    for v in s.anchor.to_array() {
+        w.f64(v);
+    }
+    w.u32(s.cells);
+    w.f64(s.max_segment);
+    w.f64(s.scale);
+    for p in &s.patches {
+        for v in p.points.iter().flat_map(|v| v.to_array()) {
+            w.f64(v);
+        }
+    }
+    for v in g.target.to_array().into_iter().chain(g.eye.to_array()) {
+        w.f64(v);
+    }
+    for v in g.view_proj.to_cols_array() {
+        w.f64(v);
+    }
+}
+
+fn read_globe(r: &mut Reader<'_>) -> Result<Option<TileGlobe>, String> {
+    if !r.bool()? {
+        return Ok(None);
+    }
+    let mut vec3 =
+        || -> Result<glam::DVec3, String> { Ok(glam::DVec3::new(r.f64()?, r.f64()?, r.f64()?)) };
+    let anchor = vec3()?;
+    let cells = r.u32()?;
+    if cells == 0 || cells > 256 {
+        return Err("placement message: bad globe series".into());
+    }
+    let (max_segment, scale) = (r.f64()?, r.f64()?);
+    let patches = (0..cells * cells)
+        .map(|_| {
+            let mut points = [glam::DVec3::ZERO; 9];
+            for p in &mut points {
+                *p = glam::DVec3::new(r.f64()?, r.f64()?, r.f64()?);
+            }
+            Ok(orb_crs::Patch { points })
+        })
+        .collect::<Result<_, String>>()?;
+    let target = glam::DVec3::new(r.f64()?, r.f64()?, r.f64()?);
+    let eye = glam::DVec3::new(r.f64()?, r.f64()?, r.f64()?);
+    let mut m = [0.0; 16];
+    for v in &mut m {
+        *v = r.f64()?;
+    }
+    Ok(Some(TileGlobe {
+        series: std::sync::Arc::new(orb_crs::Series {
+            anchor,
+            cells,
+            patches,
+            max_segment,
+            scale,
+        }),
+        target,
+        view_proj: glam::DMat4::from_cols_array(&m),
+        eye,
+    }))
+}
 
 #[derive(Default)]
 struct Writer(Vec<u8>);
@@ -269,6 +337,7 @@ pub fn pack_frame(f: &Frame) -> Vec<u8> {
             for v in t.view.matrix {
                 w.f64(v);
             }
+            write_globe(&mut w, t.view.globe.as_ref());
             w.f64(t.text_size.size);
             w.f64(t.text_size.t);
         }
@@ -310,9 +379,10 @@ pub fn unpack_frame(bytes: &[u8]) -> Result<Frame, String> {
                     for m in &mut matrix {
                         *m = r.f64()?;
                     }
+                    let globe = read_globe(&mut r)?;
                     Ok(PlacedTile {
                         bucket,
-                        view: TileView { id, matrix },
+                        view: TileView { id, matrix, globe },
                         text_size: ZoomSize {
                             size: r.f64()?,
                             t: r.f64()?,
@@ -454,6 +524,19 @@ mod tests {
                             wrap: -1,
                         },
                         matrix: std::array::from_fn(|i| i as f64),
+                        globe: orb_crs::sphere::series(
+                            &orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap(),
+                            orb_crs::TileIndex::new(4, 5, 6),
+                            1.0 / 2048.0,
+                        )
+                        .map(|series| TileGlobe {
+                            series: std::sync::Arc::new(series),
+                            target: glam::DVec3::new(1.0, 2.0, 3.0),
+                            view_proj: glam::DMat4::from_cols_array(&std::array::from_fn(|i| {
+                                i as f64 * 0.5
+                            })),
+                            eye: glam::DVec3::new(4.0, 5.0, 6.0),
+                        }),
                     },
                     text_size: ZoomSize { size: 16.0, t: 0.5 },
                 }],

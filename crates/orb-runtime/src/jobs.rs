@@ -306,6 +306,7 @@ impl TileWorker {
             lights: Default::default(),
             atmosphere: None,
             terrain: None,
+            globe: None,
             state: Vec::new(),
             sources,
             layers,

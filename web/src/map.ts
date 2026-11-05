@@ -357,10 +357,13 @@ export class OrbisMap {
     }
     this.#ui.advanceHits(ackGeneration(ack));
     if (!ackIdle(ack)) this.#idle = false;
+    // Loads and projection edits move the camera's surface, before a
+    // style's camera is adopted on it.
+    const surface = ack.events?.findLast((e) => e.type === "styledata");
+    if (surface) this.#ui.setSurface(surface.surface);
     for (const event of ack.events ?? []) {
       switch (event.type) {
         case "styleload":
-          this.#ui.setProjection(event.projection);
           if (event.camera && this.#ui.adoptStyleCamera(event.camera)) this.#loop.request();
           this.#events.emit("styleload", {});
           break;

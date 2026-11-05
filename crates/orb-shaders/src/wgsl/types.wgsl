@@ -39,6 +39,17 @@ struct Frame {
     light_ambient: vec4<f32>,
     light_color: vec4<f32>,
     light_position: vec4<f32>,
+    // The globe (orb-scene's `FrameGlobe`): camera-relative ECEF metres →
+    // clip, the horizon plane (`dot(xyz, p) + w`: 1 under the eye, 0 at the
+    // horizon), the target's ECEF position, how much of a globe the view
+    // is (0 the plane), and metres per plane world unit at the target.
+    globe_view_proj: mat4x4<f32>,
+    globe_horizon: vec4<f32>,
+    globe_target: vec3<f32>,
+    globe_amount: f32,
+    globe_metres: f32,
+    _pad5: f32,
+    _pad6: vec2<f32>,
 };
 
 // One placement of a tile's data: data units → camera-relative world is
@@ -67,9 +78,13 @@ struct Tile {
     // units of TERRAIN_RANGE_UNIT metres.
     terrain_range: u32,
     // A warped tile's quadratic patches: first word in `props` and patches
-    // per side; 0 patches for an affine tile.
+    // per side; 0 patches for an affine tile. On a globe, every tile's
+    // patches are in space (27 words each), around `globe_origin`.
     warp_base: u32,
     warp_cells: u32,
+    globe_origin: array<f32, 3>,
+    // The row's stride is a multiple of its 8-byte alignment.
+    _pad: u32,
 };
 
 const TERRAIN_RANGE_UNIT: f32 = 4.0;

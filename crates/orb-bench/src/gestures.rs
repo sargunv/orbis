@@ -270,7 +270,6 @@ pub(crate) async fn run(
         GesturePaths::City => CITY_PATHS,
         GesturePaths::Alps => ALPS_PATHS,
     };
-    let projection = crate::web_mercator();
     for path in paths_run {
         // A map per path, so each starts cold.
         progress(&format!("{}: loading its first view", path.name));
@@ -284,7 +283,7 @@ pub(crate) async fn run(
         let mut revision = map.elevation_revision();
         Publishes::default().publish(&map, &mut to, &mut index);
         // A flight's camera stands on the terrain, as the demos' do.
-        let mut camera = orb_camera::Camera::new(start, projection, viewport);
+        let mut camera = orb_camera::Camera::new(start, map.surface(), viewport);
         camera.set_terrain(map.elevation());
         let mut legs = if path.flight {
             flight_legs()
@@ -352,10 +351,10 @@ pub(crate) async fn run(
         gpu.take_frames().await;
         let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
         let started = clock::now();
-        let _ = index.hit_test(center, map.camera(), viewport, &map.projection());
+        let _ = index.hit_test(center, map.camera(), viewport, &map.surface());
         picking.hit_test = clock::now() - started;
         let started = clock::now();
-        let _ = index.hit_test(center, map.camera(), viewport, &map.projection());
+        let _ = index.hit_test(center, map.camera(), viewport, &map.surface());
         picking.hit_test_again = clock::now() - started;
         cpu.sort_unstable();
         paths.push(PathResult {

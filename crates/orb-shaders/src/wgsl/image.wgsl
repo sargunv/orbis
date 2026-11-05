@@ -36,7 +36,7 @@ fn image_vertex(node_index: u32, instance: u32, index: u32) -> ImageOut {
     }
     let tile = tile_at(v.tile);
     let pos = bitcast<vec2<f32>>(vec2<u32>(vertex_at(v.vertex), vertex_at(v.vertex + 1u)));
-    out.position = frame.view_proj * vec4<f32>(tile_to_world(tile, pos) + frame.align, 0.0, 1.0);
+    out.position = ground_clip(tile_ground(tile, pos), frame.align, 0.0);
     out.tile_pos = unpack_i16x2(vertex_at(v.vertex + 2u));
     out.tile = v.tile;
     out.layer = prop_at(v.prop_base);

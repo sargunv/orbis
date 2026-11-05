@@ -1,4 +1,5 @@
 use orb_camera::{CameraState, View, Viewport};
+use orb_crs::Surface;
 use orb_crs::TileMatrixSet;
 use orb_geo::Geodetic;
 
@@ -23,7 +24,7 @@ fn covers_match_pinned_gl_js() {
                 width: n("width"),
                 height: n("height"),
             },
-            tms.projection(),
+            &Surface::from(tms.projection()),
         );
         let mut actual: Vec<_> = view
             .cover_volume(
@@ -77,7 +78,7 @@ fn manhattan_cover_counts() {
                 width: 1024.,
                 height: 768.,
             },
-            tms.projection(),
+            &Surface::from(tms.projection()),
         );
         for maxzoom in [14, 24] {
             let mut counts = std::collections::BTreeMap::new();
@@ -87,4 +88,49 @@ fn manhattan_cover_counts() {
             println!("Manhattan pitch {pitch}, maxzoom {maxzoom}: {counts:?}");
         }
     }
+}
+
+/// The globe's cover against Web Mercator's for the same cameras (plan
+/// §18's budget: globe cover within 1.5× Mercator's time). Prints counts and
+/// times; run with `--release -- --nocapture`.
+#[test]
+fn globe_cover_cost() {
+    let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+    let projection = *tms.projection();
+    let viewport = Viewport {
+        width: 1024.0,
+        height: 768.0,
+    };
+    let (mut plane_total, mut globe_total) = (0.0, 0.0);
+    for zoom in [1.0, 3.0, 5.0, 8.0, 11.0] {
+        for pitch in [0.0, 45.0, 70.0] {
+            let mut camera = CameraState::new(Geodetic::new(139.7, 35.7), zoom, &projection);
+            camera.pitch = pitch;
+            camera.bearing = 20.0;
+            let time = |surface: Surface| {
+                let view = View::new(&camera, viewport, &surface);
+                let start = std::time::Instant::now();
+                let mut tiles = 0;
+                for _ in 0..50 {
+                    tiles = view.cover(&tms, 512.0, 22).len();
+                }
+                (tiles, start.elapsed().as_secs_f64() * 1e3 / 50.0)
+            };
+            let (plane_tiles, plane_ms) = time(Surface::plane(projection));
+            let (globe_tiles, globe_ms) = time(Surface {
+                projection,
+                globe: Some(orb_crs::Globe::V8),
+            });
+            plane_total += plane_ms;
+            globe_total += globe_ms;
+            println!(
+                "z{zoom} pitch {pitch}: Mercator {plane_tiles} tiles {plane_ms:.3} ms, globe {globe_tiles} tiles {globe_ms:.3} ms"
+            );
+            assert!(globe_tiles > 0 && globe_tiles < 200);
+        }
+    }
+    println!(
+        "total: Mercator {plane_total:.2} ms, globe {globe_total:.2} ms ({:.2}×)",
+        globe_total / plane_total
+    );
 }

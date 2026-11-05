@@ -57,6 +57,9 @@ pub enum LayoutChange {
 pub enum Change {
     /// The document needs a full reload (a sprite change, say).
     Restyle,
+    /// The root `projection` changed: every tile lays out again for the
+    /// new surface, from cached data.
+    Projection,
     SourceAdded(SourceKey),
     SourceRemoved(SourceKey),
     LayerAdded(LayerKey),
@@ -100,6 +103,7 @@ impl Change {
     pub fn class(&self) -> Class {
         match self {
             Self::Restyle => Class::Restyle,
+            Self::Projection => Class::Relayout,
             Self::SourceAdded(_) | Self::SourceRemoved(_) => Class::Reload,
             Self::LayerAdded(_) | Self::LayerRemoved(_) | Self::LayersReordered => Class::Nodes,
             Self::Visibility(_) => Class::Block,
@@ -275,6 +279,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         lights: old.lights.clone(),
         atmosphere: old.atmosphere.clone(),
         terrain: None,
+        globe: old.globe,
         state: old.state.clone(),
         sources: Vec::new(),
         layers: Vec::new(),
@@ -304,6 +309,12 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
             .any(|k| !same_opt(member(&doc.root, k), member(&draft.root, k)))
         {
             changes.push(Change::Restyle);
+        }
+        if !same_opt(
+            member(&doc.root, "projection"),
+            member(&draft.root, "projection"),
+        ) {
+            changes.push(Change::Projection);
         }
         warnings.extend(root.warnings.iter().cloned());
         style = Style {

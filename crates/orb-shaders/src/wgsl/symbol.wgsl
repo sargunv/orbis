@@ -235,7 +235,7 @@ fn tile_clip(tile: Tile, p: vec2<f32>) -> vec4<f32> {
     if (node.flags & HEIGHT_ANCHOR_GROUND) != 0u {
         metres += ground_elevation(tile, p);
     }
-    return frame.view_proj * vec4<f32>(tile_to_world(tile, p), metres * frame.extrusion_scale, 1.0);
+    return ground_clip(tile_ground(tile, p), vec2<f32>(0.0), metres * frame.extrusion_scale);
 }
 
 fn clip_to_px(c: vec4<f32>) -> vec2<f32> {
