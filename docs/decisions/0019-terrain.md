@@ -63,10 +63,19 @@ The GPU-driven design is kept by making drape slots ordinary placements:
   never mix slots, and the terrain shader clamps samples to the slot at
   the level it reads, as a texture of its own would clamp to its edge.
 
-A slot is redrawn when the draped content over its tile changes (drawn
-tiles, their meshes, the style revision, feature-state writes) and, when
-only the zoom or pattern cross-fade changed, once the camera stops: GL JS's
-fingerprint policy (#7549). Unchanged slots cost nothing per frame.
+A slot is redrawn in the frame the draped content over its tile changes
+(drawn tiles, their meshes, the style revision, feature-state writes) or
+the look it draws at does: the zoom, the pattern cross-fade, and the
+bearing under a viewport-anchored hillshade, whose light turns with the
+map. Unchanged slots cost nothing per frame. Slots first waited for the
+camera to stop before taking a new look, as GL JS's fingerprint policy
+does (#7549), so lighting and widths lagged a moving camera and caught up
+tile by tile; the renderer must be right at every camera. Redrawing in the
+frame (Apple M6, 2048×1536, render until the GPU is done) moved a rotate's
+p50/p95 from 7.2/12.7 to 10.0/15.4 ms and the Alps flight's, which zooms
+throughout, from 3.7/9.1 to 11.5/16.5 ms. Slots keyed by content alone,
+each draped at a fixed zoom of its own tile and hillshades lit in the
+terrain pass, take the camera out of them (#80).
 
 Each stack's terrain draws into a layer of its own sharing the 3D depth
 with extrusions, then composites into the map at the stack's place, as

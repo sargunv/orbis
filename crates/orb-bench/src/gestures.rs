@@ -122,6 +122,9 @@ struct PathResult {
     name: &'static str,
     /// `Map::render` per frame, sorted.
     cpu: Vec<Duration>,
+    /// `Map::render` until the GPU finished the frame, sorted; empty with
+    /// timestamps, which don't wait for each frame.
+    done: Vec<Duration>,
     /// Bytes uploaded in the frame that uploaded most.
     peak_bytes: u64,
     /// Frames that drew with tiles still loading.
@@ -222,9 +225,22 @@ impl Publishes {
 
 impl PathResult {
     fn at(&self, p: f64) -> Duration {
-        let i = ((self.cpu.len() as f64 - 1.0) * p).round() as usize;
-        self.cpu.get(i).copied().unwrap_or_default()
+        percentile(&self.cpu, p)
     }
+}
+
+/// A column of the frames to GPU completion, or – without them.
+fn done(times: &[Duration], f: impl Fn(&[Duration]) -> String) -> String {
+    if times.is_empty() {
+        "–".into()
+    } else {
+        f(times)
+    }
+}
+
+fn percentile(sorted: &[Duration], p: f64) -> Duration {
+    let i = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted.get(i).copied().unwrap_or_default()
 }
 
 /// The paths' frame times.
@@ -292,7 +308,7 @@ pub(crate) async fn run(
         };
         legs.reverse();
         progress(&format!("{}: moving", path.name));
-        let (mut cpu, mut peak_bytes, mut loading) = (Vec::new(), 0, 0);
+        let (mut cpu, mut done, mut peak_bytes, mut loading) = (Vec::new(), Vec::new(), 0, 0);
         let started = clock::now();
         for f in 1.. {
             let now = (FRAME * f).as_secs_f64() * 1000.0;
@@ -312,10 +328,14 @@ pub(crate) async fn run(
                 *map.camera_mut() = (path.camera)(settings, f64::from(f) / PATH_FRAMES as f64);
             }
             let before = uploaded(gpu);
+            let start = clock::now();
             let (report, time) = render(gpu, &mut map);
             match timing {
                 Timing::Timestamps => gpu.throttle().await,
-                Timing::WorkDone => gpu.finish().await,
+                Timing::WorkDone => {
+                    gpu.finish().await;
+                    done.push(clock::now() - start);
+                }
             }
             // A flight's thousands of frames outrun the timestamp queries;
             // this bench reads CPU times only.
@@ -357,7 +377,9 @@ pub(crate) async fn run(
         let _ = index.hit_test(center, map.camera(), viewport, &map.surface());
         picking.hit_test_again = clock::now() - started;
         cpu.sort_unstable();
+        done.sort_unstable();
         paths.push(PathResult {
+            done,
             name: path.name,
             cpu,
             peak_bytes,
@@ -400,19 +422,26 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | frames loading | peak MiB/frame | settle ms |"
+            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | to GPU done p50 | p95 | frames > 16.7 ms | frames loading | peak MiB/frame | settle ms |"
         )?;
-        writeln!(out, "|---|---|---|---|---|---|---|---|---|")?;
+        writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|---|")?;
         for p in &self.paths {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.0} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.0} |",
                 p.name,
                 ms(p.at(0.5)),
                 ms(p.at(0.95)),
                 ms(p.at(0.99)),
                 ms(p.at(1.0)),
                 p.cpu.iter().filter(|&&t| t > FRAME).count(),
+                done(&p.done, |d| ms(percentile(d, 0.5))),
+                done(&p.done, |d| ms(percentile(d, 0.95))),
+                done(&p.done, |d| d
+                    .iter()
+                    .filter(|&&t| t > FRAME)
+                    .count()
+                    .to_string()),
                 p.loading,
                 p.peak_bytes as f64 / (1024.0 * 1024.0),
                 p.settle.as_secs_f64() * 1000.0,
@@ -421,8 +450,9 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "Times in ms of `Map::render` (applying arrived tiles, uploads, placement, encoding); \
-             settle: from the path's end until the map is idle."
+            "Times in ms of `Map::render` (applying arrived tiles, uploads, placement, encoding), \
+             and with `--timing work-done` until the GPU finished the frame; settle: from the \
+             path's end until the map is idle."
         )?;
         writeln!(out)?;
         writeln!(

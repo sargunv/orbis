@@ -15,7 +15,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
 use glam::DVec2;
-use orb_camera::{CameraState, View};
+use orb_camera::View;
 use orb_crs::{CoveredTile, TileIndex, TileMatrixSet, WorldRect};
 use orb_render::{
     ClipRect, DRAPE_SLOT_PX, DemRef, DrapeLayout, PageId, PlacementTarget, TerrainDem, TerrainTile,
@@ -139,9 +139,6 @@ pub(crate) struct Terrain {
     /// elevations were last taken.
     stale: bool,
     pub(crate) revision: u64,
-    /// The camera of the previous frame: zoom-only changes wait until it
-    /// stops.
-    last_camera: Option<CameraState>,
 }
 
 impl Terrain {
@@ -175,7 +172,6 @@ impl Terrain {
             elevation: Arc::new(TerrainElevation::empty(tms.clone(), exaggeration)),
             stale: true,
             revision: 0,
-            last_camera: None,
         }
     }
 
@@ -311,14 +307,13 @@ impl Terrain {
     /// This frame's terrain tiles for the renderer, with slots assigned
     /// from `layout`, and which tile slots to redraw. `content` hashes the
     /// draped content under a terrain tile; `look` is the zoom, bearing and
-    /// cross-fade it draws at, redrawn for only once `camera` stops. On a
-    /// globe, `globe` places a tile on the sphere.
+    /// cross-fade it draws at. A tile whose either changed redraws in this
+    /// frame. On a globe, `globe` places a tile on the sphere.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
         view: &View,
-        camera: &CameraState,
         layout: DrapeLayout,
         content: &dyn Fn(CoveredTile) -> u64,
         look: [u64; 3],
@@ -330,8 +325,6 @@ impl Terrain {
             self.free.clear();
             self.next_slot = 0;
         }
-        let moving = self.last_camera.is_some_and(|last| last != *camera);
-        self.last_camera = Some(*camera);
         let keep: HashSet<CoveredTile> = self.tiles.iter().copied().collect();
         let free = &mut self.free;
         self.slots.retain(|tile, slot| {
@@ -348,7 +341,7 @@ impl Terrain {
             let content = content(tile);
             let slot = match self.slots.get_mut(&tile) {
                 Some(slot) => {
-                    if slot.content != content || (slot.look != look && !moving) {
+                    if slot.content != content || slot.look != look {
                         slot.content = content;
                         slot.look = look;
                         redraw.push((tile, slot.index));

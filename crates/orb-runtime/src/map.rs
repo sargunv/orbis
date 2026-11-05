@@ -2573,7 +2573,7 @@ impl Map {
             crate::terrain::hash((revision, parts))
         };
         // Viewport-anchored hillshades turn their light with the map: the
-        // bearing joins the look, so they redraw once the camera stops.
+        // bearing joins the look, so they redraw as it turns.
         let zoom = self.camera.zoom(self.surface.projection());
         let turns = plan.nodes.iter().any(|n| {
             matches!(&plan.style.layers[n.layer].kind, LayerKind::Hillshade(h)
@@ -2599,15 +2599,7 @@ impl Map {
                 poles: orb_crs::sphere::poles(&surface, tile),
             })
         };
-        let (tiles, redraw) = terrain.plan(
-            &surface,
-            view,
-            &self.camera,
-            layout,
-            &content,
-            look,
-            &mut globe,
-        );
+        let (tiles, redraw) = terrain.plan(&surface, view, layout, &content, look, &mut globe);
         renderer.set_terrain_tiles(gpu, &tiles);
         let slots: Vec<u32> = redraw.iter().map(|&(_, slot)| slot).collect();
         renderer.redraw_drape(&slots);
