@@ -7,9 +7,8 @@
 //! it, or the end of the stroke shows inside the tile. (GL JS's buffer is
 //! 28 px at z19.8; a 140 px road crossing a tile edge at 57° lost a corner
 //! on each side of it.) A line's dash phase and label anchors so start at
-//! its own start when that lies within a tile of the child, as in GL JS's
-//! default path, which lays out the whole ancestor; GL JS's slices start
-//! them at its buffer.
+//! its own start when that lies within a tile of the child; GL JS's slices
+//! start them at its buffer (decision 0009).
 
 use crate::{GeometryType, Layer, LayerBuilder, TileFrame};
 

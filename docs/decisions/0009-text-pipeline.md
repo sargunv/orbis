@@ -444,11 +444,18 @@ sort). The leaves are ported line by line: `quads.ts`, `get_anchors.ts`,
   bucket's scalars, the glyph keys by tile-local id, and the image names.
   Across web workers they ride in the packed tile after the meshes.
 - **Deviations.**
-  - Overscaling is 1. Orbis slices an overzoomed tile to its own extent, so
-    every tile lays out at its own scale. GL JS lays out the whole ancestor
-    at its overscaled size, so labels near a child tile's edges can differ.
-    A slice keeps lines a tile past its square, so line labels anchor from
-    the line's start when that lies within a tile.
+  - Overscaling is 1. Orbis slices every overzoomed tile from its source
+    tile to its own extent, so every tile lays out at its own scale. The
+    pinned GL JS (`zoomLevelsToOverscale`, 4 by default) slices tiles up to
+    four zooms below the map's `maxZoom` the same way, then overscales those
+    slices. Its slices cut lines at a 128-unit buffer, so a wide stroke ends
+    in caps at a child's edge; Orbis keeps lines a tile past the square, so
+    strokes cross it whole and dash phase and line-label anchors start at
+    the line's own start when that lies within a tile. Twelve render
+    fixtures at z16–17 over maxzoom-14 sources expect GL JS's cut and
+    differ for that reason: `line-dasharray/overscaled`,
+    `line-pattern/pitch`, `symbol-placement/line-center-upperright`, seven
+    of `text-pitch-alignment/` and `text-pitch-scaling/line-half{,-roll}`.
   - No Southeast Asian word breaks: no segmentation data is loaded, which
     matches GL JS without `Intl.Segmenter`.
 
