@@ -52,7 +52,7 @@ pub use paint::{
     LINE_ROW_WORDS, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, SYMBOL_ROW_WORDS,
     StateLookup, SymbolPaint, SymbolSize, Translate, pack_color,
 };
-pub use tiles::{GpuTile, ImageBuild, ImageMesh, TileKey, UploadError, dem_prepares};
+pub use tiles::{GpuTile, ImageBuild, ImageMesh, MeshRows, TileKey, UploadError, dem_prepares};
 
 use orb_hal::*;
 use orb_shaders::{

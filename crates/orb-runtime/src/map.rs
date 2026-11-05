@@ -209,17 +209,16 @@ pub(crate) struct DrapePlan {
 
 /// A tile in the scene: one scene tile per layer extent holding a mesh per
 /// render node with features, and an image tile's texture layer.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ResidentTile {
-    pub(crate) parts: Vec<(u32, TileId)>,
+    /// What the renderer holds of it: its meshes in scene tiles, its
+    /// patches, an image tile's layer.
+    pub(crate) gpu: GpuTile,
+    /// What the map keeps of each mesh, symbol meshes included.
     pub(crate) meshes: Vec<Resident>,
     pub(crate) image: Option<ResidentImage>,
-    /// What the renderer holds of it: an image tile's layer and quads.
-    pub(crate) gpu: Option<GpuTile>,
-    /// A vector tile drawn through a warp: its series, and its patches in
-    /// the scene.
+    /// A tile drawn through a warp's patches: its series.
     pub(crate) series: Option<Arc<orb_crs::Series>>,
-    pub(crate) warp: TileWarp,
     /// The style zoom it laid out at (decision 0022).
     pub(crate) zoom: f64,
     /// Its symbol layers' buckets; their meshes are among `meshes`.
@@ -230,19 +229,15 @@ pub(crate) struct ResidentTile {
 }
 
 impl ResidentTile {
-    /// The scene tiles it places, one per layer extent.
-    pub(crate) fn parts<'a>(&'a self, renderer: &'a Renderer) -> &'a [(u32, TileId)] {
-        match self.gpu {
-            Some(handle) => renderer.tile_parts(handle),
-            None => &self.parts,
-        }
-    }
-
-    /// The planar patches it draws through.
-    pub(crate) fn warp(&self, renderer: &Renderer) -> TileWarp {
-        match self.gpu {
-            Some(handle) => renderer.tile_warp(handle),
-            None => self.warp,
+    pub(crate) fn new(gpu: GpuTile, zoom: f64) -> Self {
+        Self {
+            gpu,
+            meshes: Vec::new(),
+            image: None,
+            series: None,
+            zoom,
+            symbols: Vec::new(),
+            cost: 0,
         }
     }
 }
@@ -1586,8 +1581,8 @@ impl Map {
                     continue;
                 };
                 for (tile, resident) in pyramid.ready_mut() {
-                    let (Some(image), Some(handle)) = (resident.image.as_mut(), resident.gpu)
-                    else {
+                    let handle = resident.gpu;
+                    let Some(image) = resident.image.as_mut() else {
                         continue;
                     };
                     let Ok(grid) = image_mesh(
@@ -1634,11 +1629,11 @@ impl Map {
             };
             for (_, resident) in pyramid.ready_mut() {
                 resident.symbols.retain(|s| keys.contains(&(s.layer * 2)));
+                // The renderer drops the meshes of nodes that leave.
                 resident.meshes.retain_mut(|mesh| {
                     if keys.contains(&mesh.node) {
                         return true;
                     }
-                    renderer.scene().remove_mesh(mesh.mesh);
                     for &index in &mesh.states {
                         style.states.release(index);
                     }
@@ -2174,7 +2169,7 @@ impl Map {
             };
             // Nowhere to draw it this frame: no placements.
             let Some(globe) = globe else {
-                for (_, scene_tile) in resident.parts(renderer).to_vec() {
+                for (_, scene_tile) in renderer.tile_parts(resident.gpu).to_vec() {
                     renderer
                         .scene()
                         .place_tile(scene_tile, &[])
@@ -2182,8 +2177,8 @@ impl Map {
                 }
                 continue;
             };
-            let tile_warp = resident.warp(renderer);
-            let parts = resident.parts(renderer).to_vec();
+            let tile_warp = renderer.tile_warp(resident.gpu);
+            let parts = renderer.tile_parts(resident.gpu).to_vec();
             for (extent, scene_tile) in parts {
                 let at = Placement {
                     extent,
@@ -2235,7 +2230,7 @@ impl Map {
         }
         for tile in placed.iter().filter(|t| !rows.contains_key(t)) {
             if let Some(resident) = pyramid.get(*tile) {
-                for (_, scene_tile) in resident.parts(renderer).to_vec() {
+                for (_, scene_tile) in renderer.tile_parts(resident.gpu).to_vec() {
                     renderer
                         .scene()
                         .place_tile(scene_tile, &[])
@@ -2254,10 +2249,7 @@ impl Map {
             let tiles: Vec<_> = ordered
                 .iter()
                 .flat_map(|tile| {
-                    pyramid
-                        .get(*tile)
-                        .expect("drawn tiles are ready")
-                        .parts(renderer)
+                    renderer.tile_parts(pyramid.get(*tile).expect("drawn tiles are ready").gpu)
                 })
                 .map(|&(_, tile)| tile)
                 .collect();
@@ -2665,7 +2657,7 @@ impl Map {
                     let meshes: Vec<_> = resident
                         .map(|r| r.meshes.iter().map(|m| m.mesh).collect())
                         .unwrap_or_default();
-                    let held = resident.and_then(|r| r.gpu);
+                    let held = resident.map(|r| r.gpu);
                     parts.push((i, draw.tile, draw.wrap, draw.regions.clone(), meshes, held));
                 }
             }
@@ -3258,10 +3250,8 @@ impl Map {
                     }
                     let mut resident = ResidentTile {
                         image: Some(ResidentImage { warped }),
-                        gpu: Some(handle),
                         series,
-                        zoom: tile_zoom,
-                        ..ResidentTile::default()
+                        ..ResidentTile::new(handle, tile_zoom)
                     };
                     resident.cost = tile_cost(renderer, &resident);
                     if let Some(unwanted) = pyramid.insert(tile, resident) {
@@ -3306,23 +3296,30 @@ impl Map {
         drop_stale(&mut build, plan, &stale);
         let footprint = warp.as_mut().and_then(|warp| warp.footprint(tile));
         let tile_zoom = self.surface.tile_zoom(&endpoint.tms, tile, footprint);
+        // A tile on another plane draws through its series' patches.
+        let series = warp.as_mut().and_then(|warp| warp.series(tile));
+        let patches = series.as_deref().map(series_patches);
+        let key = TileKey {
+            source: plan.sources[source].key,
+            tile,
+        };
         let mut atlas = self.services.images.0.lock().expect("images poisoned");
         // Make room for the whole tile before writing any of it: an upload
         // that runs out part way starts over, so making room one eviction
         // at a time would write the tile again for every tile evicted.
         let sizes = mesh_sizes(plan, &build);
-        let mut fits = renderer.scene().fits(sizes.iter().copied());
+        let mut fits = renderer.fits(&sizes);
         while !fits {
             let Some(victim) = evict_unused(&mut style.sources, source) else {
                 break;
             };
             self.retired_ramps
                 .extend(remove_resident(renderer, victim, &mut style.states));
-            fits = renderer.scene().fits(sizes.iter().copied());
+            fits = renderer.fits(&sizes);
         }
         // With nothing more to evict, the scene grows within its budget.
         if !fits {
-            fits = renderer.scene().grow_for(gpu, &sizes);
+            fits = renderer.grow_for(gpu, &sizes);
         }
         // Other tiles still loading will free the stand-ins they replace:
         // until they have, this one waits rather than give up its own, and
@@ -3343,11 +3340,12 @@ impl Map {
                 .as_mut()
                 .unwrap()
                 .release_ramps(gpu, self.retired_ramps.drain(..));
+            let patches = patches.as_ref().map(|(cells, p)| (*cells, &p[..]));
             match upload(
                 gpu,
                 renderer,
                 plan,
-                &build,
+                (key, &build, patches),
                 atlas.atlas.as_mut().expect("initialized"),
                 style.image_namespace.expect("namespace"),
                 &mut style.states,
@@ -3359,7 +3357,7 @@ impl Map {
                 Err(OutOfSpace) => {
                     let unused = evict_unused(&mut style.sources, source);
                     // Labels' sizes aren't known ahead: grow both pools.
-                    if unused.is_none() && renderer.scene().grow(gpu) {
+                    if unused.is_none() && renderer.grow(gpu) {
                         continue;
                     }
                     let victim = unused.or_else(|| match &mut style.sources[source] {
@@ -3380,7 +3378,7 @@ impl Map {
             }
         };
         drop(atlas);
-        let SourceState::Ready { pyramid, warp, .. } = &mut style.sources[source] else {
+        let SourceState::Ready { pyramid, .. } = &mut style.sources[source] else {
             unreachable!("checked above");
         };
         let Some(mut resident) = resident else {
@@ -3400,10 +3398,7 @@ impl Map {
             pyramid.insert_missing(tile);
             return None;
         };
-        // A tile on another plane draws through its series' patches.
-        if let Some(warp) = warp.as_mut() {
-            planar_patches(gpu, renderer, warp, tile, &mut resident, &mut self.warnings);
-        }
+        resident.series = series;
         self.counts.meshes_uploaded += build.meshes.len() as u32;
         record_maxima(&mut style.nodes, &build.meshes, &mut style.painted);
         resident.cost = tile_cost(renderer, &resident);
@@ -3564,21 +3559,52 @@ pub(crate) fn words(stream: &Stream, bytes: Option<HostBytesId>) -> Words<'_> {
     }
 }
 
-/// What a mesh's rows refer to besides their words: images patched into
-/// them, retained ramps, and the feature-state remap.
+/// What a result mesh's rows refer to besides their words: the images
+/// patched into them, the ramps among those (retained), and the
+/// feature-state indices its features refer to (interned).
+pub(crate) struct ResolvedRows {
+    pub(crate) images: Vec<(u32, u32)>,
+    pub(crate) ramps: Vec<u32>,
+    pub(crate) states: Vec<u32>,
+}
+
+impl ResolvedRows {
+    pub(crate) fn rows(&self) -> orb_render::MeshRows<'_> {
+        orb_render::MeshRows {
+            images: &self.images,
+            states: &self.states,
+        }
+    }
+
+    /// Hands back what [`resolve_rows`] retained, for rows that didn't
+    /// upload.
+    pub(crate) fn release(
+        self,
+        gpu: &mut dyn Gpu,
+        atlas: &mut ImageAtlas,
+        states: &mut FeatureStates,
+    ) {
+        for index in self.states {
+            states.release(index);
+        }
+        atlas.release_ramps(gpu, self.ramps);
+    }
+}
+
+/// Resolves a result mesh's images in the atlas and interns its features'
+/// states.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn attach_rows(
+pub(crate) fn resolve_rows(
     gpu: &mut dyn Gpu,
-    renderer: &mut Renderer,
     plan: &StylePlan,
     result: &TileResult,
     mesh: &ResultMesh,
-    id: MeshId,
     atlas: &mut ImageAtlas,
     namespace: u64,
     states: &mut FeatureStates,
     warnings: &mut Vec<String>,
-) -> Result<(Vec<u32>, Vec<u32>), OutOfSpace> {
+) -> ResolvedRows {
+    let mut images = Vec::new();
     let mut ramps = Vec::new();
     for image in &mesh.images {
         match atlas.resolve_key(gpu, namespace, &image.key) {
@@ -3587,9 +3613,7 @@ pub(crate) fn attach_rows(
                     atlas.retain_ramp(image_id);
                     ramps.push(image_id);
                 }
-                renderer
-                    .scene()
-                    .set_mesh_image(gpu, id, image.word, image_id);
+                images.push((image.word, image_id));
             }
             Err(e) => warnings.push(e.into()),
         }
@@ -3608,14 +3632,11 @@ pub(crate) fn attach_rows(
             })
             .collect();
     }
-    if let Err(e) = renderer.scene().set_mesh_state(gpu, id, &indices) {
-        for &index in &indices {
-            states.release(index);
-        }
-        atlas.release_ramps(gpu, ramps);
-        return Err(e);
+    ResolvedRows {
+        images,
+        ramps,
+        states: indices,
     }
-    Ok((ramps, indices))
 }
 
 /// Uploads one result mesh into a resident tile, in the part of its
@@ -3634,18 +3655,6 @@ pub(crate) fn upload_mesh(
     warnings: &mut Vec<String>,
 ) -> Result<(), OutOfSpace> {
     let node = plan.node(mesh.node).expect("meshes of planned nodes") as u32;
-    let part = match resident
-        .parts
-        .iter()
-        .find(|(extent, _)| *extent == mesh.extent)
-    {
-        Some(&(_, id)) => id,
-        None => {
-            let id = renderer.scene().insert_tile();
-            resident.parts.push((mesh.extent, id));
-            id
-        }
-    };
     let data = MeshData {
         vertices: words(&mesh.vertices, result.host_bytes),
         indices: words(&mesh.indices, result.host_bytes),
@@ -3653,14 +3662,12 @@ pub(crate) fn upload_mesh(
         row_words: mesh.row_words,
         chunks: &mesh.chunks,
     };
-    let id = renderer.scene().insert_mesh(gpu, part, node, &data)?;
-    let attached = attach_rows(
-        gpu, renderer, plan, result, mesh, id, atlas, namespace, states, warnings,
-    );
-    let (ramps, indices) = match attached {
-        Ok(attached) => attached,
+    let rows = resolve_rows(gpu, plan, result, mesh, atlas, namespace, states, warnings);
+    let added = renderer.add_mesh(gpu, resident.gpu, (node, mesh.extent), &data, &rows.rows());
+    let id = match added {
+        Ok(id) => id,
         Err(e) => {
-            renderer.scene().remove_mesh(id);
+            rows.release(gpu, atlas, states);
             return Err(e);
         }
     };
@@ -3670,20 +3677,20 @@ pub(crate) fn upload_mesh(
         mesh: id,
         layout_rev: result.revision,
         rows_rev: result.revision,
-        ramps,
-        states: indices,
+        ramps: rows.ramps,
+        states: rows.states,
     });
     Ok(())
 }
 
-/// Uploads a tile's meshes, one scene tile per layer extent: all of them or,
-/// when the scene is out of space, none.
+/// Uploads a tile's meshes and symbol buckets, drawing through `patches`:
+/// all of them or, when the scene is out of space, none.
 #[allow(clippy::too_many_arguments)]
 fn upload(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     plan: &StylePlan,
-    result: &TileResult,
+    (key, result, patches): (TileKey, &TileResult, Option<(u32, &[f32])>),
     atlas: &mut ImageAtlas,
     namespace: u64,
     states: &mut FeatureStates,
@@ -3691,10 +3698,8 @@ fn upload(
     tile_zoom: f64,
     warnings: &mut Vec<String>,
 ) -> Result<ResidentTile, OutOfSpace> {
-    let mut resident = ResidentTile {
-        zoom: tile_zoom,
-        ..ResidentTile::default()
-    };
+    let handle = renderer.add_tile(gpu, key, patches)?;
+    let mut resident = ResidentTile::new(handle, tile_zoom);
     for mesh in &result.meshes {
         // Symbol nodes' rows go up with their layer's bucket.
         if plan
@@ -3780,7 +3785,7 @@ pub(crate) fn tile_cost(renderer: &Renderer, resident: &ResidentTile) -> u64 {
         .iter()
         .map(|m| renderer.scene_ref().mesh_bytes(m.mesh) + m.hits.bytes())
         .sum();
-    meshes + resident.gpu.map_or(0, |t| renderer.tile_bytes(t))
+    meshes + renderer.tile_bytes(resident.gpu)
 }
 
 /// Removes a tile from the scene. Returns the ramps its rows retained.
@@ -3789,13 +3794,7 @@ pub(crate) fn remove_resident(
     tile: ResidentTile,
     states: &mut FeatureStates,
 ) -> Vec<u32> {
-    for (_, id) in tile.parts {
-        renderer.scene().remove_tile(id);
-    }
-    renderer.scene().remove_warp(tile.warp);
-    if let Some(handle) = tile.gpu {
-        renderer.release_tile(handle);
-    }
+    renderer.release_tile(tile.gpu);
     let mut ramps = Vec::new();
     for mut mesh in tile.meshes {
         for index in mesh.states {
@@ -4236,29 +4235,6 @@ fn bend_of(cells: u32, [north, south]: [bool; 2]) -> crate::Bend {
         north,
         south,
     }
-}
-
-/// Gives a tile on another plane its planar patches, if the warp has them
-/// (it draws through them on the plane, and as a globe hands over).
-fn planar_patches(
-    gpu: &mut dyn Gpu,
-    renderer: &mut Renderer,
-    warp: &mut WarpState,
-    tile: TileIndex,
-    resident: &mut ResidentTile,
-    warnings: &mut Vec<String>,
-) {
-    let Some(series) = warp.series(tile) else {
-        return;
-    };
-    let (cells, patches) = series_patches(&series);
-    match renderer.scene().add_warp(gpu, cells, &patches) {
-        Ok(warp) => resident.warp = warp,
-        Err(OutOfSpace) => warnings.push(format!(
-            "tile {tile:?}: out of property memory for its warp"
-        )),
-    }
-    resident.series = Some(series);
 }
 
 /// Cells per side of an image source's grid: GL JS's granularity for warped

@@ -27,7 +27,7 @@ use orb_v8::LayerKind;
 
 use crate::jobs::{StyleUpdate, TileResult};
 use crate::map::{
-    Map, NodeState, SourceState, attach_rows, record_maxima, revise, upload_mesh, words,
+    Map, NodeState, SourceState, record_maxima, resolve_rows, revise, upload_mesh, words,
 };
 
 /// The class a paint change costs this renderer for one node:
@@ -429,11 +429,24 @@ impl Map {
                     continue;
                 }
                 let props = words(&mesh.props, build.host_bytes);
-                if renderer
-                    .scene()
-                    .set_mesh_props(gpu, current.mesh, &props, mesh.row_words)
-                    .is_err()
-                {
+                let rows = resolve_rows(
+                    gpu,
+                    plan,
+                    &build,
+                    mesh,
+                    atlas,
+                    namespace,
+                    &mut style.states,
+                    &mut self.warnings,
+                );
+                let set = renderer.set_mesh_rows(
+                    gpu,
+                    current.mesh,
+                    (&props, mesh.row_words),
+                    &rows.rows(),
+                );
+                if set.is_err() {
+                    rows.release(gpu, atlas, &mut style.states);
                     self.warnings
                         .push("out of property memory; a paint edit is not drawn".into());
                     continue;
@@ -442,26 +455,8 @@ impl Map {
                 for index in current.states.drain(..) {
                     style.states.release(index);
                 }
-                match attach_rows(
-                    gpu,
-                    renderer,
-                    plan,
-                    &build,
-                    mesh,
-                    current.mesh,
-                    atlas,
-                    namespace,
-                    &mut style.states,
-                    &mut self.warnings,
-                ) {
-                    Ok((ramps, states)) => {
-                        current.ramps = ramps;
-                        current.states = states;
-                    }
-                    Err(_) => self
-                        .warnings
-                        .push("out of property memory; feature state is not drawn".into()),
-                }
+                current.ramps = rows.ramps;
+                current.states = rows.states;
                 current.hits = mesh.hits.clone();
                 current.rows_rev = build.revision;
                 self.counts.rows_uploaded += 1;
@@ -482,7 +477,7 @@ impl Map {
                     .partition(|m| m.node == key);
                 resident.meshes = kept;
                 for mut old in old {
-                    renderer.scene().remove_mesh(old.mesh);
+                    renderer.remove_mesh(resident.gpu, old.mesh);
                     for index in old.states.drain(..) {
                         style.states.release(index);
                     }
@@ -508,7 +503,7 @@ impl Map {
                     };
                     let mut uploaded = upload(gpu, renderer, &mut style.states, &mut self.warnings);
                     // The scene grows within its budget before a layer goes.
-                    if uploaded.is_err() && renderer.scene().grow(gpu) {
+                    if uploaded.is_err() && renderer.grow(gpu) {
                         uploaded = upload(gpu, renderer, &mut style.states, &mut self.warnings);
                     }
                     if uploaded.is_err() {

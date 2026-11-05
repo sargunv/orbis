@@ -1,6 +1,11 @@
 //! Tiles the renderer holds (plan §5.4): what an upload made of a tile,
 //! behind a handle the map keeps in its pyramid.
 //!
+//! A vector tile holds one scene tile per layer extent, its meshes in
+//! them by render node, symbol meshes among them, and the planar patches
+//! it draws through. The map refers to a mesh by its [`MeshId`] for the
+//! edits that replace its rows and for symbol state.
+//!
 //! An image tile takes a layer of its source's page, which the source's
 //! first tile makes and the source's image nodes bind, and a quad (or a
 //! warped mesh) in each of those nodes. Image tiles are indexed by source
@@ -14,7 +19,9 @@ use std::sync::Arc;
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
 use orb_layout::{Chunk, TileBox};
-use orb_scene::{MeshData, MeshId, MeshSize, OutOfSpace, Pixels, TileId, TileWarp, Words};
+use orb_scene::{
+    MeshData, MeshId, MeshSize, OutOfSpace, Pixels, SymbolMeshData, TileId, TileWarp, Words,
+};
 
 use crate::Renderer;
 use crate::image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
@@ -60,6 +67,16 @@ pub struct ImageBuild<'a> {
     pub fade_from: Option<f32>,
     /// A DEM tile's unpack vector.
     pub unpack: Option<[f32; 4]>,
+}
+
+/// What a mesh's property rows refer to besides their words.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MeshRows<'a> {
+    /// Image ids to patch into row words: `(word, image)`.
+    pub images: &'a [(u32, u32)],
+    /// Per feature slot, its feature-state index; empty for the default
+    /// state.
+    pub states: &'a [u32],
 }
 
 /// Why an upload failed.
@@ -352,6 +369,162 @@ impl Renderer {
         }
         self.tiles.entries[tile.0 as usize] = Some(entry);
         result
+    }
+
+    /// A vector tile with no meshes yet, drawing through planar patches
+    /// (cells per side and their words) if it has any.
+    pub fn add_tile(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        key: TileKey,
+        patches: Option<(u32, &[f32])>,
+    ) -> Result<GpuTile, OutOfSpace> {
+        let warp = match patches {
+            Some((cells, patches)) => self.scene.add_warp(gpu, cells, patches)?,
+            None => TileWarp::NONE,
+        };
+        Ok(self.tiles.insert(Entry {
+            key,
+            parts: Vec::new(),
+            meshes: Vec::new(),
+            image: None,
+            warp,
+        }))
+    }
+
+    /// Adds a mesh for render `node` to a tile, in its part of layer
+    /// extent `extent`, with what its rows refer to.
+    pub fn add_mesh(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        tile: GpuTile,
+        (node, extent): (u32, u32),
+        data: &MeshData<'_>,
+        rows: &MeshRows<'_>,
+    ) -> Result<MeshId, OutOfSpace> {
+        let part = self.part(tile, extent);
+        let id = self.scene.insert_mesh(gpu, part, node, data)?;
+        if let Err(e) = self.attach(gpu, id, rows) {
+            self.scene.remove_mesh(id);
+            return Err(e);
+        }
+        self.entry_mut(tile).meshes.push((node, id));
+        Ok(id)
+    }
+
+    /// Adds a symbol stream for render `node` to a tile, with its rows'
+    /// feature-state indices.
+    pub fn add_symbol_mesh(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        tile: GpuTile,
+        node: u32,
+        data: &SymbolMeshData<'_>,
+        states: &[u32],
+    ) -> Result<MeshId, OutOfSpace> {
+        let part = self.part(tile, IMAGE_EXTENT);
+        let id = self.scene.insert_symbol_mesh(gpu, part, node, data)?;
+        if let Err(e) = self.scene.set_mesh_state(gpu, id, states) {
+            self.scene.remove_mesh(id);
+            return Err(e);
+        }
+        self.entry_mut(tile).meshes.push((node, id));
+        Ok(id)
+    }
+
+    /// Removes one of a tile's meshes.
+    pub fn remove_mesh(&mut self, tile: GpuTile, mesh: MeshId) {
+        self.scene.remove_mesh(mesh);
+        self.entry_mut(tile).meshes.retain(|&(_, id)| id != mesh);
+    }
+
+    /// Replaces a mesh's property rows, keeping its geometry: `row_words`
+    /// per feature, and what they refer to.
+    pub fn set_mesh_rows(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        mesh: MeshId,
+        (props, row_words): (&Words<'_>, u32),
+        rows: &MeshRows<'_>,
+    ) -> Result<(), OutOfSpace> {
+        self.scene.set_mesh_props(gpu, mesh, props, row_words)?;
+        self.attach(gpu, mesh, rows)
+    }
+
+    /// Whether meshes of these sizes would fit without growing the pools.
+    pub fn fits(&self, meshes: &[MeshSize]) -> bool {
+        self.scene.fits(meshes.iter().copied())
+    }
+
+    /// Grows the pools, within their limits, until meshes of these sizes
+    /// fit; whether they do.
+    pub fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
+        self.scene.grow_for(gpu, meshes)
+    }
+
+    /// Grows the pools once, within their limits; whether they grew.
+    pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
+        self.scene.grow(gpu)
+    }
+
+    /// How many world copies a symbol mesh keeps state words for.
+    pub fn symbol_copies(&self, mesh: MeshId) -> u32 {
+        self.scene.symbol_copies(mesh)
+    }
+
+    /// Keeps state words for `copies` world copies (a power of two), all
+    /// hidden until written.
+    pub fn set_symbol_copies(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        mesh: MeshId,
+        copies: u32,
+    ) -> Result<(), OutOfSpace> {
+        self.scene.set_symbol_copies(gpu, mesh, copies)
+    }
+
+    /// Writes a symbol mesh's state words for world copy `wrap`.
+    pub fn write_symbol_states(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        mesh: MeshId,
+        wrap: i32,
+        words: &[u32],
+    ) {
+        self.scene.write_symbol_states(gpu, mesh, wrap, words);
+    }
+
+    /// Sets the order a symbol mesh's quads draw in: every quad once.
+    pub fn write_symbol_order(&mut self, gpu: &mut dyn Gpu, mesh: MeshId, order: &[u32]) {
+        self.scene.write_symbol_order(gpu, mesh, order);
+    }
+
+    fn attach(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        mesh: MeshId,
+        rows: &MeshRows<'_>,
+    ) -> Result<(), OutOfSpace> {
+        for &(word, image) in rows.images {
+            self.scene.set_mesh_image(gpu, mesh, word, image);
+        }
+        self.scene.set_mesh_state(gpu, mesh, rows.states)
+    }
+
+    fn entry_mut(&mut self, tile: GpuTile) -> &mut Entry {
+        self.tiles.entries[tile.0 as usize]
+            .as_mut()
+            .expect("a released tile")
+    }
+
+    /// A tile's scene tile of layer extent `extent`, made if need be.
+    fn part(&mut self, tile: GpuTile, extent: u32) -> TileId {
+        if let Some(&(_, id)) = self.entry_mut(tile).parts.iter().find(|p| p.0 == extent) {
+            return id;
+        }
+        let id = self.scene.insert_tile();
+        self.entry_mut(tile).parts.push((extent, id));
+        id
     }
 
     /// The scene tiles a tile places, one per layer extent.

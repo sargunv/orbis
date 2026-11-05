@@ -72,6 +72,14 @@ otherwise lets a coarser tile stand in.
   it cross-fades from, without the map's bookkeeping. Render nodes name the
   source they draw (`RenderNode`).
 
+- **Vector and symbol meshes next.** A vector tile is a `GpuTile` the map
+  fills with `add_mesh` and `add_symbol_mesh`; the renderer keeps its scene
+  tiles per layer extent and its patches. `MeshId` stays a handle the map
+  holds for the edits that replace a mesh's rows (`set_mesh_rows`) and for
+  symbol state. `remap_nodes` drops the meshes of nodes that leave, in
+  every tile. Image keys and feature-state indices are still resolved on
+  the CPU and passed in as `MeshRows`.
+
 ## Still to land
 
 The Map/Renderer split (`plan_frame`, a narrow `Renderer` that owns all

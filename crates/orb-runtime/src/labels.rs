@@ -192,9 +192,9 @@ impl BucketMeshes {
             (self.icon, &states.icon, &states.icon_order),
         ] {
             let Some(mesh) = mesh else { continue };
-            renderer.scene().write_symbol_states(gpu, mesh, wrap, words);
+            renderer.write_symbol_states(gpu, mesh, wrap, words);
             if !order.is_empty() {
-                renderer.scene().write_symbol_order(gpu, mesh, order);
+                renderer.write_symbol_order(gpu, mesh, order);
             }
         }
     }
@@ -591,7 +591,7 @@ impl Labels {
         resident.symbols.retain(|r| r.layer != s.layer);
         resident.meshes.retain(|m| {
             if m.node == icon_key || m.node == text_key {
-                renderer.scene().remove_mesh(m.mesh);
+                renderer.remove_mesh(resident.gpu, m.mesh);
                 for &index in &m.states {
                     states.release(index);
                 }
@@ -664,14 +664,6 @@ impl Labels {
             })
             .collect();
 
-        let part = match resident.parts.iter().find(|(extent, _)| *extent == 8192) {
-            Some(&(_, id)) => id,
-            None => {
-                let id = renderer.scene().insert_tile();
-                resident.parts.push((8192, id));
-                id
-            }
-        };
         let meta = &s.meta;
         let text_layout = layout_size(&symbol.layout.text_size, tile_zoom);
         let icon_layout = layout_size(&symbol.layout.icon_size, tile_zoom);
@@ -785,9 +777,34 @@ impl Labels {
                 chunks: &chunks,
             };
             debug_assert_eq!(data.placed.len(), placed.len() as u32 * PLACED_WORDS);
-            let mesh = renderer
-                .scene()
-                .insert_symbol_mesh(gpu, part, node, &data)?;
+            // Symbol rows name no images: only their features' states.
+            let mut warnings = Vec::new();
+            let rows = rows_mesh.map(|m| {
+                crate::map::resolve_rows(
+                    gpu,
+                    plan,
+                    result,
+                    m,
+                    images,
+                    namespace,
+                    states,
+                    &mut warnings,
+                )
+            });
+            debug_assert!(
+                rows.as_ref().is_none_or(|r| r.ramps.is_empty()) && warnings.is_empty(),
+                "symbol rows name no images"
+            );
+            let indices = rows.map(|r| r.states).unwrap_or_default();
+            let mesh = match renderer.add_symbol_mesh(gpu, resident.gpu, node, &data, &indices) {
+                Ok(mesh) => mesh,
+                Err(e) => {
+                    for index in indices {
+                        states.release(index);
+                    }
+                    return Err(e);
+                }
+            };
             resident.meshes.push(Resident {
                 node: key,
                 mesh,
@@ -795,28 +812,8 @@ impl Labels {
                 layout_rev: result.revision,
                 rows_rev: result.revision,
                 ramps: Vec::new(),
-                states: Vec::new(),
+                states: indices,
             });
-            if let Some(rows_mesh) = rows_mesh {
-                let mut warnings = Vec::new();
-                let (ramps, indices) = crate::map::attach_rows(
-                    gpu,
-                    renderer,
-                    plan,
-                    result,
-                    rows_mesh,
-                    mesh,
-                    images,
-                    namespace,
-                    states,
-                    &mut warnings,
-                )?;
-                debug_assert!(
-                    ramps.is_empty() && warnings.is_empty(),
-                    "symbol rows name no images"
-                );
-                resident.meshes.last_mut().expect("pushed above").states = indices;
-            }
             if key == text_key {
                 meshes.text = Some(mesh);
             } else {
@@ -1008,12 +1005,9 @@ impl Labels {
                 .next_power_of_two();
             let mut rewrite = false;
             for mesh in [meshes.text, meshes.icon].into_iter().flatten() {
-                if renderer.scene().symbol_copies(mesh) < copies {
+                if renderer.symbol_copies(mesh) < copies {
                     // Out of memory: copies keep sharing their words.
-                    rewrite |= renderer
-                        .scene()
-                        .set_symbol_copies(gpu, mesh, copies)
-                        .is_ok();
+                    rewrite |= renderer.set_symbol_copies(gpu, mesh, copies).is_ok();
                 }
             }
             if rewrite {
@@ -1690,6 +1684,16 @@ mod tests {
             }
         }
 
+        /// An empty tile to upload buckets into.
+        fn tile(&mut self) -> ResidentTile {
+            let key = orb_render::TileKey {
+                source: 0,
+                tile: orb_crs::TileIndex::new(14, 14552, 6450),
+            };
+            let gpu = self.renderer.add_tile(&mut self.gpu, key, None).unwrap();
+            ResidentTile::new(gpu, 14.0)
+        }
+
         fn upload(&mut self, resident: &mut ResidentTile) -> Result<(), OutOfSpace> {
             self.labels.upload(
                 &mut self.gpu,
@@ -1768,7 +1772,7 @@ mod tests {
     #[test]
     fn commits_skip_buckets_replaced_while_placing() {
         let mut h = Harness::new(SceneCapacity::default());
-        let mut resident = ResidentTile::default();
+        let mut resident = h.tile();
         h.upload(&mut resident).unwrap();
         let old = resident.symbols[0].bucket;
         h.placing(old, &[0]);
@@ -1784,7 +1788,7 @@ mod tests {
     #[test]
     fn commits_keep_world_copies_apart_after_invalidation() {
         let mut h = Harness::new(SceneCapacity::default());
-        let mut resident = ResidentTile::default();
+        let mut resident = h.tile();
         h.upload(&mut resident).unwrap();
         let bucket = resident.symbols[0].bucket;
         h.placing(bucket, &[0, 1]);
@@ -1792,7 +1796,7 @@ mod tests {
         let commit = h.commit(bucket, &[0, 1]);
         h.labels.committed(&mut h.gpu, &mut h.renderer, commit);
         let mesh = h.labels.buckets[&bucket].text.expect("a text mesh");
-        assert_eq!(h.renderer.scene().symbol_copies(mesh), 2);
+        assert_eq!(h.renderer.symbol_copies(mesh), 2);
     }
 
     /// S6: a failed upload hands its glyph leases back.
@@ -1802,7 +1806,7 @@ mod tests {
             vertex_words: 64,
             ..SceneCapacity::fixed()
         });
-        let mut resident = ResidentTile::default();
+        let mut resident = h.tile();
         assert!(h.upload(&mut resident).is_err());
         h.labels.retire(&mut h.gpu, h.renderer.glyphs());
         assert!(h.labels.glyphs.leases.is_empty());
