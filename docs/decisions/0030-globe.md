@@ -75,10 +75,28 @@ On an Apple M-series laptop, native:
   `property:projection` and now skip on `atmosphere-blend` until the
   globe's atmosphere joins (decision 0025).
 
-## Left for later
+## Gestures
 
-- Pole caps: Web Mercator stops at ±85.05°, and the globe shows the gap.
-  GL JS extends top and bottom row geometry to the poles.
+Drags, zooms and rotations around a point turn the camera around the
+sphere so the ground grabbed stays under the pointer, keeping the zoom and
+bearing (GL JS's `versorSetLocationAtPoint`): an arc rotation from what
+shows under the pointer to the ground grabbed, then Newton steps on the
+target's longitude and latitude, within 0.05 px near the poles and across
+the antimeridian. Inertia glides go through the same pan.
+
+## Pole caps
+
+Web Mercator stops at ±85.05°. As in GL JS, the world's top and bottom row
+tiles extend to the poles: fills fan their edges along the world's edge to
+a pole vertex in jobs, image tiles' grids fan their edge texels, and the
+background's grid fans both edges. A pole vertex has y −32768 or 32767
+(orb-layout's `NORTH_POLE_Y`, `SOUTH_POLE_Y`), the sentinels GL JS uses,
+but read explicitly: the shader puts it at the pole only where the row's
+clip rectangles reach past the world's edge (the placement extends an edge
+region's rectangle to the pole), and on the tile's edge, as a degenerate
+triangle, everywhere else and on the plane.
+
+## Left for later
 - The atmosphere on the globe (R2, decision 0025): the flat sky is off on a
   globe until its sphere joins `AtmosphereView`.
 - Terrain on the globe, and extrusions' depth (the horizon plane's depth is

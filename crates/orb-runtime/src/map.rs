@@ -1491,16 +1491,19 @@ impl Map {
         let SourceState::Ready { endpoint, warp, .. } = &mut style.sources[index] else {
             return;
         };
-        let mut subdivision = warp
+        let mut bend = warp
             .as_mut()
             .filter(|_| vector)
             .and_then(|warp| warp.series(tile))
-            .map(|series| series.grid());
-        // On a globe, geometry bends with the sphere.
+            .map(|series| bend_of(series.grid(), [false; 2]));
+        // On a globe, geometry bends with the sphere, and the world's edge
+        // rows reach the poles.
         if vector && self.surface.globe().is_some() {
             let grid = self.globe_warps.grid(&endpoint.tms, tile);
-            if grid > 1 {
-                subdivision = Some(subdivision.map_or(grid, |g| g.max(grid)));
+            let poles = orb_crs::sphere::poles(&endpoint.tms, tile);
+            if grid > 1 || poles.contains(&true) {
+                let cells = bend.map_or(grid, |b| b.cells.max(grid));
+                bend = Some(bend_of(cells, poles));
             }
         }
         let footprint = warp.as_mut().and_then(|warp| warp.footprint(tile));
@@ -1511,7 +1514,7 @@ impl Map {
             source: key,
             tile,
             zoom,
-            subdivision,
+            bend,
             data_zoom: tile.z.min(endpoint.maxzoom),
             location: endpoint.location(endpoint.data_tile(tile)),
             encoding: endpoint.encoding,
@@ -2002,7 +2005,7 @@ impl Map {
                 source: terrain.key,
                 tile,
                 zoom: endpoint.tms.style_zoom(tile),
-                subdivision: None,
+                bend: None,
                 data_zoom: tile.z,
                 location: endpoint.location(tile),
                 encoding: endpoint.encoding,
@@ -3279,12 +3282,32 @@ fn placements<'a>(
         None => DVec2::new(bounds.min.x, bounds.max.y) + wrap - camera_world,
     };
     let tile = draw.tile;
+    // On a globe, regions on the world's edge reach on to the poles the
+    // set stops short of (caps, `project.wgsl`). Sets are quadtrees.
+    let (first, rows0) = (tms.min_zoom(), tms.matrix_size(tms.min_zoom()).1);
+    let caps = match globe {
+        Some(_) => {
+            let bottom = TileIndex::new(first, 0, rows0 - 1);
+            [
+                orb_crs::sphere::poles(tms, TileIndex::new(first, 0, 0))[0],
+                orb_crs::sphere::poles(tms, bottom)[1],
+            ]
+        }
+        None => [false; 2],
+    };
     let rect = move |region: TileIndex| {
         let depth = region.z - tile.z;
         let size = extent >> depth;
         let x = (region.col - (tile.col << depth)) * size;
         let y = (region.row - (tile.row << depth)) * size;
-        ClipRect::new([x as i16, y as i16], [(x + size) as i16, (y + size) as i16])
+        let (mut min, mut max) = ([x as i16, y as i16], [(x + size) as i16, (y + size) as i16]);
+        if caps[0] && region.row == 0 {
+            min[1] = i16::MIN;
+        }
+        if caps[1] && region.row + 1 == rows0 << (region.z - first) {
+            max[1] = i16::MAX;
+        }
+        ClipRect::new(min, max)
     };
     // One placement has four clip rectangles. Split larger partitions into
     // disjoint rows instead of expanding to quadrants that overlap loaded
@@ -3557,6 +3580,14 @@ fn write_paint(
     }
 }
 
+fn bend_of(cells: u32, [north, south]: [bool; 2]) -> crate::Bend {
+    crate::Bend {
+        cells,
+        north,
+        south,
+    }
+}
+
 /// An image tile's mesh on a globe: a grid fine enough for the sphere to
 /// bend, or `None` for its quad.
 fn globe_grid(
@@ -3565,12 +3596,15 @@ fn globe_grid(
     tms: &TileMatrixSet,
     tile: TileIndex,
 ) -> Option<Arc<image::Warped>> {
-    let cells = if globe {
-        globe_warps.grid(tms, tile)
-    } else {
-        1
-    };
-    (cells > 1).then(|| Arc::new(image::Warped::grid(tms.tile_bounds(tile), cells)))
+    if !globe {
+        return None;
+    }
+    let (cells, poles) = (
+        globe_warps.grid(tms, tile),
+        orb_crs::sphere::poles(tms, tile),
+    );
+    (cells > 1 || poles.contains(&true))
+        .then(|| Arc::new(image::Warped::grid(tms.tile_bounds(tile), cells, poles)))
 }
 
 /// Cells per side of the background's grid on a globe: fine enough for a
@@ -3589,15 +3623,27 @@ fn make_background(
     let cells = if globe { BACKGROUND_GLOBE_CELLS } else { 1 };
     let n = cells + 1;
     let step = 8192 / cells;
-    let vertices = (0..n * n)
+    let mut vertices: Vec<u32> = (0..n * n)
         .flat_map(|k| [(k % n * step) | (k / n * step) << 16, 0])
         .collect();
-    let triangles: Vec<[u32; 3]> = (0..cells * cells)
+    let mut triangles: Vec<[u32; 3]> = (0..cells * cells)
         .flat_map(|c| {
             let k = c / cells * n + c % cells;
             [[k, k + 1, k + n + 1], [k, k + n + 1, k + n]]
         })
         .collect();
+    if globe {
+        // Caps: the top and bottom edges fanned out to the poles, which
+        // only the world's edge rows reach (`project.wgsl`).
+        for (row, pole) in [
+            (0, orb_layout::fill::NORTH_POLE_Y),
+            (cells, orb_layout::fill::SOUTH_POLE_Y),
+        ] {
+            let tip = (vertices.len() / 2) as u32;
+            vertices.extend([u32::from(pole as u16) << 16, 0]);
+            triangles.extend((0..cells).map(|i| [row * n + i, row * n + i + 1, tip]));
+        }
+    }
     let chunks = triangles
         .chunks(256)
         .enumerate()
@@ -3608,9 +3654,17 @@ fn make_background(
                 sort_key: None,
                 first_index: (c * 256 * 3) as u32,
                 index_count: (run.len() * 3) as u32,
-                bounds: orb_layout::TileBox {
-                    min: [0, (rows * step) as i16],
-                    max: [8192, ((last + 1) * step).min(8192) as i16],
+                // The caps' triangles come last and span every row.
+                bounds: if c * 256 >= (cells * cells * 2) as usize {
+                    orb_layout::TileBox {
+                        min: [0, i16::MIN],
+                        max: [8192, i16::MAX],
+                    }
+                } else {
+                    orb_layout::TileBox {
+                        min: [0, (rows * step) as i16],
+                        max: [8192, ((last + 1) * step).min(8192) as i16],
+                    }
                 },
             }
         })

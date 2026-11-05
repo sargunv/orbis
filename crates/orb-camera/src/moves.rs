@@ -1,8 +1,8 @@
 //! Camera moves in viewport pixels, which gestures and animations are built
 //! from, and the limits every move is kept to.
 
-use glam::DVec2;
-use orb_crs::{Projection, WorldRect};
+use glam::{DVec2, DVec3};
+use orb_crs::{Projection, WorldRect, sphere};
 use orb_geo::Geodetic;
 
 use crate::{CameraState, View, Viewport};
@@ -152,6 +152,12 @@ impl CameraState {
     pub fn pan(&mut self, surface: &Surface, viewport: Viewport, from: DVec2, to: DVec2) {
         let projection = &surface.projection;
         let view = View::new(self, viewport, surface);
+        if view.globe().is_some() {
+            if let Some(ground) = view.globe_ground(from, view.target_z()) {
+                self.put_under(surface, viewport, ground, to);
+            }
+            return;
+        }
         let (Some(a), Some(b)) = (view.unproject(from), view.unproject(to)) else {
             return;
         };
@@ -198,12 +204,75 @@ impl CameraState {
             change(self);
             return;
         }
-        let before = View::new(self, viewport, surface).unproject(at);
+        let view = View::new(self, viewport, surface);
+        if view.globe().is_some() {
+            let ground = view.globe_ground(at, view.target_z());
+            change(self);
+            if let Some(ground) = ground {
+                self.put_under(surface, viewport, ground, at);
+            }
+            return;
+        }
+        let before = view.unproject(at);
         change(self);
         let view = View::new(self, viewport, surface);
         if let (Some(before), Some(after)) = (before, view.unproject(at)) {
             let world = view.camera_world() + (before - after);
             self.set_target_world(projection, world, view.world_per_px());
+        }
+    }
+
+    /// On a globe, turns the camera around the sphere so the ECEF position
+    /// `ground` shows at `px`, keeping the zoom and bearing (GL JS's
+    /// `versorSetLocationAtPoint`): the arc from what shows there to
+    /// `ground` turns the target, then Newton steps on its longitude and
+    /// latitude land it exactly. Nothing moves where `px` is off the sphere.
+    fn put_under(&mut self, surface: &Surface, viewport: Viewport, ground: DVec3, px: DVec2) {
+        let projection = &surface.projection;
+        let zoom = self.zoom(projection);
+        let view = View::new(self, viewport, surface);
+        let Some(now) = view.globe_ground(px, view.target_z()) else {
+            return;
+        };
+        let turn = glam::DQuat::from_rotation_arc(now.normalize(), ground.normalize());
+        let at = |target: Geodetic| {
+            let mut camera = CameraState { target, ..*self };
+            camera.set_zoom(projection, zoom);
+            camera
+        };
+        let shown = |camera: &CameraState| {
+            let view = View::new(camera, viewport, surface);
+            view.globe()?;
+            view.project(projection.forward(sphere::geodetic(ground)))
+        };
+        let mut best = at(sphere::geodetic(turn * sphere::up(self.target.wrapped())));
+        for _ in 0..4 {
+            let Some(p) = shown(&best) else {
+                break;
+            };
+            let miss = p - px;
+            if miss.length() < 1e-6 {
+                break;
+            }
+            // The pixel's motion per degree of longitude and latitude.
+            let h = 1e-6;
+            let t = best.target;
+            let (Some(dx), Some(dy)) = (
+                shown(&at(Geodetic::new(t.lon + h, t.lat))),
+                shown(&at(Geodetic::new(t.lon, t.lat + h))),
+            ) else {
+                break;
+            };
+            let jacobian = glam::DMat2::from_cols((dx - p) / h, (dy - p) / h);
+            if jacobian.determinant().abs() < 1e-12 {
+                break;
+            }
+            let step = jacobian.inverse() * miss;
+            best = at(Geodetic::new(t.lon - step.x, t.lat - step.y));
+        }
+        if shown(&best).is_some() {
+            let g = best.target;
+            *self = at(Geodetic::new(g.lon, g.lat.clamp(-90.0, 90.0)).wrapped());
         }
     }
 
@@ -503,5 +572,48 @@ mod tests {
         assert_eq!(wrap_bearing(-180.0), 180.0);
         assert_eq!(wrap_bearing(540.0), 180.0);
         assert_eq!(wrap_bearing(-30.0), -30.0);
+    }
+
+    /// On the globe, a drag keeps the ground it grabbed under the pointer,
+    /// near the poles and across the antimeridian too, and keeps the zoom.
+    #[test]
+    fn globe_drags_hold_the_grabbed_ground() {
+        let surface = Surface {
+            projection: mercator(),
+            globe: Some(orb_crs::Globe::V8),
+        };
+        for (lon, lat, zoom, bearing, pitch) in [
+            (10.0, 30.0, 2.0, 0.0, 0.0),
+            (179.0, -20.0, 4.0, 40.0, 30.0),
+            (-30.0, 82.0, 3.0, -120.0, 50.0),
+            (100.0, 10.0, 9.0, 10.0, 60.0),
+        ] {
+            let mut camera = CameraState::new(Geodetic::new(lon, lat), zoom, &mercator());
+            camera.bearing = bearing;
+            camera.pitch = pitch;
+            let at = DVec2::new(520.0, 420.0);
+            for to in [DVec2::new(560.0, 380.0), DVec2::new(400.0, 470.0)] {
+                let view = View::new(&camera, VIEWPORT, &surface);
+                let ground = view.globe_ground(at, view.target_z()).unwrap();
+                let mut moved = camera;
+                moved.pan(&surface, VIEWPORT, at, to);
+                let view = View::new(&moved, VIEWPORT, &surface);
+                let p = view.project(mercator().forward(sphere::geodetic(ground)));
+                let p = p.unwrap();
+                assert!(p.distance(to) < 0.05, "{lon},{lat} z{zoom}: {p} for {to}");
+                assert!((moved.zoom(&mercator()) - zoom).abs() < 1e-9);
+                assert_eq!(moved.bearing, bearing);
+            }
+            // Zooming around a point keeps it in place.
+            let view = View::new(&camera, VIEWPORT, &surface);
+            let ground = view.globe_ground(at, view.target_z()).unwrap();
+            let mut zoomed = camera;
+            zoomed.zoom_around(&surface, VIEWPORT, at, zoom + 0.7);
+            let view = View::new(&zoomed, VIEWPORT, &surface);
+            let p = view
+                .project(mercator().forward(sphere::geodetic(ground)))
+                .unwrap();
+            assert!(p.distance(at) < 0.05, "{lon},{lat}: zoom around {p}");
+        }
     }
 }

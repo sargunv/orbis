@@ -11,8 +11,8 @@
 //! Messages, render worker to job worker:
 //! - `{style, update}`: lay out later requests for style id `style` with a
 //!   revision of it, a [`StyleUpdate`] as JSON.
-//! - `{id, style, source, z, zoom, subdivision?, dataZoom, col, row, url, archive, encoding,
-//!   nodes?, rowsOnly}`: load a tile, or lay out some of its nodes (by key)
+//! - `{id, style, source, z, zoom, subdivision?, poles?, dataZoom, col, row, url, archive,
+//!   encoding, nodes?, rowsOnly}`: load a tile, or lay out some of its nodes (by key)
 //!   again from the worker's cached tile, or only their property rows.
 //!
 //! - `{features: true, id, …tile, layer?, indices?, filter?}`: features of
@@ -271,9 +271,13 @@ fn tile_fields(request: &TileRequest) -> Vec<(&'static str, JsValue)> {
         ("zoom", request.zoom.into()),
         (
             "subdivision",
-            request
-                .subdivision
-                .map_or(JsValue::UNDEFINED, JsValue::from),
+            request.bend.map_or(JsValue::UNDEFINED, |b| b.cells.into()),
+        ),
+        (
+            "poles",
+            request.bend.map_or(JsValue::UNDEFINED, |b| {
+                (u32::from(b.north) | u32::from(b.south) << 1).into()
+            }),
         ),
         ("dataZoom", request.data_zoom.into()),
         ("col", request.tile.col.into()),
@@ -552,7 +556,14 @@ impl JobWorker {
             source,
             tile,
             zoom: number(message, "zoom")?,
-            subdivision: field(message, "subdivision").as_f64().map(|v| v as u32),
+            bend: field(message, "subdivision").as_f64().map(|cells| {
+                let poles = field(message, "poles").as_f64().unwrap_or(0.0) as u32;
+                orb_runtime::Bend {
+                    cells: cells as u32,
+                    north: poles & 1 != 0,
+                    south: poles & 2 != 0,
+                }
+            }),
             data_zoom,
             location: location.clone(),
             encoding,

@@ -46,21 +46,42 @@ impl Warped {
     }
 
     /// A tile's own square (`frame`) as a grid of `cells` per side, for a
-    /// globe to bend.
-    pub(crate) fn grid(frame: orb_crs::WorldRect, cells: u32) -> Self {
+    /// globe to bend, with its top or bottom edge fanned out to the North
+    /// or South Pole (caps) as `poles` ask: each cap triangle stretches its
+    /// edge's texels to the pole, as GL JS's do.
+    pub(crate) fn grid(frame: orb_crs::WorldRect, cells: u32, poles: [bool; 2]) -> Self {
         let n = cells + 1;
-        let positions: Vec<glam::DVec2> = (0..n * n)
+        let mut positions: Vec<glam::DVec2> = (0..n * n)
             .map(|k| glam::DVec2::new(f64::from(k % n), f64::from(k / n)) / f64::from(cells))
             .collect();
-        let triangles = (0..cells * cells)
+        let mut sources = positions.clone();
+        let mut triangles: Vec<[u32; 3]> = (0..cells * cells)
             .flat_map(|c| {
                 let k = c / cells * n + c % cells;
                 [[k, k + 1, k + n + 1], [k, k + n + 1, k + n]]
             })
             .collect();
+        let pole_y = [
+            orb_layout::fill::NORTH_POLE_Y,
+            orb_layout::fill::SOUTH_POLE_Y,
+        ];
+        for ((cap, row), pole) in poles.into_iter().zip([0, cells]).zip(pole_y) {
+            if !cap {
+                continue;
+            }
+            // Positions in image units, where the shader reads the pole.
+            let y = f64::from(pole) / f64::from(IMAGE_EXTENT);
+            for i in 0..cells {
+                let tip = positions.len() as u32;
+                let middle = (f64::from(i) + 0.5) / f64::from(cells);
+                positions.push(glam::DVec2::new(middle, y));
+                sources.push(glam::DVec2::new(middle, f64::from(row) / f64::from(cells)));
+                triangles.push([row * n + i, row * n + i + 1, tip]);
+            }
+        }
         Self::of(orb_crs::WarpMesh {
             frame,
-            sources: positions.clone(),
+            sources,
             positions,
             triangles,
         })

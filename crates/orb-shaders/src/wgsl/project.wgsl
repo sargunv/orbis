@@ -108,7 +108,36 @@ struct Ground {
     globe: vec3<f32>,
 };
 
+// Vertices at y -32768 and 32767 are at the North and South Pole (caps,
+// orb-layout's `NORTH_POLE_Y`): there on a globe where the row's clip
+// rectangles reach past the tile's edge toward that pole, and on the edge
+// otherwise.
+const SPHERE_RADIUS: f32 = 6378137.0;
+
+fn reaches_pole(tile: Tile, north: bool) -> bool {
+    for (var i = 0u; i < 4u; i++) {
+        let lo = unpack_i16x2(tile.clips[i].x);
+        let hi = unpack_i16x2(tile.clips[i].y);
+        if lo.x <= hi.x && ((north && lo.y < 0.0) || (!north && hi.y > tile.extent)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 fn tile_ground(tile: Tile, p: vec2<f32>) -> Ground {
+    let north = p.y <= -32767.5;
+    if north || p.y >= 32766.5 {
+        var g = tile_surface(tile, vec2<f32>(clamp(p.x, 0.0, tile.extent), select(tile.extent, 0.0, north)));
+        if frame.globe_amount > 0.0 && reaches_pole(tile, north) {
+            g.globe = vec3<f32>(0.0, 0.0, select(-SPHERE_RADIUS, SPHERE_RADIUS, north)) - frame.globe_target;
+        }
+        return g;
+    }
+    return tile_surface(tile, p);
+}
+
+fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
     var g: Ground;
     if frame.globe_amount <= 0.0 {
         g.flat = tile_to_world(tile, p);

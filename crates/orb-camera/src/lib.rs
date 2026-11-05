@@ -400,21 +400,10 @@ impl View {
     /// The world position under a point in logical pixels on the level
     /// plane `z` world units above the datum, or `None` above its horizon.
     pub fn unproject_at(&self, px: DVec2, z: f64) -> Option<DVec2> {
-        if let Some(globe) = &self.globe {
-            // The ray's nearest meeting with the sphere `z` above it.
-            let (near, far) = self.ray(px, &globe.view_proj);
-            let (origin, dir) = (near + globe.target, (far - near).normalize());
-            let radius = sphere::RADIUS + z / self.height_scale;
-            let b = origin.dot(dir);
-            let disc = b * b - (origin.length_squared() - radius * radius);
-            if disc < 0.0 {
-                return None;
-            }
-            let t = -b - disc.sqrt();
-            if t < 0.0 {
-                return None;
-            }
-            let world = self.projection.forward(sphere::geodetic(origin + dir * t));
+        if self.globe.is_some() {
+            let world = self
+                .projection
+                .forward(sphere::geodetic(self.globe_ground(px, z)?));
             // The copy of a wrapping world nearest the target.
             return Some(match self.wrap_period {
                 Some(period) => DVec2::new(
@@ -428,6 +417,23 @@ impl View {
         let t = (near.z - z) / (near.z - far.z);
         (far.z < near.z && t >= 0.0)
             .then(|| (near + (far - near) * t).truncate() + self.camera_world)
+    }
+
+    /// On a globe, the ECEF position under a point in logical pixels on the
+    /// sphere `z` world units above it: the view ray's nearest meeting with
+    /// it, or `None` where the ray misses.
+    pub(crate) fn globe_ground(&self, px: DVec2, z: f64) -> Option<DVec3> {
+        let globe = self.globe.as_ref()?;
+        let (near, far) = self.ray(px, &globe.view_proj);
+        let (origin, dir) = (near + globe.target, (far - near).normalize());
+        let radius = sphere::RADIUS + z / self.height_scale;
+        let b = origin.dot(dir);
+        let disc = b * b - (origin.length_squared() - radius * radius);
+        if disc < 0.0 {
+            return None;
+        }
+        let t = -b - disc.sqrt();
+        (t >= 0.0).then(|| origin + dir * t)
     }
 
     /// The near and far ends of the view ray through a point in logical

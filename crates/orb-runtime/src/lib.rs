@@ -51,6 +51,7 @@ pub use jobs::{
 pub use loader::{LoadDone, TileLoader, TileLocation};
 pub use map::{FrameReport, Images, JobCounts, Map, Services};
 pub use orb_camera::{CameraState, View, Viewport};
+pub use orb_layout::fill::Bend;
 pub use orb_render::{ARGS_WORDS, SceneCapacity, TargetFormat};
 pub use orb_style::{CostModel, FeatureTarget, Transaction};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};

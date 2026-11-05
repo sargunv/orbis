@@ -238,20 +238,20 @@ fn features(plan: &StylePlan, node: &NodePlan, layer: &Layer, zoom: f64) -> Vec<
     features
 }
 
-/// A node's geometry over `features`. `subdivision` (grid cells per side)
-/// cuts fills for a tile drawn through a curved warp.
+/// A node's geometry over `features`. `bend` cuts fills for a tile drawn
+/// through a curved warp or on a globe, and extends them to the poles.
 fn layout(
     layer: &Layer,
     features: &[u32],
     kind: &LayerKind,
     family: Family,
     zoom: f64,
-    subdivision: Option<u32>,
+    bend: Option<orb_layout::fill::Bend>,
 ) -> Mesh {
     match kind {
         LayerKind::Fill(_) => match family {
             Family::FillOutline => fill::outline(layer, features),
-            _ => fill::layout_subdivided(layer, features, subdivision),
+            _ => fill::layout_subdivided(layer, features, bend),
         },
         LayerKind::FillExtrusion(_) => extrusion::layout_in_extent(layer, features, 8192),
         LayerKind::Circle(c) => {
@@ -432,7 +432,7 @@ pub(crate) fn build(
     plan: &StylePlan,
     source: usize,
     zoom: f64,
-    subdivision: Option<u32>,
+    bend: Option<orb_layout::fill::Bend>,
     select: Select<'_>,
     symbols: Symbols<'_>,
 ) -> Result<TileBuild, Vec<String>> {
@@ -503,14 +503,7 @@ pub(crate) fn build(
                     Mesh::default()
                 }
                 _ => {
-                    let mesh = layout(
-                        layer,
-                        &features,
-                        &style_layer.kind,
-                        node.family,
-                        zoom,
-                        subdivision,
-                    );
+                    let mesh = layout(layer, &features, &style_layer.kind, node.family, zoom, bend);
                     if mesh.is_empty() {
                         continue;
                     }

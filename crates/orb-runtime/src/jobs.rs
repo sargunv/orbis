@@ -418,9 +418,9 @@ impl TileWorker {
         let frame = self.frame(bytes, encoding, request)?;
         // A warped tile's geometry follows the warp's curve; the cached
         // frame keeps the tile's own, for queries.
-        let frame = match request.subdivision {
-            Some(cells) => Arc::new(frame.subdivided(cells)),
-            None => frame,
+        let frame = match request.bend {
+            Some(bend) if bend.cells > 1 => Arc::new(frame.subdivided(bend.cells)),
+            _ => frame,
         };
         let select = Select {
             nodes: request.nodes.as_deref(),
@@ -438,13 +438,13 @@ impl TileWorker {
                 Words::Unavailable => tile::WordData::Unavailable,
             },
         };
-        let cells = request.subdivision;
+        let bend = request.bend;
         match tile::build(
             &frame,
             &self.plan,
             index,
             request.zoom,
-            cells,
+            bend,
             select,
             symbols,
         ) {
@@ -826,9 +826,10 @@ pub struct TileRequest {
     /// The style zoom the tile lays out at: its own zoom in
     /// `WebMercatorQuad`, from its ground resolution in other sets.
     pub zoom: f64,
-    /// Geometry is cut along a grid of this many cells per side: the tile
-    /// draws through a curved warp onto another plane.
-    pub subdivision: Option<u32>,
+    /// How geometry bends: cut along a grid of cells per side (the tile
+    /// draws through a curved warp or on a globe), with fills on the
+    /// world's edge extended to the poles.
+    pub bend: Option<orb_layout::fill::Bend>,
     /// Zoom of the ancestor whose bytes are fetched.
     pub data_zoom: u8,
     pub location: TileLocation,
@@ -1733,7 +1734,7 @@ pub(crate) mod tests {
             source: 1,
             tile,
             zoom: f64::from(tile.z),
-            subdivision: None,
+            bend: None,
             data_zoom: tile.z,
             location: TileLocation::Url("test://data.json".into()),
             encoding: Encoding::Mvt,

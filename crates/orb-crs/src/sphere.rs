@@ -40,6 +40,24 @@ pub fn frame(g: Geodetic) -> DMat3 {
     DMat3::from_cols(east, north, up(g))
 }
 
+/// Which poles a tile leaves bare on the sphere, north then south: those
+/// past its edge when it is in its set's top or bottom row and the set's
+/// world stops short of the pole (Web Mercator's at ±85.05°). Caps reach
+/// out to them.
+pub fn poles(tms: &TileMatrixSet, tile: TileIndex) -> [bool; 2] {
+    let rows = tms.matrix_size(tile.z).1;
+    let b = tms.tile_bounds(tile);
+    let projection = tms.projection();
+    let short = |y: f64| {
+        let lat = projection.inverse(DVec2::new(b.center().x, y)).lat;
+        lat.is_finite() && lat.abs() < 90.0 - 1e-9
+    };
+    [
+        tile.row == 0 && short(b.max.y),
+        tile.row + 1 == rows && short(b.min.y),
+    ]
+}
+
 /// A tile on the sphere as quadratic patches through exact positions, to
 /// within `tolerance` of the tile's side at its centre (the globe's
 /// `GpuPerVertex` and `Geodetic` plans), or `None` where its projection

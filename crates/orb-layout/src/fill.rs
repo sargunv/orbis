@@ -12,6 +12,22 @@ use crate::{Mesh, MeshBuilder};
 /// Words per fill vertex.
 pub const STRIDE: usize = 2;
 
+/// The y of a vertex at the North Pole, and of one at the South Pole: on a
+/// globe the shader puts them there; on a plane, on the tile's top or
+/// bottom edge (`project.wgsl`).
+pub const NORTH_POLE_Y: i16 = i16::MIN;
+pub const SOUTH_POLE_Y: i16 = i16::MAX;
+
+/// How a tile's fills bend onto a curved surface: cut along a grid of
+/// `cells` per side, and in a world's top or bottom row on a globe, their
+/// edges on the world's edge fanned out to the pole (plan §9.2's caps).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Bend {
+    pub cells: u32,
+    pub north: bool,
+    pub south: bool,
+}
+
 /// Lays out the polygons among `features` (indices into `layer`); other
 /// geometry types are skipped. Each feature's slot is its position in
 /// `features`.
@@ -22,8 +38,9 @@ pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
 /// [`layout`], with triangles cut along a grid of `cells` × `cells` over the
 /// tile, for a tile drawn through a curved warp onto another plane: edges
 /// then follow the curve (earcut drops the collinear vertices that cut the
-/// rings), and the vertices on the tile's edges are its neighbours'.
-pub fn layout_subdivided(layer: &Layer, features: &[u32], cells: Option<u32>) -> Mesh {
+/// rings), and the vertices on the tile's edges are its neighbours'. Edges
+/// on a pole's side extend to it.
+pub fn layout_subdivided(layer: &Layer, features: &[u32], bend: Option<Bend>) -> Mesh {
     let extent = i32::try_from(layer.extent()).expect("extent fits i32");
     assert!(
         extent <= i32::from(i16::MAX),
@@ -68,12 +85,23 @@ pub fn layout_subdivided(layer: &Layer, features: &[u32], cells: Option<u32>) ->
                 continue;
             }
             earcut.earcut(flat.iter().copied(), &holes, &mut triangles);
-            if let Some(cells) = cells {
-                subdivide(
-                    &mut points,
-                    &mut triangles,
-                    f64::from(extent) / f64::from(cells),
-                );
+            if let Some(bend) = bend {
+                if bend.cells > 1 {
+                    subdivide(
+                        &mut points,
+                        &mut triangles,
+                        f64::from(extent) / f64::from(bend.cells),
+                    );
+                }
+                let edge = extent as i16;
+                for (on, y, pole) in [
+                    (bend.north, 0, NORTH_POLE_Y),
+                    (bend.south, edge, SOUTH_POLE_Y),
+                ] {
+                    if on {
+                        cap(&mut points, &mut triangles, y, pole);
+                    }
+                }
             }
             let base = builder.vertex_count();
             for &[x, y] in &points {
@@ -131,6 +159,28 @@ pub fn outline(layer: &Layer, features: &[u32]) -> Mesh {
         }
     }
     builder.finish()
+}
+
+/// Fans the triangles' edges along the tile edge `y` out to a vertex at a
+/// pole. Only a polygon's boundary lies on the tile's edge after clipping.
+fn cap(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, y: i16, pole: i16) {
+    let mut fan = Vec::new();
+    for t in triangles.as_chunks::<3>().0 {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            if points[a as usize][1] == y && points[b as usize][1] == y {
+                fan.push((a, b));
+            }
+        }
+    }
+    let Some(&(first, _)) = fan.first() else {
+        return;
+    };
+    let tip = points.len() as u32;
+    points.push([points[first as usize][0], pole]);
+    for (a, b) in fan {
+        triangles.extend([a, b, tip]);
+    }
 }
 
 /// Cuts triangles along a grid of lines `step` apart into convex pieces,
@@ -328,7 +378,7 @@ mod tests {
 
 #[cfg(test)]
 mod subdivide_tests {
-    use super::subdivide;
+    use super::{NORTH_POLE_Y, SOUTH_POLE_Y, cap, subdivide};
 
     #[test]
     fn subdivision_keeps_area_and_cuts_at_grid_lines() {
@@ -362,5 +412,21 @@ mod subdivide_tests {
         }
         // The square's top edge has a vertex at each grid line.
         assert_eq!(points.iter().filter(|p| p[1] == 0).count(), 9);
+    }
+
+    #[test]
+    fn caps_fan_the_world_edge_to_the_pole() {
+        let mut points = vec![[0i16, 0], [4096, 0], [4096, 4096], [0, 4096]];
+        let mut triangles = vec![0, 1, 2, 0, 2, 3];
+        subdivide(&mut points, &mut triangles, 512.0);
+        let before = triangles.len() / 3;
+        cap(&mut points, &mut triangles, 0, NORTH_POLE_Y);
+        // One triangle per grid cell along the top edge, to one pole vertex.
+        assert_eq!(triangles.len() / 3 - before, 8);
+        assert_eq!(points.iter().filter(|p| p[1] == NORTH_POLE_Y).count(), 1);
+        // Nothing on the bottom edge's side without a south cap.
+        let n = triangles.len();
+        cap(&mut points, &mut triangles, 1000, SOUTH_POLE_Y);
+        assert_eq!(triangles.len(), n);
     }
 }

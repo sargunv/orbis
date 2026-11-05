@@ -194,7 +194,7 @@ impl crate::Map {
                 .get(tile)
                 .map_or_else(|| endpoint.tms.style_zoom(tile), |r| r.zoom),
             // Features are read as the tile has them.
-            subdivision: None,
+            bend: None,
             data_zoom: tile.z.min(endpoint.maxzoom),
             location: endpoint.location(endpoint.data_tile(tile)),
             encoding: endpoint.encoding,
