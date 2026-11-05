@@ -63,7 +63,7 @@ pub struct GlGpu {
     bundles: Slots<Vec<RenderCommand>>,
     host_bytes: Slots<HostBytes>,
     #[cfg(target_arch = "wasm32")]
-    host_images: Slots<web_sys::ImageBitmap>,
+    host_images: Slots<web::HostImage>,
     /// The WebGL2 context behind `gl`, for its extensions.
     #[cfg(target_arch = "wasm32")]
     webgl: Option<web_sys::WebGl2RenderingContext>,

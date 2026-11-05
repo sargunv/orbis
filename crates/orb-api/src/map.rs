@@ -15,7 +15,7 @@ use orb_crs::{TileIndex, TileMatrixSet};
 use orb_interact::{Button, Feel, Input, InteractEvent, Interaction};
 use orb_runtime::{
     CameraState, FrameReport, GridTile, Hit, MapEvent, RenderMode, StyleImage, TargetFormat,
-    Transaction, Viewport,
+    Transaction, VideoRequest, Viewport,
 };
 
 use crate::{Error, Runtime, Shared, Target};
@@ -269,6 +269,57 @@ impl Map {
         self.dirty = true;
         self.map
             .add_image(name, image)
+            .map_err(Error::InvalidArgument)
+    }
+
+    /// Whether this host plays `video` sources: it then gets
+    /// [`MapEvent::Video`] requests and hands frames to
+    /// [`video_frame`](Self::video_frame). Without it, video sources draw
+    /// nothing, with a warning.
+    pub fn set_plays_video(&mut self, plays: bool) {
+        self.map.set_plays_video(plays);
+    }
+
+    /// The frame the video of source `id` shows now: straight RGBA8 rows,
+    /// top first. It replaces any frame not yet drawn.
+    pub fn video_frame(
+        &mut self,
+        id: &str,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    ) -> Result<(), Error> {
+        if pixels.len() != width as usize * height as usize * 4 {
+            return Err(Error::InvalidArgument(
+                "pixels aren't width × height RGBA8".into(),
+            ));
+        }
+        self.dirty = true;
+        let frame = orb_runtime::TileImage {
+            width,
+            height,
+            pixels: orb_runtime::ImagePixels::Core(pixels),
+        };
+        self.map
+            .video_frame(id, frame)
+            .map_err(Error::InvalidArgument)
+    }
+
+    /// The video of source `id` can't play on this host: it draws nothing.
+    pub fn video_failed(&mut self, id: &str, message: &str) -> Result<(), Error> {
+        self.dirty = true;
+        self.map
+            .video_failed(id, message)
+            .map_err(Error::InvalidArgument)
+    }
+
+    /// Asks the host to play, pause or seek the video of source `id`, as a
+    /// [`MapEvent::Video`] (GL JS's `VideoSource` `play`, `pause`, `seek`).
+    pub fn control_video(&mut self, id: &str, request: VideoRequest) -> Result<(), Error> {
+        // The request goes out with the next frame's events.
+        self.dirty = true;
+        self.map
+            .control_video(id, request)
             .map_err(Error::InvalidArgument)
     }
 

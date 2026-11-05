@@ -2,8 +2,8 @@
 //!
 //! Host bytes are copied into wasm memory when written (WebGL2 has no
 //! `writeBuffer` from an `ArrayBuffer` the executor could reach through
-//! glow), and `ImageBitmap`s are read through a 2D canvas, since WebGL
-//! ignores premultiplication for them.
+//! glow), and images (`ImageBitmap`s, video elements) are read through a 2D
+//! canvas, since WebGL ignores premultiplication for them.
 
 use orb_hal::{HostBytesId, HostImageId};
 use wasm_bindgen::JsCast;
@@ -87,20 +87,47 @@ impl GlGpu {
 
     /// A decoded image, for [`orb_hal::Gpu::write_texture_from_host`].
     pub fn register_image_bitmap(&mut self, bitmap: web_sys::ImageBitmap) -> HostImageId {
-        HostImageId(self.host_images.insert(bitmap))
+        HostImageId(self.host_images.insert(HostImage::Bitmap(bitmap)))
+    }
+
+    /// A video element, whose frame at the time of the write
+    /// [`orb_hal::Gpu::write_texture_from_host`] reads.
+    pub fn register_video(&mut self, video: web_sys::HtmlVideoElement) -> HostImageId {
+        HostImageId(self.host_images.insert(HostImage::Video(video)))
+    }
+}
+
+/// A host-held image.
+#[derive(Debug)]
+pub(crate) enum HostImage {
+    Bitmap(web_sys::ImageBitmap),
+    Video(web_sys::HtmlVideoElement),
+}
+
+impl HostImage {
+    pub(crate) fn close(self) {
+        if let Self::Bitmap(bitmap) = self {
+            bitmap.close();
+        }
     }
 }
 
 /// An image's RGBA8 pixels, premultiplied if asked.
-pub(crate) fn read_bitmap(bitmap: &web_sys::ImageBitmap, premultiply: bool) -> Vec<u8> {
-    let (width, height) = (bitmap.width(), bitmap.height());
+pub(crate) fn read_bitmap(image: &HostImage, premultiply: bool) -> Vec<u8> {
+    let (width, height) = match image {
+        HostImage::Bitmap(bitmap) => (bitmap.width(), bitmap.height()),
+        HostImage::Video(video) => (video.video_width(), video.video_height()),
+    };
     let pixels = (|| -> Result<Vec<u8>, wasm_bindgen::JsValue> {
         let canvas = web_sys::OffscreenCanvas::new(width, height)?;
         let context = canvas
             .get_context("2d")?
             .ok_or("no 2d context")?
             .dyn_into::<web_sys::OffscreenCanvasRenderingContext2d>()?;
-        context.draw_image_with_image_bitmap(bitmap, 0.0, 0.0)?;
+        match image {
+            HostImage::Bitmap(bitmap) => context.draw_image_with_image_bitmap(bitmap, 0.0, 0.0),
+            HostImage::Video(video) => context.draw_image_with_html_video_element(video, 0.0, 0.0),
+        }?;
         Ok(context
             .get_image_data(0.0, 0.0, f64::from(width), f64::from(height))?
             .data()

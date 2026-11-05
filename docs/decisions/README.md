@@ -49,3 +49,4 @@ in code and commit messages.
 - [0042](0042-hosts-one-camera-writer.md): Hosts: one map with one camera writer, a thin native API, and the web on one thread
 - [0043](0043-core-frame-and-gpu.md): The core chain: camera-independent GPU state and a narrow renderer
 - [0044](0044-the-data-chain.md): The data chain: one paint path, one scene model, one codec
+- [0045](0045-video-sources.md): Video sources: events out, frames in

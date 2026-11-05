@@ -223,6 +223,21 @@ JNIEXPORT jint JNICALL Java_dev_orbis_OrbisNative_orbEventButton(JNIEnv* env, jc
     return (jint)(result);
 }
 
+JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbEventUrls(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    DiplomatWrite* write = diplomat_buffer_write_create(0);
+    OrbEvent_urls((const OrbEvent*)(intptr_t)self, write);
+    return write_to_bytes(env, write);
+}
+
+JNIEXPORT jdouble JNICALL Java_dev_orbis_OrbisNative_orbEventSeconds(JNIEnv* env, jclass cls, jlong self) {
+    (void)env;
+    (void)cls;
+    double result = OrbEvent_seconds((const OrbEvent*)(intptr_t)self);
+    return (jdouble)(result);
+}
+
 JNIEXPORT jbyteArray JNICALL Java_dev_orbis_OrbisNative_orbEventText(JNIEnv* env, jclass cls, jlong self) {
     (void)env;
     (void)cls;
@@ -362,6 +377,90 @@ JNIEXPORT jlong JNICALL Java_dev_orbis_OrbisNative_orbMapEdit(JNIEnv* env, jclas
         return 0;
     }
     return (jlong)(result.ok);
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSetPlaysVideo(JNIEnv* env, jclass cls, jlong self, jboolean plays) {
+    (void)env;
+    (void)cls;
+    OrbMap_set_plays_video((OrbMap*)(intptr_t)self, (bool)(plays));
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapVideoFrame(JNIEnv* env, jclass cls, jlong self, jbyteArray id, jint width, jint height, jbyteArray pixels) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    jbyte* pixels_items = (*env)->GetByteArrayElements(env, pixels, NULL);
+    if (!pixels_items) return;
+    DiplomatU8View pixels_view = { (const uint8_t*)pixels_items, (size_t)(*env)->GetArrayLength(env, pixels) };
+    OrbMap_video_frame_result result = OrbMap_video_frame((OrbMap*)(intptr_t)self, id_view, (uint32_t)(width), (uint32_t)(height), pixels_view);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, pixels, pixels_items, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapVideoFailed(JNIEnv* env, jclass cls, jlong self, jbyteArray id, jbyteArray message) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    jbyte* message_bytes = (*env)->GetByteArrayElements(env, message, NULL);
+    if (!message_bytes) return;
+    DiplomatStringView message_view = { (const char*)message_bytes, (size_t)(*env)->GetArrayLength(env, message) };
+    OrbMap_video_failed_result result = OrbMap_video_failed((OrbMap*)(intptr_t)self, id_view, message_view);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    (*env)->ReleaseByteArrayElements(env, message, message_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapPlayVideo(JNIEnv* env, jclass cls, jlong self, jbyteArray id) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    OrbMap_play_video_result result = OrbMap_play_video((OrbMap*)(intptr_t)self, id_view);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapPauseVideo(JNIEnv* env, jclass cls, jlong self, jbyteArray id) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    OrbMap_pause_video_result result = OrbMap_pause_video((OrbMap*)(intptr_t)self, id_view);
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapSeekVideo(JNIEnv* env, jclass cls, jlong self, jbyteArray id, jdouble seconds) {
+    (void)env;
+    (void)cls;
+    jbyte* id_bytes = (*env)->GetByteArrayElements(env, id, NULL);
+    if (!id_bytes) return;
+    DiplomatStringView id_view = { (const char*)id_bytes, (size_t)(*env)->GetArrayLength(env, id) };
+    OrbMap_seek_video_result result = OrbMap_seek_video((OrbMap*)(intptr_t)self, id_view, (double)(seconds));
+    (*env)->ReleaseByteArrayElements(env, id, id_bytes, JNI_ABORT);
+    if (!result.is_ok) {
+        throw_OrbError(env, result.err);
+        return;
+    }
 }
 
 JNIEXPORT void JNICALL Java_dev_orbis_OrbisNative_orbMapAddImage(JNIEnv* env, jclass cls, jlong self, jbyteArray name, jint width, jint height, jbyteArray pixels, jbyteArray options) {

@@ -25,6 +25,8 @@ open class MapView: PlatformView {
     public private(set) var framesDrawn = 0
 
     private let metalLayer = CAMetalLayer()
+    /// The style's video sources, played with AVFoundation.
+    private let videos = Videos()
     private var target: OrbTarget?
     private var displayLink: CADisplayLink?
 
@@ -44,6 +46,7 @@ open class MapView: PlatformView {
         layer.addSublayer(metalLayer)
         isMultipleTouchEnabled = true
         #endif
+        map.setPlaysVideo(plays: true)
         map.setWake { [weak self] in
             Task { @MainActor in self?.setNeedsFrame() }
         }
@@ -136,6 +139,7 @@ open class MapView: PlatformView {
 
     @objc private func step(_ link: CADisplayLink) {
         guard let target else { return }
+        videos.pump(map)
         do {
             let frame = try map.render(target: target)
             if frame.drawn {
@@ -149,9 +153,10 @@ open class MapView: PlatformView {
             print("Orbis: \(error)")
         }
         while let event = map.pollEvent() {
+            _ = videos.handle(event, map: map)
             onEvent?(event)
         }
-        if !map.needsFrame() {
+        if !map.needsFrame() && !videos.playing {
             link.isPaused = true
         }
     }

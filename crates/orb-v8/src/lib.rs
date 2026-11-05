@@ -5,8 +5,8 @@
 //! `background`, `fill`, `line`, `circle`, `heatmap`, `raster`, `hillshade` and `color-relief`
 //! layers are fully typed: every paint and layout property is a
 //! [`Property`] backed by an `orb_expr` expression and its classification,
-//! with the spec default. Other layer and source types
-//! are kept as `Unsupported` with a warning, so callers can skip them.
+//! with the spec default. Other layer types are kept as `Unsupported`
+//! with a warning, so callers can skip them.
 //! Defaults and coercions follow GL JS.
 
 #![forbid(unsafe_code)]
@@ -49,8 +49,8 @@ pub use property::{
 pub use scene::{AddedLayer, Scene, StyleRef, is_scene, parse_scene, tms_definition};
 pub use sky::Atmosphere;
 pub use source::{
-    GeoJsonData, GeoJsonSource, ImageSource, PromoteId, RasterDemSource, RasterSource, Source,
-    SourceKind, TileSet, VectorSource,
+    GeoJsonData, GeoJsonSource, ImageContent, ImageSource, PromoteId, RasterDemSource,
+    RasterSource, Source, SourceKind, TileSet, VectorSource,
 };
 pub use sprite::Sprite;
 pub use terrain::Terrain;

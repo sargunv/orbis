@@ -15,7 +15,7 @@ wgpu.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
 wasm-bindgen.workspace = true
-web-sys = { workspace = true, features = ["ImageBitmap"] }
+web-sys = { workspace = true, features = ["HtmlVideoElement", "ImageBitmap"] }
 wgpu = { workspace = true, features = ["webgpu"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

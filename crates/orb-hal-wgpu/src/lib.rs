@@ -64,11 +64,12 @@ pub struct WgpuGpu {
     query_sets: Slots<wgpu::QuerySet>,
     samplers: Slots<wgpu::Sampler>,
     host_bytes: Slots<HostBytes>,
-    /// `ImageBitmap`s for [`Gpu::write_texture_from_host`], copied with
+    /// `ImageBitmap`s and video elements for
+    /// [`Gpu::write_texture_from_host`], copied with
     /// `GPUQueue.copyExternalImageToTexture`. Native hosts decode into core
     /// memory and register none.
     #[cfg(target_arch = "wasm32")]
-    host_images: Slots<web_sys::ImageBitmap>,
+    host_images: Slots<wgpu::ExternalImageSource>,
     uploaded: Uploaded,
     pipelines_created: u32,
     /// Set when the device made by `offscreen` is lost.
@@ -88,8 +89,8 @@ pub struct Uploaded {
     pub from_js: u64,
     /// Texel bytes written to textures from Rust memory.
     pub texels_from_core: u64,
-    /// Texel bytes copied to textures from JS `ImageBitmap`s registered
-    /// with `WgpuGpu::register_image_bitmap`.
+    /// Texel bytes copied to textures from JS images registered with
+    /// `WgpuGpu::register_image_bitmap` or `register_video`.
     pub texels_from_js: u64,
 }
 
@@ -395,7 +396,20 @@ impl WgpuGpu {
     /// Registers a JS `ImageBitmap` for [`Gpu::write_texture_from_host`].
     #[cfg(target_arch = "wasm32")]
     pub fn register_image_bitmap(&mut self, bitmap: web_sys::ImageBitmap) -> HostImageId {
-        HostImageId(self.host_images.insert(bitmap))
+        HostImageId(
+            self.host_images
+                .insert(wgpu::ExternalImageSource::ImageBitmap(bitmap)),
+        )
+    }
+
+    /// Registers a video element, whose frame at the time of the write
+    /// [`Gpu::write_texture_from_host`] copies.
+    #[cfg(target_arch = "wasm32")]
+    pub fn register_video(&mut self, video: web_sys::HtmlVideoElement) -> HostImageId {
+        HostImageId(
+            self.host_images
+                .insert(wgpu::ExternalImageSource::HTMLVideoElement(video)),
+        )
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -767,7 +781,7 @@ impl Gpu for WgpuGpu {
         self.uploaded.texels_from_js += u64::from(region.width * region.height * 4);
         self.queue.copy_external_image_to_texture(
             &wgpu::CopyExternalImageSourceInfo {
-                source: wgpu::ExternalImageSource::ImageBitmap(self.host_images[image.0].clone()),
+                source: self.host_images[image.0].clone(),
                 origin: wgpu::Origin2d::ZERO,
                 flip_y: false,
             },
@@ -793,7 +807,9 @@ impl Gpu for WgpuGpu {
 
     #[cfg(target_arch = "wasm32")]
     fn release_host_image(&mut self, image: HostImageId) {
-        self.host_images.remove(image.0).close();
+        if let wgpu::ExternalImageSource::ImageBitmap(bitmap) = self.host_images.remove(image.0) {
+            bitmap.close();
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

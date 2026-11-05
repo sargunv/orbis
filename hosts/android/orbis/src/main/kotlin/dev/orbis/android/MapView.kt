@@ -51,9 +51,12 @@ class MapView(context: Context, val runtime: OrbRuntime) :
     private var target: OrbTarget? = null
     private var window = 0L
     private var scheduled = false
+    /** The style's video sources, played with MediaPlayer. */
+    private val videos = Videos(map, { post(it) }, { setNeedsFrame() })
 
     init {
         holder.addCallback(this)
+        map.setPlaysVideo(true)
         map.setWake { post { setNeedsFrame() } }
     }
 
@@ -121,7 +124,10 @@ class MapView(context: Context, val runtime: OrbRuntime) :
         }
         while (true) {
             val event = map.pollEvent() ?: break
-            event.use { onEvent?.invoke(it) }
+            event.use {
+                videos.handle(it)
+                onEvent?.invoke(it)
+            }
         }
         if (map.needsFrame()) setNeedsFrame()
     }
@@ -157,6 +163,7 @@ class MapView(context: Context, val runtime: OrbRuntime) :
         holder.removeCallback(this)
         Choreographer.getInstance().removeFrameCallback(this)
         dropTarget()
+        videos.close()
         map.close()
     }
 

@@ -669,8 +669,12 @@ impl Job {
                         self.resource(url.clone(), Then::Nothing);
                     }
                 }
-                SourceKind::Image(image) => self.resource(image.url.clone(), Then::Nothing),
-                _ => {}
+                SourceKind::Image(image) => {
+                    // A video streams from its host's player: not stored.
+                    if let orb_v8::ImageContent::Image(url) = &image.content {
+                        self.resource(url.clone(), Then::Nothing);
+                    }
+                }
             }
         }
     }

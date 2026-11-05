@@ -3,6 +3,7 @@
 // frames when idle.
 
 import type { FrameStats } from "./types.ts";
+import type { VideoEventObject } from "./videos.ts";
 
 /**
  * Runs `frame` on the next display frame after each `request()`, and again
@@ -81,7 +82,8 @@ export type MapEventObject =
   | { type: "load" } | { type: "idle" }
   | { type: "error"; message: string }
   | { type: "styleimagemissing"; id: string }
-  | { type: "capability"; tier: "modern" | "compat" };
+  | { type: "capability"; tier: "modern" | "compat" }
+  | VideoEventObject;
 
 /** The wasm map's per-frame surface. */
 export interface Renderer {

@@ -12,6 +12,7 @@ pub(crate) trait WebGpu: Gpu {
     /// on Modern.
     fn register_array_buffer(&mut self, buffer: js_sys::ArrayBuffer) -> HostBytesId;
     fn register_image_bitmap(&mut self, bitmap: web_sys::ImageBitmap) -> HostImageId;
+    fn register_video(&mut self, video: web_sys::HtmlVideoElement) -> HostImageId;
     /// Bytes uploaded since the device was made: from wasm memory, from JS.
     fn uploaded(&self) -> Uploaded;
     /// A colour target's pixels, rows top to bottom in the target's own
@@ -39,6 +40,9 @@ impl WebGpu for orb_hal_wgpu::WgpuGpu {
     fn register_image_bitmap(&mut self, bitmap: web_sys::ImageBitmap) -> HostImageId {
         orb_hal_wgpu::WgpuGpu::register_image_bitmap(self, bitmap)
     }
+    fn register_video(&mut self, video: web_sys::HtmlVideoElement) -> HostImageId {
+        orb_hal_wgpu::WgpuGpu::register_video(self, video)
+    }
     fn uploaded(&self) -> Uploaded {
         let u = orb_hal_wgpu::WgpuGpu::uploaded(self);
         Uploaded {
@@ -63,6 +67,9 @@ impl WebGpu for orb_hal_gl::GlGpu {
     }
     fn register_image_bitmap(&mut self, bitmap: web_sys::ImageBitmap) -> HostImageId {
         orb_hal_gl::GlGpu::register_image_bitmap(self, bitmap)
+    }
+    fn register_video(&mut self, video: web_sys::HtmlVideoElement) -> HostImageId {
+        orb_hal_gl::GlGpu::register_video(self, video)
     }
     fn uploaded(&self) -> Uploaded {
         Uploaded {

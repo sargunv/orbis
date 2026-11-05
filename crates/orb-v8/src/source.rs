@@ -18,20 +18,27 @@ pub enum SourceKind {
     GeoJson(GeoJsonSource),
     Raster(RasterSource),
     RasterDem(RasterDemSource),
+    /// An `image` or a `video` source.
     Image(ImageSource),
-    /// A v8 source type Orbis doesn't load yet (`video`).
-    Unsupported {
-        ty: String,
-    },
 }
 
-/// An `image` source: one image on four geographic corners.
+/// An `image` or `video` source: one picture on four geographic corners.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageSource {
-    pub url: String,
-    /// Longitude and latitude of the image's top left, top right, bottom
+    pub content: ImageContent,
+    /// Longitude and latitude of the picture's top left, top right, bottom
     /// right and bottom left corners.
     pub coordinates: [[f64; 2]; 4],
+}
+
+/// What an [`ImageSource`] shows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImageContent {
+    /// An `image` source's image URL.
+    Image(String),
+    /// A `video` source's URLs, in the order a host tries them (formats
+    /// differ in what each platform plays).
+    Video(Vec<String>),
 }
 
 /// A `geojson` source, ready for the tile worker to index.
@@ -190,15 +197,8 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
         "geojson" => SourceKind::GeoJson(parse_geojson_source(cx, json, path)?),
         "raster" => SourceKind::Raster(parse_raster(cx, json, path)?),
         "raster-dem" => SourceKind::RasterDem(parse_raster_dem(cx, json, path)?),
-        "image" => SourceKind::Image(parse_image(cx, json, path)?),
-        _ => {
-            cx.warn(
-                type_path,
-                json.get("type").expect("checked").span,
-                format!("source type \"{ty}\" is not supported yet"),
-            );
-            SourceKind::Unsupported { ty: ty.to_string() }
-        }
+        "image" | "video" => SourceKind::Image(parse_image(cx, json, path, ty == "video")?),
+        _ => unreachable!("checked against SOURCE_TYPES"),
     };
     Some(Source {
         id: id.to_string(),
@@ -206,13 +206,28 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
     })
 }
 
-fn parse_image(cx: &mut Cx, json: &Json, path: &str) -> Option<ImageSource> {
-    let url_path = format!("{path}.url");
-    let Some(url) = json.get("url") else {
-        cx.error(path, json.span, "missing required property \"url\"");
+fn parse_image(cx: &mut Cx, json: &Json, path: &str, video: bool) -> Option<ImageSource> {
+    let key = if video { "urls" } else { "url" };
+    let url_path = format!("{path}.{key}");
+    let Some(url) = json.get(key) else {
+        cx.error(
+            path,
+            json.span,
+            format!("missing required property \"{key}\""),
+        );
         return None;
     };
-    let url = cx.string(url, &url_path)?;
+    let content = if video {
+        let items = cx.array(url, &url_path)?;
+        let urls = items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| cx.string(item, &format!("{url_path}[{i}]")))
+            .collect::<Option<Vec<_>>>()?;
+        ImageContent::Video(urls)
+    } else {
+        ImageContent::Image(cx.string(url, &url_path)?)
+    };
     let coordinates_path = format!("{path}.coordinates");
     let Some(coordinates) = json.get("coordinates") else {
         cx.error(path, json.span, "missing required property \"coordinates\"");
@@ -232,7 +247,7 @@ fn parse_image(cx: &mut Cx, json: &Json, path: &str) -> Option<ImageSource> {
         out[i] = cx.numbers::<2>(corner, &format!("{coordinates_path}[{i}]"))?;
     }
     Some(ImageSource {
-        url,
+        content,
         coordinates: out,
     })
 }

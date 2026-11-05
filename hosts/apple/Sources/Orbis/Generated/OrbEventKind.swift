@@ -41,4 +41,15 @@ public enum OrbEventKind: Int, Sendable, CaseIterable {
     /// A tile's layers name an image the style doesn't have; `text` is
     /// its name. Once per name until the style gets it.
     case styleImageMissing = 12
+    /// On a host that plays video (`OrbMap::set_plays_video`): play
+    /// the first of `urls` it can, muted, looping, from the start, for
+    /// the video source `text`, and hand its frames to
+    /// `OrbMap::video_frame`.
+    case videoOpen = 13
+    /// Play, pause or seek (to `seconds`) the video of source `text`.
+    case videoPlay = 14
+    case videoPause = 15
+    case videoSeek = 16
+    /// The video source `text` is gone: stop and let go of its video.
+    case videoClose = 17
 }

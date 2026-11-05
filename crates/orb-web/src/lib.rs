@@ -107,7 +107,9 @@ pub struct FrameInfo {
 /// placement worker `place(message, transfer)` reaches, whose replies come
 /// back through [`receive_placement`](OrbisMap::receive_placement).
 /// `on_wake` is called when the map has new data to draw; the page should
-/// call `render` on its next animation frame.
+/// call `render` on its next animation frame. Video sources play on the
+/// page (`web/src/videos.ts`): see [`take_events`](OrbisMap::take_events)
+/// and [`video_frame`](OrbisMap::video_frame).
 #[wasm_bindgen(js_name = createMap)]
 pub async fn create_map(
     canvas: HtmlCanvasElement,
@@ -139,6 +141,8 @@ pub async fn create_map(
         map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
     }
     map.set_placement_lane(lane);
+    // The page plays video sources (`web/src/videos.ts`).
+    map.set_plays_video(true);
     map.load_style_url(&style_url);
     Ok(OrbisMap {
         map,
@@ -252,7 +256,9 @@ impl OrbisMap {
     /// "styleload", camera, projection}` (the style's camera if the map
     /// took it, else null; the surface's projection as JSON), `{type: "styledata", generation}`, `{type: "sourcedata",
     /// source, loaded}`, `{type: "load"}`, `{type: "idle"}`, `{type:
-    /// "error", message}`.
+    /// "error", message}`, and for the page's video player `{type: "video",
+    /// source, request}` (`open` with `urls`, `play`, `pause`, `seek` with
+    /// `seconds`, `close`).
     #[wasm_bindgen(js_name = takeEvents)]
     pub fn take_events(&mut self) -> js_sys::Array {
         let out = js_sys::Array::new();
@@ -294,6 +300,25 @@ impl OrbisMap {
                     set(&object, "id", name.into());
                     "styleimagemissing"
                 }
+                MapEvent::Video { source, request } => {
+                    set(&object, "source", source.into());
+                    let request = match request {
+                        orb_runtime::VideoRequest::Open { urls } => {
+                            let urls: js_sys::Array = urls.iter().map(JsValue::from).collect();
+                            set(&object, "urls", urls.into());
+                            "open"
+                        }
+                        orb_runtime::VideoRequest::Play => "play",
+                        orb_runtime::VideoRequest::Pause => "pause",
+                        orb_runtime::VideoRequest::Seek(seconds) => {
+                            set(&object, "seconds", seconds.into());
+                            "seek"
+                        }
+                        orb_runtime::VideoRequest::Close => "close",
+                    };
+                    set(&object, "request", request.into());
+                    "video"
+                }
                 MapEvent::Capability { tier } => {
                     let tier = match tier {
                         orb_hal::Tier::Modern => "modern",
@@ -307,6 +332,49 @@ impl OrbisMap {
             out.push(&object);
         }
         out
+    }
+
+    /// The video of source `id` has a new frame to show: the element's
+    /// current frame is copied in the next frame drawn.
+    #[wasm_bindgen(js_name = videoFrame)]
+    pub fn video_frame(
+        &mut self,
+        id: &str,
+        video: web_sys::HtmlVideoElement,
+    ) -> Result<(), JsError> {
+        let (width, height) = (video.video_width(), video.video_height());
+        let image = self.canvas.gpu().register_video(video);
+        let frame = orb_runtime::TileImage {
+            width,
+            height,
+            pixels: orb_runtime::ImagePixels::Host(image),
+        };
+        self.map
+            .video_frame(id, frame)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// The video of source `id` can't play here.
+    #[wasm_bindgen(js_name = videoFailed)]
+    pub fn video_failed(&mut self, id: &str, message: &str) -> Result<(), JsError> {
+        self.map
+            .video_failed(id, message)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// Plays (`"play"`), pauses (`"pause"`) or seeks (`"seek"`, to
+    /// `seconds`) the video of source `id`.
+    #[wasm_bindgen(js_name = controlVideo)]
+    pub fn control_video(&mut self, id: &str, request: &str, seconds: f64) -> Result<(), JsError> {
+        let request = match request {
+            "play" => orb_runtime::VideoRequest::Play,
+            "pause" => orb_runtime::VideoRequest::Pause,
+            "seek" => orb_runtime::VideoRequest::Seek(seconds),
+            other => return Err(JsError::new(&format!("unknown video request {other}"))),
+        };
+        self.map
+            .control_video(id, request)
+            .map_err(|e| JsError::new(&e))
     }
 
     /// Applies GL JS map calls as one transaction (plan §11.2): a JSON array

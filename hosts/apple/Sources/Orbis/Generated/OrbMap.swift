@@ -104,6 +104,78 @@ public final class OrbMap {
         return result.ok
     }
 
+    /// Whether this host plays `video` sources: it then gets `Video*`
+    /// events and hands frames to `video_frame`. Without it, video
+    /// sources draw nothing, with a warning.
+    ///
+    /// Contract: `command`.
+    public func setPlaysVideo(plays: Bool) {
+        OrbMap_set_plays_video(live(), plays)
+    }
+
+    /// The frame the video of source `id` shows now: straight
+    /// (not premultiplied) RGBA8 rows, top first. It replaces any frame
+    /// not yet drawn.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func videoFrame(id: String, width: UInt32, height: UInt32, pixels: [UInt8]) throws {
+        let result = withStringView(id) { idView in withSliceView(pixels) { pixelsView in OrbMap_video_frame(live(), idView, width, height, pixelsView) } }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// The video of source `id` can't play here: it draws nothing.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func videoFailed(id: String, message: String) throws {
+        let result = withStringView(id) { idView in withStringView(message) { messageView in OrbMap_video_failed(live(), idView, messageView) } }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Plays the video of source `id` (GL JS `VideoSource.play`): a
+    /// `VideoPlay` event for the host.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func playVideo(id: String) throws {
+        let result = withStringView(id) { idView in OrbMap_play_video(live(), idView) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Pauses the video of source `id`.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func pauseVideo(id: String) throws {
+        let result = withStringView(id) { idView in OrbMap_pause_video(live(), idView) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
+    /// Seeks the video of source `id` to `seconds`.
+    ///
+    /// Contract: `command`.
+    ///
+    /// - Throws: `OrbErrorFailure` when it fails.
+    public func seekVideo(id: String, seconds: Double) throws {
+        let result = withStringView(id) { idView in OrbMap_seek_video(live(), idView, seconds) }
+        guard result.is_ok else {
+            throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
+        }
+    }
+
     /// Adds an image to the style for icons, text and patterns (GL JS
     /// `addImage`): straight (not premultiplied) RGBA8 rows, top first,
     /// and GL JS's options as JSON in sprite metadata's spelling

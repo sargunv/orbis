@@ -6,6 +6,7 @@ import { Annotations } from "./annotations.ts";
 import { Emitter, type Listener } from "./events.ts";
 import { ackIdle, ackLost, frameLoop, frameStats, type FrameAck } from "./frames.ts";
 import { startMain, type Host } from "./hosts.ts";
+import { Videos, type VideoCore } from "./videos.ts";
 import { attachInput } from "./input.ts";
 import { defaultJobWorkers } from "./workers.ts";
 import { transaction, type FeatureTarget, type Transaction } from "./transaction.ts";
@@ -141,6 +142,8 @@ export class OrbisMap {
   readonly annotations: Annotations;
   #ui: UiRole;
   #host!: Host;
+  /** Video sources' players, on the page's thread. */
+  #videos?: Videos;
   #events = new Emitter<MapEvents>();
   #loop: ReturnType<typeof frameLoop>;
   #snapshotting = false;
@@ -175,6 +178,7 @@ export class OrbisMap {
   /** @internal */
   start(host: Host, interactive: boolean): void {
     this.#host = host;
+    this.#videos = new Videos(() => this.#host.core as unknown as VideoCore | undefined, () => this.#changed());
     this.#interactive = interactive;
     this.#observer = new ResizeObserver(() => this.#resize());
     this.#attach();
@@ -324,6 +328,22 @@ export class OrbisMap {
     await this.#host.request("removeImage", name);
     this.#changed();
   }
+  /** Plays, pauses or seeks (to `seconds`) a video source's video (GL JS
+   * `VideoSource.play`, `pause`, `seek`). */
+  async playVideo(source: string): Promise<void> {
+    await this.#controlVideo(source, "play", 0);
+  }
+  async pauseVideo(source: string): Promise<void> {
+    await this.#controlVideo(source, "pause", 0);
+  }
+  async seekVideo(source: string, seconds: number): Promise<void> {
+    await this.#controlVideo(source, "seek", seconds);
+  }
+  async #controlVideo(source: string, request: string, seconds: number): Promise<void> {
+    await this.#host.request("controlVideo", source, request, seconds);
+    // The request reaches the player with the next frame's events.
+    this.#changed();
+  }
   /** Whether the style has an image by this name, from its sprites or added. */
   async hasImage(name: string): Promise<boolean> {
     return await this.#host.request("hasImage", name) as boolean;
@@ -348,6 +368,7 @@ export class OrbisMap {
   /** Stops drawing and releases the map's workers and DOM. */
   remove(): void {
     for (const detach of this.#detach) detach();
+    this.#videos?.destroy();
     this.#host.destroy();
     this.canvas.parentElement?.remove();
   }
@@ -452,6 +473,7 @@ export class OrbisMap {
         }
         case "error": this.#error(event.message); break;
         case "styleimagemissing": this.#events.emit("styleimagemissing", { id: event.id }); break;
+        case "video": this.#videos?.request(event); break;
         // Idle needs the camera at rest too; see #maybeIdle.
         case "idle": break;
       }

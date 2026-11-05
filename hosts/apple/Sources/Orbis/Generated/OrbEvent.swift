@@ -82,9 +82,23 @@ public final class OrbEvent: @unchecked Sendable {
         return OrbButton(rawValue: numericCast(OrbEvent_button(handle).rawValue))!
     }
 
-    /// Source data: the source's id. Errors: the message. Query
-    /// results: the features' JSON, or the error. Capability: the tier.
-    /// A missing image: its name.
+    /// Video requests: the URLs to try, one per line.
+    ///
+    /// Contract: `snapshot`.
+    public func urls() -> String {
+        return withWrite { write in OrbEvent_urls(handle, write) }.text
+    }
+
+    /// Video seeks: the time in seconds (0 otherwise).
+    ///
+    /// Contract: `snapshot`.
+    public func seconds() -> Double {
+        return OrbEvent_seconds(handle)
+    }
+
+    /// Source data and video requests: the source's id. Errors: the
+    /// message. Query results: the features' JSON, or the error.
+    /// Capability: the tier. A missing image: its name.
     ///
     /// Contract: `snapshot`.
     public func text() -> String {

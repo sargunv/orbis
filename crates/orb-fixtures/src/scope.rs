@@ -11,9 +11,7 @@ pub(crate) fn parse_reason(message: &str) -> String {
         return "source:geojson-cluster".into();
     }
     let name = message.split('"').nth(1).unwrap_or("diagnostic");
-    let category = if message.starts_with("source type") {
-        "source"
-    } else if message.starts_with("layer type") {
+    let category = if message.starts_with("layer type") {
         "layer"
     } else if message.starts_with("Expression") {
         "expression"
@@ -30,6 +28,8 @@ pub(crate) fn runtime_reason(message: &str) -> Option<&'static str> {
         Some("compat:terrain")
     } else if message == orb_runtime::COMPAT_NO_HEATMAP {
         Some("compat:heatmap-float-targets")
+    } else if message.contains(orb_runtime::NO_VIDEO) {
+        Some("host:video-decoder")
     } else if message.contains("only vector, GeoJSON, raster and raster-dem sources") {
         Some("source:unsupported")
     } else if message.contains("need a source-layer") {
@@ -73,8 +73,8 @@ mod tests {
     #[test]
     fn reasons_do_not_contain_fixture_ids_or_layer_indices() {
         assert_eq!(
-            parse_reason("source type \"video\" is not supported yet"),
-            "source:video"
+            parse_reason("layer type \"symbol\" is not supported yet; the layer is skipped"),
+            "layer:symbol"
         );
         assert_eq!(
             parse_reason("\"line-dasharray\" is not rendered yet"),

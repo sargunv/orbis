@@ -32,7 +32,7 @@ export interface HostCallbacks {
 
 /** Calls the renderer answers asynchronously, by name. */
 export type RequestMethod = "getStyle" | "semanticSnapshot" | "queryRendered" | "querySource"
-  | "addImage" | "updateImage" | "removeImage" | "hasImage" | "retryFailedTiles";
+  | "addImage" | "updateImage" | "removeImage" | "hasImage" | "retryFailedTiles" | "controlVideo";
 
 export interface Host {
   setCamera(camera: Float64Array): void;

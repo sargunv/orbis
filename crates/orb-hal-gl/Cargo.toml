@@ -23,6 +23,7 @@ js-sys.workspace = true
 wasm-bindgen.workspace = true
 web-sys = { workspace = true, features = [
   "HtmlCanvasElement",
+  "HtmlVideoElement",
   "ImageBitmap",
   "ImageData",
   "OffscreenCanvas",

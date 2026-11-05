@@ -60,7 +60,24 @@ enum class OrbEventKind(val value: Int) {
      * A tile's layers name an image the style doesn't have; `text` is
      * its name. Once per name until the style gets it.
      */
-    StyleImageMissing(12);
+    StyleImageMissing(12),
+    /**
+     * On a host that plays video (`OrbMap::set_plays_video`): play
+     * the first of `urls` it can, muted, looping, from the start, for
+     * the video source `text`, and hand its frames to
+     * `OrbMap::video_frame`.
+     */
+    VideoOpen(13),
+    /**
+     * Play, pause or seek (to `seconds`) the video of source `text`.
+     */
+    VideoPlay(14),
+    VideoPause(15),
+    VideoSeek(16),
+    /**
+     * The video source `text` is gone: stop and let go of its video.
+     */
+    VideoClose(17);
 
     companion object {
         @JvmStatic

@@ -698,8 +698,6 @@ fn image_source(
         }
         Some(SourceKind::Raster(_) | SourceKind::Image(_)) => !dem,
         Some(SourceKind::RasterDem(_)) => dem,
-        // Video sources warn on their own.
-        Some(SourceKind::Unsupported { .. }) => true,
         Some(_) => false,
     };
     if !fits {

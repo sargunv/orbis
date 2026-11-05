@@ -57,6 +57,12 @@ internal object OrbisNative {
     external fun orbEventButton(self: Long): Int
 
     @JvmStatic
+    external fun orbEventUrls(self: Long): ByteArray
+
+    @JvmStatic
+    external fun orbEventSeconds(self: Long): Double
+
+    @JvmStatic
     external fun orbEventText(self: Long): ByteArray
 
     @JvmStatic
@@ -106,6 +112,24 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbMapEdit(self: Long, commands: ByteArray): Long
+
+    @JvmStatic
+    external fun orbMapSetPlaysVideo(self: Long, plays: Boolean): Unit
+
+    @JvmStatic
+    external fun orbMapVideoFrame(self: Long, id: ByteArray, width: Int, height: Int, pixels: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapVideoFailed(self: Long, id: ByteArray, message: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapPlayVideo(self: Long, id: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapPauseVideo(self: Long, id: ByteArray): Unit
+
+    @JvmStatic
+    external fun orbMapSeekVideo(self: Long, id: ByteArray, seconds: Double): Unit
 
     @JvmStatic
     external fun orbMapAddImage(self: Long, name: ByteArray, width: Int, height: Int, pixels: ByteArray, options: ByteArray): Unit

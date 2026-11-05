@@ -125,9 +125,31 @@ class OrbEvent internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * Source data: the source's id. Errors: the message. Query
-     * results: the features' JSON, or the error. Capability: the tier.
-     * A missing image: its name.
+     * Video requests: the URLs to try, one per line.
+     *
+     * Contract: `snapshot`.
+     */
+    fun urls(): String {
+        synchronized(this) {
+            return OrbisNative.orbEventUrls(live()).decodeToString()
+        }
+    }
+
+    /**
+     * Video seeks: the time in seconds (0 otherwise).
+     *
+     * Contract: `snapshot`.
+     */
+    fun seconds(): Double {
+        synchronized(this) {
+            return OrbisNative.orbEventSeconds(live())
+        }
+    }
+
+    /**
+     * Source data and video requests: the source's id. Errors: the
+     * message. Query results: the features' JSON, or the error.
+     * Capability: the tier. A missing image: its name.
      *
      * Contract: `snapshot`.
      */

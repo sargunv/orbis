@@ -54,6 +54,23 @@ OrbMap_set_style_json_result OrbMap_set_style_json(OrbMap* self, DiplomatStringV
 typedef struct OrbMap_edit_result {union {uint64_t ok; OrbError err;}; bool is_ok;} OrbMap_edit_result;
 OrbMap_edit_result OrbMap_edit(OrbMap* self, DiplomatStringView commands);
 
+void OrbMap_set_plays_video(OrbMap* self, bool plays);
+
+typedef struct OrbMap_video_frame_result {union { OrbError err;}; bool is_ok;} OrbMap_video_frame_result;
+OrbMap_video_frame_result OrbMap_video_frame(OrbMap* self, DiplomatStringView id, uint32_t width, uint32_t height, DiplomatU8View pixels);
+
+typedef struct OrbMap_video_failed_result {union { OrbError err;}; bool is_ok;} OrbMap_video_failed_result;
+OrbMap_video_failed_result OrbMap_video_failed(OrbMap* self, DiplomatStringView id, DiplomatStringView message);
+
+typedef struct OrbMap_play_video_result {union { OrbError err;}; bool is_ok;} OrbMap_play_video_result;
+OrbMap_play_video_result OrbMap_play_video(OrbMap* self, DiplomatStringView id);
+
+typedef struct OrbMap_pause_video_result {union { OrbError err;}; bool is_ok;} OrbMap_pause_video_result;
+OrbMap_pause_video_result OrbMap_pause_video(OrbMap* self, DiplomatStringView id);
+
+typedef struct OrbMap_seek_video_result {union { OrbError err;}; bool is_ok;} OrbMap_seek_video_result;
+OrbMap_seek_video_result OrbMap_seek_video(OrbMap* self, DiplomatStringView id, double seconds);
+
 typedef struct OrbMap_add_image_result {union { OrbError err;}; bool is_ok;} OrbMap_add_image_result;
 OrbMap_add_image_result OrbMap_add_image(OrbMap* self, DiplomatStringView name, uint32_t width, uint32_t height, DiplomatU8View pixels, DiplomatStringView options);
 

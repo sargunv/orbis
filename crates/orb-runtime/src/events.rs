@@ -36,6 +36,12 @@ pub enum MapEvent {
     /// frame on a new GPU (after device loss, perhaps on another tier).
     /// What the tier gives up arrives as warnings (plan §8.7).
     Capability { tier: orb_hal::Tier },
+    /// What the host's player of a `video` source should do, on a host
+    /// that plays video ([`Map::set_plays_video`](crate::Map::set_plays_video)).
+    Video {
+        source: String,
+        request: crate::VideoRequest,
+    },
 }
 
 #[derive(Debug, Default)]

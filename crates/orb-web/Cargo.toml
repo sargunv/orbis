@@ -19,7 +19,14 @@ compat = ["dep:orb-hal-gl", "orb-runtime/compat"]
 # `core.wasm`: the render submissions bench (web/demo/bench.html) and the
 # render fixture driver (`cargo xtask rt --platform chrome`), on either
 # tier.
-harness = ["modern", "compat", "dep:orb-bench", "orb-host/fonts", "orb-text/fonts"]
+harness = [
+  "modern",
+  "compat",
+  "dep:orb-bench",
+  "orb-host/fonts",
+  "orb-text/fonts",
+  "web-sys/Document",
+]
 
 [dependencies]
 futures-channel.workspace = true
@@ -43,7 +50,7 @@ orb-tile.workspace = true
 orb-v8.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys = { workspace = true, features = ["HtmlCanvasElement", "ImageBitmap", "OffscreenCanvas", "Window"] }
+web-sys = { workspace = true, features = ["HtmlCanvasElement", "HtmlVideoElement", "ImageBitmap", "OffscreenCanvas", "Window"] }
 wgpu = { workspace = true, optional = true }
 
 [lints]

@@ -314,6 +314,29 @@ impl Renderer {
         Ok(handle)
     }
 
+    /// Writes new texels of the same size over a resident image tile's
+    /// layer (a video's next frame); false if the tile isn't resident or
+    /// the size differs.
+    pub fn rewrite_image(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        key: TileKey,
+        size: [u32; 2],
+        pixels: Pixels<'_>,
+    ) -> bool {
+        let (Some(page), Some(layer)) = (
+            self.tiles.page(key.source),
+            self.tiles.layer_of(key.source, key.tile),
+        ) else {
+            return false;
+        };
+        if self.images.page_size(page) != size {
+            return false;
+        }
+        self.images.write_layer(gpu, page, layer, pixels);
+        true
+    }
+
     /// Frees a tile: its meshes, warp and texture layer. A source's page
     /// goes with its last tile once no node draws the source.
     pub fn release_tile(&mut self, tile: GpuTile) {

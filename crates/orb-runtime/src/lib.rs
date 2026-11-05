@@ -33,8 +33,10 @@ mod terrain;
 mod testing;
 mod tile;
 mod transitions;
+mod video;
 
 pub use events::MapEvent;
+pub use video::{NO_VIDEO, VideoRequest};
 
 /// The warning a style with terrain gets on Compat (plan §8.7), whose
 /// maps draw flat.

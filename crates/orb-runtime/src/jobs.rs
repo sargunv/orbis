@@ -1392,7 +1392,7 @@ pub(crate) fn image_result(
 }
 
 /// GL JS's `premultiplyAlpha`, in place on RGBA8 texels.
-fn premultiply(pixels: &mut [u8]) {
+pub(crate) fn premultiply(pixels: &mut [u8]) {
     for texel in pixels.as_chunks_mut::<4>().0 {
         let a = u32::from(texel[3]);
         for c in &mut texel[..3] {

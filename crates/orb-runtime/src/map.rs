@@ -468,6 +468,7 @@ pub struct Map {
     /// Chunks the last frame's cull left out for want of room.
     candidates_dropped: u32,
     pub(crate) services: Services,
+    videos: crate::video::Videos,
     camera: CameraState,
     /// The target stands on the terrain ([`Map::set_center_clamped_to_ground`]).
     center_clamped: bool,
@@ -678,6 +679,7 @@ impl Map {
             waiting: Vec::new(),
             candidates_dropped: 0,
             services,
+            videos: Default::default(),
             camera,
             surface: Surface::default(),
             lights: None,
@@ -1336,6 +1338,7 @@ impl Map {
         // A URL style may have arrived while applying messages.
         self.start_sprites(gpu, pixel_ratio);
         self.sync_nodes(gpu);
+        self.apply_videos(gpu);
 
         // Tiles' patches are on the low-zoom surface the style draws on.
         let plane = self.surface.globe().and_then(|g| g.plane);
@@ -1780,6 +1783,11 @@ impl Map {
         edit: Option<u64>,
     ) {
         let style = self.style.as_mut().expect("jobs need a style");
+        // A video's tile waits for a frame from the host.
+        let key = style.worker.plan().sources[index].key;
+        if edit.is_none() && self.videos.want(key, tile) {
+            return;
+        }
         let vector = style.worker.plan().image_kind(index).is_none();
         let SourceState::Ready { endpoint, warp, .. } = &mut style.sources[index] else {
             return;
@@ -3120,6 +3128,106 @@ impl Map {
                 self.pending.remove(&edit);
             }
         }
+    }
+
+    /// Asks the host to open and close video sources' players, and puts
+    /// their frames in their tiles.
+    fn apply_videos(&mut self, gpu: &mut dyn Gpu) {
+        let mut videos = std::mem::take(&mut self.videos);
+        let plan = self.style.as_ref().map(|s| s.worker.plan());
+        videos.sync(plan, &mut self.events.queue);
+        for image in videos.released() {
+            gpu.release_host_image(image);
+        }
+        let mut retries = Vec::new();
+        for work in videos.work() {
+            if let Some(frame) = work.fresh {
+                self.write_video_frame(gpu, work.key, frame);
+            }
+            for (tile, counted) in work.wanted {
+                let result = match (work.failed, work.frame) {
+                    (Some(e), _) => Err(format!("video: {e}")),
+                    (None, frame) => Ok(TileResult {
+                        image: frame.map(crate::video::tile_image),
+                        ..TileResult::default()
+                    }),
+                };
+                // The frame stays the source's: a tile without room drops
+                // it and tries again.
+                if self
+                    .apply_tile(gpu, work.key, tile, result, !counted)
+                    .is_some()
+                {
+                    retries.push((work.key, tile));
+                }
+            }
+        }
+        for (key, tile) in retries {
+            videos.retry(key, tile);
+        }
+        self.videos = videos;
+    }
+
+    /// Writes a video's new frame over its resident tile's layer; a frame
+    /// of another size waits for the tile to load again.
+    fn write_video_frame(&mut self, gpu: &mut dyn Gpu, key: u32, frame: &crate::TileImage) {
+        let (Some(style), Some((renderer, _))) = (&self.style, &mut self.renderer) else {
+            return;
+        };
+        let Some(index) = style.worker.plan().source(key) else {
+            return;
+        };
+        let SourceState::Ready { pyramid, .. } = &style.sources[index] else {
+            return;
+        };
+        let pixels = match &frame.pixels {
+            crate::ImagePixels::Core(pixels) => orb_render::Pixels::Core(pixels),
+            &crate::ImagePixels::Host(image) => orb_render::Pixels::Host {
+                image,
+                premultiply: true,
+            },
+        };
+        for (tile, resident) in pyramid.ready() {
+            if resident.image.is_some() {
+                let key = orb_render::TileKey { source: key, tile };
+                renderer.rewrite_image(gpu, key, [frame.width, frame.height], pixels);
+            }
+        }
+    }
+
+    /// Whether the host plays `video` sources: it then gets
+    /// [`MapEvent::Video`] requests and hands frames to
+    /// [`video_frame`](Self::video_frame). Without it, video sources draw
+    /// nothing, with a warning.
+    pub fn set_plays_video(&mut self, plays: bool) {
+        self.videos.enabled = plays;
+    }
+
+    /// The frame source `id`'s video shows now, straight-alpha RGBA rows,
+    /// top first, or an image the host registered with the GPU; it
+    /// replaces any frame not yet drawn.
+    pub fn video_frame(&mut self, id: &str, frame: crate::TileImage) -> Result<(), String> {
+        self.videos.frame(id, frame)?;
+        self.events.wake();
+        Ok(())
+    }
+
+    /// Source `id`'s video can't play here: its tile draws nothing.
+    pub fn video_failed(&mut self, id: &str, message: &str) -> Result<(), String> {
+        self.videos.failed(id, message.to_owned())?;
+        self.events.wake();
+        Ok(())
+    }
+
+    /// Asks the host to play, pause or seek the video of source `id`
+    /// (GL JS's `VideoSource` `play`, `pause` and `seek`).
+    pub fn control_video(&mut self, id: &str, request: crate::VideoRequest) -> Result<(), String> {
+        let plan = self.style.as_ref().map(|s| s.worker.plan());
+        self.videos.sync(plan, &mut self.events.queue);
+        self.videos.request(id, request, &mut self.events.queue)?;
+        // The request goes out with the next frame's events.
+        self.events.wake();
+        Ok(())
     }
 
     fn apply_tile(
@@ -4730,5 +4838,164 @@ mod tests {
         // A plain v8 style is the default scene again.
         map.set_style_json(&style("c")).unwrap();
         assert_eq!(map.projection().descriptor().kind, "web-mercator");
+    }
+}
+
+#[cfg(test)]
+mod video_tests {
+    use orb_hal_wgpu::WgpuGpu;
+    use orb_jobs::Inline;
+
+    use super::*;
+    use crate::{ImagePixels, PoolJobs, TileImage, VideoRequest};
+
+    struct NoFetch;
+    impl Fetch for NoFetch {
+        fn get(&self, url: &str, _: orb_host::FetchDone) {
+            panic!("unexpected fetch of {url}");
+        }
+        fn get_range(&self, url: &str, _: u64, _: u64, _: orb_host::FetchDone) {
+            panic!("unexpected fetch of {url}");
+        }
+    }
+
+    struct NoDecode;
+    impl ImageDecode for NoDecode {
+        fn decode(&self, _: Vec<u8>, _: orb_host::ImageDone) {
+            panic!("unexpected image");
+        }
+    }
+
+    struct Clock(std::time::Instant);
+    impl orb_host::Clock for Clock {
+        fn now(&self) -> f64 {
+            self.0.elapsed().as_secs_f64() * 1000.0
+        }
+    }
+
+    fn frame(rgba: [u8; 4]) -> TileImage {
+        TileImage {
+            width: 4,
+            height: 2,
+            pixels: ImagePixels::Core(rgba.repeat(8)),
+        }
+    }
+
+    fn requests(map: &mut Map) -> Vec<(String, VideoRequest)> {
+        map.take_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                MapEvent::Video { source, request } => Some((source, request)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn video_frames_fill_their_tile_and_replace_it_in_place() {
+        let Ok(mut gpu) = pollster::block_on(WgpuGpu::offscreen()) else {
+            eprintln!("no GPU adapter; skipped");
+            return;
+        };
+        let fetch = Arc::new(NoFetch);
+        let mut map = Map::new(
+            Services {
+                clock: Arc::new(Clock(std::time::Instant::now())),
+                image_decode: Arc::new(NoDecode),
+                images: Default::default(),
+                jobs: PoolJobs::new(
+                    fetch.clone(),
+                    Arc::new(crate::jobs::tests::NoImages),
+                    Arc::new(Inline),
+                ),
+                fetch,
+                wake: Arc::new(|| {}),
+            },
+            None,
+        );
+        map.set_plays_video(true);
+        // The video covers the whole view.
+        map.set_style_json(
+            r#"{"version": 8, "center": [0, 0], "zoom": 2,
+                "sources": {"v": {"type": "video", "urls": ["a.mp4", "a.webm"],
+                    "coordinates": [[-120, 70], [120, 70], [120, -70], [-120, -70]]}},
+                "layers": [{"id": "v", "type": "raster", "source": "v",
+                    "paint": {"raster-fade-duration": 0}}]}"#,
+        )
+        .unwrap();
+        let format = TargetFormat {
+            color: orb_hal::TextureFormat::Rgba8Unorm,
+            sample_count: 1,
+        };
+        let target = gpu.create_texture(&orb_hal::TextureDesc {
+            label: "video test",
+            width: 64,
+            height: 64,
+            array_layers: 1,
+            dimension: orb_hal::TextureViewDimension::D2,
+            format: format.color,
+            usage: orb_hal::TextureUsages::RENDER_ATTACHMENT | orb_hal::TextureUsages::COPY_SRC,
+            sample_count: 1,
+            mip_levels: 1,
+        });
+        let viewport = Viewport {
+            width: 64.0,
+            height: 64.0,
+        };
+        let centre = |map: &mut Map, gpu: &mut WgpuGpu| {
+            let mut idle = false;
+            for _ in 0..200 {
+                idle = map.render(gpu, target, format, viewport, 1.0).idle;
+                if idle {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let pixels = pollster::block_on(gpu.read_texture(target));
+            let at = (32 * 64 + 32) * 4;
+            (idle, [pixels[at], pixels[at + 1], pixels[at + 2]])
+        };
+        // Without a frame, the tile loads; the host is asked to play.
+        for _ in 0..3 {
+            assert!(!map.render(&mut gpu, target, format, viewport, 1.0).idle);
+        }
+        let urls = vec!["a.mp4".to_string(), "a.webm".to_string()];
+        assert_eq!(
+            requests(&mut map),
+            [("v".into(), VideoRequest::Open { urls })]
+        );
+        map.video_frame("v", frame([255, 0, 0, 255])).unwrap();
+        assert_eq!(centre(&mut map, &mut gpu), (true, [255, 0, 0]));
+        map.video_frame("v", frame([0, 0, 255, 255])).unwrap();
+        assert_eq!(centre(&mut map, &mut gpu), (true, [0, 0, 255]));
+        map.control_video("v", VideoRequest::Pause).unwrap();
+        assert!(map.control_video("w", VideoRequest::Play).is_err());
+        assert!(map.video_frame("w", frame([0; 4])).is_err());
+        assert_eq!(requests(&mut map), [("v".into(), VideoRequest::Pause)]);
+        // Removing the source closes it.
+        let remove = r#"[["removeLayer", "v"], ["removeSource", "v"]]"#;
+        map.edit(&crate::Transaction::from_commands(remove).unwrap())
+            .unwrap();
+        centre(&mut map, &mut gpu);
+        assert_eq!(requests(&mut map), [("v".into(), VideoRequest::Close)]);
+    }
+
+    #[test]
+    fn video_sources_fail_on_hosts_without_video() {
+        let mut videos = crate::video::Videos::default();
+        let mut events = Vec::new();
+        let style = TileWorker::new(
+            r#"{"version": 8, "sources": {"v": {"type": "video", "urls": ["a.mp4"],
+                "coordinates": [[0, 1], [1, 1], [1, 0], [0, 0]]}},
+                "layers": [{"id": "v", "type": "raster", "source": "v"}]}"#,
+        )
+        .unwrap();
+        videos.sync(Some(style.plan()), &mut events);
+        assert!(events.is_empty());
+        let key = style.plan().sources[0].key;
+        assert!(videos.want(key, TileIndex::new(0, 0, 0)));
+        let work = videos.work();
+        assert_eq!(work[0].failed, Some(crate::NO_VIDEO));
+        assert_eq!(work[0].wanted.len(), 1);
     }
 }

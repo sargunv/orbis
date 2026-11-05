@@ -556,6 +556,17 @@ mod ffi {
         /// A tile's layers name an image the style doesn't have; `text` is
         /// its name. Once per name until the style gets it.
         StyleImageMissing = 12,
+        /// On a host that plays video (`OrbMap::set_plays_video`): play
+        /// the first of `urls` it can, muted, looping, from the start, for
+        /// the video source `text`, and hand its frames to
+        /// `OrbMap::video_frame`.
+        VideoOpen = 13,
+        /// Play, pause or seek (to `seconds`) the video of source `text`.
+        VideoPlay = 14,
+        VideoPause = 15,
+        VideoSeek = 16,
+        /// The video source `text` is gone: stop and let go of its video.
+        VideoClose = 17,
     }
 
     /// For camera events: what changed.
@@ -755,9 +766,33 @@ mod ffi {
             }
         }
 
-        /// Source data: the source's id. Errors: the message. Query
-        /// results: the features' JSON, or the error. Capability: the tier.
-        /// A missing image: its name.
+        /// Video requests: the URLs to try, one per line.
+        #[diplomat::attr(contract, snapshot)]
+        pub fn urls(&self, out: &mut DiplomatWrite) {
+            if let orb_api::Event::Map(orb_api::MapEvent::Video {
+                request: orb_api::VideoRequest::Open { urls },
+                ..
+            }) = &self.0
+            {
+                out.write_str(&urls.join("\n")).ok();
+            }
+        }
+
+        /// Video seeks: the time in seconds (0 otherwise).
+        #[diplomat::attr(contract, snapshot)]
+        pub fn seconds(&self) -> f64 {
+            match self.0 {
+                orb_api::Event::Map(orb_api::MapEvent::Video {
+                    request: orb_api::VideoRequest::Seek(seconds),
+                    ..
+                }) => seconds,
+                _ => 0.0,
+            }
+        }
+
+        /// Source data and video requests: the source's id. Errors: the
+        /// message. Query results: the features' JSON, or the error.
+        /// Capability: the tier. A missing image: its name.
         #[diplomat::attr(contract, snapshot)]
         pub fn text(&self, out: &mut DiplomatWrite) {
             let text = match &self.0 {
@@ -765,7 +800,10 @@ mod ffi {
                     orb_api::Tier::Modern => "modern",
                     orb_api::Tier::Compat => "compat",
                 },
-                orb_api::Event::Map(orb_api::MapEvent::SourceData { source, .. }) => source,
+                orb_api::Event::Map(
+                    orb_api::MapEvent::SourceData { source, .. }
+                    | orb_api::MapEvent::Video { source, .. },
+                ) => source,
                 orb_api::Event::Map(orb_api::MapEvent::Error { message }) => message,
                 orb_api::Event::Map(orb_api::MapEvent::StyleImageMissing { name }) => name,
                 orb_api::Event::Query {
@@ -922,6 +960,65 @@ mod ffi {
         #[diplomat::attr(contract, command)]
         pub fn edit(&mut self, commands: &DiplomatStr) -> Result<u64, OrbError> {
             self.0.edit(&text(commands)).map_err(fail)
+        }
+
+        /// Whether this host plays `video` sources: it then gets `Video*`
+        /// events and hands frames to `video_frame`. Without it, video
+        /// sources draw nothing, with a warning.
+        #[diplomat::attr(contract, command)]
+        pub fn set_plays_video(&mut self, plays: bool) {
+            self.0.set_plays_video(plays);
+        }
+
+        /// The frame the video of source `id` shows now: straight
+        /// (not premultiplied) RGBA8 rows, top first. It replaces any frame
+        /// not yet drawn.
+        #[diplomat::attr(contract, command)]
+        pub fn video_frame(
+            &mut self,
+            id: &DiplomatStr,
+            width: u32,
+            height: u32,
+            pixels: &[u8],
+        ) -> Result<(), OrbError> {
+            self.0
+                .video_frame(&text(id), width, height, pixels.to_vec())
+                .map_err(fail)
+        }
+
+        /// The video of source `id` can't play here: it draws nothing.
+        #[diplomat::attr(contract, command)]
+        pub fn video_failed(
+            &mut self,
+            id: &DiplomatStr,
+            message: &DiplomatStr,
+        ) -> Result<(), OrbError> {
+            self.0.video_failed(&text(id), &text(message)).map_err(fail)
+        }
+
+        /// Plays the video of source `id` (GL JS `VideoSource.play`): a
+        /// `VideoPlay` event for the host.
+        #[diplomat::attr(contract, command)]
+        pub fn play_video(&mut self, id: &DiplomatStr) -> Result<(), OrbError> {
+            self.0
+                .control_video(&text(id), orb_api::VideoRequest::Play)
+                .map_err(fail)
+        }
+
+        /// Pauses the video of source `id`.
+        #[diplomat::attr(contract, command)]
+        pub fn pause_video(&mut self, id: &DiplomatStr) -> Result<(), OrbError> {
+            self.0
+                .control_video(&text(id), orb_api::VideoRequest::Pause)
+                .map_err(fail)
+        }
+
+        /// Seeks the video of source `id` to `seconds`.
+        #[diplomat::attr(contract, command)]
+        pub fn seek_video(&mut self, id: &DiplomatStr, seconds: f64) -> Result<(), OrbError> {
+            self.0
+                .control_video(&text(id), orb_api::VideoRequest::Seek(seconds))
+                .map_err(fail)
         }
 
         /// Adds an image to the style for icons, text and patterns (GL JS
@@ -1431,6 +1528,13 @@ fn event_kind(event: &orb_api::Event) -> OrbEventKind {
         Event::Map(MapEvent::Error { .. }) => OrbEventKind::Error,
         Event::Map(MapEvent::Capability { .. }) => OrbEventKind::Capability,
         Event::Map(MapEvent::StyleImageMissing { .. }) => OrbEventKind::StyleImageMissing,
+        Event::Map(MapEvent::Video { request, .. }) => match request {
+            orb_api::VideoRequest::Open { .. } => OrbEventKind::VideoOpen,
+            orb_api::VideoRequest::Play => OrbEventKind::VideoPlay,
+            orb_api::VideoRequest::Pause => OrbEventKind::VideoPause,
+            orb_api::VideoRequest::Seek(_) => OrbEventKind::VideoSeek,
+            orb_api::VideoRequest::Close => OrbEventKind::VideoClose,
+        },
         Event::Camera(CameraEvent::Changed { .. }) => OrbEventKind::Camera,
         Event::Camera(CameraEvent::AnimationEnd { .. }) => OrbEventKind::AnimationEnd,
         Event::Click { .. } => OrbEventKind::Click,

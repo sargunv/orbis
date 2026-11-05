@@ -95,6 +95,75 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
+     * Whether this host plays `video` sources: it then gets `Video*`
+     * events and hands frames to `video_frame`. Without it, video
+     * sources draw nothing, with a warning.
+     *
+     * Contract: `command`.
+     */
+    fun setPlaysVideo(plays: Boolean) {
+        OrbisNative.orbMapSetPlaysVideo(live(), plays)
+    }
+
+    /**
+     * The frame the video of source `id` shows now: straight
+     * (not premultiplied) RGBA8 rows, top first. It replaces any frame
+     * not yet drawn.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun videoFrame(id: String, width: UInt, height: UInt, pixels: ByteArray) {
+        OrbisNative.orbMapVideoFrame(live(), id.encodeToByteArray(), width.toInt(), height.toInt(), pixels)
+    }
+
+    /**
+     * The video of source `id` can't play here: it draws nothing.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun videoFailed(id: String, message: String) {
+        OrbisNative.orbMapVideoFailed(live(), id.encodeToByteArray(), message.encodeToByteArray())
+    }
+
+    /**
+     * Plays the video of source `id` (GL JS `VideoSource.play`): a
+     * `VideoPlay` event for the host.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun playVideo(id: String) {
+        OrbisNative.orbMapPlayVideo(live(), id.encodeToByteArray())
+    }
+
+    /**
+     * Pauses the video of source `id`.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun pauseVideo(id: String) {
+        OrbisNative.orbMapPauseVideo(live(), id.encodeToByteArray())
+    }
+
+    /**
+     * Seeks the video of source `id` to `seconds`.
+     *
+     * Contract: `command`.
+     *
+     * @throws OrbErrorException when it fails.
+     */
+    fun seekVideo(id: String, seconds: Double) {
+        OrbisNative.orbMapSeekVideo(live(), id.encodeToByteArray(), seconds)
+    }
+
+    /**
      * Adds an image to the style for icons, text and patterns (GL JS
      * `addImage`): straight (not premultiplied) RGBA8 rows, top first,
      * and GL JS's options as JSON in sprite metadata's spelling

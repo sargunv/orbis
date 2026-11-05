@@ -37,6 +37,10 @@ OrbPhase OrbEvent_phase(const OrbEvent* self);
 
 OrbButton OrbEvent_button(const OrbEvent* self);
 
+void OrbEvent_urls(const OrbEvent* self, DiplomatWrite* write);
+
+double OrbEvent_seconds(const OrbEvent* self);
+
 void OrbEvent_text(const OrbEvent* self, DiplomatWrite* write);
 
 void OrbEvent_destroy(OrbEvent* self);

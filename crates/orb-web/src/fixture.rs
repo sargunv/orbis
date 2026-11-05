@@ -10,7 +10,7 @@ use orb_hal_wgpu::WgpuGpu;
 use orb_host::{Fetch, FetchDone};
 use orb_host_web::{WebFetch, WebImageDecode};
 use orb_jobs::Inline;
-use orb_runtime::{Map, PoolJobs, Services, TargetFormat, Viewport};
+use orb_runtime::{Map, MapEvent, PoolJobs, Services, TargetFormat, VideoRequest, Viewport};
 use wasm_bindgen::prelude::*;
 
 /// One device shared across requests; every request owns a fresh map and scene.
@@ -46,6 +46,13 @@ impl Owner {
         }
     }
 
+    fn register_video(&mut self, video: web_sys::HtmlVideoElement) -> orb_hal::HostImageId {
+        match self {
+            Self::Modern(gpu) => gpu.register_video(video),
+            Self::Compat(gpu) => gpu.register_video(video),
+        }
+    }
+
     async fn read(&mut self, target: orb_hal::TextureId) -> Vec<u8> {
         match self {
             Self::Modern(gpu) => gpu.read_texture(target).await,
@@ -63,6 +70,65 @@ pub struct FixturePixels {
     pub frames: u32,
     pub tiles_drawn: u32,
     pub timed_out: bool,
+}
+
+thread_local! {
+    /// Videos whose first frame is ready, and those that failed, by source.
+    static VIDEOS: std::cell::RefCell<Vec<(String, Result<web_sys::HtmlVideoElement, String>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The harness's video player: each video's first frame, paused at the
+/// start, so a fixture reads the same frame every run (GL JS's harness
+/// reads what plays at load, near the start).
+fn play_first_frames(map: &mut Map, gpu: &mut Owner, assets: &AssetFetch) -> Result<(), JsError> {
+    for event in map.take_events() {
+        let MapEvent::Video {
+            source,
+            request: VideoRequest::Open { urls },
+        } = event
+        else {
+            continue;
+        };
+        let video = web_sys::window()
+            .and_then(|w| w.document())
+            .ok_or_else(|| JsError::new("no document"))?
+            .create_element("video")
+            .map_err(|_| JsError::new("no video element"))?
+            .unchecked_into::<web_sys::HtmlVideoElement>();
+        video.set_cross_origin(Some("anonymous"));
+        video.set_muted(true);
+        video.set_preload("auto");
+        let done = |result: Result<(), String>| {
+            let (source, video) = (source.clone(), video.clone());
+            Closure::once_into_js(move || {
+                VIDEOS.with(|v| v.borrow_mut().push((source, result.map(|()| video))));
+            })
+        };
+        let error = format!("none of {urls:?} plays");
+        let _ = video.add_event_listener_with_callback("loadeddata", done(Ok(())).unchecked_ref());
+        let _ = video.add_event_listener_with_callback("error", done(Err(error)).unchecked_ref());
+        video.set_src(&assets.resolve(urls.first().map_or("", String::as_str)));
+    }
+    for (source, video) in VIDEOS.with(|v| v.take()) {
+        let result = match video {
+            Ok(video) => {
+                let (width, height) = (video.video_width(), video.video_height());
+                let pixels = orb_runtime::ImagePixels::Host(gpu.register_video(video));
+                map.video_frame(
+                    &source,
+                    orb_runtime::TileImage {
+                        width,
+                        height,
+                        pixels,
+                    },
+                )
+            }
+            Err(e) => map.video_failed(&source, &e),
+        };
+        result.map_err(|e| JsError::new(&e))?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -302,6 +368,8 @@ impl FixtureRenderer {
             None,
         );
         map.set_antialias_3d(false);
+        map.set_plays_video(true);
+        let assets = AssetFetch(self.assets_url.clone());
         map.set_fade_duration(fade_duration);
         map.set_cross_source_collisions(cross_source_collisions);
         map.set_terrain_skirts(terrain_skirts);
@@ -349,6 +417,7 @@ impl FixtureRenderer {
                     camera.pitch = camera.pitch.min(max_pitch);
                     map.constrain_camera(viewport);
                     let report = map.render(gpu.gpu(), target, format, viewport, pixel_ratio);
+                    play_first_frames(map, gpu, &assets)?;
                     output.frames += 1;
                     output.warnings.extend(map.take_warnings());
                     let done = match until {
