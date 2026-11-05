@@ -95,8 +95,10 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
         out.position.x += corner.x * total * 2.0 / frame.viewport.x * scale;
         out.position.y -= corner.y * total * 2.0 / frame.viewport.y * scale;
     }
-    out.color = color * opacity;
-    out.stroke_color = stroke * stroke_opacity;
+    // Terrain in front of the centre hides it (GL JS `calculate_visibility`).
+    let visibility = terrain_visibility(projected);
+    out.color = color * opacity * visibility;
+    out.stroke_color = stroke * stroke_opacity * visibility;
     out.data = vec3<f32>(corner, max(1.0 / frame.pixel_ratio / total, blur));
     out.radius_ratio = radius / total;
     out.stroke_width = stroke_width;

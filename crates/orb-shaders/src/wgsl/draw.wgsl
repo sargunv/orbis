@@ -4,6 +4,38 @@
 @group(0) @binding(0) var<uniform> frame: Frame;
 // The terrain's DEM page: padded elevations (decision 0019).
 @group(0) @binding(14) var dem_pages: texture_2d_array<f32>;
+// The terrain's depth (reversed-Z) from its pre-pass, for what it hides;
+// 0, the far plane, without terrain.
+@group(0) @binding(15) var terrain_depth: texture_2d<f32>;
+
+// How much of a point at `clip` shows past the terrain in front of it, 0
+// to 1: GL JS's `calculate_visibility`. Partly hidden points average with
+// a point just above them.
+fn terrain_visibility(clip: vec4<f32>) -> f32 {
+    if frame.terrain_exaggeration == 0.0 || clip.w <= 0.0 {
+        return 1.0;
+    }
+    let ndc = clip.xyz / clip.w;
+    let v = terrain_depth_visibility(ndc);
+    if v > 0.95 {
+        return 1.0;
+    }
+    return (v + terrain_depth_visibility(ndc + vec3<f32>(0.0, 0.01, 0.0))) / 2.0;
+}
+
+fn terrain_depth_visibility(ndc: vec3<f32>) -> f32 {
+    let size = vec2<i32>(textureDimensions(terrain_depth));
+    let px = vec2<i32>((ndc.xy * vec2<f32>(0.5, -0.5) + 0.5) * vec2<f32>(size));
+    if any(px < vec2<i32>(0)) || any(px >= size) {
+        return 1.0;
+    }
+    let surface = textureLoad(terrain_depth, px, 0).r;
+    // GL JS fades over `terrain + 0.0001 − point` in GL's NDC z, about
+    // 1 − 2·near/distance; reversed depth here is about near/distance, with
+    // the same near plane, so half those bounds.
+    let behind = surface - (1.0 - ndc.z);
+    return 1.0 - clamp((behind - 0.00005) * 1000.0, 0.0, 1.0);
+}
 
 fn dem_pixel(p: vec2<i32>, layer: u32) -> f32 {
     let hi = vec2<i32>(textureDimensions(dem_pages)) - 1;

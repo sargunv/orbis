@@ -123,6 +123,13 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     return out;
 }
 
+// The terrain's depth, for the symbols and circles it hides (#40): the
+// reversed-Z depth the stacks draw, as a colour.
+@fragment
+fn fs_terrain_depth(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    return vec4<f32>(position.z, 0.0, 0.0, 0.0);
+}
+
 // The slot's colour at uv, mipmapped and clamped to the slot.
 fn drape_color(slot: u32, uv: vec2<f32>) -> vec4<f32> {
     let size = vec2<f32>(textureDimensions(drape));

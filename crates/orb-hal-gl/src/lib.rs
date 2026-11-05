@@ -178,6 +178,7 @@ struct Pipeline {
 fn gl_format(format: TextureFormat) -> (u32, u32, u32) {
     match format {
         TextureFormat::R8Unorm => (glow::R8, glow::RED, glow::UNSIGNED_BYTE),
+        TextureFormat::R32Float => (glow::R32F, glow::RED, glow::FLOAT),
         TextureFormat::Rgba16Float => (glow::RGBA16F, glow::RGBA, glow::HALF_FLOAT),
         // GL has no BGRA attachments; hosts read frames back as RGBA.
         TextureFormat::Rgba8Unorm | TextureFormat::Bgra8Unorm => {
@@ -195,6 +196,7 @@ fn gl_format(format: TextureFormat) -> (u32, u32, u32) {
 fn texel_bytes(format: TextureFormat) -> u32 {
     match format {
         TextureFormat::R8Unorm => 1,
+        TextureFormat::R32Float => 4,
         TextureFormat::Rgba16Float => 8,
         _ => 4,
     }

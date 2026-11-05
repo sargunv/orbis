@@ -202,6 +202,10 @@ pub struct Renderer {
     no_dem: TextureId,
     /// The DEM texture the scene groups bind.
     dem_bound: TextureId,
+    /// Bound for symbols and circles without terrain.
+    no_occlusion: TextureId,
+    /// The terrain depth bound in the scene groups.
+    occlusion_bound: TextureId,
     glyphs: GlyphAtlas,
     /// The glyph atlas revision the scene group binds.
     glyphs_bound: u32,
@@ -300,6 +304,14 @@ impl Renderer {
                         dimension: TextureViewDimension::D2Array,
                     },
                 },
+                BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: ShaderStages::VERTEX,
+                    ty: BindingType::Texture {
+                        sample: TextureSampleType::Float { filterable: false },
+                        dimension: TextureViewDimension::D2,
+                    },
+                },
             ],
         });
         let node_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -351,13 +363,26 @@ impl Renderer {
             sample_count: 1,
             mip_levels: 1,
         });
+        // Nothing hides symbols and circles without terrain: its depth is
+        // the far plane, 0 in reversed-Z.
+        let no_occlusion = gpu.create_texture(&TextureDesc {
+            label: "no terrain depth",
+            width: 1,
+            height: 1,
+            array_layers: 1,
+            dimension: TextureViewDimension::D2,
+            format: TextureFormat::R32Float,
+            usage: TextureUsages::TEXTURE_BINDING,
+            sample_count: 1,
+            mip_levels: 1,
+        });
         let draw_group = scene_group(
             gpu,
             draw_layout,
             &b,
             b.frame,
             &images,
-            (glyphs.texture(), nearest, no_dem),
+            (glyphs.texture(), nearest, no_dem, no_occlusion),
         );
         let modern = gpu.caps().tier == Tier::Modern;
         let cull_group = modern.then(|| {
@@ -438,6 +463,8 @@ impl Renderer {
             drape_pipelines: None,
             no_dem,
             dem_bound: no_dem,
+            no_occlusion,
+            occlusion_bound: no_occlusion,
             glyphs_bound: glyphs.revision(),
             nearest,
             glyphs,
@@ -876,8 +903,16 @@ impl Renderer {
             .as_ref()
             .and_then(terrain::Terrain::dem_texture)
             .unwrap_or(self.no_dem);
+        let occlusion = self
+            .terrain
+            .as_ref()
+            .and_then(terrain::Terrain::occlusion_texture)
+            .unwrap_or(self.no_occlusion);
         // The glyph pages grew into new textures, or the terrain changed.
-        if self.glyphs.revision() != self.glyphs_bound || dem != self.dem_bound {
+        if self.glyphs.revision() != self.glyphs_bound
+            || dem != self.dem_bound
+            || occlusion != self.occlusion_bound
+        {
             gpu.destroy_bind_group(self.draw_group);
             let b = *self.scene.buffers();
             self.draw_group = scene_group(
@@ -886,10 +921,11 @@ impl Renderer {
                 &b,
                 b.frame,
                 &self.image_bindings,
-                (self.glyphs.texture(), self.nearest, dem),
+                (self.glyphs.texture(), self.nearest, dem, occlusion),
             );
             self.glyphs_bound = self.glyphs.revision();
             self.dem_bound = dem;
+            self.occlusion_bound = occlusion;
             if let Some(group) = self.drape_group.take() {
                 gpu.destroy_bind_group(group);
             }
@@ -929,7 +965,13 @@ impl Renderer {
                     &b,
                     terrain.drape_frame,
                     &self.image_bindings,
-                    (self.glyphs.texture(), self.nearest, self.dem_bound),
+                    // Draped content isn't hidden by the terrain it's on.
+                    (
+                        self.glyphs.texture(),
+                        self.nearest,
+                        self.dem_bound,
+                        self.no_occlusion,
+                    ),
                 ));
                 self.invalidate_bundle(gpu);
             }
@@ -1378,7 +1420,7 @@ fn scene_group(
     b: &orb_scene::SceneBuffers,
     frame: BufferId,
     images: &ImageBindings,
-    (glyphs, nearest, dem): (TextureId, SamplerId, TextureId),
+    (glyphs, nearest, dem, occlusion): (TextureId, SamplerId, TextureId, TextureId),
 ) -> BindGroupId {
     let whole = BindingResource::buffer;
     let mut entries: Vec<BindGroupEntry> = [
@@ -1416,6 +1458,7 @@ fn scene_group(
             resource: BindingResource::Sampler(nearest),
         },
         texture(14, dem, TextureViewDimension::D2Array),
+        texture(15, occlusion, TextureViewDimension::D2),
     ]);
     gpu.create_bind_group(&BindGroupDesc {
         label: "scene",

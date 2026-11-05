@@ -87,6 +87,8 @@ pub struct QuerySetDesc<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextureFormat {
     R8Unorm,
+    /// Unfilterable single floats: the terrain's depth as a colour.
+    R32Float,
     /// Filterable, blendable half-float density targets.
     Rgba16Float,
     Rgba8Unorm,

@@ -137,6 +137,10 @@ pub(crate) struct Terrain {
     dem: Option<(TextureId, u32)>,
     group: Option<BindGroupId>,
     targets: Vec<StackTarget>,
+    /// The terrain's depth as a colour, and the depth it's drawn with: what
+    /// hides symbols and circles (#40).
+    occlusion: Option<[TextureId; 2]>,
+    occlusion_pipeline: Option<RenderPipelineId>,
     target_size: [u32; 2],
     target_samples: u32,
     /// Atlas slots to redraw this frame.
@@ -367,6 +371,8 @@ impl Terrain {
             dem: None,
             group: None,
             targets: Vec::new(),
+            occlusion: None,
+            occlusion_pipeline: None,
             target_size: [0; 2],
             target_samples: 0,
             pending: Vec::new(),
@@ -608,6 +614,34 @@ impl Terrain {
         for target in self.targets.drain(..) {
             release_target(gpu, target);
         }
+        self.release_occlusion(gpu);
+        let texture = |gpu: &mut dyn Gpu, label, format, usage| {
+            gpu.create_texture(&TextureDesc {
+                label,
+                width: size[0],
+                height: size[1],
+                array_layers: 1,
+                dimension: TextureViewDimension::D2,
+                format,
+                usage,
+                sample_count: 1,
+                mip_levels: 1,
+            })
+        };
+        self.occlusion = Some([
+            texture(
+                gpu,
+                "terrain depth",
+                TextureFormat::R32Float,
+                TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            ),
+            texture(
+                gpu,
+                "terrain depth pass",
+                TextureFormat::Depth32Float,
+                TextureUsages::RENDER_ATTACHMENT | TextureUsages::TRANSIENT_ATTACHMENT,
+            ),
+        ]);
         self.target_size = size;
         self.target_samples = samples;
         for _ in 0..stacks {
@@ -830,7 +864,52 @@ impl Terrain {
                 group
             }
         };
+        let occlusion_pipeline = self.occlusion.map(|_| self.occlusion_pipeline(gpu));
         let pipeline = self.pipeline(gpu, self.target_samples.max(1));
+        let draw = |pipeline, stack_group| {
+            vec![
+                RenderCommand::SetPipeline(pipeline),
+                RenderCommand::SetBindGroup { index: 0, group },
+                RenderCommand::SetBindGroup {
+                    index: 1,
+                    group: stack_group,
+                },
+                RenderCommand::SetIndexBuffer {
+                    buffer: self.grid_indices,
+                    format: IndexFormat::Uint32,
+                    offset: 0,
+                },
+                RenderCommand::DrawIndexed {
+                    indices: 0..self.index_count,
+                    base_vertex: 0,
+                    instances: 0..self.tile_count,
+                },
+            ]
+        };
+        // The terrain's depth first, for what it hides.
+        if let (Some([color, occlusion_depth]), Some(&stack_group), Some(occlusion_pipeline)) = (
+            self.occlusion,
+            self.stack_groups.first(),
+            occlusion_pipeline,
+        ) {
+            passes.push(Pass::Render(RenderPass {
+                label: "terrain depth".into(),
+                color: ColorAttachment {
+                    target: color,
+                    resolve: None,
+                    store: StoreOp::Store,
+                    load: LoadOp::Clear([0.0; 4]),
+                },
+                depth: Some(DepthAttachment {
+                    target: occlusion_depth,
+                    load: LoadOp::Clear(0.0),
+                    store: StoreOp::Discard,
+                }),
+                timestamps: None,
+                commands: draw(occlusion_pipeline, stack_group),
+            }));
+            draws += 1;
+        }
         for (stack, target) in self.targets.iter().enumerate() {
             let color = target.color.expect("sized");
             passes.push(Pass::Render(RenderPass {
@@ -855,24 +934,7 @@ impl Terrain {
                     store: depth_store,
                 }),
                 timestamps: None,
-                commands: vec![
-                    RenderCommand::SetPipeline(pipeline),
-                    RenderCommand::SetBindGroup { index: 0, group },
-                    RenderCommand::SetBindGroup {
-                        index: 1,
-                        group: self.stack_groups[stack],
-                    },
-                    RenderCommand::SetIndexBuffer {
-                        buffer: self.grid_indices,
-                        format: IndexFormat::Uint32,
-                        offset: 0,
-                    },
-                    RenderCommand::DrawIndexed {
-                        indices: 0..self.index_count,
-                        base_vertex: 0,
-                        instances: 0..self.tile_count,
-                    },
-                ],
+                commands: draw(pipeline, self.stack_groups[stack]),
             }));
             draws += 1;
         }
@@ -909,6 +971,7 @@ impl Terrain {
         for target in self.targets.drain(..) {
             release_target(gpu, target);
         }
+        self.release_occlusion(gpu);
         self.target_size = [0; 2];
         self.dem = None;
         self.pending.clear();
@@ -922,6 +985,58 @@ impl Terrain {
 
     pub(crate) fn active(&self) -> bool {
         self.paint.is_some() && self.atlas.is_some()
+    }
+
+    /// The terrain's depth symbols and circles read, while terrain is on.
+    pub(crate) fn occlusion_texture(&self) -> Option<TextureId> {
+        self.occlusion
+            .filter(|_| self.active())
+            .map(|[color, _]| color)
+    }
+
+    fn release_occlusion(&mut self, gpu: &mut dyn Gpu) {
+        for texture in self.occlusion.take().into_iter().flatten() {
+            gpu.destroy_texture(texture);
+        }
+    }
+
+    /// The terrain drawn as its depth, at one sample.
+    fn occlusion_pipeline(&mut self, gpu: &mut dyn Gpu) -> RenderPipelineId {
+        if let Some(pipeline) = self.occlusion_pipeline {
+            return pipeline;
+        }
+        let module = gpu.create_shader_module(&ShaderModuleDesc {
+            label: TERRAIN_SHADER.label,
+            source: ShaderSource::Wgsl(TERRAIN_SHADER.source().into()),
+        });
+        let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
+            label: "terrain depth",
+            bind_group_layouts: &[self.layout, self.stack_layout],
+            vertex: ShaderStage {
+                module,
+                entry_point: TERRAIN_SHADER.vertex,
+                constants: &[],
+            },
+            fragment: ShaderStage {
+                module,
+                entry_point: "fs_terrain_depth",
+                constants: &[],
+            },
+            targets: &[ColorTargetState {
+                format: TextureFormat::R32Float,
+                blend: None,
+            }],
+            depth: Some(DepthState {
+                format: TextureFormat::Depth32Float,
+                write: true,
+                compare: CompareFunction::GreaterEqual,
+            }),
+            topology: PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            sample_count: 1,
+        });
+        self.occlusion_pipeline = Some(pipeline);
+        pipeline
     }
 }
 

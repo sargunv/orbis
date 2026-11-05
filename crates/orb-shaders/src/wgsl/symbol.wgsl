@@ -581,6 +581,9 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let translation = t * tile_units_per_px(tile);
     let anchor = placed.anchor + translation;
     let projected_point = tile_clip(tile, anchor);
+    // Terrain in front of the anchor hides it (GL JS `calculate_visibility`).
+    let visible_opacity = total_opacity * terrain_visibility(projected_point);
+    if visible_opacity < 0.1 { return out; }
     let ctcd = camera_to_center();
     let distance_ratio = select(ctcd / projected_point.w, projected_point.w / ctcd, pitch);
     let perspective_ratio = clamp(0.5 + 0.5 * distance_ratio, 0.0, 4.0);
@@ -714,7 +717,7 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
             out.position = discarded_vertex();
         }
     }
-    out.data = vec3<f32>(final_pos.w, size, total_opacity);
+    out.data = vec3<f32>(final_pos.w, size, visible_opacity);
     if (flags & Q_COLOR) != 0u {
         out.fill = unpack4x8unorm(vertex_at(base + vertex_at(base + H_COLORS) + quad_index));
     } else {
