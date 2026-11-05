@@ -258,11 +258,6 @@ impl PropertyId {
         self.prop().paint
     }
 
-    /// Whether the value may vary per feature.
-    pub fn is_data_driven(self) -> bool {
-        self.prop().feature
-    }
-
     pub fn spec(self) -> PropertySpec {
         self.prop().spec()
     }

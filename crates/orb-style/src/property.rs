@@ -633,10 +633,6 @@ impl<T: PropertyValue> Property<T> {
         self.get().evaluate(zoom)
     }
 
-    pub fn constant_value(&self) -> Option<T> {
-        self.get().constant()
-    }
-
     pub fn as_expression(&self) -> Option<&PropertyExpression> {
         self.slot.as_expression()
     }

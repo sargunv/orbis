@@ -321,12 +321,6 @@ pub fn parse_layer(
     }
 }
 
-/// The v8 spec of a modelled paint (`paint: true`) or layout property of a
-/// `layer_type` layer.
-pub fn property_spec(layer_type: &str, paint: bool, name: &str) -> Option<orb_expr::PropertySpec> {
-    PropertyId::find(LayerType::from_name(layer_type)?, paint, name).map(PropertyId::spec)
-}
-
 /// Parses a root sky with the current global state, returning its warnings.
 pub fn parse_sky(
     json: &Json,

@@ -53,8 +53,10 @@ settled on. Each part's own record holds the details as it lands.
 - `orb-v8` is a front end onto `orb-style::Scene`, whose layers are
   table-driven by `PropertyId`.
 - Edits are typed transactions.
-- Paint has one path: a constant, curve or column per node, with curves
-  evaluated on the GPU at the frame zoom.
+- Paint has one path: a constant, curve or column per node. Curves are
+  evaluated on the CPU when the zoom changes and written to node uniforms
+  by their reflected members; evaluating them on the GPU was measured and
+  dropped (decision 0044).
 - The GPU expression interpreter is deleted. Paint that reads both feature
   state and feature data is patched on the CPU in the same frame as the state
   write, as GL JS (`updatePaintArrays`) and MapLibre Native do.

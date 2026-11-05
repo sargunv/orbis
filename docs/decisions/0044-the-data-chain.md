@@ -181,3 +181,16 @@ Hit bytes at z14 over Tokyo (`orbis render`): the extract 1.09 MB → 720 KB
 (4 tiles), OpenFreeMap Liberty 6.4 → 5.8 MB (9 tiles; its line layers
 split roads by filter, so few features have two nodes), VersaTiles
 20.3 → 13.5 MB (18 tiles). The query fixtures are unchanged (71 of 83).
+
+## Zoom curves stay on the CPU
+
+Camera-dependent paint is evaluated on the CPU at the frame zoom and
+written only to the nodes whose values changed, by the node uniforms'
+reflected members (decision 0043's B5). Across `cargo xtask bench
+--experiment gestures` on the Tokyo extract (rotate and tilt, then zoom
+z12 → z16 → z12; 800 frames), that costs 0.027 ms a frame on average
+(p50 0.003, p95 0.089, max 0.186 ms), against 0.273 ms p50 for the whole
+of `Map::render` on the zoom path. Evaluating curves on the GPU would save
+at most that, and needs stop tables in every family's node uniform, a
+curve evaluator in WGSL and its colour spaces, and new paths for every
+driver, so it waits until a profile shows paint writes matter.

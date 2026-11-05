@@ -285,11 +285,6 @@ impl StyleDoc {
         self.sources.iter().map(|s| s.key)
     }
 
-    /// The layer with `key`: its index in the style.
-    pub fn layer_index(&self, key: LayerKey) -> Option<usize> {
-        self.layers.iter().position(|l| l.key == key)
-    }
-
     pub fn source_index(&self, key: SourceKey) -> Option<usize> {
         self.sources.iter().position(|s| s.key == key)
     }
