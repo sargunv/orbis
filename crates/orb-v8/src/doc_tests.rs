@@ -43,7 +43,7 @@ fn paint_edits_classify_by_binding() {
         patch.changes,
         [Change::Paint {
             layer: water,
-            name: "fill-color".into(),
+            id: FILL_COLOR.id(),
             from: Binding::Constant,
             to: Binding::Constant
         }]
@@ -162,7 +162,7 @@ fn global_state_changes_reach_the_layers_that_read_it() {
         patch.changes,
         [Change::Paint {
             layer: roads,
-            name: "line-color".into(),
+            id: LINE_COLOR.id(),
             from: Binding::Constant,
             to: Binding::Constant
         }]

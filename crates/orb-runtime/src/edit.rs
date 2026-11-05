@@ -22,7 +22,8 @@ use std::sync::Arc;
 
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
-use orb_v8::{Binding, Change, Class, Transaction};
+use orb_style::{Binding, Change, Class, LayerKey, PropertyId};
+use orb_v8::Transaction;
 
 use crate::jobs::{StyleUpdate, TileResult};
 use crate::map::{
@@ -32,19 +33,22 @@ use crate::map::{
 /// The class a paint change costs this renderer for one node:
 /// `orb-style`'s, raised where property rows hold more than the property
 /// (line dash and gradient textures, and the width that scales dashes).
-fn paint_class(layer: &orb_style::Layer, name: &str, from: Binding, to: Binding) -> Class {
+fn paint_class(layer: &orb_style::Layer, id: PropertyId, from: Binding, to: Binding) -> Class {
     let class = Change::Paint {
-        layer: orb_v8::LayerKey(0),
-        name: String::new(),
+        layer: LayerKey(0),
+        id,
         from,
         to,
     }
     .class();
     let line_rows = crate::line::has_textures(layer);
-    match name {
-        "line-dasharray" | "line-gradient" => Class::Column,
-        "line-width" if line_rows => Class::Column,
-        _ => class,
+    if id == orb_style::LINE_DASHARRAY.id()
+        || id == orb_style::LINE_GRADIENT.id()
+        || (id == orb_style::LINE_WIDTH.id() && line_rows)
+    {
+        Class::Column
+    } else {
+        class
     }
 }
 
@@ -153,7 +157,7 @@ impl Map {
         let (now, zoom) = (self.services.clock.now(), self.zoom());
         let old_plan = old.plan();
         for change in &patch.changes {
-            let Change::Paint { layer, name, .. } = change else {
+            let Change::Paint { layer, id, .. } = change else {
                 continue;
             };
             let index =
@@ -165,15 +169,13 @@ impl Map {
             let transition = new
                 .transitions
                 .iter()
-                .find(|(n, _)| n == name)
+                .find(|(n, _)| n == id.name())
                 .map_or(plan.style.transition, |(_, t)| {
                     t.over(plan.style.transition)
                 });
             let old = &old_plan.style.layers[before];
-            if let Some(id) = orb_style::PropertyId::find(old.ty, true, name) {
-                self.transitions
-                    .start(&new.id, id, old.slot(id), transition, (now, zoom));
-            }
+            self.transitions
+                .start(&new.id, *id, old.slot(*id), transition, (now, zoom));
         }
 
         // Sources, by key: removed ones leave the scene next frame.
@@ -237,8 +239,8 @@ impl Map {
             for node in plan.nodes.iter().filter(|n| n.layer == index) {
                 let before = old.plan().node(node.key).map(|i| &old.plan().nodes[i]);
                 let class = match change {
-                    Change::Paint { name, from, to, .. } => {
-                        let class = paint_class(layer, name, *from, *to);
+                    Change::Paint { id, from, to, .. } => {
+                        let class = paint_class(layer, *id, *from, *to);
                         // Meshes need feature ids to read state.
                         let ids = plan.reads_state(node)
                             && !before.is_some_and(|b| old.plan().reads_state(b));

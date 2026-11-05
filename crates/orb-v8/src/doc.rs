@@ -7,17 +7,8 @@ use std::sync::Arc;
 use crate::{Diagnostic, Diagnostics};
 use orb_expr::json::{self, Json, JsonValue, Member, Span};
 
-use crate::diff::{self, Patch};
-use crate::tx::{FeatureStateOp, FeatureTarget, Op, Transaction};
-
-/// A layer's identity across edits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct LayerKey(pub u32);
-
-/// A source's identity across edits; a source whose definition changes is
-/// a new source.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SourceKey(pub u32);
+use crate::diff;
+use crate::tx::{FeatureTarget, Op, Transaction};
 
 #[derive(Clone, Debug)]
 pub(crate) struct LayerEntry {
@@ -205,14 +196,6 @@ impl StyleDoc {
         Ok(doc)
     }
 
-    /// Draws the scene on another plane, keeping the sources' tile matrix
-    /// sets and the low-zoom surface: a new version.
-    pub fn set_projection(&mut self, projection: orb_crs::Projection) {
-        Arc::make_mut(&mut self.decoration).projection = Some(projection);
-        self.style = Arc::new(self.decoration.apply((*self.style).clone()));
-        self.version += 1;
-    }
-
     fn from_parts(style: Scene, root: &Json) -> Self {
         let mut next_key = 0;
         let mut key = || {
@@ -375,6 +358,12 @@ impl StyleDoc {
             });
         }
         let (style, mut patch) = diff::diff(self, &draft)?;
+        for op in &tx.ops {
+            if let Op::SetPlane(projection) = op {
+                Arc::make_mut(&mut self.decoration).projection = Some(**projection);
+                patch.changes.push(Change::Restyle);
+            }
+        }
         self.version += 1;
         patch.version = self.version;
         patch.feature_state = std::mem::take(&mut draft.feature_state);
@@ -479,6 +468,8 @@ impl Draft {
 
     pub(crate) fn apply(&mut self, op: &Op) -> Result<(), String> {
         match op {
+            // The document applies it, over the style.
+            Op::SetPlane(_) => Ok(()),
             Op::SetPaint { layer, name, value } => {
                 self.set_property(layer, "paint", name, value.clone())
             }

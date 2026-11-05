@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod atmosphere;
+mod change;
 mod layer;
 mod lights;
 mod property;
@@ -17,6 +18,9 @@ mod spec;
 mod transition;
 
 pub use atmosphere::Atmosphere;
+pub use change::{
+    Binding, Change, Class, FeatureStateOp, LayerKey, LayoutChange, Patch, SourceKey,
+};
 pub use layer::Layer;
 pub use lights::{AmbientLight, Direction, DirectionalLight, Level, Lights};
 pub use orb_expr::{Color, Kind, PropertyExpression, Value};

@@ -94,3 +94,22 @@ Now:
 Render fixtures are unchanged (1196 / 99 / 50 natively against the same
 base), and the alps terrain demo's snapshot matches a base run byte for
 byte (label fades vary between runs on both).
+
+## Edits: changes by `PropertyId`, typed scene ops
+
+- The edit vocabulary is native: `Change`, `Class`, `Binding`, `Patch`,
+  the layer and source keys and `FeatureStateOp` live in `orb-style`. A
+  paint change names its `PropertyId` and takes its bindings from the old
+  and new layers' parsed slots, not from re-parsing their JSON against the
+  spec. A layout change names its `PropertyId` too, and properties the
+  table doesn't have no longer make changes.
+- The scene document's setters are typed ops: `Op::SetPlane` draws the
+  scene on another plane, through `Map::edit` like any other edit.
+- GL JS edit calls (`setPaintProperty`, `setFilter`, …) still carry
+  JSON, and `StyleDoc` still diffs JSON to find what changed: global state
+  folds into expressions at parse (decision 0015), so a global-state write
+  re-parses the layers that read it, and their JSON is what it re-parses.
+  Values are typed once parsed; the document of record stays JSON.
+
+`pnpm -C web e2e --only=edits` and the `orb-demo` edit tests keep their
+classes and job counts; the runtime-styling fixtures pass, 177 of 177.

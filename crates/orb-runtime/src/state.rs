@@ -19,8 +19,8 @@ use std::ops::Range;
 use orb_expr::FeatureData;
 use orb_hal::Gpu;
 use orb_render::{Renderer, StateLookup};
+use orb_style::FeatureStateOp;
 use orb_style::Value;
-use orb_v8::FeatureStateOp;
 
 use crate::style::{PaintProperty, StylePlan};
 
@@ -417,7 +417,7 @@ impl FeatureStates {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orb_v8::SourceKey;
+    use orb_style::SourceKey;
 
     #[test]
     fn indices_are_counted_and_states_survive_unloads() {

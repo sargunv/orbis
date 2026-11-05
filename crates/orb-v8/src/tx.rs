@@ -6,6 +6,10 @@ use orb_style::*;
 /// One edit. Layer and source ids are as in the style.
 #[derive(Clone, Debug)]
 pub enum Op {
+    /// Draws the scene on another plane (the scene document's
+    /// `projection`), keeping the sources' tile matrix sets and the
+    /// low-zoom surface. Tiles load again.
+    SetPlane(Box<orb_crs::Projection>),
     /// `None` unsets the property, back to its default.
     SetPaint {
         layer: String,
@@ -88,23 +92,6 @@ pub struct FeatureTarget {
     pub source_layer: Option<String>,
     /// As GL JS keys it: `String(id)`.
     pub id: Option<String>,
-}
-
-/// A feature-state edit, validated against the document's sources.
-#[derive(Clone, Debug, PartialEq)]
-pub enum FeatureStateOp {
-    Set {
-        source: crate::SourceKey,
-        source_layer: Option<String>,
-        id: String,
-        state: Vec<(String, Value<'static>)>,
-    },
-    Remove {
-        source: crate::SourceKey,
-        source_layer: Option<String>,
-        id: Option<String>,
-        key: Option<String>,
-    },
 }
 
 /// Edits applied together by [`StyleDoc::apply`](crate::StyleDoc::apply):

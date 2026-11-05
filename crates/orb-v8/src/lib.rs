@@ -26,15 +26,14 @@ mod tx;
 use std::collections::HashSet;
 use std::fmt;
 
-pub use diff::{Binding, Change, Class, LayoutChange, Patch};
-pub use doc::{LayerKey, SourceKey, StyleDoc};
+pub use doc::StyleDoc;
 pub use geojson::parse_geojson;
 pub use light::default_lights;
 pub use lights::parse_time;
 pub use orb_expr::json::Span;
 pub use orb_expr::{Diagnostic, Filter};
 pub use scene::{AddedLayer, SceneDocument, StyleRef, is_scene, parse_scene, tms_definition};
-pub use tx::{FeatureStateOp, FeatureTarget, Op, Transaction};
+pub use tx::{FeatureTarget, Op, Transaction};
 
 // The native model this front end builds.
 use orb_style::*;

@@ -911,11 +911,10 @@ impl Map {
     /// tile matrix sets and the camera's target and resolution. Tiles load
     /// again.
     pub fn set_projection(&mut self, projection: orb_crs::Projection) {
-        if let Some(style) = &self.style {
-            let mut doc = style.doc.clone();
-            doc.set_projection(projection);
-            self.install(doc);
-        }
+        let mut tx = orb_v8::Transaction::new();
+        tx.push(orb_v8::Op::SetPlane(Box::new(projection)));
+        // Without a style there is no scene to draw on another plane.
+        let _ = self.edit(&tx);
     }
 
     /// The view the camera gives for a viewport.
