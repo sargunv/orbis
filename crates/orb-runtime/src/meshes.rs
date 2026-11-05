@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use orb_crs::{TileIndex, TileMatrixSet};
+use orb_crs::TileIndex;
 use orb_hal::Gpu;
 use orb_render::{GpuTile, MeshData, Renderer, TileKey};
 use orb_source::endpoint::TileEndpoint;
@@ -35,55 +35,44 @@ pub(crate) fn series_patches(series: &orb_crs::Series) -> (u32, Vec<f32>) {
 
 /// An image tile's mesh: on a globe, a grid in the tile's own space that
 /// the sphere and the plane's patches bend; on another plane, the warp's
-/// mesh; else `None` for its quad. `Err` when nothing of it reaches the
-/// surface.
+/// mesh, its sides refined by `edges`; else `None` for its quad. `Err`
+/// when nothing of it reaches the surface.
 pub(crate) fn image_mesh(
     globe_warps: &mut crate::globe::GlobeWarps,
     globe: bool,
     warped: bool,
     endpoint: &TileEndpoint,
     tile: TileIndex,
+    edges: [u8; 4],
 ) -> Result<Option<Arc<image::Warped>>, ()> {
     let tms = &endpoint.tms;
-    // An image source: its quad's warp at the vertices of a grid over the
-    // image, in its one tile; on a globe, as fine as the sphere bends.
-    if let Some(quad) = &endpoint.quad {
-        let cells = if globe {
-            globe_warps.grid(tms, tile).max(IMAGE_SOURCE_CELLS)
-        } else {
-            IMAGE_SOURCE_CELLS
-        };
-        return Ok(Some(Arc::new(image::Warped::quad(
-            tms.tile_bounds(tile),
-            quad,
-            cells,
-        ))));
-    }
-    match warped {
-        true if !globe => image::Warped::new(&globe_warps.surface_warp(tms), tile)
-            .map(|mesh| Some(Arc::new(mesh)))
-            .ok_or(()),
-        _ => Ok(globe_grid(globe_warps, globe, tms, tile)),
-    }
-}
-
-/// An image tile's mesh on a globe: a grid fine enough for the sphere to
-/// bend, or `None` for its quad.
-pub(crate) fn globe_grid(
-    globe_warps: &mut crate::globe::GlobeWarps,
-    globe: bool,
-    tms: &TileMatrixSet,
-    tile: TileIndex,
-) -> Option<Arc<image::Warped>> {
-    if !globe {
-        return None;
-    }
-    let (cells, poles) = (
-        globe_warps.grid(tms, tile),
-        orb_crs::sphere::poles(tms, tile),
-    );
-    (cells > 1 || poles.contains(&true))
-        .then(|| Arc::new(image::Warped::grid(tms.tile_bounds(tile), cells, poles)))
+    let bounds = tms.tile_bounds(tile);
+    let mesh = match (&endpoint.quad, warped, globe) {
+        // An image source: its quad's warp at the vertices of a grid over
+        // the image, in its one tile; on a globe, as fine as the sphere
+        // bends.
+        (Some(quad), _, false) => image::Warped::quad(bounds, quad, IMAGE_SOURCE_CELLS),
+        (Some(quad), _, true) => {
+            let cells = globe_warps.grid(tms, tile).max(IMAGE_SOURCE_CELLS);
+            image::Warped::quad(bounds, quad, cells)
+        }
+        (None, true, false) => {
+            image::Warped::new(&globe_warps.surface_warp(tms), tile, edges).ok_or(())?
+        }
+        (None, false, false) => return Ok(None),
+        // On a globe, a grid fine enough for the sphere to bend.
+        (None, _, true) => {
+            let (cells, poles) = (
+                globe_warps.grid(tms, tile),
+                orb_crs::sphere::poles(tms, tile),
+            );
+            if cells <= 1 && poles == [false; 2] {
+                return Ok(None);
+            }
+            image::Warped::grid(bounds, cells, poles)
+        }
+    };
+    Ok(Some(Arc::new(mesh)))
 }
 
 /// Cells per side of the background's grid on a globe: fine enough for a

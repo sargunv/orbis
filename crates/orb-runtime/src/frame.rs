@@ -13,6 +13,7 @@ use orb_render::{ClipRect, DemRef, Family, PlacementTarget, Renderer, TileRow, T
 use orb_source::Draw;
 
 use crate::map::*;
+use crate::meshes::{image_mesh, series_patches};
 use crate::resident::*;
 
 impl Map {
@@ -240,6 +241,50 @@ impl Map {
                     tms,
                     resident.series.as_deref(),
                 ));
+            }
+        }
+        // Each drawn image tile's mesh is the one for this frame's surface
+        // and, for a warped tile, the finest drawn tile beside each side,
+        // whose vertices it takes so the two meet without cracks (#32).
+        let globe = self.surface.globe().is_some();
+        for &tile in rows.keys() {
+            let edges = match *warped && !globe {
+                true => edge_refinement(tile, |t| rows.contains_key(&t)),
+                false => [0; 4],
+            };
+            let resident = pyramid.get_mut(tile).expect("drawn tiles are ready");
+            let Some(image) = resident.image.as_mut() else {
+                continue;
+            };
+            if image.globe == globe && image.warped.as_ref().map_or([0; 4], |w| w.edges) == edges {
+                continue;
+            }
+            let Ok(mesh) = image_mesh(
+                &mut self.globe_warps,
+                globe,
+                *warped,
+                &endpoint,
+                tile,
+                edges,
+            ) else {
+                continue;
+            };
+            image.globe = globe;
+            image.warped = mesh;
+            // A warped image draws through planar patches only on a globe
+            // surface; elsewhere through its warp's mesh.
+            resident.series = (*warped && globe)
+                .then(|| self.globe_warps.surface_series(tms, tile))
+                .flatten();
+            let patches = resident.series.as_deref().map(series_patches);
+            let patches = patches.as_ref().map(|(cells, p)| (*cells, &p[..]));
+            let mesh = image.warped.as_ref().map(|w| Arc::clone(&w.mesh));
+            if renderer
+                .set_image_mesh(gpu, resident.gpu, mesh, patches)
+                .is_err()
+            {
+                self.warnings
+                    .push("out of scene memory; an image layer misses tiles".into());
             }
         }
         let period = self.surface.period();
@@ -733,6 +778,31 @@ pub(crate) struct DrapePlan {
 /// target to a whole pixel of the world at this zoom (half a pixel off for
 /// odd viewport sizes, turned with the bearing), so image tiles at whole
 /// pixels draw crisp.
+/// Per side of `tile` (top, right, bottom, left), how many zooms finer
+/// than it the finest `drawn` tile across that side is, up to
+/// [`orb_crs::MAX_EDGE_REFINE`].
+fn edge_refinement(tile: TileIndex, drawn: impl Fn(TileIndex) -> bool) -> [u8; 4] {
+    let TileIndex { z, col, row } = tile;
+    [0, 1, 2, 3].map(|side| {
+        (1..=orb_crs::MAX_EDGE_REFINE)
+            .rev()
+            .find(|&d| {
+                let (c, r, n) = (col << d, row << d, 1 << d);
+                // The tiles `d` zooms down across the side (none past the
+                // matrix's first row or column).
+                (0..n).any(|k| {
+                    drawn(match side {
+                        0 => TileIndex::new(z + d, c + k, r.wrapping_sub(1)),
+                        1 => TileIndex::new(z + d, c + n, r + k),
+                        2 => TileIndex::new(z + d, c + k, r + n),
+                        _ => TileIndex::new(z + d, c.wrapping_sub(1), r + k),
+                    })
+                })
+            })
+            .unwrap_or(0)
+    })
+}
+
 pub(crate) fn pixel_alignment(
     view: &View,
     projection: &orb_crs::Projection,

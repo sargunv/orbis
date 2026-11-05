@@ -392,7 +392,8 @@ impl Map {
         let mut fade_ms = 0.0;
         let now = self.frame_time;
         if let Some(tile_image) = &build.image {
-            let Ok(warped) = image_mesh(&mut self.globe_warps, globe, warped, endpoint, tile)
+            let Ok(warped) =
+                image_mesh(&mut self.globe_warps, globe, warped, endpoint, tile, [0; 4])
             else {
                 // Nothing of the tile reaches the surface.
                 pyramid.insert_empty(tile);
@@ -536,7 +537,7 @@ impl Map {
         if fade_ms > 0.0 {
             self.image_fades_until = self.image_fades_until.max(now + fade_ms);
         }
-        resident.image = image.map(|(_, warped)| ResidentImage { warped });
+        resident.image = image.map(|(_, warped)| ResidentImage { warped, globe });
         resident.series = series;
         self.counts.meshes_uploaded += build.meshes.len() as u32;
         record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);

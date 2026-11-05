@@ -1479,52 +1479,13 @@ impl Map {
         }
         let plan = style.worker.plan();
         // A projection edit put the map on or off a globe: the background
-        // and image tiles take the meshes it bends.
+        // takes the mesh it bends (image tiles take theirs as they draw).
         let globe = self.surface.globe().is_some();
         if style.globe_meshes != globe {
             style.globe_meshes = globe;
             if let Some(tile) = style.background.take() {
                 renderer.release_tile(tile);
                 style.background = make_background(gpu, renderer, plan, globe);
-            }
-            for source in &mut style.sources {
-                let SourceState::Ready {
-                    pyramid,
-                    endpoint,
-                    warped,
-                    ..
-                } = source
-                else {
-                    continue;
-                };
-                let warped = *warped;
-                for (tile, resident) in pyramid.ready_mut() {
-                    let handle = resident.gpu;
-                    let Some(image) = resident.image.as_mut() else {
-                        continue;
-                    };
-                    let Ok(grid) = image_mesh(&mut self.globe_warps, globe, warped, endpoint, tile)
-                    else {
-                        continue;
-                    };
-                    if image.warped == grid {
-                        continue;
-                    }
-                    image.warped = grid;
-                    // A warped image draws through planar patches only on a
-                    // globe surface; elsewhere through its warp's mesh.
-                    let series = (warped && globe)
-                        .then(|| self.globe_warps.surface_series(&endpoint.tms, tile))
-                        .flatten();
-                    let patches = series.as_deref().map(series_patches);
-                    let mesh = image.warped.as_ref().map(|w| Arc::clone(&w.mesh));
-                    resident.series = series;
-                    let patches = patches.as_ref().map(|(cells, p)| (*cells, &p[..]));
-                    if renderer.set_image_mesh(gpu, handle, mesh, patches).is_err() {
-                        self.warnings
-                            .push("out of scene memory; an image layer misses tiles".into());
-                    }
-                }
             }
         }
         let keys: Vec<u32> = plan.nodes.iter().map(|n| n.key).collect();

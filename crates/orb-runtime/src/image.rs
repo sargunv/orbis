@@ -16,10 +16,12 @@ use orb_style::{Color, IlluminationAnchor, LayerType, PropertyRef, PropertyValue
 use crate::style::{NodePlan, StylePlan};
 
 /// What the map keeps of a resident image tile: the mesh that warps it
-/// onto another plane, if any. The renderer holds its texels and quads.
+/// onto another plane or bends it on a globe, if any. The renderer holds its texels and quads.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ResidentImage {
     pub(crate) warped: Option<Arc<Warped>>,
+    /// Whether the mesh is for a globe surface.
+    pub(crate) globe: bool,
 }
 
 /// A tile's warp mesh as its nodes draw it (plan §9.2, `RasterWarp`).
@@ -29,13 +31,20 @@ pub(crate) struct Warped {
     /// of.
     pub(crate) frame: orb_crs::WorldRect,
     pub(crate) mesh: Arc<ImageMesh>,
+    /// Each side's refinement for its neighbours ([`orb_crs::Warp::mesh`]).
+    pub(crate) edges: [u8; 4],
 }
 
 impl Warped {
     /// The tile's mesh from `warp`, its linear interpolation within a
-    /// quarter of a pixel at 512 pixels per tile side.
-    pub(crate) fn new(warp: &orb_crs::Warp, tile: TileIndex) -> Option<Self> {
-        Some(Self::of(warp.mesh(tile, 1.0 / 2048.0, 1.0)?, None))
+    /// quarter of a pixel at 512 pixels per tile side, its sides refined
+    /// by `edges`.
+    pub(crate) fn new(warp: &orb_crs::Warp, tile: TileIndex, edges: [u8; 4]) -> Option<Self> {
+        let mesh = warp.mesh(tile, 1.0 / 2048.0, 1.0, edges)?;
+        Some(Self {
+            edges,
+            ..Self::of(mesh, None)
+        })
     }
 
     /// A tile's own square (`frame`) as a grid of `cells` per side, for a
@@ -170,6 +179,7 @@ impl Warped {
                 indices,
                 chunks,
             }),
+            edges: [0; 4],
         }
     }
 }

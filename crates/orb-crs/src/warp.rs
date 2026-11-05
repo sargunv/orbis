@@ -279,9 +279,12 @@ const MAX_SERIES_CELLS: u32 = 16;
 const FOOTPRINT_STEPS: u32 = 8;
 /// The finest mesh grid, cells per side, and the steps along tile edges.
 const MAX_CELLS: u32 = 64;
-/// Vertex positions per tile side: tile edges at `MAX_CELLS` steps, and
-/// cell centres of the finest grid.
-const LATTICE: u32 = 2 * MAX_CELLS;
+/// How many times finer than a tile a neighbour may be and still share
+/// its edge's vertices, as a power of two ([`Warp::mesh`]'s `edges`).
+pub const MAX_EDGE_REFINE: u8 = 4;
+/// Vertex positions per tile side: tile edges at `MAX_CELLS` steps (finer
+/// beside finer tiles), and cell centres of the finest grid.
+const LATTICE: u32 = (2 * MAX_CELLS) << MAX_EDGE_REFINE;
 
 impl Warp {
     pub fn new(from: TileMatrixSet, to: Projection) -> Self {
@@ -420,7 +423,17 @@ impl Warp {
     /// strays from the true position by at most `tolerance` of the tile's
     /// side (to a 64-cell limit), without the triangles that leave the
     /// target plane's world bounds grown by `reach` times their size.
-    pub fn mesh(&self, tile: TileIndex, tolerance: f64, reach: f64) -> Option<WarpMesh> {
+    /// Its edges take 64 steps, each side (top, right, bottom, left in
+    /// tile space) `2^edges[side]` times as many: as many as a neighbour
+    /// that much finer takes along it, so the two share every vertex there
+    /// (#32: no T-junction cracks).
+    pub fn mesh(
+        &self,
+        tile: TileIndex,
+        tolerance: f64,
+        reach: f64,
+        edges: [u8; 4],
+    ) -> Option<WarpMesh> {
         let footprint = self.footprint(tile)?;
         let reference = footprint.bounds.center().x;
         let world = self.to.world_bounds();
@@ -485,7 +498,7 @@ impl Warp {
         // tile's edges, so that neighbours share their edge vertices
         // whatever grid each chose (no T-junction cracks).
         let unit = LATTICE / cells;
-        let edge_step = LATTICE / MAX_CELLS;
+        let step = edges.map(|e| LATTICE / (MAX_CELLS << e.min(MAX_EDGE_REFINE)));
         let mut lattice: HashMap<(u32, u32), Option<u32>> = HashMap::new();
         let mut positions: Vec<DVec2> = Vec::new();
         let mut sources = Vec::new();
@@ -510,8 +523,11 @@ impl Warp {
         for j in 0..cells {
             for i in 0..cells {
                 let (x0, y0, x1, y1) = (i * unit, j * unit, (i + 1) * unit, (j + 1) * unit);
-                let boundary =
-                    unit > edge_step && (x0 == 0 || y0 == 0 || x1 == LATTICE || y1 == LATTICE);
+                let [top, right, bottom, left] = [y0 == 0, x1 == LATTICE, y1 == LATTICE, x0 == 0];
+                let boundary = [top, right, bottom, left]
+                    .into_iter()
+                    .zip(step)
+                    .any(|(on, step)| on && unit > step);
                 if !boundary {
                     let [a, b, c, d] =
                         [(x0, y0), (x1, y0), (x0, y1), (x1, y1)].map(|(x, y)| vertex(x, y));
@@ -522,26 +538,26 @@ impl Warp {
                 // The cell's outline clockwise, with the tile edge's
                 // vertices along the sides on it, as a fan from its centre.
                 let mut ring = Vec::new();
-                let side = |on_edge: bool| if on_edge { edge_step } else { unit };
+                let side = |on_edge: bool, side: usize| if on_edge { step[side] } else { unit };
                 let mut x = x0;
                 while x < x1 {
                     ring.push(vertex(x, y0));
-                    x += side(y0 == 0);
+                    x += side(top, 0);
                 }
                 let mut y = y0;
                 while y < y1 {
                     ring.push(vertex(x1, y));
-                    y += side(x1 == LATTICE);
+                    y += side(right, 1);
                 }
                 let mut x = x1;
                 while x > x0 {
                     ring.push(vertex(x, y1));
-                    x -= side(y1 == LATTICE);
+                    x -= side(bottom, 2);
                 }
                 let mut y = y1;
                 while y > y0 {
                     ring.push(vertex(x0, y));
-                    y -= side(x0 == 0);
+                    y -= side(left, 3);
                 }
                 fans.push((vertex(x0 + unit / 2, y0 + unit / 2), ring));
             }
@@ -618,7 +634,7 @@ mod tests {
 
     /// Every mesh vertex lands where the projections put its source point.
     fn check_mesh(warp: &Warp, tile: TileIndex, tolerance: f64) -> WarpMesh {
-        let mesh = warp.mesh(tile, tolerance, 1.0).unwrap();
+        let mesh = warp.mesh(tile, tolerance, 1.0, [0; 4]).unwrap();
         let size = mesh.frame.size();
         for (p, uv) in mesh.positions.iter().zip(&mesh.sources) {
             let world = DVec2::new(
@@ -698,7 +714,7 @@ mod tests {
             TileIndex::new(4, 7, 3),
         ] {
             let limit = warp.footprint(tile).unwrap().span / 2048.0;
-            let mesh = warp.mesh(tile, 1.0 / 2048.0, 1.0).unwrap();
+            let mesh = warp.mesh(tile, 1.0 / 2048.0, 1.0, [0; 4]).unwrap();
             let edge: Vec<f64> = mesh
                 .sources
                 .iter()
@@ -716,6 +732,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #32: a side refined once takes the points its two finer neighbours
+    /// take along it.
+    #[test]
+    fn refined_edges_take_their_finer_neighbours_points() {
+        let warp = Warp::new(mercator(), *polar().projection());
+        let bottom = |tile, edges| {
+            let mesh = warp.mesh(tile, 1.0 / 2048.0, 1.0, edges).unwrap();
+            let mut xs: Vec<f64> = mesh
+                .sources
+                .iter()
+                .filter(|s| s.y == 1.0)
+                .map(|s| s.x)
+                .collect();
+            xs.sort_by(f64::total_cmp);
+            xs.dedup();
+            xs
+        };
+        let steps = |n: u32| {
+            (0..=n)
+                .map(|k| f64::from(k) / f64::from(n))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bottom(TileIndex::new(4, 7, 3), [0; 4]), steps(64));
+        assert_eq!(bottom(TileIndex::new(3, 3, 1), [0, 0, 1, 0]), steps(128));
     }
 
     #[test]
