@@ -163,19 +163,18 @@ pub fn draw(face: &Face, text: &str, size: f32) -> Drawn {
         }
     }
     let advance = f64::from(advance as f32 * scale);
+    // Nothing drawn: the advance alone.
+    let blank = || Drawn {
+        metrics: TextMetrics {
+            advance,
+            ..TextMetrics::default()
+        },
+        width: 0,
+        height: 0,
+        alpha: Vec::new(),
+    };
     if pen.commands.is_empty() {
-        return Drawn {
-            metrics: TextMetrics {
-                advance,
-                ascent: 0.0,
-                descent: 0.0,
-                left: 0.0,
-                right: 0.0,
-            },
-            width: 0,
-            height: 0,
-            alpha: Vec::new(),
-        };
+        return blank();
     }
     let (mask, placement) = zeno::Mask::new(&pen.commands[..])
         .origin(zeno::Origin::TopLeft)
@@ -188,18 +187,7 @@ pub fn draw(face: &Face, text: &str, size: f32) -> Drawn {
         (0..h).find(|&y| row_inked(y)),
         (0..w).find(|&x| col_inked(x)),
     ) else {
-        return Drawn {
-            metrics: TextMetrics {
-                advance,
-                ascent: 0.0,
-                descent: 0.0,
-                left: 0.0,
-                right: 0.0,
-            },
-            width: 0,
-            height: 0,
-            alpha: Vec::new(),
-        };
+        return blank();
     };
     let bottom = (0..h).rev().find(|&y| row_inked(y)).expect("an inked row") + 1;
     let right = (0..w)
