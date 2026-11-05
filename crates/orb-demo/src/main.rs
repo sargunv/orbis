@@ -1075,6 +1075,9 @@ mod tests {
         }
     }
 
+    /// The moved map draws what a fresh one at its camera draws, as still
+    /// pictures: continuous label placement depends on the frames tiles
+    /// arrived in, a still one only on the camera and data.
     fn assert_matches_fresh(offscreen: &mut super::Offscreen) {
         let camera = *offscreen.map.camera();
         let options = super::Options {
@@ -1089,10 +1092,14 @@ mod tests {
         let (mut fresh, _, _) = super::Offscreen::load(&options).unwrap();
         // Use exactly the same camera, including its ground resolution.
         fresh.map.jump_to_state(camera);
+        fresh.map.set_mode(super::RenderMode::Still);
+        offscreen.map.set_mode(super::RenderMode::Still);
         let fresh_report = settle(&mut fresh);
         let report = settle(offscreen);
         let pixels = offscreen.pixels();
         let reference = fresh.pixels();
+        offscreen.map.set_mode(super::RenderMode::Continuous);
+        settle(offscreen);
         let differing = super::differing_pixels(&pixels, &reference);
         assert_eq!(
             differing, 0,
