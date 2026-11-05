@@ -119,10 +119,22 @@ Comparison thresholds and expected images are unchanged.
 
 Extrusion's remaining failures are `height/steep-pitch-near-horizon`
 (7441/262144 pixels, 2.8385%) and `vertical-gradient/east-wall`
-(three silhouette pixels out of 4096, 0.07324%). Seven skips need nonzero
-rounded-corner-distance, which explicitly warns; the other four need global
-state and/or fixture operations. These and the depth-tie/source-envelope
+(three silhouette pixels out of 4096, 0.07324%). The other four skips need
+global state and/or fixture operations. These and the depth-tie/source-envelope
 gaps are tracked in [#5](https://github.com/sargunv/orbis/issues/5).
+
+**Rounded corners.** `fill-extrusion-rounded-corner-distance` ports the
+pinned `round_polygon_corners.ts`:
+- each corner becomes an arc of 30° steps at most, its radius capped at a
+  fifth of either edge, snapped to the 8192-unit grid;
+- corners that tile clipping made stay sharp;
+- walls take normals blended across shallow turns, so an arc shades as one
+  surface.
+
+The distance converts to grid units at the tile's centre in its source's
+tile matrix set (GL JS's `getTileUnitsForMeters`, generalised). Of the
+seven fixtures, four pass and three differ by 0.04–0.32% of pixels along
+silhouette edges.
 
 The reduced Tokyo extract does **not** retain Liberty's `building-3d` layer.
 For the extrusion measurement only, the original Liberty layer is restored

@@ -22,6 +22,7 @@ pub mod fill;
 pub mod line;
 mod mesh;
 pub mod point;
+mod round_corners;
 
 pub use mesh::{
     CHUNK_INDICES, Chunk, MAX_CHUNK_INSTANCES, MAX_CHUNK_TRIANGLES, Mesh, MeshBuilder, TileBox,

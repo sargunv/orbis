@@ -247,13 +247,17 @@ fn layout(
     family: Family,
     zoom: f64,
     bend: Option<orb_layout::fill::Bend>,
+    units_per_metre: f64,
 ) -> Mesh {
     match kind {
         LayerKind::Fill(_) => match family {
             Family::FillOutline => fill::outline(layer, features),
             _ => fill::layout_subdivided(layer, features, bend),
         },
-        LayerKind::FillExtrusion(_) => extrusion::layout_in_extent(layer, features, 8192),
+        LayerKind::FillExtrusion(e) => {
+            let rounding = f64::from(e.rounded_corner_distance.evaluate(zoom)) * units_per_metre;
+            extrusion::layout_in_extent(layer, features, 8192, rounding)
+        }
         LayerKind::Circle(c) => {
             let key = c.layout.sort_key.bind(layer);
             point::layout_sorted(layer, features, |feature| {
@@ -431,7 +435,7 @@ pub(crate) fn build(
     frame: &TileFrame,
     plan: &StylePlan,
     source: usize,
-    zoom: f64,
+    (zoom, units_per_metre): (f64, f64),
     bend: Option<orb_layout::fill::Bend>,
     select: Select<'_>,
     symbols: Symbols<'_>,
@@ -503,7 +507,15 @@ pub(crate) fn build(
                     Mesh::default()
                 }
                 _ => {
-                    let mesh = layout(layer, &features, &style_layer.kind, node.family, zoom, bend);
+                    let mesh = layout(
+                        layer,
+                        &features,
+                        &style_layer.kind,
+                        node.family,
+                        zoom,
+                        bend,
+                        units_per_metre,
+                    );
                     if mesh.is_empty() {
                         continue;
                     }
@@ -826,7 +838,16 @@ mod tests {
         let frame = TileFrame {
             layers: vec![builder.finish()],
         };
-        let result = build(&frame, &plan, 0, 0.0, None, Select::default(), no_symbols()).unwrap();
+        let result = build(
+            &frame,
+            &plan,
+            0,
+            (0.0, 1.0),
+            None,
+            Select::default(),
+            no_symbols(),
+        )
+        .unwrap();
         let hits = |family| {
             result
                 .meshes
@@ -882,7 +903,7 @@ mod tests {
             &frame,
             &plan,
             0,
-            15.0,
+            (15.0, 1.0),
             None,
             Select::default(),
             no_symbols(),
@@ -910,7 +931,7 @@ mod tests {
             &frame,
             &plan,
             0,
-            15.0,
+            (15.0, 1.0),
             None,
             Select {
                 rows_only: true,
@@ -964,7 +985,7 @@ mod tests {
             &frame,
             &plan,
             0,
-            15.0,
+            (15.0, 1.0),
             None,
             Select::default(),
             no_symbols(),
@@ -1034,7 +1055,7 @@ mod tests {
             &frame(),
             &plan,
             0,
-            10.0,
+            (10.0, 1.0),
             None,
             Select::default(),
             no_symbols(),
@@ -1084,7 +1105,7 @@ mod tests {
             &frame(),
             &plan,
             0,
-            10.0,
+            (10.0, 1.0),
             None,
             Select::default(),
             no_symbols(),
@@ -1112,7 +1133,7 @@ mod tests {
             &frame(),
             &plan,
             0,
-            10.0,
+            (10.0, 1.0),
             None,
             Select::default(),
             no_symbols(),
@@ -1148,7 +1169,7 @@ mod tests {
             &frame(),
             &plan,
             0,
-            10.0,
+            (10.0, 1.0),
             None,
             Select::default(),
             no_symbols(),

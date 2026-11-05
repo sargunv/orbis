@@ -3,21 +3,31 @@
 //! bottom/top in x's low bit), then i16 normal.z and u16 edge distance.
 //! Roofs reuse fill triangulation. Walls clip original segments independently,
 //! so clipping never introduces a wall across the tile square.
+use crate::round_corners::{round_ring, wall_normals};
 use crate::{Mesh, MeshBuilder, clip::clip_segment, fill};
 use orb_tile::{GeometryType, Layer, LayerBuilder};
 
 pub const STRIDE: usize = 4;
 
 pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
-    layout_in_extent(layer, features, layer.extent())
+    layout_in_extent(layer, features, layer.extent(), 0.0)
 }
 
 /// Layout in a normalized tile grid. The pinned bucket uses 8192 units,
 /// including for edge-distance resets and integer vertex snapping.
-pub fn layout_in_extent(layer: &Layer, features: &[u32], output_extent: u32) -> Mesh {
-    if output_extent == layer.extent() {
-        return layout_normalized(layer, features);
+/// `rounding` rounds polygon corners by that many grid units
+/// (`fill-extrusion-rounded-corner-distance`), 0 for none.
+pub fn layout_in_extent(
+    layer: &Layer,
+    features: &[u32],
+    output_extent: u32,
+    rounding: f64,
+) -> Mesh {
+    let rounded = rounding > 0.0;
+    if output_extent == layer.extent() && !rounded {
+        return layout_normalized(layer, features, false);
     }
+    let extent = output_extent as i32;
     let mut normalized = LayerBuilder::new("extrusion", output_extent);
     for &feature in features {
         let feature = feature as usize;
@@ -26,11 +36,24 @@ pub fn layout_in_extent(layer: &Layer, features: &[u32], output_extent: u32) -> 
             normalized.begin_part();
             for ring in part.rings() {
                 normalized.begin_ring();
+                let scaled: Vec<[i32; 2]> = ring
+                    .iter()
+                    .map(|p| {
+                        p.map(|v| {
+                            (f64::from(v) * f64::from(output_extent) / f64::from(layer.extent())
+                                + 0.5)
+                                .floor() as i32
+                        })
+                    })
+                    .collect();
+                let polygon = layer.geometry_type(feature) == GeometryType::Polygon;
+                let ring = if rounded && polygon {
+                    round_ring(&scaled, rounding, extent)
+                } else {
+                    scaled
+                };
                 for p in ring {
-                    normalized.push_vertex(p.map(|v| {
-                        (f64::from(v) * f64::from(output_extent) / f64::from(layer.extent()) + 0.5)
-                            .floor() as i32
-                    }));
+                    normalized.push_vertex(p);
                 }
             }
         }
@@ -38,6 +61,7 @@ pub fn layout_in_extent(layer: &Layer, features: &[u32], output_extent: u32) -> 
     layout_normalized(
         &normalized.finish(),
         &(0..features.len() as u32).collect::<Vec<_>>(),
+        rounded,
     )
 }
 
@@ -69,7 +93,8 @@ pub fn centroid(layer: &Layer, feature: u32, output_extent: u32) -> [i16; 2] {
     [clamp(mean(x)), clamp(mean(y))]
 }
 
-fn layout_normalized(layer: &Layer, features: &[u32]) -> Mesh {
+/// `rounded`: polygon walls take normals that blend across rounded corners.
+fn layout_normalized(layer: &Layer, features: &[u32], rounded: bool) -> Mesh {
     let roof = fill::layout(layer, features);
     let mut builder = MeshBuilder::new(STRIDE);
     // Preserve roof chunks by feeding their triangles through the builder.
@@ -97,7 +122,11 @@ fn layout_normalized(layer: &Layer, features: &[u32]) -> Mesh {
                     continue;
                 }
                 let count = if closed { n } else { n - 1 };
+                let smooth = (rounded && closed).then(|| wall_normals(ring, extent));
                 for i in 0..count {
+                    if smooth.as_ref().is_some_and(|s| s[i].is_none()) {
+                        continue;
+                    }
                     let a = ring[i];
                     let b = ring[(i + 1) % n];
                     // The reference's synthetic clip lines are on the source
@@ -116,10 +145,14 @@ fn layout_normalized(layer: &Layer, features: &[u32]) -> Mesh {
                         distance = 0.0;
                     }
                     if let Some((ca, cb, _, _)) = clip_segment(a, b, 0, extent) {
-                        let nx = (-dy / length * 8192.0).floor() as i16 * 2;
-                        let ny = (dx / length * 16384.0) as i16;
+                        let flat = [f64::from(-dy / length), f64::from(dx / length)];
+                        // The wall's normals at its end and its start.
+                        let (start_normal, end_normal) =
+                            smooth.as_ref().and_then(|s| s[i]).unwrap_or((flat, flat));
                         let start = builder.vertex_count();
-                        for p in [cb, ca] {
+                        for (p, normal) in [(cb, end_normal), (ca, start_normal)] {
+                            let nx = (normal[0] * 8192.0).floor() as i16 * 2;
+                            let ny = (normal[1] * 16384.0) as i16;
                             // GL JS assigns the cumulative distance to the
                             // edge's end, then distance + length to its start.
                             // Retain that phase even when either end is clipped.
@@ -162,7 +195,7 @@ mod tests {
             for p in [[0, 0], [1, 0], [1, 1], [0, 1]] {
                 b.push_vertex(p.map(|v| v * extent as i32 / 2));
             }
-            layout_in_extent(&b.finish(), &[0], 8192)
+            layout_in_extent(&b.finish(), &[0], 8192, 0.0)
         };
         let a = make(4096);
         let b = make(8192);

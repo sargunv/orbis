@@ -330,6 +330,24 @@ impl TileWorker {
     }
 
     /// The plane GeoJSON tiles in and sources' tile matrix sets.
+    /// Layout grid units (8192 a tile side) per ground metre at a tile's
+    /// centre, in its source's tile matrix set: GL JS's
+    /// `getTileUnitsForMeters`.
+    fn units_per_metre(&self, source: usize, tile: TileIndex) -> f64 {
+        let id = &self.plan.style.sources[source].id;
+        let web_mercator;
+        let tms = match self.surface.sources.iter().find(|(s, _)| s == id) {
+            Some((_, tms)) => tms,
+            None => {
+                web_mercator = TileMatrixSet::by_id("WebMercatorQuad").expect("registered");
+                &web_mercator
+            }
+        };
+        let projection = tms.projection();
+        let center = projection.inverse(tms.tile_bounds(tile).center());
+        8192.0 * projection.scale_factor(center) / tms.tile_span(tile.z)
+    }
+
     pub(crate) fn surface(&self) -> &crate::SurfaceTiles {
         &self.surface
     }
@@ -444,7 +462,7 @@ impl TileWorker {
             &frame,
             &self.plan,
             index,
-            request.zoom,
+            (request.zoom, self.units_per_metre(index, request.tile)),
             bend,
             select,
             symbols,

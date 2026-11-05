@@ -108,6 +108,8 @@ pub struct FillPaint {
 #[derive(Clone, Debug)]
 pub struct FillExtrusion {
     pub selection: Selection,
+    /// `fill-extrusion-rounded-corner-distance`, metres.
+    pub rounded_corner_distance: Property<f32>,
     pub paint: FillExtrusionPaint,
 }
 
@@ -773,16 +775,6 @@ pub(crate) fn parse_layer(
         .copied()
         .unwrap_or(Visibility::Visible);
 
-    if ty == "fill-extrusion" {
-        let radius: Property<f32> = property(cx, &layout, &spec::EXTRUSION_ROUNDED_CORNER);
-        if radius.as_constant() != Some(&0.0) {
-            cx.warn(
-                format!("{path}.layout.fill-extrusion-rounded-corner-distance"),
-                json.span,
-                "\"fill-extrusion-rounded-corner-distance\" is not rendered yet",
-            );
-        }
-    }
     let kind = match ty {
         "background" => LayerKind::Background(Background {
             paint: BackgroundPaint {
@@ -811,6 +803,7 @@ pub(crate) fn parse_layer(
         }
         "fill-extrusion" => LayerKind::FillExtrusion(Box::new(FillExtrusion {
             selection: selection(cx, json, &path, &id, sources)?,
+            rounded_corner_distance: property(cx, &layout, &spec::EXTRUSION_ROUNDED_CORNER),
             paint: FillExtrusionPaint {
                 color: property(cx, &paint, &spec::EXTRUSION_COLOR),
                 opacity: property(cx, &paint, &spec::EXTRUSION_OPACITY),
