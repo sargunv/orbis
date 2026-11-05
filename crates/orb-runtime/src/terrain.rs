@@ -137,8 +137,6 @@ pub(crate) struct Terrain {
     /// This frame's terrain tiles.
     pub(crate) tiles: Vec<CoveredTile>,
     slots: HashMap<CoveredTile, Slot>,
-    free: Vec<u32>,
-    next_slot: u32,
     generation: u64,
     elevation: Arc<TerrainElevation>,
     /// The DEM tiles this camera's cover reads, sorted: the elevations hold
@@ -179,8 +177,6 @@ impl Terrain {
             max_zoom,
             tiles: Vec::new(),
             slots: HashMap::new(),
-            free: Vec::new(),
-            next_slot: 0,
             generation: 0,
             elevation: Arc::new(TerrainElevation::empty(tms.clone(), exaggeration)),
             wanted: Vec::new(),
@@ -460,33 +456,37 @@ impl Terrain {
         )
     }
 
+    /// Frees the slots of tiles this frame doesn't cover; returns the
+    /// tile slots kept, which the atlas carries over.
+    pub(crate) fn kept_slots(&mut self) -> Vec<u32> {
+        let keep: HashSet<CoveredTile> = self.tiles.iter().copied().collect();
+        self.slots.retain(|tile, _| keep.contains(tile));
+        self.slots.values().map(|s| s.index).collect()
+    }
+
     /// This frame's terrain tiles for the renderer, with slots assigned
-    /// from `layout`, and which tile slots to redraw: those whose draped
-    /// content, as `content` hashes it, changed. On a globe, `globe` places
-    /// a tile on the sphere.
+    /// from `layout` after the atlas's `moves`, and which tile slots to
+    /// redraw: those whose draped content, as `content` hashes it,
+    /// changed. On a globe, `globe` places a tile on the sphere.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
         view: &View,
-        layout: DrapeLayout,
+        (layout, moves): (DrapeLayout, &[(u32, u32)]),
         content: &dyn Fn(CoveredTile) -> u64,
         globe: &mut dyn FnMut(TileIndex) -> Option<orb_render::TerrainGlobe>,
     ) -> (Vec<TerrainTile>, Vec<(CoveredTile, u32)>) {
         if layout.generation != self.generation {
             self.generation = layout.generation;
             self.slots.clear();
-            self.free.clear();
-            self.next_slot = 0;
         }
-        let keep: HashSet<CoveredTile> = self.tiles.iter().copied().collect();
-        let free = &mut self.free;
-        self.slots.retain(|tile, slot| {
-            let kept = keep.contains(tile);
-            if !kept {
-                free.push(slot.index);
+        for slot in self.slots.values_mut() {
+            if let Some(&(_, to)) = moves.iter().find(|m| m.0 == slot.index) {
+                slot.index = to;
             }
-            kept
-        });
+        }
+        let used: HashSet<u32> = self.slots.values().map(|s| s.index).collect();
+        let mut free = (0..layout.tile_slots).filter(|t| !used.contains(t));
         let period = tms.projection().wrap_period().unwrap_or(0.0);
         let mut out = Vec::with_capacity(self.tiles.len());
         let mut redraw = Vec::new();
@@ -501,10 +501,7 @@ impl Terrain {
                     slot.index
                 }
                 None => {
-                    let index = self.free.pop().unwrap_or_else(|| {
-                        self.next_slot += 1;
-                        self.next_slot - 1
-                    });
+                    let index = free.next().expect("the atlas holds every tile");
                     self.slots.insert(tile, Slot { index, content });
                     redraw.push((tile, index));
                     index
@@ -530,11 +527,6 @@ impl Terrain {
             });
         }
         (out, redraw)
-    }
-
-    /// Tile slots in use: the atlas must hold this many.
-    pub(crate) fn slots_needed(&self) -> u32 {
-        self.next_slot.max(self.tiles.len() as u32)
     }
 }
 

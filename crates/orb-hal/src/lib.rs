@@ -15,7 +15,7 @@ pub mod slots;
 
 pub use command::{
     ColorAttachment, ComputeCommand, ComputePass, DepthAttachment, LoadOp, Pass, RenderCommand,
-    RenderPass, StoreOp,
+    RenderPass, StoreOp, TextureCopy,
 };
 pub use resource::*;
 

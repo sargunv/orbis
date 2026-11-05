@@ -174,16 +174,20 @@ impl TilePage {
         let mut copies = Vec::with_capacity(self.textures.len());
         for (desc, texture) in &mut self.textures {
             let grown = create(gpu, desc, capacity);
-            copies.push(Pass::CopyTextureLayers {
+            copies.push(Pass::CopyTexture {
                 source: *texture,
                 destination: grown,
-                layers: self.capacity,
+                copies: vec![orb_hal::TextureCopy {
+                    from: [0; 3],
+                    to: [0; 3],
+                    size: [desc.width, desc.height, self.capacity],
+                }],
             });
             *texture = grown;
         }
         gpu.submit(&copies);
         for copy in copies {
-            if let Pass::CopyTextureLayers { source, .. } = copy {
+            if let Pass::CopyTexture { source, .. } = copy {
                 gpu.destroy_texture(source);
             }
         }

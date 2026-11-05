@@ -158,11 +158,11 @@ impl GlGpu {
         match pass {
             Pass::Render(pass) => self.render_pass(pass),
             Pass::Compute(pass) => panic!("{}: Compat has no compute", pass.label),
-            Pass::CopyTextureLayers {
+            Pass::CopyTexture {
                 source,
                 destination,
-                layers,
-            } => self.copy_layers(*source, *destination, *layers),
+                copies,
+            } => self.copy_texture(*source, *destination, copies),
             Pass::ClearBuffer {
                 buffer,
                 offset,
@@ -522,32 +522,44 @@ impl GlGpu {
         }
     }
 
-    fn copy_layers(&mut self, source: TextureId, destination: TextureId, layers: u32) {
+    fn copy_texture(&mut self, source: TextureId, destination: TextureId, copies: &[TextureCopy]) {
         let from = self.textures[source.0];
         let to = self.textures[destination.0];
-        for layer in 0..layers {
-            let read = self
-                .framebuffers
-                .color(&self.gl, &mut self.state, &from, 0, layer);
-            let draw = self
-                .framebuffers
-                .color(&self.gl, &mut self.state, &to, 0, layer);
-            self.state.read_framebuffer(&self.gl, Some(read));
-            self.state.draw_framebuffer(&self.gl, Some(draw));
-            // SAFETY: a blit between same-sized layers.
-            unsafe {
-                self.gl.blit_framebuffer(
-                    0,
-                    0,
-                    from.width as i32,
-                    from.height as i32,
-                    0,
-                    0,
-                    from.width as i32,
-                    from.height as i32,
-                    glow::COLOR_BUFFER_BIT,
-                    glow::NEAREST,
-                );
+        for level in 0..from.levels.min(to.levels) {
+            for copy in copies {
+                let ([x0, y0, l0], [x1, y1, l1], [w, h, layers]) = (copy.from, copy.to, copy.size);
+                let (w, h) = (((w >> level).max(1)) as i32, ((h >> level).max(1)) as i32);
+                let at = |v: u32| (v >> level) as i32;
+                for layer in 0..layers {
+                    let read = self.framebuffers.color(
+                        &self.gl,
+                        &mut self.state,
+                        &from,
+                        level,
+                        l0 + layer,
+                    );
+                    let draw =
+                        self.framebuffers
+                            .color(&self.gl, &mut self.state, &to, level, l1 + layer);
+                    self.state.read_framebuffer(&self.gl, Some(read));
+                    self.state.draw_framebuffer(&self.gl, Some(draw));
+                    let (sx, sy, dx, dy) = (at(x0), at(y0), at(x1), at(y1));
+                    // SAFETY: a blit between same-sized boxes of two textures.
+                    unsafe {
+                        self.gl.blit_framebuffer(
+                            sx,
+                            sy,
+                            sx + w,
+                            sy + h,
+                            dx,
+                            dy,
+                            dx + w,
+                            dy + h,
+                            glow::COLOR_BUFFER_BIT,
+                            glow::NEAREST,
+                        );
+                    }
+                }
             }
         }
     }

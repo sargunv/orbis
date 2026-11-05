@@ -121,6 +121,8 @@ pub struct Memory {
     pub image_atlas: u64,
     /// The shadow cascades' depth map, while the lights cast shadows.
     pub shadow_map: u64,
+    /// The terrain's drape atlas, mips included.
+    pub drape_atlas: u64,
     /// The style's glTF models: their words, indices and textures.
     pub models: u64,
     /// Tiles kept beyond those in view, and their cost: GPU memory and
@@ -1893,6 +1895,7 @@ impl Map {
             glyph_textures,
             image_atlas: images.atlas.as_ref().map_or(0, ImageAtlas::bytes),
             shadow_map: renderer.shadow_bytes(),
+            drape_atlas: renderer.drape_bytes(),
             models: renderer.model_bytes(),
             cached_tiles,
             cached,

@@ -1164,26 +1164,37 @@ impl Gpu for WgpuGpu {
         self.encode_writes(&mut encoder);
         for (i, pass) in passes.iter().enumerate() {
             match pass {
-                Pass::CopyTextureLayers {
+                Pass::CopyTexture {
                     source,
                     destination,
-                    layers,
+                    copies,
                 } => {
                     let source = self.texture(*source);
                     let destination = self.texture(*destination);
-                    for level in 0..source.mip_level_count() {
+                    let levels = source.mip_level_count().min(destination.mip_level_count());
+                    for (copy, level) in
+                        copies.iter().flat_map(|c| (0..levels).map(move |l| (c, l)))
+                    {
+                        let at = |[x, y, z]: [u32; 3]| wgpu::Origin3d {
+                            x: x >> level,
+                            y: y >> level,
+                            z,
+                        };
+                        let [w, h, layers] = copy.size;
                         let size = wgpu::Extent3d {
-                            width: (source.width() >> level).max(1),
-                            height: (source.height() >> level).max(1),
-                            depth_or_array_layers: *layers,
+                            width: (w >> level).max(1),
+                            height: (h >> level).max(1),
+                            depth_or_array_layers: layers,
                         };
                         encoder.copy_texture_to_texture(
                             wgpu::TexelCopyTextureInfo {
                                 mip_level: level,
+                                origin: at(copy.from),
                                 ..source.as_image_copy()
                             },
                             wgpu::TexelCopyTextureInfo {
                                 mip_level: level,
+                                origin: at(copy.to),
                                 ..destination.as_image_copy()
                             },
                             size,

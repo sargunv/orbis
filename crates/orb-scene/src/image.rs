@@ -371,10 +371,14 @@ impl ImageAtlas {
             return false;
         }
         let grown = page_texture(gpu, self.size, pages + 1);
-        gpu.submit(&[orb_hal::Pass::CopyTextureLayers {
+        gpu.submit(&[orb_hal::Pass::CopyTexture {
             source: self.bindings.texture,
             destination: grown,
-            layers: pages,
+            copies: vec![orb_hal::TextureCopy {
+                from: [0; 3],
+                to: [0; 3],
+                size: [self.size, self.size, pages],
+            }],
         }]);
         gpu.destroy_texture(std::mem::replace(&mut self.bindings.texture, grown));
         self.pages.push(Shelves::default());

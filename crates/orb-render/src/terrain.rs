@@ -5,11 +5,12 @@
 //! Each terrain tile has a block of drape slots, one per drape stack (a run
 //! of draped layers between layers that draw in 3D or on screen, or a
 //! hillshade the terrain shades). Slots are squares of one mipmapped
-//! atlas. A frame redraws only the slots the runtime marks: their drape
-//! placements, the draped nodes' only candidates, map them into the atlas,
-//! so one pass redraws them all, replaying a bundle of the draped nodes per
-//! drape zoom among them, then a compute pass downsamples their mip
-//! levels. Each terrain layer (a stack, or two around a hillshade shaded
+//! atlas, sized to the slots in use: a new one takes the kept slots'
+//! texels, so none redraws for it. A frame redraws only the slots the
+//! runtime marks: their drape placements, the draped nodes' only
+//! candidates, map them into the atlas, so one pass redraws them all,
+//! replaying a bundle of the draped nodes per drape zoom among them, then
+//! a compute pass downsamples their mip levels. Each terrain layer (a stack, or two around a hillshade shaded
 //! between them from the frame's bearing) draws into a texture of its own
 //! with the depth extrusions share, composited in the map at its place.
 
@@ -110,8 +111,8 @@ pub struct DrapeLayout {
     pub columns: u32,
     /// Tile slots the atlas holds.
     pub tile_slots: u32,
-    /// Changes whenever the atlas is made again: every slot must be
-    /// redrawn.
+    /// Changes when every slot is blank (a new atlas without the old one's
+    /// texels, or other stacks): every slot must be redrawn.
     pub generation: u64,
 }
 
@@ -369,6 +370,15 @@ impl Terrain {
         }
     }
 
+    /// The drape atlas's bytes, mips included.
+    pub(crate) fn atlas_bytes(&self) -> u64 {
+        let [w, h] = self
+            .atlas
+            .as_ref()
+            .map_or([0; 2], |a| a.size.map(u64::from));
+        w * h * 4 * 4 / 3
+    }
+
     pub(crate) fn layout(&self) -> DrapeLayout {
         self.layout_state
     }
@@ -443,32 +453,50 @@ impl Terrain {
         }
     }
 
-    /// Makes room for `tile_slots` blocks of `stacks` slots. A new atlas
-    /// starts a new [`DrapeLayout::generation`]. Fails when the atlas
-    /// would exceed the device's texture size.
+    /// Sizes the atlas for `tile_slots` blocks of `stacks` slots, with
+    /// an eighth to spare: made again when they outgrow it or fill less
+    /// than four fifths of it. The tile slots in `kept` carry their texels
+    /// into a new atlas, those past its end moved to free slots; returns
+    /// the moves (from, to), or `None` when the atlas stays. A change of
+    /// stacks blanks every slot (a new [`DrapeLayout::generation`]).
+    /// Fails when the slots exceed the device's texture size.
     pub(crate) fn reserve(
         &mut self,
         gpu: &mut dyn Gpu,
-        tile_slots: u32,
+        (tile_slots, kept): (u32, &[u32]),
         stacks: u32,
         downsampler: &mut crate::downsample::Downsampler,
-    ) -> Result<(), crate::OutOfSpace> {
+    ) -> Result<Option<Vec<(u32, u32)>>, crate::OutOfSpace> {
         let stacks = stacks.max(1);
         let state = self.layout_state;
-        if self.atlas.is_some() && state.stacks == stacks && state.tile_slots >= tile_slots {
-            return Ok(());
-        }
-        let max = gpu.caps().limits.max_texture_dimension_2d;
-        let columns = (max / DRAPE_SLOT_PX).clamp(1, 8);
-        let max_rows = max / DRAPE_SLOT_PX;
-        // Grow by doubling, so a panning view rarely reallocates.
-        let wanted = (tile_slots.max(state.tile_slots).max(4) * stacks).next_power_of_two();
-        let rows = wanted.div_ceil(columns);
-        if rows > max_rows {
+        let side = gpu.caps().limits.max_texture_dimension_2d / DRAPE_SLOT_PX;
+        if tile_slots * stacks > side * side {
             return Err(crate::OutOfSpace);
         }
-        self.release_atlas(gpu);
-        let size = [columns * DRAPE_SLOT_PX, rows * DRAPE_SLOT_PX];
+        let want = (tile_slots + tile_slots.div_ceil(8)).clamp(1, side * side / stacks);
+        let same = self.atlas.is_some() && state.stacks == stacks;
+        if same && tile_slots <= state.tile_slots && state.tile_slots <= want + want / 4 {
+            return Ok(None);
+        }
+        // The grid of the fewest slots that holds them, squarest first.
+        let slots = want * stacks;
+        let (columns, rows) = (1..=side)
+            .map(|c| (c, slots.div_ceil(c)))
+            .filter(|&(_, r)| r <= side)
+            .min_by_key(|&(c, r)| (c * r, c.abs_diff(r)))
+            .expect("one column fits");
+        let layout = DrapeLayout {
+            stacks,
+            columns,
+            tile_slots: columns * rows / stacks,
+            generation: state.generation + u64::from(!same),
+        };
+        // Kept slots past the new end move to the lowest free ones.
+        let mut free = (0..layout.tile_slots).filter(|t| !kept.contains(t));
+        let moves: Vec<(u32, u32)> = (kept.iter().filter(|&&t| t >= layout.tile_slots))
+            .map(|&t| (t, free.next().expect("room for every kept slot")))
+            .collect();
+        let size = [columns, rows].map(|n| n * DRAPE_SLOT_PX);
         let levels = DRAPE_SLOT_PX.ilog2() + 1;
         let texture = gpu.create_texture(&TextureDesc {
             label: "drape atlas",
@@ -479,7 +507,9 @@ impl Terrain {
             format: DRAPE_FORMAT,
             usage: TextureUsages::RENDER_ATTACHMENT
                 | TextureUsages::TEXTURE_BINDING
-                | TextureUsages::STORAGE_BINDING,
+                | TextureUsages::STORAGE_BINDING
+                | TextureUsages::COPY_SRC
+                | TextureUsages::COPY_DST,
             sample_count: 1,
             mip_levels: levels,
         });
@@ -514,7 +544,7 @@ impl Terrain {
         });
         downsampler.make(gpu);
         let mips = downsampler.groups(gpu, &views, regions);
-        self.atlas = Some(Atlas {
+        let atlas = Atlas {
             texture,
             size,
             levels: views,
@@ -522,17 +552,36 @@ impl Terrain {
             size_uniform,
             clear,
             mips,
-        });
-        self.layout_state = DrapeLayout {
-            stacks,
-            columns,
-            tile_slots: columns * rows / stacks,
-            generation: state.generation + 1,
         };
+        if let Some(old) = self.atlas.as_ref().filter(|_| same) {
+            let to = |t: u32| moves.iter().find(|m| m.0 == t).map_or(t, |m| m.1);
+            let copies = (kept.iter().flat_map(|&t| (0..stacks).map(move |s| (t, s))))
+                .map(|(t, s)| {
+                    let ([x0, y0], [x1, y1]) = (state.corner(t, s), layout.corner(to(t), s));
+                    orb_hal::TextureCopy {
+                        from: [x0, y0, 0],
+                        to: [x1, y1, 0],
+                        size: [DRAPE_SLOT_PX, DRAPE_SLOT_PX, 1],
+                    }
+                })
+                .collect();
+            gpu.submit(&[Pass::CopyTexture {
+                source: old.texture,
+                destination: atlas.texture,
+                copies,
+            }]);
+        }
+        self.release_atlas(gpu);
+        self.atlas = Some(atlas);
+        self.layout_state = layout;
+        // Terrain tiles find their slots by these from this frame on.
+        for (word, value) in [(params::STACKS, stacks), (params::COLUMNS, columns)] {
+            gpu.write_buffer(self.params, word as u64 * 4, bytemuck::bytes_of(&value));
+        }
         self.pending.clear();
         self.pending_zooms.clear();
         self.forget_group(gpu);
-        Ok(())
+        Ok(Some(moves))
     }
 
     fn release_atlas(&mut self, gpu: &mut dyn Gpu) {

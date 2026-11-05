@@ -489,7 +489,7 @@ impl Map {
         let Some(style) = &mut self.style else {
             return None;
         };
-        let terrain = style.terrain.as_ref()?;
+        let terrain = style.terrain.as_mut()?;
         if !renderer.terrain_on() {
             return None;
         }
@@ -510,8 +510,10 @@ impl Map {
                 SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms());
             renderer.set_shaded_on_terrain(gpu, index as u32, viewport && on_surface);
         }
-        let layout = match renderer.reserve_drape(gpu, terrain.slots_needed()) {
-            Ok(layout) => layout,
+        let kept = terrain.kept_slots();
+        let slots = (terrain.tiles.len() as u32, &kept[..]);
+        let (layout, moves) = match renderer.reserve_drape(gpu, slots) {
+            Ok(reserved) => reserved,
             Err(_) => {
                 self.warnings
                     .push("too many terrain tiles for the drape atlas; terrain is flat".into());
@@ -625,7 +627,7 @@ impl Map {
             })
         };
         let terrain = style.terrain.as_mut().expect("checked above");
-        let (tiles, redraw) = terrain.plan(&surface, view, layout, &content, &mut globe);
+        let (tiles, redraw) = terrain.plan(&surface, view, (layout, &moves), &content, &mut globe);
         // A shaded hillshade draws where its layer does at the tile's
         // drape zoom, as draped layers do.
         let covered = &terrain.tiles;

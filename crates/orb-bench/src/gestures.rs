@@ -128,6 +128,8 @@ struct PathResult {
     placement: Vec<Duration>,
     /// Bytes uploaded in the frame that uploaded most.
     peak_bytes: u64,
+    /// The drape atlas's largest and summed bytes over the frames.
+    drape: (u64, u64),
     /// Frames that drew with tiles still loading.
     loading: usize,
     /// Frames that laid the cull's candidates out again, and tile rows
@@ -202,6 +204,7 @@ pub(crate) fn run(
         legs.reverse();
         progress(&format!("{}: moving", path.name));
         let (mut cpu, mut peak_bytes, mut loading) = (Vec::new(), 0, 0);
+        let mut drape = (0, 0);
         let mut placement = Vec::new();
         // Per label text: shown in full, and since which frame it is gone.
         let mut labels: std::collections::HashMap<Box<str>, Option<usize>> = Default::default();
@@ -230,6 +233,8 @@ pub(crate) fn run(
             cpu.push(time);
             placement.push(Duration::from_micros(u64::from(report.placement_us)));
             peak_bytes = peak_bytes.max(uploaded(runtime) - before);
+            let atlas = report.memory.drape_atlas;
+            drape = (drape.0.max(atlas), drape.1 + atlas);
             loading += usize::from(report.tiles_loading > 0);
             rebuilds += usize::from(report.frame.candidates_rebuilt);
             rows += u64::from(report.frame.placements_written);
@@ -277,6 +282,7 @@ pub(crate) fn run(
             cpu,
             placement,
             peak_bytes,
+            drape,
             loading,
             rebuilds,
             rows,
@@ -318,16 +324,16 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | settle ms | label blinks (frames) | placement p50 | p95 | max |"
+            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | drape atlas MiB max (mean) | settle ms | label blinks (frames) | placement p50 | p95 | max |"
         )?;
         writeln!(
             out,
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         )?;
         for p in &self.paths {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} | {} ({}) | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} ({:.0}) | {:.0} | {} ({}) | {} | {} | {} |",
                 p.name,
                 ms(p.at(0.5)),
                 ms(p.at(0.95)),
@@ -338,6 +344,8 @@ impl GesturesReport {
                 p.rebuilds,
                 p.rows as f64 / p.cpu.len().max(1) as f64,
                 p.peak_bytes as f64 / (1024.0 * 1024.0),
+                p.drape.0 as f64 / (1024.0 * 1024.0),
+                p.drape.1 as f64 / (1024.0 * 1024.0) / p.cpu.len().max(1) as f64,
                 p.settle.as_secs_f64() * 1000.0,
                 p.blinks,
                 p.blink_frames,

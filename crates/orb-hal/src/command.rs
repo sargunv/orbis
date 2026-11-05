@@ -8,13 +8,12 @@ use crate::{
 pub enum Pass {
     Compute(ComputePass),
     Render(RenderPass),
-    /// Copies layers `0..layers` of `source`, every mip level, into the
-    /// same layers of `destination`, a texture of the same size, format and
-    /// levels.
-    CopyTextureLayers {
+    /// Copies boxes of `source`'s texels into `destination`, another
+    /// texture of its format, at every mip level both have.
+    CopyTexture {
         source: TextureId,
         destination: TextureId,
-        layers: u32,
+        copies: Vec<TextureCopy>,
     },
     /// Copies `size` bytes of `source` from `source_offset` into
     /// `destination` at `destination_offset`, another buffer: how a scene
@@ -34,6 +33,15 @@ pub enum Pass {
         offset: u64,
         size: Option<u64>,
     },
+}
+
+/// A box of texels at mip level 0, `size` (width, height, layers) from
+/// `from` (x, y, layer) to `to`; each further level copies it scaled down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextureCopy {
+    pub from: [u32; 3],
+    pub to: [u32; 3],
+    pub size: [u32; 3],
 }
 
 #[derive(Clone, Debug, PartialEq)]

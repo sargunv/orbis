@@ -141,6 +141,8 @@ struct Texture {
     base_level: u32,
     /// A layer view's layer of an array texture.
     layer: u32,
+    /// Its mip levels: a view's one.
+    levels: u32,
     /// Views don't own their object.
     owned: bool,
 }
@@ -1120,6 +1122,7 @@ impl Gpu for GlGpu {
             dimension: desc.dimension,
             base_level: 0,
             layer: 0,
+            levels: desc.mip_levels,
             owned: true,
         }))
     }
@@ -1134,6 +1137,7 @@ impl Gpu for GlGpu {
         view.height = (view.height >> levels.start).max(1);
         assert_eq!(levels.len(), 1, "Compat views render into one level");
         view.base_level = levels.start;
+        view.levels = 1;
         view.owned = false;
         TextureId(self.textures.insert(view))
     }

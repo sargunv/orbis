@@ -708,6 +708,13 @@ impl Renderer {
         self.shadows.bytes()
     }
 
+    /// The terrain's drape atlas, mips included.
+    pub fn drape_bytes(&self) -> u64 {
+        self.terrain
+            .as_ref()
+            .map_or(0, terrain::Terrain::atlas_bytes)
+    }
+
     /// Changes when a pool moves into a larger buffer: room may have
     /// changed for tiles that didn't fit.
     pub fn pools_revision(&self) -> u64 {
@@ -1016,22 +1023,23 @@ impl Renderer {
     }
 
     /// Makes room for `tile_slots` terrain tiles' drape slots, one per
-    /// drape stack. A new layout generation means every slot is blank.
+    /// drape stack, keeping the texels of the tile slots in `kept`. Returns
+    /// the layout and the kept slots that moved (from, to). A new layout
+    /// generation means every slot is blank.
     pub fn reserve_drape(
         &mut self,
         gpu: &mut dyn Gpu,
-        tile_slots: u32,
-    ) -> Result<DrapeLayout, OutOfSpace> {
+        (tile_slots, kept): (u32, &[u32]),
+    ) -> Result<(DrapeLayout, Vec<(u32, u32)>), OutOfSpace> {
         let stacks = self.drape_stacks();
         let terrain = self.terrain.as_mut().expect("terrain is on");
-        let before = terrain.layout().generation;
-        terrain.reserve(gpu, tile_slots, stacks, &mut self.downsampler)?;
+        let made = terrain.reserve(gpu, (tile_slots, kept), stacks, &mut self.downsampler)?;
         let layout = terrain.layout();
-        if layout.generation != before {
+        if made.is_some() {
             // Stack layers and the main bundle's composites follow it.
             self.invalidate_bundle(gpu);
         }
-        Ok(layout)
+        Ok((layout, made.unwrap_or_default()))
     }
 
     /// Redraws these terrain tiles' drape slots this frame, each at its
