@@ -19,6 +19,15 @@ impl PropertyValue for f32 {
     }
 }
 
+/// Any value, untyped: transitions ease between them.
+impl PropertyValue for Value<'static> {
+    fn from_value(value: &Value<'_>) -> Option<Self> {
+        Some(value.clone().into_owned())
+    }
+
+    const UNSET: Option<Self> = Some(Value::Null);
+}
+
 /// Symbol layout reads numbers at full precision, as GL JS's doubles.
 impl PropertyValue for f64 {
     fn from_value(value: &Value<'_>) -> Option<Self> {
@@ -335,88 +344,178 @@ v8_enum!(
     }
 );
 
-/// A paint or layout property value: a constant, or an expression with its
-/// classification and the spec default it falls back to.
+/// A stored property value: a constant, an expression, or for properties
+/// that take one value per light (`hillshade-*`), a list of them. Its type
+/// and default come from where it is stored: a layer's [`PropertyId`]
+/// (crate::PropertyId), or a typed [`Property`].
 #[derive(Clone, Debug)]
-pub struct Property<T> {
-    value: Inner<T>,
+pub struct Slot {
+    value: Inner,
+    /// The document gives the value.
+    set: bool,
 }
 
 #[derive(Clone, Debug)]
-enum Inner<T> {
-    Constant(T),
+enum Inner {
+    Constant(Value<'static>),
     /// Boxed: most properties are constants and stay small.
-    Expression {
-        expression: Box<PropertyExpression>,
-        default: T,
-    },
+    Expression(Box<PropertyExpression>),
+    List(Box<[Slot]>),
 }
 
-impl<T: PropertyValue> Property<T> {
-    pub fn constant(value: T) -> Self {
+impl Slot {
+    pub(crate) fn constant(value: Value<'static>, set: bool) -> Self {
         Self {
             value: Inner::Constant(value),
+            set,
         }
     }
 
-    /// A property backed by an expression: one that isn't constant, or
-    /// one that reads `image`.
-    pub(crate) fn expression(expression: PropertyExpression, default: T) -> Self {
+    /// A slot backed by an expression: one that isn't constant, or one
+    /// that reads `image`.
+    pub(crate) fn expression(expression: PropertyExpression) -> Self {
         debug_assert!(
             expression.kind() != Kind::Constant || expression.expression().reads_images()
         );
         Self {
-            value: Inner::Expression {
-                expression: Box::new(expression),
-                default,
-            },
+            value: Inner::Expression(Box::new(expression)),
+            set: true,
+        }
+    }
+
+    /// A colour ramp's expression, whatever its kind.
+    pub(crate) fn expression_any(expression: PropertyExpression, set: bool) -> Self {
+        Self {
+            value: Inner::Expression(Box::new(expression)),
+            set,
+        }
+    }
+
+    pub(crate) fn list(items: Vec<Slot>) -> Self {
+        Self {
+            value: Inner::List(items.into()),
+            set: true,
         }
     }
 
     pub fn kind(&self) -> Kind {
         match &self.value {
             Inner::Constant(_) => Kind::Constant,
-            Inner::Expression { expression, .. } => expression.kind(),
+            Inner::Expression(e) => e.kind(),
+            Inner::List(items) => items.first().map_or(Kind::Constant, Slot::kind),
         }
+    }
+
+    /// Whether the document gives the value, rather than the default.
+    pub fn is_set(&self) -> bool {
+        self.set
     }
 
     /// The value, if it is the same everywhere.
-    pub fn as_constant(&self) -> Option<&T> {
+    pub fn as_constant(&self) -> Option<&Value<'static>> {
         match &self.value {
             Inner::Constant(v) => Some(v),
-            Inner::Expression { .. } => None,
+            _ => None,
         }
     }
 
-    /// What an expression falls back to: the spec default (a constant's
-    /// value for a constant).
-    pub fn default_value(&self) -> T {
+    /// The expression of a camera, source or composite value.
+    pub fn as_expression(&self) -> Option<&PropertyExpression> {
         match &self.value {
-            Inner::Constant(v) => v.clone(),
-            Inner::Expression { default, .. } => default.clone(),
+            Inner::Expression(e) => Some(e),
+            _ => None,
         }
+    }
+
+    /// The items of a list; a single value is a list of one.
+    pub fn items(&self) -> &[Slot] {
+        match &self.value {
+            Inner::List(items) => items,
+            _ => std::slice::from_ref(self),
+        }
+    }
+
+    /// Replaces the value with a constant, as a transition overlays one.
+    pub fn set_constant(&mut self, value: Value<'static>) {
+        self.value = Inner::Constant(value);
+    }
+
+    /// The value at `zoom` for a feature with `state` and captured `data`,
+    /// `None` where it evaluates to nothing usable (so the default applies).
+    fn evaluate_value(
+        &self,
+        zoom: f64,
+        state: &[(String, Value<'static>)],
+        data: Option<&orb_expr::FeatureData>,
+    ) -> Option<Value<'static>> {
+        match &self.value {
+            Inner::Constant(v) => Some(v.clone()),
+            Inner::Expression(expression) => {
+                let context = orb_expr::EvaluationContext {
+                    zoom,
+                    feature_state: state,
+                    ..Default::default()
+                };
+                let expression = expression.expression();
+                match data {
+                    Some(data) => expression.evaluate_data(&context, data),
+                    None => expression.evaluate_with(&context),
+                }
+                .ok()
+                .map(Value::into_owned)
+            }
+            Inner::List(items) => items.first()?.evaluate_value(zoom, state, data),
+        }
+    }
+}
+
+/// A property read as type `T`, with the default it falls back to.
+#[derive(Clone, Debug)]
+pub struct PropertyRef<'a, T> {
+    slot: &'a Slot,
+    default: T,
+}
+
+impl<'a, T: PropertyValue> PropertyRef<'a, T> {
+    pub(crate) fn new(slot: &'a Slot, default: T) -> Self {
+        Self { slot, default }
+    }
+
+    pub fn slot(&self) -> &'a Slot {
+        self.slot
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.slot.kind()
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.slot.is_set()
+    }
+
+    /// The value, if it is the same everywhere.
+    pub fn constant(&self) -> Option<T> {
+        self.slot
+            .as_constant()
+            .map(|v| fit(Some(v.clone()), &self.default))
+    }
+
+    /// What an expression falls back to: the spec default.
+    pub fn default_value(&self) -> T {
+        self.default.clone()
     }
 
     /// The expression of a camera, source or composite value, for its zoom
     /// curve and `interpolation_factor`.
-    pub fn as_expression(&self) -> Option<&PropertyExpression> {
-        match &self.value {
-            Inner::Constant(_) => None,
-            Inner::Expression { expression, .. } => Some(expression),
-        }
+    pub fn as_expression(&self) -> Option<&'a PropertyExpression> {
+        self.slot.as_expression()
     }
 
     /// The value at `zoom` without a feature: exact for constant and camera
     /// values. A source or composite value reads no properties, so it
     /// usually falls back to the default.
     pub fn evaluate(&self, zoom: f64) -> T {
-        match &self.value {
-            Inner::Constant(v) => v.clone(),
-            Inner::Expression {
-                expression,
-                default,
-            } => fit(expression.expression().evaluate(zoom).ok(), default),
-        }
+        self.evaluate_state(zoom, &[], None)
     }
 
     /// The value at `zoom` for a feature with `state`: exact for constant,
@@ -428,25 +527,7 @@ impl<T: PropertyValue> Property<T> {
         state: &[(String, Value<'static>)],
         data: Option<&orb_expr::FeatureData>,
     ) -> T {
-        match &self.value {
-            Inner::Constant(v) => v.clone(),
-            Inner::Expression {
-                expression,
-                default,
-            } => {
-                let context = orb_expr::EvaluationContext {
-                    zoom,
-                    feature_state: state,
-                    ..Default::default()
-                };
-                let expression = expression.expression();
-                let value = match data {
-                    Some(data) => expression.evaluate_data(&context, data),
-                    None => expression.evaluate_with(&context),
-                };
-                fit(value.ok(), default)
-            }
-        }
+        fit(self.slot.evaluate_value(zoom, state, data), &self.default)
     }
 
     /// Whether the value reads `feature-state`, but no feature properties:
@@ -456,27 +537,84 @@ impl<T: PropertyValue> Property<T> {
             .is_some_and(|e| e.reads_feature_state() && !e.reads_feature_properties())
     }
 
+    /// An owned copy, to hold apart from its layer.
+    pub fn to_owned(&self) -> Property<T> {
+        Property::from_slot(self.slot.clone(), self.default.clone())
+    }
+
+    /// The items of a per-light list.
+    pub fn items(&self) -> impl Iterator<Item = PropertyRef<'a, T>> + '_ {
+        self.slot
+            .items()
+            .iter()
+            .map(|slot| PropertyRef::new(slot, self.default.clone()))
+    }
+
     /// Binds the property to a tile layer, to evaluate it per feature.
-    pub fn bind<'a>(&'a self, layer: &'a orb_tile::Layer) -> BoundProperty<'a, T> {
+    pub fn bind(&self, layer: &'a orb_tile::Layer) -> BoundProperty<'a, T> {
         BoundProperty {
-            property: self,
+            constant: self.constant(),
             bound: self.as_expression().map(|e| e.expression().bind(layer)),
+            default: self.default.clone(),
         }
     }
 
     /// Binds the property to a tile layer with the style's images, which
     /// `image` expressions find available.
-    pub fn bind_with_images<'a>(
-        &'a self,
+    pub fn bind_with_images(
+        &self,
         layer: &'a orb_tile::Layer,
         images: &'a [String],
     ) -> BoundProperty<'a, T> {
         BoundProperty {
-            property: self,
+            constant: self.constant(),
             bound: self
                 .as_expression()
                 .map(|e| e.expression().bind(layer).with_images(images)),
+            default: self.default.clone(),
         }
+    }
+}
+
+/// A typed property held outside a layer (the light, the sky, the
+/// terrain): a slot and its default.
+#[derive(Clone, Debug)]
+pub struct Property<T> {
+    slot: Slot,
+    default: T,
+}
+
+impl<T: PropertyValue> Property<T> {
+    /// The same value everywhere (held as the default of an unset slot).
+    pub fn constant(value: T) -> Self {
+        Self {
+            slot: Slot::constant(Value::Null, false),
+            default: value,
+        }
+    }
+
+    pub(crate) fn from_slot(slot: Slot, default: T) -> Self {
+        Self { slot, default }
+    }
+
+    pub fn get(&self) -> PropertyRef<'_, T> {
+        PropertyRef::new(&self.slot, self.default.clone())
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.slot.kind()
+    }
+
+    pub fn evaluate(&self, zoom: f64) -> T {
+        self.get().evaluate(zoom)
+    }
+
+    pub fn constant_value(&self) -> Option<T> {
+        self.get().constant()
+    }
+
+    pub fn as_expression(&self) -> Option<&PropertyExpression> {
+        self.slot.as_expression()
     }
 }
 
@@ -493,19 +631,18 @@ pub(crate) fn fit<T: PropertyValue>(value: Option<Value<'_>>, default: &T) -> T 
 /// A property bound to one tile layer.
 #[derive(Debug)]
 pub struct BoundProperty<'a, T> {
-    property: &'a Property<T>,
+    constant: Option<T>,
     bound: Option<Bound<'a>>,
+    default: T,
 }
 
 impl<T: PropertyValue> BoundProperty<'_, T> {
     /// The value for feature `row` at `zoom`.
     pub fn evaluate(&self, zoom: f64, row: usize) -> T {
-        match (&self.property.value, &self.bound) {
-            (Inner::Expression { default, .. }, Some(bound)) => {
-                fit(bound.evaluate(zoom, row).ok(), default)
-            }
-            (Inner::Constant(v), _) => v.clone(),
-            (Inner::Expression { .. }, None) => unreachable!("expressions bind"),
+        match (&self.constant, &self.bound) {
+            (Some(v), _) => v.clone(),
+            (None, Some(bound)) => fit(bound.evaluate(zoom, row).ok(), &self.default),
+            (None, None) => self.default.clone(),
         }
     }
 }

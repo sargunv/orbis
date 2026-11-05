@@ -15,9 +15,7 @@ use orb_symbol::{
 };
 use orb_text::{Content, FontStack, GlyphKey, GlyphRequests, Label, Section, VerticalAlign};
 use orb_tile::{Layer, ValueRef};
-#[cfg(test)]
-use orb_v8::LayerKind;
-use orb_v8::{Property, Symbol};
+use orb_v8::PropertyRef;
 
 /// Sprite metadata: what icon layout needs of every image, by name
 /// (namespaced as the sprites expose them), at the pixel ratio the map
@@ -256,7 +254,7 @@ fn covering_stops(stops: &[f64], zoom: f64) -> [f64; 2] {
 }
 
 /// How a size property is drawn (GL JS `getSizeData`).
-pub(crate) fn size_kind(property: &Property<f64>, zoom: f64) -> SizeKind {
+pub(crate) fn size_kind(property: &PropertyRef<'_, f64>, zoom: f64) -> SizeKind {
     match property.kind() {
         Kind::Constant => SizeKind::Constant,
         Kind::Source => SizeKind::Source,
@@ -277,14 +275,14 @@ pub(crate) fn size_kind(property: &Property<f64>, zoom: f64) -> SizeKind {
 }
 
 /// The layer-wide layout, after GL JS's `SymbolStyleLayer.recalculate`.
-fn layer_layout(symbol: &Symbol, zoom: f64) -> LayerLayout {
-    let l = &symbol.layout;
-    let placement = match l.placement.evaluate(zoom) {
+fn layer_layout(symbol: &orb_v8::Layer, zoom: f64) -> LayerLayout {
+    let l = symbol;
+    let placement = match l.get(orb_v8::SYMBOL_PLACEMENT).evaluate(zoom) {
         orb_v8::SymbolPlacement::Point => Placement::Point,
         orb_v8::SymbolPlacement::Line => Placement::Line,
         orb_v8::SymbolPlacement::LineCenter => Placement::LineCenter,
     };
-    let text_rotation_alignment = match l.text_rotation_alignment.evaluate(zoom) {
+    let text_rotation_alignment = match l.get(orb_v8::TEXT_ROTATION_ALIGNMENT).evaluate(zoom) {
         orb_v8::TextRotationAlignment::Map => orb_symbol::Alignment::Map,
         orb_v8::TextRotationAlignment::Viewport => orb_symbol::Alignment::Viewport,
         orb_v8::TextRotationAlignment::ViewportGlyph => orb_symbol::Alignment::ViewportGlyph,
@@ -292,14 +290,17 @@ fn layer_layout(symbol: &Symbol, zoom: f64) -> LayerLayout {
     }
     .resolve(placement);
     // A data-driven or `auto` icon alignment resolves for the placement.
-    let icon_rotation_alignment = match l.icon_rotation_alignment.as_constant() {
+    let icon_rotation_alignment = match l.get(orb_v8::ICON_ROTATION_ALIGNMENT).constant() {
         Some(orb_v8::Alignment::Map) => orb_symbol::Alignment::Map,
         Some(orb_v8::Alignment::Viewport) => orb_symbol::Alignment::Viewport,
         _ => orb_symbol::Alignment::Auto,
     }
     .resolve(placement);
     let text_writing_mode = {
-        let modes = l.text_writing_mode.evaluate(zoom).unwrap_or_default();
+        let modes = l
+            .get(orb_v8::TEXT_WRITING_MODE)
+            .evaluate(zoom)
+            .unwrap_or_default();
         let mut deduped = Vec::new();
         for mode in modes {
             let mode = match mode {
@@ -317,30 +318,33 @@ fn layer_layout(symbol: &Symbol, zoom: f64) -> LayerLayout {
     };
     LayerLayout {
         placement,
-        spacing: l.spacing.evaluate(zoom),
+        spacing: l.get(orb_v8::SYMBOL_SPACING).evaluate(zoom),
         text_rotation_alignment,
         icon_rotation_alignment,
-        text_keep_upright: l.text_keep_upright.evaluate(zoom),
-        text_max_angle: l.text_max_angle.evaluate(zoom),
-        text_line_height: l.text_line_height.evaluate(zoom),
-        text_padding: l.text_padding.evaluate(zoom),
+        text_keep_upright: l.get(orb_v8::TEXT_KEEP_UPRIGHT).evaluate(zoom),
+        text_max_angle: l.get(orb_v8::TEXT_MAX_ANGLE).evaluate(zoom),
+        text_line_height: l.get(orb_v8::TEXT_LINE_HEIGHT).evaluate(zoom),
+        text_padding: l.get(orb_v8::TEXT_PADDING).evaluate(zoom),
         text_writing_mode,
         text_variable_anchor: l
-            .text_variable_anchor
+            .get(orb_v8::TEXT_VARIABLE_ANCHOR)
             .evaluate(zoom)
             .map(|a| a.into_iter().map(anchor).collect()),
-        text_radial_offset_set: l.text_radial_offset_set,
-        icon_text_fit: match l.icon_text_fit.evaluate(zoom) {
+        text_radial_offset_set: l.get(orb_v8::TEXT_RADIAL_OFFSET).is_set(),
+        icon_text_fit: match l.get(orb_v8::ICON_TEXT_FIT).evaluate(zoom) {
             orb_v8::IconTextFit::None => orb_symbol::IconTextFit::None,
             orb_v8::IconTextFit::Width => orb_symbol::IconTextFit::Width,
             orb_v8::IconTextFit::Height => orb_symbol::IconTextFit::Height,
             orb_v8::IconTextFit::Both => orb_symbol::IconTextFit::Both,
         },
-        icon_text_fit_padding: l.icon_text_fit_padding.evaluate(zoom),
-        icon_rotate_constant: matches!(l.icon_rotate.kind(), Kind::Constant | Kind::Camera)
-            .then(|| l.icon_rotate.evaluate(zoom)),
-        text_size: size_kind(&l.text_size, zoom),
-        icon_size: size_kind(&l.icon_size, zoom),
+        icon_text_fit_padding: l.get(orb_v8::ICON_TEXT_FIT_PADDING).evaluate(zoom),
+        icon_rotate_constant: matches!(
+            l.get(orb_v8::ICON_ROTATE).kind(),
+            Kind::Constant | Kind::Camera
+        )
+        .then(|| l.get(orb_v8::ICON_ROTATE).evaluate(zoom)),
+        text_size: size_kind(&l.get(orb_v8::TEXT_SIZE), zoom),
+        icon_size: size_kind(&l.get(orb_v8::ICON_SIZE), zoom),
     }
 }
 
@@ -373,7 +377,7 @@ fn label(sections: &[FormattedSection], transform: orb_text::TextTransform) -> L
 /// order) at tile zoom `zoom`. `ids` is the column of stable ids, the
 /// promoted id when the source has one.
 pub(crate) fn prepare(
-    symbol: &Symbol,
+    symbol: &orb_v8::Layer,
     layer: &Layer,
     features: &[u32],
     zoom: f64,
@@ -381,37 +385,43 @@ pub(crate) fn prepare(
     images: &[String],
 ) -> Prepared {
     let style = layer_layout(symbol, zoom);
-    let l = &symbol.layout;
+    let l = symbol;
     // GL JS `populate`'s hasText.
     let has_text = l
-        .text_field
-        .as_constant()
+        .get(orb_v8::TEXT_FIELD)
+        .constant()
         .is_none_or(|s| s.iter().any(|s| !s.text.is_empty() || s.image.is_some()))
-        && (l.text_font.kind() != Kind::Constant
-            || l.text_font.as_constant().is_some_and(|f| !f.is_empty()));
-    let sort_by_key = l.z_order.evaluate(zoom) != orb_v8::SymbolZOrder::ViewportY
-        && matches!(l.sort_key.kind(), Kind::Source | Kind::Composite);
+        && (l.get(orb_v8::TEXT_FONT).kind() != Kind::Constant
+            || l.get(orb_v8::TEXT_FONT)
+                .constant()
+                .is_some_and(|f| !f.is_empty()));
+    let sort_by_key = l.get(orb_v8::SYMBOL_Z_ORDER).evaluate(zoom)
+        != orb_v8::SymbolZOrder::ViewportY
+        && matches!(
+            l.get(orb_v8::SYMBOL_SORT_KEY).kind(),
+            Kind::Source | Kind::Composite
+        );
 
-    let text_field = l.text_field.bind_with_images(layer, images);
-    let text_transform = l.text_transform.bind(layer);
-    let text_font = l.text_font.bind(layer);
-    let icon_image = l.icon_image.bind_with_images(layer, images);
-    let sort_key = l.sort_key.bind(layer);
-    let text_size = l.text_size.bind(layer);
-    let icon_size = l.icon_size.bind(layer);
-    let letter_spacing = l.text_letter_spacing.bind(layer);
-    let text_anchor = l.text_anchor.bind(layer);
-    let text_justify = l.text_justify.bind(layer);
-    let max_width = l.text_max_width.bind(layer);
-    let text_offset = l.text_offset.bind(layer);
-    let radial_offset = l.text_radial_offset.bind(layer);
-    let anchor_offset = l.text_variable_anchor_offset.bind(layer);
-    let text_rotate = l.text_rotate.bind(layer);
-    let icon_offset = l.icon_offset.bind(layer);
-    let icon_anchor = l.icon_anchor.bind(layer);
-    let icon_rotate = l.icon_rotate.bind(layer);
-    let icon_padding = l.icon_padding.bind(layer);
-    let height_offset = l.height_offset.bind(layer);
+    let text_field = l.get(orb_v8::TEXT_FIELD).bind_with_images(layer, images);
+    let text_transform = l.get(orb_v8::TEXT_TRANSFORM).bind(layer);
+    let text_font = l.get(orb_v8::TEXT_FONT).bind(layer);
+    let icon_image = l.get(orb_v8::ICON_IMAGE).bind_with_images(layer, images);
+    let sort_key = l.get(orb_v8::SYMBOL_SORT_KEY).bind(layer);
+    let text_size = l.get(orb_v8::TEXT_SIZE).bind(layer);
+    let icon_size = l.get(orb_v8::ICON_SIZE).bind(layer);
+    let letter_spacing = l.get(orb_v8::TEXT_LETTER_SPACING).bind(layer);
+    let text_anchor = l.get(orb_v8::TEXT_ANCHOR).bind(layer);
+    let text_justify = l.get(orb_v8::TEXT_JUSTIFY).bind(layer);
+    let max_width = l.get(orb_v8::TEXT_MAX_WIDTH).bind(layer);
+    let text_offset = l.get(orb_v8::TEXT_OFFSET).bind(layer);
+    let radial_offset = l.get(orb_v8::TEXT_RADIAL_OFFSET).bind(layer);
+    let anchor_offset = l.get(orb_v8::TEXT_VARIABLE_ANCHOR_OFFSET).bind(layer);
+    let text_rotate = l.get(orb_v8::TEXT_ROTATE).bind(layer);
+    let icon_offset = l.get(orb_v8::ICON_OFFSET).bind(layer);
+    let icon_anchor = l.get(orb_v8::ICON_ANCHOR).bind(layer);
+    let icon_rotate = l.get(orb_v8::ICON_ROTATE).bind(layer);
+    let icon_padding = l.get(orb_v8::ICON_PADDING).bind(layer);
+    let height_offset = l.get(orb_v8::SYMBOL_HEIGHT_OFFSET).bind(layer);
 
     let sizes = |bound: &orb_v8::BoundProperty<'_, f64>, kind: SizeKind, row: usize| {
         let stops = match kind {
@@ -746,11 +756,9 @@ mod tests {
                 "version": 8, "sources": {"s": source}, "layers": [style_layer],
             });
             let style = orb_v8::parse(&style.to_string()).unwrap_or_else(|e| panic!("{name}: {e}"));
-            let LayerKind::Symbol(symbol) = &style.layers[0].kind else {
-                panic!("a symbol layer")
-            };
+            let symbol = &style.layers[0];
             let zoom = num(&case["zoom"]);
-            let features: Vec<u32> = match &symbol.selection.filter {
+            let features: Vec<u32> = match &symbol.filter {
                 Some(filter) => filter.select(layer, zoom),
                 None => (0..layer.len() as u32).collect(),
             };

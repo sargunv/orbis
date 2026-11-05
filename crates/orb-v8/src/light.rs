@@ -1,7 +1,7 @@
 //! v8's `light`, lowered into the style's [`Lights`] (decision 0026): an
 //! ambient and a directional term of GL JS's flat extrusion response.
 use crate::lights::{AmbientLight, Direction, DirectionalLight, Level, Lights};
-use crate::{Color, Cx, Property, TranslateAnchor, layer::property_at, spec::Prop};
+use crate::{Color, Cx, Property, TranslateAnchor, layer::typed_property_at, spec::Prop};
 use orb_expr::{PropertyType, Type, json::Json};
 
 #[derive(Clone, Debug)]
@@ -62,6 +62,7 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
         minimum,
         maximum,
         tokens: false,
+        ..Prop::SCENE
     };
     let anchor = prop(
         "anchor",
@@ -100,20 +101,20 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
         }
     }
     Light {
-        anchor: property_at(
+        anchor: typed_property_at(
             cx,
             json.and_then(|j| j.get("anchor")),
             "light.anchor",
             &anchor,
         ),
-        position: property_at(
+        position: typed_property_at(
             cx,
             json.and_then(|j| j.get("position")),
             "light.position",
             &position,
         ),
-        color: property_at(cx, json.and_then(|j| j.get("color")), "light.color", &color),
-        intensity: property_at(
+        color: typed_property_at(cx, json.and_then(|j| j.get("color")), "light.color", &color),
+        intensity: typed_property_at(
             cx,
             json.and_then(|j| j.get("intensity")),
             "light.intensity",

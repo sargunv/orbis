@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 
 use glam::DVec2;
 use orb_crs::TileIndex;
-use orb_v8::LayerKind;
 
 use crate::features::{FeatureRequest, FeatureSelect, TileFeature, write_string};
 use crate::jobs::TileRequest;
@@ -41,23 +40,6 @@ struct Pending {
     remaining: usize,
     found: Found,
     error: Option<String>,
-}
-
-pub(crate) fn layer_type(kind: &LayerKind) -> &str {
-    match kind {
-        LayerKind::Background(_) => "background",
-        LayerKind::Fill(_) => "fill",
-        LayerKind::FillExtrusion(_) => "fill-extrusion",
-        LayerKind::Line(_) => "line",
-        LayerKind::Circle(_) => "circle",
-        LayerKind::Heatmap(_) => "heatmap",
-        LayerKind::Raster(_) => "raster",
-        LayerKind::Hillshade(_) => "hillshade",
-        LayerKind::ColorRelief(_) => "color-relief",
-        LayerKind::Symbol(_) => "symbol",
-        LayerKind::Model(_) => "model",
-        LayerKind::Unsupported { ty } => ty,
-    }
 }
 
 impl crate::Map {
@@ -98,7 +80,7 @@ impl crate::Map {
             members.push_str(",\"layer\":{");
             write_member(&mut members, "id", &layer.id);
             members.push(',');
-            write_member(&mut members, "type", layer_type(&layer.kind));
+            write_member(&mut members, "type", layer.ty.name());
             members.push(',');
             write_member(&mut members, "source", &hit.source);
             if let Some(source_layer) = &hit.source_layer {

@@ -23,7 +23,6 @@ use std::sync::Arc;
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
 use orb_style::{Binding, Change, Class, Transaction};
-use orb_v8::LayerKind;
 
 use crate::jobs::{StyleUpdate, TileResult};
 use crate::map::{
@@ -33,7 +32,7 @@ use crate::map::{
 /// The class a paint change costs this renderer for one node:
 /// `orb-style`'s, raised where property rows hold more than the property
 /// (line dash and gradient textures, and the width that scales dashes).
-fn paint_class(kind: &LayerKind, name: &str, from: Binding, to: Binding) -> Class {
+fn paint_class(layer: &orb_v8::Layer, name: &str, from: Binding, to: Binding) -> Class {
     let class = Change::Paint {
         layer: orb_style::LayerKey(0),
         name: String::new(),
@@ -41,8 +40,7 @@ fn paint_class(kind: &LayerKind, name: &str, from: Binding, to: Binding) -> Clas
         to,
     }
     .class();
-    let line_rows = matches!(kind, LayerKind::Line(l)
-        if l.paint.dasharray.as_constant() != Some(&None) || l.paint.gradient.is_some());
+    let line_rows = crate::line::has_textures(layer);
     match name {
         "line-dasharray" | "line-gradient" => Class::Column,
         "line-width" if line_rows => Class::Column,
@@ -171,13 +169,11 @@ impl Map {
                 .map_or(plan.style.transition, |(_, t)| {
                     t.over(plan.style.transition)
                 });
-            self.transitions.start(
-                &new.id,
-                name,
-                old_plan.style.layers[before].kind.paint(name),
-                transition,
-                (now, zoom),
-            );
+            let old = &old_plan.style.layers[before];
+            if let Some(id) = orb_v8::PropertyId::find(old.ty, true, name) {
+                self.transitions
+                    .start(&new.id, id, old.slot(id), transition, (now, zoom));
+            }
         }
 
         // Sources, by key: removed ones leave the scene next frame.
@@ -237,12 +233,12 @@ impl Map {
             let Some(index) = plan.layer_keys.iter().position(|k| *k == layer.0) else {
                 continue;
             };
-            let kind = &plan.style.layers[index].kind;
+            let layer = &plan.style.layers[index];
             for node in plan.nodes.iter().filter(|n| n.layer == index) {
                 let before = old.plan().node(node.key).map(|i| &old.plan().nodes[i]);
                 let class = match change {
                     Change::Paint { name, from, to, .. } => {
-                        let class = paint_class(kind, name, *from, *to);
+                        let class = paint_class(layer, name, *from, *to);
                         // Meshes need feature ids to read state.
                         let ids = plan.reads_state(node)
                             && !before.is_some_and(|b| old.plan().reads_state(b));

@@ -8,6 +8,10 @@ first shape for addressing a paint property.
 
 ## By-name paint access
 
+**Superseded by [decision 0044](0044-the-data-chain.md):** properties are
+addressed by `PropertyId` in one table, and transitions ease untyped
+values. The by-name table below is gone.
+
 The Style IR keeps paint typed per layer kind (`Property<f32>`,
 `Property<Color>`, …). `LayerKind::paint(name)` and `paint_mut(name)`
 (`orb-v8/src/paint.rs`) address a property by its spec name and return it

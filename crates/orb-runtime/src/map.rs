@@ -19,7 +19,7 @@ use orb_render::{
 use orb_render::{ImageAtlas, ImageUpload};
 use orb_source::{Draw, TilePyramid};
 use orb_style::StyleDoc;
-use orb_v8::{LayerKind, SourceKind, TranslateAnchor};
+use orb_v8::{LayerType, SourceKind, TranslateAnchor};
 
 use crate::MapEvent;
 use crate::image::{self, ResidentImage};
@@ -1460,8 +1460,11 @@ impl Map {
             let crossfade = style.zoom_history.update(zoom, now);
             fading = crossfade.mix < 1.0
                 && plan.nodes.iter().any(|n| {
-                    plan.pattern(n).is_some()
-                        || matches!(&plan.style.layers[n.layer].kind, LayerKind::Line(l) if l.paint.dasharray.as_constant() != Some(&None))
+                    plan.pattern(n).is_some() || {
+                        let l = &plan.style.layers[n.layer];
+                        l.ty == LayerType::Line
+                            && l.get(orb_v8::LINE_DASHARRAY).constant() != Some(None)
+                    }
                 });
             // Paint transitions write from the style overlaid with their
             // eased values, and once more when they end.
@@ -2071,15 +2074,12 @@ impl Map {
             .iter()
             .filter(|node| node.source == index && node.family == Family::FillExtrusion)
             .map(|node| {
-                let LayerKind::FillExtrusion(e) = &plan.style.layers[node.layer].kind else {
-                    unreachable!()
-                };
+                let e = &plan.style.layers[node.layer];
                 let maxima = style.nodes.get(&node.key).map_or(&[][..], |n| &n.maxima);
                 let max = |i: usize| maxima.get(i).copied().unwrap_or(0.0);
-                e.paint
-                    .height
+                e.get(orb_v8::EXTRUSION_HEIGHT)
                     .evaluate(zoom)
-                    .max(e.paint.base.evaluate(zoom))
+                    .max(e.get(orb_v8::EXTRUSION_BASE).evaluate(zoom))
                     .max(max(1))
                     .max(max(2))
             })
@@ -3430,16 +3430,11 @@ impl Map {
                 .nodes
                 .iter()
                 .filter(|n| n.source == source)
-                .filter_map(|n| match &plan.style.layers[n.layer].kind {
-                    LayerKind::Raster(r)
-                        if !matches!(
-                            plan.source_def(source).kind,
-                            orb_v8::SourceKind::Image(_)
-                        ) =>
-                    {
-                        Some(f64::from(r.paint.fade_duration.evaluate(tile_zoom)))
-                    }
-                    _ => None,
+                .filter_map(|n| {
+                    let r = &plan.style.layers[n.layer];
+                    (r.ty == LayerType::Raster
+                        && !matches!(plan.source_def(source).kind, orb_v8::SourceKind::Image(_)))
+                    .then(|| f64::from(r.get(orb_v8::RASTER_FADE_DURATION).evaluate(tile_zoom)))
                 })
                 .fold(0.0, f64::max);
             // Still output shows tiles at once.
@@ -4299,10 +4294,8 @@ fn write_paint(
             continue;
         }
         let visible = layer.is_visible_at(zoom)
-            && match &layer.kind {
-                LayerKind::FillExtrusion(e) => e.paint.opacity.evaluate(zoom) > 0.0,
-                _ => true,
-            };
+            && (layer.ty != LayerType::FillExtrusion
+                || layer.get(orb_v8::EXTRUSION_OPACITY).evaluate(zoom) > 0.0);
         let draped = draping && node.family.is_draped();
         renderer.set_visible(
             index,
@@ -4358,12 +4351,13 @@ fn write_paint(
         }
         // A fill or line layer below layer opacity 1, or blending other
         // than normally, composites once.
-        let composite = match &layer.kind {
-            LayerKind::Fill(f) => Some((&f.paint.layer_opacity, &f.paint.layer_blend)),
-            LayerKind::Line(l) => Some((&l.paint.layer_opacity, &l.paint.layer_blend)),
+        let composite = match layer.ty {
+            LayerType::Fill => Some((orb_v8::FILL_LAYER_OPACITY, orb_v8::FILL_LAYER_BLEND)),
+            LayerType::Line => Some((orb_v8::LINE_LAYER_OPACITY, orb_v8::LINE_LAYER_BLEND)),
             _ => None,
         };
         if let Some((opacity, blend)) = composite {
+            let (opacity, blend) = (layer.get(opacity), layer.get(blend));
             renderer.set_layer_composite(
                 gpu,
                 index,
@@ -4407,7 +4401,7 @@ fn write_drape_paint(
             .is_visible_at(at.zoom)
             .then(|| node_paint(gpu, renderer, (style, plan), index as u32, at, atlas, None))
             .flatten();
-        turns |= paint.is_some() && turns_with_bearing(&layer.kind, at.zoom);
+        turns |= paint.is_some() && turns_with_bearing(layer, at.zoom);
         changed |= renderer.set_drape_paint(gpu, index as u32, zoom, paint.as_ref());
     }
     (changed, turns)
@@ -4415,22 +4409,18 @@ fn write_drape_paint(
 
 /// Whether a layer drawn at `zoom` turns with the map's bearing: a
 /// viewport-anchored hillshade's light, or a viewport-anchored translate.
-fn turns_with_bearing(kind: &LayerKind, zoom: f64) -> bool {
-    let translates = |px: [f32; 2], anchor: TranslateAnchor| {
-        anchor == TranslateAnchor::Viewport && px != [0.0; 2]
+fn turns_with_bearing(l: &orb_v8::Layer, zoom: f64) -> bool {
+    let translates = |px: orb_v8::Key<[f32; 2]>, anchor: orb_v8::Key<TranslateAnchor>| {
+        l.get(anchor).evaluate(zoom) == TranslateAnchor::Viewport
+            && l.get(px).evaluate(zoom) != [0.0; 2]
     };
-    match kind {
-        LayerKind::Hillshade(h) => {
-            h.paint.illumination_anchor.evaluate(zoom) == orb_v8::IlluminationAnchor::Viewport
+    match l.ty {
+        LayerType::Hillshade => {
+            l.get(orb_v8::HILLSHADE_ILLUMINATION_ANCHOR).evaluate(zoom)
+                == orb_v8::IlluminationAnchor::Viewport
         }
-        LayerKind::Fill(f) => translates(
-            f.paint.translate.evaluate(zoom),
-            f.paint.translate_anchor.evaluate(zoom),
-        ),
-        LayerKind::Line(l) => translates(
-            l.paint.translate.evaluate(zoom),
-            l.paint.translate_anchor.evaluate(zoom),
-        ),
+        LayerType::Fill => translates(orb_v8::FILL_TRANSLATE, orb_v8::FILL_TRANSLATE_ANCHOR),
+        LayerType::Line => translates(orb_v8::LINE_TRANSLATE, orb_v8::LINE_TRANSLATE_ANCHOR),
         _ => false,
     }
 }
@@ -4497,22 +4487,20 @@ fn node_paint(
             }
         }
     }
-    let translate = match &plan.style.layers[node.layer].kind {
-        LayerKind::Fill(fill) => Translate {
-            px: fill.paint.translate.evaluate(zoom),
-            viewport: fill.paint.translate_anchor.evaluate(zoom) == TranslateAnchor::Viewport,
-        },
-        LayerKind::Line(line) => Translate {
-            px: line.paint.translate.evaluate(zoom),
-            viewport: line.paint.translate_anchor.evaluate(zoom) == TranslateAnchor::Viewport,
-        },
-        LayerKind::FillExtrusion(e) => Translate {
-            px: e.paint.translate.evaluate(zoom),
-            viewport: e.paint.translate_anchor.evaluate(zoom) == TranslateAnchor::Viewport,
-        },
-        LayerKind::Background(_) => Translate::default(),
-        _ => unreachable!("drawable layer"),
-    };
+    let layer = &plan.style.layers[node.layer];
+    let translate = match layer.ty {
+        LayerType::Fill => Some((orb_v8::FILL_TRANSLATE, orb_v8::FILL_TRANSLATE_ANCHOR)),
+        LayerType::Line => Some((orb_v8::LINE_TRANSLATE, orb_v8::LINE_TRANSLATE_ANCHOR)),
+        LayerType::FillExtrusion => Some((
+            orb_v8::EXTRUSION_TRANSLATE,
+            orb_v8::EXTRUSION_TRANSLATE_ANCHOR,
+        )),
+        _ => None,
+    }
+    .map_or(Translate::default(), |(px, anchor)| Translate {
+        px: layer.get(px).evaluate(zoom),
+        viewport: layer.get(anchor).evaluate(zoom) == TranslateAnchor::Viewport,
+    });
     let paint = match node.family {
         Family::Fill | Family::FillOutline => NodePaint::Fill(FillPaint {
             color,
@@ -4523,16 +4511,14 @@ fn node_paint(
             state: lookup,
         }),
         Family::FillExtrusion => {
-            let LayerKind::FillExtrusion(e) = &plan.style.layers[node.layer].kind else {
-                unreachable!()
-            };
+            let e = layer;
             NodePaint::Extrusion(orb_render::ExtrusionPaint {
                 color,
                 height: numbers[1],
                 base: numbers[2],
-                opacity: e.paint.opacity.evaluate(zoom),
+                opacity: e.get(orb_v8::EXTRUSION_OPACITY).evaluate(zoom),
                 translate,
-                vertical_gradient: e.paint.vertical_gradient.evaluate(zoom),
+                vertical_gradient: e.get(orb_v8::EXTRUSION_VERTICAL_GRADIENT).evaluate(zoom),
                 emissive: lights.map_or(0.0, |l| l.emissive(&plan.style.layers[node.layer].id))
                     as f32,
                 table_mask,
@@ -4559,7 +4545,7 @@ fn node_paint(
     let paint = crate::line::paint(
         gpu,
         paint,
-        &plan.style.layers[node.layer].kind,
+        layer,
         atlas,
         style.image_namespace.unwrap(),
         zoom,
@@ -4567,19 +4553,17 @@ fn node_paint(
     );
     let paint = pattern_paint(
         paint,
-        plan.pattern(node),
+        plan.pattern(node).as_ref(),
         style.image_namespace.unwrap(),
         atlas,
         zoom,
         crossfade,
-        match &plan.style.layers[node.layer].kind {
-            LayerKind::Line(line) => line.paint.width.evaluate(zoom.floor()),
+        match layer.ty {
+            LayerType::Line => layer.get(orb_v8::LINE_WIDTH).evaluate(zoom.floor()),
             _ => 0.0,
         },
     );
-    let paint = if matches!(plan.style.layers[node.layer].kind, LayerKind::Background(_))
-        && plan.pattern(node).is_none()
-    {
+    let paint = if layer.ty == LayerType::Background && plan.pattern(node).is_none() {
         match paint {
             NodePaint::Fill(p) => NodePaint::Background(p),
             _ => unreachable!("solid background"),
@@ -4773,7 +4757,7 @@ fn make_background(
 
 fn pattern_paint(
     paint: NodePaint,
-    property: Option<&orb_v8::Property<Option<String>>>,
+    property: Option<&orb_v8::PropertyRef<'_, Option<String>>>,
     namespace: u64,
     atlas: &mut ImageAtlas,
     zoom: f64,

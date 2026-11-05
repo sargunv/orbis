@@ -11,7 +11,7 @@ use orb_render::{
     ColorReliefPaint, HillshadeMethod, HillshadePaint, IMAGE_EXTENT, ImageMesh, MAX_LIGHTS,
     NodePaint, RasterPaint, Renderer,
 };
-use orb_v8::{Color, IlluminationAnchor, LayerKind, Property, PropertyValue, Resampling};
+use orb_v8::{Color, IlluminationAnchor, LayerType, PropertyRef, PropertyValue, Resampling};
 
 use crate::style::{NodePlan, StylePlan};
 
@@ -186,39 +186,51 @@ pub(crate) fn paint(
     unpack: Option<[f64; 4]>,
     ramp: &mut Option<u32>,
 ) -> Option<NodePaint> {
-    let nearest = |r: &Property<Resampling>| r.evaluate(zoom) == Resampling::Nearest;
-    Some(match &plan.style.layers[node.layer].kind {
-        LayerKind::Raster(raster) => {
-            let p = &raster.paint;
+    use orb_v8::{
+        COLOR_RELIEF_COLOR, COLOR_RELIEF_OPACITY, COLOR_RELIEF_RESAMPLE, HILLSHADE_ACCENT_COLOR,
+        HILLSHADE_EXAGGERATION, HILLSHADE_HIGHLIGHT_COLOR, HILLSHADE_ILLUMINATION_ALTITUDE,
+        HILLSHADE_ILLUMINATION_ANCHOR, HILLSHADE_ILLUMINATION_DIRECTION, HILLSHADE_METHOD,
+        HILLSHADE_RESAMPLE, HILLSHADE_SHADOW_COLOR, Key, RASTER_BRIGHTNESS_MAX,
+        RASTER_BRIGHTNESS_MIN, RASTER_CONTRAST, RASTER_FADE_DURATION, RASTER_HUE_ROTATE,
+        RASTER_OPACITY, RASTER_RESAMPLE, RASTER_RESAMPLING, RASTER_SATURATION,
+    };
+    let l = &plan.style.layers[node.layer];
+    let nearest = |key: Key<Resampling>| l.get(key).evaluate(zoom) == Resampling::Nearest;
+    let number = |key: Key<f32>| l.get(key).evaluate(zoom);
+    Some(match l.ty {
+        LayerType::Raster => {
             let image_source = matches!(
                 plan.source_def(node.source).kind,
                 orb_v8::SourceKind::Image(_)
             );
             NodePaint::Raster(RasterPaint {
-                opacity: p.opacity.evaluate(zoom),
-                hue_rotate: p.hue_rotate.evaluate(zoom),
-                brightness_min: p.brightness_min.evaluate(zoom),
-                brightness_max: p.brightness_max.evaluate(zoom),
-                saturation: p.saturation.evaluate(zoom),
-                contrast: p.contrast.evaluate(zoom),
-                nearest: nearest(&p.resampling) || nearest(&p.raster_resampling),
+                opacity: number(RASTER_OPACITY),
+                hue_rotate: number(RASTER_HUE_ROTATE),
+                brightness_min: number(RASTER_BRIGHTNESS_MIN),
+                brightness_max: number(RASTER_BRIGHTNESS_MAX),
+                saturation: number(RASTER_SATURATION),
+                contrast: number(RASTER_CONTRAST),
+                nearest: nearest(RASTER_RESAMPLE) || nearest(RASTER_RESAMPLING),
                 // Image sources are one texture without mip levels in GL JS,
                 // and don't fade.
                 mipmapped: !image_source,
                 fade_duration: if image_source {
                     0.0
                 } else {
-                    p.fade_duration.evaluate(zoom).max(0.0)
+                    number(RASTER_FADE_DURATION).max(0.0)
                 },
             })
         }
-        LayerKind::Hillshade(hillshade) => {
-            let p = &hillshade.paint;
+        LayerType::Hillshade => {
+            let directions = l.list(HILLSHADE_ILLUMINATION_DIRECTION);
+            let altitudes = l.list(HILLSHADE_ILLUMINATION_ALTITUDE);
+            let shadows = l.list(HILLSHADE_SHADOW_COLOR);
+            let highlights = l.list(HILLSHADE_HIGHLIGHT_COLOR);
             let lights = [
-                p.illumination_direction.len(),
-                p.illumination_altitude.len(),
-                p.shadow_color.len(),
-                p.highlight_color.len(),
+                directions.len(),
+                altitudes.len(),
+                shadows.len(),
+                highlights.len(),
             ]
             .into_iter()
             .max()
@@ -226,26 +238,28 @@ pub(crate) fn paint(
             .clamp(1, MAX_LIGHTS);
             // GL JS repeats each array's last value up to the longest.
             fn per_light<T: PropertyValue, U>(
-                values: &[Property<T>],
+                values: &[PropertyRef<'_, T>],
                 zoom: f64,
                 f: impl Fn(T) -> U,
             ) -> [U; MAX_LIGHTS] {
                 std::array::from_fn(|i| f(values[i.min(values.len() - 1)].evaluate(zoom)))
             }
-            let turn = if p.illumination_anchor.evaluate(zoom) == IlluminationAnchor::Viewport {
+            let turn = if l.get(HILLSHADE_ILLUMINATION_ANCHOR).evaluate(zoom)
+                == IlluminationAnchor::Viewport
+            {
                 bearing.to_radians() as f32
             } else {
                 0.0
             };
             let color = |c: Color| c.premultiplied();
             NodePaint::Hillshade(HillshadePaint {
-                accent: p.accent_color.evaluate(zoom).premultiplied(),
-                shadows: per_light(&p.shadow_color, zoom, color),
-                highlights: per_light(&p.highlight_color, zoom, color),
-                altitudes: per_light(&p.illumination_altitude, zoom, f32::to_radians),
-                azimuths: per_light(&p.illumination_direction, zoom, |d| d.to_radians() + turn),
-                exaggeration: p.exaggeration.evaluate(zoom),
-                method: match p.method.evaluate(zoom) {
+                accent: l.get(HILLSHADE_ACCENT_COLOR).evaluate(zoom).premultiplied(),
+                shadows: per_light(&shadows, zoom, color),
+                highlights: per_light(&highlights, zoom, color),
+                altitudes: per_light(&altitudes, zoom, f32::to_radians),
+                azimuths: per_light(&directions, zoom, |d| d.to_radians() + turn),
+                exaggeration: number(HILLSHADE_EXAGGERATION),
+                method: match l.get(HILLSHADE_METHOD).evaluate(zoom) {
                     orb_v8::HillshadeMethod::Standard => HillshadeMethod::Standard,
                     orb_v8::HillshadeMethod::Basic => HillshadeMethod::Basic,
                     orb_v8::HillshadeMethod::Combined => HillshadeMethod::Combined,
@@ -253,25 +267,25 @@ pub(crate) fn paint(
                     orb_v8::HillshadeMethod::Multidirectional => HillshadeMethod::Multidirectional,
                 },
                 lights: lights as u32,
-                nearest: nearest(&p.resampling),
+                nearest: nearest(HILLSHADE_RESAMPLE),
             })
         }
-        LayerKind::ColorRelief(relief) => {
+        LayerType::ColorRelief => {
             let unpack = unpack?;
             let size = match *ramp {
                 Some(size) => size,
                 None => {
                     let max = gpu.caps().limits.max_texture_dimension_2d as usize;
-                    let (colors, elevations) = color_ramp(relief.paint.color.as_ref(), unpack, max);
+                    let (colors, elevations) = color_ramp(l.ramp(COLOR_RELIEF_COLOR), unpack, max);
                     renderer.set_ramp(gpu, index, &colors, &elevations);
                     *ramp.insert(colors.len() as u32)
                 }
             };
             NodePaint::ColorRelief(ColorReliefPaint {
-                opacity: relief.paint.opacity.evaluate(zoom),
+                opacity: number(COLOR_RELIEF_OPACITY),
                 unpack: unpack.map(|v| v as f32),
                 ramp_size: size,
-                nearest: nearest(&relief.paint.resampling),
+                nearest: nearest(COLOR_RELIEF_RESAMPLE),
             })
         }
         _ => unreachable!("image nodes are raster, hillshade or color-relief layers"),

@@ -167,21 +167,17 @@ fn global_state_changes_reach_the_layers_that_read_it() {
             to: Binding::Constant
         }]
     );
-    let orb_v8::LayerKind::Line(line) = &doc.style().layers[2].kind else {
-        unreachable!()
-    };
+    let line = &doc.style().layers[2];
     assert_eq!(
-        line.paint.color.as_constant(),
-        Some(&orb_v8::Color::parse("green").unwrap())
+        line.get(orb_v8::LINE_COLOR).constant(),
+        Some(orb_v8::Color::parse("green").unwrap())
     );
     // Loading the written document fresh gives the same values.
     let fresh = StyleDoc::parse(&doc.to_json()).unwrap();
-    let orb_v8::LayerKind::Line(fresh) = &fresh.style().layers[2].kind else {
-        unreachable!()
-    };
+    let fresh = &fresh.style().layers[2];
     assert_eq!(
-        fresh.paint.color.as_constant(),
-        line.paint.color.as_constant()
+        fresh.get(orb_v8::LINE_COLOR).constant(),
+        line.get(orb_v8::LINE_COLOR).constant()
     );
     // Resetting returns to the default.
     let patch = commands(&mut doc, r#"[["setGlobalStateProperty", "accent", null]]"#);
@@ -343,10 +339,10 @@ fn a_scene_extends_its_style_in_the_scene_dialect() {
         &mut doc,
         r#"[["addLayer", {"id": "more", "type": "model", "source": "g"}]]"#,
     );
-    assert!(matches!(
-        doc.style().layers.last().unwrap().kind,
-        orb_v8::LayerKind::Model(_)
-    ));
+    assert_eq!(
+        doc.style().layers.last().unwrap().ty,
+        orb_v8::LayerType::Model
+    );
     // The v8 document alone has none.
     let mut plain = StyleDoc::parse(STYLE).unwrap();
     let tx = Transaction::from_commands(

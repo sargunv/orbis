@@ -2,11 +2,9 @@
 //! style into typed sources and layers, with errors and warnings located by
 //! JSON path (`layers[3].paint.line-width`) and byte span.
 //!
-//! `background`, `fill`, `line`, `circle`, `heatmap`, `raster`, `hillshade` and `color-relief`
-//! layers are fully typed: every paint and layout property is a
-//! [`Property`] backed by an `orb_expr` expression and its classification,
-//! with the spec default. Other layer types are kept as `Unsupported`
-//! with a warning, so callers can skip them.
+//! A layer's properties are table-driven: [`PropertyId`] indexes one table
+//! of every layer property's type, default and section, and a layer holds
+//! a [`Slot`] per property of its type, read typed through a [`Key`].
 //! Defaults and coercions follow GL JS.
 
 #![forbid(unsafe_code)]
@@ -30,21 +28,17 @@ use std::fmt;
 
 pub use font_faces::{FontFace, FontFaces};
 pub use geojson::parse_geojson;
-pub use layer::{
-    Background, BackgroundPaint, Circle, CircleLayout, CirclePaint, ColorRelief, ColorReliefPaint,
-    Fill, FillExtrusion, FillExtrusionPaint, FillLayout, FillPaint, Heatmap, HeatmapPaint,
-    Hillshade, HillshadePaint, Layer, LayerKind, Line, LineLayout, LinePaint, Model, ModelPaint,
-    Raster, RasterPaint, Selection, Symbol, SymbolLayout, SymbolPaint, SymbolPartPaint,
-};
+pub use layer::Layer;
 pub use lights::{AmbientLight, Direction, DirectionalLight, Level, Lights, parse_time};
 pub use orb_expr::json::Span;
 pub use orb_expr::{Color, Diagnostic, Filter, Kind, PropertyExpression, Value};
-pub use paint::{PaintMut, PaintRef, PaintValue, Transition, TransitionOverride};
+pub use paint::{Transition, TransitionOverride};
 pub use property::{
     Alignment, Anchor, AnchorOffsets, BoundProperty, DemEncoding, Encoding, Enum, HeightAnchor,
     HillshadeMethod, IconTextFit, IlluminationAnchor, LayerBlend, LineCap, LineJoin, Overlap,
-    Padding, Property, PropertyValue, Resampling, Scheme, SymbolPlacement, SymbolZOrder,
-    TextJustify, TextRotationAlignment, TextTransform, TranslateAnchor, Visibility, WritingMode,
+    Padding, Property, PropertyRef, PropertyValue, Resampling, Scheme, Slot, SymbolPlacement,
+    SymbolZOrder, TextJustify, TextRotationAlignment, TextTransform, TranslateAnchor, Visibility,
+    WritingMode,
 };
 pub use scene::{AddedLayer, Scene, StyleRef, is_scene, parse_scene, tms_definition};
 pub use sky::Atmosphere;
@@ -52,6 +46,7 @@ pub use source::{
     GeoJsonData, GeoJsonSource, ImageContent, ImageSource, PromoteId, RasterDemSource,
     RasterSource, Source, SourceKind, TileSet, VectorSource,
 };
+pub use spec::*;
 pub use sprite::Sprite;
 pub use terrain::Terrain;
 
@@ -386,28 +381,10 @@ pub fn parse_layer(
     }
 }
 
-/// One modelled paint property of a `layer_type` layer from its value in
-/// the layer's `paint` (`None`: unset), with `global-state` reads resolved
-/// to `state`, as [`parse_layer`] gives it: an invalid value gives the
-/// default. `None` for a property Orbis doesn't model.
-pub fn parse_paint<T: PropertyValue>(
-    layer_type: &str,
-    name: &str,
-    json: Option<&Json>,
-    state: &[(String, Value<'static>)],
-) -> Option<Property<T>> {
-    let prop = spec::find_prop(layer_type, true, name)?;
-    let mut cx = Cx {
-        state: state.to_vec(),
-        ..Cx::default()
-    };
-    Some(layer::property_at(&mut cx, json, name, prop))
-}
-
 /// The v8 spec of a modelled paint (`paint: true`) or layout property of a
 /// `layer_type` layer.
 pub fn property_spec(layer_type: &str, paint: bool, name: &str) -> Option<orb_expr::PropertySpec> {
-    spec::find(layer_type, paint, name)
+    PropertyId::find(LayerType::from_name(layer_type)?, paint, name).map(PropertyId::spec)
 }
 
 /// Parses a root sky with the current global state, returning its warnings.

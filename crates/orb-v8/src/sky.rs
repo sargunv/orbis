@@ -2,7 +2,7 @@
 //! one sky and fog model, which the scene document's `atmosphere` sets
 //! with the same names and two of its own, `star-intensity` and
 //! `backdrop-color` (decision 0035).
-use crate::{Color, Cx, Property, layer::property_at, spec::Prop};
+use crate::{Color, Cx, Property, layer::typed_property_at, spec::Prop};
 use orb_expr::{PropertyType, json::Json};
 
 #[derive(Clone, Debug)]
@@ -69,10 +69,11 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json, declared: Declared) -> Atmosphere 
             minimum: number.then_some(0.0),
             maximum: number.then_some(1.0),
             tokens: false,
+            ..Prop::SCENE
         }
     };
     let color = |cx: &mut Cx, name, default| {
-        property_at(
+        typed_property_at(
             cx,
             json.get(name),
             &format!("{root}.{name}"),
@@ -80,7 +81,7 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json, declared: Declared) -> Atmosphere 
         )
     };
     let number = |cx: &mut Cx, name, default| {
-        property_at(
+        typed_property_at(
             cx,
             json.get(name),
             &format!("{root}.{name}"),

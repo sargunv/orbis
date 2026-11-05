@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use orb_layout::{Mesh, extrusion, fill, line, point};
 use orb_render::{Family, pack_color};
 use orb_tile::{Layer, LayerBuilder, TileFrame, ValueRef};
-use orb_v8::{Kind, LayerKind, SourceKind};
+use orb_v8::{Kind, LayerType, SourceKind};
 
 use crate::glyphs::GlyphCatalog;
 use crate::style::{NodePlan, PaintProperty, StylePlan};
@@ -210,27 +210,19 @@ fn split_features(layer: &Layer, features: Vec<u32>) -> Split {
 
 fn features(plan: &StylePlan, node: &NodePlan, layer: &Layer, zoom: f64) -> Vec<u32> {
     let style_layer = &plan.style.layers[node.layer];
-    let selection = match &style_layer.kind {
-        LayerKind::Fill(fill) => &fill.selection,
-        LayerKind::FillExtrusion(e) => &e.selection,
-        LayerKind::Line(line) => &line.selection,
-        LayerKind::Circle(c) => &c.selection,
-        LayerKind::Heatmap(h) => &h.selection,
-        LayerKind::Symbol(s) => &s.selection,
-        _ => unreachable!("vector nodes have feature selections"),
-    };
-    let mut features: Vec<u32> = match &selection.filter {
+    let mut features: Vec<u32> = match &style_layer.filter {
         Some(filter) => filter.select(layer, zoom),
         None => (0..layer.len() as u32).collect(),
     };
     // GL JS's buckets draw features by their sort key.
-    let sort_key = match &style_layer.kind {
-        LayerKind::Circle(c) => Some(&c.layout.sort_key),
-        LayerKind::Fill(f) => Some(&f.layout.sort_key),
-        LayerKind::Line(l) => Some(&l.layout.sort_key),
+    let sort_key = match style_layer.ty {
+        LayerType::Circle => Some(orb_v8::CIRCLE_SORT_KEY),
+        LayerType::Fill => Some(orb_v8::FILL_SORT_KEY),
+        LayerType::Line => Some(orb_v8::LINE_SORT_KEY),
         _ => None,
-    };
-    if let Some(key) = sort_key.filter(|k| k.as_constant() != Some(&None)) {
+    }
+    .map(|key| style_layer.get(key));
+    if let Some(key) = sort_key.filter(|k| k.constant() != Some(None)) {
         let key = key.bind(layer);
         // Stable order for equal keys, just like JS's Array.sort.
         features.sort_by(|&a, &b| {
@@ -247,33 +239,35 @@ fn features(plan: &StylePlan, node: &NodePlan, layer: &Layer, zoom: f64) -> Vec<
 fn layout(
     layer: &Layer,
     features: &[u32],
-    kind: &LayerKind,
+    style_layer: &orb_v8::Layer,
     family: Family,
     zoom: f64,
     bend: Option<orb_layout::fill::Bend>,
     units_per_metre: f64,
 ) -> Mesh {
-    match kind {
-        LayerKind::Fill(_) => match family {
+    let l = style_layer;
+    match l.ty {
+        LayerType::Fill => match family {
             Family::FillOutline => fill::outline(layer, features),
             _ => fill::layout_subdivided(layer, features, bend),
         },
-        LayerKind::FillExtrusion(e) => {
-            let rounding = f64::from(e.rounded_corner_distance.evaluate(zoom)) * units_per_metre;
+        LayerType::FillExtrusion => {
+            let rounding =
+                f64::from(l.get(orb_v8::EXTRUSION_ROUNDED_CORNER).evaluate(zoom)) * units_per_metre;
             extrusion::layout_in_extent(layer, features, 8192, rounding, bend)
         }
-        LayerKind::Circle(c) => {
-            let key = c.layout.sort_key.bind(layer);
+        LayerType::Circle => {
+            let key = l.get(orb_v8::CIRCLE_SORT_KEY).bind(layer);
             point::layout_sorted(layer, features, |feature| {
                 key.evaluate(zoom, feature as usize)
             })
         }
-        LayerKind::Heatmap(_) => point::layout(layer, features),
-        LayerKind::Line(l) => {
-            let join = l.layout.join.bind(layer);
-            let cap = l.layout.cap.bind(layer);
-            let miter_limit = l.layout.miter_limit.bind(layer);
-            let round_limit = l.layout.round_limit.bind(layer);
+        LayerType::Heatmap => point::layout(layer, features),
+        LayerType::Line => {
+            let join = l.get(orb_v8::LINE_JOIN).bind(layer);
+            let cap = l.get(orb_v8::LINE_CAP).bind(layer);
+            let miter_limit = l.get(orb_v8::LINE_MITER_LIMIT).bind(layer);
+            let round_limit = l.get(orb_v8::LINE_ROUND_LIMIT).bind(layer);
             let params = |feature: u32| line::LineLayout {
                 join: match join.evaluate(zoom, feature as usize) {
                     orb_v8::LineJoin::Bevel => line::LineJoin::Bevel,
@@ -363,9 +357,7 @@ fn build_symbols(
         {
             continue;
         }
-        let LayerKind::Symbol(symbol) = &plan.style.layers[node.layer].kind else {
-            unreachable!("symbol nodes are of symbol layers")
-        };
+        let symbol = &plan.style.layers[node.layer];
         let Some((layer, _)) = node_layer(frame, plan, node, zoom) else {
             continue;
         };
@@ -515,7 +507,7 @@ pub(crate) fn build(
                     let mesh = layout(
                         layer,
                         &features,
-                        &style_layer.kind,
+                        style_layer,
                         node.family,
                         zoom,
                         bend,
@@ -533,7 +525,7 @@ pub(crate) fn build(
             let pattern = plan
                 .pattern(node)
                 .filter(|p| matches!(p.kind(), Kind::Source | Kind::Composite));
-            let line_effects = matches!(&style_layer.kind, LayerKind::Line(l) if l.paint.dasharray.as_constant() != Some(&None) || l.paint.gradient.is_some());
+            let line_effects = crate::line::has_textures(style_layer);
             // Extrusion rows carry each feature's centroid, for terrain and
             // ownership.
             let per_feature = line_effects
@@ -634,7 +626,8 @@ pub(crate) fn build(
                 // Image slots are patched after upload, including host-held rows.
                 props.shrink_to_fit();
             }
-            if let LayerKind::Line(l) = &style_layer.kind {
+            if style_layer.ty == LayerType::Line {
+                let l = style_layer;
                 let maxzoom = match &source_def.kind {
                     SourceKind::GeoJson(source) => source.options.max_zoom,
                     SourceKind::Vector(source) => source.tileset.maxzoom.unwrap_or(22.0) as u8,
@@ -705,22 +698,17 @@ pub(crate) fn build(
                     })
                     .map(|&f| {
                         let i = f as usize;
-                        let (kind, radius, stroke, height) = match &style_layer.kind {
-                            LayerKind::Circle(c) => (
+                        let l = style_layer;
+                        let at = |key: orb_v8::Key<f32>| l.get(key).bind(layer).evaluate(zoom, i);
+                        let (kind, radius, stroke, height) = match l.ty {
+                            LayerType::Circle => (
                                 2,
-                                c.paint.radius.bind(layer).evaluate(zoom, i),
-                                c.paint.stroke_width.bind(layer).evaluate(zoom, i),
+                                at(orb_v8::CIRCLE_RADIUS),
+                                at(orb_v8::CIRCLE_STROKE_WIDTH),
                                 0.0,
                             ),
-                            LayerKind::Line(l) => (
-                                1,
-                                l.paint.width.bind(layer).evaluate(zoom, i) / 2.0,
-                                0.0,
-                                0.0,
-                            ),
-                            LayerKind::FillExtrusion(e) => {
-                                (0, 0.0, 0.0, e.paint.height.bind(layer).evaluate(zoom, i))
-                            }
+                            LayerType::Line => (1, at(orb_v8::LINE_WIDTH) / 2.0, 0.0, 0.0),
+                            LayerType::FillExtrusion => (0, 0.0, 0.0, at(orb_v8::EXTRUSION_HEIGHT)),
                             _ => (0, 0.0, 0.0, 0.0),
                         };
                         crate::HitFeature {
@@ -731,10 +719,8 @@ pub(crate) fn build(
                             radius,
                             stroke,
                             height,
-                            base: match &style_layer.kind {
-                                LayerKind::FillExtrusion(e) => {
-                                    e.paint.base.bind(layer).evaluate(zoom, i)
-                                }
+                            base: match l.ty {
+                                LayerType::FillExtrusion => at(orb_v8::EXTRUSION_BASE),
                                 _ => 0.0,
                             },
                             extent: layer.extent(),

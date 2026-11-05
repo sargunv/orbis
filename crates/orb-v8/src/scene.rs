@@ -477,12 +477,14 @@ mod tests {
         assert!(crate::parse(style).is_err());
         let parsed = crate::parse_dialect(style, &[], crate::Dialect::Scene).unwrap();
         assert_eq!(parsed.models, [("tower".to_string(), "t.glb".to_string())]);
-        let crate::LayerKind::Model(m) = &parsed.layers[0].kind else {
-            panic!("a model layer");
-        };
-        assert_eq!(m.model_id.evaluate(0.0), Some("tower".to_string()));
-        assert_eq!(m.paint.scale.evaluate(0.0), [2.0; 3]);
-        assert_eq!(m.paint.rotation.evaluate(0.0), [0.0, 0.0, 90.0]);
+        let m = &parsed.layers[0];
+        assert_eq!(m.ty, crate::LayerType::Model);
+        assert_eq!(
+            m.get(crate::MODEL_ID).evaluate(0.0),
+            Some("tower".to_string())
+        );
+        assert_eq!(m.get(crate::MODEL_SCALE).evaluate(0.0), [2.0; 3]);
+        assert_eq!(m.get(crate::MODEL_ROTATION).evaluate(0.0), [0.0, 0.0, 90.0]);
     }
 
     #[test]

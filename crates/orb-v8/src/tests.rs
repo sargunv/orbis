@@ -24,32 +24,29 @@ fn errors(layers: &str) -> Vec<String> {
         .collect()
 }
 
-fn line(paint: &str, layout: &str) -> Line {
+fn line(paint: &str, layout: &str) -> Layer {
     let style = style(&format!(
         r#"[{{"id": "l", "type": "line", "source": "v", "source-layer": "roads", "paint": {paint}, "layout": {layout}}}]"#
     ))
     .unwrap_or_else(|d| panic!("{d}"));
-    match style.layers.into_iter().next().unwrap().kind {
-        LayerKind::Line(line) => *line,
-        _ => panic!("a line layer"),
-    }
+    style.layers.into_iter().next().unwrap()
 }
 
 #[test]
 fn defaults_follow_the_spec() {
     let l = line("{}", "{}");
-    assert_eq!(l.paint.width.as_constant(), Some(&1.0));
-    assert_eq!(l.paint.opacity.as_constant(), Some(&1.0));
-    assert_eq!(l.paint.color.as_constant(), Some(&Color::BLACK));
-    assert_eq!(l.paint.gap_width.as_constant(), Some(&0.0));
+    assert_eq!(l.get(LINE_WIDTH).constant(), Some(1.0));
+    assert_eq!(l.get(LINE_OPACITY).constant(), Some(1.0));
+    assert_eq!(l.get(LINE_COLOR).constant(), Some(Color::BLACK));
+    assert_eq!(l.get(LINE_GAP_WIDTH).constant(), Some(0.0));
     assert_eq!(
-        l.paint.translate_anchor.as_constant(),
-        Some(&TranslateAnchor::Map)
+        l.get(LINE_TRANSLATE_ANCHOR).constant(),
+        Some(TranslateAnchor::Map)
     );
-    assert_eq!(l.paint.dasharray.as_constant(), Some(&None));
-    assert_eq!(l.layout.round_limit.as_constant(), Some(&1.05));
-    assert_eq!(l.layout.sort_key.as_constant(), Some(&None));
-    assert!(l.paint.gradient.is_none());
+    assert_eq!(l.get(LINE_DASHARRAY).constant(), Some(None));
+    assert_eq!(l.get(LINE_ROUND_LIMIT).constant(), Some(1.05));
+    assert_eq!(l.get(LINE_SORT_KEY).constant(), Some(None));
+    assert!(l.ramp(LINE_GRADIENT).is_none());
 }
 
 #[test]
@@ -95,17 +92,16 @@ fn raster_dem_sources_and_image_layers() {
     assert_eq!(dem.encoding, Some(crate::DemEncoding::Custom));
     assert_eq!(dem.factors, [0.0, 1.0, 1.0, 3.5]);
     assert_eq!(dem.raster.tile_size, Some(256.0));
-    let LayerKind::Hillshade(h) = &s.layers[1].kind else {
-        panic!()
-    };
-    assert_eq!(h.paint.highlight_color.len(), 2);
-    assert_eq!(h.paint.illumination_direction.len(), 3);
-    assert_eq!(h.paint.shadow_color.len(), 1);
-    assert_eq!(h.paint.illumination_direction[2].as_constant(), Some(&0.0));
-    let LayerKind::ColorRelief(c) = &s.layers[2].kind else {
-        panic!()
-    };
-    let ramp = c.paint.color.as_ref().unwrap().expression();
+    let h = &s.layers[1];
+    assert_eq!(h.list(HILLSHADE_HIGHLIGHT_COLOR).len(), 2);
+    assert_eq!(h.list(HILLSHADE_ILLUMINATION_DIRECTION).len(), 3);
+    assert_eq!(h.list(HILLSHADE_SHADOW_COLOR).len(), 1);
+    assert_eq!(
+        h.list(HILLSHADE_ILLUMINATION_DIRECTION)[2].constant(),
+        Some(0.0)
+    );
+    let c = &s.layers[2];
+    let ramp = c.ramp(COLOR_RELIEF_COLOR).as_ref().unwrap().expression();
     assert_eq!(ramp.interpolate_labels(), Some(&[0.0, 100.0][..]));
 }
 
@@ -146,13 +142,13 @@ fn source_and_composite_values_evaluate_per_feature() {
         r#"{"line-cap": ["match", ["get", "class"], "primary", "round", "bogus"]}"#,
     );
     let tile = tile();
-    assert_eq!(l.paint.color.kind(), Kind::Source);
-    let color = l.paint.color.bind(&tile);
+    assert_eq!(l.get(LINE_COLOR).kind(), Kind::Source);
+    let color = l.get(LINE_COLOR).bind(&tile);
     assert_eq!(color.evaluate(0.0, 0), Color::parse("red").unwrap());
     assert_eq!(color.evaluate(0.0, 1), Color::parse("blue").unwrap());
 
-    assert_eq!(l.paint.width.kind(), Kind::Composite);
-    let width = l.paint.width.bind(&tile);
+    assert_eq!(l.get(LINE_WIDTH).kind(), Kind::Composite);
+    let width = l.get(LINE_WIDTH).bind(&tile);
     // The tile job evaluates composite values at its zoom and the next.
     assert_eq!(
         (width.evaluate(10.0, 0), width.evaluate(20.0, 0)),
@@ -160,8 +156,7 @@ fn source_and_composite_values_evaluate_per_feature() {
     );
     assert_eq!(width.evaluate(15.0, 1), 2.5);
     assert_eq!(
-        l.paint
-            .width
+        l.get(LINE_WIDTH)
             .as_expression()
             .unwrap()
             .interpolation_factor(15.0, 10.0, 20.0),
@@ -169,9 +164,9 @@ fn source_and_composite_values_evaluate_per_feature() {
     );
 
     // A missing property evaluates to the default, as GL JS falls back.
-    assert_eq!(l.paint.opacity.bind(&tile).evaluate(0.0, 0), 1.0);
+    assert_eq!(l.get(LINE_OPACITY).bind(&tile).evaluate(0.0, 0), 1.0);
     // So does a value outside an enum.
-    let cap = l.layout.cap.bind(&tile);
+    let cap = l.get(LINE_CAP).bind(&tile);
     assert_eq!(
         (cap.evaluate(0.0, 0), cap.evaluate(0.0, 1)),
         (LineCap::Round, LineCap::Butt)
@@ -184,12 +179,12 @@ fn legacy_functions_and_filters() {
         r#"{"line-width": {"base": 1.5, "stops": [[10, 2], [20, 8]]}, "line-color": {"property": "class", "type": "categorical", "stops": [["primary", "red"]], "default": "blue"}}"#,
         "{}",
     );
-    assert_eq!(l.paint.width.kind(), Kind::Camera);
-    assert_eq!(l.paint.width.evaluate(10.0), 2.0);
-    assert_eq!(l.paint.color.kind(), Kind::Source);
+    assert_eq!(l.get(LINE_WIDTH).kind(), Kind::Camera);
+    assert_eq!(l.get(LINE_WIDTH).evaluate(10.0), 2.0);
+    assert_eq!(l.get(LINE_COLOR).kind(), Kind::Source);
     let tile = tile();
     assert_eq!(
-        l.paint.color.bind(&tile).evaluate(0.0, 1),
+        l.get(LINE_COLOR).bind(&tile).evaluate(0.0, 1),
         Color::parse("blue").unwrap()
     );
 
@@ -197,13 +192,8 @@ fn legacy_functions_and_filters() {
         r#"[{"id": "a", "type": "line", "source": "v", "source-layer": "roads", "filter": ["all", ["==", "class", "minor"], [">=", "width", 1]]}]"#,
     )
     .unwrap();
-    let LayerKind::Line(line) = &s.layers[0].kind else {
-        panic!()
-    };
-    assert_eq!(
-        line.selection.filter.as_ref().unwrap().select(&tile, 0.0),
-        [1]
-    );
+    let line = &s.layers[0];
+    assert_eq!(line.filter.as_ref().unwrap().select(&tile, 0.0), [1]);
 }
 
 #[test]
@@ -323,13 +313,11 @@ fn extrusion_paint_and_light_are_typed() {
     assert!((directional.level.evaluate(0.0) - 1.4).abs() < 1e-6);
     let ambient = s.lights.ambient.as_ref().unwrap();
     assert!((ambient.level.evaluate(0.0) - 0.3).abs() < 1e-6);
-    let LayerKind::FillExtrusion(e) = &s.layers[0].kind else {
-        panic!()
-    };
-    assert_eq!(e.paint.height.kind(), Kind::Source);
-    assert_eq!(e.paint.base.evaluate(0.0), 12.0);
-    assert_eq!(e.paint.opacity.evaluate(0.0), 0.5);
-    assert!(!e.paint.vertical_gradient.evaluate(0.0));
+    let e = &s.layers[0];
+    assert_eq!(e.get(EXTRUSION_HEIGHT).kind(), Kind::Source);
+    assert_eq!(e.get(EXTRUSION_BASE).evaluate(0.0), 12.0);
+    assert_eq!(e.get(EXTRUSION_OPACITY).evaluate(0.0), 0.5);
+    assert!(!e.get(EXTRUSION_VERTICAL_GRADIENT).evaluate(0.0));
 }
 
 #[test]
@@ -370,27 +358,24 @@ fn global_state_resolves_at_parse() {
             "filter": ["==", ["get", "class"], ["global-state", "cls"]],
             "paint": {"line-color": ["global-state", "c"],
                       "line-width": ["coalesce", ["feature-state", "w"], ["global-state", "w"]]}}]}"#;
-    let line = |s: &Style| match &s.layers[0].kind {
-        LayerKind::Line(l) => (**l).clone(),
-        _ => unreachable!(),
-    };
+    let line = |s: &Style| s.layers[0].clone();
     let s = parse(text).unwrap();
     assert!(s.warnings.is_empty(), "{:?}", s.warnings);
     let l = line(&s);
     // Only global state: folded to a constant.
     assert_eq!(
-        l.paint.color.as_constant(),
-        Some(&Color::parse("red").unwrap())
+        l.get(LINE_COLOR).constant(),
+        Some(Color::parse("red").unwrap())
     );
     // State-only: a state lookup, with the global default as the fallback.
-    assert!(l.paint.width.is_state_lookup());
-    assert_eq!(l.paint.width.evaluate_state(0.0, &[], None), 2.0);
+    assert!(l.get(LINE_WIDTH).is_state_lookup());
+    assert_eq!(l.get(LINE_WIDTH).evaluate_state(0.0, &[], None), 2.0);
     let state = [("w".to_string(), Value::Number(5.0))];
-    assert_eq!(l.paint.width.evaluate_state(0.0, &state, None), 5.0);
+    assert_eq!(l.get(LINE_WIDTH).evaluate_state(0.0, &state, None), 5.0);
     let s = parse_with_state(text, &[("c".into(), Value::String("blue".into()))]).unwrap();
     assert_eq!(
-        line(&s).paint.color.as_constant(),
-        Some(&Color::parse("blue").unwrap())
+        line(&s).get(LINE_COLOR).constant(),
+        Some(Color::parse("blue").unwrap())
     );
     let SourceKind::Vector(v) = &s.sources[0].kind else {
         unreachable!()
@@ -402,23 +387,20 @@ fn global_state_resolves_at_parse() {
     assert_eq!(v.promote_id.as_ref().and_then(|p| p.key("water")), None);
 }
 
-fn symbol(layout: &str, paint: &str) -> Symbol {
+fn symbol(layout: &str, paint: &str) -> Layer {
     let style = style(&format!(
         r#"[{{"id": "s", "type": "symbol", "source": "v", "source-layer": "poi", "layout": {layout}, "paint": {paint}}}]"#
     ))
     .unwrap_or_else(|d| panic!("{d}"));
-    match style.layers.into_iter().next().unwrap().kind {
-        LayerKind::Symbol(symbol) => *symbol,
-        _ => panic!("a symbol layer"),
-    }
+    style.layers.into_iter().next().unwrap()
 }
 
 #[test]
 fn image_expressions_resolve_with_the_styles_images() {
     let plain = symbol(r#"{"icon-image": "marker"}"#, "{}");
     assert_eq!(
-        plain.layout.icon_image.as_constant(),
-        Some(&Some("marker".into()))
+        plain.get(ICON_IMAGE).constant(),
+        Some(Some("marker".into()))
     );
     // GL JS evaluates constant image expressions with the available images.
     let s = symbol(
@@ -431,7 +413,7 @@ fn image_expressions_resolve_with_the_styles_images() {
     b.begin_ring();
     b.push_vertex([0, 0]);
     let tile = b.finish();
-    let icon = &s.layout.icon_image;
+    let icon = s.get(ICON_IMAGE);
     let images = ["c".to_string(), "b".to_string()];
     let with = |images: &[String]| icon.bind_with_images(&tile, images).evaluate(0.0, 0);
     assert_eq!(with(&images).as_deref(), Some("b"));
@@ -442,24 +424,22 @@ fn image_expressions_resolve_with_the_styles_images() {
 #[test]
 fn symbol_layers_are_typed() {
     let s = symbol("{}", "{}");
-    let l = &s.layout;
-    assert_eq!(l.placement.as_constant(), Some(&SymbolPlacement::Point));
-    assert_eq!(l.text_size.as_constant(), Some(&16.0));
+    let l = &s;
     assert_eq!(
-        l.text_font.as_constant().unwrap(),
-        &["Open Sans Regular", "Arial Unicode MS Regular"]
+        l.get(SYMBOL_PLACEMENT).constant(),
+        Some(SymbolPlacement::Point)
     );
-    assert_eq!(l.icon_padding.as_constant(), Some(&Padding([2.0; 4])));
-    assert_eq!(l.text_overlap.as_constant(), Some(&None));
-    assert_eq!(l.text_variable_anchor.as_constant(), Some(&None));
-    assert_eq!(l.text_field.as_constant().unwrap()[0].text, "");
+    assert_eq!(l.get(TEXT_SIZE).constant(), Some(16.0));
     assert_eq!(
-        s.paint
-            .text
-            .halo_color
-            .as_constant()
-            .unwrap()
-            .premultiplied(),
+        l.get(TEXT_FONT).constant().unwrap(),
+        ["Open Sans Regular", "Arial Unicode MS Regular"]
+    );
+    assert_eq!(l.get(ICON_PADDING).constant(), Some(Padding([2.0; 4])));
+    assert_eq!(l.get(TEXT_OVERLAP).constant(), Some(None));
+    assert_eq!(l.get(TEXT_VARIABLE_ANCHOR).constant(), Some(None));
+    assert_eq!(l.get(TEXT_FIELD).constant().unwrap()[0].text, "");
+    assert_eq!(
+        s.get(TEXT_HALO_COLOR).constant().unwrap().premultiplied(),
         [0.0; 4]
     );
 
@@ -476,9 +456,9 @@ fn symbol_layers_are_typed() {
         }"#,
         r#"{"text-color": ["get", "color"]}"#,
     );
-    let l = &s.layout;
+    let l = &s;
     // Plain strings expand tokens (GL JS `resolveTokens`).
-    assert_eq!(l.text_field.kind(), Kind::Source);
+    assert_eq!(l.get(TEXT_FIELD).kind(), Kind::Source);
     let mut b = LayerBuilder::new("poi", 4096);
     b.begin_feature(None, GeometryType::Point);
     b.begin_part();
@@ -487,40 +467,40 @@ fn symbol_layers_are_typed() {
     b.set_property("name", orb_tile::Value::Str("Café".into()));
     b.set_property("maki", orb_tile::Value::Str("bar".into()));
     let tile = b.finish();
-    let text = l.text_field.bind(&tile).evaluate(0.0, 0);
+    let text = l.get(TEXT_FIELD).bind(&tile).evaluate(0.0, 0);
     assert_eq!(
         text.iter().map(|s| s.text.as_str()).collect::<String>(),
         "Café ()"
     );
     assert_eq!(
-        l.icon_image.bind(&tile).evaluate(0.0, 0).as_deref(),
+        l.get(ICON_IMAGE).bind(&tile).evaluate(0.0, 0).as_deref(),
         Some("bar-15")
     );
     // Numbers are f64, as GL JS lays out with doubles.
-    assert_eq!(l.text_line_height.as_constant(), Some(&1.25));
+    assert_eq!(l.get(TEXT_LINE_HEIGHT).constant(), Some(1.25));
     assert_eq!(
-        l.icon_padding.as_constant(),
-        Some(&Padding([1.0, 2.0, 1.0, 2.0]))
+        l.get(ICON_PADDING).constant(),
+        Some(Padding([1.0, 2.0, 1.0, 2.0]))
     );
     assert_eq!(
-        l.text_writing_mode.as_constant(),
-        Some(&Some(vec![WritingMode::Vertical, WritingMode::Horizontal]))
+        l.get(TEXT_WRITING_MODE).constant(),
+        Some(Some(vec![WritingMode::Vertical, WritingMode::Horizontal]))
     );
     // An item outside the enum falls back to the default.
-    assert_eq!(l.text_variable_anchor.as_constant(), Some(&None));
+    assert_eq!(l.get(TEXT_VARIABLE_ANCHOR).constant(), Some(None));
     assert_eq!(
-        l.text_variable_anchor_offset.as_constant(),
-        Some(&Some(vec![
+        l.get(TEXT_VARIABLE_ANCHOR_OFFSET).constant(),
+        Some(Some(vec![
             (Anchor::Top, [0.0, 1.0]),
             (Anchor::Left, [2.0, 0.0])
         ]))
     );
     assert_eq!(
-        l.placement.as_constant(),
-        Some(&SymbolPlacement::LineCenter)
+        l.get(SYMBOL_PLACEMENT).constant(),
+        Some(SymbolPlacement::LineCenter)
     );
-    assert_eq!(s.paint.text.color.kind(), Kind::Source);
-    assert_eq!(s.paint.icon.color.kind(), Kind::Constant);
+    assert_eq!(s.get(TEXT_COLOR).kind(), Kind::Source);
+    assert_eq!(s.get(ICON_COLOR).kind(), Kind::Constant);
 }
 
 #[test]
@@ -662,10 +642,9 @@ fn layer_blends_parse() {
     let blends: Vec<LayerBlend> = style
         .layers
         .iter()
-        .map(|l| match &l.kind {
-            LayerKind::Fill(f) => f.paint.layer_blend.evaluate(0.0),
-            LayerKind::Line(l) => l.paint.layer_blend.evaluate(0.0),
-            _ => unreachable!(),
+        .map(|l| match l.ty {
+            LayerType::Fill => l.get(FILL_LAYER_BLEND).evaluate(0.0),
+            _ => l.get(LINE_LAYER_BLEND).evaluate(0.0),
         })
         .collect();
     let expected: Vec<LayerBlend> = modes.iter().chain(&modes).map(|&(_, b)| b).collect();

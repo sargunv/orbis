@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use orb_expr::{Interpolation, Kind};
 use orb_render::{Curve, Family};
-use orb_v8::{Color, LayerKind, Property, SourceKind, Style, Value};
+use orb_v8::{Color, LayerType, PropertyRef, SourceKind, Style, Value};
 
 /// A style ready to render: one revision of it. Clones are shallow, as a
 /// frame's paint transitions overlay it.
@@ -59,13 +59,13 @@ pub(crate) struct NodePlan {
 }
 
 /// A paint property as the renderer packs it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum PaintProperty<'a> {
-    Color(&'a Property<Color>),
+    Color(PropertyRef<'a, Color>),
     /// A colour that may be unset, such as `fill-outline-color` given as an
     /// expression; unset draws transparent.
-    OptionalColor(&'a Property<Option<Color>>),
-    Number(&'a Property<f32>),
+    OptionalColor(PropertyRef<'a, Option<Color>>),
+    Number(PropertyRef<'a, f32>),
 }
 
 impl PaintProperty<'_> {
@@ -203,43 +203,35 @@ impl StylePlan {
         };
 
         for (index, layer) in style.layers.iter().enumerate() {
-            let (family, source) = match &layer.kind {
-                LayerKind::Background(_) => {
+            let key = layer_keys[index] * 2;
+            let family = match layer.ty {
+                LayerType::Background => {
                     nodes.push(NodePlan {
                         layer: index,
                         family: Family::Fill,
                         source: usize::MAX,
-                        key: layer_keys[index] * 2,
+                        key,
                     });
                     continue;
                 }
-                LayerKind::FillExtrusion(e) => (Family::FillExtrusion, &e.selection.source),
-                LayerKind::Fill(fill) => (Family::Fill, &fill.selection.source),
-                LayerKind::Line(line) => (Family::Line, &line.selection.source),
-                LayerKind::Circle(c) => (Family::Circle, &c.selection.source),
-                LayerKind::Heatmap(h) => (Family::Heatmap, &h.selection.source),
-                LayerKind::Raster(raster) => (Family::Raster, &raster.source),
-                LayerKind::Hillshade(hillshade) => (Family::Hillshade, &hillshade.source),
-                LayerKind::ColorRelief(relief) => (Family::ColorRelief, &relief.source),
-                LayerKind::Symbol(symbol) => (Family::SymbolIcon, &symbol.selection.source),
-                LayerKind::Model(_) => {
+                LayerType::FillExtrusion => Family::FillExtrusion,
+                LayerType::Fill => Family::Fill,
+                LayerType::Line => Family::Line,
+                LayerType::Circle => Family::Circle,
+                LayerType::Heatmap => Family::Heatmap,
+                LayerType::Raster => Family::Raster,
+                LayerType::Hillshade => Family::Hillshade,
+                LayerType::ColorRelief => Family::ColorRelief,
+                LayerType::Symbol => Family::SymbolIcon,
+                LayerType::Model => {
                     warn(index, "model layers are not drawn yet");
                     continue;
                 }
-                LayerKind::Unsupported { .. } => continue,
             };
-            let selection = match &layer.kind {
-                LayerKind::Fill(fill) => Some(&fill.selection),
-                LayerKind::FillExtrusion(e) => Some(&e.selection),
-                LayerKind::Line(line) => Some(&line.selection),
-                LayerKind::Circle(c) => Some(&c.selection),
-                LayerKind::Heatmap(h) => Some(&h.selection),
-                LayerKind::Symbol(s) => Some(&s.selection),
-                _ => None,
-            };
+            let source = layer.source.as_deref().expect("drawn layers have sources");
             match style.source(source).map(|s| &s.kind) {
                 Some(SourceKind::Vector(_)) => {
-                    if selection.is_some_and(|s| s.source_layer.is_none()) {
+                    if layer.ty.draws_features() && layer.source_layer.is_none() {
                         warn(index, "vector layers need a source-layer");
                         continue;
                     }
@@ -261,14 +253,14 @@ impl StylePlan {
                     continue;
                 }
             }
-            if let LayerKind::Hillshade(hillshade) = &layer.kind {
-                let p = &hillshade.paint;
+            if layer.ty == LayerType::Hillshade {
                 let lights = [
-                    p.illumination_direction.len(),
-                    p.illumination_altitude.len(),
-                    p.shadow_color.len(),
-                    p.highlight_color.len(),
-                ];
+                    orb_v8::HILLSHADE_ILLUMINATION_DIRECTION.id(),
+                    orb_v8::HILLSHADE_ILLUMINATION_ALTITUDE.id(),
+                    orb_v8::HILLSHADE_SHADOW_COLOR.id(),
+                    orb_v8::HILLSHADE_HIGHLIGHT_COLOR.id(),
+                ]
+                .map(|id| layer.slot(id).items().len());
                 if lights.into_iter().max().unwrap_or(1) > orb_render::MAX_LIGHTS {
                     warn(
                         index,
@@ -279,18 +271,17 @@ impl StylePlan {
                     );
                 }
             }
-            let source = match sources.iter().position(|s| s.id == *source) {
+            let source = match sources.iter().position(|s| s.id == source) {
                 Some(i) => i,
                 None => {
-                    let at = style.sources.iter().position(|s| s.id == *source);
+                    let at = style.sources.iter().position(|s| s.id == source);
                     sources.push(PlanSource {
                         key: source_keys[at.expect("layers' sources exist")],
-                        id: source.clone(),
+                        id: source.to_string(),
                     });
                     sources.len() - 1
                 }
             };
-            let key = layer_keys[index] * 2;
             nodes.push(NodePlan {
                 layer: index,
                 family,
@@ -299,7 +290,7 @@ impl StylePlan {
             });
             // A symbol layer draws its icons, then its text (GL JS
             // `drawSymbols`).
-            if matches!(layer.kind, LayerKind::Symbol(_)) {
+            if layer.ty == LayerType::Symbol {
                 nodes.push(NodePlan {
                     layer: index,
                     family: Family::SymbolText,
@@ -308,9 +299,7 @@ impl StylePlan {
                 });
             }
             // GL JS antialiases fills by drawing their outlines after them.
-            if let LayerKind::Fill(fill) = &layer.kind
-                && fill.paint.antialias.evaluate(0.0)
-            {
+            if layer.ty == LayerType::Fill && layer.get(orb_v8::FILL_ANTIALIAS).evaluate(0.0) {
                 nodes.push(NodePlan {
                     layer: index,
                     family: Family::FillOutline,
@@ -402,76 +391,65 @@ impl StylePlan {
         if matches!(self.source_def(node.source).kind, SourceKind::GeoJson(_)) {
             return None;
         }
-        match &self.style.layers[node.layer].kind {
-            LayerKind::Fill(l) => l.selection.source_layer.as_deref(),
-            LayerKind::FillExtrusion(l) => l.selection.source_layer.as_deref(),
-            LayerKind::Line(l) => l.selection.source_layer.as_deref(),
-            LayerKind::Circle(l) => l.selection.source_layer.as_deref(),
-            LayerKind::Heatmap(l) => l.selection.source_layer.as_deref(),
-            LayerKind::Symbol(l) => l.selection.source_layer.as_deref(),
-            _ => None,
-        }
+        self.style.layers[node.layer].source_layer.as_deref()
     }
 
     /// A node's paint properties in property-row order.
     pub(crate) fn paint_properties(&self, node: &NodePlan) -> Vec<PaintProperty<'_>> {
-        match &self.style.layers[node.layer].kind {
-            LayerKind::Fill(fill) => {
-                let p = &fill.paint;
-                let color = match (node.family, p.outline_color.as_constant()) {
-                    // Without an outline colour, outlines use the fill colour.
-                    (Family::Fill, _) | (_, Some(None)) => PaintProperty::Color(&p.color),
-                    _ => PaintProperty::OptionalColor(&p.outline_color),
+        use PaintProperty::{Color as C, Number as N};
+        use orb_v8::{
+            BACKGROUND_COLOR, BACKGROUND_OPACITY, CIRCLE_BLUR, CIRCLE_COLOR, CIRCLE_OPACITY,
+            CIRCLE_RADIUS, CIRCLE_STROKE_COLOR, CIRCLE_STROKE_OPACITY, CIRCLE_STROKE_WIDTH,
+            EXTRUSION_BASE, EXTRUSION_COLOR, EXTRUSION_HEIGHT, FILL_COLOR, FILL_OPACITY,
+            FILL_OUTLINE_COLOR, HEATMAP_RADIUS, HEATMAP_WEIGHT, ICON_PART, LINE_BLUR, LINE_COLOR,
+            LINE_GAP_WIDTH, LINE_OFFSET, LINE_OPACITY, LINE_WIDTH, TEXT_PART,
+        };
+        let l = &self.style.layers[node.layer];
+        match l.ty {
+            LayerType::Fill => {
+                // Without an outline colour, outlines use the fill colour.
+                let outline = l.get(FILL_OUTLINE_COLOR);
+                let color = match (node.family, outline.constant()) {
+                    (Family::Fill, _) | (_, Some(None)) => C(l.get(FILL_COLOR)),
+                    _ => PaintProperty::OptionalColor(outline),
                 };
-                vec![color, PaintProperty::Number(&p.opacity)]
+                vec![color, N(l.get(FILL_OPACITY))]
             }
-            LayerKind::FillExtrusion(e) => vec![
-                PaintProperty::Color(&e.paint.color),
-                PaintProperty::Number(&e.paint.height),
-                PaintProperty::Number(&e.paint.base),
+            LayerType::FillExtrusion => vec![
+                C(l.get(EXTRUSION_COLOR)),
+                N(l.get(EXTRUSION_HEIGHT)),
+                N(l.get(EXTRUSION_BASE)),
             ],
-            LayerKind::Line(line) => {
-                let p = &line.paint;
-                vec![
-                    PaintProperty::Color(&p.color),
-                    PaintProperty::Number(&p.opacity),
-                    PaintProperty::Number(&p.width),
-                    PaintProperty::Number(&p.gap_width),
-                    PaintProperty::Number(&p.offset),
-                    PaintProperty::Number(&p.blur),
-                ]
-            }
-            LayerKind::Circle(c) => {
-                let p = &c.paint;
-                vec![
-                    PaintProperty::Color(&p.color),
-                    PaintProperty::Number(&p.radius),
-                    PaintProperty::Number(&p.blur),
-                    PaintProperty::Number(&p.opacity),
-                    PaintProperty::Color(&p.stroke_color),
-                    PaintProperty::Number(&p.stroke_width),
-                    PaintProperty::Number(&p.stroke_opacity),
-                ]
-            }
-            LayerKind::Heatmap(h) => vec![
-                PaintProperty::Number(&h.paint.radius),
-                PaintProperty::Number(&h.paint.weight),
+            LayerType::Line => vec![
+                C(l.get(LINE_COLOR)),
+                N(l.get(LINE_OPACITY)),
+                N(l.get(LINE_WIDTH)),
+                N(l.get(LINE_GAP_WIDTH)),
+                N(l.get(LINE_OFFSET)),
+                N(l.get(LINE_BLUR)),
             ],
-            LayerKind::Background(b) => vec![
-                PaintProperty::Color(&b.paint.color),
-                PaintProperty::Number(&b.paint.opacity),
+            LayerType::Circle => vec![
+                C(l.get(CIRCLE_COLOR)),
+                N(l.get(CIRCLE_RADIUS)),
+                N(l.get(CIRCLE_BLUR)),
+                N(l.get(CIRCLE_OPACITY)),
+                C(l.get(CIRCLE_STROKE_COLOR)),
+                N(l.get(CIRCLE_STROKE_WIDTH)),
+                N(l.get(CIRCLE_STROKE_OPACITY)),
             ],
-            LayerKind::Symbol(symbol) => {
-                let p = match node.family {
-                    Family::SymbolIcon => &symbol.paint.icon,
-                    _ => &symbol.paint.text,
+            LayerType::Heatmap => vec![N(l.get(HEATMAP_RADIUS)), N(l.get(HEATMAP_WEIGHT))],
+            LayerType::Background => vec![C(l.get(BACKGROUND_COLOR)), N(l.get(BACKGROUND_OPACITY))],
+            LayerType::Symbol => {
+                let part = match node.family {
+                    Family::SymbolIcon => ICON_PART,
+                    _ => TEXT_PART,
                 };
                 vec![
-                    PaintProperty::Number(&p.opacity),
-                    PaintProperty::Color(&p.color),
-                    PaintProperty::Color(&p.halo_color),
-                    PaintProperty::Number(&p.halo_width),
-                    PaintProperty::Number(&p.halo_blur),
+                    N(l.get(part.opacity)),
+                    C(l.get(part.color)),
+                    C(l.get(part.halo_color)),
+                    N(l.get(part.halo_width)),
+                    N(l.get(part.halo_blur)),
                 ]
             }
             // Image families have no property rows.
@@ -490,19 +468,21 @@ impl StylePlan {
 
     /// The pattern sampled by a node. An explicit fill outline colour uses
     /// the solid outline shader even when its interior is patterned.
-    pub(crate) fn pattern(&self, node: &NodePlan) -> Option<&Property<Option<String>>> {
-        let p = match &self.style.layers[node.layer].kind {
-            LayerKind::Background(b) => &b.paint.pattern,
-            LayerKind::Fill(f)
+    pub(crate) fn pattern(&self, node: &NodePlan) -> Option<PropertyRef<'_, Option<String>>> {
+        let l = &self.style.layers[node.layer];
+        let key = match l.ty {
+            LayerType::Background => orb_v8::BACKGROUND_PATTERN,
+            LayerType::Fill
                 if node.family != Family::FillOutline
-                    || f.paint.outline_color.as_constant() == Some(&None) =>
+                    || l.get(orb_v8::FILL_OUTLINE_COLOR).constant() == Some(None) =>
             {
-                &f.paint.pattern
+                orb_v8::FILL_PATTERN
             }
-            LayerKind::Line(l) => &l.paint.pattern,
-            LayerKind::FillExtrusion(e) => &e.paint.pattern,
+            LayerType::Line => orb_v8::LINE_PATTERN,
+            LayerType::FillExtrusion => orb_v8::EXTRUSION_PATTERN,
             _ => return None,
         };
-        (p.as_constant() != Some(&None)).then_some(p)
+        let p = l.get(key);
+        (p.constant() != Some(None)).then_some(p)
     }
 }

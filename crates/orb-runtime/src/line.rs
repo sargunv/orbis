@@ -4,13 +4,22 @@
 use orb_hal::Gpu;
 use orb_render::{ImageAtlas, ImageKey, NodePaint, PatternPaint, pack_color};
 use orb_tile::Layer;
-use orb_v8::{Kind, LayerKind, LineCap};
+use orb_v8::{
+    Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH, LayerType, LineCap,
+};
 
 use crate::map::Crossfade;
 use crate::tile::ImageRef;
 
+/// Whether a line layer's property rows carry dash or gradient textures.
+pub(crate) fn has_textures(layer: &orb_v8::Layer) -> bool {
+    layer.ty == LayerType::Line
+        && (layer.get(LINE_DASHARRAY).constant() != Some(None)
+            || layer.ramp(LINE_GRADIENT).is_some())
+}
+
 pub(crate) fn textures(
-    line: &orb_v8::Line,
+    line: &orb_v8::Layer,
     layer: &Layer,
     features: &[u32],
     zoom: f64,
@@ -20,17 +29,17 @@ pub(crate) fn textures(
 ) {
     // One row per feature, of the family's words and any input columns.
     let stride = props.len() / features.len().max(1);
-    if line.paint.pattern.as_constant() != Some(&None) {
+    if line.get(LINE_PATTERN).constant() != Some(None) {
         return;
     }
-    let dashed = line.paint.dasharray.as_constant() != Some(&None);
-    if !dashed && line.paint.gradient.is_none() {
+    let dashed = line.get(LINE_DASHARRAY).constant() != Some(None);
+    if !dashed && line.ramp(LINE_GRADIENT).is_none() {
         return;
     }
-    let dash = line.paint.dasharray.bind(layer);
-    let cap = line.layout.cap.bind(layer);
-    let width = line.paint.width.bind(layer);
-    let gradient = line.paint.gradient.as_ref().map(|g| g.expression());
+    let dash = line.get(LINE_DASHARRAY).bind(layer);
+    let cap = line.get(LINE_CAP).bind(layer);
+    let width = line.get(LINE_WIDTH).bind(layer);
+    let gradient = line.ramp(LINE_GRADIENT).map(|g| g.expression());
     let nearest = gradient.is_some_and(|g| g.is_step());
     let max_length = features
         .iter()
@@ -115,21 +124,24 @@ pub(crate) fn textures(
 pub(crate) fn paint(
     gpu: &mut dyn Gpu,
     paint: NodePaint,
-    layer: &LayerKind,
+    line: &orb_v8::Layer,
     atlas: &mut ImageAtlas,
     namespace: u64,
     zoom: f64,
     crossfade: Crossfade,
 ) -> NodePaint {
-    let (NodePaint::Line(mut paint), LayerKind::Line(line)) = (paint, layer) else {
+    let NodePaint::Line(mut paint) = paint else {
         return paint;
     };
-    if line.paint.pattern.as_constant() != Some(&None) {
+    if line.ty != LayerType::Line {
         return NodePaint::Line(paint);
     }
-    paint.gradient = line.paint.gradient.is_some();
-    let p = &line.paint.dasharray;
-    if p.as_constant() != Some(&None) {
+    if line.get(LINE_PATTERN).constant() != Some(None) {
+        return NodePaint::Line(paint);
+    }
+    paint.gradient = line.ramp(LINE_GRADIENT).is_some();
+    let p = line.get(LINE_DASHARRAY);
+    if p.constant() != Some(None) {
         // The pin only evaluates caps per feature for data-driven dashes.
         // Constant dashes use the cap's constant fallback for their SDF.
         let per_feature = matches!(p.kind(), Kind::Source | Kind::Composite);
@@ -145,7 +157,7 @@ pub(crate) fn paint(
                             namespace,
                             &ImageKey::Dash {
                                 array: array.iter().map(|v| v.to_bits()).collect(),
-                                round: line.layout.cap.evaluate(zoom) == LineCap::Round,
+                                round: line.get(LINE_CAP).evaluate(zoom) == LineCap::Round,
                             },
                         )
                         .ok()
@@ -173,7 +185,7 @@ pub(crate) fn paint(
             from_scale: crossfade.from_scale,
             to_scale: 1.0,
             mix: crossfade.mix,
-            floor_width: line.paint.width.evaluate(zoom.floor()),
+            floor_width: line.get(LINE_WIDTH).evaluate(zoom.floor()),
         });
     }
     NodePaint::Line(paint)

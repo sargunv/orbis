@@ -3,9 +3,7 @@
 
 use orb_expr::Interpolation;
 use orb_tile::{GeometryType, LayerBuilder};
-use orb_v8::{
-    Color, Kind, LayerKind, LineCap, LineJoin, Property, PropertyValue, SourceKind, Style,
-};
+use orb_v8::*;
 
 fn liberty() -> Style {
     orb_v8::parse(include_str!("data/liberty.json")).unwrap_or_else(|d| panic!("{d}"))
@@ -15,9 +13,9 @@ fn layer<'a>(style: &'a Style, id: &str) -> &'a orb_v8::Layer {
     style.layers.iter().find(|l| l.id == id).expect(id)
 }
 
-fn constant<T: PropertyValue + Clone>(p: &Property<T>) -> T {
+fn constant<T: PropertyValue + Clone>(p: PropertyRef<'_, T>) -> T {
     assert_eq!(p.kind(), Kind::Constant);
-    p.as_constant().cloned().unwrap()
+    p.constant().unwrap()
 }
 
 fn color(css: &str) -> Color {
@@ -33,12 +31,11 @@ fn parses_with_the_expected_warnings() {
     let warnings: Vec<String> = style.warnings.iter().map(ToString::to_string).collect();
     assert_eq!(warnings, Vec::<String>::new());
 
-    let kinds =
-        |pred: fn(&LayerKind) -> bool| style.layers.iter().filter(|l| pred(&l.kind)).count();
-    assert_eq!(kinds(|k| matches!(k, LayerKind::Background(_))), 1);
-    assert_eq!(kinds(|k| matches!(k, LayerKind::Fill(_))), 16);
-    assert_eq!(kinds(|k| matches!(k, LayerKind::Line(_))), 67);
-    assert_eq!(kinds(|k| matches!(k, LayerKind::Symbol(_))), 25);
+    let kinds = |ty: LayerType| style.layers.iter().filter(|l| l.ty == ty).count();
+    assert_eq!(kinds(LayerType::Background), 1);
+    assert_eq!(kinds(LayerType::Fill), 16);
+    assert_eq!(kinds(LayerType::Line), 67);
+    assert_eq!(kinds(LayerType::Symbol), 25);
 }
 
 #[test]
@@ -61,48 +58,41 @@ fn sources() {
 #[test]
 fn constant_properties() {
     let style = liberty();
-    let LayerKind::Background(bg) = &layer(&style, "background").kind else {
-        panic!()
-    };
-    assert_eq!(constant(&bg.paint.color), color("#f8f4f0"));
-    assert_eq!(constant(&bg.paint.opacity), 1.0);
+    let bg = &layer(&style, "background");
+    assert_eq!(constant(bg.get(BACKGROUND_COLOR)), color("#f8f4f0"));
+    assert_eq!(constant(bg.get(BACKGROUND_OPACITY)), 1.0);
 
-    let LayerKind::Fill(park) = &layer(&style, "park").kind else {
-        panic!()
-    };
-    assert_eq!(park.selection.source, "openmaptiles");
-    assert_eq!(park.selection.source_layer.as_deref(), Some("park"));
-    assert_eq!(constant(&park.paint.opacity), 0.7);
+    let park = &layer(&style, "park");
+    assert_eq!(park.source.as_deref().unwrap(), "openmaptiles");
+    assert_eq!(park.source_layer.as_deref(), Some("park"));
+    assert_eq!(constant(park.get(FILL_OPACITY)), 0.7);
     assert_eq!(
-        constant(&park.paint.outline_color),
+        constant(park.get(FILL_OUTLINE_COLOR)),
         Some(color("rgba(95, 208, 100, 1)"))
     );
-    assert!(constant(&park.paint.antialias));
+    assert!(constant(park.get(FILL_ANTIALIAS)));
 
-    let LayerKind::Fill(wood) = &layer(&style, "landcover_wood").kind else {
-        panic!()
-    };
-    assert!(!constant(&wood.paint.antialias));
-    assert_eq!(constant(&wood.paint.color), color("hsla(98,61%,72%,0.7)"));
-
-    let LayerKind::Fill(wetland) = &layer(&style, "landcover_wetland").kind else {
-        panic!()
-    };
+    let wood = &layer(&style, "landcover_wood");
+    assert!(!constant(wood.get(FILL_ANTIALIAS)));
     assert_eq!(
-        constant(&wetland.paint.pattern).as_deref(),
+        constant(wood.get(FILL_COLOR)),
+        color("hsla(98,61%,72%,0.7)")
+    );
+
+    let wetland = &layer(&style, "landcover_wetland");
+    assert_eq!(
+        constant(wetland.get(FILL_PATTERN)).as_deref(),
         Some("wetland_bg_11")
     );
 
-    let LayerKind::Line(outline) = &layer(&style, "park_outline").kind else {
-        panic!()
-    };
-    assert_eq!(constant(&outline.paint.dasharray), Some(vec![1.0, 1.5]));
+    let outline = &layer(&style, "park_outline");
+    assert_eq!(constant(outline.get(LINE_DASHARRAY)), Some(vec![1.0, 1.5]));
     // Unset properties take the spec defaults.
-    assert_eq!(constant(&outline.paint.width), 1.0);
-    assert_eq!(constant(&outline.layout.cap), LineCap::Butt);
-    assert_eq!(constant(&outline.layout.join), LineJoin::Miter);
-    assert_eq!(constant(&outline.layout.miter_limit), 2.0);
-    assert_eq!(constant(&outline.paint.translate), [0.0, 0.0]);
+    assert_eq!(constant(outline.get(LINE_WIDTH)), 1.0);
+    assert_eq!(constant(outline.get(LINE_CAP)), LineCap::Butt);
+    assert_eq!(constant(outline.get(LINE_JOIN)), LineJoin::Miter);
+    assert_eq!(constant(outline.get(LINE_MITER_LIMIT)), 2.0);
+    assert_eq!(constant(outline.get(LINE_TRANSLATE)), [0.0, 0.0]);
 }
 
 #[test]
@@ -111,30 +101,28 @@ fn camera_properties() {
     let residential = layer(&style, "landuse_residential");
     assert_eq!(residential.maxzoom, 12.0);
     assert!(residential.is_visible_at(11.9) && !residential.is_visible_at(12.0));
-    let LayerKind::Fill(fill) = &residential.kind else {
-        panic!()
-    };
-    assert_eq!(fill.paint.color.kind(), Kind::Camera);
+    let fill = &residential;
+    assert_eq!(fill.get(FILL_COLOR).kind(), Kind::Camera);
     let curve = fill
-        .paint
-        .color
+        .get(FILL_COLOR)
         .as_expression()
         .unwrap()
         .zoom_curve()
         .unwrap();
     assert_eq!(curve.stops, [9.0, 12.0]);
     assert_eq!(curve.interpolation, Some(Interpolation::Linear));
-    assert_eq!(fill.paint.color.evaluate(9.0), color("hsla(0,3%,85%,0.84)"));
     assert_eq!(
-        fill.paint.color.evaluate(13.0),
+        fill.get(FILL_COLOR).evaluate(9.0),
+        color("hsla(0,3%,85%,0.84)")
+    );
+    assert_eq!(
+        fill.get(FILL_COLOR).evaluate(13.0),
         color("hsla(35,57%,88%,0.49)")
     );
 
-    let LayerKind::Line(river) = &layer(&style, "waterway_river").kind else {
-        panic!()
-    };
-    assert_eq!(constant(&river.layout.cap), LineCap::Round);
-    let width = &river.paint.width;
+    let river = &layer(&style, "waterway_river");
+    assert_eq!(constant(river.get(LINE_CAP)), LineCap::Round);
+    let width = &river.get(LINE_WIDTH);
     assert_eq!(width.kind(), Kind::Camera);
     let expression = width.as_expression().unwrap();
     assert_eq!(
@@ -149,18 +137,14 @@ fn camera_properties() {
 
     let motorway = layer(&style, "road_motorway");
     assert_eq!(motorway.minzoom, 5.0);
-    let LayerKind::Line(line) = &motorway.kind else {
-        panic!()
-    };
-    assert_eq!(line.paint.color.kind(), Kind::Camera);
-    assert_eq!(line.paint.color.evaluate(6.0), color("#fc8"));
+    let line = &motorway;
+    assert_eq!(line.get(LINE_COLOR).kind(), Kind::Camera);
+    assert_eq!(line.get(LINE_COLOR).evaluate(6.0), color("#fc8"));
 
-    let LayerKind::Fill(building) = &layer(&style, "building").kind else {
-        panic!()
-    };
-    assert_eq!(building.paint.outline_color.kind(), Kind::Camera);
+    let building = &layer(&style, "building");
+    assert_eq!(building.get(FILL_OUTLINE_COLOR).kind(), Kind::Camera);
     assert_eq!(
-        building.paint.outline_color.evaluate(14.0),
+        building.get(FILL_OUTLINE_COLOR).evaluate(14.0),
         Some(color("hsl(35,6%,79%)"))
     );
 }
@@ -186,12 +170,8 @@ fn filters_select_features() {
     }
     let tile = b.finish();
     let select = |id: &str| {
-        let selection = match &layer(&style, id).kind {
-            LayerKind::Line(line) => &line.selection,
-            LayerKind::Fill(fill) => &fill.selection,
-            _ => panic!("{id} draws features"),
-        };
-        selection.filter.as_ref().unwrap().select(&tile, 14.0)
+        let layer = layer(&style, id);
+        layer.filter.as_ref().unwrap().select(&tile, 14.0)
     };
     assert_eq!(select("road_minor"), [0]);
     assert_eq!(select("road_trunk_primary"), [3]);

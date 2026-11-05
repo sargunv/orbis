@@ -1,8 +1,7 @@
 //! Paint transitions (v8 `transition`, `*-transition`; decision 0031): a
 //! paint edit eases from the property's prior value to its new one. Each
 //! frame a transition runs, the plan's style is overlaid with the eased
-//! values as constants, through the IR's by-name paint
-//! ([`orb_v8::LayerKind::paint_mut`]), and the paint writes from that.
+//! values as constants, by [`PropertyId`], and the paint writes from that.
 //! Values interpolate as GL JS's do: numbers, colours (premultiplied) and
 //! pairs, eased cubic in-out. Per-feature values (data or feature state)
 //! change at once, which is also what GL JS does with feature state.
@@ -10,7 +9,7 @@
 use std::sync::Arc;
 
 use orb_expr::Kind;
-use orb_v8::{Color, PaintMut, PaintRef, PaintValue, Property, Transition};
+use orb_v8::{PropertyId, Slot, Transition, Value};
 
 use crate::style::StylePlan;
 
@@ -24,8 +23,8 @@ pub(crate) struct Transitions {
 #[derive(Debug)]
 struct Running {
     layer: String,
-    name: String,
-    prior: PaintValue,
+    id: PropertyId,
+    prior: Slot,
     begin: f64,
     end: f64,
 }
@@ -51,42 +50,42 @@ fn per_feature(kind: Kind) -> bool {
 }
 
 impl Transitions {
-    /// A paint change of `layer`'s `name` from `prior` (the property
+    /// A paint change of `layer`'s property `id` from `prior` (its slot
     /// before the edit), at `now` and `zoom`.
     pub(crate) fn start(
         &mut self,
         layer: &str,
-        name: &str,
-        prior: Option<PaintRef<'_>>,
+        id: PropertyId,
+        prior: &Slot,
         transition: Transition,
         (now, zoom): (f64, f64),
     ) {
-        let Some(prior) = prior.map(|p| p.to_owned()) else {
+        if !id.transitions() {
             return;
-        };
+        }
         // A transition under way restarts from where it stands, as GL JS's
         // chain of priors does: its prior eased toward what it was heading
         // for, the property before this edit.
         let prior = match self
             .running
             .iter()
-            .position(|r| r.layer == layer && r.name == name)
+            .position(|r| r.layer == layer && r.id == id)
         {
             Some(i) => {
                 let r = self.running.remove(i);
                 let t = ease((now - r.begin) / (r.end - r.begin));
                 let mut current = prior.clone();
-                mix(current.as_mut(), &r.prior, zoom, t);
+                mix(id, &mut current, &r.prior, zoom, t);
                 current
             }
-            None => prior,
+            None => prior.clone(),
         };
         if transition.duration + transition.delay <= 0.0 || per_feature(prior.kind()) {
             return;
         }
         self.running.push(Running {
             layer: layer.to_string(),
-            name: name.to_string(),
+            id,
             prior,
             begin: now + transition.delay,
             end: now + transition.delay + transition.duration,
@@ -107,13 +106,16 @@ impl Transitions {
         }
         let mut style = (*plan.style).clone();
         for r in &self.running {
-            let Some(layer) = style.layers.iter_mut().find(|l| l.id == r.layer) else {
+            // A replaced style may reuse the id for another layer type.
+            let Some(layer) = style
+                .layers
+                .iter_mut()
+                .find(|l| l.id == r.layer && l.ty == r.id.layer_type())
+            else {
                 continue;
             };
             let t = ease((now - r.begin) / (r.end - r.begin));
-            if let Some(value) = layer.kind.paint_mut(&r.name) {
-                mix(value, &r.prior, zoom, t);
-            }
+            mix(r.id, layer.slot_mut(r.id), &r.prior, zoom, t);
         }
         Some(StylePlan {
             style: Arc::new(style),
@@ -124,30 +126,26 @@ impl Transitions {
 
 /// Replaces `value`, the new property, with its value at `zoom` eased from
 /// `prior` by `t`; per-feature values are left as they are.
-fn mix(value: PaintMut<'_>, prior: &PaintValue, zoom: f64, t: f64) {
-    let t32 = t as f32;
-    match (value, prior) {
-        (PaintMut::Number(to), PaintValue::Number(from)) if !per_feature(to.kind()) => {
-            let (a, b) = (from.evaluate(zoom), to.evaluate(zoom));
-            *to = Property::constant(a + (b - a) * t32);
-        }
-        (PaintMut::Color(to), PaintValue::Color(from)) if !per_feature(to.kind()) => {
-            let (a, b) = (from.evaluate(zoom), to.evaluate(zoom));
-            *to = Property::constant(a.mix(&b, t));
-        }
-        (PaintMut::OptionalColor(to), PaintValue::OptionalColor(from))
-            if !per_feature(to.kind()) =>
-        {
-            if let (Some(a), Some(b)) = (from.evaluate(zoom), to.evaluate(zoom)) {
-                *to = Property::constant(Some::<Color>(a.mix(&b, t)));
-            }
-        }
-        (PaintMut::Pair(to), PaintValue::Pair(from)) if !per_feature(to.kind()) => {
-            let (a, b) = (from.evaluate(zoom), to.evaluate(zoom));
-            *to = Property::constant([a[0] + (b[0] - a[0]) * t32, a[1] + (b[1] - a[1]) * t32]);
-        }
-        _ => {}
+fn mix(id: PropertyId, value: &mut Slot, prior: &Slot, zoom: f64, t: f64) {
+    if per_feature(value.kind()) || per_feature(prior.kind()) {
+        return;
     }
+    let lerp = |a: f64, b: f64| a + (b - a) * t;
+    let eased = match (id.value(prior, zoom), id.value(value, zoom)) {
+        (Value::Number(a), Value::Number(b)) => Value::Number(lerp(a, b)),
+        (Value::Color(a), Value::Color(b)) => Value::Color(a.mix(&b, t)),
+        (Value::Array(a), Value::Array(b)) if a.len() == b.len() => Value::Array(
+            a.iter()
+                .zip(b.iter())
+                .map(|(a, b)| match (a.as_f64(), b.as_f64()) {
+                    (Some(a), Some(b)) => Value::Number(lerp(a, b)),
+                    _ => b.clone(),
+                })
+                .collect(),
+        ),
+        _ => return,
+    };
+    value.set_constant(eased);
 }
 
 #[cfg(test)]

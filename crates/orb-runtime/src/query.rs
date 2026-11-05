@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use glam::{DVec2, DVec3, DVec4, Vec2};
 use orb_camera::{CameraState, View};
 use orb_crs::{TileIndex, TileMatrixSet};
-use orb_v8::{Kind, LayerKind, Property, TranslateAnchor};
+use orb_v8::{Kind, LayerType, Property, TranslateAnchor};
 
 use crate::jobs::{read_text, write_text};
 
@@ -591,28 +591,34 @@ fn per_feature(kind: Kind) -> bool {
 }
 
 impl HitPaint {
-    fn of(kind: &LayerKind) -> Self {
-        match kind {
-            LayerKind::Fill(f) => Self::Fill {
-                translate: f.paint.translate.clone(),
-                anchor: f.paint.translate_anchor.clone(),
+    fn of(l: &orb_v8::Layer) -> Self {
+        use orb_v8::{
+            CIRCLE_RADIUS, CIRCLE_STROKE_WIDTH, CIRCLE_TRANSLATE, CIRCLE_TRANSLATE_ANCHOR,
+            EXTRUSION_BASE, EXTRUSION_HEIGHT, EXTRUSION_TRANSLATE, EXTRUSION_TRANSLATE_ANCHOR,
+            FILL_TRANSLATE, FILL_TRANSLATE_ANCHOR, LINE_TRANSLATE, LINE_TRANSLATE_ANCHOR,
+            LINE_WIDTH,
+        };
+        match l.ty {
+            LayerType::Fill => Self::Fill {
+                translate: l.get(FILL_TRANSLATE).to_owned(),
+                anchor: l.get(FILL_TRANSLATE_ANCHOR).to_owned(),
             },
-            LayerKind::Line(l) => Self::Line {
-                width: l.paint.width.clone(),
-                translate: l.paint.translate.clone(),
-                anchor: l.paint.translate_anchor.clone(),
+            LayerType::Line => Self::Line {
+                width: l.get(LINE_WIDTH).to_owned(),
+                translate: l.get(LINE_TRANSLATE).to_owned(),
+                anchor: l.get(LINE_TRANSLATE_ANCHOR).to_owned(),
             },
-            LayerKind::Circle(c) => Self::Circle {
-                radius: c.paint.radius.clone(),
-                stroke: c.paint.stroke_width.clone(),
-                translate: c.paint.translate.clone(),
-                anchor: c.paint.translate_anchor.clone(),
+            LayerType::Circle => Self::Circle {
+                radius: l.get(CIRCLE_RADIUS).to_owned(),
+                stroke: l.get(CIRCLE_STROKE_WIDTH).to_owned(),
+                translate: l.get(CIRCLE_TRANSLATE).to_owned(),
+                anchor: l.get(CIRCLE_TRANSLATE_ANCHOR).to_owned(),
             },
-            LayerKind::FillExtrusion(e) => Self::Extrusion {
-                base: e.paint.base.clone(),
-                height: e.paint.height.clone(),
-                translate: e.paint.translate.clone(),
-                anchor: e.paint.translate_anchor.clone(),
+            LayerType::FillExtrusion => Self::Extrusion {
+                base: l.get(EXTRUSION_BASE).to_owned(),
+                height: l.get(EXTRUSION_HEIGHT).to_owned(),
+                translate: l.get(EXTRUSION_TRANSLATE).to_owned(),
+                anchor: l.get(EXTRUSION_TRANSLATE_ANCHOR).to_owned(),
             },
             _ => Self::Other,
         }
@@ -694,7 +700,7 @@ impl HitLayers {
                         minzoom: layer.minzoom,
                         maxzoom: layer.maxzoom,
                         visible: layer.visibility == orb_v8::Visibility::Visible,
-                        paint: HitPaint::of(&layer.kind),
+                        paint: HitPaint::of(layer),
                     },
                 )
             })

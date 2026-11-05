@@ -1,12 +1,20 @@
-//! The v8 spec entries of the properties Orbis types (`v8.json`).
+//! The v8 spec entries of the properties Orbis types (`v8.json`): one
+//! table of every layer property, which [`PropertyId`]s index. Each entry
+//! has its layer type, section, value type, default and whether it may be
+//! data-driven; parsing, validation, the diff and the renderer all read it.
 
 use orb_expr::json::{self, Json};
-use orb_expr::{PropertySpec, PropertyType, Type};
+use orb_expr::{PropertyExpression, PropertySpec, PropertyType, Type};
+
+use std::marker::PhantomData;
+
+use orb_expr::Color;
 
 use crate::property::{
-    Alignment, Anchor, Enum, HeightAnchor, HillshadeMethod, IconTextFit, IlluminationAnchor,
-    LayerBlend, LineCap, LineJoin, Overlap, Resampling, SymbolPlacement, SymbolZOrder, TextJustify,
-    TextRotationAlignment, TextTransform, TranslateAnchor, Visibility,
+    Alignment, Anchor, AnchorOffsets, Enum, HeightAnchor, HillshadeMethod, IconTextFit,
+    IlluminationAnchor, LayerBlend, LineCap, LineJoin, Overlap, Padding, Resampling,
+    SymbolPlacement, SymbolZOrder, TextJustify, TextRotationAlignment, TextTransform,
+    TranslateAnchor, Visibility, WritingMode,
 };
 
 /// One property's spec entry.
@@ -25,9 +33,22 @@ pub(crate) struct Prop {
     pub(crate) maximum: Option<f64>,
     /// Strings expand `{token}`s.
     pub(crate) tokens: bool,
+    /// The layer type of a layer property.
+    pub(crate) layer: LayerType,
+    /// A `paint` property, else `layout`.
+    pub(crate) paint: bool,
+    /// One value per light source (`hillshade-*`), given as an array.
+    pub(crate) list: bool,
+    /// A colour ramp over `heatmap-density`, `line-progress` or
+    /// `elevation`, kept as an expression.
+    pub(crate) ramp: bool,
 }
 
 impl Prop {
+    /// The fields a scene-level property (light, sky, terrain) leaves at
+    /// their defaults.
+    pub(crate) const SCENE: Self = prop("", PropertyType::Number, None);
+
     pub(crate) fn spec(&self) -> PropertySpec {
         PropertySpec {
             ty: self.ty.clone(),
@@ -56,6 +77,10 @@ const fn prop(name: &'static str, ty: PropertyType, default: Option<&'static str
         minimum: None,
         maximum: None,
         tokens: false,
+        layer: LayerType::Background,
+        paint: false,
+        list: false,
+        ramp: false,
     }
 }
 
@@ -74,6 +99,19 @@ impl Prop {
     }
     const fn tokens(mut self) -> Self {
         self.tokens = true;
+        self
+    }
+    const fn at(mut self, layer: LayerType, paint: bool) -> Self {
+        self.layer = layer;
+        self.paint = paint;
+        self
+    }
+    const fn list(mut self) -> Self {
+        self.list = true;
+        self
+    }
+    const fn ramp(mut self) -> Self {
+        self.ramp = true;
         self
     }
     const fn range(mut self, minimum: f64, maximum: Option<f64>) -> Self {
@@ -100,724 +138,443 @@ pub(crate) const VISIBILITY: Prop = prop(
 )
 .zoom_independent();
 
-pub(crate) const BACKGROUND_COLOR: Prop =
-    prop("background-color", COLOR, Some("\"#000000\"")).interpolated();
-pub(crate) const BACKGROUND_PATTERN: Prop = prop("background-pattern", IMAGE, None);
-pub(crate) const BACKGROUND_OPACITY: Prop = prop("background-opacity", NUMBER, Some("1"))
-    .interpolated()
-    .range(0.0, Some(1.0));
-
-pub(crate) const FILL_SORT_KEY: Prop = prop("fill-sort-key", NUMBER, None).data_driven();
-pub(crate) const FILL_ANTIALIAS: Prop = prop("fill-antialias", PropertyType::Boolean, Some("true"));
-pub(crate) const FILL_OPACITY: Prop = prop("fill-opacity", NUMBER, Some("1"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, Some(1.0));
-/// The layer composited once at this opacity (style-spec 26).
-pub(crate) const FILL_LAYER_OPACITY: Prop = prop("fill-layer-opacity", NUMBER, Some("1"))
-    .interpolated()
-    .range(0.0, Some(1.0));
-/// How the layer composites with what is beneath it (style-spec 26).
-pub(crate) const FILL_LAYER_BLEND: Prop = prop(
-    "fill-layer-blend",
-    enumeration::<LayerBlend>(),
-    Some("\"normal\""),
-)
-.zoom_independent();
-pub(crate) const FILL_COLOR: Prop = prop("fill-color", COLOR, Some("\"#000000\""))
-    .data_driven()
-    .interpolated();
-pub(crate) const FILL_OUTLINE_COLOR: Prop = prop("fill-outline-color", COLOR, None)
-    .data_driven()
-    .interpolated();
-pub(crate) const FILL_TRANSLATE: Prop =
-    prop("fill-translate", TRANSLATE, Some("[0, 0]")).interpolated();
-pub(crate) const FILL_TRANSLATE_ANCHOR: Prop = prop(
-    "fill-translate-anchor",
-    enumeration::<TranslateAnchor>(),
-    Some("\"map\""),
-);
-pub(crate) const FILL_PATTERN: Prop = prop("fill-pattern", IMAGE, None).data_driven();
-
-pub(crate) const LINE_CAP: Prop =
-    prop("line-cap", enumeration::<LineCap>(), Some("\"butt\"")).data_driven();
-pub(crate) const LINE_JOIN: Prop =
-    prop("line-join", enumeration::<LineJoin>(), Some("\"miter\"")).data_driven();
-pub(crate) const LINE_MITER_LIMIT: Prop = prop("line-miter-limit", NUMBER, Some("2"))
-    .data_driven()
-    .interpolated();
-pub(crate) const LINE_ROUND_LIMIT: Prop = prop("line-round-limit", NUMBER, Some("1.05"))
-    .data_driven()
-    .interpolated();
-pub(crate) const LINE_SORT_KEY: Prop = prop("line-sort-key", NUMBER, None).data_driven();
-
-pub(crate) const LINE_OPACITY: Prop = prop("line-opacity", NUMBER, Some("1"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, Some(1.0));
-/// The layer composited once at this opacity (style-spec 26).
-pub(crate) const LINE_LAYER_OPACITY: Prop = prop("line-layer-opacity", NUMBER, Some("1"))
-    .interpolated()
-    .range(0.0, Some(1.0));
-/// How the layer composites with what is beneath it (style-spec 26).
-pub(crate) const LINE_LAYER_BLEND: Prop = prop(
-    "line-layer-blend",
-    enumeration::<LayerBlend>(),
-    Some("\"normal\""),
-)
-.zoom_independent();
-pub(crate) const LINE_COLOR: Prop = prop("line-color", COLOR, Some("\"#000000\""))
-    .data_driven()
-    .interpolated();
-pub(crate) const LINE_TRANSLATE: Prop =
-    prop("line-translate", TRANSLATE, Some("[0, 0]")).interpolated();
-pub(crate) const LINE_TRANSLATE_ANCHOR: Prop = prop(
-    "line-translate-anchor",
-    enumeration::<TranslateAnchor>(),
-    Some("\"map\""),
-);
-pub(crate) const LINE_WIDTH: Prop = prop("line-width", NUMBER, Some("1"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const LINE_GAP_WIDTH: Prop = prop("line-gap-width", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const LINE_OFFSET: Prop = prop("line-offset", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated();
-pub(crate) const LINE_BLUR: Prop = prop("line-blur", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const LINE_DASHARRAY: Prop = prop(
-    "line-dasharray",
-    PropertyType::Array(Type::Number, None),
-    None,
-)
-.data_driven()
-.range(0.0, None);
-pub(crate) const LINE_PATTERN: Prop = prop("line-pattern", IMAGE, None).data_driven();
-/// `line-gradient` varies with `line-progress`, not zoom or the feature.
-pub(crate) const LINE_GRADIENT: Prop = prop("line-gradient", COLOR, None)
-    .zoom_independent()
-    .interpolated();
-
-pub(crate) const RASTER_OPACITY: Prop = prop("raster-opacity", NUMBER, Some("1"))
-    .interpolated()
-    .range(0.0, Some(1.0));
-pub(crate) const RASTER_HUE_ROTATE: Prop =
-    prop("raster-hue-rotate", NUMBER, Some("0")).interpolated();
-pub(crate) const RASTER_BRIGHTNESS_MIN: Prop = prop("raster-brightness-min", NUMBER, Some("0"))
-    .interpolated()
-    .range(0.0, Some(1.0));
-pub(crate) const RASTER_BRIGHTNESS_MAX: Prop = prop("raster-brightness-max", NUMBER, Some("1"))
-    .interpolated()
-    .range(0.0, Some(1.0));
-pub(crate) const RASTER_SATURATION: Prop = prop("raster-saturation", NUMBER, Some("0"))
-    .interpolated()
-    .range(-1.0, Some(1.0));
-pub(crate) const RASTER_CONTRAST: Prop = prop("raster-contrast", NUMBER, Some("0"))
-    .interpolated()
-    .range(-1.0, Some(1.0));
-/// `resampling`, which raster, hillshade and color-relief layers share.
-pub(crate) const RESAMPLING: Prop = prop(
-    "resampling",
-    enumeration::<Resampling>(),
-    Some("\"linear\""),
-);
-pub(crate) const RASTER_RESAMPLING: Prop = prop(
-    "raster-resampling",
-    enumeration::<Resampling>(),
-    Some("\"linear\""),
-);
-/// Parsed and validated; tiles appear without fading.
-pub(crate) const RASTER_FADE_DURATION: Prop = prop("raster-fade-duration", NUMBER, Some("300"))
-    .interpolated()
-    .range(0.0, None);
-
-pub(crate) const HILLSHADE_ILLUMINATION_DIRECTION: Prop =
-    prop("hillshade-illumination-direction", NUMBER, Some("335"))
-        .interpolated()
-        .range(0.0, Some(359.0));
-pub(crate) const HILLSHADE_ILLUMINATION_ALTITUDE: Prop =
-    prop("hillshade-illumination-altitude", NUMBER, Some("45"))
-        .interpolated()
-        .range(0.0, Some(90.0));
-pub(crate) const HILLSHADE_ILLUMINATION_ANCHOR: Prop = prop(
-    "hillshade-illumination-anchor",
-    enumeration::<IlluminationAnchor>(),
-    Some("\"viewport\""),
-);
-pub(crate) const HILLSHADE_EXAGGERATION: Prop = prop("hillshade-exaggeration", NUMBER, Some("0.5"))
-    .interpolated()
-    .range(0.0, Some(1.0));
-pub(crate) const HILLSHADE_SHADOW_COLOR: Prop =
-    prop("hillshade-shadow-color", COLOR, Some("\"#000000\"")).interpolated();
-pub(crate) const HILLSHADE_HIGHLIGHT_COLOR: Prop =
-    prop("hillshade-highlight-color", COLOR, Some("\"#FFFFFF\"")).interpolated();
-pub(crate) const HILLSHADE_ACCENT_COLOR: Prop =
-    prop("hillshade-accent-color", COLOR, Some("\"#000000\"")).interpolated();
-pub(crate) const HILLSHADE_METHOD: Prop = prop(
-    "hillshade-method",
-    enumeration::<HillshadeMethod>(),
-    Some("\"standard\""),
-);
-
-pub(crate) const COLOR_RELIEF_OPACITY: Prop = prop("color-relief-opacity", NUMBER, Some("1"))
-    .interpolated()
-    .range(0.0, Some(1.0));
-/// A colour ramp over `["elevation"]`, not zoom or the feature.
-pub(crate) const COLOR_RELIEF_COLOR: Prop = prop("color-relief-color", COLOR, None)
-    .zoom_independent()
-    .interpolated();
-
-pub(crate) const BACKGROUND_LAYOUT: &[&Prop] = &[&VISIBILITY];
-/// Raster, hillshade and color-relief layers lay out nothing else.
-pub(crate) const VISIBILITY_LAYOUT: &[&Prop] = &[&VISIBILITY];
-pub(crate) const BACKGROUND_PAINT: &[&Prop] =
-    &[&BACKGROUND_COLOR, &BACKGROUND_PATTERN, &BACKGROUND_OPACITY];
-pub(crate) const FILL_LAYOUT: &[&Prop] = &[&FILL_SORT_KEY, &VISIBILITY];
-pub(crate) const FILL_PAINT: &[&Prop] = &[
-    &FILL_ANTIALIAS,
-    &FILL_OPACITY,
-    &FILL_LAYER_OPACITY,
-    &FILL_LAYER_BLEND,
-    &FILL_COLOR,
-    &FILL_OUTLINE_COLOR,
-    &FILL_TRANSLATE,
-    &FILL_TRANSLATE_ANCHOR,
-    &FILL_PATTERN,
-];
-pub(crate) const LINE_LAYOUT: &[&Prop] = &[
-    &LINE_CAP,
-    &LINE_JOIN,
-    &LINE_MITER_LIMIT,
-    &LINE_ROUND_LIMIT,
-    &LINE_SORT_KEY,
-    &VISIBILITY,
-];
-pub(crate) const LINE_PAINT: &[&Prop] = &[
-    &LINE_OPACITY,
-    &LINE_LAYER_OPACITY,
-    &LINE_LAYER_BLEND,
-    &LINE_COLOR,
-    &LINE_TRANSLATE,
-    &LINE_TRANSLATE_ANCHOR,
-    &LINE_WIDTH,
-    &LINE_GAP_WIDTH,
-    &LINE_OFFSET,
-    &LINE_BLUR,
-    &LINE_DASHARRAY,
-    &LINE_PATTERN,
-    &LINE_GRADIENT,
-];
-pub(crate) const RASTER_PAINT: &[&Prop] = &[
-    &RASTER_OPACITY,
-    &RASTER_HUE_ROTATE,
-    &RASTER_BRIGHTNESS_MIN,
-    &RASTER_BRIGHTNESS_MAX,
-    &RASTER_SATURATION,
-    &RASTER_CONTRAST,
-    &RESAMPLING,
-    &RASTER_RESAMPLING,
-    &RASTER_FADE_DURATION,
-];
-pub(crate) const HILLSHADE_PAINT: &[&Prop] = &[
-    &HILLSHADE_ILLUMINATION_DIRECTION,
-    &HILLSHADE_ILLUMINATION_ALTITUDE,
-    &HILLSHADE_ILLUMINATION_ANCHOR,
-    &HILLSHADE_EXAGGERATION,
-    &HILLSHADE_SHADOW_COLOR,
-    &HILLSHADE_HIGHLIGHT_COLOR,
-    &HILLSHADE_ACCENT_COLOR,
-    &HILLSHADE_METHOD,
-    &RESAMPLING,
-];
-pub(crate) const COLOR_RELIEF_PAINT: &[&Prop] =
-    &[&COLOR_RELIEF_OPACITY, &COLOR_RELIEF_COLOR, &RESAMPLING];
-
-pub(crate) const CIRCLE_SORT_KEY: Prop = prop("circle-sort-key", NUMBER, None).data_driven();
-pub(crate) const CIRCLE_RADIUS: Prop = prop("circle-radius", NUMBER, Some(r#"5"#))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const CIRCLE_COLOR: Prop = prop("circle-color", COLOR, Some(r##""#000000""##))
-    .data_driven()
-    .interpolated();
-pub(crate) const CIRCLE_BLUR: Prop = prop("circle-blur", NUMBER, Some(r#"0"#))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const CIRCLE_OPACITY: Prop = prop("circle-opacity", NUMBER, Some(r#"1"#))
-    .data_driven()
-    .interpolated()
-    .range(0.0, Some(1.0));
-pub(crate) const CIRCLE_TRANSLATE: Prop =
-    prop("circle-translate", TRANSLATE, Some(r#"[0, 0]"#)).interpolated();
-pub(crate) const CIRCLE_TRANSLATE_ANCHOR: Prop = prop(
-    "circle-translate-anchor",
-    enumeration::<TranslateAnchor>(),
-    Some(r#""map""#),
-);
-pub(crate) const CIRCLE_PITCH_SCALE: Prop = prop(
-    "circle-pitch-scale",
-    enumeration::<TranslateAnchor>(),
-    Some(r#""map""#),
-);
-pub(crate) const CIRCLE_PITCH_ALIGNMENT: Prop = prop(
-    "circle-pitch-alignment",
-    enumeration::<TranslateAnchor>(),
-    Some(r#""viewport""#),
-);
-pub(crate) const CIRCLE_STROKE_WIDTH: Prop = prop("circle-stroke-width", NUMBER, Some(r#"0"#))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const CIRCLE_STROKE_COLOR: Prop =
-    prop("circle-stroke-color", COLOR, Some(r##""#000000""##))
-        .data_driven()
-        .interpolated();
-pub(crate) const CIRCLE_STROKE_OPACITY: Prop = prop("circle-stroke-opacity", NUMBER, Some(r#"1"#))
-    .data_driven()
-    .interpolated()
-    .range(0.0, Some(1.0));
-pub(crate) const HEATMAP_RADIUS: Prop = prop("heatmap-radius", NUMBER, Some(r#"30"#))
-    .data_driven()
-    .interpolated()
-    .range(1.0, None);
-pub(crate) const HEATMAP_WEIGHT: Prop = prop("heatmap-weight", NUMBER, Some(r#"1"#))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const HEATMAP_INTENSITY: Prop = prop("heatmap-intensity", NUMBER, Some(r#"1"#))
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const HEATMAP_OPACITY: Prop = prop("heatmap-opacity", NUMBER, Some(r#"1"#))
-    .interpolated()
-    .range(0.0, Some(1.0));
-pub(crate) const HEATMAP_COLOR: Prop = prop("heatmap-color", COLOR, Some(r#"["interpolate",["linear"],["heatmap-density"],0,"rgba(0, 0, 255, 0)",0.1,"royalblue",0.3,"cyan",0.5,"lime",0.7,"yellow",1,"red"]"#)).interpolated().zoom_independent();
-pub(crate) const CIRCLE_LAYOUT: &[&Prop] = &[&VISIBILITY, &CIRCLE_SORT_KEY];
-pub(crate) const CIRCLE_PAINT: &[&Prop] = &[
-    &CIRCLE_RADIUS,
-    &CIRCLE_COLOR,
-    &CIRCLE_BLUR,
-    &CIRCLE_OPACITY,
-    &CIRCLE_TRANSLATE,
-    &CIRCLE_TRANSLATE_ANCHOR,
-    &CIRCLE_PITCH_SCALE,
-    &CIRCLE_PITCH_ALIGNMENT,
-    &CIRCLE_STROKE_WIDTH,
-    &CIRCLE_STROKE_COLOR,
-    &CIRCLE_STROKE_OPACITY,
-];
-pub(crate) const HEATMAP_PAINT: &[&Prop] = &[
-    &HEATMAP_RADIUS,
-    &HEATMAP_WEIGHT,
-    &HEATMAP_INTENSITY,
-    &HEATMAP_COLOR,
-    &HEATMAP_OPACITY,
-];
-
-// The v8 flat extrusion properties. Opacity applies to the whole layer.
-pub(crate) const EXTRUSION_COLOR: Prop = prop("fill-extrusion-color", COLOR, Some("\"#000000\""))
-    .data_driven()
-    .interpolated();
-pub(crate) const EXTRUSION_OPACITY: Prop = prop("fill-extrusion-opacity", NUMBER, Some("1"))
-    .interpolated()
-    .range(0.0, Some(1.0));
-pub(crate) const EXTRUSION_HEIGHT: Prop = prop("fill-extrusion-height", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const EXTRUSION_BASE: Prop = prop("fill-extrusion-base", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const EXTRUSION_TRANSLATE: Prop =
-    prop("fill-extrusion-translate", TRANSLATE, Some("[0,0]")).interpolated();
-pub(crate) const EXTRUSION_TRANSLATE_ANCHOR: Prop = prop(
-    "fill-extrusion-translate-anchor",
-    enumeration::<TranslateAnchor>(),
-    Some("\"map\""),
-);
-pub(crate) const EXTRUSION_VERTICAL_GRADIENT: Prop = prop(
-    "fill-extrusion-vertical-gradient",
-    PropertyType::Boolean,
-    Some("true"),
-);
-pub(crate) const EXTRUSION_PATTERN: Prop =
-    prop("fill-extrusion-pattern", IMAGE, None).data_driven();
-pub(crate) const EXTRUSION_PAINT: &[&Prop] = &[
-    &EXTRUSION_COLOR,
-    &EXTRUSION_OPACITY,
-    &EXTRUSION_HEIGHT,
-    &EXTRUSION_BASE,
-    &EXTRUSION_TRANSLATE,
-    &EXTRUSION_TRANSLATE_ANCHOR,
-    &EXTRUSION_VERTICAL_GRADIENT,
-    &EXTRUSION_PATTERN,
-];
-
-pub(crate) const EXTRUSION_ROUNDED_CORNER: Prop =
-    prop("fill-extrusion-rounded-corner-distance", NUMBER, Some("0"))
-        .range(0.0, None)
-        .zoom_independent();
-pub(crate) const EXTRUSION_LAYOUT: &[&Prop] = &[&VISIBILITY, &EXTRUSION_ROUNDED_CORNER];
-// The scene document's `model` layer (plan §11.4; its names follow the
-// layer Mapbox GL JS ships, where it has them).
-const VEC3: PropertyType = PropertyType::Array(Type::Number, Some(3));
-pub(crate) const MODEL_ID: Prop = prop("model-id", PropertyType::String, None).data_driven();
-pub(crate) const MODEL_LAYOUT: &[&Prop] = &[&VISIBILITY, &MODEL_ID];
-pub(crate) const MODEL_SCALE: Prop = prop("model-scale", VEC3, Some("[1, 1, 1]"))
-    .data_driven()
-    .interpolated();
-pub(crate) const MODEL_ROTATION: Prop = prop("model-rotation", VEC3, Some("[0, 0, 0]"))
-    .data_driven()
-    .interpolated();
-pub(crate) const MODEL_TRANSLATION: Prop = prop("model-translation", VEC3, Some("[0, 0, 0]"))
-    .data_driven()
-    .interpolated();
-pub(crate) const MODEL_COLOR: Prop = prop("model-color", COLOR, Some("\"#ffffff\""))
-    .data_driven()
-    .interpolated();
-pub(crate) const MODEL_COLOR_MIX: Prop = prop("model-color-mix-intensity", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, Some(1.0));
-/// Applies to the whole layer, as `fill-extrusion-opacity` does.
-pub(crate) const MODEL_OPACITY: Prop = prop("model-opacity", NUMBER, Some("1"))
-    .interpolated()
-    .range(0.0, Some(1.0));
-pub(crate) const MODEL_EMISSIVE: Prop = prop("model-emissive-strength", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const MODEL_PAINT: &[&Prop] = &[
-    &MODEL_SCALE,
-    &MODEL_ROTATION,
-    &MODEL_TRANSLATION,
-    &MODEL_COLOR,
-    &MODEL_COLOR_MIX,
-    &MODEL_OPACITY,
-    &MODEL_EMISSIVE,
-];
-
 const OFFSET: PropertyType = PropertyType::Array(Type::Number, Some(2));
 const ANCHOR: PropertyType = enumeration::<Anchor>();
 const ANCHORS: PropertyType = PropertyType::Array(Type::String, None);
+// The scene document's `model` layer (plan §11.4; its names follow the
+// layer Mapbox GL JS ships, where it has them).
+const VEC3: PropertyType = PropertyType::Array(Type::Number, Some(3));
 
-pub(crate) const SYMBOL_PLACEMENT: Prop = prop(
-    "symbol-placement",
-    enumeration::<SymbolPlacement>(),
-    Some("\"point\""),
-);
-pub(crate) const SYMBOL_SPACING: Prop = prop("symbol-spacing", NUMBER, Some("250"))
-    .interpolated()
-    .range(1.0, None);
-pub(crate) const SYMBOL_AVOID_EDGES: Prop =
-    prop("symbol-avoid-edges", PropertyType::Boolean, Some("false"));
-pub(crate) const SYMBOL_SORT_KEY: Prop = prop("symbol-sort-key", NUMBER, None).data_driven();
-pub(crate) const SYMBOL_Z_ORDER: Prop = prop(
-    "symbol-z-order",
-    enumeration::<SymbolZOrder>(),
-    Some("\"auto\""),
-);
-pub(crate) const ICON_ALLOW_OVERLAP: Prop =
-    prop("icon-allow-overlap", PropertyType::Boolean, Some("false"));
-pub(crate) const ICON_OVERLAP: Prop = prop("icon-overlap", enumeration::<Overlap>(), None);
-pub(crate) const ICON_IGNORE_PLACEMENT: Prop = prop(
-    "icon-ignore-placement",
-    PropertyType::Boolean,
-    Some("false"),
-);
-pub(crate) const ICON_OPTIONAL: Prop = prop("icon-optional", PropertyType::Boolean, Some("false"));
-pub(crate) const ICON_ROTATION_ALIGNMENT: Prop = prop(
-    "icon-rotation-alignment",
-    enumeration::<Alignment>(),
-    Some("\"auto\""),
-)
-.data_driven();
-pub(crate) const ICON_SIZE: Prop = prop("icon-size", NUMBER, Some("1"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const ICON_TEXT_FIT: Prop = prop(
-    "icon-text-fit",
-    enumeration::<IconTextFit>(),
-    Some("\"none\""),
-);
-pub(crate) const ICON_TEXT_FIT_PADDING: Prop = prop(
-    "icon-text-fit-padding",
-    PropertyType::Array(Type::Number, Some(4)),
-    Some("[0, 0, 0, 0]"),
-)
-.interpolated();
-pub(crate) const ICON_IMAGE: Prop = prop("icon-image", IMAGE, None).data_driven().tokens();
-pub(crate) const ICON_ROTATE: Prop = prop("icon-rotate", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated();
-pub(crate) const ICON_PADDING: Prop = prop("icon-padding", PropertyType::Padding, Some("[2]"))
-    .data_driven()
-    .interpolated();
-pub(crate) const ICON_KEEP_UPRIGHT: Prop =
-    prop("icon-keep-upright", PropertyType::Boolean, Some("false"));
-pub(crate) const ICON_OFFSET: Prop = prop("icon-offset", OFFSET, Some("[0, 0]"))
-    .data_driven()
-    .interpolated();
-pub(crate) const ICON_ANCHOR: Prop = prop("icon-anchor", ANCHOR, Some("\"center\"")).data_driven();
-pub(crate) const ICON_PITCH_ALIGNMENT: Prop = prop(
-    "icon-pitch-alignment",
-    enumeration::<Alignment>(),
-    Some("\"auto\""),
-);
-pub(crate) const TEXT_PITCH_ALIGNMENT: Prop = prop(
-    "text-pitch-alignment",
-    enumeration::<Alignment>(),
-    Some("\"auto\""),
-);
-pub(crate) const TEXT_ROTATION_ALIGNMENT: Prop = prop(
-    "text-rotation-alignment",
-    enumeration::<TextRotationAlignment>(),
-    Some("\"auto\""),
-);
-pub(crate) const TEXT_FIELD: Prop = prop("text-field", PropertyType::Formatted, Some("\"\""))
-    .data_driven()
-    .tokens();
-pub(crate) const TEXT_FONT: Prop = prop(
-    "text-font",
-    PropertyType::Array(Type::String, None),
-    Some("[\"Open Sans Regular\", \"Arial Unicode MS Regular\"]"),
-)
-.data_driven();
-pub(crate) const TEXT_SIZE: Prop = prop("text-size", NUMBER, Some("16"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const TEXT_MAX_WIDTH: Prop = prop("text-max-width", NUMBER, Some("10"))
-    .data_driven()
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const TEXT_LINE_HEIGHT: Prop =
-    prop("text-line-height", NUMBER, Some("1.2")).interpolated();
-pub(crate) const TEXT_LETTER_SPACING: Prop = prop("text-letter-spacing", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated();
-pub(crate) const TEXT_JUSTIFY: Prop = prop(
-    "text-justify",
-    enumeration::<TextJustify>(),
-    Some("\"center\""),
-)
-.data_driven();
-pub(crate) const TEXT_RADIAL_OFFSET: Prop = prop("text-radial-offset", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated();
-pub(crate) const TEXT_VARIABLE_ANCHOR: Prop = prop("text-variable-anchor", ANCHORS, None);
-pub(crate) const TEXT_VARIABLE_ANCHOR_OFFSET: Prop = prop(
-    "text-variable-anchor-offset",
-    PropertyType::VariableAnchorOffsetCollection,
-    None,
-)
-.data_driven()
-.interpolated();
-pub(crate) const TEXT_ANCHOR: Prop = prop("text-anchor", ANCHOR, Some("\"center\"")).data_driven();
-pub(crate) const TEXT_MAX_ANGLE: Prop = prop("text-max-angle", NUMBER, Some("45")).interpolated();
-pub(crate) const TEXT_WRITING_MODE: Prop = prop(
-    "text-writing-mode",
-    PropertyType::Array(Type::String, None),
-    None,
-);
-pub(crate) const TEXT_ROTATE: Prop = prop("text-rotate", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated();
-pub(crate) const TEXT_PADDING: Prop = prop("text-padding", NUMBER, Some("2"))
-    .interpolated()
-    .range(0.0, None);
-pub(crate) const TEXT_KEEP_UPRIGHT: Prop =
-    prop("text-keep-upright", PropertyType::Boolean, Some("true"));
-pub(crate) const TEXT_TRANSFORM: Prop = prop(
-    "text-transform",
-    enumeration::<TextTransform>(),
-    Some("\"none\""),
-)
-.data_driven();
-pub(crate) const TEXT_OFFSET: Prop = prop("text-offset", OFFSET, Some("[0, 0]"))
-    .data_driven()
-    .interpolated();
-pub(crate) const TEXT_ALLOW_OVERLAP: Prop =
-    prop("text-allow-overlap", PropertyType::Boolean, Some("false"));
-pub(crate) const TEXT_OVERLAP: Prop = prop("text-overlap", enumeration::<Overlap>(), None);
-pub(crate) const TEXT_IGNORE_PLACEMENT: Prop = prop(
-    "text-ignore-placement",
-    PropertyType::Boolean,
-    Some("false"),
-);
-pub(crate) const TEXT_OPTIONAL: Prop = prop("text-optional", PropertyType::Boolean, Some("false"));
-pub(crate) const SYMBOL_HEIGHT_OFFSET: Prop = prop("symbol-height-offset", NUMBER, Some("0"))
-    .data_driven()
-    .interpolated();
-pub(crate) const SYMBOL_HEIGHT_ANCHOR: Prop = prop(
-    "symbol-height-anchor",
-    enumeration::<HeightAnchor>(),
-    Some("\"ground\""),
-);
+/// A v8 layer type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LayerType {
+    Background,
+    Fill,
+    FillExtrusion,
+    Line,
+    Circle,
+    Heatmap,
+    Raster,
+    Hillshade,
+    ColorRelief,
+    Symbol,
+    /// glTF models at point features: the scene document's `model`, which
+    /// v8 documents can't have.
+    Model,
+}
 
-pub(crate) const SYMBOL_LAYOUT: &[&Prop] = &[
-    &SYMBOL_PLACEMENT,
-    &SYMBOL_SPACING,
-    &SYMBOL_AVOID_EDGES,
-    &SYMBOL_SORT_KEY,
-    &SYMBOL_Z_ORDER,
-    &ICON_ALLOW_OVERLAP,
-    &ICON_OVERLAP,
-    &ICON_IGNORE_PLACEMENT,
-    &ICON_OPTIONAL,
-    &ICON_ROTATION_ALIGNMENT,
-    &ICON_SIZE,
-    &ICON_TEXT_FIT,
-    &ICON_TEXT_FIT_PADDING,
-    &ICON_IMAGE,
-    &ICON_ROTATE,
-    &ICON_PADDING,
-    &ICON_KEEP_UPRIGHT,
-    &ICON_OFFSET,
-    &ICON_ANCHOR,
-    &ICON_PITCH_ALIGNMENT,
-    &TEXT_PITCH_ALIGNMENT,
-    &TEXT_ROTATION_ALIGNMENT,
-    &TEXT_FIELD,
-    &TEXT_FONT,
-    &TEXT_SIZE,
-    &TEXT_MAX_WIDTH,
-    &TEXT_LINE_HEIGHT,
-    &TEXT_LETTER_SPACING,
-    &TEXT_JUSTIFY,
-    &TEXT_RADIAL_OFFSET,
-    &TEXT_VARIABLE_ANCHOR,
-    &TEXT_VARIABLE_ANCHOR_OFFSET,
-    &TEXT_ANCHOR,
-    &TEXT_MAX_ANGLE,
-    &TEXT_WRITING_MODE,
-    &TEXT_ROTATE,
-    &TEXT_PADDING,
-    &TEXT_KEEP_UPRIGHT,
-    &TEXT_TRANSFORM,
-    &TEXT_OFFSET,
-    &TEXT_ALLOW_OVERLAP,
-    &TEXT_OVERLAP,
-    &TEXT_IGNORE_PLACEMENT,
-    &TEXT_OPTIONAL,
-    &SYMBOL_HEIGHT_OFFSET,
-    &SYMBOL_HEIGHT_ANCHOR,
-    &VISIBILITY,
-];
+impl LayerType {
+    /// The v8 types, in the spec's order.
+    pub const V8: [Self; 10] = [
+        Self::Fill,
+        Self::Line,
+        Self::Symbol,
+        Self::Circle,
+        Self::Heatmap,
+        Self::FillExtrusion,
+        Self::Raster,
+        Self::Hillshade,
+        Self::ColorRelief,
+        Self::Background,
+    ];
 
-/// The paint of a symbol layer's icons (`icon-*`) or text (`text-*`).
-macro_rules! symbol_paint {
-    ($opacity:ident, $color:ident, $halo_color:ident, $halo_width:ident, $halo_blur:ident,
-     $translate:ident, $translate_anchor:ident, $prefix:literal) => {
-        pub(crate) const $opacity: Prop = prop(concat!($prefix, "-opacity"), NUMBER, Some("1"))
-            .data_driven()
-            .interpolated()
-            .range(0.0, Some(1.0));
-        pub(crate) const $color: Prop =
-            prop(concat!($prefix, "-color"), COLOR, Some("\"#000000\""))
-                .data_driven()
-                .interpolated();
-        pub(crate) const $halo_color: Prop = prop(
-            concat!($prefix, "-halo-color"),
-            COLOR,
-            Some("\"rgba(0, 0, 0, 0)\""),
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Fill => "fill",
+            Self::FillExtrusion => "fill-extrusion",
+            Self::Line => "line",
+            Self::Circle => "circle",
+            Self::Heatmap => "heatmap",
+            Self::Raster => "raster",
+            Self::Hillshade => "hillshade",
+            Self::ColorRelief => "color-relief",
+            Self::Symbol => "symbol",
+            Self::Model => "model",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::V8
+            .into_iter()
+            .chain([Self::Model])
+            .find(|t| t.name() == name)
+    }
+
+    /// The type's properties: a contiguous run of the table.
+    pub fn properties(self) -> impl Iterator<Item = PropertyId> {
+        PROPS
+            .iter()
+            .enumerate()
+            .filter(move |(_, p)| p.layer == self)
+            .map(|(i, _)| PropertyId(i as u16))
+    }
+
+    /// The type's first property, from which a layer indexes its own.
+    pub(crate) fn first(self) -> u16 {
+        PROPS
+            .iter()
+            .position(|p| p.layer == self)
+            .expect("every type has properties") as u16
+    }
+
+    /// Whether the layer draws a source's features (and has a source
+    /// layer and filter), rather than its images or none.
+    pub fn draws_features(self) -> bool {
+        !matches!(
+            self,
+            Self::Background | Self::Raster | Self::Hillshade | Self::ColorRelief
         )
-        .data_driven()
-        .interpolated();
-        pub(crate) const $halo_width: Prop =
-            prop(concat!($prefix, "-halo-width"), NUMBER, Some("0"))
-                .data_driven()
-                .interpolated()
-                .range(0.0, None);
-        pub(crate) const $halo_blur: Prop = prop(concat!($prefix, "-halo-blur"), NUMBER, Some("0"))
-            .data_driven()
-            .interpolated()
-            .range(0.0, None);
-        pub(crate) const $translate: Prop =
-            prop(concat!($prefix, "-translate"), TRANSLATE, Some("[0, 0]")).interpolated();
-        pub(crate) const $translate_anchor: Prop = prop(
-            concat!($prefix, "-translate-anchor"),
-            enumeration::<TranslateAnchor>(),
-            Some("\"map\""),
-        );
+    }
+}
+
+/// One layer property: an index into the property table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PropertyId(u16);
+
+impl PropertyId {
+    pub(crate) fn prop(self) -> &'static Prop {
+        &PROPS[self.0 as usize]
+    }
+
+    pub(crate) fn index(self) -> u16 {
+        self.0
+    }
+
+    /// The v8 name.
+    pub fn name(self) -> &'static str {
+        self.prop().name
+    }
+
+    pub fn layer_type(self) -> LayerType {
+        self.prop().layer
+    }
+
+    /// A `paint` property, else `layout`.
+    pub fn is_paint(self) -> bool {
+        self.prop().paint
+    }
+
+    /// Whether the value may vary per feature.
+    pub fn is_data_driven(self) -> bool {
+        self.prop().feature
+    }
+
+    pub fn spec(self) -> PropertySpec {
+        self.prop().spec()
+    }
+
+    /// The default, `Null` for properties without one.
+    pub fn default_value(self) -> &'static orb_expr::Value<'static> {
+        static DEFAULTS: std::sync::OnceLock<Vec<orb_expr::Value<'static>>> =
+            std::sync::OnceLock::new();
+        &DEFAULTS.get_or_init(|| {
+            PROPS
+                .iter()
+                .map(|p| match p.default_json().filter(|_| !p.ramp) {
+                    None => orb_expr::Value::Null,
+                    Some(json) => PropertyExpression::parse(&json, &p.spec())
+                        .unwrap_or_else(|e| panic!("{} default: {e:?}", p.name))
+                        .expression()
+                        .constant()
+                        .expect("defaults are literals")
+                        .clone(),
+                })
+                .collect()
+        })[self.0 as usize]
+    }
+
+    /// Whether a paint change eases from the prior value (decision 0031):
+    /// interpolated numbers, colours and pairs.
+    pub fn transitions(self) -> bool {
+        let p = self.prop();
+        p.paint && p.interpolated && !p.list && !p.ramp
+    }
+
+    /// `slot`'s value at `zoom` without a feature, as this property.
+    pub fn value(self, slot: &crate::Slot, zoom: f64) -> orb_expr::Value<'static> {
+        crate::PropertyRef::new(slot, self.default_value().clone()).evaluate(zoom)
+    }
+
+    /// A `layer_type` layer's `paint` or `layout` property `name`.
+    pub fn find(layer_type: LayerType, paint: bool, name: &str) -> Option<Self> {
+        PROPS
+            .iter()
+            .position(|p| p.layer == layer_type && p.paint == paint && p.name == name)
+            .map(|i| Self(i as u16))
+    }
+}
+
+/// A property and the type it is read as.
+#[derive(Debug)]
+pub struct Key<T>(PropertyId, PhantomData<fn() -> T>);
+
+impl<T> Clone for Key<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for Key<T> {}
+
+impl<T> Key<T> {
+    const fn new(index: u16) -> Self {
+        Self(PropertyId(index), PhantomData)
+    }
+
+    pub const fn id(self) -> PropertyId {
+        self.0
+    }
+}
+
+/// The type of a colour ramp, which stays an expression.
+#[derive(Debug)]
+pub enum Ramp {}
+
+/// The type of a per-light list of `T`.
+#[derive(Debug)]
+pub struct List<T>(PhantomData<T>);
+
+macro_rules! section {
+    (paint) => {
+        true
+    };
+    (layout) => {
+        false
     };
 }
 
-symbol_paint!(
-    ICON_OPACITY,
-    ICON_COLOR,
-    ICON_HALO_COLOR,
-    ICON_HALO_WIDTH,
-    ICON_HALO_BLUR,
-    ICON_TRANSLATE,
-    ICON_TRANSLATE_ANCHOR,
-    "icon"
-);
-symbol_paint!(
-    TEXT_OPACITY,
-    TEXT_COLOR,
-    TEXT_HALO_COLOR,
-    TEXT_HALO_WIDTH,
-    TEXT_HALO_BLUR,
-    TEXT_TRANSLATE,
-    TEXT_TRANSLATE_ANCHOR,
-    "text"
-);
+macro_rules! properties {
+    ($($layer:ident { $($(#[$doc:meta])* $section:ident $name:ident: $ty:ty = $prop:expr;)* })*) => {
+        #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
+        #[repr(u16)]
+        enum Index { $($($name,)*)* }
 
-pub(crate) const SYMBOL_PAINT: &[&Prop] = &[
-    &ICON_OPACITY,
-    &ICON_COLOR,
-    &ICON_HALO_COLOR,
-    &ICON_HALO_WIDTH,
-    &ICON_HALO_BLUR,
-    &ICON_TRANSLATE,
-    &ICON_TRANSLATE_ANCHOR,
-    &TEXT_OPACITY,
-    &TEXT_COLOR,
-    &TEXT_HALO_COLOR,
-    &TEXT_HALO_WIDTH,
-    &TEXT_HALO_BLUR,
-    &TEXT_TRANSLATE,
-    &TEXT_TRANSLATE_ANCHOR,
-];
+        /// Every layer property, by [`PropertyId`].
+        pub(crate) static PROPS: &[Prop] = &[
+            $($($prop.at(LayerType::$layer, section!($section)),)*)*
+        ];
 
-/// The spec of a typed layer's paint (`paint: true`) or layout property, if
-/// Orbis models it.
-pub(crate) fn find(layer_type: &str, paint: bool, name: &str) -> Option<PropertySpec> {
-    find_prop(layer_type, paint, name).map(Prop::spec)
-}
-
-/// [`find`]'s property itself.
-pub(crate) fn find_prop(layer_type: &str, paint: bool, name: &str) -> Option<&'static Prop> {
-    let props: &[&Prop] = match (layer_type, paint) {
-        ("background", false) => BACKGROUND_LAYOUT,
-        ("background", true) => BACKGROUND_PAINT,
-        ("fill", false) => FILL_LAYOUT,
-        ("fill", true) => FILL_PAINT,
-        ("line", false) => LINE_LAYOUT,
-        ("line", true) => LINE_PAINT,
-        ("circle", false) => CIRCLE_LAYOUT,
-        ("circle", true) => CIRCLE_PAINT,
-        ("heatmap", true) => HEATMAP_PAINT,
-        ("raster", true) => RASTER_PAINT,
-        ("hillshade", true) => HILLSHADE_PAINT,
-        ("color-relief", true) => COLOR_RELIEF_PAINT,
-        ("fill-extrusion", true) => EXTRUSION_PAINT,
-        ("fill-extrusion", false) => EXTRUSION_LAYOUT,
-        ("symbol", false) => SYMBOL_LAYOUT,
-        ("symbol", true) => SYMBOL_PAINT,
-        ("model", false) => MODEL_LAYOUT,
-        ("model", true) => MODEL_PAINT,
-        (_, false) => VISIBILITY_LAYOUT,
-        _ => &[],
+        $($($(#[$doc])* pub const $name: Key<$ty> = Key::new(Index::$name as u16);)*)*
     };
-    props.iter().find(|p| p.name == name).copied()
 }
+
+properties! {
+    Background {
+        paint BACKGROUND_COLOR: Color = prop("background-color", COLOR, Some("\"#000000\"")).interpolated();
+        paint BACKGROUND_PATTERN: Option<String> = prop("background-pattern", IMAGE, None);
+        paint BACKGROUND_OPACITY: f32 = prop("background-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
+    }
+    Fill {
+        layout FILL_SORT_KEY: Option<f32> = prop("fill-sort-key", NUMBER, None).data_driven();
+        paint FILL_ANTIALIAS: bool = prop("fill-antialias", PropertyType::Boolean, Some("true"));
+        paint FILL_OPACITY: f32 = prop("fill-opacity", NUMBER, Some("1")).data_driven().interpolated().range(0.0, Some(1.0));
+        /// The layer composited once at this opacity (style-spec 26).
+        paint FILL_LAYER_OPACITY: f32 = prop("fill-layer-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
+        /// How the layer composites with what is beneath it (style-spec 26).
+        paint FILL_LAYER_BLEND: LayerBlend = prop("fill-layer-blend", enumeration::<LayerBlend>(), Some("\"normal\"")).zoom_independent();
+        paint FILL_COLOR: Color = prop("fill-color", COLOR, Some("\"#000000\"")).data_driven().interpolated();
+        paint FILL_OUTLINE_COLOR: Option<Color> = prop("fill-outline-color", COLOR, None).data_driven().interpolated();
+        paint FILL_TRANSLATE: [f32; 2] = prop("fill-translate", TRANSLATE, Some("[0, 0]")).interpolated();
+        paint FILL_TRANSLATE_ANCHOR: TranslateAnchor = prop("fill-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
+        paint FILL_PATTERN: Option<String> = prop("fill-pattern", IMAGE, None).data_driven();
+    }
+    FillExtrusion {
+        layout EXTRUSION_ROUNDED_CORNER: f32 = prop("fill-extrusion-rounded-corner-distance", NUMBER, Some("0")).range(0.0, None).zoom_independent();
+        paint EXTRUSION_COLOR: Color = prop("fill-extrusion-color", COLOR, Some("\"#000000\"")).data_driven().interpolated();
+        paint EXTRUSION_OPACITY: f32 = prop("fill-extrusion-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
+        paint EXTRUSION_HEIGHT: f32 = prop("fill-extrusion-height", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
+        paint EXTRUSION_BASE: f32 = prop("fill-extrusion-base", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
+        paint EXTRUSION_TRANSLATE: [f32; 2] = prop("fill-extrusion-translate", TRANSLATE, Some("[0,0]")).interpolated();
+        paint EXTRUSION_TRANSLATE_ANCHOR: TranslateAnchor = prop("fill-extrusion-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
+        paint EXTRUSION_VERTICAL_GRADIENT: bool = prop("fill-extrusion-vertical-gradient", PropertyType::Boolean, Some("true"));
+        paint EXTRUSION_PATTERN: Option<String> = prop("fill-extrusion-pattern", IMAGE, None).data_driven();
+    }
+    Line {
+        layout LINE_CAP: LineCap = prop("line-cap", enumeration::<LineCap>(), Some("\"butt\"")).data_driven();
+        layout LINE_JOIN: LineJoin = prop("line-join", enumeration::<LineJoin>(), Some("\"miter\"")).data_driven();
+        layout LINE_MITER_LIMIT: f32 = prop("line-miter-limit", NUMBER, Some("2")).data_driven().interpolated();
+        layout LINE_ROUND_LIMIT: f32 = prop("line-round-limit", NUMBER, Some("1.05")).data_driven().interpolated();
+        layout LINE_SORT_KEY: Option<f32> = prop("line-sort-key", NUMBER, None).data_driven();
+        paint LINE_OPACITY: f32 = prop("line-opacity", NUMBER, Some("1")).data_driven().interpolated().range(0.0, Some(1.0));
+        /// The layer composited once at this opacity (style-spec 26).
+        paint LINE_LAYER_OPACITY: f32 = prop("line-layer-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
+        /// How the layer composites with what is beneath it (style-spec 26).
+        paint LINE_LAYER_BLEND: LayerBlend = prop("line-layer-blend", enumeration::<LayerBlend>(), Some("\"normal\"")).zoom_independent();
+        paint LINE_COLOR: Color = prop("line-color", COLOR, Some("\"#000000\"")).data_driven().interpolated();
+        paint LINE_TRANSLATE: [f32; 2] = prop("line-translate", TRANSLATE, Some("[0, 0]")).interpolated();
+        paint LINE_TRANSLATE_ANCHOR: TranslateAnchor = prop("line-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
+        paint LINE_WIDTH: f32 = prop("line-width", NUMBER, Some("1")).data_driven().interpolated().range(0.0, None);
+        paint LINE_GAP_WIDTH: f32 = prop("line-gap-width", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
+        paint LINE_OFFSET: f32 = prop("line-offset", NUMBER, Some("0")).data_driven().interpolated();
+        paint LINE_BLUR: f32 = prop("line-blur", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
+        paint LINE_DASHARRAY: Option<Vec<f32>> = prop("line-dasharray", PropertyType::Array(Type::Number, None), None).data_driven().range(0.0, None);
+        paint LINE_PATTERN: Option<String> = prop("line-pattern", IMAGE, None).data_driven();
+        /// `line-gradient` varies with `line-progress`, not zoom or the feature.
+        paint LINE_GRADIENT: Ramp = prop("line-gradient", COLOR, None).zoom_independent().interpolated().ramp();
+    }
+    Circle {
+        layout CIRCLE_SORT_KEY: Option<f32> = prop("circle-sort-key", NUMBER, None).data_driven();
+        paint CIRCLE_RADIUS: f32 = prop("circle-radius", NUMBER, Some(r#"5"#)).data_driven().interpolated().range(0.0, None);
+        paint CIRCLE_COLOR: Color = prop("circle-color", COLOR, Some(r##""#000000""##)).data_driven().interpolated();
+        paint CIRCLE_BLUR: f32 = prop("circle-blur", NUMBER, Some(r#"0"#)).data_driven().interpolated().range(0.0, None);
+        paint CIRCLE_OPACITY: f32 = prop("circle-opacity", NUMBER, Some(r#"1"#)).data_driven().interpolated().range(0.0, Some(1.0));
+        paint CIRCLE_TRANSLATE: [f32; 2] = prop("circle-translate", TRANSLATE, Some(r#"[0, 0]"#)).interpolated();
+        paint CIRCLE_TRANSLATE_ANCHOR: TranslateAnchor = prop("circle-translate-anchor", enumeration::<TranslateAnchor>(), Some(r#""map""#));
+        paint CIRCLE_PITCH_SCALE: TranslateAnchor = prop("circle-pitch-scale", enumeration::<TranslateAnchor>(), Some(r#""map""#));
+        paint CIRCLE_PITCH_ALIGNMENT: TranslateAnchor = prop("circle-pitch-alignment", enumeration::<TranslateAnchor>(), Some(r#""viewport""#));
+        paint CIRCLE_STROKE_WIDTH: f32 = prop("circle-stroke-width", NUMBER, Some(r#"0"#)).data_driven().interpolated().range(0.0, None);
+        paint CIRCLE_STROKE_COLOR: Color = prop("circle-stroke-color", COLOR, Some(r##""#000000""##)).data_driven().interpolated();
+        paint CIRCLE_STROKE_OPACITY: f32 = prop("circle-stroke-opacity", NUMBER, Some(r#"1"#)).data_driven().interpolated().range(0.0, Some(1.0));
+    }
+    Heatmap {
+        paint HEATMAP_RADIUS: f32 = prop("heatmap-radius", NUMBER, Some(r#"30"#)).data_driven().interpolated().range(1.0, None);
+        paint HEATMAP_WEIGHT: f32 = prop("heatmap-weight", NUMBER, Some(r#"1"#)).data_driven().interpolated().range(0.0, None);
+        paint HEATMAP_INTENSITY: f32 = prop("heatmap-intensity", NUMBER, Some(r#"1"#)).interpolated().range(0.0, None);
+        paint HEATMAP_COLOR: Ramp = prop("heatmap-color", COLOR, Some(r#"["interpolate",["linear"],["heatmap-density"],0,"rgba(0, 0, 255, 0)",0.1,"royalblue",0.3,"cyan",0.5,"lime",0.7,"yellow",1,"red"]"#)).interpolated().zoom_independent().ramp();
+        paint HEATMAP_OPACITY: f32 = prop("heatmap-opacity", NUMBER, Some(r#"1"#)).interpolated().range(0.0, Some(1.0));
+    }
+    Raster {
+        paint RASTER_OPACITY: f32 = prop("raster-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
+        paint RASTER_HUE_ROTATE: f32 = prop("raster-hue-rotate", NUMBER, Some("0")).interpolated();
+        paint RASTER_BRIGHTNESS_MIN: f32 = prop("raster-brightness-min", NUMBER, Some("0")).interpolated().range(0.0, Some(1.0));
+        paint RASTER_BRIGHTNESS_MAX: f32 = prop("raster-brightness-max", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
+        paint RASTER_SATURATION: f32 = prop("raster-saturation", NUMBER, Some("0")).interpolated().range(-1.0, Some(1.0));
+        paint RASTER_CONTRAST: f32 = prop("raster-contrast", NUMBER, Some("0")).interpolated().range(-1.0, Some(1.0));
+        /// `resampling`, which raster, hillshade and color-relief layers share.
+        paint RASTER_RESAMPLE: Resampling = prop("resampling", enumeration::<Resampling>(), Some("\"linear\""));
+        paint RASTER_RESAMPLING: Resampling = prop("raster-resampling", enumeration::<Resampling>(), Some("\"linear\""));
+        /// Parsed and validated; tiles appear without fading.
+        paint RASTER_FADE_DURATION: f32 = prop("raster-fade-duration", NUMBER, Some("300")).interpolated().range(0.0, None);
+    }
+    Hillshade {
+        paint HILLSHADE_ILLUMINATION_DIRECTION: List<f32> = prop("hillshade-illumination-direction", NUMBER, Some("335")).interpolated().range(0.0, Some(359.0)).list();
+        paint HILLSHADE_ILLUMINATION_ALTITUDE: List<f32> = prop("hillshade-illumination-altitude", NUMBER, Some("45")).interpolated().range(0.0, Some(90.0)).list();
+        paint HILLSHADE_ILLUMINATION_ANCHOR: IlluminationAnchor = prop("hillshade-illumination-anchor", enumeration::<IlluminationAnchor>(), Some("\"viewport\""));
+        paint HILLSHADE_EXAGGERATION: f32 = prop("hillshade-exaggeration", NUMBER, Some("0.5")).interpolated().range(0.0, Some(1.0));
+        paint HILLSHADE_SHADOW_COLOR: List<Color> = prop("hillshade-shadow-color", COLOR, Some("\"#000000\"")).interpolated().list();
+        paint HILLSHADE_HIGHLIGHT_COLOR: List<Color> = prop("hillshade-highlight-color", COLOR, Some("\"#FFFFFF\"")).interpolated().list();
+        paint HILLSHADE_ACCENT_COLOR: Color = prop("hillshade-accent-color", COLOR, Some("\"#000000\"")).interpolated();
+        paint HILLSHADE_METHOD: HillshadeMethod = prop("hillshade-method", enumeration::<HillshadeMethod>(), Some("\"standard\""));
+        /// `resampling`, which raster, hillshade and color-relief layers share.
+        paint HILLSHADE_RESAMPLE: Resampling = prop("resampling", enumeration::<Resampling>(), Some("\"linear\""));
+    }
+    ColorRelief {
+        paint COLOR_RELIEF_OPACITY: f32 = prop("color-relief-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
+        /// A colour ramp over `["elevation"]`, not zoom or the feature.
+        paint COLOR_RELIEF_COLOR: Ramp = prop("color-relief-color", COLOR, None).zoom_independent().interpolated().ramp();
+        /// `resampling`, which raster, hillshade and color-relief layers share.
+        paint COLOR_RELIEF_RESAMPLE: Resampling = prop("resampling", enumeration::<Resampling>(), Some("\"linear\""));
+    }
+    Symbol {
+        layout SYMBOL_PLACEMENT: SymbolPlacement = prop("symbol-placement", enumeration::<SymbolPlacement>(), Some("\"point\""));
+        layout SYMBOL_SPACING: f64 = prop("symbol-spacing", NUMBER, Some("250")).interpolated().range(1.0, None);
+        layout SYMBOL_AVOID_EDGES: bool = prop("symbol-avoid-edges", PropertyType::Boolean, Some("false"));
+        layout SYMBOL_SORT_KEY: Option<f64> = prop("symbol-sort-key", NUMBER, None).data_driven();
+        layout SYMBOL_Z_ORDER: SymbolZOrder = prop("symbol-z-order", enumeration::<SymbolZOrder>(), Some("\"auto\""));
+        layout ICON_ALLOW_OVERLAP: bool = prop("icon-allow-overlap", PropertyType::Boolean, Some("false"));
+        layout ICON_OVERLAP: Option<Overlap> = prop("icon-overlap", enumeration::<Overlap>(), None);
+        layout ICON_IGNORE_PLACEMENT: bool = prop("icon-ignore-placement", PropertyType::Boolean, Some("false"));
+        layout ICON_OPTIONAL: bool = prop("icon-optional", PropertyType::Boolean, Some("false"));
+        layout ICON_ROTATION_ALIGNMENT: Alignment = prop("icon-rotation-alignment", enumeration::<Alignment>(), Some("\"auto\"")).data_driven();
+        layout ICON_SIZE: f64 = prop("icon-size", NUMBER, Some("1")).data_driven().interpolated().range(0.0, None);
+        layout ICON_TEXT_FIT: IconTextFit = prop("icon-text-fit", enumeration::<IconTextFit>(), Some("\"none\""));
+        layout ICON_TEXT_FIT_PADDING: [f64; 4] = prop("icon-text-fit-padding", PropertyType::Array(Type::Number, Some(4)), Some("[0, 0, 0, 0]")).interpolated();
+        layout ICON_IMAGE: Option<String> = prop("icon-image", IMAGE, None).data_driven().tokens();
+        layout ICON_ROTATE: f64 = prop("icon-rotate", NUMBER, Some("0")).data_driven().interpolated();
+        layout ICON_PADDING: Padding = prop("icon-padding", PropertyType::Padding, Some("[2]")).data_driven().interpolated();
+        layout ICON_KEEP_UPRIGHT: bool = prop("icon-keep-upright", PropertyType::Boolean, Some("false"));
+        layout ICON_OFFSET: [f64; 2] = prop("icon-offset", OFFSET, Some("[0, 0]")).data_driven().interpolated();
+        layout ICON_ANCHOR: Anchor = prop("icon-anchor", ANCHOR, Some("\"center\"")).data_driven();
+        layout ICON_PITCH_ALIGNMENT: Alignment = prop("icon-pitch-alignment", enumeration::<Alignment>(), Some("\"auto\""));
+        layout TEXT_PITCH_ALIGNMENT: Alignment = prop("text-pitch-alignment", enumeration::<Alignment>(), Some("\"auto\""));
+        layout TEXT_ROTATION_ALIGNMENT: TextRotationAlignment = prop("text-rotation-alignment", enumeration::<TextRotationAlignment>(), Some("\"auto\""));
+        layout TEXT_FIELD: Vec<orb_expr::FormattedSection> = prop("text-field", PropertyType::Formatted, Some("\"\"")).data_driven().tokens();
+        layout TEXT_FONT: Vec<String> = prop("text-font", PropertyType::Array(Type::String, None), Some("[\"Open Sans Regular\", \"Arial Unicode MS Regular\"]")).data_driven();
+        layout TEXT_SIZE: f64 = prop("text-size", NUMBER, Some("16")).data_driven().interpolated().range(0.0, None);
+        layout TEXT_MAX_WIDTH: f64 = prop("text-max-width", NUMBER, Some("10")).data_driven().interpolated().range(0.0, None);
+        layout TEXT_LINE_HEIGHT: f64 = prop("text-line-height", NUMBER, Some("1.2")).interpolated();
+        layout TEXT_LETTER_SPACING: f64 = prop("text-letter-spacing", NUMBER, Some("0")).data_driven().interpolated();
+        layout TEXT_JUSTIFY: TextJustify = prop("text-justify", enumeration::<TextJustify>(), Some("\"center\"")).data_driven();
+        layout TEXT_RADIAL_OFFSET: f64 = prop("text-radial-offset", NUMBER, Some("0")).data_driven().interpolated();
+        layout TEXT_VARIABLE_ANCHOR: Option<Vec<Anchor>> = prop("text-variable-anchor", ANCHORS, None);
+        layout TEXT_VARIABLE_ANCHOR_OFFSET: Option<AnchorOffsets> = prop("text-variable-anchor-offset", PropertyType::VariableAnchorOffsetCollection, None).data_driven().interpolated();
+        layout TEXT_ANCHOR: Anchor = prop("text-anchor", ANCHOR, Some("\"center\"")).data_driven();
+        layout TEXT_MAX_ANGLE: f64 = prop("text-max-angle", NUMBER, Some("45")).interpolated();
+        layout TEXT_WRITING_MODE: Option<Vec<WritingMode>> = prop("text-writing-mode", PropertyType::Array(Type::String, None), None);
+        layout TEXT_ROTATE: f64 = prop("text-rotate", NUMBER, Some("0")).data_driven().interpolated();
+        layout TEXT_PADDING: f64 = prop("text-padding", NUMBER, Some("2")).interpolated().range(0.0, None);
+        layout TEXT_KEEP_UPRIGHT: bool = prop("text-keep-upright", PropertyType::Boolean, Some("true"));
+        layout TEXT_TRANSFORM: TextTransform = prop("text-transform", enumeration::<TextTransform>(), Some("\"none\"")).data_driven();
+        layout TEXT_OFFSET: [f64; 2] = prop("text-offset", OFFSET, Some("[0, 0]")).data_driven().interpolated();
+        layout TEXT_ALLOW_OVERLAP: bool = prop("text-allow-overlap", PropertyType::Boolean, Some("false"));
+        layout TEXT_OVERLAP: Option<Overlap> = prop("text-overlap", enumeration::<Overlap>(), None);
+        layout TEXT_IGNORE_PLACEMENT: bool = prop("text-ignore-placement", PropertyType::Boolean, Some("false"));
+        layout TEXT_OPTIONAL: bool = prop("text-optional", PropertyType::Boolean, Some("false"));
+        layout SYMBOL_HEIGHT_OFFSET: f64 = prop("symbol-height-offset", NUMBER, Some("0")).data_driven().interpolated();
+        layout SYMBOL_HEIGHT_ANCHOR: HeightAnchor = prop("symbol-height-anchor", enumeration::<HeightAnchor>(), Some("\"ground\""));
+        paint ICON_OPACITY: f32 = prop("icon-opacity", NUMBER, Some("1")).data_driven().interpolated().range(0.0, Some(1.0));
+        paint ICON_COLOR: Color = prop("icon-color", COLOR, Some("\"#000000\"")).data_driven().interpolated();
+        paint ICON_HALO_COLOR: Color = prop("icon-halo-color", COLOR, Some("\"rgba(0, 0, 0, 0)\"")).data_driven().interpolated();
+        paint ICON_HALO_WIDTH: f32 = prop("icon-halo-width", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
+        paint ICON_HALO_BLUR: f32 = prop("icon-halo-blur", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
+        paint ICON_TRANSLATE: [f32; 2] = prop("icon-translate", TRANSLATE, Some("[0, 0]")).interpolated();
+        paint ICON_TRANSLATE_ANCHOR: TranslateAnchor = prop("icon-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
+        paint TEXT_OPACITY: f32 = prop("text-opacity", NUMBER, Some("1")).data_driven().interpolated().range(0.0, Some(1.0));
+        paint TEXT_COLOR: Color = prop("text-color", COLOR, Some("\"#000000\"")).data_driven().interpolated();
+        paint TEXT_HALO_COLOR: Color = prop("text-halo-color", COLOR, Some("\"rgba(0, 0, 0, 0)\"")).data_driven().interpolated();
+        paint TEXT_HALO_WIDTH: f32 = prop("text-halo-width", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
+        paint TEXT_HALO_BLUR: f32 = prop("text-halo-blur", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
+        paint TEXT_TRANSLATE: [f32; 2] = prop("text-translate", TRANSLATE, Some("[0, 0]")).interpolated();
+        paint TEXT_TRANSLATE_ANCHOR: TranslateAnchor = prop("text-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
+    }
+    Model {
+        /// A key of the style's `models`.
+        layout MODEL_ID: Option<String> = prop("model-id", PropertyType::String, None).data_driven();
+        /// Along the model's own axes.
+        paint MODEL_SCALE: [f32; 3] = prop("model-scale", VEC3, Some("[1, 1, 1]")).data_driven().interpolated();
+        /// Degrees about east, north and up, applied in that order; up turns
+        /// clockwise seen from above, as a heading.
+        paint MODEL_ROTATION: [f32; 3] = prop("model-rotation", VEC3, Some("[0, 0, 0]")).data_driven().interpolated();
+        /// Metres east, north and up.
+        paint MODEL_TRANSLATION: [f32; 3] = prop("model-translation", VEC3, Some("[0, 0, 0]")).data_driven().interpolated();
+        paint MODEL_COLOR: Color = prop("model-color", COLOR, Some("\"#ffffff\"")).data_driven().interpolated();
+        /// How much `model-color` replaces the materials' base colours.
+        paint MODEL_COLOR_MIX: f32 = prop("model-color-mix-intensity", NUMBER, Some("0")).data_driven().interpolated().range(0.0, Some(1.0));
+        /// Applies to the whole layer, as `fill-extrusion-opacity` does.
+        paint MODEL_OPACITY: f32 = prop("model-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
+        paint MODEL_EMISSIVE: f32 = prop("model-emissive-strength", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
+    }
+}
+
+/// The paint a symbol layer's icons and its text each have.
+#[derive(Clone, Copy, Debug)]
+pub struct SymbolPart {
+    pub opacity: Key<f32>,
+    pub color: Key<Color>,
+    pub halo_color: Key<Color>,
+    pub halo_width: Key<f32>,
+    pub halo_blur: Key<f32>,
+    pub translate: Key<[f32; 2]>,
+    pub translate_anchor: Key<TranslateAnchor>,
+}
+
+pub const ICON_PART: SymbolPart = SymbolPart {
+    opacity: ICON_OPACITY,
+    color: ICON_COLOR,
+    halo_color: ICON_HALO_COLOR,
+    halo_width: ICON_HALO_WIDTH,
+    halo_blur: ICON_HALO_BLUR,
+    translate: ICON_TRANSLATE,
+    translate_anchor: ICON_TRANSLATE_ANCHOR,
+};
+
+pub const TEXT_PART: SymbolPart = SymbolPart {
+    opacity: TEXT_OPACITY,
+    color: TEXT_COLOR,
+    halo_color: TEXT_HALO_COLOR,
+    halo_width: TEXT_HALO_WIDTH,
+    halo_blur: TEXT_HALO_BLUR,
+    translate: TEXT_TRANSLATE,
+    translate_anchor: TEXT_TRANSLATE_ANCHOR,
+};

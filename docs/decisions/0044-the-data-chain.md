@@ -38,3 +38,32 @@ job, and its pixels equal the hovered branch drawn alone.
 Removed: about 3k lines, and one pipeline class. A culling margin for such
 paint now uses the stateless rows' maximum, as state lookups use the
 stateless constant.
+
+## Table-driven layer properties
+
+`orb-v8`'s layers were one hand-typed struct per layer type, with the
+property list repeated in the parser, the spec lists, the by-name paint
+table (decision 0031), the bytecode list, and the renderer's source, filter,
+source-layer and pattern matches. Now one table (`orb-v8/src/spec.rs`, the
+`properties!` macro) lists every layer property once: its layer type,
+section, value type, default, range and flags (data-driven, per-light list,
+colour ramp). A `PropertyId` indexes it, and a typed `Key<T>` names each
+entry (`FILL_COLOR: Key<Color>`).
+
+- A `Layer` is `{ ty, source, source_layer, filter, minzoom, maxzoom,
+  visibility, props }`: one untyped `Slot` (a constant `Value`, an
+  expression, or a per-light list) per property of its type, in table
+  order. `layer.get(KEY)` reads one as its type, with the table's default.
+  `layer.list` and `layer.ramp` read the per-light and ramp properties.
+- Parsing, unknown-key validation, `property_spec` and the diff read the
+  table. A layer type Orbis doesn't model can't occur: every v8 type is in
+  it.
+- Transitions hold the prior `Slot` and ease `Value`s (numbers, colours,
+  pairs) for properties the table marks as transitioning. They skip a
+  replaced style's layer of another type under the same id.
+- The fixed light, sky and terrain fields keep an owned typed
+  `Property<T>` over the same `Slot`.
+
+A constant that doesn't fit its type, NaN included, now falls back to the
+default, as an evaluated value does: `text-size/nan` passes. Reviewed with
+two Sol rounds.
