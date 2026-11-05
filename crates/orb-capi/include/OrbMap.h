@@ -71,8 +71,8 @@ OrbMap_edit_result OrbMap_edit(OrbMap* self, const OrbTransaction* transaction);
 
 void OrbMap_set_plays_video(OrbMap* self, bool plays);
 
-typedef struct OrbMap_video_frame_result {union { OrbError err;}; bool is_ok;} OrbMap_video_frame_result;
-OrbMap_video_frame_result OrbMap_video_frame(OrbMap* self, DiplomatStringView id, uint32_t width, uint32_t height, DiplomatU8View pixels);
+typedef struct OrbMap_source_frame_result {union { OrbError err;}; bool is_ok;} OrbMap_source_frame_result;
+OrbMap_source_frame_result OrbMap_source_frame(OrbMap* self, DiplomatStringView id, uint32_t width, uint32_t height, DiplomatU8View pixels);
 
 typedef struct OrbMap_video_failed_result {union { OrbError err;}; bool is_ok;} OrbMap_video_failed_result;
 OrbMap_video_failed_result OrbMap_video_failed(OrbMap* self, DiplomatStringView id, DiplomatStringView message);

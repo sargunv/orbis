@@ -115,7 +115,7 @@ fn play_first_frames(map: &mut Map, gpu: &mut Owner, assets: &AssetFetch) -> Res
             Ok(video) => {
                 let (width, height) = (video.video_width(), video.video_height());
                 let pixels = orb_runtime::ImagePixels::Host(gpu.register_video(video));
-                map.video_frame(
+                map.source_frame(
                     &source,
                     orb_runtime::TileImage {
                         width,

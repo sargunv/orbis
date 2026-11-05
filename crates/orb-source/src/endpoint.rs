@@ -199,7 +199,9 @@ impl TileEndpoint {
             // A video's frames come from its host, not a fetch.
             templates: match &source.content {
                 orb_style::ImageContent::Image(url) => vec![url.clone()],
-                orb_style::ImageContent::Video(_) => Vec::new(),
+                orb_style::ImageContent::Video(_) | orb_style::ImageContent::Canvas(_) => {
+                    Vec::new()
+                }
             },
             data_url: None,
             scheme: Scheme::Xyz,

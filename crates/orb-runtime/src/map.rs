@@ -2918,16 +2918,18 @@ impl Map {
 
     /// Whether the host plays `video` sources: it then gets
     /// [`MapEvent::Video`] requests and hands frames to
-    /// [`video_frame`](Self::video_frame). Without it, video sources draw
+    /// [`source_frame`](Self::source_frame). Without it, video sources draw
     /// nothing, with a warning.
     pub fn set_plays_video(&mut self, plays: bool) {
         self.videos.enabled = plays;
     }
 
-    /// The frame source `id`'s video shows now, straight-alpha RGBA rows,
-    /// top first, or an image the host registered with the GPU; it
-    /// replaces any frame not yet drawn.
-    pub fn video_frame(&mut self, id: &str, frame: crate::TileImage) -> Result<(), String> {
+    /// The picture video or canvas source `id` shows now, straight-alpha
+    /// RGBA rows, top first, or an image the host registered with the GPU;
+    /// it replaces any frame not yet drawn.
+    pub fn source_frame(&mut self, id: &str, frame: crate::TileImage) -> Result<(), String> {
+        let plan = self.style.as_ref().map(|s| s.worker.plan());
+        self.videos.sync(plan, &mut self.events.queue);
         self.videos.frame(id, frame)?;
         self.events.wake();
         Ok(())
@@ -3732,19 +3734,19 @@ mod video_tests {
             requests(&mut map),
             [("v".into(), VideoRequest::Open { urls })]
         );
-        map.video_frame("v", frame([255, 0, 0, 255])).unwrap();
+        map.source_frame("v", frame([255, 0, 0, 255])).unwrap();
         assert_eq!(
             centre(&mut map, &mut gpu, &mut renderer),
             (true, [255, 0, 0])
         );
-        map.video_frame("v", frame([0, 0, 255, 255])).unwrap();
+        map.source_frame("v", frame([0, 0, 255, 255])).unwrap();
         assert_eq!(
             centre(&mut map, &mut gpu, &mut renderer),
             (true, [0, 0, 255])
         );
         map.control_video("v", VideoRequest::Pause).unwrap();
         assert!(map.control_video("w", VideoRequest::Play).is_err());
-        assert!(map.video_frame("w", frame([0; 4])).is_err());
+        assert!(map.source_frame("w", frame([0; 4])).is_err());
         assert_eq!(requests(&mut map), [("v".into(), VideoRequest::Pause)]);
         // Removing the source closes it.
         let remove = r#"[["removeLayer", "v"], ["removeSource", "v"]]"#;

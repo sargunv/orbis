@@ -154,7 +154,7 @@ public final class OrbMap {
     }
 
     /// Whether this host plays `video` sources: it then gets `Video*`
-    /// events and hands frames to `video_frame`. Without it, video
+    /// events and hands frames to `source_frame`. Without it, video
     /// sources draw nothing, with a warning.
     ///
     /// Contract: `command`.
@@ -162,15 +162,17 @@ public final class OrbMap {
         OrbMap_set_plays_video(live(), plays)
     }
 
-    /// The frame the video of source `id` shows now: straight
-    /// (not premultiplied) RGBA8 rows, top first. It replaces any frame
-    /// not yet drawn.
+    /// The picture the video or canvas source `id` shows now:
+    /// straight (not premultiplied) RGBA8 rows, top first. It replaces
+    /// any frame not yet drawn. A `canvas` source (`"canvas"` naming
+    /// the app's canvas, and `coordinates`) shows only what it is
+    /// handed here.
     ///
     /// Contract: `command`.
     ///
     /// - Throws: `OrbErrorFailure` when it fails.
-    public func videoFrame(id: String, width: UInt32, height: UInt32, pixels: [UInt8]) throws {
-        let result = withStringView(id) { idView in withSliceView(pixels) { pixelsView in OrbMap_video_frame(live(), idView, width, height, pixelsView) } }
+    public func sourceFrame(id: String, width: UInt32, height: UInt32, pixels: [UInt8]) throws {
+        let result = withStringView(id) { idView in withSliceView(pixels) { pixelsView in OrbMap_source_frame(live(), idView, width, height, pixelsView) } }
         guard result.is_ok else {
             throw OrbErrorFailure(error: OrbError(rawValue: numericCast(result.err.rawValue))!, message: OrbError.lastMessage())
         }

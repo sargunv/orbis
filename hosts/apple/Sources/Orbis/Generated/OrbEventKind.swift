@@ -44,7 +44,7 @@ public enum OrbEventKind: Int, Sendable, CaseIterable {
     /// On a host that plays video (`OrbMap::set_plays_video`): play
     /// the first of `urls` it can, muted, looping, from the start, for
     /// the video source `text`, and hand its frames to
-    /// `OrbMap::video_frame`.
+    /// `OrbMap::source_frame`.
     case videoOpen = 13
     /// Play, pause or seek (to `seconds`) the video of source `text`.
     case videoPlay = 14

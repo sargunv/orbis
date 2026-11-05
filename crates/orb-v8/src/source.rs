@@ -12,6 +12,7 @@ const SOURCE_TYPES: &[&str] = &[
     "geojson",
     "video",
     "image",
+    "canvas",
 ];
 
 pub(crate) fn parse_sources(cx: &mut Cx, json: &Json) -> Vec<Source> {
@@ -50,7 +51,7 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
         "geojson" => SourceKind::GeoJson(parse_geojson_source(cx, json, path)?),
         "raster" => SourceKind::Raster(parse_raster(cx, json, path)?),
         "raster-dem" => SourceKind::RasterDem(parse_raster_dem(cx, json, path)?),
-        "image" | "video" => SourceKind::Image(parse_image(cx, json, path, ty == "video")?),
+        "image" | "video" | "canvas" => SourceKind::Image(parse_image(cx, json, path, ty)?),
         _ => unreachable!("checked against SOURCE_TYPES"),
     };
     Some(Source {
@@ -59,8 +60,14 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
     })
 }
 
-fn parse_image(cx: &mut Cx, json: &Json, path: &str, video: bool) -> Option<ImageSource> {
-    let key = if video { "urls" } else { "url" };
+/// An `image`, `video` or `canvas` source (GL JS's `canvas` source: its
+/// `animate` doesn't apply, as the host hands in each frame).
+fn parse_image(cx: &mut Cx, json: &Json, path: &str, ty: &str) -> Option<ImageSource> {
+    let key = match ty {
+        "video" => "urls",
+        "canvas" => "canvas",
+        _ => "url",
+    };
     let url_path = format!("{path}.{key}");
     let Some(url) = json.get(key) else {
         cx.error(
@@ -70,16 +77,18 @@ fn parse_image(cx: &mut Cx, json: &Json, path: &str, video: bool) -> Option<Imag
         );
         return None;
     };
-    let content = if video {
-        let items = cx.array(url, &url_path)?;
-        let urls = items
-            .iter()
-            .enumerate()
-            .map(|(i, item)| cx.string(item, &format!("{url_path}[{i}]")))
-            .collect::<Option<Vec<_>>>()?;
-        ImageContent::Video(urls)
-    } else {
-        ImageContent::Image(cx.string(url, &url_path)?)
+    let content = match ty {
+        "video" => {
+            let items = cx.array(url, &url_path)?;
+            let urls = items
+                .iter()
+                .enumerate()
+                .map(|(i, item)| cx.string(item, &format!("{url_path}[{i}]")))
+                .collect::<Option<Vec<_>>>()?;
+            ImageContent::Video(urls)
+        }
+        "canvas" => ImageContent::Canvas(cx.string(url, &url_path)?),
+        _ => ImageContent::Image(cx.string(url, &url_path)?),
     };
     let coordinates_path = format!("{path}.coordinates");
     let Some(coordinates) = json.get("coordinates") else {

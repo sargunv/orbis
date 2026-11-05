@@ -46,7 +46,7 @@ final class Videos {
                 continue
             }
             guard let (width, height, pixels) = player.newFrame() else { continue }
-            try? map.videoFrame(id: source, width: width, height: height, pixels: pixels)
+            try? map.sourceFrame(id: source, width: width, height: height, pixels: pixels)
         }
     }
 

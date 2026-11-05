@@ -17,7 +17,8 @@ pub enum SourceKind {
     /// An `image` or a `video` source.
     Image(ImageSource),
 }
-/// An `image` or `video` source: one picture on four geographic corners.
+/// An `image`, `video` or `canvas` source: one picture on four geographic
+/// corners.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ImageSource {
     pub content: ImageContent,
@@ -33,6 +34,8 @@ pub enum ImageContent {
     /// A `video` source's URLs, in the order a host tries them (formats
     /// differ in what each platform plays).
     Video(Vec<String>),
+    /// A `canvas` source's canvas: the host hands in its pixels.
+    Canvas(String),
 }
 /// A `geojson` source, ready for the tile worker to index.
 #[derive(Clone, Debug, PartialEq)]

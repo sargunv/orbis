@@ -65,7 +65,7 @@ enum class OrbEventKind(val value: Int) {
      * On a host that plays video (`OrbMap::set_plays_video`): play
      * the first of `urls` it can, muted, looping, from the start, for
      * the video source `text`, and hand its frames to
-     * `OrbMap::video_frame`.
+     * `OrbMap::source_frame`.
      */
     VideoOpen(13),
     /**

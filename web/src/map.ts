@@ -357,6 +357,13 @@ export class OrbisMap {
     this.#request();
   }
 
+  /** The picture a `canvas` source shows now ({"type": "canvas", "canvas":
+   * name, "coordinates": …}): the app draws it, and hands each new one in. */
+  setSourceFrame(source: string, image: StyleImageData): void {
+    this.#host.core.sourceFrame(source, image.width, image.height, rgba(image));
+    this.#request();
+  }
+
   /** Adds an image to the style (GL JS `addImage`) for icons, text and
    * patterns; throws when it has one by that name. */
   addImage(name: string, image: StyleImageData, options: StyleImageOptions = {}): void {

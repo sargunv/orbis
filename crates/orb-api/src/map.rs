@@ -348,15 +348,15 @@ impl Map {
 
     /// Whether this host plays `video` sources: it then gets
     /// [`MapEvent::Video`] requests and hands frames to
-    /// [`video_frame`](Self::video_frame). Without it, video sources draw
+    /// [`source_frame`](Self::source_frame). Without it, video sources draw
     /// nothing, with a warning.
     pub fn set_plays_video(&mut self, plays: bool) {
         self.map.set_plays_video(plays);
     }
 
-    /// The frame the video of source `id` shows now: straight RGBA8 rows,
-    /// top first. It replaces any frame not yet drawn.
-    pub fn video_frame(
+    /// The picture the video or canvas source `id` shows now: straight
+    /// RGBA8 rows, top first. It replaces any frame not yet drawn.
+    pub fn source_frame(
         &mut self,
         id: &str,
         width: u32,
@@ -375,7 +375,7 @@ impl Map {
             pixels: orb_runtime::ImagePixels::Core(pixels),
         };
         self.map
-            .video_frame(id, frame)
+            .source_frame(id, frame)
             .map_err(Error::InvalidArgument)
     }
 

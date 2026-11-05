@@ -151,7 +151,7 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
 
     /**
      * Whether this host plays `video` sources: it then gets `Video*`
-     * events and hands frames to `video_frame`. Without it, video
+     * events and hands frames to `source_frame`. Without it, video
      * sources draw nothing, with a warning.
      *
      * Contract: `command`.
@@ -161,16 +161,18 @@ class OrbMap internal constructor(handle: Long) : AutoCloseable {
     }
 
     /**
-     * The frame the video of source `id` shows now: straight
-     * (not premultiplied) RGBA8 rows, top first. It replaces any frame
-     * not yet drawn.
+     * The picture the video or canvas source `id` shows now:
+     * straight (not premultiplied) RGBA8 rows, top first. It replaces
+     * any frame not yet drawn. A `canvas` source (`"canvas"` naming
+     * the app's canvas, and `coordinates`) shows only what it is
+     * handed here.
      *
      * Contract: `command`.
      *
      * @throws OrbErrorException when it fails.
      */
-    fun videoFrame(id: String, width: UInt, height: UInt, pixels: ByteArray) {
-        OrbisNative.orbMapVideoFrame(live(), id.encodeToByteArray(), width.toInt(), height.toInt(), pixels)
+    fun sourceFrame(id: String, width: UInt, height: UInt, pixels: ByteArray) {
+        OrbisNative.orbMapSourceFrame(live(), id.encodeToByteArray(), width.toInt(), height.toInt(), pixels)
     }
 
     /**

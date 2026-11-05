@@ -609,7 +609,7 @@ mod ffi {
         /// On a host that plays video (`OrbMap::set_plays_video`): play
         /// the first of `urls` it can, muted, looping, from the start, for
         /// the video source `text`, and hand its frames to
-        /// `OrbMap::video_frame`.
+        /// `OrbMap::source_frame`.
         VideoOpen = 13,
         /// Play, pause or seek (to `seconds`) the video of source `text`.
         VideoPlay = 14,
@@ -1305,18 +1305,20 @@ mod ffi {
         }
 
         /// Whether this host plays `video` sources: it then gets `Video*`
-        /// events and hands frames to `video_frame`. Without it, video
+        /// events and hands frames to `source_frame`. Without it, video
         /// sources draw nothing, with a warning.
         #[diplomat::attr(contract, command)]
         pub fn set_plays_video(&mut self, plays: bool) {
             self.0.set_plays_video(plays);
         }
 
-        /// The frame the video of source `id` shows now: straight
-        /// (not premultiplied) RGBA8 rows, top first. It replaces any frame
-        /// not yet drawn.
+        /// The picture the video or canvas source `id` shows now:
+        /// straight (not premultiplied) RGBA8 rows, top first. It replaces
+        /// any frame not yet drawn. A `canvas` source (`"canvas"` naming
+        /// the app's canvas, and `coordinates`) shows only what it is
+        /// handed here.
         #[diplomat::attr(contract, command)]
-        pub fn video_frame(
+        pub fn source_frame(
             &mut self,
             id: &DiplomatStr,
             width: u32,
@@ -1324,7 +1326,7 @@ mod ffi {
             pixels: &[u8],
         ) -> Result<(), OrbError> {
             self.0
-                .video_frame(&text(id), width, height, pixels.to_vec())
+                .source_frame(&text(id), width, height, pixels.to_vec())
                 .map_err(fail)
         }
 

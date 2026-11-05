@@ -236,7 +236,8 @@ impl From<&orb_runtime::Memory> for FrameMemory {
 /// call `render` on its next animation frame. The camera is the style's
 /// until it moves. Video sources play on the page (`web/src/videos.ts`):
 /// see [`take_events`](OrbisMap::take_events) and
-/// [`video_frame`](OrbisMap::video_frame).
+/// [`video_frame`](OrbisMap::video_frame); canvas sources show what
+/// [`source_frame`](OrbisMap::source_frame) hands in.
 #[wasm_bindgen(js_name = createMap)]
 pub async fn create_map(
     canvas: HtmlCanvasElement,
@@ -543,7 +544,30 @@ impl OrbisMap {
             pixels: orb_runtime::ImagePixels::Host(image),
         };
         self.map
-            .video_frame(id, frame)
+            .source_frame(id, frame)
+            .map_err(|e| JsError::new(&e))
+    }
+
+    /// The picture canvas (or video) source `id` shows now: straight RGBA8
+    /// rows, top first.
+    #[wasm_bindgen(js_name = sourceFrame)]
+    pub fn source_frame(
+        &mut self,
+        id: &str,
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    ) -> Result<(), JsError> {
+        if pixels.len() != width as usize * height as usize * 4 {
+            return Err(JsError::new("pixels aren't width × height RGBA8"));
+        }
+        let frame = orb_runtime::TileImage {
+            width,
+            height,
+            pixels: orb_runtime::ImagePixels::Core(pixels),
+        };
+        self.map
+            .source_frame(id, frame)
             .map_err(|e| JsError::new(&e))
     }
 

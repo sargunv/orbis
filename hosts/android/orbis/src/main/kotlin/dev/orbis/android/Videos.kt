@@ -111,7 +111,7 @@ internal class Videos(
             val (width, height) = image.width to image.height
             val rgba = rgba(image)
             withMap {
-                it.videoFrame(source, width.toUInt(), height.toUInt(), rgba)
+                it.sourceFrame(source, width.toUInt(), height.toUInt(), rgba)
                 changed()
             }
         }

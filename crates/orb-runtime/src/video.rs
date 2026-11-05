@@ -1,8 +1,9 @@
-//! `video` sources (decision 0039). The core has no decoder: the host plays
-//! each video. The map asks for playback with [`MapEvent::Video`], and the
-//! host hands it frames with [`Map::video_frame`](crate::Map::video_frame).
-//! The newest frame fills the source's one tile, and later frames are
-//! written over its texture layer.
+//! `video` and `canvas` sources, whose frames the host hands in with
+//! [`Map::source_frame`](crate::Map::source_frame) (decision 0039). The core
+//! has no decoder: the host plays each video, which the map asks for with
+//! [`MapEvent::Video`]; a canvas is the app's to draw. The newest frame
+//! fills the source's one tile, and later frames are written over its
+//! texture layer.
 
 use std::collections::HashMap;
 
@@ -47,7 +48,8 @@ pub(crate) struct Videos {
 #[derive(Debug)]
 struct Open {
     id: String,
-    urls: Vec<String>,
+    /// A video's URLs; `None` for a canvas, which no player plays.
+    urls: Option<Vec<String>>,
     /// The newest frame, premultiplied, kept for a tile requested again.
     last: Option<TileImage>,
     /// `last` isn't in the resident tile's layer yet.
@@ -76,9 +78,12 @@ impl Videos {
         if let Some(plan) = plan {
             for (index, source) in plan.sources.iter().enumerate() {
                 let def = plan.source_def(index);
-                if let SourceKind::Image(image) = &def.kind
-                    && let ImageContent::Video(urls) = &image.content
-                {
+                if let SourceKind::Image(image) = &def.kind {
+                    let urls = match &image.content {
+                        ImageContent::Video(urls) => Some(urls),
+                        ImageContent::Canvas(_) => None,
+                        ImageContent::Image(_) => continue,
+                    };
                     sources.insert(source.key, (def.id.as_str(), urls));
                 }
             }
@@ -87,10 +92,10 @@ impl Videos {
         self.open.retain(|key, open| {
             let keep = sources
                 .get(key)
-                .is_some_and(|(id, urls)| open.id == *id && open.urls == **urls);
+                .is_some_and(|(id, urls)| open.id == *id && open.urls.as_ref() == *urls);
             if !keep {
                 released.extend(open.last.take().and_then(host));
-                if open.failed.is_none() {
+                if open.failed.is_none() && open.urls.is_some() {
                     events.push(MapEvent::Video {
                         source: open.id.clone(),
                         request: VideoRequest::Close,
@@ -101,8 +106,8 @@ impl Videos {
         });
         for (key, (id, urls)) in sources {
             self.open.entry(key).or_insert_with(|| {
-                let failed = (!self.enabled).then(|| NO_VIDEO.to_owned());
-                if failed.is_none() {
+                let failed = (!self.enabled && urls.is_some()).then(|| NO_VIDEO.to_owned());
+                if let Some(urls) = urls.filter(|_| failed.is_none()) {
                     events.push(MapEvent::Video {
                         source: id.to_owned(),
                         request: VideoRequest::Open { urls: urls.clone() },
@@ -110,7 +115,7 @@ impl Videos {
                 }
                 Open {
                     id: id.to_owned(),
-                    urls: urls.clone(),
+                    urls: urls.cloned(),
                     last: None,
                     fresh: false,
                     failed,
@@ -124,10 +129,11 @@ impl Videos {
         self.open
             .values_mut()
             .find(|o| o.id == id)
-            .ok_or_else(|| format!("no video source \"{id}\""))
+            .ok_or_else(|| format!("no video or canvas source \"{id}\""))
     }
 
-    /// Whether source `key` is a video's; then its tile waits for a frame.
+    /// Whether source `key` is a video's or a canvas's; then its tile waits
+    /// for a frame.
     pub(crate) fn want(&mut self, key: u32, tile: TileIndex) -> bool {
         let Some(open) = self.open.get_mut(&key) else {
             return false;
@@ -169,6 +175,9 @@ impl Videos {
         events: &mut Vec<MapEvent>,
     ) -> Result<(), String> {
         let open = self.get(id)?;
+        if open.urls.is_none() {
+            return Err(format!("{id} is a canvas, not a video"));
+        }
         if open.failed.is_none() {
             events.push(MapEvent::Video {
                 source: open.id.clone(),

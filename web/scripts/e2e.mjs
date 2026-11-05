@@ -5,7 +5,7 @@
 //   pixels, a hit test, a rendered-features query, an edit's generation,
 //   style images, camera moves with roll and elevation, project and
 //   unproject (for the camera now and another), padding, the free camera, a
-//   clustered source's queries, a drag, a click, idle drawing nothing, and an error.
+//   clustered source's queries, a canvas source, a drag, a click, idle drawing nothing, and an error.
 // - `edits`: every edit class through the map app's edit API
 //   (`globalThis.orbis`, web/demo/expose.js) must resolve and settle, and
 //   the cost of a feature-state write (plan §10.2's ≤0.05 ms target) over
@@ -236,6 +236,19 @@ async function scenario(browser, server, config) {
   assert.equal(clustered.sum, 66, JSON.stringify(clustered));
   assert.equal(clustered.leaves, 2, JSON.stringify(clustered));
   assert.ok(clustered.zoom >= 1 && clustered.children > 0, JSON.stringify(clustered));
+
+  // A canvas source shows the pixels handed in.
+  await scenario(async (s) => {
+    await s.shows(s.map.edit((tx) => tx
+      .addSource("drawing", { type: "canvas", canvas: "drawing",
+        coordinates: [[-120, 70], [120, 70], [120, -70], [-120, -70]] })
+      .addLayer({ id: "drawing", type: "raster", source: "drawing", paint: { "raster-fade-duration": 0 } })));
+    s.map.camera.jumpTo({ center: [0, 0], zoom: 0, bearing: 0, pitch: 0, roll: 0 });
+    s.map.setSourceFrame("drawing", { width: 2, height: 2, data: new Uint8Array(16).map((_, i) => (i % 4 === 1 || i % 4 === 3 ? 255 : 0)) });
+    await s.idle();
+  });
+  image = await pixels();
+  assert.deepEqual(pixel(image, CENTER), [0, 255, 0], "the canvas");
   assert.deepEqual(errors, []);
   console.log(`scenario: ${config} passed`);
   await page.close();

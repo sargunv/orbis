@@ -138,7 +138,7 @@ internal object OrbisNative {
     external fun orbMapSetPlaysVideo(self: Long, plays: Boolean): Unit
 
     @JvmStatic
-    external fun orbMapVideoFrame(self: Long, id: ByteArray, width: Int, height: Int, pixels: ByteArray): Unit
+    external fun orbMapSourceFrame(self: Long, id: ByteArray, width: Int, height: Int, pixels: ByteArray): Unit
 
     @JvmStatic
     external fun orbMapVideoFailed(self: Long, id: ByteArray, message: ByteArray): Unit

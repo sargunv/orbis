@@ -656,3 +656,35 @@ fn clustered_sources_draw_clusters_and_answer_cluster_queries() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
+
+#[test]
+fn canvas_sources_show_the_pixels_the_app_hands_in() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    // No player: a canvas needs none.
+    map.set_style_json(
+        r##"{"version": 8, "center": [0, 0], "zoom": 2,
+            "sources": {"c": {"type": "canvas", "canvas": "drawing", "animate": true,
+                "coordinates": [[-120, 70], [120, 70], [120, -70], [-120, -70]]}},
+            "layers": [
+                {"id": "background", "type": "background", "paint": {"background-color": "#ff0000"}},
+                {"id": "c", "type": "raster", "source": "c", "paint": {"raster-fade-duration": 0}}]}"##,
+    )
+    .expect("style");
+    for rgba in [[0, 0, 255, 255], [0, 255, 0, 255]] {
+        map.source_frame("c", 4, 4, rgba.repeat(16))
+            .expect("a frame");
+        let events = settle(&mut map, &mut target);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::Map(MapEvent::Video { .. }))),
+            "{events:?}"
+        );
+        let pixels = target.read_pixels().unwrap();
+        assert_eq!(pixel(&pixels, SIZE / 2, SIZE / 2), rgba, "the canvas");
+    }
+    assert!(map.control_video("c", orb_api::VideoRequest::Play).is_err());
+    assert!(map.source_frame("d", 1, 1, vec![0; 4]).is_err());
+}
