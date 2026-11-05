@@ -9,7 +9,7 @@ use crate::shelf::Shelves;
 
 /// Deferred image identity, resolved only on the scene side. Generated
 /// textures cannot collide with sprite names. Dash values are f32 bits.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ImageKey {
     Name(String),
     Dash { array: Vec<u32>, round: bool },

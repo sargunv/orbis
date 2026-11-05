@@ -9,7 +9,7 @@ pub const MAX_CHUNK_TRIANGLES: u32 = CHUNK_INDICES / 3;
 pub const MAX_CHUNK_INSTANCES: u32 = 256;
 
 /// A rectangle in tile data units.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TileBox {
     pub min: [i16; 2],
     pub max: [i16; 2],
@@ -28,7 +28,7 @@ impl TileBox {
 }
 
 /// A run of triangles, segments or point instances culled as one unit.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Chunk {
     /// First index of the chunk in [`Mesh::indices`].
     pub first_index: u32,

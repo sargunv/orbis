@@ -17,11 +17,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use orb_crs::{TileIndex, TileMatrixSet};
-use orb_expr::json::{self, Json, JsonValue, Member};
+use orb_expr::json::Json;
 use orb_hal::{HostBytesId, HostImageId};
 use orb_host::{DecodedImage, Fetch, FetchError, ImageDecode};
 use orb_jobs::Executor;
-use orb_layout::{Chunk, TileBox};
+use orb_layout::Chunk;
 use orb_style::{Encoding, GeoJsonData, Scene, SourceKind, Value};
 use orb_tile::TileFrame;
 
@@ -640,7 +640,7 @@ impl Built {
 /// A style revision for the jobs: the order of its layer and source keys,
 /// the layers and sources new or changed in it as v8 JSON, and the global
 /// state its properties resolve.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct StyleUpdate {
     pub revision: u64,
     pub layers: Vec<u32>,
@@ -669,257 +669,10 @@ impl StyleUpdate {
         (style.dialect == orb_style::Dialect::Scene)
             .then(|| style.models.iter().map(|(id, _)| id.clone()).collect())
     }
-
-    /// The update as one JSON document, for a job worker.
-    pub fn to_json(&self) -> String {
-        let synthetic = |value| Json::new(value, Default::default());
-        let member = |key: &str, value: Json| Member {
-            key: key.into(),
-            key_span: Default::default(),
-            value,
-        };
-        let keys = |keys: &[u32]| {
-            synthetic(JsonValue::Array(
-                keys.iter()
-                    .map(|&k| synthetic(JsonValue::Number(f64::from(k))))
-                    .collect(),
-            ))
-        };
-        let state = self
-            .state
-            .iter()
-            .map(|(k, v)| {
-                let value = json::parse(&v.to_json_string()).expect("values write JSON");
-                member(k, value)
-            })
-            .collect();
-        let layers = self
-            .layer_json
-            .iter()
-            .map(|(k, json)| {
-                synthetic(JsonValue::Array(vec![
-                    synthetic(JsonValue::Number(f64::from(*k))),
-                    (**json).clone(),
-                ]))
-            })
-            .collect();
-        let sources = self
-            .source_json
-            .iter()
-            .map(|(k, id, json)| {
-                synthetic(JsonValue::Array(vec![
-                    synthetic(JsonValue::Number(f64::from(*k))),
-                    synthetic(JsonValue::String(id.clone())),
-                    (**json).clone(),
-                ]))
-            })
-            .collect();
-        synthetic(JsonValue::Object(vec![
-            member(
-                "revision",
-                synthetic(JsonValue::Number(self.revision as f64)),
-            ),
-            member("layers", keys(&self.layers)),
-            member("sources", keys(&self.sources)),
-            member("layerJson", synthetic(JsonValue::Array(layers))),
-            member("sourceJson", synthetic(JsonValue::Array(sources))),
-            member("state", synthetic(JsonValue::Object(state))),
-            member(
-                "glyphs",
-                synthetic(match &self.glyphs {
-                    Some(url) => JsonValue::String(url.clone()),
-                    None => JsonValue::Null,
-                }),
-            ),
-            member(
-                "fontFaces",
-                synthetic(JsonValue::Array(
-                    self.font_faces
-                        .iter()
-                        .map(|(name, files)| {
-                            let files = files
-                                .iter()
-                                .map(|f| {
-                                    let ranges = f
-                                        .ranges
-                                        .iter()
-                                        .flatten()
-                                        .map(|&v| synthetic(JsonValue::Number(f64::from(v))))
-                                        .collect();
-                                    synthetic(JsonValue::Array(vec![
-                                        synthetic(JsonValue::String(f.url.clone())),
-                                        synthetic(JsonValue::Array(ranges)),
-                                    ]))
-                                })
-                                .collect();
-                            synthetic(JsonValue::Array(vec![
-                                synthetic(JsonValue::String(name.clone())),
-                                synthetic(JsonValue::Array(files)),
-                            ]))
-                        })
-                        .collect(),
-                )),
-            ),
-            member(
-                "localIdeographFontFamily",
-                synthetic(match &self.local_ideographs {
-                    Some(family) => JsonValue::String(family.clone()),
-                    None => JsonValue::Null,
-                }),
-            ),
-            member(
-                "models",
-                synthetic(match &self.models {
-                    None => JsonValue::Null,
-                    Some(ids) => JsonValue::Array(
-                        ids.iter()
-                            .map(|id| synthetic(JsonValue::String(id.clone())))
-                            .collect(),
-                    ),
-                }),
-            ),
-            member(
-                "plane",
-                synthetic(match &self.surface.plane {
-                    None => JsonValue::Null,
-                    Some(tms) => JsonValue::String(crate::projection_to_json(tms.projection())),
-                }),
-            ),
-            member(
-                "sourceTms",
-                synthetic(JsonValue::Array(
-                    self.surface
-                        .sources
-                        .iter()
-                        .filter_map(|(id, tms)| {
-                            Some(synthetic(JsonValue::Array(vec![
-                                synthetic(JsonValue::String(id.clone())),
-                                synthetic(JsonValue::String(crate::tms_to_json(tms)?)),
-                            ])))
-                        })
-                        .collect(),
-                )),
-            ),
-        ]))
-        .to_string()
-    }
-
-    /// Reads [`to_json`](Self::to_json)'s document.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        let bad = || "malformed style update".to_string();
-        let doc = json::parse(text).map_err(|e| e.to_string())?;
-        let keys = |key: &str| -> Result<Vec<u32>, String> {
-            doc.get(key)
-                .and_then(Json::as_array)
-                .ok_or_else(bad)?
-                .iter()
-                .map(|k| k.as_f64().map(|k| k as u32).ok_or_else(bad))
-                .collect()
-        };
-        let entries = |key: &str| doc.get(key).and_then(Json::as_array).ok_or_else(bad);
-        let layer_json = entries("layerJson")?
-            .iter()
-            .map(|e| match e.as_array() {
-                Some([k, json]) => Ok((k.as_f64().ok_or_else(bad)? as u32, Arc::new(json.clone()))),
-                _ => Err(bad()),
-            })
-            .collect::<Result<_, String>>()?;
-        let source_json = entries("sourceJson")?
-            .iter()
-            .map(|e| match e.as_array() {
-                Some([k, id, json]) => Ok((
-                    k.as_f64().ok_or_else(bad)? as u32,
-                    id.as_str().ok_or_else(bad)?.to_string(),
-                    Arc::new(json.clone()),
-                )),
-                _ => Err(bad()),
-            })
-            .collect::<Result<_, String>>()?;
-        let state = doc
-            .get("state")
-            .and_then(Json::as_object)
-            .ok_or_else(bad)?
-            .iter()
-            .map(|m| (m.key.clone(), Value::from_json(&m.value)))
-            .collect();
-        let font_faces = entries("fontFaces")?
-            .iter()
-            .map(|e| match e.as_array() {
-                Some([name, files]) => Ok((
-                    name.as_str().ok_or_else(bad)?.to_string(),
-                    files
-                        .as_array()
-                        .ok_or_else(bad)?
-                        .iter()
-                        .map(|f| match f.as_array() {
-                            Some([url, ranges]) => {
-                                let bounds = ranges
-                                    .as_array()
-                                    .ok_or_else(bad)?
-                                    .iter()
-                                    .map(|v| v.as_f64().map(|v| v as u32).ok_or_else(bad))
-                                    .collect::<Result<Vec<u32>, String>>()?;
-                                Ok(orb_style::FontFace {
-                                    url: url.as_str().ok_or_else(bad)?.to_string(),
-                                    ranges: bounds
-                                        .chunks(2)
-                                        .map(|r| [r[0], r[r.len() - 1]])
-                                        .collect(),
-                                })
-                            }
-                            _ => Err(bad()),
-                        })
-                        .collect::<Result<_, String>>()?,
-                )),
-                _ => Err(bad()),
-            })
-            .collect::<Result<_, String>>()?;
-        Ok(Self {
-            revision: doc.get("revision").and_then(Json::as_f64).ok_or_else(bad)? as u64,
-            layers: keys("layers")?,
-            sources: keys("sources")?,
-            layer_json,
-            source_json,
-            state,
-            glyphs: doc.get("glyphs").and_then(Json::as_str).map(str::to_string),
-            font_faces,
-            local_ideographs: doc
-                .get("localIdeographFontFamily")
-                .and_then(Json::as_str)
-                .map(str::to_string),
-            models: match doc.get("models").and_then(Json::as_array) {
-                None => None,
-                Some(ids) => Some(
-                    ids.iter()
-                        .map(|id| id.as_str().map(str::to_string).ok_or_else(bad))
-                        .collect::<Result<_, String>>()?,
-                ),
-            },
-            surface: crate::SurfaceTiles {
-                plane: match doc.get("plane").and_then(Json::as_str) {
-                    Some(plane) => {
-                        let projection = crate::projection_from_json(plane)?;
-                        Some(TileMatrixSet::square(projection, projection.world_bounds()))
-                    }
-                    None => None,
-                },
-                sources: entries("sourceTms")?
-                    .iter()
-                    .map(|e| match e.as_array() {
-                        Some([id, tms]) => Ok((
-                            id.as_str().ok_or_else(bad)?.to_string(),
-                            crate::tms_from_json(tms.as_str().ok_or_else(bad)?)?,
-                        )),
-                        _ => Err(bad()),
-                    })
-                    .collect::<Result<_, String>>()?,
-            },
-        })
-    }
 }
 
 /// A tile for a job to load and lay out.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TileRequest {
     /// Which style to lay out with, as given to [`Jobs::set_style`].
     pub style: u64,
@@ -949,7 +702,7 @@ pub struct TileRequest {
 /// GL JS's unpack vector of a DEM encoding: metres are
 /// `r·x + g·y + b·z − w` over the 0–255 channels. Requests compare it
 /// bit for bit.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DemUnpack(pub [f64; 4]);
 
 impl PartialEq for DemUnpack {
@@ -974,6 +727,84 @@ impl TileRequest {
 
 /// Called once with a tile's result, on any thread.
 pub type TileDone = Box<dyn FnOnce(Result<TileResult, String>) + Send + 'static>;
+
+/// A request to a job host in another worker, as [`crate::wire`] carries it.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum JobRequest {
+    /// [`Jobs::set_style`].
+    Style {
+        style: u64,
+        update: Box<StyleUpdate>,
+    },
+    /// [`Jobs::set_icons`].
+    Icons {
+        style: u64,
+        icons: SpriteIcons,
+    },
+    Load {
+        id: u32,
+        request: TileRequest,
+    },
+    Features {
+        id: u32,
+        request: crate::FeatureRequest,
+    },
+    Raster {
+        id: u32,
+        request: GlyphRaster,
+    },
+}
+
+/// A job host's answer to the request with `id`. Its large parts travel
+/// beside it, transferred: a packed tile ([`pack`]) or a DEM tile's RGBA
+/// pixels as the reply's buffer, an image tile as its bitmap.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum JobReply {
+    /// The packed tile is the buffer.
+    Tile {
+        id: u32,
+    },
+    /// An image tile: the bitmap.
+    Image {
+        id: u32,
+    },
+    /// A terrain DEM tile: its pixels are the buffer.
+    Dem {
+        id: u32,
+        width: u32,
+        elevations: Vec<f32>,
+    },
+    /// The source doesn't have the tile.
+    Missing {
+        id: u32,
+    },
+    Features {
+        id: u32,
+        features: Vec<crate::TileFeature>,
+    },
+    Glyphs {
+        id: u32,
+        bitmaps: Vec<crate::GlyphBitmap>,
+    },
+    Error {
+        id: u32,
+        message: String,
+    },
+}
+
+impl JobReply {
+    pub fn id(&self) -> u32 {
+        match self {
+            Self::Tile { id }
+            | Self::Image { id }
+            | Self::Dem { id, .. }
+            | Self::Missing { id }
+            | Self::Features { id, .. }
+            | Self::Glyphs { id, .. }
+            | Self::Error { id, .. } => *id,
+        }
+    }
+}
 
 /// Runs tile jobs for a map.
 pub trait Jobs: Send + Sync {
@@ -1459,7 +1290,7 @@ pub(crate) fn premultiply(pixels: &mut [u8]) {
 }
 
 /// A finished tile, ready to upload: in core memory, or in host-held bytes.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TileResult {
     pub warnings: Vec<String>,
     /// Images the tile's symbol layers name that the style doesn't have.
@@ -1478,12 +1309,16 @@ pub struct TileResult {
     pub symbols: Vec<ResultSymbols>,
     /// Holds every [`Stream::Host`] of the meshes and symbols; released
     /// after upload.
+    #[serde(skip)]
     pub host_bytes: Option<HostBytesId>,
     /// An image source's tile.
+    #[serde(skip)]
     pub image: Option<TileImage>,
     /// A terrain DEM tile's elevations.
+    #[serde(skip)]
     pub dem: Option<Arc<orb_tile::DemGrid>>,
     /// The tileset doesn't have the tile; nearby zooms stand in.
+    #[serde(skip)]
     pub missing: bool,
 }
 
@@ -1504,7 +1339,7 @@ pub enum ImagePixels {
 }
 
 /// One render node's share of a finished tile.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResultMesh {
     pub hits: std::sync::Arc<crate::MeshHits>,
     /// The node's key.
@@ -1527,7 +1362,8 @@ pub struct ResultMesh {
     pub data: Vec<orb_expr::FeatureData>,
 }
 
-/// A stream of u32 words.
+/// A stream of u32 words. Packed for another worker, a stream's header
+/// holds its length; its words follow the header raw ([`pack`]).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Stream {
     Core(Vec<u32>),
@@ -1578,275 +1414,82 @@ impl From<TileBuild> for TileResult {
     }
 }
 
-/// Packs a build into one buffer for another worker: a header of u32 words
-/// (its own length first; the revision as two words, the rows-only flag,
-/// the laid-out node keys and the feature id strings; then per mesh: node,
-/// extent, chunk count, stream lengths, row words, images, state ids,
-/// feature data, maxima and chunks), then each mesh's vertices, indices and property rows. After the
-/// mesh header, diagnostics are a count followed by each UTF-8 byte length
-/// and its bytes packed into padded words. Little-endian.
-pub fn pack(build: &TileBuild) -> Vec<u8> {
-    let mut header: Vec<u32> = vec![
-        0,
-        build.revision as u32,
-        (build.revision >> 32) as u32,
-        u32::from(build.rows_only),
-        build.nodes.len() as u32,
-    ];
-    header.extend(&build.nodes);
-    header.push(build.ids.len() as u32);
-    for id in &build.ids {
-        write_text(&mut header, id);
-    }
-    header.push(build.meshes.len() as u32);
-    for m in &build.meshes {
-        header.push(m.hits.words().len() as u32);
-        header.extend_from_slice(m.hits.words());
-        header.extend([
-            m.node,
-            m.extent,
-            m.mesh.chunks.len() as u32,
-            m.mesh.vertices.len() as u32,
-            m.mesh.indices.len() as u32,
-            m.props.len() as u32,
-            m.row_words,
-            m.maxima.len() as u32,
-        ]);
-        header.push(m.images.len() as u32);
-        for image in &m.images {
-            header.push(image.word);
-            match &image.key {
-                orb_render::ImageKey::Name(name) => {
-                    header.push(0);
-                    write_text(&mut header, name);
-                }
-                orb_render::ImageKey::Dash { array, round } => {
-                    header.extend([1, u32::from(*round), array.len() as u32]);
-                    header.extend(array);
-                }
-                orb_render::ImageKey::Ramp { colors, nearest } => {
-                    header.extend([2, u32::from(*nearest), colors.len() as u32]);
-                    header.extend(colors);
-                }
-            }
+impl Stream {
+    fn len(&self) -> u32 {
+        match self {
+            Self::Core(words) => words.len() as u32,
+            Self::Host { len, .. } => *len,
         }
-        match &m.state_ids {
-            None => header.push(u32::MAX),
-            Some(ids) => {
-                header.push(ids.len() as u32);
-                header.extend(ids);
-            }
-        }
-        header.push(m.data.len() as u32);
-        for data in &m.data {
-            write_text(&mut header, &data.to_json_string());
-        }
-        header.extend(m.maxima.iter().map(|v| v.to_bits()));
-        for c in &m.mesh.chunks {
-            let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
-            header.extend([
-                c.first_index,
-                c.index_count,
-                pack(c.bounds.min),
-                pack(c.bounds.max),
-                u32::from(c.sort_key.is_some()),
-                c.sort_key.unwrap_or(0.0).to_bits(),
-            ]);
-        }
-    }
-    let symbols: Vec<ResultSymbols> = build
-        .symbols
-        .iter()
-        .map(|(layer, s)| ResultSymbols::new(*layer, s))
-        .collect();
-    header.push(symbols.len() as u32);
-    for s in &symbols {
-        crate::symbol::write_header(&mut header, s);
-    }
-    header.push(build.warnings.len() as u32);
-    for warning in &build.warnings {
-        write_text(&mut header, warning);
-    }
-    header.push(build.missing_images.len() as u32);
-    for name in &build.missing_images {
-        write_text(&mut header, name);
-    }
-    header[0] = header.len() as u32;
-    let mut words = header;
-    for m in &build.meshes {
-        words.extend_from_slice(&m.mesh.vertices);
-        words.extend_from_slice(&m.mesh.indices);
-        words.extend_from_slice(&m.props);
-    }
-    for s in &symbols {
-        for table in &s.tables {
-            let Stream::Core(table) = table else {
-                unreachable!("built tables are in core memory")
-            };
-            words.extend_from_slice(table);
-        }
-    }
-    words.iter().flat_map(|w| w.to_le_bytes()).collect()
-}
-
-pub(crate) fn write_text(words: &mut Vec<u32>, text: &str) {
-    words.push(text.len() as u32);
-    for chunk in text.as_bytes().chunks(4) {
-        let mut bytes = [0; 4];
-        bytes[..chunk.len()].copy_from_slice(chunk);
-        words.push(u32::from_le_bytes(bytes));
     }
 }
 
-pub(crate) fn read_text(next: &mut dyn FnMut() -> Result<u32, String>) -> Result<String, String> {
-    let len = next()? as usize;
-    let mut bytes = Vec::new();
-    for _ in 0..len.div_ceil(4) {
-        bytes.extend_from_slice(&next()?.to_le_bytes());
+impl serde::Serialize for Stream {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u32(self.len())
     }
-    bytes.truncate(len);
-    String::from_utf8(bytes).map_err(|_| "malformed packed string".into())
 }
 
-/// Reads a packed tile's header (see [`pack`]): its meshes with
-/// [`Stream::Host`] streams into the packed buffer, registered as `bytes`.
-/// `header` holds at least the header's words; the payload need not be in
-/// core memory.
-pub fn unpack(header: &[u32], bytes: HostBytesId) -> Result<TileResult, String> {
+/// A packed stream: its offset is set once the whole header is read.
+impl<'de> serde::Deserialize<'de> for Stream {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let len = u32::deserialize(deserializer)?;
+        Ok(Self::Host { offset: 0, len })
+    }
+}
+
+impl TileResult {
+    /// The streams in packed order: each mesh's vertices, indices and
+    /// rows, then each symbol layer's tables.
+    fn streams_mut(&mut self) -> impl Iterator<Item = &mut Stream> {
+        self.meshes
+            .iter_mut()
+            .flat_map(|m| [&mut m.vertices, &mut m.indices, &mut m.props])
+            .chain(self.symbols.iter_mut().flat_map(|s| s.tables.iter_mut()))
+    }
+}
+
+/// Packs a build into one buffer for another worker: the header's length
+/// in bytes (a little-endian u32), the header (the result without its
+/// streams' words, [`crate::wire`]), padding to a word, then every stream's
+/// words in [`TileResult::streams_mut`]'s order, little-endian.
+pub fn pack(build: TileBuild) -> Vec<u8> {
+    let mut result = TileResult::from(build);
+    let header = crate::wire::encode(&result);
+    let mut packed = Vec::with_capacity(header.len() + 8);
+    packed.extend((header.len() as u32).to_le_bytes());
+    packed.extend(&header);
+    packed.resize(packed.len().next_multiple_of(4), 0);
+    for stream in result.streams_mut() {
+        let Stream::Core(words) = stream else {
+            unreachable!("built streams are in core memory")
+        };
+        packed.extend(words.iter().flat_map(|w| w.to_le_bytes()));
+    }
+    packed
+}
+
+/// The header of a packed tile (see [`pack`]): the bytes after its length.
+pub fn packed_header(packed: &[u8]) -> Result<&[u8], String> {
     let bad = || "malformed packed tile".to_string();
-    let length = *header.first().ok_or_else(bad)? as usize;
-    let header = header.get(..length).ok_or_else(bad)?;
-    let mut words = header.iter().copied();
-    let mut next = || words.next().ok_or_else(bad);
-    let header_len = next()?;
-    let revision = u64::from(next()?) | u64::from(next()?) << 32;
-    let rows_only = next()? != 0;
-    let nodes = (0..next()?).map(|_| next()).collect::<Result<_, _>>()?;
-    let ids = (0..next()?)
-        .map(|_| read_text(&mut next))
-        .collect::<Result<_, _>>()?;
-    let count = next()?;
-    let mut offset = u64::from(header_len) * 4;
-    let mut meshes = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        let words = (0..next()?).map(|_| next()).collect::<Result<_, _>>()?;
-        let hits = std::sync::Arc::new(crate::MeshHits::from_words(words)?);
-        let (node, extent, chunks, vertices, indices, props, row_words, maxima) = (
-            next()?,
-            next()?,
-            next()?,
-            next()?,
-            next()?,
-            next()?,
-            next()?,
-            next()?,
-        );
-        let images = (0..next()?)
-            .map(|_| {
-                Ok(ImageRef {
-                    word: next()?,
-                    key: match next()? {
-                        0 => orb_render::ImageKey::Name(read_text(&mut next)?),
-                        tag @ (1 | 2) => {
-                            let flag = next()? != 0;
-                            let data = (0..next()?)
-                                .map(|_| next())
-                                .collect::<Result<Vec<_>, _>>()?;
-                            if tag == 1 {
-                                orb_render::ImageKey::Dash {
-                                    array: data,
-                                    round: flag,
-                                }
-                            } else {
-                                orb_render::ImageKey::Ramp {
-                                    colors: data,
-                                    nearest: flag,
-                                }
-                            }
-                        }
-                        _ => return Err(bad()),
-                    },
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let state_ids = match next()? {
-            u32::MAX => None,
-            n => Some((0..n).map(|_| next()).collect::<Result<Vec<_>, _>>()?),
-        };
-        let data = (0..next()?)
-            .map(|_| orb_expr::FeatureData::from_json_str(&read_text(&mut next)?).ok_or_else(bad))
-            .collect::<Result<Vec<_>, String>>()?;
-        let maxima = (0..maxima)
-            .map(|_| next().map(f32::from_bits))
-            .collect::<Result<_, _>>()?;
-        let unpack = |w: u32| [w as u16 as i16, (w >> 16) as u16 as i16];
-        let chunks = (0..chunks)
-            .map(|_| {
-                Ok(Chunk {
-                    first_index: next()?,
-                    index_count: next()?,
-                    bounds: TileBox {
-                        min: unpack(next()?),
-                        max: unpack(next()?),
-                    },
-                    sort_key: {
-                        let present = next()? != 0;
-                        let value = f32::from_bits(next()?);
-                        present.then_some(value)
-                    },
-                })
-            })
-            .collect::<Result<_, String>>()?;
-        let mut stream = |len: u32| {
-            let s = Stream::Host { offset, len };
-            offset += u64::from(len) * 4;
-            s
-        };
-        meshes.push(ResultMesh {
-            hits,
-            node,
-            extent,
-            chunks,
-            vertices: stream(vertices),
-            indices: stream(indices),
-            props: stream(props),
-            row_words,
-            maxima,
-            images,
-            state_ids,
-            data,
-        });
+    let len = packed.get(..4).ok_or_else(bad)?;
+    let len = u32::from_le_bytes(len.try_into().expect("four bytes")) as usize;
+    packed.get(4..4 + len).ok_or_else(bad)
+}
+
+/// Reads a packed tile's `header` (see [`packed_header`]): its streams are
+/// [`Stream::Host`] at their offsets in the packed buffer, registered as
+/// `bytes`; the payload need not be in core memory.
+pub fn unpack(header: &[u8], bytes: HostBytesId) -> Result<TileResult, String> {
+    let mut result: TileResult = crate::wire::decode(header)?;
+    let mut offset = (4 + header.len()).next_multiple_of(4) as u64;
+    for stream in result.streams_mut() {
+        if let Stream::Host { offset: at, len } = stream {
+            *at = offset;
+            offset += u64::from(*len) * 4;
+        }
     }
-    let symbols = (0..next()?)
-        .map(|_| crate::symbol::read_header(&mut next, &mut offset))
-        .collect::<Result<Vec<_>, _>>()?;
-    let warning_count = next()?;
-    let mut warnings = Vec::new();
-    for _ in 0..warning_count {
-        warnings.push(read_text(&mut next)?);
-    }
-    let missing_count = next()?;
-    let mut missing_images = Vec::new();
-    for _ in 0..missing_count {
-        missing_images.push(read_text(&mut next)?);
-    }
-    if words.next().is_some() {
-        return Err(bad());
-    }
-    Ok(TileResult {
-        revision,
-        nodes,
-        rows_only,
-        ids,
-        meshes,
-        symbols,
-        host_bytes: Some(bytes),
-        warnings,
-        missing_images,
-        image: None,
-        dem: None,
-        missing: false,
-    })
+    result.host_bytes = Some(bytes);
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -1928,15 +1571,14 @@ pub(crate) mod tests {
             ]
         );
         // Subsequent bytes are ignored: the per-source index is authoritative.
-        assert_eq!(
-            pack(&build),
-            pack(
-                &worker
-                    .build(b"invalid", Encoding::Mlt, &request(tile))
-                    .unwrap()
-                    .tile()
-            )
-        );
+        let again = || {
+            worker
+                .build(b"invalid", Encoding::Mlt, &request(tile))
+                .unwrap()
+                .tile()
+        };
+        assert_eq!(pack(again()), pack(again()));
+        assert_eq!(build.meshes.len(), again().meshes.len());
         // A column job re-evaluates the fill's rows from the cached tile.
         let rows = worker
             .build(
@@ -2113,9 +1755,10 @@ pub(crate) mod tests {
             },
             models: Some(vec!["tower".into()]),
         };
-        let parsed = StyleUpdate::parse(&update.to_json()).unwrap();
+        let bytes = crate::wire::encode(&update);
+        let parsed: StyleUpdate = crate::wire::decode(&bytes).unwrap();
         assert_eq!(parsed.models, update.models);
-        assert_eq!(parsed.to_json(), update.to_json());
+        assert_eq!(crate::wire::encode(&parsed), bytes);
         assert_eq!(parsed.surface.plane, update.surface.plane);
         let tile = TileIndex::new(4, 7, 9);
         assert_eq!(
@@ -2183,7 +1826,7 @@ pub(crate) mod tests {
 
     #[test]
     fn packs_and_unpacks() {
-        let build = TileBuild {
+        let make = || TileBuild {
             symbols: Vec::new(),
             revision: 1 << 33 | 5,
             nodes: vec![3, 4, 9],
@@ -2215,7 +1858,7 @@ pub(crate) mod tests {
                             first_index: 0,
                             index_count: 3,
                             sort_key: Some(2.5),
-                            bounds: TileBox {
+                            bounds: orb_layout::TileBox {
                                 min: [-5, 0],
                                 max: [10, 4096],
                             },
@@ -2268,14 +1911,15 @@ pub(crate) mod tests {
                 },
             ],
         };
-        let bytes = pack(&build);
+        let build = make();
+        let bytes = pack(make());
         let words: Vec<u32> = bytes
             .as_chunks::<4>()
             .0
             .iter()
             .map(|b| u32::from_le_bytes(*b))
             .collect();
-        let result = unpack(&words, HostBytesId(7)).unwrap();
+        let result = unpack(packed_header(&bytes).unwrap(), HostBytesId(7)).unwrap();
         assert_eq!(result.host_bytes, Some(HostBytesId(7)));
         assert_eq!(*result.meshes[0].hits, build.meshes[0].hits);
         assert_eq!(result.warnings, build.warnings);
@@ -2304,7 +1948,8 @@ pub(crate) mod tests {
         };
         assert_eq!(&words[offset as usize / 4..][..len as usize], [9; 12]);
         assert_eq!(result.meshes[1].node, 4);
-        assert!(unpack(&words[..3], HostBytesId(0)).is_err());
+        assert!(packed_header(&bytes[..3]).is_err());
+        assert!(unpack(&bytes[4..8], HostBytesId(0)).is_err());
     }
 
     use crate::testing::{ASSETS, SYMBOL_TILE, SYMBOLS};
@@ -2384,15 +2029,15 @@ pub(crate) mod tests {
         );
         assert_eq!(symbols.instance_rows.len(), 2 * b.instances.len());
 
-        let packed = pack(&build);
+        let core = TileResult::from(build);
+        let packed = pack(worker.build(&[], Encoding::Mvt, &request).unwrap().tile());
         let words: Vec<u32> = packed
             .as_chunks::<4>()
             .0
             .iter()
             .map(|b| u32::from_le_bytes(*b))
             .collect();
-        let result = unpack(&words, HostBytesId(3)).unwrap();
-        let core = TileResult::from(build);
+        let result = unpack(packed_header(&packed).unwrap(), HostBytesId(3)).unwrap();
         let (unpacked, original) = (&result.symbols[0], &core.symbols[0]);
         assert_eq!(unpacked.layer, original.layer);
         assert_eq!(unpacked.meta, original.meta);
@@ -2454,6 +2099,9 @@ pub(crate) mod tests {
             },
         );
         icons.add("dot", [8, 8], &orb_render::ImageMetadata::default());
-        assert_eq!(SpriteIcons::parse(&icons.to_json()).unwrap(), icons);
+        assert_eq!(
+            crate::wire::decode::<SpriteIcons>(&crate::wire::encode(&icons)).unwrap(),
+            icons
+        );
     }
 }

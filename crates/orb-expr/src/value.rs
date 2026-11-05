@@ -414,6 +414,22 @@ impl fmt::Display for Value<'_> {
     }
 }
 
+/// A value crosses between workers as its JSON text.
+impl serde::Serialize for Value<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_json_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Value<'static> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        crate::json::parse(&text)
+            .map(|json| Value::from_json(&json))
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

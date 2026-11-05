@@ -174,6 +174,20 @@ impl FeatureData {
     }
 }
 
+/// Captured data crosses between workers as its JSON text.
+impl serde::Serialize for FeatureData {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_json_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for FeatureData {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        Self::from_json_str(&text).ok_or_else(|| serde::de::Error::custom("malformed feature data"))
+    }
+}
+
 impl crate::Expression {
     /// Evaluates for a captured feature.
     pub fn evaluate_data<'a>(

@@ -22,12 +22,55 @@ pub(crate) struct Surface {
 
 /// What job workers need of the surface: the plane GeoJSON tiles in, and
 /// the tile matrix sets of sources not in `WebMercatorQuad`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(into = "SurfaceText", try_from = "SurfaceText")]
 pub struct SurfaceTiles {
     /// The surface's one-tile set; `None` for Web Mercator.
     pub plane: Option<TileMatrixSet>,
     /// By source id.
     pub sources: Vec<(String, TileMatrixSet)>,
+}
+
+/// [`SurfaceTiles`] between workers: the plane's projection and the
+/// sources' tile matrix sets as their JSON.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SurfaceText {
+    plane: Option<String>,
+    sources: Vec<(String, String)>,
+}
+
+impl From<SurfaceTiles> for SurfaceText {
+    fn from(tiles: SurfaceTiles) -> Self {
+        Self {
+            plane: tiles.plane.map(|tms| projection_to_json(tms.projection())),
+            sources: tiles
+                .sources
+                .iter()
+                .filter_map(|(id, tms)| Some((id.clone(), tms_to_json(tms)?)))
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<SurfaceText> for SurfaceTiles {
+    type Error = String;
+
+    fn try_from(text: SurfaceText) -> Result<Self, String> {
+        Ok(Self {
+            plane: match text.plane {
+                Some(plane) => {
+                    let projection = projection_from_json(&plane)?;
+                    Some(TileMatrixSet::square(projection, projection.world_bounds()))
+                }
+                None => None,
+            },
+            sources: text
+                .sources
+                .iter()
+                .map(|(id, tms)| Ok((id.clone(), tms_from_json(tms)?)))
+                .collect::<Result<_, String>>()?,
+        })
+    }
 }
 
 impl SurfaceTiles {

@@ -356,7 +356,7 @@ impl GlyphCatalog {
 /// A raster job (decision 0009): bitmaps of some glyphs of one unit, a
 /// glyph PBF range or a font stack's local glyphs. The scene asks each
 /// unit's owner worker, once per glyph.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GlyphRaster {
     Pbf {
         url: String,
@@ -378,7 +378,7 @@ pub enum GlyphRaster {
 
 /// One glyph's SDF bitmap, border included; `index` is its position in
 /// the job's code points or texts.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GlyphBitmap {
     pub index: u32,
     pub size: [u32; 2],
@@ -484,45 +484,6 @@ impl GlyphRaster {
             })
             .collect())
     }
-
-    /// The bitmaps packed into words for another worker: count, then per
-    /// glyph its index, width, height and texels padded to words.
-    pub fn pack(bitmaps: &[GlyphBitmap]) -> Vec<u8> {
-        let mut bytes = (bitmaps.len() as u32).to_le_bytes().to_vec();
-        for b in bitmaps {
-            for w in [b.index, b.size[0], b.size[1]] {
-                bytes.extend(w.to_le_bytes());
-            }
-            bytes.extend(&b.sdf);
-            bytes.resize(bytes.len().next_multiple_of(4), 0);
-        }
-        bytes
-    }
-
-    /// Reads [`pack`](Self::pack)'s bytes.
-    pub fn unpack(bytes: &[u8]) -> Result<Vec<GlyphBitmap>, String> {
-        let bad = || "malformed glyph bitmaps".to_string();
-        let mut at = 0;
-        let word = |at: &mut usize| -> Result<u32, String> {
-            let w = bytes.get(*at..*at + 4).ok_or_else(bad)?;
-            *at += 4;
-            Ok(u32::from_le_bytes(w.try_into().expect("four bytes")))
-        };
-        let count = word(&mut at)?;
-        let mut bitmaps = Vec::with_capacity(count as usize);
-        for _ in 0..count {
-            let (index, w, h) = (word(&mut at)?, word(&mut at)?, word(&mut at)?);
-            let len = (w * h) as usize;
-            let sdf = bytes.get(at..at + len).ok_or_else(bad)?.to_vec();
-            at = (at + len).next_multiple_of(4);
-            bitmaps.push(GlyphBitmap {
-                index,
-                size: [w, h],
-                sdf,
-            });
-        }
-        Ok(bitmaps)
-    }
 }
 
 #[cfg(test)]
@@ -607,7 +568,7 @@ mod tests {
         let a = &bitmaps[0];
         assert_eq!(a.sdf.len() as u32, a.size[0] * a.size[1]);
         assert_eq!(
-            GlyphRaster::unpack(&GlyphRaster::pack(&bitmaps)).unwrap(),
+            crate::wire::decode::<Vec<GlyphBitmap>>(&crate::wire::encode(&bitmaps)).unwrap(),
             bitmaps
         );
     }

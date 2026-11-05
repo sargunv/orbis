@@ -11,6 +11,8 @@ version.workspace = true
 compat = ["orb-render/compat"]
 
 [dependencies]
+postcard.workspace = true
+serde.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 orb-camera.workspace = true

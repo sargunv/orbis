@@ -6,7 +6,9 @@ use crate::{Descriptor, Projection, WorldRect};
 
 /// A tile in a tile matrix set: zoom (the matrix identifier), column (left
 /// to right) and row (top to bottom).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct TileIndex {
     pub z: u8,
     pub col: u32,

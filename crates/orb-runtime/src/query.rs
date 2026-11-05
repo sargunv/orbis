@@ -16,7 +16,6 @@ use orb_camera::{CameraState, View};
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_style::{Kind, LayerType, Property, TranslateAnchor};
 
-use crate::jobs::{read_text, write_text};
 use crate::state::FeatureState;
 
 /// The topmost feature under a point in the last published frame.
@@ -121,6 +120,19 @@ impl MeshHits {
     /// Bytes its records take.
     pub fn bytes(&self) -> u64 {
         self.words.len() as u64 * 4
+    }
+}
+
+/// Hit records cross between workers as their words.
+impl serde::Serialize for MeshHits {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.words.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for MeshHits {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::from_words(Vec::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1862,6 +1874,26 @@ impl crate::Map {
         self.picking.borrow_mut().labels = Some((key, Arc::clone(&labels)));
         labels
     }
+}
+
+/// A string as words: its length, then its UTF-8 bytes padded to a word.
+fn write_text(words: &mut Vec<u32>, text: &str) {
+    words.push(text.len() as u32);
+    for chunk in text.as_bytes().chunks(4) {
+        let mut bytes = [0; 4];
+        bytes[..chunk.len()].copy_from_slice(chunk);
+        words.push(u32::from_le_bytes(bytes));
+    }
+}
+
+fn read_text(next: &mut dyn FnMut() -> Result<u32, String>) -> Result<String, String> {
+    let len = next()? as usize;
+    let mut bytes = Vec::new();
+    for _ in 0..len.div_ceil(4) {
+        bytes.extend_from_slice(&next()?.to_le_bytes());
+    }
+    bytes.truncate(len);
+    String::from_utf8(bytes).map_err(|_| "malformed packed string".into())
 }
 
 #[cfg(test)]

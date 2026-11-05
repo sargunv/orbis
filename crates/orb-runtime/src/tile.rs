@@ -92,7 +92,7 @@ pub(crate) const NO_ID: u32 = u32::MAX;
 
 /// A property word and typed texture key to resolve on the scene side. Jobs
 /// need no atlas allocation; generated ramps travel with the key across workers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ImageRef {
     pub word: u32,
     pub key: orb_render::ImageKey,

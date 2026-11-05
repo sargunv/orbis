@@ -8,7 +8,7 @@ use orb_tile::{GeometryType, Layer, ValueRef};
 use crate::jobs::{TileRequest, TileWorker};
 
 /// Which features of a tile a query wants.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FeatureSelect {
     /// These features of a source layer, by index.
     Indices { layer: String, features: Vec<u32> },
@@ -22,7 +22,7 @@ pub enum FeatureSelect {
 
 /// A query to a tile's owner worker: the tile, as it was loaded, and what
 /// to read from it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FeatureRequest {
     /// The tile's load request (`nodes` and `rows_only` unused).
     pub tile: TileRequest,
@@ -34,7 +34,7 @@ pub struct FeatureRequest {
 }
 
 /// One feature read from a tile.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TileFeature {
     /// The source layer's name.
     pub layer: String,

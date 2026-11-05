@@ -20,7 +20,7 @@ pub const SOUTH_POLE_Y: i16 = i16::MAX;
 /// How a tile's fills bend onto a curved surface: cut along a grid of
 /// `cells` per side, and in a world's top or bottom row on a globe, their
 /// edges on the world's edge fanned out to the pole (plan §9.2's caps).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Bend {
     pub cells: u32,
     pub north: bool,

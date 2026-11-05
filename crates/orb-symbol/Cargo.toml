@@ -7,6 +7,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+serde.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 glam.workspace = true
 libm.workspace = true

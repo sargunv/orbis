@@ -36,6 +36,7 @@ mod testing;
 mod tile;
 mod transitions;
 mod video;
+pub mod wire;
 
 pub use events::MapEvent;
 pub use video::{NO_VIDEO, VideoRequest};
@@ -50,8 +51,9 @@ pub const COMPAT_NO_HEATMAP: &str = "heatmap requires filterable, blendable rgba
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
 pub use jobs::{
-    Built, DemUnpack, ImagePixels, Jobs, PoolJobs, ResultMesh, Stream, StyleUpdate, TileDone,
-    TileImage, TileRequest, TileResult, TileWorker, pack, unpack,
+    Built, DemUnpack, ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, ResultMesh, Stream,
+    StyleUpdate, TileDone, TileImage, TileRequest, TileResult, TileWorker, pack, packed_header,
+    unpack,
 };
 pub use loader::{LoadDone, TileLoader, TileLocation};
 pub use map::{FrameReport, GridTile, Images, JobCounts, Map, Memory, RenderMode, Services};

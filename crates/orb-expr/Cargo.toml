@@ -7,6 +7,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+serde.workspace = true
 orb-tile.workspace = true
 
 [lints]

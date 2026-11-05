@@ -211,7 +211,7 @@ pub struct SortKeyRange {
 
 /// A size property as the renderer evaluates it per frame (GL JS
 /// `SizeData`, without the expression the scene side already has).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum SizeKind {
     /// Constant; every feature has the same size.
     #[default]
@@ -227,7 +227,7 @@ pub enum SizeKind {
 }
 
 /// Style-sheet problems layout ran into, for the runtime to report.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Warnings {
     /// Icons of one layer mix SDF and non-SDF images.
     pub mixed_sdf_icons: bool,

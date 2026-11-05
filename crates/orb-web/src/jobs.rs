@@ -1,35 +1,17 @@
 //! Tile jobs across workers (plan §7.1, §7.3, §10.4): both ends of the
-//! protocol between the render worker and its job workers.
+//! protocol between the page and its job workers.
 //!
 //! The page's JS owns the transport, one `MessagePort` per job worker, and
-//! passes messages through unread. The render worker's [`WorkerJobs`] posts
-//! requests; a job worker's [`JobWorker`] answers each with a packed tile
-//! (see [`orb_runtime::pack`]) in a transferred `ArrayBuffer`. The render
-//! worker copies only that buffer's header into wasm memory; the payload
-//! goes from the buffer to the GPU.
-//!
-//! Messages, render worker to job worker:
-//! - `{style, update}`: lay out later requests for style id `style` with a
-//!   revision of it, a [`StyleUpdate`] as JSON.
-//! - `{id, style, source, z, zoom, subdivision?, poles?, dataZoom, col, row, url, archive,
-//!   encoding, nodes?, rowsOnly}`: load a tile, or lay out some of its nodes (by key)
-//!   again from the worker's cached tile, or only their property rows.
-//!
-//! - `{features: true, id, …tile, layer?, indices?, filter?}`: features of
-//!   a tile for a query, sent to the tile's owner worker with its load's
-//!   fields; answered with `{id, layers, indices, ids, stateIds, bodies}`
-//!   (see [`orb_runtime::TileFeature`]) or `{id, error}`.
-//! - `{raster: true, id, url, codePoints}`: glyph bitmaps of one PBF range,
-//!   sent to the range's owner worker `hash(url) mod N`; answered with
-//!   `{id, glyphs}`, the packed bitmaps, or `{id, error}`.
-//!
-//! Job worker to render worker, one per load: `{id, buffer}`, the packed
-//! tile; `{id, image}`, an image source's tile as a transferred
-//! `ImageBitmap`, decoded in the job worker and copied to a texture by the
-//! render worker, so its pixels enter neither worker's wasm memory, with
-//! `dem`, its elevations as an f32 `ArrayBuffer`, for a terrain DEM tile;
-//! `{id, missing: true}` for a tile the source doesn't have; or
-//! `{id, error}`.
+//! passes messages through unread. The page's [`WorkerJobs`] posts each
+//! request as a [`JobRequest`] in [`orb_runtime::wire`]'s bytes; a job
+//! worker's [`JobWorker`] answers each one with an id as
+//! `{message, buffer?, image?}`: a [`JobReply`], with a packed tile ([`pack`])
+//! or a DEM tile's pixels as the transferred `buffer` and an image tile as
+//! the transferred `image` bitmap. The page copies only a packed tile's
+//! header into wasm memory; the payload goes from the buffer to the GPU.
+//! A tile, its relayouts and its queries go to job worker
+//! `hash(source, tile) mod N`, which has its data; a glyph unit to its
+//! owner worker.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -37,15 +19,15 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use js_sys::{ArrayBuffer, Object, Reflect, Uint32Array};
+use js_sys::{ArrayBuffer, Object, Reflect};
 use orb_crs::TileIndex;
 use orb_host::FetchError;
+use orb_runtime::wire;
 use orb_runtime::{
-    Built, GlyphRaster, ImagePixels, Jobs, RasterDone, SpriteIcons, StyleUpdate, TileBuild,
-    TileDone, TileImage, TileLoader, TileLocation, TileRequest, TileResult, TileWorker, pack,
-    unpack,
+    Built, GlyphRaster, ImagePixels, JobReply, JobRequest, Jobs, RasterDone, SpriteIcons,
+    StyleUpdate, TileBuild, TileDone, TileImage, TileLoader, TileRequest, TileResult, TileWorker,
+    pack, packed_header, unpack,
 };
-use orb_style::Encoding;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -133,129 +115,93 @@ impl WorkerJobs {
         gpu: &mut dyn crate::canvas::WebGpu,
         reply: &JsValue,
     ) -> Result<(), JsError> {
-        let id = number(reply, "id")? as u32;
-        let raster = self
-            .state
-            .lock()
-            .expect("jobs poisoned")
-            .rasters
-            .remove(&id);
-        let features = self
-            .state
-            .lock()
-            .expect("jobs poisoned")
-            .features
-            .remove(&id);
-        if let Some(done) = features {
-            done(read_features(reply));
-            return Ok(());
-        }
-        if let Some(done) = raster {
-            let result = match field(reply, "glyphs").dyn_into::<ArrayBuffer>() {
-                Ok(buffer) => GlyphRaster::unpack(&js_sys::Uint8Array::new(&buffer).to_vec()),
-                Err(_) => Err(field(reply, "error")
-                    .as_string()
-                    .unwrap_or_else(|| "malformed raster reply".into())),
-            };
-            done(result);
-            return Ok(());
-        }
+        let message = field(reply, "message")
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| JsError::new("job reply without a message"))?;
+        let message: JobReply = wire::decode(&message.to_vec()).map_err(|e| JsError::new(&e))?;
         let buffer = field(reply, "buffer").dyn_into::<ArrayBuffer>().ok();
-        let header = buffer.as_ref().map(header_words).transpose();
-        let done = {
-            let mut state = self.state.lock().expect("jobs poisoned");
-            state.done += 1;
-            if let Ok(Some(header)) = &header {
-                state.header_bytes += header.len() as u64 * 4;
-            }
-            state
-                .pending
-                .remove(&id)
-                .ok_or_else(|| JsError::new(&format!("reply to unknown job {id}")))?
-        };
-        let image = field(reply, "image")
-            .dyn_into::<web_sys::ImageBitmap>()
-            .ok();
-        let result = match (buffer, header) {
-            _ if field(reply, "missing").as_bool() == Some(true) => Ok(TileResult {
+        let id = message.id();
+        let mut state = self.state.lock().expect("jobs poisoned");
+        if let Some(done) = state.features.remove(&id) {
+            drop(state);
+            done(match message {
+                JobReply::Features { features, .. } => Ok(features),
+                JobReply::Error { message, .. } => Err(message),
+                _ => Err("malformed features reply".into()),
+            });
+            return Ok(());
+        }
+        if let Some(done) = state.rasters.remove(&id) {
+            drop(state);
+            done(match message {
+                JobReply::Glyphs { bitmaps, .. } => Ok(bitmaps),
+                JobReply::Error { message, .. } => Err(message),
+                _ => Err("malformed raster reply".into()),
+            });
+            return Ok(());
+        }
+        state.done += 1;
+        let done = state
+            .pending
+            .remove(&id)
+            .ok_or_else(|| JsError::new(&format!("reply to unknown job {id}")))?;
+        let result = match message {
+            JobReply::Missing { .. } => Ok(TileResult {
                 missing: true,
                 ..TileResult::default()
             }),
             // A DEM tile, decoded by the core in the job worker.
-            _ if field(reply, "pixels").is_instance_of::<ArrayBuffer>() => {
-                let pixels = js_sys::Uint8Array::new(&field(reply, "pixels")).to_vec();
-                let width = field(reply, "width").as_f64().unwrap_or(0.0) as u32;
-                let elevations = js_sys::Float32Array::new(&field(reply, "dem")).to_vec();
+            JobReply::Dem {
+                width, elevations, ..
+            } => {
+                let pixels = buffer.map(|b| js_sys::Uint8Array::new(&b).to_vec());
                 orb_tile::DemGrid::from_elevations(width, elevations).map(|dem| TileResult {
                     image: Some(TileImage {
                         width,
                         height: width,
-                        pixels: ImagePixels::Core(pixels),
+                        pixels: ImagePixels::Core(pixels.unwrap_or_default()),
                     }),
                     dem: Some(Arc::new(dem)),
                     ..TileResult::default()
                 })
             }
-            _ if image.is_some() => {
-                let bitmap = image.expect("checked");
-                Ok(TileResult {
-                    image: Some(TileImage {
-                        width: bitmap.width(),
-                        height: bitmap.height(),
-                        pixels: ImagePixels::Host(gpu.register_image_bitmap(bitmap)),
+            JobReply::Image { .. } => {
+                match field(reply, "image").dyn_into::<web_sys::ImageBitmap>() {
+                    Ok(bitmap) => Ok(TileResult {
+                        image: Some(TileImage {
+                            width: bitmap.width(),
+                            height: bitmap.height(),
+                            pixels: ImagePixels::Host(gpu.register_image_bitmap(bitmap)),
+                        }),
+                        ..TileResult::default()
                     }),
-                    ..TileResult::default()
-                })
-            }
-            (Some(buffer), Ok(Some(header))) => {
-                let bytes = gpu.register_array_buffer(buffer);
-                let result = unpack(&header, bytes);
-                if result.is_err() {
-                    gpu.release_host_bytes(bytes);
+                    Err(_) => Err("image reply without a bitmap".into()),
                 }
-                result
             }
-            (_, Err(e)) => Err(e),
-            _ => Err(field(reply, "error")
-                .as_string()
-                .unwrap_or_else(|| "malformed job reply".into())),
+            JobReply::Tile { .. } => match buffer {
+                Some(buffer) => {
+                    let header = header_bytes(&buffer);
+                    if let Ok(header) = &header {
+                        state.header_bytes += header.len() as u64;
+                    }
+                    header.and_then(|header| {
+                        let bytes = gpu.register_array_buffer(buffer);
+                        let result = unpack(&header, bytes);
+                        if result.is_err() {
+                            gpu.release_host_bytes(bytes);
+                        }
+                        result
+                    })
+                }
+                None => Err("tile reply without a buffer".into()),
+            },
+            JobReply::Error { message, .. } => Err(message),
+            _ => Err("malformed job reply".into()),
         };
+        drop(state);
         done(result);
         Ok(())
     }
-}
-
-/// A features reply's features, or its error.
-fn read_features(reply: &JsValue) -> Result<Vec<orb_runtime::TileFeature>, String> {
-    if let Some(e) = field(reply, "error").as_string() {
-        return Err(e);
-    }
-    let strings = |key: &str| -> Vec<Option<String>> {
-        js_sys::Array::from(&field(reply, key))
-            .iter()
-            .map(|v| v.as_string())
-            .collect()
-    };
-    let layers = strings("layers");
-    let ids = strings("ids");
-    let state_ids = strings("stateIds");
-    let bodies = strings("bodies");
-    let indices = field(reply, "indices")
-        .dyn_into::<js_sys::Uint32Array>()
-        .map_err(|_| "malformed features reply".to_string())?
-        .to_vec();
-    if [layers.len(), ids.len(), state_ids.len(), bodies.len()] != [indices.len(); 4] {
-        return Err("malformed features reply".into());
-    }
-    Ok((0..indices.len())
-        .map(|i| orb_runtime::TileFeature {
-            layer: layers[i].clone().unwrap_or_default(),
-            index: indices[i],
-            id: ids[i].clone(),
-            state_id: state_ids[i].clone(),
-            body: bodies[i].clone().unwrap_or_default(),
-        })
-        .collect())
 }
 
 /// The job worker that loaded `tile` of `source`: `hash(source, tile) mod N`.
@@ -265,202 +211,86 @@ fn owner(source: u32, tile: TileIndex, workers: u32) -> u32 {
     (hasher.finish() % u64::from(workers)) as u32
 }
 
-/// A tile request's fields, as a load and a features query send them.
-fn tile_fields(request: &TileRequest) -> Vec<(&'static str, JsValue)> {
-    let (url, archive) = match &request.location {
-        TileLocation::Url(url) => (url.clone(), false),
-        TileLocation::Pmtiles(url) => (url.clone(), true),
-    };
-    vec![
-        ("archive", archive.into()),
-        ("style", (request.style as f64).into()),
-        ("source", request.source.into()),
-        ("z", request.tile.z.into()),
-        ("zoom", request.zoom.into()),
-        (
-            "subdivision",
-            request.bend.map_or(JsValue::UNDEFINED, |b| b.cells.into()),
-        ),
-        (
-            "poles",
-            request.bend.map_or(JsValue::UNDEFINED, |b| {
-                (u32::from(b.north) | u32::from(b.south) << 1).into()
-            }),
-        ),
-        ("dataZoom", request.data_zoom.into()),
-        ("col", request.tile.col.into()),
-        ("row", request.tile.row.into()),
-        ("url", url.into()),
-        (
-            "encoding",
-            match request.encoding {
-                Encoding::Mvt => 0u32,
-                Encoding::Mlt => 1,
-            }
-            .into(),
-        ),
-    ]
+/// Copies a packed tile's header out of `buffer`: its length, then its
+/// bytes ([`packed_header`]).
+fn header_bytes(buffer: &ArrayBuffer) -> Result<Vec<u8>, String> {
+    let bad = || "malformed packed tile".to_string();
+    if buffer.byte_length() < 4 {
+        return Err(bad());
+    }
+    let len = js_sys::Uint8Array::new_with_byte_offset_and_length(buffer, 0, 4).to_vec();
+    let len = u32::from_le_bytes(len.try_into().expect("four bytes"));
+    if 4 + len > buffer.byte_length() {
+        return Err(bad());
+    }
+    let prefix = js_sys::Uint8Array::new_with_byte_offset_and_length(buffer, 0, 4 + len).to_vec();
+    Ok(packed_header(&prefix)?.to_vec())
 }
 
-/// Copies a packed tile's header, whose first word is its length in words,
-/// out of `buffer`. Typed arrays use the platform's byte order, which is
-/// little-endian everywhere wasm runs, as [`pack`] writes.
-fn header_words(buffer: &ArrayBuffer) -> Result<Vec<u32>, String> {
-    let bad = || "malformed packed tile".to_string();
-    let words = buffer.byte_length() / 4;
-    if words == 0 {
-        return Err(bad());
+impl WorkerJobs {
+    /// A request's id, its done kept by `keep`.
+    fn next_id(&self, keep: impl FnOnce(&mut State, u32)) -> u32 {
+        let mut state = self.state.lock().expect("jobs poisoned");
+        let id = state.next_id;
+        state.next_id = id.wrapping_add(1);
+        keep(&mut state, id);
+        id
     }
-    let len = Uint32Array::new_with_byte_offset_and_length(buffer, 0, 1).get_index(0);
-    if len == 0 || len > words {
-        return Err(bad());
-    }
-    Ok(Uint32Array::new_with_byte_offset_and_length(buffer, 0, len).to_vec())
 }
 
 impl Jobs for WorkerJobs {
-    fn set_style(&self, id: u64, update: &StyleUpdate, _: &Arc<TileWorker>) {
-        let message = object(&[
-            ("style", (id as f64).into()),
-            ("update", JsValue::from_str(&update.to_json())),
-        ]);
+    fn set_style(&self, style: u64, update: &StyleUpdate, _: &Arc<TileWorker>) {
+        let message = bytes(&wire::encode(&JobRequest::Style {
+            style,
+            update: Box::new(update.clone()),
+        }));
         for worker in 0..self.workers {
             self.post(worker, &message);
         }
     }
 
-    fn set_icons(&self, id: u64, icons: &Arc<SpriteIcons>, _: &Arc<TileWorker>) {
-        let message = object(&[
-            ("style", (id as f64).into()),
-            ("icons", JsValue::from_str(&icons.to_json())),
-        ]);
+    fn set_icons(&self, style: u64, icons: &Arc<SpriteIcons>, _: &Arc<TileWorker>) {
+        let message = bytes(&wire::encode(&JobRequest::Icons {
+            style,
+            icons: (**icons).clone(),
+        }));
         for worker in 0..self.workers {
             self.post(worker, &message);
         }
     }
 
     fn raster(&self, request: GlyphRaster, done: RasterDone) {
-        let id = {
-            let mut state = self.state.lock().expect("jobs poisoned");
-            let id = state.next_id;
-            state.next_id = id.wrapping_add(1);
+        let id = self.next_id(|state, id| {
             state.rasters.insert(id, done);
-            id
-        };
+        });
         // A unit's owner worker rasterizes it (plan §7.3 affinity).
         let worker = request.owner(self.workers);
-        let message = match request {
-            GlyphRaster::Pbf { url, code_points } => object(&[
-                ("raster", true.into()),
-                ("id", id.into()),
-                ("url", url.into()),
-                (
-                    "codePoints",
-                    js_sys::Uint32Array::from(code_points.as_slice()).into(),
-                ),
-            ]),
-            GlyphRaster::Local {
-                stack,
-                texts,
-                ideographs,
-            } => object(&[
-                ("raster", true.into()),
-                ("id", id.into()),
-                ("stack", stack.into()),
-                (
-                    "texts",
-                    texts
-                        .into_iter()
-                        .map(JsValue::from)
-                        .collect::<js_sys::Array>()
-                        .into(),
-                ),
-                (
-                    "ideographs",
-                    ideographs.map_or(JsValue::NULL, JsValue::from),
-                ),
-            ]),
-            GlyphRaster::File { url, texts } => object(&[
-                ("raster", true.into()),
-                ("id", id.into()),
-                ("file", url.into()),
-                (
-                    "texts",
-                    texts
-                        .into_iter()
-                        .map(JsValue::from)
-                        .collect::<js_sys::Array>()
-                        .into(),
-                ),
-            ]),
-        };
-        self.post(worker, &message);
+        self.post(
+            worker,
+            &bytes(&wire::encode(&JobRequest::Raster { id, request })),
+        );
     }
 
     fn load(&self, request: TileRequest, done: TileDone) {
-        let id = {
-            let mut state = self.state.lock().expect("jobs poisoned");
-            let id = state.next_id;
-            state.next_id = id.wrapping_add(1);
+        let id = self.next_id(|state, id| {
             state.pending.insert(id, done);
-            id
-        };
+        });
         let worker = owner(request.source, request.tile, self.workers);
-        let nodes = match &request.nodes {
-            Some(nodes) => js_sys::Uint32Array::from(nodes.as_slice()).into(),
-            None => JsValue::UNDEFINED,
-        };
-        let mut fields = tile_fields(&request);
-        fields.extend([
-            ("id", id.into()),
-            ("nodes", nodes),
-            ("rowsOnly", request.rows_only.into()),
-            (
-                "demUnpack",
-                match request.dem_unpack {
-                    Some(unpack) => js_sys::Float64Array::from(unpack.0.as_slice()).into(),
-                    None => JsValue::UNDEFINED,
-                },
-            ),
-        ]);
-        self.post(worker, &object(&fields));
+        self.post(
+            worker,
+            &bytes(&wire::encode(&JobRequest::Load { id, request })),
+        );
     }
 
     fn features(&self, request: orb_runtime::FeatureRequest, done: orb_runtime::FeaturesDone) {
-        let id = {
-            let mut state = self.state.lock().expect("jobs poisoned");
-            let id = state.next_id;
-            state.next_id = id.wrapping_add(1);
+        let id = self.next_id(|state, id| {
             state.features.insert(id, done);
-            id
-        };
-        let tile = &request.tile;
-        let worker = owner(tile.source, tile.tile, self.workers);
-        let mut fields = tile_fields(tile);
-        fields.extend([
-            ("id", id.into()),
-            ("features", true.into()),
-            (
-                "revision",
-                request
-                    .revision
-                    .map_or(JsValue::UNDEFINED, |r| (r as f64).into()),
-            ),
-        ]);
-        match request.select {
-            orb_runtime::FeatureSelect::Indices { layer, features } => fields.extend([
-                ("layer", layer.into()),
-                (
-                    "indices",
-                    js_sys::Uint32Array::from(features.as_slice()).into(),
-                ),
-            ]),
-            orb_runtime::FeatureSelect::Filter { layer, filter } => fields.extend([
-                ("layer", layer.map_or(JsValue::UNDEFINED, JsValue::from)),
-                ("filter", filter.map_or(JsValue::UNDEFINED, JsValue::from)),
-            ]),
-        }
-        self.post(worker, &object(&fields));
+        });
+        let worker = owner(request.tile.source, request.tile.tile, self.workers);
+        self.post(
+            worker,
+            &bytes(&wire::encode(&JobRequest::Features { id, request })),
+        );
     }
 }
 
@@ -512,109 +342,73 @@ impl JobWorker {
         orb_host_web::ShaperFiles::set_loader(loader);
     }
 
-    /// Handles a message from the render worker. Returns a promise of the
-    /// reply to post back, transferring its `buffer`, or nothing.
-    pub fn receive(&mut self, message: &JsValue) -> Result<Option<js_sys::Promise>, JsError> {
-        if field(message, "raster").as_bool() == Some(true) {
-            return Ok(Some(raster(message)?));
-        }
-        let style = number(message, "style")? as u64;
-        if let Some(update) = field(message, "update").as_string() {
-            let update = StyleUpdate::parse(&update).map_err(|e| JsError::new(&e))?;
-            let previous = self
-                .styles
+    /// Handles a request from the page: a [`JobRequest`] in
+    /// [`orb_runtime::wire`]'s bytes. Returns a promise of the reply to
+    /// post back, transferring its `buffer` and `image`, or nothing.
+    pub fn receive(
+        &mut self,
+        message: &js_sys::Uint8Array,
+    ) -> Result<Option<js_sys::Promise>, JsError> {
+        let request: JobRequest = wire::decode(&message.to_vec()).map_err(|e| JsError::new(&e))?;
+        let worker = |styles: &[(u64, Rc<TileWorker>)], style: u64| {
+            styles
                 .iter()
                 .find(|(id, _)| *id == style)
-                .map(|(_, w)| Rc::clone(w));
-            let worker =
-                TileWorker::update(previous.as_deref(), &update).map_err(|e| JsError::new(&e))?;
-            worker.set_local_glyphs(Arc::new(orb_host_web::CanvasGlyphs));
-            worker.set_font_files(Arc::new(orb_host_web::ShaperFiles));
-            if let Some(words) = self.words.borrow().as_ref() {
-                worker.set_word_breaker(Arc::clone(words));
-            } else if let Some(url) = &self.word_data_url {
-                worker.set_word_data_url(url);
-            }
-            self.styles
-                .retain(|(id, _)| *id + 1 >= style && *id != style);
-            self.styles.push((style, Rc::new(worker)));
-            return Ok(None);
-        }
-        if let Some(icons) = field(message, "icons").as_string() {
-            let icons = SpriteIcons::parse(&icons).map_err(|e| JsError::new(&e))?;
-            // Revisions share their worker data, so this reaches every one.
-            if let Some((_, worker)) = self.styles.iter().find(|(id, _)| *id == style) {
-                worker.set_icons(Arc::new(icons));
-            }
-            return Ok(None);
-        }
-        let id = number(message, "id")?;
-        let source = number(message, "source")? as u32;
-        let data_zoom = number(message, "dataZoom")? as u8;
-        let tile = TileIndex {
-            z: number(message, "z")? as u8,
-            col: number(message, "col")? as u32,
-            row: number(message, "row")? as u32,
+                .map(|(_, w)| Rc::clone(w))
         };
-        let encoding = match number(message, "encoding")? as u32 {
-            0 => Encoding::Mvt,
-            _ => Encoding::Mlt,
-        };
-        let url = field(message, "url")
-            .as_string()
-            .ok_or_else(|| JsError::new("tile request without a url"))?;
-        let location = if field(message, "archive").as_bool() == Some(true) {
-            TileLocation::Pmtiles(url.clone())
-        } else {
-            TileLocation::Url(url.clone())
-        };
-        let request = TileRequest {
-            style,
-            source,
-            tile,
-            zoom: number(message, "zoom")?,
-            bend: field(message, "subdivision").as_f64().map(|cells| {
-                let poles = field(message, "poles").as_f64().unwrap_or(0.0) as u32;
-                orb_runtime::Bend {
-                    cells: cells as u32,
-                    north: poles & 1 != 0,
-                    south: poles & 2 != 0,
+        match request {
+            JobRequest::Style { style, update } => {
+                let previous = worker(&self.styles, style);
+                let worker = TileWorker::update(previous.as_deref(), &update)
+                    .map_err(|e| JsError::new(&e))?;
+                worker.set_local_glyphs(Arc::new(orb_host_web::CanvasGlyphs));
+                worker.set_font_files(Arc::new(orb_host_web::ShaperFiles));
+                if let Some(words) = self.words.borrow().as_ref() {
+                    worker.set_word_breaker(Arc::clone(words));
+                } else if let Some(url) = &self.word_data_url {
+                    worker.set_word_data_url(url);
                 }
-            }),
-            data_zoom,
-            location: location.clone(),
-            encoding,
-            nodes: field(message, "nodes")
-                .dyn_into::<js_sys::Uint32Array>()
-                .ok()
-                .map(|nodes| nodes.to_vec()),
-            rows_only: field(message, "rowsOnly").as_bool() == Some(true),
-            dem_unpack: field(message, "demUnpack")
-                .dyn_into::<js_sys::Float64Array>()
-                .ok()
-                .and_then(|unpack| unpack.to_vec().try_into().ok())
-                .map(orb_runtime::DemUnpack),
-        };
-        let worker = self
-            .styles
-            .iter()
-            .find(|(i, _)| *i == style)
-            .map(|(_, w)| Rc::clone(w));
-        if field(message, "features").as_bool() == Some(true) {
-            return Ok(Some(query(worker, request, message, &self.loader, id)));
+                self.styles
+                    .retain(|(id, _)| *id + 1 >= style && *id != style);
+                self.styles.push((style, Rc::new(worker)));
+                Ok(None)
+            }
+            JobRequest::Icons { style, icons } => {
+                // Revisions share their worker data, so this reaches every one.
+                if let Some(worker) = worker(&self.styles, style) {
+                    worker.set_icons(Arc::new(icons));
+                }
+                Ok(None)
+            }
+            JobRequest::Raster { id, request } => Ok(Some(raster(id, request))),
+            JobRequest::Features { id, request } => {
+                let worker = worker(&self.styles, request.tile.style);
+                Ok(Some(query(worker, request, &self.loader, id)))
+            }
+            JobRequest::Load { id, request } => {
+                let worker = worker(&self.styles, request.style);
+                Ok(Some(self.load(worker, id, request)))
+            }
         }
+    }
+}
+
+impl JobWorker {
+    fn load(
+        &self,
+        worker: Option<Rc<TileWorker>>,
+        id: u32,
+        request: TileRequest,
+    ) -> js_sys::Promise {
+        let (style, source, encoding) = (request.style, request.source, request.encoding);
         let loaded = if worker
             .as_ref()
             .is_some_and(|worker| !worker.has_data(&request) && worker.data_url(source).is_none())
         {
             let (sender, loaded) = futures_channel::oneshot::channel();
             self.loader.load(
-                location,
-                TileIndex {
-                    z: data_zoom,
-                    col: tile.col >> (tile.z - data_zoom),
-                    row: tile.row >> (tile.z - data_zoom),
-                },
+                request.location.clone(),
+                request.data_tile(),
                 encoding,
                 Box::new(move |r| {
                     let _ = sender.send(r);
@@ -625,12 +419,12 @@ impl JobWorker {
             None
         };
         let source_fetch = worker.as_ref().and_then(|worker| {
-            if worker.has_data(&request) || worker.data_url(source).is_none() {
+            if worker.has_data(&request) {
                 return None;
             }
+            let url = worker.data_url(source)?.to_string();
             let mut fetches = self.source_fetches.borrow_mut();
             let promise = fetches.entry((style, source)).or_insert_with(|| {
-                let url = url.clone();
                 wasm_bindgen_futures::future_to_promise(async move {
                     match crate::regions::fetch(&url).await {
                         Ok(bytes) => Ok(js_sys::Uint8Array::from(bytes.as_slice()).into()),
@@ -644,14 +438,10 @@ impl JobWorker {
         let glyph_fetches = Rc::clone(&self.glyph_fetches);
         let words = Rc::clone(&self.words);
         let image = worker.as_ref().and_then(|w| w.image_kind(source));
-        Ok(Some(wasm_bindgen_futures::future_to_promise(async move {
-            let reply = |fields: &[(&str, JsValue)]| {
-                let mut all = vec![("id", JsValue::from(id))];
-                all.extend(fields.iter().cloned());
-                Ok(object(&all))
-            };
+        wasm_bindgen_futures::future_to_promise(async move {
+            let error = |message: String| Ok(reply(&JobReply::Error { id, message }, None, None));
             let Some(worker) = worker else {
-                return reply(&[("error", format!("style {style} was replaced").into())]);
+                return error(format!("style {style} was replaced"));
             };
             // The tile's bytes, unless it needs none.
             let bytes: Vec<u8> = if worker.has_data(&request) {
@@ -663,10 +453,10 @@ impl JobWorker {
                     Ok(_) if worker.has_data(&request) => Vec::new(),
                     Ok(value) => js_sys::Uint8Array::new(&value).to_vec(),
                     Err(e) => {
-                        let e = e
-                            .as_string()
-                            .unwrap_or_else(|| "GeoJSON fetch failed".into());
-                        return reply(&[("error", e.into())]);
+                        return error(
+                            e.as_string()
+                                .unwrap_or_else(|| "GeoJSON fetch failed".into()),
+                        );
                     }
                 }
             } else {
@@ -677,9 +467,7 @@ impl JobWorker {
                 {
                     // An archive's left-out tile draws nothing.
                     Ok((bytes, _)) if bytes.is_empty() => {
-                        let packed = pack(&TileBuild::default());
-                        let buffer = js_sys::Uint8Array::from(packed.as_slice()).buffer();
-                        return reply(&[("buffer", buffer.into())]);
+                        return Ok(tile_reply(id, TileBuild::default()));
                     }
                     // A terrain DEM tile is data: the core decodes it exactly
                     // (`orb_host::decode_image`), for the GPU and the CPU.
@@ -691,33 +479,31 @@ impl JobWorker {
                             Ok((image, grid))
                         });
                         return match decoded {
-                            Ok((image, grid)) => reply(&[
-                                (
-                                    "pixels",
-                                    js_sys::Uint8Array::from(image.pixels.as_slice())
-                                        .buffer()
-                                        .into(),
-                                ),
-                                ("width", image.width.into()),
-                                (
-                                    "dem",
-                                    js_sys::Float32Array::from(grid.elevations())
-                                        .buffer()
-                                        .into(),
-                                ),
-                            ]),
-                            Err(e) => reply(&[("error", format!("image decode: {e}").into())]),
+                            Ok((image, grid)) => Ok(reply(
+                                &JobReply::Dem {
+                                    id,
+                                    width: image.width,
+                                    elevations: grid.elevations().to_vec(),
+                                },
+                                Some(js_sys::Uint8Array::from(image.pixels.as_slice()).buffer()),
+                                None,
+                            )),
+                            Err(e) => error(format!("image decode: {e}")),
                         };
                     }
                     Ok((bytes, _)) if image.is_some() => {
                         return match orb_host_web::decode_bitmap(&bytes).await {
-                            Ok(bitmap) => reply(&[("image", bitmap.into())]),
-                            Err(e) => reply(&[("error", format!("image decode: {e:?}").into())]),
+                            Ok(bitmap) => {
+                                Ok(reply(&JobReply::Image { id }, None, Some(bitmap.into())))
+                            }
+                            Err(e) => error(format!("image decode: {e:?}")),
                         };
                     }
                     Ok((bytes, _)) => bytes,
-                    Err(FetchError::NotFound) => return reply(&[("missing", true.into())]),
-                    Err(e) => return reply(&[("error", e.to_string().into())]),
+                    Err(FetchError::NotFound) => {
+                        return Ok(reply(&JobReply::Missing { id }, None, None));
+                    }
+                    Err(e) => return error(e.to_string()),
                 }
             };
             // Labels may need glyph ranges or word data first: fetch them
@@ -760,40 +546,41 @@ impl JobWorker {
                 built = worker.build(&bytes, encoding, &request);
             }
             match built {
-                Ok(Built::Tile(build)) => {
-                    let packed = pack(&build);
-                    let buffer = js_sys::Uint8Array::from(packed.as_slice()).buffer();
-                    reply(&[("buffer", buffer.into())])
-                }
+                Ok(Built::Tile(build)) => Ok(tile_reply(id, build)),
                 Ok(Built::Fetch(_)) => unreachable!("fetched above"),
-                Err(e) => reply(&[("error", e.into())]),
+                Err(e) => error(e),
             }
-        })))
+        })
     }
+}
+
+/// A reply for the page: the message, and the buffer and bitmap it
+/// transfers.
+fn reply(message: &JobReply, buffer: Option<ArrayBuffer>, image: Option<JsValue>) -> JsValue {
+    object(&[
+        ("message", bytes(&wire::encode(message))),
+        ("buffer", buffer.map_or(JsValue::UNDEFINED, Into::into)),
+        ("image", image.unwrap_or(JsValue::UNDEFINED)),
+    ])
+}
+
+/// A packed tile's reply.
+fn tile_reply(id: u32, build: TileBuild) -> JsValue {
+    let packed = pack(build);
+    let buffer = js_sys::Uint8Array::from(packed.as_slice()).buffer();
+    reply(&JobReply::Tile { id }, Some(buffer), None)
 }
 
 /// Answers a features query from the tile's cached frame, or from the tile
 /// fetched again when the frame left the cache.
 fn query(
     worker: Option<Rc<TileWorker>>,
-    tile: TileRequest,
-    message: &JsValue,
+    request: orb_runtime::FeatureRequest,
     loader: &Arc<TileLoader>,
-    id: f64,
+    id: u32,
 ) -> js_sys::Promise {
-    let revision = field(message, "revision").as_f64().map(|r| r as u64);
-    let layer = field(message, "layer").as_string();
-    let select = match field(message, "indices").dyn_into::<js_sys::Uint32Array>() {
-        Ok(indices) => orb_runtime::FeatureSelect::Indices {
-            layer: layer.unwrap_or_default(),
-            features: indices.to_vec(),
-        },
-        Err(_) => orb_runtime::FeatureSelect::Filter {
-            layer,
-            filter: field(message, "filter").as_string(),
-        },
-    };
-    let loaded = worker.as_ref().filter(|w| !w.has_data(&tile)).map(|_| {
+    let tile = &request.tile;
+    let loaded = worker.as_ref().filter(|w| !w.has_data(tile)).map(|_| {
         let (sender, loaded) = futures_channel::oneshot::channel();
         loader.load(
             tile.location.clone(),
@@ -806,50 +593,21 @@ fn query(
         loaded
     });
     wasm_bindgen_futures::future_to_promise(async move {
-        let reply = |fields: Vec<(&str, JsValue)>| {
-            let mut all = vec![("id", JsValue::from(id))];
-            all.extend(fields);
-            Ok(object(&all))
-        };
-        let error = |e: String| reply(vec![("error", e.into())]);
+        let error = |message: String| Ok(reply(&JobReply::Error { id, message }, None, None));
         let Some(worker) = worker else {
-            return error(format!("style {} was replaced", tile.style));
+            return error(format!("style {} was replaced", request.tile.style));
         };
         let (bytes, encoding) = match loaded {
-            None => (Vec::new(), tile.encoding),
+            None => (Vec::new(), request.tile.encoding),
             Some(loaded) => match loaded.await {
                 Ok(Ok(fetched)) => fetched,
-                Ok(Err(FetchError::NotFound)) => (Vec::new(), tile.encoding),
+                Ok(Err(FetchError::NotFound)) => (Vec::new(), request.tile.encoding),
                 Ok(Err(e)) => return error(e.to_string()),
                 Err(_) => return error("tile loader dropped".into()),
             },
         };
-        let request = orb_runtime::FeatureRequest {
-            tile,
-            select,
-            revision,
-        };
         match worker.features(&bytes, encoding, &request) {
-            Ok(features) => {
-                let strings = |f: &dyn Fn(&orb_runtime::TileFeature) -> Option<&str>| {
-                    let array = js_sys::Array::new();
-                    for feature in &features {
-                        array.push(&f(feature).map_or(JsValue::NULL, JsValue::from));
-                    }
-                    JsValue::from(array)
-                };
-                let indices: Vec<u32> = features.iter().map(|f| f.index).collect();
-                reply(vec![
-                    ("layers", strings(&|f| Some(f.layer.as_str()))),
-                    (
-                        "indices",
-                        js_sys::Uint32Array::from(indices.as_slice()).into(),
-                    ),
-                    ("ids", strings(&|f| f.id.as_deref())),
-                    ("stateIds", strings(&|f| f.state_id.as_deref())),
-                    ("bodies", strings(&|f| Some(f.body.as_str()))),
-                ])
-            }
+            Ok(features) => Ok(reply(&JobReply::Features { id, features }, None, None)),
             Err(e) => error(e),
         }
     })
@@ -857,37 +615,8 @@ fn query(
 
 /// Answers a raster job: fetches the range (from the HTTP cache, usually)
 /// and replies with the requested bitmaps.
-fn raster(message: &JsValue) -> Result<js_sys::Promise, JsError> {
-    let id = number(message, "id")?;
-    let texts = || {
-        js_sys::Array::from(&field(message, "texts"))
-            .iter()
-            .filter_map(|t| t.as_string())
-            .collect()
-    };
-    let request = if let Some(url) = field(message, "file").as_string() {
-        GlyphRaster::File {
-            url,
-            texts: texts(),
-        }
-    } else if let Some(stack) = field(message, "stack").as_string() {
-        GlyphRaster::Local {
-            stack,
-            texts: texts(),
-            ideographs: field(message, "ideographs").as_string(),
-        }
-    } else {
-        GlyphRaster::Pbf {
-            url: field(message, "url")
-                .as_string()
-                .ok_or_else(|| JsError::new("raster job without a url"))?,
-            code_points: field(message, "codePoints")
-                .dyn_into::<js_sys::Uint32Array>()
-                .map_err(|_| JsError::new("raster job without code points"))?
-                .to_vec(),
-        }
-    };
-    Ok(wasm_bindgen_futures::future_to_promise(async move {
+fn raster(id: u32, request: GlyphRaster) -> js_sys::Promise {
+    wasm_bindgen_futures::future_to_promise(async move {
         let bitmaps = match &request {
             GlyphRaster::Pbf { url, .. } => match crate::regions::fetch(url).await {
                 Ok(bytes) => request.run(&bytes),
@@ -911,25 +640,24 @@ fn raster(message: &JsValue) -> Result<js_sys::Promise, JsError> {
                 }
             }
         };
-        Ok(match bitmaps {
-            Ok(bitmaps) => {
-                let packed = GlyphRaster::pack(&bitmaps);
-                let buffer = js_sys::Uint8Array::from(packed.as_slice()).buffer();
-                object(&[("id", id.into()), ("glyphs", buffer.into())])
-            }
-            Err(e) => object(&[("id", id.into()), ("error", e.into())]),
-        })
-    }))
+        Ok(reply(
+            &match bitmaps {
+                Ok(bitmaps) => JobReply::Glyphs { id, bitmaps },
+                Err(message) => JobReply::Error { id, message },
+            },
+            None,
+            None,
+        ))
+    })
+}
+
+/// A message's bytes as a JS array.
+fn bytes(bytes: &[u8]) -> JsValue {
+    js_sys::Uint8Array::from(bytes).into()
 }
 
 fn field(object: &JsValue, key: &str) -> JsValue {
     Reflect::get(object, &JsValue::from_str(key)).unwrap_or(JsValue::UNDEFINED)
-}
-
-fn number(object: &JsValue, key: &str) -> Result<f64, JsError> {
-    field(object, key)
-        .as_f64()
-        .ok_or_else(|| JsError::new(&format!("job message without `{key}`")))
 }
 
 fn object(fields: &[(&str, JsValue)]) -> JsValue {

@@ -2354,6 +2354,7 @@ name = "orb-crs"
 version = "0.0.0"
 dependencies = [
  "glam",
+ "serde",
  "serde_json",
 ]
 
@@ -2383,6 +2384,7 @@ name = "orb-expr"
 version = "0.0.0"
 dependencies = [
  "orb-tile",
+ "serde",
  "wasm-bindgen-test",
 ]
 
@@ -2491,6 +2493,7 @@ version = "0.0.0"
 dependencies = [
  "earcut",
  "orb-tile",
+ "serde",
 ]
 
 [[package]]
@@ -2533,6 +2536,8 @@ dependencies = [
  "orb-tile",
  "orb-v8",
  "pollster",
+ "postcard",
+ "serde",
  "serde_json",
 ]
 
@@ -2544,6 +2549,7 @@ dependencies = [
  "orb-hal",
  "orb-layout",
  "orb-shaders",
+ "serde",
 ]
 
 [[package]]
@@ -2572,6 +2578,7 @@ dependencies = [
  "orb-expr",
  "orb-style",
  "orb-v8",
+ "serde",
 ]
 
 [[package]]
@@ -2581,6 +2588,7 @@ dependencies = [
  "orb-crs",
  "orb-expr",
  "orb-tile",
+ "serde",
 ]
 
 [[package]]
@@ -2593,6 +2601,7 @@ dependencies = [
  "orb-crs",
  "orb-text",
  "orb-tile",
+ "serde",
  "serde_json",
  "wasm-bindgen-test",
 ]
@@ -2605,6 +2614,7 @@ dependencies = [
  "icu_provider",
  "icu_segmenter",
  "postcard",
+ "serde",
  "serde_json",
  "skrifa",
  "unicode-bidi",

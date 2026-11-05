@@ -20,7 +20,7 @@ use orb_tile::{Layer, ValueRef};
 /// Sprite metadata: what icon layout needs of every image, by name
 /// (namespaced as the sprites expose them), at the pixel ratio the map
 /// draws.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SpriteIcons {
     /// The device pixel ratio images are drawn at.
     pub pixel_ratio: f64,
@@ -31,114 +31,6 @@ pub struct SpriteIcons {
 }
 
 impl SpriteIcons {
-    /// The icons as one JSON document, for a job worker.
-    pub fn to_json(&self) -> String {
-        use orb_expr::json::{Json, JsonValue};
-        let j = |value| Json::new(value, Default::default());
-        let num = |n: f64| j(JsonValue::Number(n));
-        let ranges = |r: &Option<Vec<[f64; 2]>>| match r {
-            None => j(JsonValue::Null),
-            Some(r) => j(JsonValue::Array(
-                r.iter().flat_map(|&[a, b]| [num(a), num(b)]).collect(),
-            )),
-        };
-        let fit = |f: Option<TextFit>| match f {
-            None => j(JsonValue::Null),
-            Some(f) => num(f as u8 as f64),
-        };
-        let mut names: Vec<&String> = self.images.keys().collect();
-        names.sort();
-        let images = names
-            .into_iter()
-            .map(|name| {
-                let i = &self.images[name];
-                j(JsonValue::Array(vec![
-                    j(JsonValue::String(name.clone())),
-                    num(f64::from(i.size[0])),
-                    num(f64::from(i.size[1])),
-                    num(i.pixel_ratio),
-                    j(JsonValue::Bool(i.sdf)),
-                    ranges(&i.stretch_x),
-                    ranges(&i.stretch_y),
-                    match i.content {
-                        None => j(JsonValue::Null),
-                        Some(c) => j(JsonValue::Array(c.iter().map(|&v| num(v)).collect())),
-                    },
-                    fit(i.text_fit_width),
-                    fit(i.text_fit_height),
-                ]))
-            })
-            .collect();
-        j(JsonValue::Array(vec![
-            num(self.pixel_ratio),
-            j(JsonValue::Array(images)),
-        ]))
-        .to_string()
-    }
-
-    /// Reads [`to_json`](Self::to_json)'s document.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        use orb_expr::json::Json;
-        let bad = || "malformed sprite icons".to_string();
-        let doc = orb_expr::json::parse(text).map_err(|e| e.to_string())?;
-        let [ratio, images] = doc.as_array().ok_or_else(bad)? else {
-            return Err(bad());
-        };
-        let num = |v: &Json| v.as_f64().ok_or_else(bad);
-        let ranges = |v: &Json| -> Result<Option<Vec<[f64; 2]>>, String> {
-            if v.is_null() {
-                return Ok(None);
-            }
-            let items = v.as_array().ok_or_else(bad)?;
-            items
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|[a, b]| Ok([num(a)?, num(b)?]))
-                .collect::<Result<_, String>>()
-                .map(Some)
-        };
-        let fit = |v: &Json| -> Result<Option<TextFit>, String> {
-            Ok(match v.as_f64() {
-                None => None,
-                Some(1.0) => Some(TextFit::StretchOnly),
-                Some(2.0) => Some(TextFit::Proportional),
-                Some(_) => Some(TextFit::StretchOrShrink),
-            })
-        };
-        let mut icons = Self {
-            pixel_ratio: num(ratio)?,
-            images: HashMap::new(),
-            names: Vec::new(),
-        };
-        for image in images.as_array().ok_or_else(bad)? {
-            let [name, w, h, r, sdf, sx, sy, content, fw, fh] = image.as_array().ok_or_else(bad)?
-            else {
-                return Err(bad());
-            };
-            let content = match content.as_array() {
-                Some([a, b, c, d]) => Some([num(a)?, num(b)?, num(c)?, num(d)?]),
-                _ => None,
-            };
-            icons.images.insert(
-                name.as_str().ok_or_else(bad)?.to_string(),
-                IconImage {
-                    size: [num(w)? as u32, num(h)? as u32],
-                    pixel_ratio: num(r)?,
-                    sdf: sdf.as_bool().ok_or_else(bad)?,
-                    stretch_x: ranges(sx)?,
-                    stretch_y: ranges(sy)?,
-                    content,
-                    text_fit_width: fit(fw)?,
-                    text_fit_height: fit(fh)?,
-                },
-            );
-        }
-        icons.names = icons.images.keys().cloned().collect();
-        icons.names.sort_unstable();
-        Ok(icons)
-    }
-
     /// The images' names, sorted.
     pub(crate) fn names(&self) -> &[String] {
         &self.names
@@ -991,7 +883,7 @@ pub const SYMBOL_TABLES: usize = 14;
 
 /// The scalars of a layer's bucket ([`orb_symbol::SymbolBucket`] without
 /// its tables).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SymbolMeta {
     pub text_size: SizeKind,
     pub icon_size: SizeKind,
@@ -1007,7 +899,7 @@ pub struct SymbolMeta {
 /// A symbol layer's share of a finished tile: its bucket's tables as word
 /// streams, the glyph keys its quads name by tile-local glyph id, and its
 /// images by tile-local index.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResultSymbols {
     /// The layer's key.
     pub layer: u32,
@@ -1075,182 +967,4 @@ impl ResultSymbols {
             images: build.images.clone(),
         }
     }
-}
-
-fn write_f64(words: &mut Vec<u32>, v: f64) {
-    let bits = v.to_bits();
-    words.extend([bits as u32, (bits >> 32) as u32]);
-}
-
-fn read_f64(next: &mut impl FnMut() -> Result<u32, String>) -> Result<f64, String> {
-    let lo = u64::from(next()?);
-    Ok(f64::from_bits(lo | u64::from(next()?) << 32))
-}
-
-fn write_size(words: &mut Vec<u32>, size: SizeKind) {
-    let (tag, zooms) = match size {
-        SizeKind::Constant => (0, [0.0; 2]),
-        SizeKind::Source => (1, [0.0; 2]),
-        SizeKind::Camera => (2, [0.0; 2]),
-        SizeKind::Composite { zooms } => (3, zooms),
-    };
-    words.push(tag);
-    write_f64(words, zooms[0]);
-    write_f64(words, zooms[1]);
-}
-
-fn read_size(next: &mut impl FnMut() -> Result<u32, String>) -> Result<SizeKind, String> {
-    let tag = next()?;
-    let zooms = [read_f64(next)?, read_f64(next)?];
-    Ok(match tag {
-        0 => SizeKind::Constant,
-        1 => SizeKind::Source,
-        2 => SizeKind::Camera,
-        3 => SizeKind::Composite { zooms },
-        _ => return Err("malformed symbol size".into()),
-    })
-}
-
-/// Appends a layer's header words: its key, scalars, table lengths, glyph
-/// keys and image names. Its tables follow in the payload.
-pub(crate) fn write_header(words: &mut Vec<u32>, s: &ResultSymbols) {
-    let m = &s.meta;
-    words.push(s.layer);
-    write_size(words, m.text_size);
-    write_size(words, m.icon_size);
-    write_f64(words, m.tile_pixel_ratio);
-    write_f64(words, m.max_height_offset);
-    let flags = [
-        m.sdf_icons.is_some(),
-        m.sdf_icons == Some(true),
-        m.icons_in_text,
-        m.icons_need_linear,
-        m.allow_vertical_placement,
-        m.warnings.mixed_sdf_icons,
-        m.warnings.text_size_too_large,
-        m.warnings.icon_size_too_large,
-    ];
-    words.push(flags.iter().rev().fold(0, |w, &f| w << 1 | u32::from(f)));
-    words.extend(s.tables.iter().map(|t| match t {
-        crate::Stream::Core(w) => w.len() as u32,
-        crate::Stream::Host { len, .. } => *len,
-    }));
-    words.push(s.glyphs.len() as u32);
-    for key in &s.glyphs {
-        let variant = |v: orb_text::Variant| v as u32;
-        match key {
-            None => words.push(0),
-            Some(GlyphKey::Pbf { stack, code_point }) => {
-                words.push(1);
-                crate::jobs::write_text(words, stack.as_str());
-                words.push(*code_point);
-            }
-            Some(GlyphKey::Font {
-                font,
-                variant: v,
-                text,
-            }) => {
-                words.extend([2, font.0 as u32, (font.0 >> 32) as u32, variant(*v)]);
-                crate::jobs::write_text(words, text);
-            }
-            Some(GlyphKey::Cluster {
-                stack,
-                variant: v,
-                text,
-            }) => {
-                words.push(3);
-                crate::jobs::write_text(words, stack.as_str());
-                words.push(variant(*v));
-                crate::jobs::write_text(words, text);
-            }
-        }
-    }
-    words.push(s.images.len() as u32);
-    for name in &s.images {
-        crate::jobs::write_text(words, name);
-    }
-}
-
-/// Reads [`write_header`]'s words; tables become host streams from
-/// `offset`, which advances past them.
-pub(crate) fn read_header(
-    next: &mut impl FnMut() -> Result<u32, String>,
-    offset: &mut u64,
-) -> Result<ResultSymbols, String> {
-    let bad = || "malformed packed symbols".to_string();
-    let layer = next()?;
-    let text_size = read_size(next)?;
-    let icon_size = read_size(next)?;
-    let tile_pixel_ratio = read_f64(next)?;
-    let max_height_offset = read_f64(next)?;
-    let flags = next()?;
-    let flag = |i: u32| flags >> i & 1 != 0;
-    let meta = SymbolMeta {
-        text_size,
-        icon_size,
-        tile_pixel_ratio,
-        sdf_icons: flag(0).then_some(flag(1)),
-        icons_in_text: flag(2),
-        icons_need_linear: flag(3),
-        allow_vertical_placement: flag(4),
-        max_height_offset,
-        warnings: orb_symbol::Warnings {
-            mixed_sdf_icons: flag(5),
-            text_size_too_large: flag(6),
-            icon_size_too_large: flag(7),
-        },
-    };
-    let mut lens = [0u32; SYMBOL_TABLES];
-    for len in &mut lens {
-        *len = next()?;
-    }
-    let tables = lens.map(|len| {
-        let s = crate::Stream::Host {
-            offset: *offset,
-            len,
-        };
-        *offset += u64::from(len) * 4;
-        s
-    });
-    let variant = |v: u32| match v {
-        0 => Ok(orb_text::Variant::Default),
-        1 => Ok(orb_text::Variant::Vertical),
-        _ => Err(bad()),
-    };
-    let glyphs = (0..next()?)
-        .map(|_| {
-            Ok(match next()? {
-                0 => None,
-                1 => Some(GlyphKey::Pbf {
-                    stack: FontStack::from_joined(&crate::jobs::read_text(next)?),
-                    code_point: next()?,
-                }),
-                2 => {
-                    let lo = u64::from(next()?);
-                    let font = orb_text::FontId(lo | u64::from(next()?) << 32);
-                    Some(GlyphKey::Font {
-                        font,
-                        variant: variant(next()?)?,
-                        text: crate::jobs::read_text(next)?.into(),
-                    })
-                }
-                3 => Some(GlyphKey::Cluster {
-                    stack: FontStack::from_joined(&crate::jobs::read_text(next)?),
-                    variant: variant(next()?)?,
-                    text: crate::jobs::read_text(next)?.into(),
-                }),
-                _ => return Err(bad()),
-            })
-        })
-        .collect::<Result<_, String>>()?;
-    let images = (0..next()?)
-        .map(|_| crate::jobs::read_text(next))
-        .collect::<Result<_, _>>()?;
-    Ok(ResultSymbols {
-        layer,
-        meta,
-        tables,
-        glyphs,
-        images,
-    })
 }

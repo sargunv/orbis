@@ -12,7 +12,7 @@ use orb_style::{
 const VECTOR_TILE_PX: f64 = 512.0;
 
 /// Where a tile's bytes are.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TileLocation {
     Url(String),
     /// The archive URL without the `pmtiles://` protocol prefix.

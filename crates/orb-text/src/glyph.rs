@@ -12,7 +12,7 @@ use crate::{shaping, unicode};
 
 /// A `text-font` stack: font names joined by `,`, as GL JS keys glyphs and
 /// fills a glyphs URL's `{fontstack}`.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct FontStack(Arc<str>);
 
 impl FontStack {
@@ -38,7 +38,9 @@ impl fmt::Debug for FontStack {
 }
 
 /// Which form of a glyph: as written, or its vertical alternate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Variant {
     Default,
     Vertical,
@@ -46,11 +48,15 @@ pub enum Variant {
 
 /// A font file loaded by the runtime: a hash of its bytes and face index,
 /// so every worker loading the same file agrees on it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct FontId(pub u64);
 
 /// What a glyph is, across tiles, workers and the atlas.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum GlyphKey {
     /// A glyph from a v8 `glyphs` PBF range: one code point of a stack.
     Pbf { stack: FontStack, code_point: u32 },
