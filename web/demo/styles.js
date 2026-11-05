@@ -9,8 +9,15 @@ import arctic from "./data/crs/arctic.json?url";
 import greenland from "./data/crs/greenland.json?url";
 import nz from "./data/crs/nz.json?url";
 import alps from "./data/alps.json?url";
+import alpsSunlitScene from "./data/alps-sunlit.json";
 import osmCarto from "./data/osm-carto.json?url";
 import alpsFlight from "./data/alps-flight.json";
+
+// The sunlit Alps scene names its style relatively, which the bundle's
+// hashed asset names break: point it at the bundled style.
+const alpsSunlit = `data:application/json,${encodeURIComponent(JSON.stringify({
+  ...alpsSunlitScene, style: new URL(alps, location.href).href,
+}))}`;
 
 /** OpenFreeMap's live Liberty style over the planet: the demo's default. */
 export const LIVE = "https://tiles.openfreemap.org/styles/liberty";
@@ -60,6 +67,8 @@ export const GROUPS = [
     scenes: [
       { key: "alps", name: "Alps terrain flight", detail: "3D terrain, sky and a looping camera flight", url: alps,
         flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
+      { key: "alps-sunlit", name: "Alps in morning sun", detail: "The same flight, lit by the sun at a time and place", url: alpsSunlit,
+        flight: alpsFlight.legs, swatch: ["#c9cdb8", "#8fa9bd", "#6b7660"] },
       { key: "arctic", name: "Arctic", detail: "Polar stereographic, EPSG:3413", url: arctic, dark: true,
         swatch: ["#24476b", "#e9eef2", "#9aa6ad"] },
       { key: "nz", name: "New Zealand", detail: "Transverse Mercator, NZTM2000", url: nz,

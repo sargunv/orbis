@@ -38,6 +38,9 @@ sprites once served.
   in [Mapterhorn's attribution list](https://mapterhorn.com/attribution).
   The flight's legs are `flyTo` options looped until the user takes the
   camera.
+- `alps-sunlit.json`: a scene document over `alps.json` that lights it by a
+  morning sun over Zermatt and an ambient sky (decision 0026), written for
+  this repository; `?style=alps-sunlit&flight`.
 - `scripts.json`: the Cairo, Delhi and Bangkok entries' style
   (`?style=cairo|delhi|bangkok`, or `scripts`), written for this repository. It draws OpenFreeMap's
   planet tiles with labels in Arabic, Devanagari, Thai and Latin from
