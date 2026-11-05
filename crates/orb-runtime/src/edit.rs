@@ -31,27 +31,16 @@ use crate::map::{
 };
 
 /// The class a paint change costs this renderer for one node:
-/// `orb-style`'s, lowered to a program table write when the node's input
-/// columns pack the same (`columns_kept`), raised where property rows hold
-/// more than the property (line dash and gradient textures, and the width
-/// that scales dashes).
-fn paint_class(
-    kind: &LayerKind,
-    name: &str,
-    from: Binding,
-    to: Binding,
-    columns_kept: bool,
-) -> Class {
-    let mut class = Change::Paint {
+/// `orb-style`'s, raised where property rows hold more than the property
+/// (line dash and gradient textures, and the width that scales dashes).
+fn paint_class(kind: &LayerKind, name: &str, from: Binding, to: Binding) -> Class {
+    let class = Change::Paint {
         layer: orb_style::LayerKey(0),
         name: String::new(),
         from,
         to,
     }
     .class();
-    if class == Class::Column && to == Binding::Bytecode && columns_kept {
-        class = Class::Block;
-    }
     let line_rows = matches!(kind, LayerKind::Line(l)
         if l.paint.dasharray.as_constant() != Some(&None) || l.paint.gradient.is_some());
     match name {
@@ -137,7 +126,6 @@ impl Map {
             font_faces: doc.style().font_faces.clone(),
             local_ideographs: self.labels.ideographs.clone(),
             surface: self.surface.tiles(),
-            cost: doc.cost_model(),
         };
         self.services.jobs.set_style(style.id, &update, &worker);
         self.warnings.extend(
@@ -240,31 +228,18 @@ impl Map {
             let kind = &plan.style.layers[index].kind;
             for node in plan.nodes.iter().filter(|n| n.layer == index) {
                 let before = old.plan().node(node.key).map(|i| &old.plan().nodes[i]);
-                let layout_changed = before.and_then(|n| n.gpu.as_ref()).map(|g| &g.layout)
-                    != node.gpu.as_ref().map(|g| &g.layout);
-                // Programs read the columns their layout packs; rows keep
-                // their own stride, so columns nothing reads may stay.
-                let repack = layout_changed && node.gpu.is_some();
                 let class = match change {
                     Change::Paint { name, from, to, .. } => {
-                        let class = paint_class(kind, name, *from, *to, !repack);
+                        let class = paint_class(kind, name, *from, *to);
                         // Meshes need feature ids to read state.
                         let ids = plan.reads_state(node)
                             && !before.is_some_and(|b| old.plan().reads_state(b));
-                        if repack || ids {
-                            class.max(Class::Column)
-                        } else {
-                            class
-                        }
+                        if ids { class.max(Class::Column) } else { class }
                     }
                     change => change.class(),
                 };
                 let state = style.nodes.get_mut(&node.key).expect("added above");
                 state.ramp = None;
-                if layout_changed {
-                    // Input ranges follow the columns; new rows report them.
-                    state.maxima.truncate(plan.paint_properties(node).len());
-                }
                 let image = node.source == usize::MAX || plan.image_kind(node.source).is_some();
                 if image || state.layout_epoch == version {
                     continue;
@@ -349,7 +324,6 @@ impl Map {
             font_faces: doc.style().font_faces.clone(),
             local_ideographs: self.labels.ideographs.clone(),
             surface: self.surface.tiles(),
-            cost: doc.cost_model(),
             ..StyleUpdate::default()
         };
         self.services.jobs.set_style(style.id, &update, &worker);

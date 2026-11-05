@@ -387,7 +387,6 @@ impl Images {
             crate::draw_pipeline(
                 gpu,
                 shader,
-                false,
                 PrimitiveTopology::TriangleList,
                 target,
                 &[draw_layout, layout],
@@ -1023,7 +1022,7 @@ mod compat_prepare {
                 ],
             });
             let mut pipeline = |shader: &Shader| {
-                let module = crate::shader_module(gpu, shader, false);
+                let module = crate::shader_module(gpu, shader);
                 gpu.create_render_pipeline(&RenderPipelineDesc {
                     label: shader.label,
                     bind_group_layouts: &[layout],

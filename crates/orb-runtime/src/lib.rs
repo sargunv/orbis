@@ -9,7 +9,6 @@ mod events;
 mod features;
 mod globe;
 mod glyphs;
-mod gpu;
 mod image;
 mod jobs;
 mod labels;
@@ -58,7 +57,7 @@ pub use orb_render::{
     ARGS_WORDS, DESKTOP_BUDGET, ImageMetadata, MOBILE_BUDGET, PoolMemory, SceneCapacity,
     SceneMemory, TargetFormat,
 };
-pub use orb_style::{CostModel, FeatureTarget, Transaction};
+pub use orb_style::{FeatureTarget, Transaction};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};
 pub use placement_wire::{
     pack_committed, pack_frame, pack_tables, unpack_committed, unpack_frame, unpack_tables,

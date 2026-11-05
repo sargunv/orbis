@@ -18,7 +18,7 @@ use orb_render::{
 };
 use orb_render::{ImageAtlas, ImageUpload};
 use orb_source::{Draw, TilePyramid};
-use orb_style::{CostModel, StyleDoc};
+use orb_style::StyleDoc;
 use orb_v8::{LayerKind, SourceKind, TranslateAnchor};
 
 use crate::MapEvent;
@@ -375,7 +375,6 @@ pub(crate) struct LoadedStyle {
     pub(crate) states: FeatureStates,
     /// This frame's drawn symbol buckets, for placement.
     pub(crate) symbol_tiles: Vec<crate::labels::SymbolTile>,
-    pub(crate) programs: crate::gpu::ProgramTable,
     /// This frame's tiles to draw, per source, between their update and
     /// their placement.
     pub(crate) draws: Vec<Option<Vec<Draw>>>,
@@ -473,7 +472,6 @@ pub struct Map {
     /// Terrain tiles hang skirts ([`Map::set_terrain_skirts`]).
     terrain_skirts: bool,
     antialias_3d: bool,
-    cost: CostModel,
     /// The plane the map draws on and its sources' tile matrix sets, from
     /// the scene document.
     pub(crate) surface: Surface,
@@ -630,7 +628,6 @@ pub(crate) fn full_update(
         glyphs: doc.style().glyphs.clone(),
         font_faces: doc.style().font_faces.clone(),
         local_ideographs,
-        cost: doc.cost_model(),
         surface,
     }
 }
@@ -649,7 +646,6 @@ pub(crate) fn revise(
         doc.layer_keys().map(|k| k.0).collect(),
         doc.source_keys().map(|k| k.0).collect(),
         revision,
-        doc.cost_model(),
         local_ideographs,
         surface,
     )
@@ -689,7 +685,6 @@ impl Map {
             center_clamped: true,
             terrain_skirts: true,
             antialias_3d: true,
-            cost: CostModel::DEFAULT,
             nodes_stale: false,
             capacity: SceneCapacity::default(),
             budget: orb_render::DESKTOP_BUDGET,
@@ -785,20 +780,6 @@ impl Map {
     /// single-sample rasterization, matching a GL JS map with antialias off.
     pub fn set_antialias_3d(&mut self, enabled: bool) {
         self.antialias_3d = enabled;
-    }
-
-    /// Chooses which per-feature paint the GPU interprets (decision 0017);
-    /// benchmarks compare it with rows alone. A loaded style is installed
-    /// again under it.
-    pub fn set_cost_model(&mut self, cost: CostModel) {
-        if cost == self.cost {
-            return;
-        }
-        self.cost = cost;
-        if let Some(style) = &self.style {
-            let doc = style.doc.clone();
-            self.install(doc);
-        }
     }
 
     /// Sets how much the GPU scene holds. It's allocated on the first frame,
@@ -1090,8 +1071,7 @@ impl Map {
     /// Installs a document: a new style, or with `previous` the same
     /// style again as a new revision of its jobs' style, which keeps their
     /// cached tile frames.
-    fn install_revision(&mut self, mut doc: StyleDoc, previous: Option<(u64, &Arc<TileWorker>)>) {
-        doc.set_cost_model(self.cost);
+    fn install_revision(&mut self, doc: StyleDoc, previous: Option<(u64, &Arc<TileWorker>)>) {
         self.version += 1;
         self.labels.invalidate();
         let worker = Arc::new(revise(
@@ -1179,7 +1159,6 @@ impl Map {
             background: None,
             states: FeatureStates::default(),
             symbol_tiles: Vec::new(),
-            programs: Default::default(),
             draws: Vec::new(),
             terrain: None,
             terrain_unusable: false,
@@ -3468,7 +3447,6 @@ impl Map {
                 renderer.scene().remove_tile(tile);
             }
             style.states.release_table(renderer);
-            style.programs.release(renderer);
         }
         self.style = None;
     }
@@ -3623,8 +3601,9 @@ pub(crate) fn attach_rows(
         let layer = plan.source_layer(node);
         indices = ids
             .iter()
-            .map(|&i| match result.ids.get(i as usize) {
-                Some(id) => states.intern(source, layer, id),
+            .enumerate()
+            .map(|(slot, &i)| match result.ids.get(i as usize) {
+                Some(id) => states.intern(source, layer, id, mesh.data.get(slot)),
                 None => 0,
             })
             .collect();
@@ -4033,7 +4012,6 @@ fn write_paint(
     }
     style.painted = Some((zoom, bearing));
     style.painted_fade = Some(crossfade);
-    style.programs.prepare(gpu, renderer, plan);
     for (index, node) in plan.nodes.iter().enumerate() {
         let state = style.nodes.entry(node.key).or_default();
         let index = index as u32;
@@ -4077,7 +4055,6 @@ fn write_paint(
             state.maxima.resize(properties.len(), 0.0);
         }
         let lookup = style.states.lookup(index as usize);
-        let interpreted = style.programs.paint(plan, index as usize, &style.states);
         if crate::point::paint(
             gpu,
             renderer,
@@ -4087,7 +4064,6 @@ fn write_paint(
             zoom,
             &state.maxima,
             lookup,
-            interpreted,
         ) {
             continue;
         }
@@ -4097,9 +4073,7 @@ fn write_paint(
         let mut numbers = [0.0f32; 6];
         let mut color = [0.0f32; 4];
         for (slot, property) in properties.iter().enumerate() {
-            if interpreted.mask & 1 << slot != 0 {
-                numbers[slot] = crate::gpu::bound(plan, node, slot, zoom, maxima);
-            } else if property.per_feature() {
+            if property.per_feature() {
                 table_mask |= 1 << slot;
                 curves[slot] = property.curve();
                 numbers[slot] = maxima[slot];
@@ -4140,7 +4114,6 @@ fn write_paint(
                 table_mask,
                 curves: [curves[0], curves[1]],
                 state: lookup,
-                gpu: interpreted,
             }),
             Family::FillExtrusion => {
                 let LayerKind::FillExtrusion(e) = &plan.style.layers[node.layer].kind else {
@@ -4173,7 +4146,6 @@ fn write_paint(
                 dash: None,
                 gradient: false,
                 state: lookup,
-                gpu: interpreted,
             }),
             image => unreachable!("{image:?} nodes are painted above"),
         };

@@ -149,22 +149,6 @@ fn binding_flips_evaluate_rows_without_relayout() {
 }
 
 #[test]
-fn program_edits_keeping_their_columns_are_buffer_writes() {
-    let mut map = tokyo();
-    map.map.set_cost_model(orb_runtime::CostModel::ALL);
-    settle(&mut map);
-    let flip = r##"[["setPaintProperty", "road_minor", "line-color",
-        ["match", ["get", "class"], "minor", "#ff0000", "#0000ff"]]]"##;
-    measure(&mut map, flip);
-    // The same input and labels: the program table is rewritten, no rows.
-    let recolour = r##"[["setPaintProperty", "road_minor", "line-color",
-        ["match", ["get", "class"], "minor", "#00ff00", "#ffff00"]]]"##;
-    let (frames, _, jobs) = measure(&mut map, recolour);
-    assert_eq!((frames, jobs), (1, JobCounts::default()));
-    assert_matches_fresh(&mut map);
-}
-
-#[test]
 fn layout_edits_lay_out_one_layer_from_cached_tiles() {
     let mut map = tokyo();
     let filter = r##"[["setFilter", "road_minor", ["==", ["get", "class"], "service"]]]"##;
@@ -289,6 +273,7 @@ fn paint_reads_feature_state_and_data_together() {
         })
         .collect();
     let by_kind = r##"["match", ["get", "kind"], "a", "#ff0000", "#00ff00"]"##;
+    let otherwise = r##"["match", ["get", "kind"], "a", "#0000ff", "#ffff00"]"##;
     measure(
         &mut map,
         &format!(
@@ -297,7 +282,7 @@ fn paint_reads_feature_state_and_data_together() {
             ["addLayer", {{"id": "grid", "type": "circle", "source": "grid", "paint": {{
                 "circle-radius": 4,
                 "circle-color": ["case", ["boolean", ["feature-state", "hover"], false],
-                    {by_kind}, "#0000ff"]}}}}]]"##,
+                    {by_kind}, {otherwise}]}}}}]]"##,
             features.join(",")
         ),
     );
@@ -306,10 +291,14 @@ fn paint_reads_feature_state_and_data_together() {
             format!(r##"["setFeatureState", {{"source": "grid", "id": {id}}}, {{"hover": true}}]"##)
         })
         .collect();
-    let (frames, _, jobs) = measure(&mut map, &format!("[{}]", all.join(",")));
-    assert_eq!(frames, 1);
+    let plain = map.pixels();
+    let before = map.map.job_counts();
+    edit(&mut map, &format!("[{}]", all.join(",")));
+    // The very next frame draws the state: the scene evaluates the
+    // features' captured data, with no job.
+    assert!(map.frame().idle);
     assert_eq!(
-        jobs,
+        delta(before, map.map.job_counts()),
         JobCounts {
             state_rows: (n * n) as u64,
             ..JobCounts::default()
@@ -318,6 +307,7 @@ fn paint_reads_feature_state_and_data_together() {
     // Hovered features draw their data's colour, as the colour without
     // the state branch does.
     let hovered = map.pixels();
+    assert_ne!(hovered, plain);
     edit(
         &mut map,
         &format!(r##"[["setPaintProperty", "grid", "circle-color", {by_kind}]]"##),

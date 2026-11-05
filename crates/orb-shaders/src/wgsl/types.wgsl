@@ -26,8 +26,7 @@ struct Frame {
     // Camera pitch and roll, radians.
     pitch: f32,
     roll: f32,
-    // The zoom's f64 bits, which the GPU interpreter branches on.
-    zoom_bits: vec2<u32>,
+    _pad: vec2<u32>,
     // The terrain's DEM unpack vector (metres = r·x + g·y + b·z − w),
     // its exaggeration (0 without terrain) and DEM pixels per side.
     dem_unpack: vec4<f32>,

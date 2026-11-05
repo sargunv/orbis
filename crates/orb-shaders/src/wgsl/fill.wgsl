@@ -19,13 +19,11 @@ struct FillNode {
     curves: array<Curve, 2>,
     pattern: Pattern,
     state: StateLookup,
-    gpu: GpuPaint,
 };
 
 @group(1) @binding(0) var<uniform> node: FillNode;
 
 const FILL_STRIDE: u32 = 2u;
-const FILL_PROPS: u32 = 7u;
 
 struct FillOut {
     @builtin(position) position: vec4<f32>,
@@ -79,13 +77,9 @@ fn fill_vertex(v: Pulled) -> FillOut {
     let row = prop_row(v, feature, v.row_words);
     let state = state_block(v, feature, node.state);
 
-    let gpu = gpu_values(node.gpu, row + FILL_PROPS, state, 1u);
     var color = node.color;
     if (node.table_mask & 1u) != 0u {
         color = table_color(row, 0u, node.curves[0], tile.zoom);
-    }
-    if gpu_slot(node.gpu, 0u) {
-        color = gpu[0];
     }
     if from_state(state, node.state, 0u) {
         color = state_color(state, node.state, 0u, node.curves[0]);
@@ -93,9 +87,6 @@ fn fill_vertex(v: Pulled) -> FillOut {
     var opacity = node.opacity;
     if (node.table_mask & 2u) != 0u {
         opacity = table_number(row, 1u, node.curves[1], tile.zoom);
-    }
-    if gpu_slot(node.gpu, 1u) {
-        opacity = gpu[1].x;
     }
     if from_state(state, node.state, 1u) {
         opacity = state_number(state, node.state, 1u, node.curves[1]);

@@ -254,7 +254,6 @@ fn pipeline(
     draw_pipeline(
         gpu,
         shader,
-        false,
         PrimitiveTopology::TriangleList,
         target,
         &[layout],

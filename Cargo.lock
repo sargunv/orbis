@@ -2380,14 +2380,8 @@ dependencies = [
 name = "orb-expr"
 version = "0.0.0"
 dependencies = [
- "bytemuck",
- "futures-channel",
- "orb-hal-wgpu",
- "orb-shaders",
  "orb-tile",
- "pollster",
  "wasm-bindgen-test",
- "wgpu",
 ]
 
 [[package]]

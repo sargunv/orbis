@@ -208,7 +208,6 @@ impl LayerComposites {
             draw_pipeline_blending(
                 gpu,
                 shader,
-                false,
                 PrimitiveTopology::TriangleList,
                 target,
                 &[layout],

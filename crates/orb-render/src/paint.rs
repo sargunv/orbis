@@ -38,7 +38,6 @@ pub struct CirclePaint {
     pub table_mask: u32,
     pub curves: [Curve; 7],
     pub state: StateLookup,
-    pub gpu: GpuPaint,
 }
 
 /// Where a node's feature-state lookups read (plan §10.2): bit `i` of
@@ -58,25 +57,6 @@ pub struct StateLookup {
 impl StateLookup {
     fn words(self) -> [u32; 4] {
         [self.mask, self.base, self.stride, self.zoom.to_bits()]
-    }
-}
-
-/// Where a node's interpreted paint reads (plan §11.3 `GpuBytecode`):
-/// bit `i` of `mask` runs paint slot `i`'s program, which starts at
-/// `programs + table[i]` of the property arena, where `table` is the
-/// words at `programs`. A feature's input columns follow the family's
-/// words in its property row; its raw state values start `state` words
-/// into its state block's values.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct GpuPaint {
-    pub mask: u32,
-    pub programs: u32,
-    pub state: u32,
-}
-
-impl GpuPaint {
-    fn words(self) -> [u32; 4] {
-        [self.mask, self.programs, self.state, 0]
     }
 }
 
@@ -147,7 +127,6 @@ pub struct FillPaint {
     pub table_mask: u32,
     pub curves: [Curve; 2],
     pub state: StateLookup,
-    pub gpu: GpuPaint,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -168,7 +147,6 @@ pub struct LinePaint {
     /// Sample the per-feature gradient ramp in property word 19.
     pub gradient: bool,
     pub state: StateLookup,
-    pub gpu: GpuPaint,
 }
 
 /// Raster paint as GL JS's `rasterUniformValues` derives it.
@@ -573,7 +551,6 @@ impl NodePaint {
         }
         if let Self::Circle(p) = self {
             words.extend(p.state.words());
-            words.extend(p.gpu.words());
         }
         if let Self::Symbol(p) = self {
             words.extend(p.state.words());
@@ -644,20 +621,7 @@ impl NodePaint {
             _ => unreachable!("returned above"),
         };
         words.extend(state.words());
-        if let Some(gpu) = self.gpu() {
-            words.extend(gpu.words());
-        }
         words
-    }
-
-    /// The interpreted paint of a family that has one.
-    pub fn gpu(&self) -> Option<GpuPaint> {
-        match self {
-            Self::Fill(p) | Self::Background(p) | Self::FillPattern(p, _) => Some(p.gpu),
-            Self::Line(p) | Self::LinePattern(p, _) => Some(p.gpu),
-            Self::Circle(p) => Some(p.gpu),
-            _ => None,
-        }
     }
 
     /// How far drawn pixels can reach past a chunk's bounds.
@@ -708,14 +672,10 @@ mod tests {
             dash: None,
             gradient: false,
             state: StateLookup::default(),
-            gpu: GpuPaint::default(),
         });
         // color, 8 scalars, anchor, translate and padding, then 32-byte
-        // curves, pattern, dash, state lookup and GPU paint, as `LineNode`.
-        assert_eq!(
-            line.uniform_words(0).len() * 4,
-            64 + 6 * 32 + 32 + 32 + 16 + 16
-        );
+        // curves, pattern, dash and state lookup, as `LineNode`.
+        assert_eq!(line.uniform_words(0).len() * 4, 64 + 6 * 32 + 32 + 32 + 16);
         assert!(line.uniform_words(0).len() * 4 <= crate::NODE_UNIFORM_SIZE as usize);
     }
 

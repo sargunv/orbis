@@ -17,7 +17,6 @@ struct CircleNode {
     _pad: vec2<f32>,
     curves: array<Curve, 7>,
     state: StateLookup,
-    gpu: GpuPaint,
 };
 @group(1) @binding(0) var<uniform> node: CircleNode;
 
@@ -30,12 +29,8 @@ struct CircleOut {
     @location(4) stroke_width: f32,
 };
 
-const CIRCLE_PROPS: u32 = 14u;
 
-fn circle_number(row: u32, state: u32, slot: u32, constant: f32, z: f32, gpu: vec4<f32>) -> f32 {
-    if gpu_slot(node.gpu, slot) {
-        return gpu.x;
-    }
+fn circle_number(row: u32, state: u32, slot: u32, constant: f32, z: f32) -> f32 {
     if from_state(state, node.state, slot) {
         return state_number(state, node.state, slot, node.curves[slot]);
     }
@@ -57,13 +52,11 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let feature = vertex_at(v.vertex + 1u);
     let row = prop_row(v, feature, v.row_words);
     let state = state_block(v, feature, node.state);
-    // Colours in slots 0 and 4.
-    let gpu = gpu_values(node.gpu, row + CIRCLE_PROPS, state, 0x11u);
-    let radius = circle_number(row, state, 1u, node.radius, tile.zoom, gpu[1]);
-    let blur = circle_number(row, state, 2u, node.blur, tile.zoom, gpu[2]);
-    let opacity = circle_number(row, state, 3u, node.opacity, tile.zoom, gpu[3]);
-    let stroke_width = circle_number(row, state, 5u, node.stroke_width, tile.zoom, gpu[5]);
-    let stroke_opacity = circle_number(row, state, 6u, node.stroke_opacity, tile.zoom, gpu[6]);
+    let radius = circle_number(row, state, 1u, node.radius, tile.zoom);
+    let blur = circle_number(row, state, 2u, node.blur, tile.zoom);
+    let opacity = circle_number(row, state, 3u, node.opacity, tile.zoom);
+    let stroke_width = circle_number(row, state, 5u, node.stroke_width, tile.zoom);
+    let stroke_opacity = circle_number(row, state, 6u, node.stroke_opacity, tile.zoom);
     let total = radius + stroke_width;
     if total <= 0.0 { return out; }
     var color = node.color;
@@ -72,8 +65,6 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     if (node.table_mask & 16u) != 0u { stroke = table_color(row, 4u, node.curves[4], tile.zoom); }
     if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0]); }
     if from_state(state, node.state, 4u) { stroke = state_color(state, node.state, 4u, node.curves[4]); }
-    if gpu_slot(node.gpu, 0u) { color = gpu[0]; }
-    if gpu_slot(node.gpu, 4u) { stroke = gpu[4]; }
     let corner = point_corner(index);
     let shift = translate_world(node.translate, node.flags & 1u, tile);
     // On terrain, the ground under the anchor (GL JS `get_elevation`).

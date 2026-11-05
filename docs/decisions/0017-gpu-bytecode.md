@@ -1,5 +1,9 @@
 # 0017: GPU expression bytecode and the cost model
 
+**Superseded by [decision 0044](0044-the-data-chain.md):** the interpreter is
+deleted; paint reading feature state and feature data goes through the state
+table on the CPU.
+
 Plan §8.4's GPU interpreter and §11.3's `GpuBytecode` binding plan: which
 paint expressions the GPU evaluates, how they reach it, how exact they are,
 what they cost, and the threshold the cost model starts with.

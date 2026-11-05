@@ -22,7 +22,6 @@ use orb_hal::{HostBytesId, HostImageId};
 use orb_host::{DecodedImage, Fetch, FetchError, ImageDecode};
 use orb_jobs::Executor;
 use orb_layout::{Chunk, TileBox};
-use orb_style::CostModel;
 use orb_tile::TileFrame;
 use orb_v8::{Encoding, GeoJsonData, SourceKind, Style, Value};
 
@@ -145,7 +144,6 @@ impl TileWorker {
             layers,
             sources,
             0,
-            CostModel::DEFAULT,
             None,
             crate::SurfaceTiles::default(),
         ))
@@ -160,11 +158,10 @@ impl TileWorker {
         layer_keys: Vec<u32>,
         source_keys: Vec<u32>,
         revision: u64,
-        cost: CostModel,
         ideographs: Option<String>,
         surface: crate::SurfaceTiles,
     ) -> Self {
-        let plan = StylePlan::new(style, layer_keys, source_keys, revision, cost);
+        let plan = StylePlan::new(style, layer_keys, source_keys, revision);
         let data = match previous {
             Some(previous) => {
                 let data = Arc::clone(&previous.data);
@@ -320,7 +317,6 @@ impl TileWorker {
             update.layers.clone(),
             update.sources.clone(),
             update.revision,
-            update.cost,
             update.local_ideographs.clone(),
             update.surface.clone(),
         ))
@@ -591,8 +587,6 @@ pub struct StyleUpdate {
     pub font_faces: orb_v8::FontFaces,
     /// The map's `localIdeographFontFamily`: ideographs draw with it.
     pub local_ideographs: Option<String>,
-    /// Which paint the GPU interprets, as the map's plan decides it.
-    pub cost: CostModel,
     /// The plane GeoJSON sources tile in and the tile matrix sets of
     /// sources not in `WebMercatorQuad`.
     pub surface: crate::SurfaceTiles,
@@ -695,10 +689,6 @@ impl StyleUpdate {
                     Some(family) => JsonValue::String(family.clone()),
                     None => JsonValue::Null,
                 }),
-            ),
-            member(
-                "maxOps",
-                synthetic(JsonValue::Number(self.cost.max_ops as f64)),
             ),
             member(
                 "plane",
@@ -809,9 +799,6 @@ impl StyleUpdate {
                 .get("localIdeographFontFamily")
                 .and_then(Json::as_str)
                 .map(str::to_string),
-            cost: CostModel {
-                max_ops: doc.get("maxOps").and_then(Json::as_f64).ok_or_else(bad)? as usize,
-            },
             surface: crate::SurfaceTiles {
                 plane: match doc.get("plane").and_then(Json::as_str) {
                     Some(plane) => {
@@ -1433,13 +1420,15 @@ pub struct ResultMesh {
     pub props: Stream,
     /// Words per feature of the property rows.
     pub row_words: u32,
-    /// Per paint property, the largest number in the property rows; then
-    /// the input columns' ranges (see `NodeMesh`).
+    /// Per paint property, the largest number in the property rows.
     pub maxima: Vec<f32>,
     pub images: Vec<ImageRef>,
     /// Per feature slot, an index into [`TileResult::ids`] (or `u32::MAX`),
     /// for nodes that read feature state.
     pub state_ids: Option<Vec<u32>>,
+    /// Per feature slot, what paint reading both state and data reads of
+    /// the feature (see `NodeMesh`).
+    pub data: Vec<orb_expr::FeatureData>,
 }
 
 /// A stream of u32 words.
@@ -1471,6 +1460,7 @@ impl From<TileBuild> for TileResult {
                     maxima: m.maxima,
                     images: m.images,
                     state_ids: m.state_ids,
+                    data: m.data,
                 })
                 .collect(),
             symbols: build
@@ -1495,8 +1485,8 @@ impl From<TileBuild> for TileResult {
 /// Packs a build into one buffer for another worker: a header of u32 words
 /// (its own length first; the revision as two words, the rows-only flag,
 /// the laid-out node keys and the feature id strings; then per mesh: node,
-/// extent, chunk count, stream lengths, row words, images, state ids, maxima and
-/// chunks), then each mesh's vertices, indices and property rows. After the
+/// extent, chunk count, stream lengths, row words, images, state ids,
+/// feature data, maxima and chunks), then each mesh's vertices, indices and property rows. After the
 /// mesh header, diagnostics are a count followed by each UTF-8 byte length
 /// and its bytes packed into padded words. Little-endian.
 pub fn pack(build: &TileBuild) -> Vec<u8> {
@@ -1550,6 +1540,10 @@ pub fn pack(build: &TileBuild) -> Vec<u8> {
                 header.push(ids.len() as u32);
                 header.extend(ids);
             }
+        }
+        header.push(m.data.len() as u32);
+        for data in &m.data {
+            write_text(&mut header, &data.to_json_string());
         }
         header.extend(m.maxima.iter().map(|v| v.to_bits()));
         for c in &m.mesh.chunks {
@@ -1683,6 +1677,9 @@ pub fn unpack(header: &[u32], bytes: HostBytesId) -> Result<TileResult, String> 
             u32::MAX => None,
             n => Some((0..n).map(|_| next()).collect::<Result<Vec<_>, _>>()?),
         };
+        let data = (0..next()?)
+            .map(|_| orb_expr::FeatureData::from_json_str(&read_text(&mut next)?).ok_or_else(bad))
+            .collect::<Result<Vec<_>, String>>()?;
         let maxima = (0..maxima)
             .map(|_| next().map(f32::from_bits))
             .collect::<Result<_, _>>()?;
@@ -1721,6 +1718,7 @@ pub fn unpack(header: &[u32], bytes: HostBytesId) -> Result<TileResult, String> 
             maxima,
             images,
             state_ids,
+            data,
         });
     }
     let symbols = (0..next()?)
@@ -2013,7 +2011,6 @@ pub(crate) mod tests {
                 }],
             )],
             local_ideographs: Some("Hiragino Sans".into()),
-            cost: CostModel { max_ops: 7 },
             surface: crate::SurfaceTiles {
                 plane: Some(polar_plane()),
                 sources: vec![("geo".into(), TileMatrixSet::by_id("NZTM2000Quad").unwrap())],
@@ -2150,6 +2147,14 @@ pub(crate) mod tests {
                         },
                     ],
                     state_ids: Some(vec![1, crate::tile::NO_ID, 0]),
+                    data: vec![
+                        orb_expr::FeatureData {
+                            id: Value::Number(7.0),
+                            geometry_type: Some(orb_tile::GeometryType::LineString),
+                            properties: vec![("class".into(), Value::String("major".into()))],
+                        };
+                        3
+                    ],
                 },
                 NodeMesh {
                     hits: crate::MeshHits::default(),
@@ -2161,6 +2166,7 @@ pub(crate) mod tests {
                     maxima: vec![],
                     images: vec![],
                     state_ids: None,
+                    data: vec![],
                 },
             ],
         };
@@ -2181,6 +2187,7 @@ pub(crate) mod tests {
             (build.revision, &build.nodes, &build.ids)
         );
         assert_eq!(result.meshes[0].state_ids, build.meshes[0].state_ids);
+        assert_eq!(result.meshes[0].data, build.meshes[0].data);
         assert_eq!(result.meshes[1].state_ids, None);
         let m = &result.meshes[0];
         assert_eq!(

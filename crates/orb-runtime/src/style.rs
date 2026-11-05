@@ -8,10 +8,8 @@
 
 use std::sync::Arc;
 
-use orb_expr::gpu::{Layout, Program};
 use orb_expr::{Interpolation, Kind};
 use orb_render::{Curve, Family};
-use orb_style::CostModel;
 use orb_v8::{Color, LayerKind, Property, SourceKind, Style, Value};
 
 /// A style ready to render: one revision of it. Clones are shallow, as a
@@ -58,28 +56,6 @@ pub(crate) struct NodePlan {
     pub(crate) source: usize,
     /// Stable across revisions.
     pub(crate) key: u32,
-    /// The paint the GPU interprets, if any.
-    pub(crate) gpu: Option<Arc<NodeGpu>>,
-}
-
-/// A render node's bytecode paint (plan §11.3 `GpuBytecode`): per paint
-/// slot its program, and the input columns and state values they share.
-#[derive(Debug)]
-pub(crate) struct NodeGpu {
-    pub(crate) programs: Vec<Option<Program>>,
-    pub(crate) layout: Layout,
-}
-
-impl NodeGpu {
-    /// Bit `i`: slot `i` is interpreted.
-    pub(crate) fn mask(&self) -> u32 {
-        self.programs
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.is_some())
-            .map(|(i, _)| 1 << i)
-            .sum()
-    }
 }
 
 /// A paint property as the renderer packs it.
@@ -125,11 +101,17 @@ impl PaintProperty<'_> {
         }
     }
 
-    /// Whether the value reads both feature state and feature data, which
-    /// rows evaluate without state.
+    /// Whether the value reads both feature state and feature data: rows
+    /// hold it without state, and the state table with the feature's state
+    /// and captured data.
     pub(crate) fn mixes_state(&self) -> bool {
         self.expression()
             .is_some_and(|e| e.reads_feature_state() && e.reads_feature_properties())
+    }
+
+    /// Whether features with state take the value from the state table.
+    pub(crate) fn reads_state(&self) -> bool {
+        self.is_state_lookup() || self.mixes_state()
     }
 
     pub(crate) fn expression(&self) -> Option<&orb_expr::PropertyExpression> {
@@ -140,43 +122,39 @@ impl PaintProperty<'_> {
         }
     }
 
-    /// The value a program falls back to: the property's default.
-    pub(crate) fn default_value(&self) -> orb_expr::Value<'static> {
+    /// A state-table value packed as a row word: for a feature with
+    /// `state` and captured `data` at `zoom`.
+    pub(crate) fn state_word(
+        &self,
+        zoom: f64,
+        state: &[(String, Value<'static>)],
+        data: Option<&orb_expr::FeatureData>,
+    ) -> u32 {
         match self {
-            Self::Color(p) => orb_expr::Value::Color(p.default_value()),
-            Self::OptionalColor(p) => {
-                orb_expr::Value::Color(p.default_value().unwrap_or(orb_expr::Color::TRANSPARENT))
+            Self::Color(p) => {
+                orb_render::pack_color(p.evaluate_state(zoom, state, data).premultiplied())
             }
-            Self::Number(p) => orb_expr::Value::Number(f64::from(p.default_value())),
-        }
-    }
-
-    /// A state lookup's value packed as a row word: for a feature with
-    /// `state` at `zoom`.
-    pub(crate) fn state_word(&self, zoom: f64, state: &[(String, Value<'static>)]) -> u32 {
-        match self {
-            Self::Color(p) => orb_render::pack_color(p.evaluate_state(zoom, state).premultiplied()),
             Self::OptionalColor(p) => orb_render::pack_color(
-                p.evaluate_state(zoom, state)
+                p.evaluate_state(zoom, state, data)
                     .map_or([0.0; 4], |c| c.premultiplied()),
             ),
-            Self::Number(p) => p.evaluate_state(zoom, state).to_bits(),
+            Self::Number(p) => p.evaluate_state(zoom, state, data).to_bits(),
         }
     }
 
     /// The node constant of a state lookup: its value with no state.
     pub(crate) fn default_number(&self, zoom: f64) -> f32 {
         match self {
-            Self::Number(p) => p.evaluate_state(zoom, &[]),
+            Self::Number(p) => p.evaluate_state(zoom, &[], None),
             _ => unreachable!("not a number"),
         }
     }
 
     pub(crate) fn default_color(&self, zoom: f64) -> [f32; 4] {
         match self {
-            Self::Color(p) => p.evaluate_state(zoom, &[]).premultiplied(),
+            Self::Color(p) => p.evaluate_state(zoom, &[], None).premultiplied(),
             Self::OptionalColor(p) => p
-                .evaluate_state(zoom, &[])
+                .evaluate_state(zoom, &[], None)
                 .map_or([0.0; 4], |c| c.premultiplied()),
             Self::Number(_) => unreachable!("not a colour"),
         }
@@ -205,7 +183,7 @@ impl StylePlan {
     pub(crate) fn of(style: Style) -> Self {
         let layers = (1..=style.layers.len() as u32).collect();
         let sources = (1..=style.sources.len() as u32).collect();
-        Self::new(Arc::new(style), layers, sources, 0, CostModel::DEFAULT)
+        Self::new(Arc::new(style), layers, sources, 0)
     }
 
     pub(crate) fn new(
@@ -213,7 +191,6 @@ impl StylePlan {
         layer_keys: Vec<u32>,
         source_keys: Vec<u32>,
         revision: u64,
-        cost: CostModel,
     ) -> Self {
         assert_eq!(layer_keys.len(), style.layers.len());
         assert_eq!(source_keys.len(), style.sources.len());
@@ -233,7 +210,6 @@ impl StylePlan {
                         family: Family::Fill,
                         source: usize::MAX,
                         key: layer_keys[index] * 2,
-                        gpu: None,
                     });
                     continue;
                 }
@@ -316,7 +292,6 @@ impl StylePlan {
                 family,
                 source,
                 key,
-                gpu: None,
             });
             // A symbol layer draws its icons, then its text (GL JS
             // `drawSymbols`).
@@ -326,7 +301,6 @@ impl StylePlan {
                     family: Family::SymbolText,
                     source,
                     key: key + 1,
-                    gpu: None,
                 });
             }
             // GL JS antialiases fills by drawing their outlines after them.
@@ -338,7 +312,6 @@ impl StylePlan {
                     family: Family::FillOutline,
                     source,
                     key: key + 1,
-                    gpu: None,
                 });
             }
         }
@@ -354,7 +327,7 @@ impl StylePlan {
             });
         }
 
-        let mut plan = Self {
+        Self {
             revision,
             style,
             layer_keys,
@@ -362,89 +335,12 @@ impl StylePlan {
             nodes,
             sources,
             warnings,
-        };
-        let gpu: Vec<Option<NodeGpu>> = plan.nodes.iter().map(|n| plan.gpu(n, cost)).collect();
-        for (node, gpu) in plan.nodes.iter_mut().zip(gpu) {
-            node.gpu = gpu.map(Arc::new);
-        }
-        for node in &plan.nodes {
-            let mask = node.gpu.as_deref().map_or(0, NodeGpu::mask);
-            if plan
-                .paint_properties(node)
-                .iter()
-                .enumerate()
-                .any(|(slot, p)| p.mixes_state() && mask & 1 << slot == 0)
-            {
-                let id = &plan.style.layers[node.layer].id;
-                let warning = format!(
-                    "layers[{}] ({id}): paint that reads both feature state and feature properties is drawn without state",
-                    node.layer
-                );
-                if !plan.warnings.contains(&warning) {
-                    plan.warnings.push(warning);
-                }
-            }
-        }
-        plan
-    }
-
-    /// The node's bytecode paint under `cost`, if any slot is interpreted.
-    fn gpu(&self, node: &NodePlan, cost: CostModel) -> Option<NodeGpu> {
-        let names = self.paint_names(node);
-        let programs: Vec<Option<Program>> = self
-            .paint_properties(node)
-            .iter()
-            .zip(names)
-            .map(|(p, name)| cost.program(name, p.expression()?))
-            .collect();
-        if programs.iter().all(Option::is_none) {
-            return None;
-        }
-        let layout = Layout::new(programs.iter().flatten());
-        Some(NodeGpu { programs, layout })
-    }
-
-    /// The v8 names of a node's paint slots that may be interpreted, in
-    /// [`paint_properties`](Self::paint_properties) order; empty for
-    /// families without bytecode.
-    pub(crate) fn paint_names(&self, node: &NodePlan) -> &'static [&'static str] {
-        match (&self.style.layers[node.layer].kind, node.family) {
-            (LayerKind::Fill(f), Family::FillOutline)
-                if f.paint.outline_color.as_constant() != Some(&None) =>
-            {
-                &["fill-outline-color", "fill-opacity"]
-            }
-            (LayerKind::Fill(_), _) => &["fill-color", "fill-opacity"],
-            (LayerKind::Line(_), _) => &[
-                "line-color",
-                "line-opacity",
-                "line-width",
-                "line-gap-width",
-                "line-offset",
-                "line-blur",
-            ],
-            (LayerKind::Circle(_), _) => &[
-                "circle-color",
-                "circle-radius",
-                "circle-blur",
-                "circle-opacity",
-                "circle-stroke-color",
-                "circle-stroke-width",
-                "circle-stroke-opacity",
-            ],
-            _ => &[],
         }
     }
 
-    /// Bit `i`: the node interprets paint slot `i` on the GPU.
-    pub(crate) fn bytecode_mask(&self, node: &NodePlan) -> u32 {
-        node.gpu.as_deref().map_or(0, NodeGpu::mask)
-    }
-
-    /// Words per feature of the node's property rows: the family's, then
-    /// its input columns.
+    /// Words per feature of the node's property rows.
     pub(crate) fn row_words(&self, node: &NodePlan) -> usize {
-        let family = match node.family {
+        match node.family {
             Family::Fill | Family::FillOutline => orb_render::FILL_ROW_WORDS,
             Family::Line => orb_render::LINE_ROW_WORDS,
             Family::FillExtrusion => orb_render::EXTRUSION_ROW_WORDS,
@@ -452,12 +348,7 @@ impl StylePlan {
             Family::Heatmap => orb_render::HEATMAP_ROW_WORDS,
             Family::SymbolIcon | Family::SymbolText => orb_render::SYMBOL_ROW_WORDS,
             image => unreachable!("{image:?} nodes have no property rows"),
-        };
-        family
-            + node
-                .gpu
-                .as_ref()
-                .map_or(0, |g| g.layout.column_words() as usize)
+        }
     }
 
     /// The index of the node with `key`.
@@ -496,14 +387,10 @@ impl StylePlan {
                 | Family::Circle
                 | Family::SymbolIcon
                 | Family::SymbolText
-        ) && (self
+        ) && self
             .paint_properties(node)
             .iter()
-            .any(PaintProperty::is_state_lookup)
-            || node
-                .gpu
-                .as_ref()
-                .is_some_and(|g| g.layout.state_words() > 0))
+            .any(PaintProperty::reads_state)
     }
 
     /// The source layer a node's features come from: `None` for GeoJSON.

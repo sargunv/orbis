@@ -419,9 +419,15 @@ impl<T: PropertyValue> Property<T> {
         }
     }
 
-    /// The value at `zoom` for a feature with `state` that reads no feature
-    /// properties: exact for constant, camera and state-only values.
-    pub fn evaluate_state(&self, zoom: f64, state: &[(String, Value<'static>)]) -> T {
+    /// The value at `zoom` for a feature with `state`: exact for constant,
+    /// camera and state-only values, and with the feature's captured `data`
+    /// for values that read both state and data.
+    pub fn evaluate_state(
+        &self,
+        zoom: f64,
+        state: &[(String, Value<'static>)],
+        data: Option<&orb_expr::FeatureData>,
+    ) -> T {
         match &self.value {
             Inner::Constant(v) => v.clone(),
             Inner::Expression {
@@ -433,10 +439,12 @@ impl<T: PropertyValue> Property<T> {
                     feature_state: state,
                     ..Default::default()
                 };
-                fit(
-                    expression.expression().evaluate_with(&context).ok(),
-                    default,
-                )
+                let expression = expression.expression();
+                let value = match data {
+                    Some(data) => expression.evaluate_data(&context, data),
+                    None => expression.evaluate_with(&context),
+                };
+                fit(value.ok(), default)
             }
         }
     }

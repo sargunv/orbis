@@ -38,13 +38,11 @@ struct LineNode {
     gradient: u32,
     _pad: u32,
     state: StateLookup,
-    gpu: GpuPaint,
 };
 
 @group(1) @binding(0) var<uniform> node: LineNode;
 
 const LINE_STRIDE: u32 = 5u;
-const LINE_PROPS: u32 = 20u;
 const EXTRUDE_SCALE: f32 = 1.0 / 63.0;
 
 struct LineOut {
@@ -65,10 +63,7 @@ struct LineOut {
     @location(12) @interpolate(flat) ramp: u32,
 };
 
-fn line_prop(row: u32, state: u32, bit: u32, constant: f32, tile_zoom: f32, gpu: vec4<f32>) -> f32 {
-    if gpu_slot(node.gpu, bit) {
-        return gpu.x;
-    }
+fn line_prop(row: u32, state: u32, bit: u32, constant: f32, tile_zoom: f32) -> f32 {
     if from_state(state, node.state, bit) {
         return state_number(state, node.state, bit, node.curves[bit]);
     }
@@ -102,26 +97,22 @@ fn line_vertex(v: Pulled) -> LineOut {
     let row = prop_row(v, feature, v.row_words);
     let state = state_block(v, feature, node.state);
 
-    let gpu = gpu_values(node.gpu, row + LINE_PROPS, state, 1u);
     var color = node.color;
     if (node.table_mask & 1u) != 0u {
         color = table_color(row, 0u, node.curves[0], tile.zoom);
     }
-    if gpu_slot(node.gpu, 0u) {
-        color = gpu[0];
-    }
     if from_state(state, node.state, 0u) {
         color = state_color(state, node.state, 0u, node.curves[0]);
     }
-    let opacity = line_prop(row, state, 1u, node.opacity, tile.zoom, gpu[1]);
+    let opacity = line_prop(row, state, 1u, node.opacity, tile.zoom);
     if opacity < 0.01 {
         out.position = discarded_vertex();
         return out;
     }
-    let width = line_prop(row, state, 2u, node.width, tile.zoom, gpu[2]);
-    let gap_width = line_prop(row, state, 3u, node.gap_width, tile.zoom, gpu[3]) / 2.0;
-    let offset = -line_prop(row, state, 4u, node.offset, tile.zoom, gpu[4]);
-    let blur = line_prop(row, state, 5u, node.blur, tile.zoom, gpu[5]);
+    let width = line_prop(row, state, 2u, node.width, tile.zoom);
+    let gap_width = line_prop(row, state, 3u, node.gap_width, tile.zoom) / 2.0;
+    let offset = -line_prop(row, state, 4u, node.offset, tile.zoom);
+    let blur = line_prop(row, state, 5u, node.blur, tile.zoom);
 
     let extrude = vec2<f32>(signed_byte(data, 0u), signed_byte(data, 8u));
     let offset_normal = vec2<f32>(signed_byte(data, 16u), signed_byte(data, 24u));
@@ -168,10 +159,6 @@ fn line_vertex(v: Pulled) -> LineOut {
     if (node.table_mask & 4u) != 0u {
         out.floorwidth = bitcast<f32>(prop_at(row + 4u + select(0u, 1u, floor(frame.zoom) > tile.zoom)));
     }
-    // An interpreted width's floor width, from the job (row word 18).
-    if gpu_slot(node.gpu, 2u) {
-        out.floorwidth = bitcast<f32>(prop_at(row + 18u));
-    }
     out.images = pattern_ids(row, 12u, node.image_from, node.image_to, node.table_mask, node.pattern);
     out.progress = bitcast<f32>(vertex_at(v.vertex + 4u));
     if node.gradient != 0u { out.ramp = prop_at(row + 19u); }
@@ -181,7 +168,7 @@ fn line_vertex(v: Pulled) -> LineOut {
             out.images = vec2<u32>(prop_at(row + 15u + select(2u, 0u, node.dash_from_scale > 1.0)), prop_at(row + 16u));
         }
         out.floorwidth = node.dash_floor_width;
-        if (node.table_mask & 4u) != 0u || gpu_slot(node.gpu, 2u) {
+        if (node.table_mask & 4u) != 0u {
             out.floorwidth = bitcast<f32>(prop_at(row + 18u));
         }
     }

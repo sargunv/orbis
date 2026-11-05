@@ -6,7 +6,6 @@ use std::sync::Arc;
 use orb_expr::json::{self, Json, JsonValue, Member, Span};
 use orb_v8::{Diagnostic, Diagnostics, Style, Value};
 
-use crate::CostModel;
 use crate::diff::{self, Patch};
 use crate::tx::{FeatureStateOp, FeatureTarget, Op, Transaction};
 
@@ -45,8 +44,6 @@ pub struct StyleDoc {
     pub(crate) overrides: Vec<(String, Value<'static>)>,
     style: Arc<Style>,
     next_key: u32,
-    /// How paint changes classify for the renderer.
-    pub(crate) cost: CostModel,
 }
 
 /// The working copy a transaction edits.
@@ -148,17 +145,7 @@ impl StyleDoc {
             overrides: Vec::new(),
             style: Arc::new(style),
             next_key,
-            cost: CostModel::DEFAULT,
         })
-    }
-
-    /// The cost model paint changes classify with, the renderer's.
-    pub fn cost_model(&self) -> CostModel {
-        self.cost
-    }
-
-    pub fn set_cost_model(&mut self, cost: CostModel) {
-        self.cost = cost;
     }
 
     /// Counts applied transactions; the first document is version 1.

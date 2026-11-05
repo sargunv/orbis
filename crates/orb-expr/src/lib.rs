@@ -23,7 +23,6 @@ mod eval;
 mod eval_extra;
 mod filter;
 mod geometry;
-pub mod gpu;
 mod ir;
 mod js;
 pub mod json;
@@ -44,7 +43,7 @@ pub use filter::Filter;
 pub use ir::Interpolation;
 pub use locale::{BUILTIN_LOCALE, BuiltinLocale, Collator, Locale, NumberFormat};
 pub use property::{Kind, PropertyExpression, PropertySpec, PropertyType, ZoomCurve};
-pub use tile::Bound;
+pub use tile::{Bound, FeatureData};
 pub use value::FormattedSection;
 pub use value::{Type, Value};
 
@@ -55,8 +54,6 @@ use parse::Parser;
 
 #[cfg(test)]
 mod conformance;
-#[cfg(test)]
-mod conformance_gpu;
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, target_arch = "wasm32"))]

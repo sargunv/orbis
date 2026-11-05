@@ -33,7 +33,6 @@ fn classes(patch: &Patch) -> Vec<Class> {
 #[test]
 fn paint_edits_classify_by_binding() {
     let mut doc = doc();
-    doc.set_cost_model(CostModel::ALL);
     let water = doc.layer_keys().nth(1).unwrap();
     let patch = commands(
         &mut doc,
@@ -59,7 +58,7 @@ fn paint_edits_classify_by_binding() {
     assert!(matches!(
         patch.changes[0],
         Change::Paint {
-            from: Binding::Bytecode,
+            from: Binding::Source,
             to: Binding::Constant,
             ..
         }
@@ -73,29 +72,21 @@ fn paint_edits_classify_by_binding() {
 }
 
 #[test]
-fn the_cost_model_picks_bytecode_or_rows() {
+fn mixed_paint_binds_as_rows() {
     let mut doc = doc();
-    doc.set_cost_model(CostModel::ALL);
-    let binding = |doc: &mut StyleDoc, value: &str| {
-        let patch = commands(
-            doc,
-            &format!(r#"[["setPaintProperty", "water", "fill-color", {value}]]"#),
-        );
-        match patch.changes[0] {
-            Change::Paint { to, .. } => to,
-            _ => unreachable!("a paint change"),
+    let patch = commands(
+        &mut doc,
+        r#"[["setPaintProperty", "water", "fill-color",
+            ["case", ["boolean", ["feature-state", "hover"], false], "red", ["get", "c"]]]]"#,
+    );
+    assert!(matches!(
+        patch.changes[0],
+        Change::Paint {
+            to: Binding::Source,
+            ..
         }
-    };
-    let flip = r#"["match", ["get", "c"], "a", "red", "blue"]"#;
-    assert_eq!(binding(&mut doc, flip), Binding::Bytecode);
-    // Strings the GPU can't compare stay rows.
-    let upcase = r#"["match", ["upcase", ["get", "c"]], "A", "red", "blue"]"#;
-    assert_eq!(binding(&mut doc, upcase), Binding::Source);
-    doc.set_cost_model(CostModel::ROWS);
-    assert_eq!(binding(&mut doc, flip), Binding::Source);
-    // State and data together have no rows: interpreted whatever the cost.
-    let mixed = r#"["case", ["boolean", ["feature-state", "hover"], false], "red", ["get", "c"]]"#;
-    assert_eq!(binding(&mut doc, mixed), Binding::Bytecode);
+    ));
+    assert_eq!(classes(&patch), [Class::Column]);
 }
 
 #[test]

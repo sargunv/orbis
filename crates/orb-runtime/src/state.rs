@@ -5,15 +5,18 @@
 //! Every feature of a resident mesh whose node reads state gets an index,
 //! counted by the meshes that refer to it, so a state write rewrites one
 //! table row and no mesh. A row holds, per node that reads state, a flag
-//! word (non-zero once the feature has state) and the node's state-lookup
-//! properties evaluated with the feature's state at the table's zoom and
-//! the next, then the raw state values the node's GPU programs read
-//! (decision 0017): the layout is compiled per style revision. Index 0 and
-//! rows with a zero flag draw the node's constant, the value with no state.
+//! word (non-zero once the feature has state) and the node's properties
+//! that read state evaluated with the feature's state at the table's zoom
+//! and the next: the layout is compiled per style revision. Index 0 and
+//! rows with a zero flag draw the value with no state: the node's constant,
+//! or for paint that also reads feature data, the feature's property row.
+//! That paint evaluates here from the feature data its meshes captured, so
+//! a state write shows in the next frame, as GL JS's `updatePaintArrays`.
 
 use std::collections::HashMap;
 use std::ops::Range;
 
+use orb_expr::FeatureData;
 use orb_hal::Gpu;
 use orb_render::{Renderer, StateLookup};
 use orb_style::FeatureStateOp;
@@ -32,6 +35,8 @@ struct StateKey {
 struct Entry {
     key: Option<StateKey>,
     state: Vec<(String, Value<'static>)>,
+    /// What paint reading both state and data reads of the feature.
+    data: Option<FeatureData>,
     /// Mesh feature slots that refer to the entry.
     refs: u32,
 }
@@ -46,8 +51,6 @@ struct Block {
     layer: Option<String>,
     /// The masked property slots, in order.
     slots: Vec<usize>,
-    /// Words of raw state values for the node's programs, after the slots'.
-    raw: u32,
 }
 
 #[derive(Debug)]
@@ -117,14 +120,30 @@ impl FeatureStates {
     }
 
     /// The index of a feature of a resident mesh, counted until
-    /// [`release`](Self::release)d.
-    pub(crate) fn intern(&mut self, source: u32, layer: Option<&str>, id: &str) -> u32 {
+    /// [`release`](Self::release)d, with the data the mesh captured.
+    pub(crate) fn intern(
+        &mut self,
+        source: u32,
+        layer: Option<&str>,
+        id: &str,
+        data: Option<&FeatureData>,
+    ) -> u32 {
         let index = self.index(StateKey {
             source,
             layer: layer.map(str::to_string),
             id: id.to_string(),
         });
-        self.entries[index as usize].refs += 1;
+        let entry = &mut self.entries[index as usize];
+        entry.refs += 1;
+        if let Some(data) = data {
+            match &mut entry.data {
+                Some(held) => held.merge(data),
+                None => entry.data = Some(data.clone()),
+            }
+            if !entry.state.is_empty() {
+                self.touch(index);
+            }
+        }
         index
     }
 
@@ -141,6 +160,9 @@ impl FeatureStates {
     /// is already zero: rows are cleared when their state is removed.
     fn collect(&mut self, index: u32) {
         let entry = &mut self.entries[index as usize];
+        if entry.refs == 0 {
+            entry.data = None;
+        }
         if entry.refs == 0
             && entry.state.is_empty()
             && let Some(key) = entry.key.take()
@@ -253,7 +275,7 @@ impl FeatureStates {
             }
             let properties = plan.paint_properties(node);
             let slots: Vec<usize> = (0..properties.len())
-                .filter(|&s| properties[s].is_state_lookup())
+                .filter(|&s| properties[s].reads_state())
                 .collect();
             self.zoom_dependent |= slots
                 .iter()
@@ -264,9 +286,8 @@ impl FeatureStates {
                 source: plan.sources[node.source].key,
                 layer: plan.source_layer(node).map(str::to_string),
                 slots,
-                raw: node.gpu.as_ref().map_or(0, |g| g.layout.state_words()),
             };
-            offset += 1 + 2 * block.slots.len() as u32 + block.raw;
+            offset += 1 + 2 * block.slots.len() as u32;
             self.blocks.push(Some(block));
         }
         self.stride = offset;
@@ -356,13 +377,9 @@ impl FeatureStates {
                     row[at] = 1;
                     for (i, &slot) in block.slots.iter().enumerate() {
                         let p: &PaintProperty = &properties[slot];
-                        row[at + 1 + 2 * i] = p.state_word(zoom, &entry.state);
-                        row[at + 2 + 2 * i] = p.state_word(zoom + 1.0, &entry.state);
-                    }
-                    if let Some(gpu) = node.gpu.as_ref().filter(|_| block.raw > 0) {
-                        let raw = at + 1 + 2 * block.slots.len();
-                        gpu.layout
-                            .pack_state(&entry.state, &mut row[raw..raw + block.raw as usize]);
+                        let data = entry.data.as_ref().filter(|_| p.mixes_state());
+                        row[at + 1 + 2 * i] = p.state_word(zoom, &entry.state, data);
+                        row[at + 2 + 2 * i] = p.state_word(zoom + 1.0, &entry.state, data);
                     }
                 }
             }
@@ -389,14 +406,6 @@ impl FeatureStates {
         }
     }
 
-    /// Where node `node`'s raw state values start among its block's values.
-    pub(crate) fn raw_offset(&self, node: usize) -> u32 {
-        self.blocks
-            .get(node)
-            .and_then(Option::as_ref)
-            .map_or(0, |b| 2 * b.slots.len() as u32)
-    }
-
     /// Frees the GPU table.
     pub(crate) fn release_table(&mut self, renderer: &mut Renderer) {
         if let Some(table) = self.table.take() {
@@ -413,9 +422,9 @@ mod tests {
     #[test]
     fn indices_are_counted_and_states_survive_unloads() {
         let mut states = FeatureStates::default();
-        let a = states.intern(1, Some("poi"), "7");
-        assert_eq!(states.intern(1, Some("poi"), "7"), a);
-        let b = states.intern(1, Some("road"), "7");
+        let a = states.intern(1, Some("poi"), "7", None);
+        assert_eq!(states.intern(1, Some("poi"), "7", None), a);
+        let b = states.intern(1, Some("road"), "7", None);
         assert_ne!(a, b, "ids are per source layer");
         states.apply(&FeatureStateOp::Set {
             source: SourceKey(1),
@@ -428,7 +437,7 @@ mod tests {
         states.release(b);
         assert_eq!(states.free, [b], "the stateless entry is freed");
         // The state outlives the meshes, as GL JS keeps it.
-        assert_eq!(states.intern(1, Some("poi"), "7"), a);
+        assert_eq!(states.intern(1, Some("poi"), "7", None), a);
         states.apply(&FeatureStateOp::Remove {
             source: SourceKey(1),
             source_layer: Some("poi".into()),

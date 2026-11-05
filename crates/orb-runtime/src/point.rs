@@ -4,8 +4,7 @@
 use crate::style::{NodePlan, PaintProperty, StylePlan};
 use orb_hal::Gpu;
 use orb_render::{
-    CirclePaint, Curve, GpuPaint, HeatmapPaint, NodePaint, Renderer, StateLookup, Translate,
-    pack_color,
+    CirclePaint, Curve, HeatmapPaint, NodePaint, Renderer, StateLookup, Translate, pack_color,
 };
 use orb_v8::{LayerKind, TranslateAnchor};
 
@@ -19,7 +18,6 @@ pub(crate) fn paint(
     zoom: f64,
     maxima: &[f32],
     lookup: StateLookup,
-    interpreted: GpuPaint,
 ) -> bool {
     let kind = &plan.style.layers[node.layer].kind;
     if !matches!(kind, LayerKind::Circle(_) | LayerKind::Heatmap(_)) {
@@ -30,9 +28,7 @@ pub(crate) fn paint(
     let mut colors = [[0.0; 4]; 7];
     let mut table_mask = 0;
     for (slot, property) in plan.paint_properties(node).iter().enumerate() {
-        if interpreted.mask & 1 << slot != 0 {
-            numbers[slot] = crate::gpu::bound(plan, node, slot, zoom, maxima);
-        } else if property.per_feature() {
+        if property.per_feature() {
             table_mask |= 1 << slot;
             curves[slot] = property.curve();
             numbers[slot] = maxima[slot];
@@ -69,7 +65,6 @@ pub(crate) fn paint(
                 table_mask,
                 curves,
                 state: lookup,
-                gpu: interpreted,
             })
         }
         LayerKind::Heatmap(h) => {

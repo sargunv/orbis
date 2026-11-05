@@ -7,7 +7,6 @@ use orb_expr::PropertyExpression;
 use orb_expr::json::{Json, JsonValue, Member};
 use orb_v8::{Diagnostic, Diagnostics, Layer, Source, Style, Value};
 
-use crate::CostModel;
 use crate::doc::{Draft, LayerKey, SourceKey, StyleDoc, member, synthetic};
 use crate::tx::FeatureStateOp;
 use crate::{same, same_opt};
@@ -24,17 +23,28 @@ pub enum Binding {
     /// Per feature and zoom: property rows at two zooms (`TableCurve`).
     Composite,
     /// Per feature state only, not feature data: the state table
-    /// (`StateLookup`).
+    /// (`StateLookup`). Values that read both are rows, which the state
+    /// table overrides for features with state.
     State,
-    /// Per feature (and zoom and state), interpreted on the GPU from
-    /// input columns beside the property rows (`GpuBytecode`).
-    Bytecode,
 }
 
 impl Binding {
-    /// Whether the value needs per-feature property rows or input columns.
+    /// How a parsed paint value binds.
+    pub fn of(value: &PropertyExpression) -> Self {
+        if value.reads_feature_state() && !value.reads_feature_properties() {
+            return Self::State;
+        }
+        match value.kind() {
+            orb_expr::Kind::Constant => Self::Constant,
+            orb_expr::Kind::Camera => Self::Camera,
+            orb_expr::Kind::Source => Self::Source,
+            orb_expr::Kind::Composite => Self::Composite,
+        }
+    }
+
+    /// Whether the value needs per-feature property rows.
     pub fn is_rows(self) -> bool {
-        matches!(self, Self::Source | Self::Composite | Self::Bytecode)
+        matches!(self, Self::Source | Self::Composite)
     }
 }
 
@@ -103,8 +113,6 @@ impl Change {
             Self::LayerAdded(_) | Self::LayerRemoved(_) | Self::LayersReordered => Class::Nodes,
             Self::Visibility(_) => Class::Block,
             Self::Layout { .. } => Class::Relayout,
-            // A program edit keeps its columns when they pack the same;
-            // the renderer, which packs them, lowers that to `Block`.
             Self::Paint { from, to, .. } => {
                 if to.is_rows() {
                     Class::Column
@@ -164,7 +172,6 @@ fn reads_global(json: &Json, keys: &HashSet<&str>) -> bool {
 
 /// The binding of a paint value of a `layer_type` layer.
 fn binding(
-    cost: &CostModel,
     layer_type: &str,
     name: &str,
     json: Option<&Json>,
@@ -172,7 +179,7 @@ fn binding(
 ) -> Binding {
     json.zip(orb_v8::property_spec(layer_type, true, name))
         .and_then(|(json, spec)| PropertyExpression::parse_with_state(json, &spec, state).ok())
-        .map_or(Binding::Constant, |parsed| cost.binding(name, &parsed))
+        .map_or(Binding::Constant, |parsed| Binding::of(&parsed))
 }
 
 fn section<'a>(json: &'a Json, key: &str) -> &'a [Member] {
@@ -194,7 +201,6 @@ fn names<'a>(a: &'a [Member], b: &'a [Member]) -> Vec<&'a str> {
 /// state keys whose values changed.
 #[allow(clippy::too_many_arguments)]
 fn layer_changes(
-    cost: &CostModel,
     key: LayerKey,
     old: &Json,
     new: &Json,
@@ -217,8 +223,8 @@ fn layer_changes(
             out.push(Change::Paint {
                 layer: key,
                 name: name.into(),
-                from: binding(cost, ty, name, a, old_state),
-                to: binding(cost, ty, name, b, new_state),
+                from: binding(ty, name, a, old_state),
+                to: binding(ty, name, b, new_state),
             });
         }
     }
@@ -420,7 +426,6 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         match old_entry {
             None => changes.push(Change::LayerAdded(entry.key)),
             Some(&(old_index, _)) => layer_changes(
-                &doc.cost,
                 entry.key,
                 doc.layer_json(old_index),
                 &entry.json,

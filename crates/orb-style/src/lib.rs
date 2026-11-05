@@ -13,12 +13,10 @@
 
 #![forbid(unsafe_code)]
 
-mod cost;
 mod diff;
 mod doc;
 mod tx;
 
-pub use cost::CostModel;
 pub use diff::{Binding, Change, Class, LayoutChange, Patch};
 pub use doc::{LayerKey, SourceKey, StyleDoc};
 pub use tx::{FeatureStateOp, FeatureTarget, Op, Transaction};

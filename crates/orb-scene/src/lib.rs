@@ -115,8 +115,7 @@ pub struct FrameBlock {
     pub world_per_px: f32,
     /// Physical pixels per logical pixel.
     pub pixel_ratio: f32,
-    /// Style zoom of the camera, exactly as the CPU evaluates paint at it:
-    /// the GPU interpreter branches on its f64 bits.
+    /// Style zoom of the camera.
     pub zoom: f64,
     /// Clockwise map rotation, in radians.
     pub bearing: f32,
@@ -272,8 +271,6 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     words[86..88].copy_from_slice(&camera_lo);
     words[91] = (q as f32).to_bits();
     words[95] = (quantum(GLOBE_SPAN) as f32).to_bits();
-    words[30] = frame.zoom.to_bits() as u32;
-    words[31] = (frame.zoom.to_bits() >> 32) as u32;
     if let Some(t) = frame.terrain {
         for (word, v) in words[32..36].iter_mut().zip(t.unpack) {
             *word = v.to_bits();
@@ -729,8 +726,7 @@ pub struct MeshData<'a> {
     pub indices: Words<'a>,
     /// Property rows.
     pub props: Words<'a>,
-    /// Words per feature of the rows: the family's, then any input
-    /// columns of interpreted paint. Shaders that read rows take their
+    /// Words per feature of the rows. Shaders that read rows take their
     /// stride from the mesh, so rows and stride always agree.
     pub row_words: u32,
     pub chunks: &'a [Chunk],

@@ -12,18 +12,6 @@ const FETCH: &str = include_str!("wgsl/fetch.wgsl");
 const FETCH_COMPAT: &str = include_str!("wgsl/fetch_compat.wgsl");
 const BUILTINS: &str = include_str!("wgsl/builtins.wgsl");
 const BUILTINS_COMPAT: &str = include_str!("wgsl/builtins_compat.wgsl");
-const GPU_PAINT: &str = include_str!("wgsl/gpu_paint.wgsl");
-const EXPR: &str = include_str!("wgsl/expr.wgsl");
-const EXPR_NONE: &str = include_str!("wgsl/expr_none.wgsl");
-
-/// The GPU expression interpreter alone, for harnesses that bind their own
-/// property words: `expr_eval`, `expr_zoom`, `expr_to_number` and
-/// `expr_to_color` over the harness's `fn prop_at(i: u32) -> u32`.
-pub const EXPRESSION_MODULE: &str = concat!(
-    include_str!("wgsl/bezier.wgsl"),
-    include_str!("wgsl/builtins.wgsl"),
-    include_str!("wgsl/expr.wgsl")
-);
 /// glTF's metallic-roughness shading, functions without bindings (plan
 /// §9.4): for the model pipelines to compose.
 pub const PBR_MODULE: &str = include_str!("wgsl/pbr.wgsl");
@@ -65,41 +53,25 @@ pub struct Shader {
     pub vertex: &'static str,
     pub fragment: &'static str,
     pub compute: &'static str,
-    /// Reads paint through `expr_to_number` and `expr_to_color`: the
-    /// shader has a bytecode class.
-    pub paint: bool,
 }
 
 impl Shader {
-    /// The table class: no interpreter.
     pub fn source(&self) -> String {
-        self.compose(false, false)
+        self.compose(false)
     }
 
-    /// The bytecode class, with the GPU expression interpreter.
-    pub fn bytecode_source(&self) -> String {
-        assert!(self.paint, "{} reads no paint", self.label);
-        self.compose(false, true)
+    /// The Compat composition (plan §8.7): scene tables from data
+    /// textures, no builtins GLSL ES 3.00 lacks. The `glsl` feature has
+    /// these translated offline; see [`glsl`](crate::glsl).
+    pub fn compat_source(&self) -> String {
+        self.compose(true)
     }
 
-    /// The Compat composition (plan §8.7) of the table class, or with
-    /// `bytecode` the bytecode class: scene tables from data textures, no
-    /// builtins GLSL ES 3.00 lacks. The `glsl` feature has these
-    /// translated offline; see [`glsl`](crate::glsl).
-    pub fn compat_source(&self, bytecode: bool) -> String {
-        assert!(!bytecode || self.paint, "{} reads no paint", self.label);
-        self.compose(true, bytecode)
-    }
-
-    fn compose(&self, compat: bool, bytecode: bool) -> String {
+    fn compose(&self, compat: bool) -> String {
         let mut source = self.parts.concat();
         if self.parts.contains(&DRAW) {
             source.push_str(if compat { FETCH_COMPAT } else { FETCH });
             source.push_str(if compat { BUILTINS_COMPAT } else { BUILTINS });
-        }
-        if self.paint {
-            source.push_str(GPU_PAINT);
-            source.push_str(if bytecode { EXPR } else { EXPR_NONE });
         }
         source
     }
@@ -118,7 +90,6 @@ pub const TERRAIN_SHADER: Shader = Shader {
     vertex: "vs_terrain",
     fragment: "fs_terrain",
     compute: "",
-    paint: false,
 };
 
 /// Clears drape slots (`vs_slot`, `fs_clear`) and builds their mip levels
@@ -129,7 +100,6 @@ pub const DRAPE_SHADER: Shader = Shader {
     vertex: "vs_slot",
     fragment: "fs_clear",
     compute: "downsample",
-    paint: false,
 };
 
 pub const TERRAIN_STACK_SHADER: Shader = Shader {
@@ -138,7 +108,6 @@ pub const TERRAIN_STACK_SHADER: Shader = Shader {
     vertex: "vs_stack",
     fragment: "fs_stack",
     compute: "",
-    paint: false,
 };
 
 pub const SKY_SHADER: Shader = Shader {
@@ -147,7 +116,6 @@ pub const SKY_SHADER: Shader = Shader {
     vertex: "vs_sky",
     fragment: "fs_sky",
     compute: "",
-    paint: false,
 };
 
 /// A layer's composite at its layer opacity, blending normally.
@@ -157,7 +125,6 @@ pub const LAYER_COMPOSITE_SHADER: Shader = Shader {
     vertex: "vs_layer_composite",
     fragment: "fs_layer_composite",
     compute: "",
-    paint: false,
 };
 
 /// A layer's composite in another blend mode, over the backdrop it reads.
@@ -167,7 +134,6 @@ pub const LAYER_BLEND_SHADER: Shader = Shader {
     vertex: "vs_layer_composite",
     fragment: "fs_layer_blend",
     compute: "",
-    paint: false,
 };
 
 /// The globe atmosphere's scattering over the map (decision 0025).
@@ -183,7 +149,6 @@ pub const FILL_SHADER: Shader = Shader {
     vertex: "vs_fill",
     fragment: "fs_fill",
     compute: "",
-    paint: true,
 };
 
 pub const FILL_OUTLINE_SHADER: Shader = Shader {
@@ -192,7 +157,6 @@ pub const FILL_OUTLINE_SHADER: Shader = Shader {
     vertex: "vs_fill_outline",
     fragment: "fs_fill_outline",
     compute: "",
-    paint: true,
 };
 
 pub const LINE_SHADER: Shader = Shader {
@@ -201,7 +165,6 @@ pub const LINE_SHADER: Shader = Shader {
     vertex: "vs_line",
     fragment: "fs_line",
     compute: "",
-    paint: true,
 };
 
 pub const CIRCLE_SHADER: Shader = Shader {
@@ -210,7 +173,6 @@ pub const CIRCLE_SHADER: Shader = Shader {
     vertex: "vs_circle",
     fragment: "fs_circle",
     compute: "",
-    paint: true,
 };
 /// Symbol quads: glyphs and icons, with their halos (decision 0009).
 pub const SYMBOL_SHADER: Shader = Shader {
@@ -219,7 +181,6 @@ pub const SYMBOL_SHADER: Shader = Shader {
     vertex: "vs_symbol",
     fragment: "fs_symbol",
     compute: "",
-    paint: false,
 };
 pub const HEATMAP_SHADER: Shader = Shader {
     label: "heatmap density",
@@ -227,7 +188,6 @@ pub const HEATMAP_SHADER: Shader = Shader {
     vertex: "vs_heatmap",
     fragment: "fs_heatmap",
     compute: "",
-    paint: false,
 };
 pub const HEATMAP_COLOR_SHADER: Shader = Shader {
     label: "heatmap color",
@@ -235,7 +195,6 @@ pub const HEATMAP_COLOR_SHADER: Shader = Shader {
     vertex: "vs_heatmap_color",
     fragment: "fs_heatmap_color",
     compute: "",
-    paint: false,
 };
 
 pub const RASTER_SHADER: Shader = Shader {
@@ -244,7 +203,6 @@ pub const RASTER_SHADER: Shader = Shader {
     vertex: "vs_raster",
     fragment: "fs_raster",
     compute: "",
-    paint: false,
 };
 
 pub const HILLSHADE_SHADER: Shader = Shader {
@@ -253,7 +211,6 @@ pub const HILLSHADE_SHADER: Shader = Shader {
     vertex: "vs_hillshade",
     fragment: "fs_hillshade",
     compute: "",
-    paint: false,
 };
 
 pub const COLOR_RELIEF_SHADER: Shader = Shader {
@@ -262,7 +219,6 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
     vertex: "vs_color_relief",
     fragment: "fs_color_relief",
     compute: "",
-    paint: false,
 };
 
 /// The DEM prepare pass's border fill, from raw tiles into padded ones.
@@ -273,7 +229,6 @@ pub const IMAGE_MIPS_SHADER: Shader = Shader {
     vertex: "",
     fragment: "",
     compute: "downsample",
-    paint: false,
 };
 
 pub const PREPARE_PAD_SHADER: Shader = Shader {
@@ -286,7 +241,6 @@ pub const PREPARE_PAD_SHADER: Shader = Shader {
     vertex: "",
     fragment: "",
     compute: "pad",
-    paint: false,
 };
 
 /// The DEM prepare pass's hillshade slopes, from padded tiles.
@@ -301,7 +255,6 @@ pub const PREPARE_SLOPE_SHADER: Shader = Shader {
     vertex: "",
     fragment: "",
     compute: "slope",
-    paint: false,
 };
 
 /// The border fill drawn into one padded layer (Compat).
@@ -316,7 +269,6 @@ pub const PREPARE_PAD_DRAW_SHADER: Shader = Shader {
     vertex: "vs_prepare",
     fragment: "fs_pad",
     compute: "",
-    paint: false,
 };
 
 /// The slopes drawn into one slope layer (Compat).
@@ -332,7 +284,6 @@ pub const PREPARE_SLOPE_DRAW_SHADER: Shader = Shader {
     vertex: "vs_prepare",
     fragment: "fs_slope",
     compute: "",
-    paint: false,
 };
 
 pub const CULL_SHADER: Shader = Shader {
@@ -341,7 +292,6 @@ pub const CULL_SHADER: Shader = Shader {
     vertex: "",
     fragment: "",
     compute: "cull",
-    paint: false,
 };
 
 /// Lit roofs and walls with reversed-Z depth.
@@ -351,7 +301,6 @@ pub const EXTRUSION_SHADER: Shader = Shader {
     vertex: "vs_extrusion",
     fragment: "fs_extrusion",
     compute: "",
-    paint: false,
 };
 pub const EXTRUSION_COMPOSITE_SHADER: Shader = Shader {
     label: "extrusion composite",
@@ -366,7 +315,6 @@ pub const EXTRUSION_COMPOSITE_SHADER: Shader = Shader {
     vertex: "vs_extrusion_composite",
     fragment: "fs_extrusion_composite",
     compute: "",
-    paint: false,
 };
 
 /// The shaders Compat draws with (plan §8.7): all but terrain's, the

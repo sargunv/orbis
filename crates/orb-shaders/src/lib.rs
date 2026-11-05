@@ -1,10 +1,7 @@
 //! WGSL modules and their composition (plan §8.4).
 //!
 //! Each pipeline's source is the shared scene types, the bindings of its
-//! kind (draw or cull) and its own module, concatenated. Shaders that read
-//! paint come in two classes: the table class with stand-ins for the GPU
-//! expression interpreter, and the bytecode class with the interpreter
-//! (`expr.wgsl`), compiled only into pipelines of nodes that need it.
+//! kind (draw or cull) and its own module, concatenated.
 
 #![forbid(unsafe_code)]
 
@@ -16,13 +13,12 @@ mod glsl {
     include!(concat!(env!("OUT_DIR"), "/glsl.rs"));
 }
 
-/// A Compat shader's offline GLSL ES 3.00 program (plan §8.4): its table
-/// class, or with `bytecode` the bytecode class.
+/// A Compat shader's offline GLSL ES 3.00 program (plan §8.4).
 #[cfg(feature = "glsl")]
-pub fn glsl(shader: &Shader, bytecode: bool) -> &'static orb_hal::GlslProgram<'static> {
+pub fn glsl(shader: &Shader) -> &'static orb_hal::GlslProgram<'static> {
     glsl::PROGRAMS
         .iter()
-        .find(|(label, b, _)| *label == shader.label && *b == bytecode)
+        .find(|(label, _)| *label == shader.label)
         .map(|(.., program)| program)
         .unwrap_or_else(|| panic!("{} has no Compat program", shader.label))
 }
@@ -32,9 +28,6 @@ mod tests {
     use super::*;
 
     fn validate(shader: &Shader) -> naga::Module {
-        if shader.paint {
-            parse(shader.label, &shader.bytecode_source());
-        }
         parse(shader.label, &shader.source()).0
     }
 

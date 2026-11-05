@@ -73,17 +73,18 @@ pub(crate) struct NodeMesh {
     pub(crate) mesh: Mesh,
     /// Property rows, one per selected feature.
     pub(crate) props: Vec<u32>,
-    /// Words per row: the family's, then the node's input columns.
+    /// Words per row.
     pub(crate) row_words: u32,
     /// Per paint property, the largest number in the rows (0 for colours
-    /// and properties not in the rows), for culling margins; then per input
-    /// column of the node's bytecode, its largest and negated smallest
-    /// number, for [`orb_expr::Expression::bound`].
+    /// and properties not in the rows), for culling margins.
     pub(crate) maxima: Vec<f32>,
     pub(crate) images: Vec<ImageRef>,
     /// For nodes that read feature state: per feature slot, its id as an
     /// index into [`TileBuild::ids`], or [`NO_ID`].
     pub(crate) state_ids: Option<Vec<u32>>,
+    /// For nodes with paint that reads both feature state and feature
+    /// data: per feature slot, what that paint reads of the feature.
+    pub(crate) data: Vec<orb_expr::FeatureData>,
 }
 
 /// A feature without an id: it keeps the default state.
@@ -95,12 +96,6 @@ pub(crate) const NO_ID: u32 = u32::MAX;
 pub struct ImageRef {
     pub word: u32,
     pub key: orb_render::ImageKey,
-}
-
-/// The least f32 at or above `x`.
-fn up(x: f64) -> f32 {
-    let f = x as f32;
-    if f64::from(f) < x { f.next_up() } else { f }
 }
 
 /// The feature-state key of a value: GL JS's `String(id)`.
@@ -494,14 +489,7 @@ pub(crate) fn build(
             None => (layer, None),
         };
         for features in split.groups {
-            // The family's words, then the node's input columns.
-            let family_words = plan.row_words(node)
-                - node
-                    .gpu
-                    .as_ref()
-                    .map_or(0, |g| g.layout.column_words() as usize);
             let row_words = plan.row_words(node);
-            let bytecode = plan.bytecode_mask(node);
             let mesh = match node.family {
                 _ if select.rows_only => Mesh::default(),
                 // Symbol geometry is the layer's bucket; its nodes carry rows.
@@ -543,21 +531,11 @@ pub(crate) fn build(
             let per_feature = line_effects
                 || node.family == Family::FillExtrusion
                 || pattern.is_some()
-                || bytecode != 0
                 || properties.iter().any(PaintProperty::per_feature);
             let props = if per_feature {
                 let mut rows = vec![0u32; features.len() * row_words];
-                if let Some(gpu) = &node.gpu {
-                    let layout = &gpu.layout;
-                    layout.pack_columns(layer, &features, row_words, family_words, &mut rows);
-                    // Each column's range, as a maximum and a negated minimum,
-                    // for the culling bounds of interpreted widths.
-                    for [lo, hi] in layout.ranges(layer, &features) {
-                        maxima.extend([up(hi), up(-lo)]);
-                    }
-                }
                 for (slot, property) in properties.iter().enumerate() {
-                    if !property.per_feature() || bytecode & 1 << slot != 0 {
+                    if !property.per_feature() {
                         continue;
                     }
                     let composite = property.kind() == Kind::Composite;
@@ -635,7 +613,7 @@ pub(crate) fn build(
                                         Family::Line => 12,
                                         // The feature's centroid follows.
                                         Family::FillExtrusion => 6,
-                                        _ => family_words - 3,
+                                        _ => row_words - 3,
                                     }
                                     + j) as u32,
                                 key: orb_render::ImageKey::Name(name),
@@ -647,15 +625,6 @@ pub(crate) fn build(
                 props.shrink_to_fit();
             }
             if let LayerKind::Line(l) = &style_layer.kind {
-                // Dash and pattern scales read the width at the tile's zoom per
-                // feature (word 18); an interpreted width has no table words.
-                if bytecode & 1 << 2 != 0 {
-                    let width = l.paint.width.bind(layer);
-                    for (i, &feature) in features.iter().enumerate() {
-                        props[i * row_words + 18] =
-                            width.evaluate(zoom, feature as usize).to_bits();
-                    }
-                }
                 let maxzoom = match &source_def.kind {
                     SourceKind::GeoJson(source) => source.options.max_zoom,
                     SourceKind::Vector(source) => source.tileset.maxzoom.unwrap_or(22.0) as u8,
@@ -686,6 +655,21 @@ pub(crate) fn build(
                     })
                     .collect()
             });
+            let mixed: Vec<&orb_expr::Expression> = properties
+                .iter()
+                .filter(|p| p.mixes_state())
+                .filter_map(|p| p.expression().map(|e| e.expression()))
+                .collect();
+            let data = if mixed.is_empty() {
+                Vec::new()
+            } else {
+                features
+                    .iter()
+                    .map(|&f| {
+                        orb_expr::FeatureData::capture(layer, f as usize, mixed.iter().copied())
+                    })
+                    .collect()
+            };
             let promote = match &source_def.kind {
                 SourceKind::Vector(v) => v
                     .promote_id
@@ -793,6 +777,7 @@ pub(crate) fn build(
                 maxima,
                 images,
                 state_ids,
+                data,
             });
         }
     }
@@ -1130,15 +1115,7 @@ mod tests {
 
     #[test]
     fn packs_composite_values_at_both_zooms() {
-        // Rows alone: the cost model interprets nothing.
-        let style = orb_v8::parse(STYLE).expect("valid style");
-        let plan = StylePlan::new(
-            std::sync::Arc::new(style),
-            vec![1, 2, 3, 4],
-            vec![1],
-            0,
-            orb_style::CostModel::ROWS,
-        );
+        let plan = plan(STYLE);
         let build = build(
             &frame(),
             &plan,
@@ -1161,38 +1138,5 @@ mod tests {
         assert_eq!(width(0), (6.0, 8.0));
         assert_eq!(width(1), (1.0, 2.0));
         assert_eq!(all.maxima[2], 8.0);
-    }
-
-    #[test]
-    fn packs_input_columns_for_interpreted_paint() {
-        let style = orb_v8::parse(STYLE).expect("valid style");
-        let plan = StylePlan::new(
-            std::sync::Arc::new(style),
-            vec![1, 2, 3, 4],
-            vec![1],
-            0,
-            orb_style::CostModel::ALL,
-        );
-        let node = &plan.nodes[2];
-        assert_eq!(plan.bytecode_mask(node), 1 << 2, "the composite width");
-        let build = build(
-            &frame(),
-            &plan,
-            0,
-            (10.0, 1.0),
-            None,
-            Select::default(),
-            no_symbols(),
-        )
-        .unwrap();
-        let all = &build.meshes[1];
-        // One string column, `class`, after each feature's row.
-        let stride = LINE_ROW_WORDS + 2;
-        assert_eq!(all.props.len(), 3 * stride);
-        let class = |feature: usize| all.props[feature * stride + LINE_ROW_WORDS];
-        assert_eq!(class(0), class(2));
-        assert_ne!(class(0), class(1));
-        // No number column: its range is empty.
-        assert_eq!(all.maxima.len(), 6 + 2);
     }
 }

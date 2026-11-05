@@ -12,16 +12,5 @@ orb-tile.workspace = true
 [lints]
 workspace = true
 
-[dev-dependencies]
-bytemuck.workspace = true
-futures-channel.workspace = true
-# Brings wgpu's platform backends.
-orb-hal-wgpu.workspace = true
-orb-shaders.workspace = true
-wgpu.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-pollster.workspace = true
-
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3.80"

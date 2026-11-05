@@ -97,7 +97,7 @@ impl Heatmaps {
         let ([scene, node], layout, target) = (self.layouts, self.layout, self.target);
         let density_pipeline = if self.density {
             let shader = HEATMAP_SHADER;
-            let module = crate::shader_module(gpu, &shader, false);
+            let module = crate::shader_module(gpu, &shader);
             Some(gpu.create_render_pipeline(&RenderPipelineDesc {
                 cull_mode: None,
                 label: shader.label,
@@ -126,7 +126,6 @@ impl Heatmaps {
         let color_pipeline = draw_pipeline(
             gpu,
             &HEATMAP_COLOR_SHADER,
-            false,
             PrimitiveTopology::TriangleList,
             target,
             &[scene, layout],

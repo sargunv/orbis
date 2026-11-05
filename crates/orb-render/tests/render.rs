@@ -251,7 +251,6 @@ fn red_fill(h: &mut Harness) {
             table_mask: 0,
             curves: [Curve::Step; 2],
             state: Default::default(),
-            gpu: Default::default(),
         }),
     );
 }
@@ -381,7 +380,6 @@ fn adjacent_clip_regions_do_not_double_blend_their_shared_edge() {
             table_mask: 0,
             curves: [Curve::Step; 2],
             state: Default::default(),
-            gpu: Default::default(),
         }),
     );
     let tile = h.renderer.scene().insert_tile();
@@ -501,7 +499,6 @@ fn translates_fills_and_clips_where_they_land() {
             table_mask: 0,
             curves: [Curve::Step; 2],
             state: Default::default(),
-            gpu: Default::default(),
         }),
     );
     let tile = h.renderer.scene().insert_tile();
@@ -559,7 +556,6 @@ fn margins_and_visibility_change_without_laying_candidates_out() {
             table_mask: 0,
             curves: [Curve::Step; 2],
             state: Default::default(),
-            gpu: Default::default(),
         })
     };
     h.renderer.set_paint(&mut h.gpu, 0, &translated(16.0));
@@ -659,7 +655,6 @@ fn circle_paint(color: [f32; 4]) -> NodePaint {
         table_mask: 0,
         curves: [Curve::Step; 7],
         state: Default::default(),
-        gpu: Default::default(),
     })
 }
 
@@ -768,7 +763,6 @@ fn heatmap_composites_in_layer_order_and_hides_without_recording() {
             table_mask: 0,
             curves: [Curve::Step; 2],
             state: Default::default(),
-            gpu: Default::default(),
         }),
     );
     let tile = h.renderer.scene().insert_tile();
@@ -914,7 +908,6 @@ fn image_rows_fill_late_span_pages_and_recycle_without_recording_commands() {
                 table_mask: 0,
                 curves: [Curve::Step; 2],
                 state: Default::default(),
-                gpu: Default::default(),
             },
             PatternPaint {
                 from: late,
@@ -1014,7 +1007,6 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
                 floor_width: 8.0,
             }),
             state: Default::default(),
-            gpu: Default::default(),
         }),
     );
     let mut b = LayerBuilder::new("line", 4096);
@@ -1257,7 +1249,6 @@ fn blended_fills(modes: [Blend; 2]) -> Vec<u8> {
                 table_mask: 0,
                 curves: [Curve::Step; 2],
                 state: Default::default(),
-                gpu: Default::default(),
             }),
         );
         let (opacity, blend) = match node {

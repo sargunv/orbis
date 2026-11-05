@@ -384,9 +384,9 @@ fn global_state_resolves_at_parse() {
     );
     // State-only: a state lookup, with the global default as the fallback.
     assert!(l.paint.width.is_state_lookup());
-    assert_eq!(l.paint.width.evaluate_state(0.0, &[]), 2.0);
+    assert_eq!(l.paint.width.evaluate_state(0.0, &[], None), 2.0);
     let state = [("w".to_string(), Value::Number(5.0))];
-    assert_eq!(l.paint.width.evaluate_state(0.0, &state), 5.0);
+    assert_eq!(l.paint.width.evaluate_state(0.0, &state, None), 5.0);
     let s = parse_with_state(text, &[("c".into(), Value::String("blue".into()))]).unwrap();
     assert_eq!(
         line(&s).paint.color.as_constant(),

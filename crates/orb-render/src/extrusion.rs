@@ -82,7 +82,6 @@ impl Extrusions {
             self.composite = Some(draw_pipeline(
                 gpu,
                 &EXTRUSION_COMPOSITE_SHADER,
-                false,
                 PrimitiveTopology::TriangleList,
                 self.target,
                 &[self.layouts[0], self.layout],
@@ -114,7 +113,7 @@ impl Extrusions {
             return;
         }
         let shader = EXTRUSION_SHADER;
-        let module = crate::shader_module(gpu, &shader, false);
+        let module = crate::shader_module(gpu, &shader);
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
             cull_mode: Some(Face::Back),
             label: shader.label,

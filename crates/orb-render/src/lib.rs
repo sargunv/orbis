@@ -48,9 +48,9 @@ pub use orb_scene::{
 };
 pub use paint::{
     CIRCLE_ROW_WORDS, CirclePaint, ColorReliefPaint, Curve, EXTRUSION_ROW_WORDS, ExtrusionPaint,
-    FILL_ROW_WORDS, FillPaint, GpuPaint, HEATMAP_ROW_WORDS, HeatmapPaint, HillshadeMethod,
-    HillshadePaint, LINE_ROW_WORDS, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint,
-    SYMBOL_ROW_WORDS, StateLookup, SymbolPaint, SymbolSize, Translate, pack_color,
+    FILL_ROW_WORDS, FillPaint, HEATMAP_ROW_WORDS, HeatmapPaint, HillshadeMethod, HillshadePaint,
+    LINE_ROW_WORDS, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, SYMBOL_ROW_WORDS,
+    StateLookup, SymbolPaint, SymbolSize, Translate, pack_color,
 };
 pub use tiles::{GpuTile, ImageBuild, ImageMesh, TileKey, UploadError, dem_prepares};
 
@@ -171,8 +171,6 @@ pub struct RenderNode {
 struct Node {
     family: Family,
     source: Option<u32>,
-    /// Draws with the bytecode-class pipeline.
-    bytecode: bool,
     group: BindGroupId,
     cull: NodeCull,
     /// The uniform words last written, to skip unchanged writes.
@@ -204,12 +202,9 @@ pub struct Renderer {
     cull: Option<(ComputePipelineId, BindGroupId)>,
     draw_layout: BindGroupLayoutId,
     node_layout: BindGroupLayoutId,
-    /// The vector families' table-class pipelines, each made for the
-    /// family's first node.
-    paint: PaintClass,
-    /// Their bytecode class, made for the first node that interprets
-    /// paint (plan §8.4: only it compiles the interpreter).
-    bytecode: PaintClass,
+    /// The vector families' pipelines, each made for the family's first
+    /// node.
+    paint: PaintPipelines,
     /// Symbols, made for the first symbol node.
     symbol_pipeline: Option<RenderPipelineId>,
     /// The symbol shader's pass (group 2): halo and fill together, halo
@@ -501,8 +496,7 @@ impl Renderer {
             cull,
             draw_layout,
             node_layout,
-            paint: PaintClass::new(false),
-            bytecode: PaintClass::new(true),
+            paint: PaintPipelines::default(),
             symbol_pipeline: None,
             symbol_passes,
             symbol_pass_layout,
@@ -683,7 +677,6 @@ impl Renderer {
             self.nodes.push(Node {
                 family,
                 source: desc.source,
-                bytecode: false,
                 group,
                 extrusion: (family == Family::FillExtrusion)
                     .then(extrusion::NodeExtrusion::default),
@@ -965,12 +958,6 @@ impl Renderer {
     /// Writes a node's paint values. The paint's family must match the
     /// node's.
     pub fn set_paint(&mut self, gpu: &mut dyn Gpu, node: u32, paint: &NodePaint) {
-        let bytecode = paint.gpu().is_some_and(|g| g.mask != 0);
-        if bytecode != self.nodes[node as usize].bytecode {
-            self.nodes[node as usize].bytecode = bytecode;
-            self.pipelines_stale = true;
-            self.invalidate_bundle(gpu);
-        }
         let entry = &mut self.nodes[node as usize];
         assert!(
             paint.fits(entry.family),
@@ -1076,12 +1063,12 @@ impl Renderer {
         let own_drape = self.target.color != DRAPE_FORMAT;
         for i in 0..self.nodes.len() {
             let node = &self.nodes[i];
-            let (family, bytecode) = (node.family, node.bytecode);
+            let family = node.family;
             if node.stack.is_some() {
                 // Into the drape atlas, with its format's pipelines if
                 // the target's differs.
                 if !own_drape {
-                    self.make_node_pipeline(gpu, family, bytecode);
+                    self.make_node_pipeline(gpu, family);
                     continue;
                 }
                 let drape = self
@@ -1096,29 +1083,19 @@ impl Renderer {
                         family,
                     );
                 } else {
-                    let class = if bytecode {
-                        &mut drape.bytecode
-                    } else {
-                        &mut drape.paint
-                    };
-                    class.make(gpu, drape_target, &layouts, family);
+                    drape.paint.make(gpu, drape_target, &layouts, family);
                 }
                 continue;
             }
-            self.make_node_pipeline(gpu, family, bytecode);
+            self.make_node_pipeline(gpu, family);
         }
     }
 
-    fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, family: Family, bytecode: bool) {
+    fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, family: Family) {
         let layouts = [self.draw_layout, self.node_layout];
         match family {
             Family::Fill | Family::FillOutline | Family::Line | Family::Circle => {
-                let class = if bytecode {
-                    &mut self.bytecode
-                } else {
-                    &mut self.paint
-                };
-                class.make(gpu, self.target, &layouts, family);
+                self.paint.make(gpu, self.target, &layouts, family);
             }
             Family::SymbolIcon | Family::SymbolText => {
                 let layouts = [self.draw_layout, self.node_layout, self.symbol_pass_layout];
@@ -1142,9 +1119,8 @@ impl Renderer {
                 out.extend(terrain.pipelines());
             }
             if let Some(d) = self.drape_pipelines.as_ref() {
-                let class = if node.bytecode { &d.bytecode } else { &d.paint };
                 out.extend(
-                    class
+                    d.paint
                         .get(node.family)
                         .or_else(|| {
                             node.family
@@ -1170,14 +1146,7 @@ impl Renderer {
                     out.extend(self.images.prepare_pipelines());
                 }
             }
-            family => {
-                let class = if node.bytecode {
-                    &self.bytecode
-                } else {
-                    &self.paint
-                };
-                out.extend(class.get(family).map(PipelineId::from));
-            }
+            family => out.extend(self.paint.get(family).map(PipelineId::from)),
         }
     }
 
@@ -1735,14 +1704,9 @@ impl Renderer {
             .filter(|_| scene != self.draw_group && self.target.color != DRAPE_FORMAT);
         let pipeline = match (drape, node.family.is_image()) {
             (Some(d), true) => d.images.get(node.family),
-            (Some(d), false) => if node.bytecode { &d.bytecode } else { &d.paint }.get(node.family),
+            (Some(d), false) => d.paint.get(node.family),
             (None, true) => self.images.pipeline(node.family),
-            (None, false) => if node.bytecode {
-                &self.bytecode
-            } else {
-                &self.paint
-            }
-            .get(node.family),
+            (None, false) => self.paint.get(node.family),
         };
         let Some(pipeline) = pipeline.filter(|&p| gpu.pipeline_ready(p.into())) else {
             return false;
@@ -1796,48 +1760,34 @@ struct Ready {
 /// its family's first draped node.
 #[derive(Debug, Default)]
 struct DrapePipelines {
-    paint: PaintClass,
-    bytecode: PaintClass,
+    paint: PaintPipelines,
     images: image::ImagePipelines,
 }
 
 /// A module of `shader` for the device's tier: its WGSL on Modern, or on
-/// Compat its offline GLSL (the bytecode class with `bytecode`).
-fn shader_module(gpu: &mut dyn Gpu, shader: &Shader, bytecode: bool) -> ShaderModuleId {
+/// Compat its offline GLSL.
+fn shader_module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
     #[cfg(feature = "compat")]
     if gpu.caps().tier == Tier::Compat {
         return gpu.create_shader_module(&ShaderModuleDesc {
             label: shader.label,
-            source: ShaderSource::Glsl(orb_shaders::glsl(shader, bytecode)),
+            source: ShaderSource::Glsl(orb_shaders::glsl(shader)),
         });
     }
-    let wgsl = if bytecode {
-        shader.bytecode_source()
-    } else {
-        shader.source()
-    };
     gpu.create_shader_module(&ShaderModuleDesc {
         label: shader.label,
-        source: ShaderSource::Wgsl(wgsl.into()),
+        source: ShaderSource::Wgsl(shader.source().into()),
     })
 }
 
-/// The vector families' pipelines of one paint class (fill, fill outline,
-/// line, circle), each made for the family's first node.
+/// The vector families' pipelines (fill, fill outline, line, circle), each
+/// made for the family's first node.
 #[derive(Clone, Copy, Debug, Default)]
-struct PaintClass {
-    bytecode: bool,
+struct PaintPipelines {
     pipelines: [Option<RenderPipelineId>; 4],
 }
 
-impl PaintClass {
-    fn new(bytecode: bool) -> Self {
-        Self {
-            bytecode,
-            pipelines: [None; 4],
-        }
-    }
-
+impl PaintPipelines {
     fn index(family: Family) -> Option<usize> {
         Some(match family {
             Family::Fill => 0,
@@ -1868,9 +1818,8 @@ impl PaintClass {
             Family::Line => (&LINE_SHADER, PrimitiveTopology::TriangleList),
             _ => (&CIRCLE_SHADER, PrimitiveTopology::TriangleList),
         };
-        let bytecode = self.bytecode;
         self.pipelines[index]
-            .get_or_insert_with(|| draw_pipeline(gpu, shader, bytecode, topology, target, layouts));
+            .get_or_insert_with(|| draw_pipeline(gpu, shader, topology, target, layouts));
     }
 }
 
@@ -1879,7 +1828,6 @@ impl PaintClass {
 fn draw_pipeline(
     gpu: &mut dyn Gpu,
     shader: &Shader,
-    bytecode: bool,
     topology: PrimitiveTopology,
     target: TargetFormat,
     layouts: &[BindGroupLayoutId],
@@ -1887,7 +1835,6 @@ fn draw_pipeline(
     draw_pipeline_blending(
         gpu,
         shader,
-        bytecode,
         topology,
         target,
         layouts,
@@ -1899,13 +1846,12 @@ fn draw_pipeline(
 fn draw_pipeline_blending(
     gpu: &mut dyn Gpu,
     shader: &Shader,
-    bytecode: bool,
     topology: PrimitiveTopology,
     target: TargetFormat,
     layouts: &[BindGroupLayoutId],
     blend: Option<BlendState>,
 ) -> RenderPipelineId {
-    let module = shader_module(gpu, shader, bytecode);
+    let module = shader_module(gpu, shader);
     gpu.create_render_pipeline(&RenderPipelineDesc {
         cull_mode: None,
         label: shader.label,
@@ -2021,7 +1967,7 @@ fn symbol_pipeline(
     target: TargetFormat,
     layouts: &[BindGroupLayoutId],
 ) -> RenderPipelineId {
-    let module = shader_module(gpu, &SYMBOL_SHADER, false);
+    let module = shader_module(gpu, &SYMBOL_SHADER);
     gpu.create_render_pipeline(&RenderPipelineDesc {
         cull_mode: None,
         label: SYMBOL_SHADER.label,

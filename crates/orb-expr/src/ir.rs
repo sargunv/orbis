@@ -2,8 +2,8 @@
 //!
 //! Nodes live in one arena in post order: every operand is defined before
 //! the node that uses it, and the root is the last node. That is the shape of
-//! plan §11.3's SSA DAG, so a register VM, a column evaluator or GPU bytecode
-//! can be lowered from it by a linear walk. Each node carries its static type
+//! plan §11.3's SSA DAG, so a register VM or a column evaluator can be
+//! lowered from it by a linear walk. Each node carries its static type
 //! and the inputs it depends on.
 
 use std::ops::BitOr;

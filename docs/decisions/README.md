@@ -21,7 +21,7 @@ in code and commit messages.
 - [0014](0014-pitched-cover-and-sky.md): Pitched cover and flat-surface sky
 - [0015](0015-style-edits.md): Style edits without reloads, and feature state
 - [0016](0016-style-playground.md): Style playground and published picking (native bridge superseded)
-- [0017](0017-gpu-bytecode.md): GPU expression bytecode and the cost model
+- [0017](0017-gpu-bytecode.md): GPU expression bytecode and the cost model (superseded by 0044)
 - [0018](0018-bindings.md): Bindings: a Diplomat front end and our own Swift and Kotlin/JNI emitters
 - [0019](0019-terrain.md): Terrain: draped slots, DEM references and a camera on the ground
 - [0020](0020-any-crs.md): Any CRS: planes, tile matrix sets and the planner
@@ -48,3 +48,4 @@ in code and commit messages.
 - [0041](0041-adaptive-planes.md): Adaptive projections: low-zoom planes over Web Mercator
 - [0042](0042-hosts-one-camera-writer.md): Hosts: one map with one camera writer, a thin native API, and the web on one thread
 - [0043](0043-core-frame-and-gpu.md): The core chain: camera-independent GPU state and a narrow renderer
+- [0044](0044-the-data-chain.md): The data chain: one paint path, one scene model, one codec

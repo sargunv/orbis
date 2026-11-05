@@ -291,7 +291,6 @@ impl Terrain {
         let composite = draw_pipeline(
             gpu,
             &TERRAIN_STACK_SHADER,
-            false,
             PrimitiveTopology::TriangleList,
             target,
             &[composite_layout],
