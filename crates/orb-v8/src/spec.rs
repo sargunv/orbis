@@ -465,6 +465,45 @@ pub(crate) const EXTRUSION_ROUNDED_CORNER: Prop =
         .range(0.0, None)
         .zoom_independent();
 pub(crate) const EXTRUSION_LAYOUT: &[&Prop] = &[&VISIBILITY, &EXTRUSION_ROUNDED_CORNER];
+// The scene document's `model` layer (plan §11.4; its names follow the
+// layer Mapbox GL JS ships, where it has them).
+const VEC3: PropertyType = PropertyType::Array(Type::Number, Some(3));
+pub(crate) const MODEL_ID: Prop = prop("model-id", PropertyType::String, None).data_driven();
+pub(crate) const MODEL_LAYOUT: &[&Prop] = &[&VISIBILITY, &MODEL_ID];
+pub(crate) const MODEL_SCALE: Prop = prop("model-scale", VEC3, Some("[1, 1, 1]"))
+    .data_driven()
+    .interpolated();
+pub(crate) const MODEL_ROTATION: Prop = prop("model-rotation", VEC3, Some("[0, 0, 0]"))
+    .data_driven()
+    .interpolated();
+pub(crate) const MODEL_TRANSLATION: Prop = prop("model-translation", VEC3, Some("[0, 0, 0]"))
+    .data_driven()
+    .interpolated();
+pub(crate) const MODEL_COLOR: Prop = prop("model-color", COLOR, Some("\"#ffffff\""))
+    .data_driven()
+    .interpolated();
+pub(crate) const MODEL_COLOR_MIX: Prop = prop("model-color-mix-intensity", NUMBER, Some("0"))
+    .data_driven()
+    .interpolated()
+    .range(0.0, Some(1.0));
+/// Applies to the whole layer, as `fill-extrusion-opacity` does.
+pub(crate) const MODEL_OPACITY: Prop = prop("model-opacity", NUMBER, Some("1"))
+    .interpolated()
+    .range(0.0, Some(1.0));
+pub(crate) const MODEL_EMISSIVE: Prop = prop("model-emissive-strength", NUMBER, Some("0"))
+    .data_driven()
+    .interpolated()
+    .range(0.0, None);
+pub(crate) const MODEL_PAINT: &[&Prop] = &[
+    &MODEL_SCALE,
+    &MODEL_ROTATION,
+    &MODEL_TRANSLATION,
+    &MODEL_COLOR,
+    &MODEL_COLOR_MIX,
+    &MODEL_OPACITY,
+    &MODEL_EMISSIVE,
+];
+
 const OFFSET: PropertyType = PropertyType::Array(Type::Number, Some(2));
 const ANCHOR: PropertyType = enumeration::<Anchor>();
 const ANCHORS: PropertyType = PropertyType::Array(Type::String, None);
@@ -775,6 +814,8 @@ pub(crate) fn find_prop(layer_type: &str, paint: bool, name: &str) -> Option<&'s
         ("fill-extrusion", false) => EXTRUSION_LAYOUT,
         ("symbol", false) => SYMBOL_LAYOUT,
         ("symbol", true) => SYMBOL_PAINT,
+        ("model", false) => MODEL_LAYOUT,
+        ("model", true) => MODEL_PAINT,
         (_, false) => VISIBILITY_LAYOUT,
         _ => &[],
     };

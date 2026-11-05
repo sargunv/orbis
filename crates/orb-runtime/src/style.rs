@@ -222,6 +222,10 @@ impl StylePlan {
                 LayerKind::Hillshade(hillshade) => (Family::Hillshade, &hillshade.source),
                 LayerKind::ColorRelief(relief) => (Family::ColorRelief, &relief.source),
                 LayerKind::Symbol(symbol) => (Family::SymbolIcon, &symbol.selection.source),
+                LayerKind::Model(_) => {
+                    warn(index, "model layers are not drawn yet");
+                    continue;
+                }
                 LayerKind::Unsupported { .. } => continue,
             };
             let selection = match &layer.kind {

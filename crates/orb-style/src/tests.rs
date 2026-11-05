@@ -325,3 +325,33 @@ fn terrain_switches_without_a_reload_and_follows_its_source() {
     let missing = Transaction::from_commands(r#"[["setTerrain",{"source":"nope"}]]"#).unwrap();
     assert!(doc.apply(&missing).is_err());
 }
+
+#[test]
+fn a_scene_extends_its_style_in_the_scene_dialect() {
+    let scene = orb_v8::parse_scene(
+        r#"{"style": "s.json", "models": {"tower": "t.glb"},
+            "layers+": [{"id": "towers", "type": "model", "source": "g", "after": "water"}]}"#,
+    )
+    .unwrap();
+    let models = [("tower".to_string(), "https://example.com/t.glb".to_string())];
+    let mut doc = StyleDoc::parse_extended(STYLE, &models, &scene.layers).unwrap();
+    let ids: Vec<&str> = doc.style().layers.iter().map(|l| l.id.as_str()).collect();
+    assert_eq!(ids, ["bg", "water", "towers", "roads", "points"]);
+    assert_eq!(doc.style().models, models);
+    // Edits keep the dialect: another model layer can be added.
+    commands(
+        &mut doc,
+        r#"[["addLayer", {"id": "more", "type": "model", "source": "g"}]]"#,
+    );
+    assert!(matches!(
+        doc.style().layers.last().unwrap().kind,
+        orb_v8::LayerKind::Model(_)
+    ));
+    // The v8 document alone has none.
+    let mut plain = StyleDoc::parse(STYLE).unwrap();
+    let tx = Transaction::from_commands(
+        r#"[["addLayer", {"id": "more", "type": "model", "source": "g"}]]"#,
+    )
+    .unwrap();
+    assert!(plain.apply(&tx).is_err());
+}

@@ -274,11 +274,15 @@ impl TileWorker {
             };
             sources.push(source);
         }
+        let dialect = match update.models {
+            Some(_) => orb_v8::Dialect::Scene,
+            None => orb_v8::Dialect::V8,
+        };
         let mut layers = Vec::with_capacity(update.layers.len());
         for (index, key) in update.layers.iter().enumerate() {
             let layer = match update.layer_json.iter().find(|(k, _)| k == key) {
                 Some((_, json)) => {
-                    orb_v8::parse_layer(json, index, &sources, &update.state)
+                    orb_v8::parse_layer(json, index, &sources, &update.state, dialect)
                         .map_err(|d| d.to_string())?
                         .0
                 }
@@ -292,6 +296,13 @@ impl TileWorker {
             layers.push(layer);
         }
         let style = Style {
+            dialect,
+            models: update
+                .models
+                .iter()
+                .flatten()
+                .map(|id| (id.clone(), String::new()))
+                .collect(),
             name: None,
             center: None,
             zoom: None,
@@ -590,9 +601,18 @@ pub struct StyleUpdate {
     /// The plane GeoJSON sources tile in and the tile matrix sets of
     /// sources not in `WebMercatorQuad`.
     pub surface: crate::SurfaceTiles,
+    /// A style a scene document extends (its dialect) and its models' ids;
+    /// `None` for a v8 style.
+    pub models: Option<Vec<String>>,
 }
 
 impl StyleUpdate {
+    /// The update's dialect and model ids from `doc`.
+    pub(crate) fn models_of(style: &Style) -> Option<Vec<String>> {
+        (style.dialect == orb_v8::Dialect::Scene)
+            .then(|| style.models.iter().map(|(id, _)| id.clone()).collect())
+    }
+
     /// The update as one JSON document, for a job worker.
     pub fn to_json(&self) -> String {
         let synthetic = |value| Json::new(value, Default::default());
@@ -688,6 +708,17 @@ impl StyleUpdate {
                 synthetic(match &self.local_ideographs {
                     Some(family) => JsonValue::String(family.clone()),
                     None => JsonValue::Null,
+                }),
+            ),
+            member(
+                "models",
+                synthetic(match &self.models {
+                    None => JsonValue::Null,
+                    Some(ids) => JsonValue::Array(
+                        ids.iter()
+                            .map(|id| synthetic(JsonValue::String(id.clone())))
+                            .collect(),
+                    ),
                 }),
             ),
             member(
@@ -799,6 +830,14 @@ impl StyleUpdate {
                 .get("localIdeographFontFamily")
                 .and_then(Json::as_str)
                 .map(str::to_string),
+            models: match doc.get("models").and_then(Json::as_array) {
+                None => None,
+                Some(ids) => Some(
+                    ids.iter()
+                        .map(|id| id.as_str().map(str::to_string).ok_or_else(bad))
+                        .collect::<Result<_, String>>()?,
+                ),
+            },
             surface: crate::SurfaceTiles {
                 plane: match doc.get("plane").and_then(Json::as_str) {
                     Some(plane) => {
@@ -2015,8 +2054,10 @@ pub(crate) mod tests {
                 plane: Some(polar_plane()),
                 sources: vec![("geo".into(), TileMatrixSet::by_id("NZTM2000Quad").unwrap())],
             },
+            models: Some(vec!["tower".into()]),
         };
         let parsed = StyleUpdate::parse(&update.to_json()).unwrap();
+        assert_eq!(parsed.models, update.models);
         assert_eq!(parsed.to_json(), update.to_json());
         assert_eq!(parsed.surface.plane, update.surface.plane);
         let tile = TileIndex::new(4, 7, 9);

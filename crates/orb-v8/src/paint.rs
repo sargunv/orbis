@@ -201,6 +201,15 @@ macro_rules! paint_table {
                     _ => None,
                 }
             }
+            LayerKind::Model(l) => match $name {
+                "model-color" => Some($kind::Color($($ref)* l.paint.color)),
+                "model-color-mix-intensity" => Some($kind::Number($($ref)* l.paint.color_mix)),
+                "model-opacity" => Some($kind::Number($($ref)* l.paint.opacity)),
+                "model-emissive-strength" => {
+                    Some($kind::Number($($ref)* l.paint.emissive_strength))
+                }
+                _ => None,
+            },
             LayerKind::Unsupported { .. } => None,
         }
     };

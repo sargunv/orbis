@@ -55,6 +55,7 @@ pub(crate) fn layer_type(kind: &LayerKind) -> &str {
         LayerKind::Hillshade(_) => "hillshade",
         LayerKind::ColorRelief(_) => "color-relief",
         LayerKind::Symbol(_) => "symbol",
+        LayerKind::Model(_) => "model",
         LayerKind::Unsupported { ty } => ty,
     }
 }

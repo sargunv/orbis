@@ -715,6 +715,8 @@ It references or embeds an unchanged v8 style; it may decorate sources (TMS) and
 | Accessibility | layer `a11y` (`role`, `label`, `importance`) | M10 |
 | Symbols, text | `placement-scope`, `symbol-occlusion`, `symbol-placement-mode`; variable fonts; SVG icons (discussion #175) | M8+ |
 
+[implemented at M8] The scene document's `models` (`{id: URL}`, relative to it) and `layers+` (layers with `before` or `after` a style layer, else on top) extend its style in memory; that style then parses in the **scene dialect** (`orb_v8::Dialect::Scene`), whose layers may be `model` and whose edits may add them, while a v8 document alone never does. A `model` layer draws the glTF model `model-id` names at each point feature, with `model-scale`, `model-rotation` (degrees about east, north and up, up as a heading), `model-translation` (metres east, north, up), `model-color` and `model-color-mix-intensity`, `model-emissive-strength`, and `model-opacity` for the layer as a whole; the names follow the layer Mapbox GL JS ships.
+
 CRS/TMS and composition are the candidates for spec RFCs with fixtures. An offline `orb-v8 import --dialect mapbox-v8` tool converts same-key, different-schema features (`projection`, `sky`) into a v8 style plus a scene document.
 
 ---

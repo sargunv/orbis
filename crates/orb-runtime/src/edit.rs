@@ -126,6 +126,7 @@ impl Map {
             font_faces: doc.style().font_faces.clone(),
             local_ideographs: self.labels.ideographs.clone(),
             surface: self.surface.tiles(),
+            models: StyleUpdate::models_of(doc.style()),
         };
         self.services.jobs.set_style(style.id, &update, &worker);
         self.warnings.extend(
@@ -324,6 +325,7 @@ impl Map {
             font_faces: doc.style().font_faces.clone(),
             local_ideographs: self.labels.ideographs.clone(),
             surface: self.surface.tiles(),
+            models: StyleUpdate::models_of(doc.style()),
             ..StyleUpdate::default()
         };
         self.services.jobs.set_style(style.id, &update, &worker);

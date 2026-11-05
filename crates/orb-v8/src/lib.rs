@@ -33,8 +33,8 @@ pub use geojson::parse_geojson;
 pub use layer::{
     Background, BackgroundPaint, Circle, CircleLayout, CirclePaint, ColorRelief, ColorReliefPaint,
     Fill, FillExtrusion, FillExtrusionPaint, FillLayout, FillPaint, Heatmap, HeatmapPaint,
-    Hillshade, HillshadePaint, Layer, LayerKind, Line, LineLayout, LinePaint, Raster, RasterPaint,
-    Selection, Symbol, SymbolLayout, SymbolPaint, SymbolPartPaint,
+    Hillshade, HillshadePaint, Layer, LayerKind, Line, LineLayout, LinePaint, Model, ModelPaint,
+    Raster, RasterPaint, Selection, Symbol, SymbolLayout, SymbolPaint, SymbolPartPaint,
 };
 pub use lights::{AmbientLight, Direction, DirectionalLight, Level, Lights, parse_time};
 pub use orb_expr::json::Span;
@@ -46,7 +46,7 @@ pub use property::{
     Padding, Property, PropertyValue, Resampling, Scheme, SymbolPlacement, SymbolZOrder,
     TextJustify, TextRotationAlignment, TextTransform, TranslateAnchor, Visibility, WritingMode,
 };
-pub use scene::{Scene, StyleRef, is_scene, parse_scene, tms_definition};
+pub use scene::{AddedLayer, Scene, StyleRef, is_scene, parse_scene, tms_definition};
 pub use sky::Atmosphere;
 pub use source::{
     GeoJsonData, GeoJsonSource, ImageSource, PromoteId, RasterDemSource, RasterSource, Source,
@@ -60,6 +60,9 @@ use orb_expr::json::{self, Json, JsonValue, Member};
 /// A parsed style.
 #[derive(Clone, Debug)]
 pub struct Style {
+    pub dialect: Dialect,
+    /// glTF models `model` layers draw, by id: their URLs (scene dialect).
+    pub models: Vec<(String, String)>,
     pub name: Option<String>,
     /// The default camera: `[longitude, latitude]`.
     pub center: Option<[f64; 2]>,
@@ -134,7 +137,30 @@ pub fn parse_with_state(
     text: &str,
     overrides: &[(String, Value<'static>)],
 ) -> Result<Style, Diagnostics> {
-    let mut cx = Cx::default();
+    parse_dialect(text, overrides, Dialect::V8)
+}
+
+/// Which document a style is: v8 as it is, or a style a scene document
+/// extends (plan §11.1), whose layers may be the scene's types (`model`)
+/// and whose root may declare `models`. v8 documents never mean more than
+/// v8 says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Dialect {
+    #[default]
+    V8,
+    Scene,
+}
+
+/// [`parse_with_state`] in `dialect`.
+pub fn parse_dialect(
+    text: &str,
+    overrides: &[(String, Value<'static>)],
+    dialect: Dialect,
+) -> Result<Style, Diagnostics> {
+    let mut cx = Cx {
+        scene: dialect == Dialect::Scene,
+        ..Cx::default()
+    };
     let doc = match json::parse(text) {
         Ok(doc) => doc,
         Err(e) => {
@@ -169,6 +195,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             "version" | "name" | "metadata" | "center" | "zoom" | "bearing" | "pitch" | "roll"
             | "sources" | "layers" | "sprite" | "glyphs" | "font-faces" | "light" | "state"
             | "sky" | "terrain" | "projection" => {}
+            "models" if cx.scene => {}
             "transition" => {}
             key if UNMODELED_ROOT.contains(&key) => {
                 cx.warn(
@@ -257,7 +284,25 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             }
         },
     };
+    let models = match doc.get("models").filter(|_| cx.scene) {
+        None => Vec::new(),
+        Some(models) => cx
+            .object(models, "models")
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|m| {
+                let url = cx.string(&m.value, &format!("models.{}", m.key))?;
+                Some((m.key.clone(), url))
+            })
+            .collect(),
+    };
     Some(Style {
+        dialect: if cx.scene {
+            Dialect::Scene
+        } else {
+            Dialect::V8
+        },
+        models,
         name,
         center,
         zoom,
@@ -327,9 +372,11 @@ pub fn parse_layer(
     index: usize,
     sources: &[Source],
     state: &[(String, Value<'static>)],
+    dialect: Dialect,
 ) -> Result<(Layer, Vec<Diagnostic>), Diagnostics> {
     let mut cx = Cx {
         state: state.to_vec(),
+        scene: dialect == Dialect::Scene,
         ..Cx::default()
     };
     let layer = layer::parse_layer(&mut cx, json, index, sources, &mut HashSet::new());
@@ -536,6 +583,9 @@ pub fn parse_source(id: &str, json: &Json) -> Result<(Source, Vec<Diagnostic>), 
 #[derive(Debug, Default)]
 pub(crate) struct Cx {
     diagnostics: Diagnostics,
+    /// Parsing a style a scene document extends: its layers may be the
+    /// scene's types (`model`) and its root may have `models`.
+    pub(crate) scene: bool,
     /// The global state `global-state` reads resolve to.
     state: Vec<(String, Value<'static>)>,
 }

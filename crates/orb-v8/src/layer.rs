@@ -54,6 +54,8 @@ pub enum LayerKind {
     Hillshade(Box<Hillshade>),
     ColorRelief(Box<ColorRelief>),
     Symbol(Box<Symbol>),
+    /// glTF models at point features (the scene document's `model`).
+    Model(Box<Model>),
     /// A v8 layer type Orbis doesn't draw yet.
     Unsupported {
         ty: String,
@@ -67,6 +69,33 @@ pub struct Selection {
     /// Required for vector sources.
     pub source_layer: Option<String>,
     pub filter: Option<Filter>,
+}
+
+/// glTF models of the style's `models`, one at each point feature, in
+/// metres on its east, north and up.
+#[derive(Clone, Debug)]
+pub struct Model {
+    pub selection: Selection,
+    /// A key of the style's `models`.
+    pub model_id: Property<Option<String>>,
+    pub paint: ModelPaint,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModelPaint {
+    /// Along the model's own axes.
+    pub scale: Property<[f32; 3]>,
+    /// Degrees about east, north and up, applied in that order; up turns
+    /// clockwise seen from above, as a heading.
+    pub rotation: Property<[f32; 3]>,
+    /// Metres east, north and up.
+    pub translation: Property<[f32; 3]>,
+    pub color: Property<Color>,
+    /// How much `color` replaces the materials' base colours.
+    pub color_mix: Property<f32>,
+    /// Applied to the layer as a whole.
+    pub opacity: Property<f32>,
+    pub emissive_strength: Property<f32>,
 }
 
 #[derive(Clone, Debug)]
@@ -718,7 +747,7 @@ pub(crate) fn parse_layer(
             None
         }
         Some(t) => match t.as_str() {
-            Some(ty) if LAYER_TYPES.contains(&ty) => Some(ty),
+            Some(ty) if LAYER_TYPES.contains(&ty) || (cx.scene && ty == "model") => Some(ty),
             _ => {
                 cx.error(
                     format!("{path}.type"),
@@ -761,6 +790,7 @@ pub(crate) fn parse_layer(
             | "hillshade"
             | "color-relief"
             | "symbol"
+            | "model"
     );
     let (layout_props, paint_props): (&[&Prop], &[&Prop]) = match ty {
         "background" => (spec::BACKGROUND_LAYOUT, spec::BACKGROUND_PAINT),
@@ -773,6 +803,7 @@ pub(crate) fn parse_layer(
         "hillshade" => (spec::VISIBILITY_LAYOUT, spec::HILLSHADE_PAINT),
         "color-relief" => (spec::VISIBILITY_LAYOUT, spec::COLOR_RELIEF_PAINT),
         "symbol" => (spec::SYMBOL_LAYOUT, spec::SYMBOL_PAINT),
+        "model" => (spec::MODEL_LAYOUT, spec::MODEL_PAINT),
         _ => (&[], &[]),
     };
     let layout = section(cx, json, "layout", &path, typed.then_some(layout_props));
@@ -810,6 +841,19 @@ pub(crate) fn parse_layer(
                 selection: selection?,
             }))
         }
+        "model" => LayerKind::Model(Box::new(Model {
+            selection: selection(cx, json, &path, &id, sources)?,
+            model_id: property(cx, &layout, &spec::MODEL_ID),
+            paint: ModelPaint {
+                scale: property(cx, &paint, &spec::MODEL_SCALE),
+                rotation: property(cx, &paint, &spec::MODEL_ROTATION),
+                translation: property(cx, &paint, &spec::MODEL_TRANSLATION),
+                color: property(cx, &paint, &spec::MODEL_COLOR),
+                color_mix: property(cx, &paint, &spec::MODEL_COLOR_MIX),
+                opacity: property(cx, &paint, &spec::MODEL_OPACITY),
+                emissive_strength: property(cx, &paint, &spec::MODEL_EMISSIVE),
+            },
+        })),
         "fill-extrusion" => LayerKind::FillExtrusion(Box::new(FillExtrusion {
             selection: selection(cx, json, &path, &id, sources)?,
             rounded_corner_distance: property(cx, &layout, &spec::EXTRUSION_ROUNDED_CORNER),

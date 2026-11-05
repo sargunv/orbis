@@ -107,6 +107,66 @@ impl StyleDoc {
     pub fn parse(text: &str) -> Result<Self, Diagnostics> {
         let style = orb_v8::parse(text)?;
         let root = json::parse(text).map_err(|e| error(e.to_string()))?;
+        Ok(Self::from_parts(style, &root))
+    }
+
+    /// A v8 document as a scene document extends it (plan §11.1, S0):
+    /// with the scene's `models` (resolved URLs) and its added layers, in
+    /// the scene dialect.
+    pub fn parse_extended(
+        text: &str,
+        models: &[(String, String)],
+        added: &[orb_v8::AddedLayer],
+    ) -> Result<Self, Diagnostics> {
+        let root = json::parse(text).map_err(|e| error(e.to_string()))?;
+        let mut members = root
+            .as_object()
+            .ok_or_else(|| error("a style must be an object"))?
+            .to_vec();
+        let mut layers: Vec<Json> = member(&members, "layers")
+            .and_then(Json::as_array)
+            .unwrap_or_default()
+            .to_vec();
+        for layer in added {
+            let at = |id: &str| {
+                layers
+                    .iter()
+                    .position(|l| layer_id(l) == Some(id))
+                    .ok_or_else(|| error(format!("layers+: the layer \"{id}\" does not exist")))
+            };
+            let index = match (&layer.before, &layer.after) {
+                (Some(before), _) => at(before)?,
+                (_, Some(after)) => at(after)? + 1,
+                _ => layers.len(),
+            };
+            layers.insert(index, layer.json.clone());
+        }
+        set_member(
+            &mut members,
+            "layers",
+            Some(synthetic(JsonValue::Array(layers))),
+        );
+        if !models.is_empty() {
+            let object = models
+                .iter()
+                .map(|(id, url)| Member {
+                    key: id.clone(),
+                    key_span: Span::default(),
+                    value: synthetic(JsonValue::String(url.clone())),
+                })
+                .collect();
+            set_member(
+                &mut members,
+                "models",
+                Some(synthetic(JsonValue::Object(object))),
+            );
+        }
+        let merged = synthetic(JsonValue::Object(members));
+        let style = orb_v8::parse_dialect(&merged.to_string(), &[], orb_v8::Dialect::Scene)?;
+        Ok(Self::from_parts(style, &merged))
+    }
+
+    fn from_parts(style: Style, root: &Json) -> Self {
         let mut next_key = 0;
         let mut key = || {
             next_key += 1;
@@ -137,7 +197,7 @@ impl StyleDoc {
             .filter(|m| m.key != "sources" && m.key != "layers")
             .cloned()
             .collect();
-        Ok(Self {
+        Self {
             version: 1,
             root: Arc::new(root),
             sources,
@@ -145,7 +205,7 @@ impl StyleDoc {
             overrides: Vec::new(),
             style: Arc::new(style),
             next_key,
-        })
+        }
     }
 
     /// Counts applied transactions; the first document is version 1.

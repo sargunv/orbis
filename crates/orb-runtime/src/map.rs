@@ -68,6 +68,13 @@ impl std::fmt::Debug for Services {
     }
 }
 
+/// A scene document's models (URLs resolved against it) and added layers.
+#[derive(Debug)]
+struct SceneExtension {
+    models: Vec<(String, String)>,
+    layers: Vec<orb_v8::AddedLayer>,
+}
+
 /// What a frame did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameReport {
@@ -474,6 +481,9 @@ pub struct Map {
     lights: Option<orb_v8::Lights>,
     /// A scene document's atmosphere, which replaces the style's `sky`.
     atmosphere: Option<orb_v8::Atmosphere>,
+    /// What the scene document adds to its style. A scene's style parses
+    /// in the scene dialect.
+    scene: Option<SceneExtension>,
     /// When the map began, by its clock: frames' time counts from it.
     born: f64,
     /// When the last raster tile to arrive finishes fading in.
@@ -624,6 +634,7 @@ pub(crate) fn full_update(
         font_faces: doc.style().font_faces.clone(),
         local_ideographs,
         surface,
+        models: StyleUpdate::models_of(doc.style()),
     }
 }
 
@@ -671,6 +682,7 @@ impl Map {
             surface: Surface::default(),
             lights: None,
             atmosphere: None,
+            scene: None,
             transitions: Default::default(),
             style_request: 0,
             generation: 0,
@@ -1005,6 +1017,21 @@ impl Map {
             self.surface = Surface::new(parsed.projection, parsed.sources, parsed.globe);
             self.lights = parsed.lights;
             self.atmosphere = parsed.atmosphere;
+            let models = parsed
+                .models
+                .into_iter()
+                .map(|(id, url)| {
+                    let url = match base {
+                        Some(base) => orb_source::endpoint::join_url(base, &url),
+                        None => url,
+                    };
+                    (id, url)
+                })
+                .collect();
+            self.scene = Some(SceneExtension {
+                models,
+                layers: parsed.layers,
+            });
             return match parsed.style {
                 orb_v8::StyleRef::Inline(style) => self.set_document(&style, base, true),
                 orb_v8::StyleRef::Url(url) => {
@@ -1019,8 +1046,15 @@ impl Map {
         }
         // A fetched style's relative URLs are relative to it.
         let resolved = base.map(|base| orb_source::endpoint::resolve_style_urls(json, base));
-        let doc =
-            StyleDoc::parse(resolved.as_deref().unwrap_or(json)).map_err(|d| d.to_string())?;
+        let text = resolved.as_deref().unwrap_or(json);
+        if !scene {
+            self.scene = None;
+        }
+        let doc = match &self.scene {
+            Some(e) => StyleDoc::parse_extended(text, &e.models, &e.layers),
+            None => StyleDoc::parse(text),
+        }
+        .map_err(|d| d.to_string())?;
         if !scene {
             self.surface = Surface::default();
             self.lights = None;

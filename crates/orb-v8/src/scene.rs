@@ -42,7 +42,21 @@ pub struct Scene {
     pub lights: Option<crate::Lights>,
     /// The scene's atmosphere, which replaces the style's lowered `sky`.
     pub atmosphere: Option<crate::Atmosphere>,
+    /// What the scene adds to its style: glTF models by id (URLs relative
+    /// to the scene document) and layers. Added layers are parsed in the
+    /// scene dialect with the style ([`crate::Dialect::Scene`]).
+    pub models: Vec<(String, String)>,
+    pub layers: Vec<AddedLayer>,
     pub warnings: Vec<crate::Diagnostic>,
+}
+
+/// A layer of the scene's `layers+`: its definition, placed before or
+/// after a style layer, or above them all.
+#[derive(Clone, Debug)]
+pub struct AddedLayer {
+    pub json: Json,
+    pub before: Option<String>,
+    pub after: Option<String>,
 }
 
 /// Where a scene document's v8 style is.
@@ -81,6 +95,8 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
     let mut sources = Vec::new();
     let (mut lights, mut emissive) = (None, Vec::new());
     let mut atmosphere = None;
+    let mut models = Vec::new();
+    let mut added = Vec::new();
     for m in root {
         match m.key.as_str() {
             "$schema" => {}
@@ -132,6 +148,52 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
             }
             "lights" => lights = Some(crate::lights::parse_lights(&mut cx, &m.value)),
             "layers" => emissive = crate::lights::parse_layers(&mut cx, &m.value),
+            "models" => {
+                for model in cx.object(&m.value, "models").unwrap_or_default() {
+                    if let Some(url) = cx.string(&model.value, &format!("models.{}", model.key)) {
+                        models.push((model.key.clone(), url));
+                    }
+                }
+            }
+            "layers+" => {
+                for (i, layer) in cx
+                    .array(&m.value, "layers+")
+                    .unwrap_or_default()
+                    .iter()
+                    .enumerate()
+                {
+                    let path = format!("layers+[{i}]");
+                    let Some(members) = cx.object(layer, &path) else {
+                        continue;
+                    };
+                    let place =
+                        |key: &str| layer.get(key).and_then(Json::as_str).map(str::to_owned);
+                    let (before, after) = (place("before"), place("after"));
+                    if before.is_some() && after.is_some() {
+                        cx.error(
+                            &path,
+                            layer.span,
+                            "a layer is placed before or after another, not both",
+                        );
+                        continue;
+                    }
+                    let json = Json::new(
+                        JsonValue::Object(
+                            members
+                                .iter()
+                                .filter(|m| m.key != "before" && m.key != "after")
+                                .cloned()
+                                .collect(),
+                        ),
+                        layer.span,
+                    );
+                    added.push(AddedLayer {
+                        json,
+                        before,
+                        after,
+                    });
+                }
+            }
             "atmosphere" => {
                 atmosphere = Some(crate::sky::parse(
                     &mut cx,
@@ -177,6 +239,8 @@ pub fn parse_scene(text: &str) -> Result<Scene, Diagnostics> {
         sources,
         lights,
         atmosphere,
+        models,
+        layers: added,
         warnings: cx.diagnostics.warnings,
     })
 }
@@ -388,6 +452,37 @@ mod tests {
         assert_eq!(utm.projection, None);
         assert_eq!(utm.globe.unwrap().handover, Some([8.0, 9.0]));
         assert!(parse_scene(r#"{"style": "s.json", "projection": {"type": "equal-earth", "transition": [9, 8]}}"#).is_err());
+    }
+
+    #[test]
+    fn models_and_added_layers_parse_in_the_scene_dialect_only() {
+        let scene = parse_scene(
+            r#"{"style": "s.json", "models": {"tower": "tower.glb"},
+                "layers+": [{"id": "towers", "type": "model", "source": "p",
+                             "layout": {"model-id": "tower"}, "after": "roads"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            scene.models,
+            [("tower".to_string(), "tower.glb".to_string())]
+        );
+        assert_eq!(scene.layers[0].after.as_deref(), Some("roads"));
+        assert!(scene.layers[0].json.get("after").is_none());
+        let style = r#"{"version": 8, "models": {"tower": "t.glb"},
+            "sources": {"p": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}},
+            "layers": [{"id": "towers", "type": "model", "source": "p",
+                        "layout": {"model-id": "tower"},
+                        "paint": {"model-scale": [2, 2, 2], "model-rotation": [0, 0, 90]}}]}"#;
+        // v8 has no model layers.
+        assert!(crate::parse(style).is_err());
+        let parsed = crate::parse_dialect(style, &[], crate::Dialect::Scene).unwrap();
+        assert_eq!(parsed.models, [("tower".to_string(), "t.glb".to_string())]);
+        let crate::LayerKind::Model(m) = &parsed.layers[0].kind else {
+            panic!("a model layer");
+        };
+        assert_eq!(m.model_id.evaluate(0.0), Some("tower".to_string()));
+        assert_eq!(m.paint.scale.evaluate(0.0), [2.0; 3]);
+        assert_eq!(m.paint.rotation.evaluate(0.0), [0.0, 0.0, 90.0]);
     }
 
     #[test]

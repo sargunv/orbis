@@ -259,7 +259,7 @@ fn layer_changes(
 }
 
 /// The root keys whose change needs a full reload.
-const RESTYLE_ROOT: &[&str] = &["sprite", "glyphs", "font-faces", "light", "sky"];
+const RESTYLE_ROOT: &[&str] = &["sprite", "glyphs", "font-faces", "light", "sky", "models"];
 
 /// The new snapshot and the patch from `doc` to `draft`.
 pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diagnostics> {
@@ -269,6 +269,8 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
 
     // The root: camera and state defaults, sprites.
     let mut style = Style {
+        dialect: old.dialect,
+        models: old.models.clone(),
         name: old.name.clone(),
         center: old.center,
         zoom: old.zoom,
@@ -306,7 +308,11 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
                 value: synthetic(value),
             });
         }
-        let root = orb_v8::parse(&synthetic(JsonValue::Object(members)).to_string())?;
+        let root = orb_v8::parse_dialect(
+            &synthetic(JsonValue::Object(members)).to_string(),
+            &[],
+            old.dialect,
+        )?;
         if RESTYLE_ROOT
             .iter()
             .any(|k| !same_opt(member(&doc.root, k), member(&draft.root, k)))
@@ -420,7 +426,13 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
             style.layers.push(old_entry.expect("kept").1.clone());
             continue;
         }
-        let (layer, w) = orb_v8::parse_layer(&entry.json, index, &style.sources, &new_state)?;
+        let (layer, w) = orb_v8::parse_layer(
+            &entry.json,
+            index,
+            &style.sources,
+            &new_state,
+            style.dialect,
+        )?;
         warnings.extend(w);
         style.layers.push(layer);
         match old_entry {
