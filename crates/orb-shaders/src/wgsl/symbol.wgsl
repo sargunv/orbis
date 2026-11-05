@@ -231,11 +231,39 @@ var<private> symbol_height: f32;
 // over the terrain when anchored to the ground (GL JS
 // `getSymbolElevation`).
 fn tile_clip(tile: Tile, p: vec2<f32>) -> vec4<f32> {
+    return ground_clip(tile_ground(tile, p), vec2<f32>(0.0), symbol_metres(tile, p) * frame.extrusion_scale);
+}
+
+fn symbol_metres(tile: Tile, p: vec2<f32>) -> f32 {
     var metres = symbol_height;
     if (node.flags & HEIGHT_ANCHOR_GROUND) != 0u {
         metres += ground_elevation(tile, p);
     }
-    return ground_clip(tile_ground(tile, p), vec2<f32>(0.0), metres * frame.extrusion_scale);
+    return metres;
+}
+
+// Map-pitched glyphs keep their size on a globe, whose tile units shrink
+// toward the poles: GL JS's pitched text correction, the cosine of the
+// target's latitude over the anchor's, mixed in as the globe hands over.
+fn pitched_correction(tile: Tile, p: vec2<f32>) -> f32 {
+    if frame.globe_amount <= 0.0 {
+        return 1.0;
+    }
+    let up = normalize(tile_ground(tile, p).globe + frame.globe_target);
+    let centre = normalize(frame.globe_target);
+    let ratio = sqrt(max(1.0 - centre.z * centre.z, 1e-6)) / sqrt(max(1.0 - up.z * up.z, 1e-6));
+    return mix(1.0, ratio, frame.globe_amount);
+}
+
+// On a globe, whether the sphere stands between the eye and the symbol's
+// anchor at its height, as GL JS hides symbols behind the planet.
+fn globe_hides_anchor(tile: Tile, p: vec2<f32>) -> bool {
+    if frame.globe_amount <= 0.0 {
+        return false;
+    }
+    let g = tile_ground(tile, p);
+    let up = normalize(g.globe + frame.globe_target);
+    return sphere_hides(g.globe + up * (symbol_metres(tile, p) * frame.extrusion_scale * frame.globe_metres));
 }
 
 fn clip_to_px(c: vec4<f32>) -> vec2<f32> {
@@ -586,6 +614,7 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     // Terrain in front of the anchor hides it (GL JS `calculate_visibility`).
     let visible_opacity = total_opacity * terrain_visibility(projected_point);
     if visible_opacity < 0.1 { return out; }
+    if globe_hides_anchor(tile, anchor) { return out; }
     let ctcd = camera_to_center();
     let distance_ratio = select(ctcd / projected_point.w, projected_point.w / ctcd, pitch);
     let perspective_ratio = clamp(0.5 + 0.5 * distance_ratio, 0.0, 4.0);
@@ -692,7 +721,7 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     let glyph_offset_px = rotation * (offset / 32.0 * max(min_font_scale, vec2<f32>(font_scale)) + pixel_offset);
     var final_pos: vec4<f32>;
     if pitch {
-        let p = plane_pos + glyph_offset_px;
+        let p = plane_pos + glyph_offset_px * pitched_correction(tile, anchor);
         final_pos = tile_clip(tile, from_pitched_plane(tile, p));
     } else {
         final_pos = vec4<f32>(px_to_clip(plane_pos + glyph_offset_px), 0.0, 1.0);

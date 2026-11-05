@@ -198,8 +198,13 @@ fn ground_clip(g: Ground, offset: vec2<f32>, z: f32) -> vec4<f32> {
     return ground_clip_depth(g, offset, z, false);
 }
 
-// Whether the sphere stands between the eye and camera-relative `p`.
+// Whether the sphere stands between the eye and camera-relative `p`. A
+// point in front of the horizon plane never is; only behind it does the
+// ray test run (in f32 it cancels badly for grazing rays).
 fn sphere_hides(p: vec3<f32>) -> bool {
+    if dot(frame.globe_horizon.xyz, p) + frame.globe_horizon.w >= 0.0 {
+        return false;
+    }
     let from_center = frame.globe_eye + frame.globe_target;
     let d = p - frame.globe_eye;
     let a = dot(d, d);

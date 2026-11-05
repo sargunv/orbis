@@ -84,14 +84,14 @@ impl TileView {
             return project(&self.matrix, x, y, z);
         };
         let ground = globe.series.position(glam::DVec2::new(x, y) / EXTENT);
-        let radius = orb_crs::sphere::RADIUS;
-        if ground.dot(globe.eye) < radius * radius {
+        let raised = ground + ground.normalize() * z.unwrap_or(0.0);
+        if sphere_hides(globe.eye, raised) {
             return Projected {
                 point: Point::new(-10.0, -10.0),
                 w: 1.0,
             };
         }
-        let p = ground + ground.normalize() * z.unwrap_or(0.0) - globe.target;
+        let p = raised - globe.target;
         let clip = globe.view_proj * p.extend(1.0);
         Projected {
             point: Point::new(clip.x / clip.w, clip.y / clip.w),
@@ -103,6 +103,23 @@ impl TileView {
     pub(crate) fn tile_units_per_pixel(&self, camera: &Camera) -> f64 {
         EXTENT / (512.0 * 2f64.powf(camera.zoom - f64::from(self.id.z)))
     }
+}
+
+/// Whether the sphere stands between `eye` and `p` (ECEF). A point in
+/// front of the horizon plane never is; behind it, the ray decides.
+fn sphere_hides(eye: glam::DVec3, p: glam::DVec3) -> bool {
+    let radius = orb_crs::sphere::RADIUS;
+    if p.dot(eye) >= radius * radius {
+        return false;
+    }
+    let d = p - eye;
+    let (a, b, c) = (d.dot(d), eye.dot(d), eye.dot(eye) - radius * radius);
+    let disc = b * b - a * c;
+    if disc <= 0.0 {
+        return false;
+    }
+    let t = (-b - disc.sqrt()) / a;
+    t > 0.0 && t < 1.0
 }
 
 /// A projected point: clip `x, y` over `w`, and `w`.
