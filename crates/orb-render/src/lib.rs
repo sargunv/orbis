@@ -29,6 +29,7 @@ mod model;
 mod occlusion;
 mod offscreen;
 mod paint;
+mod release;
 mod shadow;
 mod terrain;
 mod tiles;
@@ -64,6 +65,7 @@ pub use tiles::{
     dem_neighbours,
 };
 
+use crate::release::Release;
 use std::collections::BTreeMap;
 
 use orb_hal::*;
@@ -214,6 +216,7 @@ pub struct Renderer {
     /// The symbol shader's pass (group 2): halo and fill together, halo
     /// only, fill only.
     symbol_passes: [BindGroupId; 3],
+    symbol_pass_buffer: BufferId,
     symbol_pass_layout: BindGroupLayoutId,
     /// Nodes changed since pipelines were last made for them.
     pipelines_stale: bool,
@@ -304,6 +307,66 @@ impl Node {
 }
 
 impl Renderer {
+    /// Frees everything the renderer holds on `gpu`, the device it was
+    /// made on (#79): what a map's frames made goes with it. The images it
+    /// was handed stay.
+    pub fn destroy(self, gpu: &mut dyn Gpu) {
+        use release::Release;
+        self.scene.destroy(gpu);
+        self.glyphs.destroy(gpu);
+        let layouts = (
+            self.draw_layout,
+            self.node_layout,
+            self.symbol_pass_layout,
+            self.cull_layout,
+        );
+        let groups = (
+            self.draw_group,
+            self.cull,
+            self.symbol_passes,
+            self.symbol_pass_buffer,
+            self.caster_group,
+        );
+        let pipelines = (self.paint.pipelines, self.symbol_pipelines);
+        (
+            layouts,
+            groups,
+            pipelines,
+            self.node_uniforms,
+            self.bundles,
+            self.nodes,
+        )
+            .release(gpu);
+        (
+            self.atmosphere,
+            self.images,
+            self.heatmaps,
+            self.extrusions,
+            self.models,
+        )
+            .release(gpu);
+        (
+            self.lit,
+            self.occlusion,
+            self.shadows,
+            self.layers,
+            self.composites,
+        )
+            .release(gpu);
+        let drape = self
+            .drape_pipelines
+            .map(|d| (d.paint.pipelines, d.images.0));
+        (
+            self.terrain,
+            self.drape_zooms,
+            drape,
+            self.no_dem,
+            self.no_occlusion,
+            self.nearest,
+        )
+            .release(gpu);
+    }
+
     pub fn new(gpu: &mut dyn Gpu, target: TargetFormat, capacity: SceneCapacity) -> Self {
         let images = ImageAtlas::new(gpu, 512, 4, 4096);
         Self::with_images(gpu, target, capacity, images.bindings())
@@ -524,6 +587,7 @@ impl Renderer {
                     constants: &[],
                 },
             });
+            gpu.destroy_shader_module(module);
             (pipeline, group)
         });
 
@@ -558,6 +622,7 @@ impl Renderer {
             paint: PaintPipelines::default(),
             symbol_pipelines: [None; 2],
             symbol_passes,
+            symbol_pass_buffer: pass_buffer,
             symbol_pass_layout,
             pipelines_stale: false,
             made_seen: 0,
@@ -734,18 +799,7 @@ impl Renderer {
             }
         }
         self.tiles.remap(&map);
-        for node in old.into_iter().flatten() {
-            gpu.destroy_bind_group(node.group);
-            if let Some(extrusion) = node.extrusion {
-                extrusion.release(gpu);
-            }
-            if let Some(heatmap) = node.heatmap {
-                heatmap::Heatmaps::release(gpu, heatmap);
-            }
-            if let Some(image) = node.image {
-                image::Images::release_node(gpu, image);
-            }
-        }
+        old.release(gpu);
         let mut added = Vec::new();
         for (i, ((&family, node), desc)) in families.iter().zip(kept).zip(nodes).enumerate() {
             let uniform = self.node_uniform(i as u32);
@@ -755,13 +809,7 @@ impl Renderer {
             let (mut image, cull) = match node {
                 Some(node) => {
                     // Groups bind the uniform at the node's index.
-                    gpu.destroy_bind_group(node.group);
-                    if let Some(extrusion) = node.extrusion {
-                        extrusion.release(gpu);
-                    }
-                    if let Some(heatmap) = node.heatmap {
-                        heatmap::Heatmaps::release(gpu, heatmap);
-                    }
+                    (node.group, node.extrusion, node.heatmap).release(gpu);
                     (node.image, node.cull)
                 }
                 None => (
@@ -808,9 +856,7 @@ impl Renderer {
             });
         }
         // Every group that bound the old uniforms is gone.
-        if let Some(buffer) = retired_uniforms {
-            gpu.destroy_buffer(buffer);
-        }
+        retired_uniforms.release(gpu);
         self.assign_stacks();
         // Nodes moved: their drape paint is set again at their indices.
         for (_, level) in std::mem::take(&mut self.drape_zooms) {
@@ -1177,9 +1223,7 @@ impl Renderer {
     }
 
     fn drop_bundles(&mut self, gpu: &mut dyn Gpu) {
-        for bundle in self.bundles.drain(..) {
-            gpu.destroy_render_bundle(bundle);
-        }
+        std::mem::take(&mut self.bundles).release(gpu);
     }
 
     fn invalidate_bundle(&mut self, gpu: &mut dyn Gpu) {
@@ -1313,9 +1357,7 @@ impl Renderer {
                 }
                 entry.separate_halo = p.separate_halo;
                 entry.along_line = p.along_line;
-                for bundle in self.bundles.drain(..) {
-                    gpu.destroy_render_bundle(bundle);
-                }
+                std::mem::take(&mut self.bundles).release(gpu);
             }
         }
         if words != entry.written {
@@ -1605,7 +1647,7 @@ impl Renderer {
         }
         self.occlusion.enabled = enabled;
         if !enabled {
-            self.occlusion.release(gpu);
+            occlusion::Occlusion::release(&mut self.occlusion, gpu);
         }
         self.extrusions.set_sampled(enabled);
     }
@@ -1649,9 +1691,7 @@ impl Renderer {
                 }
             }
             gpu.destroy_bind_group(self.draw_group);
-            if let Some(group) = self.caster_group.take() {
-                gpu.destroy_bind_group(group);
-            }
+            self.caster_group.take().release(gpu);
             let b = *self.scene.buffers();
             self.draw_group = scene_group(
                 gpu,
@@ -1667,9 +1707,7 @@ impl Renderer {
             self.dem_bound = dem;
             self.occlusion_bound = occlusion;
             for zoom in self.drape_zooms.values_mut() {
-                if let Some(group) = zoom.scene.take() {
-                    gpu.destroy_bind_group(group);
-                }
+                zoom.scene.take().release(gpu);
             }
             self.invalidate_bundle(gpu);
             // Extrusion and heatmap nodes record the scene group too.
@@ -2439,23 +2477,26 @@ struct DrapeZoom {
     bundle: Option<(RenderBundleId, Vec<BindGroupId>)>,
 }
 
+impl release::Release for Node {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (self.group, self.image, self.heatmap, self.extrusion).release(gpu);
+    }
+}
+
+impl release::Release for DrapeZoom {
+    fn release(self, gpu: &mut dyn Gpu) {
+        DrapeZoom::release(self, gpu);
+    }
+}
+
 impl DrapeZoom {
     fn forget_bundle(&mut self, gpu: &mut dyn Gpu) {
-        if let Some((bundle, groups)) = self.bundle.take() {
-            gpu.destroy_render_bundle(bundle);
-            for group in groups {
-                gpu.destroy_bind_group(group);
-            }
-        }
+        self.bundle.take().release(gpu);
     }
 
     fn release(mut self, gpu: &mut dyn Gpu) {
         self.forget_bundle(gpu);
-        if let Some(group) = self.scene.take() {
-            gpu.destroy_bind_group(group);
-        }
-        gpu.destroy_buffer(self.frame);
-        gpu.destroy_buffer(self.uniforms);
+        (self.scene, self.frame, self.uniforms).release(gpu);
     }
 }
 
@@ -2547,7 +2588,7 @@ fn draw_pipeline_blending(
     blend: Option<BlendState>,
 ) -> RenderPipelineId {
     let module = shader_module(gpu, shader);
-    gpu.create_render_pipeline(&RenderPipelineDesc {
+    let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
         cull_mode: None,
         label: shader.label,
         bind_group_layouts: layouts,
@@ -2568,7 +2609,9 @@ fn draw_pipeline_blending(
         depth: None,
         topology,
         sample_count: target.sample_count,
-    })
+    });
+    gpu.destroy_shader_module(module);
+    pipeline
 }
 
 /// The cull pass's group: the scene's tables and index buffers.
@@ -2674,7 +2717,7 @@ fn symbol_pipeline(
     shader: &Shader,
 ) -> RenderPipelineId {
     let module = shader_module(gpu, shader);
-    gpu.create_render_pipeline(&RenderPipelineDesc {
+    let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
         cull_mode: None,
         label: shader.label,
         bind_group_layouts: layouts,
@@ -2695,5 +2738,7 @@ fn symbol_pipeline(
         depth: None,
         topology: PrimitiveTopology::TriangleList,
         sample_count: target.sample_count,
-    })
+    });
+    gpu.destroy_shader_module(module);
+    pipeline
 }

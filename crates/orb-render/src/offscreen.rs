@@ -6,6 +6,7 @@
 //! A target is a list of colour attachments, each with a multisampled
 //! attachment when it draws multisampled.
 
+use crate::release::Release;
 use orb_hal::*;
 use orb_shaders::{COMPOSITE_OVER_SHADER, COMPOSITE_REPLACE_SHADER};
 
@@ -87,15 +88,6 @@ impl Target {
             load,
         }
     }
-
-    pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {
-        for a in self.colors {
-            gpu.destroy_texture(a.color);
-            if let Some(m) = a.multisample {
-                gpu.destroy_texture(m);
-            }
-        }
-    }
 }
 
 /// A node drawn apart from the map: its target and composite once sized,
@@ -122,22 +114,13 @@ impl Apart {
     /// Drops the recorded draw, so the next frame records it over the
     /// current bind groups.
     pub(crate) fn forget_bundle(&mut self, gpu: &mut dyn Gpu) {
-        if let Some(bundle) = self.bundle.take() {
-            gpu.destroy_render_bundle(bundle);
-        }
+        self.bundle.take().release(gpu);
     }
 
     pub(crate) fn set_opacity(&mut self, gpu: &mut dyn Gpu, opacity: f32) {
         self.opacity = opacity;
         if let Some(o) = &mut self.offscreen {
             o.set_opacity(gpu, opacity);
-        }
-    }
-
-    pub(crate) fn release(mut self, gpu: &mut dyn Gpu) {
-        self.forget_bundle(gpu);
-        if let Some(offscreen) = self.offscreen {
-            offscreen.release(gpu);
         }
     }
 }
@@ -183,11 +166,6 @@ impl Offscreen {
 
     pub(crate) fn set_opacity(&mut self, gpu: &mut dyn Gpu, opacity: f32) {
         Composites::set_opacity(gpu, &mut self.composite, opacity);
-    }
-
-    pub(crate) fn release(self, gpu: &mut dyn Gpu) {
-        self.target.destroy(gpu);
-        Composites::release(gpu, self.composite);
     }
 }
 
@@ -421,9 +399,43 @@ impl Composites {
             },
         ]
     }
+}
 
-    pub(crate) fn release(gpu: &mut dyn Gpu, composite: Composite) {
-        gpu.destroy_bind_group(composite.group);
-        gpu.destroy_buffer(composite.uniform);
+impl crate::release::Release for Apart {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (self.bundle, self.offscreen).release(gpu);
+    }
+}
+
+impl crate::release::Release for Offscreen {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (self.target, self.composite).release(gpu);
+    }
+}
+
+impl crate::release::Release for Target {
+    fn release(self, gpu: &mut dyn Gpu) {
+        for a in self.colors {
+            (a.color, a.multisample).release(gpu);
+        }
+    }
+}
+
+impl crate::release::Release for Composite {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (self.group, self.uniform).release(gpu);
+    }
+}
+
+impl crate::release::Release for Composites {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (
+            self.layout,
+            self.over,
+            self.replace,
+            self.linear,
+            self.blank,
+        )
+            .release(gpu);
     }
 }

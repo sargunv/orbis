@@ -17,6 +17,7 @@
 //! 0019): the stack's terrain layer is the texture the group composites,
 //! in place of the stack's plain composite.
 
+use crate::release::Release;
 use std::ops::Range;
 
 use orb_hal::*;
@@ -236,16 +237,14 @@ impl LayerComposites {
 
     pub(crate) fn clear(&mut self, gpu: &mut dyn Gpu) {
         for g in self.groups.drain(..) {
-            if let Some(bundle) = g.bundle {
-                gpu.destroy_render_bundle(bundle);
-            }
-            Composites::release(gpu, g.composite);
-            if let Some(layer) = g.layer {
-                layer.destroy(gpu);
-            }
+            (g.bundle, g.composite, g.layer).release(gpu);
         }
-        for canvas in self.canvases.drain(..) {
-            canvas.destroy(gpu);
-        }
+        std::mem::take(&mut self.canvases).release(gpu);
+    }
+}
+
+impl crate::release::Release for LayerComposites {
+    fn release(mut self, gpu: &mut dyn Gpu) {
+        self.clear(gpu);
     }
 }

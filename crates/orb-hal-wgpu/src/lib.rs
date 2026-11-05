@@ -363,9 +363,15 @@ impl WgpuGpu {
                     continue;
                 }
             };
+            // A pipeline destroyed while it compiled is dropped.
             match built {
-                compile::Built::Render(slot, p) => self.render_pipelines.set(slot, Some(p)),
-                compile::Built::Compute(slot, p) => self.compute_pipelines.set(slot, Some(p)),
+                compile::Built::Render(slot, p) if self.render_pipelines.contains(slot) => {
+                    self.render_pipelines.set(slot, Some(p));
+                }
+                compile::Built::Compute(slot, p) if self.compute_pipelines.contains(slot) => {
+                    self.compute_pipelines.set(slot, Some(p));
+                }
+                _ => {}
             }
             self.pipelines_created += 1;
             self.compiled.push((done.label, done.took));
@@ -894,6 +900,40 @@ impl Gpu for WgpuGpu {
             self.samplers
                 .insert(self.device.create_sampler(&descriptor)),
         )
+    }
+
+    fn destroy_sampler(&mut self, id: SamplerId) {
+        self.samplers.remove(id.0);
+    }
+
+    fn destroy_shader_module(&mut self, id: ShaderModuleId) {
+        self.shader_modules.remove(id.0);
+    }
+
+    fn destroy_bind_group_layout(&mut self, id: BindGroupLayoutId) {
+        self.bind_group_layouts.remove(id.0);
+    }
+
+    fn destroy_pipeline(&mut self, id: PipelineId) {
+        match id {
+            PipelineId::Render(id) => drop(self.render_pipelines.remove(id.0)),
+            PipelineId::Compute(id) => drop(self.compute_pipelines.remove(id.0)),
+        }
+    }
+
+    fn live_resources(&self) -> usize {
+        let counts = [
+            self.buffers.len(),
+            self.textures.len(),
+            self.shader_modules.len(),
+            self.bind_group_layouts.len(),
+            self.bind_groups.len(),
+            self.render_pipelines.len(),
+            self.compute_pipelines.len(),
+            self.render_bundles.len(),
+            self.samplers.len(),
+        ];
+        counts.iter().sum()
     }
 
     fn create_shader_module(&mut self, desc: &ShaderModuleDesc<'_>) -> ShaderModuleId {

@@ -54,6 +54,9 @@ pub struct GlGpu {
     pipelines: Slots<Pipeline>,
     /// Programs compiling, in the order they finish in blocking mode.
     pending: std::collections::VecDeque<Pending>,
+    /// Modules destroyed while a pipeline of theirs compiles: they go once
+    /// it finishes.
+    doomed: Vec<ShaderModuleId>,
     /// A compile past the watchdog's limit, or one that failed.
     hung: Option<String>,
     compiler: Compiler,
@@ -341,6 +344,7 @@ impl GlGpu {
             groups: Slots::default(),
             pipelines: Slots::default(),
             pending: Default::default(),
+            doomed: Vec::new(),
             hung: None,
             compiler: if parallel {
                 Compiler::Parallel
@@ -665,11 +669,14 @@ impl GlGpu {
 
     #[cfg(all(feature = "egl", not(target_arch = "wasm32")))]
     fn finish_threaded(&mut self, done: compile::Done) {
-        let at = self
-            .pending
-            .iter()
-            .position(|p| p.slot == done.slot)
-            .expect("a pending program");
+        // A pipeline destroyed while it compiled: its program goes too.
+        let Some(at) = self.pending.iter().position(|p| p.slot == done.slot) else {
+            if let Ok((program, _)) = done.result {
+                // SAFETY: a program of this context.
+                unsafe { self.gl.delete_program(program) };
+            }
+            return;
+        };
         let pending = self.pending.remove(at).expect("found");
         let label = self.modules[pending.module.0].label.clone();
         let (program, binary) = match done.result {
@@ -732,6 +739,25 @@ impl GlGpu {
         let label = self.modules[pending.module.0].label.clone();
         self.compiled
             .push((label, took.unwrap_or_else(|| pending.since.elapsed())));
+    }
+
+    /// Removes destroyed modules no compiling pipeline still reads.
+    fn sweep_modules(&mut self) {
+        let pending = &self.pending;
+        let (gone, kept) = self
+            .doomed
+            .drain(..)
+            .partition(|&id| !pending.iter().any(|p| p.module == id));
+        self.doomed = kept;
+        for id in gone {
+            if let Some((vertex, fragment)) = self.modules.remove(id.0).shaders {
+                // SAFETY: shaders of this context.
+                unsafe {
+                    self.gl.delete_shader(vertex);
+                    self.gl.delete_shader(fragment);
+                }
+            }
+        }
     }
 
     /// A pipeline that failed to compile or link stays unready: the nodes
@@ -1257,6 +1283,57 @@ impl Gpu for GlGpu {
         SamplerId(self.samplers.insert(sampler))
     }
 
+    fn destroy_sampler(&mut self, id: SamplerId) {
+        let sampler = self.samplers.remove(id.0);
+        // SAFETY: a sampler of this context.
+        unsafe { self.gl.delete_sampler(sampler) };
+    }
+
+    fn destroy_shader_module(&mut self, id: ShaderModuleId) {
+        self.doomed.push(id);
+        self.sweep_modules();
+    }
+
+    fn destroy_bind_group_layout(&mut self, id: BindGroupLayoutId) {
+        self.layouts.remove(id.0);
+    }
+
+    fn destroy_pipeline(&mut self, id: PipelineId) {
+        let PipelineId::Render(id) = id else {
+            panic!("Compat has no compute");
+        };
+        let program = if let Some(at) = self.pending.iter().position(|p| p.slot == id.0) {
+            // On the compile thread, it finishes into nothing.
+            self.pending
+                .remove(at)
+                .and_then(|p| p.program)
+                .map(|(program, _)| program)
+        } else if self.pipelines.contains(id.0) {
+            Some(self.pipelines.remove(id.0).program)
+        } else {
+            None
+        };
+        if let Some(program) = program {
+            // SAFETY: a program of this context.
+            unsafe { self.gl.delete_program(program) };
+        }
+        self.sweep_modules();
+    }
+
+    fn live_resources(&self) -> usize {
+        let counts = [
+            self.buffers.len(),
+            self.textures.len(),
+            self.samplers.len(),
+            self.modules.len(),
+            self.layouts.len(),
+            self.groups.len(),
+            self.pipelines.len(),
+            self.bundles.len(),
+        ];
+        counts.iter().sum()
+    }
+
     fn create_shader_module(&mut self, desc: &ShaderModuleDesc<'_>) -> ShaderModuleId {
         let ShaderSource::Glsl(program) = &desc.source else {
             panic!("{}: Compat draws offline GLSL, not WGSL", desc.label);
@@ -1353,6 +1430,7 @@ impl Gpu for GlGpu {
 
     fn poll_pipelines(&mut self) -> PipelineCounts {
         self.take_linked(true);
+        self.sweep_modules();
         PipelineCounts {
             made: self.pipelines_created,
             pending: self.pending.len() as u32,

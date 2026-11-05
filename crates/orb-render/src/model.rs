@@ -7,6 +7,7 @@
 //! [`NodeDraw::Instances`]: orb_scene::NodeDraw::Instances
 //! [`Renderer::set_model`]: crate::Renderer::set_model
 
+use crate::release::Release;
 use std::collections::HashMap;
 
 use orb_3d::gpu::GpuModel;
@@ -232,13 +233,7 @@ impl Models {
 
     pub(crate) fn remove(&mut self, gpu: &mut dyn Gpu, index: u32) {
         if let Some(r) = self.resident.remove(&index) {
-            gpu.destroy_bind_group(r.group);
-            gpu.destroy_buffer(r.words);
-            gpu.destroy_buffer(r.indices);
-            gpu.destroy_buffer(r.draw);
-            if let Some(texture) = r.texture {
-                gpu.destroy_texture(texture);
-            }
+            (r.group, r.words, r.indices, r.draw, r.texture).release(gpu);
         }
     }
 
@@ -289,6 +284,7 @@ impl Models {
                 sample_count: samples,
             }));
         }
+        gpu.destroy_shader_module(module);
     }
 
     pub(crate) fn pipelines(&self, samples: u32) -> Vec<PipelineId> {
@@ -392,5 +388,21 @@ impl Models {
             }
         }
         commands
+    }
+}
+
+impl crate::release::Release for Models {
+    fn release(self, gpu: &mut dyn Gpu) {
+        let resident: Vec<_> = (self.resident.into_values())
+            .map(|r| (r.words, r.indices, r.texture, r.draw, r.group))
+            .collect();
+        (
+            resident,
+            self.layout,
+            self.pipelines,
+            self.sampler,
+            self.blank,
+        )
+            .release(gpu);
     }
 }

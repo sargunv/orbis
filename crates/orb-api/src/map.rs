@@ -169,6 +169,12 @@ impl Drop for Map {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         drop(hook);
+        // What the map drew with goes with it, on the device that made it.
+        if let Some(renderer) = self.renderer.take()
+            && self.device == self.shared.generation.get()
+        {
+            renderer.destroy(self.shared.gpu.borrow_mut().gpu());
+        }
     }
 }
 

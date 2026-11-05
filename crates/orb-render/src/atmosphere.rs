@@ -259,3 +259,9 @@ fn pipeline(
         &[layout],
     )
 }
+
+impl crate::release::Release for Atmosphere {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (self.uniform, self.sky, self.scatter).release(gpu);
+    }
+}

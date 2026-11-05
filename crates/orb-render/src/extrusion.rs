@@ -2,6 +2,7 @@
 //! resolve it, then composite it at their layer opacity once. The shared
 //! depth attachment keeps occlusion between 3D layers.
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
+use crate::release::Release;
 use orb_hal::*;
 use orb_scene::SceneBuffers;
 use orb_shaders::EXTRUSION_SHADER;
@@ -87,6 +88,7 @@ impl Extrusions {
             topology: PrimitiveTopology::TriangleList,
             sample_count: self.samples,
         });
+        gpu.destroy_shader_module(module);
         self.pipelines[slot] = Some(pipeline);
     }
     pub(crate) fn set_antialias(&mut self, antialias: bool) -> bool {
@@ -115,9 +117,7 @@ impl Extrusions {
         if count == 0 || (self.size == size && self.single_layer == (count == 1)) {
             return false;
         }
-        if let Some(depth) = self.depth.take() {
-            gpu.destroy_texture(depth);
-        }
+        self.depth.take().release(gpu);
         self.depth = Some(gpu.create_texture(&TextureDesc {
             label: "3d depth",
             width: size[0],
@@ -246,5 +246,11 @@ impl Extrusions {
             }),
             commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],
         }
+    }
+}
+
+impl crate::release::Release for Extrusions {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (self.pipelines, self.depth).release(gpu);
     }
 }

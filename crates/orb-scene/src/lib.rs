@@ -1020,6 +1020,26 @@ pub struct SceneStats {
 }
 
 impl Scene {
+    /// Destroys the scene's buffers, with the scene.
+    pub fn destroy(self, gpu: &mut dyn Gpu) {
+        let b = self.buffers;
+        for buffer in [
+            b.frame,
+            b.tiles,
+            b.chunks,
+            b.candidates,
+            b.node_cull,
+            b.visible,
+            b.args,
+            b.vertices,
+            b.indices,
+            b.compacted,
+            b.props,
+        ] {
+            gpu.destroy_buffer(buffer);
+        }
+    }
+
     pub fn new(gpu: &mut dyn Gpu, capacity: SceneCapacity) -> Self {
         // The growable pools stay within one storage binding and buffer.
         let limits = gpu.caps().limits;

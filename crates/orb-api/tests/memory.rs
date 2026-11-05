@@ -47,3 +47,29 @@ fn tokyo_takes_what_it_draws() {
         assert!(memory.allocated() < 64 << 20, "z{zoom}: {memory:#?}");
     }
 }
+
+/// A dropped map frees what its frames made (#79): maps made, drawn and
+/// dropped one after another leave the device holding what the runtime
+/// shares (its target, the image atlas) and nothing more.
+#[test]
+fn dropped_maps_leave_nothing_behind() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, 512, 512, 1.0);
+    let live: Vec<usize> = (0..20)
+        .map(|_| {
+            let mut map = Map::new(&runtime, MapOptions::default());
+            map.set_style_json(&tokyo()).unwrap();
+            map.jump_to(&CameraTarget {
+                center: Some(Geodetic::new(139.74, 35.685)),
+                zoom: Some(15.0),
+                ..CameraTarget::default()
+            });
+            map.render_until_idle(&mut target, Duration::from_secs(60))
+                .unwrap();
+            drop(map);
+            runtime.stats().live_resources
+        })
+        .collect();
+    eprintln!("live resources after each map: {live:?}");
+    assert!(live.iter().all(|&n| n == live[0]), "{live:?}");
+}

@@ -80,15 +80,21 @@ pub trait Gpu {
     /// Releases a host-held image once every write from it is queued.
     fn release_host_image(&mut self, image: HostImageId);
     fn create_sampler(&mut self, desc: &SamplerDesc<'_>) -> SamplerId;
+    fn destroy_sampler(&mut self, id: SamplerId);
 
     fn create_shader_module(&mut self, desc: &ShaderModuleDesc<'_>) -> ShaderModuleId;
+    /// Pipelines made from the module keep what they need of it.
+    fn destroy_shader_module(&mut self, id: ShaderModuleId);
     fn create_bind_group_layout(&mut self, desc: &BindGroupLayoutDesc<'_>) -> BindGroupLayoutId;
+    fn destroy_bind_group_layout(&mut self, id: BindGroupLayoutId);
     fn create_bind_group(&mut self, desc: &BindGroupDesc<'_>) -> BindGroupId;
     fn destroy_bind_group(&mut self, id: BindGroupId);
     /// Queues a pipeline's compile and returns its id at once.
     fn create_render_pipeline(&mut self, desc: &RenderPipelineDesc<'_>) -> RenderPipelineId;
     /// Queues a pipeline's compile and returns its id at once.
     fn create_compute_pipeline(&mut self, desc: &ComputePipelineDesc<'_>) -> ComputePipelineId;
+    /// A pipeline still compiling is dropped when its compile finishes.
+    fn destroy_pipeline(&mut self, id: PipelineId);
     /// Whether a pipeline compiled, so commands may use it.
     fn pipeline_ready(&mut self, id: PipelineId) -> bool;
     /// Takes compiles that finished, and counts pipelines made and still
@@ -111,6 +117,9 @@ pub trait Gpu {
 
     /// Encodes and submits passes in order.
     fn submit(&mut self, passes: &[Pass]);
+
+    /// Resources alive, of every kind, for leak checks.
+    fn live_resources(&self) -> usize;
 }
 
 /// A render or compute pipeline.

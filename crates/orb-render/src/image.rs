@@ -13,6 +13,7 @@
 //! neighbours (GL JS's `backfillBorder`), `slope` computes hillshade
 //! slopes. Each is a draw into the tile's layer, on both tiers.
 
+use crate::release::Release;
 use orb_hal::*;
 use orb_scene::{PageTexture, Pixels, TilePage};
 use orb_shaders::{
@@ -133,13 +134,7 @@ struct Mips {
 }
 
 fn destroy_mips(gpu: &mut dyn Gpu, mips: Mips) {
-    for group in mips.groups {
-        gpu.destroy_bind_group(group);
-    }
-    for view in mips.views {
-        gpu.destroy_texture(view);
-    }
-    gpu.destroy_buffer(mips.jobs);
+    (mips.groups, mips.views, mips.jobs).release(gpu);
 }
 
 /// What an image node's bind group holds.
@@ -162,7 +157,7 @@ pub(crate) struct Prepared {
 /// One target format's raster, hillshade and color-relief pipelines, each
 /// made for the first node of its family.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ImagePipelines([Option<RenderPipelineId>; 3]);
+pub(crate) struct ImagePipelines(pub(crate) [Option<RenderPipelineId>; 3]);
 
 fn image_index(family: Family) -> usize {
     match family {
@@ -684,9 +679,7 @@ impl Images {
         elevations: &[u32],
     ) {
         assert_eq!(colors.len(), elevations.len(), "one colour per stop");
-        if let Some(old) = node.ramp.take() {
-            gpu.destroy_texture(old);
-        }
+        node.ramp.take().release(gpu);
         let width = colors.len() as u32;
         let texture = gpu.create_texture(&TextureDesc {
             label: "color relief ramp",
@@ -798,12 +791,6 @@ impl Images {
             entries: &entries,
         })
     }
-
-    pub(crate) fn release_node(gpu: &mut dyn Gpu, node: NodeImage) {
-        if let Some(ramp) = node.ramp {
-            gpu.destroy_texture(ramp);
-        }
-    }
 }
 
 /// A compute pipeline of `shader` over one group of `layout`.
@@ -816,7 +803,7 @@ fn compute_pipeline(
         label: shader.label,
         source: ShaderSource::Wgsl(shader.source().into()),
     });
-    gpu.create_compute_pipeline(&ComputePipelineDesc {
+    let pipeline = gpu.create_compute_pipeline(&ComputePipelineDesc {
         label: shader.label,
         bind_group_layouts: &[layout],
         compute: ShaderStage {
@@ -824,7 +811,9 @@ fn compute_pipeline(
             entry_point: shader.compute,
             constants: &[],
         },
-    })
+    });
+    gpu.destroy_shader_module(module);
+    pipeline
 }
 
 /// The prepare (plan §8.5's render-to-texture `Prepare`): for each pending
@@ -835,15 +824,16 @@ mod prepare {
     use orb_shaders::{PREPARE_PAD_SHADER, PREPARE_SLOPE_SHADER, Shader};
 
     use super::{DEM_PADDED, DEM_RAW, DEM_SLOPES, Page, prepare_job};
+    use crate::release::Release;
 
     /// A job slot's bytes; jobs are 64 bytes.
     const SLOT: u64 = 256;
 
     #[derive(Debug)]
     pub(super) struct Draws {
-        layout: BindGroupLayoutId,
-        pad: RenderPipelineId,
-        slope: RenderPipelineId,
+        pub(super) layout: BindGroupLayoutId,
+        pub(super) pad: RenderPipelineId,
+        pub(super) slope: RenderPipelineId,
     }
 
     /// A page's layer views, job slots and groups, for one revision of its
@@ -861,13 +851,7 @@ mod prepare {
 
     impl Targets {
         pub(super) fn destroy(self, gpu: &mut dyn Gpu) {
-            for view in self.views.into_iter().flatten().flatten() {
-                gpu.destroy_texture(view);
-            }
-            for group in self.groups.into_iter().flatten() {
-                gpu.destroy_bind_group(group);
-            }
-            gpu.destroy_buffer(self.jobs);
+            (self.views, self.groups, self.jobs).release(gpu);
         }
     }
 
@@ -893,7 +877,7 @@ mod prepare {
             });
             let mut pipeline = |shader: &Shader| {
                 let module = crate::shader_module(gpu, shader);
-                gpu.create_render_pipeline(&RenderPipelineDesc {
+                let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
                     label: shader.label,
                     bind_group_layouts: &[layout],
                     vertex: ShaderStage {
@@ -914,7 +898,9 @@ mod prepare {
                     topology: PrimitiveTopology::TriangleList,
                     cull_mode: None,
                     sample_count: 1,
-                })
+                });
+                gpu.destroy_shader_module(module);
+                pipeline
             };
             Self {
                 pad: pipeline(&PREPARE_PAD_SHADER),
@@ -1037,5 +1023,30 @@ mod prepare {
             }
             count
         }
+    }
+}
+
+impl crate::release::Release for Images {
+    fn release(mut self, gpu: &mut dyn Gpu) {
+        for id in 0..self.pages.len() {
+            if self.pages[id].is_some() {
+                self.remove_page(gpu, PageId(id as u32));
+            }
+        }
+        let draws = self.prepare.map(|d| (d.layout, d.pad, d.slope));
+        let fixed = (
+            self.image_layout,
+            self.relief_layout,
+            self.mips_layout,
+            self.mips,
+        );
+        (fixed, self.pipelines.0, self.linear, self.nearest).release(gpu);
+        (self.placeholder, self.placeholder_ramp, draws).release(gpu);
+    }
+}
+
+impl crate::release::Release for NodeImage {
+    fn release(self, gpu: &mut dyn Gpu) {
+        self.ramp.release(gpu);
     }
 }

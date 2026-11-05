@@ -10,6 +10,7 @@
 //! full-screen multiply at the first 3D layer's place. Planes only, and
 //! Modern only (plan §8.7).
 
+use crate::release::Release;
 use glam::{DMat4, DVec3};
 use orb_hal::*;
 use orb_scene::{FrameBlock, FrameShadow, SceneBuffers};
@@ -37,6 +38,7 @@ pub(crate) struct Shadows {
     pass_layout: BindGroupLayoutId,
     /// Each cascade's caster group: which cascade it draws.
     passes: [BindGroupId; CASCADES],
+    pass_buffer: BufferId,
     /// Made when extrusions, then models, first cast.
     casters: [Option<RenderPipelineId>; 2],
     /// Made when shadows are first cast.
@@ -113,6 +115,7 @@ impl Shadows {
             compare,
             pass_layout,
             passes,
+            pass_buffer,
             casters: [None; 2],
             ground: None,
             bundles: Vec::new(),
@@ -188,9 +191,7 @@ impl Shadows {
                 self.map = Some((map, layers));
             }
             (false, Some((map, layers))) => {
-                for view in layers {
-                    gpu.destroy_texture(view);
-                }
+                layers.release(gpu);
                 gpu.destroy_texture(map);
                 self.map = None;
                 self.forget_bundles(gpu);
@@ -224,9 +225,7 @@ impl Shadows {
     }
 
     pub(crate) fn forget_bundles(&mut self, gpu: &mut dyn Gpu) {
-        for bundle in self.bundles.drain(..) {
-            gpu.destroy_render_bundle(bundle);
-        }
+        std::mem::take(&mut self.bundles).release(gpu);
     }
 
     /// Writes the receivers' uniform for this frame: the cascades fitted
@@ -382,7 +381,7 @@ fn caster_pipeline(
     layouts: &[BindGroupLayoutId],
 ) -> RenderPipelineId {
     let module = shader_module(gpu, shader);
-    gpu.create_render_pipeline(&RenderPipelineDesc {
+    let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
         label: shader.label,
         bind_group_layouts: layouts,
         vertex: ShaderStage {
@@ -404,7 +403,9 @@ fn caster_pipeline(
         topology: PrimitiveTopology::TriangleList,
         cull_mode: None,
         sample_count: 1,
-    })
+    });
+    gpu.destroy_shader_module(module);
+    pipeline
 }
 
 /// One cascade as fitted: camera-relative world → the light's clip
@@ -527,6 +528,20 @@ fn ground_share(frame: &FrameBlock) -> f32 {
         return 0.0;
     }
     directional / (ambient + directional)
+}
+
+impl crate::release::Release for Shadows {
+    fn release(self, gpu: &mut dyn Gpu) {
+        self.pass_buffer.release(gpu);
+        let fixed = (
+            self.uniform,
+            self.no_map,
+            self.compare,
+            self.pass_layout,
+            self.passes,
+        );
+        (fixed, self.map, self.casters, self.ground, self.bundles).release(gpu);
+    }
 }
 
 #[cfg(test)]

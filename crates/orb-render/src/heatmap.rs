@@ -66,6 +66,7 @@ impl Heatmaps {
             topology: PrimitiveTopology::TriangleList,
             sample_count: 1,
         }));
+        gpu.destroy_shader_module(module);
     }
 
     /// Whether the density pipeline and the composites' compiled.
@@ -95,11 +96,6 @@ impl Heatmaps {
             colors: Vec::new(),
             apart: Apart::default(),
         }
-    }
-
-    pub(crate) fn release(gpu: &mut dyn Gpu, node: NodeHeatmap) {
-        node.apart.release(gpu);
-        gpu.destroy_texture(node.ramp);
     }
 
     pub(crate) fn set_ramp(gpu: &mut dyn Gpu, node: &mut NodeHeatmap, colors: &[u32]) {
@@ -182,5 +178,17 @@ impl Heatmaps {
             depth: None,
             commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],
         })
+    }
+}
+
+impl crate::release::Release for Heatmaps {
+    fn release(self, gpu: &mut dyn Gpu) {
+        self.pipeline.release(gpu);
+    }
+}
+
+impl crate::release::Release for NodeHeatmap {
+    fn release(self, gpu: &mut dyn Gpu) {
+        (self.apart, self.ramp).release(gpu);
     }
 }

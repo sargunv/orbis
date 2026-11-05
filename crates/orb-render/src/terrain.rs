@@ -14,6 +14,7 @@
 //! with the depth extrusions share, composited in the map at its place.
 
 use crate::TargetFormat;
+use crate::release::Release;
 use orb_hal::*;
 use orb_shaders::{DRAPE_SHADER, Shader, TERRAIN_SHADE_SHADER, TERRAIN_SHADER};
 
@@ -320,6 +321,7 @@ impl Terrain {
                 constants: &[],
             },
         });
+        gpu.destroy_shader_module(drape_module);
 
         let (grid, indices) = grid();
         let grid_buffer = gpu.create_buffer(&BufferDesc {
@@ -413,12 +415,8 @@ impl Terrain {
         }
         let count = (layers.len() as u32).next_power_of_two().max(4);
         if self.stack_groups.len() < count as usize {
-            for group in self.stack_groups.drain(..) {
-                gpu.destroy_bind_group(group);
-            }
-            if let Some(buffer) = self.stack_uniforms.take() {
-                gpu.destroy_buffer(buffer);
-            }
+            std::mem::take(&mut self.stack_groups).release(gpu);
+            self.stack_uniforms.take().release(gpu);
             let buffer = gpu.create_buffer(&BufferDesc {
                 label: "terrain layers",
                 size: UNIFORM_STRIDE * u64::from(count),
@@ -604,23 +602,13 @@ impl Terrain {
     }
 
     fn release_atlas(&mut self, gpu: &mut dyn Gpu) {
-        if let Some(atlas) = self.atlas.take() {
-            for group in atlas.groups {
-                gpu.destroy_bind_group(group);
-            }
-            for view in atlas.levels {
-                gpu.destroy_texture(view);
-            }
-            gpu.destroy_texture(atlas.texture);
-            gpu.destroy_buffer(atlas.slots);
-            gpu.destroy_buffer(atlas.level_uniforms);
+        if let Some(a) = self.atlas.take() {
+            (a.groups, a.levels, a.texture, a.slots, a.level_uniforms).release(gpu);
         }
     }
 
     fn forget_group(&mut self, gpu: &mut dyn Gpu) {
-        if let Some((group, _)) = self.group.take() {
-            gpu.destroy_bind_group(group);
-        }
+        self.group.take().map(|(group, _)| group).release(gpu);
     }
 
     /// Redraws tile slots' every stack this frame, each at its drape zoom.
@@ -866,6 +854,7 @@ impl Terrain {
             cull_mode: None,
             sample_count: samples,
         });
+        gpu.destroy_shader_module(module);
         self.pipelines[usize::from(shaded)][usize::from(samples > 1)] = Some(pipeline);
         pipeline
     }
@@ -1157,9 +1146,7 @@ impl Terrain {
     }
 
     fn release_occlusion(&mut self, gpu: &mut dyn Gpu) {
-        for texture in self.occlusion.take().into_iter().flatten() {
-            gpu.destroy_texture(texture);
-        }
+        self.occlusion.take().release(gpu);
     }
 
     /// The terrain drawn as its depth, at one sample.
@@ -1197,6 +1184,7 @@ impl Terrain {
             cull_mode: None,
             sample_count: 1,
         });
+        gpu.destroy_shader_module(module);
         self.occlusion_pipeline = Some(pipeline);
         pipeline
     }
@@ -1247,6 +1235,37 @@ fn grid() -> (Vec<u32>, Vec<u32>) {
         }
     }
     (vertices, indices)
+}
+
+impl crate::release::Release for Terrain {
+    fn release(mut self, gpu: &mut dyn Gpu) {
+        self.release_atlas(gpu);
+        self.release_occlusion(gpu);
+        self.forget_group(gpu);
+        let layouts = (self.layout, self.stack_layout, self.clear_layout);
+        let pipelines = (
+            self.pipelines,
+            self.clear,
+            self.downsample,
+            self.occlusion_pipeline,
+        );
+        let buffers = (
+            self.grid,
+            self.grid_indices,
+            self.tiles,
+            self.params,
+            self.shade_tiles,
+        );
+        (
+            layouts,
+            self.mip_layout,
+            pipelines,
+            buffers,
+            self.stack_uniforms,
+        )
+            .release(gpu);
+        (self.stack_groups, self.linear, self.targets).release(gpu);
+    }
 }
 
 #[cfg(test)]

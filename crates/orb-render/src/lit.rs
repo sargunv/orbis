@@ -3,6 +3,7 @@
 //! its node's material, in the main pass where they draw unlit otherwise.
 //! Their lit pipelines take the nodes' materials as a group of their own.
 
+use crate::release::Release;
 use orb_hal::*;
 
 use crate::{Family, TargetFormat};
@@ -84,10 +85,10 @@ impl Lit {
             .buffer
             .is_none_or(|(_, _, capacity)| capacity < nodes.max(1))
         {
-            if let Some((buffer, group, _)) = self.buffer.take() {
-                gpu.destroy_bind_group(group);
-                gpu.destroy_buffer(buffer);
-            }
+            self.buffer
+                .take()
+                .map(|(buffer, group, _)| (buffer, group))
+                .release(gpu);
             let capacity = nodes.max(1).next_power_of_two();
             let buffer = gpu.create_buffer(&BufferDesc {
                 label: "node materials",
@@ -168,5 +169,12 @@ impl Lit {
     /// `family`'s lit pipeline, if made.
     pub(crate) fn get(&self, family: Family) -> Option<RenderPipelineId> {
         self.pipelines[Self::slot(family)?]
+    }
+}
+
+impl Release for Lit {
+    fn release(self, gpu: &mut dyn Gpu) {
+        let buffer = self.buffer.map(|(buffer, group, _)| (buffer, group));
+        (self.layout, buffer, self.pipelines).release(gpu);
     }
 }

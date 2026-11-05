@@ -4,6 +4,7 @@
 //! texture, which symbols and circles read where they otherwise read the
 //! terrain's own depth (`terrain_visibility`).
 
+use crate::release::Release;
 use orb_hal::*;
 use orb_shaders::OCCLUSION_SHADERS;
 
@@ -77,12 +78,8 @@ impl Occlusion {
     }
 
     pub(crate) fn release(&mut self, gpu: &mut dyn Gpu) {
-        if let Some(target) = self.target.take() {
-            gpu.destroy_texture(target);
-        }
-        if let Some((_, group)) = self.group.take() {
-            gpu.destroy_bind_group(group);
-        }
+        self.target.take().release(gpu);
+        self.group.take().map(|(_, group)| group).release(gpu);
         self.size = [0; 2];
     }
 
@@ -99,7 +96,7 @@ impl Occlusion {
         let pipeline = *self.pipelines[slot].get_or_insert_with(|| {
             let shader = &OCCLUSION_SHADERS[slot];
             let module = crate::shader_module(gpu, shader);
-            gpu.create_render_pipeline(&RenderPipelineDesc {
+            let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
                 label: shader.label,
                 bind_group_layouts: &[self.layouts[slot]],
                 vertex: ShaderStage {
@@ -120,15 +117,15 @@ impl Occlusion {
                 topology: PrimitiveTopology::TriangleList,
                 cull_mode: None,
                 sample_count: 1,
-            })
+            });
+            gpu.destroy_shader_module(module);
+            pipeline
         });
         if !gpu.pipeline_ready(pipeline.into()) {
             return None;
         }
         if self.group.is_none_or(|(read, _)| read != depth) {
-            if let Some((_, group)) = self.group.take() {
-                gpu.destroy_bind_group(group);
-            }
+            self.group.take().map(|(_, group)| group).release(gpu);
             let group = gpu.create_bind_group(&BindGroupDesc {
                 label: "occlusion",
                 layout: self.layouts[slot],
@@ -161,5 +158,12 @@ impl Occlusion {
                 },
             ],
         }))
+    }
+}
+
+impl crate::release::Release for Occlusion {
+    fn release(mut self, gpu: &mut dyn Gpu) {
+        Occlusion::release(&mut self, gpu);
+        (self.layouts, self.pipelines).release(gpu);
     }
 }

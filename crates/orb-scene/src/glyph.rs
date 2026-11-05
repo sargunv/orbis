@@ -46,6 +46,11 @@ pub struct GlyphAtlas {
 }
 
 impl GlyphAtlas {
+    /// Destroys the glyph pages; the row table is the scene's.
+    pub fn destroy(self, gpu: &mut dyn Gpu) {
+        self.page.destroy(gpu);
+    }
+
     /// GPU bytes of the glyph pages.
     pub fn bytes(&self) -> u64 {
         self.page.bytes()

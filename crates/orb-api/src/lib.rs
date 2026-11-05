@@ -223,6 +223,8 @@ pub struct RuntimeStats {
     pub gpu_timestamps: bool,
     /// The GPU timestamps' resolution, once timing has seen a step.
     pub timestamp_resolution: Option<std::time::Duration>,
+    /// GPU resources alive: buffers, textures, pipelines and the rest.
+    pub live_resources: usize,
 }
 
 /// Every map's wake, held weakly: a dropped map's goes.
@@ -295,6 +297,10 @@ impl Runtime {
             pipeline_time,
             pipeline_timings,
             hung_compile: gpu.hung(),
+            live_resources: match &*gpu {
+                Device::Modern(gpu) => orb_hal::Gpu::live_resources(gpu),
+                Device::Compat(c) => orb_hal::Gpu::live_resources(&c.gpu),
+            },
             http_cache: self.shared.fetch.cache().map(|c| c.stats()),
             max_texture_size: match &*gpu {
                 Device::Modern(gpu) => orb_hal::Gpu::caps(gpu),

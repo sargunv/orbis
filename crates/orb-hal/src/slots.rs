@@ -53,6 +53,15 @@ impl<T> Slots<T> {
         self.items.contains_key(&id)
     }
 
+    /// Live resources.
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     /// Takes every live resource.
     pub fn drain(&mut self) -> impl Iterator<Item = T> + '_ {
         self.items.drain().map(|(_, item)| item)
