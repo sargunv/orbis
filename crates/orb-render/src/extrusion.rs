@@ -294,7 +294,6 @@ impl Extrusions {
                     LoadOp::Load
                 },
             }),
-            timestamps: None,
             commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],
         }
     }

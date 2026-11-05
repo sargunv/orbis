@@ -21,7 +21,17 @@ pub(crate) trait WebGpu: Gpu {
         &mut self,
         id: TextureId,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<u8>>>>;
+    /// Times submissions from now on; WebGL2 has no timing.
+    fn set_timing(&mut self, _on: bool) {}
+    /// Each submission's times since the last call once the GPU finished
+    /// them: its passes' GPU milliseconds by label, and its CPU ones.
+    fn take_timings(&mut self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<Timed>>>> {
+        Box::pin(async { Vec::new() })
+    }
 }
+
+/// A submission's times, milliseconds: per pass on the GPU, and the CPU's.
+pub(crate) type Timed = (Vec<(String, f64)>, f64);
 
 /// [`WebGpu::uploaded`]'s counts.
 #[derive(Clone, Copy, Debug, Default)]
@@ -57,6 +67,23 @@ impl WebGpu for orb_hal_wgpu::WgpuGpu {
         id: TextureId,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<u8>>>> {
         Box::pin(orb_hal_wgpu::WgpuGpu::read_texture(self, id))
+    }
+    fn set_timing(&mut self, on: bool) {
+        orb_hal_wgpu::WgpuGpu::set_timing(self, on);
+    }
+    fn take_timings(&mut self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<Timed>>>> {
+        let timings = orb_hal_wgpu::WgpuGpu::take_timings(self);
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        Box::pin(async move {
+            timings
+                .await
+                .into_iter()
+                .map(|t| {
+                    let passes = t.passes.into_iter().map(|(l, d)| (l, ms(d))).collect();
+                    (passes, ms(t.cpu))
+                })
+                .collect()
+        })
     }
 }
 
@@ -311,6 +338,8 @@ impl Modern {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
+                // Timestamps time passes for measurements (`setGpuTiming`).
+                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
                 ..Default::default()
             })
             .await

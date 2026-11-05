@@ -17,7 +17,8 @@
 </style>
 <h1>Frame bench</h1>
 <p>Still frames of five views of the committed Tokyo extract, timed on the
-GPU and CPU; the same loop as <code>cargo xtask bench</code>.
+GPU and CPU through the <code>orbis</code> package; the views of
+<code>cargo xtask bench</code>.
 <code>?experiment=gestures</code> runs rotate, tilt and zoom paths through the
 <code>orbis</code> package. It takes several minutes on a phone. Keep the phone
 plugged in, the screen on and this tab in front, then copy the result into the
@@ -30,16 +31,15 @@ issue.</p>
 <div id="result" class="scroll"></div>
 <textarea id="markdown" readonly hidden></textarea>
 <script type="module">
-// Query: format=mvt|mlt or style=<url> (the Tokyo extract by default); orb-bench settings frames, warmup,
-// rounds, size=WxH, ratio, at=lon,lat, timing=timestamps|work-done,
-// experiment=frames|gestures; for gestures,
-// workers=<job workers> and paths=city|alps (alps by default with style=alps,
-// at the terrain demo's view).
-import init, { runBench } from "../pkg/harness.js";
+// Query: format=mvt|mlt or style=<url> (the Tokyo extract by default);
+// size=WxH, at=lon,lat, experiment=frames|gestures; for frames, frames,
+// warmup, rounds and ratio; for gestures, workers=<job workers> and
+// paths=city|alps (alps by default with style=alps, at the terrain demo's
+// view).
+import { runFrames } from "./frames.js";
 import { runGestures } from "./gestures.js";
 import { demoStyle } from "./styles.js";
 
-const SETTINGS = ["frames", "warmup", "rounds", "size", "ratio", "at", "timing", "experiment"];
 const params = new URLSearchParams(location.search);
 const format = params.get("format") ?? "mvt";
 if (!["mvt", "mlt"].includes(format)) throw new Error("format must be mvt or mlt");
@@ -119,13 +119,12 @@ async function run() {
   const lock = await navigator.wakeLock?.request("screen").catch(() => null);
   try {
     if (!navigator.gpu) throw new Error("this browser has no WebGPU");
-    const options = [];
-    for (const name of SETTINGS) if (params.has(name)) options.push(name, params.get(name));
     const lines = await about();
     const started = performance.now();
+    const [w, h] = (params.get("size") ?? "1024x768").split("x").map(Number);
+    const number = (name, fallback) => (params.has(name) ? Number(params.get(name)) : fallback);
     let report;
     if (params.get("experiment") === "gestures") {
-      const [w, h] = (params.get("size") ?? "1024x768").split("x").map(Number);
       const paths = params.get("paths") ?? (params.get("style") === "alps" ? "alps" : "city");
       const center = (params.get("at") ?? (paths === "alps" ? "7.7491,46.0207" : "139.74,35.685")).split(",").map(Number);
       report = await runGestures({
@@ -134,7 +133,12 @@ async function run() {
         show: (line) => show(line),
       });
     } else {
-      report = await runBench(style, options, lines, (line) => show(line));
+      report = await runFrames({
+        style, size: [w, h], about: lines, show: (line) => show(line),
+        center: (params.get("at") ?? "139.74,35.685").split(",").map(Number),
+        ratio: number("ratio", 2), frames: number("frames", 100), warmup: number("warmup", 50),
+        rounds: number("rounds", 3),
+      });
     }
     const seconds = ((performance.now() - started) / 1000).toFixed(0);
     if (hidden) {
@@ -164,7 +168,6 @@ document.getElementById("copy").onclick = async () => {
   }
 };
 document.getElementById("again").onclick = run;
-await init();
 await run();
 </script>
 </html>

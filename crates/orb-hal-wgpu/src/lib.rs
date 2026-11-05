@@ -15,6 +15,7 @@ mod convert;
 mod offscreen;
 #[cfg(not(target_arch = "wasm32"))]
 mod surface;
+mod timing;
 mod writes;
 
 pub use convert::from_texture_format;
@@ -22,6 +23,7 @@ use orb_hal::slots::Slots;
 use orb_hal::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use surface::{RawSurface, Surface, SurfaceError};
+pub use timing::SubmitTimes;
 /// The wgpu this HAL is built on, for hosts that hand it windows.
 pub use wgpu;
 
@@ -60,7 +62,8 @@ pub struct WgpuGpu {
     /// finished.
     compiled: Vec<(String, std::time::Duration)>,
     render_bundles: Slots<wgpu::RenderBundle>,
-    query_sets: Slots<wgpu::QuerySet>,
+    /// Submissions' times, while timing ([`WgpuGpu::set_timing`]).
+    timing: Option<timing::Timing>,
     samplers: Slots<wgpu::Sampler>,
     host_bytes: Slots<HostBytes>,
     /// `ImageBitmap`s and video elements for
@@ -244,7 +247,7 @@ impl WgpuGpu {
             hung: None,
             compiled: Vec::new(),
             render_bundles: Slots::default(),
-            query_sets: Slots::default(),
+            timing: None,
             samplers: Slots::default(),
             host_bytes: Slots::default(),
             #[cfg(target_arch = "wasm32")]
@@ -494,13 +497,6 @@ impl WgpuGpu {
     /// Nanoseconds per timestamp tick in resolved query sets.
     pub fn timestamp_period_ns(&self) -> f32 {
         self.queue.get_timestamp_period()
-    }
-
-    fn timestamp_writes(
-        &self,
-        timestamps: Option<PassTimestamps>,
-    ) -> Option<(&wgpu::QuerySet, Option<u32>, Option<u32>)> {
-        timestamps.map(|t| (&self.query_sets[t.query_set.0], t.beginning, t.end))
     }
 
     fn pipeline_layout(&self, label: &str, layouts: &[BindGroupLayoutId]) -> wgpu::PipelineLayout {
@@ -1089,25 +1085,24 @@ impl Gpu for WgpuGpu {
         self.render_bundles.remove(id.0);
     }
 
-    fn create_query_set(&mut self, desc: &QuerySetDesc<'_>) -> QuerySetId {
-        let set = self.device.create_query_set(&wgpu::QuerySetDescriptor {
-            label: Some(desc.label),
-            ty: wgpu::QueryType::Timestamp,
-            count: desc.count,
-        });
-        QuerySetId(self.query_sets.insert(set))
-    }
-
-    fn destroy_query_set(&mut self, id: QuerySetId) {
-        self.query_sets.remove(id.0);
-    }
-
     fn submit(&mut self, passes: &[Pass]) {
+        let started = timing::now();
+        // While timing, each compute and render pass's first query.
+        let queries = match &mut self.timing {
+            Some(timing) => timing.begin(passes.iter().map(|pass| match pass {
+                Pass::Compute(p) => Some(p.label.as_str()),
+                Pass::Render(p) => Some(p.label.as_str()),
+                _ => None,
+            })),
+            None => Vec::new(),
+        };
+        let set = self.timing.as_ref().and_then(timing::Timing::set);
+        let writes = |i: usize| Some((set?, (*queries.get(i)?)?));
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         self.encode_writes(&mut encoder);
-        for pass in passes {
+        for (i, pass) in passes.iter().enumerate() {
             match pass {
                 Pass::CopyTextureLayers {
                     source,
@@ -1155,27 +1150,16 @@ impl Gpu for WgpuGpu {
                     *destination_offset,
                     *size,
                 ),
-                Pass::ResolveQuerySet {
-                    query_set,
-                    queries,
-                    destination,
-                    offset,
-                } => encoder.resolve_query_set(
-                    &self.query_sets[query_set.0],
-                    queries.clone(),
-                    &self.buffers[destination.0],
-                    *offset,
-                ),
                 Pass::Compute(compute) => {
                     let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                         label: Some(&compute.label),
-                        timestamp_writes: self.timestamp_writes(compute.timestamps).map(
-                            |(query_set, beginning, end)| wgpu::ComputePassTimestampWrites {
+                        timestamp_writes: writes(i).map(|(query_set, first)| {
+                            wgpu::ComputePassTimestampWrites {
                                 query_set,
-                                beginning_of_pass_write_index: beginning,
-                                end_of_pass_write_index: end,
-                            },
-                        ),
+                                beginning_of_pass_write_index: Some(first),
+                                end_of_pass_write_index: Some(first + 1),
+                            }
+                        }),
                     });
                     for command in &compute.commands {
                         match command {
@@ -1234,13 +1218,13 @@ impl Gpu for WgpuGpu {
                                 stencil_ops: None,
                             }
                         }),
-                        timestamp_writes: self.timestamp_writes(render.timestamps).map(
-                            |(query_set, beginning, end)| wgpu::RenderPassTimestampWrites {
+                        timestamp_writes: writes(i).map(|(query_set, first)| {
+                            wgpu::RenderPassTimestampWrites {
                                 query_set,
-                                beginning_of_pass_write_index: beginning,
-                                end_of_pass_write_index: end,
-                            },
-                        ),
+                                beginning_of_pass_write_index: Some(first),
+                                end_of_pass_write_index: Some(first + 1),
+                            }
+                        }),
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
@@ -1251,5 +1235,8 @@ impl Gpu for WgpuGpu {
             }
         }
         self.queue.submit([encoder.finish()]);
+        if let Some(timing) = &mut self.timing {
+            timing.end(timing::now() - started);
+        }
     }
 }

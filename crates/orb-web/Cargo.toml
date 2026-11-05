@@ -15,14 +15,11 @@ default = ["modern"]
 modern = ["dep:orb-hal-wgpu", "dep:wgpu"]
 # WebGL2 through orb-hal-gl: the Compat tier, `compat.wasm` (plan §8.7).
 compat = ["dep:orb-hal-gl", "orb-runtime/compat"]
-# The test harness entry points, built into `harness.wasm` and never into
-# `core.wasm`: the render submissions bench (web/demo/bench.html) and the
-# render fixture driver (`cargo xtask rt --platform chrome`), on either
-# tier.
+# The render fixture driver (`cargo xtask rt --platform chrome`), on either
+# tier, built into `harness.wasm` and never into `core.wasm`.
 harness = [
   "modern",
   "compat",
-  "dep:orb-bench",
   "orb-host/fonts",
   "orb-text/fonts",
   "web-sys/Document",
@@ -33,7 +30,6 @@ futures-channel.workspace = true
 glam.workspace = true
 js-sys.workspace = true
 orb-3d.workspace = true
-orb-bench = { workspace = true, optional = true }
 orb-camera.workspace = true
 orb-crs.workspace = true
 orb-expr.workspace = true

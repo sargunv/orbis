@@ -14,8 +14,8 @@ mod resource;
 pub mod slots;
 
 pub use command::{
-    ColorAttachment, ComputeCommand, ComputePass, DepthAttachment, LoadOp, Pass, PassTimestamps,
-    RenderCommand, RenderPass, StoreOp,
+    ColorAttachment, ComputeCommand, ComputePass, DepthAttachment, LoadOp, Pass, RenderCommand,
+    RenderPass, StoreOp,
 };
 pub use resource::*;
 
@@ -108,10 +108,6 @@ pub trait Gpu {
         commands: &[RenderCommand],
     ) -> RenderBundleId;
     fn destroy_render_bundle(&mut self, id: RenderBundleId);
-
-    /// Needs [`Caps::timestamp_query`].
-    fn create_query_set(&mut self, desc: &QuerySetDesc<'_>) -> QuerySetId;
-    fn destroy_query_set(&mut self, id: QuerySetId);
 
     /// Encodes and submits passes in order.
     fn submit(&mut self, passes: &[Pass]);

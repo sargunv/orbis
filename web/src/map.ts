@@ -12,7 +12,7 @@ import { defaultJobWorkers } from "./workers.ts";
 import { transaction, type FeatureTarget, type Transaction } from "./transaction.ts";
 import type {
   Bounds, Camera, CameraOptions, Constraints, EaseOptions, Feature, FitOptions, FlyOptions, FreeCamera, Padding,
-  FrameStats, Hit, LngLat, MapEvents, MapOptions, Point, QueryGeometry, QueryOptions,
+  FrameStats, GpuSubmission, Hit, LngLat, MapEvents, MapOptions, Point, QueryGeometry, QueryOptions,
   LocationFix, MarkerOptions, SourceQueryOptions, StyleImageData, StyleImageOptions,
 } from "./types.ts";
 
@@ -151,6 +151,9 @@ export class OrbisMap {
   #canvas: HTMLCanvasElement;
   #frame: HTMLElement;
   #interactive: boolean;
+  /** The device pixels per CSS pixel the map draws with; the display's
+   * when undefined. */
+  #pixelRatio: number | undefined;
   #detachInput: (() => void) | undefined;
   #observer: ResizeObserver;
   /** A device loss's start, while the host recovers. */
@@ -161,13 +164,14 @@ export class OrbisMap {
 
   /** @internal */
   constructor(container: HTMLElement, frame: HTMLElement, canvas: HTMLCanvasElement, overlay: HTMLElement,
-    host: Host, interactive: boolean) {
+    host: Host, interactive: boolean, pixelRatio?: number) {
     this.container = container;
     this.#frame = frame;
     this.#canvas = canvas;
     this.#host = host;
     this.#videos = new Videos(() => (this.#removed ? undefined : this.#host.core), () => this.#request());
     this.#interactive = interactive;
+    this.#pixelRatio = pixelRatio;
     this.#loop = frameLoop((now) => this.#tick(now), (e) => this.#error(e));
     this.camera = new CameraControl(() => this.#host.core, () => this.#request(), this.#animations);
     this.annotations = new Annotations(overlay, () => this.#placeAnnotations());
@@ -198,7 +202,7 @@ export class OrbisMap {
    * meanwhile. Rejects after a minute.
    */
   snapshot(width = this.#canvas.clientWidth, height = this.#canvas.clientHeight,
-    scale = devicePixelRatio): Promise<ImageData> {
+    scale = this.#pixelRatio ?? devicePixelRatio): Promise<ImageData> {
     const run = async () => {
       const core = this.#host.core;
       this.#snapshotting = true;
@@ -233,6 +237,18 @@ export class OrbisMap {
 
   /** The last frame's counters. */
   get stats(): FrameStats | undefined { return this.#stats; }
+
+  /** Draws a frame even if nothing changed (GL JS `triggerRepaint`). */
+  triggerRepaint(): void { this.#request(); }
+
+  /** Times the GPU's work from now on, for measurements: `gpuTimings`
+   * collects it. WebGPU only. */
+  setGpuTiming(on: boolean): void { this.#host.core.setGpuTiming(on); }
+
+  /** Each GPU submission's times since the last call, once the GPU has
+   * finished them, in order: its passes' GPU milliseconds by label (where
+   * the device has timestamp queries) and the CPU's to submit them. */
+  gpuTimings(): Promise<GpuSubmission[]> { return this.#host.core.gpuTimings(); }
 
   on<K extends keyof MapEvents>(type: K, listener: Listener<MapEvents[K]>): () => void {
     return this.#events.on(type, listener);
@@ -382,7 +398,7 @@ export class OrbisMap {
 
   #resize(): void {
     if (this.#removed || this.#lostAt !== undefined) return;
-    const ratio = devicePixelRatio;
+    const ratio = this.#pixelRatio ?? devicePixelRatio;
     const [w, h] = [Math.round(this.canvas.clientWidth * ratio), Math.round(this.canvas.clientHeight * ratio)];
     this.canvas.width = w;
     this.canvas.height = h;
@@ -507,7 +523,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   Object.assign(overlay.style, { position: "absolute", inset: "0", pointerEvents: "none" });
   frame.append(canvas, overlay);
   options.container.append(frame);
-  const ratio = devicePixelRatio;
+  const ratio = options.pixelRatio ?? devicePixelRatio;
   canvas.width = Math.round(canvas.clientWidth * ratio);
   canvas.height = Math.round(canvas.clientHeight * ratio);
   const style = typeof options.style === "string"
@@ -528,6 +544,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     },
   }, tier);
   host.resize(canvas.width, canvas.height, ratio);
-  map = new OrbisMap(options.container, frame, canvas, overlay, host, options.interactive ?? true);
+  map = new OrbisMap(options.container, frame, canvas, overlay, host, options.interactive ?? true,
+    options.pixelRatio);
   return map;
 }

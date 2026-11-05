@@ -334,7 +334,6 @@ impl Shadows {
                         load: LoadOp::Clear(1.0),
                         store: StoreOp::Store,
                     }),
-                    timestamps: None,
                     commands: vec![RenderCommand::ExecuteBundles(vec![bundle])],
                 })
             })

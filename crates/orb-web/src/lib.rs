@@ -7,15 +7,13 @@
 //! - **workers**: job workers ([`jobs::JobWorker`]) fetch and lay out
 //!   tiles; a placement worker ([`PlacementWorker`]) places labels.
 //!
-//! The map draws through WebGPU (`compat.wasm`: WebGL2). With the `harness` feature the module also
-//! exports the benches (`runBench`) and the render fixture
-//! driver (`FixtureRenderer`); `cargo xtask web` builds that into
-//! `harness.wasm`, apart from `core.wasm`.
+//! The map draws through WebGPU (`compat.wasm`: WebGL2). With the `harness`
+//! feature the module also exports the render fixture driver
+//! (`FixtureRenderer`); `cargo xtask web` builds that into `harness.wasm`,
+//! apart from `core.wasm`.
 
 #![cfg(target_arch = "wasm32")]
 
-#[cfg(feature = "harness")]
-pub mod bench;
 mod camera;
 mod canvas;
 #[cfg(feature = "harness")]
@@ -686,6 +684,35 @@ impl OrbisMap {
     #[wasm_bindgen(js_name = retryFailedTiles)]
     pub fn retry_failed_tiles(&mut self) {
         self.map.retry_failed_tiles();
+    }
+
+    /// Times the GPU's submissions from now on, for measurements
+    /// (`gpuTimings` collects them); WebGPU only.
+    #[wasm_bindgen(js_name = setGpuTiming)]
+    pub fn set_gpu_timing(&mut self, on: bool) {
+        self.canvas.gpu().set_timing(on);
+    }
+
+    /// Each submission's times since the last call, once the GPU has
+    /// finished them: `{ passes: [label, ms][], cpu: ms }`, passes timed
+    /// where the device has timestamp queries.
+    #[wasm_bindgen(js_name = gpuTimings)]
+    pub fn gpu_timings(&mut self) -> js_sys::Promise {
+        let timings = self.canvas.gpu().take_timings();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let out = js_sys::Array::new();
+            for (passes, cpu) in timings.await {
+                let pairs = js_sys::Array::new();
+                for (label, ms) in passes {
+                    pairs.push(&js_sys::Array::of2(&label.into(), &ms.into()));
+                }
+                let submission = js_sys::Object::new();
+                js_sys::Reflect::set(&submission, &"passes".into(), &pairs)?;
+                js_sys::Reflect::set(&submission, &"cpu".into(), &cpu.into())?;
+                out.push(&submission);
+            }
+            Ok(out.into())
+        })
     }
 
     /// Loses the GPU on purpose (`GPUDevice.destroy()`, or WebGL's

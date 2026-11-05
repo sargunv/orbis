@@ -615,7 +615,6 @@ impl Images {
             (
                 Pass::Compute(ComputePass {
                     label: "image mips".into(),
-                    timestamps: None,
                     commands,
                 }),
                 dispatches,
@@ -992,7 +991,6 @@ mod prepare {
                             load: LoadOp::Load,
                         }),
                         depth: None,
-                        timestamps: None,
                         commands: vec![
                             RenderCommand::SetPipeline(pipeline),
                             RenderCommand::SetBindGroup { index: 0, group },

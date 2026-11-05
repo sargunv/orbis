@@ -26,11 +26,10 @@ pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints, EaseOptions, Easing,
     FitOptions, FlyOptions, FreeCamera, Padding, Phase,
 };
-pub use orb_crs::Geodetic;
-pub use orb_crs::TileMatrixSet;
+pub use orb_crs::{Geodetic, Projection, TileMatrixSet};
 pub use orb_hal::Tier;
 pub use orb_hal_gl::egl::EglWindow;
-pub use orb_hal_wgpu::RawSurface;
+pub use orb_hal_wgpu::{RawSurface, SubmitTimes};
 pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_runtime::batteries::{Location, Marker};
 pub use orb_runtime::{
@@ -188,6 +187,8 @@ struct Shared {
     wakes: Wakes,
     /// Whether the device wakes the maps when a pipeline compiles.
     compile_wakes: std::cell::Cell<bool>,
+    /// Whether submissions are timed ([`Runtime::set_gpu_timing`]).
+    timing: std::cell::Cell<bool>,
 }
 
 /// What a runtime's device is and has done ([`Runtime::stats`]).
@@ -212,6 +213,13 @@ pub struct RuntimeStats {
     pub http_cache: Option<CacheStats>,
     /// The widest and tallest texture target the device makes, in pixels.
     pub max_texture_size: u32,
+    /// Bytes written to the device's buffers and textures so far.
+    pub uploaded_bytes: u64,
+    /// Whether [`Runtime::gpu_timings`] times passes on the GPU: the
+    /// device has timestamp queries.
+    pub gpu_timestamps: bool,
+    /// The GPU timestamps' resolution, once timing has seen a step.
+    pub timestamp_resolution: Option<std::time::Duration>,
 }
 
 /// Every map's wake, held weakly: a dropped map's goes.
@@ -262,6 +270,7 @@ impl Runtime {
                 cache: RefCell::new(None),
                 wakes,
                 compile_wakes: std::cell::Cell::new(compile_wakes),
+                timing: std::cell::Cell::new(false),
             }),
         };
         runtime.start_pipeline_cache()?;
@@ -290,6 +299,47 @@ impl Runtime {
             }
             .limits
             .max_texture_dimension_2d,
+            uploaded_bytes: match &*gpu {
+                Device::Modern(gpu) => {
+                    let u = gpu.uploaded();
+                    u.from_core + u.from_js + u.texels_from_core + u.texels_from_js
+                }
+                Device::Compat(c) => c.gpu.uploaded(),
+            },
+            gpu_timestamps: match &*gpu {
+                Device::Modern(gpu) => orb_hal::Gpu::caps(gpu).timestamp_query,
+                Device::Compat(_) => false,
+            },
+            timestamp_resolution: match &*gpu {
+                Device::Modern(gpu) => gpu.timestamp_resolution(),
+                Device::Compat(_) => None,
+            },
+        }
+    }
+
+    /// Times every submission from now on, for measurements:
+    /// [`gpu_timings`](Self::gpu_timings) collects them. Modern only.
+    pub fn set_gpu_timing(&self, on: bool) {
+        self.shared.timing.set(on);
+        if let Device::Modern(gpu) = &mut *self.shared.gpu.borrow_mut() {
+            gpu.set_timing(on);
+        }
+    }
+
+    /// Each submission's times since the last call, in order, once the GPU
+    /// has finished them: its CPU time, and its passes' GPU times where
+    /// the device has timestamp queries. Blocks until the GPU is done.
+    pub fn gpu_timings(&self) -> Vec<SubmitTimes> {
+        match &mut *self.shared.gpu.borrow_mut() {
+            Device::Modern(gpu) => pollster::block_on(gpu.take_timings()),
+            Device::Compat(_) => Vec::new(),
+        }
+    }
+
+    /// Blocks until the GPU has finished the work submitted so far.
+    pub fn finish(&self) {
+        if let Device::Modern(gpu) = &*self.shared.gpu.borrow() {
+            pollster::block_on(gpu.work_done());
         }
     }
 
@@ -331,6 +381,7 @@ impl Runtime {
         self.shared.images.reset();
         *self.shared.cache.borrow_mut() = None;
         self.start_pipeline_cache()?;
+        self.set_gpu_timing(self.shared.timing.get());
         Ok(self.shared.gpu.borrow().tier())
     }
 

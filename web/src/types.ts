@@ -124,6 +124,9 @@ export interface MapOptions {
   feel?: "desktop" | "ios" | "android";
   /** Whether input moves the map; true by default. */
   interactive?: boolean;
+  /** Device pixels per CSS pixel to draw with; the display's
+   * (`devicePixelRatio`) by default. */
+  pixelRatio?: number;
   /** How many job workers lay out tiles; by default
    * `clamp(hardwareConcurrency − 2, 1, 4)` (plan §7.1). */
   jobWorkers?: number;
@@ -173,6 +176,14 @@ export interface SourceQueryOptions {
 
 /** A frame's counters: orb-web's `FrameStats`, `memory` its `FrameMemory`. */
 export type { FrameStats, FrameMemory };
+
+/** A GPU submission's times ([`OrbisMap.gpuTimings`]), milliseconds. */
+export interface GpuSubmission {
+  /** Each pass's label and GPU time; empty without timestamp queries. */
+  passes: [string, number][];
+  /** Encoding and submitting the passes. */
+  cpu: number;
+}
 
 /** An image for the style (`addImage`): `ImageData`, or straight
  * (not premultiplied) RGBA8 rows, top first. */

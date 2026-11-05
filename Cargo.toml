@@ -53,7 +53,6 @@ wgpu = { version = "30.0.1", default-features = false, features = ["wgsl", "std"
 orb-3d = { path = "crates/orb-3d" }
 orb-a11y = { path = "crates/orb-a11y" }
 orb-api = { path = "crates/orb-api" }
-orb-bench = { path = "crates/orb-bench" }
 orb-camera = { path = "crates/orb-camera" }
 orb-crs = { path = "crates/orb-crs" }
 orb-expr = { path = "crates/orb-expr" }

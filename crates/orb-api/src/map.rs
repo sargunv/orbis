@@ -234,6 +234,26 @@ impl Map {
         *self.hook.lock().expect("wake hook poisoned") = Some(Box::new(wake));
     }
 
+    /// Moves to `camera` at once, exactly, as [`jump_to`](Self::jump_to)
+    /// moves to a target: for hosts that hold exact cameras, such as
+    /// benches and fixtures.
+    pub fn jump_to_state(&mut self, camera: CameraState) {
+        self.map.jump_to_state(camera);
+    }
+
+    /// Per label text, the greatest opacity it drew with in the last
+    /// frame: for benches that watch labels across gestures.
+    pub fn shown_labels(&self) -> std::collections::HashMap<Box<str>, f32> {
+        self.map.shown_labels()
+    }
+
+    /// The style as v8 JSON, with every edit applied and the global state
+    /// as its defaults, so that loading it gives this map's style; `None`
+    /// before a style loads.
+    pub fn style_json(&self) -> Option<String> {
+        self.map.style_doc().map(|doc| doc.to_json())
+    }
+
     /// Whether a paint transition runs (decision 0031).
     pub fn transitioning(&self) -> bool {
         self.map.transitioning()

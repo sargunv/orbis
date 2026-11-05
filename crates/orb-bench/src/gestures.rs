@@ -6,19 +6,17 @@
 //! jobs loading meanwhile. Per frame: `Map::render`'s CPU time and the bytes
 //! uploaded. A frame over 16.7 ms misses a 60 Hz display's refresh; the
 //! tail (p99, max) is where tile arrivals and per-frame work that should
-//! wait for a change show. Natively `cargo xtask bench --experiment
-//! gestures`; in the browser `bench.html?experiment=gestures` times the same
-//! paths through the page's map package, render worker included.
+//! wait for a change show. `cargo xtask bench --experiment gestures`; in
+//! the browser `bench.html?experiment=gestures` times the same paths
+//! through the page's map package.
 
 use std::fmt::Write;
 use std::time::Duration;
 
-use orb_hal::TextureId;
-use orb_runtime::{CameraState, FrameReport, Map, TargetFormat, Viewport};
+use orb_api::{CameraState, CameraTarget, FlyOptions, Map, Runtime, Target};
 
 use crate::report::{ms, resolution};
-use crate::timed::TimedGpu;
-use crate::{GesturePaths, Settings, Timing, clock, settle};
+use crate::{GesturePaths, Settings, Timing, clock, frame, settle};
 
 /// A 60 Hz display's frame.
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -61,7 +59,7 @@ const CITY_PATHS: &[Path] = &[
 
 /// The terrain demo's view: z11.6, bearing −32, pitch 72.
 fn alps_view(s: &Settings, lon: f64, bearing: f64) -> CameraState {
-    let center = orb_crs::Geodetic::new(s.center.lon + lon, s.center.lat);
+    let center = orb_api::Geodetic::new(s.center.lon + lon, s.center.lat);
     CameraState {
         bearing,
         pitch: 72.0,
@@ -89,7 +87,7 @@ const ALPS_PATHS: &[Path] = &[
 
 /// The terrain demo's flight (`web/demo/data/alps-flight.json`): `flyTo`
 /// legs, as the demos fly them.
-fn flight_legs() -> Vec<(orb_camera::CameraTarget, orb_camera::FlyOptions)> {
+fn flight_legs() -> Vec<(CameraTarget, FlyOptions)> {
     let json: serde_json::Value =
         serde_json::from_str(include_str!("../../../web/demo/data/alps-flight.json"))
             .expect("the flight parses");
@@ -101,8 +99,8 @@ fn flight_legs() -> Vec<(orb_camera::CameraTarget, orb_camera::FlyOptions)> {
             let number = |key: &str| leg[key].as_f64();
             let center = &leg["center"];
             (
-                orb_camera::CameraTarget {
-                    center: Some(orb_crs::Geodetic::new(
+                CameraTarget {
+                    center: Some(orb_api::Geodetic::new(
                         center[0].as_f64().expect("lon"),
                         center[1].as_f64().expect("lat"),
                     )),
@@ -111,7 +109,7 @@ fn flight_legs() -> Vec<(orb_camera::CameraTarget, orb_camera::FlyOptions)> {
                     pitch: number("pitch"),
                     ..Default::default()
                 },
-                orb_camera::FlyOptions {
+                FlyOptions {
                     duration: number("duration"),
                     ..Default::default()
                 },
@@ -178,36 +176,19 @@ pub struct GesturesReport {
     warnings: Vec<String>,
 }
 
-fn uploaded(gpu: &TimedGpu) -> u64 {
-    let u = gpu.inner().uploaded();
-    u.from_core + u.from_js + u.texels_from_core + u.texels_from_js
+fn uploaded(runtime: &Runtime) -> u64 {
+    runtime.stats().uploaded_bytes
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn run(
-    gpu: &mut TimedGpu,
+pub(crate) fn run(
+    runtime: &Runtime,
     timing: Timing,
-    target: (TextureId, (u32, u32)),
-    format: TargetFormat,
+    (target, size): (&mut Target, (u32, u32)),
     settings: &Settings,
     about: Vec<String>,
-    mut new_map: impl FnMut(CameraState) -> Result<Map, String>,
+    mut new_map: impl FnMut(CameraState) -> Map,
     mut progress: impl FnMut(&str),
 ) -> Result<GesturesReport, String> {
-    let (target, size) = target;
-    let viewport = Viewport {
-        width: f64::from(settings.width),
-        height: f64::from(settings.height),
-    };
-    // The path's map's renderer: a new map gets a new one.
-    let renderer = std::cell::RefCell::new(None);
-    let render = |gpu: &mut TimedGpu, map: &mut Map, time: f64| -> (FrameReport, Duration) {
-        let started = clock::now();
-        let mut renderer = renderer.borrow_mut();
-        let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
-        let report = map.render(gpu, renderer, target, viewport, settings.ratio, time);
-        (report, clock::now() - started)
-    };
     let mut warnings = Vec::new();
     let mut paths = Vec::new();
     let paths_run = match settings.paths {
@@ -218,20 +199,14 @@ pub(crate) async fn run(
         // A map per path, so each starts cold.
         progress(&format!("{}: loading its first view", path.name));
         let start = (path.camera)(settings, 0.0);
-        let mut map = new_map(start)?;
-        *renderer.borrow_mut() = None;
-        // Frames' times: the wall clock while the view loads, then 60 Hz
-        // from there, so fades and transitions run on.
+        let mut map = new_map(start);
+        // Frames' times: the wall clock while the view loads (the map times
+        // its own frames from its last one), then 60 Hz from there, so
+        // fades and transitions run on.
         let epoch = clock::now();
-        let since = || (clock::now() - epoch).as_secs_f64() * 1000.0;
-        settle(
-            gpu,
-            &mut map,
-            &|g, m| render(g, m, since()).0,
-            &mut warnings,
-        )
-        .await?;
-        let base = since();
+        frame(&mut map, target, 0.0)?;
+        settle(&mut map, target, &mut warnings)?;
+        let base = (clock::now() - epoch).as_secs_f64() * 1000.0;
         let mut legs = if path.flight {
             flight_legs()
         } else {
@@ -262,24 +237,17 @@ pub(crate) async fn run(
             } else {
                 map.jump_to_state((path.camera)(settings, f64::from(f) / PATH_FRAMES as f64));
             }
-            let before = uploaded(gpu);
+            let before = uploaded(runtime);
             let start = clock::now();
-            let (report, time) = render(gpu, &mut map, now);
-            match timing {
-                Timing::Timestamps => gpu.throttle().await,
-                Timing::WorkDone => {
-                    gpu.finish().await;
-                    done.push(clock::now() - start);
-                }
-            }
-            // A flight's thousands of frames outrun the timestamp queries;
-            // this bench reads CPU times only.
-            if f % 64 == 0 {
-                gpu.take_frames().await;
+            let (report, time) = frame(&mut map, target, now)?;
+            // Each frame finishes before the next, as a display's would.
+            runtime.finish();
+            if timing == Timing::WorkDone {
+                done.push(clock::now() - start);
             }
             cpu.push(time);
             placement.push(Duration::from_micros(u64::from(report.placement_us)));
-            peak_bytes = peak_bytes.max(uploaded(gpu) - before);
+            peak_bytes = peak_bytes.max(uploaded(runtime) - before);
             loading += usize::from(report.tiles_loading > 0);
             rebuilds += usize::from(report.frame.candidates_rebuilt);
             rows += u64::from(report.frame.placements_written);
@@ -305,13 +273,13 @@ pub(crate) async fn run(
             }
             warnings.extend(crate::take_warnings(&mut map));
             let next = started + FRAME * f;
-            clock::sleep(next.saturating_sub(clock::now())).await;
+            std::thread::sleep(next.saturating_sub(clock::now()));
         }
         let ended = clock::now();
         loop {
             now += FRAME.as_secs_f64() * 1000.0;
-            let (report, _) = render(gpu, &mut map, now);
-            gpu.take_frames().await;
+            let (report, _) = frame(&mut map, target, now)?;
+            runtime.finish();
             warnings.extend(crate::take_warnings(&mut map));
             if report.idle {
                 break;
@@ -319,9 +287,8 @@ pub(crate) async fn run(
             if clock::now() - ended > SETTLE_TIMEOUT {
                 return Err(format!("{}: timed out settling", path.name));
             }
-            clock::sleep(FRAME).await;
+            std::thread::sleep(FRAME);
         }
-        gpu.take_frames().await;
         cpu.sort_unstable();
         done.sort_unstable();
         placement.sort_unstable();

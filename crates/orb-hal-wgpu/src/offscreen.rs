@@ -63,8 +63,10 @@ impl WgpuGpu {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("orbis"),
-                // Natively, warm starts reuse pipelines through a cache.
-                required_features: adapter.features() & wgpu::Features::PIPELINE_CACHE,
+                // Natively, warm starts reuse pipelines through a cache;
+                // timestamps time passes for measurements (`set_timing`).
+                required_features: adapter.features()
+                    & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::TIMESTAMP_QUERY),
                 // WebGPU's defaults, lowered where the adapter falls short
                 // of them: the iOS simulator has 15 inter-stage variables.
                 required_limits: wgpu::Limits::default().or_worse_values_from(&adapter.limits()),
@@ -91,7 +93,7 @@ impl WgpuGpu {
     }
 
     /// Resolves when the GPU has finished all work submitted so far.
-    pub fn work_done(&self) -> impl Future<Output = ()> + 'static {
+    pub fn work_done(&self) -> impl Future<Output = ()> + use<> {
         // Gathered writes are work submitted too.
         let mut encoder = self
             .device
@@ -176,7 +178,7 @@ impl WgpuGpu {
     }
 }
 
-async fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> wgpu::BufferView {
+pub(crate) async fn map_read(device: &wgpu::Device, buffer: &wgpu::Buffer) -> wgpu::BufferView {
     let (sender, receiver) = futures_channel::oneshot::channel();
     buffer
         .slice(..)

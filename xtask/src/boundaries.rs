@@ -76,6 +76,7 @@ const SCENE_SIDE: &[&str] = &[
 pub(crate) const NATIVE_ONLY: &[&str] = &[
     "orb-host-native",
     "orb-api",
+    "orb-bench",
     "orb-cli",
     "diplomat-swift-kotlin",
     "dsk-fixture",

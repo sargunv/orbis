@@ -149,7 +149,6 @@ fn samples_written_layers_of_a_texture_array() {
                 instances: 0..1,
             },
         ],
-        timestamps: None,
     })]);
     let pixels = pollster::block_on(gpu.read_texture(target));
     assert_eq!(&pixels[..4], [255, 0, 0, 255], "layer 0");

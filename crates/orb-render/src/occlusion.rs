@@ -152,7 +152,6 @@ impl Occlusion {
                 load: LoadOp::Clear([0.0; 4]),
             }),
             depth: None,
-            timestamps: None,
             commands: vec![
                 RenderCommand::SetPipeline(pipeline),
                 RenderCommand::SetBindGroup { index: 0, group },

@@ -6,8 +6,7 @@ use std::time::Duration;
 use crate::{Settings, Timing};
 
 /// Clocks at least this fine give medians; coarser ones give means, which
-/// quantization does not bias. Chrome quantizes timestamps (to 65.5 µs on a
-/// Mac) and `performance.now()` (to 100 µs, or 5 µs cross-origin isolated).
+/// quantization does not bias.
 const FINE: Duration = Duration::from_micros(1);
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -76,10 +75,6 @@ pub(crate) struct ViewResult {
     pub(crate) submit_cpu: Summary,
     pub(crate) draws: u32,
     pub(crate) dispatches: u32,
-    /// The cull pass's counts on the last frame: chunks kept, and vertex
-    /// inputs (pulled vertices, or visible chunks' indices).
-    pub(crate) chunks: u64,
-    pub(crate) inputs: u64,
     pub(crate) tiles: u32,
     pub(crate) candidates: u32,
     pub(crate) meshes: u32,
@@ -164,14 +159,14 @@ impl FramesReport {
         };
         writeln!(
             out,
-            "| view | {gpu_label} | p90 | cull pass {g} | main pass {g} | extrusion pass {g} | CPU render {c} | CPU encode+submit {c} | draws | dispatches | vertex inputs |"
+            "| view | {gpu_label} | p90 | cull pass {g} | main pass {g} | extrusion pass {g} | CPU render {c} | CPU encode+submit {c} | draws | dispatches |"
         )?;
-        writeln!(out, "|---|---|---|---|---|---|---|---|---|---|---|")?;
+        writeln!(out, "|---|---|---|---|---|---|---|---|---|---|")?;
         let pass = |p: &Option<Summary>| p.as_ref().map_or("—".into(), |m| ms(gpu_stat.of(m)));
         for view in &self.views {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                 view.name,
                 ms(gpu_stat.of(&view.gpu)),
                 ms(view.gpu.p90),
@@ -182,23 +177,18 @@ impl FramesReport {
                 ms(cpu_stat.of(&view.submit_cpu)),
                 view.draws,
                 view.dispatches,
-                thousands(view.inputs),
             )?;
         }
         writeln!(out)?;
-        writeln!(
-            out,
-            "Times in ms. Vertex inputs: the visible chunks' indices, and pulled point and image vertices."
-        )?;
+        writeln!(out, "Times in ms.")?;
         for view in &self.views {
             writeln!(
                 out,
-                "- {}: {} tiles drawn, {} candidates, {} visible chunks, {} meshes, \
+                "- {}: {} tiles drawn, {} candidates, {} meshes, \
                  {:.1} MiB of GPU memory allocated, {:.1} MiB of pools used",
                 view.name,
                 view.tiles,
                 view.candidates,
-                view.chunks,
                 view.meshes,
                 view.memory.0 as f64 / f64::from(1 << 20),
                 view.memory.1 as f64 / f64::from(1 << 20),
@@ -228,18 +218,6 @@ pub(crate) fn resolution(r: Option<Duration>) -> String {
 
 pub(crate) fn ms(d: Duration) -> String {
     format!("{:.3}", d.as_secs_f64() * 1000.0)
-}
-
-fn thousands(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
 
 #[cfg(test)]

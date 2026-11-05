@@ -154,3 +154,24 @@ through `RuntimeOptions::url_transform`, the first of the host's fetch
 hooks. Queries go through `Map::query_rendered` and its event. The native
 render suite is unchanged at 1191 passes, 104 failures and 50 skips, test
 for test (62.9 s → 58.0 s); the query suite at 71 of 83.
+
+## The benches draw through `orb-api` and the package
+
+`cargo xtask bench` makes an `orb-api` `Runtime` and `Map` and draws into a
+texture `Target`; `bench.html` drives the `orbis` package, its frames
+experiment included (`harness.wasm` keeps only the fixture driver). GPU
+timing moved from the bench's `Gpu` wrapper into `orb-hal-wgpu`
+(`WgpuGpu::set_timing`, `take_timings`): every submission's CPU time and,
+with timestamp queries, every pass's GPU time. Hosts reach it as
+`Runtime::set_gpu_timing` and `gpu_timings` natively and `setGpuTiming` and
+`gpuTimings` in the package, beside `triggerRepaint` and a `pixelRatio`
+option. The HAL lost its query sets, `PassTimestamps` and
+`Pass::ResolveQuerySet`, which only the bench used. A take resolves its
+queries once the GPU has finished: Apple GPUs write a render pass's end
+sample after its fragment work, and a resolve right behind it read the
+previous frame's. The cull counters (chunks kept, vertex inputs) left the
+frames report: they were read out of the renderer's argument buffer, which
+no host API reaches. Frame bench through `orb-api`, M6 Metal, medians of
+2 × 50 frames (GPU ms; before → after): z12 0.450 → 0.611, z15
+0.733 → 0.730, z15 pitch 60 0.834 → 0.840, z17 0.638 → 0.759, z16 pitch 60
+with buildings 1.560 → 1.537.

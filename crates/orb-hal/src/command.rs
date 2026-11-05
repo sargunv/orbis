@@ -1,6 +1,6 @@
 use crate::{
-    BindGroupId, BufferId, ComputePipelineId, IndexFormat, QuerySetId, RenderBundleId,
-    RenderPipelineId, TextureId,
+    BindGroupId, BufferId, ComputePipelineId, IndexFormat, RenderBundleId, RenderPipelineId,
+    TextureId,
 };
 
 /// One pass of a submission.
@@ -34,30 +34,11 @@ pub enum Pass {
         offset: u64,
         size: Option<u64>,
     },
-    /// Writes timestamps `queries` as u64 values into `destination` at
-    /// `offset`, a multiple of 256. The unit is the implementation's
-    /// (nanoseconds in WebGPU).
-    ResolveQuerySet {
-        query_set: QuerySetId,
-        queries: std::ops::Range<u32>,
-        destination: BufferId,
-        offset: u64,
-    },
-}
-
-/// Where a pass writes timestamps at its beginning and end
-/// (`GPU*PassTimestampWrites`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PassTimestamps {
-    pub query_set: QuerySetId,
-    pub beginning: Option<u32>,
-    pub end: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComputePass {
     pub label: String,
-    pub timestamps: Option<PassTimestamps>,
     pub commands: Vec<ComputeCommand>,
 }
 
@@ -74,7 +55,6 @@ pub struct RenderPass {
     /// `None` draws depth only (Modern; Compat draws no such pass).
     pub color: Option<ColorAttachment>,
     pub depth: Option<DepthAttachment>,
-    pub timestamps: Option<PassTimestamps>,
     pub commands: Vec<RenderCommand>,
 }
 

@@ -183,7 +183,6 @@ impl LayerComposites {
                 label: "layer composite".into(),
                 color: Some(g.layer.as_ref()?.attachment(0, LoadOp::Clear([0.0; 4]))),
                 depth: None,
-                timestamps: None,
                 commands: vec![RenderCommand::ExecuteBundles(vec![g.bundle?])],
             }))
         })
@@ -229,7 +228,6 @@ impl LayerComposites {
                     label: "main".into(),
                     color: Some(color),
                     depth: None,
-                    timestamps: None,
                     commands,
                 })
             })

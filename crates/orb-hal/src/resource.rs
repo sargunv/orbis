@@ -18,8 +18,6 @@ ids! {
     RenderPipelineId;
     ComputePipelineId;
     RenderBundleId;
-    /// A set of timestamp queries.
-    QuerySetId;
     SamplerId;
     /// Bytes the host holds outside core memory, such as a transferred JS
     /// `ArrayBuffer`, registered with the implementation.
@@ -73,15 +71,6 @@ pub struct BufferDesc<'a> {
 pub enum IndexFormat {
     Uint16,
     Uint32,
-}
-
-/// Timestamp queries, for devices with [`Caps::timestamp_query`].
-///
-/// [`Caps::timestamp_query`]: crate::Caps::timestamp_query
-#[derive(Clone, Debug, PartialEq)]
-pub struct QuerySetDesc<'a> {
-    pub label: &'a str,
-    pub count: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

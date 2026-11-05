@@ -185,7 +185,6 @@ impl GlGpu {
                 *destination_offset,
                 *size,
             ),
-            Pass::ResolveQuerySet { .. } => panic!("Compat has no timestamp queries"),
         }
     }
 

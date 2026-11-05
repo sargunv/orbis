@@ -1388,12 +1388,6 @@ impl Gpu for GlGpu {
         self.bundles.remove(id.0);
     }
 
-    fn create_query_set(&mut self, desc: &QuerySetDesc<'_>) -> QuerySetId {
-        panic!("{}: Compat has no timestamp queries", desc.label);
-    }
-
-    fn destroy_query_set(&mut self, _: QuerySetId) {}
-
     fn submit(&mut self, passes: &[Pass]) {
         for pass in passes {
             self.execute(pass);

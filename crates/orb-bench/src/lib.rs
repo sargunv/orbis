@@ -1,31 +1,22 @@
-//! GPU and CPU frame timings: natively (`cargo xtask bench`) and in the
-//! browser (`orb-web`'s `harness` feature, `web/demo/bench.html`), through
-//! the same loop.
+//! GPU and CPU frame timings through `orb-api` (`cargo xtask bench`), as
+//! hosts draw.
 //!
 //! By default one map visits each view, loads until it is idle and renders
 //! `rounds` runs of still frames offscreen; `experiment=gestures` times
 //! rotate, tilt, zoom and pan paths with tiles arriving. [`run`] returns a
 //! [`Report`], which formats as Markdown.
-//!
-//! The loop is async so it runs on the browser's event loop; natively,
-//! every future it awaits is ready when first polled.
 
 #![forbid(unsafe_code)]
 
 mod clock;
 mod gestures;
 mod report;
-mod timed;
 
 use std::time::Duration;
 
 pub use gestures::GesturesReport;
-use orb_crs::Geodetic;
-use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureUsages};
-use orb_hal_wgpu::WgpuGpu;
-use orb_runtime::{CameraState, FrameReport, Map, TargetFormat, Transaction, Viewport};
+use orb_api::{CameraState, Event, FrameReport, Geodetic, Map, MapEvent, Runtime, Target};
 use report::{FramesReport, Summary, ViewResult};
-use timed::TimedGpu;
 
 /// The committed Tokyo extract's view, by the Imperial Palace
 /// (`web/demo/data/README.md`).
@@ -44,11 +35,6 @@ const VIEWS: &[(&str, f64, f64, bool)] = &[
 /// OpenFreeMap Liberty's extrusion layer, which the reduced style leaves
 /// out, added before the labels.
 const BUILDINGS_3D: &str = r#"{"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles", "source-layer": "building", "minzoom": 14, "filter": ["!", ["has", "hide_3d"]], "paint": {"fill-extrusion-base": ["get", "render_min_height"], "fill-extrusion-color": "hsl(35,8%,85%)", "fill-extrusion-height": ["get", "render_height"], "fill-extrusion-opacity": 0.8}}"#;
-/// Words of the cull pass's counters in a node's draw arguments
-/// (`cull.wgsl`): chunks kept, indices written, vertex inputs.
-const KEPT_WORD: usize = 5;
-const WRITTEN_WORD: usize = 6;
-const INPUTS_WORD: usize = 7;
 /// How long a view may take to load.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -148,8 +134,7 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Sets one option by name, as the native tool's `--name value` and the
-    /// page's `?name=value` give it: `frames`, `warmup`, `rounds`, `size`
+    /// Sets one option by name, as the tool's `--name value` gives it: `frames`, `warmup`, `rounds`, `size`
     /// (`WxH`), `ratio`, `at` (`lon,lat`), `timing` (`timestamps` or
     /// `work-done`), `experiment` (`frames` or `gestures`), `paths` (`city` or `alps`,
     /// the gestures bench's) or `view` (`zoom,pitch,bearing`, adding a view
@@ -222,53 +207,17 @@ impl Settings {
     }
 }
 
-/// A device for [`run`], and how it times the GPU.
-#[derive(Debug)]
-pub struct Device {
-    gpu: WgpuGpu,
-    /// wgpu's adapter name, backend and driver.
-    pub adapter: String,
-    pub timing: Timing,
-}
-
-/// A device on the high-performance adapter, with timestamp queries unless
-/// `timing` asks for the proxy or the adapter lacks them.
-pub async fn device(timing: Option<Timing>) -> Result<Device, String> {
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| format!("no adapter: {e}"))?;
-    let timestamps = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
-    let timing = match timing {
+/// How `runtime` times the GPU: `asked`, or timestamps where it has them.
+fn timing(runtime: &Runtime, asked: Option<Timing>) -> Result<Timing, String> {
+    let timestamps = runtime.stats().gpu_timestamps;
+    match asked {
         Some(Timing::Timestamps) if !timestamps => {
-            return Err("the adapter has no timestamp queries".into());
+            Err("the device has no timestamp queries".into())
         }
-        Some(timing) => timing,
-        None if timestamps => Timing::Timestamps,
-        None => Timing::WorkDone,
-    };
-    let info = adapter.get_info();
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("orb-bench"),
-            required_features: match timing {
-                Timing::Timestamps => wgpu::Features::TIMESTAMP_QUERY,
-                Timing::WorkDone => wgpu::Features::empty(),
-            },
-            ..Default::default()
-        })
-        .await
-        .map_err(|e| format!("no device: {e}"))?;
-    Ok(Device {
-        gpu: WgpuGpu::new(device, queue),
-        adapter: format!("{} ({:?}, {})", info.name, info.backend, info.driver),
-        timing,
-    })
+        Some(timing) => Ok(timing),
+        None if timestamps => Ok(Timing::Timestamps),
+        None => Ok(Timing::WorkDone),
+    }
 }
 
 /// A view's still frames.
@@ -281,93 +230,46 @@ struct Samples {
     cull: Vec<Duration>,
     main: Vec<Duration>,
     extrusion: Vec<Duration>,
-    /// `Map::render`, less the timer's own overhead.
+    /// `Map::render`.
     render_cpu: Vec<Duration>,
     submit_cpu: Vec<Duration>,
     report: FrameReport,
-    /// The last frame's cull counters, summed over nodes.
-    counters: [u64; 3],
 }
 
-/// The cull counters (chunks kept, indices written, vertex inputs) summed
-/// over the first `nodes` nodes of a draw-argument buffer's words.
-fn counters(words: &[u32], nodes: u32) -> [u64; 3] {
-    let mut sum = [0u64; 3];
-    for node in words.chunks(orb_runtime::ARGS_WORDS).take(nodes as usize) {
-        for (s, word) in sum.iter_mut().zip([KEPT_WORD, WRITTEN_WORD, INPUTS_WORD]) {
-            *s += u64::from(node[word]);
-        }
-    }
-    sum
-}
-
-/// Runs every view on `device`. `about` lines head the report (adapter,
-/// browser, data); `new_map` makes a map loading the benchmarked style at
-/// a camera; `progress` hears what runs.
-pub async fn run(
-    device: Device,
+/// Runs every view on `runtime`. `about` lines head the report (adapter,
+/// data); `new_map` makes a map loading the benchmarked style at a camera;
+/// `progress` hears what runs.
+pub fn run(
+    runtime: &Runtime,
     settings: &Settings,
     about: Vec<String>,
-    mut new_map: impl FnMut(CameraState) -> Result<Map, String>,
+    mut new_map: impl FnMut(CameraState) -> Map,
     mut progress: impl FnMut(&str),
 ) -> Result<Report, String> {
-    let timing = device.timing;
-    let mut gpu = TimedGpu::new(device.gpu, timing == Timing::Timestamps);
+    let timing = timing(runtime, settings.timing)?;
     let cpu_resolution = clock::resolution();
     let (width, height) = settings.physical_size();
-    let format = TargetFormat {
-        color: TextureFormat::Rgba8Unorm,
-        sample_count: 1,
-    };
-    let target = gpu.create_texture(&TextureDesc {
-        label: "bench",
-        width,
-        height,
-        array_layers: 1,
-        dimension: orb_hal::TextureViewDimension::D2,
-        format: format.color,
-        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
-        sample_count: 1,
-        mip_levels: 1,
-    });
-    let viewport = Viewport {
-        width: f64::from(settings.width),
-        height: f64::from(settings.height),
-    };
+    let mut target = Target::texture(runtime, width, height, f64::from(settings.ratio));
     let size = (width, height);
-    match settings.experiment {
-        Experiment::Gestures => {
-            let run = gestures::run(
-                &mut gpu,
-                timing,
-                (target, size),
-                format,
-                settings,
-                about,
-                new_map,
-                progress,
-            );
-            return run.await.map(Report::Gestures);
-        }
-        Experiment::Frames => {}
+    if settings.experiment == Experiment::Gestures {
+        return gestures::run(
+            runtime,
+            timing,
+            (&mut target, size),
+            settings,
+            about,
+            new_map,
+            progress,
+        )
+        .map(Report::Gestures);
     }
-    // The one map's renderer, and the frames' clock: fades and transitions
-    // run on frame times.
-    let renderer = std::cell::RefCell::new(None);
+    // The frames' clock: fades and transitions run on frame times.
     let epoch = clock::now();
-    let render = |gpu: &mut TimedGpu, map: &mut Map| {
-        let started = clock::now();
-        let mut renderer = renderer.borrow_mut();
-        let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
-        let time = (started - epoch).as_secs_f64() * 1000.0;
-        let report = map.render(gpu, renderer, target, viewport, settings.ratio, time);
-        (report, started, clock::now() - started)
-    };
 
     let mut warnings = Vec::new();
     let mut views = Vec::new();
-    // One map for every view: a dropped map keeps its GPU buffers (#20), and
-    // a phone's browser has no room for a map per view.
+    let mut gpu_resolution = None;
+    // One map for every view, as a host keeps one while it moves.
     let mut map: Option<Map> = None;
     let cameras: Vec<(String, f64, f64, f64, bool)> = if settings.views.is_empty() {
         VIEWS
@@ -396,26 +298,17 @@ pub async fn run(
                 map.jump_to_state(camera);
                 map
             }
-            None => map.insert(new_map(camera)?),
+            None => map.insert(new_map(camera)),
         };
-        settle(&mut gpu, map, &|g, m| render(g, m).0, &mut warnings).await?;
+        settle(map, &mut target, &mut warnings)?;
         if buildings {
-            // Liberty's extrusions, beneath its labels.
-            let before = map
-                .style_doc()
-                .into_iter()
-                .flat_map(|doc| doc.style().layers.iter())
-                .find(|l| l.ty == orb_style::LayerType::Symbol)
-                .map(|l| l.id.replace('\\', "\\\\").replace('"', "\\\""));
-            let call = match before {
-                Some(before) => format!("[[\"addLayer\", {BUILDINGS_3D}, \"{before}\"]]"),
-                None => format!("[[\"addLayer\", {BUILDINGS_3D}]]"),
-            };
-            map.edit(&Transaction::from_commands(&call)?)?;
-            settle(&mut gpu, map, &|g, m| render(g, m).0, &mut warnings).await?;
+            let tx = orb_api::Transaction::from_commands(&add_buildings(map)?)?;
+            map.edit(&tx).map_err(|e| e.to_string())?;
+            settle(map, &mut target, &mut warnings)?;
         }
 
         let mut s = Samples::default();
+        runtime.set_gpu_timing(true);
         for round in 0..settings.rounds {
             progress(&format!(
                 "{name}: round {} of {}",
@@ -424,24 +317,30 @@ pub async fn run(
             ));
             let count = settings.warmup + settings.frames;
             let (mut cpu, mut wall) = (Vec::with_capacity(count), Vec::with_capacity(count));
-            for _ in 0..count {
-                let (report, started, time) = render(&mut gpu, map);
-                match timing {
-                    Timing::Timestamps => gpu.throttle().await,
-                    Timing::WorkDone => {
-                        gpu.finish().await;
-                        wall.push(clock::now() - started);
-                    }
+            for f in 0..count {
+                let started = clock::now();
+                let time = (started - epoch).as_secs_f64() * 1000.0;
+                let (report, time) = frame(map, &mut target, time)?;
+                // The proxy waits for each frame; timestamps let two
+                // queue, as a display's swapchain does, so the GPU keeps
+                // its clocks.
+                if timing == Timing::WorkDone || f % 2 == 1 {
+                    runtime.finish();
+                }
+                if timing == Timing::WorkDone {
+                    wall.push(clock::now() - started);
                 }
                 s.report = report;
                 cpu.push(time);
             }
-            let times = gpu.take_frames().await;
-            assert_eq!(times.len(), count, "one submission per frame");
+            let times = runtime.gpu_timings();
+            if times.len() != count {
+                return Err(format!("{} submissions for {count} frames", times.len()));
+            }
             for f in settings.warmup..count {
                 s.gpu.push(match timing {
                     Timing::Timestamps => times[f].gpu(),
-                    Timing::WorkDone => wall[f].saturating_sub(times[f].overhead),
+                    Timing::WorkDone => wall[f],
                 });
                 for (label, samples) in [
                     ("cull", &mut s.cull),
@@ -450,17 +349,12 @@ pub async fn run(
                 ] {
                     samples.extend(times[f].pass(label));
                 }
-                s.render_cpu.push(cpu[f].saturating_sub(times[f].overhead));
-                s.submit_cpu.push(times[f].submit_cpu);
+                s.render_cpu.push(cpu[f]);
+                s.submit_cpu.push(times[f].cpu);
             }
         }
-        let (args, nodes) = renderer
-            .borrow()
-            .as_ref()
-            .map(|r| r.draw_args())
-            .ok_or("no renderer")?;
-        s.counters = counters(&words(&gpu.inner().read_buffer(args).await), nodes);
-
+        gpu_resolution = gpu_resolution.or(runtime.stats().timestamp_resolution);
+        runtime.set_gpu_timing(false);
         views.push(view_result(&name, s));
     }
     Ok(Report::Frames(FramesReport {
@@ -468,21 +362,27 @@ pub async fn run(
         settings: settings.clone(),
         size: (width, height),
         timing,
-        gpu_resolution: gpu.timestamp_resolution(),
+        gpu_resolution,
         cpu_resolution,
         views,
         warnings,
     }))
 }
 
-/// Little-endian words.
-fn words(bytes: &[u8]) -> Vec<u32> {
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|w| u32::from_le_bytes(*w))
-        .collect()
+/// The edit adding Liberty's extrusions beneath its labels.
+fn add_buildings(map: &Map) -> Result<String, String> {
+    let style: serde_json::Value =
+        serde_json::from_str(&map.style_json().ok_or("no style")?).map_err(|e| e.to_string())?;
+    let before = style["layers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|l| l["type"] == "symbol")
+        .map(|l| l["id"].clone());
+    Ok(match before {
+        Some(before) => format!("[[\"addLayer\", {BUILDINGS_3D}, {before}]]"),
+        None => format!("[[\"addLayer\", {BUILDINGS_3D}]]"),
+    })
 }
 
 fn view_result(name: &str, mut s: Samples) -> ViewResult {
@@ -498,8 +398,6 @@ fn view_result(name: &str, mut s: Samples) -> ViewResult {
         submit_cpu: Summary::of(&mut s.submit_cpu),
         draws: stats.draws,
         dispatches: stats.dispatches,
-        chunks: s.counters[0],
-        inputs: s.counters[2],
         tiles: s.report.tiles_drawn,
         candidates: stats.candidates,
         meshes: s.report.scene.meshes,
@@ -517,44 +415,46 @@ fn view_result(name: &str, mut s: Samples) -> ViewResult {
 }
 
 /// The default surface's projection, which the benchmarks draw on.
-pub(crate) fn web_mercator() -> orb_crs::Projection {
-    *orb_crs::TileMatrixSet::by_id("WebMercatorQuad")
+pub(crate) fn web_mercator() -> orb_api::Projection {
+    *orb_api::TileMatrixSet::by_id("WebMercatorQuad")
         .expect("built-in tile matrix set")
         .projection()
 }
 
-/// The warnings and errors since the last frame.
+/// The warnings and errors since the last call.
 pub(crate) fn take_warnings(map: &mut Map) -> Vec<String> {
-    map.take_events()
-        .into_iter()
+    std::iter::from_fn(|| map.poll_event())
         .filter_map(|event| match event {
-            orb_runtime::MapEvent::Warning { message }
-            | orb_runtime::MapEvent::Error { message } => Some(message),
+            Event::Map(MapEvent::Warning { message } | MapEvent::Error { message }) => {
+                Some(message)
+            }
             _ => None,
         })
         .collect()
 }
 
-/// Draws until the map is idle, then once more.
-pub(crate) async fn settle(
-    gpu: &mut TimedGpu,
+/// One frame at `time` (milliseconds), and its CPU time.
+pub(crate) fn frame(
     map: &mut Map,
-    render: &impl Fn(&mut TimedGpu, &mut Map) -> FrameReport,
+    target: &mut Target,
+    time: f64,
+) -> Result<(FrameReport, Duration), String> {
+    let started = clock::now();
+    let report = map
+        .render(target, time)
+        .map_err(|e| e.to_string())?
+        .ok_or("a texture target always draws")?;
+    Ok((report, clock::now() - started))
+}
+
+/// Draws until the map is idle, then once more.
+pub(crate) fn settle(
+    map: &mut Map,
+    target: &mut Target,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
-    let started = clock::now();
-    loop {
-        let report = render(gpu, map);
-        warnings.extend(take_warnings(map));
-        gpu.take_frames().await;
-        if report.idle {
-            render(gpu, map);
-            gpu.take_frames().await;
-            return Ok(());
-        }
-        if clock::now() - started > LOAD_TIMEOUT {
-            return Err("timed out waiting for tiles".into());
-        }
-        clock::sleep(Duration::from_millis(5)).await;
-    }
+    map.render_until_idle(target, LOAD_TIMEOUT)
+        .map_err(|e| format!("loading: {e}"))?;
+    warnings.extend(take_warnings(map));
+    Ok(())
 }

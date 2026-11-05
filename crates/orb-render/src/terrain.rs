@@ -830,7 +830,6 @@ impl Terrain {
                     load: LoadOp::Load,
                 }),
                 depth: None,
-                timestamps: None,
                 commands,
             }));
             // Each level from the one above, one dispatch over the slots.
@@ -852,7 +851,6 @@ impl Terrain {
             }
             passes.push(Pass::Compute(ComputePass {
                 label: "drape mips".into(),
-                timestamps: None,
                 commands: mips,
             }));
             draws += 1;
@@ -956,7 +954,6 @@ impl Terrain {
                     load: LoadOp::Clear(0.0),
                     store: StoreOp::Discard,
                 }),
-                timestamps: None,
                 commands: draw(occlusion_pipeline, stack_group),
             }));
             draws += 1;
@@ -974,7 +971,6 @@ impl Terrain {
                     },
                     store: depth_store,
                 }),
-                timestamps: None,
                 commands: draw(pipeline, self.stack_groups[stack]),
             }));
             draws += 1;

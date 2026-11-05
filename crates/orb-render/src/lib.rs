@@ -1833,7 +1833,6 @@ impl Renderer {
             stats.dispatches += 1;
             passes.push(Pass::Compute(ComputePass {
                 label: "cull".into(),
-                timestamps: None,
                 commands: vec![
                     ComputeCommand::SetPipeline(pipeline),
                     ComputeCommand::SetBindGroup { index: 0, group },

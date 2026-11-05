@@ -2,8 +2,7 @@
 //! `web/pkg/`, reports its size by crate (twiggy) and warns when it
 //! grows past plan §14.3's numbers; then `compat.wasm`, the renderer on
 //! WebGL2 that pages without WebGPU load instead (plan §8.7), and
-//! `harness.wasm`, the module with the bench page's and the fixture
-//! driver's entry points on either tier.
+//! `harness.wasm`, the Chrome fixture driver's module on either tier.
 //!
 //! `cargo xtask pages`: the above, then the Vite build of the site
 //! `.github/workflows/pages.yml` deploys, into `web/dist/`.
