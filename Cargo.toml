@@ -77,8 +77,14 @@ orb-tile = { path = "crates/orb-tile" }
 orb-v8 = { path = "crates/orb-v8" }
 orb-web = { path = "crates/orb-web" }
 
+# Several agents build at once on one disk: line tables keep backtraces
+# readable at a fraction of full debug info, and dependencies carry none.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 
 # The web build: smallest code, one codegen unit, whole-program LTO.
 [profile.wasm-release]

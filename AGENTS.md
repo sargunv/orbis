@@ -101,6 +101,12 @@ Progress over excessive rigor, but never at the cost of dirty shortcuts.
   the camera stops", no caches keyed on the camera that go stale mid-gesture,
   no gesture-only modes. If something looks wrong while moving, find the
   still frame that looks wrong and fix that.
+- **Share the disk.** Many agents build on one machine. Don't make extra
+  checkouts or second `target/` directories to build old commits; compare
+  against a baseline by checking the commit out in your own worktree (or
+  ask for the numbers), and delete scratch builds you made as soon as
+  you're done. If the disk fills, stop and report it; delete only files you
+  created.
 - **Measure.** Report sizes, timings and counters as numbers.
 
 ### Devices
