@@ -48,7 +48,7 @@ pub use placement_wire::{
     pack_committed, pack_frame, pack_tables, unpack_committed, unpack_frame, unpack_tables,
 };
 pub use queries::QueryDone;
-pub use query::{Hit, HitFeature, HitIndex};
+pub use query::{Hit, HitFeature, HitIndex, HitPublication, MeshHits};
 pub use style::ImageKind;
 pub use surface::{
     SurfaceTiles, projection_from_json, projection_to_json, tms_from_json, tms_to_json,

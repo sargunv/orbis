@@ -423,10 +423,6 @@ fn published_hits_follow_layer_order_visibility_and_camera() {
         &super::web_mercator(),
     );
     settle(&mut map);
-    // An idle frame may retain its index without emitting a new transfer.
-    // Publish a camera change before testing the transfer round trip.
-    map.map.camera_mut().bearing = 1.0;
-    map.frame();
     let center = glam::DVec2::new(512., 384.);
     let hit = map.map.hit_test(center).expect("center station");
     assert_eq!(
@@ -435,12 +431,35 @@ fn published_hits_follow_layer_order_visibility_and_camera() {
     );
     assert_eq!(hit.source, "district");
     assert_eq!(hit.source_layer, None);
+    // A UI thread's index answers as the map does, for any camera, and
+    // camera moves alone publish nothing.
+    let mut publication = orb_runtime::HitPublication::default();
     let mut published = orb_runtime::HitIndex::default();
-    published.update(&map.map.hit_snapshot()).unwrap();
+    published
+        .apply(
+            &map.map
+                .publish_hits(&mut publication)
+                .expect("first publication"),
+        )
+        .unwrap();
     published.set_generation(hit.generation);
-    assert_eq!(published.hit_test(center), Some(hit.clone()));
-    assert!(published.update(&[1, 2, 3]).is_err());
-    assert_eq!(published.hit_test(center), Some(hit.clone()));
+    let viewport = map.viewport;
+    let ui_hit = |index: &orb_runtime::HitIndex, map: &Offscreen, point| {
+        index.hit_test(point, map.map.camera(), viewport, &map.map.projection())
+    };
+    assert_eq!(ui_hit(&published, &map, center), Some(hit.clone()));
+    map.map.camera_mut().bearing = 30.0;
+    map.frame();
+    assert!(map.map.publish_hits(&mut publication).is_none());
+    let turned = map.map.hit_test(center);
+    assert_eq!(ui_hit(&published, &map, center), turned);
+    for point in [glam::DVec2::new(300., 200.), glam::DVec2::new(700., 500.)] {
+        assert_eq!(ui_hit(&published, &map, point), map.map.hit_test(point));
+    }
+    assert!(published.apply(&[1, 2, 3]).is_err());
+    assert_eq!(ui_hit(&published, &map, center), turned);
+    map.map.camera_mut().bearing = 0.0;
+    settle(&mut map);
     let tx =
         Transaction::from_commands(r#"[["setLayoutProperty","stations","visibility","none"]]"#)
             .unwrap();

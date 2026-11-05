@@ -567,10 +567,10 @@ impl UiRole {
         Ok(())
     }
 
-    /// Takes a picking snapshot from a frame acknowledgement.
+    /// Applies picking's changes from a frame acknowledgement.
     #[wasm_bindgen(js_name = updateHits)]
     pub fn update_hits(&mut self, bytes: &[u8]) -> Result<(), JsError> {
-        self.hits.update(bytes).map_err(|e| JsError::new(&e))
+        self.hits.apply(bytes).map_err(|e| JsError::new(&e))
     }
 
     #[wasm_bindgen(js_name = advanceHits)]
@@ -578,11 +578,12 @@ impl UiRole {
         self.hits.set_generation(generation as u64);
     }
 
-    /// The topmost feature under a CSS pixel in the published snapshot,
-    /// mapped through the ground when the camera has moved since.
+    /// The topmost feature under a CSS pixel with the camera now: the
+    /// drawn tiles' features where it puts them, labels as the last
+    /// placement commit shows them.
     #[wasm_bindgen(js_name = hitTest)]
     pub fn hit_test(&self, x: f64, y: f64) -> JsValue {
-        crate::hit_object(self.hits.hit_test_from(
+        crate::hit_object(self.hits.hit_test(
             DVec2::new(x, y),
             self.camera.state(),
             self.camera.viewport(),

@@ -314,8 +314,14 @@ impl View {
     /// terrain the plane gestures drag, as GL JS's do), or `None` above
     /// its horizon.
     pub fn unproject(&self, px: DVec2) -> Option<DVec2> {
+        self.unproject_at(px, self.target_z)
+    }
+
+    /// The world position under a point in logical pixels on the level
+    /// plane `z` world units above the datum, or `None` above its horizon.
+    pub fn unproject_at(&self, px: DVec2, z: f64) -> Option<DVec2> {
         let (near, far) = self.ray(px);
-        let t = (near.z - self.target_z) / (near.z - far.z);
+        let t = (near.z - z) / (near.z - far.z);
         (far.z < near.z && t >= 0.0)
             .then(|| (near + (far - near) * t).truncate() + self.camera_world)
     }

@@ -286,7 +286,7 @@ pub(crate) fn add_node(
     };
     let mesh = renderer.scene().insert_mesh(gpu, part, index, &mesh)?;
     resident.meshes.push(Resident {
-        hits: Vec::new(),
+        hits: Default::default(),
         node: key,
         mesh,
         layout_rev: 0,

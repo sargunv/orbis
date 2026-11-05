@@ -28,3 +28,4 @@ in code and commit messages.
 - [0021](0021-interaction-and-thread-mode.md): Interaction, the web package, and the default thread mode
 - [0022](0022-style-zoom-per-view.md): Style zoom per view (updates D15)
 - [0023](0023-frame-time-regressions.md): Picking on demand, budgeted tile intake, and jobs off the page
+- [0024](0024-picking-without-the-camera.md): Picking without the camera

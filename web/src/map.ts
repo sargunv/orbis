@@ -291,7 +291,7 @@ export class OrbisMap {
 
   #frame(ack: FrameAck): void {
     this.#latest = ack;
-    if (ack.hitSnapshot) this.#ui.updateHits(ack.hitSnapshot);
+    if (ack.hits) this.#ui.updateHits(ack.hits);
     if (ack.elevation) {
       // The camera stands on the new terrain: send it with the next tick.
       this.#ui.updateElevation(ack.elevation);

@@ -305,6 +305,24 @@ pub fn parse_layer(
     }
 }
 
+/// One modelled paint property of a `layer_type` layer from its value in
+/// the layer's `paint` (`None`: unset), with `global-state` reads resolved
+/// to `state`, as [`parse_layer`] gives it: an invalid value gives the
+/// default. `None` for a property Orbis doesn't model.
+pub fn parse_paint<T: PropertyValue>(
+    layer_type: &str,
+    name: &str,
+    json: Option<&Json>,
+    state: &[(String, Value<'static>)],
+) -> Option<Property<T>> {
+    let prop = spec::find_prop(layer_type, true, name)?;
+    let mut cx = Cx {
+        state: state.to_vec(),
+        ..Cx::default()
+    };
+    Some(layer::property_at(&mut cx, json, name, prop))
+}
+
 /// The v8 spec of a modelled paint (`paint: true`) or layout property of a
 /// `layer_type` layer.
 pub fn property_spec(layer_type: &str, paint: bool, name: &str) -> Option<orb_expr::PropertySpec> {

@@ -186,7 +186,7 @@ pub(crate) struct Resident {
     /// The node's key.
     pub(crate) node: u32,
     pub(crate) mesh: MeshId,
-    pub(crate) hits: Vec<crate::HitFeature>,
+    pub(crate) hits: Arc<crate::MeshHits>,
     /// The style revisions its geometry and its rows were laid out with.
     pub(crate) layout_rev: u64,
     pub(crate) rows_rev: u64,
@@ -321,10 +321,8 @@ pub(crate) struct LoadedStyle {
 pub struct Map {
     /// Placement and the scene side of labels.
     pub(crate) labels: crate::labels::Labels,
-    /// The picking index, built from the last frame when something picks.
+    /// The last frame's picking state; queries project from it.
     pub(crate) picking: std::cell::RefCell<crate::query::Picking>,
-    /// The last frame's camera and viewport.
-    drawn: Option<(CameraState, Viewport)>,
     /// This frame's placement time so far, in milliseconds.
     placement_ms: f64,
     /// Arrived tiles wait for the next frame: this one spent its budget.
@@ -511,7 +509,6 @@ impl Map {
         });
         Self {
             picking: Default::default(),
-            drawn: None,
             placement_ms: 0.0,
             tiles_deferred: false,
             services,
@@ -646,65 +643,6 @@ impl Map {
     /// a style that arrives later doesn't override it.
     pub fn set_camera(&mut self, camera: CameraState) {
         *self.camera_mut() = camera;
-    }
-
-    /// The camera and viewport of the last frame.
-    pub(crate) fn drawn_view(&self) -> Option<(CameraState, Viewport)> {
-        self.drawn
-    }
-
-    /// The picking index, built from the last frame if that waits and the
-    /// style hasn't changed since; otherwise the last one built.
-    pub(crate) fn picking(&self) -> std::cell::Ref<'_, crate::query::Picking> {
-        let frame = self.picking.borrow_mut().take_frame(self.version);
-        if let Some(frame) = frame {
-            let hits = self.build_hits(&frame);
-            self.picking.borrow_mut().install(&frame, hits);
-        }
-        self.picking.borrow()
-    }
-
-    /// Projects what `frame` drew, labels included, into its pixels.
-    fn build_hits(&self, frame: &crate::query::HitFrame) -> Vec<crate::query::ScreenHit> {
-        let Some(style) = &self.style else {
-            return Vec::new();
-        };
-        let plan = style.worker.plan();
-        let period = self.surface.period();
-        let mut hits = Vec::new();
-        for (index, tile, draws) in &frame.tiles {
-            let SourceState::Ready {
-                pyramid, endpoint, ..
-            } = &style.sources[*index]
-            else {
-                continue;
-            };
-            let Some(resident) = pyramid.get(*tile) else {
-                continue;
-            };
-            crate::query::Publisher {
-                hits: &mut hits,
-                plan,
-                view: &frame.view,
-                place: match &resident.series {
-                    Some(series) => crate::query::TilePlace::Warped(series),
-                    None => crate::query::TilePlace::Affine(&endpoint.tms),
-                },
-                period,
-                camera: &frame.stamp.camera,
-                zoom: frame.stamp.camera.zoom(self.surface.projection()),
-            }
-            .tile(resident, *index, *tile, draws);
-        }
-        hits.extend(
-            self.labels
-                .screen_hits(plan, &frame.view, &self.bucket_planes(style)),
-        );
-        hits.sort_by_key(|h| h.order);
-        for h in &mut hits {
-            h.hit.generation = frame.generation;
-        }
-        hits
     }
 
     /// The view's style zoom (decision 0022): GL JS's in Web Mercator,
@@ -1018,7 +956,7 @@ impl Map {
     }
 
     /// The tile matrix sets of this frame's symbol buckets.
-    fn bucket_planes(&self, style: &LoadedStyle) -> crate::labels::BucketPlanes {
+    pub(crate) fn bucket_planes(&self, style: &LoadedStyle) -> crate::labels::BucketPlanes {
         crate::labels::BucketPlanes {
             to_world: style
                 .symbol_tiles
@@ -1082,21 +1020,8 @@ impl Map {
         self.sync_nodes(gpu);
 
         let view = self.view(viewport);
-        self.drawn = Some((self.camera, viewport));
-        // Picking records what this frame draws when it differs from the
-        // index's; the index builds from it on first use.
-        let hit_stamp = crate::query::HitStamp {
-            camera: self.camera,
-            viewport,
-            version: self.version,
-            counts: self.counts,
-            commits: self.labels.commits(),
-        };
-        let mut hit_frame = self
-            .picking
-            .get_mut()
-            .stale(&hit_stamp)
-            .then(|| crate::query::HitFrame::new(hit_stamp, view.clone()));
+        // What this frame draws, for picking.
+        let mut drawn = Vec::new();
         let zoom = self.zoom();
         let mut report = FrameReport::default();
         let clear = self.clear_color;
@@ -1157,14 +1082,7 @@ impl Map {
                 &mut report,
             );
             for index in 0..self.style.as_ref().map_or(0, |s| s.sources.len()) {
-                self.place_source(
-                    gpu,
-                    &view,
-                    index,
-                    drape.as_ref(),
-                    &mut report,
-                    hit_frame.as_mut(),
-                );
+                self.place_source(gpu, &view, index, drape.as_ref(), &mut report, &mut drawn);
             }
         }
         let labels_settled = self.place_labels(gpu, &view, now);
@@ -1179,10 +1097,14 @@ impl Map {
                 .release_ramps(gpu, self.retired_ramps.drain(..));
         }
         report.generation = self.generation();
-        if let Some(frame) = &mut hit_frame {
-            frame.generation = report.generation;
+        let picking = self.picking.get_mut();
+        if picking.layers_version != Some(self.version)
+            && let Some(style) = &self.style
+        {
+            picking.layers = Arc::new(crate::query::HitLayers::of(style.worker.plan()));
+            picking.layers_version = Some(self.version);
         }
-        self.picking.get_mut().drew(hit_stamp, hit_frame);
+        picking.drew(view.clone(), self.camera, drawn, report.generation);
         report.loaded = self.style.as_ref().is_some_and(|s| {
             s.sprites_loading == 0
                 && s.sources
@@ -1613,7 +1535,7 @@ impl Map {
         index: usize,
         drape: Option<&DrapePlan>,
         report: &mut FrameReport,
-        mut hit_frame: Option<&mut crate::query::HitFrame>,
+        drawn: &mut Vec<crate::query::DrawnTile>,
     ) {
         let style = self.style.as_mut().expect("called with a style");
         let Some(draws) = style.draws[index].take() else {
@@ -1626,6 +1548,7 @@ impl Map {
                 .any(|n| n.source == index && n.family.is_draped())
         });
         let terrain = style.terrain.as_ref();
+        let source_key = style.worker.plan().sources[index].key;
         let SourceState::Ready {
             pyramid, endpoint, ..
         } = &mut style.sources[index]
@@ -1636,8 +1559,27 @@ impl Map {
         let tms = &endpoint.tms;
         let (renderer, _) = self.renderer.as_mut().expect("created before placing");
         let mut rows: HashMap<TileIndex, Vec<&Draw>> = HashMap::new();
+        // Picking reads tiles with features in drawing order, ancestors
+        // before descendants.
+        let mut order = Vec::new();
         for draw in &draws {
-            rows.entry(draw.tile).or_default().push(draw);
+            let copies = rows.entry(draw.tile).or_default();
+            if copies.is_empty() {
+                order.push(draw.tile);
+            }
+            copies.push(draw);
+        }
+        for tile in order {
+            let resident = pyramid.get(tile).expect("drawn tiles are ready");
+            if resident.meshes.iter().any(|m| !m.hits.is_empty()) {
+                drawn.push(crate::query::DrawnTile::new(
+                    source_key,
+                    tile,
+                    &rows[&tile],
+                    tms,
+                    resident.series.as_deref(),
+                ));
+            }
         }
         let camera_world = view.camera_world();
         let period = self.surface.period();
@@ -1662,9 +1604,6 @@ impl Map {
                         wrap,
                     });
                 }
-            }
-            if let Some(frame) = hit_frame.as_deref_mut() {
-                frame.tile(index, tile, draws);
             }
             let frame = resident
                 .image

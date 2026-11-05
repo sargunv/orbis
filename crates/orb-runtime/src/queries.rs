@@ -1,10 +1,10 @@
 //! Asynchronous feature queries (plan §13): `queryRenderedFeatures` over
-//! the last frame's picking index (labels included) and
+//! the last frame's picking scene (labels included) and
 //! `querySourceFeatures` over a source's drawn tiles. Properties and
 //! geometry come from each tile's owner worker; no tile is decoded again
 //! here.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use glam::DVec2;
@@ -23,6 +23,8 @@ pub type QueryDone = Box<dyn FnOnce(Result<String, String>) + Send + 'static>;
 
 /// A feature a query reports, once its worker has read it.
 struct Wanted {
+    /// The plan source's index.
+    source: usize,
     key: FeatureKey,
     /// The source layer, as the tile names it.
     tile_layer: String,
@@ -41,7 +43,7 @@ struct Pending {
     error: Option<String>,
 }
 
-fn layer_type(kind: &LayerKind) -> &str {
+pub(crate) fn layer_type(kind: &LayerKind) -> &str {
     match kind {
         LayerKind::Background(_) => "background",
         LayerKind::Fill(_) => "fill",
@@ -60,11 +62,7 @@ fn layer_type(kind: &LayerKind) -> &str {
 impl crate::Map {
     /// GL JS `queryRenderedFeatures`: the features drawn in the box
     /// `min..max` (logical pixels; a point when they are equal) in the last
-    /// frame, topmost first, of `layers` or of every layer. When the
-    /// picking index is older than the frame (see
-    /// [`hit_test`](Self::hit_test)), the box goes through the ground to its
-    /// pixels: its corners' bounds there, or the whole index when a corner
-    /// of a box is above the horizon.
+    /// frame, topmost first, of `layers` or of every layer.
     pub fn query_rendered(
         &self,
         min: DVec2,
@@ -77,39 +75,22 @@ impl crate::Map {
         };
         let plan = style.worker.plan();
         let (min, max) = (min.min(max), min.max(max));
-        let corners = [min, DVec2::new(max.x, min.y), max, DVec2::new(min.x, max.y)]
-            .map(|p| self.to_hit_pixels(p));
-        let (min, max) = if corners.iter().all(Option::is_some) {
-            let corners = corners.map(Option::unwrap);
-            (
-                corners
-                    .into_iter()
-                    .reduce(DVec2::min)
-                    .expect("four corners"),
-                corners
-                    .into_iter()
-                    .reduce(DVec2::max)
-                    .expect("four corners"),
-            )
-        } else if min == max {
-            return done(Ok("[]".into()));
-        } else {
-            (DVec2::NEG_INFINITY, DVec2::INFINITY)
-        };
-        let mut seen = HashSet::new();
+        let hits = self
+            .with_scene(|scene, view, camera, zoom| {
+                scene.query(view, camera, zoom, min, max, layers)
+            })
+            .unwrap_or_default();
         let mut wanted = Vec::new();
-        let picking = self.picking();
-        for hit in picking.hits.iter().rev() {
-            if layers.is_some_and(|l| !l.contains(&hit.hit.layer))
-                || !hit.intersects(min, max)
-                || !seen.insert((hit.order, hit.key))
-            {
+        for (hit, order, key) in hits {
+            let Some(source) = plan.sources.iter().position(|s| s.key == key.source) else {
                 continue;
-            }
-            let layer = &plan.style.layers[hit.order];
+            };
+            let Some(layer) = plan.style.layers.get(order) else {
+                continue;
+            };
             let mut members = String::new();
-            write_member(&mut members, "source", &hit.hit.source);
-            if let Some(source_layer) = &hit.hit.source_layer {
+            write_member(&mut members, "source", &hit.source);
+            if let Some(source_layer) = &hit.source_layer {
                 members.push(',');
                 write_member(&mut members, "sourceLayer", source_layer);
             }
@@ -118,28 +99,28 @@ impl crate::Map {
             members.push(',');
             write_member(&mut members, "type", layer_type(&layer.kind));
             members.push(',');
-            write_member(&mut members, "source", &hit.hit.source);
-            if let Some(source_layer) = &hit.hit.source_layer {
+            write_member(&mut members, "source", &hit.source);
+            if let Some(source_layer) = &hit.source_layer {
                 members.push(',');
                 write_member(&mut members, "source-layer", source_layer);
             }
             members.push('}');
             wanted.push(Wanted {
-                key: hit.key,
+                source,
+                key,
                 tile_layer: hit
-                    .hit
                     .source_layer
                     .clone()
                     .unwrap_or_else(|| orb_tile::geojson::LAYER_NAME.into()),
                 members,
-                source_key: plan.sources[hit.key.source].key,
-                source_layer: hit.hit.source_layer.clone(),
+                source_key: key.source,
+                source_layer: hit.source_layer.clone(),
             });
         }
         let mut groups: HashMap<(usize, TileIndex, String), Vec<u32>> = HashMap::new();
         for w in &wanted {
             groups
-                .entry((w.key.source, w.key.tile, w.tile_layer.clone()))
+                .entry((w.source, w.key.tile, w.tile_layer.clone()))
                 .or_default()
                 .push(w.key.feature);
         }
@@ -346,12 +327,7 @@ fn assemble(
                 })
                 .collect();
             for w in &wanted {
-                let key = (
-                    w.key.source,
-                    w.key.tile,
-                    w.tile_layer.as_str(),
-                    w.key.feature,
-                );
+                let key = (w.source, w.key.tile, w.tile_layer.as_str(), w.key.feature);
                 if let Some(feature) = by_index.get(&key) {
                     let state = state(w.source_key, w.source_layer.clone(), feature);
                     push(&mut out, feature, &w.members, state);

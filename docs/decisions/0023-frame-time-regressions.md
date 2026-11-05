@@ -82,9 +82,10 @@ natively at a 60 Hz pace and times `Map::render`, tile arrivals included;
 
 ## Open
 
-The worker's snapshot at rest still costs one picking build (28 ms at Tokyo
-z12), 10 ms to encode, and 26 ms to decode on the page; on the page a first
-hover after a move builds the index (#43). The scene's tile cache is bounded
+The worker's snapshot at rest still cost one picking build (28 ms at Tokyo
+z12), 10 ms to encode, and 26 ms to decode on the page, and on the page a
+first hover after a move built the index (#43); decision 0024 removed both by
+keeping picking independent of the camera. The scene's tile cache is bounded
 by count (128 tiles), not memory, so a pitched city view keeps the arenas
 full and evicts on almost every arrival; plan §8's budget manager is the
 answer.

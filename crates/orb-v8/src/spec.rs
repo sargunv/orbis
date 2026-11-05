@@ -727,6 +727,11 @@ pub(crate) const SYMBOL_PAINT: &[&Prop] = &[
 /// The spec of a typed layer's paint (`paint: true`) or layout property, if
 /// Orbis models it.
 pub(crate) fn find(layer_type: &str, paint: bool, name: &str) -> Option<PropertySpec> {
+    find_prop(layer_type, paint, name).map(Prop::spec)
+}
+
+/// [`find`]'s property itself.
+pub(crate) fn find_prop(layer_type: &str, paint: bool, name: &str) -> Option<&'static Prop> {
     let props: &[&Prop] = match (layer_type, paint) {
         ("background", false) => BACKGROUND_LAYOUT,
         ("background", true) => BACKGROUND_PAINT,
@@ -747,5 +752,5 @@ pub(crate) fn find(layer_type: &str, paint: bool, name: &str) -> Option<Property
         (_, false) => VISIBILITY_LAYOUT,
         _ => &[],
     };
-    props.iter().find(|p| p.name == name).map(|p| p.spec())
+    props.iter().find(|p| p.name == name).copied()
 }

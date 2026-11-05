@@ -48,7 +48,7 @@ async function runPath(container, style, thread, center, path, show) {
     const longs = [];
     const observer = typeof PerformanceObserver !== "undefined" &&
       PerformanceObserver.supportedEntryTypes?.includes("longtask")
-      ? new PerformanceObserver((list) => { for (const e of list.getEntries()) longs.push(e.duration); })
+      ? new PerformanceObserver((list) => { for (const e of list.getEntries()) longs.push({ start: e.startTime, duration: e.duration }); })
       : null;
     observer?.observe({ type: "longtask" });
     const started = await nextFrame();
@@ -62,6 +62,8 @@ async function runPath(container, style, thread, center, path, show) {
     observer?.disconnect();
     off();
     const moving = acks.filter((a) => a.t > started && a.t <= ended);
+    const after = acks.filter((a) => a.t > ended);
+    const longsAfter = longs.filter((l) => l.start > ended).map((l) => l.duration);
     const gaps = moving.slice(1).map((a, i) => a.t - moving[i].t);
     const cpu = moving.map((a) => a.ms);
     return {
@@ -69,8 +71,8 @@ async function runPath(container, style, thread, center, path, show) {
       interval: [0.5, 0.95, 0.99, 1].map((p) => percentile(gaps, p)),
       cpu: [0.5, 0.95, 1].map((p) => percentile(cpu, p)),
       missed: gaps.filter((g) => g > 50).length,
-      longs: longs.length, longest: Math.max(0, ...longs),
-      settle,
+      longs: longs.length, longest: Math.max(0, ...longs.map((l) => l.duration)),
+      settle, settleCpu: Math.max(0, ...after.map((a) => a.ms)), settleLong: Math.max(0, ...longsAfter),
     };
   } finally {
     map.remove();
@@ -96,14 +98,15 @@ export async function runGestures({ style, center, threads, size, about, show })
     `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${PATH_FRAMES} frames a path, ` +
       "the camera moved once a display frame (`jumpTo`), each path from a fresh map at rest",
     "",
-    "| thread | path | frames | interval p50 | p95 | p99 | max | gaps > 50 ms | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    "| thread | path | frames | interval p50 | p95 | p99 | max | gaps > 50 ms | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ...rows.map((r) => `| ${r.thread} | ${r.path} | ${r.frames} | ${r.interval.map(ms).join(" | ")} | ${r.missed} | ` +
-      `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} |`),
+      `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} |`),
     "",
     "Times in ms. Interval: between frames reaching the page while the camera moves; render CPU: the frame's " +
       "`render` where it drew (the render worker in worker mode); long tasks: the page's, over 50 ms; idle after: " +
-      "from the path's end until the map's `idle` event.",
+      "from the path's end until the map's `idle` event; after: the frames and the page's long tasks from the path's end to " +
+      "`idle` (picking's publication at rest shows there).",
   ];
   return `${lines.join("\n")}\n`;
 }

@@ -62,6 +62,55 @@ struct PathResult {
     loading: usize,
     /// From the path's end until the map is idle.
     settle: Duration,
+    picking: Picking,
+}
+
+/// What publishing picking to a UI thread's index costs (decision 0024):
+/// the render thread's `Map::publish_hits` and the UI's `HitIndex::apply`
+/// after each frame, and a first hit test at rest.
+#[derive(Debug, Default)]
+struct Picking {
+    /// Over the path: publications, their total and largest time and bytes.
+    moving: Publishes,
+    /// From the path's end until idle.
+    settling: Publishes,
+    /// Hit tests at the centre at rest, through the UI's index: the first
+    /// and the next.
+    hit_test: Duration,
+    hit_test_again: Duration,
+}
+
+#[derive(Debug, Default)]
+struct Publishes {
+    count: usize,
+    publish: Duration,
+    publish_max: Duration,
+    apply: Duration,
+    apply_max: Duration,
+    bytes: usize,
+}
+
+impl Publishes {
+    fn publish(
+        &mut self,
+        map: &Map,
+        to: &mut orb_runtime::HitPublication,
+        index: &mut orb_runtime::HitIndex,
+    ) {
+        let started = clock::now();
+        let Some(bytes) = map.publish_hits(to) else {
+            return;
+        };
+        let published = clock::now();
+        index.apply(&bytes).expect("a publication applies");
+        let applied = clock::now();
+        self.count += 1;
+        self.publish += published - started;
+        self.publish_max = self.publish_max.max(published - started);
+        self.apply += applied - published;
+        self.apply_max = self.apply_max.max(applied - published);
+        self.bytes += bytes.len();
+    }
 }
 
 impl PathResult {
@@ -115,6 +164,10 @@ pub(crate) async fn run(
         progress(&format!("{}: loading its first view", path.name));
         let mut map = new_map((path.camera)(settings, 0.0))?;
         settle(gpu, &mut map, &render, &mut warnings).await?;
+        let mut to = orb_runtime::HitPublication::default();
+        let mut index = orb_runtime::HitIndex::default();
+        let mut picking = Picking::default();
+        Publishes::default().publish(&map, &mut to, &mut index);
         progress(&format!("{}: moving", path.name));
         let (mut cpu, mut peak_bytes, mut loading) = (Vec::new(), 0, 0);
         let started = clock::now();
@@ -127,6 +180,7 @@ pub(crate) async fn run(
                 Timing::WorkDone => gpu.finish().await,
             }
             cpu.push(time);
+            picking.moving.publish(&map, &mut to, &mut index);
             peak_bytes = peak_bytes.max(uploaded(gpu) - before);
             loading += usize::from(report.tiles_loading > 0);
             warnings.extend(map.take_warnings());
@@ -136,6 +190,7 @@ pub(crate) async fn run(
         let ended = clock::now();
         loop {
             let (report, _) = render(gpu, &mut map);
+            picking.settling.publish(&map, &mut to, &mut index);
             gpu.take_frames().await;
             warnings.extend(map.take_warnings());
             if report.idle {
@@ -147,6 +202,13 @@ pub(crate) async fn run(
             clock::sleep(FRAME).await;
         }
         gpu.take_frames().await;
+        let center = glam::DVec2::new(viewport.width / 2.0, viewport.height / 2.0);
+        let started = clock::now();
+        let _ = index.hit_test(center, map.camera(), viewport, &map.projection());
+        picking.hit_test = clock::now() - started;
+        let started = clock::now();
+        let _ = index.hit_test(center, map.camera(), viewport, &map.projection());
+        picking.hit_test_again = clock::now() - started;
         cpu.sort_unstable();
         paths.push(PathResult {
             name: path.name,
@@ -154,6 +216,7 @@ pub(crate) async fn run(
             peak_bytes,
             loading,
             settle: clock::now() - ended,
+            picking,
         });
     }
     warnings.sort();
@@ -210,8 +273,43 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "Times in ms of `Map::render` (applying arrived tiles, uploads, placement, picking, encoding); \
+            "Times in ms of `Map::render` (applying arrived tiles, uploads, placement, encoding); \
              settle: from the path's end until the map is idle."
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "| path | picking while moving: publications | publish total / max | apply total / max | MiB | \
+             while settling: publications | publish total / max | apply total / max | MiB | hit tests at rest: first / next |"
+        )?;
+        writeln!(out, "|---|---|---|---|---|---|---|---|---|---|")?;
+        for p in &self.paths {
+            let row = |p: &Publishes| {
+                format!(
+                    "{} | {} / {} | {} / {} | {:.2}",
+                    p.count,
+                    ms(p.publish),
+                    ms(p.publish_max),
+                    ms(p.apply),
+                    ms(p.apply_max),
+                    p.bytes as f64 / (1024.0 * 1024.0)
+                )
+            };
+            writeln!(
+                out,
+                "| {} | {} | {} | {} / {} |",
+                p.name,
+                row(&p.picking.moving),
+                row(&p.picking.settling),
+                ms(p.picking.hit_test),
+                ms(p.picking.hit_test_again)
+            )?;
+        }
+        writeln!(out)?;
+        writeln!(
+            out,
+            "Picking: `Map::publish_hits` on the render thread and `HitIndex::apply` on the UI's after each \
+             frame (a publication carries what changed: tiles, the drawn list, labels, the layer table)."
         )?;
         for warning in &self.warnings {
             writeln!(out, "- warning: {warning}")?;

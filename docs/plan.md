@@ -263,7 +263,7 @@ Lanes: MAIN [H + ui], RENDER-W [S], JOB-W k [J], PLACE-W [P] (dedicated when `ha
 9. **PLACE-W:** cross-tile matching → placement on the latest camera → symbol-state diff (u32 per symbol) + sort-key permutations → RENDER-W.
 10. **RENDER-W:** frame block + changed rows; diff applied (≤0.2 ms) → **one cull/compact dispatch** → replay the pass bundle (≈ one `drawIndirect` per node) → present.
 11. **GPU:** Cull/Compact → Prepare → Layer2D → Symbols → ViewAnnotations.
-12. **RENDER-W → MAIN:** frame ack `{generation, camera, viewport, hits revision}`; hit snapshot on request; accessibility delta.
+12. **RENDER-W → MAIN:** frame ack `{generation, camera, viewport}` with picking's changes (tiles, drawn list, labels, layer table; decision 0024); accessibility delta.
 
 Main-path messages: 4 (+2 per glyph batch), against 14–16 hops per uncached tile on Native Android [verified baseline]. Worker frames usually present one rAF later than main-thread rendering [reviewer-reported; measured in M3].
 
@@ -306,7 +306,7 @@ GL JS reloads every tile on a projection switch (`style.ts:1806-1811`); Native h
 
 | Role | Owned (apps, servers) | HostDriven (engines, XR; M9) | Web (default) | Inline |
 |---|---|---|---|---|
-| [H] | UI thread; reads snapshots | game thread | main: TS host, DOM, input, **ui role** of `core.wasm` (camera authority, gestures, sync project/unproject, hit snapshot, a11y mirror) | caller |
+| [H] | UI thread; reads snapshots | game thread | main: TS host, DOM, input, **ui role** of `core.wasm` (camera authority, gestures, sync project/unproject, hit index, a11y mirror) | caller |
 | [S] | one core thread | `runtime.poll(budget_us)` | **render worker** with the OffscreenCanvas, or main with `thread: "main"` | caller |
 | Target | = [S] or surface owner | engine render thread | = [S] | caller |
 | [J] | pool `min(cores − 1, 6)` | host `JobSink` or core pool | N workers `clamp(hardwareConcurrency − 2, 1, 4)`, ≤4 ms slices | inline |
@@ -658,7 +658,7 @@ A `columnar` source family: Arrow/GeoArrow batches (zero-copy natively with a re
 | GeoArrow batches | disposable ingest worker, one copy per shard | 1 |
 | Collision SoA + keys | placement worker | 1 |
 | Metadata, arena ranges, candidate lists, hit index | render worker wasm | 1 |
-| Camera, hit snapshot, a11y snapshot, elevation pyramid (M7) | ui role on main | 1 per update |
+| Camera, hit index, a11y snapshot, elevation pyramid (M7) | ui role on main | 1 per update |
 
 A SharedArrayBuffer build (opt-in, after M12) would remove the job → render copy and allow in-job cancellation; no target depends on it.
 
@@ -743,17 +743,19 @@ The M1 playground publishes non-symbol fill, line, circle and extrusion hit
 geometry with resident tile results, including promoted ids. `Map::hit_test`
 and `OrbisMap.hitTest(x, y)` synchronously read the last rendered frame in
 CSS pixels; camera and style mutations leave it intact until the next
-render. A frame only records the tiles it drew; the index projects their
-features into its pixels when something first picks from it (a hit test, a
-query or a snapshot), since projecting every feature took 20–30 ms of
-render-thread time per moving frame at Seattle z14 in Chrome. Frame
-acknowledgements carry a hits revision; the page's ui role asks the render
-worker for a snapshot when a hit test finds its own older, and before it
-emits `idle`, so `hitTest` is synchronous in both thread modes and exact
-after `idle`. Snapshots carry their camera, and points picked with a newer
-one map through the ground to the snapshot.
-[built at M3] Labels and icons the last placement commit shows join the
-index as their collision boxes (a line label as its anchor's circle).
+render. [built at M3, decision 0024] Picking does not depend on the camera.
+Tile jobs pack each node's features in tile-local data units with their
+bounds (`MeshHits`); a frame records the tiles it drew and their clip
+regions in world space; placement commits record the labels they show as
+world anchors with pixel boxes (a line label as its anchor's circle); and a
+layer table holds the paint that sets pixel tolerances. A query unprojects
+its point or box with its camera, culls by world bounds and projects only
+the candidates for the exact test. The render worker publishes these parts
+as they change (`Map::publish_hits`: tiles as they load, change or go, the
+drawn list, labels with commits, the layer table with the style), never for
+a camera move, and the page's ui role answers `hitTest` with the camera it
+has now: 0.2–0.3 ms per hit test on live Liberty, and 0.1–0.2 ms of
+publication at a gesture's end where a screen-space snapshot cost 52 ms.
 `Map::query_rendered` (the package's `queryRenderedFeatures`, a point or a
 box) takes the index's features, topmost first, and asks each tile's owner
 job worker for them: geometry and every property from its cached

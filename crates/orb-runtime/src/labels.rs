@@ -1139,16 +1139,16 @@ impl Labels {
         self.commits
     }
 
-    /// Picking hits for the labels and icons the last commit shows, their
-    /// collision boxes around anchors projected with `view` (issue #11).
-    /// Boxes are viewport-aligned, without variable-anchor shifts; a line
-    /// label is its anchor's collision circle's square.
-    pub(crate) fn screen_hits(
+    /// Picking hits for the labels and icons the last commit shows: their
+    /// anchors in world space and their collision boxes in pixels at the
+    /// anchor's scale (issue #11), for any camera to project. Boxes are
+    /// viewport-aligned, without variable-anchor shifts; a line label is
+    /// its anchor's collision circle's square.
+    pub(crate) fn label_hits(
         &self,
         plan: &StylePlan,
-        view: &orb_camera::View,
         planes: &BucketPlanes,
-    ) -> Vec<crate::query::ScreenHit> {
+    ) -> Vec<crate::query::LabelHit> {
         use orb_symbol::state;
         let Some(frame) = self.placed.as_deref() else {
             return Vec::new();
@@ -1160,14 +1160,13 @@ impl Labels {
                     .is_some_and(|&w| w & state::HIDDEN == 0 && w & state::PLACED != 0)
         };
         let period = planes.period;
-        let center_w = (view.view_proj() * glam::DVec4::new(0.0, 0.0, 0.0, 1.0)).w;
         let mut hits = Vec::new();
         for layer in &frame.layers {
-            let Some(node) = plan.node(layer.params.layer * 2) else {
+            let key = layer.params.layer * 2;
+            let Some(node) = plan.node(key) else {
                 continue;
             };
             let node = &plan.nodes[node];
-            let style_layer = &plan.style.layers[node.layer];
             for tile in &layer.tiles {
                 let Some(meshes) = self.buckets.get(&tile.bucket) else {
                     continue;
@@ -1186,61 +1185,31 @@ impl Labels {
                     if !(text || icon) {
                         continue;
                     }
+                    let boxes: Vec<[f64; 4]> = [(text, 0), (icon, 2)]
+                        .into_iter()
+                        .map(|(shown, i)| (shown, instance.boxes[i].map(f64::from)))
+                        .filter(|(shown, b)| *shown && !(b[0] == b[2] && b[1] == b[3]))
+                        .map(|(_, b)| b)
+                        .collect();
+                    let circle = (instance.flags
+                        & orb_symbol::instance_flags::RUNTIME_COLLISION_CIRCLES
+                        != 0)
+                        .then(|| f64::from(instance.collision_circle_diameter) / 2.0);
+                    if boxes.is_empty() && circle.is_none() {
+                        continue;
+                    }
                     let [ax, ay] = instance.anchor.map(f64::from);
-                    let world = to_world.transform_point2(glam::DVec2::new(ax, ay)) + shift;
-                    let relative = world - view.camera_world();
-                    let clip = view.view_proj() * relative.extend(0.0).extend(1.0);
-                    if clip.w <= 0.0 {
-                        continue;
-                    }
-                    let Some(anchor) = view.project(world) else {
-                        continue;
-                    };
-                    // GL JS: tile units at 512 px per tile side, scaled by
-                    // the perspective ratio.
-                    let scale = 512.0 / orb_symbol::EXTENT * (0.5 + 0.5 * center_w / clip.w);
-                    let mut bounds = [
-                        f64::INFINITY,
-                        f64::INFINITY,
-                        f64::NEG_INFINITY,
-                        f64::NEG_INFINITY,
-                    ];
-                    for (shown, i) in [(text, 0), (icon, 2)] {
-                        let b = instance.boxes[i].map(f64::from);
-                        if !shown || (b[0] == b[2] && b[1] == b[3]) {
-                            continue;
-                        }
-                        bounds = [
-                            bounds[0].min(anchor.x + b[0] * scale),
-                            bounds[1].min(anchor.y + b[1] * scale),
-                            bounds[2].max(anchor.x + b[2] * scale),
-                            bounds[3].max(anchor.y + b[3] * scale),
-                        ];
-                    }
-                    if !bounds.iter().all(|b| b.is_finite()) {
-                        // A line label collides by circles along its line;
-                        // its anchor's stands for them.
-                        if instance.flags & orb_symbol::instance_flags::RUNTIME_COLLISION_CIRCLES
-                            == 0
-                        {
-                            continue;
-                        }
-                        let r = f64::from(instance.collision_circle_diameter) / 2.0;
-                        bounds = [anchor.x - r, anchor.y - r, anchor.x + r, anchor.y + r];
-                    }
-                    let hit = crate::Hit {
-                        layer: style_layer.id.clone(),
-                        source: plan.sources[node.source].id.clone(),
-                        source_layer: plan.source_layer(node).map(str::to_string),
-                        id: None,
-                        generation: 0,
-                    };
-                    let key = crate::query::FeatureKey {
-                        source: node.source,
-                        tile: orb_crs::TileIndex::new(id.z, id.x, id.y),
-                        feature: instance.feature,
-                    };
-                    hits.push(crate::query::ScreenHit::label(hit, node.layer, key, bounds));
+                    hits.push(crate::query::LabelHit {
+                        node: key,
+                        key: crate::query::FeatureKey {
+                            source: plan.sources[node.source].key,
+                            tile: orb_crs::TileIndex::new(id.z, id.x, id.y),
+                            feature: instance.feature,
+                        },
+                        anchor: to_world.transform_point2(glam::DVec2::new(ax, ay)) + shift,
+                        boxes,
+                        circle,
+                    });
                 }
             }
         }

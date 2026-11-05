@@ -71,13 +71,11 @@ pub struct OrbisMap {
     format: TargetFormat,
     pixel_ratio: f64,
     worker_jobs: Arc<WorkerJobs>,
-    /// Sends picking snapshots for the page's ui role (the render worker;
-    /// on the page the map answers hit tests itself).
-    publishes_hits: bool,
-    /// The map's hits revision the last published snapshot showed.
-    hits_published: Option<u64>,
+    /// What picking the page's ui role has: in the render worker; on the
+    /// page the map answers hit tests itself.
+    hits: Option<orb_runtime::HitPublication>,
     /// The last frame's camera and how many frames in a row showed it, to
-    /// publish picking once it settles.
+    /// publish the elevation pyramid once it settles.
     last_camera: Option<(CameraState, u32)>,
     /// The terrain revision last published to the ui role.
     elevation_revision: u64,
@@ -95,10 +93,10 @@ pub struct FrameInfo {
     /// can follow the frame on screen.
     #[wasm_bindgen(readonly)]
     pub camera: Vec<f64>,
-    /// A picking snapshot for the page's [`UiRole`]: in the render worker,
-    /// once the camera settles on a changed index.
+    /// Picking's changes for the page's [`UiRole`], in the render worker
+    /// (`orb_runtime::Map::publish_hits`).
     #[wasm_bindgen(readonly)]
-    pub hit_snapshot: Option<Vec<u8>>,
+    pub hits: Option<Vec<u8>>,
     /// The terrain's elevation pyramid for the page's [`UiRole`] when it
     /// changed (empty: the terrain is gone), so its camera stands on the
     /// terrain (plan §7.1).
@@ -170,7 +168,7 @@ pub async fn create_map(
     let size = (canvas.width(), canvas.height());
     let target = wgpu::SurfaceTarget::Canvas(canvas);
     let mut map = create(target, size, &style_url, on_wake, job_workers, post, place).await?;
-    map.publishes_hits = false;
+    map.hits = None;
     Ok(map)
 }
 
@@ -268,8 +266,7 @@ async fn create(
         },
         pixel_ratio: 1.0,
         worker_jobs,
-        publishes_hits: true,
-        hits_published: None,
+        hits: Some(Default::default()),
         last_camera: None,
         elevation_revision: 0,
         elevation_age: 0,
@@ -471,25 +468,16 @@ impl OrbisMap {
         self.gpu.queue().present(frame);
         let uploaded = self.gpu.uploaded();
         let jobs = self.worker_jobs.stats();
-        // Picking publishes once the camera settles: a moving camera would
-        // build and send a snapshot every frame, and the ui role maps points
-        // through the ground meanwhile.
+        // Picking publishes what changed: tiles, the drawn list, labels and
+        // the layer table; camera moves alone publish nothing.
+        let hits = self.hits.as_mut().and_then(|to| self.map.publish_hits(to));
         let camera = *self.map.camera();
-        let revision = self.map.hits_revision();
         let still = match self.last_camera {
             Some((last, frames)) if last == camera => frames + 1,
             _ => 0,
         };
         self.last_camera = Some((camera, still));
-        // A gesture's camera can rest for a frame between inputs; a
-        // snapshot is worth sending once it has rested a few, and again
-        // once the map is idle: not every frame tiles arrive meanwhile.
         let settled = still == SETTLE_FRAMES || (still > 0 && report.idle);
-        let changed = self.hits_published != Some(revision);
-        let hit_snapshot = (self.publishes_hits && settled && changed).then(|| {
-            self.hits_published = Some(revision);
-            self.map.hit_snapshot()
-        });
         // The ui role's camera keeps above the terrain the pyramid shows,
         // and an animation ends on it, so it publishes while the camera
         // moves too: at once when the ui role has none, then at most every
@@ -506,7 +494,7 @@ impl OrbisMap {
         Ok(FrameInfo {
             zoom: self.map.zoom(),
             camera: ui::camera_array(&camera, &self.map.projection()),
-            hit_snapshot,
+            hits,
             elevation,
             meshes_uploaded: self.map.job_counts().meshes_uploaded,
             rows_uploaded: self.map.job_counts().rows_uploaded,
@@ -538,7 +526,8 @@ impl OrbisMap {
     }
 }
 
-/// Frames a camera rests before the render worker publishes picking.
+/// Frames a camera rests before the render worker publishes the
+/// elevation pyramid.
 const SETTLE_FRAMES: u32 = 3;
 
 /// How often, in frames, the elevation pyramid may publish while the camera

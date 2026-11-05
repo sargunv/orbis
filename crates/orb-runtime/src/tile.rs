@@ -65,7 +65,7 @@ pub(crate) struct Select<'a> {
 pub(crate) struct NodeMesh {
     /// The node's key.
     pub(crate) node: u32,
-    pub(crate) hits: Vec<crate::HitFeature>,
+    pub(crate) hits: crate::MeshHits,
     /// Data units per tile side.
     pub(crate) extent: u32,
     pub(crate) mesh: Mesh,
@@ -565,7 +565,7 @@ pub(crate) fn build(
                 .and_then(|key| layer.property(key)),
             _ => None,
         };
-        let hits = if matches!(
+        let hits: Vec<crate::HitFeature> = if matches!(
             node.family,
             Family::Fill | Family::Line | Family::Circle | Family::FillExtrusion
         ) {
@@ -646,7 +646,7 @@ pub(crate) fn build(
             Vec::new()
         };
         build.meshes.push(NodeMesh {
-            hits,
+            hits: crate::MeshHits::new(&hits),
             node: node.key,
             extent: if matches!(
                 node.family,
@@ -718,12 +718,13 @@ mod tests {
         };
         let result = build(&frame, &plan, 0, 0.0, None, Select::default(), no_symbols()).unwrap();
         let hits = |family| {
-            &result
+            result
                 .meshes
                 .iter()
                 .find(|m| plan.nodes[plan.node(m.node).unwrap()].family == family)
                 .unwrap()
                 .hits
+                .decode()
         };
         assert_eq!(hits(Family::Fill).len(), 1);
         assert_eq!(hits(Family::Line).len(), 2);

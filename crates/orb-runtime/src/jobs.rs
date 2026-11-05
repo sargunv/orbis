@@ -1390,7 +1390,7 @@ pub enum ImagePixels {
 /// One render node's share of a finished tile.
 #[derive(Debug)]
 pub struct ResultMesh {
-    pub hits: Vec<crate::HitFeature>,
+    pub hits: std::sync::Arc<crate::MeshHits>,
     /// The node's key.
     pub node: u32,
     pub extent: u32,
@@ -1428,7 +1428,7 @@ impl From<TileBuild> for TileResult {
                 .into_iter()
                 .map(|m| ResultMesh {
                     node: m.node,
-                    hits: m.hits,
+                    hits: std::sync::Arc::new(m.hits),
                     extent: m.extent,
                     chunks: m.mesh.chunks,
                     vertices: Stream::Core(m.mesh.vertices),
@@ -1480,32 +1480,8 @@ pub fn pack(build: &TileBuild) -> Vec<u8> {
     }
     header.push(build.meshes.len() as u32);
     for m in &build.meshes {
-        header.push(m.hits.len() as u32);
-        for h in &m.hits {
-            header.push(u32::from(h.id.is_some()));
-            if let Some(id) = &h.id {
-                write_text(&mut header, id);
-            }
-            header.extend([
-                h.feature,
-                h.kind,
-                h.extent,
-                h.radius.to_bits(),
-                h.stroke.to_bits(),
-                h.height.to_bits(),
-                h.base.to_bits(),
-                h.parts.len() as u32,
-            ]);
-            for part in &h.parts {
-                header.push(part.len() as u32);
-                for ring in part {
-                    header.push(ring.len() as u32);
-                    for point in ring {
-                        header.extend(point.map(|v| v as u32));
-                    }
-                }
-            }
-        }
+        header.push(m.hits.words().len() as u32);
+        header.extend_from_slice(m.hits.words());
         header.extend([
             m.node,
             m.extent,
@@ -1625,44 +1601,8 @@ pub fn unpack(header: &[u32], bytes: HostBytesId) -> Result<TileResult, String> 
     let mut offset = u64::from(header_len) * 4;
     let mut meshes = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let mut hits = Vec::new();
-        for _ in 0..next()? {
-            let id = if next()? != 0 {
-                Some(read_text(&mut next)?)
-            } else {
-                None
-            };
-            let feature = next()?;
-            let kind = next()?;
-            let extent = next()?;
-            let radius = f32::from_bits(next()?);
-            let stroke = f32::from_bits(next()?);
-            let height = f32::from_bits(next()?);
-            let base = f32::from_bits(next()?);
-            let mut parts = Vec::new();
-            for _ in 0..next()? {
-                let mut rings = Vec::new();
-                for _ in 0..next()? {
-                    let mut points = Vec::new();
-                    for _ in 0..next()? {
-                        points.push([next()? as i32, next()? as i32]);
-                    }
-                    rings.push(points);
-                }
-                parts.push(rings);
-            }
-            hits.push(crate::HitFeature {
-                id,
-                feature,
-                kind,
-                extent,
-                radius,
-                stroke,
-                height,
-                base,
-                parts,
-            });
-        }
+        let words = (0..next()?).map(|_| next()).collect::<Result<_, _>>()?;
+        let hits = std::sync::Arc::new(crate::MeshHits::from_words(words)?);
         let (node, extent, chunks, vertices, indices, props, row_words, maxima) = (
             next()?,
             next()?,
@@ -2115,7 +2055,7 @@ pub(crate) mod tests {
             ],
             meshes: vec![
                 NodeMesh {
-                    hits: vec![crate::HitFeature {
+                    hits: crate::MeshHits::new(&[crate::HitFeature {
                         id: Some("promoted é".into()),
                         feature: 7,
                         kind: 0,
@@ -2125,7 +2065,7 @@ pub(crate) mod tests {
                         height: 40.0,
                         base: 2.0,
                         parts: vec![vec![vec![[-3, 5], [30, 50], [30, 5]]]],
-                    }],
+                    }]),
                     node: 3,
                     extent: 4096,
                     mesh: Mesh {
@@ -2167,7 +2107,7 @@ pub(crate) mod tests {
                     state_ids: Some(vec![1, crate::tile::NO_ID, 0]),
                 },
                 NodeMesh {
-                    hits: Vec::new(),
+                    hits: crate::MeshHits::default(),
                     node: 4,
                     extent: 8192,
                     mesh: Mesh::default(),
@@ -2188,7 +2128,7 @@ pub(crate) mod tests {
             .collect();
         let result = unpack(&words, HostBytesId(7)).unwrap();
         assert_eq!(result.host_bytes, Some(HostBytesId(7)));
-        assert_eq!(result.meshes[0].hits, build.meshes[0].hits);
+        assert_eq!(*result.meshes[0].hits, build.meshes[0].hits);
         assert_eq!(result.warnings, build.warnings);
         assert_eq!(
             (result.revision, &result.nodes, &result.ids),

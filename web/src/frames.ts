@@ -33,7 +33,8 @@ export function frameLoop(frame: (now: number) => boolean, onError: (e: unknown)
 export interface FrameAck extends FrameStats {
   /** The frame's camera: [lon, lat, resolution, bearing, pitch, fov, zoom, elevation]. */
   camera: Float64Array;
-  hitSnapshot?: Uint8Array;
+  /** Picking's changes for the ui role (render worker). */
+  hits?: Uint8Array;
   /** The terrain's elevation pyramid when it changed; empty when it's gone. */
   elevation?: Uint8Array;
   /** The map's events since the last frame. */
@@ -55,7 +56,7 @@ export interface Renderer {
 
 /** The fields of core.wasm's `FrameInfo`. */
 export interface RenderInfo {
-  zoom: number; camera: Float64Array; hit_snapshot?: Uint8Array; elevation?: Uint8Array;
+  zoom: number; camera: Float64Array; hits?: Uint8Array; elevation?: Uint8Array;
   generation: number;
   meshes_uploaded: number; rows_uploaded: number; draws: number; dispatches: number;
   candidates: number; tiles_drawn: number; tiles_loading: number; bundle_recorded: boolean;
@@ -73,7 +74,7 @@ export function renderFrame(map: Renderer): FrameAck {
   const ack: FrameAck = {
     ms,
     camera: info.camera,
-    hitSnapshot: info.hit_snapshot,
+    hits: info.hits,
     elevation: info.elevation,
     events: map.takeEvents(),
     zoom: info.zoom,
