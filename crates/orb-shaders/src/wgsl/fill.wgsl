@@ -99,8 +99,12 @@ fn fill_vertex(v: Pulled) -> FillOut {
     out.pattern_pos = pos;
     out.images = pattern_ids(row, 4u, node.image_from, node.image_to, node.table_mask, node.pattern);
     // Translated geometry is clipped where it lands, as GL JS's stencil
-    // does.
-    out.tile_pos = pos + vec2<f32>(shift.x, -shift.y) / tile.scale;
+    // does on a plane; on a globe, where GL JS clips no tile, where it was,
+    // so a fill crossing tiles moves whole.
+    out.tile_pos = pos;
+    if frame.globe_amount <= 0.0 {
+        out.tile_pos += vec2<f32>(shift.x, -shift.y) / tile.scale;
+    }
     out.tile = v.tile;
     return out;
 }
