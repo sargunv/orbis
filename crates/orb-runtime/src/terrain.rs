@@ -17,9 +17,10 @@ use glam::DVec2;
 use orb_camera::View;
 use orb_crs::{CoveredTile, TileIndex, TileMatrixSet, WorldRect};
 use orb_render::{
-    ClipRect, DRAPE_SLOT_PX, DemRef, DrapeLayout, PageId, PlacementTarget, TerrainDem, TerrainTile,
-    TileRow,
+    ClipRect, DRAPE_SLOT_PX, DemRef, DrapeLayout, GpuTile, PageId, PlacementTarget, TerrainDem,
+    TerrainSlopes, TerrainTile, TileRow,
 };
+use orb_source::endpoint::TileEndpoint;
 use orb_source::{Draw, TilePyramid};
 use orb_tile::DemGrid;
 
@@ -355,13 +356,11 @@ impl Terrain {
             let bounds = tms.tile_bounds(tile.index);
             let origin = DVec2::new(bounds.min.x + f64::from(tile.wrap) * period, bounds.max.y)
                 - view.camera_world();
-            let dem = self.dem_for(tile.index).map(|(dem_tile, _)| {
-                let depth = tile.index.z - dem_tile.z;
-                let scale = 0.5f32.powi(i32::from(depth));
-                let d = |v: u32| (v - (v >> depth << depth)) as f32 * scale;
+            let dem = self.dem_for(tile.index).map(|(dem_tile, dem)| {
+                let (offset, scale) = within(tile.index, dem_tile);
                 TerrainDem {
-                    layer: self.pyramid.get(dem_tile).expect("ready").layer,
-                    offset: [d(tile.index.col), d(tile.index.row)],
+                    layer: dem.layer,
+                    offset,
                     scale,
                 }
             });
@@ -380,6 +379,52 @@ impl Terrain {
     pub(crate) fn slots_needed(&self) -> u32 {
         self.next_slot.max(self.tiles.len() as u32)
     }
+}
+
+/// Where `tile` lies in its ancestor (or itself) `at`: tile uv → `at`'s uv
+/// as `uv · scale + offset`.
+fn within(tile: TileIndex, at: TileIndex) -> ([f32; 2], f32) {
+    let depth = tile.z - at.z;
+    let scale = 0.5f32.powi(i32::from(depth));
+    let d = |v: u32| (v - (v >> depth << depth)) as f32 * scale;
+    ([d(tile.col), d(tile.row)], scale)
+}
+
+/// Where a hillshade the terrain shades reads the slopes over `tile`, a
+/// quarter of a terrain tile (decision 0019): the tile its source draws
+/// there, itself or an ancestor, as a slot would draw it; where the source
+/// draws deeper, the nearest resident tile at the quarter's zoom or above.
+/// None outside the source's bounds, as nothing draws there. The source's
+/// tiles are the surface's.
+pub(crate) fn slopes<T>(
+    (endpoint, pyramid): (&TileEndpoint, &TilePyramid<T>),
+    drawn: &HashSet<TileIndex>,
+    gpu: impl Fn(&T) -> GpuTile,
+    tile: TileIndex,
+) -> Option<TerrainSlopes> {
+    let start = scaled(tile, tile.z.min(pyramid.max_zoom()));
+    if !endpoint.contains(start) {
+        return None;
+    }
+    let found = |wanted: &dyn Fn(TileIndex) -> bool| {
+        let mut at = start;
+        loop {
+            if let Some(resident) = pyramid.get(at).filter(|_| wanted(at)) {
+                return Some((at, resident));
+            }
+            if at.z <= pyramid.min_zoom() {
+                return None;
+            }
+            at = at.parent()?;
+        }
+    };
+    let (at, resident) = found(&|at| drawn.contains(&at)).or_else(|| found(&|_| true))?;
+    let (offset, scale) = within(tile, at);
+    Some(TerrainSlopes {
+        tile: gpu(resident),
+        offset,
+        scale,
+    })
 }
 
 /// `tile`'s ancestor (or itself) at zoom `z ≤ tile.z`.

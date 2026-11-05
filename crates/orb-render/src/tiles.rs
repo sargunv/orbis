@@ -26,6 +26,7 @@ use orb_scene::{
 
 use crate::Renderer;
 use crate::image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
+use crate::terrain::{SHADE_WORDS, TerrainSlopes};
 
 /// A tile the renderer holds, from an upload; [`Renderer::release_tile`]
 /// frees it.
@@ -192,6 +193,29 @@ impl Tiles {
     /// The page of a source with image tiles.
     pub(crate) fn page(&self, source: u32) -> Option<PageId> {
         self.sources.get(&source).map(|s| s.page)
+    }
+
+    /// A shaded hillshade's words for a terrain tile reading `slopes`
+    /// (`terrain_shade.wgsl`'s `ShadeTile`): its offset, the slope tile's
+    /// latitudes, its scale and layer, or no layer.
+    pub(crate) fn shade_words(&self, slopes: Option<TerrainSlopes>) -> [u32; SHADE_WORDS] {
+        let found = slopes.and_then(|s| {
+            let entry = self.entries.get(s.tile.0 as usize)?.as_ref()?;
+            Some((s, entry.image.as_ref()?.layer, entry.key.tile))
+        });
+        let Some((s, layer, tile)) = found else {
+            return [0, 0, 0, 0, 0, u32::MAX];
+        };
+        let [top, bottom] = [tile.row, tile.row + 1].map(|row| latitude(tile.z, row));
+        let f = f32::to_bits;
+        [
+            f(s.offset[0]),
+            f(s.offset[1]),
+            f(top),
+            f(bottom),
+            f(s.scale),
+            layer,
+        ]
     }
 
     fn layer_of(&self, source: u32, tile: TileIndex) -> Option<u32> {

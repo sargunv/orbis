@@ -3,17 +3,19 @@
 //! texture (decision 0019).
 //!
 //! Each terrain tile has a block of drape slots, one per drape stack (a run
-//! of draped layers between layers that draw in 3D or on screen). Slots are
-//! squares of one mipmapped atlas. A frame redraws only the slots the
-//! runtime marks: their drape placements, the draped nodes' only
-//! candidates, map them into the atlas, so one pass redraws them all,
-//! replaying a bundle of the draped nodes per drape zoom among them, then
-//! a compute pass downsamples their mip levels. Each stack's terrain draws into a layer of its own with the depth
-//! extrusions share, composited in the map at the stack's place.
+//! of draped layers between layers that draw in 3D or on screen, or a
+//! hillshade the terrain shades). Slots are squares of one mipmapped
+//! atlas. A frame redraws only the slots the runtime marks: their drape
+//! placements, the draped nodes' only candidates, map them into the atlas,
+//! so one pass redraws them all, replaying a bundle of the draped nodes per
+//! drape zoom among them, then a compute pass downsamples their mip
+//! levels. Each terrain layer (a stack, or two around a hillshade shaded
+//! between them from the frame's bearing) draws into a texture of its own
+//! with the depth extrusions share, composited in the map at its place.
 
 use crate::TargetFormat;
 use orb_hal::*;
-use orb_shaders::{DRAPE_SHADER, TERRAIN_SHADER};
+use orb_shaders::{DRAPE_SHADER, Shader, TERRAIN_SHADE_SHADER, TERRAIN_SHADER};
 
 use crate::offscreen::{Composite, Composites, Mode, Target};
 
@@ -29,8 +31,12 @@ pub const TERRAIN_GRID: u32 = 128;
 /// Terrain units per tile side (`terrain.wgsl`'s `TERRAIN_EXTENT`).
 pub const TERRAIN_EXTENT: f32 = 8192.0;
 const NO_DEM: u32 = u32::MAX;
+const NONE: u32 = u32::MAX;
 const TILE_WORDS: usize = 14;
 const PARAM_WORDS: usize = 12;
+/// Words per terrain tile of a shaded hillshade (`terrain_shade.wgsl`'s
+/// `ShadeTile`).
+pub(crate) const SHADE_WORDS: usize = 6;
 /// Uniform slices are 256-byte aligned on every backend.
 const UNIFORM_STRIDE: u64 = 256;
 
@@ -57,6 +63,26 @@ pub struct TerrainTile {
     pub slot: u32,
     /// On a globe, where it lies on the sphere.
     pub globe: Option<TerrainGlobe>,
+}
+
+/// What one terrain draw composites in the map: a stack's slots, or the
+/// stacks below and above a hillshade it shades between them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TerrainLayer {
+    pub(crate) below: Option<u8>,
+    /// The hillshade node, which draws no slots.
+    pub(crate) shade: Option<u32>,
+    pub(crate) above: Option<u8>,
+}
+
+/// Where a shaded hillshade reads a quarter of a terrain tile's slopes: an
+/// image tile of its source, and the quarter's uv → that tile's uv as
+/// `uv · scale + offset`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerrainSlopes {
+    pub tile: crate::GpuTile,
+    pub offset: [f32; 2],
+    pub scale: f32,
 }
 
 /// A terrain tile on a globe (decision 0030's surface): its patches in
@@ -116,7 +142,7 @@ struct Atlas {
     level_uniforms: BufferId,
 }
 
-/// A stack's terrain layer and its composite into the map.
+/// A terrain layer's texture and its composite into the map.
 #[derive(Debug)]
 struct StackTarget {
     target: Target,
@@ -128,10 +154,12 @@ pub(crate) struct Terrain {
     target: TargetFormat,
     layout: BindGroupLayoutId,
     stack_layout: BindGroupLayoutId,
+    /// A shaded hillshade's node group: its image node's.
+    shade_layout: BindGroupLayoutId,
     clear_layout: BindGroupLayoutId,
     mip_layout: BindGroupLayoutId,
-    /// At one sample and at four.
-    pipelines: [Option<RenderPipelineId>; 2],
+    /// Draping and shading, each at one sample and at four.
+    pipelines: [[Option<RenderPipelineId>; 2]; 2],
     clear: RenderPipelineId,
     downsample: ComputePipelineId,
     grid: BufferId,
@@ -141,8 +169,12 @@ pub(crate) struct Terrain {
     tile_capacity: u32,
     tile_count: u32,
     params: BufferId,
-    /// Each stack's group over its slice of `stack_uniforms`, made for as
-    /// many stacks as the style has.
+    /// Shaded hillshades' slope tiles, each's for every terrain tile.
+    shade_tiles: BufferId,
+    shade_capacity: u64,
+    /// The terrain layers, and each's group over its slice of
+    /// `stack_uniforms`, made for as many as the style has.
+    layers: Vec<TerrainLayer>,
     stack_groups: Vec<BindGroupId>,
     stack_uniforms: Option<BufferId>,
     linear: SamplerId,
@@ -150,7 +182,8 @@ pub(crate) struct Terrain {
     layout_state: DrapeLayout,
     /// The DEM page texture and revision the group binds.
     dem: Option<(TextureId, u32)>,
-    group: Option<BindGroupId>,
+    /// The group, and the frame and property buffers it binds.
+    group: Option<(BindGroupId, [BufferId; 2])>,
     targets: Vec<StackTarget>,
     /// The terrain's depth as a colour, and the depth it's drawn with: what
     /// hides symbols and circles (#40).
@@ -186,7 +219,14 @@ fn texture(binding: u32, visibility: ShaderStages, filterable: bool) -> BindGrou
 }
 
 impl Terrain {
-    pub(crate) fn new(gpu: &mut dyn Gpu, target: TargetFormat, atmosphere: BufferId) -> Self {
+    /// Terrain drawn into `target`, fogged by `atmosphere`, shading
+    /// hillshades through image node groups of `shade_layout`.
+    pub(crate) fn new(
+        gpu: &mut dyn Gpu,
+        target: TargetFormat,
+        atmosphere: BufferId,
+        shade_layout: BindGroupLayoutId,
+    ) -> Self {
         let vs = ShaderStages::VERTEX;
         let fs = ShaderStages::FRAGMENT;
         let vf = vs | fs;
@@ -219,11 +259,16 @@ impl Terrain {
                 uniform(7, vf),
                 // The scene's property arena: globe patches.
                 storage(8),
+                BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: fs,
+                    ty: BindingType::Storage { read_only: true },
+                },
             ],
         });
         let stack_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
-            label: "terrain stack",
-            entries: &[uniform(0, vs)],
+            label: "terrain layer",
+            entries: &[uniform(0, fs)],
         });
         let clear_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
             label: "drape clear",
@@ -318,9 +363,10 @@ impl Terrain {
             target,
             layout,
             stack_layout,
+            shade_layout,
             clear_layout,
             mip_layout,
-            pipelines: [None; 2],
+            pipelines: [[None; 2]; 2],
             clear,
             downsample,
             grid: grid_buffer,
@@ -334,6 +380,13 @@ impl Terrain {
             tile_capacity: 64,
             tile_count: 0,
             params,
+            shade_tiles: gpu.create_buffer(&BufferDesc {
+                label: "terrain shade tiles",
+                size: 64 * SHADE_WORDS as u64 * 4,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            }),
+            shade_capacity: 64,
+            layers: Vec::new(),
             stack_groups: Vec::new(),
             stack_uniforms: None,
             linear,
@@ -362,45 +415,78 @@ impl Terrain {
         self.layout_state
     }
 
-    /// Groups for `stacks` stacks, each binding its index.
-    fn ensure_stacks(&mut self, gpu: &mut dyn Gpu, stacks: u32) {
-        if self.stack_groups.len() >= stacks as usize {
+    /// This frame's terrain layers: each gets a group binding what it
+    /// draws, and a texture once sized.
+    pub(crate) fn set_layers(&mut self, gpu: &mut dyn Gpu, layers: &[TerrainLayer]) {
+        if self.layers == layers {
             return;
         }
-        let count = stacks.next_power_of_two().max(4);
-        for group in self.stack_groups.drain(..) {
-            gpu.destroy_bind_group(group);
-        }
-        if let Some(buffer) = self.stack_uniforms.take() {
-            gpu.destroy_buffer(buffer);
-        }
-        let buffer = gpu.create_buffer(&BufferDesc {
-            label: "terrain stacks",
-            size: UNIFORM_STRIDE * u64::from(count),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
-        let mut words = vec![0u32; (UNIFORM_STRIDE / 4 * u64::from(count)) as usize];
-        for stack in 0..count {
-            words[(UNIFORM_STRIDE / 4 * u64::from(stack)) as usize] = stack;
-        }
-        gpu.write_buffer(buffer, 0, bytemuck::cast_slice(&words));
-        self.stack_groups = (0..count)
-            .map(|stack| {
-                gpu.create_bind_group(&BindGroupDesc {
-                    label: "terrain stack",
-                    layout: self.stack_layout,
-                    entries: &[BindGroupEntry {
-                        binding: 0,
-                        resource: BindingResource::Buffer {
-                            buffer,
-                            offset: UNIFORM_STRIDE * u64::from(stack),
-                            size: Some(16),
-                        },
-                    }],
+        let count = (layers.len() as u32).next_power_of_two().max(4);
+        if self.stack_groups.len() < count as usize {
+            for group in self.stack_groups.drain(..) {
+                gpu.destroy_bind_group(group);
+            }
+            if let Some(buffer) = self.stack_uniforms.take() {
+                gpu.destroy_buffer(buffer);
+            }
+            let buffer = gpu.create_buffer(&BufferDesc {
+                label: "terrain layers",
+                size: UNIFORM_STRIDE * u64::from(count),
+                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            });
+            self.stack_groups = (0..count)
+                .map(|layer| {
+                    gpu.create_bind_group(&BindGroupDesc {
+                        label: "terrain layer",
+                        layout: self.stack_layout,
+                        entries: &[BindGroupEntry {
+                            binding: 0,
+                            resource: BindingResource::Buffer {
+                                buffer,
+                                offset: UNIFORM_STRIDE * u64::from(layer),
+                                size: Some(16),
+                            },
+                        }],
+                    })
                 })
-            })
-            .collect();
-        self.stack_uniforms = Some(buffer);
+                .collect();
+            self.stack_uniforms = Some(buffer);
+        }
+        let buffer = self.stack_uniforms.expect("made above");
+        let mut shades = 0;
+        for (i, layer) in layers.iter().enumerate() {
+            let stack = |s: Option<u8>| s.map_or(NONE, u32::from);
+            let shade = layer.shade.map_or(NONE, |_| {
+                shades += 1;
+                shades - 1
+            });
+            let words = [stack(layer.below), stack(layer.above), shade, 0];
+            gpu.write_buffer(
+                buffer,
+                UNIFORM_STRIDE * i as u64,
+                bytemuck::cast_slice(&words),
+            );
+        }
+        self.layers = layers.to_vec();
+    }
+
+    /// The shaded hillshades' slope tiles: [`SHADE_WORDS`] per quarter of
+    /// a terrain tile, each hillshade's after the one before.
+    pub(crate) fn set_shade_tiles(&mut self, gpu: &mut dyn Gpu, words: &[u32]) {
+        let entries = (words.len() / SHADE_WORDS) as u64;
+        if entries > self.shade_capacity {
+            gpu.destroy_buffer(self.shade_tiles);
+            self.shade_capacity = entries.next_power_of_two();
+            self.shade_tiles = gpu.create_buffer(&BufferDesc {
+                label: "terrain shade tiles",
+                size: self.shade_capacity * SHADE_WORDS as u64 * 4,
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            });
+            self.forget_group(gpu);
+        }
+        if !words.is_empty() {
+            gpu.write_buffer(self.shade_tiles, 0, bytemuck::cast_slice(words));
+        }
     }
 
     /// Makes room for `tile_slots` blocks of `stacks` slots. A new atlas
@@ -413,7 +499,6 @@ impl Terrain {
         stacks: u32,
     ) -> Result<(), crate::OutOfSpace> {
         let stacks = stacks.max(1);
-        self.ensure_stacks(gpu, stacks);
         let state = self.layout_state;
         if self.atlas.is_some() && state.stacks == stacks && state.tile_slots >= tile_slots {
             return Ok(());
@@ -543,7 +628,7 @@ impl Terrain {
     }
 
     fn forget_group(&mut self, gpu: &mut dyn Gpu) {
-        if let Some(group) = self.group.take() {
+        if let Some((group, _)) = self.group.take() {
             gpu.destroy_bind_group(group);
         }
     }
@@ -613,6 +698,7 @@ impl Terrain {
             gpu.write_buffer(self.tiles, 0, bytemuck::cast_slice(&words));
         }
         self.tile_count = tiles.len() as u32;
+        gpu.write_buffer(self.params, 40, bytemuck::bytes_of(&self.tile_count));
     }
 
     /// Writes the frame's terrain values for a DEM page of `dim`-texel
@@ -638,11 +724,12 @@ impl Terrain {
         words[7] = state.stacks;
         words[8] = state.columns;
         words[9] = f(DRAPE_SLOT_PX as f32);
+        words[10] = self.tile_count;
         gpu.write_buffer(self.params, 0, bytemuck::cast_slice(&words));
         self.paint = Some(paint);
     }
 
-    /// Sizes the stacks' layers to the target.
+    /// Sizes the terrain layers' textures to the target.
     /// Returns whether they changed.
     pub(crate) fn resize(
         &mut self,
@@ -651,10 +738,10 @@ impl Terrain {
         size: [u32; 2],
         samples: u32,
     ) -> bool {
-        let stacks = self.layout_state.stacks as usize;
+        let layers = self.layers.len();
         if self.target_size == size
             && self.target_samples == samples
-            && self.targets.len() == stacks
+            && self.targets.len() == layers
         {
             return false;
         }
@@ -691,7 +778,7 @@ impl Terrain {
         ]);
         self.target_size = size;
         self.target_samples = samples;
-        for _ in 0..stacks {
+        for _ in 0..layers {
             let target = Target::new(gpu, "terrain layer", &[self.target.color], size, samples);
             let composite = composites.composite(gpu, target.texture(0), None, Mode::Over, 1.0);
             self.targets.push(StackTarget { target, composite });
@@ -699,26 +786,28 @@ impl Terrain {
         true
     }
 
-    /// Stack `stack`'s composite into the map, for the main bundle.
-    /// The colour texture stack `stack`'s terrain layer draws into, once
-    /// sized.
-    pub(crate) fn stack_texture(&self, stack: u32) -> Option<TextureId> {
-        Some(self.targets.get(stack as usize)?.target.texture(0))
+    /// The colour texture terrain layer `layer` draws into, once sized.
+    pub(crate) fn layer_texture(&self, layer: u8) -> Option<TextureId> {
+        Some(self.targets.get(usize::from(layer))?.target.texture(0))
     }
 
-    /// Stack `stack`'s composite into the map, once sized.
-    pub(crate) fn stack_composite(&self, stack: u32) -> Option<&Composite> {
-        Some(&self.targets.get(stack as usize)?.composite)
+    /// Terrain layer `layer`'s composite into the map, once sized.
+    pub(crate) fn layer_composite(&self, layer: u8) -> Option<&Composite> {
+        Some(&self.targets.get(usize::from(layer))?.composite)
     }
 
     /// Whether every terrain pipeline at the current sample count
     /// compiled, making the one for it if needed. Until then terrain draws
     /// nothing.
     pub(crate) fn ready(&mut self, gpu: &mut dyn Gpu) -> bool {
-        let pipeline = self.pipeline(gpu, self.target_samples.max(1));
+        let samples = self.target_samples.max(1);
+        let pipeline = self.pipeline(gpu, samples, false);
+        let shaded = (self.layers.iter().any(|l| l.shade.is_some()))
+            .then(|| self.pipeline(gpu, samples, true));
         let occlusion = self.occlusion.map(|_| self.occlusion_pipeline(gpu));
         [pipeline.into(), self.clear.into(), self.downsample.into()]
             .into_iter()
+            .chain(shaded.map(PipelineId::from))
             .chain(occlusion.map(PipelineId::from))
             .all(|p| gpu.pipeline_ready(p))
     }
@@ -728,6 +817,7 @@ impl Terrain {
         out.extend(
             self.pipelines
                 .iter()
+                .flatten()
                 .flatten()
                 .map(|&p| PipelineId::from(p)),
         );
@@ -742,26 +832,36 @@ impl Terrain {
         self.pending_zooms.clear();
     }
 
-    fn pipeline(&mut self, gpu: &mut dyn Gpu, samples: u32) -> RenderPipelineId {
-        let slot = usize::from(samples > 1);
-        if let Some(pipeline) = self.pipelines[slot] {
+    /// The pipeline terrain layers draw with at `samples`: shading a
+    /// hillshade or not.
+    fn pipeline(&mut self, gpu: &mut dyn Gpu, samples: u32, shaded: bool) -> RenderPipelineId {
+        let slot = &mut self.pipelines[usize::from(shaded)][usize::from(samples > 1)];
+        if let Some(pipeline) = *slot {
             return pipeline;
         }
+        let (shader, layouts): (&Shader, &[_]) = if shaded {
+            (
+                &TERRAIN_SHADE_SHADER,
+                &[self.layout, self.stack_layout, self.shade_layout],
+            )
+        } else {
+            (&TERRAIN_SHADER, &[self.layout, self.stack_layout])
+        };
         let module = gpu.create_shader_module(&ShaderModuleDesc {
-            label: TERRAIN_SHADER.label,
-            source: ShaderSource::Wgsl(TERRAIN_SHADER.source().into()),
+            label: shader.label,
+            source: ShaderSource::Wgsl(shader.source().into()),
         });
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
-            label: TERRAIN_SHADER.label,
-            bind_group_layouts: &[self.layout, self.stack_layout],
+            label: shader.label,
+            bind_group_layouts: layouts,
             vertex: ShaderStage {
                 module,
-                entry_point: TERRAIN_SHADER.vertex,
+                entry_point: shader.vertex,
                 constants: &[],
             },
             fragment: ShaderStage {
                 module,
-                entry_point: TERRAIN_SHADER.fragment,
+                entry_point: shader.fragment,
                 constants: &[],
             },
             targets: &[ColorTargetState {
@@ -777,18 +877,19 @@ impl Terrain {
             cull_mode: None,
             sample_count: samples,
         });
-        self.pipelines[slot] = Some(pipeline);
+        self.pipelines[usize::from(shaded)][usize::from(samples > 1)] = Some(pipeline);
         pipeline
     }
 
     /// This frame's passes before the map: redrawn drape slots (`drape`
     /// draws the draped nodes into level 0), their mip levels, and each
-    /// stack's terrain into its layer, the first clearing `depth`.
+    /// terrain layer into its texture, the first clearing `depth`. A layer
+    /// shades its hillshade where `shades` has the node's group.
     pub(crate) fn passes(
         &mut self,
         gpu: &mut dyn Gpu,
         (frame, props): (BufferId, BufferId),
-        drape: &[RenderBundleId],
+        (drape, shades): (&[RenderBundleId], &[Option<BindGroupId>]),
         (depth, depth_store): (TextureId, StoreOp),
         passes: &mut Vec<Pass>,
     ) -> u32 {
@@ -858,8 +959,12 @@ impl Terrain {
             self.pending_zooms.clear();
         }
         let atlas_texture = atlas.texture;
+        if self.group.is_some_and(|(_, bound)| bound != [frame, props]) {
+            // The scene's buffers grew.
+            self.forget_group(gpu);
+        }
         let group = match self.group {
-            Some(group) => group,
+            Some((group, _)) => group,
             None => {
                 let group = gpu.create_bind_group(&BindGroupDesc {
                     label: "terrain",
@@ -907,22 +1012,33 @@ impl Terrain {
                             binding: 8,
                             resource: BindingResource::buffer(props),
                         },
+                        BindGroupEntry {
+                            binding: 9,
+                            resource: BindingResource::buffer(self.shade_tiles),
+                        },
                     ],
                 });
-                self.group = Some(group);
+                self.group = Some((group, [frame, props]));
                 group
             }
         };
         let occlusion_pipeline = self.occlusion.map(|_| self.occlusion_pipeline(gpu));
-        let pipeline = self.pipeline(gpu, self.target_samples.max(1));
-        let draw = |pipeline, stack_group| {
-            vec![
+        let samples = self.target_samples.max(1);
+        let pipelines = [false, true].map(|shaded| {
+            let wanted = shaded && shades.iter().any(Option::is_some);
+            (!shaded || wanted).then(|| self.pipeline(gpu, samples, shaded))
+        });
+        let draw = |pipeline, layer_group, shade: Option<BindGroupId>| {
+            let mut commands = vec![
                 RenderCommand::SetPipeline(pipeline),
                 RenderCommand::SetBindGroup { index: 0, group },
                 RenderCommand::SetBindGroup {
                     index: 1,
-                    group: stack_group,
+                    group: layer_group,
                 },
+            ];
+            commands.extend(shade.map(|group| RenderCommand::SetBindGroup { index: 2, group }));
+            commands.extend([
                 RenderCommand::SetIndexBuffer {
                     buffer: self.grid_indices,
                     format: IndexFormat::Uint32,
@@ -933,10 +1049,11 @@ impl Terrain {
                     base_vertex: 0,
                     instances: 0..self.tile_count,
                 },
-            ]
+            ]);
+            commands
         };
         // The terrain's depth first, for what it hides.
-        if let (Some([color, occlusion_depth]), Some(&stack_group), Some(occlusion_pipeline)) = (
+        if let (Some([color, occlusion_depth]), Some(&layer_group), Some(occlusion_pipeline)) = (
             self.occlusion,
             self.stack_groups.first(),
             occlusion_pipeline,
@@ -954,24 +1071,26 @@ impl Terrain {
                     load: LoadOp::Clear(0.0),
                     store: StoreOp::Discard,
                 }),
-                commands: draw(occlusion_pipeline, stack_group),
+                commands: draw(occlusion_pipeline, layer_group, None),
             }));
             draws += 1;
         }
-        for (stack, target) in self.targets.iter().enumerate() {
+        for (layer, target) in self.targets.iter().enumerate() {
+            let shade = shades.get(layer).copied().flatten();
+            let pipeline = pipelines[usize::from(shade.is_some())].expect("made above");
             passes.push(Pass::Render(RenderPass {
                 label: "terrain".into(),
                 color: Some(target.target.attachment(0, LoadOp::Clear([0.0; 4]))),
                 depth: Some(DepthAttachment {
                     target: depth,
-                    load: if stack == 0 {
+                    load: if layer == 0 {
                         LoadOp::Clear(0.0)
                     } else {
                         LoadOp::Load
                     },
                     store: depth_store,
                 }),
-                commands: draw(pipeline, self.stack_groups[stack]),
+                commands: draw(pipeline, self.stack_groups[layer], shade),
             }));
             draws += 1;
         }

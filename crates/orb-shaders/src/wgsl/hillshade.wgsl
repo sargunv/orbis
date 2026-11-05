@@ -1,6 +1,9 @@
-// Hillshade layers, after GL JS's `hillshade` fragment shader. The node's
-// texture array holds each tile's slopes from the DEM prepare pass
-// (`prepare.wgsl`): (dim + 2)² texels, a one-texel border around the tile.
+// Hillshade methods, after GL JS's `hillshade` fragment shader, over a
+// `node: HillshadeNode` the shader binds: the hillshade layer's
+// (`hillshade_layer.wgsl`), or one the terrain pass shades
+// (`terrain_shade.wgsl`). Slopes come from the DEM prepare pass
+// (`prepare_slope.wgsl`): (dim + 2)² texels a tile, a one-texel border
+// around it, as 8-bit derivatives about 128/255.
 
 const PI: f32 = 3.141592653589793;
 // The most light sources a node holds.
@@ -29,13 +32,6 @@ struct HillshadeNode {
     _pad1: u32,
     _pad2: u32,
 };
-
-@group(1) @binding(0) var<uniform> node: HillshadeNode;
-
-@vertex
-fn vs_hillshade(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> ImageOut {
-    return image_vertex(node.index, instance, index);
-}
 
 fn get_aspect(deriv: vec2<f32>) -> f32 {
     if deriv.x != 0.0 {
@@ -131,22 +127,11 @@ fn combined_hillshade(d: vec2<f32>) -> vec4<f32> {
     return node.shadows[0] * shade + node.highlights[0] * highlight;
 }
 
-@fragment
-fn fs_hillshade(in: ImageOut) -> @location(0) vec4<f32> {
-    if image_clipped(in) {
-        discard;
-    }
-    let v_pos = image_pos(in) / IMAGE_EXTENT;
-    let size = vec2<f32>(textureDimensions(images));
-    let pixel = sample_image(in, (v_pos * (size - 2.0) + 1.0) / size, node.nearest);
-
-    // Slopes shrink by the cosine of the latitude, for Mercator's
-    // stretching (GL JS #4807).
-    let lat_top = in.latitudes.x;
-    let lat_bottom = in.latitudes.y;
-    let scale_factor = cos(radians((lat_top - lat_bottom) * (1.0 - v_pos.y) + lat_bottom));
-    let deriv = (pixel.rg - 128.0 / 255.0) * 8.0 / scale_factor;
-
+// The shade of slopes `pixel` (the prepared texel) at `latitude` degrees.
+// Slopes shrink by the cosine of the latitude, for Mercator's stretching
+// (GL JS #4807).
+fn hillshade_color(pixel: vec4<f32>, latitude: f32) -> vec4<f32> {
+    let deriv = (pixel.rg - 128.0 / 255.0) * 8.0 / cos(radians(latitude));
     switch node.method {
         case BASIC: {
             return basic_hillshade(deriv);

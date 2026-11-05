@@ -104,6 +104,7 @@ mod tests {
             COMPOSITE_OVER_SHADER,
             COMPOSITE_REPLACE_SHADER,
             TERRAIN_SHADER,
+            TERRAIN_SHADE_SHADER,
             DRAPE_SHADER,
             EXTRUSION_SHADER,
             EXTRUSION_CASTER_SHADER,

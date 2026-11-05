@@ -132,8 +132,8 @@ pub(crate) fn drape(
             .filter(|(_, n)| n.family.is_draped())
         {
             let layer = &plan.style.layers[node.layer];
-            let paint = layer
-                .is_visible_at(at.zoom)
+            // A shaded hillshade draws no slots.
+            let paint = (layer.is_visible_at(at.zoom) && !renderer.shades_on_terrain(index as u32))
                 .then(|| node_paint(gpu, renderer, (style, plan), index as u32, at, atlas))
                 .flatten();
             turns |= paint.is_some() && turns_with_bearing(layer, at.zoom);
@@ -408,7 +408,8 @@ fn write_paint(
 }
 
 /// Whether a layer drawn at `zoom` turns with the map's bearing: a
-/// viewport-anchored hillshade's light, or a viewport-anchored translate.
+/// viewport-anchored hillshade's light (one the terrain doesn't shade), or
+/// a viewport-anchored translate.
 fn turns_with_bearing(l: &orb_style::Layer, zoom: f64) -> bool {
     let translates = |px: orb_style::Key<[f32; 2]>, anchor: orb_style::Key<TranslateAnchor>| {
         l.get(anchor).evaluate(zoom) == TranslateAnchor::Viewport

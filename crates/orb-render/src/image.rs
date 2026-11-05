@@ -127,7 +127,7 @@ struct Page {
     targets: Option<prepare::Targets>,
 }
 
-/// A raster page's mip bindings, for one revision of its texture: views of
+/// A raster page's or DEM slopes' mip bindings, for one revision of its texture: views of
 /// each level and a group per level that reads the one above.
 #[derive(Debug)]
 struct Mips {
@@ -361,6 +361,11 @@ impl Images {
         })
     }
 
+    /// The bind group layout of raster and hillshade nodes' groups.
+    pub(crate) fn image_layout(&self) -> BindGroupLayoutId {
+        self.image_layout
+    }
+
     pub(crate) fn pipeline(&self, family: Family) -> Option<RenderPipelineId> {
         self.pipelines.get(family)
     }
@@ -372,8 +377,9 @@ impl Images {
         }
     }
 
-    /// Whether raster tiles have their mip levels: the pipeline that makes
-    /// them compiled, or no raster page needs it. Raster nodes wait for it.
+    /// Whether raster tiles and DEM slopes have their mip levels: the
+    /// pipeline that makes them compiled, or no page needs it. Raster nodes
+    /// and shaded hillshades wait for it.
     pub(crate) fn mips_ready(&self, gpu: &mut dyn Gpu) -> bool {
         self.mips.is_none_or(|p| gpu.pipeline_ready(p.into()))
     }
@@ -419,21 +425,31 @@ impl Images {
         if kind == PageKind::Dem {
             self.make_prepare(gpu);
         }
-        if kind == PageKind::Raster && gpu.caps().tier == Tier::Modern && self.mips.is_none() {
+        if gpu.caps().tier == Tier::Modern && self.mips.is_none() {
             self.mips = Some(compute_pipeline(gpu, &IMAGE_MIPS_SHADER, self.mips_layout));
         }
+        let levels = |border: u32| 32 - (width.max(height) + 2 * border).max(1).leading_zeros();
         let textures = match kind {
             // Mipmapped on Modern (#3), whose compute pass makes the levels.
             PageKind::Raster if self.mips.is_some() => vec![PageTexture {
                 usage: uploaded | TextureUsages::STORAGE_BINDING,
-                mip_levels: 32 - width.max(height).max(1).leading_zeros(),
+                mip_levels: levels(0),
                 ..texture("raster tiles", 0, uploaded)
             }],
             PageKind::Raster => vec![texture("raster tiles", 0, uploaded)],
+            // Slopes are mipmapped on Modern too, for the terrain pass's
+            // shaded hillshades in the distance (decision 0019).
             PageKind::Dem => vec![
                 texture("dem tiles", 0, uploaded),
                 texture("padded dem tiles", 2, uploaded),
-                texture("hillshade slopes", 1, uploaded),
+                match self.mips {
+                    Some(_) => PageTexture {
+                        usage: uploaded | TextureUsages::STORAGE_BINDING,
+                        mip_levels: levels(1),
+                        ..texture("hillshade slopes", 1, uploaded)
+                    },
+                    None => texture("hillshade slopes", 1, uploaded),
+                },
             ],
         };
         let page = Page {
@@ -543,8 +559,9 @@ impl Images {
         }
     }
 
-    /// The compute pass that makes mip levels for raster layers uploaded
-    /// since the last, if any, and its dispatches.
+    /// The compute pass that makes mip levels for raster layers uploaded,
+    /// and DEM slopes prepared, since the last, if any, and its
+    /// dispatches.
     pub(crate) fn mip_pass(&mut self, gpu: &mut dyn Gpu) -> Option<(Pass, u32)> {
         // Layers wait for the pipeline to compile.
         let mips_pipeline = self.mips.filter(|&p| gpu.pipeline_ready(p.into()))?;
@@ -559,8 +576,12 @@ impl Images {
             if page.mips.as_ref().is_some_and(|m| m.revision != revision) {
                 destroy_mips(gpu, page.mips.take().expect("checked"));
             }
-            let texture = page.page.texture(0);
-            let levels = page.page.mip_levels(0);
+            let index = match page.kind {
+                PageKind::Raster => 0,
+                PageKind::Dem => DEM_SLOPES,
+            };
+            let texture = page.page.texture(index);
+            let levels = page.page.mip_levels(index);
             let mips = page.mips.get_or_insert_with(|| {
                 let jobs = gpu.create_buffer(&BufferDesc {
                     label: "image mip layers",
@@ -602,7 +623,7 @@ impl Images {
             });
             let layers = std::mem::take(&mut page.mip_layers);
             gpu.write_buffer(mips.jobs, 0, bytemuck::cast_slice(&layers));
-            let [width, height] = page.page.size(0);
+            let [width, height] = page.page.size(index);
             for (level, &group) in (1..levels).zip(&mips.groups) {
                 commands.extend([
                     ComputeCommand::SetPipeline(mips_pipeline),
@@ -940,7 +961,11 @@ mod prepare {
                     groups: Vec::new(),
                 }
             });
+            let mipmapped = page.page.mip_levels(DEM_SLOPES) > 1;
             for (slot, job) in page.pending.drain(..).enumerate() {
+                if mipmapped && !page.mip_layers.contains(&job.layer) {
+                    page.mip_layers.push(job.layer);
+                }
                 gpu.write_buffer(
                     targets.jobs,
                     slot as u64 * SLOT,

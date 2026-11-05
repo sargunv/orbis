@@ -1,12 +1,14 @@
 // The terrain surface (plan §9.4): one instance per terrain tile of a
-// shared grid, raised by its DEM tile, coloured from the tile's drape slot
-// for the stack being drawn, fogged by the atmosphere like GL JS's
-// `terrain.fragment.glsl`. On a globe it lies on the sphere through the
+// shared grid, raised by its DEM tile, coloured from the tile's drape slots
+// for the terrain layer being drawn, lit and fogged by the atmosphere like
+// GL JS's `terrain.fragment.glsl`. On a globe it lies on the sphere through the
 // tile's patches in space (`project.wgsl`'s `sphere_at`), raised along the
 // sphere's up, and its top and bottom rows' skirts close the poles.
 //
 // Drape slots are squares of the drape atlas, `slot_px` texels per side,
 // `columns` per row; a tile's slot for stack `s` is `slot * stacks + s`.
+// A terrain layer draws a stack's slots, or two stacks' around a
+// hillshade it shades between them (`terrain_shade.wgsl`).
 // Mip levels never mix slots, and samples keep to the slot at the level
 // they read, as a texture of its own would clamp to its edge.
 
@@ -42,17 +44,22 @@ struct Terrain {
     stacks: u32,
     columns: u32,
     slot_px: f32,
+    // Terrain tiles drawn.
+    tiles: u32,
 };
 
-struct Stack {
-    index: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+// A terrain layer: the stacks drawn below and above its shaded hillshade,
+// or NO_STACK, and that hillshade's index among the shaded ones.
+struct Layer {
+    below: u32,
+    above: u32,
+    shade: u32,
+    _pad: u32,
 };
 
 const TERRAIN_EXTENT: f32 = 8192.0;
 const NO_DEM: u32 = 0xffffffffu;
+const NO_STACK: u32 = 0xffffffffu;
 // Grid cells per tile side.
 const GRID: u32 = 128u;
 
@@ -66,7 +73,7 @@ const GRID: u32 = 128u;
 @group(0) @binding(6) var<uniform> terrain: Terrain;
 @group(0) @binding(7) var<uniform> atmosphere: Atmosphere;
 @group(0) @binding(8) var<storage, read> props: array<u32>;
-@group(1) @binding(0) var<uniform> stack: Stack;
+@group(1) @binding(0) var<uniform> layer: Layer;
 
 fn prop_at(i: u32) -> u32 {
     return props[i];
@@ -98,7 +105,8 @@ struct TerrainOut {
     @builtin(position) @invariant position: vec4<f32>,
     // Tile uv, y down.
     @location(0) uv: vec2<f32>,
-    @location(1) @interpolate(flat) slot: u32,
+    // The tile's index and its block of drape slots.
+    @location(1) @interpolate(flat) tile: vec2<u32>,
     @location(2) fog_depth: f32,
     // The surface's normal for the lights, in their axes (lighting.wgsl).
     @location(3) normal: vec3<f32>,
@@ -137,7 +145,7 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     // Reversed-Z, as extrusions draw.
     out.position = vec4<f32>(clip.xy, clip.w - clip.z, clip.w);
     out.uv = uv;
-    out.slot = tile.slot * terrain.stacks + stack.index;
+    out.tile = vec2<u32>(instance, tile.slot);
     // The view depth is the clip w. Fog stays off on a globe, as in GL JS.
     out.fog_depth = select(atmosphere_fog_depth(atmosphere, clip.w), 0.0, globe);
     out.normal = vec3<f32>(0.0, 0.0, 1.0);
@@ -160,10 +168,15 @@ fn fs_terrain_depth(@builtin(position) position: vec4<f32>) -> @location(0) vec4
     return vec4<f32>(position.z, 0.0, 0.0, 0.0);
 }
 
-// The slot's colour at uv: trilinear and anisotropic, as GL JS samples its
-// render-to-texture tiles, and kept in the slot as a texture of its own
-// would clamp to its edge.
-fn drape_color(slot: u32, uv: vec2<f32>) -> vec4<f32> {
+// Stack `stack`'s slot colour at uv, none for NO_STACK: trilinear and
+// anisotropic, as GL JS samples its render-to-texture tiles, and kept in
+// the slot as a texture of its own would clamp to its edge.
+fn drape_color(in: TerrainOut, stack: u32) -> vec4<f32> {
+    if stack == NO_STACK {
+        return vec4<f32>(0.0);
+    }
+    let slot = in.tile.y * terrain.stacks + stack;
+    let uv = in.uv;
     let size = vec2<f32>(textureDimensions(drape));
     let corner = vec2<f32>(f32(slot % terrain.columns), f32(slot / terrain.columns)) * terrain.slot_px;
     let texel = uv * terrain.slot_px;
@@ -184,9 +197,19 @@ fn drape_color(slot: u32, uv: vec2<f32>) -> vec4<f32> {
     return textureSampleGrad(drape, drape_sampler, (corner + p) / size, dx * fit / size, dy * fit / size);
 }
 
+// `top` over `bottom`, premultiplied.
+fn over(top: vec4<f32>, bottom: vec4<f32>) -> vec4<f32> {
+    return top + (1.0 - top.a) * bottom;
+}
+
 @fragment
 fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
-    var surface = drape_color(in.slot, in.uv);
+    return lit_surface(in, over(drape_color(in, layer.above), drape_color(in, layer.below)));
+}
+
+// The surface's colour as the scene lights and fogs it.
+fn lit_surface(in: TerrainOut, color: vec4<f32>) -> vec4<f32> {
+    var surface = color;
     if frame.light_position.w > 0.0 {
         // The scene's lights shade the terrain too (decision 0026).
         surface = vec4<f32>(light_surface(surface.rgb, normalize(in.normal), 1.0, 0.0, 1.0), surface.a);

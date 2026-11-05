@@ -35,7 +35,7 @@ pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
-    TerrainGlobe, TerrainPaint, TerrainTile,
+    TerrainGlobe, TerrainPaint, TerrainSlopes, TerrainTile,
 };
 
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
@@ -208,12 +208,32 @@ struct Node {
     extrusion: Option<extrusion::NodeExtrusion>,
     /// A symbol node draws its halos in a pass of their own.
     separate_halo: bool,
-    /// On terrain, the drape stack a draped node draws into.
+    /// On terrain, the drape stack a draped node draws into, and the
+    /// terrain layer that composites it.
     stack: Option<u8>,
+    terrain_layer: Option<u8>,
+    /// A hillshade the terrain pass shades from the frame's bearing rather
+    /// than draping it ([`Renderer::set_shaded_on_terrain`]).
+    shaded: bool,
     /// Its style layer's key, layer opacity and blend mode
     /// (`*-layer-opacity`, `*-layer-blend`): below opacity 1 or blending
     /// other than normally, the layer composites once.
     composite: Option<(u32, f32, Blend)>,
+}
+
+impl Node {
+    /// A hillshade the terrain pass shades: it draws no placements.
+    fn shades_on_terrain(&self) -> bool {
+        self.terrain_layer.is_some() && self.stack.is_none()
+    }
+
+    /// What the cull sees of it.
+    fn scene_cull(&self) -> NodeCull {
+        NodeCull {
+            visible: self.cull.visible && !self.shades_on_terrain(),
+            ..self.cull
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -282,6 +302,8 @@ pub struct Renderer {
     terrain: Option<terrain::Terrain>,
     /// The drape passes of each style zoom slots are drawn at.
     drape_zooms: BTreeMap<u8, DrapeZoom>,
+    /// What each terrain draw composites, in style order.
+    terrain_layers: Vec<terrain::TerrainLayer>,
     /// Draped families' pipelines for the drape atlas, made for the first
     /// terrain when the target's format isn't the atlas's.
     drape_pipelines: Option<DrapePipelines>,
@@ -600,6 +622,7 @@ impl Renderer {
             shadows,
             terrain: None,
             drape_zooms: BTreeMap::new(),
+            terrain_layers: Vec::new(),
             drape_pipelines: None,
             no_dem,
             dem_bound: no_dem,
@@ -813,6 +836,8 @@ impl Renderer {
                 image,
                 separate_halo: false,
                 stack: None,
+                terrain_layer: None,
+                shaded: false,
                 composite: None,
             });
         }
@@ -825,7 +850,7 @@ impl Renderer {
         for (_, level) in std::mem::take(&mut self.drape_zooms) {
             level.release(gpu);
         }
-        let cull: Vec<NodeCull> = self.nodes.iter().map(|n| n.cull).collect();
+        let cull: Vec<NodeCull> = self.nodes.iter().map(Node::scene_cull).collect();
         self.scene.remap_nodes(&map, &cull);
         self.pipelines_stale = true;
         self.invalidate_bundle(gpu);
@@ -838,28 +863,76 @@ impl Renderer {
         complete
     }
 
-    /// Puts draped nodes in their drape stacks while terrain is on: each
-    /// run of them between nodes that aren't draped is a stack, and a layer
-    /// that composites once (below opacity 1 or blending other than
-    /// normally) has a stack of its own, whose terrain layer composites
-    /// as the layer's.
+    /// Puts draped nodes in their drape stacks and terrain layers while
+    /// terrain is on: each run of them between nodes that aren't draped is
+    /// a terrain layer of one stack, and a layer that composites once
+    /// (below opacity 1 or blending other than normally) has a terrain
+    /// layer of its own, which composites as the layer's. A shaded
+    /// hillshade ends its stack: the terrain layer shades it over that
+    /// stack and under the next, which draws the layers above it (one
+    /// hillshade a terrain layer; another starts the next).
     fn assign_stacks(&mut self) {
         let on = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
         let mut stacks = 0u8;
+        let mut layers: Vec<terrain::TerrainLayer> = Vec::new();
         let mut previous: Option<Option<u32>> = None;
-        for node in &mut self.nodes {
+        for (i, node) in self.nodes.iter_mut().enumerate() {
             let draped = on && node.family.is_draped();
             let group = composite_group(node.composite);
-            if draped && previous != Some(group) {
-                stacks = stacks.saturating_add(1);
+            let shaded = draped && node.shaded;
+            let open = layers
+                .last()
+                .filter(|l| draped && previous == Some(group) && !(shaded && l.shade.is_some()));
+            if draped && open.is_none() {
+                layers.push(terrain::TerrainLayer::default());
             }
             previous = draped.then_some(group);
-            node.stack = draped.then(|| stacks - 1);
+            node.stack = None;
+            node.terrain_layer = draped.then(|| layers.len() as u8 - 1);
+            if let Some(layer) = layers.last_mut().filter(|_| draped) {
+                if shaded {
+                    layer.shade = Some(i as u32);
+                } else {
+                    let part = match layer.shade {
+                        Some(_) => &mut layer.above,
+                        None => &mut layer.below,
+                    };
+                    node.stack = Some(*part.get_or_insert_with(|| {
+                        stacks = stacks.saturating_add(1);
+                        stacks - 1
+                    }));
+                }
+            }
             node.cull.target = match node.stack {
                 Some(stack) => PlacementTarget::Drape(stack),
                 None => PlacementTarget::Map,
             };
         }
+        self.terrain_layers = layers;
+    }
+
+    /// Makes node `node`, a hillshade, one the terrain pass shades from
+    /// the frame's bearing between drape stacks, or one it drapes: a
+    /// viewport-anchored hillshade turns with the map, and no drape slot
+    /// should.
+    pub fn set_shaded_on_terrain(&mut self, gpu: &mut dyn Gpu, node: u32, shaded: bool) {
+        let n = &mut self.nodes[node as usize];
+        if n.shaded == shaded {
+            return;
+        }
+        n.shaded = shaded;
+        if n.terrain_layer.is_some() {
+            self.assign_stacks();
+            self.sync_cull();
+            self.pipelines_stale = true;
+            self.invalidate_bundle(gpu);
+        }
+    }
+
+    /// Whether node `node` is a hillshade the terrain pass shades now,
+    /// drawing no drape slots.
+    pub fn shades_on_terrain(&self, node: u32) -> bool {
+        self.nodes[node as usize].shades_on_terrain()
     }
 
     /// Drape stacks of the current nodes while terrain is on.
@@ -894,9 +967,10 @@ impl Renderer {
                     None => ((self.images.placeholder(), 0), 1),
                 };
                 let atmosphere = self.atmosphere.uniform;
-                let t = self
-                    .terrain
-                    .get_or_insert_with(|| terrain::Terrain::new(gpu, target, atmosphere));
+                let t = self.terrain.get_or_insert_with(|| {
+                    let shade_layout = self.images.image_layout();
+                    terrain::Terrain::new(gpu, target, atmosphere, shade_layout)
+                });
                 t.set_paint(gpu, paint, dem, dim);
             }
             None => {
@@ -1005,11 +1079,26 @@ impl Renderer {
         true
     }
 
-    /// This frame's terrain tiles.
-    pub fn set_terrain_tiles(&mut self, gpu: &mut dyn Gpu, tiles: &[TerrainTile]) {
-        if let Some(terrain) = &mut self.terrain {
-            terrain.set_tiles(gpu, tiles);
-        }
+    /// This frame's terrain tiles, and where each shaded hillshade reads
+    /// their slopes: `slopes(node, i)` for each quarter of tile `i`, west
+    /// to east, then north to south.
+    pub fn set_terrain_tiles(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        tiles: &[TerrainTile],
+        slopes: impl Fn(u32, usize) -> [Option<TerrainSlopes>; 4],
+    ) {
+        let Some(terrain) = &mut self.terrain else {
+            return;
+        };
+        terrain.set_tiles(gpu, tiles);
+        let words: Vec<u32> = (self.terrain_layers.iter())
+            .filter_map(|l| l.shade)
+            .flat_map(|node| (0..tiles.len()).map(move |i| (node, i)))
+            .flat_map(|(node, i)| slopes(node, i))
+            .flat_map(|quarter| self.tiles.shade_words(quarter))
+            .collect();
+        terrain.set_shade_tiles(gpu, &words);
     }
 
     fn node_uniform(&self, node: u32) -> BindingResource {
@@ -1092,8 +1181,8 @@ impl Renderer {
         let before = grouped(n.composite);
         n.composite = Some((layer, opacity, blend));
         if grouped(n.composite) != before {
-            if n.stack.is_some() {
-                // The layer gains or loses a drape stack of its own.
+            if n.terrain_layer.is_some() {
+                // The layer gains or loses a terrain layer of its own.
                 self.assign_stacks();
                 self.sync_cull();
             }
@@ -1280,7 +1369,7 @@ impl Renderer {
         if margin != entry.cull.margin_px || elevation != entry.cull.elevation {
             entry.cull.margin_px = margin;
             entry.cull.elevation = elevation;
-            self.scene.set_node(node, entry.cull);
+            self.scene.set_node(node, entry.scene_cull());
         }
     }
 
@@ -1290,12 +1379,12 @@ impl Renderer {
         let entry = &mut self.nodes[node as usize];
         if entry.cull.visible != visible {
             entry.cull.visible = visible;
-            self.scene.set_node(node, entry.cull);
+            self.scene.set_node(node, entry.scene_cull());
         }
     }
 
     fn sync_cull(&mut self) {
-        let cull: Vec<NodeCull> = self.nodes.iter().map(|n| n.cull).collect();
+        let cull: Vec<NodeCull> = self.nodes.iter().map(Node::scene_cull).collect();
         self.scene.set_nodes(&cull);
     }
 
@@ -1335,6 +1424,10 @@ impl Renderer {
         for i in 0..self.nodes.len() {
             let node = &self.nodes[i];
             let family = node.family;
+            if node.shades_on_terrain() {
+                // The terrain pass shades it.
+                continue;
+            }
             if node.stack.is_some() {
                 // Into the drape atlas, with its format's pipelines if
                 // the target's differs.
@@ -1388,25 +1481,27 @@ impl Renderer {
     /// The pipelines node `i` draws with, made or not.
     fn node_pipelines(&self, i: usize, out: &mut Vec<PipelineId>) {
         let node = &self.nodes[i];
-        if node.stack.is_some() {
-            if let Some(terrain) = &self.terrain {
-                out.extend(terrain.pipelines());
-            }
-            if let Some(d) = self.drape_pipelines.as_ref() {
-                out.extend(
-                    d.paint
-                        .get(node.family)
-                        .or_else(|| {
-                            node.family
-                                .is_image()
-                                .then(|| d.images.get(node.family))
-                                .flatten()
-                        })
-                        .map(PipelineId::from),
-                );
-            }
+        if node.terrain_layer.is_some()
+            && let Some(terrain) = &self.terrain
+        {
+            out.extend(terrain.pipelines());
         }
-        if node.stack.is_some() || node.heatmap.is_some() || node.extrusion.is_some() {
+        if node.stack.is_some()
+            && let Some(d) = self.drape_pipelines.as_ref()
+        {
+            out.extend(
+                d.paint
+                    .get(node.family)
+                    .or_else(|| {
+                        node.family
+                            .is_image()
+                            .then(|| d.images.get(node.family))
+                            .flatten()
+                    })
+                    .map(PipelineId::from),
+            );
+        }
+        if node.terrain_layer.is_some() || node.heatmap.is_some() || node.extrusion.is_some() {
             out.extend(self.composites.pipelines());
         }
         match node.family {
@@ -1640,7 +1735,11 @@ impl Renderer {
             self.prioritize(gpu);
         }
         let terrain_on = self.terrain.as_ref().is_some_and(terrain::Terrain::active);
-        let stacks = if terrain_on { self.drape_stacks() } else { 0 };
+        let terrain_layers = if terrain_on {
+            self.terrain_layers.len()
+        } else {
+            0
+        };
         let density_size = frame
             .viewport
             .map(|v| (v * frame.pixel_ratio / 4.0).floor().max(1.0) as u32);
@@ -1650,9 +1749,10 @@ impl Renderer {
         let mut resized = self.extrusions.resize(
             gpu,
             size,
-            self.nodes.iter().filter(|n| n.extrusion.is_some()).count() + stacks as usize,
+            self.nodes.iter().filter(|n| n.extrusion.is_some()).count() + terrain_layers,
         );
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
+            terrain.set_layers(gpu, &self.terrain_layers);
             resized |= terrain.resize(gpu, &mut self.composites, size, self.extrusions.samples);
         }
         for node in &mut self.nodes {
@@ -1691,15 +1791,15 @@ impl Renderer {
             // Runs of one layer's nodes below layer opacity 1 or blending
             // other than normally draw into a texture of their own; draped
             // nodes take the terrain's way.
-            // On terrain, a draped layer's group is its drape stack: the
-            // stack's terrain layer is the texture it composites.
+            // On terrain, a draped layer's group is its terrain layer: the
+            // texture it composites.
             let mut runs: Vec<layer_composite::Run> = Vec::new();
             for (i, node) in self.nodes.iter().enumerate() {
                 let Some(layer) = composite_group(node.composite) else {
                     continue;
                 };
                 let (_, opacity, blend) = node.composite.expect("grouped");
-                let stack = node.stack.filter(|_| terrain_on);
+                let terrain_layer = node.terrain_layer.filter(|_| terrain_on);
                 match runs.last_mut() {
                     Some(run)
                         if run.nodes.end == i
@@ -1712,8 +1812,7 @@ impl Renderer {
                         nodes: i..i + 1,
                         opacity,
                         blend,
-                        source: stack
-                            .and_then(|s| self.terrain.as_ref()?.stack_texture(u32::from(s))),
+                        source: terrain_layer.and_then(|l| self.terrain.as_ref()?.layer_texture(l)),
                     }),
                 }
             }
@@ -1881,7 +1980,22 @@ impl Renderer {
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
             let depth = self.extrusions.depth().expect("sized above");
             let b = self.scene.buffers();
-            stats.draws += terrain.passes(gpu, (b.frame, b.props), &drape, depth, &mut passes);
+            // Shaded hillshades draw once their slopes can be prepared,
+            // with their mip levels.
+            let prepared = self.images.prepare_ready(gpu) && self.images.mips_ready(gpu);
+            let shades: Vec<Option<BindGroupId>> = (self.terrain_layers.iter())
+                .map(|l| {
+                    let node = &self.nodes[l.shade? as usize];
+                    (prepared && node.cull.visible).then_some(node.group)
+                })
+                .collect();
+            stats.draws += terrain.passes(
+                gpu,
+                (b.frame, b.props),
+                (&drape, &shades),
+                depth,
+                &mut passes,
+            );
         }
         let mut first = !terrain_on;
         let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
@@ -2111,8 +2225,7 @@ impl Renderer {
 
     /// Node `i`'s commands as a bundle records them, over the scene group
     /// `scene`: the map's, or the drape's for draped nodes on terrain. In
-    /// the map, a drape stack draws its terrain layer in its first node's
-    /// place. `false` when the node waits for a pipeline and records
+    /// the map, a terrain layer composites in its first node's place. `false` when the node waits for a pipeline and records
     /// nothing.
     fn node_commands(
         &self,
@@ -2127,8 +2240,8 @@ impl Renderer {
         }
         let node = &self.nodes[i];
         let args = args_offset(i as u32);
-        if let (Some(stack), true) = (node.stack, scene == self.draw_group) {
-            let first = i == 0 || self.nodes[i - 1].stack != Some(stack);
+        if let (Some(layer), true) = (node.terrain_layer, scene == self.draw_group) {
+            let first = i == 0 || self.nodes[i - 1].terrain_layer != Some(layer);
             if !ready.terrain {
                 return false;
             }
@@ -2136,7 +2249,7 @@ impl Renderer {
                 .terrain
                 .as_ref()
                 .filter(|_| first)
-                .and_then(|t| t.stack_composite(u32::from(stack)))
+                .and_then(|t| t.layer_composite(layer))
             {
                 commands.extend(self.composites.commands(composite));
             }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -2713,7 +2713,9 @@ impl Map {
     /// writes the draped paint at their drape zooms and picks the slots to
     /// redraw, by what is draped under each tile (decision 0019). Nothing
     /// here depends on the camera but which tiles there are, and the
-    /// bearing under layers that turn with it.
+    /// bearing under a viewport-anchored translate. Viewport-anchored
+    /// hillshades turn with the map too: the terrain pass shades them
+    /// between drape stacks, from the frame's bearing.
     fn plan_drape(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -2726,6 +2728,23 @@ impl Map {
         let terrain = style.terrain.as_ref()?;
         if !renderer.terrain_on() {
             return None;
+        }
+        let worker = Arc::clone(&style.worker);
+        let plan = worker.plan();
+        let zoom = self.camera.state().zoom(self.surface.projection());
+        for (index, node) in plan.nodes.iter().enumerate() {
+            if node.family != Family::Hillshade {
+                continue;
+            }
+            let layer = &plan.style.layers[node.layer];
+            let viewport = layer
+                .get(orb_style::HILLSHADE_ILLUMINATION_ANCHOR)
+                .evaluate(zoom)
+                == orb_style::IlluminationAnchor::Viewport;
+            // Shading reads its tiles as the surface's.
+            let on_surface = matches!(&style.sources[node.source],
+                SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms());
+            renderer.set_shaded_on_terrain(gpu, index as u32, viewport && on_surface);
         }
         let layout = match renderer.reserve_drape(gpu, terrain.slots_needed()) {
             Ok(layout) => layout,
@@ -2742,8 +2761,6 @@ impl Map {
             .iter()
             .map(|t| crate::terrain::drape_zoom(&surface, t.index))
             .collect();
-        let worker = Arc::clone(&style.worker);
-        let plan = worker.plan();
         let bearing = self.camera.state().bearing;
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
@@ -2753,9 +2770,11 @@ impl Map {
         drop(images);
         let draped: Vec<usize> = (0..style.sources.len())
             .filter(|&i| {
-                plan.nodes
-                    .iter()
-                    .any(|n| n.source == i && n.family.is_draped())
+                (plan.nodes.iter().enumerate()).any(|(index, n)| {
+                    n.source == i
+                        && n.family.is_draped()
+                        && !renderer.shades_on_terrain(index as u32)
+                })
             })
             .collect();
         let period = self.surface.period();
@@ -2819,7 +2838,33 @@ impl Map {
         };
         let terrain = style.terrain.as_mut().expect("checked above");
         let (tiles, redraw) = terrain.plan(&surface, view, layout, &content, &mut globe);
-        renderer.set_terrain_tiles(gpu, &tiles);
+        // A shaded hillshade draws where its layer does at the tile's
+        // drape zoom, as draped layers do.
+        let covered = &terrain.tiles;
+        let drawn: HashMap<usize, HashSet<TileIndex>> = (plan.nodes.iter().enumerate())
+            .filter(|&(index, _)| renderer.shades_on_terrain(index as u32))
+            .map(|(_, n)| {
+                let tiles = draws[n.source].iter().flatten().map(|d| d.tile).collect();
+                (n.source, tiles)
+            })
+            .collect();
+        let slopes = |node: u32, i: usize| {
+            let node = &plan.nodes[node as usize];
+            let tile = covered[i].index;
+            let zoom = crate::terrain::drape_zoom(&surface, tile);
+            match (&sources[node.source], drawn.get(&node.source)) {
+                (
+                    SourceState::Ready {
+                        endpoint, pyramid, ..
+                    },
+                    Some(drawn),
+                ) if plan.style.layers[node.layer].is_visible_at(f64::from(zoom)) => tile
+                    .children()
+                    .map(|q| crate::terrain::slopes((endpoint, pyramid), drawn, |r| r.gpu, q)),
+                _ => [None; 4],
+            }
+        };
+        renderer.set_terrain_tiles(gpu, &tiles, slopes);
         let slots: Vec<(u32, u8)> = redraw
             .iter()
             .map(|&(tile, slot)| (slot, crate::terrain::drape_zoom(&surface, tile.index)))

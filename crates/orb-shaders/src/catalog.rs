@@ -46,6 +46,7 @@ const ATMOSPHERE: &str = include_str!("wgsl/atmosphere.wgsl");
 const LIGHTING: &str = include_str!("wgsl/lighting.wgsl");
 const RASTER: &str = include_str!("wgsl/raster.wgsl");
 const HILLSHADE: &str = include_str!("wgsl/hillshade.wgsl");
+const TERRAIN: &str = include_str!("wgsl/terrain.wgsl");
 const COLOR_RELIEF: &str = include_str!("wgsl/color_relief.wgsl");
 const PREPARE: &str = include_str!("wgsl/prepare.wgsl");
 const PREPARE_PAD: &str = include_str!("wgsl/prepare_pad.wgsl");
@@ -95,16 +96,27 @@ impl Shader {
 
 pub const TERRAIN_SHADER: Shader = Shader {
     label: "terrain",
+    parts: &[TYPES, DEM, ATMOSPHERE, LIGHTING, PROJECT, TERRAIN],
+    vertex: "vs_terrain",
+    fragment: "fs_terrain",
+    compute: "",
+};
+
+/// A terrain layer that shades a hillshade between its stacks.
+pub const TERRAIN_SHADE_SHADER: Shader = Shader {
+    label: "terrain shade",
     parts: &[
         TYPES,
         DEM,
         ATMOSPHERE,
         LIGHTING,
         PROJECT,
-        include_str!("wgsl/terrain.wgsl"),
+        TERRAIN,
+        HILLSHADE,
+        include_str!("wgsl/terrain_shade.wgsl"),
     ],
     vertex: "vs_terrain",
-    fragment: "fs_terrain",
+    fragment: "fs_terrain_shaded",
     compute: "",
 };
 
@@ -218,7 +230,13 @@ pub const RASTER_SHADER: Shader = Shader {
 
 pub const HILLSHADE_SHADER: Shader = Shader {
     label: "hillshade",
-    parts: &[TYPES, DRAW, IMAGE, HILLSHADE],
+    parts: &[
+        TYPES,
+        DRAW,
+        IMAGE,
+        HILLSHADE,
+        include_str!("wgsl/hillshade_layer.wgsl"),
+    ],
     vertex: "vs_hillshade",
     fragment: "fs_hillshade",
     compute: "",

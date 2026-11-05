@@ -36,8 +36,9 @@ for translucent drapes, where skirts would show.
 
 Layers GL JS renders to texture (background, fill, fill outline, line,
 raster, hillshade, color-relief) drape. A run of them between layers that
-draw in 3D or on screen is a drape stack. Each terrain tile owns a block of
-drape slots, one per stack: 1024² texel squares (GL JS's quality factor 2
+draw in 3D or on screen is a drape stack, and a viewport-anchored
+hillshade ends one (below). Each terrain tile owns a block of drape slots,
+one per stack: 1024² texel squares (GL JS's quality factor 2
 over 512 pixels) of one mipmapped RGBA8 atlas. Draped families get
 pipelines for that format when the target's differs.
 
@@ -71,10 +72,13 @@ The GPU-driven design is kept by making drape slots ordinary placements:
   side, as at first, blurred everything under pitch, and that blur was
   most of the terrain fixtures' differences (below).
 
-Each stack's terrain draws into a layer of its own sharing the 3D depth
-with extrusions, then composites into the map at the stack's place, as
-extrusion layers do (decision 0011). GL JS's terrain fog (sky `fog-*`,
-`horizon-*`, faded in from 60° to 70° of pitch) is applied there.
+Each terrain layer, a stack or the two stacks around a shaded hillshade,
+draws the terrain into a texture of its own sharing the 3D depth with
+extrusions, then composites into the map at its place, as extrusion
+layers do (decision 0011). The scene's lights and GL JS's terrain fog (sky
+`fog-*`, `horizon-*`, faded in from 60° to 70° of pitch) apply there, once
+over what the layer composites, as GL JS's apply to its render to
+texture.
 
 ### Slots don't depend on the camera
 
@@ -114,13 +118,57 @@ fill their borders), the style revision, feature-state writes, a revision
 per drape zoom that changes when the uniforms written there do, and the
 image atlas's pixel revision. Unchanged slots cost nothing per frame.
 
-Two exceptions follow the camera honestly. A draped layer that turns with
-the bearing has its zoom's slots keyed on the bearing: a viewport-anchored
-hillshade's light, or a viewport-anchored `*-translate`. Lighting
-viewport hillshades in the terrain pass instead needs a second slot or
-plane per tile, because the hillshade sits between other draped layers
-(#83). Feature-state rows hold values for the camera's integer zoom, so
-state paint that varies with zoom keys on that zoom (#85).
+Two exceptions follow the camera honestly. A viewport-anchored
+`*-translate` on a draped fill or line turns with the bearing, so its
+zoom's slots key on the bearing; that is rare. Feature-state rows hold
+values for the camera's integer zoom, so state paint that varies with zoom
+keys on that zoom (#85).
+
+### Viewport-anchored hillshades are shaded, not draped
+
+A viewport-anchored hillshade (v8's default anchor) is lit from the
+bearing, so baked into slots it redrew every slot of the view, once per
+drape zoom, in every frame the map turned (#83). Instead it draws no
+slots: it ends its drape stack, the layers below it draw into one stack's
+slots and the layers above into the next stack's, and the terrain pass
+shades it between them in the same draw, at its place in style order:
+the fragment composites the stack below, the hillshade, then the stack
+above, and lights and fogs the result once (`terrain_shade.wgsl`). The
+hillshade's own node group supplies its paint, written for the camera's
+zoom and bearing each frame as the map's other layers are, and its
+source's prepared slopes; the methods are `hillshade.wgsl`'s, which the
+hillshade layer shares. Its zoom range applies at each terrain tile's
+drape zoom, as for draped layers. A terrain layer shades one hillshade;
+another starts the next layer. Map-anchored hillshades drape as before,
+and so does a hillshade whose source isn't on the surface's tile matrix
+set, whose tiles the terrain can't read as its own.
+
+Raster sources refine half a zoom deeper than terrain tiles (tile size
+over √2, GL JS's `roundZoom`), so each quarter of a terrain tile reads one
+slope tile: the one its source draws there (itself or an ancestor, which
+depends only on the cover), else the nearest resident one at the
+quarter's zoom or above. The slots drew the same tiles. Slope pages have
+mip levels on Modern, made with the raster mips' pass after each prepare,
+so the distance samples them filtered as it sampled mipmapped slots;
+without them far ridges sparkled. They cost a third more slope texels per
+DEM page.
+
+Slots then never key on that bearing. They double only for a style with a
+viewport-anchored hillshade on terrain between other draped layers. The
+Alps demo over the gestures bench's view holds 19 tile slots: its atlas
+went from 32 slots (8192 × 4096 texels, 171 MiB with mip levels) to 64
+(8192², 341 MiB). The atlas's cap (128 slots on a
+16384-texel device) still makes terrain flat with a warning when a view
+needs more, now at half the tiles for such a style.
+
+Of the fixtures only `terrain/symbol-height-offset-occluded-ground` and
+the two `projection/globe/terrain/hillshade*` have a viewport hillshade
+on terrain. The globe ones pass as before; the first, failing before at
+0.09%, fails at 0.12%: a few far ridge pixels where shading per fragment
+differs from a slot drawn at the tile's zoom (its label's offset is the
+rest). The terrain fixtures fail the same set as before natively and in
+Chrome (44 pass, 30 fail, 14 skip), and the hillshade fixtures pass (27)
+on all three platforms.
 
 Because widths are fixed per tile, a draped line's width on screen
 ranges from its width at the tile's zoom up to twice that, as the camera
@@ -143,12 +191,15 @@ hillshade anchored to the map):
 | keyed by content, at drape zooms | 10.3 / 17.5 | 8.7 / 13.8 | 101 |
 | … hillshade anchored to the map, before | 5.1 / 9.4 | 8.8 / 19.5 | 233 |
 | … hillshade anchored to the map, after | 5.6 / 13.0 | 4.3 / 11.2 | 82 |
+| viewport hillshade draped, later | 10.2 / 16.9 | 9.7 / 14.4 | 91 |
+| viewport hillshade shaded in the terrain pass | 7.7 / 13.3 | 5.2 / 10.9 | 35 |
 
-The demo's hillshade is viewport-anchored, so turning still redraws every
-slot. Those frames now replay the draped nodes once per drape zoom, which
-costs 0.5 to 1.5 ms. Without a layer that turns, slots redraw only when
-their content changes, which halves the flight's p50. Lighting viewport
-hillshades in the terrain pass (#83) gives the demo style that too.
+(The last two rows: median of three runs each while the machine's load
+average was about 26; rotate frames over 16.7 ms went from 26 to 7.)
+
+With the demo's hillshade draped, turning redrew every slot and replayed
+the draped nodes once per drape zoom. Shaded in the terrain pass, it
+leaves slots to redraw only when their content changes (above).
 `orb-demo`'s `rotating_over_the_alps_matches_a_fresh_view` keeps the camera
 turning until its tiles load, then checks that frame against a fresh map
 at rest at that camera. Silhouettes differ by about 1,200 pixels for
