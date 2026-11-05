@@ -28,7 +28,8 @@ use orb_host_native::{NativeFetch, NativeImageDecode};
 use orb_interact::{Button, Key, Modifiers, PointerKind, WheelUnit};
 use orb_jobs::ThreadPool;
 use orb_runtime::{
-    CameraState, Map, MapEvent, PoolJobs, SceneCapacity, Services, TargetFormat, Viewport,
+    CameraState, Map, MapEvent, PoolJobs, RenderMode, SceneCapacity, Services, TargetFormat,
+    Viewport,
 };
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
@@ -221,16 +222,24 @@ impl Offscreen {
 
     /// Loads the style and renders until everything in view has arrived.
     /// Returns the map, the last frame's report and the frame count.
+    #[cfg(test)]
     fn load(options: &Options) -> Result<(Self, orb_runtime::FrameReport, u32), String> {
         Self::load_with(options, SceneCapacity::default())
     }
 
     /// Like [`load`](Self::load), with a given GPU scene capacity.
+    #[cfg(test)]
     fn load_with(
         options: &Options,
         capacity: SceneCapacity,
     ) -> Result<(Self, orb_runtime::FrameReport, u32), String> {
-        let mut this = Self::new(options, capacity)?;
+        Self::new(options, capacity)?.settle()
+    }
+
+    /// Renders until everything in view has arrived. Returns the map, the
+    /// last frame's report and the frame count.
+    fn settle(mut self) -> Result<(Self, orb_runtime::FrameReport, u32), String> {
+        let this = &mut self;
         let started = Instant::now();
         let mut frames = 0;
         // Two idle frames in a row: the second draws what the first's
@@ -286,7 +295,7 @@ impl Offscreen {
                         took.as_secs_f64() * 1000.0
                     );
                 }
-                return Ok((this, report, frames));
+                return Ok((self, report, frames));
             }
             was_idle = report.idle;
             if started.elapsed().as_secs() > 60 {
@@ -360,10 +369,13 @@ impl Offscreen {
     }
 }
 
-/// Renders offscreen until idle and writes the frame as a PNG.
+/// Renders a still picture offscreen (labels placed once everything has
+/// arrived, no fades) and writes it as a PNG.
 fn snapshot(options: &Options, path: &str) -> Result<Vec<u8>, String> {
     let started = Instant::now();
-    let (offscreen, report, frames) = Offscreen::load(options)?;
+    let mut offscreen = Offscreen::new(options, SceneCapacity::default())?;
+    offscreen.map.set_mode(RenderMode::Still);
+    let (offscreen, report, frames) = offscreen.settle()?;
     let pixels = offscreen.pixels();
     write_png(path, &pixels)?;
     eprintln!(

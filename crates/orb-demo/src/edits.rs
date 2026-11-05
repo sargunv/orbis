@@ -80,7 +80,8 @@ fn measure(offscreen: &mut Offscreen, commands: &str) -> (u32, FrameReport, JobC
 }
 
 /// The edited map's pixels equal those of its style loaded fresh, with the
-/// same camera.
+/// same camera, drawn as still pictures: continuous placement depends on
+/// the frames tiles arrived in, a still one only on the camera and data.
 fn assert_matches_fresh(offscreen: &mut Offscreen) {
     let json = offscreen.map.style_doc().unwrap().to_json();
     let camera = *offscreen.map.camera();
@@ -103,9 +104,13 @@ fn assert_matches_fresh(offscreen: &mut Offscreen) {
     .0;
     fresh.map.jump_to_state(camera);
     fresh.map.set_style_json(&json).unwrap();
-    settle(&mut fresh);
-    settle(offscreen);
+    for map in [&mut fresh, &mut *offscreen] {
+        map.map.set_mode(orb_runtime::RenderMode::Still);
+        settle(map);
+    }
     let (a, b) = (offscreen.pixels(), fresh.pixels());
+    offscreen.map.set_mode(orb_runtime::RenderMode::Continuous);
+    settle(offscreen);
     let differing = crate::differing_pixels(&a, &b);
     assert_eq!(differing, 0, "edited and fresh pixels differ");
 }
