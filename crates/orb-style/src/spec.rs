@@ -233,10 +233,12 @@ impl LayerType {
 pub struct PropertyId(u16);
 
 impl PropertyId {
+    #[inline]
     pub fn prop(self) -> &'static Prop {
         &PROPS[self.0 as usize]
     }
 
+    #[inline]
     pub(crate) fn index(self) -> u16 {
         self.0
     }
@@ -246,6 +248,7 @@ impl PropertyId {
         self.prop().name
     }
 
+    #[inline]
     pub fn layer_type(self) -> LayerType {
         self.prop().layer
     }
@@ -265,6 +268,7 @@ impl PropertyId {
     }
 
     /// The default, `Null` for properties without one.
+    #[inline]
     pub fn default_value(self) -> &'static orb_expr::Value<'static> {
         static DEFAULTS: std::sync::OnceLock<Vec<orb_expr::Value<'static>>> =
             std::sync::OnceLock::new();
@@ -293,7 +297,7 @@ impl PropertyId {
 
     /// `slot`'s value at `zoom` without a feature, as this property.
     pub fn value(self, slot: &crate::Slot, zoom: f64) -> orb_expr::Value<'static> {
-        crate::PropertyRef::new(slot, self.default_value().clone()).evaluate(zoom)
+        crate::PropertyRef::of(slot, self).evaluate(zoom)
     }
 
     /// A `layer_type` layer's `paint` or `layout` property `name`.

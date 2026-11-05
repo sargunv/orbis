@@ -228,6 +228,7 @@ impl Map {
                     ramp: None,
                     layout_epoch: version,
                     rows_epoch: version,
+                    painted: None,
                 },
             );
             if node.source != usize::MAX && plan.image_kind(node.source).is_none() {

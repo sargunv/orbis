@@ -5,7 +5,7 @@
 // its screen on).
 //
 //   pnpm measure [--android [--physical] | --headed] [--runs=3]
-//     [--configs=orbis,gljs] [--no-capture] [--no-annotation]
+//     [--configs=orbis,gljs] [--no-capture] [--no-annotation] [--profile]
 //   pnpm measure --pipelines [--runs=3] [--android [--physical]]
 //
 // `--pipelines` measures pipeline creation instead (#26): measure.html
@@ -49,6 +49,9 @@ const configs = option("configs", "orbis,gljs").split(",");
 const capture = !args.includes("--no-capture");
 // Without the DOM annotation, for what it costs the main thread.
 const annotation = !args.includes("--no-annotation");
+// `--profile` samples the main thread over the gestures and reports its
+// wasm self time, and the busiest wasm functions.
+const profile = args.includes("--profile");
 const GESTURES = ["pan", "pinch", "rotate"];
 
 /** The centroid of pixels matching `test`, or null. */
@@ -139,6 +142,11 @@ async function run(page, config, viewport) {
   Object.assign(viewport, await page.evaluate(() => ({ width: innerWidth, height: innerHeight })));
   const center = [viewport.width / 2, viewport.height / 2];
   const result = { config, loadMs: info.loadMs, loadBusyMs: loadBusy, idle: idleQuiet, gestures: {} };
+  if (profile) {
+    await cdp.send("Profiler.enable");
+    await cdp.send("Profiler.setSamplingInterval", { interval: 100 });
+    await cdp.send("Profiler.start");
+  }
   for (const kind of GESTURES) {
     await page.evaluate(() => window.measure.then(async (m) => { await m.home(); await new Promise((r) => setTimeout(r, 300)); m.reset(); }));
     const frames = [];
@@ -199,6 +207,27 @@ async function run(page, config, viewport) {
     };
     await page.evaluate(() => window.measure.then((m) => m.idle()));
   }
+  if (profile) {
+    const { profile: p } = await cdp.send("Profiler.stop");
+    const nodes = new Map(p.nodes.map((n) => [n.id, n]));
+    const self = new Map();
+    p.samples.forEach((id, i) => self.set(id, (self.get(id) ?? 0) + (p.timeDeltas[i] ?? 0) / 1000));
+    const wasm = new Map();
+    const all = new Map();
+    for (const [id, ms] of self) {
+      const f = nodes.get(id).callFrame;
+      const key = `${f.functionName || "(anonymous)"} ${f.url.split("/").pop()}`;
+      all.set(key, (all.get(key) ?? 0) + ms);
+    }
+    result.top = [...all].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([f, ms]) => `${ms.toFixed(1)} ${f}`);
+    for (const [id, ms] of self) {
+      const frame = nodes.get(id).callFrame;
+      if (!frame.url.includes(".wasm") && !frame.url.startsWith("wasm://")) continue;
+      wasm.set(frame.functionName, (wasm.get(frame.functionName) ?? 0) + ms);
+    }
+    result.wasmMs = [...wasm.values()].reduce((a, b) => a + b, 0);
+    result.wasmTop = [...wasm].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([f, ms]) => `${ms.toFixed(1)} ${f}`);
+  }
   result.afterQuiet = await page.evaluate(() => window.measure.then((m) => m.quiet(3000)));
   result.errors = errors;
   await cdp.detach();
@@ -253,6 +282,7 @@ try {
       config,
       loadBusy: median(mine.map((r) => r.loadBusyMs)),
       gestureBusy: median(mine.map((r) => GESTURES.reduce((s, k) => s + r.gestures[k].busyMs, 0))),
+      wasm: median(mine.map((r) => r.wasmMs ?? NaN)),
       idle: mine.map((r) => `${r.idle.rafs}/${r.idle.renders}, ${r.afterQuiet.rafs}/${r.afterQuiet.renders}`).join("; "),
       ...Object.fromEntries(GESTURES.flatMap((k) => [
         [`${k}P50`, g(k, "latencyP50")], [`${k}P95`, g(k, "latencyP95")],
@@ -267,6 +297,9 @@ try {
     console.log(`| ${r.config} | ${fmt(r.panP50)} / ${fmt(r.panP95)} | ${fmt(r.pinchP50)} / ${fmt(r.pinchP95)} | ` +
       `${fmt(r.rotateP50)} / ${fmt(r.rotateP95)} | ${fmt(r.panSkew)} / ${fmt(r.pinchSkew)} / ${fmt(r.rotateSkew)} | ` +
       `${fmt(r.loadBusy)} / ${fmt(r.gestureBusy)} | ${r.idle} |`);
+  }
+  if (profile) {
+    for (const r of rows) console.log(`\n${r.config}: wasm self time over the gestures ${fmt(r.wasm)} ms (median)`);
   }
   console.log(`\nframes measured per gesture: ${rows.map((r) => `${r.config} ${GESTURES.map((k) => r[`${k}Frames`]).join("/")}`).join("; ")}`);
   console.log(`\n${JSON.stringify(results)}`);

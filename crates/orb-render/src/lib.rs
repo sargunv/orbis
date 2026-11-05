@@ -232,6 +232,10 @@ pub struct Renderer {
     ground_waiting: bool,
     node_uniforms: BufferId,
     node_stride: u64,
+    /// The node uniforms as written, and the nodes changed since the last
+    /// frame: one buffer write a frame, not one a node.
+    node_words: Vec<u32>,
+    nodes_dirty: Option<std::ops::Range<usize>>,
     nodes: Vec<Node>,
     tiles: tiles::Tiles,
     surface_warps: tiles::SurfaceWarps,
@@ -547,6 +551,8 @@ impl Renderer {
             ground_waiting: false,
             node_uniforms,
             node_stride,
+            node_words: vec![0; (node_stride / 4) as usize * capacity.nodes as usize],
+            nodes_dirty: None,
             nodes: Vec::new(),
             tiles: Default::default(),
             surface_warps: Default::default(),
@@ -1117,11 +1123,12 @@ impl Renderer {
             }
         }
         if words != entry.written {
-            gpu.write_buffer(
-                self.node_uniforms,
-                u64::from(node) * self.node_stride,
-                bytemuck::cast_slice(&words),
-            );
+            let (node, stride) = (node as usize, (self.node_stride / 4) as usize);
+            self.node_words[node * stride..][..words.len()].copy_from_slice(&words);
+            self.nodes_dirty = Some(match self.nodes_dirty.take() {
+                Some(r) => r.start.min(node)..r.end.max(node + 1),
+                None => node..node + 1,
+            });
             entry.written = words;
             self.paints_written += 1;
         }
@@ -1341,6 +1348,14 @@ impl Renderer {
             [self.draw_layout, self.node_layout],
         );
         self.bind_scene(gpu);
+        if let Some(nodes) = self.nodes_dirty.take() {
+            let stride = (self.node_stride / 4) as usize;
+            gpu.write_buffer(
+                self.node_uniforms,
+                nodes.start as u64 * self.node_stride,
+                bytemuck::cast_slice(&self.node_words[nodes.start * stride..nodes.end * stride]),
+            );
+        }
         let mut stats = self.render_modern(gpu, frame, target, clear, cast);
         stats.draws += u32::from(self.atmosphere.enabled);
         stats.draws -= stats.nodes_waiting;

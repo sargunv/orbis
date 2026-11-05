@@ -25,6 +25,8 @@ pub struct Layer {
     pub visibility: Visibility,
     /// The layer type's properties, in table order.
     props: Box<[Slot]>,
+    /// The table index of the type's first property.
+    first: u16,
     /// Paint properties' own `*-transition`, by property name; the rest
     /// take the style's.
     pub transitions: Vec<(String, crate::TransitionOverride)>,
@@ -48,6 +50,7 @@ impl Layer {
             maxzoom: f64::INFINITY,
             visibility: Visibility::Visible,
             props: props.into(),
+            first: ty.first(),
             transitions: Vec::new(),
         }
     }
@@ -61,34 +64,24 @@ impl Layer {
         self.visibility == Visibility::Visible && above_min && below_max
     }
 
+    #[inline]
     fn at(&self, id: PropertyId) -> usize {
-        assert_eq!(
-            id.layer_type(),
-            self.ty,
-            "{} is not a {} property",
-            id.name(),
-            self.ty.name()
-        );
-        usize::from(id.index() - self.ty.first())
+        debug_assert_eq!(id.layer_type(), self.ty, "{} is another type's", id.name());
+        usize::from(id.index() - self.first)
     }
 
     /// A property, read as its type.
+    #[inline]
     pub fn get<T: PropertyValue>(&self, key: Key<T>) -> PropertyRef<'_, T> {
-        let slot = self.slot(key.id());
-        let default = T::from_value(key.id().default_value())
-            .or(T::UNSET)
-            .unwrap_or_else(|| panic!("{} has no default", key.id().name()));
-        PropertyRef::new(slot, default)
+        PropertyRef::of(self.slot(key.id()), key.id())
     }
 
     /// A per-light property's values.
     pub fn list<T: PropertyValue>(&self, key: Key<List<T>>) -> Vec<PropertyRef<'_, T>> {
-        let default = T::from_value(key.id().default_value())
-            .unwrap_or_else(|| panic!("{} has no default", key.id().name()));
         self.slot(key.id())
             .items()
             .iter()
-            .map(|slot| PropertyRef::new(slot, default.clone()))
+            .map(|slot| PropertyRef::of(slot, key.id()))
             .collect()
     }
 
@@ -98,6 +91,7 @@ impl Layer {
     }
 
     /// A property, untyped.
+    #[inline]
     pub fn slot(&self, id: PropertyId) -> &Slot {
         &self.props[self.at(id)]
     }

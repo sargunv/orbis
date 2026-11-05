@@ -343,6 +343,10 @@ pub(crate) struct NodeState {
     /// before are stale for the node.
     pub(crate) layout_epoch: u64,
     pub(crate) rows_epoch: u64,
+    /// The paint epoch the node's paint was last written in, if its paint
+    /// is the same at every zoom and bearing ([`camera_free`]): written
+    /// once per epoch, not per frame.
+    pub(crate) painted: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -365,6 +369,9 @@ pub(crate) struct LoadedStyle {
     /// The draped nodes' paint at drape zooms.
     drape: DrapePaint,
     painted_fade: Option<Crossfade>,
+    /// Counts rewrites of all paint (`painted` reset): what camera-free
+    /// nodes were written in.
+    paint_epoch: u64,
     zoom_history: ZoomHistory,
     pub(crate) image_namespace: Option<u64>,
     sprites_started: bool,
@@ -1195,6 +1202,7 @@ impl Map {
             painted: None,
             drape: DrapePaint::default(),
             painted_fade: None,
+            paint_epoch: 0,
             zoom_history: ZoomHistory::default(),
             image_namespace: None,
             sprites_started: false,
@@ -4353,6 +4361,32 @@ struct PaintAt {
     crossfade: Crossfade,
 }
 
+/// Whether a node's paint is the same at every zoom, bearing and
+/// crossfade: a vector node whose layer reads no camera (constant, per
+/// feature, or per feature and zoom in rows, which don't change with the
+/// camera), and draws no pattern, dash or gradient textures, which cross
+/// fade with the zoom. Its visibility still follows the zoom.
+fn camera_free(plan: &StylePlan, node: &crate::style::NodePlan) -> bool {
+    let layer = &plan.style.layers[node.layer];
+    matches!(
+        node.family,
+        Family::Fill
+            | Family::FillOutline
+            | Family::Line
+            | Family::Circle
+            | Family::Heatmap
+            | Family::FillExtrusion
+    ) && layer.slots().all(|(_, slot)| match slot.kind() {
+        orb_expr::Kind::Constant | orb_expr::Kind::Source => true,
+        // Rows hold it at two zooms; a state lookup's default is per zoom.
+        orb_expr::Kind::Composite => slot
+            .as_expression()
+            .is_some_and(|e| e.reads_feature_properties()),
+        orb_expr::Kind::Camera => false,
+    }) && plan.pattern(node).is_none()
+        && !crate::line::has_textures(layer)
+}
+
 /// Writes every node's paint and visibility for `zoom`, if it changed.
 fn write_paint(
     gpu: &mut dyn Gpu,
@@ -4366,16 +4400,24 @@ fn write_paint(
     if style.painted.is_none() {
         // What draped nodes draw with at their drape zooms may have changed.
         style.drape.painted.clear();
+        style.paint_epoch += 1;
     }
     if style.painted == Some((zoom, bearing)) && style.painted_fade == Some(crossfade) {
         return missing;
     }
+    // Only image nodes' paint reads the bearing (a viewport-anchored
+    // hillshade's light): a turn alone repaints them.
+    let turned_only =
+        style.painted.is_some_and(|(z, _)| z == zoom) && style.painted_fade == Some(crossfade);
     style.painted = Some((zoom, bearing));
     style.painted_fade = Some(crossfade);
     // Draped nodes on terrain draw at their slots' zooms, which hide them
     // where their layers don't draw ([`write_drape_paint`]).
     let draping = renderer.terrain_on();
     for (index, node) in plan.nodes.iter().enumerate() {
+        if turned_only && !node.family.is_image() {
+            continue;
+        }
         let state = style.nodes.entry(node.key).or_default();
         let index = index as u32;
         let layer = &plan.style.layers[node.layer];
@@ -4400,6 +4442,13 @@ fn write_paint(
                 visible
             },
         );
+        // Paint that is the same for every camera was written this epoch.
+        if state.painted == Some(style.paint_epoch) {
+            continue;
+        }
+        if camera_free(plan, node) {
+            state.painted = Some(style.paint_epoch);
+        }
         if matches!(node.family, Family::Circle | Family::Heatmap) {
             let properties = plan.paint_properties(node).len();
             if state.maxima.len() < properties {
