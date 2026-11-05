@@ -21,8 +21,12 @@ pub trait Elevation: Send + Sync + std::fmt::Debug {
     fn range(&self, rect: WorldRect, z: u8) -> Option<(f64, f64)>;
 }
 
-/// How close, in metres, the eye may come to the terrain under it.
-const CLEARANCE_M: f64 = 50.0;
+/// How close, in metres, the eye and its near plane may come to the
+/// terrain: a little slack over zero, so the near plane never cuts a
+/// slope. GL JS keeps only the eye out of the terrain; a wider margin
+/// lifts low, steeply pitched cameras above where the same camera stands
+/// in GL JS, which moves their near plane and their fog.
+const CLEARANCE_M: f64 = 2.0;
 
 impl View {
     /// The terrain point under a logical pixel, as `(world, elevation in

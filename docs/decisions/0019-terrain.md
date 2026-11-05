@@ -187,13 +187,16 @@ the map publishes (`Map::elevation`, `Map::elevation_revision`):
   destination, re-aimed whenever that changes as DEM data lands, with the
   elevation now kept (GL JS's `_updateElevation`): data landing mid-flight
   bends the path instead of moving the camera.
-- The eye and its near plane keep 50 m above the terrain (`keep_above`,
+- The eye and its near plane keep 2 m above the terrain (`keep_above`,
   `View::clearance`): the ground under the eye and a 5×5 grid across the
   near plane, which reaches about 16 pixels ahead, where a slope would
   show cut open. The camera rises straight up by the shortfall, over the
   same ground, so one step suffices and the lift is continuous as the
   camera moves. Every writer goes through it: gestures, animations, API
-  calls and new terrain. The terrain requests the DEM tiles under that
+  calls and new terrain. (It was 50 m at first; that lifted a z15 camera
+  at pitch 85 21 m above where GL JS stands it, whose eye is 34 m over
+  the target, and moved the near plane and fog of nine `sky/` fixtures.
+  GL JS keeps only the eye out of the terrain.) The terrain requests the DEM tiles under that
   footprint at the nearest tiles' detail, though it lies behind the view.
 - The far plane reaches the lowest elevation of the DEM tile under the
   target, as GL JS's `minElevationForCurrentTile` makes it; without it the
