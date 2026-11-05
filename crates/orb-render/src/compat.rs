@@ -121,7 +121,9 @@ fn cull_listed(
         (_, false) => CHUNK_VERTICES,
     };
     let instances = written * if points { 256 } else { 1 };
-    args.copy_from_slice(&[
+    // One draw's words: the rest of a node's are an instanced node's
+    // second draw, and Compat draws no instanced nodes.
+    args[..8].copy_from_slice(&[
         vertices,
         instances,
         0,
