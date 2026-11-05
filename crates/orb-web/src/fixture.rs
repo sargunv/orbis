@@ -411,6 +411,7 @@ fn apply(map: &mut Map, op: &orb_expr::json::Json) -> Result<Next, String> {
         }
         "setBearing" => map.camera_mut().bearing = number(1)?,
         "setPitch" => map.camera_mut().pitch = number(1)?,
+        "setRoll" => map.camera_mut().roll = number(1)?,
         "setCenter" => {
             let center = items.get(1).and_then(|c| c.as_array()).unwrap_or_default();
             let at = |i: usize| {

@@ -902,6 +902,7 @@ impl Map {
             }
             self.camera.bearing = plan.style.bearing;
             self.camera.pitch = plan.style.pitch;
+            self.camera.roll = plan.style.roll;
             style_camera = Some(self.camera);
         }
         self.events.wake();
@@ -1111,6 +1112,7 @@ impl Map {
         // The atmosphere: the sky above the surface's horizon (a globe's
         // limb), fog on terrain, scattering over a globe.
         let (fog_near, fog_far) = view.fog_range_px();
+        let (horizon, horizon_normal) = view.sky_horizon_line();
         let lights = self
             .lights
             .as_ref()
@@ -1137,8 +1139,8 @@ impl Map {
                         atmosphere_blend: atmosphere.atmosphere_blend.evaluate(zoom),
                     }),
                 orb_render::AtmosphereView {
-                    horizon: [(viewport.width / 2.0) as f32, view.sky_horizon() as f32],
-                    horizon_normal: [0.0, -1.0],
+                    horizon: horizon.as_vec2().to_array(),
+                    horizon_normal: horizon_normal.as_vec2().to_array(),
                     height: viewport.height as f32,
                     fog_range: [fog_near as f32, fog_far as f32],
                     fog_opacity: fog_blend_opacity(self.camera.pitch),
@@ -1251,6 +1253,7 @@ impl Map {
             ground_horizon: view.ground_horizon() as f32,
             symbol_fade_change: self.labels.fade_change(now),
             pitch: self.camera.pitch.to_radians() as f32,
+            roll: self.camera.roll.to_radians() as f32,
             align: match globe {
                 Some(_) => [0.0; 2],
                 None => pixel_alignment(&view, self.surface.projection(), self.camera.bearing),

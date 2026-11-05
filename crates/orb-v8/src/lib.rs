@@ -64,6 +64,8 @@ pub struct Style {
     pub zoom: Option<f64>,
     pub bearing: f64,
     pub pitch: f64,
+    /// The default camera's roll about the view axis, degrees.
+    pub roll: f64,
     pub sprites: Vec<Sprite>,
     /// The glyph PBF URL template, with `{fontstack}` and `{range}`.
     pub glyphs: Option<String>,
@@ -154,13 +156,13 @@ pub fn parse_with_state(
 }
 
 /// Root keys v8 defines that Orbis does not model yet.
-const UNMODELED_ROOT: &[&str] = &["centerAltitude", "roll", "transition"];
+const UNMODELED_ROOT: &[&str] = &["centerAltitude", "transition"];
 
 fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -> Option<Style> {
     let root = cx.object(doc, "")?;
     for m in root {
         match m.key.as_str() {
-            "version" | "name" | "metadata" | "center" | "zoom" | "bearing" | "pitch"
+            "version" | "name" | "metadata" | "center" | "zoom" | "bearing" | "pitch" | "roll"
             | "sources" | "layers" | "sprite" | "glyphs" | "font-faces" | "light" | "state"
             | "sky" | "terrain" | "projection" => {}
             // Edits apply at once: what a zero-duration transition asks.
@@ -190,6 +192,10 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
     let pitch = doc
         .get("pitch")
         .and_then(|p| cx.number(p, "pitch"))
+        .unwrap_or(0.0);
+    let roll = doc
+        .get("roll")
+        .and_then(|r| cx.number(r, "roll"))
         .unwrap_or(0.0);
 
     let sprites = sprite::parse(cx, doc.get("sprite"));
@@ -241,6 +247,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         zoom,
         bearing,
         pitch,
+        roll,
         sprites,
         glyphs,
         font_faces: font_faces::parse(cx, doc.get("font-faces")),

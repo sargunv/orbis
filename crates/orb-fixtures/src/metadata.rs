@@ -39,7 +39,7 @@ fn operation_skip(op: &Value) -> Option<String> {
         // Waiting for a named event.
         "wait" => Some("operation:wait-for".into()),
         "idle" => None,
-        "setZoom" | "setBearing" | "setPitch" if number(1) => None,
+        "setZoom" | "setBearing" | "setPitch" | "setRoll" if number(1) => None,
         "setCenter"
             if op
                 .get(1)

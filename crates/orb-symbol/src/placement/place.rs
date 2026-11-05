@@ -1168,6 +1168,7 @@ mod tests {
                 zoom: 0.0,
                 bearing: 0.0,
                 pitch: 0.0,
+                roll: 0.0,
                 camera_to_center_distance: 1.0,
             },
             layers,

@@ -32,6 +32,7 @@ pub(crate) fn camera_array(camera: &CameraState, projection: &orb_crs::Projectio
         camera.fov,
         camera.zoom(projection),
         camera.elevation,
+        camera.roll,
     ]
 }
 
@@ -44,6 +45,7 @@ pub(crate) fn camera_from(words: &[f64]) -> Result<CameraState, JsError> {
             pitch,
             fov,
             elevation: words.get(7).copied().unwrap_or(0.0),
+            roll: words.get(8).copied().unwrap_or(0.0),
         }),
         _ => Err(JsError::new("a camera has 6 numbers or more")),
     }

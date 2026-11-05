@@ -22,9 +22,9 @@ struct Frame {
     _pad2: f32,
     // How far symbol fades have run since the last placement commit.
     symbol_fade_change: f32,
-    // Camera pitch, radians.
+    // Camera pitch and roll, radians.
     pitch: f32,
-    _pad3: u32,
+    roll: f32,
     // The zoom's f64 bits, which the GPU interpreter branches on.
     zoom_bits: vec2<u32>,
     // The terrain's DEM unpack vector (metres = r·x + g·y + b·z − w),

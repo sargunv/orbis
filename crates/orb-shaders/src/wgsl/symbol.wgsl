@@ -250,13 +250,15 @@ fn camera_to_center() -> f32 {
     return frame.view_proj[3].w;
 }
 
-// GL JS `getTileSkewVectors` without roll: east, south.
+// GL JS `getTileSkewVectors`: east, south.
 fn skew_vectors() -> mat2x2<f32> {
     let cp = cos(frame.pitch);
     let sb = sin(frame.bearing);
     let cb = cos(frame.bearing);
-    var east = vec2<f32>(cb * cp, sb * cp);
-    var south = vec2<f32>(-sb, cb);
+    let sr = sin(frame.roll);
+    let cr = cos(frame.roll);
+    var east = vec2<f32>(cb * cp * cr - sb * sr, sb * cp * cr + cb * sr);
+    var south = vec2<f32>(-cb * cp * sr - sb * cr, -sb * cp * sr + cb * cr);
     east = select(vec2<f32>(0.0), normalize(east), length(east) > 1e-9);
     south = select(vec2<f32>(0.0), normalize(south), length(south) > 1e-9);
     return mat2x2<f32>(east, south);

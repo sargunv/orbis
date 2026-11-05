@@ -39,6 +39,7 @@ pub(crate) fn apply(map: &mut Map, op: &Value) -> Result<Next, String> {
         }
         "setBearing" => map.camera_mut().bearing = number(1)?,
         "setPitch" => map.camera_mut().pitch = number(1)?,
+        "setRoll" => map.camera_mut().roll = number(1)?,
         "setCenter" => {
             let center = op
                 .get(1)

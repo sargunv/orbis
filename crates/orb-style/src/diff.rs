@@ -273,6 +273,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         zoom: old.zoom,
         bearing: old.bearing,
         pitch: old.pitch,
+        roll: old.roll,
         sprites: old.sprites.clone(),
         glyphs: old.glyphs.clone(),
         font_faces: old.font_faces.clone(),

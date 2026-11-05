@@ -126,6 +126,8 @@ pub struct FrameBlock {
     pub symbol_fade_change: f32,
     /// Camera pitch, radians.
     pub pitch: f32,
+    /// Camera roll about the view axis, radians.
+    pub roll: f32,
     /// The terrain elevated content stands on, if any.
     pub terrain: Option<FrameTerrain>,
     /// The style's lights (decision 0026); without them lit surfaces are
@@ -207,6 +209,7 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     words[25] = frame.ground_horizon.to_bits();
     words[27] = frame.symbol_fade_change.to_bits();
     words[28] = frame.pitch.to_bits();
+    words[29] = frame.roll.to_bits();
     words[30] = frame.zoom.to_bits() as u32;
     words[31] = (frame.zoom.to_bits() >> 32) as u32;
     if let Some(t) = frame.terrain {

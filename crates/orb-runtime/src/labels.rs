@@ -1134,6 +1134,7 @@ impl Labels {
                 zoom,
                 bearing: camera.bearing.to_radians(),
                 pitch: camera.pitch.to_radians(),
+                roll: camera.roll.to_radians(),
                 camera_to_center_distance: view_proj.col(3).w,
             },
             layers,
@@ -1616,6 +1617,7 @@ mod tests {
                     zoom: 14.0,
                     bearing: 0.0,
                     pitch: 0.0,
+                    roll: 0.0,
                     camera_to_center_distance: 1.0,
                 },
                 layers: vec![LayerFrame {

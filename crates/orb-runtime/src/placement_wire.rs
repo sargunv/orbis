@@ -315,6 +315,7 @@ pub fn pack_frame(f: &Frame) -> Vec<u8> {
         c.zoom,
         c.bearing,
         c.pitch,
+        c.roll,
         c.camera_to_center_distance,
         f.now,
         f.fade_duration,
@@ -347,7 +348,7 @@ pub fn pack_frame(f: &Frame) -> Vec<u8> {
 
 pub fn unpack_frame(bytes: &[u8]) -> Result<Frame, String> {
     let mut r = Reader(bytes);
-    let mut v = [0.0; 9];
+    let mut v = [0.0; 10];
     for x in &mut v {
         *x = r.f64()?;
     }
@@ -357,6 +358,7 @@ pub fn unpack_frame(bytes: &[u8]) -> Result<Frame, String> {
         zoom,
         bearing,
         pitch,
+        roll,
         camera_to_center_distance,
         now,
         fade,
@@ -401,6 +403,7 @@ pub fn unpack_frame(bytes: &[u8]) -> Result<Frame, String> {
             zoom,
             bearing,
             pitch,
+            roll,
             camera_to_center_distance,
         },
         layers,
@@ -487,6 +490,7 @@ mod tests {
                 zoom: 3.5,
                 bearing: 0.5,
                 pitch: 0.25,
+                roll: 0.125,
                 camera_to_center_distance: 2.0,
             },
             layers: vec![LayerFrame {

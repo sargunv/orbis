@@ -18,6 +18,8 @@ pub struct Camera {
     pub bearing: f64,
     /// Radians from straight down.
     pub pitch: f64,
+    /// Radians about the view axis.
+    pub roll: f64,
     /// Distance from the camera to the target, logical pixels.
     pub camera_to_center_distance: f64,
 }
@@ -122,10 +124,11 @@ pub(crate) fn project(m: &Mat4, x: f64, y: f64, z: Option<f64>) -> Projected {
     }
 }
 
-/// GL JS `getTileSkewVectors`, without roll.
+/// GL JS `getTileSkewVectors`.
 pub(crate) fn tile_skew_vectors(camera: &Camera) -> (Point, Point) {
     let cos_pitch = libm::cos(camera.pitch);
     let (sin_b, cos_b) = (libm::sin(camera.bearing), libm::cos(camera.bearing));
+    let (sin_r, cos_r) = (libm::sin(camera.roll), libm::cos(camera.roll));
     let unit = |x: f64, y: f64| {
         let len = libm::hypot(x, y);
         if len < 1.0e-9 {
@@ -134,8 +137,14 @@ pub(crate) fn tile_skew_vectors(camera: &Camera) -> (Point, Point) {
             Point::new(x / len, y / len)
         }
     };
-    let south = unit(-sin_b, cos_b);
-    let east = unit(cos_b * cos_pitch, sin_b * cos_pitch);
+    let south = unit(
+        -cos_b * cos_pitch * sin_r - sin_b * cos_r,
+        -sin_b * cos_pitch * sin_r + cos_b * cos_r,
+    );
+    let east = unit(
+        cos_b * cos_pitch * cos_r - sin_b * sin_r,
+        sin_b * cos_pitch * cos_r + cos_b * sin_r,
+    );
     (east, south)
 }
 

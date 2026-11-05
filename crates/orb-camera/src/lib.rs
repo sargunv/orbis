@@ -40,6 +40,9 @@ pub struct CameraState {
     pub bearing: f64,
     /// Tilt from looking straight down, in degrees.
     pub pitch: f64,
+    /// Rotation about the view axis, in degrees: GL JS's roll, turning the
+    /// picture counter-clockwise.
+    pub roll: f64,
     /// Vertical field of view, in degrees.
     pub fov: f64,
     /// The target's height above the surface in metres (GL JS's center
@@ -68,6 +71,7 @@ impl CameraState {
             resolution: 1.0,
             bearing: 0.0,
             pitch: 0.0,
+            roll: 0.0,
             fov: Self::DEFAULT_FOV,
             elevation: 0.0,
         };
@@ -148,6 +152,8 @@ impl GlobeView {
 pub struct View {
     viewport: Viewport,
     pitch: f64,
+    /// Degrees about the view axis.
+    roll: f64,
     fov: f64,
     camera_world: DVec2,
     world_per_px: f64,
@@ -218,8 +224,16 @@ impl View {
         // Distance to the ground point at the top edge of the viewport, after
         // GL JS's transform.
         let ground_angle = FRAC_PI_2 + pitch;
-        let top_half_surface = half_fov.sin() * lowest_plane_px
-            / (PI - ground_angle - half_fov).clamp(0.01, PI - 0.01).sin();
+        // GL JS's `zfov`: a rolled view's vertical extent spans some of its
+        // width, so the far plane reaches farther.
+        let (roll_sin, roll_cos) = camera.roll.to_radians().sin_cos();
+        let above_center = half_fov
+            * (roll_cos.abs() * viewport.height + roll_sin.abs() * viewport.width)
+            / viewport.height;
+        let top_half_surface = above_center.sin() * lowest_plane_px
+            / (PI - ground_angle - above_center)
+                .clamp(0.01, PI - 0.01)
+                .sin();
         let horizon_angle = ((FRAC_PI_2 - pitch).tan() * 0.85)
             .min((MAX_HORIZON_PITCH.to_radians() - pitch).tan())
             .atan();
@@ -234,7 +248,9 @@ impl View {
         let near_px = viewport.height / 50.0;
 
         let to_px = DMat4::from_scale(DVec3::splat(1.0 / world_per_px));
+        let roll = DMat4::from_rotation_z(camera.roll.to_radians());
         let view = DMat4::from_translation(DVec3::new(0.0, 0.0, -eye_distance_px))
+            * roll
             * DMat4::from_rotation_x(-pitch)
             * DMat4::from_rotation_z(camera.bearing.to_radians())
             * to_px
@@ -267,6 +283,7 @@ impl View {
             // to the sphere's axes, in metres.
             let local = DMat4::from_mat3(sphere::frame(target).transpose());
             let view = DMat4::from_translation(DVec3::new(0.0, 0.0, -eye_distance_px))
+                * roll
                 * DMat4::from_rotation_x(-pitch)
                 * DMat4::from_rotation_z(camera.bearing.to_radians())
                 * DMat4::from_scale(DVec3::splat(1.0 / camera.resolution))
@@ -290,6 +307,7 @@ impl View {
         Self {
             viewport,
             pitch: camera.pitch,
+            roll: camera.roll,
             fov: camera.fov,
             camera_world,
             world_per_px,
@@ -327,12 +345,37 @@ impl View {
 
     /// Top logical row of the apparent horizon, including the reference's
     /// finite planar horizon adjustment. Sky starts here and extends upward.
+    /// Without roll it is [`sky_horizon_line`](Self::sky_horizon_line)'s.
     pub fn sky_horizon(&self) -> f64 {
+        self.viewport.height / 2.0 - self.horizon_offset()
+    }
+
+    /// The apparent horizon as a line: a point on it and its unit normal
+    /// toward the sky, logical pixels with y down. Roll turns it about the
+    /// viewport's centre (GL JS's `u_horizon`, `u_horizon_normal`).
+    pub fn sky_horizon_line(&self) -> (DVec2, DVec2) {
+        let (sin, cos) = self.roll.to_radians().sin_cos();
+        let h = self.horizon_offset();
+        (
+            DVec2::new(
+                self.viewport.width / 2.0 - h * sin,
+                self.viewport.height / 2.0 - h * cos,
+            ),
+            DVec2::new(-sin, -cos),
+        )
+    }
+
+    /// The horizon's distance from the viewport's centre, logical pixels
+    /// (GL JS's `getMercatorHorizon`).
+    fn horizon_offset(&self) -> f64 {
         let pitch = self.pitch.to_radians();
-        let offset = self.eye_distance_px
-            * ((FRAC_PI_2 - pitch).tan() * 0.85)
-                .min((MAX_HORIZON_PITCH.to_radians() - pitch).tan());
-        self.viewport.height / 2.0 - offset
+        self.eye_distance_px
+            * ((FRAC_PI_2 - pitch).tan() * 0.85).min((MAX_HORIZON_PITCH.to_radians() - pitch).tan())
+    }
+
+    /// Degrees about the view axis.
+    pub fn roll(&self) -> f64 {
+        self.roll
     }
 
     pub fn viewport(&self) -> Viewport {
@@ -552,7 +595,11 @@ impl View {
         // GL JS holds a constant zoom through 60 degrees (or the
         // FOV-dependent threshold) without terrain. Above it, and on
         // terrain, use its default tile LOD.
-        let threshold = (78.5 - self.fov / 2.0).clamp(0.0, 60.0);
+        // A rolled view's vertical extent spans some of its width.
+        let (sin, cos) = self.roll.to_radians().sin_cos();
+        let zfov = self.fov * (cos.abs() * self.viewport.height + sin.abs() * self.viewport.width)
+            / self.viewport.height;
+        let threshold = (78.5 - zfov / 2.0).clamp(0.0, 60.0);
         let lod = (terrain.is_some() || self.pitch > threshold).then(|| {
             let horizon = MAX_HORIZON_PITCH.to_radians();
             let fov = self.fov.to_radians();
