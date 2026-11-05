@@ -304,12 +304,14 @@ impl Terrain {
             size: PARAM_WORDS as u64 * 4,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
+        // Trilinear and anisotropic, as GL JS samples its render-to-texture
+        // tiles.
         let linear = gpu.create_sampler(&SamplerDesc {
             label: "drape",
             filter: FilterMode::Linear,
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Linear,
-            anisotropy: 1,
+            anisotropy: 16,
             compare: None,
         });
         Self {
@@ -636,7 +638,6 @@ impl Terrain {
         words[7] = state.stacks;
         words[8] = state.columns;
         words[9] = f(DRAPE_SLOT_PX as f32);
-        words[10] = f((DRAPE_SLOT_PX.ilog2() + 1) as f32);
         gpu.write_buffer(self.params, 0, bytemuck::cast_slice(&words));
         self.paint = Some(paint);
     }

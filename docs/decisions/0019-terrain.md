@@ -59,9 +59,17 @@ The GPU-driven design is kept by making drape slots ordinary placements:
   One compute pass then downsamples them, a dispatch per mip level over
   the redrawn slots (a render pass per level cost 3 to 5 ms each on
   Apple GPUs whatever its size; the compute pass costs 0.35 ms for all
-  levels of 19 slots). Slots are aligned, so levels
-  never mix slots, and the terrain shader clamps samples to the slot at
-  the level it reads, as a texture of its own would clamp to its edge.
+  levels of 19 slots). Slots are aligned, so levels never mix slots.
+- The terrain samples a slot as GL JS samples its render-to-texture
+  tiles: trilinear and anisotropic (16 probes), through
+  `textureSampleGrad` with the fragment's own footprint. To stay in its
+  slot, as a texture of its own would clamp to its edge, a sample keeps
+  half a texel of the level it reads from the slot's edge, and near the
+  edge its footprint shrinks until the probes fit. Moving the sample
+  further in instead shifted the edge texels away: tile borders drawn on
+  slot edges thinned. An isotropic level from the footprint's longer
+  side, as at first, blurred everything under pitch, and that blur was
+  most of the terrain fixtures' differences (below).
 
 Each stack's terrain draws into a layer of its own sharing the 3D depth
 with extrusions, then composites into the map at the stack's place, as
@@ -293,6 +301,67 @@ The full redraw's drape pass is 5.1 ms of that, its mips 0.35 ms.
 Memory: a slot is 4 MiB plus a third for its mip levels; the atlas grows by
 doubling and holds 64 slots at most on an 8192-texel device. The fixture
 views use 4 to 12 terrain tiles.
+
+## Fixture notes
+
+Natively and in Chrome alike (Apple M6), the terrain directory has 44
+passing, 30 failing and 14 skipped. That was 31, 43 and 14 before drape
+sampling became anisotropic and labels were sized against the target's own
+depth. The fixtures' differing pixels went from 122,084 to 104,122. The
+rest of the render suite is unchanged, apart from `*-opacity/terrain`
+(already passing) now differing in 8 to 73 pixels rather than 208 to 692.
+On lavapipe the directory stays at 31 passing, though every in-scope
+fixture but `pitch-70` differs less. Labels gain fully there (`symbol`
+716 → 108 pixels). The drape gains little (`default` 272 → 249), as
+lavapipe's software sampler does little with the anisotropy it is given.
+
+Anisotropic sampling costs the Alps demo's still frames 0.05 to 0.10 ms
+of GPU time (`cargo xtask bench alps`, 2048×1536, Apple M6, medians: z15
+pitch 60 went from 1.85 to 1.92 ms). The gestures bench's rotate, pan and
+flight stayed within the shared machine's run-to-run noise (flight to GPU
+done, p50/p95: 9.0–9.8/11.9–12.6 ms before, 9.2–13.5/12.5–20.5 after,
+over two and three runs).
+
+Two causes accounted for most of the drape and label differences:
+
+- **The drape's filtering.** GL JS samples every render-to-texture tile
+  trilinearly with the device's maximum anisotropy. Orbis took an
+  isotropic level from the footprint's longer side, which blurred the
+  drape under pitch: distant numerals, tile borders and outlines. Sampling
+  as GL JS does (above) made `default`, `field-of-view`,
+  `field-of-view-number`, `fill-outline`, `low-zoom`, `tile-stiching`,
+  `fill-extrusion` and `symbol-height-anchor-ground`/`-absolute` pass.
+- **Labels and circles on terrain were too large.** The symbol and circle
+  shaders took GL JS's `cameraToCenterDistance` as the clip w of
+  camera-relative space's origin. On terrain that origin is the datum
+  under the target, not the raised target, so labels at the centre drew
+  at a perspective ratio above 1 (10% wider in `symbol`). The frame now carries the target's own clip w
+  (`View::camera_to_center`), and CPU placement uses the same value.
+  `symbol`, `symbol-height-offset`, `symbol-height-offset-building` and
+  `occlusion-debug` pass.
+  The P label `occlusion-debug` missed was a size difference, not
+  occlusion.
+
+What differs in the in-scope fixtures, understood and not chased:
+
+- `image-projective` (0.63%, 1,652 px; was 1.38%) and `symbol-line`
+  (0.22%, 577 px; was 1.09%): the draped vector line only. The outline
+  (3 px at zoom 12.5) and the red line (2 px at zoom 16.25) draw at their
+  terrain tiles' drape zoom. On screen they are wider than GL JS's, which
+  draws at the camera's zoom and narrows with distance: 1,030 red pixels
+  against GL JS's 575 in `symbol-line`. That is the trade-off "Slots don't
+  depend on the camera" describes. The image, the rasters and the label
+  match.
+- `rtt-mipmap-minification/pitch-70` (0.81%, 534 px; was 0.89%): a
+  checkerboard finer than a pixel at pitch 70. Both renderers filter it
+  through the mip chain, and what's left is the moiré each GPU's
+  anisotropic probes leave: a vertical band of stronger moiré from Apple's
+  sampler, and scattered pixels. With the footprint not shrunk at slot
+  edges it is 0.69%. That shrink keeps neighbouring slots out of the
+  seams.
+- `symbol-height-offset-occluded-ground` (0.09%, 247 px; was 0.24%):
+  single pixels on sub-pixel hillshade highlights along the far ridges,
+  the same minification difference. The label matches.
 
 ## Demo
 

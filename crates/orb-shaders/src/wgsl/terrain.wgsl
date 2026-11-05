@@ -7,7 +7,7 @@
 //
 // Drape slots are squares of the drape atlas, `slot_px` texels per side,
 // `columns` per row; a tile's slot for stack `s` is `slot * stacks + s`.
-// Mip levels never mix slots, and samples clamp to the slot at the level
+// Mip levels never mix slots, and samples keep to the slot at the level
 // they read, as a texture of its own would clamp to its edge.
 
 struct TerrainTile {
@@ -42,8 +42,6 @@ struct Terrain {
     stacks: u32,
     columns: u32,
     slot_px: f32,
-    // Mip levels of the atlas.
-    levels: f32,
 };
 
 struct Stack {
@@ -162,17 +160,28 @@ fn fs_terrain_depth(@builtin(position) position: vec4<f32>) -> @location(0) vec4
     return vec4<f32>(position.z, 0.0, 0.0, 0.0);
 }
 
-// The slot's colour at uv, mipmapped and clamped to the slot.
+// The slot's colour at uv: trilinear and anisotropic, as GL JS samples its
+// render-to-texture tiles, and kept in the slot as a texture of its own
+// would clamp to its edge.
 fn drape_color(slot: u32, uv: vec2<f32>) -> vec4<f32> {
     let size = vec2<f32>(textureDimensions(drape));
     let corner = vec2<f32>(f32(slot % terrain.columns), f32(slot / terrain.columns)) * terrain.slot_px;
     let texel = uv * terrain.slot_px;
-    let footprint = max(length(dpdx(texel)), length(dpdy(texel)));
-    let lod = clamp(log2(max(footprint, 1e-6)), 0.0, terrain.levels - 1.0);
-    // Half a texel of the coarser level read: samples stay in the slot.
-    let inset = 0.5 * exp2(ceil(lod));
-    let p = clamp(texel, vec2<f32>(inset), vec2<f32>(terrain.slot_px - inset));
-    return textureSampleLevel(drape, drape_sampler, (corner + p) / size, lod);
+    let dx = dpdx(texel);
+    let dy = dpdy(texel);
+    // A texel of the level the sampler reads: the footprint's longer side
+    // over up to 16 probes along it, no finer than its shorter side.
+    let level_texel = max(max(length(dx), length(dy)) / 16.0, min(length(dx), length(dy)));
+    // Each probe reads half a texel of the coarser level around it: the
+    // sample keeps that far from the slot's edge. The probes span the
+    // footprint: near the edge it shrinks until they stay in the slot,
+    // rather than the sample moving further off the edge texels.
+    let half = 0.5 * exp2(ceil(clamp(log2(level_texel), 0.0, log2(terrain.slot_px) - 1.0)));
+    let p = clamp(texel, vec2<f32>(half), vec2<f32>(terrain.slot_px - half));
+    let room = min(p, vec2<f32>(terrain.slot_px) - p) - half;
+    let need = 0.5 * max(abs(dx), abs(dy));
+    let fit = min(1.0, min(room.x / max(need.x, 1e-6), room.y / max(need.y, 1e-6)));
+    return textureSampleGrad(drape, drape_sampler, (corner + p) / size, dx * fit / size, dy * fit / size);
 }
 
 @fragment
