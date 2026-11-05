@@ -19,6 +19,10 @@ const report = (result) => {
 // compiled, which the browser's cache returns (decision 0038).
 const counts = { shaders: 0, render: 0, compute: 0, renderAsync: 0, computeAsync: 0, createMs: 0 };
 const waits = [];
+// A hidden page gets few animation frames (Firefox gives one every few
+// seconds), so its timings don't count.
+let visible = document.visibilityState === "visible";
+document.addEventListener("visibilitychange", () => { if (document.visibilityState !== "visible") visible = false; });
 for (const [method, key] of [["createShaderModule", "shaders"], ["createRenderPipeline", "render"],
   ["createComputePipeline", "compute"], ["createRenderPipelineAsync", "renderAsync"],
   ["createComputePipelineAsync", "computeAsync"]]) {
@@ -26,10 +30,6 @@ for (const [method, key] of [["createShaderModule", "shaders"], ["createRenderPi
   GPUDevice.prototype[method] = function (...args) {
     counts[key]++;
     const started = performance.now();
-    // A hidden page gets few animation frames (Firefox gives one every few
-    // seconds), so its timings don't count.
-    let visible = document.visibilityState === "visible";
-    document.addEventListener("visibilitychange", () => { if (document.visibilityState !== "visible") visible = false; });
     const result = original.apply(this, args);
     counts.createMs += performance.now() - started;
     return result;

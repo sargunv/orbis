@@ -157,6 +157,17 @@ impl Canvas {
         }
     }
 
+    /// Whether the GPU wakes the map when a pipeline compiles: WebGPU's
+    /// promises do; WebGL2 has no callback, so frames poll.
+    pub(crate) fn compile_wakes(&self) -> bool {
+        match self {
+            #[cfg(feature = "modern")]
+            Self::Modern(_) => true,
+            #[cfg(feature = "compat")]
+            Self::Compat(_) => false,
+        }
+    }
+
     pub(crate) fn gpu_ref(&self) -> &dyn WebGpu {
         match self {
             #[cfg(feature = "modern")]
@@ -330,8 +341,11 @@ impl Modern {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
+        let gpu = orb_hal_wgpu::WgpuGpu::new(device, queue);
+        // A map waiting only for pipelines draws when one arrives (#70).
+        gpu.set_compile_wake(std::rc::Rc::new(move || crate::wake(map)));
         Ok(Self {
-            gpu: orb_hal_wgpu::WgpuGpu::new(device, queue),
+            gpu,
             surface,
             config,
             format: TargetFormat {

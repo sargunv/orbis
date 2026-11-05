@@ -312,6 +312,14 @@ impl WgpuGpu {
         self.compiler.set_wake(wake);
     }
 
+    /// Calls `wake` whenever a pipeline's `create*PipelineAsync` promise
+    /// settles, so a host that stopped drawing draws the layers that waited
+    /// for it.
+    #[cfg(target_arch = "wasm32")]
+    pub fn set_compile_wake(&self, wake: std::rc::Rc<dyn Fn()>) {
+        self.compiler.set_wake(wake);
+    }
+
     /// Makes later compiles stall forever, as in a driver hung in its
     /// compiler: fault injection for the watchdog's tests. Needs compile
     /// threads.

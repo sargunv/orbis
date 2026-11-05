@@ -540,11 +540,28 @@ mod web {
     /// how long after its request, milliseconds.
     type Settled = (Job, Result<(), String>, f64);
 
+    /// Called when a promise settles: the map draws the pipeline then.
+    type Wake = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
     /// Compiles with the browser's async pipeline creation.
-    #[derive(Debug, Default)]
+    #[derive(Default)]
     pub(crate) struct Compiler {
         settled: Rc<RefCell<VecDeque<Settled>>>,
         finished: VecDeque<Done>,
+        wake: Wake,
+    }
+
+    impl std::fmt::Debug for Compiler {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Compiler").finish_non_exhaustive()
+        }
+    }
+
+    fn wake_up(wake: &Wake) {
+        let wake = wake.borrow().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
     }
 
     fn now() -> f64 {
@@ -554,6 +571,11 @@ mod web {
     impl Compiler {
         pub(crate) fn new() -> Self {
             Self::default()
+        }
+
+        /// Calls `wake` whenever a pipeline's promise settles.
+        pub(crate) fn set_wake(&self, wake: Rc<dyn Fn()>) {
+            *self.wake.borrow_mut() = Some(wake);
         }
 
         pub(crate) fn submit(&mut self, device: &wgpu::Device, layouts: Vec<JsValue>, job: Job) {
@@ -580,6 +602,7 @@ mod web {
             let job = Rc::new(RefCell::new(Some(job)));
             let settled = self.settled.clone();
             let (ok_job, ok_settled) = (job.clone(), settled.clone());
+            let (ok_wake, wake) = (self.wake.clone(), self.wake.clone());
             // The browser's pipeline stays alive until wgpu made its own:
             // its cache holds only live pipelines.
             let ok = Closure::once(move |pipeline: JsValue| {
@@ -587,6 +610,7 @@ mod web {
                     ok_settled
                         .borrow_mut()
                         .push_back((job, Ok(()), now() - started));
+                    wake_up(&ok_wake);
                 }
                 drop(pipeline);
             });
@@ -599,6 +623,7 @@ mod web {
                     settled
                         .borrow_mut()
                         .push_back((job, Err(message), now() - started));
+                    wake_up(&wake);
                 }
             });
             let _ = promise.then2(&ok, &err);

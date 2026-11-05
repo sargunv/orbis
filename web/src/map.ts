@@ -403,7 +403,7 @@ export class OrbisMap {
     this.#drain();
     if (this.#events.has("render")) this.#events.emit("render", stats);
     this.#placeAnnotations();
-    return !stats.idle;
+    return stats.needsFrame;
   }
 
   /** Gets a new GPU after a loss (plan §8.8) and draws on. */

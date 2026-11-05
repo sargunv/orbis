@@ -105,6 +105,10 @@ pub struct FrameStats {
     /// Nothing left to do: no loads, fades, placement or camera motion.
     #[wasm_bindgen(readonly)]
     pub idle: bool,
+    /// Whether the map needs another frame: it isn't idle, and isn't only
+    /// waiting for pipelines that wake it when they compile.
+    #[wasm_bindgen(readonly, js_name = needsFrame)]
+    pub needs_frame: bool,
     /// The GPU was lost and nothing was drawn; the map draws again once
     /// [`OrbisMap::recover`] gives it another.
     #[wasm_bindgen(readonly)]
@@ -737,6 +741,7 @@ impl OrbisMap {
             zoom: self.map.zoom(),
             generation: report.generation as f64,
             idle: report.idle,
+            needs_frame: !report.idle && !(report.compiling && self.canvas.compile_wakes()),
             lost: false,
             meshes_uploaded: counts.meshes_uploaded,
             rows_uploaded: counts.rows_uploaded,
