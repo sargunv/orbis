@@ -247,6 +247,20 @@ longest on-screen edge. The terrain cover keeps tiles near 512 px on
 screen, and a foreshortened tile is still full width. Square size
 classes would save under 1% of atlas memory, so #42 is closed.
 
+## A drape atlas sized to its slots
+
+The drape atlas used to double and never shrink, and each new atlas
+blanked every slot for a full redraw. Now it holds the slots in use with
+an eighth to spare. It is made again when the slots outgrow it or fill
+under four fifths of it. The new atlas takes the kept slots' texels,
+every mip level, by a GPU copy (the HAL's `CopyTexture`), slots past its
+end move to free ones, and the runtime follows the moves, so nothing
+redraws. Only a change of drape stacks blanks it. On the Alps gestures
+bench, the atlas's mean per frame went from 341 MiB to 264–278 MiB
+across rotate, pan and the flight. The peak stays at 341 MiB: 29 tiles
+at 2 stacks reach the 64 slots an 8192-texel texture holds. The three
+paths made 54 resizes, each under 1 ms of CPU.
+
 ## Map trims
 
 Terrain keeps itself (`Terrain::upkeep`, `arrive`, `release`), and the
