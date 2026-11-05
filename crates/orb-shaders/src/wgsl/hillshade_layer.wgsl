@@ -17,5 +17,5 @@ fn fs_hillshade(in: ImageOut) -> MapOut {
     let size = vec2<f32>(textureDimensions(images));
     let pixel = sample_image(in, (v_pos * (size - 2.0) + 1.0) / size, node.nearest);
     let latitude = mix(in.latitudes.x, in.latitudes.y, v_pos.y);
-    return map_out(hillshade_color(pixel, latitude), node.index);
+    return map_out(hillshade_color(pixel, latitude), node.index, in.position);
 }

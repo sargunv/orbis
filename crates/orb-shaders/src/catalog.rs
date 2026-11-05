@@ -17,11 +17,10 @@ const BUILTINS_COMPAT: &str = include_str!("wgsl/builtins_compat.wgsl");
 const PBR_MODULE: &str = include_str!("wgsl/pbr.wgsl");
 /// The style's lights as `pbr.wgsl` takes them.
 const SCENE_LIGHTS: &str = include_str!("wgsl/scene_lights.wgsl");
-/// A map layer's output: its colour, or for the lit map its material
-/// (#91, decision 0048), as [`Shader::lit`] composes.
+/// A map layer's output: its colour, or lit by a scene's lights (#91,
+/// decision 0048), as [`Shader::lit`] composes.
 const MAP_OUT: &str = include_str!("wgsl/map_out.wgsl");
-const MAP_OUT_MATERIAL: &str = include_str!("wgsl/map_out_material.wgsl");
-const MAP_LIGHT: &str = include_str!("wgsl/map_light.wgsl");
+const MAP_OUT_LIT: &str = include_str!("wgsl/map_out_lit.wgsl");
 
 /// The shadows a surface receives (decision 0046): the cascades, their
 /// maps in the scene group and `shadow_at`. Compat composes
@@ -69,12 +68,12 @@ pub struct Shader {
     pub vertex: &'static str,
     pub fragment: &'static str,
     pub compute: &'static str,
-    /// Its map layers draw into the lit map's material buffer.
+    /// Its map layers are lit by a scene's lights.
     pub lit: bool,
 }
 
 impl Shader {
-    /// The same shader drawing into the lit map's material buffer.
+    /// The same shader with its map layers lit by a scene's lights.
     pub const fn lit(self) -> Self {
         Self { lit: true, ..self }
     }
@@ -106,8 +105,14 @@ impl Shader {
             }
             source.push_str(if compat { BUILTINS_COMPAT } else { BUILTINS });
         }
-        if source.contains("MapOut") {
-            source.push_str(if self.lit { MAP_OUT_MATERIAL } else { MAP_OUT });
+        if self.lit {
+            for part in [PBR_MODULE, SCENE_LIGHTS, MAP_OUT_LIT] {
+                if !self.parts.contains(&part) {
+                    source.push_str(part);
+                }
+            }
+        } else if source.contains("MapOut") {
+            source.push_str(MAP_OUT);
         }
         source
     }
@@ -239,23 +244,6 @@ pub const MODEL_SHADER: Shader = Shader {
     ],
     vertex: "vs_model",
     fragment: "fs_model",
-    compute: "",
-    lit: false,
-};
-/// The lit map's lighting pass (#91, decision 0048): the material buffer
-/// shaded under the style's lights, with the ground's shadows.
-pub const MAP_LIGHT_SHADER: Shader = Shader {
-    label: "map light",
-    parts: &[
-        TYPES,
-        DRAW,
-        SHADOW_RECEIVE,
-        PBR_MODULE,
-        SCENE_LIGHTS,
-        MAP_LIGHT,
-    ],
-    vertex: "vs_map_light",
-    fragment: "fs_map_light",
     compute: "",
     lit: false,
 };
@@ -486,7 +474,6 @@ pub const SHADERS: &[Shader] = &[
     CIRCLE_SHADER,
     MODEL_SHADER,
     MODEL_CASTER_SHADER,
-    MAP_LIGHT_SHADER,
     FILL_SHADER.lit(),
     FILL_OUTLINE_SHADER.lit(),
     LINE_SHADER.lit(),
@@ -494,7 +481,6 @@ pub const SHADERS: &[Shader] = &[
     RASTER_SHADER.lit(),
     HILLSHADE_SHADER.lit(),
     COLOR_RELIEF_SHADER.lit(),
-    COMPOSITE_OVER_SHADER.lit(),
     SYMBOL_SHADERS[0],
     SYMBOL_SHADERS[1],
     HEATMAP_SHADER,

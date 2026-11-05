@@ -126,9 +126,9 @@ fn fs_fill(in: FillOut) -> MapOut {
         discard;
     }
     if node.pattern.enabled == 1u {
-        return map_out(fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity), node.index);
+        return map_out(fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity), node.index, in.position);
     }
-    return map_out(in.color, node.index);
+    return map_out(in.color, node.index, in.position);
 }
 
 @fragment
@@ -141,5 +141,5 @@ fn fs_fill_outline(in: FillOut) -> MapOut {
     if node.pattern.enabled == 1u {
         color = fill_pattern_color(in.images, tile_at(in.tile), in.pattern_pos, node.pattern, in.color, in.opacity);
     }
-    return map_out(color * (1.0 - smoothstep(0.0, 1.0, dist)), node.index);
+    return map_out(color * (1.0 - smoothstep(0.0, 1.0, dist)), node.index, in.position);
 }

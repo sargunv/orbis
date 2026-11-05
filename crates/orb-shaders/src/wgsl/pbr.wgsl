@@ -91,9 +91,9 @@ fn pbr_specular(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, f0: vec3<f32>, roughne
     return d * vis * f;
 }
 
-// A surface's material: all its shading needs besides the lights, as a
-// material buffer would hold it per pixel for one lighting pass over the
-// whole map (#91). Colours are linear; the normal is a unit vector in
+// A surface's material: all its shading needs besides the lights, the one
+// model the lit map's layers (`map_out_lit.wgsl`) and models fill (#91,
+// decision 0048). Colours are linear; the normal is a unit vector in
 // east, north and up.
 struct Material {
     albedo: vec3<f32>,

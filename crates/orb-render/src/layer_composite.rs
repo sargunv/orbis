@@ -176,15 +176,6 @@ impl LayerComposites {
         composites.commands(&group.composite)
     }
 
-    /// A group's composite into the lit map's material buffer.
-    pub(crate) fn lit_composite_commands(
-        &self,
-        composites: &Composites,
-        group: &Group,
-    ) -> [RenderCommand; 3] {
-        composites.lit_commands(&group.composite)
-    }
-
     /// Each group's pass: its nodes' draws into its target.
     pub(crate) fn passes(&self) -> impl Iterator<Item = Pass> + '_ {
         self.groups.iter().filter_map(|g| {

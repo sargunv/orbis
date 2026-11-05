@@ -199,7 +199,7 @@ fn fs_line(in: LineOut) -> MapOut {
         let y = in.normal.y * 0.5 + 0.5;
         let ca = pattern_sample(a, vec2<f32>(x_a, y), 1.0);
         let cb = pattern_sample(b, vec2<f32>(x_b, y), 1.0);
-        return map_out(mix(ca, cb, node.pattern.fade) * alpha * in.opacity, node.index);
+        return map_out(mix(ca, cb, node.pattern.fade) * alpha * in.opacity, node.index, in.position);
     }
     if node.dashed != 0u {
         let a = image_at(in.images.x);
@@ -211,9 +211,9 @@ fn fs_line(in: LineOut) -> MapOut {
         alpha *= smoothstep(0.5 - gamma, 0.5 + gamma, mix(ca, cb, node.dash_fade));
     }
     if node.gradient != 0u {
-        return map_out(gradient_sample(image_at(in.ramp), in.progress) * alpha * in.opacity, node.index);
+        return map_out(gradient_sample(image_at(in.ramp), in.progress) * alpha * in.opacity, node.index, in.position);
     }
-    return map_out(in.color * alpha, node.index);
+    return map_out(in.color * alpha, node.index, in.position);
 }
 
 // GL JS LineAtlas: center row and 14-texel span for round dashes, one row

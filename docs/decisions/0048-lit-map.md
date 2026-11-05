@@ -1,4 +1,4 @@
-# 0048: The lit map: a scene's lights shade every layer through one material buffer
+# 0048: The lit map: a scene's lights shade every layer's fragments
 
 #91 asks for the whole map to be one lit surface: every layer a material,
 one lighting model over all of it. Decision 0026 lit only 3D content
@@ -15,38 +15,48 @@ their v8 colours. Decision 0043 left room for a material buffer.
   `layers` member takes `roughness` and `metalness` (0 to 1) beside
   `emissive-strength`; a layer's v8 colours are its albedo. The default is
   matte paint: roughness 1, metalness 0.
-- **One material buffer, one lighting pass.** The map's layers draw, in
-  style order and blended as their colours are, into a material buffer of
-  two attachments: the albedo, and roughness, metalness and the self-lit
-  share, premultiplied by coverage (`map_out_material.wgsl`). One
-  full-screen draw in the main pass (`map_light.wgsl`) divides the
-  coverage out and shades it with `pbr_light` under the frame's lights and
-  the directional light's shadows on the ground, over the sky. Labels draw
-  after it, unlit. The families' fragments return `map_out(colour, node)`;
-  a shader's lit composition (`Shader::lit`) defines it as material, its
-  classic one as colour, so the unlit path is unchanged.
-- **Per-node materials** are a storage array in a group of the lit
-  pipelines' own (group 2), so the scene group and Compat are untouched.
-- **First cut.** 3D layers, heatmaps and layers composited once arrive
-  already shaded and composite in as self-lit; blend modes composite
-  normally. The map draws unlit with terrain, and on Compat, which warns.
+- **Forward, in the main pass.** A lit layer's fragment fills the
+  `Material` of its colour and its node's material and shades it with
+  `pbr_light` under the frame's lights (`map_out_lit.wgsl`), where the
+  unlit map draws it. Families' fragments return
+  `map_out(colour, node, position)`; a shader's lit composition
+  (`Shader::lit`) shades, its classic one passes the colour, so the unlit
+  path is unchanged. Node materials are a storage array in the lit
+  pipelines' own group 2. Map layers face up and share a pixel's point,
+  so blending lit colours is lighting their blended albedo for diffuse
+  light; specular differs slightly.
+- **Shadows on the ground stay one pass.** The ground pass (decision 0046)
+  takes the directional light's share of level ground's lighting away
+  where shadows fall, which for matte lit ground is exactly its shadowed
+  shading; layers don't each sample the cascades.
+- 3D layers, heatmaps and layers composited once arrive shaded and
+  composite as they do unlit; draped layers on terrain draw into the drape
+  unlit, which the terrain's own lighting shades. Compat draws unlit and
+  warns.
+
+## The material buffer, tried first
+
+A deferred version drew the layers into a material buffer (the albedo,
+then roughness, metalness and the self-lit share) in a pass of its own,
+and one full-screen draw in the main pass shaded it. It cost 0.8 to
+2.5 ms more than the unlit map on the bench below: a second full pass with
+two attachments written and read back, while the main pass's own cost
+(attachments, labels) stayed. A map has a few layers per pixel and one
+cheap lighting model, which forward shading suits; it also gave up blend
+modes and terrain, which forward keeps.
 
 ## Measured
 
 Apple M6, 2048×1536, `orb-bench` over central Tokyo with Liberty's 3D
 buildings, the scene's lights without shadows against the same scene
-unlit: GPU median 1.24 → 2.02 ms at z12, 1.70 → 3.05 ms at z15, 3.15 →
-5.69 ms at z15 pitched 60°, 1.02 → 1.91 ms at z17. The lit surface pass
-takes 0.8 to 2.2 ms of that: the layers drawn into two attachments in a
-pass of their own, where the unlit map drew them in the main pass. A
-mid-range phone at 1080p should expect several milliseconds more per
-frame. Dropping the normal attachment, which carried nothing yet, saved
-little: the cost is the extra pass and the composites moved into it, not
-bandwidth alone.
+unlit: GPU median 1.15 → 1.41 ms at z12, 1.36 → 1.57 ms at z15, 3.21 →
+3.43 ms pitched 60°, 0.95 → 1.09 ms at z17, 3.08 → 3.23 ms with Liberty's
+buildings pitched. Shading per fragment rather than per pixel costs 0.14
+to 0.26 ms there; a mid-range phone at 1080p should see a few tenths of a
+millisecond. Sampling the shadow cascades in every layer's fragments cost
+1.2 ms more at z15 than the ground pass.
 
 ## Next
 
-3D layers, terrain and models writing their materials and normals into the
-buffer (one lighting model for everything, shadows on walls from the
-pass), procedural detail (water, windows at night), and the cost of the
-separate pass.
+3D layers and models in the same lighting model, procedural detail (water,
+windows at night).
