@@ -258,10 +258,10 @@ impl Kotlin<'_> {
         let mut out = format!("{HEADER}package {}\n\n", self.config.package);
         match &def.kind {
             Kind::Enum { variants } => {
-                out += &comment(&def.docs, " * ", "").pipe_doc("");
+                out += &kdoc(&def.docs, "");
                 writeln!(out, "enum class {}(val value: Int) {{", def.name).unwrap();
                 for (i, (name, value, docs)) in variants.iter().enumerate() {
-                    out += &comment(docs, " * ", "    ").pipe_doc("    ");
+                    out += &kdoc(docs, "    ");
                     let end = if i + 1 == variants.len() { ";" } else { "," };
                     writeln!(out, "    {name}({value}){end}").unwrap();
                 }
@@ -278,10 +278,10 @@ impl Kotlin<'_> {
                 out += "    }\n}\n";
             }
             Kind::Struct { fields } => {
-                out += &comment(&def.docs, " * ", "").pipe_doc("");
+                out += &kdoc(&def.docs, "");
                 writeln!(out, "data class {}(", def.name).unwrap();
                 for f in fields {
-                    out += &comment(&f.docs, " * ", "    ").pipe_doc("    ");
+                    out += &kdoc(&f.docs, "    ");
                     writeln!(
                         out,
                         "    val {}: {},",
@@ -309,7 +309,7 @@ impl Kotlin<'_> {
                     docs += "\n\nIt may be used on any thread; calls and [close] are serialized.";
                 }
                 docs += " Release it with [close]; owned objects that are never closed leak.";
-                out += &comment(docs.trim_start(), " * ", "").pipe_doc("");
+                out += &kdoc(docs.trim_start(), "");
                 writeln!(
                     out,
                     "class {} internal constructor(handle: Long) : AutoCloseable {{",
@@ -384,7 +384,6 @@ impl Kotlin<'_> {
         docs
     }
 
-    /// A Kotlin method calling its external function.
     /// Whether objects of an opaque type may be used from any thread.
     fn any_thread(&self, name: &str) -> bool {
         matches!(
@@ -396,8 +395,9 @@ impl Kotlin<'_> {
         )
     }
 
+    /// A Kotlin method calling its external function.
     fn method(&self, def: &Def, m: &Method, indent: &str) -> String {
-        let mut out = comment(&self.method_docs(m), " * ", indent).pipe_doc(indent);
+        let mut out = kdoc(&self.method_docs(m), indent);
         let params: Vec<String> = m
             .params
             .iter()
@@ -1057,17 +1057,12 @@ fn error_value(c_ret: &str) -> &'static str {
     }
 }
 
-trait PipeDoc {
-    /// Wraps comment lines in `/** … */`, or nothing when empty.
-    fn pipe_doc(self, indent: &str) -> String;
-}
-
-impl PipeDoc for String {
-    fn pipe_doc(self, indent: &str) -> String {
-        if self.trim().is_empty() {
-            String::new()
-        } else {
-            format!("{indent}/**\n{self}{indent} */\n")
-        }
+/// Doc text as a `/** … */` block, or nothing when empty.
+fn kdoc(docs: &str, indent: &str) -> String {
+    let lines = comment(docs, " * ", indent);
+    if lines.trim().is_empty() {
+        String::new()
+    } else {
+        format!("{indent}/**\n{lines}{indent} */\n")
     }
 }
