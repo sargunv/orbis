@@ -62,8 +62,9 @@ The scene group binds the shadow uniform, the map and a comparison sampler
 `shadow_none.wgsl` instead.
 
 - **Extrusions:** the vertex shader shades each vertex lit and with none of
-  the directional light. The fragment mixes the two by `shadow_at`, a 3×3
-  comparison filter after a normal and light offset of about a texel. Lit,
+  the directional light. The fragment mixes the two by `shadow_at`: four
+  bilinear comparisons half a texel either way, a tent over 3×3 texels, after
+  a normal and light offset of about a texel. Lit,
   the colour is exactly what it was, so extrusion fixtures are unchanged.
 - **Models:** `shadow_at` at the geometric normal is `PbrLights.shadow`, which
   scales `pbr_light`'s directional term: the lighting path the whole map's
@@ -96,6 +97,22 @@ bearing −18.1), `--timing work-done` (wall time to the GPU's work done):
 
 Most of the 3 ms is the extrusions drawn twice more, once per cascade, with
 the camera's culled chunks.
+
+The demo's Manhattan scene (Liberty with its labels hidden behind buildings,
+`--at -73.985,40.752`, 2048×1536 px at 2×, `--timing work-done`), z14.52
+pitch 61 and z15.6 pitch 70, bearing 29:
+
+| | z14.52 pitch 61 | z15.6 pitch 70 |
+|---|---|---|
+| shadows, 3×3 comparisons | 16.9 ms | 17.7 ms |
+| shadows, four bilinear comparisons | 13.5 ms | 16.0 ms |
+| no shadows, no label occlusion | 8.2 ms | 10.5 ms |
+
+Of what shadows still cost at z14.52, the caster passes are about 1.8 ms
+and the cull's shadow reach about 1 ms; the ground's pass is under 0.5 ms
+and skipping faces turned from the light saved nothing measurable. The
+bench reports GPU time by pass label (timestamp queries split passes on this
+GPU, so their totals run several ms over the wall time).
 
 ## Not done
 

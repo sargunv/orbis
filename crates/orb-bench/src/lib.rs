@@ -12,6 +12,7 @@ mod clock;
 mod gestures;
 mod report;
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub use gestures::GesturesReport;
@@ -225,11 +226,11 @@ fn timing(runtime: &Runtime, asked: Option<Timing>) -> Result<Timing, String> {
 struct Samples {
     /// GPU time per frame (every pass), or the proxy.
     gpu: Vec<Duration>,
-    /// Passes alone; empty under the proxy. Extrusions' offscreen pass only
-    /// where the view has them.
+    /// Passes alone; empty under the proxy.
     cull: Vec<Duration>,
     main: Vec<Duration>,
-    extrusion: Vec<Duration>,
+    /// Per pass label, its passes' time in each frame, and how many ran.
+    passes: BTreeMap<String, (Vec<Duration>, usize)>,
     /// `Map::render`.
     render_cpu: Vec<Duration>,
     submit_cpu: Vec<Duration>,
@@ -342,12 +343,18 @@ pub fn run(
                     Timing::Timestamps => times[f].gpu(),
                     Timing::WorkDone => wall[f],
                 });
-                for (label, samples) in [
-                    ("cull", &mut s.cull),
-                    ("main", &mut s.main),
-                    ("extrusion", &mut s.extrusion),
-                ] {
+                for (label, samples) in [("cull", &mut s.cull), ("main", &mut s.main)] {
                     samples.extend(times[f].pass(label));
+                }
+                let mut frame: BTreeMap<&str, (Duration, usize)> = BTreeMap::new();
+                for (label, d) in &times[f].passes {
+                    let e = frame.entry(label).or_default();
+                    *e = (e.0 + *d, e.1 + 1);
+                }
+                for (label, (d, n)) in frame {
+                    let e = s.passes.entry(label.to_string()).or_default();
+                    e.0.push(d);
+                    e.1 = n;
                 }
                 s.render_cpu.push(cpu[f]);
                 s.submit_cpu.push(times[f].cpu);
@@ -393,7 +400,9 @@ fn view_result(name: &str, mut s: Samples) -> ViewResult {
         gpu: Summary::of(&mut s.gpu),
         cull: summary(&mut s.cull),
         main: summary(&mut s.main),
-        extrusion: summary(&mut s.extrusion),
+        passes: (s.passes.into_iter())
+            .map(|(label, (mut d, n))| (label, Summary::of(&mut d), n))
+            .collect(),
         render_cpu: Summary::of(&mut s.render_cpu),
         submit_cpu: Summary::of(&mut s.submit_cpu),
         draws: stats.draws,

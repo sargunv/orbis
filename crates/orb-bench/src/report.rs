@@ -67,10 +67,11 @@ impl Stat {
 pub(crate) struct ViewResult {
     pub(crate) name: String,
     pub(crate) gpu: Summary,
-    /// Passes, where timed; extrusions' only where the view has them.
+    /// Passes, where timed.
     pub(crate) cull: Option<Summary>,
     pub(crate) main: Option<Summary>,
-    pub(crate) extrusion: Option<Summary>,
+    /// Every pass label's time per frame and how many passes it has.
+    pub(crate) passes: Vec<(String, Summary, usize)>,
     pub(crate) render_cpu: Summary,
     pub(crate) submit_cpu: Summary,
     pub(crate) draws: u32,
@@ -159,20 +160,19 @@ impl FramesReport {
         };
         writeln!(
             out,
-            "| view | {gpu_label} | p90 | cull pass {g} | main pass {g} | extrusion pass {g} | CPU render {c} | CPU encode+submit {c} | draws | dispatches |"
+            "| view | {gpu_label} | p90 | cull pass {g} | main pass {g} | CPU render {c} | CPU encode+submit {c} | draws | dispatches |"
         )?;
-        writeln!(out, "|---|---|---|---|---|---|---|---|---|---|")?;
+        writeln!(out, "|---|---|---|---|---|---|---|---|---|")?;
         let pass = |p: &Option<Summary>| p.as_ref().map_or("—".into(), |m| ms(gpu_stat.of(m)));
         for view in &self.views {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                 view.name,
                 ms(gpu_stat.of(&view.gpu)),
                 ms(view.gpu.p90),
                 pass(&view.cull),
                 pass(&view.main),
-                pass(&view.extrusion),
                 ms(cpu_stat.of(&view.render_cpu)),
                 ms(cpu_stat.of(&view.submit_cpu)),
                 view.draws,
@@ -193,6 +193,12 @@ impl FramesReport {
                 view.memory.0 as f64 / f64::from(1 << 20),
                 view.memory.1 as f64 / f64::from(1 << 20),
             )?;
+            if !view.passes.is_empty() {
+                let passes: Vec<String> = (view.passes.iter())
+                    .map(|(label, t, n)| format!("{label} ×{n} {}", ms(gpu_stat.of(t))))
+                    .collect();
+                writeln!(out, "  - GPU by pass: {}", passes.join(", "))?;
+            }
         }
         for warning in &self.warnings {
             writeln!(out, "- warning: {warning}")?;

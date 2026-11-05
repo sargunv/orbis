@@ -38,8 +38,9 @@ fn shadow_cascade(c: ShadowCascades, depth: f32) -> u32 {
     return c.count;
 }
 
-// How lit a receiver is in cascade `i`, 0 to 1: a 3×3 comparison filter
-// around its place in the map, outside the map lit.
+// How lit a receiver is in cascade `i`, 0 to 1, outside the map lit: four
+// bilinear comparisons half a texel either way of its place in the map,
+// a tent over the 3×3 texels around it.
 fn shadow_lit(map: texture_depth_2d_array, cmp: sampler_comparison, c: ShadowCascades, i: u32, world: vec3<f32>, normal: vec3<f32>) -> f32 {
     let p = c.view_proj[i] * vec4<f32>(world + (normal * 1.5 + c.light) * c.texel[i], 1.0);
     let ndc = p.xyz / p.w;
@@ -47,15 +48,13 @@ fn shadow_lit(map: texture_depth_2d_array, cmp: sampler_comparison, c: ShadowCas
     if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) || ndc.z > 1.0 {
         return 1.0;
     }
-    let step = 1.0 / vec2<f32>(textureDimensions(map));
+    let half = 0.5 / vec2<f32>(textureDimensions(map));
     var lit = 0.0;
-    for (var y = -1; y <= 1; y++) {
-        for (var x = -1; x <= 1; x++) {
-            let at = uv + vec2<f32>(f32(x), f32(y)) * step;
-            lit += textureSampleCompareLevel(map, cmp, at, i32(i), ndc.z);
-        }
+    for (var k = 0u; k < 4u; k++) {
+        let at = uv + vec2<f32>(f32(k & 1u) * 2.0 - 1.0, f32(k >> 1u) * 2.0 - 1.0) * half;
+        lit += textureSampleCompareLevel(map, cmp, at, i32(i), ndc.z);
     }
-    return lit / 9.0;
+    return lit / 4.0;
 }
 
 // How much of the directional light reaches a receiver at camera-relative
