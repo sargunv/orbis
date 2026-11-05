@@ -238,6 +238,16 @@ export class OrbisMap {
   /** The last frame's counters. */
   get stats(): FrameStats | undefined { return this.#stats; }
 
+  /** The next frame the map draws, as the canvas shows it: for
+   * screenshots and tests. Asks for that frame. */
+  async readPixels(): Promise<ImageData> {
+    const pixels: Promise<Uint8Array> = this.#host.core.readNextFrame();
+    this.#request();
+    const data = await pixels;
+    return new ImageData(new Uint8ClampedArray(data.buffer as ArrayBuffer, data.byteOffset, data.length),
+      this.canvas.width, this.canvas.height);
+  }
+
   /** Draws a frame even if nothing changed (GL JS `triggerRepaint`). */
   triggerRepaint(): void { this.#request(); }
 
@@ -554,7 +564,12 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   // The map exists once its host does: until then its callbacks wait.
   let map: OrbisMap | undefined;
   let first = true;
-  const host = await startMain(await module, canvas, style, options.jobWorkers ?? defaultJobWorkers(), {
+  const core = {
+    fadeDuration: options.fadeDuration, crossSourceCollisions: options.crossSourceCollisions,
+    localIdeographFontFamily: options.localIdeographFontFamily, antialias: options.antialias,
+    terrainSkirts: options.terrainSkirts,
+  };
+  const host = await startMain(await module, canvas, style, core, options.jobWorkers ?? defaultJobWorkers(), {
     wake: () => map?.wake(),
     error: (e) => (map ? map.fail(e) : console.error(e)),
     setup: (core) => {

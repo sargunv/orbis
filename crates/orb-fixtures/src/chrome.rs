@@ -1,4 +1,6 @@
-//! A single render-only Chromium process; selection and comparison stay in Rust.
+//! The Chrome driver (`web/scripts/render-fixtures.mjs`): one Chromium
+//! process drawing fixtures through the `orbis` package; selection and
+//! comparison stay in Rust.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -14,8 +16,6 @@ pub(crate) struct Chrome {
     output: BufReader<ChildStdout>,
     pub(crate) version: Value,
     pub(crate) max_size: u32,
-    /// `orb-text`'s script matrix digest in wasm.
-    pub(crate) text_matrix: Value,
 }
 
 impl Chrome {
@@ -39,14 +39,12 @@ impl Chrome {
             output,
             version: Value::Null,
             max_size: 0,
-            text_matrix: Value::Null,
         };
         let ready = chrome.receive()?;
         if ready["ready"] != true {
             return Err(format!("Chrome initialization: {ready}"));
         }
         chrome.version = ready["browser"].clone();
-        chrome.text_matrix = ready["text_matrix"].clone();
         chrome.max_size = ready["max_size"]
             .as_u64()
             .ok_or("missing Chrome device limit")? as u32;
@@ -61,49 +59,56 @@ impl Chrome {
         serde_json::from_str(&line).map_err(|e| format!("Chrome driver response: {e}: {line}"))
     }
 
-    pub(crate) fn render(
-        &mut self,
-        style: &str,
-        metadata: &Metadata,
-        output: &Path,
-    ) -> Result<(Option<Image>, Value), String> {
+    /// Sends a fixture's request, with `extra` fields, and reads the reply.
+    fn send(&mut self, style: &str, metadata: &Metadata, extra: Value) -> Result<Value, String> {
         let (width, height) = metadata.physical_size();
-        let request = json!({"style":style, "width":width, "height":height,
-            "logical_width":metadata.width,"logical_height":metadata.height,
-            "pixel_ratio":metadata.pixel_ratio,"timeout_ms":metadata.timeout_ms,
+        let mut request = json!({"style":style, "width":width, "height":height,
+            "ratio":metadata.pixel_ratio,"timeout_ms":metadata.timeout_ms,
             "fade_duration":metadata.fade_duration,
             "cross_source_collisions":metadata.cross_source_collisions,
             "local_ideographs":metadata.local_ideographs,
             "max_pitch":metadata.max_pitch,
             "terrain_skirts":metadata.terrain_skirts,
-            "operations":Value::Array(metadata.operations.clone()).to_string(),"output":output});
+            "operations":metadata.operations});
+        request
+            .as_object_mut()
+            .expect("an object")
+            .extend(extra.as_object().expect("an object").clone());
         let input = self.input.as_mut().expect("open transport");
         serde_json::to_writer(&mut *input, &request).map_err(|e| e.to_string())?;
         input
             .write_all(b"\n")
             .and_then(|_| input.flush())
             .map_err(|e| e.to_string())?;
-        let response = self.receive()?;
+        self.receive()
+    }
+
+    /// Renders a test: its straight RGBA pixels, or `None` with the
+    /// driver's error in the response.
+    pub(crate) fn render(
+        &mut self,
+        style: &str,
+        metadata: &Metadata,
+        output: &Path,
+    ) -> Result<(Option<Image>, Value), String> {
+        let response = self.send(style, metadata, json!({"output": output}))?;
         if !response["error"].is_null() {
             return Ok((None, response));
         }
+        let (width, height) = metadata.physical_size();
         let pixels = std::fs::read(output).map_err(|e| e.to_string())?;
         std::fs::remove_file(output).map_err(|e| e.to_string())?;
         if pixels.len() != width as usize * height as usize * 4 {
             return Err("Chrome returned the wrong number of RGBA bytes".into());
         }
-        Ok((
-            Some(Image {
-                width,
-                height,
-                pixels,
-            }),
-            response,
-        ))
+        let image = Image {
+            width,
+            height,
+            pixels,
+        };
+        Ok((Some(image), response))
     }
-}
 
-impl Chrome {
     /// Settles a query test's style as [`render`](Self::render) does, then
     /// queries the box `[x1, y1, x2, y2]`; returns the features.
     pub(crate) fn query(
@@ -112,24 +117,7 @@ impl Chrome {
         metadata: &Metadata,
         query: [f64; 4],
     ) -> Result<Value, String> {
-        let (width, height) = metadata.physical_size();
-        let request = json!({"style":style, "width":width, "height":height,
-            "logical_width":metadata.width,"logical_height":metadata.height,
-            "pixel_ratio":metadata.pixel_ratio,"timeout_ms":metadata.timeout_ms,
-            "fade_duration":metadata.fade_duration,
-            "cross_source_collisions":metadata.cross_source_collisions,
-            "local_ideographs":metadata.local_ideographs,
-            "max_pitch":metadata.max_pitch,
-            "terrain_skirts":metadata.terrain_skirts,
-            "operations":Value::Array(metadata.operations.clone()).to_string(),
-            "query":query});
-        let input = self.input.as_mut().expect("open transport");
-        serde_json::to_writer(&mut *input, &request).map_err(|e| e.to_string())?;
-        input
-            .write_all(b"\n")
-            .and_then(|_| input.flush())
-            .map_err(|e| e.to_string())?;
-        let response = self.receive()?;
+        let response = self.send(style, metadata, json!({"query": query}))?;
         if !response["error"].is_null() {
             return Err(format!("Chrome query: {}", response["error"]));
         }

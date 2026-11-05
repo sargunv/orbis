@@ -1,0 +1,96 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Orbis · fixture driver</title>
+<script type="module">
+// `cargo xtask rt --platform chrome`'s page (web/scripts/render-fixtures.mjs):
+// one GL JS fixture through the orbis package, settled as orb-fixtures
+// settles it natively. `window.fixture(request)` resolves to its straight
+// RGBA pixels as base64, or with `query` set to its features' JSON.
+import { createMap } from "orbis";
+
+const assets = new URL("fixtures/", location.href).href;
+// GL JS's harness reads a video's first frame: videos here stay on it.
+HTMLMediaElement.prototype.play = () => Promise.resolve();
+const local = (text) => text.replaceAll("local://", assets).replaceAll("http://localhost:2900/", assets);
+
+/** One operation; what to settle until after it: "loaded", "idle" or ms. */
+async function apply(map, [name, ...args]) {
+  const jump = (camera) => map.camera.jumpTo(camera);
+  switch (name) {
+    case "wait": return args.length ? args[0] : "loaded";
+    case "idle": return "idle";
+    case "setZoom": jump({ zoom: args[0] }); break;
+    case "setBearing": jump({ bearing: args[0] }); break;
+    case "setPitch": jump({ pitch: args[0] }); break;
+    case "setRoll": jump({ roll: args[0] }); break;
+    case "setCenter": jump({ center: args[0] }); break;
+    case "setCenterElevation": map.camera.setCenterElevation(args[0]); break;
+    case "setCenterClampedToGround": map.camera.centerClampedToGround = args[0]; break;
+    case "removeImage": map.removeImage(args[0]); break;
+    case "addImage": {
+      const bitmap = await createImageBitmap(await (await fetch(new URL(args[1], assets))).blob(),
+        { premultiplyAlpha: "none", colorSpaceConversion: "none" });
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
+      context.drawImage(bitmap, 0, 0);
+      map.addImage(args[0], context.getImageData(0, 0, bitmap.width, bitmap.height), args[2]);
+      break;
+    }
+    default: map.edit((tx) => tx[name](...args));
+  }
+}
+
+window.fixture = async (r) => {
+  const container = document.createElement("div");
+  Object.assign(container.style, { width: `${r.width / r.ratio}px`, height: `${r.height / r.ratio}px` });
+  document.body.replaceChildren(container);
+  const warnings = [];
+  const map = await createMap({
+    container, style: JSON.parse(local(r.style)), renderer: r.renderer, interactive: false, pixelRatio: r.ratio,
+    constraints: { maxPitch: r.max_pitch }, fadeDuration: r.fade_duration, antialias: false,
+    crossSourceCollisions: r.cross_source_collisions, localIdeographFontFamily: r.local_ideographs ?? false,
+    terrainSkirts: r.terrain_skirts,
+  });
+  map.on("warning", ({ message }) => warnings.push(message));
+  map.on("error", ({ message }) => warnings.push(message));
+  const started = performance.now();
+  let frames = 0, stats, timedOut = false;
+  // Draws until `until` ("loaded", "idle", ms of wall time, or one frame);
+  // false on the test's timeout.
+  const settle = async (until) => {
+    const from = performance.now();
+    for (;;) {
+      const drawn = map.once("render");
+      map.triggerRepaint();
+      stats = await drawn;
+      frames++;
+      if (until === undefined || (until === "loaded" && stats.loaded) || (until === "idle" && stats.idle) ||
+        (typeof until === "number" && performance.now() - from >= until)) return true;
+      if (performance.now() - started >= r.timeout_ms) return !(timedOut = true);
+    }
+  };
+  try {
+    const fades = r.fade_duration > 0;
+    let settled = await settle(fades ? "loaded" : "idle");
+    for (const op of JSON.parse(local(JSON.stringify(r.operations)))) {
+      if (!settled) break;
+      try {
+        const next = await apply(map, op);
+        if (next !== undefined) settled = await settle(next === "loaded" && !fades ? "idle" : next);
+      } catch (e) { warnings.push(`operation ${JSON.stringify(op)}: ${e?.message ?? e}`); }
+    }
+    // A fading test reads after its last operation, a transition where its
+    // waits left it; the rest after one more settle.
+    if (settled) await settle(fades || stats.transitioning ? undefined : "idle");
+    if (r.query) {
+      await settle();
+      return JSON.stringify(await map.queryRenderedFeatures([r.query.slice(0, 2), r.query.slice(2)]));
+    }
+    const { data } = await map.readPixels();
+    let binary = "";
+    for (let i = 0; i < data.length; i += 8192) binary += String.fromCharCode(...data.subarray(i, i + 8192));
+    return { rgba: btoa(binary), warnings, frames, tiles_drawn: stats.tilesDrawn, timed_out: timedOut };
+  } finally {
+    map.remove();
+  }
+};
+</script>

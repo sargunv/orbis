@@ -188,18 +188,11 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
         Backend::Chrome(c) => c.version.clone(),
         _ => Value::Null,
     };
-    // Decision 0009's byte-identity check: one digest of text layout from
-    // font bytes, natively and in wasm.
-    let text_matrix = match &backend {
-        Backend::Chrome(c) => c.text_matrix.clone(),
-        _ => json!(orb_text::matrix::digest().to_string()),
-    };
     let summary = json!({
         "filter": filter,
         "platform": {"name":name,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"browser":browser},
         "comparison": {"metric":"pixelmatch-8.0.0-oklab-hyab", "includeAA":false, "checkerboard":true, "default_threshold":0.1285, "default_allowed":0.00025},
         "total_seconds": started.elapsed().as_secs_f64(),
-        "text_matrix": text_matrix,
         "totals": total.json(),
         "prefixes": prefixes.iter().map(|(p,c)| (p.clone(), c.json())).collect::<BTreeMap<_,_>>(),
         "skip_reasons": skip_counts.iter().map(|(reason,count)| json!({"reason":reason,"count":count})).collect::<Vec<_>>(),
@@ -384,7 +377,7 @@ fn run_test(
             Some((image, rendered))
         }
     };
-    let Some((mut actual, rendered)) = rendered else {
+    let Some((actual, rendered)) = rendered else {
         finish_skip(&mut result, &reasons, started);
         return Ok(result);
     };
@@ -401,7 +394,6 @@ fn run_test(
     if !diagnostics.is_empty() {
         failure.get_or_insert("runtime-warning");
     }
-    actual.unpremultiply();
     let image_path = output.join("images").join(id).join("actual.png");
     std::fs::create_dir_all(image_path.parent().expect("image parent"))
         .map_err(|e| e.to_string())?;
@@ -577,11 +569,12 @@ fn render_native(
             vec![0; width as usize * height as usize * 4]
         }
     };
-    let image = Image {
+    let mut image = Image {
         width,
         height,
         pixels,
     };
+    image.unpremultiply();
     let report = json!({"frames":frames,"tiles_drawn":tiles_drawn,"timed_out":failure.is_some()});
     Some((image, report))
 }

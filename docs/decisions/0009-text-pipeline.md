@@ -255,6 +255,9 @@ NaN semantics reproduced, and no platform maths. PBF SDF bitmaps are copied
 byte for byte. SDFs that Orbis computes from outlines with the shared EDT are
 identical too. Only browser-canvas clusters differ, because the browser draws
 their alpha; those fixtures carry `expected-web-*` tags (plan §12).
+The script matrix digest that once checked this apart from the fixtures is
+superseded: the Chrome fixture run compares every native pass with the
+browser's picture (decision 0042).
 
 ### Lazy on the web
 

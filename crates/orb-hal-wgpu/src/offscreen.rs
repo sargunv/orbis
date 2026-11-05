@@ -119,8 +119,16 @@ impl WgpuGpu {
     /// Copies the pixels of a 4-byte-per-texel texture out, row by row
     /// without padding. The copy is submitted now; the future holds no
     /// borrow of the device, so the texture may go before it resolves.
-    pub fn read_texture(&self, id: TextureId) -> impl Future<Output = Vec<u8>> + 'static {
-        let texture = self.texture(id);
+    pub fn read_texture(&self, id: TextureId) -> impl Future<Output = Vec<u8>> + use<> {
+        self.read_wgpu_texture(self.texture(id))
+    }
+
+    /// [`read_texture`](Self::read_texture) for a wgpu texture the host
+    /// owns, such as a canvas's current texture (made with `COPY_SRC`).
+    pub fn read_wgpu_texture(
+        &self,
+        texture: &wgpu::Texture,
+    ) -> impl Future<Output = Vec<u8>> + use<> {
         let (width, height) = (texture.width(), texture.height());
         let row = width * 4;
         let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);

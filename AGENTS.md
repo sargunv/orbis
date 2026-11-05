@@ -42,7 +42,7 @@ node, pnpm, a JDK, Gradle, kotlinc, CMake, Go and devices-cli); run
 | `… -p orb-demo -- file://$PWD/web/demo/data/alps.json --flight web/demo/data/alps-flight.json` | the terrain flight over the Alps (web: `?style=alps&flight`) |
 | `cargo run --release -p orb-cli -- render <style> -o out.png [--at lon,lat,z[,bearing,pitch]] [--size WxH] [--a11y out.json]` | `orbis`: a still picture of a style or scene document (Still mode); `--a11y` also writes its semantic snapshot |
 | `… -p orb-cli -- tiles <style> -o dir --tms <id\|tms.json> --zoom z[-z] [--bbox w,s,e,n]` | a tile pyramid on the scene's plane (Tile mode), `dir/z/col/row.png` |
-| `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `harness.wasm` (the Chrome fixture driver) into `web/pkg` |
+| `cargo xtask web` | build `core.wasm` (size report, warns above plan §14.3) and `compat.wasm` into `web/pkg` |
 | `cargo xtask pages` | `cargo xtask web`, then the Vite build into `web/dist`: the site `.github/workflows/pages.yml` deploys on every push to `main` |
 | `pnpm -C web dev` | Vite dev server at `/orbis/` (run `cargo xtask web` first); the style editor at `/orbis/?style=playground&edit` |
 | `pnpm -C web typecheck` / `pnpm -C web test` | type-check the `orbis` package (`web/src`); its unit tests and the build test |

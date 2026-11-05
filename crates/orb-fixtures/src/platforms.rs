@@ -87,16 +87,6 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str) -> Result<(), Strin
             }
         }
     }
-    if let (Some(native), Some(chrome)) = (reports.get("native"), reports.get("chrome")) {
-        let (n, c) = (&native["text_matrix"], &chrome["text_matrix"]);
-        println!(
-            "Text matrix (decision 0009): native {n}, Chrome {c}: {}",
-            if n == c { "identical" } else { "DIFFERENT" }
-        );
-        if n != c {
-            return Err("the script matrix's layout differs between native and wasm".into());
-        }
-    }
     let summary = json!({"filter":filter, "total_seconds":started.elapsed().as_secs_f64(), "platforms":reports,"identity":identity});
     write_json(&combined, &summary)?;
     println!("\nReport: {}", combined.display());

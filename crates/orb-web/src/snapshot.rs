@@ -93,29 +93,14 @@ impl OrbisMap {
             .snapshot
             .take()
             .ok_or_else(|| JsError::new("no snapshot started"))?;
-        let bgra = matches!(
-            self.canvas.format().color,
-            TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb
-        );
+        let bgra = bgra(self.canvas.format().color);
         let gpu = self.canvas.gpu();
         let pixels = gpu.read_texture(snapshot.texture);
         // The copy is submitted: the texture can go.
         gpu.destroy_texture(snapshot.texture);
         self.map.set_mode(RenderMode::Continuous);
         Ok(wasm_bindgen_futures::future_to_promise(async move {
-            let mut pixels = pixels.await;
-            for px in pixels.as_chunks_mut::<4>().0 {
-                if bgra {
-                    px.swap(0, 2);
-                }
-                let a = u32::from(px[3]);
-                if a != 0 && a != 255 {
-                    for c in &mut px[..3] {
-                        *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
-                    }
-                }
-            }
-            Ok(js_sys::Uint8Array::from(pixels.as_slice()).into())
+            Ok(straight_rgba(pixels.await, bgra).into())
         }))
     }
 
@@ -127,4 +112,29 @@ impl OrbisMap {
             self.map.set_mode(RenderMode::Continuous);
         }
     }
+}
+
+/// Whether a target of `format` holds its bytes blue first.
+pub(crate) fn bgra(format: TextureFormat) -> bool {
+    matches!(
+        format,
+        TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb
+    )
+}
+
+/// A target's premultiplied pixels as straight RGBA, as `ImageData` holds
+/// them, truncating as GL JS's render tests do.
+pub(crate) fn straight_rgba(mut pixels: Vec<u8>, bgra: bool) -> js_sys::Uint8Array {
+    for px in pixels.as_chunks_mut::<4>().0 {
+        if bgra {
+            px.swap(0, 2);
+        }
+        let a = u32::from(px[3]);
+        if a != 0 && a != 255 {
+            for c in &mut px[..3] {
+                *c = (u32::from(*c) * 255 / a).min(255) as u8;
+            }
+        }
+    }
+    js_sys::Uint8Array::from(pixels.as_slice())
 }

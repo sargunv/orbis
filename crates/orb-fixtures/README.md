@@ -70,21 +70,15 @@ Chromium nor Docker.
 `mise install`, `pnpm -C web install` and `pnpm -C web exec playwright install chromium`.
 The native Rust runner owns discovery, metadata, scope, alpha conversion,
 expected-image selection and pixelmatch. It starts one Node/Playwright process
-with a line-oriented JSON protocol. Node serves only wasm bindings and fixture
-assets over loopback, drives headless Chromium with WebGPU, and returns raw RGBA
-readback plus render diagnostics. Node handles no fixture metadata or comparisons.
-This keeps the existing Rust measurement authoritative while using Playwright's
-maintained browser launcher instead of implementing CDP in Rust.
-
-`orb-web::FixtureRenderer` (in `harness.wasm`, not `core.wasm`) shares a WebGPU
-device across requests. Each request gets a fresh map, inline jobs and GPU resource owner, an RGBA8Unorm offscreen
-texture at Rust's physical dimensions, and the logical viewport and pixel ratio.
-It renders until idle plus one final frame, yielding to fetch callbacks between
-frames, then asynchronously maps a padded GPU readback buffer and removes row
-padding. It returns premultiplied pixels; Rust applies the same unpremultiplication
-as native. The Fetch wrapper maps `local://` to the server's asset directory,
-including URLs inside TileJSON and range requests. Browser render exceptions
-fail their fixture and reload the page before the next request.
+(`web/scripts/render-fixtures.mjs`) with a line-oriented JSON protocol. Node
+serves the demo build and the fixture assets over loopback (their JSON's
+`local://` URLs pointing at it) and opens `web/demo/fixture.html` in headless
+Chromium with animation frames unpaced. The page draws each fixture through the
+`orbis` package as a host would: a map with GL JS's options, the operations as
+package calls, frames until loaded or idle as natively, and `readPixels` for
+straight RGBA (alpha unassociated by truncation, as GL JS's harness and the
+native runner do). Videos stay on their first frame. A failed render reloads
+the page before the next request.
 
 Identity considers every native pass, even if the Chrome expected-image test
 failed. It compares the two actual images using that fixture's unchanged

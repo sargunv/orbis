@@ -23,6 +23,15 @@ async function rendererModule(tier: "modern" | "compat", module: WebAssembly.Mod
   return { create: compat.createMap as unknown as typeof createCoreMap, reload: compat.reloadRegions };
 }
 
+/** GL JS's map options the core takes at creation (`MapOptions`). */
+export interface CoreOptions {
+  fadeDuration?: number;
+  crossSourceCollisions?: boolean;
+  localIdeographFontFamily?: string | false;
+  antialias?: boolean;
+  terrainSkirts?: boolean;
+}
+
 export interface HostCallbacks {
   /** The map has new data to draw. */
   wake(): void;
@@ -48,7 +57,7 @@ export interface Host {
 
 /** The map on this thread, drawing into `canvas` at `tier`. */
 export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasElement, style: string,
-  jobWorkers: number, callbacks: HostCallbacks, tier: "modern" | "compat"): Promise<Host> {
+  options: CoreOptions, jobWorkers: number, callbacks: HostCallbacks, tier: "modern" | "compat"): Promise<Host> {
   const receive = (apply: (data: unknown) => void) => ({ data }: MessageEvent) => {
     try {
       apply(data);
@@ -60,7 +69,7 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   const start = async (tier: "modern" | "compat", canvas: HTMLCanvasElement, style: string) => {
     const { workers, ports, placement } = spawnWorkers(module, jobWorkers);
     const { create, reload } = await rendererModule(tier, module);
-    const core = await create(canvas, style, callbacks.wake, ports.length,
+    const core = await create(canvas, style, options, callbacks.wake, ports.length,
       (worker: number, message: unknown) => ports[worker].postMessage(message),
       (message: unknown, transfer: Transferable[]) => placement.postMessage(message, transfer));
     placement.onmessage = receive((data) => core.receivePlacement(data));

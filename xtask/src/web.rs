@@ -1,8 +1,7 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
 //! `web/pkg/`, reports its size by crate (twiggy) and warns when it
 //! grows past plan §14.3's numbers; then `compat.wasm`, the renderer on
-//! WebGL2 that pages without WebGPU load instead (plan §8.7), and
-//! `harness.wasm`, the Chrome fixture driver's module on either tier.
+//! WebGL2 that pages without WebGPU load instead (plan §8.7).
 //!
 //! `cargo xtask pages`: the above, then the Vite build of the site
 //! `.github/workflows/pages.yml` deploys, into `web/dist/`.
@@ -79,15 +78,7 @@ pub(crate) fn build() -> Result<(), String> {
         compat.raw / 1024,
         compat.brotli / 1024
     );
-    // The bench page's and the fixture driver's module: core plus their
-    // entry points, outside the budget because no map page loads it.
     word_data(&out)?;
-    let harness = module(&root, "orb-web", "harness", &["--features", "harness"])?;
-    eprintln!(
-        "harness.wasm: {} KiB raw, {} KiB brotli",
-        harness.raw / 1024,
-        harness.brotli / 1024
-    );
     // `font-faces` drawing, loaded the first time a style declares a file.
     let shaper = module(&root, "orb-shaper", "shaper", &[])?;
     eprintln!(

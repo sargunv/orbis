@@ -127,6 +127,19 @@ export interface MapOptions {
   /** Device pixels per CSS pixel to draw with; the display's
    * (`devicePixelRatio`) by default. */
   pixelRatio?: number;
+  /** How long labels fade in and out, ms; 300 by default. */
+  fadeDuration?: number;
+  /** Whether labels of different sources collide; true by default. */
+  crossSourceCollisions?: boolean;
+  /** The CSS font family ideographs (CJK and the like) of the default
+   * font stack draw with instead of the style's glyphs; `sans-serif` by
+   * default, `false` for the glyphs. */
+  localIdeographFontFamily?: string | false;
+  /** Multisampling for 3D surfaces; true by default. */
+  antialias?: boolean;
+  /** Whether terrain tiles hang skirts hiding the cracks between tiles of
+   * different detail; translucent terrain shows them. True by default. */
+  terrainSkirts?: boolean;
   /** How many job workers lay out tiles; by default
    * `clamp(hardwareConcurrency − 2, 1, 4)` (plan §7.1). */
   jobWorkers?: number;

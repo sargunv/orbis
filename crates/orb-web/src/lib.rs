@@ -7,24 +7,17 @@
 //! - **workers**: job workers ([`jobs::JobWorker`]) fetch and lay out
 //!   tiles; a placement worker ([`PlacementWorker`]) places labels.
 //!
-//! The map draws through WebGPU (`compat.wasm`: WebGL2). With the `harness`
-//! feature the module also exports the render fixture driver
-//! (`FixtureRenderer`); `cargo xtask web` builds that into `harness.wasm`,
-//! apart from `core.wasm`.
+//! The map draws through WebGPU (`compat.wasm`: WebGL2).
 
 #![cfg(target_arch = "wasm32")]
 
 mod camera;
 mod canvas;
-#[cfg(feature = "harness")]
-mod fixture;
 mod jobs;
 mod placement;
 pub mod regions;
 mod snapshot;
 
-#[cfg(feature = "harness")]
-pub use fixture::{FixturePixels, FixtureRenderer};
 pub use jobs::JobWorker;
 pub use placement::PlacementWorker;
 
@@ -75,6 +68,10 @@ pub struct OrbisMap {
     snapshot: Option<snapshot::Snapshot>,
     /// Markers and the location layer.
     batteries: orb_runtime::batteries::Batteries,
+    /// Where the next frame's pixels go ([`read_next_frame`]).
+    ///
+    /// [`read_next_frame`]: OrbisMap::read_next_frame
+    read_next: Option<futures_channel::oneshot::Sender<Vec<u8>>>,
 }
 
 impl Drop for OrbisMap {
@@ -103,6 +100,12 @@ pub struct FrameStats {
     /// Nothing left to do: no loads, fades, placement or camera motion.
     #[wasm_bindgen(readonly)]
     pub idle: bool,
+    /// The style and every tile in view are in (GL JS `loaded()`).
+    #[wasm_bindgen(readonly)]
+    pub loaded: bool,
+    /// A paint transition runs (decision 0031).
+    #[wasm_bindgen(readonly)]
+    pub transitioning: bool,
     /// Whether the map needs another frame: it isn't idle, and isn't only
     /// waiting for pipelines that wake it when they compile.
     #[wasm_bindgen(readonly, js_name = needsFrame)]
@@ -237,11 +240,16 @@ impl From<&orb_runtime::Memory> for FrameMemory {
 /// until it moves. Video sources play on the page (`web/src/videos.ts`):
 /// see [`take_events`](OrbisMap::take_events) and
 /// [`video_frame`](OrbisMap::video_frame); canvas sources show what
-/// [`source_frame`](OrbisMap::source_frame) hands in.
+/// [`source_frame`](OrbisMap::source_frame) hands in. `options` holds GL
+/// JS's map options by name, each optional: `fadeDuration`,
+/// `crossSourceCollisions`, `localIdeographFontFamily` (`false` draws the
+/// style's glyphs), `antialias` and `terrainSkirts`.
 #[wasm_bindgen(js_name = createMap)]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_map(
     canvas: HtmlCanvasElement,
     style_url: String,
+    options: JsValue,
     on_wake: js_sys::Function,
     job_workers: u32,
     post: js_sys::Function,
@@ -273,6 +281,30 @@ pub async fn create_map(
     map.set_placement_lane(lane);
     // The page plays video sources (`web/src/videos.ts`).
     map.set_plays_video(true);
+    let option = |name: &str| js_sys::Reflect::get(&options, &name.into()).ok();
+    if let Some(ms) = option("fadeDuration").and_then(|v| v.as_f64()) {
+        map.set_fade_duration(ms);
+    }
+    if let Some(collide) = option("crossSourceCollisions").and_then(|v| v.as_bool()) {
+        map.set_cross_source_collisions(collide);
+    }
+    match option("localIdeographFontFamily") {
+        Some(family) if family.as_bool() == Some(false) || family.is_null() => {
+            map.set_local_ideograph_font_family(None);
+        }
+        Some(family) => {
+            if let Some(family) = family.as_string() {
+                map.set_local_ideograph_font_family(Some(&family));
+            }
+        }
+        None => {}
+    }
+    if let Some(antialias) = option("antialias").and_then(|v| v.as_bool()) {
+        map.set_antialias_3d(antialias);
+    }
+    if let Some(skirts) = option("terrainSkirts").and_then(|v| v.as_bool()) {
+        map.set_terrain_skirts(skirts);
+    }
     map.load_style_url(&style_url);
     Ok(OrbisMap {
         id,
@@ -284,6 +316,7 @@ pub async fn create_map(
         worker_jobs,
         snapshot: None,
         batteries: Default::default(),
+        read_next: None,
     })
 }
 
@@ -740,6 +773,22 @@ impl OrbisMap {
         self.map.retry_failed_tiles();
     }
 
+    /// The next frame's pixels, straight (not premultiplied) RGBA8 rows top
+    /// to bottom, as `ImageData` holds them: what the canvas shows, for
+    /// screenshots and tests. Resolves once that frame is drawn.
+    #[wasm_bindgen(js_name = readNextFrame)]
+    pub fn read_next_frame(&mut self) -> js_sys::Promise {
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        self.read_next = Some(sender);
+        let bgra = snapshot::bgra(self.canvas.format().color);
+        wasm_bindgen_futures::future_to_promise(async move {
+            let pixels = receiver
+                .await
+                .map_err(|_| JsValue::from_str("the map went before its next frame"))?;
+            Ok(snapshot::straight_rgba(pixels, bgra).into())
+        })
+    }
+
     /// Times the GPU's submissions from now on, for measurements
     /// (`gpuTimings` collects them); WebGPU only.
     #[wasm_bindgen(js_name = setGpuTiming)]
@@ -807,13 +856,18 @@ impl OrbisMap {
         self.batteries.sync(&mut self.map);
         let viewport = self.viewport();
         let (map, ratio, renderer) = (&mut self.map, self.pixel_ratio as f32, &mut self.renderer);
-        let report = self
+        let (report, pixels) = self
             .canvas
-            .frame(|gpu, target, format| {
+            .frame(self.read_next.is_some(), |gpu, target, format| {
                 let renderer = renderer.get_or_insert_with(|| map.create_renderer(gpu, format));
                 map.render(gpu, renderer, target, viewport, ratio, frame_time)
             })
             .map_err(|e| JsError::new(&e))?;
+        if let (Some(pixels), Some(sender)) = (pixels, self.read_next.take()) {
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = sender.send(pixels.await);
+            });
+        }
         let uploaded = self.canvas.gpu_ref().uploaded();
         let jobs = self.worker_jobs.stats();
         let counts = self.map.job_counts();
@@ -822,6 +876,8 @@ impl OrbisMap {
             zoom: self.map.zoom(),
             generation: report.generation as f64,
             idle: report.idle,
+            loaded: report.loaded,
+            transitioning: self.map.transitioning(),
             needs_frame: !report.idle && !(report.compiling && self.canvas.compile_wakes()),
             lost: false,
             meshes_uploaded: counts.meshes_uploaded,

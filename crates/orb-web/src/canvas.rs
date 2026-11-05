@@ -1,6 +1,6 @@
 //! The map's canvas and the GPU drawing into it: WebGPU (the Modern tier,
 //! `core.wasm`) or WebGL2 (Compat, `compat.wasm`; plan §8.7). A build with
-//! both, the harness, tries WebGPU first.
+//! both tries WebGPU first.
 
 use orb_hal::{Gpu, HostBytesId, HostImageId, TextureId};
 use orb_runtime::TargetFormat;
@@ -29,6 +29,9 @@ pub(crate) trait WebGpu: Gpu {
         Box::pin(async { Vec::new() })
     }
 }
+
+/// A frame's pixels, once read back.
+pub(crate) type Pixels = std::pin::Pin<Box<dyn std::future::Future<Output = Vec<u8>>>>;
 
 /// A submission's times, milliseconds: per pass on the GPU, and the CPU's.
 pub(crate) type Timed = (Vec<(String, f64)>, f64);
@@ -260,11 +263,13 @@ impl Canvas {
     }
 
     /// Draws a frame with `draw`, which renders into the target it's
-    /// given, and presents it.
+    /// given, and presents it; with `read`, also its pixels, in the
+    /// canvas's byte order ([`format`](Self::format)).
     pub(crate) fn frame<R>(
         &mut self,
+        read: bool,
         draw: impl FnOnce(&mut dyn Gpu, TextureId, TargetFormat) -> R,
-    ) -> Result<R, String> {
+    ) -> Result<(R, Option<Pixels>), String> {
         match self {
             #[cfg(feature = "modern")]
             Self::Modern(m) => {
@@ -278,9 +283,11 @@ impl Canvas {
                     .create_view(&wgpu::TextureViewDescriptor::default());
                 let target = m.gpu.register_view(view);
                 let result = draw(&mut m.gpu, target, m.format);
+                let pixels =
+                    read.then(|| Box::pin(m.gpu.read_wgpu_texture(&frame.texture)) as Pixels);
                 m.gpu.destroy_texture(target);
                 m.gpu.queue().present(frame);
-                Ok(result)
+                Ok((result, pixels))
             }
             #[cfg(feature = "compat")]
             Self::Compat(c) => {
@@ -307,8 +314,9 @@ impl Canvas {
                     }
                 };
                 let result = draw(&mut c.gpu, frame, format);
+                let pixels = read.then(|| c.gpu.read_rgba8(frame));
                 c.gpu.present(frame, c.size.0, c.size.1);
-                Ok(result)
+                Ok((result, pixels.map(|p| Box::pin(async move { p }) as Pixels)))
             }
         }
     }
@@ -359,7 +367,9 @@ impl Modern {
             .find(|f| !f.is_srgb() && from_texture_format(*f).is_some())
             .ok_or("no non-sRGB 8-bit canvas format")?;
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // Frames are read back for `readNextFrame`; WebGPU canvases take
+            // any usage, though wgpu's capabilities list only this one.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: surface_format,
             width: width.max(1),
             height: height.max(1),

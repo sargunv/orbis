@@ -2374,7 +2374,6 @@ dependencies = [
  "orb-api",
  "orb-runtime",
  "orb-style",
- "orb-text",
  "orb-v8",
  "png",
  "serde_json",

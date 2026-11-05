@@ -15,15 +15,6 @@ default = ["modern"]
 modern = ["dep:orb-hal-wgpu", "dep:wgpu"]
 # WebGL2 through orb-hal-gl: the Compat tier, `compat.wasm` (plan §8.7).
 compat = ["dep:orb-hal-gl", "orb-runtime/compat"]
-# The render fixture driver (`cargo xtask rt --platform chrome`), on either
-# tier, built into `harness.wasm` and never into `core.wasm`.
-harness = [
-  "modern",
-  "compat",
-  "orb-host/fonts",
-  "orb-text/fonts",
-  "web-sys/Document",
-]
 
 [dependencies]
 futures-channel.workspace = true

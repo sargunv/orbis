@@ -16,8 +16,6 @@ mod bidi;
 pub mod font;
 mod glyph;
 mod label;
-#[cfg(feature = "fonts")]
-pub mod matrix;
 pub mod pbf;
 pub mod sdf;
 mod segment;

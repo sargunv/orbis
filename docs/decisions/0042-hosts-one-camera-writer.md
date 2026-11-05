@@ -175,3 +175,16 @@ no host API reaches. Frame bench through `orb-api`, M6 Metal, medians of
 2 × 50 frames (GPU ms; before → after): z12 0.450 → 0.611, z15
 0.733 → 0.730, z15 pitch 60 0.834 → 0.840, z17 0.638 → 0.759, z16 pitch 60
 with buildings 1.560 → 1.537.
+
+## The Chrome fixtures draw through the package
+
+`cargo xtask rt --platform chrome` opens `web/demo/fixture.html`, which draws
+each fixture through the `orbis` package: GL JS's map options at creation,
+operations as package calls, frames until loaded or idle, and the new
+`readPixels` (the next frame as the canvas shows it). `harness.wasm`, its
+`FixtureRenderer`, the `harness` feature and `orb_text::matrix` (decision
+0009's script matrix digest) are deleted; the identity check of every
+native pass against Chrome's picture covers what the digest did. Chrome
+passes 1208 against 1206 before (88 fail, 49 skip), every one of the 1206
+native passes identical; the query suite passes 71 of 83 in both. The run
+takes 118 s, from 71 s: frames go through the package's animation frames.

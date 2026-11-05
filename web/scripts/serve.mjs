@@ -14,8 +14,10 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".wasm": "applic
 
 // Resolves to { url, close } once listening on a free local port.
 // `isolated` serves the pages cross-origin isolated, which refines
-// `performance.now()` from 100 µs to 5 µs in Chrome.
-export async function serveDemo({ isolated = false } = {}) {
+// `performance.now()` from 100 µs to 5 µs in Chrome. `assets` serves that
+// directory at `fixtures/` too (the GL JS fixtures'), its JSON's `local://`
+// URLs pointing there.
+export async function serveDemo({ isolated = false, assets } = {}) {
   await build({ configFile: fileURLToPath(new URL("../vite.config.js", import.meta.url)), logLevel: "warn" });
   const isolation = isolated
     ? { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp" }
@@ -25,9 +27,10 @@ export async function serveDemo({ isolated = false } = {}) {
     if (!url.pathname.startsWith("/orbis/")) { res.writeHead(404).end(); return; }
     let pathname = decodeURIComponent(url.pathname.slice("/orbis/".length));
     if (!pathname || pathname.endsWith("/")) pathname += "index.html";
-    const path = normalize(join(root, pathname));
+    const [dir, file] = assets && pathname.startsWith("fixtures/") ? [assets, pathname.slice(9)] : [root, pathname];
+    const path = normalize(join(dir, file));
     try {
-      if (!path.startsWith(root)) { res.writeHead(403).end(); return; }
+      if (!path.startsWith(dir)) { res.writeHead(403).end(); return; }
       const size = (await stat(path)).size;
       const match = req.headers.range?.match(/^bytes=(\d+)-(\d+)$/);
       if (match) {
@@ -43,7 +46,11 @@ export async function serveDemo({ isolated = false } = {}) {
         } finally { await file.close(); }
         return;
       }
-      const body = await readFile(path);
+      let body = await readFile(path);
+      if (dir === assets && extname(path) === ".json") {
+        const here = `http://127.0.0.1:${server.address().port}/orbis/fixtures/`;
+        body = body.toString().replaceAll("local://", here).replaceAll("http://localhost:2900/", here);
+      }
       res.writeHead(200, { "content-type": types[extname(path)] ?? "application/octet-stream",
         ...isolation });
       res.end(body);
@@ -57,12 +64,13 @@ export async function serveDemo({ isolated = false } = {}) {
 
 // `unsafe` allows WebGPU's unsafe APIs, which also stops Chrome quantizing
 // timestamps; a user's Chrome runs without it. `headed` opens a window on
-// the display rather than drawing offscreen.
-export function launchChromium({ unsafe = true, headed = false } = {}) {
+// the display rather than drawing offscreen; `unpaced` runs animation frames
+// as fast as they draw rather than at the display's rate.
+export function launchChromium({ unsafe = true, headed = false, unpaced = false } = {}) {
   return chromium.launch({
     headless: !headed,
     args: [...(unsafe ? ["--enable-unsafe-webgpu"] : []), "--enable-features=Vulkan,WebGPU",
-      "--use-angle=metal"],
+      "--use-angle=metal", ...(unpaced ? ["--disable-gpu-vsync", "--disable-frame-rate-limit"] : [])],
   });
 }
 

@@ -10,7 +10,6 @@ version.workspace = true
 glam.workspace = true
 orb-api.workspace = true
 orb-runtime.workspace = true
-orb-text = { workspace = true, features = ["fonts"] }
 orb-style.workspace = true
 orb-v8.workspace = true
 png.workspace = true

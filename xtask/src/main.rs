@@ -38,7 +38,7 @@ cargo xtask <task>
   apple [--test] [--ios-sim[=name]]  hosts/apple/OrbisC.xcframework (macOS,
                iOS, iOS simulator) and the Swift package; --test runs the
                Swift smoke test; --ios-sim runs the iOS app on a simulator
-  web          build core.wasm and harness.wasm into web/pkg, report sizes
+  web          build core.wasm and compat.wasm into web/pkg, report sizes
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
   rt [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]
@@ -150,8 +150,9 @@ fn full_check() -> Result<(), String> {
         "--quiet",
         "--target",
         "wasm32-unknown-unknown",
+        // Both tiers' code.
         "--features",
-        "orb-web/harness",
+        "orb-web/compat",
     ];
     for name in boundaries::NATIVE_ONLY {
         wasm.extend(["--exclude", name]);
@@ -196,10 +197,9 @@ fn affected_check(base: &str) -> Result<(), String> {
         for name in &wasm_packages {
             wasm.extend(["-p", name.as_str()]);
         }
-        // `harness` only exists on orb-web: enable it when that crate is in
-        // the selection, as the full check does for the whole workspace.
+        // Both of orb-web's tiers, as the full check does.
         if wasm_packages.iter().any(|name| *name == "orb-web") {
-            wasm.extend(["--features", "orb-web/harness"]);
+            wasm.extend(["--features", "orb-web/compat"]);
         }
         wasm.extend(["--", "-D", "warnings"]);
         cargo(&wasm)?;
