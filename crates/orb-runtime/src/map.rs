@@ -183,11 +183,8 @@ pub(crate) enum Message {
     },
     Style {
         request: u64,
-        /// Where the document came from, for a scene document's relative
-        /// style URL.
+        /// Where the document came from, for its relative URLs.
         url: String,
-        /// A scene document's style: keep its surface.
-        scene: bool,
         result: Result<String, FetchError>,
     },
     Sprite {
@@ -200,13 +197,6 @@ pub(crate) enum Message {
         source: u32,
         result: Result<String, FetchError>,
     },
-    /// The style's model `index` loaded, for renderer `renderer`.
-    Model {
-        generation: u64,
-        renderer: u64,
-        index: usize,
-        result: Result<orb_3d::gpu::GpuModel, String>,
-    },
     Tile {
         generation: u64,
         /// The source's key.
@@ -217,7 +207,8 @@ pub(crate) enum Message {
         edit: Option<u64>,
         /// A DEM tile for the terrain rather than for the source's layers.
         terrain: bool,
-        result: Result<TileResult, String>,
+        /// Boxed: the other messages are much smaller.
+        result: Box<Result<TileResult, String>>,
     },
 }
 
@@ -303,9 +294,6 @@ pub(crate) struct LoadedStyle {
     /// The style's models by index: their bounds once the renderer holds
     /// them.
     pub(crate) models: Vec<Option<[[f32; 3]; 2]>>,
-    /// The renderer the models load for, and how many are loading.
-    pub(crate) models_for: Option<u64>,
-    pub(crate) models_loading: u32,
 }
 
 /// What tiles and styles let go of between frames, released from the
@@ -396,11 +384,8 @@ pub struct Map {
     pub(crate) terrain_skirts: bool,
     pub(crate) antialias_3d: bool,
     /// The plane the map draws on and its sources' tile matrix sets: the
-    /// scene's, planned for its tiles.
+    /// style's, planned for its tiles.
     pub(crate) surface: Surface,
-    /// A scene document whose style is loading, which the style parses
-    /// under (models resolved against the scene).
-    pub(crate) pending_scene: Option<orb_v8::SceneDocument>,
     /// The first frame's time: frames' time counts from it (fades,
     /// transitions and the shaders' time run on frame time).
     pub(crate) born: Option<f64>,
@@ -421,9 +406,6 @@ pub struct Map {
     /// The renderer whose tiles the map holds, by its id: a frame with
     /// another one forgets them.
     pub(crate) renderer: Option<u64>,
-    /// Model indices the renderer holds below: a new style's models
-    /// replace them.
-    pub(crate) models_resident: u32,
     /// What tiles and styles let go of between frames, for the next frame
     /// to release from the renderer.
     pub(crate) retired: Retired,
@@ -516,7 +498,6 @@ pub(crate) fn full_update(
         font_faces: doc.style().font_faces.clone(),
         local_ideographs,
         surface,
-        models: StyleUpdate::models_of(doc.style()),
     }
 }
 
@@ -577,7 +558,6 @@ impl Map {
             terrain_seen: 0,
             globe_warps: crate::globe::GlobeWarps::new(*surface.projection()),
             surface,
-            pending_scene: None,
             transitions: Default::default(),
             style_request: 0,
             style_error: None,
@@ -585,7 +565,6 @@ impl Map {
             tile_generation: 0,
             style: None,
             renderer: None,
-            models_resident: 0,
             retired: Retired::default(),
             terrain_skirts: true,
             antialias_3d: true,
@@ -730,9 +709,9 @@ impl Map {
         self.camera.state().zoom(self.surface.projection())
     }
 
-    /// The surface's projection, for camera moves. It changes when a scene
-    /// document loads (with [`MapEvent::StyleLoad`]) or with
-    /// [`set_projection`](Self::set_projection).
+    /// The surface's projection, for camera moves: the style's root
+    /// `projection`'s plane. It changes when a style loads (with
+    /// [`MapEvent::StyleLoad`]) or an edit sets another.
     pub fn projection(&self) -> orb_crs::Projection {
         *self.surface.projection()
     }
@@ -742,16 +721,6 @@ impl Map {
     /// [`MapEvent::StyleData`].
     pub fn surface(&self) -> orb_crs::Surface {
         self.surface.view_surface()
-    }
-
-    /// Draws the map on another plane, keeping the style, the sources'
-    /// tile matrix sets and the camera's target and resolution. Tiles load
-    /// again.
-    pub fn set_projection(&mut self, projection: orb_crs::Projection) {
-        let mut tx = orb_v8::Transaction::new();
-        tx.push(orb_v8::Op::SetPlane(Box::new(projection)));
-        // Without a style there is no scene to draw on another plane.
-        let _ = self.edit(&tx);
     }
 
     /// The view the camera gives for a viewport.
@@ -817,10 +786,18 @@ impl Map {
         }
     }
 
-    /// Loads a v8 style or a scene document from a URL; it replaces the
-    /// current one when it arrives.
+    /// Loads a v8 style from a URL; it replaces the current one when it
+    /// arrives.
     pub fn load_style_url(&mut self, url: &str) {
-        self.fetch_style(url, false);
+        self.style_error = None;
+        self.style_request += 1;
+        let request = self.style_request;
+        let owned = url.to_string();
+        self.fetch_text(url, move |result| Message::Style {
+            request,
+            url: owned,
+            result,
+        });
     }
 
     /// Why the latest style request failed, if it did: a fetch or parse
@@ -829,68 +806,19 @@ impl Map {
         self.style_error.as_deref()
     }
 
-    fn fetch_style(&mut self, url: &str, scene: bool) {
-        self.style_error = None;
-        self.style_request += 1;
-        let request = self.style_request;
-        let owned = url.to_string();
-        self.fetch_text(url, move |result| Message::Style {
-            request,
-            url: owned,
-            scene,
-            result,
-        });
-    }
-
-    /// Replaces the style with a v8 document on the default surface (Web
-    /// Mercator), or with a scene document and its style. Its tiles load
-    /// as frames render.
+    /// Replaces the style with a v8 document. Its tiles load as frames
+    /// render.
     pub fn set_style_json(&mut self, json: &str) -> Result<(), String> {
-        self.set_document(json, None, false)
+        self.set_document(json, None)
     }
 
-    /// Installs a v8 style or a scene document; `base`, the URL it came
-    /// from, resolves its relative URLs, and `scene` keeps the surface for
-    /// a scene's own style.
-    fn set_document(&mut self, json: &str, base: Option<&str>, scene: bool) -> Result<(), String> {
-        if !scene && orb_v8::is_scene(json) {
-            let parsed = orb_v8::parse_scene(json).map_err(|d| d.to_string())?;
-            self.warnings
-                .extend(parsed.warnings.iter().map(ToString::to_string));
-            let models = parsed
-                .models
-                .iter()
-                .map(|(id, url)| {
-                    let url = match base {
-                        Some(base) => orb_source::endpoint::join_url(base, url),
-                        None => url.clone(),
-                    };
-                    (id.clone(), url)
-                })
-                .collect();
-            let style = parsed.style.clone();
-            self.pending_scene = Some(orb_v8::SceneDocument { models, ..parsed });
-            return match style {
-                orb_v8::StyleRef::Inline(style) => self.set_document(&style, base, true),
-                orb_v8::StyleRef::Url(url) => {
-                    let url = match base {
-                        Some(base) => orb_source::endpoint::join_url(base, &url),
-                        None => url,
-                    };
-                    self.fetch_style(&url, true);
-                    Ok(())
-                }
-            };
-        }
+    /// Installs a v8 style; `base`, the URL it came from, resolves its
+    /// relative URLs.
+    fn set_document(&mut self, json: &str, base: Option<&str>) -> Result<(), String> {
         // A fetched style's relative URLs are relative to it.
         let resolved = base.map(|base| orb_source::endpoint::resolve_style_urls(json, base));
         let text = resolved.as_deref().unwrap_or(json);
-        let pending = std::mem::take(&mut self.pending_scene).filter(|_| scene);
-        let doc = match &pending {
-            Some(scene) => StyleDoc::parse_extended(text, scene),
-            None => StyleDoc::parse(text),
-        }
-        .map_err(|d| d.to_string())?;
+        let doc = StyleDoc::parse(text).map_err(|d| d.to_string())?;
         // A style URL still loading is superseded, and the old style's
         // paint transitions with it.
         self.style_request += 1;
@@ -943,7 +871,6 @@ impl Map {
         }
         // What the old renderer held went with it.
         self.retired = Retired::default();
-        self.models_resident = 0;
     }
 
     /// Replaces the style with a document, every tile loaded fresh.
@@ -1040,8 +967,6 @@ impl Map {
             terrain: None,
             globe_meshes: self.surface.globe().is_some(),
             models: Vec::new(),
-            models_for: None,
-            models_loading: 0,
         });
         self.nodes_stale = true;
     }
@@ -1165,7 +1090,6 @@ impl Map {
         self.retired.release(renderer);
         renderer.set_antialias_3d(gpu, self.antialias_3d);
         self.start_sprites(gpu, pixel_ratio);
-        self.start_models(gpu, renderer);
         self.apply_image_edits(gpu);
         // Bring the scene's nodes to the plan before results for it apply.
         self.sync_nodes(gpu, renderer);
@@ -1173,7 +1097,6 @@ impl Map {
         self.apply_messages(gpu, renderer);
         // A URL style may have arrived while applying messages.
         self.start_sprites(gpu, pixel_ratio);
-        self.start_models(gpu, renderer);
         self.sync_nodes(gpu, renderer);
         self.apply_videos(gpu, renderer);
         // The camera moves for this frame on what has arrived.
@@ -1305,7 +1228,6 @@ impl Map {
         }
         report.loaded = self.style.as_ref().is_some_and(|s| {
             s.sprites_loading == 0
-                && s.models_loading == 0
                 && s.sources
                     .iter()
                     .all(|source| !matches!(source, SourceState::Resolving))
@@ -1372,8 +1294,6 @@ impl Map {
             lights: frame_lights,
             globe,
         };
-        let occluded = scene.as_deref().is_some_and(|s| s.symbol_occlusion);
-        renderer.set_symbol_occlusion(gpu, occluded);
         // The shared atlas grows pages as images arrive.
         if let Some(atlas) = &self
             .services
@@ -1497,36 +1417,6 @@ impl Map {
         style.paint.invalidate();
         for placed in &mut style.placed {
             placed.clear();
-        }
-    }
-
-    /// Loads the style's models for `renderer`, once per style and
-    /// renderer; a new style's replace the last one's there.
-    fn start_models(&mut self, gpu: &mut dyn Gpu, renderer: &mut Renderer) {
-        let Some(style) = &mut self.style else { return };
-        if style.models_for == Some(renderer.id()) {
-            return;
-        }
-        style.models_for = Some(renderer.id());
-        for index in 0..std::mem::take(&mut self.models_resident) {
-            renderer.remove_model(gpu, index);
-        }
-        let worker = Arc::clone(&style.worker);
-        let models = &worker.plan().style.models;
-        style.models = vec![None; models.len()];
-        if models.is_empty() {
-            return;
-        }
-        style.models_loading = models.len() as u32;
-        for (index, (_, url)) in models.iter().enumerate() {
-            let (generation, renderer) = (self.generation, renderer.id());
-            let done = self.reply(move |result| Message::Model {
-                generation,
-                renderer,
-                index,
-                result,
-            });
-            self.services.jobs.model(url.clone(), done);
         }
     }
 
@@ -1751,7 +1641,7 @@ impl Map {
             tile,
             edit,
             terrain,
-            result,
+            result: Box::new(result),
         });
         self.services.jobs.load(request, done);
     }
@@ -2065,7 +1955,6 @@ impl Map {
         &mut self,
         request: u64,
         url: &str,
-        scene: bool,
         result: Result<String, FetchError>,
     ) {
         if request != self.style_request {
@@ -2073,7 +1962,7 @@ impl Map {
         }
         let installed = result
             .map_err(|e| e.to_string())
-            .and_then(|json| self.set_document(&json, Some(url), scene));
+            .and_then(|json| self.set_document(&json, Some(url)));
         if let Err(e) = installed {
             let message = format!("style: {e}");
             self.style_error = Some(message.clone());
@@ -2329,18 +2218,17 @@ mod tests {
         while let Ok(Message::Style {
             request,
             url,
-            scene,
             result,
         }) = map.receiver.try_recv()
         {
-            map.apply_style(request, &url, scene, result);
+            map.apply_style(request, &url, result);
         }
         let name = map.style.as_ref().unwrap().worker.plan().style.name.clone();
         assert_eq!(name.as_deref(), Some("b"));
     }
 
     #[test]
-    fn scene_documents_choose_the_surface_and_load_their_style() {
+    fn the_root_projection_chooses_the_surface() {
         let fetch = Arc::new(HeldFetch::default());
         let services = Services {
             clock: Arc::new(NoClock),
@@ -2356,38 +2244,35 @@ mod tests {
         };
         let mut map = Map::new(services, None);
         map.load_style_url("https://example.com/maps/polar.json");
-        let deliver = |map: &mut Map, body: &str| {
-            let (url, done) = fetch.pending.lock().unwrap().pop().unwrap();
-            done(Ok(body.as_bytes().to_vec()));
-            while let Ok(Message::Style {
-                request,
-                url,
-                scene,
-                result,
-            }) = map.receiver.try_recv()
-            {
-                map.apply_style(request, &url, scene, result);
-            }
-            url
-        };
-        deliver(
-            &mut map,
-            r#"{"style": "styles/b.json", "projection": {"type": "EPSG:3413"},
-                "sources": {"s": {"tileMatrixSet": "UPSArcticWGS84Quad"}}}"#,
-        );
-        // The surface comes with the scene's style, as one scene.
-        assert_eq!(map.projection().descriptor().kind, "web-mercator");
-        // The scene's relative style URL loads next, onto its surface.
-        assert_eq!(
-            deliver(&mut map, &style("b")),
-            "https://example.com/maps/styles/b.json"
-        );
+        let (_, done) = fetch.pending.lock().unwrap().pop().unwrap();
+        done(Ok(br#"{"version": 8, "projection": {"type": "EPSG:3413"},
+            "sources": {"s": {"type": "raster", "tiles": ["t/{z}/{x}/{y}.png"],
+                              "tileMatrixSet": "UPSArcticWGS84Quad"}},
+            "layers": []}"#
+            .to_vec()));
+        while let Ok(Message::Style {
+            request,
+            url,
+            result,
+        }) = map.receiver.try_recv()
+        {
+            map.apply_style(request, &url, result);
+        }
         assert_eq!(map.projection().descriptor().kind, "EPSG:3413");
         assert_eq!(
             map.surface.source_tms("s", false).id(),
             "UPSArcticWGS84Quad"
         );
-        // A plain v8 style is the default scene again.
+        // An edit to Web Mercator plans the surface again.
+        let tx = orb_v8::Transaction::from_commands(r#"[["setProjection", {"type": "mercator"}]]"#)
+            .unwrap();
+        map.edit(&tx).unwrap();
+        assert_eq!(map.projection().descriptor().kind, "web-mercator");
+        assert_eq!(
+            map.surface.source_tms("s", false).id(),
+            "UPSArcticWGS84Quad"
+        );
+        // A style without a projection is on Web Mercator.
         map.set_style_json(&style("c")).unwrap();
         assert_eq!(map.projection().descriptor().kind, "web-mercator");
     }

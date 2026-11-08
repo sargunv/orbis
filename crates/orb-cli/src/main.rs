@@ -5,12 +5,12 @@
 //! orbis tiles <style> -o dir --tms <id|tms.json> --zoom z[-z] [--bbox w,s,e,n] [--size px] [--scale s]
 //! ```
 //!
-//! `<style>` is a v8 style or a scene document: a URL (`https://`,
-//! `file://`, `pmtiles://`) or a path. `render` draws one picture in Still
+//! `<style>` is a v8 style: a URL (`https://`, `file://`, `pmtiles://`)
+//! or a path. `render` draws one picture in Still
 //! mode (`--at`'s zoom is Web Mercator's, as the style's own plane is known
 //! only once it loads); `--a11y` also writes the picture's semantic
 //! snapshot as JSON. `tiles` draws every tile of a tile matrix set on the
-//! scene's plane in Tile mode, `dir/z/col/row.png`, rows in the set's own
+//! style's plane in Tile mode, `dir/z/col/row.png`, rows in the set's own
 //! order; `--bbox` (degrees) limits them to the tiles it touches.
 
 #![forbid(unsafe_code)]

@@ -66,8 +66,8 @@ pub(crate) fn web_mercator() -> orb_crs::Projection {
 }
 
 /// The camera of `at`, or `None` to use the style's. Its zoom is on
-/// the default Web Mercator surface: a scene document's own plane is known
-/// only once it loads.
+/// the default Web Mercator surface: a style's own plane is known only
+/// once it loads.
 pub(crate) fn camera(options: &Options) -> Option<CameraState> {
     options
         .at

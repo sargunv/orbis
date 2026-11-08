@@ -11,8 +11,8 @@ use crate::family::{
 /// A map projection into a plane's world space (world units with y up:
 /// projected metres, or degrees for a geographic plane).
 ///
-/// Built from a [`Descriptor`], as in the scene document's
-/// `{"type": "...", ...}`, and turned back into one by
+/// Built from a [`Descriptor`], as in a style's root
+/// `{"type": "...", ...}` `projection`, and turned back into one by
 /// [`descriptor`](Self::descriptor).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Projection {

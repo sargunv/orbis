@@ -34,9 +34,8 @@ fn tokyo(extra: &str, sources: &str) -> String {
     style.replacen("\"sources\": {", &format!("\"sources\": {{{sources}"), 1)
 }
 
-/// Tokyo's buildings standing, under a low sun that casts shadows
-/// a scene document over the extract.
-fn shadowed_tokyo() -> String {
+/// Tokyo's buildings standing, as extrusions under the v8 `light`.
+fn extruded_tokyo() -> String {
     let style = tokyo("", "").replacen(
         "{\n      \"id\": \"building\",",
         r##"{"id": "building-3d", "type": "fill-extrusion", "source": "openmaptiles",
@@ -47,13 +46,7 @@ fn shadowed_tokyo() -> String {
         1,
     );
     assert!(style.contains("building-3d"));
-    format!(
-        r##"{{"style": {style},
-            "lights": [
-              {{"type": "ambient", "properties": {{"intensity": 0.5}}}},
-              {{"type": "sun", "properties": {{"time": "2024-10-20T06:30:00Z",
-                "intensity": 0.6, "cast-shadows": true}}}}]}}"##
-    )
+    style
 }
 
 /// A camera: centre, zoom, bearing, pitch.
@@ -233,10 +226,10 @@ fn zooming_in_with_a_turn_and_tilt_draws_what_a_fresh_map_does() {
 }
 
 #[test]
-fn shadows_after_a_gesture_are_a_fresh_map_s() {
+fn extrusions_after_a_gesture_are_a_fresh_map_s() {
     let start = (Geodetic::new(139.72, 35.67), 14.2, 0.0, 0.0);
     let end = (STATION, 15.6, -40.0, 60.0);
-    assert_same("shadows", both_ways(&shadowed_tokyo(), start, end, 30));
+    assert_same("extrusions", both_ways(&extruded_tokyo(), start, end, 30));
 }
 
 /// Panning around a circle frame by frame, as the bench's moving camera
@@ -403,36 +396,6 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
     assert_same("terrain", both_ways(&style, start, end, 30));
-}
-
-/// Contour lines over the hills (the scene document's `contour`), flat and
-/// draped on terrain: each tile's lines meet its neighbours' from the
-/// borders the view reads, so a gesture through a change of interval
-/// draws the lines a fresh map at rest does.
-#[test]
-fn contours_after_a_gesture_are_a_fresh_map_s() {
-    let (hills, _dem) = hills();
-    let hills = hills.trim_end_matches(',');
-    let scene = |terrain: &str| {
-        format!(
-            r##"{{"style": {{"version": 8, "sources": {{{hills}}}, {terrain}
-                "layers": [{{"id": "ground", "type": "background", "paint": {{"background-color": "#f4f0e6"}}}}]}},
-              "layers+": [{{"id": "contours", "type": "contour", "source": "hills",
-                "paint": {{"contour-interval": ["step", ["zoom"], 100, 12, 50], "contour-color": "#6b4a2b"}}}}]}}"##
-        )
-    };
-    let start = (Geodetic::new(139.70, 35.66), 11.5, 0.0, 0.0);
-    let end = (STATION, 12.8, 30.0, 50.0);
-    let flat = both_ways(&scene(""), start, end, 30);
-    // The lines draw: dark on the light ground.
-    let lines = flat.1.chunks(4).filter(|p| p[0] < 200).count();
-    assert!(lines > 2000, "{lines} pixels of contour lines");
-    assert_same("contours", flat);
-    let terrain = r#""terrain": {"source": "hills", "exaggeration": 1.5},"#;
-    assert_same(
-        "draped contours",
-        both_ways(&scene(terrain), start, end, 30),
-    );
 }
 
 /// Ridges against the sky over the Alps: a turn and tilt to a pitch of
@@ -606,7 +569,7 @@ fn camera_only_frames_write_no_rows() {
     for style in [
         tokyo("", ""),
         tokyo(r#""projection": {"type": "globe"},"#, ""),
-        shadowed_tokyo(),
+        extruded_tokyo(),
     ] {
         let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
         let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);

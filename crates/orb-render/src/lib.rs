@@ -1663,8 +1663,7 @@ impl Renderer {
             || self.terrain.as_ref().is_some_and(terrain::Terrain::active)
     }
 
-    /// Hides symbols and circles behind 3D layers as well as the terrain
-    /// (the scene document's `symbol-occlusion`).
+    /// Hides symbols and circles behind 3D layers as well as the terrain.
     pub fn set_symbol_occlusion(&mut self, gpu: &mut dyn Gpu, enabled: bool) {
         if enabled == self.occlusion.enabled {
             return;

@@ -6,10 +6,6 @@ use orb_style::*;
 /// One edit. Layer and source ids are as in the style.
 #[derive(Clone, Debug)]
 pub enum Op {
-    /// Draws the scene on another plane (the scene document's
-    /// `projection`), keeping the sources' tile matrix sets and the
-    /// low-zoom surface. Tiles load again.
-    SetPlane(Box<orb_crs::Projection>),
     /// `None` unsets the property, back to its default.
     SetPaint {
         layer: String,

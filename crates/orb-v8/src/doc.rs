@@ -36,37 +36,6 @@ pub struct StyleDoc {
     pub(crate) overrides: Vec<(String, Value<'static>)>,
     style: Arc<Scene>,
     next_key: u32,
-    /// What the scene document sets over the style.
-    decoration: Arc<Decoration>,
-}
-
-/// What a scene document sets over the style it extends:
-/// it decorates the style's v8 meaning, never edits it, so every snapshot
-/// of the style gets it again.
-#[derive(Clone, Debug, Default)]
-struct Decoration {
-    projection: Option<orb_crs::Projection>,
-    globe: Option<orb_crs::Globe>,
-    tile_matrix_sets: Vec<(String, orb_crs::TileMatrixSet)>,
-    lights: Option<Lights>,
-    atmosphere: Option<Atmosphere>,
-    symbol_occlusion: bool,
-}
-
-impl Decoration {
-    fn apply(&self, mut scene: Scene) -> Scene {
-        scene.projection = self.projection;
-        scene.symbol_occlusion = self.symbol_occlusion;
-        scene.globe = self.globe.or(scene.globe);
-        scene.tile_matrix_sets = self.tile_matrix_sets.clone();
-        if let Some(lights) = &self.lights {
-            scene.lights = lights.clone();
-        }
-        if let Some(atmosphere) = &self.atmosphere {
-            scene.atmosphere = Some(atmosphere.clone());
-        }
-        scene
-    }
 }
 
 /// The working copy a transaction edits.
@@ -137,91 +106,6 @@ impl StyleDoc {
         Ok(Self::from_parts(style, &root))
     }
 
-    /// A v8 document as a scene document extends it:
-    /// with the scene's `models` (resolved URLs), the paint it sets on
-    /// the style's layers and its added layers, in
-    /// the scene dialect, under the scene's projection, tile matrix sets,
-    /// low-zoom surface, lights and atmosphere.
-    pub fn parse_extended(text: &str, scene: &crate::SceneDocument) -> Result<Self, Diagnostics> {
-        let (models, added) = (&scene.models, &scene.layers);
-        let root = json::parse(text).map_err(|e| error(e.to_string()))?;
-        let mut members = root
-            .as_object()
-            .ok_or_else(|| error("a style must be an object"))?
-            .to_vec();
-        let mut layers: Vec<Json> = member(&members, "layers")
-            .and_then(Json::as_array)
-            .unwrap_or_default()
-            .to_vec();
-        for layer in added {
-            let at = |id: &str| {
-                layers
-                    .iter()
-                    .position(|l| layer_id(l) == Some(id))
-                    .ok_or_else(|| error(format!("layers+: the layer \"{id}\" does not exist")))
-            };
-            let index = match (&layer.before, &layer.after) {
-                (Some(before), _) => at(before)?,
-                (_, Some(after)) => at(after)? + 1,
-                _ => layers.len(),
-            };
-            layers.insert(index, layer.json.clone());
-        }
-        for (id, paint) in &scene.paint {
-            let layer = layers
-                .iter_mut()
-                .find(|l| layer_id(l) == Some(id))
-                .ok_or_else(|| error(format!("layers.{id}: the layer \"{id}\" does not exist")))?;
-            let mut members = layer.as_object().unwrap_or_default().to_vec();
-            let mut own = member(&members, "paint")
-                .and_then(Json::as_object)
-                .unwrap_or_default()
-                .to_vec();
-            for m in paint.as_object().unwrap_or_default() {
-                set_member(&mut own, &m.key, Some(m.value.clone()));
-            }
-            set_member(
-                &mut members,
-                "paint",
-                Some(synthetic(JsonValue::Object(own))),
-            );
-            *layer = synthetic(JsonValue::Object(members));
-        }
-        set_member(
-            &mut members,
-            "layers",
-            Some(synthetic(JsonValue::Array(layers))),
-        );
-        if !models.is_empty() {
-            let object = models
-                .iter()
-                .map(|(id, url)| Member {
-                    key: id.clone(),
-                    key_span: Span::default(),
-                    value: synthetic(JsonValue::String(url.clone())),
-                })
-                .collect();
-            set_member(
-                &mut members,
-                "models",
-                Some(synthetic(JsonValue::Object(object))),
-            );
-        }
-        let merged = synthetic(JsonValue::Object(members));
-        let style = crate::parse_dialect(&merged.to_string(), &[], Dialect::Scene)?;
-        let mut doc = Self::from_parts(style, &merged);
-        doc.decoration = Arc::new(Decoration {
-            projection: scene.projection,
-            globe: scene.globe,
-            tile_matrix_sets: scene.sources.clone(),
-            lights: scene.lights.clone(),
-            atmosphere: scene.atmosphere.clone(),
-            symbol_occlusion: scene.symbol_occlusion,
-        });
-        doc.style = Arc::new(doc.decoration.apply((*doc.style).clone()));
-        Ok(doc)
-    }
-
     fn from_parts(style: Scene, root: &Json) -> Self {
         let mut next_key = 0;
         let mut key = || {
@@ -261,7 +145,6 @@ impl StyleDoc {
             overrides: Vec::new(),
             style: Arc::new(style),
             next_key,
-            decoration: Arc::default(),
         }
     }
 
@@ -403,12 +286,6 @@ impl StyleDoc {
             });
         }
         let (style, mut patch) = diff::diff(self, &draft)?;
-        for op in &tx.ops {
-            if let Op::SetPlane(projection) = op {
-                Arc::make_mut(&mut self.decoration).projection = Some(**projection);
-                patch.changes.push(Change::Restyle);
-            }
-        }
         self.version += 1;
         patch.version = self.version;
         patch.feature_state = std::mem::take(&mut draft.feature_state);
@@ -417,7 +294,7 @@ impl StyleDoc {
         self.layers = draft.layers;
         self.overrides = draft.overrides;
         self.next_key = draft.next_key;
-        self.style = Arc::new(self.decoration.apply(style));
+        self.style = Arc::new(style);
         Ok(patch)
     }
 }
@@ -513,8 +390,6 @@ impl Draft {
 
     pub(crate) fn apply(&mut self, op: &Op) -> Result<(), String> {
         match op {
-            // The document applies it, over the style.
-            Op::SetPlane(_) => Ok(()),
             Op::SetPaint { layer, name, value } => {
                 self.set_property(layer, "paint", name, value.clone())
             }

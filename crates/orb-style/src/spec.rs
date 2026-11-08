@@ -141,8 +141,7 @@ pub const VISIBILITY: Prop = prop(
 const OFFSET: PropertyType = PropertyType::Array(Type::Number, Some(2));
 const ANCHOR: PropertyType = enumeration::<Anchor>();
 const ANCHORS: PropertyType = PropertyType::Array(Type::String, None);
-// The scene document's `model` layer (its names follow the layer Mapbox
-// GL JS ships, where it has them).
+// The `model` layer's vectors.
 const VEC3: PropertyType = PropertyType::Array(Type::Number, Some(3));
 
 /// A v8 layer type.
@@ -158,11 +157,10 @@ pub enum LayerType {
     Hillshade,
     ColorRelief,
     Symbol,
-    /// glTF models at point features: the scene document's `model`, which
-    /// v8 documents can't have.
+    /// glTF models at point features, which no document can declare.
     Model,
-    /// Contour lines of a `raster-dem` source, worked out on the GPU: the
-    /// scene document's `contour`.
+    /// Contour lines of a `raster-dem` source, which no document can
+    /// declare.
     Contour,
 }
 
@@ -198,11 +196,9 @@ impl LayerType {
         }
     }
 
+    /// A v8 type by its name.
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::V8
-            .into_iter()
-            .chain([Self::Model, Self::Contour])
-            .find(|t| t.name() == name)
+        Self::V8.into_iter().find(|t| t.name() == name)
     }
 
     /// The type's properties: a contiguous run of the table.
@@ -532,7 +528,7 @@ properties! {
         paint TEXT_TRANSLATE_ANCHOR: TranslateAnchor = prop("text-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
     }
     Model {
-        /// A key of the style's `models`.
+        /// The model's id.
         layout MODEL_ID: Option<String> = prop("model-id", PropertyType::String, None).data_driven();
         /// Along the model's own axes.
         paint MODEL_SCALE: [f32; 3] = prop("model-scale", VEC3, Some("[1, 1, 1]")).data_driven().interpolated();

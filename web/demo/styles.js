@@ -8,41 +8,11 @@ import scripts from "./data/scripts.json?url";
 import arctic from "./data/crs/arctic.json?url";
 import greenland from "./data/crs/greenland.json?url";
 import nz from "./data/crs/nz.json?url";
-import equalEarth from "./data/crs/equal-earth.json?url";
 import blueMarble from "./data/crs/blue-marble.json?url";
 import alps from "./data/alps.json?url";
-import alpsSunlitScene from "./data/alps-sunlit.json";
-import alpsHikingScene from "./data/alps-hiking.json";
 import osmCarto from "./data/osm-carto.json?url";
 import alpsFlight from "./data/alps-flight.json";
-import globe from "./data/globe.json?url";
-import manhattan from "./data/manhattan.json?url";
 import video from "./data/video.json?url";
-import landmarksScene from "./data/tokyo-landmarks.json";
-import litMorning from "./data/lit/tokyo-morning.json?url";
-import litNoon from "./data/lit/tokyo-noon.json?url";
-import litDusk from "./data/lit/tokyo-dusk.json?url";
-import litNight from "./data/lit/tokyo-night.json?url";
-import litEarth from "./data/lit/earth.json?url";
-import tower from "./data/models/tower.glb?url";
-import torii from "./data/models/torii.glb?url";
-import pagoda from "./data/models/pagoda.glb?url";
-
-// The sunlit Alps scene names its style relatively, which the bundle's
-// hashed asset names break: point it at the bundled style.
-const alpsSunlit = `data:application/json,${encodeURIComponent(JSON.stringify({
-  ...alpsSunlitScene, style: new URL(alps, location.href).href,
-}))}`;
-const alpsHiking = `data:application/json,${encodeURIComponent(JSON.stringify({
-  ...alpsHikingScene, style: new URL(alps, location.href).href,
-}))}`;
-
-// The landmarks scene names its models relatively, which hashed asset
-// names break too.
-const absolute = (url) => new URL(url, location.href).href;
-const landmarks = `data:application/json,${encodeURIComponent(JSON.stringify({
-  ...landmarksScene, models: { tower: absolute(tower), torii: absolute(torii), pagoda: absolute(pagoda) },
-}))}`;
 
 /** OpenFreeMap's live Liberty style over the planet: the demo's default. */
 export const LIVE = "https://tiles.openfreemap.org/styles/liberty";
@@ -110,6 +80,13 @@ const DUSK = [
   ["setPaintProperty", "water", "fill-layer-blend", "screen"],
 ];
 
+/** A blue sky around the globe that thins out as it hands over to Mercator. */
+const GLOBE_SKY = [
+  ["setSky", { "sky-color": "#4f8fd9", "horizon-color": "#d6e8fb", "fog-color": "#e4eef8",
+    "sky-horizon-blend": 0.7, "horizon-fog-blend": 0.6, "fog-ground-blend": 0.7,
+    "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 1, 2, 0.8, 4, 0.45, 8, 0] }],
+];
+
 /**
  * GL JS's image source example: a weather radar frame over the northeast
  * of the United States, on Liberty.
@@ -121,33 +98,14 @@ const RADAR = [
     paint: { "raster-fade-duration": 0, "raster-opacity": 0.85 } }],
 ];
 
-/** The landmarks scene's glTF models, at points of a GeoJSON source, under Liberty's labels. */
-const point = (model, coordinates) => ({ type: "Feature", properties: { model },
-  geometry: { type: "Point", coordinates } });
-const LANDMARKS = [
-  ["addSource", "landmarks", { type: "geojson", data: { type: "FeatureCollection", features: [
-    point("tower", [139.74543, 35.65858]),
-    point("torii", [139.7497, 35.6572]),
-    point("pagoda", [139.7462, 35.6553]),
-  ] } }],
-  ["addLayer", { id: "landmarks", type: "model", source: "landmarks",
-    layout: { "model-id": ["get", "model"] } }, "road_one_way_arrow"],
-];
-
 /** @type {{ name: string, scenes: Scene[] }[]} */
 export const GROUPS = [
   {
     name: "Orbis showcases",
     scenes: [
-      { key: "globe", name: "Globe", detail: "Liberty on the v8 globe in space, Web Mercator from zoom 12",
-        url: globe, projection: { type: "globe" }, camera: { center: [10, 30], zoom: 1.5 }, dark: true,
-        swatch: ["#f8f4f0", "#a0c8f0", "#02040b"] },
-      { key: "lit-earth", name: "Lit Earth", detail: "The sun over the globe: day, dusk, and NASA's city lights by night",
-        url: litEarth, projection: { type: "globe" }, camera: { center: [60, 22], zoom: 1.6 }, dark: true,
-        swatch: ["#e6dfcf", "#1c2440", "#f6d27a"] },
-      { key: "manhattan", name: "Manhattan in 3D", detail: "Low afternoon sun: shadows, and labels hidden behind buildings",
-        url: manhattan, camera: { center: [-73.985, 40.752], zoom: 15.6, bearing: 29, pitch: 62 },
-        swatch: ["#d8d4cf", "#a0c8f0", "#e9ac77"] },
+      { key: "globe", name: "Globe", detail: "Liberty on the v8 globe under a v8 sky, Web Mercator from zoom 12",
+        url: LIVE, projection: { type: "globe" }, calls: GLOBE_SKY, camera: { center: [10, 30], zoom: 1.5 },
+        dark: true, swatch: ["#f8f4f0", "#a0c8f0", "#02040b"] },
       { key: "dusk", name: "Liberty at dusk", detail: "Layer blends: a multiplied tint, glowing roads",
         url: LIVE, calls: DUSK, camera: { center: [139.767, 35.681], zoom: 12.5 }, dark: true,
         swatch: ["#4c4f6e", "#6f86b8", "#ff9d4d"] },
@@ -155,18 +113,11 @@ export const GROUPS = [
         url: blueMarble, dark: true, swatch: ["#2f4a2a", "#0b2a5c", "#d8d0b8"] },
       { key: "alps", name: "Alps terrain flight", detail: "3D terrain, sky and a looping camera flight", url: alps,
         flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
-      { key: "alps-sunlit", name: "Alps in morning sun", detail: "The same flight, lit by the sun at a time and place", url: alpsSunlit,
-        flight: alpsFlight.legs, swatch: ["#c9cdb8", "#8fa9bd", "#6b7660"] },
-      { key: "alps-hiking", name: "Alps hiking map", detail: "Contour lines worked out on the GPU, trails, lit terrain",
-        url: alpsHiking, camera: { center: [7.70, 45.985], zoom: 13.2, bearing: -60, pitch: 45 },
-        swatch: ["#d9d2c0", "#7a5636", "#c8322a"] },
-      { key: "landmarks", name: "Tokyo landmarks", detail: "glTF models among sunlit 3D buildings",
-        url: landmarks, calls: LANDMARKS, camera: { center: [139.7471, 35.6566], zoom: 16.2, bearing: -25, pitch: 60 },
-        swatch: ["#e9e4dc", "#a0c8f0", "#e8542a"] },
       { key: "arctic", name: "Arctic", detail: "Polar stereographic, EPSG:3413", url: arctic, dark: true,
         swatch: ["#24476b", "#e9eef2", "#9aa6ad"] },
       { key: "equal-earth", name: "Equal Earth", detail: "The whole world equal-area, handing over to Web Mercator by zoom 7",
-        url: equalEarth, camera: { center: [0, 10], zoom: 0.5 }, swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
+        url: LIVE, projection: { type: "equal-earth" }, camera: { center: [0, 10], zoom: 0.5 },
+        swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
       { key: "nz", name: "New Zealand", detail: "Transverse Mercator, NZTM2000", url: nz,
         swatch: ["#f8f4f0", "#a0c8f0", "#bfd6a8"] },
       { key: "greenland", name: "Greenland ice flow", detail: "Polar imagery warped onto Web Mercator", url: greenland,
@@ -186,19 +137,6 @@ export const GROUPS = [
         formats: { mvt, mlt }, constraints: { bounds: TOKYO_BOUNDS, maxPitch: 0 },
         swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
     ],
-  },
-  {
-    name: "Lit Tokyo",
-    scenes: [
-      ["lit-morning", "Morning", "Liberty lit as one surface by a low eastern sun", litMorning,
-        ["#e8dcc8", "#8fb4d8", "#f0a868"]],
-      ["lit-noon", "Noon", "The whole map under the midday sun, its buildings' shadows on the ground", litNoon,
-        ["#f2efe8", "#9cc4ec", "#f6d27a"]],
-      ["lit-dusk", "Dusk", "A low orange sun, glossy water", litDusk, ["#c9a990", "#6a7fb8", "#ff9d4d"]],
-      ["lit-night", "Night", "Streets that light themselves under a dark sky", litNight,
-        ["#20253a", "#0f1a38", "#f6d27a"], true],
-    ].map(([key, name, detail, url, swatch, dark]) => ({ key, name, detail, url, swatch, dark,
-      camera: { center: [139.7655, 35.6795], zoom: 15.6, bearing: -20, pitch: 60 } })),
   },
   {
     name: "OpenFreeMap",
@@ -277,7 +215,8 @@ export function sceneFor(params, camera) {
   }
   if (SCENES[style]) return { scene: SCENES[style] };
   const url = new URL(style, location.href).href;
-  const known = Object.values(SCENES).find((s) => new URL(s.url, location.href).href === url);
+  const known = Object.values(SCENES)
+    .find((s) => !s.projection && !s.calls && new URL(s.url, location.href).href === url);
   if (known) return { scene: known };
   return { scene: { key: style, name: new URL(url).hostname, detail: url, url, provider: "Custom style",
     basemap: true, swatch: ["#e8e8e8", "#c8c8c8", "#9a9a9a"] } };

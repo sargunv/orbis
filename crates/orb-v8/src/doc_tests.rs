@@ -323,58 +323,43 @@ fn terrain_switches_without_a_reload_and_follows_its_source() {
 }
 
 #[test]
-fn a_scene_extends_its_style_in_the_scene_dialect() {
-    let scene = crate::parse_scene(
-        r#"{"style": "s.json", "models": {"tower": "t.glb"},
-            "layers+": [{"id": "towers", "type": "model", "source": "g", "after": "water"}]}"#,
-    )
-    .unwrap();
-    let models = [("tower".to_string(), "https://example.com/t.glb".to_string())];
-    let scene = crate::SceneDocument {
-        models: models.to_vec(),
-        ..scene
-    };
-    let mut doc = StyleDoc::parse_extended(STYLE, &scene).unwrap();
-    let ids: Vec<&str> = doc.style().layers.iter().map(|l| l.id.as_str()).collect();
-    assert_eq!(ids, ["bg", "water", "towers", "roads", "points"]);
-    assert_eq!(doc.style().models, models);
-    // Edits keep the dialect: another model layer can be added.
-    commands(
-        &mut doc,
-        r#"[["addLayer", {"id": "more", "type": "model", "source": "g"}]]"#,
-    );
-    assert_eq!(
-        doc.style().layers.last().unwrap().ty,
-        crate::LayerType::Model
-    );
-    // The v8 document alone has none.
-    let mut plain = StyleDoc::parse(STYLE).unwrap();
-    let tx = Transaction::from_commands(
-        r#"[["addLayer", {"id": "more", "type": "model", "source": "g"}]]"#,
-    )
-    .unwrap();
-    assert!(plain.apply(&tx).is_err());
+fn only_v8_layer_types_parse() {
+    let mut doc = doc();
+    for ty in ["model", "contour"] {
+        let tx = Transaction::from_commands(&format!(
+            r#"[["addLayer", {{"id": "more", "type": "{ty}", "source": "g"}}]]"#
+        ))
+        .unwrap();
+        assert!(doc.apply(&tx).is_err(), "{ty}");
+    }
 }
 
-/// A scene's `layers` entry sets paint over its style's layer, keeping
-/// the rest of the layer's paint; a layer the style lacks fails the scene.
+/// A projection to or from a coordinate reference system's plane, or a
+/// source in another tile matrix set, plans the surface again; a globe
+/// over the same plane doesn't.
 #[test]
-fn a_scene_paints_its_styles_layers() {
-    let scene = crate::parse_scene(
-        r#"{"style": "s.json", "layers": {"water": {"paint": {"fill-opacity": 0.5}}}}"#,
-    )
-    .unwrap();
-    let doc = StyleDoc::parse_extended(STYLE, &scene).unwrap();
-    let json = json::parse(&doc.to_json()).unwrap();
-    let water = &json.get("layers").unwrap().as_array().unwrap()[1];
-    let paint = water.get("paint").unwrap();
-    assert_eq!(paint.get("fill-opacity").unwrap().as_f64(), Some(0.5));
-    assert_eq!(paint.get("fill-color").unwrap().as_str(), Some("blue"));
-    // Paint alone is not a material: no warning that lights are missing.
-    assert!(scene.warnings.is_empty(), "{:?}", scene.warnings);
-    let missing =
-        crate::parse_scene(r#"{"style": "s.json", "layers": {"nope": {"paint": {}}}}"#).unwrap();
-    assert!(StyleDoc::parse_extended(STYLE, &missing).is_err());
+fn planes_and_tile_matrix_sets_restyle() {
+    let mut doc = doc();
+    let patch = commands(&mut doc, r#"[["setProjection", {"type": "globe"}]]"#);
+    assert!(!patch.changes.contains(&Change::Restyle));
+    assert!(patch.changes.contains(&Change::Projection));
+    let patch = commands(&mut doc, r#"[["setProjection", {"type": "EPSG:3413"}]]"#);
+    assert!(patch.changes.contains(&Change::Restyle));
+    assert_eq!(
+        doc.style().projection,
+        Some(orb_crs::Projection::from_descriptor("EPSG:3413").unwrap())
+    );
+    assert_eq!(doc.style().globe, None);
+    let patch = commands(
+        &mut doc,
+        r#"[["addSource", "polar", {"type": "raster", "tiles": ["x/{z}/{x}/{y}.png"],
+            "tileMatrixSet": "UPSArcticWGS84Quad"}]]"#,
+    );
+    assert!(patch.changes.contains(&Change::Restyle));
+    assert_eq!(doc.style().tile_matrix_sets()[0].0, "polar");
+    let patch = commands(&mut doc, r#"[["setProjection", {"type": "mercator"}]]"#);
+    assert!(patch.changes.contains(&Change::Restyle));
+    assert_eq!(doc.style().projection, None);
 }
 
 #[test]

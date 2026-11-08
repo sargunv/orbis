@@ -659,3 +659,85 @@ fn layer_blends_parse() {
     .unwrap_err();
     assert_eq!(error.errors[0].path, "layers[0].paint.fill-layer-blend");
 }
+
+#[test]
+fn parses_projection_and_source_matrix_sets() {
+    let style = crate::parse(
+        r#"{
+            "version": 8,
+            "projection": {"type": "EPSG:3413"},
+            "sources": {
+                "linz": {"type": "raster", "tiles": ["a/{z}/{x}/{y}.png"],
+                         "tileMatrixSet": "NZTM2000Quad"},
+                "gibs": {"type": "raster", "tiles": ["b/{z}/{x}/{y}.png"], "tileMatrixSet": {
+                    "id": "GIBS3413", "crs": "http://www.opengis.net/def/crs/EPSG/0/3413",
+                    "tileMatrices": [
+                        {"id": "0", "scaleDenominator": 29257142.85714286, "pointOfOrigin": [-4194304, 4194304],
+                         "tileWidth": 512, "tileHeight": 512, "matrixWidth": 2, "matrixHeight": 2},
+                        {"id": "1", "scaleDenominator": 14628571.42857143, "pointOfOrigin": [-4194304, 4194304],
+                         "tileWidth": 512, "tileHeight": 512, "matrixWidth": 4, "matrixHeight": 4}
+                    ]}}
+            },
+            "layers": []
+        }"#,
+    )
+    .unwrap();
+    assert!(style.warnings.is_empty(), "{:?}", style.warnings);
+    let projection = style.projection.unwrap();
+    assert_eq!(
+        projection.descriptor(),
+        orb_crs::Descriptor::named("EPSG:3413")
+    );
+    let sets = style.tile_matrix_sets();
+    assert_eq!(sets.len(), 2);
+    let gibs = &sets[1].1;
+    assert!(gibs.projection().same_plane(&projection));
+    assert_eq!(gibs.matrix_size(0), (2, 2));
+    // 8,192 m pixels, 512 per tile.
+    assert!((gibs.tile_span(0) - 4_194_304.0).abs() < 1e-3);
+    assert_eq!(style.globe, None, "national planes stay fixed");
+}
+
+#[test]
+fn world_planes_adapt_to_mercator() {
+    let style = |projection: &str| {
+        crate::parse(&format!(
+            r#"{{"version": 8, "projection": {projection}, "sources": {{}}, "layers": []}}"#
+        ))
+        .unwrap()
+    };
+    let equal_earth = orb_crs::Projection::from_descriptor("equal-earth").unwrap();
+    let adaptive = style(r#"{"type": "equal-earth"}"#);
+    assert_eq!(adaptive.projection, None);
+    assert_eq!(
+        adaptive.globe,
+        Some(orb_crs::Globe {
+            handover: Some([6.0, 7.0]),
+            plane: Some(equal_earth),
+        })
+    );
+    let utm = style(r#"{"type": "EPSG:32633", "transition": [8, 9]}"#);
+    assert_eq!(utm.projection, None);
+    assert_eq!(utm.globe.unwrap().handover, Some([8.0, 9.0]));
+    let polar =
+        style(r#"{"type": "polar-stereographic", "lat_0": 90, "lat_ts": 70, "lon_0": -45}"#);
+    assert!(polar.projection.is_some() && polar.warnings.is_empty());
+    // Unknown planes and invalid transitions warn and draw Web Mercator.
+    for bad in [
+        r#"{"type": "EPSG:28992"}"#,
+        r#"{"type": "equal-earth", "lon_0": "east"}"#,
+    ] {
+        let style = style(bad);
+        assert_eq!(style.warnings.len(), 1, "{bad}: {:?}", style.warnings);
+    }
+    let reversed = style(r#"{"type": "equal-earth", "transition": [9, 8]}"#);
+    assert_eq!(reversed.warnings.len(), 1);
+    assert_eq!(reversed.globe.unwrap().handover, Some([6.0, 7.0]));
+    let bad_tms = crate::parse(
+        r#"{"version": 8, "sources": {"a": {"type": "raster", "tiles": ["a"],
+            "tileMatrixSet": "GNOSISGlobalGrid"}}, "layers": []}"#,
+    )
+    .unwrap_err();
+    let paths: Vec<_> = bad_tms.errors.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, ["sources.a.tileMatrixSet"]);
+}

@@ -38,34 +38,6 @@ sprites once served.
   in [Mapterhorn's attribution list](https://mapterhorn.com/attribution).
   The flight's legs are `flyTo` options looped until the user takes the
   camera.
-- `alps-sunlit.json`: a scene document over `alps.json` that lights it by a
-  morning sun over Zermatt and an ambient sky, written for
-  this repository; `?style=alps-sunlit&flight`.
-- `alps-hiking.json`: a scene document over `alps.json` under a summer
-  morning sun, adding `contour` lines (worked out on the GPU from the
-  same DEM) and dashed trails. Written for this repository;
-  `?style=alps-hiking`.
-- `manhattan.json`: a scene document over OpenFreeMap's Liberty (data as
-  above): Midtown lit by an October afternoon sun that casts shadows,
-  labels hidden behind buildings, written for this
-  repository; `?style=manhattan`.
-- `tokyo-landmarks.json` and `models/`: a scene document over OpenFreeMap's
-  Liberty (data as above): Shiba Park lit by a November afternoon sun, with
-  three glTF landmarks (a lattice tower, a torii and a pagoda) that the
-  demo's entry places at GeoJSON points in a `model` layer;
-  `?style=landmarks`. The models are built from boxes, frusta and prisms by
-  `cargo xtask demo-data models`; both are written for this repository.
-- `lit/tokyo-*.json`: scene documents over OpenFreeMap's Liberty (data as
-  above) that light the whole map over central Tokyo at
-  morning, noon, dusk and night: glossy water with waves, and at night
-  streets that light themselves and buildings with lit windows. They
-  repaint Liberty's buildings solid and a warmer mid-tone. Written
-  for this repository; `?style=lit-noon` and so on.
-- `lit/earth.json`: a scene document with its own low-zoom globe style
-  (OpenFreeMap's Natural Earth relief and OpenMapTiles water, borders and
-  country names) under the sun on a November afternoon, NASA's Black
-  Marble (VIIRS, via NASA GIBS) as its night lights.
-  Written for this repository; `?style=lit-earth`.
 - `scripts.json`: the Cairo, Delhi and Bangkok entries' style
   (`?style=cairo|delhi|bangkok`, or `scripts`), written for this repository. It draws OpenFreeMap's
   planet tiles with labels in Arabic, Devanagari, Thai and Latin from
@@ -125,10 +97,10 @@ them; they are never silently stringified. The real extract has none.
 
 ## Other projections (`crs/`)
 
-Scene documents with their v8 styles inline, written for this
-repository; the web demo opens them as `?style=arctic`, `?style=nz`,
-`?style=equal-earth`, `?style=blue-marble` and `?style=greenland`, the
-native demo as
+v8 styles whose root `projection` names a coordinate reference system
+and whose sources name their `tileMatrixSet`, written for this repository;
+the web demo opens them as `?style=arctic`, `?style=nz`,
+`?style=blue-marble` and `?style=greenland`, the native demo as
 `file://$PWD/web/demo/data/crs/arctic.json`.
 
 - `arctic.json` draws on an EPSG:3413 (NSIDC polar stereographic) surface:
@@ -143,9 +115,7 @@ native demo as
 - `blue-marble.json` draws a v8 globe: GIBS Blue Marble shaded relief from
   its EPSG:4326 tiles (declared inline from level 3, where its matrices
   become a quadtree of 36° tiles), to the poles, with OpenFreeMap's planet
-  tiles' boundaries and labels.
-- `equal-earth.json` draws OpenFreeMap's Liberty style (by URL) on an Equal
-  Earth (EPSG:8857) world map, reprojected from Web Mercator.
+  tiles' boundaries and labels, under a v8 `sky`.
 - `greenland.json` keeps Web Mercator: OpenFreeMap's planet tiles under the
   same ice velocity raster, warped from EPSG:3413 (the `RasterWarp` plan).
 

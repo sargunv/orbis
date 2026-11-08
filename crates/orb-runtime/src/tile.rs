@@ -211,12 +211,6 @@ fn features(
         Some(filter) => filter.select(layer, zoom, canonical),
         None => (0..layer.len() as u32).collect(),
     };
-    // A model node draws the features whose `model-id` picks its model.
-    if let Some(model) = node.model {
-        let id = &plan.style.models[model].0;
-        let picks = style_layer.get(orb_style::MODEL_ID).bind(layer);
-        features.retain(|&f| picks.evaluate(zoom, f as usize).as_deref() == Some(id.as_str()));
-    }
     // GL JS's buckets draw features by their sort key.
     let sort_key = match style_layer.ty {
         LayerType::Circle => Some(orb_style::CIRCLE_SORT_KEY),

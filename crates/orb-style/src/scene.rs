@@ -1,29 +1,13 @@
 //! The scene: one document of sources, layers, lights, atmosphere,
-//! terrain and globe, which `orb-v8` builds from a v8 style and the scene
-//! document that extends it.
+//! terrain and surface, which `orb-v8` builds from a v8 style.
 
 use orb_expr::{Diagnostic, Value};
 
 use crate::{Atmosphere, FontFaces, Layer, Lights, Source, Sprite, Terrain, Transition};
 
-/// Which document a style is: v8 as it is, or a style a scene document
-/// extends, whose layers may be the scene's types (`model`)
-/// and whose root may declare `models`. v8 documents never mean more than
-/// v8 says.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Dialect {
-    #[default]
-    V8,
-    Scene,
-}
-
-/// The native scene document: what a v8 style and a scene
-/// document that extends it parse into, merged.
+/// The native scene: what a v8 style parses into.
 #[derive(Clone, Debug)]
 pub struct Scene {
-    pub dialect: Dialect,
-    /// glTF models `model` layers draw, by id: their URLs (scene dialect).
-    pub models: Vec<(String, String)>,
     pub name: Option<String>,
     /// The default camera: `[longitude, latitude]`.
     pub center: Option<[f64; 2]>,
@@ -46,20 +30,14 @@ pub struct Scene {
     /// The atmosphere: v8's `sky` lowered.
     pub atmosphere: Option<Atmosphere>,
     pub terrain: Option<Terrain>,
-    /// The low-zoom surface the plane's tiles draw on: the scene
-    /// document's, else the root `projection`'s (a globe,
-    /// `vertical-perspective` or a zoom interpolation from one to
-    /// `mercator`); `None` draws the plane alone.
+    /// The low-zoom surface the plane's tiles draw on, from the root
+    /// `projection`: a globe, `vertical-perspective`, a world plane, a CRS
+    /// with a `transition`, or a zoom interpolation from one to `mercator`;
+    /// `None` draws the plane alone.
     pub globe: Option<orb_crs::Globe>,
-    /// The plane the scene draws on (the scene document's `projection`);
-    /// `None` for Web Mercator.
+    /// The plane the scene draws on: the root `projection`'s CRS (such as
+    /// `EPSG:3413`) when it has no `transition`; `None` for Web Mercator.
     pub projection: Option<orb_crs::Projection>,
-    /// Sources' tile matrix sets by source id (the scene document's); the
-    /// rest use `WebMercatorQuad`, GeoJSON the plane's own.
-    pub tile_matrix_sets: Vec<(String, orb_crs::TileMatrixSet)>,
-    /// Symbols and circles are hidden by 3D layers as well as by the
-    /// terrain (the scene document's `symbol-occlusion`).
-    pub symbol_occlusion: bool,
     pub sources: Vec<std::sync::Arc<Source>>,
     /// Shared, so a snapshot that changes some layers (an edit, a frame's
     /// transitions) copies only those.
@@ -70,5 +48,14 @@ pub struct Scene {
 impl Scene {
     pub fn source(&self, id: &str) -> Option<&Source> {
         self.sources.iter().find(|s| s.id == id).map(|s| &**s)
+    }
+
+    /// Sources' tile matrix sets by source id; the rest use
+    /// `WebMercatorQuad`, GeoJSON the plane's own.
+    pub fn tile_matrix_sets(&self) -> Vec<(String, orb_crs::TileMatrixSet)> {
+        self.sources
+            .iter()
+            .filter_map(|s| Some((s.id.clone(), s.tile_matrix_set.clone()?)))
+            .collect()
     }
 }

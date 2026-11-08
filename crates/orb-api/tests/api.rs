@@ -874,47 +874,6 @@ fn request_transforms_rewrite_what_the_map_fetches() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// Lit water's waves move with time: settled, a map
-/// showing them still needs frames, and frames half a second apart differ;
-/// the same lit water without waves settles, as does a view without the
-/// water.
-#[test]
-fn lit_waves_keep_frames_coming() {
-    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
-    let mut target = Target::texture(&runtime, SIZE, SIZE, 1.0);
-    let mut map = Map::new(&runtime, MapOptions::default());
-    let mut lit = |waves: f64| {
-        let scene = format!(
-            r#"{{"style": {STYLE}, "lights": [
-                {{"type": "ambient", "properties": {{"intensity": 0.5}}}},
-                {{"type": "directional", "properties": {{"direction": [180, 30], "intensity": 0.5}}}}],
-                "layers": {{"box": {{"roughness": 0.1, "waves": {waves}}}}}}}"#
-        );
-        map.set_style_json(&scene).expect("scene");
-        // Inside the box, where its waves are tens of pixels long.
-        map.jump_to(&CameraTarget {
-            zoom: Some(19.0),
-            ..CameraTarget::default()
-        });
-        settle(&mut map, &mut target);
-        map.needs_frame()
-    };
-    assert!(!lit(0.0), "still water settles");
-    assert!(lit(0.2), "waves draw on");
-    map.render(&mut target, 1e6).unwrap();
-    let before = target.read_pixels().unwrap();
-    map.render(&mut target, 1e6 + 500.0).unwrap();
-    assert_ne!(before, target.read_pixels().unwrap(), "the waves moved");
-    // Far from the box, its waves are in no tile drawn.
-    map.jump_to(&CameraTarget {
-        center: Some(orb_api::Geodetic::new(100.0, 50.0)),
-        zoom: Some(10.0),
-        ..CameraTarget::default()
-    });
-    settle(&mut map, &mut target);
-    assert!(!map.needs_frame(), "waves out of view don't draw on");
-}
-
 #[test]
 fn the_style_reads_back_with_its_edits() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");

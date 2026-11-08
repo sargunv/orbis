@@ -1,5 +1,5 @@
-// Contour lines of a raster-dem source (the scene document's `contour`
-// layers), worked out per fragment: its elevation over the node's interval
+// Contour lines of a raster-dem source (`contour` layers), worked out per
+// fragment: its elevation over the node's interval
 // is a level, and its distance in pixels to the nearest whole level is that
 // level's fraction over the level's change across a pixel. The node's
 // texture array holds each tile's DEM with a two-texel border filled from

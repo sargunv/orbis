@@ -86,7 +86,7 @@ fn layer_changes(
 }
 
 /// The root keys whose change needs a full reload.
-const RESTYLE_ROOT: &[&str] = &["sprite", "glyphs", "font-faces", "light", "sky", "models"];
+const RESTYLE_ROOT: &[&str] = &["sprite", "glyphs", "font-faces", "light", "sky"];
 
 /// The new snapshot and the patch from `doc` to `draft`.
 pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diagnostics> {
@@ -96,8 +96,6 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
 
     // The root: camera and state defaults, sprites.
     let mut style = Scene {
-        dialect: old.dialect,
-        models: old.models.clone(),
         name: old.name.clone(),
         center: old.center,
         zoom: old.zoom,
@@ -113,8 +111,6 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
         terrain: None,
         globe: old.globe,
         projection: old.projection,
-        tile_matrix_sets: old.tile_matrix_sets.clone(),
-        symbol_occlusion: old.symbol_occlusion,
         state: old.state.clone(),
         sources: Vec::new(),
         layers: Vec::new(),
@@ -138,11 +134,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
                 value: synthetic(value),
             });
         }
-        let root = crate::parse_dialect(
-            &synthetic(JsonValue::Object(members)).to_string(),
-            &[],
-            old.dialect,
-        )?;
+        let root = crate::parse(&synthetic(JsonValue::Object(members)).to_string())?;
         if RESTYLE_ROOT
             .iter()
             .any(|k| !same_opt(member(&doc.root, k), member(&draft.root, k)))
@@ -191,11 +183,12 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
     if let Some(json) = member(&draft.root, "projection")
         && (draft.new_root || reads_global(json, &changed))
     {
-        let (globe, w) = crate::parse_projection(json, &new_state);
+        let (plane, globe, w) = crate::parse_projection(json, &new_state);
         warnings.extend(w);
         if globe != old.globe && !changes.contains(&Change::Projection) {
             changes.push(Change::Projection);
         }
+        style.projection = plane;
         style.globe = globe;
     }
 
@@ -234,6 +227,14 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
         if !draft.sources.iter().any(|s| s.key == key) {
             changes.push(Change::SourceRemoved(key));
         }
+    }
+
+    // Another plane, or sources in other tile matrix sets: the surface is
+    // planned again and every tile loads on it.
+    if (style.projection != old.projection || style.tile_matrix_sets() != old.tile_matrix_sets())
+        && !changes.contains(&Change::Restyle)
+    {
+        changes.push(Change::Restyle);
     }
 
     // Terrain reads the new sources; switching it needs no reload.
@@ -276,13 +277,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
                 .push(std::sync::Arc::clone(old_entry.expect("kept").1));
             continue;
         }
-        let (layer, w) = crate::parse_layer(
-            &entry.json,
-            index,
-            &style.sources,
-            &new_state,
-            style.dialect,
-        )?;
+        let (layer, w) = crate::parse_layer(&entry.json, index, &style.sources, &new_state)?;
         warnings.extend(w);
         match old_entry {
             None => changes.push(Change::LayerAdded(entry.key)),

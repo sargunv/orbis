@@ -22,8 +22,16 @@ export interface Transaction {
   setFeatureState(feature: FeatureTarget, state: Record<string, unknown>): Transaction;
   removeFeatureState(feature: Partial<FeatureTarget>, key?: string): Transaction;
   setStyle(style: object): Transaction;
-  /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"`, `"mercator"`, `"equal-earth"`, `"natural-earth"`, `"equirectangular"`, with an optional `transition: [start, end] | false`. */
+  /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"`, `"mercator"`, `"equal-earth"`, `"natural-earth"`, `"equirectangular"` or a coordinate reference system such as `"EPSG:3413"`, with an optional `transition: [start, end] | false`. Another CRS plane reloads every tile. */
   setProjection(projection: object): Transaction;
+  /** v8 `sky`, or `null` for none. */
+  setSky(sky: object | null): Transaction;
+  /** v8 `terrain`, or `null` for none. */
+  setTerrain(terrain: object | null): Transaction;
+  /** v8 `light`. */
+  setLight(light: object): Transaction;
+  /** v8 root `transition`. */
+  setTransition(transition: object): Transaction;
 }
 
 /** GL JS's `GeoJSONSourceDiff`: features by id (or the source's `promoteId`). */
@@ -50,7 +58,7 @@ const CALLS = [
   "setPaintProperty", "setLayoutProperty", "setFilter", "setLayerZoomRange",
   "addLayer", "removeLayer", "moveLayer", "addSource", "removeSource", "setSourceData", "updateSourceData",
   "setGlobalStateProperty", "setFeatureState", "removeFeatureState", "setStyle",
-  "setProjection",
+  "setProjection", "setSky", "setTerrain", "setLight", "setTransition",
 ] as const;
 
 /** A transaction's calls as the JSON array the core applies. */

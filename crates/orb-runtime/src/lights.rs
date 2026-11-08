@@ -1,6 +1,5 @@
-//! The scene's lights for a frame: the scene document's
-//! lights folded into what shaders take, the sun placed for the camera's
-//! target.
+//! The scene's lights for a frame: the style's lights folded into what
+//! shaders take, the sun placed for the camera's target.
 
 use orb_crs::Geodetic;
 use orb_render::{FrameLights, FrameShadow};
@@ -219,38 +218,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stars_turn_by_the_sidereal_time() {
-        // GMST at J2000.0 (2000-01-01T12:00Z) is 280.46°; a sidereal day
-        // later the sky has turned once.
-        let j2000 = orb_v8::parse_time("2000-01-01T12:00:00Z").unwrap();
-        assert!((sidereal_degrees(j2000) - 280.460_618_37).abs() < 1e-6);
-        let turned = sidereal_degrees(j2000 + 86_164.090_5);
-        assert!((turned - 280.460_618_37).abs() < 1e-3, "{turned}");
-    }
-
-    fn at(time: &str, lon: f64, lat: f64) -> (f64, f64) {
-        sun_position(orb_v8::parse_time(time).unwrap(), Geodetic::new(lon, lat))
-    }
-
-    #[test]
-    fn the_sun_stands_where_almanacs_put_it() {
-        // Solar noon at Greenwich on the June solstice: due south, at
-        // 90° − 51.48° + 23.44°.
-        let (azimuth, altitude) = at("2024-06-21T12:02:00Z", 0.0, 51.48);
-        assert!((azimuth - 180.0).abs() < 1.0, "{azimuth}");
-        assert!((altitude - 61.96).abs() < 0.2, "{altitude}");
-        // The March equinox's noon on the equator is overhead.
-        let (_, altitude) = at("2024-03-20T12:07:00Z", 0.0, 0.0);
-        assert!(altitude > 89.0, "{altitude}");
-        // Morning in Zermatt on the solstice: in the east-northeast, low.
-        let (azimuth, altitude) = at("2024-06-21T04:30:00Z", 7.75, 46.02);
-        assert!((50.0..80.0).contains(&azimuth), "{azimuth}");
-        assert!((5.0..15.0).contains(&altitude), "{altitude}");
-        // Midnight there is below the horizon.
-        assert!(at("2024-06-21T23:00:00Z", 7.75, 46.02).1 < 0.0);
-    }
-
-    #[test]
     fn lights_lower_into_the_frame() {
         let target = Geodetic::new(7.75, 46.02);
         // v8's default light: ambient 1 − 0.5, directional 2 · 0.5, at
@@ -264,15 +231,5 @@ mod tests {
             (v8.position[0] - turned.position[1]).abs() < 1e-5,
             "{v8:?} {turned:?}"
         );
-        // A scene's sun below the horizon stands there, for the points
-        // that still see it; the target's ground doesn't.
-        let night = orb_v8::parse_scene(
-            r#"{"style": "s.json", "lights": [{"type": "sun", "properties": {"time": "2024-06-21T23:00:00Z"}}]}"#,
-        )
-        .unwrap();
-        let frame = frame_lights(&night.lights.unwrap(), 0.0, 0.0, target, [0.0; 2]);
-        assert!(frame.position[2] < 0.0, "{:?}", frame.position);
-        assert!(frame.shadow().is_none());
-        assert!(frame.terrain);
     }
 }

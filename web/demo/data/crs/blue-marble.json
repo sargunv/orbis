@@ -1,168 +1,24 @@
 {
- "style": {
-  "version": 8,
-  "name": "Blue Marble globe",
-  "center": [
-   20,
-   60
-  ],
-  "zoom": 1.6,
-  "projection": {
-   "type": "globe"
-  },
-  "sources": {
-   "relief": {
-    "type": "raster",
-    "tileSize": 512,
-    "minzoom": 3,
-    "maxzoom": 7,
-    "attribution": "<a href=\"https://earthdata.nasa.gov/gibs\">NASA EOSDIS GIBS</a>",
-    "tiles": [
-     "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{tileMatrix}/{tileRow}/{tileCol}.jpeg"
-    ]
-   },
-   "openmaptiles": {
-    "type": "vector",
-    "url": "https://tiles.openfreemap.org/planet",
-    "attribution": "<a href=\"https://openfreemap.org\">OpenFreeMap</a> <a href=\"https://www.openmaptiles.org/\">© OpenMapTiles</a> Data from <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>"
-   }
-  },
-  "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
-  "layers": [
-   {
-    "id": "background",
-    "type": "background",
-    "paint": {
-     "background-color": "#0b1e3a"
-    }
-   },
-   {
-    "id": "relief",
-    "type": "raster",
-    "source": "relief"
-   },
-   {
-    "id": "boundary",
-    "type": "line",
-    "source": "openmaptiles",
-    "source-layer": "boundary",
-    "filter": [
-     "<=",
-     [
-      "get",
-      "admin_level"
-     ],
-     2
-    ],
-    "paint": {
-     "line-color": "rgba(255,230,160,0.8)",
-     "line-width": [
-      "interpolate",
-      [
-       "linear"
-      ],
-      [
-       "zoom"
-      ],
-      2,
-      0.8,
-      8,
-      1.6
-     ],
-     "line-dasharray": [
-      3,
-      2
-     ]
-    }
-   },
-   {
-    "id": "water-name",
-    "type": "symbol",
-    "source": "openmaptiles",
-    "source-layer": "water_name",
-    "layout": {
-     "text-field": [
-      "coalesce",
-      [
-       "get",
-       "name:en"
-      ],
-      [
-       "get",
-       "name"
-      ]
-     ],
-     "text-font": [
-      "Noto Sans Italic"
-     ],
-     "text-size": 12,
-     "text-max-width": 6
-    },
-    "paint": {
-     "text-color": "#bcd8f0",
-     "text-halo-color": "rgba(10,30,60,0.8)",
-     "text-halo-width": 1.2
-    }
-   },
-   {
-    "id": "place",
-    "type": "symbol",
-    "source": "openmaptiles",
-    "source-layer": "place",
-    "filter": [
-     "in",
-     [
-      "get",
-      "class"
-     ],
-     [
-      "literal",
-      [
-       "country",
-       "state",
-       "city",
-       "town"
-      ]
-     ]
-    ],
-    "layout": {
-     "text-field": [
-      "coalesce",
-      [
-       "get",
-       "name:en"
-      ],
-      [
-       "get",
-       "name"
-      ]
-     ],
-     "text-font": [
-      "Noto Sans Regular"
-     ],
-     "text-size": [
-      "match",
-      [
-       "get",
-       "class"
-      ],
-      "country",
-      14,
-      "state",
-      12,
-      11
-     ]
-    },
-    "paint": {
-     "text-color": "#fff",
-     "text-halo-color": "rgba(10,30,60,0.85)",
-     "text-halo-width": 1.4
-    }
-   }
-  ]
+ "version": 8,
+ "name": "Blue Marble globe",
+ "center": [
+  20,
+  60
+ ],
+ "zoom": 1.6,
+ "projection": {
+  "type": "globe"
  },
  "sources": {
   "relief": {
+   "type": "raster",
+   "tileSize": 512,
+   "minzoom": 3,
+   "maxzoom": 7,
+   "attribution": "<a href=\"https://earthdata.nasa.gov/gibs\">NASA EOSDIS GIBS</a>",
+   "tiles": [
+    "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_ShadedRelief_Bathymetry/default/500m/{tileMatrix}/{tileRow}/{tileCol}.jpeg"
+   ],
    "tileMatrixSet": {
     "id": "GIBS_EPSG4326_500m",
     "title": "NASA GIBS EPSG:4326 500m, from its quadtree levels",
@@ -230,9 +86,147 @@
      }
     ]
    }
+  },
+  "openmaptiles": {
+   "type": "vector",
+   "url": "https://tiles.openfreemap.org/planet",
+   "attribution": "<a href=\"https://openfreemap.org\">OpenFreeMap</a> <a href=\"https://www.openmaptiles.org/\">© OpenMapTiles</a> Data from <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>"
   }
  },
- "atmosphere": {
+ "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+ "layers": [
+  {
+   "id": "background",
+   "type": "background",
+   "paint": {
+    "background-color": "#0b1e3a"
+   }
+  },
+  {
+   "id": "relief",
+   "type": "raster",
+   "source": "relief"
+  },
+  {
+   "id": "boundary",
+   "type": "line",
+   "source": "openmaptiles",
+   "source-layer": "boundary",
+   "filter": [
+    "<=",
+    [
+     "get",
+     "admin_level"
+    ],
+    2
+   ],
+   "paint": {
+    "line-color": "rgba(255,230,160,0.8)",
+    "line-width": [
+     "interpolate",
+     [
+      "linear"
+     ],
+     [
+      "zoom"
+     ],
+     2,
+     0.8,
+     8,
+     1.6
+    ],
+    "line-dasharray": [
+     3,
+     2
+    ]
+   }
+  },
+  {
+   "id": "water-name",
+   "type": "symbol",
+   "source": "openmaptiles",
+   "source-layer": "water_name",
+   "layout": {
+    "text-field": [
+     "coalesce",
+     [
+      "get",
+      "name:en"
+     ],
+     [
+      "get",
+      "name"
+     ]
+    ],
+    "text-font": [
+     "Noto Sans Italic"
+    ],
+    "text-size": 12,
+    "text-max-width": 6
+   },
+   "paint": {
+    "text-color": "#bcd8f0",
+    "text-halo-color": "rgba(10,30,60,0.8)",
+    "text-halo-width": 1.2
+   }
+  },
+  {
+   "id": "place",
+   "type": "symbol",
+   "source": "openmaptiles",
+   "source-layer": "place",
+   "filter": [
+    "in",
+    [
+     "get",
+     "class"
+    ],
+    [
+     "literal",
+     [
+      "country",
+      "state",
+      "city",
+      "town"
+     ]
+    ]
+   ],
+   "layout": {
+    "text-field": [
+     "coalesce",
+     [
+      "get",
+      "name:en"
+     ],
+     [
+      "get",
+      "name"
+     ]
+    ],
+    "text-font": [
+     "Noto Sans Regular"
+    ],
+    "text-size": [
+     "match",
+     [
+      "get",
+      "class"
+     ],
+     "country",
+     14,
+     "state",
+     12,
+     11
+    ]
+   },
+   "paint": {
+    "text-color": "#fff",
+    "text-halo-color": "rgba(10,30,60,0.85)",
+    "text-halo-width": 1.4
+   }
+  }
+ ],
+ "sky": {
   "sky-color": "#4f8fd9",
   "horizon-color": "#d6e8fb",
   "fog-color": "#e4eef8",
@@ -255,20 +249,6 @@
    0.45,
    8,
    0
-  ],
-  "star-intensity": [
-   "interpolate",
-   [
-    "linear"
-   ],
-   [
-    "zoom"
-   ],
-   3,
-   1,
-   7,
-   0
-  ],
-  "backdrop-color": "#02040b"
+  ]
  }
 }

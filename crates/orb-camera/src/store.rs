@@ -186,8 +186,8 @@ impl Camera {
         self.state.zoom(&self.surface.projection)
     }
 
-    /// Moves to a new surface (a scene document loaded, or the map's
-    /// projection changed): the target and ground resolution stay, running
+    /// Moves to a new surface (a style loaded, or the map's projection
+    /// changed): the target and ground resolution stay, running
     /// animations stop, and the camera keeps to the new world.
     pub fn set_surface(&mut self, surface: Surface) {
         if surface == self.surface {

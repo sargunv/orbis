@@ -769,7 +769,7 @@ impl Map {
         index: TileIndex,
         deadline: Instant,
     ) -> Result<(), Error> {
-        // The scene document sets the plane.
+        // The style's projection sets the plane.
         self.set_mode(RenderMode::Still);
         while self.map.style_doc().is_none() {
             self.frame(target, self.now())?;
@@ -782,7 +782,7 @@ impl Map {
         let tms = &tile.tile_matrix_set;
         if surface.globe.is_some() || !tms.projection().same_plane(&surface.projection) {
             return Err(Error::InvalidArgument(format!(
-                "{} isn't on the map's plane: set the scene's projection to its own",
+                "{} isn't on the map's plane: set the style's projection to its own",
                 tms.id()
             )));
         }

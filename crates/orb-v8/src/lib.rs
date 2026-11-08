@@ -1,6 +1,6 @@
 //! The front end of the native scene: parses and
-//! validates v8 styles and the scene documents that extend them into an
-//! `orb_style::Scene`, with errors and warnings located by JSON path
+//! validates v8 styles into an `orb_style::Scene`, with errors and
+//! warnings located by JSON path
 //! (`layers[3].paint.line-width`) and byte span; keeps the documents of
 //! record ([`StyleDoc`]) and applies GL JS-style edits to them as
 //! transactions, diffed into classified changes. Defaults and coercions
@@ -14,9 +14,7 @@ mod font_faces;
 mod geojson;
 mod layer;
 mod light;
-mod lights;
 mod paint;
-mod scene;
 mod sky;
 mod source;
 mod sprite;
@@ -29,10 +27,9 @@ use std::fmt;
 pub use doc::StyleDoc;
 pub use geojson::{apply_diffs, parse_geojson};
 pub use light::default_lights;
-pub use lights::parse_time;
 pub use orb_expr::json::Span;
 pub use orb_expr::{Diagnostic, Filter};
-pub use scene::{AddedLayer, SceneDocument, StyleRef, is_scene, parse_scene, tms_definition};
+pub use source::tms_definition;
 pub use tx::{FeatureTarget, Op, Transaction};
 
 // The native model this front end builds.
@@ -76,19 +73,7 @@ pub fn parse_with_state(
     text: &str,
     overrides: &[(String, Value<'static>)],
 ) -> Result<Scene, Diagnostics> {
-    parse_dialect(text, overrides, Dialect::V8)
-}
-
-/// [`parse_with_state`] in `dialect`.
-pub fn parse_dialect(
-    text: &str,
-    overrides: &[(String, Value<'static>)],
-    dialect: Dialect,
-) -> Result<Scene, Diagnostics> {
-    let mut cx = Cx {
-        scene: dialect == Dialect::Scene,
-        ..Cx::default()
-    };
+    let mut cx = Cx::default();
     let doc = match json::parse(text) {
         Ok(doc) => doc,
         Err(e) => {
@@ -122,9 +107,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         match m.key.as_str() {
             "version" | "name" | "metadata" | "center" | "zoom" | "bearing" | "pitch" | "roll"
             | "sources" | "layers" | "sprite" | "glyphs" | "font-faces" | "light" | "state"
-            | "sky" | "terrain" | "projection" => {}
-            "models" if cx.scene => {}
-            "transition" => {}
+            | "sky" | "terrain" | "projection" | "transition" => {}
             key if UNMODELED_ROOT.contains(&key) => {
                 cx.warn(
                     key,
@@ -216,25 +199,10 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
             }
         },
     };
-    let models = match doc.get("models").filter(|_| cx.scene) {
-        None => Vec::new(),
-        Some(models) => cx
-            .object(models, "models")
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|m| {
-                let url = cx.string(&m.value, &format!("models.{}", m.key))?;
-                Some((m.key.clone(), url))
-            })
-            .collect(),
-    };
+    let (projection, globe) = doc
+        .get("projection")
+        .map_or((None, None), |p| parse_surface(cx, p));
     Some(Scene {
-        dialect: if cx.scene {
-            Dialect::Scene
-        } else {
-            Dialect::V8
-        },
-        models,
         name,
         center,
         zoom,
@@ -246,14 +214,10 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         glyphs,
         font_faces: font_faces::parse(cx, doc.get("font-faces")),
         lights: light::parse(cx, doc.get("light")).lower(),
-        globe: doc.get("projection").and_then(|p| parse_globe(cx, p)),
-        projection: None,
-        tile_matrix_sets: Vec::new(),
-        symbol_occlusion: false,
+        globe,
+        projection,
         state,
-        atmosphere: doc
-            .get("sky")
-            .map(|json| sky::parse(cx, json, sky::Declared::Sky)),
+        atmosphere: doc.get("sky").map(|json| sky::parse(cx, json)),
         terrain: doc
             .get("terrain")
             .and_then(|json| terrain::parse(cx, json, &sources)),
@@ -307,11 +271,9 @@ pub fn parse_layer(
     index: usize,
     sources: &[std::sync::Arc<Source>],
     state: &[(String, Value<'static>)],
-    dialect: Dialect,
 ) -> Result<(Layer, Vec<Diagnostic>), Diagnostics> {
     let mut cx = Cx {
         state: state.to_vec(),
-        scene: dialect == Dialect::Scene,
         ..Cx::default()
     };
     let layer = layer::parse_layer(&mut cx, json, index, sources, &mut HashSet::new());
@@ -330,7 +292,7 @@ pub fn parse_sky(
         state: state.to_vec(),
         ..Cx::default()
     };
-    let sky = sky::parse(&mut cx, json, sky::Declared::Sky);
+    let sky = sky::parse(&mut cx, json);
     if cx.diagnostics.errors.is_empty() {
         Ok((sky, cx.diagnostics.warnings))
     } else {
@@ -351,39 +313,74 @@ pub fn parse_terrain(
     }
 }
 
-/// Parses a root `projection`, returning its globe (`None` for Web
-/// Mercator) and its warnings.
+/// Parses a root `projection`, returning its plane (`None` for Web
+/// Mercator), its low-zoom surface and its warnings.
 pub fn parse_projection(
     json: &Json,
     state: &[(String, Value<'static>)],
-) -> (Option<orb_crs::Globe>, Vec<Diagnostic>) {
+) -> (
+    Option<orb_crs::Projection>,
+    Option<orb_crs::Globe>,
+    Vec<Diagnostic>,
+) {
     let mut cx = Cx {
         state: state.to_vec(),
         ..Cx::default()
     };
-    let globe = parse_globe(&mut cx, json);
-    (globe, cx.diagnostics.warnings)
+    let (plane, globe) = parse_surface(&mut cx, json);
+    (plane, globe, cx.diagnostics.warnings)
 }
 
-/// v8 `projection`: a `type` of `mercator`, `globe` (GL JS's
+/// v8 `projection`, returning the plane the map draws on and the low-zoom
+/// surface its tiles draw on. Its `type` is `mercator`, `globe` (GL JS's
 /// interpolation from a vertical perspective through zoom 11 to Mercator
-/// from zoom 12), `vertical-perspective` or a low-zoom plane
+/// from zoom 12), `vertical-perspective`, a low-zoom plane
 /// (style-spec#1865: `equal-earth`, `natural-earth`, `equirectangular`,
-/// handing over to Mercator between zooms 6 and 7), or GL JS's zoom
-/// interpolation from one of them to `mercator`; and style-spec#1866's
-/// `transition`, `[start, end]` or `false`, which replaces the zooms it
-/// hands over between. Others warn and stay Web Mercator.
-fn parse_globe(cx: &mut Cx, json: &Json) -> Option<orb_crs::Globe> {
+/// handing over to Mercator between zooms 6 and 7), GL JS's zoom
+/// interpolation from one of them to `mercator`, or a coordinate reference
+/// system `orb_crs` registers (`EPSG:3413`, or a parametric kind such as
+/// `polar-stereographic` with PROJ-named numeric parameters beside the
+/// `type`), which is the plane itself. style-spec#1866's `transition`,
+/// `[start, end]` or `false`, replaces the zooms it hands over between; a
+/// CRS with a `transition` is a low-zoom plane over Web Mercator. Others
+/// warn and stay Web Mercator.
+fn parse_surface(
+    cx: &mut Cx,
+    json: &Json,
+) -> (Option<orb_crs::Projection>, Option<orb_crs::Globe>) {
     let path = "projection.type";
-    let ty = json.get("type")?;
-    let unsupported = |cx: &mut Cx| {
-        cx.warn(
-            path,
-            ty.span,
-            "only \"mercator\", \"globe\", \"vertical-perspective\", \"equal-earth\", \"natural-earth\", \"equirectangular\" and zoom interpolations from the last four to \"mercator\" are supported; drawing Web Mercator",
-        );
-        None
+    let Some(ty) = json.get("type") else {
+        return (None, None);
     };
+    let unsupported = |cx: &mut Cx, message: &str| {
+        cx.warn(path, ty.span, format!("{message}; drawing Web Mercator"));
+        (None, None)
+    };
+    const SUPPORTED: &str = "only \"mercator\", \"globe\", \"vertical-perspective\", \"equal-earth\", \"natural-earth\", \"equirectangular\", zoom interpolations from the last four to \"mercator\" and registered coordinate reference systems are supported";
+    // PROJ-named parameters of a plane: `lon_0`, `lat_ts` and the like.
+    let mut descriptor = orb_crs::Descriptor::default();
+    for m in json.as_object().unwrap_or_default() {
+        match (m.key.as_str(), m.value.as_f64()) {
+            ("type" | "transition", _) => {}
+            (key, Some(n)) => descriptor.params.push((key.to_string(), n)),
+            (key, None) => cx.warn(
+                format!("projection.{key}"),
+                m.value.span,
+                "expected a number",
+            ),
+        }
+    }
+    let transition = json.get("transition").and_then(|t| {
+        let parsed = parse_transition(t);
+        if parsed.is_none() {
+            cx.warn(
+                "projection.transition",
+                t.span,
+                "expected [start, end] zooms with start < end, or false",
+            );
+        }
+        parsed
+    });
     // A type from the global state: `["global-state", name]`.
     let from_state = ty.as_array().and_then(|items| match items {
         [op, name] if op.as_str() == Some("global-state") => {
@@ -397,15 +394,35 @@ fn parse_globe(cx: &mut Cx, json: &Json) -> Option<orb_crs::Globe> {
     });
     let (low, handover) = if let Some(name) = from_state.as_deref().or(ty.as_str()) {
         if name == "mercator" {
-            return None;
+            return (None, None);
         }
-        match low_surface(name) {
-            Some((low, handover)) => (low, handover),
-            None => return unsupported(cx),
+        descriptor.kind = name.to_string();
+        match low_surface(&descriptor) {
+            Some(Ok(surface)) => surface,
+            Some(Err(e)) => return unsupported(cx, &e.to_string()),
+            None => {
+                // A coordinate reference system: the plane, or with a
+                // transition a low-zoom plane.
+                return match orb_crs::Projection::new(&descriptor) {
+                    Ok(plane) => match transition {
+                        Some(Some(handover)) => (
+                            None,
+                            Some(orb_crs::Globe {
+                                handover: Some(handover),
+                                plane: Some(plane),
+                            }),
+                        ),
+                        _ => (Some(plane), None),
+                    },
+                    Err(e) => unsupported(cx, &format!("{SUPPORTED}, not {}", e.0)),
+                };
+            }
         }
     } else {
         // ["interpolate", ["linear"], ["zoom"], z0, low, z1, "mercator"]
-        let items = ty.as_array()?;
+        let Some(items) = ty.as_array() else {
+            return unsupported(cx, SUPPORTED);
+        };
         let text = |k: usize| items.get(k).and_then(Json::as_str);
         let number = |k: usize| items.get(k).and_then(Json::as_f64);
         let linear = items
@@ -416,7 +433,10 @@ fn parse_globe(cx: &mut Cx, json: &Json) -> Option<orb_crs::Globe> {
             .get(2)
             .and_then(Json::as_array)
             .is_some_and(|a| a.len() == 1 && a[0].as_str() == Some("zoom"));
-        let low = text(4).filter(|&t| t != "globe").and_then(low_surface);
+        let low = text(4)
+            .filter(|&t| t != "globe")
+            .and_then(|t| low_surface(&orb_crs::Descriptor::named(t)))
+            .and_then(Result::ok);
         match (text(0), linear, zoom, number(3), low, number(5), text(6)) {
             (
                 Some("interpolate"),
@@ -427,39 +447,32 @@ fn parse_globe(cx: &mut Cx, json: &Json) -> Option<orb_crs::Globe> {
                 Some(to),
                 Some("mercator"),
             ) if items.len() == 7 && from < to => (low, Some([from, to])),
-            _ => return unsupported(cx),
+            _ => return unsupported(cx, SUPPORTED),
         }
     };
-    let handover = match json.get("transition") {
-        None => handover,
-        Some(t) => match parse_transition(t) {
-            Some(transition) => transition,
-            None => {
-                cx.warn(
-                    "projection.transition",
-                    t.span,
-                    "expected [start, end] zooms with start < end, or false",
-                );
-                handover
-            }
-        },
-    };
-    Some(orb_crs::Globe {
-        handover,
+    let globe = orb_crs::Globe {
+        handover: transition.unwrap_or(handover),
         plane: low,
-    })
+    };
+    (None, Some(globe))
 }
 
-/// A low-zoom surface v8 names: the sphere (`None`) or a plane, and the
-/// zooms it hands over to Mercator between by default.
-fn low_surface(name: &str) -> Option<(Option<orb_crs::Projection>, Option<[f64; 2]>)> {
-    match name {
-        "globe" => Some((None, orb_crs::Globe::V8.handover)),
-        "vertical-perspective" => Some((None, None)),
-        "equal-earth" | "natural-earth" | "equirectangular" => Some((
-            orb_crs::Projection::from_descriptor(name).ok(),
-            Some(orb_crs::Globe::PLANE_HANDOVER),
-        )),
+/// A low-zoom surface: the sphere (`None`) or a plane, and the zooms it
+/// hands over to Mercator between.
+type LowSurface = (Option<orb_crs::Projection>, Option<[f64; 2]>);
+
+/// The low-zoom surface v8 names, with its default handover; `None` for
+/// other names.
+fn low_surface(
+    descriptor: &orb_crs::Descriptor,
+) -> Option<Result<LowSurface, orb_crs::UnknownProjection>> {
+    match descriptor.kind.as_str() {
+        "globe" => Some(Ok((None, orb_crs::Globe::V8.handover))),
+        "vertical-perspective" => Some(Ok((None, None))),
+        "equal-earth" | "natural-earth" | "equirectangular" => Some(
+            orb_crs::Projection::new(descriptor)
+                .map(|plane| (Some(plane), Some(orb_crs::Globe::PLANE_HANDOVER))),
+        ),
         _ => None,
     }
 }
@@ -494,9 +507,6 @@ pub fn parse_source(id: &str, json: &Json) -> Result<(Source, Vec<Diagnostic>), 
 #[derive(Debug, Default)]
 pub(crate) struct Cx {
     diagnostics: Diagnostics,
-    /// Parsing a style a scene document extends: its layers may be the
-    /// scene's types (`model`) and its root may have `models`.
-    pub(crate) scene: bool,
     /// The global state `global-state` reads resolve to.
     state: Vec<(String, Value<'static>)>,
 }

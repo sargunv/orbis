@@ -533,59 +533,6 @@ mod tests {
         );
     }
 
-    /// A scene's lights shade an extrusion's roof by its material (decision
-    /// 0048), and emissive strength shows its colour.
-    #[test]
-    fn scene_lights_shade_extrusions() {
-        let options = crate::common::Options {
-            style: Some(format!(
-                "file://{}/tests/data/extrusion.json",
-                env!("CARGO_MANIFEST_DIR")
-            )),
-            encoding: "mvt".into(),
-            at: Some((orb_crs::Geodetic::new(-0.00015, -0.00025), 19.0, 0.0, 0.0)),
-        };
-        let (mut offscreen, _, _) = crate::common::Offscreen::load(&options).unwrap();
-        let style = r##"{"version": 8,
-            "sources": {"b": {"type": "geojson", "data": {"type": "Polygon",
-                "coordinates": [[[-0.0003, -0.0004], [-0.0003, -0.0001], [0, -0.0001], [0, -0.0004], [-0.0003, -0.0004]]]}}},
-            "layers": [
-                {"id": "ground", "type": "background", "paint": {"background-color": "#000000"}},
-                {"id": "block", "type": "fill-extrusion", "source": "b",
-                 "paint": {"fill-extrusion-height": 10, "fill-extrusion-color": "#808080"}}]}"##;
-        let mut roof = |direction: &str, emissive: f64| {
-            let scene = format!(
-                r#"{{"style": {style}, "lights": [
-                    {{"type": "ambient", "properties": {{"intensity": 0.5}}}},
-                    {{"type": "directional", "properties": {{"direction": {direction}, "intensity": 0.5}}}}],
-                    "layers": {{"block": {{"emissive-strength": {emissive}}}}}}}"#
-            );
-            offscreen.map.set_style_json(&scene).unwrap();
-            let projection = offscreen.map.projection();
-            offscreen.map.jump_to_state(orb_runtime::CameraState::new(
-                orb_crs::Geodetic::new(-0.00015, -0.00025),
-                19.0,
-                &projection,
-            ));
-            settle(&mut offscreen);
-            let pixels = offscreen.pixels();
-            let at = (crate::common::Offscreen::HEIGHT as usize / 2
-                * crate::common::Offscreen::WIDTH as usize
-                + crate::common::Offscreen::WIDTH as usize / 2)
-                * 4;
-            pixels[at]
-        };
-        // The lit map's material model: #808080 is 0.216
-        // linear. Overhead the roof gets both levels, 1, of it, a matte
-        // specular glint (0.002) and the sky it mirrors (0.04 of the
-        // ambient level, 0.3 of it at its roughness: 0.006): 130 in sRGB.
-        assert!(roof("[0, 0]", 0.0).abs_diff(130) <= 1);
-        // At the horizon only the ambient level, 0.5: 0.114, 95 in sRGB.
-        assert!(roof("[90, 90]", 0.0).abs_diff(95) <= 1);
-        // Fully emissive: its own colour.
-        assert!(roof("[90, 90]", 1.0).abs_diff(128) <= 1);
-    }
-
     #[test]
     fn point_and_line_families_keep_camera_only_uploads_to_placements() {
         for style in [

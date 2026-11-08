@@ -296,43 +296,6 @@ impl StylePlan {
                     sources.len() - 1
                 }
             };
-            if layer.ty == LayerType::Model {
-                // A node per model its `model-id` can pick.
-                let id = layer.get(orb_style::MODEL_ID);
-                let models: Vec<usize> = match id.constant() {
-                    Some(Some(id)) => style
-                        .models
-                        .iter()
-                        .position(|(m, _)| *m == id)
-                        .into_iter()
-                        .collect(),
-                    Some(None) => Vec::new(),
-                    None => (0..style.models.len()).collect(),
-                };
-                if models.is_empty() {
-                    warn(index, "the layer's model-id names no model of the document");
-                }
-                if models.len() >= LAYER_NODES as usize {
-                    warn(
-                        index,
-                        &format!("a model layer draws at most {} models", LAYER_NODES - 1),
-                    );
-                }
-                for (n, model) in models
-                    .into_iter()
-                    .take(LAYER_NODES as usize - 1)
-                    .enumerate()
-                {
-                    nodes.push(NodePlan {
-                        layer: index,
-                        family,
-                        source,
-                        key: key + n as u32,
-                        model: Some(model),
-                    });
-                }
-                continue;
-            }
             nodes.push(NodePlan {
                 layer: index,
                 family,

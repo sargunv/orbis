@@ -316,15 +316,11 @@ impl TileWorker {
             };
             sources.push(source);
         }
-        let dialect = match update.models {
-            Some(_) => orb_style::Dialect::Scene,
-            None => orb_style::Dialect::V8,
-        };
         let mut layers = Vec::with_capacity(update.layers.len());
         for (index, key) in update.layers.iter().enumerate() {
             let layer = match update.layer_json.iter().find(|(k, _)| k == key) {
                 Some((_, json)) => Arc::new(
-                    orb_v8::parse_layer(json, index, &sources, &update.state, dialect)
+                    orb_v8::parse_layer(json, index, &sources, &update.state)
                         .map_err(|d| d.to_string())?
                         .0,
                 ),
@@ -338,13 +334,6 @@ impl TileWorker {
             layers.push(layer);
         }
         let style = Scene {
-            dialect,
-            models: update
-                .models
-                .iter()
-                .flatten()
-                .map(|id| (id.clone(), String::new()))
-                .collect(),
             name: None,
             center: None,
             zoom: None,
@@ -360,8 +349,6 @@ impl TileWorker {
             terrain: None,
             globe: None,
             projection: None,
-            tile_matrix_sets: Vec::new(),
-            symbol_occlusion: false,
             state: Vec::new(),
             sources,
             layers,
@@ -756,17 +743,6 @@ pub struct StyleUpdate {
     /// The plane GeoJSON sources tile in and the tile matrix sets of
     /// sources not in `WebMercatorQuad`.
     pub surface: crate::SurfaceTiles,
-    /// A style a scene document extends (its dialect) and its models' ids;
-    /// `None` for a v8 style.
-    pub models: Option<Vec<String>>,
-}
-
-impl StyleUpdate {
-    /// The update's dialect and model ids from `doc`.
-    pub(crate) fn models_of(style: &Scene) -> Option<Vec<String>> {
-        (style.dialect == orb_style::Dialect::Scene)
-            .then(|| style.models.iter().map(|(id, _)| id.clone()).collect())
-    }
 }
 
 /// A tile for a job to load and lay out.
@@ -1077,11 +1053,9 @@ pub(crate) mod tests {
                 plane: Some(polar_plane()),
                 sources: vec![("geo".into(), TileMatrixSet::by_id("NZTM2000Quad").unwrap())],
             },
-            models: Some(vec!["tower".into()]),
         };
         let bytes = crate::wire::encode(&update);
         let parsed: StyleUpdate = crate::wire::decode(&bytes).unwrap();
-        assert_eq!(parsed.models, update.models);
         assert_eq!(crate::wire::encode(&parsed), bytes);
         assert_eq!(parsed.surface.plane, update.surface.plane);
         let tile = TileIndex::new(4, 7, 9);

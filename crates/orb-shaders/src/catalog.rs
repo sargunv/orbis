@@ -297,7 +297,7 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
     compute: "",
     lit: false,
 };
-/// Contour lines of a raster-dem source: the scene document's `contour`.
+/// Contour lines of a raster-dem source.
 pub const CONTOUR_SHADER: Shader = Shader {
     label: "contour",
     parts: &[TYPES, DRAW, IMAGE, DEM, CONTOUR],

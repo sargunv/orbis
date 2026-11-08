@@ -1,6 +1,5 @@
-// The style's lights on a surface: one model
-// for v8's `light` and the scene document's lights, which the frame block
-// carries. Its response is GL JS's flat extrusion shading, which v8 defines:
+// The style's lights on a surface: one model for v8's `light`, which the
+// frame block carries. Its response is GL JS's flat extrusion shading, which v8 defines:
 // a face away from the light gets the ambient level of the ambient colour,
 // a face toward it `max(a + d − luminance, 1)` of the directional colour
 // (lighter surfaces lit less, so lit faces don't wash out), in between by

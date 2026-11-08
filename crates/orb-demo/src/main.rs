@@ -134,8 +134,8 @@ fn style_url(options: &Options) -> Result<String, String> {
 }
 
 /// The camera from `--at`, or `None` to use the style's. Its zoom is on
-/// the default Web Mercator surface: a scene document's own plane is known
-/// only once it loads.
+/// the default Web Mercator surface: a style's own plane is known only
+/// once it loads.
 fn camera(options: &Options) -> Option<CameraState> {
     let mercator = *TileMatrixSet::by_id("WebMercatorQuad")
         .expect("built in")

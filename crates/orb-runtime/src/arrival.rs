@@ -63,9 +63,8 @@ impl Map {
                 Message::Style {
                     request,
                     url,
-                    scene,
                     result,
-                } => self.apply_style(request, &url, scene, result),
+                } => self.apply_style(request, &url, result),
                 Message::Sprite { generation, result } => {
                     if let Some(style) = self
                         .style
@@ -124,35 +123,6 @@ impl Map {
                         }
                     }
                 }
-                Message::Model {
-                    generation,
-                    renderer: id,
-                    index,
-                    result,
-                } => {
-                    let Some(style) = self
-                        .style
-                        .as_mut()
-                        .filter(|_| generation == self.generation && id == renderer.id())
-                    else {
-                        continue;
-                    };
-                    style.models_loading -= 1;
-                    match result {
-                        Ok(model) => {
-                            renderer.set_model(gpu, index as u32, &model);
-                            self.models_resident = self.models_resident.max(index as u32 + 1);
-                            if let Some(bounds) = style.models.get_mut(index) {
-                                *bounds = Some(model.bounds);
-                            }
-                            style.paint.invalidate();
-                        }
-                        Err(e) => {
-                            let message = format!("model: {e}");
-                            self.events.push(MapEvent::Error { message });
-                        }
-                    }
-                }
                 Message::TileJson {
                     generation,
                     source,
@@ -197,6 +167,7 @@ impl Map {
                     terrain,
                     result,
                 } => {
+                    let result = *result;
                     let host = result.as_ref().ok().map(HostData::of);
                     if let Some(edit) = edit {
                         self.finish_job(edit);

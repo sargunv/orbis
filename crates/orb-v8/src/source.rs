@@ -1,6 +1,7 @@
 //! Sources.
 
-use orb_expr::json::Json;
+use orb_crs::{TileMatrix, TileMatrixSet, TileMatrixSetDefinition};
+use orb_expr::json::{Json, JsonValue};
 use orb_style::*;
 
 use crate::Cx;
@@ -54,9 +55,114 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
         "image" | "video" | "canvas" => SourceKind::Image(parse_image(cx, json, path, ty)?),
         _ => unreachable!("checked against SOURCE_TYPES"),
     };
+    let tile_matrix_set = match json.get("tileMatrixSet") {
+        None => None,
+        Some(tms) => Some(parse_tms(cx, tms, &format!("{path}.tileMatrixSet"))?),
+    };
     Some(Source {
         id: id.to_string(),
         kind,
+        tile_matrix_set,
+    })
+}
+
+/// A source's `tileMatrixSet`: an identifier `orb_crs` registers or an
+/// inline OGC 2D-TMS document (version 2.0, or 1.0's `identifier` and
+/// `topLeftCorner`).
+fn parse_tms(cx: &mut Cx, json: &Json, path: &str) -> Option<TileMatrixSet> {
+    let result = match &json.value {
+        JsonValue::String(id) => TileMatrixSet::by_id(id),
+        JsonValue::Object(_) => match tms_definition(json) {
+            Ok(def) => TileMatrixSet::from_definition(&def),
+            Err(message) => {
+                cx.error(path, json.span, message);
+                return None;
+            }
+        },
+        _ => {
+            cx.error(
+                path,
+                json.span,
+                "expected an identifier or a tile matrix set",
+            );
+            return None;
+        }
+    };
+    result
+        .map_err(|e| cx.error(path, json.span, e.to_string()))
+        .ok()
+}
+
+/// An OGC 2D-TMS document (2.0, or 1.0's names) as a definition.
+pub fn tms_definition(json: &Json) -> Result<TileMatrixSetDefinition, String> {
+    let text = |key: &str| json.get(key).and_then(Json::as_str);
+    let id = text("id")
+        .or_else(|| text("identifier"))
+        .unwrap_or("inline")
+        .to_string();
+    let crs = json
+        .get("crs")
+        .or_else(|| json.get("supportedCRS"))
+        .and_then(|c| c.as_str().or_else(|| c.get("uri").and_then(Json::as_str)))
+        .ok_or("a tile matrix set needs a `crs`")?
+        .to_string();
+    let northing_first = json
+        .get("orderedAxes")
+        .and_then(Json::as_array)
+        .and_then(|axes| axes.first())
+        .and_then(Json::as_str)
+        .map(|axis| {
+            matches!(
+                axis.to_ascii_lowercase().as_str(),
+                "y" | "n" | "lat" | "latitude" | "north" | "northing"
+            )
+        });
+    let matrices = json
+        .get("tileMatrices")
+        .or_else(|| json.get("tileMatrix"))
+        .and_then(Json::as_array)
+        .ok_or("a tile matrix set needs `tileMatrices`")?;
+    let matrices = matrices
+        .iter()
+        .map(|m| {
+            let number = |key: &str| m.get(key).and_then(Json::as_f64);
+            let count = |key: &str| {
+                number(key)
+                    .filter(|n| *n >= 1.0 && n.fract() == 0.0 && *n <= f64::from(u32::MAX))
+                    .map(|n| n as u32)
+                    .ok_or_else(|| format!("a tile matrix needs a whole `{key}`"))
+            };
+            let id = m
+                .get("id")
+                .or_else(|| m.get("identifier"))
+                .and_then(Json::as_str)
+                .ok_or("a tile matrix needs an `id`")?;
+            let origin = m
+                .get("pointOfOrigin")
+                .or_else(|| m.get("topLeftCorner"))
+                .and_then(Json::as_array)
+                .and_then(|p| Some([p.first()?.as_f64()?, p.get(1)?.as_f64()?]))
+                .ok_or("a tile matrix needs a `pointOfOrigin`")?;
+            Ok(TileMatrix {
+                id: id.to_string(),
+                scale_denominator: number("scaleDenominator")
+                    .ok_or("a tile matrix needs a `scaleDenominator`")?,
+                cell_size: number("cellSize"),
+                point_of_origin: origin,
+                bottom_left: m.get("cornerOfOrigin").and_then(Json::as_str) == Some("bottomLeft"),
+                tile_width: count("tileWidth")?,
+                tile_height: count("tileHeight")?,
+                matrix_width: count("matrixWidth")?,
+                matrix_height: count("matrixHeight")?,
+                variable_widths: m.get("variableMatrixWidths").is_some(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(TileMatrixSetDefinition {
+        id,
+        crs,
+        northing_first,
+        matrices,
     })
 }
 

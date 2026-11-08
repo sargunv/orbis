@@ -12,8 +12,8 @@ build when they own a project, not to compete with MapLibre.
 What it does today: one Rust core renders
 [MapLibre style spec](https://maplibre.org/maplibre-style-spec/) v8 maps in the
 browser (wasm and WebGPU) and natively (Vulkan, Metal and D3D12 through wgpu),
-with terrain, a globe, 3D buildings and models,
-shadows and lighting, and C, Kotlin and Swift bindings. Nothing is published
+with terrain, a globe, 3D buildings, other projections and coordinate
+reference systems, and C, Kotlin and Swift bindings. Nothing is published
 and every API can change. The live demo is at
 <https://code.sargunv.dev/orbis/>.
 

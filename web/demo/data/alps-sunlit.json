@@ -1,8 +1,0 @@
-{
-  "style": "alps.json",
-  "lights": [
-    {"id": "sky", "type": "ambient", "properties": {"color": "#dfe9ff", "intensity": 0.5}},
-    {"id": "sun", "type": "sun", "properties": {"time": "2024-07-15T06:30:00Z", "color": "#fff1dc", "intensity": 0.8}}
-  ],
-  "layers": {"buildings": {"emissive-strength": 0.1}}
-}

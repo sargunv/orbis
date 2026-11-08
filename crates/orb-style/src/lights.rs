@@ -1,14 +1,11 @@
-//! Lights: what v8's `light` lowers into and what the
-//! scene document's `lights` replace it with.
+//! Lights: what v8's `light` lowers into.
 
 use orb_expr::Color;
 
 use crate::{Property, TranslateAnchor};
 
-/// The style's lights: what v8's `light` lowers into (an ambient and a
-/// directional term of GL JS's flat extrusion response) and what the scene
-/// document's `lights` replace it with. Shadows and glTF's materials extend
-/// this model; they don't add another.
+/// The style's lights: what v8's `light` lowers into, an ambient and a
+/// directional term of GL JS's flat extrusion response.
 #[derive(Clone, Debug)]
 pub struct Lights {
     pub ambient: Option<AmbientLight>,

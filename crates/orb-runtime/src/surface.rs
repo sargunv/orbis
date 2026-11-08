@@ -1,4 +1,5 @@
-//! The surface a map draws on, from its scene document, and the planner
+//! The surface a map draws on, from its style's `projection` and sources'
+//! tile matrix sets, and the planner
 //! that decides how each source's tiles reach it.
 
 use orb_crs::{Descriptor, Projection, TileMatrixSet, TileMatrixSetDefinition, WorldRect};
@@ -13,7 +14,7 @@ pub(crate) struct Surface {
     projection: Projection,
     /// Backgrounds and GeoJSON sources tile in this set.
     tms: TileMatrixSet,
-    /// Sources' tile matrix sets by source id, from the scene document.
+    /// Sources' tile matrix sets by source id.
     sources: Vec<(String, TileMatrixSet)>,
     /// The low-zoom surface the plane's tiles draw on.
     globe: Option<orb_crs::Globe>,
@@ -112,15 +113,11 @@ impl Surface {
     /// The scene's surface: its plane, its sources' tile matrix sets and
     /// its low-zoom surface.
     pub(crate) fn of(scene: &orb_style::Scene) -> Self {
-        Self::new(
-            scene.projection,
-            scene.tile_matrix_sets.clone(),
-            scene.globe,
-        )
+        Self::new(scene.projection, scene.tile_matrix_sets(), scene.globe)
     }
 
-    /// A surface on `projection` (Web Mercator if `None`) with the scene
-    /// document's tile matrix sets and low-zoom plane. The plane's extent
+    /// A surface on `projection` (Web Mercator if `None`) with the sources'
+    /// tile matrix sets and the low-zoom surface. The plane's extent
     /// is that of the first source set on it, or else the projection's own.
     fn new(
         projection: Option<Projection>,
@@ -216,7 +213,7 @@ impl Surface {
         self.projection.wrap_period().unwrap_or(0.0)
     }
 
-    /// A source's tile matrix set: the scene document's, else the
+    /// A source's tile matrix set: its `tileMatrixSet`, else the
     /// surface's own for GeoJSON (which is geodetic and tiles anywhere)
     /// and `WebMercatorQuad` for the rest, as v8 means them.
     pub(crate) fn source_tms(&self, id: &str, geojson: bool) -> TileMatrixSet {

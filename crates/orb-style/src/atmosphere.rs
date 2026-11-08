@@ -1,5 +1,4 @@
-//! The atmosphere: what v8's `sky` lowers into and the
-//! scene document's `atmosphere` sets.
+//! The atmosphere: what v8's `sky` lowers into.
 
 use orb_expr::Color;
 
