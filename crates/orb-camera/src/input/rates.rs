@@ -30,7 +30,7 @@ pub(crate) const PITCH_INERTIA: Inertia = Inertia::new(1000.0, 90.0);
 
 /// How a property keeps moving after a gesture lets go: a fraction of the
 /// release speed, decelerating at a constant rate along GL JS's inertia
-/// ease-out ([`Easing::INERTIA`](orb_camera::Easing::INERTIA)).
+/// ease-out ([`Easing::INERTIA`](crate::Easing::INERTIA)).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Inertia {
     /// Units per second squared.

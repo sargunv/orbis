@@ -1,6 +1,6 @@
 [package]
 name = "orb-camera"
-description = "Camera state and view transforms"
+description = "Camera state, view transforms, animated moves, and the gestures and keys that drive them"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

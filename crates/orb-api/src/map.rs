@@ -8,13 +8,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use glam::DVec2;
+use orb_camera::input::Input;
 use orb_camera::{
     AnimationId, Bounds, CameraTarget, Constraints, EaseOptions, FitOptions, FlyOptions,
     FreeCamera, Padding,
 };
 use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
-use orb_interact::Input;
 use orb_runtime::{
     CameraState, ClusterQuery, FrameReport, GridTile, Hit, HostTile, MapEvent, RenderMode,
     StyleImage, Transaction, VideoRequest, Viewport,

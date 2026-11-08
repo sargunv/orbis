@@ -58,12 +58,12 @@ pub use jobs::{
 };
 pub use loader::{LoadDone, TileLoader, TileLocation};
 pub use map::{FrameReport, GridTile, Images, JobCounts, Map, Memory, RenderMode, Services};
+pub use orb_camera::input::{Button, Input};
 pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraState, CameraTarget, Constraints, EaseOptions,
     FitOptions, FlyOptions, View, Viewport,
 };
 pub use orb_expr::json;
-pub use orb_interact::{Button, Input};
 pub use orb_layout::fill::Bend;
 pub use orb_render::Renderer;
 pub use orb_render::{

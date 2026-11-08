@@ -54,7 +54,6 @@ orb-crs = { path = "crates/orb-crs" }
 orb-expr = { path = "crates/orb-expr" }
 orb-hal = { path = "crates/orb-hal" }
 orb-hal-wgpu = { path = "crates/orb-hal-wgpu" }
-orb-interact = { path = "crates/orb-interact" }
 orb-host = { path = "crates/orb-host" }
 orb-host-native = { path = "crates/orb-host-native" }
 orb-layout = { path = "crates/orb-layout" }

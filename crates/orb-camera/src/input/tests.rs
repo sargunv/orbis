@@ -1,5 +1,5 @@
+use crate::{Camera, CameraEvent, CameraState, Change, Phase, Viewport};
 use glam::DVec2;
-use orb_camera::{Camera, CameraEvent, CameraState, Change, Phase, Viewport};
 use orb_crs::Geodetic;
 use orb_crs::TileMatrixSet;
 
@@ -338,11 +338,11 @@ fn keys_step_the_camera() {
 fn input_interrupts_animations() {
     let mut rig = Rig::new();
     let id = rig.camera.ease_to(
-        &orb_camera::CameraTarget {
+        &crate::CameraTarget {
             zoom: Some(4.0),
             ..Default::default()
         },
-        orb_camera::EaseOptions::default(),
+        crate::EaseOptions::default(),
         Some(rig.now),
     );
     rig.frame();

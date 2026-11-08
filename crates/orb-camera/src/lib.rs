@@ -5,12 +5,16 @@
 //! projection into the matrices and tile cover a frame needs. World positions
 //! handed to the GPU are relative to the camera's world position so they stay
 //! precise in f32 at any zoom.
+//!
+//! The [`input`] module turns pointer, touch, wheel and keyboard input into
+//! moves of the [`Camera`] store.
 
 #![forbid(unsafe_code)]
 
 mod animate;
 mod fit;
 mod free;
+pub mod input;
 mod moves;
 mod store;
 mod terrain;

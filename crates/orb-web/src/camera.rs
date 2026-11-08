@@ -5,11 +5,11 @@
 //! read by name.
 
 use glam::DVec2;
+use orb_camera::input::{Button, Input, Key, Modifiers, PointerKind, WheelUnit};
 use orb_camera::{
     Bounds, CameraTarget, Constraints, EaseOptions, Easing, FitOptions, FlyOptions, Padding,
 };
 use orb_crs::Geodetic;
-use orb_interact::{Button, Input, Key, Modifiers, PointerKind, WheelUnit};
 use wasm_bindgen::prelude::*;
 
 use crate::OrbisMap;

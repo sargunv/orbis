@@ -59,7 +59,6 @@ const JOB_SIDE: &[&str] = &["orb-tile", "orb-layout", "orb-text", "orb-symbol"];
 const SCENE_SIDE: &[&str] = &[
     "orb-style",
     "orb-camera",
-    "orb-interact",
     "orb-render",
     "orb-hal",
     "orb-shaders",

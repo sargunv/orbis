@@ -1,4 +1,4 @@
-// DOM input to the map's gestures (orb-interact): pointer events for
+// DOM input to the map's gestures (orb-camera's input): pointer events for
 // mouse, pen and touch, wheel, keys and focus. Each call carries the
 // event's timestamp, which inertia and double taps measure, on the clock
 // frames' timestamps use.

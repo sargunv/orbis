@@ -56,7 +56,7 @@ pub struct FrameBlock {
     /// camera-relative.
     pub camera: [f64; 2],
     /// How many world units the surface spans, which sets the precision
-    /// positions split at ([`quantum`]).
+    /// positions split at (`quantum`).
     pub world_span: f64,
     /// Logical pixels.
     pub viewport: [f32; 2],
@@ -423,7 +423,7 @@ const CHUNK_WORDS: usize = layout::chunk::WORDS;
 const CANDIDATE_WORDS: usize = layout::candidate::WORDS;
 const VISIBLE_WORDS: usize = layout::visible::WORDS;
 const NODE_CULL_WORDS: usize = layout::node_cull::WORDS;
-/// Words per node of [`SceneBuffers::args`]: a draw's indirect arguments
+/// Words per node of `SceneBuffers::args`: a draw's indirect arguments
 /// and the cull's counters.
 pub const ARGS_WORDS: usize = 8;
 /// Candidates per cull workgroup of an indexed node (`cull.wgsl`).
@@ -635,7 +635,7 @@ pub struct MeshData<'a> {
     pub chunks: &'a [Chunk],
 }
 
-/// The words and chunks of a mesh to insert, for [`Scene::fits`].
+/// The words and chunks of a mesh to insert, for `Scene::fits`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MeshSize {
     pub vertices: u32,

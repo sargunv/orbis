@@ -2254,7 +2254,6 @@ dependencies = [
  "orb-hal-wgpu",
  "orb-host",
  "orb-host-native",
- "orb-interact",
  "orb-runtime",
  "png",
  "pollster",
@@ -2380,15 +2379,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "orb-interact"
-version = "0.0.0"
-dependencies = [
- "glam",
- "orb-camera",
- "orb-crs",
-]
-
-[[package]]
 name = "orb-layout"
 version = "0.0.0"
 dependencies = [
@@ -2425,7 +2415,6 @@ dependencies = [
  "orb-hal-wgpu",
  "orb-host",
  "orb-host-native",
- "orb-interact",
  "orb-layout",
  "orb-render",
  "orb-shaders",
@@ -2531,7 +2520,6 @@ dependencies = [
  "orb-hal",
  "orb-hal-wgpu",
  "orb-host",
- "orb-interact",
  "orb-runtime",
  "orb-style",
  "orb-symbol",

@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 
 use glam::DVec2;
 use orb_camera::CameraEvent;
-use orb_interact::Button;
+use orb_camera::input::Button;
 
 /// Something the map did, drained with [`Map::take_events`](crate::Map::take_events).
 #[derive(Clone, Debug, PartialEq)]

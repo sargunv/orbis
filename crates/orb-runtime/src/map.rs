@@ -367,7 +367,7 @@ pub struct Map {
     /// The camera's only writer: the app's moves, the style's camera and
     /// gestures all go through it.
     pub(crate) camera: orb_camera::Camera,
-    pub(crate) input: orb_interact::Interaction,
+    pub(crate) input: orb_camera::input::Interaction,
     /// The camera and terrain revisions the last frame saw.
     pub(crate) camera_seen: u64,
     pub(crate) terrain_seen: u64,
@@ -544,7 +544,7 @@ impl Map {
             videos: Default::default(),
             host_tiles: Default::default(),
             camera: store,
-            input: orb_interact::Interaction::default(),
+            input: orb_camera::input::Interaction::default(),
             camera_seen: 0,
             terrain_seen: 0,
             globe_warps: crate::globe::GlobeWarps::new(*surface.projection()),

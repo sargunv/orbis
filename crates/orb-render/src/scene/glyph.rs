@@ -134,7 +134,7 @@ impl GlyphAtlas {
     }
 
     /// Writes a `size[0]` × `size[1]` R8 bitmap into a reserved row, with
-    /// [`GLYPH_PADDING`] transparent texels around it.
+    /// `GLYPH_PADDING` transparent texels around it.
     pub fn upload(
         &mut self,
         gpu: &mut dyn Gpu,

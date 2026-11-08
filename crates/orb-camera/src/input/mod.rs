@@ -2,7 +2,7 @@
 //! camera moves, with inertia. Host-independent: hosts
 //! feed [`Input`]s with their timestamps and call [`Interaction::frame`]
 //! once a display frame; every move goes through the
-//! [`Camera`](orb_camera::Camera) store, which reports the camera events.
+//! [`Camera`] store, which reports the camera events.
 //!
 //! GL JS's handlers are the reference for what each gesture does and at
 //! what rate: drag to pan, right- or Ctrl-drag to rotate and tilt, wheel
@@ -10,16 +10,14 @@
 //! zoom out, tap-and-drag zoom, two-finger pinch, twist and vertical tilt,
 //! and the arrow and `+`/`-` keys.
 
-#![forbid(unsafe_code)]
-
 mod rates;
 
 use rates::*;
 
 use std::collections::VecDeque;
 
+use crate::{Camera, CameraTarget, EaseOptions, Easing, Glide, Track};
 use glam::DVec2;
-use orb_camera::{Camera, CameraTarget, EaseOptions, Easing, Glide, Track};
 
 /// What kind of device a pointer is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

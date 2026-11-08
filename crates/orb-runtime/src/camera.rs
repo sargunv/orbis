@@ -4,12 +4,12 @@
 //! advances gestures and animations at the frame's timestamp, then draws.
 
 use glam::DVec2;
+use orb_camera::input::{Input, InteractEvent};
 use orb_camera::{
     AnimationId, Bounds, CameraState, CameraTarget, Constraints, EaseOptions, FitOptions,
     FlyOptions, FreeCamera, Viewport,
 };
 use orb_crs::Geodetic;
-use orb_interact::{Input, InteractEvent};
 
 use crate::{Map, MapEvent};
 
