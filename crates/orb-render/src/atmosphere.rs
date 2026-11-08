@@ -22,10 +22,6 @@ pub struct AtmospherePaint {
     pub fog_ground_blend: f32,
     /// How much the globe's atmosphere shows: 0 none, 1 GL JS's full halo.
     pub atmosphere_blend: f32,
-    /// Premultiplied colour behind the stars and the sky.
-    pub backdrop: [f32; 4],
-    /// The stars' brightness, 0 to 1.
-    pub stars: f32,
 }
 
 /// A globe view's sphere, for its sky and scattering.
@@ -60,9 +56,6 @@ pub struct AtmosphereView {
     /// inverse view-projection, on a flat surface turned from east, north
     /// and up at the target.
     pub ray_inverse: [[f32; 4]; 4],
-    /// The stars' turn about the pole, radians: the Greenwich sidereal
-    /// angle at the scene's sun time, 0 without one.
-    pub star_rotation: f32,
     /// The globe, when the view is one.
     pub globe: Option<GlobeSky>,
 }
@@ -134,9 +127,7 @@ impl Atmosphere {
         if let Some(p) = paint {
             b.f(n::SKY_COLOR, &p.sky_color)
                 .f(n::HORIZON_COLOR, &p.horizon_color);
-            b.f(n::FOG_COLOR, &p.fog_color)
-                .f(n::BACKDROP, &p.backdrop)
-                .f(n::STARS, &[p.stars]);
+            b.f(n::FOG_COLOR, &p.fog_color);
             b.f(
                 n::SKY_HORIZON_BLEND,
                 &[p.sky_horizon_blend * view.height / 2.0],
@@ -145,8 +136,7 @@ impl Atmosphere {
             b.f(n::FOG_GROUND_BLEND, &[p.fog_ground_blend])
                 .f(n::FOG_OPACITY, &[view.fog_opacity]);
         }
-        b.f(n::RAY_INVERSE, view.ray_inverse.as_flattened())
-            .f(n::STAR_ROTATION, &[view.star_rotation]);
+        b.f(n::RAY_INVERSE, view.ray_inverse.as_flattened());
         b.f(n::HORIZON, &view.horizon)
             .f(n::HORIZON_NORMAL, &view.horizon_normal);
         b.f(n::FOG_NEAR, &[view.fog_range[0]])

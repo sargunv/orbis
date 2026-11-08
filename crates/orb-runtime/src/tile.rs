@@ -259,7 +259,7 @@ fn layout(
                 key.evaluate(zoom, feature as usize)
             })
         }
-        LayerType::Heatmap | LayerType::Model => point::layout(layer, features),
+        LayerType::Heatmap => point::layout(layer, features),
         LayerType::Line => {
             let join = l.get(orb_style::LINE_JOIN).bind(layer);
             let cap = l.get(orb_style::LINE_CAP).bind(layer);
@@ -584,14 +584,6 @@ pub(crate) fn build(
                             Box::new(move |z, f| {
                                 let v = b.evaluate(z, f);
                                 (v.to_bits(), v)
-                            })
-                        }
-                        // Reaches count either way.
-                        PaintProperty::Component(p, c) => {
-                            let (b, c) = (p.bind(layer), *c);
-                            Box::new(move |z, f| {
-                                let v = b.evaluate(z, f)[c];
-                                (v.to_bits(), v.abs())
                             })
                         }
                     };

@@ -58,7 +58,7 @@ const UNSAFE_ALLOWED: &[&str] = &[
 ];
 
 /// Job-side crates are share-nothing and never depend on scene-side crates.
-const JOB_SIDE: &[&str] = &["orb-tile", "orb-layout", "orb-text", "orb-symbol", "orb-3d"];
+const JOB_SIDE: &[&str] = &["orb-tile", "orb-layout", "orb-text", "orb-symbol"];
 const SCENE_SIDE: &[&str] = &[
     "orb-style",
     "orb-camera",

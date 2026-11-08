@@ -48,7 +48,6 @@ wasm-bindgen-futures = "0.4.80"
 web-sys = "0.3.107"
 wgpu = { version = "30.0.1", default-features = false, features = ["wgsl", "std", "parking_lot"] }
 
-orb-3d = { path = "crates/orb-3d" }
 orb-a11y = { path = "crates/orb-a11y" }
 orb-api = { path = "crates/orb-api" }
 orb-camera = { path = "crates/orb-camera" }

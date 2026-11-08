@@ -2244,17 +2244,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
-name = "orb-3d"
-version = "0.0.0"
-dependencies = [
- "base64 0.23.1",
- "glam",
- "image",
- "orb-expr",
- "orb-host",
-]
-
-[[package]]
 name = "orb-a11y"
 version = "0.0.0"
 
@@ -2437,7 +2426,6 @@ version = "0.0.0"
 dependencies = [
  "bytemuck",
  "glam",
- "orb-3d",
  "orb-crs",
  "orb-hal",
  "orb-hal-wgpu",
@@ -2455,7 +2443,6 @@ version = "0.0.0"
 dependencies = [
  "bytemuck",
  "glam",
- "orb-3d",
  "orb-a11y",
  "orb-camera",
  "orb-crs",
@@ -2588,7 +2575,6 @@ dependencies = [
  "futures-channel",
  "glam",
  "js-sys",
- "orb-3d",
  "orb-camera",
  "orb-crs",
  "orb-expr",

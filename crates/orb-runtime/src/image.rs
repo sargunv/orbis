@@ -8,8 +8,8 @@ use orb_crs::TileIndex;
 use orb_hal::Gpu;
 use orb_layout::{Chunk, TileBox};
 use orb_render::{
-    ColorReliefPaint, ContourPaint, HillshadeMethod, HillshadePaint, IMAGE_EXTENT, ImageMesh,
-    MAX_LIGHTS, NodePaint, RasterPaint, Renderer,
+    ColorReliefPaint, HillshadeMethod, HillshadePaint, IMAGE_EXTENT, ImageMesh, MAX_LIGHTS,
+    NodePaint, RasterPaint, Renderer,
 };
 use orb_style::{Color, IlluminationAnchor, LayerType, PropertyRef, PropertyValue, Resampling};
 
@@ -300,26 +300,7 @@ pub(crate) fn paint(
                 nearest: nearest(COLOR_RELIEF_RESAMPLE),
             })
         }
-        LayerType::Contour => {
-            use orb_style::{
-                CONTOUR_COLOR, CONTOUR_INTERVAL, CONTOUR_MAJOR, CONTOUR_MAJOR_WIDTH,
-                CONTOUR_OPACITY, CONTOUR_WIDTH,
-            };
-            let opacity = number(CONTOUR_OPACITY);
-            NodePaint::Contour(ContourPaint {
-                unpack: unpack?.map(|v| v as f32),
-                color: l
-                    .get(CONTOUR_COLOR)
-                    .evaluate(zoom)
-                    .premultiplied()
-                    .map(|c| c * opacity),
-                interval: number(CONTOUR_INTERVAL),
-                major: number(CONTOUR_MAJOR).round().max(1.0),
-                width: number(CONTOUR_WIDTH),
-                major_width: number(CONTOUR_MAJOR_WIDTH),
-            })
-        }
-        _ => unreachable!("image nodes are raster, hillshade, color-relief or contour layers"),
+        _ => unreachable!("image nodes are raster, hillshade or color-relief layers"),
     })
 }
 

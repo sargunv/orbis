@@ -1,6 +1,6 @@
 //! v8's `sky`, lowered into the style's [`Atmosphere`]: one sky and fog
 //! model.
-use crate::{Color, Cx, Property, layer::typed_property_at};
+use crate::{Cx, layer::typed_property_at};
 use orb_expr::{PropertyType, json::Json};
 use orb_style::*;
 
@@ -62,8 +62,6 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
         horizon_fog_blend: number(cx, "horizon-fog-blend", "0.8"),
         sky_horizon_blend: number(cx, "sky-horizon-blend", "0.8"),
         atmosphere_blend: number(cx, "atmosphere-blend", "0.8"),
-        stars: Property::constant(0.0),
-        backdrop: Property::constant(Color::TRANSPARENT),
     }
 }
 

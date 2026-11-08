@@ -1,6 +1,6 @@
-//! 3D layers (extrusions and models) draw into a target of their own,
-//! resolve it, then composite it at their layer opacity once. The shared
-//! depth attachment keeps occlusion between 3D layers.
+//! Extrusion layers draw into a target of their own, resolve it, then
+//! composite it at their layer opacity once. The shared depth attachment
+//! keeps occlusion between 3D layers and the terrain.
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
 use crate::release::Release;
 use orb_hal::*;
@@ -18,10 +18,8 @@ pub(crate) struct Extrusions {
     depth: Option<TextureId>,
     size: [u32; 2],
     single_layer: bool,
-    /// The depth is kept and read after the 3D passes (`occlusion`).
-    sampled: bool,
 }
-/// A 3D layer's node, drawn apart.
+/// An extrusion layer's node, drawn apart.
 pub(crate) type NodeExtrusion = Apart;
 
 impl Extrusions {
@@ -33,7 +31,6 @@ impl Extrusions {
             depth: None,
             size: [0; 2],
             single_layer: false,
-            sampled: false,
         }
     }
 
@@ -155,7 +152,7 @@ impl Extrusions {
     /// The depth 3D passes share, once a resize made it, and how its
     /// passes store it: a single pass's is transient.
     pub(crate) fn depth(&self) -> Option<(TextureId, StoreOp)> {
-        let store = if self.single_layer && !self.sampled {
+        let store = if self.single_layer {
             StoreOp::Discard
         } else {
             StoreOp::Store
@@ -178,9 +175,7 @@ impl Extrusions {
             dimension: TextureViewDimension::D2,
             format: TextureFormat::Depth32Float,
             usage: TextureUsages::RENDER_ATTACHMENT
-                | if self.sampled {
-                    TextureUsages::TEXTURE_BINDING
-                } else if count == 1 {
+                | if count == 1 {
                     TextureUsages::TRANSIENT_ATTACHMENT
                 } else {
                     TextureUsages::empty()
@@ -192,17 +187,6 @@ impl Extrusions {
         self.single_layer = count == 1;
         true
     }
-    /// Keeps the depth for reading after the 3D passes, or lets a single
-    /// pass's be transient; whether that changed (it's made again).
-    pub(crate) fn set_sampled(&mut self, sampled: bool) -> bool {
-        if sampled == self.sampled {
-            return false;
-        }
-        self.sampled = sampled;
-        self.size = [0; 2];
-        true
-    }
-
     /// Gives a node its target of `size` and its composite, unless it has
     /// them at this size and sample count; whether it changed.
     pub(crate) fn resize_node(
@@ -227,8 +211,9 @@ impl Extrusions {
         changed
     }
 
-    /// An extrusion node's pass; lit with the node materials' group
-    /// `materials`.
+    /// An extrusion node's pass into its target over the shared depth,
+    /// replaying its draws, recorded once; lit with the node materials'
+    /// group `materials`.
     #[expect(clippy::too_many_arguments, reason = "one recorded draw")]
     pub(crate) fn prepare(
         &self,
@@ -241,7 +226,7 @@ impl Extrusions {
         first: bool,
     ) -> RenderPass {
         let pipelines = self.slot(materials.is_some());
-        self.pass(gpu, node, first, || {
+        let bundle = *node.bundle.get_or_insert_with(|| {
             let lit = materials.map(|group| RenderCommand::SetBindGroup { index: 2, group });
             let draw = RenderCommand::DrawIndexedIndirect {
                 buffer: buffers.args,
@@ -263,20 +248,6 @@ impl Extrusions {
             for &pipeline in pipelines.iter().flatten() {
                 commands.extend([RenderCommand::SetPipeline(pipeline), draw.clone()]);
             }
-            commands
-        })
-    }
-
-    /// A 3D layer's pass into its target over the shared depth, replaying
-    /// its draws, recorded once from `commands`.
-    pub(crate) fn pass(
-        &self,
-        gpu: &mut dyn Gpu,
-        node: &mut NodeExtrusion,
-        first: bool,
-        commands: impl FnOnce() -> Vec<RenderCommand>,
-    ) -> RenderPass {
-        let bundle = *node.bundle.get_or_insert_with(|| {
             gpu.create_render_bundle(
                 &RenderBundleDesc {
                     label: "3d layer",
@@ -284,7 +255,7 @@ impl Extrusions {
                     depth_format: Some(TextureFormat::Depth32Float),
                     sample_count: self.samples,
                 },
-                &commands(),
+                &commands,
             )
         });
         RenderPass {

@@ -15,9 +15,4 @@ pub struct Atmosphere {
     pub horizon_fog_blend: Property<f32>,
     pub sky_horizon_blend: Property<f32>,
     pub atmosphere_blend: Property<f32>,
-    /// The stars' brightness, 0 (none) to 1, behind the sky.
-    pub stars: Property<f32>,
-    /// The colour behind everything, stars before it: where neither the
-    /// map nor the sky covers it. Transparent shows the host's backing.
-    pub backdrop: Property<Color>,
 }

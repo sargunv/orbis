@@ -401,7 +401,7 @@ pub(crate) fn parse_layer(
         .collect();
     let (source, source_layer, filter) = match ty {
         LayerType::Background => (None, None, None),
-        LayerType::Raster | LayerType::Hillshade | LayerType::ColorRelief | LayerType::Contour => {
+        LayerType::Raster | LayerType::Hillshade | LayerType::ColorRelief => {
             let dem = ty != LayerType::Raster;
             (image_source(cx, json, &path, &id, sources, dem), None, None)
         }

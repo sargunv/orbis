@@ -123,8 +123,6 @@ pub struct Memory {
     pub shadow_map: u64,
     /// The terrain's drape atlas, mips included.
     pub drape_atlas: u64,
-    /// The style's glTF models: their words, indices and textures.
-    pub models: u64,
     /// Tiles kept beyond those in view, and their cost: GPU memory and
     /// picking data.
     pub cached_tiles: u32,
@@ -146,7 +144,6 @@ impl Memory {
             + self.glyph_textures
             + self.image_atlas
             + self.shadow_map
-            + self.models
     }
 }
 
@@ -291,9 +288,6 @@ pub(crate) struct LoadedStyle {
     /// Whether the background and image tiles' meshes are grids for a
     /// globe to bend.
     pub(crate) globe_meshes: bool,
-    /// The style's models by index: their bounds once the renderer holds
-    /// them.
-    pub(crate) models: Vec<Option<[[f32; 3]; 2]>>,
 }
 
 /// What tiles and styles let go of between frames, released from the
@@ -966,7 +960,6 @@ impl Map {
             draws: Vec::new(),
             terrain: None,
             globe_meshes: self.surface.globe().is_some(),
-            models: Vec::new(),
         });
         self.nodes_stale = true;
     }
@@ -1133,11 +1126,7 @@ impl Map {
                 renderer,
                 style,
                 &mut self.transitions,
-                (
-                    zoom,
-                    self.camera.state().bearing,
-                    self.camera.state().resolution,
-                ),
+                (zoom, self.camera.state().bearing),
                 now,
                 images.atlas.as_mut().expect("initialized"),
             );
@@ -1396,7 +1385,6 @@ impl Map {
             .map(|n| RenderNode {
                 family: n.family,
                 source: n.family.is_image().then(|| plan.sources[n.source].key),
-                model: n.model.map(|m| (m as u32, crate::style::layer_key(n.key))),
             })
             .collect();
         // New nodes of image sources draw the tiles already resident.
@@ -1763,7 +1751,6 @@ impl Map {
             image_atlas: images.atlas.as_ref().map_or(0, ImageAtlas::bytes),
             shadow_map: renderer.shadow_bytes(),
             drape_atlas: renderer.drape_bytes(),
-            models: renderer.model_bytes(),
             cached_tiles,
             cached,
             cache_budget: self.budget / 4,

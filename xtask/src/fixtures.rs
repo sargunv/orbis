@@ -74,89 +74,9 @@ fn fixtures_dir() -> PathBuf {
     xtask.parent().expect("the workspace root").join("fixtures")
 }
 
-/// Khronos glTF sample models (glTF-Sample-Assets at [`GLTF_COMMIT`]) for
-/// `orb-3d`'s model suite, each `Models/<name>/glTF-Binary/<name>.glb` with
-/// its SHA-256.
-const GLTF_COMMIT: &str = "8f492390ddc7a2ae221a1369ef560589cf8c70fb";
-const GLTF_SAMPLES: [(&str, &str); 12] = [
-    (
-        "AlphaBlendModeTest",
-        "37c3577d143071b42dd46e9d942b157837eb25c6340112171d7faecaa987b14e",
-    ),
-    (
-        "Avocado",
-        "ccc9c3ce56423720b09399c2351537207cd5a65f859f9e6e2f30922762f3abd4",
-    ),
-    (
-        "BoomBox",
-        "f8b918445ebdd006768232205a62f5182d2208ca57f84c6ccc084943c0bc8f15",
-    ),
-    (
-        "Box",
-        "ed52f7192b8311d700ac0ce80644e3852cd01537e4d62241b9acba023da3d54e",
-    ),
-    (
-        "BoxTextured",
-        "b510eca2e2ef33f62f9ed57d6e7ce2d10ebb2bdebc4a8e59d347719ba81abdf4",
-    ),
-    (
-        "DamagedHelmet",
-        "a1e3b04de97b11de564ce6e53b95f02954a297f0008183ac63a4f5974f6b32d8",
-    ),
-    (
-        "Duck",
-        "65bf938f54d6073e619e76e007820bbf980cdc3dc0daec0d94830ffc4ae54ab5",
-    ),
-    (
-        "Fox",
-        "d97044e701822bac5a62696459b27d7b375aada5de8574ed4362edbba94771f7",
-    ),
-    (
-        "MetalRoughSpheres",
-        "450c05557b0823a10835e32c05caf77a7b175eba94516555c1c9bb084f563f01",
-    ),
-    (
-        "NormalTangentMirrorTest",
-        "31ce5f3c873fc55531a17ccacf001e3d1d482a508695aa826fa79cc196e0ce78",
-    ),
-    (
-        "OrientationTest",
-        "a91cf448f37de06ab61bc615e123692dd29ac185e6c69e1fdbf1cf53e41045b2",
-    ),
-    (
-        "TextureCoordinateTest",
-        "fe75a63a0423c9a682bf46c3045b6328ae9c55abefc9a50adf3ec1d6dc6ea3b9",
-    ),
-];
-
-/// Fetches the glTF samples missing from `fixtures/gltf/` or differing
-/// from their pins.
-fn ensure_gltf() -> Result<(), String> {
-    let out = fixtures_dir().join("gltf");
-    fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    for (name, sha) in GLTF_SAMPLES {
-        let path = out.join(format!("{name}.glb"));
-        if fs::read(&path).is_ok_and(|bytes| hex(&Sha256::digest(&bytes)) == sha) {
-            continue;
-        }
-        let url = format!(
-            "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/{GLTF_COMMIT}/Models/{name}/glTF-Binary/{name}.glb"
-        );
-        let bytes = get(&url)?;
-        let got = hex(&Sha256::digest(&bytes));
-        if got != sha {
-            return Err(format!("{name}.glb hashes to {got}, not the pinned {sha}"));
-        }
-        fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    }
-    eprintln!("fixtures/gltf matches glTF-Sample-Assets {GLTF_COMMIT}");
-    Ok(())
-}
-
 /// Fetches the mirror into `fixtures/gl-js/` unless the one there matches the
-/// pin, and the glTF samples into `fixtures/gltf/`.
+/// pin.
 pub(crate) fn ensure() -> Result<(), String> {
-    ensure_gltf()?;
     let out = fixtures_dir().join("gl-js");
     if out.exists() {
         let hash = content_hash(&out)?;

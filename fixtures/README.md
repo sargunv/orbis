@@ -26,16 +26,6 @@ replaces a mirror that differs from the pin. To move the pin, change `COMMIT`,
 run `cargo xtask fixtures`, review the mirror it leaves in
 `fixtures/gl-js.partial/`, and set `MIRROR_SHA256` to the hash it reports.
 
-## glTF samples
-
-`fixtures/gltf/` holds twelve of Khronos's
-[glTF sample models](https://github.com/KhronosGroup/glTF-Sample-Assets) as
-`.glb` files, which `cargo xtask fixtures` fetches from the commit pinned
-in `xtask/src/fixtures.rs` (`GLTF_COMMIT`), each checked against its pinned
-SHA-256. About 38 MiB. `orb-3d` and the model renderer's suite read them.
-Each model keeps its own licence (CC0, CC-BY 4.0 and others), listed in its
-directory upstream.
-
 ## What reads it
 
 Only `cargo xtask rt` (`orb-fixtures`: the render suite natively, in Chrome

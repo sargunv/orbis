@@ -141,8 +141,6 @@ pub const VISIBILITY: Prop = prop(
 const OFFSET: PropertyType = PropertyType::Array(Type::Number, Some(2));
 const ANCHOR: PropertyType = enumeration::<Anchor>();
 const ANCHORS: PropertyType = PropertyType::Array(Type::String, None);
-// The `model` layer's vectors.
-const VEC3: PropertyType = PropertyType::Array(Type::Number, Some(3));
 
 /// A v8 layer type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -157,11 +155,6 @@ pub enum LayerType {
     Hillshade,
     ColorRelief,
     Symbol,
-    /// glTF models at point features, which no document can declare.
-    Model,
-    /// Contour lines of a `raster-dem` source, which no document can
-    /// declare.
-    Contour,
 }
 
 impl LayerType {
@@ -191,8 +184,6 @@ impl LayerType {
             Self::Hillshade => "hillshade",
             Self::ColorRelief => "color-relief",
             Self::Symbol => "symbol",
-            Self::Model => "model",
-            Self::Contour => "contour",
         }
     }
 
@@ -223,7 +214,7 @@ impl LayerType {
     pub fn draws_features(self) -> bool {
         !matches!(
             self,
-            Self::Background | Self::Raster | Self::Hillshade | Self::ColorRelief | Self::Contour
+            Self::Background | Self::Raster | Self::Hillshade | Self::ColorRelief
         )
     }
 }
@@ -526,35 +517,6 @@ properties! {
         paint TEXT_HALO_BLUR: f32 = prop("text-halo-blur", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
         paint TEXT_TRANSLATE: [f32; 2] = prop("text-translate", TRANSLATE, Some("[0, 0]")).interpolated();
         paint TEXT_TRANSLATE_ANCHOR: TranslateAnchor = prop("text-translate-anchor", enumeration::<TranslateAnchor>(), Some("\"map\""));
-    }
-    Model {
-        /// The model's id.
-        layout MODEL_ID: Option<String> = prop("model-id", PropertyType::String, None).data_driven();
-        /// Along the model's own axes.
-        paint MODEL_SCALE: [f32; 3] = prop("model-scale", VEC3, Some("[1, 1, 1]")).data_driven().interpolated();
-        /// Degrees about east, north and up, applied in that order; up turns
-        /// clockwise seen from above, as a heading.
-        paint MODEL_ROTATION: [f32; 3] = prop("model-rotation", VEC3, Some("[0, 0, 0]")).data_driven().interpolated();
-        /// Metres east, north and up.
-        paint MODEL_TRANSLATION: [f32; 3] = prop("model-translation", VEC3, Some("[0, 0, 0]")).data_driven().interpolated();
-        paint MODEL_COLOR: Color = prop("model-color", COLOR, Some("\"#ffffff\"")).data_driven().interpolated();
-        /// How much `model-color` replaces the materials' base colours.
-        paint MODEL_COLOR_MIX: f32 = prop("model-color-mix-intensity", NUMBER, Some("0")).data_driven().interpolated().range(0.0, Some(1.0));
-        /// Applies to the whole layer, as `fill-extrusion-opacity` does.
-        paint MODEL_OPACITY: f32 = prop("model-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
-        paint MODEL_EMISSIVE: f32 = prop("model-emissive-strength", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
-    }
-    Contour {
-        /// Metres between lines, at the camera's zoom. Steps by zoom, not
-        /// interpolated: an interval that slid would slide every line.
-        paint CONTOUR_INTERVAL: f32 = prop("contour-interval", NUMBER, Some("100")).range(0.0, None);
-        /// Every this many lines is a major one, drawn `contour-major-width`.
-        paint CONTOUR_MAJOR: f32 = prop("contour-major", NUMBER, Some("5")).range(1.0, None);
-        paint CONTOUR_COLOR: Color = prop("contour-color", COLOR, Some("\"#8c6d4f\"")).interpolated();
-        /// Pixels.
-        paint CONTOUR_WIDTH: f32 = prop("contour-width", NUMBER, Some("1")).interpolated().range(0.0, None);
-        paint CONTOUR_MAJOR_WIDTH: f32 = prop("contour-major-width", NUMBER, Some("2")).interpolated().range(0.0, None);
-        paint CONTOUR_OPACITY: f32 = prop("contour-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0));
     }
 }
 

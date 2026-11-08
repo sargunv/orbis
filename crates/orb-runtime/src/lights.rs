@@ -80,8 +80,6 @@ pub(crate) fn atmosphere(
             horizon_fog_blend: a.horizon_fog_blend.evaluate(zoom),
             fog_ground_blend: a.fog_ground_blend.evaluate(zoom),
             atmosphere_blend: a.atmosphere_blend.evaluate(zoom),
-            backdrop: a.backdrop.evaluate(zoom).premultiplied(),
-            stars: a.stars.evaluate(zoom),
         });
     let (fog_near, fog_far) = view.fog_range_px();
     let (horizon, horizon_normal) = view.sky_horizon_line();
@@ -95,7 +93,6 @@ pub(crate) fn atmosphere(
         fog_range: [fog_near as f32, fog_far as f32],
         fog_opacity,
         ray_inverse: ray_inverse(view, camera.target),
-        star_rotation: star_rotation(lights),
         // The sky over a sphere; a low-zoom plane's is a plane's.
         globe: (view.globe().filter(|g| g.plane.is_none()))
             .map(|g| globe_sky(g, view, camera, lights, zoom)),
@@ -167,18 +164,6 @@ fn ray_inverse(view: &orb_camera::View, target: Geodetic) -> [[f32; 4]; 4] {
         None => glam::DMat4::from_mat3(orb_crs::sphere::frame(target)) * view.view_proj().inverse(),
     };
     inverse.as_mat4().to_cols_array_2d()
-}
-
-/// The stars' turn about the pole: the Greenwich sidereal angle in radians
-/// at the scene's sun time, so the sky turns with the sun; 0 without one.
-fn star_rotation(lights: Option<&Lights>) -> f32 {
-    match lights
-        .and_then(|l| l.directional.as_ref())
-        .map(|d| &d.direction)
-    {
-        Some(Direction::Sun { time }) => sidereal_degrees(*time).to_radians() as f32,
-        _ => 0.0,
-    }
 }
 
 /// Greenwich mean sidereal time at `time` (Unix seconds), in degrees.

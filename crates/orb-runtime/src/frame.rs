@@ -60,7 +60,7 @@ impl Map {
             return None;
         }
         let zoom = self.camera.state().zoom(self.surface.projection());
-        // The tallest extrusion or model, as this frame's paint has it.
+        // The tallest extrusion, as this frame's paint has it.
         let height = (plan.nodes.iter().enumerate())
             .filter(|(_, n)| n.source == index)
             .map(|(i, _)| renderer.cull_elevation(i as u32))

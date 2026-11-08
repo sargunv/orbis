@@ -9,8 +9,6 @@
 # The GL JS fixture mirror, fetched by `cargo xtask fixtures`.
 /fixtures/gl-js/
 /fixtures/gl-js.partial/
-# The Khronos glTF samples, fetched by `cargo xtask fixtures`.
-/fixtures/gltf/
 # Built by `cargo xtask apple` and `cargo xtask android`.
 /hosts/apple/OrbisC.xcframework/
 /hosts/apple/.build/

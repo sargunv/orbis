@@ -8,8 +8,8 @@ const DRAW: &str = concat!(
     include_str!("wgsl/project.wgsl")
 );
 const FETCH: &str = include_str!("wgsl/fetch.wgsl");
-/// glTF's metallic-roughness shading, functions without bindings, for the
-/// model pipelines to compose.
+/// Metallic-roughness shading, functions without bindings, for the lit
+/// map to compose.
 const PBR_MODULE: &str = include_str!("wgsl/pbr.wgsl");
 /// The style's lights as `pbr.wgsl` takes them.
 const SCENE_LIGHTS: &str = include_str!("wgsl/scene_lights.wgsl");
@@ -34,7 +34,6 @@ const FILL: &str = include_str!("wgsl/fill.wgsl");
 const LINE: &str = include_str!("wgsl/line.wgsl");
 const POINT: &str = include_str!("wgsl/point.wgsl");
 const CIRCLE: &str = include_str!("wgsl/circle.wgsl");
-const MODEL: &str = include_str!("wgsl/model.wgsl");
 const SYMBOL: &str = include_str!("wgsl/symbol.wgsl");
 const SYMBOL_POINT: &str = include_str!("wgsl/symbol_point.wgsl");
 const SYMBOL_LINE: &str = include_str!("wgsl/symbol_line.wgsl");
@@ -51,7 +50,6 @@ const RASTER: &str = include_str!("wgsl/raster.wgsl");
 const HILLSHADE: &str = include_str!("wgsl/hillshade.wgsl");
 const TERRAIN: &str = include_str!("wgsl/terrain.wgsl");
 const COLOR_RELIEF: &str = include_str!("wgsl/color_relief.wgsl");
-const CONTOUR: &str = include_str!("wgsl/contour.wgsl");
 const PREPARE: &str = include_str!("wgsl/prepare.wgsl");
 const PREPARE_PAD: &str = include_str!("wgsl/prepare_pad.wgsl");
 /// First of a vertex-only shader's parts where clip distances are (wgpu's
@@ -210,30 +208,6 @@ pub const CIRCLE_SHADER: Shader = Shader {
     compute: "",
     lit: false,
 };
-/// glTF models at point features, lit by the style's lights.
-pub const MODEL_SHADER: Shader = Shader {
-    label: "model",
-    parts: &[
-        TYPES,
-        DRAW,
-        POINT,
-        PBR_MODULE,
-        SHADOW_RECEIVE,
-        SCENE_LIGHTS,
-        MODEL,
-    ],
-    vertex: "vs_model",
-    fragment: "fs_model",
-    compute: "",
-    lit: false,
-};
-/// Alpha-masked and blended model materials, which discard: apart from
-/// opaque ones, whose pipelines never do.
-pub const MODEL_MASKED_SHADER: Shader = Shader {
-    label: "model masked",
-    fragment: "fs_model_masked",
-    ..MODEL_SHADER
-};
 /// Symbol quads: glyphs and icons, with their halos, of
 /// point labels and of line labels (`symbol-placement: line` and
 /// `line-center`): two variants, so point labels' pipeline doesn't compile
@@ -294,15 +268,6 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
     parts: &[TYPES, DRAW, IMAGE, DEM, COLOR_RELIEF],
     vertex: "vs_color_relief",
     fragment: "fs_color_relief",
-    compute: "",
-    lit: false,
-};
-/// Contour lines of a raster-dem source.
-pub const CONTOUR_SHADER: Shader = Shader {
-    label: "contour",
-    parts: &[TYPES, DRAW, IMAGE, DEM, CONTOUR],
-    vertex: "vs_contour",
-    fragment: "fs_contour",
     compute: "",
     lit: false,
 };
@@ -394,32 +359,6 @@ pub const EXTRUSION_PLANES_SHADER: Shader = Shader {
     fragment: "",
     ..EXTRUSION_SHADER
 };
-/// The 3D depth resolved for the symbols it hides, from one sample and
-/// from several.
-pub const OCCLUSION_SHADERS: [Shader; 2] = [
-    Shader {
-        label: "occlusion",
-        parts: &[
-            include_str!("wgsl/occlusion.wgsl"),
-            include_str!("wgsl/occlusion_single.wgsl"),
-        ],
-        vertex: "vs_occlusion",
-        fragment: "fs_occlusion",
-        compute: "",
-        lit: false,
-    },
-    Shader {
-        label: "occlusion multisampled",
-        parts: &[
-            include_str!("wgsl/occlusion.wgsl"),
-            include_str!("wgsl/occlusion_multi.wgsl"),
-        ],
-        vertex: "vs_occlusion",
-        fragment: "fs_occlusion",
-        compute: "",
-        lit: false,
-    },
-];
 /// Extrusions' depth from the light, into a shadow cascade.
 pub const EXTRUSION_CASTER_SHADER: Shader = Shader {
     label: "extrusion caster",
@@ -436,31 +375,6 @@ pub const EXTRUSION_CASTER_SHADER: Shader = Shader {
     fragment: "fs_caster",
     compute: "",
     lit: false,
-};
-/// Models' depth from the light, into a shadow cascade.
-pub const MODEL_CASTER_SHADER: Shader = Shader {
-    label: "model caster",
-    parts: &[
-        TYPES,
-        DRAW,
-        POINT,
-        PBR_MODULE,
-        SHADOW_RECEIVE,
-        SCENE_LIGHTS,
-        MODEL,
-        include_str!("wgsl/model_caster.wgsl"),
-    ],
-    vertex: "vs_model_caster",
-    fragment: "fs_model_caster",
-    compute: "",
-    lit: false,
-};
-/// Alpha-masked models into a shadow cascade, their texels under the
-/// cutoff discarded.
-pub const MODEL_CASTER_MASKED_SHADER: Shader = Shader {
-    label: "model caster masked",
-    fragment: "fs_model_caster_masked",
-    ..MODEL_CASTER_SHADER
 };
 /// Shadows on the ground, multiplied over the main pass.
 pub const SHADOW_GROUND_SHADER: Shader = Shader {
@@ -487,16 +401,10 @@ pub const SHADERS: &[Shader] = &[
     EXTRUSION_PLANES_SHADER,
     EXTRUSION_CASTER_SHADER,
     SHADOW_GROUND_SHADER,
-    OCCLUSION_SHADERS[0],
-    OCCLUSION_SHADERS[1],
     FILL_SHADER,
     FILL_OUTLINE_SHADER,
     LINE_SHADER,
     CIRCLE_SHADER,
-    MODEL_SHADER,
-    MODEL_MASKED_SHADER,
-    MODEL_CASTER_SHADER,
-    MODEL_CASTER_MASKED_SHADER,
     FILL_SHADER.lit(),
     FILL_OUTLINE_SHADER.lit(),
     LINE_SHADER.lit(),
@@ -504,7 +412,6 @@ pub const SHADERS: &[Shader] = &[
     RASTER_SHADER.lit(),
     HILLSHADE_SHADER.lit(),
     COLOR_RELIEF_SHADER.lit(),
-    CONTOUR_SHADER.lit(),
     EXTRUSION_SHADER.lit(),
     SYMBOL_SHADERS[0],
     SYMBOL_SHADERS[1],
@@ -512,7 +419,6 @@ pub const SHADERS: &[Shader] = &[
     RASTER_SHADER,
     HILLSHADE_SHADER,
     COLOR_RELIEF_SHADER,
-    CONTOUR_SHADER,
     PREPARE_PAD_SHADER,
     PREPARE_SLOPE_SHADER,
     DOWNSAMPLE_SHADER,

@@ -68,7 +68,6 @@ struct State {
     pending: HashMap<u32, TileDone>,
     rasters: HashMap<u32, RasterDone>,
     features: HashMap<u32, orb_runtime::FeaturesDone>,
-    models: HashMap<u32, orb_runtime::ModelDone>,
     answers: HashMap<u32, orb_runtime::QueryDone>,
     /// The worker each request went to, until it answers.
     sent_to: HashMap<u32, u32>,
@@ -178,24 +177,6 @@ impl WorkerJobs {
                 JobReply::Features { features, .. } => Ok(features),
                 JobReply::Error { message, .. } => Err(message),
                 _ => Err("malformed features reply".into()),
-            });
-            return Ok(());
-        }
-        if let Some(done) = state.models.remove(&id) {
-            drop(state);
-            done(match (message, buffer) {
-                (JobReply::Model { .. }, Some(buffer)) => {
-                    let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
-                    let words: Vec<u32> = bytes
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|&w| u32::from_le_bytes(w))
-                        .collect();
-                    orb_3d::gpu::GpuModel::from_words(&words)
-                }
-                (JobReply::Error { message, .. }, _) => Err(message),
-                _ => Err("malformed model reply".into()),
             });
             return Ok(());
         }
@@ -394,16 +375,6 @@ impl Jobs for WorkerJobs {
         );
     }
 
-    fn model(&self, url: String, done: orb_runtime::ModelDone) {
-        let mut hasher = DefaultHasher::new();
-        url.hash(&mut hasher);
-        self.send(
-            (hasher.finish() % u64::from(self.workers)) as u32,
-            |state, id| drop(state.models.insert(id, done)),
-            |id| JobRequest::Model { id, url },
-        );
-    }
-
     fn cluster(&self, request: orb_runtime::ClusterRequest, done: orb_runtime::QueryDone) {
         self.send(
             owner(request.tile.source, request.tile.tile, self.workers),
@@ -468,13 +439,6 @@ impl JobWorker {
                 self.host.cluster(
                     request,
                     Box::new(move |r| drop(sender.send(JobAnswer::Cluster(r)))),
-                );
-                (id, None)
-            }
-            JobRequest::Model { id, url } => {
-                self.host.model(
-                    url,
-                    Box::new(move |r| drop(sender.send(JobAnswer::Model(r)))),
                 );
                 (id, None)
             }
@@ -548,21 +512,10 @@ impl JobWorker {
                     reply(&JobReply::Glyphs { id, bitmaps }, None, None)
                 }
                 JobAnswer::Cluster(Ok(json)) => reply(&JobReply::Answer { id, json }, None, None),
-                // A model's words are the buffer.
-                JobAnswer::Model(Ok(model)) => {
-                    let bytes: Vec<u8> = model
-                        .to_words()
-                        .iter()
-                        .flat_map(|w| w.to_le_bytes())
-                        .collect();
-                    let buffer = js_sys::Uint8Array::from(bytes.as_slice()).buffer();
-                    reply(&JobReply::Model { id }, Some(buffer), None)
-                }
                 JobAnswer::Load(Err(e))
                 | JobAnswer::Features(Err(e))
                 | JobAnswer::Raster(Err(e))
-                | JobAnswer::Cluster(Err(e))
-                | JobAnswer::Model(Err(e)) => error(e),
+                | JobAnswer::Cluster(Err(e)) => error(e),
             })
         })))
     }
@@ -574,7 +527,6 @@ enum JobAnswer {
     Features(Result<Vec<orb_runtime::TileFeature>, String>),
     Raster(Result<Vec<orb_runtime::GlyphBitmap>, String>),
     Cluster(Result<String, String>),
-    Model(Result<orb_3d::gpu::GpuModel, String>),
 }
 
 /// A reply for the page: the message, and the buffer and bitmap it

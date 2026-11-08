@@ -102,10 +102,9 @@ pub(crate) struct SurfaceWarps {
 const SURFACE_WARPS: usize = 2048;
 
 /// A render node's share of a tile: its geometry in one layer extent and
-/// its property rows, which per-feature paint and per-instance data (a
-/// circle's radius, a model's scale and rotation) read. Fills, lines and
-/// extrusions are meshes; point families (circles, heatmaps, a model
-/// layer's instances) are their points.
+/// its property rows, which per-feature paint (a circle's radius) reads.
+/// Fills, lines and extrusions are meshes; point families (circles,
+/// heatmaps) are their points.
 #[derive(Clone, Copy, Debug)]
 pub struct MeshBuild<'a> {
     pub node: u32,

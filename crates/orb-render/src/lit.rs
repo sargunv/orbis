@@ -52,7 +52,7 @@ pub(crate) struct Lit {
     dirty: bool,
     /// The fill, outline, line and circle pipelines, then the image
     /// families'.
-    pipelines: [Option<RenderPipelineId>; 8],
+    pipelines: [Option<RenderPipelineId>; 7],
 }
 
 impl Lit {
@@ -70,7 +70,7 @@ impl Lit {
             materials: Vec::new(),
             buffer: None,
             dirty: true,
-            pipelines: [None; 8],
+            pipelines: [None; 7],
         }
     }
 
@@ -158,7 +158,6 @@ impl Lit {
             Family::Raster => 4,
             Family::Hillshade => 5,
             Family::ColorRelief => 6,
-            Family::Contour => 7,
             _ => return None,
         })
     }
@@ -183,7 +182,6 @@ impl Lit {
             Family::Circle => (CIRCLE_SHADER, PrimitiveTopology::TriangleList),
             Family::Raster => (RASTER_SHADER, PrimitiveTopology::TriangleList),
             Family::Hillshade => (HILLSHADE_SHADER, PrimitiveTopology::TriangleList),
-            Family::Contour => (CONTOUR_SHADER, PrimitiveTopology::TriangleList),
             _ => (COLOR_RELIEF_SHADER, PrimitiveTopology::TriangleList),
         };
         let layout = self.layout;

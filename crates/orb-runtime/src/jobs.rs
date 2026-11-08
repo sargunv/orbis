@@ -50,11 +50,6 @@ pub enum JobRequest {
         id: u32,
         request: GlyphRaster,
     },
-    /// [`Jobs::model`].
-    Model {
-        id: u32,
-        url: String,
-    },
 }
 
 /// A job host's answer to the request with `id`. Its large parts travel
@@ -93,12 +88,6 @@ pub enum JobReply {
         id: u32,
         bitmaps: Vec<crate::GlyphBitmap>,
     },
-    /// A model: its words ([`GpuModel::to_words`]) are the buffer.
-    ///
-    /// [`GpuModel::to_words`]: orb_3d::gpu::GpuModel::to_words
-    Model {
-        id: u32,
-    },
     Error {
         id: u32,
         message: String,
@@ -115,7 +104,6 @@ impl JobReply {
             | Self::Features { id, .. }
             | Self::Answer { id, .. }
             | Self::Glyphs { id, .. }
-            | Self::Model { id }
             | Self::Error { id, .. } => *id,
         }
     }
@@ -141,9 +129,6 @@ pub trait Jobs: Send + Sync {
     /// Reads features of a tile for a query, in the worker that loaded it,
     /// from its cached frame or from the tile fetched again.
     fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone);
-    /// Loads the glTF model at `url`, packed for the GPU
-    /// ([`JobHost::model`](crate::JobHost::model)).
-    fn model(&self, url: String, done: crate::ModelDone);
     /// Answers a cluster query, in the worker that loads the request's
     /// tile: it has the source's data, or fetches it.
     fn cluster(&self, request: crate::ClusterRequest, done: crate::QueryDone);
@@ -203,10 +188,6 @@ impl Jobs for PoolJobs {
 
     fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone) {
         self.host.features(request, done);
-    }
-
-    fn model(&self, url: String, done: crate::ModelDone) {
-        self.host.model(url, done);
     }
 
     fn cluster(&self, request: crate::ClusterRequest, done: crate::QueryDone) {

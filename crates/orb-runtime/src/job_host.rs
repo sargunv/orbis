@@ -10,8 +10,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use orb_3d::gpu::GpuModel;
-use orb_3d::load::Load;
 use orb_host::{Fetch, FetchError, FontFiles};
 use orb_jobs::Executor;
 
@@ -439,16 +437,6 @@ impl JobHost {
         );
     }
 
-    /// Loads a model layer's glTF file.
-    pub fn model(&self, url: String, done: ModelDone) {
-        load(
-            Arc::clone(&self.fetch),
-            Arc::clone(&self.executor),
-            url,
-            done,
-        );
-    }
-
     /// Rasterizes glyphs for the atlas.
     pub fn raster(&self, request: GlyphRaster, done: RasterDone) {
         let executor = Arc::clone(&self.executor);
@@ -496,98 +484,5 @@ impl JobHost {
                 }));
             }
         }
-    }
-}
-
-/// Called once with a loaded model, on any thread.
-pub type ModelDone = Box<dyn FnOnce(Result<GpuModel, String>) + Send>;
-
-/// Loads the glTF document at `url` through `fetch`: its external buffers,
-/// then its images by URI, which are decoded and packed with the model on
-/// `executor`. An image that fails to load or decode leaves its material
-/// slots untextured.
-fn load(fetch: Arc<dyn Fetch>, executor: Arc<dyn Executor>, url: String, done: ModelDone) {
-    let document = url.clone();
-    let f = Arc::clone(&fetch);
-    fetch.get(
-        &document,
-        Box::new(move |fetched| {
-            let load = fetched
-                .map_err(|e| format!("model {url}: {e}"))
-                .and_then(|bytes| Load::new(&url, &bytes).map_err(|e| format!("model {url}: {e}")));
-            match load {
-                Ok(load) => step(f, executor, Arc::new(Mutex::new(Some((load, done))))),
-                Err(e) => done(Err(e)),
-            }
-        }),
-    );
-}
-
-/// A model loading and its done, taken by whichever step finishes it.
-type Loading = Arc<Mutex<Option<(Load, ModelDone)>>>;
-
-/// Fetches what the load wants next, or decodes and packs it once it
-/// wants nothing.
-fn step(fetch: Arc<dyn Fetch>, executor: Arc<dyn Executor>, loading: Loading) {
-    let mut guard = loading.lock().expect("model load poisoned");
-    let Some((load, _)) = guard.as_mut() else {
-        return;
-    };
-    // The buffers, then (once the model is built from them) its images.
-    let mut wanted = load.wanted();
-    let mut encoded = None;
-    if wanted.is_empty() {
-        match load.images() {
-            Ok(None) => wanted = load.wanted(),
-            Ok(Some(images)) => encoded = Some(images),
-            Err(e) => {
-                let (_, done) = guard.take().expect("checked above");
-                drop(guard);
-                done(Err(e));
-                return;
-            }
-        }
-    }
-    if let Some(encoded) = encoded {
-        let (load, done) = guard.take().expect("checked above");
-        drop(guard);
-        executor.spawn(Box::new(move || {
-            let decoded: Vec<_> = encoded
-                .iter()
-                .map(|bytes| {
-                    let image = orb_host::decode_image(bytes.as_deref()?).ok()?;
-                    Some((image.width, image.height, image.pixels))
-                })
-                .collect();
-            done(load.finish(&decoded));
-        }));
-        return;
-    }
-    drop(guard);
-    let remaining = Arc::new(Mutex::new(wanted.len()));
-    for url in wanted {
-        let (fetch2, executor, loading, remaining) = (
-            Arc::clone(&fetch),
-            Arc::clone(&executor),
-            Arc::clone(&loading),
-            Arc::clone(&remaining),
-        );
-        let target = url.clone();
-        fetch.get(
-            &target,
-            Box::new(move |fetched| {
-                if let Some((load, _)) = loading.lock().expect("model load poisoned").as_mut() {
-                    // A failed fetch arrives empty: a buffer then fails to
-                    // read, an image to decode.
-                    load.fetched(&url, fetched.unwrap_or_default());
-                }
-                let mut left = remaining.lock().expect("model load poisoned");
-                *left -= 1;
-                if *left == 0 {
-                    drop(left);
-                    step(fetch2, executor, loading);
-                }
-            }),
-        );
     }
 }

@@ -30,8 +30,6 @@ pub(crate) struct PaintState {
     /// in.
     epoch: u64,
     zoom_history: ZoomHistory,
-    /// The ground resolution model nodes' reach was painted at.
-    models: f64,
     /// The draped nodes' paint at drape zooms.
     drape: DrapePaint,
 }
@@ -43,15 +41,15 @@ impl PaintState {
     }
 }
 
-/// Writes this frame's node paint: at `zoom`, `bearing` and `resolution`,
-/// with paint transitions eased in at `now`. Returns whether the pattern
+/// Writes this frame's node paint: at `zoom` and `bearing`, with paint
+/// transitions eased in at `now`. Returns whether the pattern
 /// and dash cross-fade is still fading, and images the style lacks.
 pub(crate) fn frame(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     style: &mut LoadedStyle,
     transitions: &mut crate::transitions::Transitions,
-    (zoom, bearing, resolution): (f64, f64, f64),
+    (zoom, bearing): (f64, f64),
     now: f64,
     atlas: &mut ImageAtlas,
 ) -> (bool, Vec<String>) {
@@ -74,19 +72,12 @@ pub(crate) fn frame(
     if overlay.is_some() || std::mem::take(&mut transitions.ran) {
         style.paint.invalidate();
     }
-    // Model nodes' reach in pixels follows the ground resolution, which
-    // panning changes at one zoom: within its slack.
-    if plan.nodes.iter().any(|n| n.family == Family::Model)
-        && (resolution / style.paint.models - 1.0).abs() > 0.05
-    {
-        style.paint.invalidate();
-    }
     let plan = overlay.as_ref().unwrap_or(plan);
     let missing = write_paint(
         gpu,
         renderer,
         (style, plan),
-        (zoom, bearing, resolution),
+        (zoom, bearing),
         crossfade,
         atlas,
     );
@@ -274,7 +265,7 @@ fn write_paint(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     (style, plan): (&mut LoadedStyle, &StylePlan),
-    (zoom, bearing, resolution): (f64, f64, f64),
+    (zoom, bearing): (f64, f64),
     crossfade: Crossfade,
     atlas: &mut ImageAtlas,
 ) -> Vec<String> {
@@ -343,22 +334,6 @@ fn write_paint(
         }
         if camera_free(plan, node) {
             state.painted = Some(style.paint.epoch);
-        }
-        if node.family == Family::Model {
-            let bounds = node
-                .model
-                .and_then(|m| style.models.get(m).copied().flatten());
-            let lookup = style.states.lookup(index as usize);
-            crate::model::paint(
-                gpu,
-                renderer,
-                (plan, node, index),
-                zoom,
-                (&state.maxima, lookup),
-                (bounds, resolution),
-            );
-            style.paint.models = resolution;
-            continue;
         }
         if matches!(node.family, Family::Circle | Family::Heatmap) {
             let properties = plan.paint_properties(node).len();

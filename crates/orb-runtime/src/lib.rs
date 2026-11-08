@@ -24,7 +24,6 @@ mod line;
 mod loader;
 mod map;
 mod meshes;
-mod model;
 pub mod offline;
 mod paint;
 mod placement;
@@ -58,7 +57,7 @@ pub const GLOBE_NO_SHADOWS: &str =
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
-pub use job_host::{JobHost, Loaded, LoadedDone, ModelDone};
+pub use job_host::{JobHost, Loaded, LoadedDone};
 pub use jobs::{
     ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, ResultMesh, Stream, TileDone, TileImage,
     TileResult, pack, packed_header, unpack,

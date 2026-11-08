@@ -12,8 +12,7 @@
 //! Fill, line and extrusion nodes draw compacted indices, which the cull
 //! dispatch keeps in each candidate's slot of one index buffer, with one
 //! `drawIndexedIndirect` per node; point families and image tiles pull
-//! their vertices. Model nodes draw their model's indices
-//! once per visible point (`model`).
+//! their vertices.
 
 #![forbid(unsafe_code)]
 
@@ -24,8 +23,6 @@ mod heatmap;
 mod image;
 mod layer_composite;
 mod lit;
-mod model;
-mod occlusion;
 mod offscreen;
 mod paint;
 mod release;
@@ -55,9 +52,9 @@ pub use orb_scene::{
     SYMBOL_STATE_WORDS, SymbolMeshData, pack_image_rect, symbol_header,
 };
 pub use paint::{
-    CirclePaint, ColorReliefPaint, ContourPaint, Curve, ExtrusionPaint, FillPaint, HeatmapPaint,
-    HillshadeMethod, HillshadePaint, LinePaint, MAX_LIGHTS, ModelPaint, NodePaint, PatternPaint,
-    RasterPaint, StateLookup, SymbolPaint, SymbolSize, Translate,
+    CirclePaint, ColorReliefPaint, Curve, ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod,
+    HillshadePaint, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, StateLookup,
+    SymbolPaint, SymbolSize, Translate,
 };
 pub use tiles::{
     GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, TileBuild, TileKey, UploadError, WarpKey,
@@ -84,14 +81,7 @@ fn draw_of(family: Family) -> NodeDraw {
         Family::Circle | Family::Heatmap | Family::SymbolIcon | Family::SymbolText => {
             NodeDraw::Points
         }
-        Family::Raster | Family::Hillshade | Family::ColorRelief | Family::Contour => {
-            NodeDraw::Images
-        }
-        // Its model's ranges once it is resident.
-        Family::Model => NodeDraw::Instances {
-            first: 0,
-            counts: [0; 4],
-        },
+        Family::Raster | Family::Hillshade | Family::ColorRelief => NodeDraw::Images,
     }
 }
 
@@ -138,24 +128,18 @@ pub struct FrameStats {
     pub animated: bool,
 }
 
-/// A render node: its family, the source an image node draws the tiles
-/// of (by style key), and a model node's model (by the index the map
-/// uploads it at, [`Renderer::set_model`]) and layer (by style key): a
-/// layer's model nodes are consecutive, draw into one 3D target and
-/// composite once.
+/// A render node: its family, and the source an image node draws the
+/// tiles of (by style key).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderNode {
     pub family: Family,
     pub source: Option<u32>,
-    pub model: Option<(u32, u32)>,
 }
 
 #[derive(Debug)]
 struct Node {
     family: Family,
     source: Option<u32>,
-    /// A model node's model and layer.
-    model: Option<(u32, u32)>,
     group: BindGroupId,
     cull: NodeCull,
     /// The uniform words last written, to skip unchanged writes.
@@ -163,8 +147,7 @@ struct Node {
     /// What an image family's group binds.
     image: Option<image::NodeImage>,
     heatmap: Option<heatmap::NodeHeatmap>,
-    /// A 3D layer's colour target: an extrusion node's, and the first
-    /// model node's of a layer, which its other nodes draw into too.
+    /// An extrusion node's colour target.
     extrusion: Option<extrusion::NodeExtrusion>,
     /// A symbol node draws its halos in a pass of their own.
     separate_halo: bool,
@@ -250,13 +233,10 @@ pub struct Renderer {
     downsampler: downsample::Downsampler,
     heatmaps: heatmap::Heatmaps,
     extrusions: extrusion::Extrusions,
-    models: model::Models,
     /// The lit map: the nodes' materials and the lit pipelines.
     lit: lit::Lit,
     /// Whether the map is lit.
     lit_on: bool,
-    /// The 3D depth resolved for the symbols it hides, when they are.
-    occlusion: occlusion::Occlusion,
     shadows: shadow::Shadows,
     /// The shadow map the scene groups bind.
     shadow_bound: TextureId,
@@ -281,9 +261,9 @@ pub struct Renderer {
     /// The DEM texture the scene groups bind.
     dem_bound: TextureId,
     /// Bound for symbols and circles without terrain.
-    no_occlusion: TextureId,
+    no_terrain_depth: TextureId,
     /// The terrain depth bound in the scene groups.
-    occlusion_bound: TextureId,
+    terrain_depth_bound: TextureId,
     glyphs: GlyphAtlas,
     /// The glyph atlas revision the scene group binds.
     glyphs_bound: u32,
@@ -299,16 +279,6 @@ pub struct Renderer {
 
 /// Bytes reserved per node uniform; every node struct fits.
 const NODE_UNIFORM_SIZE: u64 = 512;
-
-impl Node {
-    fn desc(&self) -> RenderNode {
-        RenderNode {
-            family: self.family,
-            source: self.source,
-            model: self.model,
-        }
-    }
-}
 
 impl Renderer {
     /// Frees everything the renderer holds on `gpu`, the device it was
@@ -347,17 +317,9 @@ impl Renderer {
             self.downsampler,
             self.heatmaps,
             self.extrusions,
-            self.models,
         )
             .release(gpu);
-        (
-            self.lit,
-            self.occlusion,
-            self.shadows,
-            self.layers,
-            self.composites,
-        )
-            .release(gpu);
+        (self.lit, self.shadows, self.layers, self.composites).release(gpu);
         let drape = self
             .drape_pipelines
             .map(|d| (d.paint.pipelines, d.images.0));
@@ -366,7 +328,7 @@ impl Renderer {
             self.drape_zooms,
             drape,
             self.no_dem,
-            self.no_occlusion,
+            self.no_terrain_depth,
             self.nearest,
         )
             .release(gpu);
@@ -524,7 +486,7 @@ impl Renderer {
         });
         // Nothing hides symbols and circles without terrain: its depth is
         // the far plane, 0 in reversed-Z.
-        let no_occlusion = gpu.create_texture(&TextureDesc {
+        let no_terrain_depth = gpu.create_texture(&TextureDesc {
             label: "no terrain depth",
             width: 1,
             height: 1,
@@ -542,7 +504,7 @@ impl Renderer {
             &b,
             b.frame,
             &images,
-            (glyphs.texture(), nearest, no_dem, no_occlusion),
+            (glyphs.texture(), nearest, no_dem, no_terrain_depth),
             shadows.bindings(),
         );
         let cull_group = cull_group(gpu, cull_layout, &b);
@@ -601,9 +563,7 @@ impl Renderer {
         let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
         let extrusions = extrusion::Extrusions::new(draw_layout, node_layout);
-        let models = model::Models::new(gpu, draw_layout, node_layout);
         let lit = lit::Lit::new(gpu);
-        let occlusion = occlusion::Occlusion::new(gpu);
         let node_stride = NODE_UNIFORM_SIZE.max(u64::from(
             gpu.caps().limits.min_uniform_buffer_offset_alignment,
         ));
@@ -649,10 +609,8 @@ impl Renderer {
             layers: Default::default(),
             composites,
             extrusions,
-            models,
             lit,
             lit_on: false,
-            occlusion,
             shadow_bound: shadows.bindings().1,
             caster_group: None,
             shadows,
@@ -662,8 +620,8 @@ impl Renderer {
             drape_pipelines: None,
             no_dem,
             dem_bound: no_dem,
-            no_occlusion,
-            occlusion_bound: no_occlusion,
+            no_terrain_depth,
+            terrain_depth_bound: no_terrain_depth,
             glyphs_bound: glyphs.revision(),
             buffers_bound: 0,
             cull_layout,
@@ -748,7 +706,6 @@ impl Renderer {
             .map(|&family| RenderNode {
                 family,
                 source: None,
-                model: None,
             })
             .collect();
         self.remap_nodes(gpu, &nodes, &vec![None; nodes.len()]);
@@ -795,9 +752,9 @@ impl Renderer {
                     .take()
                     .expect("each old node is retained once");
                 assert_eq!(
-                    (node.family, node.source, node.model),
-                    (new.family, new.source, new.model),
-                    "a retained node keeps its family, source and model"
+                    (node.family, node.source),
+                    (new.family, new.source),
+                    "a retained node keeps its family and source"
                 );
                 map[from as usize] = Some(i as u32);
                 node
@@ -830,7 +787,7 @@ impl Renderer {
                     NodeCull {
                         margin_px: 0.0,
                         elevation: 0.0,
-                        draw: self.node_draw(family, desc.model.map(|m| m.0)),
+                        draw: draw_of(family),
                         visible: true,
                         target: PlacementTarget::Map,
                         labels: family.is_symbol(),
@@ -851,11 +808,9 @@ impl Renderer {
             self.nodes.push(Node {
                 family,
                 source: desc.source,
-                model: desc.model,
                 group,
-                extrusion: (family == Family::FillExtrusion
-                    || (family == Family::Model && !joins(&self.nodes, desc)))
-                .then(extrusion::NodeExtrusion::default),
+                extrusion: (family == Family::FillExtrusion)
+                    .then(extrusion::NodeExtrusion::default),
                 heatmap: (family == Family::Heatmap).then(|| heatmap::Heatmaps::node(gpu)),
                 cull,
                 written: Vec::new(),
@@ -1167,55 +1122,6 @@ impl Renderer {
         self.lit.set_material(node as usize, material);
     }
 
-    /// How a node of `family` draws: a model node, its model's ranges once
-    /// the model is resident.
-    fn node_draw(&self, family: Family, model: Option<u32>) -> NodeDraw {
-        match (family, model.and_then(|m| self.models.draws(m))) {
-            (Family::Model, Some((first, counts))) => NodeDraw::Instances { first, counts },
-            _ => draw_of(family),
-        }
-    }
-
-    /// Uploads model `index` for the model nodes that draw it, replacing
-    /// what was there.
-    pub fn set_model(&mut self, gpu: &mut dyn Gpu, index: u32, model: &orb_3d::gpu::GpuModel) {
-        self.models.set(gpu, index, model);
-        self.models_changed(gpu, index);
-    }
-
-    /// Frees model `index`: its nodes draw nothing until it is set again.
-    pub fn remove_model(&mut self, gpu: &mut dyn Gpu, index: u32) {
-        self.models.remove(gpu, index);
-        self.models_changed(gpu, index);
-    }
-
-    /// GPU bytes of the resident models.
-    pub fn model_bytes(&self) -> u64 {
-        self.models.bytes()
-    }
-
-    /// Model `index` changed: its nodes draw its new ranges, and their
-    /// layers record their draws again.
-    fn models_changed(&mut self, gpu: &mut dyn Gpu, index: u32) {
-        for i in 0..self.nodes.len() {
-            let node = &self.nodes[i];
-            if node.family != Family::Model || node.model.map(|m| m.0) != Some(index) {
-                continue;
-            }
-            let draw = self.node_draw(Family::Model, Some(index));
-            self.nodes[i].cull.draw = draw;
-            self.scene.set_node(i as u32, self.nodes[i].cull);
-            let first = (0..=i)
-                .rev()
-                .find(|&j| self.nodes[j].extrusion.is_some())
-                .expect("a layer's first model node has its target");
-            if let Some(target) = &mut self.nodes[first].extrusion {
-                target.forget_bundle(gpu);
-            }
-            self.shadows.forget_bundles(gpu);
-        }
-    }
-
     /// Sets a node's layer composite: its style layer `layer` (nodes of
     /// one layer share it) draws whole and composites once at `opacity`
     /// in `blend` when the opacity is below 1 or the blend isn't normal.
@@ -1357,7 +1263,7 @@ impl Renderer {
     }
 
     /// How high node `node`'s content stands, style metres (extrusions'
-    /// and models' tallest; 0 for flat content), from its last paint.
+    /// tallest; 0 for flat content), from its last paint.
     pub fn cull_elevation(&self, node: u32) -> f32 {
         self.nodes[node as usize].cull.elevation
     }
@@ -1398,8 +1304,7 @@ impl Renderer {
         // Layers drawn apart apply their opacity as they composite.
         if let (
             NodePaint::Extrusion(ExtrusionPaint { opacity, .. })
-            | NodePaint::ExtrusionPattern(ExtrusionPaint { opacity, .. }, _)
-            | NodePaint::Model(ModelPaint { opacity, .. }),
+            | NodePaint::ExtrusionPattern(ExtrusionPaint { opacity, .. }, _),
             Some(e),
         ) = (paint, &mut entry.extrusion)
         {
@@ -1413,7 +1318,6 @@ impl Renderer {
             NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) => {
                 p.height.max(p.base).max(0.0)
             }
-            NodePaint::Model(p) => p.height.max(0.0),
             _ => 0.0,
         };
         if margin != entry.cull.margin_px || elevation != entry.cull.elevation {
@@ -1532,16 +1436,13 @@ impl Renderer {
                     ));
                 }
             }
-            Family::Raster | Family::Hillshade | Family::ColorRelief | Family::Contour => {
+            Family::Raster | Family::Hillshade | Family::ColorRelief => {
                 self.images.make(gpu, family);
             }
             Family::Heatmap => self.heatmaps.make(gpu),
             Family::FillExtrusion => {
                 let lit = self.lit_on.then(|| self.lit.layout());
                 self.extrusions.make(gpu, lit);
-            }
-            Family::Model => {
-                self.models.make(gpu, self.extrusions.samples);
             }
         }
     }
@@ -1576,10 +1477,6 @@ impl Renderer {
             Family::Heatmap => out.extend(self.heatmaps.pipelines()),
             Family::FillExtrusion => {
                 out.extend(self.extrusions.pipelines(self.lit_on));
-                out.extend(self.shadows.pipelines());
-            }
-            Family::Model => {
-                out.extend(self.models.pipelines(self.extrusions.samples));
                 out.extend(self.shadows.pipelines());
             }
             Family::SymbolIcon | Family::SymbolText => {
@@ -1637,9 +1534,9 @@ impl Renderer {
         let cast = self.casting(frame);
         self.shadows.set_casting(
             gpu,
-            cast.map_or([false; 2], |_| self.casters()),
+            cast.is_some(),
             self.target,
-            [self.draw_layout, self.node_layout, self.models.layout()],
+            [self.draw_layout, self.node_layout],
         );
         self.bind_scene(gpu);
         if let Some(nodes) = self.nodes_dirty.take() {
@@ -1657,24 +1554,6 @@ impl Renderer {
         stats
     }
 
-    /// Whether a frame has 3D passes: extrusion layers or terrain.
-    fn has_3d(&self) -> bool {
-        self.nodes.iter().any(|n| n.extrusion.is_some())
-            || self.terrain.as_ref().is_some_and(terrain::Terrain::active)
-    }
-
-    /// Hides symbols and circles behind 3D layers as well as the terrain.
-    pub fn set_symbol_occlusion(&mut self, gpu: &mut dyn Gpu, enabled: bool) {
-        if enabled == self.occlusion.enabled {
-            return;
-        }
-        self.occlusion.enabled = enabled;
-        if !enabled {
-            occlusion::Occlusion::release(&mut self.occlusion, gpu);
-        }
-        self.extrusions.set_sampled(enabled);
-    }
-
     /// Binds what the scene groups bind anew when it changed: the glyph
     /// pages grew into new textures, the terrain changed, or a scene pool
     /// moved into a larger buffer.
@@ -1684,23 +1563,17 @@ impl Renderer {
             .as_ref()
             .and_then(terrain::Terrain::dem_texture)
             .unwrap_or(self.no_dem);
-        // Symbols and circles read the 3D depth where it hides them, else
-        // the terrain's.
-        let occlusion = self
-            .occlusion
-            .texture()
-            .filter(|_| self.has_3d())
-            .or_else(|| {
-                self.terrain
-                    .as_ref()
-                    .and_then(terrain::Terrain::occlusion_texture)
-            })
-            .unwrap_or(self.no_occlusion);
+        // Symbols and circles read the terrain's depth.
+        let terrain_depth = self
+            .terrain
+            .as_ref()
+            .and_then(terrain::Terrain::occlusion_texture)
+            .unwrap_or(self.no_terrain_depth);
         let buffers = self.scene.buffers_revision();
         let shadow_map = self.shadows.bindings().1;
         if self.glyphs.revision() != self.glyphs_bound
             || dem != self.dem_bound
-            || occlusion != self.occlusion_bound
+            || terrain_depth != self.terrain_depth_bound
             || shadow_map != self.shadow_bound
             || buffers != self.buffers_bound
             || self.image_bindings.texture != self.images_bound
@@ -1720,13 +1593,13 @@ impl Renderer {
                 &b,
                 b.frame,
                 &self.image_bindings,
-                (self.glyphs.texture(), self.nearest, dem, occlusion),
+                (self.glyphs.texture(), self.nearest, dem, terrain_depth),
                 self.shadows.bindings(),
             );
             self.shadow_bound = shadow_map;
             self.glyphs_bound = self.glyphs.revision();
             self.dem_bound = dem;
-            self.occlusion_bound = occlusion;
+            self.terrain_depth_bound = terrain_depth;
             for zoom in self.drape_zooms.values_mut() {
                 zoom.scene.take().release(gpu);
             }
@@ -1746,12 +1619,9 @@ impl Renderer {
     /// The shadows this frame casts: from the frame's light, onto a
     /// plane, with extrusions to cast them.
     fn casting(&self, frame: &FrameBlock) -> Option<(FrameShadow, [f32; 3])> {
-        frame.shadow().filter(|_| self.casters().contains(&true))
-    }
-
-    /// Whether extrusions, and models, are in the style to cast shadows.
-    fn casters(&self) -> [bool; 2] {
-        [Family::FillExtrusion, Family::Model].map(|f| self.nodes.iter().any(|n| n.family == f))
+        frame
+            .shadow()
+            .filter(|_| self.nodes.iter().any(|n| n.family == Family::FillExtrusion))
     }
 
     fn record(
@@ -1826,11 +1696,6 @@ impl Renderer {
                     .heatmaps
                     .resize(gpu, &mut self.composites, heatmap, density_size);
             }
-        }
-        if self.occlusion.resize(gpu, size) {
-            // Symbols' bundles bind the new texture.
-            self.bind_scene(gpu);
-            resized = true;
         }
         let lit = self.lit_on;
         if lit {
@@ -1926,10 +1791,8 @@ impl Renderer {
                 sample_count: self.target.sample_count,
             };
             // The ground's shadows go under the first 3D layer.
-            let first_extrusion = cast.and_then(|_| {
-                (self.nodes.iter())
-                    .position(|n| matches!(n.family, Family::FillExtrusion | Family::Model))
-            });
+            let first_extrusion = cast
+                .and_then(|_| (self.nodes.iter()).position(|n| n.family == Family::FillExtrusion));
             self.ground_waiting = false;
             for i in 0..self.nodes.len() {
                 let (start, member) = self.layers.at(i);
@@ -2067,17 +1930,8 @@ impl Renderer {
         let extrusions_ready =
             cull_ready && self.extrusions.ready(gpu, &self.composites, self.lit_on);
         let materials = self.lit.group().filter(|_| self.lit_on);
-        let samples = self.extrusions.samples;
-        let models_ready = cull_ready
-            && self.models.ready(gpu, samples)
-            && self.composites.ready(gpu, offscreen::Mode::Over);
-        // Shadows show with all that casts them.
-        let casters = self.casters();
-        let shadowed = cast.filter(|_| {
-            (!casters[0] || extrusions_ready)
-                && (!casters[1] || models_ready)
-                && self.shadows.ready(gpu, casters)
-        });
+        // Shadows show with the extrusions that cast them.
+        let shadowed = cast.filter(|_| extrusions_ready && self.shadows.ready(gpu));
         self.shadows.write(gpu, frame, shadowed);
         if shadowed.is_some() {
             let b = *self.scene.buffers();
@@ -2085,18 +1939,6 @@ impl Renderer {
                 .filter(|(_, n)| n.family == Family::FillExtrusion)
                 .map(|(i, n)| (i as u32, n.group))
                 .collect();
-            // Opaque materials, then masked ones, whose caster alone
-            // discards.
-            let models = [false, true].map(|masked| {
-                (self.nodes.iter().enumerate())
-                    .filter(|(_, n)| n.family == Family::Model)
-                    .flat_map(|(i, n)| {
-                        let model = n.model.map(|m| m.0);
-                        self.models
-                            .caster_commands(n.group, &b, i as u32, model, masked)
-                    })
-                    .collect::<Vec<RenderCommand>>()
-            });
             let scene = *self.caster_group.get_or_insert_with(|| {
                 scene_group(
                     gpu,
@@ -2108,72 +1950,31 @@ impl Renderer {
                         self.glyphs.texture(),
                         self.nearest,
                         self.dem_bound,
-                        self.occlusion_bound,
+                        self.terrain_depth_bound,
                     ),
                     self.shadows.caster_bindings(),
                 )
             });
-            let shadow_passes = self.shadows.passes(gpu, scene, &extrusions, &models, &b);
+            let shadow_passes = self.shadows.passes(gpu, scene, &extrusions, &b);
             stats.draws += shadow_passes.len() as u32;
             passes.extend(shadow_passes);
         }
-        for index in 0..self.nodes.len() {
-            // A model layer's nodes after its first draw in its pass.
-            let layer: Vec<(u32, BindGroupId, Option<u32>)> = match self.nodes[index].family {
-                Family::Model => (index..self.nodes.len())
-                    .take_while(|&j| {
-                        j == index
-                            || (self.nodes[j].extrusion.is_none()
-                                && joins(&self.nodes[..j], &self.nodes[j].desc()))
-                    })
-                    .map(|j| {
-                        (
-                            j as u32,
-                            self.nodes[j].group,
-                            self.nodes[j].model.map(|m| m.0),
-                        )
-                    })
-                    .collect(),
-                _ => Vec::new(),
+        let (draw_group, buffers) = (self.draw_group, *self.scene.buffers());
+        for (index, node) in self.nodes.iter_mut().enumerate() {
+            let Some(target) = node.extrusion.as_mut().filter(|_| extrusions_ready) else {
+                continue;
             };
-            let (draw_group, buffers) = (self.draw_group, *self.scene.buffers());
-            let node = &mut self.nodes[index];
-            let pass = match (node.family, node.extrusion.as_mut()) {
-                (Family::FillExtrusion, Some(target)) if extrusions_ready => {
-                    let groups = (draw_group, node.group);
-                    self.extrusions.prepare(
-                        gpu,
-                        target,
-                        groups,
-                        materials,
-                        &buffers,
-                        index as u32,
-                        first,
-                    )
-                }
-                (Family::Model, Some(target)) if models_ready => {
-                    let models = &self.models;
-                    self.extrusions.pass(gpu, target, first, || {
-                        layer
-                            .iter()
-                            .flat_map(|&(i, group, model)| {
-                                models.commands(samples, (draw_group, group), &buffers, i, model)
-                            })
-                            .collect()
-                    })
-                }
-                _ => continue,
-            };
+            let pass = self.extrusions.prepare(
+                gpu,
+                target,
+                (draw_group, node.group),
+                materials,
+                &buffers,
+                index as u32,
+                first,
+            );
             passes.push(Pass::Render(pass));
             first = false;
-            stats.draws += 1;
-        }
-        // The 3D depth, now complete, for the symbols it hides.
-        if self.has_3d()
-            && let Some((depth, _)) = self.extrusions.depth()
-            && let Some(pass) = self.occlusion.pass(gpu, depth, self.extrusions.samples)
-        {
-            passes.push(pass);
             stats.draws += 1;
         }
         passes.extend(self.layers.passes());
@@ -2244,7 +2045,7 @@ impl Renderer {
                     self.glyphs.texture(),
                     self.nearest,
                     self.dem_bound,
-                    self.no_occlusion,
+                    self.no_terrain_depth,
                 ),
                 self.shadows.bindings(),
             ));
@@ -2334,19 +2135,8 @@ impl Renderer {
             }
             return true;
         }
-        // A model layer composites once, in its first node's place.
-        if node.family == Family::Model && node.extrusion.is_none() {
-            return true;
-        }
         if let Some(extrusion) = &node.extrusion {
-            let compiled = match node.family {
-                Family::Model => {
-                    self.models.ready(gpu, self.extrusions.samples)
-                        && self.composites.ready(gpu, offscreen::Mode::Over)
-                }
-                _ => self.extrusions.ready(gpu, &self.composites, self.lit_on),
-            };
-            if !compiled {
+            if !self.extrusions.ready(gpu, &self.composites, self.lit_on) {
                 return false;
             }
             if let Some(o) = &extrusion.offscreen {
@@ -2395,11 +2185,7 @@ impl Renderer {
             }
             return true;
         }
-        if matches!(
-            node.family,
-            Family::Hillshade | Family::ColorRelief | Family::Contour
-        ) && !ready.prepare
-        {
+        if matches!(node.family, Family::Hillshade | Family::ColorRelief) && !ready.prepare {
             return false;
         }
         if node.family == Family::Raster && !ready.mips {
@@ -2451,15 +2237,6 @@ impl Renderer {
         ]);
         true
     }
-}
-
-/// Whether a model node joins the 3D target of the nodes before it: they
-/// end with a model node of its layer.
-fn joins(before: &[Node], node: &RenderNode) -> bool {
-    node.family == Family::Model
-        && before.last().is_some_and(|last| {
-            last.family == Family::Model && last.model.map(|m| m.1) == node.model.map(|m| m.1)
-        })
 }
 
 /// The style layer a node composites once with, when it does: below layer
@@ -2679,7 +2456,7 @@ fn scene_group(
     b: &orb_scene::SceneBuffers,
     frame: BufferId,
     images: &ImageBindings,
-    (glyphs, nearest, dem, occlusion): (TextureId, SamplerId, TextureId, TextureId),
+    (glyphs, nearest, dem, terrain_depth): (TextureId, SamplerId, TextureId, TextureId),
     (shadow, shadow_map, shadow_compare): (BufferId, TextureId, SamplerId),
 ) -> BindGroupId {
     let whole = BindingResource::buffer;
@@ -2718,7 +2495,7 @@ fn scene_group(
             resource: BindingResource::Sampler(nearest),
         },
         texture(14, dem, TextureViewDimension::D2Array),
-        texture(15, occlusion, TextureViewDimension::D2),
+        texture(15, terrain_depth, TextureViewDimension::D2),
         BindGroupEntry {
             binding: 16,
             resource: whole(shadow),

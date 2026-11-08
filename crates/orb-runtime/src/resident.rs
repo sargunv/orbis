@@ -470,7 +470,6 @@ pub(crate) fn under_budget(renderer: &Renderer, atlas: u64, budget: u64) -> bool
         + tiles
         + glyphs
         + renderer.shadow_bytes()
-        + renderer.model_bytes()
         + atlas;
     allocated < budget
 }

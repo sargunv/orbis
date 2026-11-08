@@ -1,6 +1,5 @@
-// glTF's metallic-roughness shading under the style's lights, as
-// functions of their inputs alone: no bindings, so any
-// pipeline composes it. Directions are in east, north and up; colours are
+// Metallic-roughness shading under the style's lights, as functions of
+// their inputs alone: no bindings, so any pipeline composes it. Directions are in east, north and up; colours are
 // linear.
 
 const PBR_PI: f32 = 3.14159265;
@@ -12,56 +11,6 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
     let x = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
     return select(1.055 * pow(x, vec3<f32>(1.0 / 2.4)) - 0.055, x * 12.92, x <= vec3<f32>(0.0031308));
-}
-
-// `orb_3d::gpu`'s octahedral normal: two snorm16s, x low.
-fn octahedral_normal(w: u32) -> vec3<f32> {
-    let e = vec2<f32>(f32(bitcast<i32>(w << 16u) >> 16u), f32(bitcast<i32>(w) >> 16u)) / 32767.0;
-    var n = vec3<f32>(e, 1.0 - abs(e.x) - abs(e.y));
-    if n.z < 0.0 {
-        n = vec3<f32>((1.0 - abs(n.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), n.xy >= vec2<f32>(0.0)), n.z);
-    }
-    let l = length(n);
-    return select(vec3<f32>(0.0, 0.0, 1.0), n / l, l > 0.0);
-}
-
-// Turns `v` about east, then north, then up (clockwise seen from above, as
-// a heading), by `degrees`: a model layer's `model-rotation`.
-fn turn_enu(v: vec3<f32>, degrees: vec3<f32>) -> vec3<f32> {
-    let r = radians(degrees);
-    let x = vec3<f32>(v.x, v.y * cos(r.x) - v.z * sin(r.x), v.y * sin(r.x) + v.z * cos(r.x));
-    let y = vec3<f32>(x.x * cos(r.y) + x.z * sin(r.y), x.y, -x.x * sin(r.y) + x.z * cos(r.y));
-    return vec3<f32>(y.x * cos(r.z) + y.y * sin(r.z), -y.x * sin(r.z) + y.y * cos(r.z), y.z);
-}
-
-// Texture coordinates wrapped as a glTF sampler says, per axis two bits
-// of `wrap` (0 repeat, 1 clamp to edge, 2 mirrored repeat), for a sampler
-// that repeats.
-fn wrap_uv(uv: vec2<f32>, wrap: u32) -> vec2<f32> {
-    var t = uv;
-    for (var axis = 0u; axis < 2u; axis++) {
-        let mode = (wrap >> (2u * axis)) & 3u;
-        if mode == 1u {
-            t[axis] = clamp(t[axis], 0.0, 1.0);
-        } else if mode == 2u {
-            t[axis] = 1.0 - abs(fract(t[axis] * 0.5) * 2.0 - 1.0);
-        }
-    }
-    return t;
-}
-
-// A normal map's normal (`sampled`, the texel in [0, 1]) on surface
-// normal `n`, with the tangent frame from screen derivatives of the
-// position and texture coordinates, so meshes need no tangents.
-fn perturb_normal(n: vec3<f32>, dp: mat2x3<f32>, duv: mat2x2<f32>, sampled: vec3<f32>, scale: f32) -> vec3<f32> {
-    let t = dp[0] * duv[1].y - dp[1] * duv[0].y;
-    let b = dp[1] * duv[0].x - dp[0] * duv[1].x;
-    let size = max(length(t), length(b));
-    if size == 0.0 {
-        return n;
-    }
-    let m = sampled * 2.0 - 1.0;
-    return normalize(t / size * m.x * scale + b / size * m.y * scale + n * m.z);
 }
 
 // The lights at a surface: linear colours times their levels, the unit
@@ -91,8 +40,8 @@ fn pbr_specular(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, f0: vec3<f32>, roughne
     return d * vis * f;
 }
 
-// A surface's material: all its shading needs besides the lights, the one
-// model the lit map's layers (`map_out_lit.wgsl`) and models fill (#91).
+// A surface's material: all its shading needs besides the lights, which
+// the lit map's layers fill (`map_out_lit.wgsl`, #91).
 // Colours are linear; the normal is a unit vector in
 // east, north and up.
 struct Material {
@@ -102,8 +51,7 @@ struct Material {
     roughness: f32,
     // Ambient light reaching it, 0 to 1.
     occlusion: f32,
-    // How much of its albedo shows whatever the lights (glTF's unlit is 1;
-    // a model layer's `model-emissive-strength`).
+    // How much of its albedo shows whatever the lights.
     self_lit: f32,
     // Light it gives off, added after shading.
     emitted: vec3<f32>,

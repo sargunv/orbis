@@ -506,10 +506,9 @@ const CHUNK_WORDS: usize = layout::chunk::WORDS;
 const CANDIDATE_WORDS: usize = layout::candidate::WORDS;
 const VISIBLE_WORDS: usize = layout::visible::WORDS;
 const NODE_CULL_WORDS: usize = layout::node_cull::WORDS;
-/// Words per node of [`SceneBuffers::args`]: a draw's indirect arguments,
-/// the cull's counters, and an instanced node's further draws, every 8
-/// words.
-pub const ARGS_WORDS: usize = 32;
+/// Words per node of [`SceneBuffers::args`]: a draw's indirect arguments
+/// and the cull's counters.
+pub const ARGS_WORDS: usize = 8;
 /// Candidates per cull workgroup of an indexed node (`cull.wgsl`).
 const INDEXED_BATCH: u32 = 64;
 /// A candidate's `drawn` word before its first cull: neither drawn (1) nor
@@ -519,8 +518,7 @@ const UNKNOWN: u32 = u32::MAX;
 /// How many of each thing the scene can hold. Buffers are allocated once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SceneCapacity {
-    /// Tile placements: a tile drawn in two world copies takes two. At
-    /// most 2^16: an instanced node's visible list packs them in 16 bits.
+    /// Tile placements: a tile drawn in two world copies takes two.
     pub placements: u32,
     pub chunks: u32,
     /// `(chunk, placement)` pairs the cull pass considers, over all nodes.
@@ -883,12 +881,6 @@ pub enum NodeDraw {
     /// one `drawIndexedIndirect` covers the node's slots. Indices are
     /// `run << run_shift | vertex`, a run being a mesh in one placement.
     Indexed,
-    /// A model's indices once per visible point, as instances: from
-    /// `first`, `counts` indices of each of its draw classes in turn
-    /// (`orb_3d::gpu::DrawClass`), each a `drawIndexedIndirect` whose
-    /// arguments start every 8 words. The visible list counts the points
-    /// before each chunk (`point.wgsl`'s `pull_instance`).
-    Instances { first: u32, counts: [u32; 4] },
 }
 
 impl NodeCull {
@@ -915,7 +907,6 @@ impl NodeDraw {
             Self::Images => 0,
             Self::Points => 1,
             Self::Indexed => 2,
-            Self::Instances { .. } => 3,
         }
     }
 }
@@ -1016,10 +1007,6 @@ impl Scene {
             .min(limits.max_buffer_size)
             / 4)
         .min(u64::from(u32::MAX)) as u32;
-        assert!(
-            capacity.placements <= 1 << 16,
-            "placements must fit 16 bits"
-        );
         let mut capacity = capacity;
         // The glyph table is the property arena's first block.
         let glyph_words = capacity.glyph_rows * GLYPH_ROW_WORDS as u32;
@@ -1872,10 +1859,6 @@ impl Scene {
                 }
                 runs.extend((base..).zip(order));
             }
-            let (index_base, index_count, [_, more @ ..]) = match node.cull.draw {
-                NodeDraw::Instances { first, counts } => (first, counts[0], counts),
-                _ => (index_base, compacted - index_base, [0; 4]),
-            };
             node_cull.extend([
                 base,
                 node.cull.margin_px.to_bits(),
@@ -1883,10 +1866,9 @@ impl Scene {
                 node.cull.draw_word(),
                 node.cull.elevation.to_bits(),
                 index_base,
-                index_count,
+                compacted - index_base,
                 if indexed { run_shift } else { 0 },
             ]);
-            node_cull.extend(more);
         }
         self.candidate_count = (rows.len() / CANDIDATE_WORDS) as u32;
         self.candidates_dropped = dropped;

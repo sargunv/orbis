@@ -322,18 +322,6 @@ fn terrain_switches_without_a_reload_and_follows_its_source() {
     assert!(doc.apply(&missing).is_err());
 }
 
-#[test]
-fn only_v8_layer_types_parse() {
-    let mut doc = doc();
-    for ty in ["model", "contour"] {
-        let tx = Transaction::from_commands(&format!(
-            r#"[["addLayer", {{"id": "more", "type": "{ty}", "source": "g"}}]]"#
-        ))
-        .unwrap();
-        assert!(doc.apply(&tx).is_err(), "{ty}");
-    }
-}
-
 /// A projection to or from a coordinate reference system's plane, or a
 /// source in another tile matrix set, plans the surface again; a globe
 /// over the same plane doesn't.
