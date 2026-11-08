@@ -40,7 +40,7 @@ pub use target::Target;
 use orb_hal_wgpu::WgpuGpu;
 pub use orb_host_native::CacheStats;
 use orb_host_native::{HttpCache, NativeFetch, NativeImageDecode};
-use orb_jobs::ThreadPool;
+use orb_host::jobs::ThreadPool;
 
 /// Why a call failed.
 #[derive(Clone, Debug, PartialEq, Eq)]

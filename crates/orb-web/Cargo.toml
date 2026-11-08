@@ -21,7 +21,6 @@ orb-interact.workspace = true
 orb-hal-wgpu.workspace = true
 orb-host.workspace = true
 orb-host-web.workspace = true
-orb-jobs.workspace = true
 orb-runtime.workspace = true
 orb-symbol.workspace = true
 orb-text.workspace = true

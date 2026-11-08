@@ -395,7 +395,7 @@ pub struct JobWorker {
 impl JobWorker {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        let host = JobHost::new(crate::regions::service(), Arc::new(orb_jobs::Inline));
+        let host = JobHost::new(crate::regions::service(), Arc::new(orb_host::jobs::Inline));
         host.set_local_glyphs(Arc::new(orb_host_web::CanvasGlyphs));
         host.set_font_files(Arc::new(orb_host_web::ShaperFiles));
         Self { host }

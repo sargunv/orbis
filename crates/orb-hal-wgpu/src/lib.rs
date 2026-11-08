@@ -268,7 +268,7 @@ impl WgpuGpu {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_compile_executor(
         &mut self,
-        executor: Option<std::sync::Arc<dyn orb_jobs::Executor>>,
+        executor: Option<std::sync::Arc<dyn orb_host::jobs::Executor>>,
     ) {
         self.compiler.set_executor(executor);
     }

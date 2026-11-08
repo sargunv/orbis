@@ -2255,7 +2255,6 @@ dependencies = [
  "orb-host",
  "orb-host-native",
  "orb-interact",
- "orb-jobs",
  "orb-runtime",
  "png",
  "pollster",
@@ -2355,7 +2354,7 @@ dependencies = [
  "futures-channel",
  "js-sys",
  "orb-hal",
- "orb-jobs",
+ "orb-host",
  "pollster",
  "sha2",
  "wasm-bindgen",
@@ -2378,7 +2377,6 @@ dependencies = [
  "fontdb",
  "image",
  "orb-host",
- "orb-jobs",
  "orb-text",
  "ureq",
 ]
@@ -2404,10 +2402,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "orb-jobs"
-version = "0.0.0"
-
-[[package]]
 name = "orb-layout"
 version = "0.0.0"
 dependencies = [
@@ -2425,7 +2419,7 @@ dependencies = [
  "orb-crs",
  "orb-hal",
  "orb-hal-wgpu",
- "orb-jobs",
+ "orb-host",
  "orb-layout",
  "orb-scene",
  "orb-shaders",
@@ -2447,7 +2441,6 @@ dependencies = [
  "orb-host",
  "orb-host-native",
  "orb-interact",
- "orb-jobs",
  "orb-layout",
  "orb-render",
  "orb-shaders",
@@ -2578,7 +2571,6 @@ dependencies = [
  "orb-host",
  "orb-host-web",
  "orb-interact",
- "orb-jobs",
  "orb-runtime",
  "orb-style",
  "orb-symbol",

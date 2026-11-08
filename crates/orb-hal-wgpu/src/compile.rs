@@ -269,7 +269,7 @@ mod native {
     use std::time::{Duration, Instant};
 
     use orb_hal::PipelineId;
-    use orb_jobs::Executor;
+    use orb_host::jobs::Executor;
 
     use super::{Done, Job};
 

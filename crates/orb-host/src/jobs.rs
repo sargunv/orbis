@@ -4,8 +4,6 @@
 //! Natively that's a [`ThreadPool`]; [`Inline`] runs jobs on the caller's
 //! thread, for tests and hosts that drive the runtime themselves.
 
-#![forbid(unsafe_code)]
-
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 

@@ -61,7 +61,7 @@ impl Harness {
     ) -> Self {
         let mut gpu = pollster::block_on(WgpuGpu::offscreen()).expect("a GPU adapter");
         gpu.set_compile_executor(
-            threads.map(|n| std::sync::Arc::new(orb_jobs::ThreadPool::new("pipelines", n)) as _),
+            threads.map(|n| std::sync::Arc::new(orb_host::jobs::ThreadPool::new("pipelines", n)) as _),
         );
         let target = gpu.create_texture(&TextureDesc {
             label: "target",

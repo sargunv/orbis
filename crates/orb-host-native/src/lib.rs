@@ -14,7 +14,7 @@ pub use orb_host::FontFileFaces;
 pub use storage::{FileStorage, wait};
 
 use orb_host::{Fetch, FetchDone, FetchError, ImageDecode, ImageDone, Request, RequestTransform};
-use orb_jobs::{Executor, ThreadPool};
+use orb_host::jobs::{Executor, ThreadPool};
 
 /// Fetches `http(s)://` URLs with ureq and `file://` URLs from disk, on a
 /// small pool of I/O threads, through an [`HttpCache`] when it has one.

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use orb_host::{Fetch, FetchError, FontFiles};
-use orb_jobs::Executor;
+use orb_host::jobs::Executor;
 
 use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone};
 use crate::style::ImageKind;

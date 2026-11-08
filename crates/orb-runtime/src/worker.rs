@@ -947,7 +947,7 @@ pub(crate) mod tests {
         let jobs = PoolJobs::new(
             fetch.clone(),
             Arc::new(NoImages),
-            Arc::new(orb_jobs::Inline),
+            Arc::new(orb_host::jobs::Inline),
         );
         jobs.set_style(1, &StyleUpdate::default(), &worker);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1226,7 +1226,7 @@ pub(crate) mod tests {
         let jobs = PoolJobs::new(
             fetch.clone(),
             Arc::new(NoImages),
-            Arc::new(orb_jobs::Inline),
+            Arc::new(orb_host::jobs::Inline),
         );
         let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
         jobs.set_style(1, &StyleUpdate::default(), &worker);

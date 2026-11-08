@@ -343,10 +343,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
-    struct HeldExecutor(Mutex<Vec<orb_jobs::Job>>);
+    struct HeldExecutor(Mutex<Vec<orb_host::jobs::Job>>);
 
-    impl orb_jobs::Executor for HeldExecutor {
-        fn spawn(&self, job: orb_jobs::Job) {
+    impl orb_host::jobs::Executor for HeldExecutor {
+        fn spawn(&self, job: orb_host::jobs::Job) {
             self.0.lock().unwrap().push(job);
         }
     }
@@ -564,7 +564,7 @@ mod tests {
                 jobs: crate::common::PoolJobs::new(
                     fetch.clone(),
                     Arc::new(crate::common::NativeImageDecode),
-                    Arc::new(orb_jobs::Inline),
+                    Arc::new(orb_host::jobs::Inline),
                 ),
                 fetch,
                 wake: Arc::new(|| {}),
@@ -617,7 +617,7 @@ mod tests {
         let jobs = crate::common::PoolJobs::new(
             fetch.clone(),
             Arc::new(crate::common::NativeImageDecode),
-            Arc::new(orb_jobs::Inline),
+            Arc::new(orb_host::jobs::Inline),
         );
         jobs.set_local_glyphs(orb_host_native::SystemFonts::shared());
         let services = crate::common::Services {
@@ -681,7 +681,7 @@ mod tests {
             jobs: crate::common::PoolJobs::new(
                 fetch.clone(),
                 Arc::new(crate::common::NativeImageDecode),
-                Arc::new(orb_jobs::Inline),
+                Arc::new(orb_host::jobs::Inline),
             ),
             fetch,
             wake: Arc::new(|| {}),

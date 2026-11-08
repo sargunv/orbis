@@ -1,10 +1,11 @@
-//! Host service traits: what the core asks of its platform.
-//! Implementations live in `orb-host-native` and, for the browser,
-//! `orb-host-web`.
+//! Host service traits: what the core asks of its platform, and the job
+//! executors that run its work. Implementations live in `orb-host-native`
+//! and, for the browser, `orb-web`.
 
 #![forbid(unsafe_code)]
 
 pub mod cache;
+pub mod jobs;
 
 use std::fmt;
 

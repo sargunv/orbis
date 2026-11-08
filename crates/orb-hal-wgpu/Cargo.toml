@@ -20,7 +20,7 @@ wgpu = { workspace = true, features = ["webgpu"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Pipelines compile on the host's job threads.
-orb-jobs.workspace = true
+orb-host.workspace = true
 # Pipeline cache files carry a checksum (src/cache.rs).
 sha2.workspace = true
 # Compile threads pop wgpu's (immediately ready) error scopes.

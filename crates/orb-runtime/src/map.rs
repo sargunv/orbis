@@ -2071,7 +2071,7 @@ mod tests {
     use std::sync::Mutex;
 
     use orb_host::FetchDone;
-    use orb_jobs::Inline;
+    use orb_host::jobs::Inline;
 
     use super::*;
     use crate::PoolJobs;
@@ -2208,7 +2208,7 @@ mod tests {
 #[cfg(test)]
 mod video_tests {
     use orb_hal_wgpu::WgpuGpu;
-    use orb_jobs::Inline;
+    use orb_host::jobs::Inline;
 
     use super::*;
     use crate::{ImagePixels, PoolJobs, TileImage, VideoRequest};

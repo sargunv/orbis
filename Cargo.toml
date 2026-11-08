@@ -58,7 +58,6 @@ orb-interact = { path = "crates/orb-interact" }
 orb-host = { path = "crates/orb-host" }
 orb-host-native = { path = "crates/orb-host-native" }
 orb-host-web = { path = "crates/orb-host-web" }
-orb-jobs = { path = "crates/orb-jobs" }
 orb-layout = { path = "crates/orb-layout" }
 orb-render = { path = "crates/orb-render" }
 orb-runtime = { path = "crates/orb-runtime" }

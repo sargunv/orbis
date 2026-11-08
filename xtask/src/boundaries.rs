@@ -14,7 +14,6 @@ use serde_json::Value;
 /// GPU handles and platform APIs.
 const PLATFORM: &[&str] = &[
     "orb-runtime",
-    "orb-jobs",
     "orb-host",
     "orb-host-native",
     "orb-host-web",
@@ -52,7 +51,6 @@ const UNSAFE_ALLOWED: &[&str] = &[
     "orb-hal-wgpu",
     "orb-capi",
     "orb-web",
-    "orb-jobs",
     // The binding emitters' test bridge: Diplomat's macro writes `extern "C"`.
     "dsk-fixture",
 ];

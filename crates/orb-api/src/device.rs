@@ -31,7 +31,7 @@ pub(crate) fn make() -> Result<(WgpuGpu, String), Error> {
 /// compiles.
 pub(crate) fn set_compiler(
     gpu: &mut WgpuGpu,
-    executor: std::sync::Arc<dyn orb_jobs::Executor>,
+    executor: std::sync::Arc<dyn orb_host::jobs::Executor>,
     wake: std::sync::Arc<dyn Fn() + Send + Sync>,
 ) {
     gpu.set_compile_executor(Some(executor));
