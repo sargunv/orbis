@@ -60,7 +60,6 @@ orb-host-native = { path = "crates/orb-host-native" }
 orb-layout = { path = "crates/orb-layout" }
 orb-render = { path = "crates/orb-render" }
 orb-runtime = { path = "crates/orb-runtime" }
-orb-scene = { path = "crates/orb-scene" }
 orb-shaders = { path = "crates/orb-shaders" }
 orb-source = { path = "crates/orb-source" }
 orb-symbol = { path = "crates/orb-symbol" }

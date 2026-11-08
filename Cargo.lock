@@ -2404,13 +2404,11 @@ name = "orb-render"
 version = "0.0.0"
 dependencies = [
  "bytemuck",
- "glam",
  "orb-crs",
  "orb-hal",
  "orb-hal-wgpu",
  "orb-host",
  "orb-layout",
- "orb-scene",
  "orb-shaders",
  "orb-tile",
  "pollster",
@@ -2444,17 +2442,6 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "orb-scene"
-version = "0.0.0"
-dependencies = [
- "bytemuck",
- "orb-hal",
- "orb-layout",
- "orb-shaders",
- "serde",
 ]
 
 [[package]]

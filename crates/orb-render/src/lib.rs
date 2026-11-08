@@ -13,6 +13,10 @@
 //! dispatch keeps in each candidate's slot of one index buffer, with one
 //! `drawIndexedIndirect` per node; point families and image tiles pull
 //! their vertices.
+//!
+//! The `scene` module holds what a frame reads on the GPU: the persistent
+//! tables, the arenas of tile streams and the atlases, kept consistent as
+//! meshes arrive and leave.
 
 #![forbid(unsafe_code)]
 
@@ -25,6 +29,7 @@ mod layer_composite;
 mod offscreen;
 mod paint;
 mod release;
+mod scene;
 mod terrain;
 mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
@@ -36,22 +41,22 @@ pub use terrain::{
 
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
 pub use orb_layout::{Family, pack_color};
-pub use orb_scene::Pixels;
-pub use orb_scene::{
+pub use paint::{
+    CirclePaint, ColorReliefPaint, Curve, ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod,
+    HillshadePaint, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, StateLookup,
+    SymbolPaint, SymbolSize, Translate,
+};
+pub use scene::Pixels;
+pub use scene::{
     ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLight, FrameTerrain,
     GLOBE_PATCH_WORDS, ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData,
     MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity,
     SceneStats, TileId, TileRow, TileWarp, WARP_PATCH_WORDS, Words,
 };
-pub use orb_scene::{DESKTOP_BUDGET, MOBILE_BUDGET, PoolMemory, SceneMemory};
-pub use orb_scene::{
+pub use scene::{DESKTOP_BUDGET, MOBILE_BUDGET, PoolMemory, SceneMemory};
+pub use scene::{
     GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas, PLACED_WORDS, QUAD_WORDS, SYMBOL_HEADER_WORDS,
     SYMBOL_STATE_WORDS, SymbolMeshData, pack_image_rect, symbol_header,
-};
-pub use paint::{
-    CirclePaint, ColorReliefPaint, Curve, ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod,
-    HillshadePaint, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, StateLookup,
-    SymbolPaint, SymbolSize, Translate,
 };
 pub use tiles::{
     GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, TileBuild, TileKey, UploadError, WarpKey,
@@ -62,11 +67,11 @@ use crate::release::Release;
 use std::collections::BTreeMap;
 
 use orb_hal::*;
-use orb_scene::Scene;
 use orb_shaders::{
     CIRCLE_SHADER, CULL_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, SYMBOL_SHADERS,
     Shader,
 };
+use scene::Scene;
 
 /// How a family's nodes draw: meshes from compacted
 /// indices, instanced quads by vertex pulling.
@@ -84,7 +89,7 @@ fn draw_of(family: Family) -> NodeDraw {
 
 /// Where node `index`'s draw arguments start in the scene's args buffer.
 fn args_offset(index: u32) -> u64 {
-    u64::from(index) * orb_scene::ARGS_WORDS as u64 * 4
+    u64::from(index) * crate::scene::ARGS_WORDS as u64 * 4
 }
 
 /// The attachment a renderer draws into.
@@ -612,7 +617,7 @@ impl Renderer {
     }
 
     /// The scene's GPU memory.
-    pub fn memory(&self) -> orb_scene::SceneMemory {
+    pub fn memory(&self) -> crate::scene::SceneMemory {
         self.scene.memory()
     }
 
@@ -985,7 +990,7 @@ impl Renderer {
         let level = self.drape_zooms.entry(zoom).or_insert_with(|| DrapeZoom {
             frame: gpu.create_buffer(&BufferDesc {
                 label: "drape frame",
-                size: orb_scene::FRAME_BYTES,
+                size: crate::scene::FRAME_BYTES,
                 usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             }),
             uniforms: gpu.create_buffer(&BufferDesc {
@@ -1414,7 +1419,7 @@ impl Renderer {
         let mut wanted = Vec::new();
         wanted.push(self.cull.0.into());
         for i in 0..self.nodes.len() {
-            if self.scene.node_meshes(i as u32).next().is_some() {
+            if self.scene.node_has_meshes(i as u32) {
                 self.node_pipelines(i, &mut wanted);
             }
         }
@@ -1857,7 +1862,7 @@ impl Renderer {
         let terrain = self.terrain.as_ref()?;
         let drape_frame = terrain.drape_frame(frame, zoom);
         let level = self.drape_zooms.get_mut(&zoom)?;
-        orb_scene::write_frame(gpu, level.frame, &drape_frame);
+        crate::scene::write_frame(gpu, level.frame, &drape_frame);
         if level.scene.is_none() {
             let b = *self.scene.buffers();
             level.scene = Some(scene_group(
@@ -2235,7 +2240,7 @@ fn draw_pipeline_blending(
 fn cull_group(
     gpu: &mut dyn Gpu,
     layout: BindGroupLayoutId,
-    b: &orb_scene::SceneBuffers,
+    b: &crate::scene::SceneBuffers,
 ) -> BindGroupId {
     let entries: Vec<BindGroupEntry> = [
         b.frame,
@@ -2266,7 +2271,7 @@ fn cull_group(
 fn scene_group(
     gpu: &mut dyn Gpu,
     layout: BindGroupLayoutId,
-    b: &orb_scene::SceneBuffers,
+    b: &crate::scene::SceneBuffers,
     frame: BufferId,
     images: &ImageBindings,
     (glyphs, nearest, dem, terrain_depth): (TextureId, SamplerId, TextureId, TextureId),

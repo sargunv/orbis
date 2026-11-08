@@ -14,8 +14,8 @@
 //! slopes. Each is a draw into the tile's layer.
 
 use crate::release::Release;
+use crate::scene::{PageTexture, Pixels, TilePage};
 use orb_hal::*;
-use orb_scene::{PageTexture, Pixels, TilePage};
 use orb_shaders::{COLOR_RELIEF_SHADER, HILLSHADE_SHADER, RASTER_SHADER};
 
 use crate::{Family, OutOfSpace, TargetFormat};

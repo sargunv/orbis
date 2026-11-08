@@ -99,7 +99,7 @@ pub struct TerrainSlopes {
 /// row of a set that stops short of the pole).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerrainGlobe {
-    pub warp: orb_scene::TileWarp,
+    pub warp: crate::scene::TileWarp,
     pub origin: [f32; 3],
     pub poles: [bool; 2],
 }
@@ -1075,9 +1075,9 @@ impl Terrain {
     /// atlas.
     pub(crate) fn drape_frame(
         &self,
-        frame: &orb_scene::FrameBlock,
+        frame: &crate::scene::FrameBlock,
         zoom: u8,
-    ) -> orb_scene::FrameBlock {
+    ) -> crate::scene::FrameBlock {
         let [w, h] = self
             .atlas
             .as_ref()
@@ -1089,7 +1089,7 @@ impl Terrain {
             [0.0, 0.0, 0.0, 0.0],
             [-1.0, 1.0, 0.0, 1.0],
         ];
-        orb_scene::FrameBlock {
+        crate::scene::FrameBlock {
             view_proj,
             // Drape placements' origins are in drape space already.
             camera: [0.0; 2],

@@ -16,13 +16,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use orb_crs::TileIndex;
-use orb_hal::Gpu;
-use orb_layout::{Chunk, TileBox};
-use orb_scene::{
+use crate::scene::{
     MeshData, MeshId, MeshSize, OutOfSpace, Pixels, SymbolMeshData, TileId, TileRow, TileWarp,
     Words,
 };
+use orb_crs::TileIndex;
+use orb_hal::Gpu;
+use orb_layout::{Chunk, TileBox};
 
 use crate::Renderer;
 use crate::image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
@@ -61,7 +61,7 @@ pub struct ImageBuild<'a> {
     /// Its mesh, or `None` for its square.
     pub mesh: Option<Arc<ImageMesh>>,
     /// Planar patches it draws through on a globe: cells per side and their
-    /// words (`orb_scene::WARP_PATCH_WORDS` each).
+    /// words (`crate::scene::WARP_PATCH_WORDS` each).
     pub patches: Option<(u32, &'a [f32])>,
     /// When it arrived, in the frame's milliseconds, if it fades in: it
     /// then cross-fades from its nearest resident ancestor, unless resident
@@ -705,7 +705,7 @@ impl Renderer {
 
     /// A tile's patches on the low-zoom surface, uploaded the first time a
     /// placement needs them: `cells` per side, their words from `patches`
-    /// (`orb_scene::GLOBE_PATCH_WORDS` each). `None` when the property
+    /// (`crate::scene::GLOBE_PATCH_WORDS` each). `None` when the property
     /// memory has no room.
     pub fn surface_warp(
         &mut self,

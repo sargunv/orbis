@@ -44,7 +44,7 @@ struct Candidate {
 @group(0) @binding(8) var<storage, read_write> compacted: array<u32>;
 
 const ARGS_WORDS: u32 = 8u;
-// Candidates per workgroup of an indexed node (orb-scene's INDEXED_BATCH).
+// Candidates per workgroup of an indexed node (orb-render's INDEXED_BATCH).
 const INDEXED_BATCH: u32 = 64u;
 // The view-volume planes a clip-space corner lies outside, a bit each:
 // right, left, top, bottom (widened by `margin`, in NDC per unit w), far

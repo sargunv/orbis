@@ -5,8 +5,6 @@
 //! else changes only when meshes arrive or leave. Row layouts match the
 //! structs in `orb-shaders`' `types.wgsl` and `cull.wgsl`.
 
-#![forbid(unsafe_code)]
-
 mod arena;
 mod glyph;
 mod image;
@@ -14,17 +12,18 @@ mod line;
 mod pages;
 mod shelf;
 mod symbol;
-pub use glyph::{GLYPH_PADDING, GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
+pub use glyph::{GLYPH_PAGE, GLYPH_ROW_WORDS, GlyphAtlas};
 pub use image::{ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload};
 
 use std::ops::Range;
 
 use arena::{Arena, Slots};
 use orb_hal::{BufferDesc, BufferId, BufferUsages, Gpu, HostBytesId};
+use orb_layout::Chunk;
 use orb_layout::Mesh;
-pub use orb_layout::{Chunk, TileBox};
 use orb_shaders::layout;
-pub use pages::{PageTexture, Pixels, TilePage};
+pub use pages::Pixels;
+pub(crate) use pages::{PageTexture, TilePage};
 pub use symbol::{
     PLACED_WORDS, QUAD_WORDS, SYMBOL_HEADER_WORDS, SYMBOL_STATE_WORDS, SymbolMeshData,
     pack_image_rect, symbol_header,
@@ -147,14 +146,14 @@ pub struct FrameTerrain {
 const FRAME_WORDS: usize = layout::frame::WORDS;
 
 /// Bytes of a frame block's uniform buffer.
-pub const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 4;
+pub(crate) const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 4;
 
 /// The power of two positions on a surface `span` world units across
 /// split at: a whole number of quanta (an i32, room for 64 spans) and an
 /// f32 remainder under half a quantum. Shaders subtract the camera's whole
 /// quanta as integers, exactly whatever the compiler reorders, then the
 /// remainders, which keeps positions to the f64 camera at zoom 22.
-pub fn quantum(span: f64) -> f64 {
+pub(crate) fn quantum(span: f64) -> f64 {
     2f64.powi((span * 64.0 / 2f64.powi(31)).log2().ceil() as i32)
 }
 
@@ -175,7 +174,7 @@ fn split<const N: usize>(v: [f64; N], quantum: f64) -> [[u32; N]; 2] {
 
 /// Writes a frame block into a uniform buffer of [`FRAME_BYTES`]: the
 /// scene's own, or another view's of the same scene (the terrain drape's).
-pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
+pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
     use layout::frame as f;
     let mut b = orb_shaders::Block::new(f::WORDS);
     b.f(f::VIEW_PROJ, frame.view_proj.as_flattened());
@@ -548,7 +547,7 @@ pub const MOBILE_BUDGET: u64 = 192 << 20;
 
 /// The scene's GPU buffers, for binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SceneBuffers {
+pub(crate) struct SceneBuffers {
     pub frame: BufferId,
     /// Tile placements.
     pub tiles: BufferId,
@@ -700,7 +699,7 @@ struct TileEntry {
 
 /// A tile placement: its row in the placement table, and the row's values.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Placement {
+pub(crate) struct Placement {
     pub slot: u32,
     pub row: TileRow,
 }
@@ -711,7 +710,6 @@ struct MeshEntry {
     node: u32,
     chunk_slots: Vec<u32>,
     chunks: Vec<Chunk>,
-    bounds: TileBox,
     vertices: Range<u32>,
     indices: Range<u32>,
     props: Range<u32>,
@@ -734,28 +732,7 @@ const CHUNK_PROPS_WORD: u64 = layout::chunk::PROP_BASE as u64;
 const CHUNK_ROW_WORDS_WORD: u64 = layout::chunk::ROW_WORDS as u64;
 
 /// No feature-state remap: every feature has the default state.
-pub const NO_STATE: u32 = u32::MAX;
-
-/// A resident mesh's place in the arenas.
-#[derive(Clone, Copy, Debug)]
-pub struct ResidentMesh<'a> {
-    /// The mesh's words in the vertex arena.
-    pub vertices: &'a Range<u32>,
-    /// The mesh's indices in the index arena.
-    pub indices: &'a Range<u32>,
-    /// First word of its property rows in the property arena.
-    pub prop_base: u32,
-    /// First word of its feature-state remap, or [`NO_STATE`].
-    pub state_base: u32,
-    /// Words per feature of its property rows.
-    pub row_words: u32,
-    /// Chunks, with indices relative to [`indices`](Self::indices).
-    pub chunks: &'a [Chunk],
-    /// The union of the chunks' bounds.
-    pub bounds: TileBox,
-    /// Where the mesh's tile draws.
-    pub placements: &'a [Placement],
-}
+pub(crate) const NO_STATE: u32 = u32::MAX;
 
 #[derive(Debug)]
 struct NodeEntry {
@@ -837,7 +814,7 @@ const DRAPED: u32 = 1 << 8;
 const HIDDEN: u32 = 1 << 9;
 
 #[derive(Debug)]
-pub struct Scene {
+pub(crate) struct Scene {
     buffers: SceneBuffers,
     capacity: SceneCapacity,
     placement_slots: Slots,
@@ -866,7 +843,6 @@ pub struct Scene {
     compacted_words: u32,
     /// Rows of the cull dispatch: the most batches an indexed node has.
     cull_batches: u32,
-    revision: u64,
     /// Changes whenever a pool or table moves into a larger buffer: bind
     /// groups and
     /// recorded commands over the old one must be made again.
@@ -898,7 +874,7 @@ pub struct SceneStats {
 
 impl Scene {
     /// Destroys the scene's buffers, with the scene.
-    pub fn destroy(self, gpu: &mut dyn Gpu) {
+    pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {
         let b = self.buffers;
         for buffer in [
             b.frame,
@@ -917,7 +893,7 @@ impl Scene {
         }
     }
 
-    pub fn new(gpu: &mut dyn Gpu, capacity: SceneCapacity) -> Self {
+    pub(crate) fn new(gpu: &mut dyn Gpu, capacity: SceneCapacity) -> Self {
         // The growable pools stay within one storage binding and buffer.
         let limits = gpu.caps().limits;
         let largest = (limits
@@ -1009,7 +985,6 @@ impl Scene {
             candidates_dropped: 0,
             compacted_words: 0,
             cull_batches: 1,
-            revision: 0,
             buffers_revision: 0,
             placements_written: 0,
             tile_rows: Vec::new(),
@@ -1018,37 +993,31 @@ impl Scene {
         }
     }
 
-    pub fn buffers(&self) -> &SceneBuffers {
+    pub(crate) fn buffers(&self) -> &SceneBuffers {
         &self.buffers
     }
 
-    pub fn capacity(&self) -> &SceneCapacity {
+    pub(crate) fn capacity(&self) -> &SceneCapacity {
         &self.capacity
     }
 
     /// The first word of the glyph table in the property buffer: its
     /// [`SceneCapacity::glyph_rows`] rows are the arena's first block.
-    pub fn glyph_table(&self) -> u32 {
+    pub(crate) fn glyph_table(&self) -> u32 {
         0
-    }
-
-    /// Counts changes to meshes and placement counts; equal revisions mean
-    /// the same meshes in the same slots.
-    pub fn revision(&self) -> u64 {
-        self.revision
     }
 
     /// The cull dispatch's grid, as of the last [`prepare`](Self::prepare):
     /// one workgroup per node, by as many rows as the indexed node with the
     /// most candidates has batches of them.
-    pub fn cull_grid(&self) -> [u32; 2] {
+    pub(crate) fn cull_grid(&self) -> [u32; 2] {
         [self.nodes.len() as u32, self.cull_batches]
     }
 
     /// Orders tiles within each render node independently of upload order.
     /// Meshes of the same tile keep their relative order; tiles not listed
     /// follow the listed ones. The order persists until changed again.
-    pub fn set_tile_order(&mut self, tiles: &[TileId]) {
+    pub(crate) fn set_tile_order(&mut self, tiles: &[TileId]) {
         let order: std::collections::HashMap<_, _> = tiles
             .iter()
             .enumerate()
@@ -1063,34 +1032,16 @@ impl Scene {
             if !node.meshes.is_sorted_by_key(key) {
                 node.meshes.sort_by_key(key);
                 self.candidates_dirty = true;
-                self.revision += 1;
             }
         }
     }
 
-    /// The meshes of render `node` in candidate order.
-    pub fn node_meshes(&self, node: u32) -> impl Iterator<Item = ResidentMesh<'_>> {
-        self.nodes[node as usize].meshes.iter().map(|id| {
-            let mesh = self.meshes[id.0 as usize]
-                .as_ref()
-                .expect("node lists live meshes");
-            let tile = self.tiles[mesh.tile.0 as usize]
-                .as_ref()
-                .expect("meshes have tiles");
-            ResidentMesh {
-                vertices: &mesh.vertices,
-                indices: &mesh.indices,
-                prop_base: mesh.props.start,
-                state_base: state_base(&mesh.state),
-                row_words: mesh.row_words,
-                chunks: &mesh.chunks,
-                bounds: mesh.bounds,
-                placements: &tile.placements,
-            }
-        })
+    /// Whether render `node` has any resident mesh.
+    pub(crate) fn node_has_meshes(&self, node: u32) -> bool {
+        !self.nodes[node as usize].meshes.is_empty()
     }
 
-    pub fn stats(&self) -> SceneStats {
+    pub(crate) fn stats(&self) -> SceneStats {
         SceneStats {
             meshes: (self.meshes.len() - self.free_meshes.len()) as u32,
             candidates: self.candidate_count,
@@ -1105,7 +1056,7 @@ impl Scene {
     /// Makes room for `nodes` render nodes: the node cull and draw argument
     /// tables move to buffers twice the size until they fit. Their rows
     /// are written whole again ([`remap_nodes`](Self::remap_nodes) follows).
-    pub fn grow_nodes(&mut self, gpu: &mut dyn Gpu, nodes: u32) {
+    pub(crate) fn grow_nodes(&mut self, gpu: &mut dyn Gpu, nodes: u32) {
         if nodes <= self.capacity.nodes {
             return;
         }
@@ -1134,7 +1085,7 @@ impl Scene {
     /// Renumbers the render nodes with their meshes: node `i` becomes
     /// `map[i]`, and the scene has `nodes.len()` nodes. Nodes mapped to
     /// `None` must hold no meshes.
-    pub fn remap_nodes(&mut self, map: &[Option<u32>], nodes: &[NodeCull]) {
+    pub(crate) fn remap_nodes(&mut self, map: &[Option<u32>], nodes: &[NodeCull]) {
         assert_eq!(map.len(), self.nodes.len(), "one entry per node");
         assert!(
             nodes.len() as u32 <= self.capacity.nodes,
@@ -1160,14 +1111,13 @@ impl Scene {
         }
         self.nodes = entries;
         self.candidates_dirty = true;
-        self.revision += 1;
     }
 
     /// Sets how each render node is culled. Changing the number of nodes
     /// requires the scene to hold no meshes. Margins, elevations and
     /// visibility are parameters the cull reads from the node rows: they
     /// change without laying the candidates out again.
-    pub fn set_nodes(&mut self, nodes: &[NodeCull]) {
+    pub(crate) fn set_nodes(&mut self, nodes: &[NodeCull]) {
         if nodes.len() != self.nodes.len() {
             assert!(
                 self.nodes.iter().all(|n| n.meshes.is_empty()),
@@ -1193,7 +1143,7 @@ impl Scene {
     }
 
     /// Sets how one render node is culled; see [`set_nodes`](Self::set_nodes).
-    pub fn set_node(&mut self, node: u32, cull: NodeCull) {
+    pub(crate) fn set_node(&mut self, node: u32, cull: NodeCull) {
         let i = node as usize;
         let entry = &mut self.nodes[i];
         if entry.cull == cull {
@@ -1216,7 +1166,7 @@ impl Scene {
     }
 
     /// A new tile with no meshes and no placements.
-    pub fn insert_tile(&mut self) -> TileId {
+    pub(crate) fn insert_tile(&mut self) -> TileId {
         match self.free_tiles.pop() {
             Some(id) => {
                 self.tiles[id as usize] = Some(TileEntry::default());
@@ -1230,7 +1180,7 @@ impl Scene {
     }
 
     /// Removes a tile with its meshes and placements.
-    pub fn remove_tile(&mut self, tile: TileId) {
+    pub(crate) fn remove_tile(&mut self, tile: TileId) {
         let entry = self.tiles[tile.0 as usize]
             .take()
             .expect("tile already removed");
@@ -1242,13 +1192,12 @@ impl Scene {
             self.drop_mesh(mesh);
         }
         self.candidates_dirty = true;
-        self.revision += 1;
     }
 
     /// Uploads a warp's patches (`cells`² of them, row by row) for tile
     /// rows to draw through: [`WARP_PATCH_WORDS`] f32 each on a plane,
     /// [`GLOBE_PATCH_WORDS`] on a globe.
-    pub fn add_warp(
+    pub(crate) fn add_warp(
         &mut self,
         gpu: &mut dyn Gpu,
         cells: u32,
@@ -1272,7 +1221,7 @@ impl Scene {
     }
 
     /// Frees a warp no row draws through any more.
-    pub fn remove_warp(&mut self, warp: TileWarp) {
+    pub(crate) fn remove_warp(&mut self, warp: TileWarp) {
         if warp.cells > 0 {
             self.prop_arena.free(warp.base..warp.base + warp.words);
         }
@@ -1282,7 +1231,7 @@ impl Scene {
     /// Rows are of the tile's place in the world, not of the camera, so
     /// a frame that only moves the camera changes none; changed rows reach
     /// the GPU together in the next [`prepare`](Self::prepare).
-    pub fn place_tile(&mut self, tile: TileId, rows: &[TileRow]) -> Result<(), OutOfSpace> {
+    pub(crate) fn place_tile(&mut self, tile: TileId, rows: &[TileRow]) -> Result<(), OutOfSpace> {
         let entry = self.tiles[tile.0 as usize].as_mut().expect("unknown tile");
         let added = rows.len().saturating_sub(entry.placements.len());
         if entry.placements.len() != rows.len() {
@@ -1301,7 +1250,6 @@ impl Scene {
                 });
             }
             self.candidates_dirty = true;
-            self.revision += 1;
         }
         let fresh = entry.placements.len() - added;
         for (i, (placement, row)) in entry.placements.iter_mut().zip(rows).enumerate() {
@@ -1356,19 +1304,19 @@ impl Scene {
 
     /// Placement rows that changed in the frames since the last call, which
     /// each frame wrote in one write.
-    pub fn take_placements_written(&mut self) -> u32 {
+    pub(crate) fn take_placements_written(&mut self) -> u32 {
         std::mem::take(&mut self.placements_written)
     }
 
     /// How many candidates render `node` had at the last layout.
-    pub fn node_candidates(&self, node: u32) -> u32 {
+    pub(crate) fn node_candidates(&self, node: u32) -> u32 {
         let at = node as usize * NODE_CULL_WORDS + layout::node_cull::CANDIDATE_COUNT;
         self.node_rows.get(at).copied().unwrap_or(0)
     }
 
     /// Keeps only a tile's labels drawing: its map placements become
     /// [`PlacementTarget::Labels`] ones, and its drape placements go.
-    pub fn hold_symbols(&mut self, tile: TileId) {
+    pub(crate) fn hold_symbols(&mut self, tile: TileId) {
         let rows: Vec<TileRow> = self.tiles[tile.0 as usize]
             .as_ref()
             .expect("unknown tile")
@@ -1390,7 +1338,7 @@ impl Scene {
     /// Whether meshes of these sizes would all insert now, in order: the
     /// arena ranges and chunk slots [`insert_mesh`](Self::insert_mesh)
     /// would take, found without writing anything.
-    pub fn fits(&self, meshes: impl IntoIterator<Item = MeshSize>) -> bool {
+    pub(crate) fn fits(&self, meshes: impl IntoIterator<Item = MeshSize>) -> bool {
         let mut vertices = self.vertex_arena.clone();
         let mut indices = self.index_arena.clone();
         let mut props = self.prop_arena.clone();
@@ -1407,7 +1355,7 @@ impl Scene {
         chunks <= u64::from(self.chunk_slots.available())
     }
 
-    pub fn insert_mesh(
+    pub(crate) fn insert_mesh(
         &mut self,
         gpu: &mut dyn Gpu,
         tile: TileId,
@@ -1443,13 +1391,7 @@ impl Scene {
         mesh.props.write(gpu, self.buffers.props, prop_range.start);
 
         let mut chunk_ids = Vec::with_capacity(mesh.chunks.len());
-        let mut bounds = TileBox {
-            min: [i16::MAX; 2],
-            max: [i16::MIN; 2],
-        };
         for chunk in mesh.chunks {
-            bounds.min = [0, 1].map(|i| bounds.min[i].min(chunk.bounds.min[i]));
-            bounds.max = [0, 1].map(|i| bounds.max[i].max(chunk.bounds.max[i]));
             let id = self.chunk_slots.alloc().expect("checked above");
             let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
             let row: [u32; CHUNK_WORDS] = [
@@ -1471,7 +1413,6 @@ impl Scene {
             node,
             chunk_slots: chunk_ids,
             chunks: mesh.chunks.to_vec(),
-            bounds,
             vertices,
             indices,
             props: prop_range,
@@ -1504,13 +1445,18 @@ impl Scene {
             .meshes
             .push(id);
         self.candidates_dirty = true;
-        self.revision += 1;
         id
     }
 
     /// Patches image references after uploading rows from either core or
     /// host memory. No vertex data or bind groups change when images arrive.
-    pub fn set_mesh_image(&mut self, gpu: &mut dyn Gpu, mesh: MeshId, word: u32, image: u32) {
+    pub(crate) fn set_mesh_image(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        mesh: MeshId,
+        word: u32,
+        image: u32,
+    ) {
         let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
         assert!(word < entry.props.len() as u32);
         gpu.write_buffer(
@@ -1523,7 +1469,7 @@ impl Scene {
     /// Replaces a mesh's property rows, keeping its geometry: a column job's
     /// result, `row_words` per feature. Image references are patched again
     /// by the caller.
-    pub fn set_mesh_props(
+    pub(crate) fn set_mesh_props(
         &mut self,
         gpu: &mut dyn Gpu,
         mesh: MeshId,
@@ -1556,7 +1502,6 @@ impl Scene {
                     range.start,
                 );
             }
-            self.revision += 1;
         }
         props.write(gpu, self.buffers.props, entry.props.start);
         Ok(())
@@ -1564,7 +1509,7 @@ impl Scene {
 
     /// Sets the feature-state index of each of a mesh's feature slots, or
     /// (empty) gives every feature the default state.
-    pub fn set_mesh_state(
+    pub(crate) fn set_mesh_state(
         &mut self,
         gpu: &mut dyn Gpu,
         mesh: MeshId,
@@ -1587,7 +1532,6 @@ impl Scene {
                     state_base(&range),
                 );
             }
-            self.revision += 1;
         }
         if !indices.is_empty() {
             Words::Core(indices).write(gpu, self.buffers.props, entry.state.start);
@@ -1597,21 +1541,21 @@ impl Scene {
 
     /// Words of the property buffer for a table outside any mesh, such as
     /// the feature-state table. The words are not cleared.
-    pub fn alloc_table(&mut self, words: u32) -> Result<Range<u32>, OutOfSpace> {
+    pub(crate) fn alloc_table(&mut self, words: u32) -> Result<Range<u32>, OutOfSpace> {
         self.prop_arena.alloc(words).ok_or(OutOfSpace)
     }
 
-    pub fn free_table(&mut self, range: Range<u32>) {
+    pub(crate) fn free_table(&mut self, range: Range<u32>) {
         self.prop_arena.free(range);
     }
 
     /// Writes words of a table from [`alloc_table`](Self::alloc_table),
     /// starting at word `at` of the property buffer.
-    pub fn write_table(&mut self, gpu: &mut dyn Gpu, at: u32, words: &[u32]) {
+    pub(crate) fn write_table(&mut self, gpu: &mut dyn Gpu, at: u32, words: &[u32]) {
         Words::Core(words).write(gpu, self.buffers.props, at);
     }
 
-    pub fn remove_mesh(&mut self, id: MeshId) {
+    pub(crate) fn remove_mesh(&mut self, id: MeshId) {
         let tile = self.meshes[id.0 as usize]
             .as_ref()
             .expect("mesh already removed")
@@ -1623,7 +1567,6 @@ impl Scene {
             .retain(|&m| m != id);
         self.drop_mesh(id);
         self.candidates_dirty = true;
-        self.revision += 1;
     }
 
     fn drop_mesh(&mut self, id: MeshId) {
@@ -1645,7 +1588,7 @@ impl Scene {
     /// Writes the frame block, and the candidate lists if meshes or
     /// placements changed. Returns the number of candidates, and whether
     /// they were laid out again.
-    pub fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> (u32, bool) {
+    pub(crate) fn prepare(&mut self, gpu: &mut dyn Gpu, frame: &FrameBlock) -> (u32, bool) {
         self.write_rows(gpu, quantum(frame.world_span));
         let rebuilt = self.candidates_dirty;
         if self.candidates_dirty {
@@ -1816,7 +1759,7 @@ impl Scene {
     /// Grows the vertex and index pools, each doubling to its ceiling (the
     /// device's buffer limits), until `meshes` would insert.
     /// Returns whether they would.
-    pub fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
+    pub(crate) fn grow_for(&mut self, gpu: &mut dyn Gpu, meshes: &[MeshSize]) -> bool {
         loop {
             if self.fits(meshes.iter().copied()) {
                 return true;
@@ -1851,7 +1794,7 @@ impl Scene {
     /// Doubles the vertex and index pools where their ceilings allow, for
     /// an upload whose sizes aren't known ahead. Returns whether either
     /// grew.
-    pub fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
+    pub(crate) fn grow(&mut self, gpu: &mut dyn Gpu) -> bool {
         let vertices = self.grow_pool(gpu, Pool::Vertices);
         let props = self.grow_pool(gpu, Pool::Props);
         self.grow_pool(gpu, Pool::Indices) || vertices || props
@@ -1873,7 +1816,7 @@ impl Scene {
     /// that emptied gives back what it grew them to, and each pool keeps
     /// room to grow fourfold before it doubles again. Returns whether any
     /// shrank.
-    pub fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
+    pub(crate) fn shrink(&mut self, gpu: &mut dyn Gpu) -> bool {
         let mut shrank = false;
         for (pool, first) in [Pool::Vertices, Pool::Indices, Pool::Props]
             .into_iter()
@@ -2041,7 +1984,7 @@ impl Scene {
     }
 
     /// GPU bytes a mesh takes in the pools.
-    pub fn mesh_bytes(&self, mesh: MeshId) -> u64 {
+    pub(crate) fn mesh_bytes(&self, mesh: MeshId) -> u64 {
         self.meshes[mesh.0 as usize].as_ref().map_or(0, |m| {
             (m.vertices.len()
                 + m.indices.len()
@@ -2053,12 +1996,12 @@ impl Scene {
     }
 
     /// Changes whenever a pool moved into a larger buffer.
-    pub fn buffers_revision(&self) -> u64 {
+    pub(crate) fn buffers_revision(&self) -> u64 {
         self.buffers_revision
     }
 
     /// The scene's GPU memory by pool.
-    pub fn memory(&self) -> SceneMemory {
+    pub(crate) fn memory(&self) -> SceneMemory {
         let c = &self.capacity;
         let bytes = |words: u32| u64::from(words) * 4;
         let pool = |arena: &Arena, allocated: u32, ceiling: u32| PoolMemory {

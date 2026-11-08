@@ -1,4 +1,4 @@
-// Scene tables shared by every pipeline. Layouts must match orb-scene's
+// Scene tables shared by every pipeline. Layouts must match orb-render's
 // `#[repr(C)]` rows.
 
 // Property rows, one per feature (`prop_row`): two words per paint
@@ -63,7 +63,7 @@ struct Frame {
     light_color: vec4<f32>,
     light_position: vec3<f32>,
     _pad5: f32,
-    // The low-zoom surface (orb-scene's `FrameGlobe`), the sphere or a plane
+    // The low-zoom surface (orb-render's `FrameGlobe`), the sphere or a plane
     // as `globe_plane` says: camera-relative ECEF metres →
     // clip, the horizon plane (`dot(xyz, p) + w`: 1 under the eye, 0 at the
     // horizon), the target's ECEF position, how much of a globe the view
@@ -185,7 +185,7 @@ struct Visible {
     tile: u32,
 };
 
-// How a node draws (orb-scene's `NodeDraw`).
+// How a node draws (orb-render's `NodeDraw`).
 const DRAW_IMAGES: u32 = 0u;
 // Points clip anchors, then expand the whole footprint.
 const DRAW_POINTS: u32 = 1u;

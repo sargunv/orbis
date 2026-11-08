@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use orb_hal::*;
 
-use crate::shelf::Shelves;
+use crate::scene::shelf::Shelves;
 pub use orb_layout::{ImageKey, ImageMetadata};
 
 /// What a table row holds: an image as patterns and layers sample it, or
@@ -66,7 +66,7 @@ pub struct ImageAtlas {
     entries: Vec<Option<Entry>>,
     free: Vec<u32>,
     namespace: u64,
-    lines: crate::line::LineAtlas,
+    lines: crate::scene::line::LineAtlas,
     /// Changes whenever an image's pixels do.
     revision: u64,
 }
@@ -94,7 +94,7 @@ impl ImageAtlas {
             mipmap_filter: FilterMode::Nearest,
             anisotropy: 1,
         });
-        let lines = crate::line::LineAtlas::new(gpu);
+        let lines = crate::scene::line::LineAtlas::new(gpu);
         Self {
             bindings: ImageBindings {
                 table,
@@ -195,7 +195,7 @@ impl ImageAtlas {
                 let words = [
                     0,
                     rows[0] + rows[1] / 2,
-                    crate::line::WIDTH,
+                    crate::scene::line::WIDTH,
                     rows[1] - 1,
                     0,
                     length.to_bits(),
@@ -208,7 +208,7 @@ impl ImageAtlas {
                     bytemuck::cast_slice(&words),
                 );
                 let entry = self.entries[id as usize].as_mut().unwrap();
-                entry.size = Some([crate::line::WIDTH, rows[1]]);
+                entry.size = Some([crate::scene::line::WIDTH, rows[1]]);
                 entry.dash_rows = Some(rows);
             }
             ImageKey::Ramp { colors, nearest } => {

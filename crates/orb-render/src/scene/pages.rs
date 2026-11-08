@@ -8,20 +8,20 @@
 //! their layers into the larger arrays; [`TilePage::revision`] changes so
 //! bind groups over the old arrays are rebuilt.
 
-use crate::arena::Slots;
+use crate::scene::arena::Slots;
 use orb_hal::{
     Gpu, HostImageId, Pass, TextureDesc, TextureFormat, TextureId, TextureRegion, TextureUsages,
     TextureViewDimension,
 };
 
-use crate::OutOfSpace;
+use crate::scene::OutOfSpace;
 
 /// Layers a page holds before it first grows.
 const INITIAL_LAYERS: u32 = 8;
 
 /// One of a page's texture arrays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PageTexture {
+pub(crate) struct PageTexture {
     pub label: &'static str,
     pub width: u32,
     pub height: u32,
@@ -46,7 +46,7 @@ pub enum Pixels<'a> {
 }
 
 #[derive(Debug)]
-pub struct TilePage {
+pub(crate) struct TilePage {
     textures: Vec<(PageTexture, TextureId)>,
     capacity: u32,
     max_layers: u32,
@@ -56,7 +56,7 @@ pub struct TilePage {
 
 impl TilePage {
     /// GPU bytes of the page's textures at their current layer counts.
-    pub fn bytes(&self) -> u64 {
+    pub(crate) fn bytes(&self) -> u64 {
         self.textures
             .iter()
             .map(|(desc, _)| texture_bytes(desc, self.capacity))
@@ -64,7 +64,7 @@ impl TilePage {
     }
 
     /// Bytes one layer takes across the page's textures.
-    pub fn layer_bytes(&self) -> u64 {
+    pub(crate) fn layer_bytes(&self) -> u64 {
         self.textures
             .iter()
             .map(|(desc, _)| texture_bytes(desc, 1))
@@ -72,7 +72,7 @@ impl TilePage {
     }
 
     /// A page of texture arrays whose layers are allocated together.
-    pub fn new(gpu: &mut dyn Gpu, textures: &[PageTexture]) -> Self {
+    pub(crate) fn new(gpu: &mut dyn Gpu, textures: &[PageTexture]) -> Self {
         let max_layers = gpu.caps().limits.max_texture_array_layers;
         let capacity = INITIAL_LAYERS.min(max_layers);
         Self {
@@ -88,32 +88,32 @@ impl TilePage {
     }
 
     /// The `index`th texture array, as given to [`new`](Self::new).
-    pub fn texture(&self, index: usize) -> TextureId {
+    pub(crate) fn texture(&self, index: usize) -> TextureId {
         self.textures[index].1
     }
 
     /// The size of the `index`th array's layers.
-    pub fn size(&self, index: usize) -> [u32; 2] {
+    pub(crate) fn size(&self, index: usize) -> [u32; 2] {
         let t = &self.textures[index].0;
         [t.width, t.height]
     }
 
     /// The `index`th array's mip levels.
-    pub fn mip_levels(&self, index: usize) -> u32 {
+    pub(crate) fn mip_levels(&self, index: usize) -> u32 {
         self.textures[index].0.mip_levels
     }
 
     /// Changes whenever the textures are replaced.
-    pub fn revision(&self) -> u32 {
+    pub(crate) fn revision(&self) -> u32 {
         self.revision
     }
 
-    pub fn capacity(&self) -> u32 {
+    pub(crate) fn capacity(&self) -> u32 {
         self.capacity
     }
 
     /// A free layer, growing the page if it is full.
-    pub fn alloc(&mut self, gpu: &mut dyn Gpu) -> Result<u32, OutOfSpace> {
+    pub(crate) fn alloc(&mut self, gpu: &mut dyn Gpu) -> Result<u32, OutOfSpace> {
         if let Some(layer) = self.alloc_existing() {
             return Ok(layer);
         }
@@ -122,21 +122,21 @@ impl TilePage {
     }
 
     /// Layers handed out and not freed.
-    pub fn used(&self) -> u32 {
+    pub(crate) fn used(&self) -> u32 {
         self.layers.used()
     }
 
     /// A layer the arrays already have, without growing them.
-    pub fn alloc_existing(&mut self) -> Option<u32> {
+    pub(crate) fn alloc_existing(&mut self) -> Option<u32> {
         self.layers.alloc()
     }
 
-    pub fn free(&mut self, layer: u32) {
+    pub(crate) fn free(&mut self, layer: u32) {
         self.layers.free(layer);
     }
 
     /// Writes a layer of the `index`th array, whole.
-    pub fn write(&self, gpu: &mut dyn Gpu, index: usize, layer: u32, pixels: Pixels<'_>) {
+    pub(crate) fn write(&self, gpu: &mut dyn Gpu, index: usize, layer: u32, pixels: Pixels<'_>) {
         let (desc, texture) = &self.textures[index];
         let region = TextureRegion {
             texture: *texture,
@@ -155,7 +155,7 @@ impl TilePage {
         }
     }
 
-    pub fn destroy(self, gpu: &mut dyn Gpu) {
+    pub(crate) fn destroy(self, gpu: &mut dyn Gpu) {
         for (_, texture) in self.textures {
             gpu.destroy_texture(texture);
         }
@@ -165,7 +165,7 @@ impl TilePage {
     /// overshoot less than by doubling. The copy is submitted at once, so
     /// writes queued before it land in the old arrays first and later ones
     /// after it.
-    pub fn grow(&mut self, gpu: &mut dyn Gpu) -> Result<(), OutOfSpace> {
+    pub(crate) fn grow(&mut self, gpu: &mut dyn Gpu) -> Result<(), OutOfSpace> {
         if self.capacity >= self.max_layers {
             return Err(OutOfSpace);
         }

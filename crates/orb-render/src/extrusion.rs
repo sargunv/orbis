@@ -3,8 +3,8 @@
 //! keeps occlusion between 3D layers and the terrain.
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
 use crate::release::Release;
+use crate::scene::SceneBuffers;
 use orb_hal::*;
-use orb_scene::SceneBuffers;
 use orb_shaders::{EXTRUSION_CUT_SHADER, EXTRUSION_PLANES_SHADER, EXTRUSION_SHADER, Shader};
 
 #[derive(Debug)]

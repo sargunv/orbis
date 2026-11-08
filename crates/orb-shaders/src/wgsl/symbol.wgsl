@@ -4,7 +4,7 @@
 // vertex stage: each vertex places its glyph along the projected line, or
 // shifts its label to the variable anchor placement chose.
 //
-// One instance per quad: visible chunks of at most 256 quads (orb-scene's
+// One instance per quad: visible chunks of at most 256 quads (orb-render's
 // symbol meshes), six vertices each. A mesh's tables sit behind a header in
 // the vertex arena; its state words, paint rows and the glyph row table in
 // the property arena.
@@ -67,7 +67,7 @@ const ICONS_IN_TEXT: u32 = 1024u;
 // `symbol-height-anchor: ground`: heights count from the terrain.
 const HEIGHT_ANCHOR_GROUND: u32 = 2048u;
 
-// Header words (orb-scene `symbol_header`).
+// Header words (orb-render `symbol_header`).
 const H_QUADS: u32 = 0u;
 const H_PLACED: u32 = 1u;
 const H_GLYPH_OFFSETS: u32 = 2u;

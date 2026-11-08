@@ -7,7 +7,7 @@
 
 use orb_hal::Gpu;
 
-use crate::{Chunk, MeshEntry, MeshId, NO_STATE, OutOfSpace, Scene, TileBox, TileId, Words};
+use crate::scene::{Chunk, MeshEntry, MeshId, NO_STATE, OutOfSpace, Scene, TileId, Words};
 
 /// Words of a symbol mesh's header, ahead of its tables.
 pub const SYMBOL_HEADER_WORDS: usize = 20;
@@ -83,7 +83,7 @@ impl Scene {
     /// Uploads a symbol stream of `tile` for render `node`, with state
     /// words for one world copy. They start hidden (zero opacity, not
     /// placed).
-    pub fn insert_symbol_mesh(
+    pub(crate) fn insert_symbol_mesh(
         &mut self,
         gpu: &mut dyn Gpu,
         tile: TileId,
@@ -138,13 +138,7 @@ impl Scene {
         Words::Core(&vec![0; states.len()]).write(gpu, self.buffers.props, states.start);
 
         let mut chunk_ids = Vec::with_capacity(data.chunks.len());
-        let mut bounds = TileBox {
-            min: [i16::MAX; 2],
-            max: [i16::MIN; 2],
-        };
         for chunk in data.chunks {
-            bounds.min = [0, 1].map(|i| bounds.min[i].min(chunk.bounds.min[i]));
-            bounds.max = [0, 1].map(|i| bounds.max[i].max(chunk.bounds.max[i]));
             let id = self.chunk_slots.alloc().expect("checked above");
             let pack = |p: [i16; 2]| u32::from(p[0] as u16) | u32::from(p[1] as u16) << 16;
             let row = [
@@ -157,10 +151,10 @@ impl Scene {
                 NO_STATE,
                 0,
             ];
-            crate::write_words(
+            crate::scene::write_words(
                 gpu,
                 self.buffers.chunks,
-                id * crate::CHUNK_WORDS as u32,
+                id * crate::scene::CHUNK_WORDS as u32,
                 &row,
             );
             chunk_ids.push(id);
@@ -170,7 +164,6 @@ impl Scene {
             node,
             chunk_slots: chunk_ids,
             chunks: data.chunks.to_vec(),
-            bounds,
             vertices,
             indices: 0..0,
             props,
@@ -185,7 +178,7 @@ impl Scene {
     }
 
     /// Sets the order a symbol mesh's quads draw in: every quad once.
-    pub fn write_symbol_order(&mut self, gpu: &mut dyn Gpu, mesh: MeshId, order: &[u32]) {
+    pub(crate) fn write_symbol_order(&mut self, gpu: &mut dyn Gpu, mesh: MeshId, order: &[u32]) {
         let entry = self.meshes[mesh.0 as usize].as_ref().expect("live mesh");
         let [offset, quads] = entry.symbol_order;
         assert_eq!(order.len() as u32, quads, "one entry per quad");
@@ -193,7 +186,7 @@ impl Scene {
     }
 
     /// How many world copies a symbol mesh keeps state words for.
-    pub fn symbol_copies(&self, mesh: MeshId) -> u32 {
+    pub(crate) fn symbol_copies(&self, mesh: MeshId) -> u32 {
         self.meshes[mesh.0 as usize]
             .as_ref()
             .expect("live mesh")
@@ -202,7 +195,7 @@ impl Scene {
 
     /// Keeps state words for `copies` world copies (a power of two), all
     /// hidden until written.
-    pub fn set_symbol_copies(
+    pub(crate) fn set_symbol_copies(
         &mut self,
         gpu: &mut dyn Gpu,
         mesh: MeshId,
@@ -224,7 +217,7 @@ impl Scene {
 
     /// Writes a symbol mesh's state words for world copy `wrap`:
     /// [`SYMBOL_STATE_WORDS`] per placed symbol.
-    pub fn write_symbol_states(
+    pub(crate) fn write_symbol_states(
         &mut self,
         gpu: &mut dyn Gpu,
         mesh: MeshId,

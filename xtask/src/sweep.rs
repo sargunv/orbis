@@ -254,9 +254,9 @@ mod tests {
             ("orb_runtime", c, at(3)),
             ("orb_runtime", b, at(1)),
             ("orb_runtime", a, at(0)),
-            // orb_scene is idle: its newest two stay anyway.
-            ("orb_scene", a, at(1)),
-            ("orb_scene", b, at(2)),
+            // orb_render is idle: its newest two stay anyway.
+            ("orb_render", a, at(1)),
+            ("orb_render", b, at(2)),
             // The same hash of another crate is another build.
             ("orb_style", a, at(5)),
         ];

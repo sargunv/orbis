@@ -60,7 +60,6 @@ const SCENE_SIDE: &[&str] = &[
     "orb-style",
     "orb-camera",
     "orb-interact",
-    "orb-scene",
     "orb-render",
     "orb-hal",
     "orb-shaders",

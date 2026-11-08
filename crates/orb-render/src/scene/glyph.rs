@@ -8,13 +8,13 @@
 
 use orb_hal::{BufferId, Gpu, TextureFormat, TextureId, TextureRegion};
 
-use crate::shelf::Shelves;
-use crate::{OutOfSpace, PageTexture, TilePage};
+use crate::scene::shelf::Shelves;
+use crate::scene::{OutOfSpace, PageTexture, TilePage};
 
 /// Texels on a side of a glyph page.
 pub const GLYPH_PAGE: u32 = 512;
 /// Transparent texels around every bitmap, as GL JS's glyph atlas pads.
-pub const GLYPH_PADDING: u32 = 1;
+pub(crate) const GLYPH_PADDING: u32 = 1;
 /// One more transparent texel around the padded rectangle: glyph quads
 /// cover their padding, so filtering at their edge reaches one texel past
 /// it, which must not be whichever glyph was packed next to it.
