@@ -22,16 +22,13 @@ mod extrusion;
 mod heatmap;
 mod image;
 mod layer_composite;
-mod lit;
 mod offscreen;
 mod paint;
 mod release;
-mod shadow;
 mod terrain;
 mod tiles;
 pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
-pub use lit::NodeMaterial;
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
     TerrainGlobe, TerrainPaint, TerrainSlopes, TerrainTile,
@@ -41,7 +38,7 @@ pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, Pa
 pub use orb_layout::{Family, pack_color};
 pub use orb_scene::Pixels;
 pub use orb_scene::{
-    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLights, FrameShadow, FrameTerrain,
+    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLight, FrameTerrain,
     GLOBE_PATCH_WORDS, ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData,
     MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity,
     SceneStats, TileId, TileRow, TileWarp, WARP_PATCH_WORDS, Words,
@@ -123,9 +120,6 @@ pub struct FrameStats {
     /// Something in the frame waited for a pipeline (nodes, terrain, the
     /// DEM prepare, the sky): the frame isn't complete.
     pub waited: bool,
-    /// A layer drawn in view (to the tile) moves with time (lit water's
-    /// waves): the next frame differs however still the map is.
-    pub animated: bool,
 }
 
 /// A render node: its family, and the source an image node draws the
@@ -211,9 +205,6 @@ pub struct Renderer {
     /// nodes a drape bundle left out.
     waiting: u32,
     drape_waiting: u32,
-    /// The main bundle left out the ground's shadows, waiting for their
-    /// pipeline.
-    ground_waiting: bool,
     node_uniforms: BufferId,
     node_stride: u64,
     /// The node uniforms as written, and the nodes changed since the last
@@ -233,15 +224,6 @@ pub struct Renderer {
     downsampler: downsample::Downsampler,
     heatmaps: heatmap::Heatmaps,
     extrusions: extrusion::Extrusions,
-    /// The lit map: the nodes' materials and the lit pipelines.
-    lit: lit::Lit,
-    /// Whether the map is lit.
-    lit_on: bool,
-    shadows: shadow::Shadows,
-    /// The shadow map the scene groups bind.
-    shadow_bound: TextureId,
-    /// The shadow casters' scene group, without the map they draw.
-    caster_group: Option<BindGroupId>,
     /// Layers drawn whole and composited at their layer opacity.
     /// Runs of nodes composited once (`*-layer-opacity`, `-blend`).
     layers: layer_composite::LayerComposites,
@@ -299,7 +281,6 @@ impl Renderer {
             self.cull,
             self.symbol_passes,
             self.symbol_pass_buffer,
-            self.caster_group,
         );
         let pipelines = (self.paint.pipelines, self.symbol_pipelines);
         (
@@ -319,7 +300,7 @@ impl Renderer {
             self.extrusions,
         )
             .release(gpu);
-        (self.lit, self.shadows, self.layers, self.composites).release(gpu);
+        (self.layers, self.composites).release(gpu);
         let drape = self
             .drape_pipelines
             .map(|d| (d.paint.pipelines, d.images.0));
@@ -428,20 +409,6 @@ impl Renderer {
                         dimension: TextureViewDimension::D2,
                     },
                 },
-                uniform(16, vf),
-                BindGroupLayoutEntry {
-                    binding: 17,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::Texture {
-                        sample: TextureSampleType::Depth,
-                        dimension: TextureViewDimension::D2Array,
-                    },
-                },
-                BindGroupLayoutEntry {
-                    binding: 18,
-                    visibility: ShaderStages::FRAGMENT,
-                    ty: BindingType::ComparisonSampler,
-                },
             ],
         });
         let node_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -471,7 +438,6 @@ impl Renderer {
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
             anisotropy: 1,
-            compare: None,
         });
         let no_dem = gpu.create_texture(&TextureDesc {
             label: "no dem",
@@ -497,7 +463,6 @@ impl Renderer {
             sample_count: 1,
             mip_levels: 1,
         });
-        let shadows = shadow::Shadows::new(gpu);
         let draw_group = scene_group(
             gpu,
             draw_layout,
@@ -505,7 +470,6 @@ impl Renderer {
             b.frame,
             &images,
             (glyphs.texture(), nearest, no_dem, no_terrain_depth),
-            shadows.bindings(),
         );
         let cull_group = cull_group(gpu, cull_layout, &b);
 
@@ -563,7 +527,6 @@ impl Renderer {
         let heatmaps = heatmap::Heatmaps::new(draw_layout, node_layout);
         let composites = offscreen::Composites::new(gpu, target);
         let extrusions = extrusion::Extrusions::new(draw_layout, node_layout);
-        let lit = lit::Lit::new(gpu);
         let node_stride = NODE_UNIFORM_SIZE.max(u64::from(
             gpu.caps().limits.min_uniform_buffer_offset_alignment,
         ));
@@ -593,7 +556,6 @@ impl Renderer {
             made_seen: 0,
             waiting: 0,
             drape_waiting: 0,
-            ground_waiting: false,
             node_uniforms,
             node_stride,
             node_words: vec![0; (node_stride / 4) as usize * capacity.nodes as usize],
@@ -609,11 +571,6 @@ impl Renderer {
             layers: Default::default(),
             composites,
             extrusions,
-            lit,
-            lit_on: false,
-            shadow_bound: shadows.bindings().1,
-            caster_group: None,
-            shadows,
             terrain: None,
             drape_zooms: BTreeMap::new(),
             terrain_layers: Vec::new(),
@@ -657,11 +614,6 @@ impl Renderer {
     /// The scene's GPU memory.
     pub fn memory(&self) -> orb_scene::SceneMemory {
         self.scene.memory()
-    }
-
-    /// GPU bytes of the shadow map, while shadows are cast.
-    pub fn shadow_bytes(&self) -> u64 {
-        self.shadows.bytes()
     }
 
     /// The terrain's drape atlas, mips included.
@@ -1095,33 +1047,6 @@ impl Renderer {
         }
     }
 
-    /// Lights the whole map (#91): the map's layers shade
-    /// their fragments with their materials under the frame's lights.
-    /// Draped layers draw into the drape unlit, which the terrain lights.
-    pub fn set_lit_map(&mut self, gpu: &mut dyn Gpu, lit: bool) {
-        if lit != self.lit_on {
-            self.lit_on = lit;
-            self.pipelines_stale = true;
-            self.invalidate_bundle(gpu);
-            self.forget_3d_bundles(gpu);
-        }
-    }
-
-    /// Drops 3D layers' recorded passes, which bind their pipelines and
-    /// the materials' group.
-    fn forget_3d_bundles(&mut self, gpu: &mut dyn Gpu) {
-        for node in &mut self.nodes {
-            if let Some(extrusion) = &mut node.extrusion {
-                extrusion.forget_bundle(gpu);
-            }
-        }
-    }
-
-    /// A node's material under the lit map's lights.
-    pub fn set_material(&mut self, node: u32, material: NodeMaterial) {
-        self.lit.set_material(node as usize, material);
-    }
-
     /// Sets a node's layer composite: its style layer `layer` (nodes of
     /// one layer share it) draws whole and composites once at `opacity`
     /// in `blend` when the opacity is below 1 or the blend isn't normal.
@@ -1158,7 +1083,6 @@ impl Renderer {
 
     fn invalidate_bundle(&mut self, gpu: &mut dyn Gpu) {
         self.drop_bundles(gpu);
-        self.shadows.forget_bundles(gpu);
         for zoom in self.drape_zooms.values_mut() {
             zoom.forget_bundle(gpu);
         }
@@ -1412,14 +1336,6 @@ impl Renderer {
     fn make_node_pipeline(&mut self, gpu: &mut dyn Gpu, i: usize) {
         let layouts = [self.draw_layout, self.node_layout];
         let family = self.nodes[i].family;
-        if self.lit_on {
-            let node_layout = match family {
-                f if f.is_image() => self.images.node_layout(f),
-                _ => self.node_layout,
-            };
-            self.lit
-                .make(gpu, family, self.target, [self.draw_layout, node_layout]);
-        }
         match family {
             Family::Fill | Family::FillOutline | Family::Line | Family::Circle => {
                 self.paint.make(gpu, self.target, &layouts, family);
@@ -1440,10 +1356,7 @@ impl Renderer {
                 self.images.make(gpu, family);
             }
             Family::Heatmap => self.heatmaps.make(gpu),
-            Family::FillExtrusion => {
-                let lit = self.lit_on.then(|| self.lit.layout());
-                self.extrusions.make(gpu, lit);
-            }
+            Family::FillExtrusion => self.extrusions.make(gpu),
         }
     }
 
@@ -1475,10 +1388,7 @@ impl Renderer {
         }
         match node.family {
             Family::Heatmap => out.extend(self.heatmaps.pipelines()),
-            Family::FillExtrusion => {
-                out.extend(self.extrusions.pipelines(self.lit_on));
-                out.extend(self.shadows.pipelines());
-            }
+            Family::FillExtrusion => out.extend(self.extrusions.pipelines()),
             Family::SymbolIcon | Family::SymbolText => {
                 out.extend(
                     self.symbol_pipelines[usize::from(node.along_line)].map(PipelineId::from),
@@ -1493,9 +1403,6 @@ impl Renderer {
                 }
             }
             family => out.extend(self.paint.get(family).map(PipelineId::from)),
-        }
-        if self.lit_on {
-            out.extend(self.lit.get(node.family).map(PipelineId::from));
         }
     }
 
@@ -1531,13 +1438,6 @@ impl Renderer {
         clear: [f64; 4],
     ) -> FrameStats {
         self.destroy_retired_pages(gpu);
-        let cast = self.casting(frame);
-        self.shadows.set_casting(
-            gpu,
-            cast.is_some(),
-            self.target,
-            [self.draw_layout, self.node_layout],
-        );
         self.bind_scene(gpu);
         if let Some(nodes) = self.nodes_dirty.take() {
             let stride = (self.node_stride / 4) as usize;
@@ -1547,7 +1447,7 @@ impl Renderer {
                 bytemuck::cast_slice(&self.node_words[nodes.start * stride..nodes.end * stride]),
             );
         }
-        let mut stats = self.record(gpu, frame, target, clear, cast);
+        let mut stats = self.record(gpu, frame, target, clear);
         stats.draws += u32::from(self.atmosphere.enabled);
         stats.draws -= stats.nodes_waiting;
         self.end_surface_warps();
@@ -1570,11 +1470,9 @@ impl Renderer {
             .and_then(terrain::Terrain::occlusion_texture)
             .unwrap_or(self.no_terrain_depth);
         let buffers = self.scene.buffers_revision();
-        let shadow_map = self.shadows.bindings().1;
         if self.glyphs.revision() != self.glyphs_bound
             || dem != self.dem_bound
             || terrain_depth != self.terrain_depth_bound
-            || shadow_map != self.shadow_bound
             || buffers != self.buffers_bound
             || self.image_bindings.texture != self.images_bound
         {
@@ -1585,7 +1483,6 @@ impl Renderer {
                 self.cull.1 = cull_group(gpu, self.cull_layout, self.scene.buffers());
             }
             gpu.destroy_bind_group(self.draw_group);
-            self.caster_group.take().release(gpu);
             let b = *self.scene.buffers();
             self.draw_group = scene_group(
                 gpu,
@@ -1594,9 +1491,7 @@ impl Renderer {
                 b.frame,
                 &self.image_bindings,
                 (self.glyphs.texture(), self.nearest, dem, terrain_depth),
-                self.shadows.bindings(),
             );
-            self.shadow_bound = shadow_map;
             self.glyphs_bound = self.glyphs.revision();
             self.dem_bound = dem;
             self.terrain_depth_bound = terrain_depth;
@@ -1616,21 +1511,12 @@ impl Renderer {
         }
     }
 
-    /// The shadows this frame casts: from the frame's light, onto a
-    /// plane, with extrusions to cast them.
-    fn casting(&self, frame: &FrameBlock) -> Option<(FrameShadow, [f32; 3])> {
-        frame
-            .shadow()
-            .filter(|_| self.nodes.iter().any(|n| n.family == Family::FillExtrusion))
-    }
-
     fn record(
         &mut self,
         gpu: &mut dyn Gpu,
         frame: &FrameBlock,
         target: TextureId,
         clear: [f64; 4],
-        cast: Option<(FrameShadow, [f32; 3])>,
     ) -> FrameStats {
         let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame);
         // A heatmap hidden, or with nothing to draw, composites nothing.
@@ -1651,7 +1537,7 @@ impl Renderer {
         if compiling.made != self.made_seen {
             // Pipelines arrived: record again what waited for them.
             self.made_seen = compiling.made;
-            if self.waiting > 0 || self.drape_waiting > 0 || self.ground_waiting {
+            if self.waiting > 0 || self.drape_waiting > 0 {
                 self.invalidate_bundle(gpu);
             }
             if self.drape_waiting > 0
@@ -1697,14 +1583,6 @@ impl Renderer {
                     .resize(gpu, &mut self.composites, heatmap, density_size);
             }
         }
-        let lit = self.lit_on;
-        if lit {
-            // Lit nodes' draws bind the materials' group.
-            if self.lit.upload(gpu, self.nodes.len()) {
-                resized = true;
-                self.forget_3d_bundles(gpu);
-            }
-        }
         if resized {
             self.invalidate_bundle(gpu);
         }
@@ -1717,7 +1595,6 @@ impl Renderer {
                 offset: 0,
             };
             let mut ready = self.ready(gpu, terrain_on);
-            ready.lit = lit && self.lit.group().is_some();
             let mut commands = Vec::with_capacity(self.nodes.len() * 4 + 1);
             if indexed {
                 commands.push(index_buffer.clone());
@@ -1790,10 +1667,6 @@ impl Renderer {
                 depth_format: None,
                 sample_count: self.target.sample_count,
             };
-            // The ground's shadows go under the first 3D layer.
-            let first_extrusion = cast
-                .and_then(|_| (self.nodes.iter()).position(|n| n.family == Family::FillExtrusion));
-            self.ground_waiting = false;
             for i in 0..self.nodes.len() {
                 let (start, member) = self.layers.at(i);
                 match start {
@@ -1815,12 +1688,6 @@ impl Renderer {
                         }
                     }
                     None => {}
-                }
-                if !member && first_extrusion == Some(i) {
-                    match self.shadows.ground_commands(gpu, self.draw_group) {
-                        Some(ground) => commands.extend(ground),
-                        None => self.ground_waiting = true,
-                    }
                 }
                 let groups = (self.draw_group, self.nodes[i].group);
                 if !member && !self.node_commands(gpu, &ready, i, groups, &mut commands) {
@@ -1849,10 +1716,6 @@ impl Renderer {
             paints_written: std::mem::take(&mut self.paints_written),
             pipelines_pending: compiling.pending,
             nodes_waiting: self.waiting,
-            animated: self.lit_on
-                && self.nodes.iter().enumerate().any(|(i, n)| {
-                    n.cull.visible && self.lit.animates(i) && self.scene.node_placed(i as u32)
-                }),
             ..FrameStats::default()
         };
         if let Some((prepare, prepared)) = self.images.prepare_pass(gpu) {
@@ -1927,38 +1790,7 @@ impl Renderer {
             );
         }
         let mut first = !terrain_on;
-        let extrusions_ready =
-            cull_ready && self.extrusions.ready(gpu, &self.composites, self.lit_on);
-        let materials = self.lit.group().filter(|_| self.lit_on);
-        // Shadows show with the extrusions that cast them.
-        let shadowed = cast.filter(|_| extrusions_ready && self.shadows.ready(gpu));
-        self.shadows.write(gpu, frame, shadowed);
-        if shadowed.is_some() {
-            let b = *self.scene.buffers();
-            let extrusions: Vec<(u32, BindGroupId)> = (self.nodes.iter().enumerate())
-                .filter(|(_, n)| n.family == Family::FillExtrusion)
-                .map(|(i, n)| (i as u32, n.group))
-                .collect();
-            let scene = *self.caster_group.get_or_insert_with(|| {
-                scene_group(
-                    gpu,
-                    self.draw_layout,
-                    &b,
-                    b.frame,
-                    &self.image_bindings,
-                    (
-                        self.glyphs.texture(),
-                        self.nearest,
-                        self.dem_bound,
-                        self.terrain_depth_bound,
-                    ),
-                    self.shadows.caster_bindings(),
-                )
-            });
-            let shadow_passes = self.shadows.passes(gpu, scene, &extrusions, &b);
-            stats.draws += shadow_passes.len() as u32;
-            passes.extend(shadow_passes);
-        }
+        let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
         let (draw_group, buffers) = (self.draw_group, *self.scene.buffers());
         for (index, node) in self.nodes.iter_mut().enumerate() {
             let Some(target) = node.extrusion.as_mut().filter(|_| extrusions_ready) else {
@@ -1968,7 +1800,6 @@ impl Renderer {
                 gpu,
                 target,
                 (draw_group, node.group),
-                materials,
                 &buffers,
                 index as u32,
                 first,
@@ -1993,12 +1824,8 @@ impl Renderer {
         // during the frame.
         let end = gpu.poll_pipelines();
         stats.pipelines_pending = end.pending;
-        stats.waited = compiling.pending > 0
-            || end.pending > 0
-            || end.made != made
-            || self.waiting > 0
-            || self.ground_waiting
-            || cast.is_some() != shadowed.is_some();
+        stats.waited =
+            compiling.pending > 0 || end.pending > 0 || end.made != made || self.waiting > 0;
         stats
     }
 
@@ -2006,7 +1833,6 @@ impl Renderer {
     /// pipelines.
     fn ready(&mut self, gpu: &mut dyn Gpu, terrain_on: bool) -> Ready {
         Ready {
-            lit: false,
             cull: gpu.pipeline_ready(self.cull.0.into()),
             terrain: self
                 .terrain
@@ -2047,7 +1873,6 @@ impl Renderer {
                     self.dem_bound,
                     self.no_terrain_depth,
                 ),
-                self.shadows.bindings(),
             ));
             level.forget_bundle(gpu);
         }
@@ -2136,7 +1961,7 @@ impl Renderer {
             return true;
         }
         if let Some(extrusion) = &node.extrusion {
-            if !self.extrusions.ready(gpu, &self.composites, self.lit_on) {
+            if !self.extrusions.ready(gpu, &self.composites) {
                 return false;
             }
             if let Some(o) = &extrusion.offscreen {
@@ -2198,8 +2023,6 @@ impl Renderer {
             .as_ref()
             .filter(|_| scene != self.draw_group && self.target.color != DRAPE_FORMAT);
         let pipeline = match (drape, node.family.is_image()) {
-            // Into the map, lit; the drape records unlit.
-            _ if ready.lit => self.lit.get(node.family),
             (Some(d), true) => d.images.get(node.family),
             (Some(d), false) => d.paint.get(node.family),
             (None, true) => self.images.pipeline(node.family),
@@ -2208,14 +2031,6 @@ impl Renderer {
         let Some(pipeline) = pipeline.filter(|&p| gpu.pipeline_ready(p.into())) else {
             return false;
         };
-        if ready.lit
-            && let Some(materials) = self.lit.group()
-        {
-            commands.push(RenderCommand::SetBindGroup {
-                index: 2,
-                group: materials,
-            });
-        }
         commands.extend([
             RenderCommand::SetPipeline(pipeline),
             RenderCommand::SetBindGroup {
@@ -2251,8 +2066,6 @@ fn composite_group(composite: Option<(u32, f32, Blend)>) -> Option<u32> {
 /// pipelines.
 #[derive(Clone, Copy)]
 struct Ready {
-    /// The map is lit: its layers drawn into the map shade their fragments.
-    lit: bool,
     cull: bool,
     terrain: bool,
     /// The DEM prepare's, which hillshade and color relief wait for.
@@ -2457,7 +2270,6 @@ fn scene_group(
     frame: BufferId,
     images: &ImageBindings,
     (glyphs, nearest, dem, terrain_depth): (TextureId, SamplerId, TextureId, TextureId),
-    (shadow, shadow_map, shadow_compare): (BufferId, TextureId, SamplerId),
 ) -> BindGroupId {
     let whole = BindingResource::buffer;
     let mut entries: Vec<BindGroupEntry> = [
@@ -2496,15 +2308,6 @@ fn scene_group(
         },
         texture(14, dem, TextureViewDimension::D2Array),
         texture(15, terrain_depth, TextureViewDimension::D2),
-        BindGroupEntry {
-            binding: 16,
-            resource: whole(shadow),
-        },
-        texture(17, shadow_map, TextureViewDimension::D2Array),
-        BindGroupEntry {
-            binding: 18,
-            resource: BindingResource::Sampler(shadow_compare),
-        },
     ]);
     gpu.create_bind_group(&BindGroupDesc {
         label: "scene",

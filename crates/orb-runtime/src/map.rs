@@ -119,8 +119,6 @@ pub struct Memory {
     pub glyph_textures: u64,
     /// Icons and patterns.
     pub image_atlas: u64,
-    /// The shadow cascades' depth map, while the lights cast shadows.
-    pub shadow_map: u64,
     /// The terrain's drape atlas, mips included.
     pub drape_atlas: u64,
     /// Tiles kept beyond those in view, and their cost: GPU memory and
@@ -143,7 +141,6 @@ impl Memory {
             + self.tile_textures
             + self.glyph_textures
             + self.image_atlas
-            + self.shadow_map
     }
 }
 
@@ -1109,11 +1106,8 @@ impl Map {
             .style
             .as_ref()
             .map(|s| Arc::clone(&s.worker.plan().style));
-        let lights = scene.as_deref().map(|s| &s.lights);
-        // A scene's lights light the whole map.
-        renderer.set_lit_map(gpu, lights.is_some_and(|l| l.terrain));
         let (paint, at) =
-            crate::lights::atmosphere(scene.as_deref(), &view, self.camera.state(), zoom);
+            crate::light::atmosphere(scene.as_deref(), &view, self.camera.state(), zoom);
         renderer.set_atmosphere(gpu, paint, at);
 
         let now = frame_time;
@@ -1136,29 +1130,15 @@ impl Map {
             }
             style.symbol_tiles.clear();
         }
-        let (mut frame_lights, mut frame_terrain) = (None, None);
+        let frame_light = scene
+            .as_deref()
+            .map(|s| crate::light::frame_light(&s.light, zoom, self.camera.state().bearing));
+        let mut frame_terrain = None;
         if self.style.is_some() {
             // Terrain's DEM and cover first: the sources cover over its
             // elevations, and drape over its tiles.
             frame_terrain = self.update_terrain(gpu, renderer, &view, &mut report);
             let elevation = self.terrain_elevation();
-            // The lights before the sources: their covers keep the tiles
-            // whose casters' shadows fall in the view.
-            let heights = self.shadow_heights(&view, zoom);
-            frame_lights = lights.map(|lights| {
-                crate::lights::frame_lights(
-                    lights,
-                    zoom,
-                    self.camera.state().bearing,
-                    self.camera.state().target,
-                    heights,
-                )
-            });
-            let shadow = frame_lights
-                .and_then(|l| l.shadow_reach())
-                .map_or(glam::DVec2::ZERO, |[x, y]| {
-                    glam::DVec2::new(x.into(), y.into())
-                });
             // Failed tiles due for a retry go, so the plan asks for them.
             let now = self.services.clock.now();
             for source in self.style.iter_mut().flat_map(|s| &mut s.sources) {
@@ -1166,7 +1146,7 @@ impl Map {
                     pyramid.retry_failed(now);
                 }
             }
-            let plan = self.plan_frame(renderer, &view, elevation.as_deref(), shadow);
+            let plan = self.plan_frame(renderer, &view, elevation.as_deref());
             for (index, update) in plan.into_iter().enumerate() {
                 self.apply_source(index, update, &mut report);
             }
@@ -1244,12 +1224,6 @@ impl Map {
         }
 
         let globe = view.globe().map(|globe| frame_globe(globe, &view));
-        // Why shadows the lights cast aren't drawn.
-        let shadows_off = frame_lights
-            .and_then(|l| l.shadow)
-            .and(globe)
-            .map(|_| crate::GLOBE_NO_SHADOWS);
-        self.warnings.extend(shadows_off.map(String::from));
         let frame = FrameBlock {
             camera: view.camera_world().to_array(),
             world_span: self
@@ -1280,7 +1254,7 @@ impl Map {
                 ),
             },
             terrain: frame_terrain,
-            lights: frame_lights,
+            light: frame_light,
             globe,
         };
         // The shared atlas grows pages as images arrive.
@@ -1441,24 +1415,6 @@ impl Map {
             );
             crate::sprite::load(fetch, decode, sprite, pixel_ratio, done);
         }
-    }
-
-    /// The heights shadows fall between, world units: the terrain's range
-    /// around the view's target (sea level without terrain), up to the
-    /// tallest buildings standing on it.
-    fn shadow_heights(&mut self, view: &orb_camera::View, zoom: f64) -> [f32; 2] {
-        const TALLEST_M: f64 = 600.0;
-        let target = view.camera_world();
-        // A tile some zooms out holds what the view's cascades reach.
-        let z = (zoom - 3.0).floor().max(0.0) as u8;
-        let (low, high) = self
-            .terrain_elevation()
-            .and_then(|e| {
-                orb_camera::Elevation::range(&*e, orb_crs::WorldRect::around([target]), z)
-            })
-            .unwrap_or((0.0, 0.0));
-        let scale = self.extrusion_scale();
-        [low * scale, (high + TALLEST_M) * scale].map(|h| h as f32)
     }
 
     // Pinned GL JS v8 heights use the IUGG mean sphere (6371008.8 m),
@@ -1749,7 +1705,6 @@ impl Map {
             tile_textures,
             glyph_textures,
             image_atlas: images.atlas.as_ref().map_or(0, ImageAtlas::bytes),
-            shadow_map: renderer.shadow_bytes(),
             drape_atlas: renderer.drape_bytes(),
             cached_tiles,
             cached,

@@ -25,10 +25,9 @@ impl Map {
         renderer: &Renderer,
         view: &View,
         elevation: Option<&crate::terrain::TerrainElevation>,
-        shadow: glam::DVec2,
     ) -> Vec<Option<orb_source::Update>> {
         let sources = self.style.as_ref().map_or(0, |s| s.sources.len());
-        let at = |index| self.plan_source(renderer, view, index, elevation, shadow);
+        let at = |index| self.plan_source(renderer, view, index, elevation);
         (0..sources).map(at).collect()
     }
 
@@ -41,7 +40,6 @@ impl Map {
         view: &View,
         index: usize,
         elevation: Option<&crate::terrain::TerrainElevation>,
-        shadow: glam::DVec2,
     ) -> Option<orb_source::Update> {
         let style = self.style.as_ref()?;
         let plan = style.worker.plan();
@@ -135,10 +133,7 @@ impl Map {
                 tms,
                 endpoint.cover_px,
                 data_zoom..=pyramid.max_zoom(),
-                orb_camera::Standing {
-                    height: f64::from(height) * self.extrusion_scale(),
-                    shadow,
-                },
+                f64::from(height) * self.extrusion_scale(),
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
                 f64::from(reach),
             ),
@@ -705,7 +700,7 @@ impl Map {
                 tms,
                 TILE_PX,
                 0..=24,
-                orb_camera::Standing::default(),
+                0.0,
                 elevation.map(|e| e as &dyn orb_camera::Elevation),
                 0.0,
             ),

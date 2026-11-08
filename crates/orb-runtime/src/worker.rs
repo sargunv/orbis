@@ -344,7 +344,7 @@ impl TileWorker {
             sprites: Vec::new(),
             glyphs: update.glyphs.clone(),
             font_faces: update.font_faces.clone(),
-            lights: orb_v8::default_lights(),
+            light: orb_v8::default_light(),
             atmosphere: None,
             terrain: None,
             globe: None,

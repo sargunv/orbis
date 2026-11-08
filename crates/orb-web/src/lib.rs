@@ -107,8 +107,7 @@ pub struct FrameStats {
     #[wasm_bindgen(readonly)]
     pub transitioning: bool,
     /// Whether the map needs another frame: it isn't idle, and isn't only
-    /// waiting for pipelines that wake it when they compile, or it shows
-    /// something that moves with time (lit water's waves).
+    /// waiting for pipelines that wake it when they compile.
     #[wasm_bindgen(readonly, js_name = needsFrame)]
     pub needs_frame: bool,
     /// The GPU was lost and nothing was drawn; the map draws again once
@@ -952,7 +951,7 @@ impl OrbisMap {
             idle: report.idle,
             loaded: report.loaded,
             transitioning: self.map.transitioning(),
-            needs_frame: (!report.idle && !report.compiling) || report.frame.animated,
+            needs_frame: !report.idle && !report.compiling,
             lost: false,
             meshes_uploaded: counts.meshes_uploaded,
             rows_uploaded: counts.rows_uploaded,

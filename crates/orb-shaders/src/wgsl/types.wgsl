@@ -50,9 +50,6 @@ struct Frame {
     // Camera pitch and roll, radians.
     pitch: f32,
     roll: f32,
-    // Where a caster's shadow falls on the ground per world unit of its
-    // height, when the directional light casts shadows.
-    shadow_reach: vec2<f32>,
     // The terrain's DEM unpack vector (metres = r·x + g·y + b·z − w),
     // its exaggeration (0 without terrain) and DEM pixels per side.
     dem_unpack: vec4<f32>,
@@ -61,20 +58,11 @@ struct Frame {
     // The target's clip w (orb-camera's `View::camera_to_center`).
     camera_to_center: f32,
     _pad4: f32,
-    // The style's lights (see lighting.wgsl): the ambient
-    // and directional colours with their levels in w, and the vector
-    // toward the directional light in tile axes, w = 1 when terrain is lit.
-    light_ambient: vec4<f32>,
+    // v8's `light` (see lighting.wgsl): its premultiplied colour with its
+    // intensity in w, and its position in GL JS's extrusion axes.
     light_color: vec4<f32>,
-    light_position: vec4<f32>,
-    // The same lights as the lit map shades with (`scene_lights`), worked
-    // out once a frame: linear ambient and directional colours times their
-    // levels, and unit vectors toward the directional light (straight
-    // down without one) and the eye, in east, north and up at the target.
-    lit_ambient: vec4<f32>,
-    lit_directional: vec4<f32>,
-    lit_toward_light: vec4<f32>,
-    lit_toward_eye: vec4<f32>,
+    light_position: vec3<f32>,
+    _pad5: f32,
     // The low-zoom surface (orb-scene's `FrameGlobe`), the sphere or a plane
     // as `globe_plane` says: camera-relative ECEF metres →
     // clip, the horizon plane (`dot(xyz, p) + w`: 1 under the eye, 0 at the
@@ -237,22 +225,6 @@ const CHUNK_VERTICES: u32 = 768u;
 fn tile_origin(tile: Tile) -> vec2<f32> {
     return vec2<f32>(tile.origin - frame.camera_whole) * frame.quantum
         + (tile.origin_rest - frame.camera_rest);
-}
-
-// The ground under a fragment, for detail anchored to it (lit water's
-// waves): where tile point `pos` (data units) lies in a square of
-// GROUND_CELL quanta the world tiles with, so it is exact at any distance
-// from the origin and the same at every camera, and its change across a
-// pixel. Take it where control flow is uniform.
-const GROUND_CELL: i32 = 64;
-struct GroundPoint {
-    at: vec2<f32>,
-    width: vec2<f32>,
-};
-fn ground_point(tile: Tile, pos: vec2<f32>) -> GroundPoint {
-    let whole = vec2<f32>(tile.origin & vec2<i32>(GROUND_CELL - 1));
-    let at = whole * frame.quantum + tile.origin_rest + vec2<f32>(pos.x, -pos.y) * tile.scale;
-    return GroundPoint(at, fwidth(at));
 }
 
 // The anchor of the tile's patches in space, camera-relative.

@@ -469,7 +469,6 @@ pub(crate) fn under_budget(renderer: &Renderer, atlas: u64, budget: u64) -> bool
         + m.tables
         + tiles
         + glyphs
-        + renderer.shadow_bytes()
         + atlas;
     allocated < budget
 }

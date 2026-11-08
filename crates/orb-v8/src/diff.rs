@@ -106,7 +106,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
         sprites: old.sprites.clone(),
         glyphs: old.glyphs.clone(),
         font_faces: old.font_faces.clone(),
-        lights: old.lights.clone(),
+        light: old.light.clone(),
         atmosphere: old.atmosphere.clone(),
         terrain: None,
         globe: old.globe,

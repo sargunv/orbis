@@ -266,7 +266,7 @@ fn warnings_for_what_is_not_supported() {
     let s = style(
         r#"[{"id": "s", "type": "symbol", "source": "v", "source-layer": "x", "layout": {"text-field": "x", "text-wrap": 1}},
             {"id": "f", "type": "fill", "source": "v", "source-layer": "x", "minzoom": 3, "maxzoom": 0,
-             "paint": {"fill-color-transition": {"duration": 0}, "fill-emissive": 1, "fill-pattern": "p"}}]"#,
+             "paint": {"fill-color-transition": {"duration": 0}, "fill-glow": 1,"fill-pattern": "p"}}]"#,
     )
     .unwrap();
     let warnings: Vec<String> = s.warnings.iter().map(|w| w.to_string()).collect();
@@ -274,7 +274,7 @@ fn warnings_for_what_is_not_supported() {
         warnings,
         [
             "layers[0].layout.text-wrap: unknown property \"text-wrap\"",
-            "layers[1].paint.fill-emissive: unknown property \"fill-emissive\"",
+            "layers[1].paint.fill-glow: unknown property \"fill-glow\"",
         ]
     );
     // GL JS reads a `maxzoom` of 0 as unset.
@@ -303,16 +303,9 @@ fn extrusion_paint_and_light_are_typed() {
       "layers":[{"id":"e","type":"fill-extrusion","source":"s","paint":{"fill-extrusion-height":["get","height"],"fill-extrusion-base":12,
       "fill-extrusion-opacity":0.5,"fill-extrusion-vertical-gradient":false}}]}"##).unwrap();
     assert!(s.warnings.is_empty(), "{:?}", s.warnings);
-    // v8's light lowers to ambient `1 − i` and directional `2i`.
-    let directional = s.lights.directional.as_ref().unwrap();
-    let crate::Direction::Position(position) = &directional.direction else {
-        panic!("a positioned light")
-    };
-    assert_eq!(position.evaluate(0.0), [1.5, 120.0, 50.0]);
-    assert_eq!(directional.anchor.evaluate(0.0), TranslateAnchor::Map);
-    assert!((directional.level.evaluate(0.0) - 1.4).abs() < 1e-6);
-    let ambient = s.lights.ambient.as_ref().unwrap();
-    assert!((ambient.level.evaluate(0.0) - 0.3).abs() < 1e-6);
+    assert_eq!(s.light.position.evaluate(0.0), [1.5, 120.0, 50.0]);
+    assert_eq!(s.light.anchor.evaluate(0.0), TranslateAnchor::Map);
+    assert_eq!(s.light.intensity.evaluate(0.0), 0.7);
     let e = &s.layers[0];
     assert_eq!(e.get(EXTRUSION_HEIGHT).kind(), Kind::Source);
     assert_eq!(e.get(EXTRUSION_BASE).evaluate(0.0), 12.0);

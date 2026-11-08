@@ -1,9 +1,9 @@
-//! The scene: one document of sources, layers, lights, atmosphere,
+//! The scene: one document of sources, layers, light, atmosphere,
 //! terrain and surface, which `orb-v8` builds from a v8 style.
 
 use orb_expr::{Diagnostic, Value};
 
-use crate::{Atmosphere, FontFaces, Layer, Lights, Source, Sprite, Terrain, Transition};
+use crate::{Atmosphere, FontFaces, Layer, Light, Source, Sprite, Terrain, Transition};
 
 /// The native scene: what a v8 style parses into.
 #[derive(Clone, Debug)]
@@ -23,8 +23,8 @@ pub struct Scene {
     pub glyphs: Option<String>,
     /// Font files for `text-font` names (the root `font-faces`).
     pub font_faces: FontFaces,
-    /// The lights: v8's `light` lowered.
-    pub lights: Lights,
+    /// v8's `light`.
+    pub light: Light,
     /// The root `state`: each global state property's default.
     pub state: Vec<(String, Value<'static>)>,
     /// The atmosphere: v8's `sky` lowered.

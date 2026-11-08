@@ -846,16 +846,10 @@ mod web {
                                         "unfilterable-float"
                                     }
                                     TextureSampleType::Uint => "uint",
-                                    TextureSampleType::Depth
-                                    | TextureSampleType::DepthMultisampled => "depth",
                                 }
                                 .into(),
                             ),
                             ("viewDimension", dimension(d).into()),
-                            (
-                                "multisampled",
-                                (sample == TextureSampleType::DepthMultisampled).into(),
-                            ),
                         ]),
                     ),
                     BindingType::Sampler { filtering } => (
@@ -870,9 +864,6 @@ mod web {
                             .into(),
                         )]),
                     ),
-                    BindingType::ComparisonSampler => {
-                        ("sampler", dict(&[("type", "comparison".into())]))
-                    }
                     BindingType::StorageTexture {
                         format: f,
                         dimension: d,

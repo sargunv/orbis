@@ -51,5 +51,5 @@ fn shade_color(in: TerrainOut) -> vec4<f32> {
 fn fs_terrain_shaded(in: TerrainOut) -> @location(0) vec4<f32> {
     let below = drape_color(in, layer.below);
     let above = drape_color(in, layer.above);
-    return lit_surface(in, over(above, over(shade_color(in), below)));
+    return fogged(in, over(above, over(shade_color(in), below)));
 }

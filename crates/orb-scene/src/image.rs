@@ -93,7 +93,6 @@ impl ImageAtlas {
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
             anisotropy: 1,
-            compare: None,
         });
         let lines = crate::line::LineAtlas::new(gpu);
         Self {

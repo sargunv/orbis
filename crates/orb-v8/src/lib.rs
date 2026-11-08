@@ -26,7 +26,7 @@ use std::fmt;
 
 pub use doc::StyleDoc;
 pub use geojson::{apply_diffs, parse_geojson};
-pub use light::default_lights;
+pub use light::default_light;
 pub use orb_expr::json::Span;
 pub use orb_expr::{Diagnostic, Filter};
 pub use source::tms_definition;
@@ -213,7 +213,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         sprites,
         glyphs,
         font_faces: font_faces::parse(cx, doc.get("font-faces")),
-        lights: light::parse(cx, doc.get("light")).lower(),
+        light: light::parse(cx, doc.get("light")),
         globe,
         projection,
         state,

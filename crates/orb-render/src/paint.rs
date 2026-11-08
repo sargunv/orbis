@@ -178,9 +178,6 @@ pub struct ExtrusionPaint {
     pub opacity: f32,
     pub translate: Translate,
     pub vertical_gradient: bool,
-    /// How much of its own colour it shows under the style's lights (0 lit
-    /// fully, 1 unlit), which the frame block carries.
-    pub emissive: f32,
     pub table_mask: u32,
     pub curves: [Curve; 3],
     pub state: StateLookup,
@@ -351,7 +348,7 @@ impl NodePaint {
                 b.u(n::INDEX, &[node]).u(n::TABLE_MASK, &[p.table_mask]);
                 b.translate(n::TRANSLATE_ANCHOR, n::TRANSLATE, p.translate);
                 b.u(n::VERTICAL_GRADIENT, &[u32::from(p.vertical_gradient)]);
-                b.f(n::OPACITY, &[p.opacity]).f(n::EMISSIVE, &[p.emissive]);
+                b.f(n::OPACITY, &[p.opacity]);
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
                 b.pattern([n::IMAGE_FROM, n::IMAGE_TO, n::PATTERN], pattern);
             }

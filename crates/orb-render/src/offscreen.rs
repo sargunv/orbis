@@ -252,7 +252,6 @@ impl Composites {
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Nearest,
             anisotropy: 1,
-            compare: None,
         });
         let blank = gpu.create_texture(&TextureDesc {
             label: "composite blank",

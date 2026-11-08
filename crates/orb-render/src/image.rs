@@ -245,7 +245,6 @@ impl Images {
                 address: AddressMode::ClampToEdge,
                 mipmap_filter: filter,
                 anisotropy,
-                compare: None,
             })
         };
         let linear = sampler("linear", FilterMode::Linear, 16);
@@ -319,14 +318,6 @@ impl Images {
     /// The bind group layout of raster and hillshade nodes' groups.
     pub(crate) fn image_layout(&self) -> BindGroupLayoutId {
         self.image_layout
-    }
-
-    /// The node group's layout `family`'s pipelines take.
-    pub(crate) fn node_layout(&self, family: Family) -> BindGroupLayoutId {
-        match family {
-            Family::ColorRelief => self.relief_layout,
-            _ => self.image_layout,
-        }
     }
 
     pub(crate) fn pipeline(&self, family: Family) -> Option<RenderPipelineId> {

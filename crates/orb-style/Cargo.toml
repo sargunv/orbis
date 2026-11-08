@@ -1,6 +1,6 @@
 [package]
 name = "orb-style"
-description = "The native scene a v8 style parses into: table-driven layers, sources, lights, atmosphere, terrain and surface"
+description = "The native scene a v8 style parses into: table-driven layers, sources, light, atmosphere, terrain and surface"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

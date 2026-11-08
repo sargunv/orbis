@@ -1,6 +1,6 @@
 // The terrain surface: one instance per terrain tile of a
 // shared grid, raised by its DEM tile, coloured from the tile's drape slots
-// for the terrain layer being drawn, lit and fogged by the atmosphere like
+// for the terrain layer being drawn, fogged by the atmosphere like
 // GL JS's `terrain.fragment.glsl`. On a globe it lies on the sphere through the
 // tile's patches in space (`project.wgsl`'s `sphere_at`), raised along the
 // sphere's up, and its top and bottom rows' skirts close the poles.
@@ -108,8 +108,6 @@ struct TerrainOut {
     // The tile's index and its block of drape slots.
     @location(1) @interpolate(flat) tile: vec2<u32>,
     @location(2) fog_depth: f32,
-    // The surface's normal for the lights, in their axes (lighting.wgsl).
-    @location(3) normal: vec3<f32>,
 };
 
 @vertex
@@ -148,16 +146,6 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     out.tile = vec2<u32>(instance, tile.slot);
     // The view depth is the clip w. Fog stays off on a globe, as in GL JS.
     out.fog_depth = select(atmosphere_fog_depth(atmosphere, clip.w), 0.0, globe);
-    out.normal = vec3<f32>(0.0, 0.0, 1.0);
-    if frame.light_position.w > 0.0 && tile.dem_layer != NO_DEM {
-        // Central differences over a grid cell, in world units; uv y runs
-        // south, as tile axes do, whose horizontal parts the lights negate.
-        let d = 1.0 / f32(GRID);
-        let east = terrain_elevation(tile, uv + vec2<f32>(d, 0.0)) - terrain_elevation(tile, uv - vec2<f32>(d, 0.0));
-        let south = terrain_elevation(tile, uv + vec2<f32>(0.0, d)) - terrain_elevation(tile, uv - vec2<f32>(0.0, d));
-        let rise = frame.extrusion_scale / (2.0 * TERRAIN_EXTENT * tile.scale * d);
-        out.normal = normalize(vec3<f32>(east * rise, south * rise, 1.0));
-    }
     return out;
 }
 
@@ -204,15 +192,10 @@ fn over(top: vec4<f32>, bottom: vec4<f32>) -> vec4<f32> {
 
 @fragment
 fn fs_terrain(in: TerrainOut) -> @location(0) vec4<f32> {
-    return lit_surface(in, over(drape_color(in, layer.above), drape_color(in, layer.below)));
+    return fogged(in, over(drape_color(in, layer.above), drape_color(in, layer.below)));
 }
 
-// The surface's colour as the scene lights and fogs it.
-fn lit_surface(in: TerrainOut, color: vec4<f32>) -> vec4<f32> {
-    var surface = color;
-    if frame.light_position.w > 0.0 {
-        // The scene's lights shade the terrain too.
-        surface = vec4<f32>(light_surface(surface.rgb, normalize(in.normal), 1.0, 0.0, 1.0), surface.a);
-    }
-    return atmosphere_fog(atmosphere, surface, in.fog_depth);
+// The surface's colour as the atmosphere fogs it.
+fn fogged(in: TerrainOut, color: vec4<f32>) -> vec4<f32> {
+    return atmosphere_fog(atmosphere, color, in.fog_depth);
 }

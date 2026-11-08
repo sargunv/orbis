@@ -125,15 +125,6 @@ fn equator_circumference_px_per_m(target: Geodetic) -> f64 {
     2.0 * PI * wgs84::SEMI_MAJOR_M * orb_crs::style_parallel(target.lat) / STYLE_ZOOM_TILE_PX
 }
 
-/// What stands on a cover's ground: the tallest content's height in world
-/// units, and where its shadow falls on the ground per unit of its height
-/// (zero without shadows).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Standing {
-    pub height: f64,
-    pub shadow: DVec2,
-}
-
 /// A viewport in logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
@@ -598,14 +589,13 @@ impl View {
     /// The tiles of `tms` that cover the view, choosing for each the zoom at
     /// which GL JS's default level-of-detail policy selects `tile_px` tiles.
     pub fn cover(&self, tms: &TileMatrixSet, tile_px: f64, max_zoom: u8) -> Vec<CoveredTile> {
-        self.cover_volume(tms, tile_px, 0..=max_zoom, Standing::default(), None, 0.0)
+        self.cover_volume(tms, tile_px, 0..=max_zoom, 0.0, None, 0.0)
     }
 
-    /// Covers ground and elevated content (`standing`). As the bottom edge
-    /// approaches the horizon the culling volume grows toward its height (at
-    /// least 500 style metres), retaining tiles whose roofs can enter the
-    /// view above their ground. A tile out of view whose content's shadow
-    /// falls in it stays too, so its casters cast.
+    /// Covers ground and content standing on it up to `height` (world
+    /// units). As the bottom edge approaches the horizon the culling volume
+    /// grows toward that height (at least 500 style metres), retaining
+    /// tiles whose roofs can enter the view above their ground.
     /// On `terrain`, tiles are culled by the elevations under them where
     /// known, and detail varies with distance at any pitch, as GL JS's
     /// cover does with terrain.
@@ -619,7 +609,7 @@ impl View {
         tms: &TileMatrixSet,
         tile_px: f64,
         zooms: std::ops::RangeInclusive<u8>,
-        standing: Standing,
+        height: f64,
         terrain: Option<&dyn Elevation>,
         margin_px: f64,
     ) -> Vec<CoveredTile> {
@@ -631,7 +621,7 @@ impl View {
             return self.cover_globe(globe, tms, tile_px, max_zoom);
         }
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
-        self.cover_tiles(tms, zooms, standing, terrain, margin_px, |index, offset| {
+        self.cover_tiles(tms, zooms, height, terrain, margin_px, |index, offset| {
             let bounds = tms.tile_bounds(index).translated(DVec2::new(offset, 0.0));
             Some((bounds, center_zoom))
         })
@@ -654,20 +644,13 @@ impl View {
             return self.cover_globe(globe, tms, tile_px, max_zoom);
         }
         let scale = self.world_per_px * tile_px;
-        self.cover_tiles(
-            tms,
-            0..=max_zoom,
-            Standing::default(),
-            None,
-            0.0,
-            |index, offset| {
-                let f = footprint(index)?;
-                // The zoom at which this tile, at its own scale, would span
-                // `tile_px` pixels at the camera.
-                let center = f64::from(index.z) + (f.span / scale).log2();
-                Some((f.bounds.translated(DVec2::new(offset, 0.0)), center))
-            },
-        )
+        self.cover_tiles(tms, 0..=max_zoom, 0.0, None, 0.0, |index, offset| {
+            let f = footprint(index)?;
+            // The zoom at which this tile, at its own scale, would span
+            // `tile_px` pixels at the camera.
+            let center = f64::from(index.z) + (f.span / scale).log2();
+            Some((f.bounds.translated(DVec2::new(offset, 0.0)), center))
+        })
     }
 
     /// Covers this view of a low-zoom plane with tiles of a set on another,
@@ -686,7 +669,7 @@ impl View {
         &self,
         tms: &TileMatrixSet,
         zooms: std::ops::RangeInclusive<u8>,
-        standing: Standing,
+        height: f64,
         terrain: Option<&dyn Elevation>,
         margin_px: f64,
         mut place: impl FnMut(TileIndex, f64) -> Option<(WorldRect, f64)>,
@@ -702,7 +685,7 @@ impl View {
         // horizon. Heights here stay in world units, just like tile bounds.
         let proximity =
             ((15.0 - (MAX_HORIZON_PITCH - self.pitch - self.fov / 2.0)) / 15.0).clamp(0.0, 1.0);
-        let raised = proximity * standing.height.max(500.0 * self.height_scale);
+        let raised = proximity * height.max(500.0 * self.height_scale);
         let culling_z = self.target_z + raised;
         let flat_range = (culling_z.min(0.0), culling_z.max(0.0));
         let reach = (self.far_px * self.world_per_px).max(self.viewport.width * self.world_per_px);
@@ -722,7 +705,7 @@ impl View {
             // Elevated content stands on the ground under the tile.
             let (lo, hi) = ground.map_or(flat_range, |(lo, hi)| (lo, hi + raised));
             let rel = bounds.translated(-self.camera_world);
-            if !frustum.meets(&rel, lo, hi) && !self.shadow_meets(&frustum, rel, ground, standing) {
+            if !frustum.meets(&rel, lo, hi) {
                 return CoverDecision::Skip;
             }
             let desired =
@@ -737,28 +720,6 @@ impl View {
                 CoverDecision::Accept
             }
         })
-    }
-
-    /// Whether the shadow of what stands on a tile at `rel` (camera-relative,
-    /// on `ground`, flat without) falls in the view: the tile's rectangle
-    /// drawn out along the shadow by its tallest content, on the ground.
-    fn shadow_meets(
-        &self,
-        frustum: &Frustum,
-        rel: WorldRect,
-        ground: Option<(f64, f64)>,
-        standing: Standing,
-    ) -> bool {
-        if standing.shadow == DVec2::ZERO || standing.height <= 0.0 {
-            return false;
-        }
-        let cast = standing.shadow * standing.height;
-        let reach = WorldRect {
-            min: rel.min + cast.min(DVec2::ZERO),
-            max: rel.max + cast.max(DVec2::ZERO),
-        };
-        let (lo, hi) = ground.unwrap_or((0.0, 0.0));
-        frustum.meets(&reach, lo, hi)
     }
 
     /// How the cover's tile zoom falls with distance (GL JS's default LOD),
@@ -1196,9 +1157,8 @@ mod tests {
     #[test]
     fn cover_margins_reach_past_the_edge() {
         let (view, tms) = setup(3.0, 0.0);
-        let flat = Standing::default();
-        let plain = view.cover_volume(&tms, 512.0, 0..=14, flat, None, 0.0);
-        let padded = view.cover_volume(&tms, 512.0, 0..=14, flat, None, 300.0);
+        let plain = view.cover_volume(&tms, 512.0, 0..=14, 0.0, None, 0.0);
+        let padded = view.cover_volume(&tms, 512.0, 0..=14, 0.0, None, 300.0);
         assert!(padded.len() > plain.len());
         assert!(plain.iter().all(|t| padded.contains(t)));
     }

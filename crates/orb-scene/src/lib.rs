@@ -90,70 +90,22 @@ pub struct FrameBlock {
     pub time: f32,
     /// The terrain elevated content stands on, if any.
     pub terrain: Option<FrameTerrain>,
-    /// The style's lights; without them lit surfaces are
-    /// black.
-    pub lights: Option<FrameLights>,
+    /// v8's `light`; without it extrusions are black.
+    pub light: Option<FrameLight>,
     /// The view's globe, when it is one at its zoom.
     pub globe: Option<FrameGlobe>,
 }
 
-/// The style's lights as shaders take them: the ambient
-/// and directional terms of GL JS's flat response, each a premultiplied
-/// colour and a level.
+/// v8's `light` as shaders take it (`lighting.wgsl`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FrameLights {
-    pub ambient: [f32; 3],
-    pub ambient_level: f32,
-    pub directional: [f32; 3],
-    pub directional_level: f32,
-    /// The directional light's position as GL JS's `sphericalToCartesian`
-    /// gives it: tile axes (y south) with the horizontal parts negated, as
-    /// long as v8's radial position (1 for scene lights). Viewport
-    /// anchoring is already applied.
-    pub position: [f32; 3],
-    /// Whether the terrain surface is lit too.
-    pub terrain: bool,
-    /// The directional light's shadows, when it casts them.
-    pub shadow: Option<FrameShadow>,
-}
-
-/// How the directional light casts shadows.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FrameShadow {
-    /// How much of the directional light a shadow takes away, 0 to 1.
+pub struct FrameLight {
+    /// Premultiplied.
+    pub color: [f32; 3],
     pub intensity: f32,
-    /// The heights shadows fall between, world units: the ground under
-    /// the view up to the tallest content on it.
-    pub heights: [f32; 2],
-}
-
-/// Below this sine of its elevation the light casts no shadows: they
-/// would run past the view.
-const SHADOW_MIN_ELEVATION_SIN: f32 = 0.035;
-
-impl FrameLights {
-    /// The shadows the lights cast and the unit vector toward their light
-    /// in camera-relative world axes (x east, y north, z up): from a light
-    /// above the horizon.
-    pub fn shadow(&self) -> Option<(FrameShadow, [f32; 3])> {
-        let shadow = self.shadow.filter(|s| s.intensity > 0.0)?;
-        let [x, y, z] = self.position;
-        let length = (x * x + y * y + z * z).sqrt();
-        (z > SHADOW_MIN_ELEVATION_SIN * length).then(|| (shadow, [-x, y, z].map(|v| v / length)))
-    }
-
-    /// Where a caster's shadow falls on the ground per unit of its height,
-    /// from the caster, when shadows are cast.
-    pub fn shadow_reach(&self) -> Option<[f32; 2]> {
-        self.shadow().map(|(_, [x, y, z])| [-x / z, -y / z])
-    }
-}
-
-impl FrameBlock {
-    /// [`FrameLights::shadow`], on a plane.
-    pub fn shadow(&self) -> Option<(FrameShadow, [f32; 3])> {
-        self.lights?.shadow().filter(|_| self.globe.is_none())
-    }
+    /// Its position as GL JS's `sphericalToCartesian` gives it: tile axes
+    /// (y south) with the horizontal parts negated, as long as v8's radial
+    /// position. Viewport anchoring is already applied.
+    pub position: [f32; 3],
 }
 
 /// A low-zoom surface's terms (`project.wgsl`), as a globe's; positions on the sphere are
@@ -246,44 +198,10 @@ pub fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBlock) {
         b.f(f::TERRAIN_EXAGGERATION, &[t.exaggeration]);
         b.f(f::DEM_DIM, &[t.dem_dim]);
     }
-    if let Some(l) = frame.lights {
-        let [a, d, p] = [l.ambient, l.directional, l.position];
-        b.f(f::LIGHT_AMBIENT, &[a[0], a[1], a[2], l.ambient_level]);
-        b.f(f::LIGHT_COLOR, &[d[0], d[1], d[2], l.directional_level]);
-        b.f(
-            f::LIGHT_POSITION,
-            &[p[0], p[1], p[2], f32::from(u8::from(l.terrain))],
-        );
-        // `scene_lights.wgsl`'s terms, once a frame: the lights' axes keep
-        // GL JS's (x negated, y south), the lit map's east, north and up.
-        let linear = |c: [f32; 3], level: f32| {
-            let c = c.map(|c| {
-                if c <= 0.04045 {
-                    c / 12.92
-                } else {
-                    ((c + 0.055) / 1.055).powf(2.4)
-                }
-            });
-            [c[0] * level, c[1] * level, c[2] * level, 0.0]
-        };
-        b.f(f::LIT_AMBIENT, &linear(a, l.ambient_level));
-        b.f(f::LIT_DIRECTIONAL, &linear(d, l.directional_level));
-        let toward = [-p[0], p[1], p[2]];
-        let length = toward.iter().map(|v| v * v).sum::<f32>().sqrt();
-        let toward = if length > 0.0 {
-            toward.map(|v| v / length)
-        } else {
-            [0.0, 0.0, -1.0]
-        };
-        b.f(f::LIT_TOWARD_LIGHT, &[toward[0], toward[1], toward[2], 0.0]);
-    }
-    let (sb, cb) = frame.bearing.sin_cos();
-    let (sp, cp) = frame.pitch.sin_cos();
-    b.f(f::LIT_TOWARD_EYE, &[-sb * sp, -cb * sp, cp, 0.0]);
-    // Where a casting chunk's shadow reaches, per world unit of height,
-    // for the cull.
-    if let Some(reach) = frame.shadow().and_then(|_| frame.lights?.shadow_reach()) {
-        b.f(f::SHADOW_REACH, &reach);
+    if let Some(light) = frame.light {
+        let [red, green, blue] = light.color;
+        b.f(f::LIGHT_COLOR, &[red, green, blue, light.intensity]);
+        b.f(f::LIGHT_POSITION, &light.position);
     }
     let globe = frame.globe.map(|g| {
         b.f(f::GLOBE_VIEW_PROJ, g.view_proj.as_flattened());
@@ -1170,12 +1088,6 @@ impl Scene {
                 placements: &tile.placements,
             }
         })
-    }
-
-    /// Whether render `node` has a mesh in a tile placed this frame: it
-    /// draws in view, to the tile.
-    pub fn node_placed(&self, node: u32) -> bool {
-        self.node_meshes(node).any(|m| !m.placements.is_empty())
     }
 
     pub fn stats(&self) -> SceneStats {

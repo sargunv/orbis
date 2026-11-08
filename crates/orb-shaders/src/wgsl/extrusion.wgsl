@@ -1,4 +1,4 @@
-// Extrusions, lit by the style's lights (lighting.wgsl), ported from
+// Extrusions, lit by v8's `light` (lighting.wgsl), ported from
 // MapLibre GL JS (BSD-3-Clause).
 struct ExtrusionNode {
     color: vec4<f32>,
@@ -11,8 +11,6 @@ struct ExtrusionNode {
     vertical_gradient: u32,
     opacity: f32,
     image_from: u32, image_to: u32,
-    // How much of its own colour it shows (0: lit fully).
-    emissive: f32,
     curves: array<Curve, 3>,
     pattern: Pattern,
     state: StateLookup,
@@ -21,25 +19,11 @@ struct ExtrusionNode {
 struct ExtrusionOut {
     @builtin(position) position: vec4<f32>,
     //planes @builtin(clip_distances) clip: array<f32, 4>,
-    // Lit, and with none of the directional light (in shadow).
     @location(0) color: vec4<f32>,
-    @location(7) unlit: vec4<f32>,
     @location(1) @interpolate(perspective, centroid) tile_pos: vec2<f32>,
     @location(2) @interpolate(flat) tile: u32,
     @location(3) pattern_pos: vec2<f32>,
     @location(4) @interpolate(flat) images: vec2<u32>,
-    // Camera-relative world (x east, y north, z up), the face's normal
-    // there and the view depth, for shadows.
-    @location(8) world: vec3<f32>,
-    @location(9) normal: vec3<f32>,
-    @location(10) depth: f32,
-    // For the lit map (`surface_out`): the paint colour, where on a wall
-    // (metres along it and above the ground), and a value per building.
-    @location(11) albedo: vec4<f32>,
-    @location(12) wall: vec2<f32>,
-    @location(13) @interpolate(flat) seed: u32,
-    // The Earth's up there (`ground_up`).
-    @location(14) up: vec3<f32>,
 };
 // Extrusions draw in two pipelines: whole buildings, and buildings cut at
 // the source's buffer, clipped per fragment to the placement. Only the
@@ -163,20 +147,10 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     let shift = translate_world(node.translate, node.translate_anchor, tile);
     let ground = tile_ground_shifted(tile, pos, shift);
     out.position = ground_clip_3d(ground, vec2<f32>(0.0), elevation * frame.extrusion_scale);
-    // Shadows fall on the plane only: there world is the ground point,
-    // raised, and the normal leaves GL JS's axes (horizontal parts negated).
-    out.world = vec3<f32>(ground.flat, elevation * frame.extrusion_scale);
-    out.normal = normal * vec3<f32>(-1.0, 1.0, 1.0);
-    out.depth = out.position.w;
     // Modern uses reversed Z; the shared camera matrix remains usable by 2D.
     out.position.z = out.position.w - out.position.z;
     out.tile_pos = pos;
     out.tile = v.tile;
-    out.albedo = color;
-    let along = f32(vertex_at(v.vertex + 3u) >> 16u) * tile.scale / max(frame.extrusion_scale, 1e-12);
-    out.wall = vec2<f32>(along, mix(gradient_base, gradient_height, top));
-    out.seed = prop_at(row + EXTRUSION_ROW_CENTROID);
-    out.up = ground_up(ground);
     var gradient = 1.0;
     if normal.z == 0.0 && node.vertical_gradient != 0u {
         gradient = light_wall_gradient(top + gradient_base, gradient_height);
@@ -193,38 +167,21 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
         out.pattern_pos = pattern_pos;
         // The pattern's texels multiply the light, as GL JS shades them at
         // mid luminance.
-        let least = (vec3<f32>(1.0) - frame.light_color.rgb) * 0.3;
-        let light = clamp(light_factor(normal, 0.5, gradient, 1.0), least, vec3<f32>(1.0));
-        let unlit = clamp(light_factor(normal, 0.5, gradient, 0.0), least, vec3<f32>(1.0));
-        out.color = vec4<f32>(mix(light, vec3<f32>(1.0), node.emissive), 1.0);
-        out.unlit = vec4<f32>(mix(unlit, vec3<f32>(1.0), node.emissive), 1.0);
+        out.color = vec4<f32>(clamp(light_factor(normal, 0.5, gradient), light_floor(), vec3<f32>(1.0)), 1.0);
         return out;
     }
-    out.color = vec4<f32>(light_surface(color.rgb, normal, gradient, node.emissive, 1.0), 1.0);
-    out.unlit = vec4<f32>(light_surface(color.rgb, normal, gradient, node.emissive, 0.0), 1.0);
+    out.color = vec4<f32>(light_surface(color.rgb, normal, gradient), 1.0);
     return out;
 }
-fn extrusion_shade(in: ExtrusionOut, wall_width: vec2<f32>) -> vec4<f32> {
+fn extrusion_shade(in: ExtrusionOut) -> vec4<f32> {
+    if node.pattern.enabled == 0u {
+        return in.color;
+    }
     let tile = tile_at(in.tile);
-    // Shadows take the directional light away; lit, the colour is exact.
-    let lit = shadow_at(in.world, in.normal, in.depth);
-    var color = select(mix(in.unlit, in.color, lit), in.color, lit >= 1.0);
-    var albedo = in.albedo;
-    if node.pattern.enabled != 0u {
-        let image_a = image_at(in.images.x); let image_b = image_at(in.images.y);
-        let pos_a = pattern_position(tile, in.pattern_pos, image_a, node.pattern.from_scale);
-        let pos_b = pattern_position(tile, in.pattern_pos, image_b, node.pattern.to_scale);
-        let a = pattern_sample(image_a, fract(pos_a), 0.0);
-        let b = pattern_sample(image_b, fract(pos_b), 0.0);
-        let texel = mix(a, b, node.pattern.fade);
-        color = texel * color;
-        albedo = texel;
-    }
-    // Walls near the ground get less of the sky, as GL JS's vertical
-    // gradient darkens them: ambient occlusion for the lit map.
-    var occlusion = 1.0;
-    if node.vertical_gradient != 0u && abs(in.normal.z) < 0.5 {
-        occlusion = 0.7 + 0.3 * clamp(in.wall.y / 40.0, 0.0, 1.0);
-    }
-    return surface_out(SurfaceIn(color, albedo, in.normal, lit, occlusion, node.index, in.wall, wall_width, in.seed, in.up));
+    let image_a = image_at(in.images.x); let image_b = image_at(in.images.y);
+    let pos_a = pattern_position(tile, in.pattern_pos, image_a, node.pattern.from_scale);
+    let pos_b = pattern_position(tile, in.pattern_pos, image_b, node.pattern.to_scale);
+    let a = pattern_sample(image_a, fract(pos_a), 0.0);
+    let b = pattern_sample(image_b, fract(pos_b), 0.0);
+    return mix(a, b, node.pattern.fade) * in.color;
 }

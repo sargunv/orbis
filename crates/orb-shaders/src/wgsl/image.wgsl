@@ -37,8 +37,6 @@ struct ImageOut {
     @location(3) @interpolate(flat) latitudes: vec2<f32>,
     // Its fade's three row words.
     @location(6) @interpolate(flat) fade: vec3<u32>,
-    // The Earth's up there, for the lit map (`ground_up`).
-    @location(7) up: vec3<f32>,
 };
 
 const NO_ANCESTOR: u32 = 0xffffffffu;
@@ -54,7 +52,6 @@ fn image_vertex(node_index: u32, instance: u32, index: u32) -> ImageOut {
     let pos = bitcast<vec2<f32>>(vec2<u32>(vertex_at(v.vertex), vertex_at(v.vertex + 1u)));
     let ground = tile_ground(tile, pos);
     out.position = ground_clip(ground, frame.align, 0.0);
-    out.up = ground_up(ground);
     let weight = bitcast<f32>(vertex_at(v.vertex + 3u));
     out.tile_pos = unpack_i16x2(vertex_at(v.vertex + 4u)) * weight;
     out.weight = weight;

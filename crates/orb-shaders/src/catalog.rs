@@ -8,24 +8,6 @@ const DRAW: &str = concat!(
     include_str!("wgsl/project.wgsl")
 );
 const FETCH: &str = include_str!("wgsl/fetch.wgsl");
-/// Metallic-roughness shading, functions without bindings, for the lit
-/// map to compose.
-const PBR_MODULE: &str = include_str!("wgsl/pbr.wgsl");
-/// The style's lights as `pbr.wgsl` takes them.
-const SCENE_LIGHTS: &str = include_str!("wgsl/scene_lights.wgsl");
-/// A map layer's output: its colour, or lit by a scene's lights (#91),
-/// as [`Shader::lit`] composes.
-const MAP_OUT: &str = include_str!("wgsl/map_out.wgsl");
-const MAP_OUT_LIT: &str = include_str!("wgsl/map_out_lit.wgsl");
-
-/// The shadows a surface receives: the cascades, their
-/// maps in the scene group and `shadow_at`.
-const SHADOW_RECEIVE: &str = concat!(
-    include_str!("wgsl/shadow.wgsl"),
-    include_str!("wgsl/shadow_receive.wgsl")
-);
-const SHADOW_GROUND: &str = include_str!("wgsl/shadow_ground.wgsl");
-const EXTRUSION_CASTER: &str = include_str!("wgsl/extrusion_caster.wgsl");
 const PATTERN: &str = include_str!("wgsl/pattern.wgsl");
 const EXTRUSION: &str = include_str!("wgsl/extrusion.wgsl");
 const EXTRUSION_FRAGMENT: &str = include_str!("wgsl/extrusion_fragment.wgsl");
@@ -44,7 +26,7 @@ const IMAGE: &str = include_str!("wgsl/image.wgsl");
 const DEM: &str = include_str!("wgsl/dem.wgsl");
 /// The atmosphere's sky and fog.
 const ATMOSPHERE: &str = include_str!("wgsl/atmosphere.wgsl");
-/// The style's lights on a surface.
+/// v8's `light` on extrusions.
 const LIGHTING: &str = include_str!("wgsl/lighting.wgsl");
 const RASTER: &str = include_str!("wgsl/raster.wgsl");
 const HILLSHADE: &str = include_str!("wgsl/hillshade.wgsl");
@@ -67,16 +49,9 @@ pub struct Shader {
     pub vertex: &'static str,
     pub fragment: &'static str,
     pub compute: &'static str,
-    /// Its map layers are lit by a scene's lights.
-    pub lit: bool,
 }
 
 impl Shader {
-    /// The same shader with its map layers lit by a scene's lights.
-    pub const fn lit(self) -> Self {
-        Self { lit: true, ..self }
-    }
-
     pub fn source(&self) -> String {
         let mut source: String = self.parts.concat();
         if self.parts.contains(&CLIP_PLANES) {
@@ -85,26 +60,16 @@ impl Shader {
         if self.parts.contains(&DRAW) {
             source.push_str(FETCH);
         }
-        if self.lit {
-            for part in [PBR_MODULE, SCENE_LIGHTS, MAP_OUT_LIT] {
-                if !self.parts.contains(&part) {
-                    source.push_str(part);
-                }
-            }
-        } else if source.contains("MapOut") || source.contains("surface_out(") {
-            source.push_str(MAP_OUT);
-        }
         source
     }
 }
 
 pub const TERRAIN_SHADER: Shader = Shader {
     label: "terrain",
-    parts: &[TYPES, DEM, ATMOSPHERE, LIGHTING, PROJECT, TERRAIN],
+    parts: &[TYPES, DEM, ATMOSPHERE, PROJECT, TERRAIN],
     vertex: "vs_terrain",
     fragment: "fs_terrain",
     compute: "",
-    lit: false,
 };
 
 /// A terrain layer that shades a hillshade between its stacks.
@@ -114,7 +79,6 @@ pub const TERRAIN_SHADE_SHADER: Shader = Shader {
         TYPES,
         DEM,
         ATMOSPHERE,
-        LIGHTING,
         PROJECT,
         TERRAIN,
         HILLSHADE,
@@ -123,7 +87,6 @@ pub const TERRAIN_SHADE_SHADER: Shader = Shader {
     vertex: "vs_terrain",
     fragment: "fs_terrain_shaded",
     compute: "",
-    lit: false,
 };
 
 /// Clears the drape slots a frame redraws.
@@ -133,7 +96,6 @@ pub const DRAPE_SHADER: Shader = Shader {
     vertex: "vs_slot",
     fragment: "fs_clear",
     compute: "",
-    lit: false,
 };
 
 pub const SKY_SHADER: Shader = Shader {
@@ -142,7 +104,6 @@ pub const SKY_SHADER: Shader = Shader {
     vertex: "vs_sky",
     fragment: "fs_sky",
     compute: "",
-    lit: false,
 };
 
 /// Composites (`composite.wgsl`): over the map by premultiplied blending,
@@ -153,7 +114,6 @@ pub const COMPOSITE_OVER_SHADER: Shader = Shader {
     vertex: "vs_composite",
     fragment: "fs_over",
     compute: "",
-    lit: false,
 };
 
 /// A layer blended into the map beneath in a W3C mode, written in place.
@@ -163,7 +123,6 @@ pub const COMPOSITE_REPLACE_SHADER: Shader = Shader {
     vertex: "vs_composite",
     fragment: "fs_replace",
     compute: "",
-    lit: false,
 };
 
 /// The globe atmosphere's scattering over the map.
@@ -179,7 +138,6 @@ pub const FILL_SHADER: Shader = Shader {
     vertex: "vs_fill",
     fragment: "fs_fill",
     compute: "",
-    lit: false,
 };
 
 pub const FILL_OUTLINE_SHADER: Shader = Shader {
@@ -188,7 +146,6 @@ pub const FILL_OUTLINE_SHADER: Shader = Shader {
     vertex: "vs_fill_outline",
     fragment: "fs_fill_outline",
     compute: "",
-    lit: false,
 };
 
 pub const LINE_SHADER: Shader = Shader {
@@ -197,7 +154,6 @@ pub const LINE_SHADER: Shader = Shader {
     vertex: "vs_line",
     fragment: "fs_line",
     compute: "",
-    lit: false,
 };
 
 pub const CIRCLE_SHADER: Shader = Shader {
@@ -206,7 +162,6 @@ pub const CIRCLE_SHADER: Shader = Shader {
     vertex: "vs_circle",
     fragment: "fs_circle",
     compute: "",
-    lit: false,
 };
 /// Symbol quads: glyphs and icons, with their halos, of
 /// point labels and of line labels (`symbol-placement: line` and
@@ -219,7 +174,6 @@ pub const SYMBOL_SHADERS: [Shader; 2] = [
         vertex: "vs_symbol",
         fragment: "fs_symbol",
         compute: "",
-        lit: false,
     },
     Shader {
         label: "symbol line",
@@ -227,7 +181,6 @@ pub const SYMBOL_SHADERS: [Shader; 2] = [
         vertex: "vs_symbol",
         fragment: "fs_symbol",
         compute: "",
-        lit: false,
     },
 ];
 pub const HEATMAP_SHADER: Shader = Shader {
@@ -236,7 +189,6 @@ pub const HEATMAP_SHADER: Shader = Shader {
     vertex: "vs_heatmap",
     fragment: "fs_heatmap",
     compute: "",
-    lit: false,
 };
 
 pub const RASTER_SHADER: Shader = Shader {
@@ -245,7 +197,6 @@ pub const RASTER_SHADER: Shader = Shader {
     vertex: "vs_raster",
     fragment: "fs_raster",
     compute: "",
-    lit: false,
 };
 
 pub const HILLSHADE_SHADER: Shader = Shader {
@@ -260,7 +211,6 @@ pub const HILLSHADE_SHADER: Shader = Shader {
     vertex: "vs_hillshade",
     fragment: "fs_hillshade",
     compute: "",
-    lit: false,
 };
 
 pub const COLOR_RELIEF_SHADER: Shader = Shader {
@@ -269,7 +219,6 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
     vertex: "vs_color_relief",
     fragment: "fs_color_relief",
     compute: "",
-    lit: false,
 };
 
 /// Mip levels over regions of array layers: drape slots, raster pages.
@@ -279,7 +228,6 @@ pub const DOWNSAMPLE_SHADER: Shader = Shader {
     vertex: "",
     fragment: "",
     compute: "downsample",
-    lit: false,
 };
 
 /// The DEM prepare pass's border fill, from a raw tile into its padded
@@ -290,7 +238,6 @@ pub const PREPARE_PAD_SHADER: Shader = Shader {
     vertex: "vs_prepare",
     fragment: "fs_pad",
     compute: "",
-    lit: false,
 };
 
 /// The DEM prepare pass's hillshade slopes, from a padded tile into its
@@ -301,7 +248,6 @@ pub const PREPARE_SLOPE_SHADER: Shader = Shader {
     vertex: "vs_prepare",
     fragment: "fs_slope",
     compute: "",
-    lit: false,
 };
 
 pub const CULL_SHADER: Shader = Shader {
@@ -310,7 +256,6 @@ pub const CULL_SHADER: Shader = Shader {
     vertex: "",
     fragment: "",
     compute: "cull",
-    lit: false,
 };
 
 /// Lit roofs and walls with reversed-Z depth.
@@ -321,14 +266,12 @@ pub const EXTRUSION_SHADER: Shader = Shader {
         DRAW,
         PATTERN,
         LIGHTING,
-        SHADOW_RECEIVE,
         EXTRUSION,
         EXTRUSION_FRAGMENT,
     ],
     vertex: "vs_extrusion",
     fragment: "fs_extrusion",
     compute: "",
-    lit: false,
 };
 /// Extrusions cut at the source's buffer, clipped per fragment, apart from
 /// whole ones, whose pipeline never discards: every one, or where clip
@@ -346,46 +289,11 @@ pub const EXTRUSION_CUT_SHADER: Shader = Shader {
 /// can't take the clip distances its vertex output carries.
 pub const EXTRUSION_PLANES_SHADER: Shader = Shader {
     label: "extrusion planes",
-    parts: &[
-        CLIP_PLANES,
-        TYPES,
-        DRAW,
-        PATTERN,
-        LIGHTING,
-        SHADOW_RECEIVE,
-        EXTRUSION,
-    ],
+    parts: &[CLIP_PLANES, TYPES, DRAW, PATTERN, LIGHTING, EXTRUSION],
     vertex: "vs_extrusion_cut_planes",
     fragment: "",
     ..EXTRUSION_SHADER
 };
-/// Extrusions' depth from the light, into a shadow cascade.
-pub const EXTRUSION_CASTER_SHADER: Shader = Shader {
-    label: "extrusion caster",
-    parts: &[
-        TYPES,
-        DRAW,
-        PATTERN,
-        LIGHTING,
-        SHADOW_RECEIVE,
-        EXTRUSION,
-        EXTRUSION_CASTER,
-    ],
-    vertex: "vs_caster",
-    fragment: "fs_caster",
-    compute: "",
-    lit: false,
-};
-/// Shadows on the ground, multiplied over the main pass.
-pub const SHADOW_GROUND_SHADER: Shader = Shader {
-    label: "shadow ground",
-    parts: &[TYPES, DRAW, SHADOW_RECEIVE, SHADOW_GROUND],
-    vertex: "vs_shadow_ground",
-    fragment: "fs_shadow_ground",
-    compute: "",
-    lit: false,
-};
-
 /// Every shader: what the build script reflects layouts from, and the
 /// tests validate.
 pub const SHADERS: &[Shader] = &[
@@ -399,20 +307,10 @@ pub const SHADERS: &[Shader] = &[
     EXTRUSION_SHADER,
     EXTRUSION_CUT_SHADER,
     EXTRUSION_PLANES_SHADER,
-    EXTRUSION_CASTER_SHADER,
-    SHADOW_GROUND_SHADER,
     FILL_SHADER,
     FILL_OUTLINE_SHADER,
     LINE_SHADER,
     CIRCLE_SHADER,
-    FILL_SHADER.lit(),
-    FILL_OUTLINE_SHADER.lit(),
-    LINE_SHADER.lit(),
-    CIRCLE_SHADER.lit(),
-    RASTER_SHADER.lit(),
-    HILLSHADE_SHADER.lit(),
-    COLOR_RELIEF_SHADER.lit(),
-    EXTRUSION_SHADER.lit(),
     SYMBOL_SHADERS[0],
     SYMBOL_SHADERS[1],
     HEATMAP_SHADER,

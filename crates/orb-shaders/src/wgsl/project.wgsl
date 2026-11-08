@@ -179,54 +179,6 @@ fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
     return g;
 }
 
-// The Earth's up at ground point `g`, in east, north and up at the
-// camera's target, where the frame's lights are given: so each point sees
-// the sun from where it stands. On the globe it is the sphere's, exactly.
-// On a plane, the point's distance from the target (at the target's
-// scale) tilts it over the Earth's radius, toward the point: exact along
-// the target's meridian and parallel, and close while a plane's view is
-// a small part of the world. The handover mixes the two.
-fn ground_up(g: Ground) -> vec3<f32> {
-    var up = vec3<f32>(0.0, 0.0, 1.0);
-    if g.on_plane {
-        up = plane_up(g.flat / max(frame.extrusion_scale, 1e-30));
-    }
-    if frame.globe_amount > 0.0 {
-        var low: vec3<f32>;
-        if frame.globe_plane != 0u {
-            low = plane_up(g.globe.xy * frame.globe_metres);
-        } else {
-            let t = normalize(frame.globe_target);
-            let level = vec3<f32>(-t.y, t.x, 0.0);
-            let east = select(vec3<f32>(0.0, 1.0, 0.0), normalize(level), length(level) > 1e-6);
-            let north = cross(t, east);
-            let u = normalize(g.globe + frame.globe_target);
-            low = vec3<f32>(dot(u, east), dot(u, north), dot(u, t));
-        }
-        up = select(normalize(mix(up, low, frame.globe_amount)), low, !g.on_plane);
-    }
-    return up;
-}
-
-// Up `metres` east and north of the target over a sphere of the Earth's
-// mean radius, in the target's east, north and up.
-fn plane_up(metres: vec2<f32>) -> vec3<f32> {
-    let d = length(metres);
-    if d < 1e-3 {
-        return vec3<f32>(0.0, 0.0, 1.0);
-    }
-    let a = min(d / 6371008.8, 3.14159265);
-    return vec3<f32>(metres / d * sin(a), cos(a));
-}
-
-// `v` (east, north and up at its point) in the target's axes, the point's
-// up being `up` (`ground_up`): turned by the least rotation that takes
-// the target's up to it.
-fn turn_to_up(v: vec3<f32>, up: vec3<f32>) -> vec3<f32> {
-    let axis = vec3<f32>(-up.y, up.x, 0.0);
-    return v * up.z + cross(axis, v) + axis * dot(axis, v) / max(1.0 + up.z, 1e-6);
-}
-
 // A camera-relative Web Mercator world position (metres) on the sphere,
 // camera-relative: exact, for points no tile's patches hold. Differences
 // of two nearby points keep f32's precision about the target.

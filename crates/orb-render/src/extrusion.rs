@@ -10,9 +10,9 @@ use orb_shaders::{EXTRUSION_CUT_SHADER, EXTRUSION_PLANES_SHADER, EXTRUSION_SHADE
 #[derive(Debug)]
 pub(crate) struct Extrusions {
     /// Whole buildings; cut ones clipped per fragment, which alone discard;
-    /// and where clip distances are, cut ones clipped by planes. Unlit then
-    /// lit, at one sample and at four.
-    pipelines: [[[Option<RenderPipelineId>; 2]; 2]; 3],
+    /// and where clip distances are, cut ones clipped by planes; at one
+    /// sample and at four.
+    pipelines: [[Option<RenderPipelineId>; 2]; 3],
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,
     depth: Option<TextureId>,
@@ -25,7 +25,7 @@ pub(crate) type NodeExtrusion = Apart;
 impl Extrusions {
     pub(crate) fn new(scene: BindGroupLayoutId, node: BindGroupLayoutId) -> Self {
         Self {
-            pipelines: [[[None; 2]; 2]; 3],
+            pipelines: [[None; 2]; 3],
             layouts: [scene, node],
             samples: 4,
             depth: None,
@@ -34,20 +34,16 @@ impl Extrusions {
         }
     }
 
-    /// The whole, cut and planes pipelines at the current sample count, lit
-    /// or not.
-    fn slot(&self, lit: bool) -> [Option<RenderPipelineId>; 3] {
-        self.pipelines
-            .map(|p| p[usize::from(lit)][usize::from(self.samples == 4)])
+    /// The whole, cut and planes pipelines at the current sample count.
+    fn slot(&self) -> [Option<RenderPipelineId>; 3] {
+        self.pipelines.map(|p| p[usize::from(self.samples == 4)])
     }
 
-    /// Makes the pipeline at the current sample count, for the first
-    /// extrusion node: lit with the node materials' group layout `lit`.
-    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, lit: Option<BindGroupLayoutId>) {
+    /// Makes the pipelines at the current sample count, for the first
+    /// extrusion node.
+    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu) {
         let samples = usize::from(self.samples == 4);
-        let layouts: Vec<BindGroupLayoutId> = self.layouts.iter().copied().chain(lit).collect();
-        let lit_of = |shader: Shader| if lit.is_some() { shader.lit() } else { shader };
-        let (whole, cut) = (lit_of(EXTRUSION_SHADER), lit_of(EXTRUSION_CUT_SHADER));
+        let (whole, cut) = (EXTRUSION_SHADER, EXTRUSION_CUT_SHADER);
         // With clip distances, the cut pipeline keeps the buildings of
         // placements with several clip rectangles, and the planes one draws
         // the rest with the whole pipeline's fragment stage.
@@ -71,10 +67,9 @@ impl Extrusions {
             )),
         ];
         for (kind, stages) in stages.into_iter().enumerate() {
-            let at = (kind, usize::from(lit.is_some()), samples);
-            if let (None, Some((vertex, fragment))) = (self.pipelines[at.0][at.1][at.2], stages) {
-                let pipeline = self.pipeline(gpu, vertex, fragment, &layouts);
-                self.pipelines[at.0][at.1][at.2] = Some(pipeline);
+            if let (None, Some((vertex, fragment))) = (self.pipelines[kind][samples], stages) {
+                let pipeline = self.pipeline(gpu, vertex, fragment);
+                self.pipelines[kind][samples] = Some(pipeline);
             }
         }
     }
@@ -86,10 +81,9 @@ impl Extrusions {
         gpu: &mut dyn Gpu,
         (vertex, vertex_entry): (Shader, &str),
         (fragment, fragment_entry): (Shader, &str),
-        layouts: &[BindGroupLayoutId],
     ) -> RenderPipelineId {
         let vertex_module = crate::shader_module(gpu, &vertex);
-        let apart = vertex.label != fragment.label || vertex.lit != fragment.lit;
+        let apart = vertex.label != fragment.label;
         let fragment_module = if apart {
             crate::shader_module(gpu, &fragment)
         } else {
@@ -98,7 +92,7 @@ impl Extrusions {
         let pipeline = gpu.create_render_pipeline(&RenderPipelineDesc {
             cull_mode: Some(Face::Back),
             label: vertex.label,
-            bind_group_layouts: layouts,
+            bind_group_layouts: &self.layouts,
             vertex: ShaderStage {
                 module: vertex_module,
                 entry_point: vertex_entry,
@@ -128,17 +122,17 @@ impl Extrusions {
         pipeline
     }
 
-    /// Whether the pipeline at the current sample count, lit or not, and
-    /// the composites', compiled.
-    pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites, lit: bool) -> bool {
-        let slot = self.slot(lit);
+    /// Whether the pipelines at the current sample count, and the
+    /// composites', compiled.
+    pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
+        let slot = self.slot();
         slot[0].is_some()
             && slot.iter().flatten().all(|&p| gpu.pipeline_ready(p.into()))
             && composites.ready(gpu, Mode::Over)
     }
 
-    pub(crate) fn pipelines(&self, lit: bool) -> Vec<PipelineId> {
-        self.slot(lit).iter().flatten().map(|&p| p.into()).collect()
+    pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
+        self.slot().iter().flatten().map(|&p| p.into()).collect()
     }
     pub(crate) fn set_antialias(&mut self, antialias: bool) -> bool {
         let samples = if antialias { 4 } else { 1 };
@@ -212,28 +206,23 @@ impl Extrusions {
     }
 
     /// An extrusion node's pass into its target over the shared depth,
-    /// replaying its draws, recorded once; lit with the node materials'
-    /// group `materials`.
-    #[expect(clippy::too_many_arguments, reason = "one recorded draw")]
+    /// replaying its draws, recorded once.
     pub(crate) fn prepare(
         &self,
         gpu: &mut dyn Gpu,
         node: &mut NodeExtrusion,
         (scene, group): (BindGroupId, BindGroupId),
-        materials: Option<BindGroupId>,
         buffers: &SceneBuffers,
         index: u32,
         first: bool,
     ) -> RenderPass {
-        let pipelines = self.slot(materials.is_some());
+        let pipelines = self.slot();
         let bundle = *node.bundle.get_or_insert_with(|| {
-            let lit = materials.map(|group| RenderCommand::SetBindGroup { index: 2, group });
             let draw = RenderCommand::DrawIndexedIndirect {
                 buffer: buffers.args,
                 offset: crate::args_offset(index),
             };
-            let mut commands: Vec<RenderCommand> = lit.into_iter().collect();
-            commands.extend([
+            let mut commands = vec![
                 RenderCommand::SetBindGroup {
                     index: 0,
                     group: scene,
@@ -244,7 +233,7 @@ impl Extrusions {
                     format: IndexFormat::Uint32,
                     offset: 0,
                 },
-            ]);
+            ];
             for &pipeline in pipelines.iter().flatten() {
                 commands.extend([RenderCommand::SetPipeline(pipeline), draw.clone()]);
             }

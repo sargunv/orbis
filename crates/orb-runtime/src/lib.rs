@@ -19,7 +19,7 @@ mod image;
 mod job_host;
 mod jobs;
 mod labels;
-mod lights;
+mod light;
 mod line;
 mod loader;
 mod map;
@@ -50,10 +50,6 @@ pub use events::MapEvent;
 pub use orb_a11y::Snapshot as SemanticSnapshot;
 pub use video::{NO_VIDEO, VideoRequest};
 
-/// The warning scenes whose lights cast shadows get while the view shows
-/// a globe.
-pub const GLOBE_NO_SHADOWS: &str =
-    "shadows are drawn on a plane only, not while the view shows a globe";
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};

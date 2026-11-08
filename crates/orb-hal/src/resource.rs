@@ -156,9 +156,6 @@ pub struct SamplerDesc<'a> {
     /// The most samples along a footprint's long axis: 1 is isotropic.
     /// Above 1 every filter must be `Linear`.
     pub anisotropy: u16,
-    /// A comparison sampler: samples of a depth texture are whether this
-    /// compares a reference with the stored depth, 1 or 0, filtered.
-    pub compare: Option<CompareFunction>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -195,8 +192,6 @@ pub enum BindingType {
     Sampler {
         filtering: bool,
     },
-    /// A sampler made with [`SamplerDesc::compare`].
-    ComparisonSampler,
     /// A write-only storage texture.
     StorageTexture {
         format: TextureFormat,
@@ -206,13 +201,8 @@ pub enum BindingType {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextureSampleType {
-    Float {
-        filterable: bool,
-    },
+    Float { filterable: bool },
     Uint,
-    /// A depth texture read with `textureLoad`, of one sample or several.
-    Depth,
-    DepthMultisampled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

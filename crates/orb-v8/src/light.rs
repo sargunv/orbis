@@ -1,55 +1,11 @@
-//! v8's `light`, lowered into the style's [`Lights`]: an
-//! ambient and a directional term of GL JS's flat extrusion response.
-use crate::{Color, Cx, Property, TranslateAnchor, layer::typed_property_at};
+//! v8's `light`, parsed into the style's [`Light`].
+use crate::{Cx, layer::typed_property_at};
 use orb_expr::{PropertyType, Type, json::Json};
 use orb_style::*;
-use orb_style::{AmbientLight, Direction, DirectionalLight, Level, Lights};
 
-#[derive(Clone, Debug)]
-pub(crate) struct Light {
-    pub anchor: Property<TranslateAnchor>,
-    /// Radius, azimuth clockwise from north, polar angle from the zenith.
-    pub position: Property<[f32; 3]>,
-    pub color: Property<Color>,
-    pub intensity: Property<f32>,
-}
-
-impl Light {
-    /// GL JS shades an extrusion face `mix(1 − i, max(1 − lum + i, 1), n·l)`
-    /// of its colour: an ambient level `1 − i` and a directional one `2i`
-    /// of the light's colour, in the response `mix(a, max(a + d − lum, 1),
-    /// n·l)` that scene lights share.
-    pub(crate) fn lower(self) -> Lights {
-        Lights {
-            ambient: Some(AmbientLight {
-                color: self.color.clone(),
-                level: Level {
-                    intensity: self.intensity.clone(),
-                    offset: 1.0,
-                    scale: -1.0,
-                },
-            }),
-            directional: Some(DirectionalLight {
-                color: self.color,
-                level: Level {
-                    intensity: self.intensity,
-                    offset: 0.0,
-                    scale: 2.0,
-                },
-                anchor: self.anchor,
-                direction: Direction::Position(self.position),
-                // v8's light casts no shadows.
-                shadow: None,
-            }),
-            terrain: false,
-            materials: Vec::new(),
-        }
-    }
-}
-
-/// v8's default `light`, lowered: every property at its spec default.
-pub fn default_lights() -> Lights {
-    parse(&mut Cx::default(), None).lower()
+/// v8's default `light`: every property at its spec default.
+pub fn default_light() -> Light {
+    parse(&mut Cx::default(), None)
 }
 
 pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {

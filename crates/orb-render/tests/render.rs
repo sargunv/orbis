@@ -146,7 +146,7 @@ impl Harness {
             roll: 0.0,
             camera_to_center: 1.0,
             terrain: None,
-            lights: None,
+            light: None,
             globe: None,
         }
     }

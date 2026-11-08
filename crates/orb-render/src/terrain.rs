@@ -328,7 +328,6 @@ impl Terrain {
             address: AddressMode::ClampToEdge,
             mipmap_filter: FilterMode::Linear,
             anisotropy: 16,
-            compare: None,
         });
         Self {
             target,

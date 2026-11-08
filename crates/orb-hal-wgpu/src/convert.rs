@@ -126,21 +126,15 @@ pub(crate) fn bind_group_layout_entry(entry: &BindGroupLayoutEntry) -> wgpu::Bin
                         wgpu::TextureSampleType::Float { filterable }
                     }
                     TextureSampleType::Uint => wgpu::TextureSampleType::Uint,
-                    TextureSampleType::Depth | TextureSampleType::DepthMultisampled => {
-                        wgpu::TextureSampleType::Depth
-                    }
                 },
                 view_dimension: view_dimension(dimension),
-                multisampled: sample == TextureSampleType::DepthMultisampled,
+                multisampled: false,
             },
             BindingType::Sampler { filtering } => wgpu::BindingType::Sampler(if filtering {
                 wgpu::SamplerBindingType::Filtering
             } else {
                 wgpu::SamplerBindingType::NonFiltering
             }),
-            BindingType::ComparisonSampler => {
-                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison)
-            }
             BindingType::StorageTexture { format, dimension } => {
                 wgpu::BindingType::StorageTexture {
                     access: wgpu::StorageTextureAccess::WriteOnly,
@@ -213,7 +207,6 @@ pub(crate) fn sampler(desc: &SamplerDesc<'_>) -> wgpu::SamplerDescriptor<'static
             FilterMode::Nearest => wgpu::MipmapFilterMode::Nearest,
             FilterMode::Linear => wgpu::MipmapFilterMode::Linear,
         },
-        compare: desc.compare.map(compare),
         ..Default::default()
     }
 }

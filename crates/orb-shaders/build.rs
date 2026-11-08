@@ -34,8 +34,6 @@ mod reflect {
         ("TerrainTile", "terrain_tile"),
         ("ShadeTile", "shade_tile"),
         ("Job", "prepare_job"),
-        ("Shadow", "shadow"),
-        ("ShadowCascades", "shadow_cascades"),
         ("Candidate", "candidate"),
     ];
 

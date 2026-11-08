@@ -9,7 +9,7 @@
 mod atmosphere;
 mod change;
 mod layer;
-mod lights;
+mod light;
 mod property;
 mod resources;
 mod scene;
@@ -22,7 +22,7 @@ pub use change::{
     Binding, Change, Class, FeatureStateOp, LayerKey, LayoutChange, Patch, SourceKey,
 };
 pub use layer::Layer;
-pub use lights::{AmbientLight, Direction, DirectionalLight, LayerMaterial, Level, Lights};
+pub use light::Light;
 pub use orb_expr::{Color, Kind, PropertyExpression, Value};
 pub use property::*;
 pub use resources::{FontFace, FontFaces, Sprite, Terrain};

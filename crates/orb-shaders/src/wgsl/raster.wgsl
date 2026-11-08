@@ -27,7 +27,7 @@ fn vs_raster(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
 }
 
 @fragment
-fn fs_raster(in: ImageOut) -> MapOut {
+fn fs_raster(in: ImageOut) -> @location(0) vec4<f32> {
     // The texture's footprint, in uniform control flow, for its mip levels.
     let uv = image_pos(in) / IMAGE_EXTENT;
     let ddx = dpdx(uv);
@@ -71,5 +71,5 @@ fn fs_raster(in: ImageOut) -> MapOut {
     // brightness
     let high = vec3<f32>(node.brightness_low);
     let low = vec3<f32>(node.brightness_high);
-    return map_out(vec4<f32>(mix(high, low, rgb) * color.a, color.a), node.index, in.up);
+    return vec4<f32>(mix(high, low, rgb) * color.a, color.a);
 }
