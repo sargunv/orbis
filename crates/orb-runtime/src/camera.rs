@@ -140,16 +140,25 @@ impl Map {
         self.camera.set_viewport(viewport);
     }
 
+    /// Stands the camera on the DEM data that has arrived since it last
+    /// did. Returns whether that moved it.
+    pub(crate) fn stand_on_terrain(&mut self) -> bool {
+        let terrain = self.elevation_revision();
+        if terrain == self.terrain_seen {
+            return false;
+        }
+        self.terrain_seen = terrain;
+        let before = self.camera.revision();
+        self.camera.set_terrain(self.elevation());
+        self.camera.revision() != before
+    }
+
     /// Brings the camera to this frame: it stands on the surface and
     /// terrain that have arrived and the frame's viewport, then gestures
     /// and animations advance to `time`. Returns whether it moves on.
     pub(crate) fn advance_camera(&mut self, viewport: Viewport, time: f64) -> bool {
         self.camera.set_surface(self.surface.view_surface());
-        let terrain = self.elevation_revision();
-        if terrain != self.terrain_seen {
-            self.terrain_seen = terrain;
-            self.camera.set_terrain(self.elevation());
-        }
+        self.stand_on_terrain();
         if self.camera.viewport() != viewport {
             self.camera.set_viewport(viewport);
         }

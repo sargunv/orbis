@@ -1259,7 +1259,10 @@ impl Map {
         report.compiling = report.idle && report.frame.waited;
         report.loaded &= !report.frame.waited;
         report.idle &= !report.frame.waited;
-        // Idle once the camera rests too, and once per rest.
+        // Idle once the camera rests too, and once per rest. DEM data that
+        // arrived after the camera advanced may move it onto the ground it
+        // lands on: then this frame isn't a rest.
+        let moving = self.stand_on_terrain() || moving;
         let held = self.camera.is_held() || self.input.is_active();
         self.events
             .frame(report.loaded, report.idle && !moving && !held);
