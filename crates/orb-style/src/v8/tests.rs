@@ -1,8 +1,8 @@
 use orb_tile::{GeometryType, LayerBuilder};
 
-use crate::*;
+use crate::v8::*;
 
-fn style(layers: &str) -> Result<Scene, Diagnostics> {
+fn style(layers: &str) -> Result<Style, Diagnostics> {
     parse(&format!(
         r#"{{
             "version": 8,
@@ -89,7 +89,7 @@ fn raster_dem_sources_and_image_layers() {
     let SourceKind::RasterDem(dem) = &s.source("dem").unwrap().kind else {
         panic!()
     };
-    assert_eq!(dem.encoding, Some(crate::DemEncoding::Custom));
+    assert_eq!(dem.encoding, Some(crate::v8::DemEncoding::Custom));
     assert_eq!(dem.factors, [0.0, 1.0, 1.0, 3.5]);
     assert_eq!(dem.raster.tile_size, Some(256.0));
     let h = &s.layers[1];
@@ -324,7 +324,7 @@ fn transitions_parse_and_merge_over_the_style() {
     assert!(style.warnings.is_empty(), "{:?}", style.warnings);
     assert_eq!(
         style.transition,
-        crate::Transition {
+        crate::v8::Transition {
             duration: 500.0,
             delay: 0.0
         }
@@ -333,13 +333,13 @@ fn transitions_parse_and_merge_over_the_style() {
     assert_eq!(name, "background-color");
     assert_eq!(
         t.over(style.transition),
-        crate::Transition {
+        crate::v8::Transition {
             duration: 500.0,
             delay: 100.0
         }
     );
     let default = parse(r#"{"version": 8, "sources": {}, "layers": []}"#).unwrap();
-    assert_eq!(default.transition, crate::Transition::default());
+    assert_eq!(default.transition, crate::v8::Transition::default());
 }
 
 #[test]
@@ -351,7 +351,7 @@ fn global_state_resolves_at_parse() {
             "filter": ["==", ["get", "class"], ["global-state", "cls"]],
             "paint": {"line-color": ["global-state", "c"],
                       "line-width": ["coalesce", ["feature-state", "w"], ["global-state", "w"]]}}]}"#;
-    let line = |s: &Scene| s.layers[0].clone();
+    let line = |s: &Style| s.layers[0].clone();
     let s = parse(text).unwrap();
     assert!(s.warnings.is_empty(), "{:?}", s.warnings);
     let l = line(&s);
@@ -655,7 +655,7 @@ fn layer_blends_parse() {
 
 #[test]
 fn parses_projection_and_source_matrix_sets() {
-    let style = crate::parse(
+    let style = crate::v8::parse(
         r#"{
             "version": 8,
             "projection": {"type": "EPSG:3413"},
@@ -694,7 +694,7 @@ fn parses_projection_and_source_matrix_sets() {
 #[test]
 fn world_planes_adapt_to_mercator() {
     let style = |projection: &str| {
-        crate::parse(&format!(
+        crate::v8::parse(&format!(
             r#"{{"version": 8, "projection": {projection}, "sources": {{}}, "layers": []}}"#
         ))
         .unwrap()
@@ -726,7 +726,7 @@ fn world_planes_adapt_to_mercator() {
     let reversed = style(r#"{"type": "equal-earth", "transition": [9, 8]}"#);
     assert_eq!(reversed.warnings.len(), 1);
     assert_eq!(reversed.globe.unwrap().handover, Some([6.0, 7.0]));
-    let bad_tms = crate::parse(
+    let bad_tms = crate::v8::parse(
         r#"{"version": 8, "sources": {"a": {"type": "raster", "tiles": ["a"],
             "tileMatrixSet": "GNOSISGlobalGrid"}}, "layers": []}"#,
     )

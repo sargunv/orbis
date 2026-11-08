@@ -1,8 +1,8 @@
 //! The style's `terrain`: the `raster-dem` source that raises the map's
 //! surface, and how far.
-use crate::{Cx, Source, SourceKind};
+use crate::v8::{Cx, Source, SourceKind};
+use crate::*;
 use orb_expr::json::Json;
-use orb_style::*;
 
 pub(crate) fn parse(
     cx: &mut Cx,
@@ -55,8 +55,8 @@ pub(crate) fn parse(
 
 #[cfg(test)]
 mod tests {
-    fn parse(terrain: &str) -> Result<crate::Scene, crate::Diagnostics> {
-        crate::parse(&format!(
+    fn parse(terrain: &str) -> Result<crate::v8::Style, crate::v8::Diagnostics> {
+        crate::v8::parse(&format!(
             r#"{{"version":8,"sources":{{"dem":{{"type":"raster-dem","tiles":["x/{{z}}/{{x}}/{{y}}.png"]}},"v":{{"type":"vector","tiles":["x"]}}}},"layers":[],"terrain":{terrain}}}"#
         ))
     }

@@ -1,12 +1,10 @@
-//! The front end of the native scene: parses and
-//! validates v8 styles into an `orb_style::Scene`, with errors and
+//! The v8 front end: parses and
+//! validates v8 styles into a [`Style`], with errors and
 //! warnings located by JSON path
 //! (`layers[3].paint.line-width`) and byte span; keeps the documents of
 //! record ([`StyleDoc`]) and applies GL JS-style edits to them as
 //! transactions, diffed into classified changes. Defaults and coercions
 //! follow GL JS.
-
-#![forbid(unsafe_code)]
 
 mod diff;
 mod doc;
@@ -33,7 +31,7 @@ pub use source::tms_definition;
 pub use tx::{FeatureTarget, Op, Transaction};
 
 // The native model this front end builds.
-use orb_style::*;
+use crate::*;
 
 use orb_expr::json::{self, Json, JsonValue, Member};
 
@@ -61,7 +59,7 @@ impl std::error::Error for Diagnostics {}
 
 /// Parses and validates a v8 style document, its `global-state` reads
 /// resolved to the root `state` defaults.
-pub fn parse(text: &str) -> Result<Scene, Diagnostics> {
+pub fn parse(text: &str) -> Result<Style, Diagnostics> {
     parse_with_state(text, &[])
 }
 
@@ -72,7 +70,7 @@ pub fn parse(text: &str) -> Result<Scene, Diagnostics> {
 pub fn parse_with_state(
     text: &str,
     overrides: &[(String, Value<'static>)],
-) -> Result<Scene, Diagnostics> {
+) -> Result<Style, Diagnostics> {
     let mut cx = Cx::default();
     let doc = match json::parse(text) {
         Ok(doc) => doc,
@@ -101,7 +99,7 @@ pub fn parse_with_state(
 /// Root keys v8 defines that Orbis does not model yet.
 const UNMODELED_ROOT: &[&str] = &["centerAltitude"];
 
-fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -> Option<Scene> {
+fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -> Option<Style> {
     let root = cx.object(doc, "")?;
     for m in root {
         match m.key.as_str() {
@@ -202,7 +200,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
     let (projection, globe) = doc
         .get("projection")
         .map_or((None, None), |p| parse_surface(cx, p));
-    Some(Scene {
+    Some(Style {
         name,
         center,
         zoom,

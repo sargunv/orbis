@@ -45,9 +45,9 @@ pub struct Prop {
 }
 
 impl Prop {
-    /// The fields a scene-level property (light, sky, terrain) leaves at
+    /// The fields a root-level property (light, sky, terrain) leaves at
     /// their defaults.
-    pub const SCENE: Self = prop("", PropertyType::Number, None);
+    pub const ROOT: Self = prop("", PropertyType::Number, None);
 
     pub fn spec(&self) -> PropertySpec {
         PropertySpec {

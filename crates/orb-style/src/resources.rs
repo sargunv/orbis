@@ -1,4 +1,4 @@
-//! What the scene loads beside its sources: sprites, fonts and the
+//! What a style loads beside its sources: sprites, fonts and the
 //! terrain's DEM.
 
 /// One sprite sheet. The default namespace exposes unprefixed image names;

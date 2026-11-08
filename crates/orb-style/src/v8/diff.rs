@@ -1,14 +1,14 @@
 //! Diff of a transaction's draft against the document, into classified
 //! changes.
 
-use orb_style::*;
+use crate::*;
 use std::collections::{HashMap, HashSet};
 
-use crate::{Diagnostic, Diagnostics};
+use crate::v8::{Diagnostic, Diagnostics};
 use orb_expr::json::{Json, JsonValue, Member};
 
-use crate::doc::{Draft, StyleDoc, member, synthetic};
-use crate::doc::{same, same_opt};
+use crate::v8::doc::{Draft, StyleDoc, member, synthetic};
+use crate::v8::doc::{same, same_opt};
 
 /// Whether `json` reads any of `keys` through `global-state`.
 fn reads_global(json: &Json, keys: &HashSet<&str>) -> bool {
@@ -89,13 +89,13 @@ fn layer_changes(
 const RESTYLE_ROOT: &[&str] = &["sprite", "glyphs", "font-faces", "light", "sky"];
 
 /// The new snapshot and the patch from `doc` to `draft`.
-pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diagnostics> {
+pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diagnostics> {
     let old = doc.style();
     let mut changes = Vec::new();
     let mut warnings = Vec::new();
 
     // The root: camera and state defaults, sprites.
-    let mut style = Scene {
+    let mut style = Style {
         name: old.name.clone(),
         center: old.center,
         zoom: old.zoom,
@@ -134,7 +134,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
                 value: synthetic(value),
             });
         }
-        let root = crate::parse(&synthetic(JsonValue::Object(members)).to_string())?;
+        let root = crate::v8::parse(&synthetic(JsonValue::Object(members)).to_string())?;
         if RESTYLE_ROOT
             .iter()
             .any(|k| !same_opt(member(&doc.root, k), member(&draft.root, k)))
@@ -148,14 +148,14 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
             changes.push(Change::Projection);
         }
         warnings.extend(root.warnings.iter().cloned());
-        style = Scene {
+        style = Style {
             warnings: Vec::new(),
             ..root
         };
     }
 
     let old_state = doc.global_state();
-    let new_state = crate::resolve_state(&style.state, &draft.overrides);
+    let new_state = crate::v8::resolve_state(&style.state, &draft.overrides);
     let changed: HashSet<&str> = old_state
         .iter()
         .chain(&new_state)
@@ -171,7 +171,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
     if let Some(json) = member(&draft.root, "sky")
         && reads_global(json, &changed)
     {
-        let (sky, w) = crate::parse_sky(json, &new_state)?;
+        let (sky, w) = crate::v8::parse_sky(json, &new_state)?;
         style.atmosphere = Some(sky);
         warnings.extend(w);
         if !changes.contains(&Change::Restyle) {
@@ -183,7 +183,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
     if let Some(json) = member(&draft.root, "projection")
         && (draft.new_root || reads_global(json, &changed))
     {
-        let (plane, globe, w) = crate::parse_projection(json, &new_state);
+        let (plane, globe, w) = crate::v8::parse_projection(json, &new_state);
         warnings.extend(w);
         if globe != old.globe && !changes.contains(&Change::Projection) {
             changes.push(Change::Projection);
@@ -199,7 +199,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
     for entry in &draft.sources {
         match old_sources.get(&entry.key) {
             Some(_) if draft.new_data.contains(&entry.key) => {
-                let (source, w) = crate::parse_source(&entry.id, &entry.json)?;
+                let (source, w) = crate::v8::parse_source(&entry.id, &entry.json)?;
                 warnings.extend(w);
                 style.sources.push(std::sync::Arc::new(source));
                 changes.push(Change::SourceData(entry.key));
@@ -208,15 +208,15 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
                 if let Some((_, diffs)) = draft.diffs.iter().find(|(k, _)| *k == entry.key) =>
             {
                 // The parsed features change by the diffs; the JSON already did.
-                let source =
-                    crate::geojson::apply_diffs(source, diffs).map_err(crate::doc::error)?;
+                let source = crate::v8::geojson::apply_diffs(source, diffs)
+                    .map_err(crate::v8::doc::error)?;
                 style.sources.push(std::sync::Arc::new(source));
                 changes.push(Change::SourceData(entry.key));
                 source_diffs.push((entry.key, diffs.clone()));
             }
             Some(source) => style.sources.push(std::sync::Arc::clone(source)),
             None => {
-                let (source, w) = crate::parse_source(&entry.id, &entry.json)?;
+                let (source, w) = crate::v8::parse_source(&entry.id, &entry.json)?;
                 warnings.extend(w);
                 style.sources.push(std::sync::Arc::new(source));
                 changes.push(Change::SourceAdded(entry.key));
@@ -239,7 +239,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
 
     // Terrain reads the new sources; switching it needs no reload.
     if let Some(json) = member(&draft.root, "terrain") {
-        let (terrain, w) = crate::parse_terrain(json, &style.sources)?;
+        let (terrain, w) = crate::v8::parse_terrain(json, &style.sources)?;
         warnings.extend(w);
         style.terrain = Some(terrain);
     }
@@ -277,7 +277,7 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Scene, Patch), Diag
                 .push(std::sync::Arc::clone(old_entry.expect("kept").1));
             continue;
         }
-        let (layer, w) = crate::parse_layer(&entry.json, index, &style.sources, &new_state)?;
+        let (layer, w) = crate::v8::parse_layer(&entry.json, index, &style.sources, &new_state)?;
         warnings.extend(w);
         match old_entry {
             None => changes.push(Change::LayerAdded(entry.key)),

@@ -1,7 +1,7 @@
 //! v8's `light`, parsed into the style's [`Light`].
-use crate::{Cx, layer::typed_property_at};
+use crate::v8::{Cx, layer::typed_property_at};
+use crate::*;
 use orb_expr::{PropertyType, Type, json::Json};
-use orb_style::*;
 
 /// v8's default `light`: every property at its spec default.
 pub fn default_light() -> Light {
@@ -19,7 +19,7 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
         minimum,
         maximum,
         tokens: false,
-        ..Prop::SCENE
+        ..Prop::ROOT
     };
     let anchor = prop(
         "anchor",

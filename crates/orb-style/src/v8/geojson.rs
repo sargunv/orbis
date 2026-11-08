@@ -2,7 +2,7 @@
 
 use orb_expr::json::{self, Json, JsonValue};
 
-use crate::doc::set_member;
+use crate::v8::doc::set_member;
 use orb_tile::{
     Value,
     geojson::{Feature, Geometry},
@@ -127,17 +127,17 @@ fn geometry(doc: &Json) -> Result<Geometry, String> {
 
 /// `source` with `diffs` applied to its parsed inline features.
 pub fn apply_diffs(
-    source: &orb_style::Source,
+    source: &crate::Source,
     diffs: &[std::sync::Arc<Json>],
-) -> Result<orb_style::Source, String> {
+) -> Result<crate::Source, String> {
     let mut source = source.clone();
-    let orb_style::SourceKind::GeoJson(geojson) = &mut source.kind else {
+    let crate::SourceKind::GeoJson(geojson) = &mut source.kind else {
         return Err(format!(
             "the source \"{}\" is not a GeoJSON source",
             source.id
         ));
     };
-    let orb_style::GeoJsonData::Inline(features) = &mut geojson.data else {
+    let crate::GeoJsonData::Inline(features) = &mut geojson.data else {
         return Err(format!(
             "the source \"{}\" has no inline data to update",
             source.id

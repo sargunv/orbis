@@ -551,7 +551,7 @@ mod tests {
     }
 
     fn vector(style: &str) -> SourceKind {
-        let style = orb_v8::parse(&format!(
+        let style = orb_style::v8::parse(&format!(
             r#"{{"version": 8, "sources": {{"s": {style}}}, "layers": []}}"#
         ))
         .unwrap();
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn region_tiles_follow_the_cover_zoom() {
-        let source = orb_v8::parse_source(
+        let source = orb_style::v8::parse_source(
             "s",
             &json::parse(r#"{"type": "raster", "tiles": ["https://x/{z}/{x}/{y}.png"], "tileSize": 256, "maxzoom": 3}"#).unwrap(),
         )

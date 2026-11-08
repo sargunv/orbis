@@ -5,11 +5,11 @@ use orb_expr::Interpolation;
 use orb_style::*;
 use orb_tile::{GeometryType, LayerBuilder};
 
-fn liberty() -> Scene {
-    orb_v8::parse(include_str!("data/liberty.json")).unwrap_or_else(|d| panic!("{d}"))
+fn liberty() -> Style {
+    orb_style::v8::parse(include_str!("data/liberty.json")).unwrap_or_else(|d| panic!("{d}"))
 }
 
-fn layer<'a>(style: &'a Scene, id: &str) -> &'a Layer {
+fn layer<'a>(style: &'a Style, id: &str) -> &'a Layer {
     style.layers.iter().find(|l| l.id == id).expect(id)
 }
 

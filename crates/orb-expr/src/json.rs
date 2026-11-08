@@ -1,7 +1,7 @@
 //! A small, strict JSON parser (RFC 8259) that keeps byte offsets for
 //! diagnostics, and a compact writer matching JavaScript's `JSON.stringify`.
 //!
-//! Core crates don't use `serde_json` (wasm size); `orb-v8` reads
+//! Core crates don't use `serde_json` (wasm size); `orb-style`'s v8 front end reads
 //! whole style documents with this parser.
 
 use std::fmt;

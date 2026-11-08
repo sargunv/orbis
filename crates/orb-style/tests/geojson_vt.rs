@@ -9,7 +9,7 @@ use orb_tile::{
 
 #[test]
 fn matches_geojson_vt_6_3_0() {
-    let features = orb_v8::parse_geojson(include_str!("geojson/input.json")).unwrap();
+    let features = orb_style::v8::parse_geojson(include_str!("geojson/input.json")).unwrap();
     let mut index = Index::new(
         features,
         Options {

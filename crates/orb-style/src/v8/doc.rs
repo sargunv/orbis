@@ -1,14 +1,14 @@
 //! The persistent document.
 
-use orb_style::*;
+use crate::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{Diagnostic, Diagnostics};
+use crate::v8::{Diagnostic, Diagnostics};
 use orb_expr::json::{self, Json, JsonValue, Member, Span};
 
-use crate::diff;
-use crate::tx::{FeatureTarget, Op, Transaction};
+use crate::v8::diff;
+use crate::v8::tx::{FeatureTarget, Op, Transaction};
 
 #[derive(Clone, Debug)]
 pub(crate) struct LayerEntry {
@@ -34,7 +34,7 @@ pub struct StyleDoc {
     pub(crate) layers: Vec<LayerEntry>,
     /// Global state set by transactions, over the root `state` defaults.
     pub(crate) overrides: Vec<(String, Value<'static>)>,
-    style: Arc<Scene>,
+    style: Arc<Style>,
     next_key: u32,
 }
 
@@ -101,12 +101,12 @@ fn layer_id(json: &Json) -> Option<&str> {
 impl StyleDoc {
     /// Parses a v8 document.
     pub fn parse(text: &str) -> Result<Self, Diagnostics> {
-        let style = crate::parse(text)?;
+        let style = crate::v8::parse(text)?;
         let root = json::parse(text).map_err(|e| error(e.to_string()))?;
         Ok(Self::from_parts(style, &root))
     }
 
-    fn from_parts(style: Scene, root: &Json) -> Self {
+    fn from_parts(style: Style, root: &Json) -> Self {
         let mut next_key = 0;
         let mut key = || {
             next_key += 1;
@@ -154,7 +154,7 @@ impl StyleDoc {
     }
 
     /// The current snapshot.
-    pub fn style(&self) -> &Arc<Scene> {
+    pub fn style(&self) -> &Arc<Style> {
         &self.style
     }
 
@@ -211,7 +211,7 @@ impl StyleDoc {
 
     /// The global state: root defaults with transactions' values over them.
     pub fn global_state(&self) -> Vec<(String, Value<'static>)> {
-        crate::resolve_state(&self.style.state, &self.overrides)
+        crate::v8::resolve_state(&self.style.state, &self.overrides)
     }
 
     /// The document as v8 JSON, with the global state written as its
@@ -377,7 +377,7 @@ impl Draft {
     fn feature_target(
         &self,
         target: &FeatureTarget,
-    ) -> Result<(crate::SourceKey, Option<String>), String> {
+    ) -> Result<(crate::v8::SourceKey, Option<String>), String> {
         let source = self.source(&target.source)?;
         let vector = source.json.get("type").and_then(Json::as_str) == Some("vector");
         if vector && target.source_layer.is_none() {
@@ -505,7 +505,7 @@ impl Draft {
                         .or_else(|| p.get(orb_tile::geojson::LAYER_NAME).and_then(Json::as_str)),
                     None => None,
                 };
-                let parsed = crate::geojson::Diff::parse(diff)?;
+                let parsed = crate::v8::geojson::Diff::parse(diff)?;
                 let data = parsed.apply_json(data, promote_id)?;
                 let mut members = entry
                     .json

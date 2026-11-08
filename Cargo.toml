@@ -66,7 +66,6 @@ orb-symbol = { path = "crates/orb-symbol" }
 orb-text = { path = "crates/orb-text", default-features = false }
 orb-style = { path = "crates/orb-style" }
 orb-tile = { path = "crates/orb-tile" }
-orb-v8 = { path = "crates/orb-v8" }
 orb-web = { path = "crates/orb-web" }
 
 # Several agents build at once on one disk: line tables keep backtraces

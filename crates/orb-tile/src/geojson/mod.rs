@@ -1,9 +1,10 @@
 //! GeoJSON tiling, ported from `@maplibre/geojson-vt` 6.3.0
 //! (f7fce808d7c14810ca805b383d5873b833ebf591). See LICENSE in this directory.
 //!
-//! JSON is parsed by `orb-v8` using `orb_expr::json`; this module consumes
-//! typed features so the tile/expr dependency remains acyclic. Coordinates
-//! are longitude/latitude degrees. Output goes straight to `TileFrame`.
+//! JSON is parsed by `orb-style`'s v8 front end using `orb_expr::json`;
+//! this module consumes typed features so the tile/expr dependency remains
+//! acyclic. Coordinates are longitude/latitude degrees. Output goes
+//! straight to `TileFrame`.
 
 mod clip;
 mod cluster;

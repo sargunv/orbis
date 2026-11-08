@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use orb_style::Scene;
+use orb_style::Style;
 
 /// Diagnostic locations contain source ids and layer indices; the message's
 /// first quoted spec name gives a short, stable aggregation key instead.
@@ -45,7 +45,7 @@ pub(crate) fn edit_reason(message: &str) -> Option<String> {
     (parsed && message.contains("not supported yet")).then(|| parse_reason(message))
 }
 
-pub(crate) fn reasons(style: &Scene) -> BTreeSet<String> {
+pub(crate) fn reasons(style: &Style) -> BTreeSet<String> {
     style
         .warnings
         .iter()

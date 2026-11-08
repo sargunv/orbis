@@ -2295,7 +2295,6 @@ dependencies = [
  "orb-crs",
  "orb-expr",
  "orb-style",
- "orb-v8",
  "png",
 ]
 
@@ -2335,7 +2334,6 @@ dependencies = [
  "orb-api",
  "orb-runtime",
  "orb-style",
- "orb-v8",
  "png",
  "serde_json",
 ]
@@ -2436,7 +2434,6 @@ dependencies = [
  "orb-symbol",
  "orb-text",
  "orb-tile",
- "orb-v8",
  "png",
  "pollster",
  "postcard",
@@ -2468,7 +2465,6 @@ dependencies = [
  "orb-crs",
  "orb-expr",
  "orb-style",
- "orb-v8",
  "serde",
 ]
 
@@ -2523,16 +2519,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "orb-v8"
-version = "0.0.0"
-dependencies = [
- "orb-crs",
- "orb-expr",
- "orb-style",
- "orb-tile",
-]
-
-[[package]]
 name = "orb-web"
 version = "0.0.0"
 dependencies = [
@@ -2551,7 +2537,6 @@ dependencies = [
  "orb-symbol",
  "orb-text",
  "orb-tile",
- "orb-v8",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

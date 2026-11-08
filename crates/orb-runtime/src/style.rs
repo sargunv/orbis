@@ -11,7 +11,7 @@ use std::sync::Arc;
 use orb_expr::Kind;
 use orb_layout::Family;
 use orb_shaders::layout;
-use orb_style::{Color, LayerType, PropertyRef, Scene, SourceKind, Value};
+use orb_style::{Color, LayerType, PropertyRef, SourceKind, Style, Value};
 
 /// Node keys a layer has: a fill and its outline, or a symbol layer's
 /// icons and text, take one each.
@@ -33,7 +33,7 @@ pub(crate) fn layer_key(node_key: u32) -> u32 {
 pub(crate) struct StylePlan {
     /// The map's style version this plan is of.
     pub(crate) revision: u64,
-    pub(crate) style: Arc<Scene>,
+    pub(crate) style: Arc<Style>,
     /// Keys of the style's layers, in order.
     pub(crate) layer_keys: Vec<u32>,
     /// Keys of the style's sources, in order.
@@ -180,14 +180,14 @@ impl StylePlan {
     /// A plan with layer and source keys counted from one, for a style that
     /// is never edited.
     #[cfg(test)]
-    pub(crate) fn of(style: Scene) -> Self {
+    pub(crate) fn of(style: Style) -> Self {
         let layers = (1..=style.layers.len() as u32).collect();
         let sources = (1..=style.sources.len() as u32).collect();
         Self::new(Arc::new(style), layers, sources, 0)
     }
 
     pub(crate) fn new(
-        style: Arc<Scene>,
+        style: Arc<Style>,
         layer_keys: Vec<u32>,
         source_keys: Vec<u32>,
         revision: u64,

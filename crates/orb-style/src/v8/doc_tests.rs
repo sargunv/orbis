@@ -1,4 +1,4 @@
-use crate::*;
+use crate::v8::*;
 
 const STYLE: &str = r#"{
     "version": 8,
@@ -169,15 +169,15 @@ fn global_state_changes_reach_the_layers_that_read_it() {
     );
     let line = &doc.style().layers[2];
     assert_eq!(
-        line.get(crate::LINE_COLOR).constant(),
-        Some(crate::Color::parse("green").unwrap())
+        line.get(crate::v8::LINE_COLOR).constant(),
+        Some(crate::v8::Color::parse("green").unwrap())
     );
     // Loading the written document fresh gives the same values.
     let fresh = StyleDoc::parse(&doc.to_json()).unwrap();
     let fresh = &fresh.style().layers[2];
     assert_eq!(
-        fresh.get(crate::LINE_COLOR).constant(),
-        line.get(crate::LINE_COLOR).constant()
+        fresh.get(crate::v8::LINE_COLOR).constant(),
+        line.get(crate::v8::LINE_COLOR).constant()
     );
     // Resetting returns to the default.
     let patch = commands(&mut doc, r#"[["setGlobalStateProperty", "accent", null]]"#);
@@ -236,7 +236,7 @@ fn feature_state_is_validated_and_passed_through() {
             source: doc.source_key("g").unwrap(),
             source_layer: None,
             id: "1".into(),
-            state: vec![("hover".into(), crate::Value::Bool(true))],
+            state: vec![("hover".into(), crate::v8::Value::Bool(true))],
         }]
     );
     let vector = Transaction::from_commands(
@@ -362,10 +362,10 @@ fn source_data_is_a_new_revision_of_the_same_source() {
     assert_eq!(patch.changes, [Change::SourceData(keys[1])]);
     assert_eq!(classes(&patch), [Class::Relayout]);
     assert_eq!(doc.source_keys().collect::<Vec<_>>(), keys);
-    let crate::SourceKind::GeoJson(g) = &doc.style().sources[1].kind else {
+    let crate::v8::SourceKind::GeoJson(g) = &doc.style().sources[1].kind else {
         panic!("a GeoJSON source");
     };
-    assert!(matches!(&g.data, crate::GeoJsonData::Inline(f) if f.len() == 1));
+    assert!(matches!(&g.data, crate::v8::GeoJsonData::Inline(f) if f.len() == 1));
     assert!(doc.source_json(1).to_string().contains("[1,2]"));
     for bad in [
         r#"[["setSourceData", "v", {}]]"#,
@@ -422,7 +422,7 @@ fn source_diffs_change_the_record_and_the_features_alike() {
         .map(|f| format!("{:?} {:?} {:?}", f.id, f.properties, f.geometry))
         .collect();
     // The record, parsed again from scratch, agrees.
-    let reparsed = crate::geojson::convert(doc.source_json(1).get("data").unwrap()).unwrap();
+    let reparsed = crate::v8::geojson::convert(doc.source_json(1).get("data").unwrap()).unwrap();
     let again: Vec<String> = reparsed
         .iter()
         .map(|f| format!("{:?} {:?} {:?}", f.id, f.properties, f.geometry))

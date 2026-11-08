@@ -1,7 +1,7 @@
-//! Transactions: edits to apply to a [`StyleDoc`](crate::StyleDoc) as one.
+//! Transactions: edits to apply to a [`StyleDoc`](crate::v8::StyleDoc) as one.
 
+use crate::*;
 use orb_expr::json::{self, Json, JsonValue};
-use orb_style::*;
 
 /// One edit. Layer and source ids are as in the style.
 #[derive(Clone, Debug)]
@@ -97,7 +97,7 @@ pub struct FeatureTarget {
     pub id: Option<String>,
 }
 
-/// Edits applied together by [`StyleDoc::apply`](crate::StyleDoc::apply):
+/// Edits applied together by [`StyleDoc::apply`](crate::v8::StyleDoc::apply):
 /// all of them or, if any fails, none.
 #[derive(Clone, Debug, Default)]
 pub struct Transaction {

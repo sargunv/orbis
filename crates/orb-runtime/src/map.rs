@@ -16,7 +16,7 @@ use orb_render::{
 };
 use orb_source::Draw;
 use orb_style::SourceKind;
-use orb_v8::StyleDoc;
+use orb_style::v8::StyleDoc;
 
 use crate::MapEvent;
 use crate::frame::*;
@@ -1087,12 +1087,12 @@ impl Map {
         let zoom = self.zoom();
         let mut report = FrameReport::default();
         let clear = self.clear_color;
-        let scene = self
+        let model = self
             .style
             .as_ref()
             .map(|s| Arc::clone(&s.worker.plan().style));
         let (paint, at) =
-            crate::light::atmosphere(scene.as_deref(), &view, self.camera.state(), zoom);
+            crate::light::atmosphere(model.as_deref(), &view, self.camera.state(), zoom);
         renderer.set_atmosphere(gpu, paint, at);
 
         let now = frame_time;
@@ -1115,7 +1115,7 @@ impl Map {
             }
             style.symbol_tiles.clear();
         }
-        let frame_light = scene
+        let frame_light = model
             .as_deref()
             .map(|s| crate::light::frame_light(&s.light, zoom, self.camera.state().bearing));
         let mut frame_terrain = None;
@@ -2191,8 +2191,10 @@ mod tests {
             "UPSArcticWGS84Quad"
         );
         // An edit to Web Mercator plans the surface again.
-        let tx = orb_v8::Transaction::from_commands(r#"[["setProjection", {"type": "mercator"}]]"#)
-            .unwrap();
+        let tx = orb_style::v8::Transaction::from_commands(
+            r#"[["setProjection", {"type": "mercator"}]]"#,
+        )
+        .unwrap();
         map.edit(&tx).unwrap();
         assert_eq!(map.projection().descriptor().kind, "web-mercator");
         assert_eq!(

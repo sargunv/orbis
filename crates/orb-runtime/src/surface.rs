@@ -110,10 +110,10 @@ impl Default for Surface {
 }
 
 impl Surface {
-    /// The scene's surface: its plane, its sources' tile matrix sets and
+    /// A style's surface: its plane, its sources' tile matrix sets and
     /// its low-zoom surface.
-    pub(crate) fn of(scene: &orb_style::Scene) -> Self {
-        Self::new(scene.projection, scene.tile_matrix_sets(), scene.globe)
+    pub(crate) fn of(style: &orb_style::Style) -> Self {
+        Self::new(style.projection, style.tile_matrix_sets(), style.globe)
     }
 
     /// A surface on `projection` (Web Mercator if `None`) with the sources'

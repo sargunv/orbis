@@ -2,10 +2,10 @@
 //! names its `text-font` stacks use, each covering some code points (GL JS
 //! `FontFaceManager`).
 
+use crate::*;
 use orb_expr::json::Json;
-use orb_style::*;
 
-use crate::Cx;
+use crate::v8::Cx;
 
 const MAX_CODE_POINT: u32 = 0x10FFFF;
 
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn parses_declarations_like_gl_js() {
-        let style = crate::parse(
+        let style = crate::v8::parse(
             r#"{"version":8,"sources":{},"layers":[],"font-faces":{
                 "A":"a.ttf",
                 "B":[{"url":"b.woff2","unicode-range":["U+0-7F","bad"]},{"unicode-range":["U+80"]}],

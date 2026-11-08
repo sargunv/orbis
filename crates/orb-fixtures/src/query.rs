@@ -127,7 +127,7 @@ fn run_test(
     if test.get("queryOptions").is_some() {
         reasons.insert("query:options".into());
     }
-    if let Ok(parsed) = orb_v8::parse(&text) {
+    if let Ok(parsed) = orb_style::v8::parse(&text) {
         // The query tests' layers carry GL JS's long-gone `interactive`
         // flag, which nothing reads.
         reasons.extend(

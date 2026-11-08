@@ -22,11 +22,11 @@ pub(crate) fn frame_light(light: &Light, zoom: f64, bearing: f64) -> FrameLight 
     }
 }
 
-/// The atmosphere of `scene` at `zoom` and how `view` of `camera` sees it:
+/// The atmosphere of `style` at `zoom` and how `view` of `camera` sees it:
 /// the sky above the surface's horizon (a globe's limb), fog on terrain,
 /// scattering over a globe.
 pub(crate) fn atmosphere(
-    scene: Option<&orb_style::Scene>,
+    style: Option<&orb_style::Style>,
     view: &orb_camera::View,
     camera: &orb_camera::CameraState,
     zoom: f64,
@@ -34,8 +34,8 @@ pub(crate) fn atmosphere(
     Option<orb_render::AtmospherePaint>,
     orb_render::AtmosphereView,
 ) {
-    let light = scene.map(|s| &s.light);
-    let paint = scene
+    let light = style.map(|s| &s.light);
+    let paint = style
         .and_then(|s| s.atmosphere.as_ref())
         .map(|a| orb_render::AtmospherePaint {
             sky_color: a.sky_color.evaluate(zoom).premultiplied(),
@@ -132,7 +132,7 @@ mod tests {
     fn the_light_turns_with_a_viewport_anchor() {
         // v8's default light: intensity 0.5 at [1.15, 210, 30], turning
         // with the map.
-        let light = orb_v8::default_light();
+        let light = orb_style::v8::default_light();
         let still = frame_light(&light, 0.0, 0.0);
         assert_eq!(still.intensity, 0.5);
         let turned = frame_light(&light, 0.0, 90.0);

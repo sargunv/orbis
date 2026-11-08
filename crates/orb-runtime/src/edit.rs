@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use orb_crs::TileIndex;
 use orb_hal::Gpu;
+use orb_style::v8::Transaction;
 use orb_style::{Binding, Change, Class, LayerKey, PropertyId};
-use orb_v8::Transaction;
 
 use crate::jobs::TileResult;
 use crate::map::{Map, NodeState, revise};

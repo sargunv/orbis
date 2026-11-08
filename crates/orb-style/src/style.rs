@@ -1,13 +1,13 @@
-//! The scene: one document of sources, layers, light, atmosphere,
-//! terrain and surface, which `orb-v8` builds from a v8 style.
+//! The style: one document of sources, layers, light, atmosphere,
+//! terrain and surface, which the [`v8`](crate::v8) front end builds.
 
 use orb_expr::{Diagnostic, Value};
 
 use crate::{Atmosphere, FontFaces, Layer, Light, Source, Sprite, Terrain, Transition};
 
-/// The native scene: what a v8 style parses into.
+/// The style model: what a v8 style parses into.
 #[derive(Clone, Debug)]
-pub struct Scene {
+pub struct Style {
     pub name: Option<String>,
     /// The default camera: `[longitude, latitude]`.
     pub center: Option<[f64; 2]>,
@@ -35,7 +35,7 @@ pub struct Scene {
     /// with a `transition`, or a zoom interpolation from one to `mercator`;
     /// `None` draws the plane alone.
     pub globe: Option<orb_crs::Globe>,
-    /// The plane the scene draws on: the root `projection`'s CRS (such as
+    /// The plane the style draws on: the root `projection`'s CRS (such as
     /// `EPSG:3413`) when it has no `transition`; `None` for Web Mercator.
     pub projection: Option<orb_crs::Projection>,
     pub sources: Vec<std::sync::Arc<Source>>,
@@ -45,7 +45,7 @@ pub struct Scene {
     /// What parsed but isn't supported or rendered yet.
     pub warnings: Vec<Diagnostic>,
 }
-impl Scene {
+impl Style {
     pub fn source(&self, id: &str) -> Option<&Source> {
         self.sources.iter().find(|s| s.id == id).map(|s| &**s)
     }

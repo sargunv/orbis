@@ -291,7 +291,7 @@ fn run_test(
         Backend::Native(runtime) => Some(map(runtime, &metadata)),
         Backend::Chrome(_) => None,
     };
-    match orb_v8::parse(&text) {
+    match orb_style::v8::parse(&text) {
         Ok(style) => {
             reasons.extend(scope::reasons(&style));
             // set_style_json also exposes plan diagnostics absent from the parser.

@@ -786,7 +786,7 @@ mod tests {
     }
 
     fn plan(style: &str) -> StylePlan {
-        StylePlan::of(orb_v8::parse(style).expect("valid style"))
+        StylePlan::of(orb_style::v8::parse(style).expect("valid style"))
     }
 
     #[test]

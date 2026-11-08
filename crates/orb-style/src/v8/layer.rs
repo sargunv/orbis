@@ -1,13 +1,13 @@
 //! Layers: a v8 layer's source and selection, and its properties in the
 //! order of the property table ([`PropertyId`]).
 
-use orb_style::*;
+use crate::*;
 use std::collections::HashSet;
 
 use orb_expr::json::{Json, JsonValue, Member};
 use orb_expr::{Filter, Kind, PropertyExpression, Value};
 
-use crate::Cx;
+use crate::v8::Cx;
 
 const LAYER_KEYS: &[&str] = &[
     "id",
@@ -123,7 +123,7 @@ pub(crate) fn typed_property_at<T: PropertyValue>(
     json: Option<&Json>,
     path: &str,
     prop: &Prop,
-) -> crate::Property<T> {
+) -> crate::v8::Property<T> {
     let default = match prop.default_json() {
         None => T::UNSET.unwrap_or_else(|| panic!("{} has no default", prop.name)),
         Some(json) => {
@@ -138,7 +138,7 @@ pub(crate) fn typed_property_at<T: PropertyValue>(
             .unwrap_or_else(|| panic!("{} default has the wrong type", prop.name))
         }
     };
-    crate::Property::from_slot(property_at(cx, json, path, prop), default)
+    crate::v8::Property::from_slot(property_at(cx, json, path, prop), default)
 }
 
 fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
@@ -382,9 +382,9 @@ pub(crate) fn parse_layer(
     let visibility = {
         let slot = property_at(
             cx,
-            layout.get(orb_style::VISIBILITY.name),
+            layout.get(crate::VISIBILITY.name),
             &format!("{}.visibility", layout.path),
-            &orb_style::VISIBILITY,
+            &crate::VISIBILITY,
         );
         slot.as_constant()
             .and_then(Visibility::from_value)
@@ -415,7 +415,7 @@ pub(crate) fn parse_layer(
         .iter()
         .filter_map(|m| {
             let name = m.key.strip_suffix("-transition")?;
-            match crate::paint::parse_transition(&m.value) {
+            match crate::v8::paint::parse_transition(&m.value) {
                 Some(t) => Some((name.to_string(), t)),
                 None => {
                     cx.warn(

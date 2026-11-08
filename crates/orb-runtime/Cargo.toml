@@ -25,7 +25,6 @@ orb-style.workspace = true
 orb-symbol.workspace = true
 orb-text = { workspace = true, features = ["sea-buffer"] }
 orb-tile.workspace = true
-orb-v8.workspace = true
 
 # Native builds compile the Southeast Asian word data in; the web loads it.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

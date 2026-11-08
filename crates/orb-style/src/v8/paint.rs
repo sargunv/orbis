@@ -1,6 +1,6 @@
 //! Paint transitions: how a paint change animates.
 
-use orb_style::*;
+use crate::*;
 /// A `{duration, delay}` object's members, or `None` where it isn't one.
 pub(crate) fn parse_transition(json: &orb_expr::json::Json) -> Option<TransitionOverride> {
     let member = |key: &str| match json.get(key) {

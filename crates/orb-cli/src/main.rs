@@ -172,7 +172,7 @@ fn tiles(
     let tms = if tms.ends_with(".json") {
         let text = std::fs::read_to_string(tms).map_err(|e| format!("{tms}: {e}"))?;
         let json = orb_expr::json::parse(&text).map_err(|e| format!("{tms}: {e:?}"))?;
-        let def = orb_v8::tms_definition(&json).map_err(|e| format!("{tms}: {e}"))?;
+        let def = orb_style::v8::tms_definition(&json).map_err(|e| format!("{tms}: {e}"))?;
         TileMatrixSet::from_definition(&def)
     } else {
         TileMatrixSet::by_id(tms)

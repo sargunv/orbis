@@ -1,10 +1,10 @@
 //! Sources.
 
+use crate::*;
 use orb_crs::{TileMatrix, TileMatrixSet, TileMatrixSetDefinition};
 use orb_expr::json::{Json, JsonValue};
-use orb_style::*;
 
-use crate::Cx;
+use crate::v8::Cx;
 
 const SOURCE_TYPES: &[&str] = &[
     "vector",
@@ -341,7 +341,7 @@ fn parse_geojson_source(cx: &mut Cx, json: &Json, path: &str) -> Option<GeoJsonS
     let data = if let Some(url) = data.as_str() {
         GeoJsonData::Url(url.to_string())
     } else {
-        match crate::geojson::convert(data) {
+        match crate::v8::geojson::convert(data) {
             Ok(features) => GeoJsonData::Inline(features),
             Err(e) => {
                 cx.error(at("data"), data.span, e);
@@ -445,7 +445,7 @@ fn parse_geojson_source(cx: &mut Cx, json: &Json, path: &str) -> Option<GeoJsonS
 /// `clusterRadius` pixels (50) in tile units, `clusterMaxZoom` (the
 /// source's `maxzoom` less one), `clusterMinPoints` (2, at least) and
 /// `clusterProperties`.
-fn cluster(json: &Json, path: &str, max_zoom: u8, cx: &mut Cx) -> orb_style::Cluster {
+fn cluster(json: &Json, path: &str, max_zoom: u8, cx: &mut Cx) -> crate::Cluster {
     let at = |key: &str| format!("{path}.{key}");
     let mut options = orb_tile::geojson::ClusterOptions {
         max_zoom: max_zoom.saturating_sub(1),
@@ -474,7 +474,7 @@ fn cluster(json: &Json, path: &str, max_zoom: u8, cx: &mut Cx) -> orb_style::Clu
     if let Some(v) = json.get("clusterProperties") {
         let Some(members) = v.as_object() else {
             cx.error(at("clusterProperties"), v.span, "expected an object");
-            return orb_style::Cluster {
+            return crate::Cluster {
                 options,
                 properties,
             };
@@ -504,7 +504,7 @@ fn cluster(json: &Json, path: &str, max_zoom: u8, cx: &mut Cx) -> orb_style::Clu
                 }
             }
             if ok {
-                properties.push(orb_style::ClusterProperty {
+                properties.push(crate::ClusterProperty {
                     name: m.key.clone(),
                     map: map.clone(),
                     reduce,
@@ -512,7 +512,7 @@ fn cluster(json: &Json, path: &str, max_zoom: u8, cx: &mut Cx) -> orb_style::Clu
             }
         }
     }
-    orb_style::Cluster {
+    crate::Cluster {
         options,
         properties,
     }
@@ -521,8 +521,8 @@ fn cluster(json: &Json, path: &str, max_zoom: u8, cx: &mut Cx) -> orb_style::Clu
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn parse(source: &str) -> Result<crate::Scene, crate::Diagnostics> {
-        crate::parse(&format!(
+    fn parse(source: &str) -> Result<crate::v8::Style, crate::v8::Diagnostics> {
+        crate::v8::parse(&format!(
             r#"{{"version":8,"sources":{{"s":{source}}},"layers":[]}}"#
         ))
     }

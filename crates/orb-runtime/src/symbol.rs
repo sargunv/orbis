@@ -647,7 +647,8 @@ mod tests {
             let style = serde_json::json!({
                 "version": 8, "sources": {"s": source}, "layers": [style_layer],
             });
-            let style = orb_v8::parse(&style.to_string()).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let style =
+                orb_style::v8::parse(&style.to_string()).unwrap_or_else(|e| panic!("{name}: {e}"));
             let symbol = &style.layers[0];
             let zoom = num(&case["zoom"]);
             let features: Vec<u32> = match &symbol.filter {

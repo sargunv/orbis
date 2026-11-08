@@ -1,9 +1,9 @@
-use orb_style::*;
+use crate::*;
 use std::collections::HashSet;
 
 use orb_expr::json::Json;
 
-use crate::Cx;
+use crate::v8::Cx;
 
 pub(crate) fn parse(cx: &mut Cx, value: Option<&Json>) -> Vec<Sprite> {
     let Some(value) = value else {
@@ -50,10 +50,10 @@ mod tests {
         let style = |sprite: &str| {
             format!(r#"{{"version":8,"sprite":{sprite},"sources":{{}},"layers":[]}}"#)
         };
-        let single = crate::parse(&style(r#""https://example.com/sprite""#)).unwrap();
+        let single = crate::v8::parse(&style(r#""https://example.com/sprite""#)).unwrap();
         assert_eq!(single.sprites[0].id, "default");
         let array = r#"[{"id":"one","url":"test://one"},{"id":"two","url":"test://two"}]"#;
-        assert_eq!(crate::parse(&style(array)).unwrap().sprites.len(), 2);
-        assert!(crate::parse(&style(&array.replace("two", "one"))).is_err());
+        assert_eq!(crate::v8::parse(&style(array)).unwrap().sprites.len(), 2);
+        assert!(crate::v8::parse(&style(&array.replace("two", "one"))).is_err());
     }
 }

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use orb_crs::{TileIndex, TileMatrixSet};
 use orb_expr::json::Json;
-use orb_style::{Encoding, GeoJsonData, Scene, SourceKind, Value};
+use orb_style::{Encoding, GeoJsonData, SourceKind, Style, Value};
 use orb_tile::TileFrame;
 
 use crate::TileLocation;
@@ -151,7 +151,7 @@ impl TileWorker {
     /// Parses a v8 style that will not be edited. Returns the style's
     /// errors joined by newlines.
     pub fn new(style_json: &str) -> Result<Self, String> {
-        let style = orb_v8::parse(style_json).map_err(|d| d.to_string())?;
+        let style = orb_style::v8::parse(style_json).map_err(|d| d.to_string())?;
         let layers = (1..=style.layers.len() as u32).collect();
         let sources = (1..=style.sources.len() as u32).collect();
         Ok(Self::with_style(
@@ -175,7 +175,7 @@ impl TileWorker {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_style(
         previous: Option<&TileWorker>,
-        style: Arc<Scene>,
+        style: Arc<Style>,
         layer_keys: Vec<u32>,
         source_keys: Vec<u32>,
         new_data: &[u32],
@@ -299,13 +299,15 @@ impl TileWorker {
             };
             let diffs = update.source_diffs.iter().find(|(k, _)| k == key);
             let source = match update.source_json.iter().find(|(k, ..)| k == key) {
-                Some((_, id, json)) => {
-                    Arc::new(orb_v8::parse_source(id, json).map_err(|d| d.to_string())?.0)
-                }
+                Some((_, id, json)) => Arc::new(
+                    orb_style::v8::parse_source(id, json)
+                        .map_err(|d| d.to_string())?
+                        .0,
+                ),
                 None if let Some((_, diffs)) = diffs => {
                     let source =
                         previous().ok_or_else(|| format!("a diff of unknown source {key}"))?;
-                    Arc::new(orb_v8::apply_diffs(source, diffs)?)
+                    Arc::new(orb_style::v8::apply_diffs(source, diffs)?)
                 }
                 None => old
                     .and_then(|plan| {
@@ -320,7 +322,7 @@ impl TileWorker {
         for (index, key) in update.layers.iter().enumerate() {
             let layer = match update.layer_json.iter().find(|(k, _)| k == key) {
                 Some((_, json)) => Arc::new(
-                    orb_v8::parse_layer(json, index, &sources, &update.state)
+                    orb_style::v8::parse_layer(json, index, &sources, &update.state)
                         .map_err(|d| d.to_string())?
                         .0,
                 ),
@@ -333,7 +335,7 @@ impl TileWorker {
             };
             layers.push(layer);
         }
-        let style = Scene {
+        let style = Style {
             name: None,
             center: None,
             zoom: None,
@@ -344,7 +346,7 @@ impl TileWorker {
             sprites: Vec::new(),
             glyphs: update.glyphs.clone(),
             font_faces: update.font_faces.clone(),
-            light: orb_v8::default_light(),
+            light: orb_style::v8::default_light(),
             atmosphere: None,
             terrain: None,
             globe: None,
@@ -580,9 +582,9 @@ impl TileWorker {
     ) -> Result<crate::geojson::Index, String> {
         let features = match &geojson.data {
             GeoJsonData::Inline(features) => features.clone(),
-            GeoJsonData::Url(_) => {
-                orb_v8::parse_geojson(std::str::from_utf8(bytes).map_err(|e| e.to_string())?)?
-            }
+            GeoJsonData::Url(_) => orb_style::v8::parse_geojson(
+                std::str::from_utf8(bytes).map_err(|e| e.to_string())?,
+            )?,
         };
         let plane = self.surface.plane.clone().map(Arc::new);
         crate::geojson::Index::new(features, geojson, plane)

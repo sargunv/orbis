@@ -284,7 +284,7 @@ struct State {
     pumping: bool,
     again: bool,
     /// The style, parsed, once it arrives.
-    style: Option<Arc<orb_style::Scene>>,
+    style: Option<Arc<orb_style::Style>>,
     /// Keys of resources already kept: `resources` offset and length.
     resources: HashMap<String, (u64, u64)>,
     resources_len: u64,
@@ -607,7 +607,7 @@ impl Job {
             Then::Style => match std::str::from_utf8(bytes)
                 .map_err(|e| e.to_string())
                 .and_then(|text| {
-                    orb_v8::parse(text)
+                    orb_style::v8::parse(text)
                         .map_err(|e| e.to_string())
                         .map(|s| (s, text))
                 }) {
@@ -627,7 +627,7 @@ impl Job {
 
     /// Queues everything the style needs but tiles, which follow their
     /// sources' TileJSON.
-    fn style(self: &Arc<Self>, style: orb_style::Scene, text: &str) {
+    fn style(self: &Arc<Self>, style: orb_style::Style, text: &str) {
         let style = Arc::new(style);
         self.lock().style = Some(style.clone());
         for sprite in &style.sprites {
