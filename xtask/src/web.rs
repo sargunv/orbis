@@ -1,6 +1,7 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
 //! `web/pkg/` and reports its sizes, raw, brotli and by crate (twiggy).
-//! Size is watched, not a gate.
+//! Size is watched, not a gate: it warns when a module grows past its
+//! watch level, and never fails.
 //!
 //! `cargo xtask pages`: the above, then the Vite build of the site
 //! `.github/workflows/pages.yml` deploys, into `web/dist/`.
@@ -12,6 +13,14 @@ use std::process::Command;
 use crate::cargo;
 
 const OUT_DIR: &str = "web/pkg";
+
+/// The brotli sizes, in KiB, past which `core.wasm` and `shaper.wasm` warn:
+/// a few percent above what each weighs now, so crossing one means
+/// something grew. Find what in the per-crate report; if the growth earns
+/// its bytes, raise the level to the new size plus the same margin, and
+/// when a change shrinks a module, lower it.
+const CORE_WATCH_KIB: usize = 980;
+const SHAPER_WATCH_KIB: usize = 420;
 
 /// Crates whose code the size report attributes separately.
 const CRATES: &[&str] = &[
@@ -48,6 +57,7 @@ pub(crate) fn build() -> Result<(), String> {
         core.brotli / 1024,
         js.len() / 1024,
     );
+    watch("core.wasm", core.brotli, CORE_WATCH_KIB);
     word_data(&out)?;
     // `font-faces` drawing, loaded the first time a style declares a file.
     let shaper = module(&root, "orb-shaper", "shaper")?;
@@ -56,7 +66,18 @@ pub(crate) fn build() -> Result<(), String> {
         shaper.raw / 1024,
         shaper.brotli / 1024
     );
+    watch("shaper.wasm", shaper.brotli, SHAPER_WATCH_KIB);
     Ok(())
+}
+
+/// Warns when `name`'s brotli size passes its watch level.
+fn watch(name: &str, brotli: usize, level_kib: usize) {
+    if brotli > level_kib * 1024 {
+        eprintln!(
+            "warning: {name} grew to {} KiB brotli, past its {level_kib} KiB watch level (xtask/src/web.rs)",
+            brotli / 1024
+        );
+    }
 }
 
 pub(crate) fn pages() -> Result<(), String> {
