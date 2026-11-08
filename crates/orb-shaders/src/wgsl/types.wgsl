@@ -81,7 +81,7 @@ struct Frame {
     globe_eye: vec3<f32>,
     _pad7: f32,
     // The camera's world position as whole quanta and a remainder (orb-
-    // scene's `quantum`): rows' origins less it are camera-relative
+    // render's `quantum`): rows' origins less it are camera-relative
     // (`tile_origin`).
     camera_whole: vec2<i32>,
     camera_rest: vec2<f32>,

@@ -5,6 +5,14 @@
 
 #![forbid(unsafe_code)]
 
+/// A WGSL module as the build script wrote it: without comments or
+/// indentation, which only the source tree needs.
+macro_rules! wgsl {
+    ($name:literal) => {
+        include_str!(concat!(env!("OUT_DIR"), "/wgsl/", $name, ".wgsl"))
+    };
+}
+
 mod catalog;
 pub use catalog::*;
 

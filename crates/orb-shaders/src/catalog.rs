@@ -1,45 +1,41 @@
 // The shader catalog: composition of WGSL modules into pipeline sources.
 // Shared with the build script, which reflects the shaders' uniforms.
-pub(crate) const TYPES: &str = include_str!("wgsl/types.wgsl");
-const PROJECT: &str = include_str!("wgsl/project.wgsl");
-const DRAW: &str = concat!(
-    include_str!("wgsl/bezier.wgsl"),
-    include_str!("wgsl/draw.wgsl"),
-    include_str!("wgsl/project.wgsl")
-);
-const FETCH: &str = include_str!("wgsl/fetch.wgsl");
-const PATTERN: &str = include_str!("wgsl/pattern.wgsl");
-const EXTRUSION: &str = include_str!("wgsl/extrusion.wgsl");
-const EXTRUSION_FRAGMENT: &str = include_str!("wgsl/extrusion_fragment.wgsl");
+pub(crate) const TYPES: &str = wgsl!("types");
+const PROJECT: &str = wgsl!("project");
+const DRAW: &str = concat!(wgsl!("bezier"), wgsl!("draw"), wgsl!("project"));
+const FETCH: &str = wgsl!("fetch");
+const PATTERN: &str = wgsl!("pattern");
+const EXTRUSION: &str = wgsl!("extrusion");
+const EXTRUSION_FRAGMENT: &str = wgsl!("extrusion_fragment");
 
-const FILL: &str = include_str!("wgsl/fill.wgsl");
-const LINE: &str = include_str!("wgsl/line.wgsl");
-const POINT: &str = include_str!("wgsl/point.wgsl");
-const CIRCLE: &str = include_str!("wgsl/circle.wgsl");
-const SYMBOL: &str = include_str!("wgsl/symbol.wgsl");
-const SYMBOL_POINT: &str = include_str!("wgsl/symbol_point.wgsl");
-const SYMBOL_LINE: &str = include_str!("wgsl/symbol_line.wgsl");
-const HEATMAP: &str = include_str!("wgsl/heatmap.wgsl");
-const COMPOSITE: &str = include_str!("wgsl/composite.wgsl");
-pub(crate) const CULL: &str = include_str!("wgsl/cull.wgsl");
-const IMAGE: &str = include_str!("wgsl/image.wgsl");
-const DEM: &str = include_str!("wgsl/dem.wgsl");
+const FILL: &str = wgsl!("fill");
+const LINE: &str = wgsl!("line");
+const POINT: &str = wgsl!("point");
+const CIRCLE: &str = wgsl!("circle");
+const SYMBOL: &str = wgsl!("symbol");
+const SYMBOL_POINT: &str = wgsl!("symbol_point");
+const SYMBOL_LINE: &str = wgsl!("symbol_line");
+const HEATMAP: &str = wgsl!("heatmap");
+const COMPOSITE: &str = wgsl!("composite");
+pub(crate) const CULL: &str = wgsl!("cull");
+const IMAGE: &str = wgsl!("image");
+const DEM: &str = wgsl!("dem");
 /// The atmosphere's sky and fog.
-const ATMOSPHERE: &str = include_str!("wgsl/atmosphere.wgsl");
+const ATMOSPHERE: &str = wgsl!("atmosphere");
 /// v8's `light` on extrusions.
-const LIGHTING: &str = include_str!("wgsl/lighting.wgsl");
-const RASTER: &str = include_str!("wgsl/raster.wgsl");
-const HILLSHADE: &str = include_str!("wgsl/hillshade.wgsl");
-const TERRAIN: &str = include_str!("wgsl/terrain.wgsl");
-const COLOR_RELIEF: &str = include_str!("wgsl/color_relief.wgsl");
-const PREPARE: &str = include_str!("wgsl/prepare.wgsl");
-const PREPARE_PAD: &str = include_str!("wgsl/prepare_pad.wgsl");
+const LIGHTING: &str = wgsl!("lighting");
+const RASTER: &str = wgsl!("raster");
+const HILLSHADE: &str = wgsl!("hillshade");
+const TERRAIN: &str = wgsl!("terrain");
+const COLOR_RELIEF: &str = wgsl!("color_relief");
+const PREPARE: &str = wgsl!("prepare");
+const PREPARE_PAD: &str = wgsl!("prepare_pad");
 /// First of a vertex-only shader's parts where clip distances are (wgpu's
 /// `CLIP_DISTANCES`, WebGPU's `clip-distances`): it enables them, and the
 /// parts' lines marked `//planes ` become code. A fragment stage can't take
 /// clip distances, so such a shader leaves its fragment stages out.
 const CLIP_PLANES: &str = "enable clip_distances;\n";
-const PREPARE_SLOPE: &str = include_str!("wgsl/prepare_slope.wgsl");
+const PREPARE_SLOPE: &str = wgsl!("prepare_slope");
 
 /// A composed shader module and its entry points.
 #[derive(Clone, Copy, Debug)]
@@ -82,7 +78,7 @@ pub const TERRAIN_SHADE_SHADER: Shader = Shader {
         PROJECT,
         TERRAIN,
         HILLSHADE,
-        include_str!("wgsl/terrain_shade.wgsl"),
+        wgsl!("terrain_shade"),
     ],
     vertex: "vs_terrain",
     fragment: "fs_terrain_shaded",
@@ -92,7 +88,7 @@ pub const TERRAIN_SHADE_SHADER: Shader = Shader {
 /// Clears the drape slots a frame redraws.
 pub const DRAPE_SHADER: Shader = Shader {
     label: "drape",
-    parts: &[include_str!("wgsl/drape.wgsl")],
+    parts: &[wgsl!("drape")],
     vertex: "vs_slot",
     fragment: "fs_clear",
     compute: "",
@@ -100,7 +96,7 @@ pub const DRAPE_SHADER: Shader = Shader {
 
 pub const SKY_SHADER: Shader = Shader {
     label: "sky",
-    parts: &[TYPES, ATMOSPHERE, include_str!("wgsl/sky.wgsl")],
+    parts: &[TYPES, ATMOSPHERE, wgsl!("sky")],
     vertex: "vs_sky",
     fragment: "fs_sky",
     compute: "",
@@ -201,13 +197,7 @@ pub const RASTER_SHADER: Shader = Shader {
 
 pub const HILLSHADE_SHADER: Shader = Shader {
     label: "hillshade",
-    parts: &[
-        TYPES,
-        DRAW,
-        IMAGE,
-        HILLSHADE,
-        include_str!("wgsl/hillshade_layer.wgsl"),
-    ],
+    parts: &[TYPES, DRAW, IMAGE, HILLSHADE, wgsl!("hillshade_layer")],
     vertex: "vs_hillshade",
     fragment: "fs_hillshade",
     compute: "",
@@ -224,7 +214,7 @@ pub const COLOR_RELIEF_SHADER: Shader = Shader {
 /// Mip levels over regions of array layers: drape slots, raster pages.
 pub const DOWNSAMPLE_SHADER: Shader = Shader {
     label: "downsample",
-    parts: &[include_str!("wgsl/downsample.wgsl")],
+    parts: &[wgsl!("downsample")],
     vertex: "",
     fragment: "",
     compute: "downsample",

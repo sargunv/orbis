@@ -6,6 +6,38 @@ fn main() {
     println!("cargo::rerun-if-changed=src/catalog.rs");
     println!("cargo::rerun-if-changed=src/wgsl");
     reflect::write();
+    strip();
+}
+
+/// Writes each WGSL module to `OUT_DIR/wgsl` without its comments,
+/// indentation and blank lines, which the binaries would otherwise carry.
+/// A `//planes ` line stays: [`Shader::source`](catalog::Shader::source)
+/// turns it into code.
+fn strip() {
+    let out =
+        std::path::Path::new(&std::env::var("OUT_DIR").expect("cargo sets OUT_DIR")).join("wgsl");
+    std::fs::create_dir_all(&out).expect("creates OUT_DIR/wgsl");
+    for entry in std::fs::read_dir("src/wgsl").expect("reads src/wgsl") {
+        let path = entry.expect("lists src/wgsl").path();
+        let source = std::fs::read_to_string(&path).expect("reads a WGSL module");
+        let mut stripped = String::with_capacity(source.len());
+        for line in source.lines() {
+            let line = line.trim();
+            let code = if line.starts_with("//planes ") {
+                line
+            } else {
+                line.split_once("//")
+                    .map_or(line, |(code, _)| code)
+                    .trim_end()
+            };
+            if !code.is_empty() {
+                stripped.push_str(code);
+                stripped.push('\n');
+            }
+        }
+        std::fs::write(out.join(path.file_name().expect("a file")), stripped)
+            .expect("writes OUT_DIR/wgsl");
+    }
 }
 
 mod reflect {
@@ -143,6 +175,18 @@ mod reflect {
         let dir = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
         std::fs::write(format!("{dir}/layout.rs"), rust).expect("writes OUT_DIR");
     }
+}
+
+/// The build script reflects the source tree's modules.
+macro_rules! wgsl {
+    ($name:literal) => {
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/wgsl/",
+            $name,
+            ".wgsl"
+        ))
+    };
 }
 
 #[allow(dead_code, unreachable_pub)]
