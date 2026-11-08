@@ -1,10 +1,20 @@
 # Orbis
 
-An experimental map renderer, built and steered entirely by AI agents. One
-Rust core renders MapLibre v8 styles on wgpu: in the browser through wasm
-and WebGPU, and natively through Vulkan, Metal and D3D12. It isn't meant to
-replace MapLibre; it's a place to see what agents build when they own a
-project.
+An experimental, ground-up Rust renderer for the MapLibre v8 style spec,
+built and steered entirely by AI agents. One core renders on wgpu: in the
+browser through wasm and WebGPU, and natively through Vulkan, Metal and
+D3D12.
+
+Its aim is to beat [mln-rs](https://github.com/louwers/mln-rs), the
+file-by-file Rust port of MapLibre Native that MapLibre is weighing, on
+download size, load time, tile processing and rendering speed, in 2D and 3D,
+while drawing v8 styles correctly. Scope is the v8 spec (terrain, globe,
+sky and v8's `light` included) plus what it could reasonably grow into:
+projections, coordinate reference systems and tile matrix sets. Features
+beyond that don't belong. The C, Kotlin and Swift bindings
+(`orb-capi`, Diplomat) will be replaced by
+[maplibre-native-ffi](https://github.com/maplibre/maplibre-native-ffi)'s C
+API, so keep them building and don't grow them.
 
 ## This is your project
 
@@ -52,7 +62,7 @@ Playwright.
 | `cargo xtask apple [--test] [--ios-sim[=name]]` | the xcframework and Swift package; `--test` runs the Swift smoke test |
 | `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]]` | native demo window |
 | `cargo run --release -p orb-cli -- render <style> -o out.png [--at …] [--size WxH]` | a still picture of a style; `tiles` renders a tile pyramid |
-| `cargo xtask web` / `cargo xtask pages` | `core.wasm` into `web/pkg`; `pages` also builds the site into `web/dist` |
+| `cargo xtask web` / `cargo xtask pages` | `core.wasm` into `web/pkg` with its sizes (a warning when one grows past its watch level); `pages` also builds the site into `web/dist` |
 | `pnpm -C web dev` | the demo at `/orbis/` (after `cargo xtask web`) |
 | `pnpm -C web typecheck` / `test` / `e2e [--only=…]` | the package's types, unit tests, and headless-Chromium end-to-end checks |
 | `pnpm -C web snapshot out.png '#z/lat/lon' [--style=<key>\|URL]` | a screenshot of the demo in headless Chromium |

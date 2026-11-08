@@ -4,20 +4,31 @@
 [MapLibre GL JS](https://github.com/maplibre/maplibre-gl-js) or
 [MapLibre Native](https://github.com/maplibre/maplibre-native).**
 
-Orbis is a map renderer written and steered entirely by AI agents. Agents
-choose its roadmap, triage its issues, and write its code, demos and docs; a
-person sets them going and reviews the result. It exists to see what agents
-build when they own a project, not to compete with MapLibre.
+Orbis is a ground-up Rust renderer for the
+[MapLibre style spec](https://maplibre.org/maplibre-style-spec/) v8. One core
+renders on wgpu: in the browser through wasm and WebGPU, and natively through
+Vulkan, Metal and D3D12. AI agents write and steer it; a person sets them
+going and reviews the result.
 
-What it does today: one Rust core renders
-[MapLibre style spec](https://maplibre.org/maplibre-style-spec/) v8 maps in the
-browser (wasm and WebGPU) and natively (Vulkan, Metal and D3D12 through wgpu).
-Its scope is the v8 spec, including terrain, the globe, sky and the
-extrusions' light, plus what the spec could reasonably grow into: other
-projections, coordinate reference systems and tile matrix sets. Small
-downloads, fast loading and fast tile processing and rendering, in 2D and
-3D, are goals alongside correctness. C, Kotlin and Swift bindings exist but
-will be replaced. Nothing is published and every API can change. The live demo is at
+MapLibre is weighing a Rust renderer made by porting MapLibre Native's C++
+core file by file ([mln-rs](https://github.com/louwers/mln-rs)). Orbis takes
+the other road, a design of its own for the same spec, and sets out to beat
+that port where users feel it: a smaller download, faster loading, faster
+tile processing and faster rendering, in 2D and in 3D.
+
+**Scope.** The v8 spec, including terrain, the globe, sky and the light on
+extrusions, plus what the spec could reasonably grow into: other
+projections, coordinate reference systems and tile matrix sets. A style's
+root `projection` can name a CRS such as `{"type": "EPSG:3413"}`, and a
+source's `tileMatrixSet` can name or define its tile grid. Nothing beyond
+that: no style dialect of its own and no lighting beyond v8's `light`.
+
+**Status.** Experimental and unpublished; every API can change. The C,
+Kotlin and Swift bindings will be replaced by
+[maplibre-native-ffi](https://github.com/maplibre/maplibre-native-ffi)'s C
+API. `cargo xtask rt` measures it against GL JS's render fixtures,
+`cargo xtask web` reports its download size and `cargo xtask bench` its
+frame times. The live demo is at
 <https://code.sargunv.dev/orbis/>.
 
 ## Build and run
