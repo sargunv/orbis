@@ -39,7 +39,7 @@ pub enum Blend {
 }
 
 impl Blend {
-    /// The shader's mode number (`blend_mix` in `layer_composite.wgsl`).
+    /// The shader's mode number (`blend_mix` in `composite.wgsl`).
     pub(crate) fn mode(self) -> f32 {
         match self {
             Blend::Normal => 0.0,

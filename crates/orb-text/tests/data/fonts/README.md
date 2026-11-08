@@ -3,7 +3,7 @@
 Subsets of Noto Sans (Regular) from
 [notofonts.github.io](https://github.com/notofonts/notofonts.github.io),
 unhinted TTF, cut with fontTools' `pyftsubset` to the characters of
-`orb-text`'s script matrix (`src/matrix.rs`) with all layout features; the
+`orb-text`'s script tests (`src/tests.rs`) with all layout features; the
 Arabic subset also keeps the presentation-form blocks Arabic shaping maps to.
 
 Noto Sans is © Google LLC and the Noto Project Authors, under the
