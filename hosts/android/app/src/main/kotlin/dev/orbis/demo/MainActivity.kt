@@ -67,7 +67,7 @@ class MainActivity : Activity() {
         runtime = OrbRuntime.createWith(0u, File(noBackupFilesDir, "orbis-state").path)
         Log.i("Orbis", runtime.stats().use { it.adapter() })
         // `--ez leakcheck true`: maps made, drawn and dropped one after
-        // another leave the device holding what one leaves (#79).
+        // another leave the device holding what one leaves.
         if (intent.getBooleanExtra("leakcheck", false)) {
             val style = "file://${File(data, "tokyo-mvt.json").path}"
             val live = (1..20).map {

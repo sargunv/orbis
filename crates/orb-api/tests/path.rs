@@ -100,7 +100,7 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
     drop(moved);
     let (fresh, fresh_rest) = fresh_at(&runtime, &mut target, style, end);
     // At rest, the camera too is what a fresh one is: over terrain, it
-    // stands on the same ground at the same height (#104).
+    // stands on the same ground at the same height.
     assert_eq!(
         rest, fresh_rest,
         "the camera at rest differs from a fresh map's"
@@ -362,7 +362,7 @@ fn hills() -> (String, DemDir) {
 /// Steep ridges over the Valais Alps, 700 to about 4,500 m, zooms 0–11,
 /// hillshaded on the terrain under a sky: ridge silhouettes stand against
 /// it at a high pitch. Crests are rounded: a crease one DEM pixel wide
-/// running across the pixel grid shades as dotted lines (#103).
+/// running across the pixel grid shades as dotted lines.
 fn alps() -> (String, DemDir) {
     let (dem, dir) = dem("alps", (7.4, 45.7, 8.4, 46.3), 11, |lon, lat| {
         let ridge = |v: f64| 1.0 - (v.sin().powi(2) + 0.04).sqrt();
@@ -385,7 +385,7 @@ fn alps() -> (String, DemDir) {
 }
 
 /// Terrain over local hills: DEM borders come from the neighbours the view
-/// draws, not from those a gesture saw (#84).
+/// draws, not from those a gesture saw.
 #[test]
 fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     let (hills, _dem) = hills();
@@ -399,7 +399,7 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
 }
 
 /// Ridges against the sky over the Alps: a turn and tilt to a pitch of
-/// 75° draws the silhouettes a fresh map at rest draws (#84).
+/// 75° draws the silhouettes a fresh map at rest draws.
 #[test]
 fn an_alpine_gesture_draws_what_a_fresh_map_does() {
     let start = (Geodetic::new(7.95, 46.0), 11.2, 0.0, 30.0);
@@ -446,7 +446,7 @@ fn every_terrain_view_fits_the_drape_atlas() {
 /// camera never stopping: once loaded, a frame mid-turn draws what a fresh
 /// map at rest at its camera draws, ridges against the sky and every drape
 /// slot's edge. What a slot's filter reads past its tile never depends on
-/// which tile holds the next slot (#84). Labels, which settle by their own
+/// which tile holds the next slot. Labels, which settle by their own
 /// history, are hidden. Needs the network:
 /// `cargo test --release -p orb-api --test path -- --ignored alps`.
 #[test]
@@ -503,7 +503,7 @@ fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
 
 /// A draped fill whose hovered colour varies with zoom shows the colour of
 /// its new zoom in the first frame after a jump of six zooms: the state
-/// rows' zooms follow the camera that frame (#85), as a fresh map at rest
+/// rows' zooms follow the camera that frame, as a fresh map at rest
 /// draws it.
 #[test]
 fn a_fast_zoom_drapes_state_paint_of_its_new_zoom() {

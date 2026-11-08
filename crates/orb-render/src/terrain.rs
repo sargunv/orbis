@@ -190,7 +190,7 @@ pub(crate) struct Terrain {
     /// Each terrain layer's texture and its composite into the map.
     targets: Vec<Offscreen>,
     /// The terrain's depth as a colour, and the depth it's drawn with: what
-    /// hides symbols and circles (#40).
+    /// hides symbols and circles.
     occlusion: Option<[TextureId; 2]>,
     occlusion_pipeline: Option<RenderPipelineId>,
     target_size: [u32; 2],

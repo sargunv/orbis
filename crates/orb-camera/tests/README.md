@@ -37,8 +37,8 @@ npm install --prefix "$TASK_GL" --ignore-scripts --save-exact \
 cargo test -p orb-camera
 ```
 
-`data/pins.json` is the 4,000-camera Web Mercator pin of M6's CRS suite
-(`pins.rs`), generated the same way by `generate-pins.mjs`: seeded random
+`data/pins.json` is the 4,000-camera Web Mercator pin that `pins.rs` checks,
+generated the same way by `generate-pins.mjs`: seeded random
 cameras (five viewport sizes, zoom 0–22, latitude ±84°, any bearing, pitch 0
 for every fourth camera and 0–85° otherwise), the location GL JS's
 `screenPointToLocation` gives for five screen points below any horizon, and
@@ -60,8 +60,6 @@ symbol projection helpers; those helpers are never used by the generators.
 Upstream source is BSD-3-Clause. Only the generator and numeric outputs are
 committed here.
 
-`cargo test -p orb-camera --test covers manhattan_cover_counts -- --nocapture`
-prints per-zoom ideal tile counts for the live Liberty reproduction. The
-maxzoom=24 counts represent the runtime's overzoomed vector ideals; maxzoom=14
-also shows the canonical source-limited cover. Loaded fallback/ancestor tiles
-and background placements in the demo's HUD are separate counters.
+`cargo test --release -p orb-camera --test covers globe_cover_cost -- --nocapture`
+prints the globe's cover counts and times beside Web Mercator's for the same
+cameras.

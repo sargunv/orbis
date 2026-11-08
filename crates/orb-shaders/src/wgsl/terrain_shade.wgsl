@@ -1,5 +1,5 @@
-// A terrain layer that shades a hillshade between its stacks (decision
-// 0019): lit from the frame's bearing on every frame, so no drape slot
+// A terrain layer that shades a hillshade between its stacks:
+// lit from the frame's bearing on every frame, so no drape slot
 // turns with the map. The hillshade's node group is group 2: its paint
 // (`hillshade.wgsl`'s `node`) and its source's prepared slopes. Each
 // quarter of a terrain tile reads one slope tile (raster covers refine a

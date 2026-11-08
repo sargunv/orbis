@@ -76,7 +76,7 @@ impl Frames {
 
 /// A source's data revisions a worker keeps, oldest first: the style
 /// revision each began at, and its index and decoded tiles. Queries read
-/// the revision a drawn tile was laid out from (#89).
+/// the revision a drawn tile was laid out from.
 type SourceRevisions = Vec<(u64, Arc<SourceData>)>;
 
 /// How many data revisions of a source a worker keeps: the drawn tiles'

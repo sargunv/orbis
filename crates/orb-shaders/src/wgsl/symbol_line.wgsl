@@ -1,7 +1,7 @@
 // Line labels' variant of the symbol shader: each glyph placed along its
 // projected line in the vertex stage. Point labels compose
-// `symbol_point.wgsl` instead, so their pipeline doesn't compile this
-// (#69: Adreno compilers inline every call).
+// `symbol_point.wgsl` instead, so their pipeline doesn't compile this:
+// Adreno compilers inline every call.
 
 const LINE_LABELS: bool = true;
 

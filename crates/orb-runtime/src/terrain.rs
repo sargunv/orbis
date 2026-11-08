@@ -141,7 +141,7 @@ pub(crate) struct Terrain {
     elevation: Arc<TerrainElevation>,
     /// The DEM tiles this camera's cover reads, sorted: the elevations hold
     /// these alone (and, while one loads, its nearest ready ancestor), not
-    /// whatever else the pyramid keeps from earlier views (#84).
+    /// whatever else the pyramid keeps from earlier views.
     wanted: Vec<TileIndex>,
     /// Per wanted DEM tile, its layer and the neighbours' layers its border
     /// was last padded from ([`pads`](Self::pads)).
@@ -270,7 +270,7 @@ impl Terrain {
     /// wants, and the ancestors drawn while they load) from their ready
     /// neighbours among them, for the tiles whose neighbours changed since:
     /// a border is a function of what this camera reads, not of which tiles
-    /// were resident before (#84).
+    /// were resident before.
     fn pads(&mut self, unpack: [f32; 4]) -> Vec<orb_render::DemPrepare> {
         let mut read: Vec<TileIndex> = (self.tiles.iter())
             .filter_map(|t| self.dem_for(t.index).map(|(at, _)| at))

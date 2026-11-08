@@ -166,7 +166,7 @@ pub const CIRCLE_SHADER: Shader = Shader {
 /// Symbol quads: glyphs and icons, with their halos, of
 /// point labels and of line labels (`symbol-placement: line` and
 /// `line-center`): two variants, so point labels' pipeline doesn't compile
-/// line placement (#69).
+/// line placement.
 pub const SYMBOL_SHADERS: [Shader; 2] = [
     Shader {
         label: "symbol",

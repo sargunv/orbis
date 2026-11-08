@@ -1,4 +1,4 @@
-//! Giving the GPU back (#79): what a renderer holds goes when it does.
+//! Giving the GPU back: what a renderer holds goes when it does.
 //! Each piece releases its own resources; ids it only binds (the shared
 //! image atlas, the textures it was handed) stay.
 

@@ -132,7 +132,7 @@ fn prop_row(v: Pulled, slot: u32, stride: u32) -> u32 {
 // starts at `base + s * stride` with a word that is non-zero once the
 // feature has state, then per masked slot STATE_ZOOMS words: its values at
 // the integer zooms from `zoom` on, which a drape slot reads at its own
-// zoom and the camera between two (#85).
+// zoom and the camera between two.
 struct StateLookup {
     mask: u32,
     base: u32,

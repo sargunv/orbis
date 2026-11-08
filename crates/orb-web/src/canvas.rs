@@ -165,7 +165,7 @@ impl Canvas {
         };
         surface.configure(&device, &config);
         let gpu = WgpuGpu::new(device, queue);
-        // A map waiting only for pipelines draws when one arrives (#70).
+        // A map waiting only for pipelines draws when one arrives.
         gpu.set_compile_wake(std::rc::Rc::new(move || crate::wake(map)));
         Ok(Self {
             gpu,

@@ -61,7 +61,7 @@ mod tests {
     /// array variables nor dynamic indexing into an array value, which
     /// compilers lower to the same. An Adreno 830's Vulkan driver (Chrome
     /// 156) miscompiled the cull dispatch with them, writing no draws or
-    /// losing the device (#23). Shared helpers it doesn't call are compiled
+    /// losing the device. Shared helpers it doesn't call are compiled
     /// out.
     #[test]
     fn cull_shader_has_no_function_arrays() {

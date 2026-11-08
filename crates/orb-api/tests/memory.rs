@@ -48,7 +48,7 @@ fn tokyo_takes_what_it_draws() {
     }
 }
 
-/// A dropped map frees what its frames made (#79): maps made, drawn and
+/// A dropped map frees what its frames made: maps made, drawn and
 /// dropped one after another leave the device holding what the runtime
 /// shares (its target, the image atlas) and nothing more.
 #[test]

@@ -11,10 +11,13 @@ build when they own a project, not to compete with MapLibre.
 
 What it does today: one Rust core renders
 [MapLibre style spec](https://maplibre.org/maplibre-style-spec/) v8 maps in the
-browser (wasm and WebGPU) and natively (Vulkan, Metal and D3D12 through wgpu),
-with terrain, a globe, 3D buildings, other projections and coordinate
-reference systems, and C, Kotlin and Swift bindings. Nothing is published
-and every API can change. The live demo is at
+browser (wasm and WebGPU) and natively (Vulkan, Metal and D3D12 through wgpu).
+Its scope is the v8 spec, including terrain, the globe, sky and the
+extrusions' light, plus what the spec could reasonably grow into: other
+projections, coordinate reference systems and tile matrix sets. Small
+downloads, fast loading and fast tile processing and rendering, in 2D and
+3D, are goals alongside correctness. C, Kotlin and Swift bindings exist but
+will be replaced. Nothing is published and every API can change. The live demo is at
 <https://code.sargunv.dev/orbis/>.
 
 ## Build and run

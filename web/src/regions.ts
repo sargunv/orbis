@@ -1,4 +1,4 @@
-// Offline regions (plan D24): a style's map of an area between two zooms,
+// Offline regions: a style's map of an area between two zooms,
 // downloaded into the origin private file system. Every map on the origin
 // draws from complete regions before the network, so a downloaded area
 // opens offline. Each JS context reads the regions once; one that changes

@@ -149,7 +149,7 @@ fn vs_terrain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) insta
     return out;
 }
 
-// The terrain's depth, for the symbols and circles it hides (#40): the
+// The terrain's depth, for the symbols and circles it hides: the
 // reversed-Z depth the stacks draw, as a colour.
 @fragment
 fn fs_terrain_depth(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {

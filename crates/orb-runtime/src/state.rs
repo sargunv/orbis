@@ -9,7 +9,7 @@
 //! that read state evaluated with the feature's state at [`STATE_ZOOMS`]
 //! integer zooms around the camera's, from five below its own to two
 //! above: drape slots read their own zoom's value, so they draw alike
-//! whatever the camera's (#85). The layout is compiled per style revision. Index 0 and
+//! whatever the camera's. The layout is compiled per style revision. Index 0 and
 //! rows with a zero flag draw the value with no state: the node's constant,
 //! or for paint that also reads feature data, the feature's property row.
 //! That paint evaluates here from the feature data its meshes captured, so
@@ -468,7 +468,7 @@ mod tests {
     use orb_style::SourceKey;
 
     /// Drape slots within the rows' zooms read their own zoom's values,
-    /// whatever the camera's; only those past them change with it (#85).
+    /// whatever the camera's; only those past them change with it.
     #[test]
     fn drape_zooms_in_the_rows_need_no_camera_key() {
         let states = FeatureStates {

@@ -87,7 +87,7 @@ fn data_replaced_every_frame_never_blanks() {
     );
 }
 
-/// A rendered query answers for what's drawn (#89): right after new data,
+/// A rendered query answers for what's drawn: right after new data,
 /// before its tiles replace the drawn ones, a query at the old feature
 /// gets the old feature, not the new data's at its index.
 #[test]

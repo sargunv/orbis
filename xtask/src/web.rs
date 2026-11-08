@@ -1,6 +1,6 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
-//! `web/pkg/`, reports its size by crate (twiggy) and warns when it
-//! grows past its size targets.
+//! `web/pkg/` and reports its sizes, raw, brotli and by crate (twiggy).
+//! Size is watched, not a gate.
 //!
 //! `cargo xtask pages`: the above, then the Vite build of the site
 //! `.github/workflows/pages.yml` deploys, into `web/dist/`.
@@ -12,12 +12,6 @@ use std::process::Command;
 use crate::cargo;
 
 const OUT_DIR: &str = "web/pkg";
-
-/// The initial-payload target. Size is watched, not a gate: above
-/// it, and above the ceiling, the build only warns.
-const BROTLI_TARGET: usize = 450 * 1024;
-/// The ceiling for the first release.
-const BROTLI_CEILING: usize = 550 * 1024;
 
 /// Crates whose code the size report attributes separately.
 const CRATES: &[&str] = &[
@@ -54,16 +48,6 @@ pub(crate) fn build() -> Result<(), String> {
         core.brotli / 1024,
         js.len() / 1024,
     );
-    for (limit, what) in [(BROTLI_CEILING, "ceiling"), (BROTLI_TARGET, "target")] {
-        if core.brotli > limit {
-            eprintln!(
-                "warning: core.wasm is {} KiB brotli, over the {} KiB {what}",
-                core.brotli / 1024,
-                limit / 1024
-            );
-            break;
-        }
-    }
     word_data(&out)?;
     // `font-faces` drawing, loaded the first time a style declares a file.
     let shaper = module(&root, "orb-shaper", "shaper")?;

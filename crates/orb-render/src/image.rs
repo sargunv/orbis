@@ -368,7 +368,7 @@ impl Images {
         if kind == PageKind::Dem {
             self.make_prepare(gpu);
         }
-        // Mipmapped (#3): a compute pass makes the levels.
+        // Mipmapped: a compute pass makes the levels.
         downsampler.make(gpu);
         let levels = |border: u32| 32 - (width.max(height) + 2 * border).max(1).leading_zeros();
         let textures = match kind {

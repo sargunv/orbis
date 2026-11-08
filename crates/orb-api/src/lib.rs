@@ -96,7 +96,7 @@ pub struct RuntimeOptions {
 /// which needn't be the main thread: an embedder draws on a render thread
 /// of its own by making them there. On macOS a `CAMetalLayer` inside a
 /// window's view must still present from the main thread: wgpu-hal asks
-/// the view for its window when it acquires a frame (#35).
+/// the view for its window when it acquires a frame.
 #[derive(Clone, Debug)]
 pub struct Runtime {
     shared: Rc<Shared>,

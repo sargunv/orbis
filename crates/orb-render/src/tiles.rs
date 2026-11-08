@@ -643,7 +643,7 @@ impl Renderer {
     /// Pads source `source`'s drawn DEM tiles (`drawn`) from their drawn
     /// neighbours: a tile whose drawn neighbours changed since it was last
     /// prepared is prepared again. A border is then a function of what the
-    /// view draws, not of which tiles were resident before (#84).
+    /// view draws, not of which tiles were resident before.
     pub fn pad_dems(&mut self, source: u32, drawn: &std::collections::HashSet<TileIndex>) {
         let Some(page) = self.tiles.sources.get(&source).map(|s| s.page) else {
             return;

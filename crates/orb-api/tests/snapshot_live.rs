@@ -1,4 +1,4 @@
-//! A snapshot leaves the live map as it was (#82): hit tests and rendered
+//! A snapshot leaves the live map as it was: hit tests and rendered
 //! queries answer for the live view, and its labels stay placed.
 
 use std::path::PathBuf;

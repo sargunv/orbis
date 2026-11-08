@@ -64,14 +64,14 @@ pub const QUIRKS: &[Quirk] = &[
         workaround: Workaround::ShaderRewrite,
         evidence: "the Adreno 830's Vulkan driver (Chrome 156) miscompiles a compute shader \
                    that dynamically indexes function-scope arrays inlined twice: the cull wrote \
-                   no draws or lost the device (#23)",
+                   no draws or lost the device",
     },
     Quirk {
         name: "transient_attachment_usage",
         applies: None,
         workaround: Workaround::DropTransientAttachments,
         evidence: "Samsung Internet 30 (Chromium 143) has no GPUTextureUsage.TRANSIENT_ATTACHMENT \
-                   and rejects textures with it, invalidating every frame (#23)",
+                   and rejects textures with it, invalidating every frame",
     },
 ];
 

@@ -71,9 +71,9 @@ fn covers_match_pinned_gl_js() {
     );
 }
 
-/// The globe's cover against Web Mercator's for the same cameras: within
-/// 1.5× Mercator's time. Prints counts and
-/// times; run with `--release -- --nocapture`.
+/// The globe's cover against Web Mercator's for the same cameras: never
+/// empty and under 200 tiles. Prints counts and times; run with
+/// `--release -- --nocapture`.
 #[test]
 fn globe_cover_cost() {
     let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();

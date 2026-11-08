@@ -84,9 +84,8 @@ archives). The snapshot script builds and serves that production layout. The scr
 writes both a screenshot with the HUD and a `-map.png` without overlays;
 `--compare` compares decoded map pixels exactly and fails on any difference.
 
-`cargo xtask check` includes full TileFrame equality for every manifest tile
-and a native offscreen pixel comparison at the default view. Timings from
-`tile-parity` include decode into TileFrame, excluding range reads and gzip.
+`cargo test -p xtask` decodes every manifest tile from both archives and
+checks that their layers are equal.
 
 The MLT tool preserves feature order, geometry, numeric signedness and float
 precision. The high-level encoder narrows positive signed values to unsigned;

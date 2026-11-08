@@ -1305,7 +1305,7 @@ impl Labels {
 
     /// Picking hits for the labels and icons the last commit shows: their
     /// anchors in world space and their collision boxes in pixels at the
-    /// anchor's scale (issue #11), for any camera to project. Boxes are
+    /// anchor's scale, for any camera to project. Boxes are
     /// viewport-aligned, without variable-anchor shifts; a line label is
     /// its anchor's collision circle's square.
     pub(crate) fn label_hits(
@@ -1819,7 +1819,7 @@ mod tests {
         assert_eq!(h.renderer.symbol_copies(mesh), 2);
     }
 
-    /// #55: a bucket whose tile left the draw list keeps its labels as
+    /// A bucket whose tile left the draw list keeps its labels as
     /// placed until a placement asked for since commits, then fades them
     /// out from there and is released once they have.
     #[test]

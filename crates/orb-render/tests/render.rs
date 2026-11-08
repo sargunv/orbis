@@ -201,7 +201,7 @@ fn half_square(x: i32) -> orb_layout::Mesh {
 }
 
 /// A table outside any tile (the feature-state table) grows the property
-/// pool to fit, within its limit, rather than failing (#79).
+/// pool to fit, within its limit, rather than failing.
 #[test]
 fn tables_grow_the_property_pool() {
     let capacity = SceneCapacity {
@@ -297,7 +297,7 @@ fn red_fill(h: &mut Harness) {
 }
 
 /// A style with more render nodes than the scene was made for grows its
-/// node tables rather than failing (#19), and the last node draws.
+/// node tables rather than failing, and the last node draws.
 #[test]
 fn node_tables_grow_for_more_nodes() {
     let mut h = Harness::with(4, 2, 8, Harness::SMALL, None);

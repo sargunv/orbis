@@ -1,4 +1,4 @@
-// Pipeline creation in the browser (#26, measure.html `?pipelines`): the
+// Pipeline creation in the browser (measure.html `?pipelines`): the
 // Tokyo extract from `createMap` to `idle`, counting
 // the shader modules and pipelines made and timing each queue submission
 // to its `onSubmittedWorkDone`. Browsers compile pipelines in the GPU

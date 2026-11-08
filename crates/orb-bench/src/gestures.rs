@@ -138,7 +138,7 @@ struct PathResult {
     rebuilds: usize,
     rows: u64,
     /// Labels shown in full that all but vanished and were back in full
-    /// within [`FLASH_FRAMES`] (#55), and the frames between.
+    /// within [`FLASH_FRAMES`], and the frames between.
     blinks: usize,
     blink_frames: usize,
     /// From the path's end until the map is idle.

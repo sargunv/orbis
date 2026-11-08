@@ -66,8 +66,8 @@ fn outside_planes(p: vec4<f32>, margin: vec2<f32>) -> u32 {
 // No function-scope arrays: this is inlined once per cull mode, and two
 // copies of a version that indexed local arrays in loops (its eight
 // corners, the tile's copied clip rectangles) miscompiled on an Adreno 830
-// (Chrome 156, Vulkan): the dispatch wrote nothing or lost the device
-// (#23). A test in orb-shaders keeps the cull shader free of them.
+// (Chrome 156, Vulkan): the dispatch wrote nothing or lost the device.
+// A test in orb-shaders keeps the cull shader free of them.
 fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation: f32, draped: bool) -> bool {
     let point_instances = draw == DRAW_POINTS;
     let chunk = chunks[candidate.chunk];

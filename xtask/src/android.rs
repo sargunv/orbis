@@ -6,7 +6,7 @@
 //! the Android device `scripts/android-serial` names (this worktree's emulator
 //! from devices-cli, or `ANDROID_SERIAL`) and starts it. `--run --leakcheck`
 //! starts it to make, draw and drop 20 maps, and fails unless the device's
-//! live GPU resources stay flat (#79).
+//! live GPU resources stay flat.
 //!
 //! Needs `ANDROID_HOME` with an NDK (`mise x --` provides it here).
 

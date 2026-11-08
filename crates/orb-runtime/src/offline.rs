@@ -1,4 +1,4 @@
-//! Offline regions (plan D24): a style's resources for an area and a zoom
+//! Offline regions: a style's resources for an area and a zoom
 //! range, downloaded into [`Storage`] and served from it before the
 //! network.
 //!

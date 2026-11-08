@@ -93,8 +93,7 @@ private let style = """
 /// A layer's frames on a thread of the app's own (Swift Testing runs this off
 /// the main thread): a runtime and what's made with it belong to the thread
 /// that made them. A layer inside a window's view must still present on the
-/// main thread on macOS: wgpu-hal asks the view for its window on acquire
-/// (#35).
+/// main thread on macOS: wgpu-hal asks the view for its window on acquire.
 @Test func metalLayerFrames() throws {
     #expect(!Thread.isMainThread)
     let runtime = try OrbRuntime.create(jobThreads: 0)

@@ -426,7 +426,7 @@ impl Warp {
     /// Its edges take 64 steps, each side (top, right, bottom, left in
     /// tile space) `2^edges[side]` times as many: as many as a neighbour
     /// that much finer takes along it, so the two share every vertex there
-    /// (#32: no T-junction cracks).
+    /// and no T-junction cracks open.
     pub fn mesh(
         &self,
         tile: TileIndex,
@@ -734,7 +734,7 @@ mod tests {
         }
     }
 
-    /// #32: a side refined once takes the points its two finer neighbours
+    /// A side refined once takes the points its two finer neighbours
     /// take along it.
     #[test]
     fn refined_edges_take_their_finer_neighbours_points() {

@@ -13,8 +13,7 @@
 //! formula. Then the map's draws continue on top. The last pass draws
 //! into the target, so a map without such groups keeps its one pass.
 //!
-//! On terrain, a draped layer's group is its own drape stack (decision
-//! 0019): the stack's terrain layer is the texture the group composites,
+//! On terrain, a draped layer's group is its own drape stack: the stack's terrain layer is the texture the group composites,
 //! in place of the stack's plain composite.
 
 use crate::release::Release;

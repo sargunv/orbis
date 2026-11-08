@@ -1,5 +1,5 @@
 //! Small buffer writes, gathered into one upload and copied into place at
-//! the start of the next submission (#21). `GPUQueue.writeBuffer` costs
+//! the start of the next submission. `GPUQueue.writeBuffer` costs
 //! some microseconds a call however few bytes it carries, and a frame
 //! writes hundreds of small runs: symbol state words, tile rows, paint.
 

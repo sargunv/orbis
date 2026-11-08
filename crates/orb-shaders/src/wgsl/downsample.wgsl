@@ -1,4 +1,4 @@
-// Mip levels (#3): each a 2×2 box filter of the level
+// Mip levels: each a 2×2 box filter of the level
 // above, as WebGL's `generateMipmap` makes GL JS's, over square regions of
 // an array texture's layers: the drape slots a frame redrew, or a raster
 // page's new layers. Texels are premultiplied, so the average is correct;

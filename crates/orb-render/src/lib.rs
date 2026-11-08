@@ -269,7 +269,7 @@ const NODE_UNIFORM_SIZE: u64 = 512;
 
 impl Renderer {
     /// Frees everything the renderer holds on `gpu`, the device it was
-    /// made on (#79): what a map's frames made goes with it. The images it
+    /// made on, so what a map's frames made goes with it. The images it
     /// was handed stay.
     pub fn destroy(self, gpu: &mut dyn Gpu) {
         use release::Release;

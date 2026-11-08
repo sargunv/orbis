@@ -8,7 +8,7 @@
 //     [--configs=orbis,gljs] [--no-capture] [--no-annotation] [--profile]
 //   pnpm measure --pipelines [--runs=3] [--android [--physical]]
 //
-// `--pipelines` measures pipeline creation instead (#26): measure.html
+// `--pipelines` measures pipeline creation instead: measure.html
 // `?pipelines` (web/demo/pipelines.js) loads the Tokyo extract `--runs`
 // times in a fresh profile (cold: the browser's shader cache empty) and as
 // often again in that profile reopened (warm), reporting pipelines made and
@@ -338,7 +338,7 @@ async function loadAndroid(server, clean) {
   }
 }
 
-/** Pipeline creation, cold and warm (#26). */
+/** Pipeline creation, cold and warm. */
 async function pipelines(server) {
   const rows = [];
   try {

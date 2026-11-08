@@ -261,7 +261,7 @@ impl Map {
         }
         // Each drawn image tile's mesh is the one for this frame's surface
         // and, for a warped tile, the finest drawn tile beside each side,
-        // whose vertices it takes so the two meet without cracks (#32).
+        // whose vertices it takes so the two meet without cracks.
         let globe = self.surface.globe().is_some();
         for &tile in rows.keys() {
             let edges = match *warped && !globe {
