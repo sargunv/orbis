@@ -2,7 +2,8 @@
 // `orbis` package, with a style editor, feature popups and highlights
 // through feature state, and a debug overlay.
 //
-// URL: `?style=<key|url>` (styles.js), `&flight` (the Alps),
+// URL: `?style=<key|url>` (styles.js), `&flight` (fly an entry's looping
+// flight, as picking it does; without it the map stays put and settles),
 // `&debug`, `&edit`, `&lose=<ms>` (lose the GPU that long after loading,
 // to show recovery),
 // and the camera as `#zoom/lat/lon[/bearing/pitch]`.
@@ -201,7 +202,7 @@ function go(next) {
     current = next;
     picker.show(next.scene, next.format);
     history.replaceState(history.state, "", urlFor(next, camera ?? map.camera.current));
-    if (camera) map.camera.flyTo({ ...camera, bearing: 0, pitch: 0, duration: reducedMotion() ? 0 : undefined });
+    if (camera) map.camera.flyTo({ bearing: 0, pitch: 0, ...camera, duration: reducedMotion() ? 0 : undefined });
     return;
   }
   location.assign(urlFor(next, camera));
@@ -272,7 +273,7 @@ async function load(next, { camera }) {
   }
   wireFeatures(map);
 
-  if (next.scene.flight) {
+  if (next.scene.flight && params().has("flight")) {
     // From the style's own camera, which it adopts as it loads.
     (async () => {
       await created.once("styleload");
