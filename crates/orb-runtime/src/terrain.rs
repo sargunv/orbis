@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use glam::DVec2;
 use orb_camera::View;
@@ -214,15 +214,39 @@ impl Terrain {
     /// Covers the view with at most `budget` tiles, the drape atlas's
     /// room, asks for the DEM tiles missing and returns the tiles to
     /// request.
+    ///
+    /// The cover culls tiles by the elevations held, and what is held
+    /// follows from the cover, so a DEM tile whose range culls a tile is
+    /// wanted too. Otherwise a tile its own DEM culls lets go of that DEM,
+    /// comes back under its ancestor's wider range and asks for it again:
+    /// a view at rest would flip between two covers forever.
     fn update(&mut self, view: &View, tms: &TileMatrixSet, budget: usize) -> Vec<TileIndex> {
+        let consulted = Consulted {
+            elevation: &self.elevation,
+            ranges: Mutex::new(Vec::new()),
+        };
         let mut tiles = view.cover_volume(
             tms,
             TERRAIN_TILE_PX,
             0..=TERRAIN_MAX_ZOOM,
             0.0,
-            Some(&*self.elevation),
+            Some(&consulted),
             0.0,
         );
+        let ranges = consulted.ranges.into_inner().expect("ranges poisoned");
+        // The tiles the cover drew or refined: any other tile it read a
+        // range for, that range culled.
+        let mut kept: HashSet<TileIndex> = tiles.iter().map(|t| t.index).collect();
+        for t in &tiles {
+            let mut at = t.index.parent();
+            while let Some(parent) = at.filter(|&p| kept.insert(p)) {
+                at = parent.parent();
+            }
+        }
+        let culled_by: Vec<CoveredTile> = (ranges.into_iter())
+            .filter(|(tile, _)| !kept.contains(tile))
+            .map(|(_, index)| CoveredTile { index, wrap: 0 })
+            .collect();
         let period = tms.projection().wrap_period().unwrap_or(0.0);
         let eye = view.eye().truncate();
         coarsen(&mut tiles, budget, |t| {
@@ -255,6 +279,7 @@ impl Terrain {
                     .map(|index| CoveredTile { index, wrap: 0 }),
             );
         }
+        wanted.extend(culled_by);
         wanted.sort();
         wanted.dedup();
         let indices: Vec<TileIndex> = wanted.iter().map(|t| t.index).collect();
@@ -1000,10 +1025,45 @@ impl orb_camera::Elevation for TerrainElevation {
     }
 
     fn range(&self, rect: WorldRect, z: u8) -> Option<(f64, f64)> {
+        self.range_of(rect, z).map(|(_, _, range)| range)
+    }
+}
+
+impl TerrainElevation {
+    /// The tile at zoom `z` under `rect`, the DEM tile it reads and that
+    /// DEM's range of elevations.
+    fn range_of(&self, rect: WorldRect, z: u8) -> Option<(TileIndex, TileIndex, (f64, f64))> {
         let (tile, _) = self.locate(self.wrapped(rect.center()), z)?;
-        let (_, grid) = self.dem_for(tile)?;
+        let (dem, grid) = self.dem_for(tile)?;
         let e = self.exaggeration;
-        Some((f64::from(grid.min()) * e, f64::from(grid.max()) * e))
+        Some((
+            tile,
+            dem,
+            (f64::from(grid.min()) * e, f64::from(grid.max()) * e),
+        ))
+    }
+}
+
+/// Elevations that note, per tile asked about, the DEM tile whose range
+/// answered.
+#[derive(Debug)]
+struct Consulted<'a> {
+    elevation: &'a TerrainElevation,
+    ranges: Mutex<Vec<(TileIndex, TileIndex)>>,
+}
+
+impl orb_camera::Elevation for Consulted<'_> {
+    fn at(&self, world: DVec2) -> Option<f64> {
+        self.elevation.at(world)
+    }
+
+    fn range(&self, rect: WorldRect, z: u8) -> Option<(f64, f64)> {
+        let (tile, dem, range) = self.elevation.range_of(rect, z)?;
+        self.ranges
+            .lock()
+            .expect("ranges poisoned")
+            .push((tile, dem));
+        Some(range)
     }
 }
 
