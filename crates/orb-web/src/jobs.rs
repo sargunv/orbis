@@ -396,8 +396,8 @@ impl JobWorker {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         let host = JobHost::new(crate::regions::service(), Arc::new(orb_host::jobs::Inline));
-        host.set_local_glyphs(Arc::new(orb_host_web::CanvasGlyphs));
-        host.set_font_files(Arc::new(orb_host_web::ShaperFiles));
+        host.set_local_glyphs(Arc::new(crate::host::CanvasGlyphs));
+        host.set_font_files(Arc::new(crate::host::ShaperFiles));
         Self { host }
     }
 
@@ -412,7 +412,7 @@ impl JobWorker {
     /// `loader()` returns a promise of a `Shaper`.
     #[wasm_bindgen(js_name = setShaperLoader)]
     pub fn set_shaper_loader(&mut self, loader: js_sys::Function) {
-        orb_host_web::ShaperFiles::set_loader(loader);
+        crate::host::ShaperFiles::set_loader(loader);
     }
 
     /// Handles a request from the page: a [`JobRequest`] in
@@ -500,7 +500,7 @@ impl JobWorker {
                     }
                 }
                 JobAnswer::Load(Ok(Loaded::Image { bytes, .. })) => {
-                    match orb_host_web::decode_bitmap(&bytes).await {
+                    match crate::host::decode_bitmap(&bytes).await {
                         Ok(bitmap) => reply(&JobReply::Image { id }, None, Some(bitmap.into())),
                         Err(e) => error(format!("image decode: {e:?}")),
                     }

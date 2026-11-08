@@ -10,7 +10,7 @@ use web_sys::{FileSystemDirectoryHandle as Dir, FileSystemFileHandle};
 /// The origin private file system (`navigator.storage.getDirectory()`),
 /// on the page or in a worker.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct OpfsStorage;
+pub(crate) struct OpfsStorage;
 
 impl Storage for OpfsStorage {
     fn read(&self, key: &str, range: Option<(u64, u64)>, done: StorageDone<Option<Vec<u8>>>) {

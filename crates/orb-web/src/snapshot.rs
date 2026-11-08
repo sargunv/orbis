@@ -78,7 +78,7 @@ impl OrbisMap {
             snapshot.texture,
             snapshot.viewport,
             snapshot.scale,
-            orb_host::Clock::now(&orb_host_web::WebClock),
+            orb_host::Clock::now(&crate::host::WebClock),
         );
         let settled = report.idle && snapshot.idle;
         snapshot.idle = report.idle;

@@ -8,8 +8,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::host::{OpfsStorage, WebFetch};
 use orb_host::{Fetch, Storage};
-use orb_host_web::{OpfsStorage, WebFetch};
 use orb_runtime::offline::{self, RegionDefinition, RegionEvent, RegionFetch};
 use wasm_bindgen::prelude::*;
 
@@ -31,7 +31,7 @@ pub(crate) fn service() -> Arc<dyn Fetch> {
 /// it. No hook, none.
 #[wasm_bindgen(js_name = setRequestHook)]
 pub fn set_request_hook(hook: Option<js_sys::Function>) {
-    orb_host_web::set_request_hook(hook);
+    crate::host::set_request_hook(hook);
 }
 
 /// Reads the regions again, after another context changed them.

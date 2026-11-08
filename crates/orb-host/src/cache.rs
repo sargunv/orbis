@@ -1,4 +1,4 @@
-//! What the HTTP caches of `orb-host-native` and `orb-host-web` share: how
+//! What the HTTP caches of `orb-host-native` and `orb-web` share: how
 //! long a response stays fresh, and the key a request is stored under.
 //!
 //! Both caches answer fresh entries without the network. A stale entry is

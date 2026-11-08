@@ -1,11 +1,10 @@
 //! Host services in the browser, for the main thread and workers alike.
 
 #![forbid(unsafe_code)]
-#![cfg(target_arch = "wasm32")]
 
 mod storage;
 
-pub use storage::OpfsStorage;
+pub(crate) use storage::OpfsStorage;
 
 use js_sys::{Reflect, Uint8Array};
 use orb_host::{DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone};
@@ -13,13 +12,13 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct WebFetch;
+pub(crate) struct WebFetch;
 
 /// Decodes images with the browser's decoder: `createImageBitmap` without
 /// premultiplication or colour conversion, read back through an
 /// `OffscreenCanvas`, on the page or in a worker.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct WebImageDecode;
+pub(crate) struct WebImageDecode;
 
 impl ImageDecode for WebImageDecode {
     fn decode(&self, bytes: Vec<u8>, done: ImageDone) {
@@ -34,7 +33,7 @@ impl ImageDecode for WebImageDecode {
 }
 
 /// Decodes an image to straight RGBA8 texels.
-pub async fn decode_image(bytes: &[u8]) -> Result<DecodedImage, JsValue> {
+pub(crate) async fn decode_image(bytes: &[u8]) -> Result<DecodedImage, JsValue> {
     let bitmap = decode_bitmap(bytes).await?;
     let image = read_bitmap(&bitmap);
     bitmap.close();
@@ -62,7 +61,7 @@ fn read_bitmap(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
 /// conversion, on the page or in a worker. Its pixels stay with the
 /// browser: a job worker transfers the bitmap to the render worker, which
 /// copies it to a texture.
-pub async fn decode_bitmap(bytes: &[u8]) -> Result<web_sys::ImageBitmap, JsValue> {
+pub(crate) async fn decode_bitmap(bytes: &[u8]) -> Result<web_sys::ImageBitmap, JsValue> {
     let parts = js_sys::Array::of1(&Uint8Array::from(bytes));
     let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)?;
     let options = js_sys::Object::new();
@@ -91,7 +90,7 @@ impl Fetch for WebFetch {
     }
 }
 
-pub async fn fetch(url: &str) -> Result<Vec<u8>, FetchError> {
+pub(crate) async fn fetch(url: &str) -> Result<Vec<u8>, FetchError> {
     fetch_body(url, None).await
 }
 
@@ -104,7 +103,7 @@ thread_local! {
 /// Transforms every request this JS context's fetches make (GL JS
 /// `transformRequest`): `hook(url)` answers `{url, headers}` (or a promise
 /// of it), `null` to refuse, or `undefined` to leave the request.
-pub fn set_request_hook(hook: Option<js_sys::Function>) {
+pub(crate) fn set_request_hook(hook: Option<js_sys::Function>) {
     REQUEST_HOOK.with(|h| *h.borrow_mut() = hook);
 }
 
@@ -216,7 +215,7 @@ async fn fetch_body(url: &str, range: Option<(u64, u64)>) -> Result<Vec<u8>, Fet
 
 /// The browser's monotonic clock, available on the page and workers.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct WebClock;
+pub(crate) struct WebClock;
 
 impl orb_host::Clock for WebClock {
     fn now(&self) -> f64 {
@@ -232,7 +231,7 @@ impl orb_host::Clock for WebClock {
 /// 2.3.0 draws them: a 48 px font, measured with `measureText` and filled
 /// at the ink box's pen offset inside a six-texel border, then read back.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct CanvasGlyphs;
+pub(crate) struct CanvasGlyphs;
 
 /// TinySDF's `buffer` once GL JS sets it to the atlas padding.
 const CANVAS_BUFFER: i32 = 6;
@@ -335,7 +334,7 @@ impl orb_host::LocalGlyphs for CanvasGlyphs {
 /// worker loads the first time a style declares a file: HarfRust and
 /// skrifa, as natively, outside `core.wasm`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct ShaperFiles;
+pub(crate) struct ShaperFiles;
 
 thread_local! {
     /// The job worker's loader (a JS function returning a promise of a
@@ -354,12 +353,12 @@ thread_local! {
 impl ShaperFiles {
     /// Sets how this worker loads `shaper.wasm`: `loader()` returns a
     /// promise of a `Shaper`.
-    pub fn set_loader(loader: js_sys::Function) {
+    pub(crate) fn set_loader(loader: js_sys::Function) {
         SHAPER_LOADER.with(|l| *l.borrow_mut() = Some(loader));
     }
 
     /// Loads the shaper unless this worker has it.
-    pub async fn load() -> Result<(), String> {
+    pub(crate) async fn load() -> Result<(), String> {
         if SHAPER.with(|s| s.borrow().is_some()) {
             return Ok(());
         }
@@ -388,7 +387,7 @@ impl ShaperFiles {
     }
 
     /// Whether this worker has `url` open.
-    pub fn is_open(url: &str) -> bool {
+    pub(crate) fn is_open(url: &str) -> bool {
         SHAPER_OPEN.with(|o| o.borrow().contains(url))
     }
 

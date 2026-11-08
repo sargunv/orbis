@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use orb_hal::{HostBytesId, HostImageId};
-use orb_host::{DecodedImage, Fetch, ImageDecode};
 use orb_host::jobs::Executor;
+use orb_host::{DecodedImage, Fetch, ImageDecode};
 use orb_layout::Chunk;
 
 use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone};

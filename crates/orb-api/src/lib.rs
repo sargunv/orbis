@@ -38,9 +38,9 @@ pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Target;
 
 use orb_hal_wgpu::WgpuGpu;
+use orb_host::jobs::ThreadPool;
 pub use orb_host_native::CacheStats;
 use orb_host_native::{HttpCache, NativeFetch, NativeImageDecode};
-use orb_host::jobs::ThreadPool;
 
 /// Why a call failed.
 #[derive(Clone, Debug, PartialEq, Eq)]

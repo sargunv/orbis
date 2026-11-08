@@ -16,7 +16,6 @@ const PLATFORM: &[&str] = &[
     "orb-runtime",
     "orb-host",
     "orb-host-native",
-    "orb-host-web",
     "orb-hal-wgpu",
     "orb-api",
     "orb-capi",

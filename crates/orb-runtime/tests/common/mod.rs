@@ -9,8 +9,8 @@ use std::time::Instant;
 pub(crate) use orb_crs::Geodetic;
 use orb_hal::Gpu;
 pub(crate) use orb_hal_wgpu::WgpuGpu;
-pub(crate) use orb_host_native::{NativeFetch, NativeImageDecode};
 use orb_host::jobs::ThreadPool;
+pub(crate) use orb_host_native::{NativeFetch, NativeImageDecode};
 pub(crate) use orb_runtime::{
     CameraState, Map, MapEvent, PoolJobs, SceneCapacity, Services, TargetFormat, Viewport,
 };

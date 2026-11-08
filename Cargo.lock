@@ -2382,17 +2382,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "orb-host-web"
-version = "0.0.0"
-dependencies = [
- "js-sys",
- "orb-host",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "orb-interact"
 version = "0.0.0"
 dependencies = [
@@ -2569,7 +2558,6 @@ dependencies = [
  "orb-hal",
  "orb-hal-wgpu",
  "orb-host",
- "orb-host-web",
  "orb-interact",
  "orb-runtime",
  "orb-style",

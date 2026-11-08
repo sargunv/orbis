@@ -7,12 +7,14 @@
 //! - **workers**: job workers ([`jobs::JobWorker`]) fetch and lay out
 //!   tiles; a placement worker ([`PlacementWorker`]) places labels.
 //!
-//! The map draws through WebGPU.
+//! The map draws through WebGPU; the `host` module gives both places
+//! the browser's fetch, storage, image decoding and canvas glyphs.
 
 #![cfg(target_arch = "wasm32")]
 
 mod camera;
 mod canvas;
+mod host;
 mod jobs;
 mod placement;
 pub mod regions;
@@ -265,8 +267,8 @@ pub async fn create_map(
         .map_err(|e| JsError::new(&e))?;
     let images = orb_runtime::Images::default();
     let services = Services {
-        clock: Arc::new(orb_host_web::WebClock),
-        image_decode: Arc::new(orb_host_web::WebImageDecode),
+        clock: Arc::new(crate::host::WebClock),
+        image_decode: Arc::new(crate::host::WebImageDecode),
         images: images.clone(),
         jobs,
         fetch: regions::service(),
@@ -854,7 +856,7 @@ impl OrbisMap {
                 ..FrameStats::default()
             });
         }
-        let started = orb_host::Clock::now(&orb_host_web::WebClock);
+        let started = orb_host::Clock::now(&crate::host::WebClock);
         let viewport = self.viewport();
         let (map, ratio, renderer) = (&mut self.map, self.pixel_ratio as f32, &mut self.renderer);
         let (report, pixels) = self
@@ -873,7 +875,7 @@ impl OrbisMap {
         let jobs = self.worker_jobs.stats();
         let counts = self.map.job_counts();
         Ok(FrameStats {
-            ms: orb_host::Clock::now(&orb_host_web::WebClock) - started,
+            ms: orb_host::Clock::now(&crate::host::WebClock) - started,
             zoom: self.map.zoom(),
             generation: report.generation as f64,
             idle: report.idle,
