@@ -13,7 +13,7 @@ import { transaction, type FeatureTarget, type Transaction } from "./transaction
 import type {
   Bounds, Camera, CameraOptions, Constraints, EaseOptions, Feature, FitOptions, FlyOptions, FreeCamera, Padding,
   FrameStats, GpuSubmission, Hit, LngLat, MapEvents, MapOptions, Point, QueryGeometry, QueryOptions,
-  LocationFix, MarkerOptions, SourceQueryOptions, StyleImageData, StyleImageOptions,
+  SourceQueryOptions, StyleImageData, StyleImageOptions,
 } from "./types.ts";
 
 /** An image's RGBA bytes, as the wasm map takes them. */
@@ -343,32 +343,6 @@ export class OrbisMap {
     return this.edit((tx) => tx.setGlobalStateProperty(name, value));
   }
 
-  /**
-   * Adds a marker the map draws over the style: an image of the style (a
-   * built-in pin by default) at a point. Returns its id, which
-   * `queryRenderedFeatures` gives it in the `orbis-markers` layer.
-   */
-  addMarker(marker: MarkerOptions): number {
-    const id = this.#host.core.addMarker(marker.lngLat[0], marker.lngLat[1], marker.image, marker.anchor);
-    this.#request();
-    return id;
-  }
-  /** Moves or changes a marker. */
-  updateMarker(id: number, marker: MarkerOptions): void {
-    this.#host.core.updateMarker(id, marker.lngLat[0], marker.lngLat[1], marker.image, marker.anchor);
-    this.#request();
-  }
-  removeMarker(id: number): void {
-    this.#host.core.removeMarker(id);
-    this.#request();
-  }
-  /** Shows the device's location (a dot, its accuracy and its heading),
-   * or with `null` hides it. The app passes each fix, such as a
-   * `GeolocationPosition`'s coordinates. */
-  setLocation(fix: LocationFix | null): void {
-    this.#host.core.setLocation(fix?.lngLat[0] ?? NaN, fix?.lngLat[1] ?? NaN, fix?.accuracy ?? 0, fix?.heading);
-    this.#request();
-  }
 
   /** The app's answer for a `tilerequest` of a source it feeds
    * (`{"type": "vector", "tiles": ["orbis-host:"]}`): the tile in the
@@ -439,12 +413,6 @@ export class OrbisMap {
   /** The layers' ids in drawing order. */
   getLayersOrder(): string[] { return this.#host.core.layerIds(); }
   getSourceIds(): string[] { return this.#host.core.sourceIds(); }
-
-  /** What the labels on screen say, for assistive technology; null before labels place. */
-  semanticSnapshot(): object | null {
-    const json = this.#host.core.semanticSnapshot();
-    return json ? JSON.parse(json) : null;
-  }
 
   /** Stops drawing and releases the map's workers and DOM. Animations
    * still running resolve false. Calling it again does nothing. */
@@ -606,7 +574,6 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     wake: () => map?.wake(),
     error: (e) => (map ? map.fail(e) : console.error(e)),
     setup: (core) => {
-      core.setFeel(options.feel ?? "desktop");
       if (options.constraints) core.setConstraints(options.constraints);
       if (options.camera) core.jumpTo(options.camera);
     },

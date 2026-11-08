@@ -102,28 +102,13 @@ internal object OrbisNative {
     external fun orbImagePixels(self: Long): ByteArray
 
     @JvmStatic
-    external fun orbMapCreate(runtime: Long, feel: Int, clearR: Double, clearG: Double, clearB: Double, clearA: Double): Long
+    external fun orbMapCreate(runtime: Long, clearR: Double, clearG: Double, clearB: Double, clearA: Double): Long
 
     @JvmStatic
     external fun orbMapSetWake(self: Long, wake: Function0<Unit>): Unit
 
     @JvmStatic
     external fun orbMapNeedsFrame(self: Long): Boolean
-
-    @JvmStatic
-    external fun orbMapAddMarker(self: Long, lon: Double, lat: Double, image: ByteArray, anchor: ByteArray): Long
-
-    @JvmStatic
-    external fun orbMapUpdateMarker(self: Long, id: Long, lon: Double, lat: Double, image: ByteArray, anchor: ByteArray): Unit
-
-    @JvmStatic
-    external fun orbMapRemoveMarker(self: Long, id: Long): Unit
-
-    @JvmStatic
-    external fun orbMapSetLocation(self: Long, lon: Double, lat: Double, accuracy: Double, heading: Double): Unit
-
-    @JvmStatic
-    external fun orbMapClearLocation(self: Long): Unit
 
     @JvmStatic
     external fun orbMapRetryFailedTiles(self: Long): Unit
@@ -235,9 +220,6 @@ internal object OrbisNative {
 
     @JvmStatic
     external fun orbMapSource(self: Long, id: ByteArray): ByteArray
-
-    @JvmStatic
-    external fun orbMapSemanticSnapshot(self: Long): ByteArray
 
     @JvmStatic
     external fun orbMapPointerDown(self: Long, id: Int, kind: Int, button: Int, x: Double, y: Double, modifiers_shift: Boolean, modifiers_ctrl: Boolean, modifiers_alt: Boolean, modifiers_meta: Boolean, timeMs: Double): Boolean

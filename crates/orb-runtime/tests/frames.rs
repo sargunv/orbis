@@ -603,11 +603,10 @@ mod tests {
         }
     }
 
-    /// A style with a symbol layer loads, places and goes idle. Without a
-    /// glyphs URL its text needs local fonts, which warn.
-    /// A placement commit's semantic snapshot reads the labels it shows.
+    /// A placement commit from the placement thread shows a symbol
+    /// layer's label, drawn with local fonts.
     #[test]
-    fn semantic_snapshots_read_shown_labels() {
+    fn placement_commits_show_labels() {
         let options = crate::common::Options {
             style: None,
             encoding: "mvt".into(),
@@ -645,36 +644,25 @@ mod tests {
             )
             .unwrap();
         assert!(
-            offscreen.map.semantic_snapshot().is_none(),
+            offscreen.map.shown_labels().is_empty(),
             "nothing placed yet"
         );
         // The commit comes from the placement thread.
         let started = std::time::Instant::now();
-        let mut snapshot = None;
-        while snapshot.is_none() && started.elapsed() < std::time::Duration::from_secs(10) {
+        let mut shown = 0.0;
+        while shown < 1.0 && started.elapsed() < std::time::Duration::from_secs(10) {
             let report = offscreen.frame();
             if report.idle && report.tiles_drawn > 0 {
-                snapshot = offscreen.map.semantic_snapshot();
+                shown = offscreen
+                    .map
+                    .shown_labels()
+                    .get("Null Island")
+                    .copied()
+                    .unwrap_or(0.0);
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        let snapshot = snapshot.expect("labels were placed");
-        let node = &snapshot.nodes[snapshot.reading_order[0] as usize];
-        assert_eq!(
-            (node.text.as_str(), node.role, node.layer.as_str()),
-            ("Null Island", orb_a11y::Role::Label, "label")
-        );
-        assert!(node.distance < 1.0, "{node:?}");
-        let [x0, y0, x1, y1] = node.bounds;
-        let center = (
-            f64::from(crate::common::Offscreen::WIDTH) / 2.0,
-            f64::from(crate::common::Offscreen::HEIGHT) / 2.0,
-        );
-        assert!(
-            x0 < center.0 && center.0 < x1 && y0 < center.1 && center.1 < y1,
-            "{node:?}"
-        );
-        assert_eq!(snapshot.summary.highlights, vec!["Null Island"]);
+        assert_eq!(shown, 1.0, "the label was placed and faded in");
     }
 
     #[test]

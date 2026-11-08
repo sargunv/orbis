@@ -5,7 +5,6 @@
 #![forbid(unsafe_code)]
 
 mod arrival;
-pub mod batteries;
 mod camera;
 mod edit;
 mod events;
@@ -47,7 +46,6 @@ pub mod wire;
 mod worker;
 
 pub use events::MapEvent;
-pub use orb_a11y::Snapshot as SemanticSnapshot;
 pub use video::{NO_VIDEO, VideoRequest};
 
 pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
@@ -65,7 +63,7 @@ pub use orb_camera::{
     FitOptions, FlyOptions, View, Viewport,
 };
 pub use orb_expr::json;
-pub use orb_interact::{Button, Feel, Input};
+pub use orb_interact::{Button, Input};
 pub use orb_layout::fill::Bend;
 pub use orb_render::Renderer;
 pub use orb_render::{

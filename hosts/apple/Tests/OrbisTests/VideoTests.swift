@@ -53,7 +53,7 @@ private func solidVideo(at url: URL, rgb: (UInt8, UInt8, UInt8), seconds: Int) a
 
     let runtime = try OrbRuntime.create(jobThreads: 0)
     let target = OrbTarget.createTexture(runtime: runtime, width: 64, height: 64, scale: 1)
-    let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
+    let map = OrbMap.create(runtime: runtime, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
     map.setPlaysVideo(plays: true)
     // WebM comes first: AVFoundation skips it for the MP4.
     try map.setStyleJson(json: """

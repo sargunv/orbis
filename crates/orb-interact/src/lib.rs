@@ -1,5 +1,5 @@
 //! Gestures: pointer, touch, wheel and keyboard input turned into
-//! camera moves, with inertia and feel profiles. Host-independent: hosts
+//! camera moves, with inertia. Host-independent: hosts
 //! feed [`Input`]s with their timestamps and call [`Interaction::frame`]
 //! once a display frame; every move goes through the
 //! [`Camera`](orb_camera::Camera) store, which reports the camera events.
@@ -12,9 +12,9 @@
 
 #![forbid(unsafe_code)]
 
-mod feel;
+mod rates;
 
-pub use feel::{Feel, Inertia};
+use rates::*;
 
 use std::collections::VecDeque;
 
@@ -198,7 +198,6 @@ const TRACKPAD_END: f64 = 200.0;
 /// The gesture recognizers for one map.
 #[derive(Debug)]
 pub struct Interaction {
-    feel: Feel,
     pointers: Vec<Pointer>,
     mode: Mode,
     samples: VecDeque<Sample>,
@@ -213,14 +212,7 @@ pub struct Interaction {
 
 impl Default for Interaction {
     fn default() -> Self {
-        Self::new(Feel::default())
-    }
-}
-
-impl Interaction {
-    pub fn new(feel: Feel) -> Self {
         Self {
-            feel,
             pointers: Vec::new(),
             mode: Mode::Idle,
             samples: VecDeque::new(),
@@ -231,11 +223,9 @@ impl Interaction {
             events: Vec::new(),
         }
     }
+}
 
-    pub fn set_feel(&mut self, feel: Feel) {
-        self.feel = feel;
-    }
-
+impl Interaction {
     /// A gesture is under way: hosts keep pointer capture and scrolling off.
     pub fn is_active(&self) -> bool {
         !matches!(self.mode, Mode::Idle) || self.wheel_hold_until.is_some()
@@ -349,7 +339,7 @@ impl Interaction {
                     pitch: (vector.y.abs() > vector.x.abs()).then_some(false),
                     single_since: None,
                     panning: false,
-                    tap: now - self.pointers[0].down_at < self.feel.tap_interval
+                    tap: now - self.pointers[0].down_at < TAP_INTERVAL
                         && matches!(self.mode, Mode::Pressed { .. }),
                 });
                 self.record(Sample::at(now));
@@ -367,7 +357,7 @@ impl Interaction {
         self.pointers[index].position = position;
         match &mut self.mode {
             Mode::Pressed { rotate, .. } => {
-                if position.distance(self.pointers[index].down) > self.feel.click_tolerance {
+                if position.distance(self.pointers[index].down) > CLICK_TOLERANCE {
                     let rotate = *rotate;
                     self.mode = if rotate { Mode::Rotate } else { Mode::Pan };
                     let down = self.pointers[index].down;
@@ -377,7 +367,7 @@ impl Interaction {
             Mode::Pan | Mode::Rotate => self.step(camera, last, position, now),
             Mode::TapDrag { origin, moved } => {
                 let (origin, dy) = (*origin, position.y - last.y);
-                *moved = *moved || position.distance(origin) > self.feel.click_tolerance;
+                *moved = *moved || position.distance(origin) > CLICK_TOLERANCE;
                 if *moved {
                     let zoom = dy / 128.0;
                     camera.zoom_by(origin, zoom);
@@ -414,8 +404,8 @@ impl Interaction {
         let delta = to - from;
         match self.mode {
             Mode::Rotate => {
-                let bearing = delta.x * self.feel.drag_rotate;
-                let pitch = -delta.y * self.feel.drag_pitch;
+                let bearing = delta.x * DRAG_ROTATE;
+                let pitch = -delta.y * DRAG_PITCH;
                 let center = center(camera);
                 camera.rotate_by(center, bearing);
                 camera.pitch_by(pitch);
@@ -442,10 +432,9 @@ impl Interaction {
         let [la, lb] = pinch.last;
         let (va, vb) = (a - la, b - lb);
         let vector = b - a;
-        let feel = &self.feel;
         if pinch.tap
-            && (a.distance(self.pointers[0].down) > feel.tap_tolerance
-                || b.distance(self.pointers[1].down) > feel.tap_tolerance)
+            && (a.distance(self.pointers[0].down) > TAP_TOLERANCE
+                || b.distance(self.pointers[1].down) > TAP_TOLERANCE)
         {
             pinch.tap = false;
         }
@@ -467,7 +456,7 @@ impl Interaction {
             }
         }
         if pinch.pitch == Some(true) {
-            let pitch = (va.y + vb.y) / 2.0 * -feel.drag_pitch;
+            let pitch = (va.y + vb.y) / 2.0 * -DRAG_PITCH;
             camera.pitch_by(pitch);
             pinch.last = points;
             pinch.tap = false;
@@ -482,21 +471,19 @@ impl Interaction {
         let distance = vector.length();
         let last_distance = (lb - la).length();
         pinch.min_diameter = pinch.min_diameter.min(distance);
-        if !pinch.zooming
-            && (distance / pinch.start_distance).log2().abs() >= feel.pinch_zoom_threshold
+        if !pinch.zooming && (distance / pinch.start_distance).log2().abs() >= PINCH_ZOOM_THRESHOLD
         {
             pinch.zooming = true;
         }
         if !pinch.rotating {
-            let threshold =
-                feel.rotate_threshold / (std::f64::consts::PI * pinch.min_diameter) * 360.0;
+            let threshold = ROTATE_THRESHOLD / (std::f64::consts::PI * pinch.min_diameter) * 360.0;
             if angle(pinch.start_vector, vector).abs() >= threshold {
                 pinch.rotating = true;
             }
         }
         if !pinch.panning
             && (mid - (self.pointers[0].down + self.pointers[1].down) / 2.0).length()
-                > feel.click_tolerance
+                > CLICK_TOLERANCE
         {
             pinch.panning = true;
         }
@@ -550,7 +537,7 @@ impl Interaction {
                 if !self.pointers.is_empty() {
                     // Lifting one finger continues as a one-finger pan;
                     // lifting the second ends a two-finger tap.
-                    let tap = pinch.tap && now - pointer.down_at < self.feel.tap_interval;
+                    let tap = pinch.tap && now - pointer.down_at < TAP_INTERVAL;
                     self.mode = if tap {
                         Mode::Pinch(pinch)
                     } else {
@@ -600,7 +587,7 @@ impl Interaction {
     fn tap(&mut self, camera: &mut Camera, pointer: Pointer, button: Button, now: f64) {
         let position = pointer.position;
         self.events.push(InteractEvent::Click { position, button });
-        if button != Button::Primary || now - pointer.down_at > self.feel.tap_interval {
+        if button != Button::Primary || now - pointer.down_at > TAP_INTERVAL {
             return;
         }
         if self.follows_tap(pointer.kind, position, now) {
@@ -628,9 +615,7 @@ impl Interaction {
     /// Whether a press of `kind` at `position` is the second of a double tap.
     fn follows_tap(&self, kind: PointerKind, position: DVec2, now: f64) -> bool {
         self.last_tap.is_some_and(|(at, time, k)| {
-            k == kind
-                && now - time < self.feel.tap_interval
-                && at.distance(position) < self.feel.tap_tolerance
+            k == kind && now - time < TAP_INTERVAL && at.distance(position) < TAP_TOLERANCE
         })
     }
 
@@ -674,13 +659,12 @@ impl Interaction {
             total.bearing += s.bearing;
             total.pitch += s.pitch;
         }
-        let feel = &self.feel;
         let mut glide = Glide {
             around: total.around,
             ..Glide::default()
         };
         if total.pan.length() > 0.0 {
-            let (amount, duration, easing) = feel.pan_inertia.ease(total.pan.length(), duration);
+            let (amount, duration) = PAN_INERTIA.ease(total.pan.length(), duration);
             // Never glide past the horizon, where the pan would turn back
             // (GL JS `handlePanInertia`).
             let view = camera.view();
@@ -689,25 +673,25 @@ impl Interaction {
             glide.pan = Some(Track {
                 amount: total.pan.normalize() * length,
                 duration,
-                easing,
+                easing: Easing::INERTIA,
             });
         }
         let track = |inertia: &Inertia, amount: f64| {
             (amount != 0.0).then(|| {
-                let (amount, duration, easing) = inertia.ease(amount, duration);
+                let (amount, duration) = inertia.ease(amount, duration);
                 Track {
                     amount,
                     duration,
-                    easing,
+                    easing: Easing::INERTIA,
                 }
             })
         };
-        glide.zoom = track(&feel.zoom_inertia, total.zoom);
-        glide.bearing = track(&feel.bearing_inertia, total.bearing).map(|mut t| {
+        glide.zoom = track(&ZOOM_INERTIA, total.zoom);
+        glide.bearing = track(&BEARING_INERTIA, total.bearing).map(|mut t| {
             t.amount = t.amount.clamp(-179.0, 179.0);
             t
         });
-        glide.pitch = track(&feel.pitch_inertia, total.pitch);
+        glide.pitch = track(&PITCH_INERTIA, total.pitch);
         (glide.pan.is_some()
             || glide.zoom.is_some()
             || glide.bearing.is_some()
@@ -777,9 +761,9 @@ impl Interaction {
         }
         let kind = self.wheel_kind.unwrap_or(WheelKind::Wheel);
         let rate = if kind == WheelKind::Wheel && value.abs() > WHEEL_STEP {
-            self.feel.wheel_zoom_rate
+            WHEEL_ZOOM_RATE
         } else {
-            self.feel.trackpad_zoom_rate
+            TRACKPAD_ZOOM_RATE
         };
         let mut scale = 2.0 / (1.0 + (-(value * rate).abs()).exp());
         if value > 0.0 {
@@ -815,7 +799,6 @@ impl Interaction {
     /// GL JS's `KeyboardHandler`: arrows pan, Shift-arrows rotate and
     /// tilt, `+` and `-` zoom; each an eased step.
     fn key(&mut self, camera: &mut Camera, key: Key, modifiers: Modifiers, now: f64) -> bool {
-        let feel = &self.feel;
         let state = *camera.state();
         let mut target = CameraTarget {
             center: Some(state.target),
@@ -828,14 +811,14 @@ impl Interaction {
                 let sign = if key == Key::ZoomIn { 1.0 } else { -1.0 };
                 target.zoom = Some(camera.zoom() + sign * step);
             }
-            (Key::Left, true) => target.bearing = Some(state.bearing - feel.key_bearing),
-            (Key::Right, true) => target.bearing = Some(state.bearing + feel.key_bearing),
-            (Key::Up, true) => target.pitch = Some(state.pitch + feel.key_pitch),
-            (Key::Down, true) => target.pitch = Some(state.pitch - feel.key_pitch),
-            (Key::Left, false) => target.offset = DVec2::new(feel.key_pan, 0.0),
-            (Key::Right, false) => target.offset = DVec2::new(-feel.key_pan, 0.0),
-            (Key::Up, false) => target.offset = DVec2::new(0.0, feel.key_pan),
-            (Key::Down, false) => target.offset = DVec2::new(0.0, -feel.key_pan),
+            (Key::Left, true) => target.bearing = Some(state.bearing - KEY_BEARING),
+            (Key::Right, true) => target.bearing = Some(state.bearing + KEY_BEARING),
+            (Key::Up, true) => target.pitch = Some(state.pitch + KEY_PITCH),
+            (Key::Down, true) => target.pitch = Some(state.pitch - KEY_PITCH),
+            (Key::Left, false) => target.offset = DVec2::new(KEY_PAN, 0.0),
+            (Key::Right, false) => target.offset = DVec2::new(-KEY_PAN, 0.0),
+            (Key::Up, false) => target.offset = DVec2::new(0.0, KEY_PAN),
+            (Key::Down, false) => target.offset = DVec2::new(0.0, -KEY_PAN),
         }
         camera.user_ease(
             &target,

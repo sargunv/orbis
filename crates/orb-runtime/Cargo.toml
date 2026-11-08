@@ -23,7 +23,6 @@ orb-render.workspace = true
 orb-shaders.workspace = true
 orb-source.workspace = true
 orb-style.workspace = true
-orb-a11y.workspace = true
 orb-symbol.workspace = true
 orb-text = { workspace = true, features = ["sea-buffer"] }
 orb-tile.workspace = true

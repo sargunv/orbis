@@ -113,8 +113,6 @@ export interface MapOptions {
   /** The starting camera; the style's by default. */
   camera?: CameraOptions;
   constraints?: Constraints;
-  /** Gesture feel; "desktop" (GL JS's) by default. */
-  feel?: "desktop" | "ios" | "android";
   /** Whether input moves the map; true by default. */
   interactive?: boolean;
   /** Device pixels per CSS pixel to draw with; the display's
@@ -252,22 +250,3 @@ export interface MapEvents {
   render: FrameStats;
 }
 
-/** A marker the map draws: an image at a point (`map.addMarker`). */
-export interface MarkerOptions {
-  lngLat: LngLat;
-  /** An image of the style (`addImage`, or its sprite's); a built-in pin
-   * by default. */
-  image?: string;
-  /** Which part of the image sits on the point (`icon-anchor`): the pin's
-   * tip, or the centre of other images, by default. */
-  anchor?: "center" | "top" | "bottom" | "left" | "right" | "top-left" | "top-right" | "bottom-left" | "bottom-right";
-}
-
-/** A location fix for `map.setLocation`. */
-export interface LocationFix {
-  lngLat: LngLat;
-  /** Horizontal accuracy, metres: the circle drawn around the dot. */
-  accuracy?: number;
-  /** Degrees clockwise from north the device faces. */
-  heading?: number;
-}

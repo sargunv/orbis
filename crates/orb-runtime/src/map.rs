@@ -674,20 +674,6 @@ impl Map {
         (self.services.wake)();
     }
 
-    /// The last placement commit's semantic snapshot: the
-    /// labels and icons it shows, a reading order and a region summary.
-    /// `None` before labels are first placed.
-    pub fn semantic_snapshot(&self) -> Option<orb_a11y::Snapshot> {
-        let style = self.style.as_ref()?;
-        let target = self.camera.state().target;
-        self.labels.semantic_snapshot(
-            style.worker.plan(),
-            [target.lon, target.lat],
-            self.zoom(),
-            &self.bucket_planes(style),
-        )
-    }
-
     /// Per label text, the greatest opacity it drew with at the last
     /// frame's time: for benches that watch labels across gestures.
     pub fn shown_labels(&self) -> HashMap<Box<str>, f32> {
@@ -1034,7 +1020,6 @@ impl Map {
                 .iter()
                 .map(|t| (t.bucket, t.to_world))
                 .collect(),
-            projection: *self.surface.projection(),
             period: self.surface.period(),
         }
     }

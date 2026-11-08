@@ -29,8 +29,7 @@ pub use orb_camera::{
 pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};
 pub use orb_host::{Request, RequestTransform};
-pub use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
-pub use orb_runtime::batteries::{Location, Marker};
+pub use orb_interact::{Button, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_runtime::{
     CameraState, ClusterQuery, FeatureTarget, FrameReport, HOST_TILES, Hit, HostTile, MapEvent, Op,
     StyleDoc, StyleImage, Transaction, VideoRequest, json,

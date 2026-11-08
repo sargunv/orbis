@@ -43,7 +43,7 @@ int main(void) {
     OrbRuntime_create_result rt = OrbRuntime_create(0);
     CHECK(rt.is_ok);
     OrbTarget* target = OrbTarget_create_texture(rt.ok, SIZE, SIZE, 1.0);
-    OrbMap* map = OrbMap_create(rt.ok, OrbFeel_Desktop, 0, 0, 0, 0);
+    OrbMap* map = OrbMap_create(rt.ok, 0, 0, 0, 0);
     /* The viewport, before a target draws. */
     OrbMap_set_viewport(map, SIZE, SIZE);
     OrbPoint middle = OrbMap_project(map, 0, 0);

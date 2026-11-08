@@ -24,7 +24,7 @@ private let style = """
     #expect(OrbRuntime.abiVersion() == 10)
     let runtime = try OrbRuntime.create(jobThreads: 0)
     let target = OrbTarget.createTexture(runtime: runtime, width: 64, height: 64, scale: 1)
-    let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
+    let map = OrbMap.create(runtime: runtime, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
     // The viewport, before a target draws.
     map.setViewport(width: 64, height: 64)
     let middle = map.project(lon: 0, lat: 0)
@@ -102,7 +102,7 @@ private let style = """
     layer.drawableSize = CGSize(width: 64, height: 64)
     let address = UInt(bitPattern: Unmanaged.passUnretained(layer).toOpaque())
     let target = try OrbTarget.createMetalLayer(runtime: runtime, layer: address, width: 64, height: 64, scale: 1)
-    let map = OrbMap.create(runtime: runtime, feel: .desktop, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
+    let map = OrbMap.create(runtime: runtime, clearR: 0, clearG: 0, clearB: 0, clearA: 0)
     try map.setStyleJson(json: style)
     let started = Date()
     var drawn = 0

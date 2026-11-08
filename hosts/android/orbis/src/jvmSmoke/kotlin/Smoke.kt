@@ -21,7 +21,7 @@ fun main() {
     check(OrbRuntime.abiVersion() == 10u)
     OrbRuntime.create(0u).use { runtime ->
         OrbTarget.createTexture(runtime, 64u, 64u, 1.0).use { target ->
-            OrbMap.create(runtime, OrbFeel.Desktop, 0.0, 0.0, 0.0, 0.0).use { map ->
+            OrbMap.create(runtime, 0.0, 0.0, 0.0, 0.0).use { map ->
                 // The viewport, before a target draws.
                 map.setViewport(64.0, 64.0)
                 check(map.project(0.0, 0.0).let { Math.abs(it.x - 32.0) < 1e-6 && Math.abs(it.y - 32.0) < 1e-6 })

@@ -27,21 +27,19 @@ fn tokyo() -> String {
         .replace("\"./", &format!("\"file://{}/", data.display()))
 }
 
+/// A label's text and anchor (longitude, latitude).
+type Anchor = (String, f64, f64);
+
 /// Labels a few pixels apart over a few tiles at zoom 10, each longer than
 /// the gap: a random field, and a row in which each overlaps the next, so
 /// that which ones show along it runs in one chain of collisions from its
-/// west end.
-fn crowd() -> String {
-    let mut features = Vec::new();
-    let mut feature = |name: String, lon: f64, lat: f64| {
-        features.push(format!(
-            r#"{{"type":"Feature","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[{lon},{lat}]}}}}"#
-        ));
-    };
+/// west end. Returns the style and each label's anchor.
+fn crowd() -> (String, Vec<Anchor>) {
+    let mut anchors = Vec::new();
     // 41 pixels apart at zoom 10, west to east: placed against the view, the
     // row shows another label at an edge when its west end is out of view.
     for i in 0..60 {
-        feature(format!("chain{i:03}"), -0.6 + f64::from(i) * 0.0283, 0.6);
+        anchors.push((format!("chain{i:03}"), -0.6 + f64::from(i) * 0.0283, 0.6));
     }
     let mut seed = 7u32;
     let mut next = || {
@@ -50,9 +48,17 @@ fn crowd() -> String {
     };
     for i in 0..1200 {
         let (lon, lat) = (-0.5 + next() * 1.4, -0.5 + next() * 0.8);
-        feature(format!("{}{i}", "label".repeat(1 + i % 3)), lon, lat);
+        anchors.push((format!("{}{i}", "label".repeat(1 + i % 3)), lon, lat));
     }
-    format!(
+    let features: Vec<String> = anchors
+        .iter()
+        .map(|(name, lon, lat)| {
+            format!(
+                r#"{{"type":"Feature","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[{lon},{lat}]}}}}"#
+            )
+        })
+        .collect();
+    let style = format!(
         r#"{{"version":8,
             "glyphs":"file://{}/glyphs/{{fontstack}}/{{range}}.pbf",
             "sources":{{"crowd":{{"type":"geojson","data":{{"type":"FeatureCollection","features":[{}]}}}}}},
@@ -63,12 +69,37 @@ fn crowd() -> String {
             ]}}"#,
         data().display(),
         features.join(",")
-    )
+    );
+    (style, anchors)
 }
 
 fn mercator() -> TileMatrixSet {
     TileMatrixSet::by_id("WebMercatorQuad").unwrap()
 }
+
+/// The tile of `z` that holds `at`.
+fn tile_at(at: Geodetic, z: u8) -> orb_crs::TileIndex {
+    let p = mercator().projection().forward(at);
+    mercator()
+        .tiles_in(orb_crs::WorldRect { min: p, max: p }, z)
+        .next()
+        .unwrap()
+}
+
+/// Draws one tile of `z` at 512 pixels.
+fn render_tile(map: &mut Map, z: u8, col: u32, row: u32) -> Vec<u8> {
+    let request = TileRequest {
+        tile_matrix_set: mercator(),
+        z,
+        col,
+        row,
+        size: TILE,
+        scale: 1.0,
+    };
+    map.render_tile(&request).unwrap().pixels
+}
+
+const TILE: u32 = 512;
 
 #[test]
 fn still_output_repeats_byte_for_byte() {
@@ -96,112 +127,87 @@ fn still_output_repeats_byte_for_byte() {
     assert!(still(&mut map) == first, "a still differs on repeat");
 }
 
-/// A label: text, layer and bounds in pixels of the grid at its zoom.
-type Label = (String, String, [f64; 4]);
-
-/// Draws the 3×3 tiles around `at`, and the middle one again. Returns the
-/// labels that cross an edge two tiles share and show on both sides, those
-/// that show on one, and whether the middle tile drew the same bytes again.
-fn edges(style: &str, at: Geodetic, z: u8, size: u32) -> (usize, Vec<Label>, bool) {
+#[test]
+fn tiles_repeat_byte_for_byte() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut map = Map::new(&runtime, MapOptions::default());
-    map.set_style_json(style).unwrap();
-    let tms = mercator();
-    let p = tms.projection().forward(at);
-    let center = tms
-        .tiles_in(orb_crs::WorldRect { min: p, max: p }, z)
-        .next()
-        .unwrap();
-    let mut tile = |col: u32, row: u32| -> (Vec<u8>, Vec<Label>) {
-        let request = TileRequest {
-            tile_matrix_set: tms.clone(),
-            z,
-            col,
-            row,
-            size,
-            scale: 1.0,
-        };
-        let pixels = map.render_tile(&request).unwrap().pixels;
-        // The view holds the tile and a tile around it.
-        let s = f64::from(size);
-        let (x0, y0) = ((f64::from(col) - 1.0) * s, (f64::from(row) - 1.0) * s);
-        let [left, top] = [f64::from(col) * s, f64::from(row) * s];
-        let labels = map
-            .semantic_snapshot()
-            .map(|s| s.nodes)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|n| {
-                let b = n.bounds;
-                (
-                    n.text,
-                    n.layer,
-                    [b[0] + x0, b[1] + y0, b[2] + x0, b[3] + y0],
-                )
-            })
-            .filter(|(_, _, b)| b[2] > left && b[0] < left + s && b[3] > top && b[1] < top + s)
-            .collect();
-        (pixels, labels)
-    };
-    let first = tile(center.col, center.row);
+    map.set_style_json(&tokyo()).unwrap();
+    let center = tile_at(Geodetic::new(139.755, 35.686), 15);
+    let first = render_tile(&mut map, 15, center.col, center.row);
+    // A neighbour between: what was placed there doesn't carry over.
+    render_tile(&mut map, 15, center.col + 1, center.row);
+    assert!(
+        render_tile(&mut map, 15, center.col, center.row) == first,
+        "a tile differs on repeat"
+    );
+}
+
+/// Each tile's picture is drawn with a tile of its neighbours around it, so
+/// two tiles that share an edge both see a label anchored a few pixels from
+/// it, which crosses it: both show it or neither does.
+#[test]
+fn tiles_agree_on_labels_across_edges() {
+    const Z: u8 = 10;
+    let (style, anchors) = crowd();
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    let center = tile_at(Geodetic::new(0.2, 0.2), Z);
     let mut tiles = Vec::new();
     for row in center.row - 1..=center.row + 1 {
         for col in center.col - 1..=center.col + 1 {
-            tiles.push(((col, row), tile(col, row).1));
+            render_tile(&mut map, Z, col, row);
+            let shown: std::collections::HashSet<Box<str>> = map
+                .shown_labels()
+                .into_iter()
+                .filter(|&(_, opacity)| opacity > 0.5)
+                .map(|(text, _)| text)
+                .collect();
+            tiles.push(((col, row), shown));
         }
     }
-    let repeats = tile(center.col, center.row).0 == first.0;
-
-    let same = |a: &Label, b: &Label| {
-        a.0 == b.0 && a.1 == b.1 && a.2.iter().zip(b.2).all(|(x, y)| (x - y).abs() < 0.01)
+    // Web Mercator pixels of the grid at `Z`.
+    let world = f64::from(TILE) * f64::from(1u32 << Z);
+    let pixel = |lon: f64, lat: f64| {
+        let y = lat.to_radians().tan().asinh();
+        [
+            (lon + 180.0) / 360.0 * world,
+            (1.0 - y / std::f64::consts::PI) / 2.0 * world,
+        ]
     };
+    let s = f64::from(TILE);
     let (mut agree, mut differ) = (0, Vec::new());
     for (i, ((ca, ra), a)) in tiles.iter().enumerate() {
         for ((cb, rb), b) in &tiles[i + 1..] {
             if ca.abs_diff(*cb) + ra.abs_diff(*rb) != 1 {
                 continue;
             }
-            let edge = f64::from(if ca != cb { ca.max(cb) } else { ra.max(rb) } * size);
-            let crosses = |l: &&Label| {
-                let (lo, hi) = if ca != cb {
-                    (l.2[0], l.2[2])
-                } else {
-                    (l.2[1], l.2[3])
-                };
-                lo < edge && hi > edge
+            // The shared edge, `edge` across it, starting `start` along it.
+            let vertical = ca != cb;
+            let (edge, start) = if vertical {
+                (f64::from(*ca.max(cb)) * s, f64::from(*ra) * s)
+            } else {
+                (f64::from(*ra.max(rb)) * s, f64::from(*ca) * s)
             };
-            for (x, y) in [(a, b), (b, a)] {
-                for l in x.iter().filter(crosses) {
-                    if y.iter().any(|m| same(l, m)) {
-                        agree += 1;
-                    } else {
-                        differ.push(l.clone());
-                    }
+            for (name, lon, lat) in &anchors {
+                let [x, y] = pixel(*lon, *lat);
+                let (across, along) = if vertical { (x, y) } else { (y, x) };
+                // Well within the shortest label's half width, and away
+                // from the edge's ends.
+                if (across - edge).abs() > 8.0 || along < start + 20.0 || along > start + s - 20.0 {
+                    continue;
+                }
+                match (a.contains(name.as_str()), b.contains(name.as_str())) {
+                    (true, true) => agree += 1,
+                    (false, false) => {}
+                    _ => differ.push(name.clone()),
                 }
             }
         }
     }
-    (agree / 2, differ, repeats)
-}
-
-#[test]
-fn tiles_repeat_and_agree_across_edges() {
-    for (name, style, at, z, size) in [
-        ("tokyo", tokyo(), Geodetic::new(139.755, 35.686), 15, 512),
-        ("crowd", crowd(), Geodetic::new(0.2, 0.2), 10, 512),
-    ] {
-        let (agree, differ, repeats) = edges(&style, at, z, size);
-        eprintln!(
-            "{name}: {agree} labels agree across edges, {} differ",
-            differ.len()
-        );
-        assert!(repeats, "{name}: a tile differs on repeat");
-        assert!(agree > 0, "{name}: no labels crossed the edges");
-        assert!(
-            differ.is_empty(),
-            "{name}: labels differ across edges: {differ:?}"
-        );
-    }
+    eprintln!("{agree} labels agree across edges, {} differ", differ.len());
+    assert!(agree > 0, "no labels crossed the edges");
+    assert!(differ.is_empty(), "labels differ across edges: {differ:?}");
 }
 
 #[test]

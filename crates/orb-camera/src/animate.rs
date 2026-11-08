@@ -16,12 +16,6 @@ pub enum Easing {
     /// A CSS-style cubic Bézier through (0, 0), `(x1, y1)`, `(x2, y2)`,
     /// (1, 1).
     Bezier([f64; 4]),
-    /// Exponential decay, as platform scroll views decelerate: velocity
-    /// falls by `rate` per millisecond over `duration` milliseconds.
-    Decay {
-        rate: f64,
-        duration: f64,
-    },
 }
 
 impl Easing {
@@ -38,14 +32,6 @@ impl Easing {
         match *self {
             Self::Linear => t,
             Self::Bezier([x1, y1, x2, y2]) => bezier(x1, y1, x2, y2, t),
-            Self::Decay { rate, duration } => {
-                let total = 1.0 - rate.powf(duration);
-                if total <= 0.0 {
-                    t
-                } else {
-                    (1.0 - rate.powf(t * duration)) / total
-                }
-            }
         }
     }
 }
@@ -564,10 +550,6 @@ mod tests {
             Easing::DEFAULT,
             Easing::EASE_OUT,
             Easing::INERTIA,
-            Easing::Decay {
-                rate: 0.998,
-                duration: 900.0,
-            },
         ] {
             assert!(easing.at(0.0).abs() < 1e-6, "{easing:?}");
             assert!((easing.at(1.0) - 1.0).abs() < 1e-6, "{easing:?}");

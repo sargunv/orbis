@@ -16,7 +16,6 @@
 #include "OrbEvent.h"
 #include "OrbEventKind.h"
 #include "OrbFeature.h"
-#include "OrbFeel.h"
 #include "OrbFrame.h"
 #include "OrbFreeCamera.h"
 #include "OrbImage.h"

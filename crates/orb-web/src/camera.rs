@@ -9,7 +9,7 @@ use orb_camera::{
     Bounds, CameraTarget, Constraints, EaseOptions, Easing, FitOptions, FlyOptions, Padding,
 };
 use orb_crs::Geodetic;
-use orb_interact::{Button, Feel, Input, Key, Modifiers, PointerKind, WheelUnit};
+use orb_interact::{Button, Input, Key, Modifiers, PointerKind, WheelUnit};
 use wasm_bindgen::prelude::*;
 
 use crate::OrbisMap;
@@ -150,18 +150,6 @@ impl OrbisMap {
 
 #[wasm_bindgen]
 impl OrbisMap {
-    /// `"desktop"`, `"ios"` or `"android"`.
-    #[wasm_bindgen(js_name = setFeel)]
-    pub fn set_feel(&mut self, name: &str) -> Result<(), JsError> {
-        self.map.set_feel(match name {
-            "desktop" => Feel::DESKTOP,
-            "ios" => Feel::IOS,
-            "android" => Feel::ANDROID,
-            _ => return Err(JsError::new("feel is desktop, ios or android")),
-        });
-        Ok(())
-    }
-
     /// A `Constraints` object: zoom and pitch ranges, and bounds.
     #[wasm_bindgen(js_name = setConstraints)]
     pub fn set_constraints(&mut self, constraints: &JsValue) {

@@ -388,18 +388,6 @@ mod ffi {
         }
     }
 
-    /// How gestures feel.
-    #[diplomat::attr(contract, thread = "any")]
-    #[derive(Debug)]
-    pub enum OrbFeel {
-        /// GL JS's handlers.
-        Desktop = 0,
-        /// Pans glide like a `UIScrollView`.
-        Ios = 1,
-        /// Pans glide like Android's `OverScroller`.
-        Android = 2,
-    }
-
     /// Space at the viewport's edges, logical pixels.
     #[diplomat::attr(contract, thread = "any")]
     #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1237,7 +1225,6 @@ mod ffi {
         #[diplomat::attr(contract, lifecycle)]
         pub fn create(
             runtime: &OrbRuntime,
-            feel: OrbFeel,
             clear_r: f64,
             clear_g: f64,
             clear_b: f64,
@@ -1247,11 +1234,6 @@ mod ffi {
                 &runtime.0,
                 orb_api::MapOptions {
                     camera: None,
-                    feel: match feel {
-                        OrbFeel::Desktop => orb_api::Feel::DESKTOP,
-                        OrbFeel::Ios => orb_api::Feel::IOS,
-                        OrbFeel::Android => orb_api::Feel::ANDROID,
-                    },
                     clear_color: [clear_r, clear_g, clear_b, clear_a],
                     ..orb_api::MapOptions::default()
                 },
@@ -1272,60 +1254,6 @@ mod ffi {
         #[diplomat::attr(contract, snapshot)]
         pub fn needs_frame(&self) -> bool {
             self.0.needs_frame()
-        }
-
-        /// Adds a marker drawn by the map over the style: the image `image`
-        /// of the style (the built-in pin when empty) at `lon`, `lat`, with
-        /// `anchor` (`icon-anchor`: "center", "bottom" and so on; the
-        /// image's default when empty) on the point. Rendered queries name
-        /// it by the returned id, in the `orbis-markers` layer.
-        #[diplomat::attr(contract, command)]
-        pub fn add_marker(
-            &mut self,
-            lon: f64,
-            lat: f64,
-            image: &DiplomatStr,
-            anchor: &DiplomatStr,
-        ) -> u64 {
-            self.0.add_marker(crate::marker(lon, lat, image, anchor))
-        }
-
-        /// Moves or changes a marker.
-        #[diplomat::attr(contract, command)]
-        pub fn update_marker(
-            &mut self,
-            id: u64,
-            lon: f64,
-            lat: f64,
-            image: &DiplomatStr,
-            anchor: &DiplomatStr,
-        ) -> Result<(), OrbError> {
-            self.0
-                .update_marker(id, crate::marker(lon, lat, image, anchor))
-                .map_err(fail)
-        }
-
-        #[diplomat::attr(contract, command)]
-        pub fn remove_marker(&mut self, id: u64) -> Result<(), OrbError> {
-            self.0.remove_marker(id).map_err(fail)
-        }
-
-        /// Shows the device's location: a dot at `lon`, `lat`, a circle of
-        /// `accuracy` metres and, unless it is NaN, a cone toward
-        /// `heading` (degrees clockwise from north). Push each fix.
-        #[diplomat::attr(contract, command)]
-        pub fn set_location(&mut self, lon: f64, lat: f64, accuracy: f64, heading: f64) {
-            self.0.set_location(Some(orb_api::Location {
-                position: [lon, lat],
-                accuracy,
-                heading: (!heading.is_nan()).then_some(heading),
-            }));
-        }
-
-        /// Hides the location layer.
-        #[diplomat::attr(contract, command)]
-        pub fn clear_location(&mut self) {
-            self.0.set_location(None);
         }
 
         /// Requests the tiles that failed again now: call it when the
@@ -1735,15 +1663,6 @@ mod ffi {
                 .ok_or_else(|| invalid(format!("no source {id}")))?;
             out.write_str(&json.to_string()).ok();
             Ok(())
-        }
-
-        /// What the labels on screen say, for assistive technology, as
-        /// JSON; empty before labels are first placed.
-        #[diplomat::attr(contract, snapshot)]
-        pub fn semantic_snapshot(&self, out: &mut DiplomatWrite) {
-            if let Some(snapshot) = self.0.semantic_snapshot() {
-                out.write_str(&snapshot.to_json()).ok();
-            }
         }
 
         /// A pointer went down, in logical pixels. Returns whether the map
@@ -2294,15 +2213,6 @@ fn modifiers(m: ffi::OrbModifiers) -> orb_api::Modifiers {
         ctrl: m.ctrl,
         alt: m.alt,
         meta: m.meta,
-    }
-}
-
-fn marker(lon: f64, lat: f64, image: &[u8], anchor: &[u8]) -> orb_api::Marker {
-    let some = |s: &[u8]| (!s.is_empty()).then(|| text(s).into_owned());
-    orb_api::Marker {
-        position: [lon, lat],
-        image: some(image),
-        anchor: some(anchor),
     }
 }
 

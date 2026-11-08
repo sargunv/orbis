@@ -14,8 +14,7 @@ use orb_camera::{
 };
 use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
-use orb_interact::{Feel, Input};
-use orb_runtime::batteries::{Location, Marker};
+use orb_interact::Input;
 use orb_runtime::{
     CameraState, ClusterQuery, FrameReport, GridTile, Hit, HostTile, MapEvent, RenderMode,
     StyleImage, Transaction, VideoRequest, Viewport,
@@ -28,8 +27,6 @@ use crate::{Error, Runtime, Shared, Target};
 pub struct MapOptions {
     /// The camera; the first style's when `None`, as GL JS does.
     pub camera: Option<CameraState>,
-    /// How gestures feel.
-    pub feel: Feel,
     /// The backing colour behind transparent style pixels, premultiplied
     /// RGBA; opaque surfaces want their view's background.
     pub clear_color: [f64; 4],
@@ -56,7 +53,6 @@ impl Default for MapOptions {
     fn default() -> Self {
         Self {
             camera: None,
-            feel: Feel::default(),
             clear_color: [0.0; 4],
             fade_duration: 300.0,
             cross_source_collisions: true,
@@ -140,8 +136,6 @@ pub struct Map {
     dirty: bool,
     /// How the map renders now.
     mode: RenderMode,
-    /// Markers and the location layer.
-    batteries: orb_runtime::batteries::Batteries,
     /// The last frame's time and when it was drawn: frames the map times
     /// itself (still output, [`render_until_idle`](Self::render_until_idle))
     /// go on from it, on the host's clock.
@@ -205,7 +199,6 @@ impl Map {
             map.set_memory_budget(orb_runtime::MOBILE_BUDGET);
         }
         map.set_clear_color(options.clear_color);
-        map.set_feel(options.feel);
         map.set_fade_duration(options.fade_duration);
         map.set_cross_source_collisions(options.cross_source_collisions);
         map.set_local_ideograph_font_family(options.local_ideograph_font_family.as_deref());
@@ -228,7 +221,6 @@ impl Map {
             busy: true,
             dirty: true,
             mode: RenderMode::Continuous,
-            batteries: Default::default(),
             last_frame: None,
         }
     }
@@ -319,37 +311,6 @@ impl Map {
         self.map
             .add_image(name, image)
             .map_err(Error::InvalidArgument)
-    }
-
-    /// Adds a marker, drawn by the map over the style: an image at a point.
-    /// Its id names it to [`update_marker`](Self::update_marker),
-    /// [`remove_marker`](Self::remove_marker) and in hits, in the
-    /// `orbis-markers` layer.
-    pub fn add_marker(&mut self, marker: Marker) -> u64 {
-        self.dirty = true;
-        self.batteries.add_marker(&mut self.map, marker)
-    }
-
-    /// Moves or changes a marker.
-    pub fn update_marker(&mut self, id: u64, marker: Marker) -> Result<(), Error> {
-        self.dirty = true;
-        self.batteries
-            .update_marker(&mut self.map, id, marker)
-            .map_err(Error::InvalidArgument)
-    }
-
-    pub fn remove_marker(&mut self, id: u64) -> Result<(), Error> {
-        self.dirty = true;
-        self.batteries
-            .remove_marker(&mut self.map, id)
-            .map_err(Error::InvalidArgument)
-    }
-
-    /// Shows the device's location: a dot, its accuracy circle and its
-    /// heading; `None` hides them. The app pushes each fix.
-    pub fn set_location(&mut self, location: Option<Location>) {
-        self.dirty = true;
-        self.batteries.set_location(&mut self.map, location);
     }
 
     /// Whether this host plays `video` sources: it then gets
@@ -932,8 +893,6 @@ impl Map {
             )));
         }
         let viewport = target.viewport();
-        // Markers and the location layer come back with a new style.
-        self.batteries.sync(&mut self.map);
         // The frame borrows the device once: the target begins and ends
         // with it, and it's let go before anything else here borrows it.
         let report = {
@@ -972,13 +931,6 @@ impl Map {
             let _ = self.runtime.save_pipeline_cache();
         }
         Ok(Some(report))
-    }
-
-    /// What the labels on screen say, for assistive technology: the
-    /// last placement's labels and icons, a reading order and a
-    /// summary; `None` before labels are first placed.
-    pub fn semantic_snapshot(&self) -> Option<orb_runtime::SemanticSnapshot> {
-        self.map.semantic_snapshot()
     }
 
     /// The oldest event not yet taken.

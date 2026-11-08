@@ -88,8 +88,8 @@ pub(crate) struct Prepared {
     /// `text-color`: per section layout keeps, its premultiplied colour as
     /// a property row packs it.
     pub(crate) section_colors: HashMap<u32, Vec<Option<u32>>>,
-    /// By feature index, what its symbol reads as (the semantic snapshot):
-    /// its text sections before `text-transform` and shaping, or its icon.
+    /// By feature index, what its symbol reads as: its text sections
+    /// before `text-transform` and shaping, or its icon.
     pub(crate) names: HashMap<u32, String>,
     pub(crate) requests: GlyphRequests,
 }

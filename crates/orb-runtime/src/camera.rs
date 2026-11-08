@@ -9,7 +9,7 @@ use orb_camera::{
     FlyOptions, FreeCamera, Viewport,
 };
 use orb_crs::Geodetic;
-use orb_interact::{Feel, Input, InteractEvent};
+use orb_interact::{Input, InteractEvent};
 
 use crate::{Map, MapEvent};
 
@@ -73,11 +73,6 @@ impl Map {
     /// `setCenterElevation`); while clamped, the terrain takes it back.
     pub fn set_center_elevation(&mut self, elevation: f64) {
         self.camera.set_center_elevation(elevation);
-    }
-
-    /// How gestures feel.
-    pub fn set_feel(&mut self, feel: Feel) {
-        self.input.set_feel(feel);
     }
 
     /// Hands the map a pointer, wheel or key input at `time`, the event's

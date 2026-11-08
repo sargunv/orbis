@@ -32,12 +32,7 @@ open class MapView: PlatformView {
 
     public init(runtime: OrbRuntime, frame: CGRect = .zero) {
         self.runtime = runtime
-        #if os(macOS)
-        let feel = OrbFeel.desktop
-        #else
-        let feel = OrbFeel.ios
-        #endif
-        map = OrbMap.create(runtime: runtime, feel: feel, clearR: 1, clearG: 1, clearB: 1, clearA: 1)
+        map = OrbMap.create(runtime: runtime, clearR: 1, clearG: 1, clearB: 1, clearA: 1)
         super.init(frame: frame)
         #if os(macOS)
         wantsLayer = true

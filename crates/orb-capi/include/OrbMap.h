@@ -15,7 +15,6 @@
 #include "OrbError.d.h"
 #include "OrbEvent.d.h"
 #include "OrbFeature.d.h"
-#include "OrbFeel.d.h"
 #include "OrbFrame.d.h"
 #include "OrbFreeCamera.d.h"
 #include "OrbImage.d.h"
@@ -42,23 +41,11 @@ typedef struct DiplomatCallback_OrbMap_set_wake_wake {
     void (*destructor)(const void*);
 } DiplomatCallback_OrbMap_set_wake_wake;
 
-OrbMap* OrbMap_create(const OrbRuntime* runtime, OrbFeel feel, double clear_r, double clear_g, double clear_b, double clear_a);
+OrbMap* OrbMap_create(const OrbRuntime* runtime, double clear_r, double clear_g, double clear_b, double clear_a);
 
 void OrbMap_set_wake(OrbMap* self, DiplomatCallback_OrbMap_set_wake_wake wake_cb_wrap);
 
 bool OrbMap_needs_frame(const OrbMap* self);
-
-uint64_t OrbMap_add_marker(OrbMap* self, double lon, double lat, DiplomatStringView image, DiplomatStringView anchor);
-
-typedef struct OrbMap_update_marker_result {union { OrbError err;}; bool is_ok;} OrbMap_update_marker_result;
-OrbMap_update_marker_result OrbMap_update_marker(OrbMap* self, uint64_t id, double lon, double lat, DiplomatStringView image, DiplomatStringView anchor);
-
-typedef struct OrbMap_remove_marker_result {union { OrbError err;}; bool is_ok;} OrbMap_remove_marker_result;
-OrbMap_remove_marker_result OrbMap_remove_marker(OrbMap* self, uint64_t id);
-
-void OrbMap_set_location(OrbMap* self, double lon, double lat, double accuracy, double heading);
-
-void OrbMap_clear_location(OrbMap* self);
 
 void OrbMap_retry_failed_tiles(OrbMap* self);
 
@@ -152,8 +139,6 @@ OrbMap_layer_result OrbMap_layer(const OrbMap* self, DiplomatStringView id, Dipl
 
 typedef struct OrbMap_source_result {union { OrbError err;}; bool is_ok;} OrbMap_source_result;
 OrbMap_source_result OrbMap_source(const OrbMap* self, DiplomatStringView id, DiplomatWrite* write);
-
-void OrbMap_semantic_snapshot(const OrbMap* self, DiplomatWrite* write);
 
 bool OrbMap_pointer_down(OrbMap* self, uint32_t id, OrbPointerKind kind, OrbButton button, double x, double y, OrbModifiers modifiers, double time_ms);
 

@@ -186,8 +186,8 @@ struct BucketMeshes {
     /// The states last written, per drawn world copy, to write again when
     /// the meshes make room for more copies.
     written: HashMap<i32, orb_symbol::BucketStates>,
-    /// The bucket's placement tables and, per instance, what it reads as:
-    /// the semantic snapshot's input.
+    /// The bucket's placement tables and, per instance, what it reads as
+    /// (for [`shown`](Labels::shown)).
     tables: Arc<PlacementTables>,
     names: Vec<Box<str>>,
 }
@@ -209,10 +209,9 @@ impl BucketMeshes {
 }
 
 /// Where symbol buckets' tiles are: each bucket's tile units
-/// ([`orb_symbol::EXTENT`]) to world, and the surface they draw on.
+/// ([`orb_symbol::EXTENT`]) to world, and the surface's wrap period.
 pub(crate) struct BucketPlanes {
     pub(crate) to_world: HashMap<u64, glam::DAffine2>,
-    pub(crate) projection: orb_crs::Projection,
     /// The surface's wrap period, 0 if it doesn't wrap.
     pub(crate) period: f64,
 }
@@ -1406,124 +1405,6 @@ impl Labels {
             }
         }
         hits
-    }
-
-    /// The last commit's semantic snapshot: every shown label
-    /// and icon with its text, role, layer, sort key, viewport bounds (its
-    /// collision box at layout size) and bearing and distance from
-    /// `center` (longitude, latitude).
-    pub(crate) fn semantic_snapshot(
-        &self,
-        plan: &StylePlan,
-        center: [f64; 2],
-        zoom: f64,
-        planes: &BucketPlanes,
-    ) -> Option<orb_a11y::Snapshot> {
-        use orb_symbol::state;
-        let frame = self.placed.as_deref()?;
-        let shown = |words: &[u32], placed: u32| {
-            placed != orb_symbol::NONE
-                && words
-                    .get(placed as usize * state::WORDS)
-                    .is_some_and(|&w| w & state::HIDDEN == 0 && w & state::PLACED != 0)
-        };
-        let (width, height) = (frame.camera.width, frame.camera.height);
-        let mut nodes = Vec::new();
-        // Frames list symbol layers in style order; the topmost places first.
-        for (rank, layer) in frame.layers.iter().rev().enumerate() {
-            let Some(node) = plan.node(crate::style::node_key(layer.params.layer, 0)) else {
-                continue;
-            };
-            let style_layer = &plan.style.layers[plan.nodes[node].layer];
-            if style_layer.ty != orb_style::LayerType::Symbol {
-                continue;
-            }
-            let symbol = style_layer;
-            let along_line = symbol.get(orb_style::SYMBOL_PLACEMENT).evaluate(zoom)
-                != orb_style::SymbolPlacement::Point;
-            for tile in &layer.tiles {
-                let Some(meshes) = self.buckets.get(&tile.bucket) else {
-                    continue;
-                };
-                let Some(&to_world) = planes.to_world.get(&tile.bucket) else {
-                    continue;
-                };
-                let id = tile.view.id;
-                let Some(states) = meshes.written.get(&id.wrap) else {
-                    continue;
-                };
-                let m = &tile.view.matrix;
-                let to_px = |x: f64, y: f64| {
-                    let clip = |r: usize| m[r] * x + m[4 + r] * y + m[12 + r];
-                    let w = clip(3);
-                    [
-                        (clip(0) / w * 0.5 + 0.5) * width,
-                        (0.5 - clip(1) / w * 0.5) * height,
-                        w,
-                    ]
-                };
-                let tables = &meshes.tables;
-                for (i, instance) in tables.instances.iter().enumerate() {
-                    let text = instance.text.iter().any(|&p| shown(&states.text, p));
-                    let icon = instance.icon.iter().any(|&p| shown(&states.icon, p));
-                    let name = meshes.names.get(i).map_or("", |n| &**n);
-                    if !(text || icon) || name.is_empty() {
-                        continue;
-                    }
-                    let [ax, ay] = instance.anchor.map(f64::from);
-                    let [px, py, w] = to_px(ax, ay);
-                    if w <= 0.0 {
-                        continue;
-                    }
-                    // The collision box, tile units around the anchor at
-                    // the tile's zoom, projected corner by corner.
-                    let b = instance.boxes[if text { 0 } else { 2 }].map(f64::from);
-                    let mut bounds = [px, py, px, py];
-                    for (dx, dy) in [(b[0], b[1]), (b[2], b[1]), (b[0], b[3]), (b[2], b[3])] {
-                        let [x, y, _] = to_px(ax + dx, ay + dy);
-                        bounds = [
-                            bounds[0].min(x),
-                            bounds[1].min(y),
-                            bounds[2].max(x),
-                            bounds[3].max(y),
-                        ];
-                    }
-                    // Placement keeps labels just past the edges; a reader
-                    // gets what is on screen.
-                    if bounds[2] < 0.0 || bounds[3] < 0.0 || bounds[0] > width || bounds[1] > height
-                    {
-                        continue;
-                    }
-                    let p = to_world.transform_point2(glam::DVec2::new(ax, ay))
-                        + glam::DVec2::new(f64::from(id.wrap) * planes.period, 0.0);
-                    let g = planes.projection.inverse(p);
-                    let lonlat = [g.lon, g.lat];
-                    let (bearing, distance) = orb_a11y::bearing_distance(center, lonlat);
-                    let sort_key = tables
-                        .sort_key_ranges
-                        .iter()
-                        .find(|r| (r.start..r.end).contains(&(i as u32)))
-                        .map(|r| r.sort_key);
-                    nodes.push(orb_a11y::Node {
-                        text: name.to_string(),
-                        role: if along_line {
-                            orb_a11y::Role::Road
-                        } else if icon {
-                            orb_a11y::Role::Poi
-                        } else {
-                            orb_a11y::Role::Label
-                        },
-                        layer: style_layer.id.clone(),
-                        layer_rank: rank as u32,
-                        sort_key,
-                        bounds,
-                        bearing,
-                        distance,
-                    });
-                }
-            }
-        }
-        Some(orb_a11y::Snapshot::new(self.commits, nodes, center, zoom))
     }
 
     /// Forgets the placement inputs, so the next frame places again.

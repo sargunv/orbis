@@ -7,7 +7,6 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import dev.orbis.OrbEvent
-import dev.orbis.OrbFeel
 import dev.orbis.OrbFrame
 import dev.orbis.OrbMap
 import dev.orbis.OrbModifiers
@@ -34,7 +33,7 @@ import dev.orbis.OrbError
 class MapView(context: Context, val runtime: OrbRuntime) :
     SurfaceView(context), SurfaceHolder.Callback, Choreographer.FrameCallback, AutoCloseable {
 
-    val map: OrbMap = OrbMap.create(runtime, OrbFeel.Android, 1.0, 1.0, 1.0, 1.0)
+    val map: OrbMap = OrbMap.create(runtime, 1.0, 1.0, 1.0, 1.0)
 
     /** Called after each frame drawn, with what it did. */
     var onFrame: ((OrbFrame) -> Unit)? = null

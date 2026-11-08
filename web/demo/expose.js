@@ -11,7 +11,6 @@ export function expose(map) {
     setGlobalState: (name, value) => map.setGlobalState(name, value),
     hitTest: (x, y) => map.hitTest([x, y]),
     getStyle: async () => JSON.stringify(await map.getStyle()),
-    semanticSnapshot: () => map.semanticSnapshot(),
     loseDevice: () => map.loseDevice(),
     trapPlacementWorker: () => map.trapPlacementWorker(),
     setRequestTransform,
@@ -25,10 +24,4 @@ export function hashCamera() {
   if (hash.length < 3 || !hash.every(Number.isFinite)) return undefined;
   const [zoom, lat, lon, bearing = 0, pitch = 0] = hash;
   return { center: [lon, lat], zoom, bearing, pitch };
-}
-
-/** The gesture feel for this device. */
-export function feel() {
-  if (!matchMedia("(pointer: coarse)").matches) return "desktop";
-  return /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent) ? "ios" : "android";
 }

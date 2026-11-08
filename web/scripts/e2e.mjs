@@ -19,18 +19,14 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-// - `batteries`: the map app's "My location" and "Drop pins" switches on the
-//   Tokyo extract with a granted geolocation: the dot shows, a click drops a
-//   pin and a click on it lifts it.
-//
-//   pnpm e2e [--only=scenario,edits,editor,batteries,offline]
+//   pnpm e2e [--only=scenario,edits,editor,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520]
 import assert from "node:assert/strict";
 import { decodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor,batteries").split(",");
+const only = arg("only", "scenario,edits,editor").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -322,10 +318,8 @@ async function edits(browser, server) {
     console.log(`edits: ${name} → generation ${generation}, idle in ${Date.now() - started} ms`);
   }
   // A placement worker that traps is replaced: labels place again.
-  const labels = () => page.evaluate(() => {
-    const snapshot = globalThis.orbis.semanticSnapshot();
-    return { commit: snapshot?.commit ?? 0, shown: snapshot?.nodes?.length ?? 0 };
-  });
+  const labels = () => page.evaluate(async () =>
+    (await globalThis.orbis.map.queryRenderedFeatures()).filter((f) => f.layer?.type === "symbol").length);
   const before = await labels();
   await page.evaluate(() => globalThis.orbis.trapPlacementWorker());
   await page.waitForTimeout(100);
@@ -333,18 +327,16 @@ async function edits(browser, server) {
   await page.waitForTimeout(50);
   await idle();
   const after = await labels();
-  assert.ok(before.shown > 0 && after.shown > 0 && after.commit > before.commit,
-    `labels before the trap ${JSON.stringify(before)}, after ${JSON.stringify(after)}`);
-  console.log(`edits: placement worker trapped and replaced; commit ${before.commit} → ${after.commit}, ${after.shown} labels`);
+  assert.ok(before > 0 && after > 0, `labels before the trap ${before}, after ${after}`);
+  console.log(`edits: placement worker trapped and replaced; ${before} → ${after} labels`);
 
   // A device loss keeps what the app set at run time:
-  // feature state (the grid's feature 7 above), images, markers, a
+  // feature state (the grid's feature 7 above), images, a
   // GeoJSON source's diffed data and a transformed request.
   const recovered = await page.evaluate(async () => {
     const { map, setRequestTransform } = globalThis.orbis;
     map.camera.jumpTo({ center: [139.74, 35.688], zoom: 15, bearing: 0, pitch: 0 });
     map.addImage("e2e-dot", { width: 2, height: 2, data: new Uint8Array(16).fill(255) });
-    const marker = map.addMarker({ lngLat: [139.74, 35.685], image: "e2e-dot" });
     // Squares north of the grid, one per source.
     const box = (x) => [[x, 35.691], [x + 0.002, 35.691], [x + 0.002, 35.693], [x, 35.693], [x, 35.691]];
     const square = (x, properties = {}) => ({ type: "Feature", id: 1, properties, geometry: { type: "Polygon", coordinates: [box(x)] } });
@@ -371,16 +363,14 @@ async function edits(browser, server) {
     await map.once("idle");
     const at = map.project([139.735 + 7 * 0.0004, 35.682]);
     const [feature] = await map.queryRenderedFeatures(at, { layers: ["grid"] });
-    let moved = true;
-    try { map.updateMarker(marker, { lngLat: [139.741, 35.685], image: "e2e-dot" }); } catch { moved = false; }
     const after = await shown();
     map.edit((tx) => tx.removeLayer("e2e-geo").removeLayer("e2e-remote"));
     setRequestTransform(undefined);
-    return { image: await map.hasImage("e2e-dot"), state: feature?.state, moved, before, after };
+    return { image: await map.hasImage("e2e-dot"), state: feature?.state, before, after };
   });
   const sources = { geo: { name: "b" }, remote: {} };
   assert.deepEqual(recovered.before, sources, JSON.stringify(recovered));
-  assert.deepEqual(recovered, { image: true, state: { hover: true }, moved: true, before: sources, after: sources },
+  assert.deepEqual(recovered, { image: true, state: { hover: true }, before: sources, after: sources },
     JSON.stringify(recovered));
   console.log("edits: lost the GPU, recovered with the app's state and sources");
 
@@ -545,44 +535,11 @@ async function offline(browser, server) {
   await page.close();
 }
 
-/** Markers and the location layer from the map app's menu, on the Tokyo
- * extract: the location follows a fix, a click drops a pin, another lifts it. */
-async function batteries(browser, server) {
-  const context = await browser.newContext({ viewport: { width: 600, height: 400 },
-    permissions: ["geolocation"], geolocation: { latitude: 35.684, longitude: 139.75, accuracy: 120 } });
-  const page = await context.newPage();
-  const errors = [];
-  page.on("pageerror", (e) => errors.push(e.message));
-  page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
-  const idle = () => page.waitForFunction(() => document.getElementById("app")?.dataset.map === "idle",
-    null, { timeout: 60_000 });
-  await page.goto(`${server.url}?style=tokyo-mvt#15/35.684/139.75`);
-  await idle();
-  // The menu stays open over its switches.
-  await page.click("#menu-button");
-  await page.click("#location-toggle");
-  await page.click("#pins-toggle");
-  await page.keyboard.press("Escape");
-  await page.waitForFunction(async () => (await globalThis.orbis.map.queryRenderedFeatures(
-    [[0, 0], [600, 400]], { layers: ["orbis-location"] })).length === 1, null, { timeout: 30_000 });
-  await page.mouse.click(450, 120);
-  await page.waitForFunction(async () => (await globalThis.orbis.map.queryRenderedFeatures(
-    [[0, 0], [600, 400]], { layers: ["orbis-markers"] })).length === 1, null, { timeout: 30_000 });
-  // The pin's head, above the point clicked: it lifts.
-  await page.mouse.click(450, 108);
-  await page.waitForFunction(async () => (await globalThis.orbis.map.queryRenderedFeatures(
-    [[0, 0], [600, 400]], { layers: ["orbis-markers"] })).length === 0, null, { timeout: 30_000 });
-  console.log("batteries: location shown, pin dropped and lifted");
-  assert.deepEqual(errors, []);
-  await context.close();
-}
-
 const CHECKS = {
   scenario,
   edits,
   editor,
   offline,
-  batteries,
 };
 const server = await serveDemo();
 const browser = await launchChromium();
