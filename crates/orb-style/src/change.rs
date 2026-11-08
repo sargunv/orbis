@@ -64,7 +64,7 @@ impl Binding {
     }
 
     /// How a property's slot binds: a list by its first value.
-    pub fn of_slot(slot: &Slot) -> Self {
+    pub(crate) fn of_slot(slot: &Slot) -> Self {
         slot.items()
             .first()
             .and_then(Slot::as_expression)
@@ -72,7 +72,7 @@ impl Binding {
     }
 
     /// Whether the value needs per-feature property rows.
-    pub fn is_rows(self) -> bool {
+    pub(crate) fn is_rows(self) -> bool {
         matches!(self, Self::Source | Self::Composite)
     }
 }

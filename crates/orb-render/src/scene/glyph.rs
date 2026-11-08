@@ -37,9 +37,8 @@ pub struct GlyphAtlas {
     page: TilePage,
     /// Per layer of `page`, its shelves.
     shelves: Vec<Shelves>,
-    /// The row table: words of a scene buffer from `base`.
+    /// The row table: the first words of a scene buffer.
     table: BufferId,
-    base: u32,
     capacity: u32,
     rows: Vec<Option<Row>>,
     free: Vec<u32>,
@@ -56,9 +55,9 @@ impl GlyphAtlas {
         self.page.bytes()
     }
 
-    /// An atlas of at most `capacity` rows, its row table in `table` from
-    /// word `base` (`capacity` × [`GLYPH_ROW_WORDS`] words).
-    pub fn new(gpu: &mut dyn Gpu, capacity: u32, table: BufferId, base: u32) -> Self {
+    /// An atlas of at most `capacity` rows, its row table the first
+    /// `capacity` × [`GLYPH_ROW_WORDS`] words of `table`.
+    pub fn new(gpu: &mut dyn Gpu, capacity: u32, table: BufferId) -> Self {
         assert!(capacity > 1);
         let page = TilePage::new(
             gpu,
@@ -71,12 +70,11 @@ impl GlyphAtlas {
                 mip_levels: 1,
             }],
         );
-        gpu.write_buffer(table, u64::from(base) * 4, &[0; GLYPH_ROW_WORDS * 4]);
+        gpu.write_buffer(table, 0, &[0; GLYPH_ROW_WORDS * 4]);
         Self {
             page,
             shelves: Vec::new(),
             table,
-            base,
             capacity,
             rows: vec![Some(Row { placed: None })],
             free: Vec::new(),
@@ -90,18 +88,12 @@ impl GlyphAtlas {
     }
 
     /// The row table moved, at the same offset, into a larger buffer.
-    pub fn set_table(&mut self, table: BufferId) {
+    pub(crate) fn set_table(&mut self, table: BufferId) {
         self.table = table;
     }
 
-    /// The row table's first word in its buffer: [`GLYPH_ROW_WORDS`] per
-    /// row.
-    pub fn table_base(&self) -> u32 {
-        self.base
-    }
-
     fn row_offset(&self, row: u32) -> u64 {
-        (u64::from(self.base) + u64::from(row) * GLYPH_ROW_WORDS as u64) * 4
+        u64::from(row) * GLYPH_ROW_WORDS as u64 * 4
     }
 
     /// Changes whenever [`texture`](Self::texture) is replaced, so bind

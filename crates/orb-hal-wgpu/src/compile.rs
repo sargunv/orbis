@@ -273,6 +273,12 @@ mod native {
 
     use super::{Done, Job};
 
+    /// How long one pipeline may compile before its driver is taken to
+    /// have hung in its compiler: the device is then lost, and the runtime
+    /// reports the hang rather than make another. Set from the slowest cold
+    /// compile on an Adreno 619 with a wide margin.
+    pub(crate) const WATCHDOG: Duration = Duration::from_secs(60);
+
     /// Compiles on the host's job executor, front of the queue first: each
     /// request spawns one task, which compiles the job at the front when
     /// it runs.
@@ -322,7 +328,7 @@ mod native {
         pub(crate) fn new() -> Self {
             let (done_tx, done) = mpsc::channel();
             let shared = Shared {
-                limit: Mutex::new(orb_hal::device::COMPILE_WATCHDOG),
+                limit: Mutex::new(WATCHDOG),
                 ..Default::default()
             };
             Self {

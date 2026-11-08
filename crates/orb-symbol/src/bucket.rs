@@ -36,34 +36,23 @@ pub enum SymbolWritingMode {
     HorizontalOnly = 3,
 }
 
-impl SymbolWritingMode {
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => Self::Horizontal,
-            2 => Self::Vertical,
-            3 => Self::HorizontalOnly,
-            _ => Self::None,
-        }
-    }
-}
-
 /// Bits of [`SymbolInstance::flags`]: which collision features exist.
 pub mod instance_flags {
-    pub const TEXT_BOX: u32 = 1 << 0;
-    pub const VERTICAL_TEXT_BOX: u32 = 1 << 1;
-    pub const ICON_BOX: u32 = 1 << 2;
-    pub const VERTICAL_ICON_BOX: u32 = 1 << 3;
+    pub(crate) const TEXT_BOX: u32 = 1 << 0;
+    pub(crate) const VERTICAL_TEXT_BOX: u32 = 1 << 1;
+    pub(crate) const ICON_BOX: u32 = 1 << 2;
+    pub(crate) const VERTICAL_ICON_BOX: u32 = 1 << 3;
     /// Line labels collide as circles along the line, sized by
     /// [`super::SymbolInstance::collision_circle_diameter`].
-    pub const RUNTIME_COLLISION_CIRCLES: u32 = 1 << 4;
+    pub(crate) const RUNTIME_COLLISION_CIRCLES: u32 = 1 << 4;
 }
 
 /// Index of a justification in [`SymbolInstance::text`].
 pub mod justification {
-    pub const RIGHT: usize = 0;
+    pub(crate) const RIGHT: usize = 0;
     pub const CENTER: usize = 1;
-    pub const LEFT: usize = 2;
-    pub const VERTICAL: usize = 3;
+    pub(crate) const LEFT: usize = 2;
+    pub(crate) const VERTICAL: usize = 3;
 }
 
 /// One possible placement of a feature's label and icon at one anchor (GL
@@ -81,7 +70,7 @@ pub struct SymbolInstance {
     pub text_box_scale: f32,
     /// In pixels of `text-size` at zoom + 1; meaningful with
     /// [`instance_flags::RUNTIME_COLLISION_CIRCLES`].
-    pub collision_circle_diameter: f32,
+    pub(crate) collision_circle_diameter: f32,
     /// `symbol-height-offset`, meters.
     pub height_offset: f32,
     /// Text placed symbols by [`justification`]: right, center, left and
@@ -150,7 +139,7 @@ pub struct Quad {
     /// rectangle (one texel of padding around every bitmap).
     pub tex: [u16; 4],
     /// Stretchable-icon pixel offsets × 16: `tl.x, tl.y, br.x, br.y`.
-    pub pixel_offsets: [i16; 4],
+    pub(crate) pixel_offsets: [i16; 4],
     /// Minimum font scale of stretched icons × 256, `x, y`.
     pub min_font_scale: [i16; 2],
     /// A tile-local glyph id ([`orb_text::GlyphId`]), or an image index
@@ -230,11 +219,11 @@ pub enum SizeKind {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Warnings {
     /// Icons of one layer mix SDF and non-SDF images.
-    pub mixed_sdf_icons: bool,
+    pub(crate) mixed_sdf_icons: bool,
     /// A `text-size` reached 255 px, the packed maximum.
-    pub text_size_too_large: bool,
+    pub(crate) text_size_too_large: bool,
     /// An `icon-size` reached 255, the packed maximum.
-    pub icon_size_too_large: bool,
+    pub(crate) icon_size_too_large: bool,
 }
 
 /// One symbol layer's layout of one tile (GL JS `SymbolBucket`).

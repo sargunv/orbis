@@ -302,7 +302,7 @@ fn is_upright_in_run(c: char) -> bool {
 
 /// Whether a cluster starting with `c` may need a vertical glyph (GL JS
 /// `mayUseVerticalGlyph`).
-pub fn may_use_vertical_glyph(c: char, allow_vertical_placement: bool) -> bool {
+pub(crate) fn may_use_vertical_glyph(c: char, allow_vertical_placement: bool) -> bool {
     if allow_vertical_placement {
         return is_line_vertical(WritingMode::Vertical, true, c);
     }

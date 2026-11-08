@@ -54,7 +54,7 @@ pub fn fresh_until(headers: Headers<'_>, now: u64) -> Option<u64> {
 
 /// Parses an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`), the form
 /// servers must send, to Unix seconds.
-pub fn http_date(text: &str) -> Option<u64> {
+pub(crate) fn http_date(text: &str) -> Option<u64> {
     let mut parts = text.split_ascii_whitespace();
     let _weekday = parts.next()?;
     let day: u64 = parts.next()?.parse().ok()?;

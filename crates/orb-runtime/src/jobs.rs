@@ -460,7 +460,7 @@ impl TileResult {
 /// Packs a build into one buffer for another worker: the header's length
 /// in bytes (a little-endian u32), the header (the result without its
 /// streams' words, [`crate::wire`]), padding to a word, then every stream's
-/// words in [`TileResult::streams_mut`]'s order, little-endian.
+/// words in `TileResult::streams_mut`'s order, little-endian.
 pub fn pack(build: TileBuild) -> Vec<u8> {
     let mut result = TileResult::from(build);
     let header = crate::wire::encode(&result);

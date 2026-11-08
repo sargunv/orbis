@@ -165,23 +165,6 @@ fn platform_texture_usages() -> wgpu::TextureUsages {
     }
 }
 
-/// An adapter as the quirks table sees it (`orb_hal::device`).
-pub fn device_adapter(info: &wgpu::AdapterInfo) -> orb_hal::device::Adapter<'_> {
-    use orb_hal::device::Api;
-    orb_hal::device::Adapter {
-        api: match info.backend {
-            wgpu::Backend::Vulkan => Api::Vulkan,
-            wgpu::Backend::Metal => Api::Metal,
-            wgpu::Backend::Dx12 => Api::Dx12,
-            wgpu::Backend::BrowserWebGpu => Api::WebGpu,
-            _ => Api::Gl,
-        },
-        vendor: info.vendor,
-        name: &info.name,
-        driver: &info.driver_info,
-    }
-}
-
 impl WgpuGpu {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let limits = device.limits();
@@ -305,14 +288,14 @@ impl WgpuGpu {
     }
 
     /// How long a compile may run before the driver is taken to have hung
-    /// (by default [`orb_hal::device::COMPILE_WATCHDOG`]).
+    /// (60 s by default).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_compile_watchdog(&self, limit: std::time::Duration) {
         self.compiler.set_watchdog(limit);
     }
 
-    /// The compile that ran past the watchdog's limit
-    /// ([`orb_hal::device::COMPILE_WATCHDOG`]), or failed, if one did: the
+    /// The compile that ran past the watchdog's limit, or failed, if one
+    /// did: the
     /// driver is taken to have hung, and the device is lost.
     pub fn hung(&self) -> Option<&str> {
         self.hung.as_deref()
@@ -488,7 +471,7 @@ impl WgpuGpu {
     }
 
     /// Nanoseconds per timestamp tick in resolved query sets.
-    pub fn timestamp_period_ns(&self) -> f32 {
+    pub(crate) fn timestamp_period_ns(&self) -> f32 {
         self.queue.get_timestamp_period()
     }
 

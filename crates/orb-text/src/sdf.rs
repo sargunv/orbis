@@ -104,7 +104,7 @@ impl InkBox {
     /// TinySDF's box from canvas `TextMetrics` (`width`,
     /// `actualBoundingBox{Ascent,Descent,Left,Right}`), clipped to
     /// `max_glyph_dim`.
-    pub fn from_text_metrics(
+    pub(crate) fn from_text_metrics(
         advance: f64,
         ascent: f64,
         descent: f64,
@@ -138,7 +138,7 @@ pub struct Sdf {
 /// TinySDF's `draw` from the glyph's coverage: `alpha` holds
 /// `glyph_width × glyph_height` alpha bytes of the ink box, drawn with the
 /// box's top-left at the pen offset TinySDF uses.
-pub fn tiny_sdf(ink: &InkBox, alpha: &[u8], buffer: u32, radius: f64, cutoff: f64) -> Sdf {
+pub(crate) fn tiny_sdf(ink: &InkBox, alpha: &[u8], buffer: u32, radius: f64, cutoff: f64) -> Sdf {
     let (gw, gh) = (ink.glyph_width as usize, ink.glyph_height as usize);
     let buffer = buffer as usize;
     let width = gw + 2 * buffer;
@@ -297,16 +297,16 @@ pub mod local {
     use super::*;
 
     pub const FONT_SIZE: f64 = 48.0;
-    pub const BUFFER: u32 = 6;
+    pub(crate) const BUFFER: u32 = 6;
     pub const RADIUS: f64 = 16.0;
-    pub const CUTOFF: f64 = 0.25;
+    pub(crate) const CUTOFF: f64 = 0.25;
     const TEXTURE_SCALE: f64 = 2.0;
     const TOP_ADJUSTMENT: f64 = 27.5;
     const LEFT_ADJUSTMENT: f64 = 0.5;
 
     /// The largest ink box TinySDF keeps: 66 px for a code point, 120 px
     /// for a cluster, whose canvas is three ems wide.
-    pub fn max_glyph_dim(cluster: bool) -> u32 {
+    pub(crate) fn max_glyph_dim(cluster: bool) -> u32 {
         if cluster { 120 } else { 66 }
     }
 

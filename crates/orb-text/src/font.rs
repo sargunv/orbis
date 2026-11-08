@@ -10,9 +10,9 @@ use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::{FontRef, MetadataProvider};
 
-use crate::glyph::{FontId, GlyphMetrics};
+use crate::glyph::FontId;
 pub use crate::sdf::local::TextMetrics;
-use crate::sdf::{InkBox, Sdf, local};
+use crate::sdf::{InkBox, local};
 
 /// Font file bytes, shared without copying (a memory-mapped system font).
 pub type FontBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
@@ -244,20 +244,10 @@ impl Drawn {
     }
 }
 
-/// A glyph as GL JS's local path makes it, from font bytes: TinySDF at 2×
-/// over the cluster's coverage (`GlyphManager._createGlyph`).
-pub fn local_glyph(face: &Face, text: &str) -> (GlyphMetrics, Sdf) {
-    let drawn = draw(face, text, local::FONT_SIZE as f32);
-    let ink = local::ink_box(text, &drawn.metrics);
-    let sdf = local::sdf(&ink, &drawn.ink_alpha(&ink));
-    let (metrics, _) = local::metrics(text, &ink);
-    (metrics, sdf)
-}
-
 /// A font file's sfnt bytes: TrueType and OpenType as they are, WOFF and
 /// WOFF2 decompressed (GL JS hands a `font-faces` file to the browser,
 /// which reads all four).
-pub fn sfnt(bytes: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn sfnt(bytes: &[u8]) -> Result<Vec<u8>, String> {
     match bytes.get(..4) {
         Some(b"wOF2") => wuff::decompress_woff2(bytes).map_err(|e| format!("WOFF2: {e:?}")),
         Some(b"wOFF") => wuff::decompress_woff1(bytes).map_err(|e| format!("WOFF: {e:?}")),
@@ -265,8 +255,9 @@ pub fn sfnt(bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Open font files by URL, drawing as [`local_glyph`] does, for hosts that
-/// draw `font-faces` glyphs: [`measure`](Self::measure) then
+/// Open font files by URL, drawn as GL JS's local path draws glyphs
+/// (TinySDF at 2× over the cluster's coverage), for hosts that draw
+/// `font-faces` glyphs: [`measure`](Self::measure) then
 /// [`coverage`](Self::coverage) of the same text draws it once.
 #[derive(Debug, Default)]
 pub struct Files {

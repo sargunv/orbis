@@ -5,8 +5,8 @@
 pub(crate) struct ClippedLine {
     pub points: Vec<[i32; 2]>,
     pub closed: bool,
-    pub start_clipped: bool,
-    pub end_clipped: bool,
+    pub(crate) start_clipped: bool,
+    pub(crate) end_clipped: bool,
     pub start_distance: f64,
 }
 

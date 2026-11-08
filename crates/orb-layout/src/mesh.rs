@@ -82,7 +82,7 @@ impl MeshBuilder {
     }
 
     /// Starts a sorted run, closing the previous chunk when the key changes.
-    pub fn set_sort_key(&mut self, key: Option<f32>) {
+    pub(crate) fn set_sort_key(&mut self, key: Option<f32>) {
         if self.sort_key != key {
             self.close_chunk();
             self.sort_key = key;
@@ -107,12 +107,12 @@ impl MeshBuilder {
 
     /// Adds a line segment, for meshes drawn as line lists. A mesh holds
     /// triangles or segments, not both.
-    pub fn push_segment(&mut self, a: u32, b: u32) {
+    pub(crate) fn push_segment(&mut self, a: u32, b: u32) {
         self.push_primitive(&[a, b], CHUNK_INDICES);
     }
 
     /// Adds one point instance. A mesh holds only one primitive kind.
-    pub fn push_point(&mut self, vertex: u32) {
+    pub(crate) fn push_point(&mut self, vertex: u32) {
         self.push_primitive(&[vertex], MAX_CHUNK_INSTANCES);
     }
 

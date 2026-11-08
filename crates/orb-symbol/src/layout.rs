@@ -134,7 +134,7 @@ impl Default for LayerLayout {
 
 impl LayerLayout {
     /// Text follows lines (GL JS `textAlongLine`).
-    pub fn text_along_line(&self) -> bool {
+    pub(crate) fn text_along_line(&self) -> bool {
         self.text_rotation_alignment != Alignment::Viewport && self.placement != Placement::Point
     }
 

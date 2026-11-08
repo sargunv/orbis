@@ -215,7 +215,7 @@ impl Camera {
 
     /// The view `camera` would have in this one's viewport, on its surface
     /// and terrain.
-    pub fn view_of(&self, camera: &CameraState) -> View {
+    pub(crate) fn view_of(&self, camera: &CameraState) -> View {
         match self.terrain.as_deref() {
             Some(terrain) => View::over(camera, self.viewport, &self.surface, terrain),
             None => View::new(camera, self.viewport, &self.surface),
@@ -277,7 +277,7 @@ impl Camera {
     /// Moves the eye to `free` at once (GL JS `setFreeCameraOptions`),
     /// keeping the field of view and padding.
     pub fn jump_to_free(&mut self, free: &FreeCamera) {
-        let state = self.state.from_free(free, self.viewport, &self.surface);
+        let state = self.state.with_free(free, self.viewport, &self.surface);
         self.jump_to_state(state);
     }
 
@@ -313,7 +313,7 @@ impl Camera {
 
     /// [`ease_to`](Self::ease_to) for input handlers: its events say the
     /// user moved the camera.
-    pub fn user_ease(
+    pub(crate) fn user_ease(
         &mut self,
         target: &CameraTarget,
         options: EaseOptions,
@@ -381,7 +381,7 @@ impl Camera {
 
     /// Continues a user's move with a glide (inertia, smooth wheel zoom). A
     /// glide started during another adds what that one had left.
-    pub fn glide(&mut self, mut glide: Glide, now: f64) -> AnimationId {
+    pub(crate) fn glide(&mut self, mut glide: Glide, now: f64) -> AnimationId {
         if let Some(rest) = self
             .running
             .as_ref()
@@ -444,14 +444,14 @@ impl Camera {
     }
 
     /// Turns the map clockwise by `delta` degrees around a pixel.
-    pub fn rotate_by(&mut self, at: DVec2, delta: f64) {
+    pub(crate) fn rotate_by(&mut self, at: DVec2, delta: f64) {
         let mut next = self.state;
         next.rotate_around(&self.surface, self.viewport, at, next.bearing + delta);
         self.user_write(next);
     }
 
     /// Tilts by `delta` degrees around the viewport's middle.
-    pub fn pitch_by(&mut self, delta: f64) {
+    pub(crate) fn pitch_by(&mut self, delta: f64) {
         let mut next = self.state;
         next.pitch += delta;
         self.user_write(next);

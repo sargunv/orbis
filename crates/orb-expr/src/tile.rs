@@ -142,7 +142,7 @@ impl FeatureData {
     }
 
     /// Reads [`to_json_string`](Self::to_json_string)'s text.
-    pub fn from_json_str(text: &str) -> Option<Self> {
+    pub(crate) fn from_json_str(text: &str) -> Option<Self> {
         let Value::Array(items) = Value::from_json(&crate::json::parse(text).ok()?) else {
             return None;
         };

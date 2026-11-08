@@ -33,7 +33,11 @@ impl View {
     /// metres)`, found by walking the view ray (a CPU DEM ray walk,
     /// never a GPU readback). Where no DEM data has loaded the
     /// ground is at sea level. `None` above the horizon.
-    pub fn unproject_terrain(&self, px: DVec2, terrain: &dyn Elevation) -> Option<(DVec2, f64)> {
+    pub(crate) fn unproject_terrain(
+        &self,
+        px: DVec2,
+        terrain: &dyn Elevation,
+    ) -> Option<(DVec2, f64)> {
         let (near, far) = self.ray(px, &self.view_proj);
         let ground = |p: DVec3| {
             terrain
@@ -157,7 +161,7 @@ impl CameraState {
     /// `clampCenterToGround`: where its DEM data is still loading the
     /// target keeps its elevation, so the camera moves once, when the data
     /// lands (GL JS #8549). Returns whether it changed.
-    pub fn settle_on(&mut self, terrain: &dyn Elevation, projection: &Projection) -> bool {
+    pub(crate) fn settle_on(&mut self, terrain: &dyn Elevation, projection: &Projection) -> bool {
         match terrain.at(self.target_world(projection)) {
             Some(elevation) if elevation != self.elevation => {
                 self.elevation = elevation;
@@ -172,7 +176,7 @@ impl CameraState {
     /// doesn't move while the target, its elevation and the zoom do. Ends
     /// gestures and animations that held the elevation. Returns whether it
     /// changed.
-    pub fn recenter_on(
+    pub(crate) fn recenter_on(
         &mut self,
         terrain: &dyn Elevation,
         surface: &Surface,

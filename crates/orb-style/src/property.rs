@@ -346,8 +346,8 @@ v8_enum!(
 
 /// A stored property value: a constant, an expression, or for properties
 /// that take one value per light (`hillshade-*`), a list of them. Its type
-/// and default come from where it is stored: a layer's [`PropertyId`]
-/// (crate::PropertyId), or a typed [`Property`].
+/// and default come from where it is stored: a layer's
+/// [`PropertyId`](crate::PropertyId), or a typed [`Property`].
 #[derive(Clone, Debug)]
 pub struct Slot {
     value: Inner,
@@ -384,7 +384,7 @@ impl Slot {
     }
 
     /// A colour ramp's expression, whatever its kind.
-    pub fn expression_any(expression: PropertyExpression, set: bool) -> Self {
+    pub(crate) fn expression_any(expression: PropertyExpression, set: bool) -> Self {
         Self {
             value: Inner::Expression(Box::new(expression)),
             set,
@@ -414,7 +414,7 @@ impl Slot {
 
     /// The value, if it is the same everywhere.
     #[inline]
-    pub fn as_constant(&self) -> Option<&Value<'static>> {
+    pub(crate) fn as_constant(&self) -> Option<&Value<'static>> {
         match &self.value {
             Inner::Constant(v) => Some(v),
             _ => None,
@@ -503,11 +503,6 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
     /// The value, if it is the same everywhere.
     pub fn constant(&self) -> Option<T> {
         self.slot.as_constant().map(|v| self.fit(Some(v)))
-    }
-
-    /// What an expression falls back to: the spec default.
-    pub fn default_value(&self) -> T {
-        self.default.get()
     }
 
     /// The expression of a camera, source or composite value, for its zoom

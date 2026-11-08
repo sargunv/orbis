@@ -330,7 +330,7 @@ impl TileEndpoint {
 /// `relative` resolved against `base`, as a browser resolves a link:
 /// absolute URLs stay, `/path` keeps the origin, others replace `base`'s
 /// last segment with `./` and `../` applied.
-pub fn join_url(base: &str, relative: &str) -> String {
+pub(crate) fn join_url(base: &str, relative: &str) -> String {
     if relative.contains("://") || relative.starts_with("data:") {
         return relative.to_string();
     }

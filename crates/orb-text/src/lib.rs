@@ -30,17 +30,14 @@ pub use glyph::{
     GlyphRequests, LocalFont, Provider, Variant, glyphs_url, provider,
 };
 pub use label::{Content, IMAGE_PADDING, Images, InlineImage, Label, Section, VerticalAlign};
+pub use segment::WordBreaker;
 #[cfg(feature = "sea-export")]
 pub use segment::sea_dictionary_bytes;
-pub use segment::{WordBreaker, graphemes, is_cluster};
 pub use shaping::{
     Anchor, DEFAULT_OFFSET, GlyphSource, Justify, ONE_EM, PositionedGlyph, PositionedLine,
-    ShapeContext, ShapeOptions, ShapedSection, Shaping, WritingMode, may_use_vertical_glyph,
-    shape_text,
+    ShapeContext, ShapeOptions, ShapedSection, Shaping, WritingMode, shape_text,
 };
-pub use transform::{
-    TextTransform, apply_arabic_shaping, transform_text, vertical_form, verticalize_punctuation,
-};
+pub use transform::{TextTransform, transform_text};
 
 #[cfg(all(test, target_arch = "wasm32"))]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);

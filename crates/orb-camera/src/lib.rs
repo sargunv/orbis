@@ -19,10 +19,10 @@ mod moves;
 mod store;
 mod terrain;
 
-pub use animate::{CameraTarget, EaseOptions, Easing, FlyOptions, Glide, Track};
+pub use animate::{CameraTarget, EaseOptions, Easing, FlyOptions};
 pub use fit::{FitOptions, Padding};
 pub use free::FreeCamera;
-pub use moves::{Bounds, Constraints, wrap_bearing};
+pub use moves::{Bounds, Constraints};
 pub use store::{AnimationId, Camera, CameraEvent, Change, Phase};
 pub use terrain::Elevation;
 
@@ -161,7 +161,7 @@ pub struct GlobeView {
 impl GlobeView {
     /// Whether a camera-relative point on the surface faces the eye: on the
     /// sphere, in front of its horizon; on a plane, always.
-    pub fn faces_eye(&self, p: DVec3) -> bool {
+    pub(crate) fn faces_eye(&self, p: DVec3) -> bool {
         if self.plane.is_some() {
             return true;
         }
@@ -170,7 +170,7 @@ impl GlobeView {
     }
 
     /// The angle from the point under the eye to the horizon, in radians.
-    pub fn horizon_angle(&self) -> f64 {
+    pub(crate) fn horizon_angle(&self) -> f64 {
         (sphere::RADIUS / (self.target + self.eye).length())
             .min(1.0)
             .acos()
@@ -217,7 +217,7 @@ impl View {
     /// `lowest` metres (GL JS's `minElevationForCurrentTile`, from the
     /// terrain's DEM tile under the target): the far plane reaches down to
     /// it.
-    pub fn on_ground(
+    pub(crate) fn on_ground(
         camera: &CameraState,
         viewport: Viewport,
         surface: &Surface,
@@ -408,7 +408,7 @@ impl View {
     /// Top logical row of the apparent horizon, including the reference's
     /// finite planar horizon adjustment. Sky starts here and extends upward.
     /// Without roll it is [`sky_horizon_line`](Self::sky_horizon_line)'s.
-    pub fn sky_horizon(&self) -> f64 {
+    pub(crate) fn sky_horizon(&self) -> f64 {
         self.center.y - self.horizon_offset()
     }
 
@@ -561,7 +561,7 @@ impl View {
     }
 
     /// The target's height in world units.
-    pub fn target_z(&self) -> f64 {
+    pub(crate) fn target_z(&self) -> f64 {
         self.target_z
     }
 

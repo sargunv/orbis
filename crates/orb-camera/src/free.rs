@@ -47,7 +47,12 @@ impl CameraState {
     /// padding: it orbits the sea-level point the eye looks at, or one
     /// 10 km ahead when it looks at or above the horizon (GL JS's
     /// `calculateCameraOptionsFromCameraLngLatAltRotation`).
-    pub fn from_free(&self, free: &FreeCamera, viewport: Viewport, surface: &Surface) -> Self {
+    pub(crate) fn with_free(
+        &self,
+        free: &FreeCamera,
+        viewport: Viewport,
+        surface: &Surface,
+    ) -> Self {
         let projection = &surface.projection;
         let eye = projection.forward(free.position.wrapped());
         let pitch = free.pitch.to_radians();
@@ -118,7 +123,7 @@ mod tests {
                     "{free:?}"
                 );
             }
-            let again = camera.from_free(&free, viewport, &surface);
+            let again = camera.with_free(&free, viewport, &surface);
             assert!((again.target.lon - 11.4).abs() < 1e-9, "{again:?}");
             assert!((again.target.lat - 47.3).abs() < 1e-9, "{again:?}");
             assert!((again.zoom(&mercator) - 13.0).abs() < 1e-9, "{again:?}");
@@ -126,7 +131,7 @@ mod tests {
         }
         // Looking at the horizon: the target is 10 km ahead, at the eye's
         // height.
-        let level = CameraState::new(Geodetic::new(0.0, 0.0), 10.0, &mercator).from_free(
+        let level = CameraState::new(Geodetic::new(0.0, 0.0), 10.0, &mercator).with_free(
             &FreeCamera {
                 position: Geodetic::new(0.0, 0.0),
                 altitude: 500.0,

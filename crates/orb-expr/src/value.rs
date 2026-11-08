@@ -125,7 +125,7 @@ impl<'a> Value<'a> {
     /// The value's type, as `typeOf`. Array item types follow GL JS: a
     /// common item type when every item has the same non-array type,
     /// `value` otherwise.
-    pub fn type_of(&self) -> Type {
+    pub(crate) fn type_of(&self) -> Type {
         match self {
             Self::Null => Type::Null,
             Self::Bool(_) => Type::Boolean,
@@ -210,7 +210,7 @@ impl<'a> Value<'a> {
     }
 
     /// The same value, borrowing what `self` owns.
-    pub fn reborrow(&self) -> Value<'_> {
+    pub(crate) fn reborrow(&self) -> Value<'_> {
         match self {
             Self::Null => Value::Null,
             Self::Bool(b) => Value::Bool(*b),

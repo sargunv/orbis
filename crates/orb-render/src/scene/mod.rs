@@ -1001,12 +1001,6 @@ impl Scene {
         &self.capacity
     }
 
-    /// The first word of the glyph table in the property buffer: its
-    /// [`SceneCapacity::glyph_rows`] rows are the arena's first block.
-    pub(crate) fn glyph_table(&self) -> u32 {
-        0
-    }
-
     /// The cull dispatch's grid, as of the last [`prepare`](Self::prepare):
     /// one workgroup per node, by as many rows as the indexed node with the
     /// most candidates has batches of them.

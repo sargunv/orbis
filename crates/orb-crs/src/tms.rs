@@ -365,8 +365,8 @@ impl TileMatrixSet {
         &self.id
     }
 
-    /// The set as an OGC definition, which [`from_definition`]
-    /// (Self::from_definition) reads back; `None` for a set whose
+    /// The set as an OGC definition, which
+    /// [`from_definition`](Self::from_definition) reads back; `None` for a set whose
     /// projection has no CRS code (a parametric descriptor's).
     pub fn definition(&self) -> Option<TileMatrixSetDefinition> {
         let kind = self.projection.descriptor().kind;

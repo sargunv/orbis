@@ -101,7 +101,7 @@ impl Expression {
 
     /// Parses using the host locale service, including constant folding of
     /// case mapping and number formatting. Use the same service at evaluation.
-    pub fn parse_with_locale(
+    pub(crate) fn parse_with_locale(
         json: &Json,
         expected: Option<&Type>,
         locale: &dyn Locale,
@@ -126,7 +126,7 @@ impl Expression {
 
     /// Whether the expression reads the feature's geometry (`within`,
     /// `distance`), which evaluation then needs in its context.
-    pub fn reads_geometry(&self) -> bool {
+    pub(crate) fn reads_geometry(&self) -> bool {
         self.deps().contains(Deps::GEOMETRY)
     }
 
@@ -190,7 +190,8 @@ impl Expression {
     }
 
     /// The path, within the expression, of the operator that failed.
-    pub fn error_path(&self, error: &EvalError) -> &str {
+    #[cfg(test)]
+    fn error_path(&self, error: &EvalError) -> &str {
         &self.ir.paths[error.node as usize]
     }
 }

@@ -77,7 +77,7 @@ pub(super) type Result<T> = std::result::Result<T, EvalError>;
 /// geometry type `null`.
 pub(crate) struct Evaluator<'c, 'a> {
     pub context: &'c crate::EvaluationContext<'a>,
-    pub ir: &'a Ir,
+    pub(crate) ir: &'a Ir,
     pub feature: Option<&'c dyn Feature<'a>>,
 }
 

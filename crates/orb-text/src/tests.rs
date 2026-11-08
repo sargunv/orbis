@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
+use crate::segment::graphemes;
+use crate::transform::{apply_arabic_shaping, vertical_form};
 use crate::*;
 
 const GLYPHS: &str = include_str!("../tests/data/fontstack-glyphs.json");

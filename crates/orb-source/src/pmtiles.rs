@@ -8,7 +8,7 @@ use orb_crs::TileIndex;
 
 pub const HEADER_LEN: u64 = 127;
 /// Maximum compressed or decompressed directory/tile body (64 MiB).
-pub const MAX_BYTES: u64 = 64 << 20;
+pub(crate) const MAX_BYTES: u64 = 64 << 20;
 const CACHE_BYTES: usize = 8 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -67,10 +67,10 @@ pub enum TileType {
 pub struct Header {
     pub root: Range,
     pub metadata: Range,
-    pub leaves_offset: u64,
-    pub leaves_length: u64,
+    pub(crate) leaves_offset: u64,
+    pub(crate) leaves_length: u64,
     pub tiles_offset: u64,
-    pub tiles_length: u64,
+    pub(crate) tiles_length: u64,
     pub internal_compression: Compression,
     pub tile_compression: Compression,
     pub tile_type: TileType,

@@ -9,7 +9,6 @@
 #![forbid(unsafe_code)]
 
 mod command;
-pub mod device;
 mod resource;
 pub mod slots;
 

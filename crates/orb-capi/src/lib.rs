@@ -8,7 +8,7 @@
 //!   `*_destroy`; references are borrowed for the call; a returned slice
 //!   borrows from its owner until the owner's next mutable call.
 //! - **Errors.** Fallible calls return `OrbError`, a status;
-//!   [`OrbError::last_message`] has the message of the thread's last error.
+//!   `OrbError::last_message` has the message of the thread's last error.
 //!   Panics abort.
 //! - **Contracts.** `#[diplomat::attr(contract, …)]` gives each method its
 //!   execution category (`command`, `query`, `snapshot`, `event_batch`,

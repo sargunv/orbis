@@ -104,7 +104,7 @@ impl CameraState {
     }
 
     /// Keeps the style zoom within limits, keeping the target.
-    pub fn limit_zoom(&mut self, min: f64, max: f64, projection: &Projection) {
+    pub(crate) fn limit_zoom(&mut self, min: f64, max: f64, projection: &Projection) {
         let zoom = self.zoom(projection);
         let clamped = zoom.clamp(min, max.max(min));
         if clamped != zoom {
@@ -113,12 +113,17 @@ impl CameraState {
     }
 
     /// The target's position in world space.
-    pub fn target_world(&self, projection: &Projection) -> DVec2 {
+    pub(crate) fn target_world(&self, projection: &Projection) -> DVec2 {
         projection.forward(self.target.wrapped())
     }
 
     /// Puts the target at a world position with the given scale.
-    pub fn set_target_world(&mut self, projection: &Projection, world: DVec2, world_per_px: f64) {
+    pub(crate) fn set_target_world(
+        &mut self,
+        projection: &Projection,
+        world: DVec2,
+        world_per_px: f64,
+    ) {
         self.target = projection.inverse(world).wrapped();
         self.resolution = world_per_px / projection.scale_factor(self.target);
     }
@@ -271,7 +276,12 @@ impl CameraState {
     /// Unlike GL JS, bounds hold the rotated viewport's extent, so turning
     /// the map never shows past them. Leaves a camera that already complies
     /// untouched.
-    pub fn constrain(&mut self, constraints: &Constraints, surface: &Surface, viewport: Viewport) {
+    pub(crate) fn constrain(
+        &mut self,
+        constraints: &Constraints,
+        surface: &Surface,
+        viewport: Viewport,
+    ) {
         let projection = &surface.projection;
         self.limit_zoom(constraints.min_zoom, constraints.max_zoom, projection);
         self.pitch = self.pitch.clamp(
@@ -351,7 +361,7 @@ impl CameraState {
 }
 
 /// A bearing in GL JS's range, (-180, 180].
-pub fn wrap_bearing(bearing: f64) -> f64 {
+pub(crate) fn wrap_bearing(bearing: f64) -> f64 {
     let wrapped = (bearing + 180.0).rem_euclid(360.0) - 180.0;
     if wrapped == -180.0 { 180.0 } else { wrapped }
 }

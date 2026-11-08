@@ -37,14 +37,14 @@ impl WgpuGpu {
     /// also draw to window surfaces.
     pub async fn offscreen() -> Result<Self, String> {
         let (mut instance, mut adapter) = adapter(false).await?;
-        // The quirks table (orb_hal::device): Orbis's indirect arguments
-        // are its cull shader's, bounded by the scene's own buffers, so on
-        // drivers that mishandle wgpu's validation of them it is skipped.
+        // After wgpu's indirect-call validation pass, Qualcomm's Vulkan
+        // driver draws nothing from drawIndexedIndirect (Adreno 619
+        // measured; gfx-rs/wgpu#8801 on 650/740). Orbis's indirect
+        // arguments are its cull shader's, bounded by the scene's own
+        // buffers, so there the validation is skipped.
+        const QUALCOMM: u32 = 0x5143;
         let info = adapter.get_info();
-        if orb_hal::device::needs(
-            &crate::device_adapter(&info),
-            orb_hal::device::Workaround::SkipIndirectValidation,
-        ) {
+        if info.backend == wgpu::Backend::Vulkan && info.vendor == QUALCOMM {
             (instance, adapter) = self::adapter(true).await?;
         }
         // Orbis draws indirectly from compute; devices without that (the
@@ -96,7 +96,7 @@ impl WgpuGpu {
     }
 
     /// Resolves when the GPU has finished all work submitted so far.
-    pub fn work_done(&self) -> impl Future<Output = ()> + use<> {
+    pub(crate) fn work_done(&self) -> impl Future<Output = ()> + use<> {
         // Gathered writes are work submitted too.
         let mut encoder = self
             .device

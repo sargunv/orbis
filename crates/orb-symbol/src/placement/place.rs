@@ -184,9 +184,9 @@ pub mod state {
     /// The shift words hold a variable anchor's shift.
     pub const SHIFTED: u32 = 1 << 9;
     /// The shift turns with a vertical label: an icon fitted to it.
-    pub const QUARTER_TURN: u32 = 1 << 10;
+    pub(crate) const QUARTER_TURN: u32 = 1 << 10;
     /// For an icon shifted with its text: the text's justification slot.
-    pub const TEXT_SLOT_SHIFT: u32 = 11;
+    pub(crate) const TEXT_SLOT_SHIFT: u32 = 11;
     /// Words per placed symbol.
     pub const WORDS: usize = 3;
 }

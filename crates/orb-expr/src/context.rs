@@ -55,7 +55,7 @@ pub struct CanonicalTile {
 impl FeatureGeometry {
     /// Captures the geometry for a bound row. Prepare this only for
     /// geometry-dependent expressions, and reuse it for all such properties.
-    pub fn from_layer(layer: &orb_tile::Layer, row: usize, tile: CanonicalTile) -> Self {
+    pub(crate) fn from_layer(layer: &orb_tile::Layer, row: usize, tile: CanonicalTile) -> Self {
         let kind = layer.geometry_type(row);
         let mut parts = Vec::new();
         for part in layer.geometry(row).parts() {

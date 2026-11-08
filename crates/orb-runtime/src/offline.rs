@@ -67,7 +67,7 @@ pub enum RegionEvent {
 pub type RegionEvents = Arc<dyn Fn(RegionEvent) + Send + Sync>;
 
 /// The most tiles one region may hold.
-pub const MAX_REGION_TILES: usize = 250_000;
+pub(crate) const MAX_REGION_TILES: usize = 250_000;
 /// Requests in flight at once.
 const PARALLEL: usize = 8;
 /// Bytes buffered before they're appended to storage.

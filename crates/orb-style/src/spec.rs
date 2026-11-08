@@ -47,7 +47,7 @@ pub struct Prop {
 impl Prop {
     /// The fields a root-level property (light, sky, terrain) leaves at
     /// their defaults.
-    pub const ROOT: Self = prop("", PropertyType::Number, None);
+    pub(crate) const ROOT: Self = prop("", PropertyType::Number, None);
 
     pub fn spec(&self) -> PropertySpec {
         PropertySpec {
@@ -131,7 +131,7 @@ const fn enumeration<E: Enum>() -> PropertyType {
 }
 
 /// `visibility`: a constant, which only `global-state` could vary.
-pub const VISIBILITY: Prop = prop(
+pub(crate) const VISIBILITY: Prop = prop(
     "visibility",
     enumeration::<Visibility>(),
     Some("\"visible\""),
@@ -245,7 +245,7 @@ impl PropertyId {
     }
 
     /// A `paint` property, else `layout`.
-    pub fn is_paint(self) -> bool {
+    pub(crate) fn is_paint(self) -> bool {
         self.prop().paint
     }
 
@@ -255,7 +255,7 @@ impl PropertyId {
 
     /// The default, `Null` for properties without one.
     #[inline]
-    pub fn default_value(self) -> &'static orb_expr::Value<'static> {
+    pub(crate) fn default_value(self) -> &'static orb_expr::Value<'static> {
         static DEFAULTS: std::sync::OnceLock<Vec<orb_expr::Value<'static>>> =
             std::sync::OnceLock::new();
         &DEFAULTS.get_or_init(|| {

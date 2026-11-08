@@ -43,7 +43,7 @@ pub struct TileFeature {
     /// The feature's id (promoted where the source says), as JSON.
     pub id: Option<String>,
     /// GL JS's `String(id)`: the feature-state key.
-    pub state_id: Option<String>,
+    pub(crate) state_id: Option<String>,
     /// `"geometry":…,"properties":…`, a GeoJSON feature's members.
     pub body: String,
 }

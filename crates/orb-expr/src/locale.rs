@@ -4,18 +4,18 @@ use std::cmp::Ordering;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Collator {
-    pub case_sensitive: bool,
-    pub diacritic_sensitive: bool,
-    pub locale: String,
+    pub(crate) case_sensitive: bool,
+    pub(crate) diacritic_sensitive: bool,
+    pub(crate) locale: String,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NumberFormat<'a> {
-    pub locale: Option<&'a str>,
-    pub currency: Option<&'a str>,
+    pub(crate) locale: Option<&'a str>,
+    pub(crate) currency: Option<&'a str>,
     pub unit: Option<&'a str>,
-    pub min_fraction_digits: Option<f64>,
-    pub max_fraction_digits: Option<f64>,
+    pub(crate) min_fraction_digits: Option<f64>,
+    pub(crate) max_fraction_digits: Option<f64>,
 }
 
 /// Locale-sensitive operations, with no I/O or platform handles in core.

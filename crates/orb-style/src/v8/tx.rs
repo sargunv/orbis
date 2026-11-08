@@ -119,7 +119,7 @@ impl Transaction {
     }
 
     /// Whether every edit is to feature state, which needs no new snapshot.
-    pub fn only_feature_state(&self) -> bool {
+    pub(crate) fn only_feature_state(&self) -> bool {
         self.ops.iter().all(|op| {
             matches!(
                 op,
@@ -170,7 +170,7 @@ impl Op {
     }
 
     /// One GL JS map call as JSON: `[name, ...args]`.
-    pub fn from_command(call: &Json) -> Result<Self, String> {
+    pub(crate) fn from_command(call: &Json) -> Result<Self, String> {
         let items = call.as_array().ok_or("a command must be an array")?;
         let name = items
             .first()

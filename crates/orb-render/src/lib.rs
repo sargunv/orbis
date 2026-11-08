@@ -436,7 +436,7 @@ impl Renderer {
             ],
         });
 
-        let glyphs = GlyphAtlas::new(gpu, capacity.glyph_rows, b.props, scene.glyph_table());
+        let glyphs = GlyphAtlas::new(gpu, capacity.glyph_rows, b.props);
         let nearest = gpu.create_sampler(&SamplerDesc {
             label: "nearest",
             filter: FilterMode::Nearest,
@@ -873,7 +873,7 @@ impl Renderer {
     }
 
     /// Drape stacks of the current nodes while terrain is on.
-    pub fn drape_stacks(&self) -> u32 {
+    pub(crate) fn drape_stacks(&self) -> u32 {
         self.nodes
             .iter()
             .filter_map(|n| n.stack)
@@ -1094,7 +1094,7 @@ impl Renderer {
     }
 
     /// A page of tile textures, `size` texels per tile, for image nodes to
-    /// bind with [`bind_page`](Self::bind_page).
+    /// bind.
     pub fn create_page(&mut self, gpu: &mut dyn Gpu, kind: PageKind, size: [u32; 2]) -> PageId {
         self.images
             .create_page(gpu, kind, size, &mut self.downsampler)
@@ -1208,7 +1208,6 @@ impl Renderer {
         let mut words = paint.uniform_words(node);
         if let NodePaint::Symbol(p) = paint {
             use orb_shaders::layout::symbol_node as n;
-            words[n::GLYPH_TABLE] = self.glyphs.table_base();
             words[n::GLYPH_PAGE] = (GLYPH_PAGE as f32).to_bits();
             words[n::IMAGE_PAGE] = (self.image_bindings.size as f32).to_bits();
             if entry.separate_halo != p.separate_halo || entry.along_line != p.along_line {

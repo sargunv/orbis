@@ -28,39 +28,39 @@ pub fn is_whitespace(c: char) -> bool {
 }
 
 /// `\p{P}` or `\p{S}`.
-pub fn is_symbol_or_punctuation(c: char) -> bool {
+pub(crate) fn is_symbol_or_punctuation(c: char) -> bool {
     contains(PUNCTUATION_OR_SYMBOL, c)
 }
 
 /// `\p{Nd}`: a decimal digit of any script.
-pub fn is_decimal_digit(c: char) -> bool {
+pub(crate) fn is_decimal_digit(c: char) -> bool {
     contains(DECIMAL_DIGIT, c)
 }
 
 /// `\p{Lu}`: an uppercase letter of any script.
-pub fn is_uppercase_letter(c: char) -> bool {
+pub(crate) fn is_uppercase_letter(c: char) -> bool {
     contains(UPPERCASE_LETTER, c)
 }
 
 /// `\p{Cf}`: an invisible formatting character.
-pub fn is_format(c: char) -> bool {
+pub(crate) fn is_format(c: char) -> bool {
     contains(FORMAT, c)
 }
 
 /// In a script written right to left. Like GL JS, this includes every code
 /// point without a script (unassigned and private use).
-pub fn is_rtl(c: char) -> bool {
+pub(crate) fn is_rtl(c: char) -> bool {
     contains(RTL_SCRIPT, c)
 }
 
 /// In a script whose letters join, so they can't be spaced apart.
-pub fn is_cursive(c: char) -> bool {
+pub(crate) fn is_cursive(c: char) -> bool {
     contains(CURSIVE_SCRIPT, c)
 }
 
 /// GL JS `charInComplexShapingScript`: in the Arabic script. Vertical text
 /// never sets these upright.
-pub fn is_arabic(c: char) -> bool {
+pub(crate) fn is_arabic(c: char) -> bool {
     contains(ARABIC_SCRIPT, c)
 }
 
@@ -76,7 +76,7 @@ pub fn uses_local_ideograph_font(c: char) -> bool {
 }
 
 /// A line may break after this character.
-pub fn allows_ideographic_breaking(c: char) -> bool {
+pub(crate) fn allows_ideographic_breaking(c: char) -> bool {
     contains(IDEOGRAPHIC_BREAKING, c)
 }
 
@@ -86,12 +86,12 @@ pub fn has_upright_vertical_orientation(c: char) -> bool {
 }
 
 /// Drawn upright in vertical text only beside upright characters.
-pub fn has_neutral_vertical_orientation(c: char) -> bool {
+pub(crate) fn has_neutral_vertical_orientation(c: char) -> bool {
     contains(NEUTRAL_VERTICAL, c)
 }
 
 /// Drawn rotated in vertical text, and rotates neutral neighbours with it.
-pub fn has_rotated_vertical_orientation(c: char) -> bool {
+pub(crate) fn has_rotated_vertical_orientation(c: char) -> bool {
     !(has_upright_vertical_orientation(c) || has_neutral_vertical_orientation(c))
 }
 
@@ -178,7 +178,7 @@ pub fn allows_vertical_writing_mode(text: &str) -> bool {
 }
 
 /// Whether any character is in a right-to-left script.
-pub fn contains_rtl(text: &str) -> bool {
+pub(crate) fn contains_rtl(text: &str) -> bool {
     text.chars().any(is_rtl)
 }
 

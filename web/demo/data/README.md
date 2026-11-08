@@ -48,6 +48,10 @@ sprites once served.
   `tile.openstreetmap.org`, under its [tile usage policy](https://operations.osmfoundation.org/policies/tiles/):
   attributed, fetched only as the map shows them, with the browser's
   referrer. Written for this repository.
+- `video.json`: a v8 `video` source over USGS The National Map's
+  orthoimagery (US public domain), playing GL JS's drone footage from
+  Mapbox's static assets, as GL JS's video example does; fetched at run
+  time, not committed. Written for this repository (`?style=video`).
 - `playground.json`: the style editor's sample, a made-up Tokyo district
   drawn with hover state (`?style=playground`); written for this repository.
 - Labels: `sprites/` is OpenFreeMap's Liberty sprite (`ofm_f384/ofm`, 1× and

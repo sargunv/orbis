@@ -32,8 +32,7 @@ pub enum VideoRequest {
 }
 
 /// Why a video source draws nothing on a host that plays no video.
-pub const NO_VIDEO: &str =
-    "video sources need a host that plays video, which this one doesn't";
+pub const NO_VIDEO: &str = "video sources need a host that plays video, which this one doesn't";
 
 /// The video sources' state, by source key.
 #[derive(Debug, Default)]

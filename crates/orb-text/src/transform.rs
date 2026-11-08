@@ -72,7 +72,7 @@ fn form_for(t: u8, before: bool, after: bool) -> Option<Form> {
 /// Rewrites Arabic letters as the Presentation Forms-B code point of the
 /// shape each takes in its word, joining lam-alef. Text without Arabic is
 /// returned unchanged.
-pub fn apply_arabic_shaping(text: &str) -> String {
+pub(crate) fn apply_arabic_shaping(text: &str) -> String {
     if !text.chars().any(arabic_block) {
         return text.to_string();
     }
@@ -160,7 +160,7 @@ pub fn apply_arabic_shaping(text: &str) -> String {
 
 /// The vertical presentation form of a punctuation mark (GL JS
 /// `verticalizedCharacterMap`).
-pub fn vertical_form(c: char) -> Option<char> {
+pub(crate) fn vertical_form(c: char) -> Option<char> {
     Some(match c {
         '!' => '︕',
         '#' => '＃',
@@ -253,7 +253,7 @@ pub fn vertical_form(c: char) -> Option<char> {
 /// Replaces punctuation with its vertical form wherever neither neighbour is
 /// a rotated character (GL JS `verticalizePunctuation`). One character in,
 /// one out, so positions are preserved.
-pub fn verticalize_punctuation(text: &str) -> Vec<char> {
+pub(crate) fn verticalize_punctuation(text: &str) -> Vec<char> {
     let chars: Vec<char> = text.chars().collect();
     let replaceable_neighbour = |c: Option<&char>| {
         c.is_none_or(|&c| {

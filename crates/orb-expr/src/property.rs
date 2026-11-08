@@ -49,7 +49,7 @@ pub struct PropertySpec {
 
 impl PropertySpec {
     /// The type an expression for this property must produce.
-    pub fn expected_type(&self) -> Type {
+    pub(crate) fn expected_type(&self) -> Type {
         match &self.ty {
             PropertyType::Number => Type::Number,
             PropertyType::String | PropertyType::Enum(_) => Type::String,
@@ -160,7 +160,7 @@ impl PropertyExpression {
 
     /// Parses and folds constants with the same locale service the host will
     /// supply when evaluating the property.
-    pub fn parse_with_locale(
+    pub(crate) fn parse_with_locale(
         json: &Json,
         spec: &PropertySpec,
         locale: &dyn crate::Locale,

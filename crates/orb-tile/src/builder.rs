@@ -92,7 +92,7 @@ impl LayerBuilder {
     }
 
     /// Discards the current feature and everything added to it.
-    pub fn abandon_feature(&mut self) {
+    pub(crate) fn abandon_feature(&mut self) {
         let Some(part_start) = self.feature_parts.pop() else {
             return;
         };
@@ -118,7 +118,7 @@ impl LayerBuilder {
 
     /// The layer's geometry was clipped `buffer` data units past the tile
     /// square ([`Layer::clip_buffer`]).
-    pub fn clipped_at(&mut self, buffer: i32) -> &mut Self {
+    pub(crate) fn clipped_at(&mut self, buffer: i32) -> &mut Self {
         self.clip = Some(buffer);
         self
     }

@@ -10,11 +10,6 @@ import { createMap } from "orbis";
 import { demoStyle } from "./styles.js";
 
 const status = document.getElementById("status");
-/** Posts a result to `?report=<url>`, for browsers no driver controls (web/scripts/open.mjs). */
-const report = (result) => {
-  const to = new URLSearchParams(location.search).get("report");
-  if (to) fetch(to, { method: "POST", mode: "no-cors", body: JSON.stringify(result) });
-};
 // Async compiles count apart: wgpu makes each such pipeline again once
 // compiled, which the browser's cache returns.
 const counts = { shaders: 0, render: 0, compute: 0, renderAsync: 0, computeAsync: 0, createMs: 0 };
@@ -67,12 +62,10 @@ window.pipelines = (async () => {
     };
     status.textContent = JSON.stringify(result, null, 1);
     status.dataset.state = "done";
-    report(result);
     return result;
   } catch (e) {
     status.textContent = String(e);
     status.dataset.state = "error";
-    report({ error: String(e) });
     throw e;
   }
 })();

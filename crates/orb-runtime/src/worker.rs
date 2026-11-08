@@ -143,7 +143,7 @@ pub struct TileWorker {
 pub enum Built {
     Tile(TileBuild),
     /// URLs (glyph PBF ranges, word data) to fetch and add with
-    /// [`TileWorker::add_resource`]; then build again.
+    /// `TileWorker::add_resource`; then build again.
     Fetch(Vec<String>),
 }
 
@@ -211,7 +211,7 @@ impl TileWorker {
 
     /// Adds a resource a build asked for (or its failure) for later
     /// builds, which report a failure.
-    pub fn add_resource(&self, url: &str, bytes: Result<&[u8], String>) {
+    pub(crate) fn add_resource(&self, url: &str, bytes: Result<&[u8], String>) {
         let mut words = self.data.words.lock().expect("words poisoned");
         let word_url = self.data.word_url.lock().expect("words poisoned");
         if word_url.as_deref() == Some(url) {
@@ -249,7 +249,7 @@ impl TileWorker {
     }
 
     /// The word data, once loaded, to hand to workers of other styles.
-    pub fn word_breaker(&self) -> Option<Arc<orb_text::WordBreaker>> {
+    pub(crate) fn word_breaker(&self) -> Option<Arc<orb_text::WordBreaker>> {
         match &*self.data.words.lock().expect("words poisoned") {
             Words::Ready(breaker) => Some(Arc::clone(breaker)),
             _ => None,
@@ -257,7 +257,7 @@ impl TileWorker {
     }
 
     /// Uses word data another worker loaded.
-    pub fn set_word_breaker(&self, breaker: Arc<orb_text::WordBreaker>) {
+    pub(crate) fn set_word_breaker(&self, breaker: Arc<orb_text::WordBreaker>) {
         *self.data.words.lock().expect("words poisoned") = Words::Ready(breaker);
     }
 
@@ -268,7 +268,7 @@ impl TileWorker {
     }
 
     /// Whether the style declares `url` as a font file (`font-faces`).
-    pub fn declares_font(&self, url: &str) -> bool {
+    pub(crate) fn declares_font(&self, url: &str) -> bool {
         let declared = self.plan.style.font_faces.iter();
         declared.flat_map(|(_, files)| files).any(|f| f.url == url)
     }
@@ -451,7 +451,7 @@ impl TileWorker {
     /// Whether `source` (a source key) has image tiles to decode rather
     /// than lay out, and of which kind: any of the style's sources, drawn
     /// by layers or by the terrain alone.
-    pub fn image_kind(&self, source: u32) -> Option<ImageKind> {
+    pub(crate) fn image_kind(&self, source: u32) -> Option<ImageKind> {
         let at = self.plan.source_keys.iter().position(|&k| k == source)?;
         match self.plan.style.sources[at].kind {
             orb_style::SourceKind::Raster(_) | orb_style::SourceKind::Image(_) => {
@@ -482,7 +482,7 @@ impl TileWorker {
     /// Whether `request` can build without fetching bytes: its tile is
     /// cached, or its source is inline or already indexed GeoJSON. Job
     /// hosts use this to avoid fetching again; `build` ignores bytes then.
-    pub fn has_data(&self, request: &TileRequest) -> bool {
+    pub(crate) fn has_data(&self, request: &TileRequest) -> bool {
         // An app's tile comes with the request.
         if self.plan.source(request.source).is_none()
             || matches!(request.location, crate::TileLocation::Host(_))
@@ -750,7 +750,7 @@ pub struct StyleUpdate {
 /// A tile for a job to load and lay out.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TileRequest {
-    /// Which style to lay out with, as given to [`Jobs::set_style`].
+    /// Which style to lay out with, as given to [`Jobs::set_style`](crate::Jobs::set_style).
     pub style: u64,
     /// The source's key.
     pub source: u32,
@@ -763,15 +763,15 @@ pub struct TileRequest {
     /// world's edge extended to the poles.
     pub bend: Option<orb_layout::fill::Bend>,
     /// Zoom of the ancestor whose bytes are fetched.
-    pub data_zoom: u8,
+    pub(crate) data_zoom: u8,
     pub location: TileLocation,
     pub encoding: Encoding,
     /// Lay out only these nodes (by key); `None` for all of the source's.
     pub nodes: Option<Vec<u32>>,
     /// Only property rows: a column job.
-    pub rows_only: bool,
+    pub(crate) rows_only: bool,
     /// A terrain DEM tile: also decode its elevations with this unpack
-    /// vector, for the CPU ([`TileResult::dem`]).
+    /// vector, for the CPU ([`TileResult::dem`](crate::TileResult::dem)).
     pub dem_unpack: Option<DemUnpack>,
 }
 

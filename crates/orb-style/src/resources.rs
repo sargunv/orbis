@@ -35,5 +35,5 @@ pub struct Terrain {
     pub exaggeration: f64,
 }
 impl Terrain {
-    pub const DEFAULT_EXAGGERATION: f64 = 1.0;
+    pub(crate) const DEFAULT_EXAGGERATION: f64 = 1.0;
 }

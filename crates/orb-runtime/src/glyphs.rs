@@ -454,7 +454,7 @@ impl GlyphRaster {
 
     /// The requested bitmaps drawn from a declared font file, opening it
     /// from `bytes` unless `opened`.
-    pub fn draw_file(
+    pub(crate) fn draw_file(
         &self,
         files: &dyn FontFiles,
         bytes: Option<&[u8]>,

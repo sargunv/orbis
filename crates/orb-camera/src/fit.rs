@@ -58,7 +58,7 @@ impl CameraState {
     /// The camera that shows `bounds` inside the padded viewport (the
     /// fit's padding inside the camera's own), or `None` when the padding
     /// leaves no room.
-    pub fn for_bounds(
+    pub(crate) fn for_bounds(
         &self,
         bounds: Bounds,
         options: &FitOptions,

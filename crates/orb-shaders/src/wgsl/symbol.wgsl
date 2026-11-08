@@ -32,8 +32,6 @@ struct SymbolNode {
     index: u32,
     table_mask: u32,
     flags: u32,
-    // First word of the glyph row table in the property arena.
-    glyph_table: u32,
     // Texels on a side of a glyph page and of an image page.
     glyph_page: f32,
     // `*-translate` in pixels.
@@ -532,7 +530,8 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
         out.tex = (vec2<f32>(f32(rect & 0xfffu), f32((rect >> 12u) & 0xfffu)) + corner_tex) / node.image_page;
     } else {
         let atlas_row = vertex_at(base + vertex_at(base + H_GLYPHS) + texture);
-        let g = node.glyph_table + atlas_row * 4u;
+        // The glyph row table is the property arena's first block.
+        let g = atlas_row * 4u;
         let origin = prop_at(g);
         out.layer = prop_at(g + 2u);
         out.tex = (vec2<f32>(f32(origin & 0xffffu), f32(origin >> 16u)) + corner_tex) / node.glyph_page;

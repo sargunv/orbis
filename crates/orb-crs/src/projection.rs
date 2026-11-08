@@ -204,7 +204,7 @@ impl Projection {
 
     /// The projection of a coordinate reference system URI, as tile matrix
     /// sets name it: `EPSG:n`, an OGC URN or an opengis.net URL.
-    pub fn from_crs_uri(uri: &str) -> Result<Self, UnknownProjection> {
+    pub(crate) fn from_crs_uri(uri: &str) -> Result<Self, UnknownProjection> {
         let uri = uri.trim();
         let tail = uri
             .strip_prefix("http://www.opengis.net/def/crs/")
@@ -359,8 +359,8 @@ impl Projection {
         )
     }
 
-    /// World units per pixel at a style zoom: [`zoom_at_scale`]
-    /// (Self::zoom_at_scale)'s inverse.
+    /// World units per pixel at a style zoom: [`zoom_at_scale`](Self::zoom_at_scale)'s
+    /// inverse.
     pub fn scale_at_zoom(&self, zoom: f64) -> Option<f64> {
         let reference = self.zoom_reference()?;
         Some(

@@ -1839,17 +1839,6 @@ impl Map {
         Some(terrain.snapshot() as Arc<dyn orb_camera::Elevation>)
     }
 
-    /// [`elevation`](Self::elevation) at reduced resolution, as bytes for a
-    /// camera on another thread (the elevation pyramid; read with
-    /// [`TerrainElevation::from_pyramid`](crate::TerrainElevation::from_pyramid));
-    /// empty without terrain.
-    pub fn elevation_pyramid(&self) -> Arc<[u8]> {
-        self.style
-            .as_ref()
-            .and_then(|s| s.terrain.as_ref())
-            .map_or_else(Default::default, |t| t.snapshot().pyramid())
-    }
-
     /// Changes whenever [`elevation`](Self::elevation) has new data.
     pub fn elevation_revision(&self) -> u64 {
         self.style

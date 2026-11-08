@@ -13,7 +13,7 @@ use icu_segmenter::GraphemeClusterSegmenter;
 use crate::unicode;
 
 /// Splits `text` into grapheme clusters, as byte ranges.
-pub fn graphemes(text: &str) -> Vec<Range<usize>> {
+pub(crate) fn graphemes(text: &str) -> Vec<Range<usize>> {
     let mut clusters: Vec<Range<usize>> = Vec::new();
     if !text.chars().any(unicode::can_form_cluster) {
         // No character can join another: one cluster per code point.
@@ -46,7 +46,7 @@ fn can_combine(former: &str, latter: &str) -> bool {
 
 /// Whether a cluster is more than one code point, and so must be drawn as a
 /// whole (GL JS `isCluster`).
-pub fn is_cluster(grapheme: &str) -> bool {
+pub(crate) fn is_cluster(grapheme: &str) -> bool {
     grapheme.chars().nth(1).is_some()
 }
 
@@ -79,7 +79,7 @@ impl WordBreaker {
         Self { segmenter }
     }
 
-    /// The same dictionaries from [`sea_dictionary_bytes`]' container, as
+    /// The same dictionaries from `sea_dictionary_bytes`' container, as
     /// the web loads them.
     #[cfg(feature = "sea-buffer")]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {

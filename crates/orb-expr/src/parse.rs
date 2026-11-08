@@ -338,12 +338,12 @@ pub(super) fn js_typeof(json: &Json) -> &'static str {
 
 #[derive(Debug)]
 pub(crate) struct Parser<'l> {
-    pub locale: &'l dyn crate::Locale,
+    pub(crate) locale: &'l dyn crate::Locale,
     /// When set, `global-state` reads fold to these values at parse time.
     pub global_state: Option<&'l [(String, Value<'static>)]>,
     /// The literals folded from global state.
     pub(crate) global_literals: Vec<NodeId>,
-    pub ir: Ir,
+    pub(crate) ir: Ir,
     pub errors: Vec<Diagnostic>,
     pub(super) scope: Vec<(String, NodeId)>,
 }

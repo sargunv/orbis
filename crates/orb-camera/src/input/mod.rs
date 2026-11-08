@@ -16,7 +16,8 @@ use rates::*;
 
 use std::collections::VecDeque;
 
-use crate::{Camera, CameraTarget, EaseOptions, Easing, Glide, Track};
+use crate::animate::{Glide, Track};
+use crate::{Camera, CameraTarget, EaseOptions, Easing};
 use glam::DVec2;
 
 /// What kind of device a pointer is.

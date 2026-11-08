@@ -247,7 +247,7 @@ fn parse_state(cx: &mut Cx, json: &Json) -> Vec<(String, Value<'static>)> {
 
 /// Global state: the defaults, each replaced by an override of the same
 /// name; overrides without a default are added.
-pub fn resolve_state(
+pub(crate) fn resolve_state(
     defaults: &[(String, Value<'static>)],
     overrides: &[(String, Value<'static>)],
 ) -> Vec<(String, Value<'static>)> {
@@ -282,7 +282,7 @@ pub fn parse_layer(
 }
 
 /// Parses a root sky with the current global state, returning its warnings.
-pub fn parse_sky(
+pub(crate) fn parse_sky(
     json: &Json,
     state: &[(String, Value<'static>)],
 ) -> Result<(Atmosphere, Vec<Diagnostic>), Diagnostics> {
@@ -300,7 +300,7 @@ pub fn parse_sky(
 
 /// Parses a root `terrain` against the style's sources, returning its
 /// warnings.
-pub fn parse_terrain(
+pub(crate) fn parse_terrain(
     json: &Json,
     sources: &[std::sync::Arc<Source>],
 ) -> Result<(Terrain, Vec<Diagnostic>), Diagnostics> {
@@ -313,7 +313,7 @@ pub fn parse_terrain(
 
 /// Parses a root `projection`, returning its plane (`None` for Web
 /// Mercator), its low-zoom surface and its warnings.
-pub fn parse_projection(
+pub(crate) fn parse_projection(
     json: &Json,
     state: &[(String, Value<'static>)],
 ) -> (

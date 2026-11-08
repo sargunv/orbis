@@ -10,7 +10,7 @@ use crate::js;
 
 /// Nesting deeper than this is rejected, which also bounds the recursion of
 /// everything that walks a parsed document.
-pub const MAX_DEPTH: usize = 128;
+pub(crate) const MAX_DEPTH: usize = 128;
 
 /// A byte range in the source text. Synthetic nodes (built by lowering) carry
 /// the span of the source node they came from.

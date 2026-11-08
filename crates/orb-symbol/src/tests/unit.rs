@@ -167,14 +167,8 @@ fn keep_upright_adds_a_vertical_shaping_for_vertical_scripts() {
     let instance = &upright.instances[0];
     let horizontal = &upright.text.placed[instance.text[justification::CENTER] as usize];
     let vertical = &upright.text.placed[instance.text[justification::VERTICAL] as usize];
-    assert_eq!(
-        SymbolWritingMode::from_u8(horizontal.writing_mode),
-        SymbolWritingMode::Horizontal
-    );
-    assert_eq!(
-        SymbolWritingMode::from_u8(vertical.writing_mode),
-        SymbolWritingMode::Vertical
-    );
+    assert_eq!(horizontal.writing_mode, SymbolWritingMode::Horizontal as u8);
+    assert_eq!(vertical.writing_mode, SymbolWritingMode::Vertical as u8);
 
     let free = run(
         &layer,
@@ -188,8 +182,8 @@ fn keep_upright_adds_a_vertical_shaping_for_vertical_scripts() {
     assert_eq!(instance.text[justification::VERTICAL], NONE);
     let horizontal = &free.text.placed[instance.text[justification::CENTER] as usize];
     assert_eq!(
-        SymbolWritingMode::from_u8(horizontal.writing_mode),
-        SymbolWritingMode::HorizontalOnly
+        horizontal.writing_mode,
+        SymbolWritingMode::HorizontalOnly as u8
     );
 
     // Latin text never gets a vertical shaping.
@@ -302,10 +296,7 @@ fn vertical_point_labels_rotate_their_glyph_quads() {
     };
     let horizontal = &bucket.text.placed[instance.text[justification::CENTER] as usize];
     let vertical = &bucket.text.placed[instance.text[justification::VERTICAL] as usize];
-    assert_eq!(
-        SymbolWritingMode::from_u8(vertical.writing_mode),
-        SymbolWritingMode::Vertical
-    );
+    assert_eq!(vertical.writing_mode, SymbolWritingMode::Vertical as u8);
     for q in quads(horizontal) {
         let [tl, tr, ..] = q.corners;
         assert_eq!(tl[1], tr[1], "a horizontal quad's top edge is level");

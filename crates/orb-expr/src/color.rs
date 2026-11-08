@@ -19,10 +19,6 @@ pub struct Color {
 }
 
 impl Color {
-    pub const TRANSPARENT: Self = Self {
-        premultiplied: [0.0; 4],
-        straight: [0.0; 4],
-    };
     pub const BLACK: Self = Self {
         premultiplied: [0.0, 0.0, 0.0, 1.0],
         straight: [0.0, 0.0, 0.0, 1.0],

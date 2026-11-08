@@ -22,9 +22,9 @@ impl Easing {
     /// GL JS's `defaultEasing`.
     pub const DEFAULT: Self = Self::Bezier([0.25, 0.1, 0.25, 1.0]);
     /// GL JS's `easeOut`, for keyboard and double-click moves.
-    pub const EASE_OUT: Self = Self::Bezier([0.0, 0.0, 0.58, 1.0]);
+    pub(crate) const EASE_OUT: Self = Self::Bezier([0.0, 0.0, 0.58, 1.0]);
     /// GL JS's inertia easing.
-    pub const INERTIA: Self = Self::Bezier([0.0, 0.0, 0.3, 1.0]);
+    pub(crate) const INERTIA: Self = Self::Bezier([0.0, 0.0, 0.3, 1.0]);
 
     /// Progress at time fraction `t` in [0, 1].
     pub fn at(&self, t: f64) -> f64 {
@@ -143,7 +143,7 @@ impl Default for FlyOptions {
 
 /// One property's share of a glide: a total change spread over time.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Track<T> {
+pub(crate) struct Track<T> {
     pub amount: T,
     /// Milliseconds.
     pub duration: f64,
@@ -154,7 +154,7 @@ pub struct Track<T> {
 /// smooth wheel zoom. Each property eases on its own schedule, so a short
 /// zoom fling needn't end with a long pan's.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Glide {
+pub(crate) struct Glide {
     /// Pixels the ground moves on screen.
     pub pan: Option<Track<DVec2>>,
     /// Zoom levels.
