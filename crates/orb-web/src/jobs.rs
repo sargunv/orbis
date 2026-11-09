@@ -12,7 +12,8 @@
 //! A tile goes to the job worker with the fewest requests in flight, and
 //! its relayouts and queries follow it there, where its data is; a glyph
 //! unit goes to its owner worker. A worker that is lost (its wasm trapped, or it died) fails
-//! the queries and rasters it had, which the map retries. The page puts
+//! the queries it had, which the map retries, and its rasters go again
+//! (their glyphs' atlas rows wait for them). The page puts
 //! another in its place, which this sends the style; or, past the page's
 //! limit, its share goes to the next worker on. The loads it had go again
 //! at once, as suspects: one at a time, with no other suspect in flight, so
@@ -71,6 +72,8 @@ struct State {
     next_id: u32,
     pending: HashMap<u32, TileDone>,
     rasters: HashMap<u32, RasterDone>,
+    /// Each raster's request, to send again if its worker is lost.
+    raster_requests: HashMap<u32, GlyphRaster>,
     features: HashMap<u32, orb_runtime::FeaturesDone>,
     answers: HashMap<u32, orb_runtime::QueryDone>,
     /// The worker each request went to, until it answers, and a load's
@@ -170,7 +173,7 @@ impl WorkerJobs {
         why: &str,
         replacement: Option<Option<(u64, StyleUpdate, SpriteIcons)>>,
     ) {
-        let (failed, loads, heads) = {
+        let (failed, loads, rasters, heads) = {
             let mut state = self.state.lock().expect("jobs poisoned");
             let Some(lost) = state.lost.get_mut(worker as usize) else {
                 return;
@@ -182,13 +185,19 @@ impl WorkerJobs {
                 .filter(|&(_, &(w, _))| w == worker)
                 .map(|(&id, _)| id)
                 .collect();
-            let (mut failed, mut loads) = (Vec::new(), Vec::new());
+            let (mut failed, mut loads, mut rasters) = (Vec::new(), Vec::new(), Vec::new());
             for id in ids {
                 let Some((_, request)) = state.sent_to.remove(&id) else {
                     continue;
                 };
                 if state.suspect == Some(id) {
                     state.suspect = None;
+                }
+                if let Some(raster) = state.raster_requests.remove(&id) {
+                    if let Some(done) = state.rasters.remove(&id) {
+                        rasters.push((raster, done));
+                    }
+                    continue;
                 }
                 let Some(request) = request else {
                     failed.push(id);
@@ -200,7 +209,7 @@ impl WorkerJobs {
                     loads.push((request, done));
                 }
             }
-            (failed, loads, state.heads.clone())
+            (failed, loads, rasters, state.heads.clone())
         };
         if let Some(style) = replacement {
             if let Some((style, update, icons)) = style {
@@ -231,6 +240,9 @@ impl WorkerJobs {
                 None,
                 &JsValue::UNDEFINED,
             );
+        }
+        for (request, done) in rasters {
+            self.raster(request, done);
         }
         for (request, done) in loads {
             if self.quarantined(load_key(&request)) {
@@ -298,6 +310,7 @@ impl WorkerJobs {
             return Ok(());
         }
         if let Some(done) = state.rasters.remove(&id) {
+            state.raster_requests.remove(&id);
             drop(state);
             done(match message {
                 JobReply::Glyphs { bitmaps, .. } => Ok(bitmaps),
@@ -529,10 +542,14 @@ impl Jobs for WorkerJobs {
     fn raster(&self, request: GlyphRaster, done: RasterDone) {
         // A unit's owner worker rasterizes it.
         let owner = request.owner(self.workers);
+        let kept = request.clone();
         self.send(
             |_| owner,
             None,
-            |state, id| drop(state.rasters.insert(id, done)),
+            |state, id| {
+                state.rasters.insert(id, done);
+                state.raster_requests.insert(id, kept);
+            },
             |id| JobRequest::Raster { id, request },
         );
     }
