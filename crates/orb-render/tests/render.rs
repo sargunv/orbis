@@ -286,7 +286,9 @@ fn pools_grow_into_larger_buffers_keeping_their_meshes() {
 
 /// A mesh drawing another's vertices and indices takes no pool words of
 /// its own, and keeps drawing them when that mesh goes; they free with
-/// the last.
+/// the last. A mesh with no words of its own (a point node's indices, a
+/// symbol's) holds no share of them, though its empty ranges start where
+/// the first allocation does.
 #[test]
 fn shared_geometry_lives_until_its_last_mesh() {
     let mut h = Harness::new();
@@ -298,6 +300,10 @@ fn shared_geometry_lives_until_its_last_mesh() {
         indices: Words::Core(&[]),
         ..data
     };
+    let empty = MeshData {
+        chunks: &[],
+        ..shared
+    };
     let build = |data, shares| orb_render::MeshBuild {
         node: 0,
         extent: EXTENT,
@@ -305,7 +311,11 @@ fn shared_geometry_lives_until_its_last_mesh() {
         rows: Default::default(),
         shares,
     };
-    let meshes = [build(data, [None; 2]), build(shared, [Some(0); 2])];
+    let meshes = [
+        build(data, [None; 2]),
+        build(shared, [Some(0); 2]),
+        build(empty, [None; 2]),
+    ];
     let key = orb_render::TileKey {
         source: 0,
         tile: orb_crs::TileIndex::new(0, 0, 0),
@@ -330,6 +340,8 @@ fn shared_geometry_lives_until_its_last_mesh() {
         square.vertices.len() as u64 * 4,
         square.indices.len() as u64 * 4,
     );
+    assert_eq!(used(&h), words);
+    h.renderer.remove_mesh(tile, ids[2]);
     assert_eq!(used(&h), words);
     h.renderer.remove_mesh(tile, ids[0]);
     assert_eq!(pixel(&h.render(), 4, 32), RED);

@@ -1426,6 +1426,9 @@ impl Scene {
         .enumerate()
         {
             match ranges[pool] {
+                // Empty ranges all start at 0, where the first allocation
+                // does: they hold nothing to share.
+                Some(_) if range.is_empty() => {}
                 Some(_) => *self.shared[pool].entry(range.start).or_default() += 1,
                 None => words.write(gpu, buffer, range.start),
             }
@@ -1634,6 +1637,11 @@ impl Scene {
     /// Drops a mesh's hold on a vertex (`pool` 0) or index (1) range:
     /// whether it was the last, and the range is free.
     fn release_shared(&mut self, pool: usize, range: &Range<u32>) -> bool {
+        // An empty range (`0..0`: a point node's indices, a symbol's) is
+        // no share of the one starting at 0.
+        if range.is_empty() {
+            return true;
+        }
         let Some(others) = self.shared[pool].get_mut(&range.start) else {
             return true;
         };
