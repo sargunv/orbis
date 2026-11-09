@@ -81,14 +81,7 @@ impl ElevationCurve {
 
     /// `value` changed to `ir`, with its inputs counted again.
     fn with(&self, mut ir: crate::ir::Ir, root: NodeId) -> PropertyExpression {
-        // Post order: operands come before the nodes that read them.
-        for i in 0..ir.nodes.len() {
-            let mut deps = ir.nodes[i].op.own_deps();
-            ir.nodes[i]
-                .op
-                .for_each_child(|c| deps = deps | ir.nodes[c as usize].deps);
-            ir.nodes[i].deps = deps;
-        }
+        ir.recount_deps();
         let ir = ir.compact(root);
         let feature = ir.node(ir.root()).deps.contains(Deps::FEATURE);
         let curve = self.value.zoom_curve().cloned();

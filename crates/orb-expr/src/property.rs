@@ -321,22 +321,15 @@ impl PropertyExpression {
             return None;
         }
         let mut ir = self.expression.ir.clone();
-        // Post order: operands come before the nodes that read them.
-        for i in 0..ir.nodes.len() {
-            let value = match ir.nodes[i].op {
+        for node in &mut ir.nodes {
+            let value = match node.op {
                 Op::Call(Call::Pitch, _) => pitch,
                 Op::Call(Call::Bearing, _) => bearing,
-                _ => f64::NAN,
+                _ => continue,
             };
-            if !value.is_nan() {
-                ir.nodes[i].op = Op::Literal(crate::Value::Number(value));
-            }
-            let mut deps = ir.nodes[i].op.own_deps();
-            ir.nodes[i]
-                .op
-                .for_each_child(|c| deps = deps | ir.nodes[c as usize].deps);
-            ir.nodes[i].deps = deps;
+            node.op = Op::Literal(crate::Value::Number(value));
         }
+        ir.recount_deps();
         Some(Self {
             expression: Expression { ir },
             kind: if self.curve.is_some() {

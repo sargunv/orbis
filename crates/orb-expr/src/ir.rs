@@ -294,11 +294,12 @@ pub(crate) enum Op {
     Legacy(LegacyFilter),
 }
 
-impl Op {
-    /// Calls `f` on each operand, in evaluation order.
-    pub(crate) fn for_each_child(&self, mut f: impl FnMut(NodeId)) {
-        match self {
-            Op::Call(_, ids) => ids.iter().for_each(|&id| f(id)),
+/// Runs `$body` with `$id` bound to each operand of `$op`, in evaluation
+/// order: the one walk behind [`Op::for_each_child`] (`&Op`, so `$id` is a
+/// `&NodeId`) and [`Op::map_children`] (`&mut Op`, a `&mut NodeId`).
+macro_rules! each_child {
+    ($op:expr, |$id:ident| $body:expr) => {
+        match $op {
             Op::Literal(_)
             | Op::Zoom
             | Op::LineProgress
@@ -308,16 +309,16 @@ impl Op {
             | Op::Get(_)
             | Op::Has(_)
             | Op::Legacy(_) => {}
-            Op::GetDynamic(a)
-            | Op::HasDynamic(a)
-            | Op::Not(a)
-            | Op::Neg(a)
-            | Op::Math(_, a)
-            | Op::ToRgba(a)
-            | Op::Upcase(a)
-            | Op::Downcase(a)
-            | Op::Length(a)
-            | Op::TypeOf(a) => f(*a),
+            Op::GetDynamic($id)
+            | Op::HasDynamic($id)
+            | Op::Not($id)
+            | Op::Neg($id)
+            | Op::Math(_, $id)
+            | Op::ToRgba($id)
+            | Op::Upcase($id)
+            | Op::Downcase($id)
+            | Op::Length($id)
+            | Op::TypeOf($id) => $body,
             Op::GetFrom { key: a, object: b }
             | Op::HasIn { key: a, object: b }
             | Op::In {
@@ -329,16 +330,15 @@ impl Op {
             | Op::Rem(a, b)
             | Op::Pow(a, b)
             | Op::At { index: a, array: b } => {
-                f(*a);
-                f(*b);
+                for $id in [a, b] {
+                    $body;
+                }
             }
             Op::Compare {
                 lhs, rhs, collator, ..
             } => {
-                f(*lhs);
-                f(*rhs);
-                if let Some(c) = collator {
-                    f(*c);
+                for $id in [lhs, rhs].into_iter().chain(collator) {
+                    $body;
                 }
             }
             Op::Match {
@@ -347,129 +347,34 @@ impl Op {
                 otherwise,
                 ..
             } => {
-                f(*input);
-                outputs.iter().for_each(|&o| f(o));
-                f(*otherwise);
-            }
-            Op::Case {
-                branches,
-                otherwise,
-            } => {
-                for &(test, out) in branches {
-                    f(test);
-                    f(out);
+                for $id in std::iter::once(input).chain(outputs).chain([otherwise]) {
+                    $body;
                 }
-                f(*otherwise);
-            }
-            Op::Step { input, outputs, .. } | Op::Interpolate { input, outputs, .. } => {
-                f(*input);
-                outputs.iter().for_each(|&o| f(o));
-            }
-            Op::Rgba { r, g, b, a } => {
-                f(*r);
-                f(*g);
-                f(*b);
-                if let Some(a) = a {
-                    f(*a);
-                }
-            }
-            Op::Coalesce(ids)
-            | Op::All(ids)
-            | Op::Any(ids)
-            | Op::Sum(ids)
-            | Op::Product(ids)
-            | Op::Min(ids)
-            | Op::Max(ids)
-            | Op::Coerce(ids)
-            | Op::Assert(ids)
-            | Op::Concat(ids) => ids.iter().for_each(|&id| f(id)),
-        }
-    }
-
-    /// Replaces each operand with `f(operand)`, in evaluation order.
-    pub(crate) fn map_children(&mut self, mut f: impl FnMut(NodeId) -> NodeId) {
-        fn each(ids: &mut [NodeId], f: &mut impl FnMut(NodeId) -> NodeId) {
-            ids.iter_mut().for_each(|id| *id = f(*id));
-        }
-        match self {
-            Op::Call(_, ids) => each(ids, &mut f),
-            Op::Literal(_)
-            | Op::Zoom
-            | Op::LineProgress
-            | Op::Id
-            | Op::GeometryType
-            | Op::Properties
-            | Op::Get(_)
-            | Op::Has(_)
-            | Op::Legacy(_) => {}
-            Op::GetDynamic(a)
-            | Op::HasDynamic(a)
-            | Op::Not(a)
-            | Op::Neg(a)
-            | Op::Math(_, a)
-            | Op::ToRgba(a)
-            | Op::Upcase(a)
-            | Op::Downcase(a)
-            | Op::Length(a)
-            | Op::TypeOf(a) => *a = f(*a),
-            Op::GetFrom { key, object } | Op::HasIn { key, object } => {
-                *key = f(*key);
-                *object = f(*object);
-            }
-            Op::Match {
-                input,
-                outputs,
-                otherwise,
-                ..
-            } => {
-                *input = f(*input);
-                each(outputs, &mut f);
-                *otherwise = f(*otherwise);
             }
             Op::Case {
                 branches,
                 otherwise,
             } => {
                 for (test, out) in branches {
-                    *test = f(*test);
-                    *out = f(*out);
+                    for $id in [test, out] {
+                        $body;
+                    }
                 }
-                *otherwise = f(*otherwise);
+                let $id = otherwise;
+                $body;
             }
             Op::Step { input, outputs, .. } | Op::Interpolate { input, outputs, .. } => {
-                *input = f(*input);
-                each(outputs, &mut f);
-            }
-            Op::Compare {
-                lhs, rhs, collator, ..
-            } => {
-                *lhs = f(*lhs);
-                *rhs = f(*rhs);
-                if let Some(c) = collator {
-                    *c = f(*c);
+                for $id in std::iter::once(input).chain(outputs) {
+                    $body;
                 }
-            }
-            Op::In { needle, haystack } => {
-                *needle = f(*needle);
-                *haystack = f(*haystack);
-            }
-            Op::Sub(a, b) | Op::Div(a, b) | Op::Rem(a, b) | Op::Pow(a, b) => {
-                *a = f(*a);
-                *b = f(*b);
-            }
-            Op::At { index, array } => {
-                *index = f(*index);
-                *array = f(*array);
             }
             Op::Rgba { r, g, b, a } => {
-                *r = f(*r);
-                *g = f(*g);
-                *b = f(*b);
-                if let Some(a) = a {
-                    *a = f(*a);
+                for $id in [r, g, b].into_iter().chain(a) {
+                    $body;
                 }
             }
-            Op::Coalesce(ids)
+            Op::Call(_, ids)
+            | Op::Coalesce(ids)
             | Op::All(ids)
             | Op::Any(ids)
             | Op::Sum(ids)
@@ -478,8 +383,24 @@ impl Op {
             | Op::Max(ids)
             | Op::Coerce(ids)
             | Op::Assert(ids)
-            | Op::Concat(ids) => each(ids, &mut f),
+            | Op::Concat(ids) => {
+                for $id in ids {
+                    $body;
+                }
+            }
         }
+    };
+}
+
+impl Op {
+    /// Calls `f` on each operand, in evaluation order.
+    pub(crate) fn for_each_child(&self, mut f: impl FnMut(NodeId)) {
+        each_child!(self, |id| f(*id));
+    }
+
+    /// Replaces each operand with `f(operand)`, in evaluation order.
+    pub(crate) fn map_children(&mut self, mut f: impl FnMut(NodeId) -> NodeId) {
+        each_child!(self, |id| *id = f(*id));
     }
 
     /// The node's own inputs, not counting its operands'.
@@ -527,14 +448,28 @@ pub(crate) struct Ir {
 
 impl Ir {
     pub(crate) fn push(&mut self, op: Op, ty: Type, path: &str) -> NodeId {
-        let mut deps = op.own_deps();
-        op.for_each_child(|c| deps = deps | self.nodes[c as usize].deps);
+        let deps = self.deps_of(&op);
         self.nodes.push(Node { op, ty, deps });
         #[cfg(any(test, feature = "conformance"))]
         self.paths.push(path.into());
         #[cfg(not(any(test, feature = "conformance")))]
         let _ = path;
         (self.nodes.len() - 1) as NodeId
+    }
+
+    /// The inputs of a node with `op`: its own and its operands'.
+    fn deps_of(&self, op: &Op) -> Deps {
+        let mut deps = op.own_deps();
+        op.for_each_child(|c| deps = deps | self.nodes[c as usize].deps);
+        deps
+    }
+
+    /// Counts every node's inputs again, after nodes were replaced.
+    pub(crate) fn recount_deps(&mut self) {
+        // Post order: operands come before the nodes that read them.
+        for i in 0..self.nodes.len() {
+            self.nodes[i].deps = self.deps_of(&self.nodes[i].op);
+        }
     }
 
     pub(crate) fn node(&self, id: NodeId) -> &Node {
