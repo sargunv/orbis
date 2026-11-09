@@ -142,9 +142,10 @@ pub struct RenderTimes {
     pub bundles: u32,
     /// The drape passes of slots redrawn: their bundles and passes.
     pub drape: u32,
-    /// The frame's other passes built.
+    /// The frame's other passes listed (wgpu records them in `submit`).
     pub encode: u32,
-    /// The passes submitted to the device.
+    /// The passes and the buffer writes staged for them recorded into
+    /// wgpu's encoder and submitted.
     pub submit: u32,
 }
 

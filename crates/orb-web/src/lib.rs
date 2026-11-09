@@ -139,7 +139,8 @@ pub struct FrameStats {
     /// frames.
     #[wasm_bindgen(readonly)]
     pub prepared: FrameTimes,
-    /// Tiles whose results arrived and applied since the last frame.
+    /// Tiles whose data arrived since the last frame (not loads given up,
+    /// missing or failed).
     #[wasm_bindgen(readonly, js_name = tilesArrived)]
     pub tiles_arrived: u32,
     #[wasm_bindgen(readonly, js_name = paintsWritten)]
@@ -206,10 +207,10 @@ pub struct FrameTimes {
     /// Redrawn drape slots' bundles and passes.
     #[wasm_bindgen(readonly, js_name = drapePasses)]
     pub drape_passes: f64,
-    /// The other passes built.
+    /// The other passes listed.
     #[wasm_bindgen(readonly)]
     pub encode: f64,
-    /// The passes submitted to the device.
+    /// The passes and their staged buffer writes recorded and submitted.
     #[wasm_bindgen(readonly)]
     pub submit: f64,
 }

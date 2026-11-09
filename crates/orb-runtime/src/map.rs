@@ -101,8 +101,9 @@ pub struct FrameReport {
     pub times: FrameTimes,
     /// What [`Map::prepare`] spent since the last frame drawn, summed.
     pub prepared: FrameTimes,
-    /// Tiles whose results arrived and applied (vector, raster and DEM)
-    /// since the last frame drawn, in its preparations or in it.
+    /// Tiles whose data arrived (vector, raster and DEM; not loads given
+    /// up, missing or failed) since the last frame drawn, in its
+    /// preparations or in it.
     pub tiles_arrived: u32,
     /// Only compiling pipelines keep the frame from being complete: a
     /// host whose GPU wakes it when a pipeline compiles needs no frames

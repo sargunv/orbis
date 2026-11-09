@@ -162,7 +162,11 @@ impl Map {
                     }
                     let mut kept = false;
                     if generation == self.tile_generation {
-                        self.tiles_arrived += u32::from(edit.is_none());
+                        // Loads given up, missing or failed brought nothing.
+                        self.tiles_arrived += u32::from(
+                            edit.is_none()
+                                && result.as_ref().is_ok_and(|r| !r.cancelled && !r.missing),
+                        );
                         match edit {
                             None if terrain => {
                                 self.apply_terrain_tile(gpu, renderer, source, tile, result)

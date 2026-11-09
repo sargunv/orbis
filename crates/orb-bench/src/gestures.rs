@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use orb_api::{CameraState, CameraTarget, FlyOptions, Map, Runtime, Target};
 
-use crate::report::{ms, resolution};
+use crate::report::{ms, percentile, resolution};
 use crate::{GesturePaths, Settings, clock, frame, settle};
 
 /// A 60 Hz display's frame.
@@ -173,11 +173,6 @@ impl PathResult {
     fn at(&self, p: f64) -> Duration {
         percentile(&self.cpu, p)
     }
-}
-
-fn percentile(sorted: &[Duration], p: f64) -> Duration {
-    let i = ((sorted.len() as f64 - 1.0) * p).round() as usize;
-    sorted.get(i).copied().unwrap_or_default()
 }
 
 /// The paths' frame times.

@@ -225,6 +225,12 @@ pub(crate) fn resolution(r: Option<Duration>) -> String {
     }
 }
 
+/// The `p` quantile of `sorted`, nearest rank; zero for none.
+pub(crate) fn percentile(sorted: &[Duration], p: f64) -> Duration {
+    let i = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted.get(i).copied().unwrap_or_default()
+}
+
 pub(crate) fn ms(d: Duration) -> String {
     format!("{:.3}", d.as_secs_f64() * 1000.0)
 }

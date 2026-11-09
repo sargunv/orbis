@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use orb_api::{CameraState, FrameTimes, Geodetic, Map, Runtime, Target};
 
-use crate::report::{ms, resolution};
+use crate::report::{ms, percentile, resolution};
 use crate::{Settings, clock, frame, settle};
 
 /// A 60 Hz display's frame, and two.
@@ -382,11 +382,6 @@ fn by_name(parts: impl Iterator<Item = (String, Duration)>) -> Vec<(String, Dura
     totals
 }
 
-fn percentile(sorted: &[Duration], p: f64) -> Duration {
-    let i = ((sorted.len() as f64 - 1.0) * p).round() as usize;
-    sorted.get(i).copied().unwrap_or_default()
-}
-
 fn sorted(xs: impl Iterator<Item = Duration>) -> Vec<Duration> {
     let mut v: Vec<Duration> = xs.collect();
     v.sort_unstable();
@@ -495,7 +490,8 @@ impl StutterReport {
              placement: building the placement lane's frame, applying its commits; cull: the \
              cull's candidates laid out and placement rows written; bundles: the main bundles \
              recorded again; drape passes: redrawn drape slots' bundles and passes; encode: the \
-             other passes built; submit: the passes submitted to the device; runtime other: paint, the camera, picking; host: \
+             other passes listed; submit: the passes and the buffer writes staged for them \
+             recorded into wgpu and submitted; runtime other: paint, the camera, picking; host: \
              `orb-api` around the runtime's frame."
         )?;
         for warning in &self.warnings {
