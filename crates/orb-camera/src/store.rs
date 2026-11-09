@@ -331,7 +331,7 @@ impl Camera {
     ) -> AnimationId {
         self.stop();
         let (to, around) = self.resolve(target);
-        let motion = Motion::ease(self.state, to, around, options, &self.surface.projection);
+        let motion = Motion::ease(self.state, to, around, options, &self.surface);
         self.start(motion, start, user, self.aims(target))
     }
 
@@ -350,7 +350,7 @@ impl Camera {
             to,
             options,
             self.constraints.min_zoom,
-            &self.surface.projection,
+            &self.surface,
             self.viewport,
         );
         self.start(motion, start, false, self.aims(target))
@@ -634,8 +634,9 @@ impl Camera {
                 to.target = c;
                 if let Some(zoom) = zoom {
                     to.set_zoom(projection, zoom);
-                } else {
-                    // Keep the scale on screen, as a pan does.
+                } else if !self.state.on_sphere(surface) {
+                    // Keep the scale on screen, as a pan does (on the
+                    // sphere, its size: the ground resolution).
                     to.resolution =
                         self.state.world_per_px(projection) / projection.scale_factor(c);
                 }
@@ -777,6 +778,71 @@ mod tests {
         assert_eq!(camera.state().roll, -170.0);
         // Without terrain nothing takes the elevation back.
         assert_eq!(camera.state().elevation, 300.0);
+    }
+
+    /// On the globe, eases and flights that don't set a zoom keep its size
+    /// all the way (GL JS's zoom adjustment), and one to a pole goes there
+    /// over the sphere, latitude moving steadily.
+    #[test]
+    fn globe_eases_keep_its_size() {
+        let surface = Surface {
+            projection: mercator(),
+            globe: Some(orb_crs::Globe::V8),
+        };
+        let viewport = Viewport {
+            width: 800.0,
+            height: 800.0,
+        };
+        let start = CameraState::new(Geodetic::new(0.0, 0.0), 2.0, &mercator());
+        for fly in [false, true] {
+            let mut camera = Camera::new(start, surface, viewport);
+            let target = CameraTarget {
+                center: Some(Geodetic::new(60.0, 50.0)),
+                ..CameraTarget::default()
+            };
+            let options = EaseOptions {
+                duration: 100.0,
+                easing: Easing::Linear,
+            };
+            match fly {
+                false => camera.ease_to(&target, options, Some(0.0)),
+                true => camera.fly_to(
+                    &target,
+                    &FlyOptions {
+                        duration: Some(100.0),
+                        ..FlyOptions::default()
+                    },
+                    Some(0.0),
+                ),
+            };
+            let mut t = 0.0;
+            while camera.frame(t) {
+                if !fly {
+                    assert_eq!(camera.state().resolution, start.resolution);
+                }
+                t += 10.0;
+            }
+            let end = camera.state();
+            assert!((end.resolution / start.resolution - 1.0).abs() < 1e-12);
+            assert!((end.target.lat - 50.0).abs() < 1e-9);
+        }
+        let mut camera = Camera::new(start, surface, viewport);
+        camera.ease_to(
+            &CameraTarget {
+                center: Some(Geodetic::new(0.0, 90.0)),
+                zoom: Some(1.0),
+                ..CameraTarget::default()
+            },
+            EaseOptions {
+                duration: 100.0,
+                easing: Easing::Linear,
+            },
+            Some(0.0),
+        );
+        camera.frame(50.0);
+        assert!((camera.state().target.lat - 45.0).abs() < 1e-9);
+        camera.frame(100.0);
+        assert_eq!(camera.state().target.lat, 90.0);
     }
 
     #[test]

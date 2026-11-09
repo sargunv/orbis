@@ -5,7 +5,7 @@ use glam::DVec2;
 use orb_crs::Geodetic;
 use orb_crs::{Projection, WorldRect, sphere};
 
-use crate::{CameraState, View, Viewport};
+use crate::{CameraState, STYLE_ZOOM_TILE_PX, View, Viewport};
 use orb_crs::Surface;
 
 /// A longitude and latitude box, in degrees. `west` may exceed `east` only
@@ -101,6 +101,27 @@ impl CameraState {
     /// plane's own scale factor does).
     pub fn world_per_px(&self, projection: &Projection) -> f64 {
         self.resolution * projection.scale_factor(self.target.wrapped())
+    }
+
+    /// Whether moves keep the planet's size on screen rather than the
+    /// style zoom (GL JS's globe `getZoomAdjustment`): on the sphere, whose
+    /// radius on screen is its own over the ground resolution while the
+    /// style zoom also moves with the target's latitude.
+    pub(crate) fn on_sphere(&self, surface: &Surface) -> bool {
+        surface.globe.is_some_and(|g| g.plane.is_none())
+            && surface.globe_amount(self.zoom(&surface.projection)) > 0.0
+    }
+
+    /// The style zoom the ground resolution would have on the equator (GL
+    /// JS's globe zoom normalized by `getZoomAdjustment`): what sets the
+    /// sphere's size on screen.
+    pub(crate) fn globe_zoom(&self) -> f64 {
+        (crate::equator_circumference_px_per_m(Geodetic::new(0.0, 0.0)) / self.resolution).log2()
+    }
+
+    pub(crate) fn set_globe_zoom(&mut self, zoom: f64) {
+        self.resolution =
+            crate::equator_circumference_px_per_m(Geodetic::new(0.0, 0.0)) / zoom.exp2();
     }
 
     /// Keeps the style zoom within limits, keeping the target.
@@ -204,18 +225,27 @@ impl CameraState {
     }
 
     /// On a low-zoom surface, moves the camera so `ground` shows at `px`,
-    /// keeping the zoom and bearing: on a globe, the arc from what shows
-    /// there to `ground` turns the target (GL JS's
-    /// `versorSetLocationAtPoint`), on a plane it moves by their distance
-    /// on it; then Newton steps on the target's longitude and latitude land
-    /// it exactly. Nothing moves where `px` is off the surface.
-    fn put_under(&mut self, surface: &Surface, viewport: Viewport, ground: Geodetic, px: DVec2) {
+    /// keeping the bearing, and the sphere's size on screen (its ground
+    /// resolution; GL JS's `getZoomAdjustment`) or a plane's zoom: on a
+    /// globe, the arc from what shows there to `ground` turns the target
+    /// (GL JS's `versorSetLocationAtPoint`), on a plane it moves by their
+    /// distance on it; then Newton steps on the target's longitude and
+    /// latitude land it exactly. Nothing moves where `px` is off the
+    /// surface.
+    pub(crate) fn put_under(
+        &mut self,
+        surface: &Surface,
+        viewport: Viewport,
+        ground: Geodetic,
+        px: DVec2,
+    ) {
         let projection = &surface.projection;
         let zoom = self.zoom(projection);
         let view = View::new(self, viewport, surface);
         let Some(now) = view.low_ground(px, view.target_z()) else {
             return;
         };
+        let sphere = view.low_plane().is_none();
         let guess = match view.low_plane() {
             Some(low) => {
                 let plane = low.projection();
@@ -230,7 +260,9 @@ impl CameraState {
         };
         let at = |target: Geodetic| {
             let mut camera = CameraState { target, ..*self };
-            camera.set_zoom(projection, zoom);
+            if !sphere {
+                camera.set_zoom(projection, zoom);
+            }
             camera
         };
         let shown = |camera: &CameraState| {
@@ -283,11 +315,29 @@ impl CameraState {
         viewport: Viewport,
     ) {
         let projection = &surface.projection;
-        self.limit_zoom(constraints.min_zoom, constraints.max_zoom, projection);
+        let sphere = constraints.bounds.is_none() && self.on_sphere(surface);
+        if sphere {
+            // The least zoom bounds the sphere's size as it is at the
+            // equator (GL JS's globe `defaultConstrain`), so the smallest
+            // globe is as small over a pole.
+            if self.globe_zoom() < constraints.min_zoom {
+                self.set_globe_zoom(constraints.min_zoom);
+            }
+            self.limit_zoom(f64::NEG_INFINITY, constraints.max_zoom, projection);
+        } else {
+            self.limit_zoom(constraints.min_zoom, constraints.max_zoom, projection);
+        }
         self.pitch = self.pitch.clamp(
             constraints.min_pitch,
             constraints.max_pitch.max(constraints.min_pitch),
         );
+        if sphere && projection.wrap_period().is_some() {
+            // Past the plane's edge the sphere has no data: the target
+            // reaches a pole only while that cap fits the viewport.
+            let reach = self.max_latitude(projection, viewport);
+            self.target.lat = self.target.lat.clamp(-reach, reach);
+            return;
+        }
         if constraints.bounds.is_none() && surface.globe_amount(self.zoom(projection)) > 0.0 {
             // A globe shows the whole world at any size: only the target
             // keeps to it.
@@ -319,6 +369,32 @@ impl CameraState {
             ),
         };
         self.keep_within(projection, extent, rect, both_axes);
+    }
+
+    /// How far from the equator the target may go on the sphere, in
+    /// degrees (GL JS's `_getMaxLatitude`): to a pole while the arc from
+    /// the plane's top edge to it is at most half the viewport's least side
+    /// on screen, back to the edge by the time it is four times that, and
+    /// the edge beyond.
+    fn max_latitude(&self, projection: &Projection, viewport: Viewport) -> f64 {
+        let world = projection.world_bounds();
+        let edge = projection
+            .inverse(DVec2::new(world.center().x, world.max.y))
+            .lat
+            .abs()
+            .min(90.0);
+        let cap = (90.0 - edge).to_radians();
+        if cap <= 0.0 {
+            return 90.0;
+        }
+        // That arc on screen with the target at the edge.
+        let radius = STYLE_ZOOM_TILE_PX * self.zoom(projection).exp2()
+            / (2.0 * std::f64::consts::PI * edge.to_radians().cos());
+        let area = radius * cap;
+        let reach = viewport.width.min(viewport.height) / 2.0;
+        let fade = ((area - reach) / (reach * (POLE_FADE - 1.0))).clamp(0.0, 1.0);
+        let center = area.min(reach) * (1.0 - fade);
+        edge + (cap * center / area).to_degrees()
     }
 
     /// Keeps a viewport `size` pixels across, axis-aligned in world space,
@@ -359,6 +435,11 @@ impl CameraState {
         }
     }
 }
+
+/// How many times the reach (half the viewport's least side) the polar cap
+/// has grown to on screen when the target is back at the plane's edge (GL
+/// JS's `POLE_AREA_FADE_SCALE`).
+const POLE_FADE: f64 = 4.0;
 
 /// A bearing in GL JS's range, (-180, 180].
 pub(crate) fn wrap_bearing(bearing: f64) -> f64 {
@@ -572,9 +653,107 @@ mod tests {
         assert_eq!(wrap_bearing(-30.0), -30.0);
     }
 
+    fn globe_surface() -> Surface {
+        Surface {
+            projection: mercator(),
+            globe: Some(orb_crs::Globe::V8),
+        }
+    }
+
+    /// The sphere's radius on screen, along the viewport's middle row.
+    fn limb(camera: &CameraState, viewport: Viewport) -> f64 {
+        let view = View::new(camera, viewport, &globe_surface());
+        let center = camera.center(viewport);
+        let (mut on, mut off) = (0.0, viewport.width);
+        while off - on > 1.0 / 64.0 {
+            let x = (on + off) / 2.0;
+            match view.unproject(center + DVec2::new(x, 0.0)) {
+                Some(_) => on = x,
+                None => off = x,
+            }
+        }
+        on
+    }
+
+    /// Dragging the globe north keeps its size on screen, as GL JS's zoom
+    /// adjustment does, where keeping the style zoom grows it by a third
+    /// from the equator to 46°N.
+    #[test]
+    fn globe_drags_keep_its_size() {
+        let surface = globe_surface();
+        let viewport = Viewport {
+            width: 800.0,
+            height: 800.0,
+        };
+        let mut camera = CameraState::new(Geodetic::new(0.0, 0.0), 2.0, &mercator());
+        let radius = limb(&camera, viewport);
+        for _ in 0..10 {
+            camera.pan(
+                &surface,
+                viewport,
+                DVec2::new(400.0, 400.0),
+                DVec2::new(400.0, 430.0),
+            );
+            assert!((limb(&camera, viewport) - radius).abs() < 1.0);
+        }
+        assert!(camera.target.lat > 40.0, "{:?}", camera.target);
+        // The style zoom falls as the parallels shorten.
+        let adjusted = 2.0 + camera.target.lat.to_radians().cos().log2();
+        assert!((camera.zoom(&mercator()) - adjusted).abs() < 1e-9);
+    }
+
+    /// GL JS's `_getMaxLatitude`: a small globe centres on a pole, and the
+    /// reach falls back to Web Mercator's edge as the cap past it outgrows
+    /// the viewport.
+    #[test]
+    fn small_globes_reach_the_poles() {
+        let surface = globe_surface();
+        let edge = 85.051_128_779_806_59;
+        let reach = |zoom: f64| {
+            let mut camera = CameraState::new(Geodetic::new(30.0, 90.0), zoom, &mercator());
+            camera.constrain(&Constraints::default(), &surface, VIEWPORT);
+            camera.target.lat
+        };
+        // The cap is 82 px across per 2^zoom; the reach is 300 px.
+        assert_eq!(reach(1.0), 90.0);
+        assert_eq!(reach(1.8), 90.0);
+        let mut last = 90.0;
+        for zoom in [2.0, 2.5, 3.0, 3.5] {
+            let lat = reach(zoom);
+            assert!(lat < last && lat > edge, "z{zoom}: {lat}");
+            last = lat;
+        }
+        assert!((reach(4.0) - edge).abs() < 1e-6);
+        assert!((reach(8.0) - edge).abs() < 1e-6);
+        // A pole-centred view keeps its pole and draws.
+        let camera = CameraState::new(Geodetic::new(0.0, -90.0), 1.0, &mercator());
+        let view = View::new(&camera, VIEWPORT, &surface);
+        let tms = orb_crs::TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        assert!(!view.cover(&tms, 512.0, 22).is_empty());
+        assert!(view.unproject(DVec2::new(400.0, 300.0)).is_some());
+    }
+
+    /// On the sphere the least zoom bounds its size as at the equator, so a
+    /// globe as small as the limit allows is as small over a pole.
+    #[test]
+    fn the_least_zoom_bounds_the_globes_size() {
+        let surface = globe_surface();
+        let constraints = Constraints {
+            min_zoom: 1.0,
+            ..Constraints::default()
+        };
+        let mut equator = CameraState::new(Geodetic::new(0.0, 0.0), 0.0, &mercator());
+        let mut north = CameraState::new(Geodetic::new(0.0, 80.0), 0.0, &mercator());
+        north.set_globe_zoom(0.0);
+        equator.constrain(&constraints, &surface, VIEWPORT);
+        north.constrain(&constraints, &surface, VIEWPORT);
+        assert!((equator.resolution / north.resolution - 1.0).abs() < 1e-12);
+        assert!(north.zoom(&mercator()) < 1.0);
+    }
+
     /// On the globe and on a low-zoom plane, a drag keeps the ground it
     /// grabbed under the pointer, near the poles and across the
-    /// antimeridian too, and keeps the zoom.
+    /// antimeridian too, and keeps the sphere's size or the plane's zoom.
     #[test]
     fn low_zoom_drags_hold_the_grabbed_ground() {
         let equal_earth = orb_crs::Globe {
@@ -617,7 +796,12 @@ mod tests {
                     let view = View::new(&moved, VIEWPORT, &surface);
                     let p = view.project(mercator().forward(ground)).unwrap();
                     assert!(p.distance(to) < 0.05, "{lon},{lat} z{zoom}: {p} for {to}");
-                    assert!((moved.zoom(&mercator()) - zoom).abs() < 1e-9);
+                    // The sphere keeps its size, a plane its zoom.
+                    if globe.plane.is_none() {
+                        assert_eq!(moved.resolution, camera.resolution);
+                    } else {
+                        assert!((moved.zoom(&mercator()) - zoom).abs() < 1e-9);
+                    }
                     assert_eq!(moved.bearing, bearing);
                 }
                 // Zooming around a point keeps it in place.

@@ -3,7 +3,7 @@
 
 use glam::DVec2;
 use orb_crs::Geodetic;
-use orb_crs::Projection;
+use orb_crs::sphere;
 
 use crate::moves::wrap_bearing;
 use crate::{CameraState, View, Viewport};
@@ -197,6 +197,9 @@ pub(crate) enum Motion {
         /// antimeridian.
         to_world: DVec2,
         options: EaseOptions,
+        /// On the sphere: the target moves over it and the sphere's size
+        /// eases (GL JS's globe `handleEaseTo`).
+        sphere: bool,
     },
     Fly {
         from: CameraState,
@@ -205,6 +208,7 @@ pub(crate) enum Motion {
         curve: FlyCurve,
         duration: f64,
         easing: Easing,
+        sphere: bool,
     },
     Glide {
         glide: Glide,
@@ -287,14 +291,44 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
 
+/// A target `t` of the way from `from` to `to` over the sphere, the short
+/// way round (GL JS's `interpolateLngLatForGlobe`): latitude moves
+/// steadily, and longitude by the integral of the secant of latitude, so
+/// the globe turns at a steady speed on screen.
+fn over_sphere(from: Geodetic, to: Geodetic, t: f64) -> Geodetic {
+    let d_lon = nearest_bearing(from.lon, to.lon) - from.lon;
+    let lat = lerp(from.lat, to.lat, t).clamp(-90.0, 90.0);
+    let edge = 85.051_129;
+    let (start, end) = (from.lat.clamp(-edge, edge), to.lat.clamp(-edge, edge));
+    let k = if (end - start).abs() > 1.0 {
+        // ∫ sec x dx, sampled across the equator with the start mirrored.
+        let integral = |x: f64| {
+            let (sin, cos) = (x / 2.0).sin_cos();
+            (sin + cos).ln() - (cos - sin).ln()
+        };
+        let a = if start.signum() == end.signum() {
+            start.abs()
+        } else {
+            -start.abs()
+        }
+        .to_radians();
+        let b = end.abs().to_radians();
+        (integral(a + t * (b - a)) - integral(a)) / (integral(b) - integral(a))
+    } else {
+        t
+    };
+    Geodetic::new(from.lon + d_lon * k, lat).wrapped()
+}
+
 impl Motion {
     pub(crate) fn ease(
         from: CameraState,
         to: CameraState,
         around: Option<(Geodetic, DVec2)>,
         options: EaseOptions,
-        projection: &Projection,
+        surface: &Surface,
     ) -> Self {
+        let projection = &surface.projection;
         let to_world =
             projection.nearest_copy(to.target_world(projection), from.target_world(projection));
         Self::Ease {
@@ -303,6 +337,7 @@ impl Motion {
             around,
             to_world,
             options,
+            sphere: from.on_sphere(surface),
         }
     }
 
@@ -311,22 +346,37 @@ impl Motion {
         to: CameraState,
         options: &FlyOptions,
         min_zoom: f64,
-        projection: &Projection,
+        surface: &Surface,
         viewport: Viewport,
     ) -> Self {
+        let projection = &surface.projection;
+        let sphere = from.on_sphere(surface);
         let from_world = from.target_world(projection);
         let to_world = projection.nearest_copy(to.target_world(projection), from_world);
-        let start_px = from.world_per_px(projection);
+        // On the sphere the flight is over it, at its size: the distance
+        // is the arc's on screen at the start, and zooms are the sphere's
+        // size (GL JS's globe `handleFlyTo`).
+        let zoom = |camera: &CameraState| match sphere {
+            true => camera.globe_zoom(),
+            false => camera.zoom(projection),
+        };
         let w0 = viewport.width.max(viewport.height);
-        let w1 = w0 / (to.zoom(projection) - from.zoom(projection)).exp2();
-        let u1 = (to_world - from_world).length() / start_px;
-        let lowest = options
-            .min_zoom
-            .unwrap_or(min_zoom)
-            .max(min_zoom)
-            .min(from.zoom(projection))
-            .min(to.zoom(projection));
-        let w_max = w0 / (lowest - from.zoom(projection)).exp2();
+        let w1 = w0 / (zoom(&to) - zoom(&from)).exp2();
+        let u1 = match sphere {
+            true => {
+                let (a, b) = (sphere::up(from.target), sphere::up(to.target));
+                a.angle_between(b) * sphere::RADIUS / from.resolution
+            }
+            false => (to_world - from_world).length() / from.world_per_px(projection),
+        };
+        let floor = options.min_zoom.unwrap_or(min_zoom).max(min_zoom);
+        // A least style zoom, as the sphere's size at the destination.
+        let floor = match sphere {
+            true => floor - orb_crs::style_parallel(to.target.lat).log2(),
+            false => floor,
+        };
+        let lowest = floor.min(zoom(&from)).min(zoom(&to));
+        let w_max = w0 / (lowest - zoom(&from)).exp2();
         let curve = FlyCurve::new(w0, w1, u1, options.curve, w_max);
         let duration = options.duration.unwrap_or_else(|| {
             let speed = options
@@ -345,6 +395,7 @@ impl Motion {
             curve,
             duration,
             easing: options.easing,
+            sphere,
         }
     }
 
@@ -443,13 +494,18 @@ impl Motion {
                 around,
                 to_world,
                 options,
+                sphere,
             } => {
                 let k = options.easing.at(t);
                 let mut next = *from;
-                next.set_zoom(
-                    projection,
-                    lerp(from.zoom(projection), to.zoom(projection), k),
-                );
+                if *sphere {
+                    next.set_globe_zoom(lerp(from.globe_zoom(), to.globe_zoom(), k));
+                } else {
+                    next.set_zoom(
+                        projection,
+                        lerp(from.zoom(projection), to.zoom(projection), k),
+                    );
+                }
                 next.bearing = wrap_bearing(lerp(
                     from.bearing,
                     nearest_bearing(from.bearing, to.bearing),
@@ -461,6 +517,10 @@ impl Motion {
                 next.fov = lerp(from.fov, to.fov, k);
                 next.padding = from.padding.lerp(to.padding, k);
                 match around {
+                    Some((ground, at)) if *sphere => {
+                        next.put_under(surface, viewport, *ground, *at);
+                    }
+                    None if *sphere => next.target = over_sphere(from.target, to.target, k),
                     Some((ground, at)) => {
                         let world = projection.forward(*ground);
                         let view = View::new(&next, viewport, surface);
@@ -488,12 +548,17 @@ impl Motion {
                 to_world,
                 curve,
                 easing,
+                sphere,
                 ..
             } => {
                 let k = easing.at(t);
                 let (w, u) = curve.at(k);
                 let mut next = *from;
-                next.set_zoom(projection, from.zoom(projection) + (1.0 / w).log2());
+                if *sphere {
+                    next.set_globe_zoom(from.globe_zoom() + (1.0 / w).log2());
+                } else {
+                    next.set_zoom(projection, from.zoom(projection) + (1.0 / w).log2());
+                }
                 next.bearing = wrap_bearing(lerp(
                     from.bearing,
                     nearest_bearing(from.bearing, to.bearing),
@@ -504,9 +569,17 @@ impl Motion {
                 next.elevation = lerp(from.elevation, to.elevation, k);
                 next.fov = lerp(from.fov, to.fov, k);
                 next.padding = from.padding.lerp(to.padding, k);
-                let start = from.target_world(projection);
-                let world_per_px = next.world_per_px(projection);
-                next.set_target_world(projection, start + (*to_world - start) * u, world_per_px);
+                if *sphere {
+                    next.target = over_sphere(from.target, to.target, u);
+                } else {
+                    let start = from.target_world(projection);
+                    let world_per_px = next.world_per_px(projection);
+                    next.set_target_world(
+                        projection,
+                        start + (*to_world - start) * u,
+                        world_per_px,
+                    );
+                }
                 *camera = next;
             }
             Self::Glide { glide, done } => {
