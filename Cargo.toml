@@ -4,7 +4,7 @@ members = ["crates/*", "crates/diplomat-swift-kotlin/fixture", "xtask"]
 
 [workspace.package]
 edition = "2024"
-license = "BSD-3-Clause"
+license = "BSD-2-Clause"
 publish = false
 version = "0.0.0"
 

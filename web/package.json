@@ -1,7 +1,7 @@
 {
   "name": "orbis",
   "private": true,
-  "license": "BSD-3-Clause",
+  "license": "BSD-2-Clause",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
