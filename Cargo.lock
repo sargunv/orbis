@@ -858,9 +858,9 @@ dependencies = [
 
 [[package]]
 name = "earcut"
-version = "0.4.5"
+version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88459a2a8e3a514b6e6de38cf3aaa9250a894cb098f74a932db77fcc8341b6d0"
+checksum = "beecb4bee051769371e9fd229b2168782e484bd50fc5f48e9ccce4172a0037d7"
 dependencies = [
  "num-traits",
 ]
@@ -1113,8 +1113,7 @@ dependencies = [
 [[package]]
 name = "geo"
 version = "0.33.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30eb1fdc57c1e5cfd11826fe0caec4b9dc7901f3758263bb506228d88c8d9e9a"
+source = "git+https://github.com/sargunv/geo?branch=unpin-earcut-0.33.1#05b2909895b31da2bb16af3a02d8d11fa2195c9a"
 dependencies = [
  "earcut",
  "float_next_after",

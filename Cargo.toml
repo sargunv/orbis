@@ -19,8 +19,7 @@ all = { level = "warn", priority = -1 }
 mlt-core = { version = "0.22.1", default-features = false }
 brotli = "9.1.1"
 bitflags = "2.13.2"
-# geo (through mlt-core) pins earcut 0.4.5; share that version with layout.
-earcut = "=0.4.5"
+earcut = "0.4.12"
 bytemuck = "1.25.2"
 diplomat = "0.17.0"
 diplomat-runtime = "0.16.1"
@@ -75,6 +74,11 @@ orb-web = { path = "crates/orb-web" }
 # One copy of the scalar unpack kernels instead of three: 7 KiB brotli off
 # core.wasm, no measurable tile decode cost (#35 tracks sending it upstream).
 fastpfor = { git = "https://github.com/sargunv/FastPFOR-rs", branch = "scalar-unpack-not-inline" }
+# geo 0.33.1 (through mlt-core) pins earcut =0.4.5, and Cargo allows one 0.4.x
+# in a graph. 0.4.12 bridges holes through a block index, several times
+# faster on polygons with many holes. Upstream unpinned it after 0.33.1
+# (georust/geo#1533); drop this with the next geo release.
+geo = { git = "https://github.com/sargunv/geo", branch = "unpin-earcut-0.33.1" }
 
 # Several agents build at once on one disk: line tables keep backtraces
 # readable at a fraction of full debug info, and dependencies carry none.
