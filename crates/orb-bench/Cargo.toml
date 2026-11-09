@@ -1,6 +1,6 @@
 [package]
 name = "orb-bench"
-description = "Native benchmarks through orb-api: GPU and CPU frame timings, gesture paths, map loads, and tile jobs' stages"
+description = "Native benchmarks through orb-api: GPU and CPU frame timings, gesture paths, stutter paths by stage, map loads, and tile jobs' stages"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

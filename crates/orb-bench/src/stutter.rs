@@ -1,0 +1,615 @@
+//! The stutter bench: camera paths that bring many tiles in, frame by
+//! frame, with each frame's CPU time split by stage, its GPU time, the
+//! bytes it uploaded and the tiles that arrived in it. The report names
+//! the worst frames and what they spent their time on, and a histogram of
+//! each stage's per-frame times.
+//!
+//! The scenarios: Liberty's 3D buildings over Manhattan, zooming z12 → z16
+//! at pitch 60 and panning on across new ground; the Terrain entry's fast
+//! turns and its flight (`web/demo/data/alps.json`); and Liberty on the
+//! globe, zooming from the whole world onto Tokyo. Each starts cold from
+//! its first camera at rest and runs at a 60 Hz pace, as the gestures bench
+//! does. `cargo xtask bench stutter`; in the browser
+//! `bench.html?experiment=stutter` runs the same paths through the page's
+//! map package and, with `engine=gl`, through GL JS.
+
+use std::fmt::Write;
+use std::time::Duration;
+
+use orb_api::{CameraState, FrameTimes, Geodetic, Map, Runtime, Target};
+
+use crate::report::{ms, resolution};
+use crate::{Settings, clock, frame, settle};
+
+/// A 60 Hz display's frame, and two.
+const FRAME: Duration = Duration::from_micros(16_667);
+const TWO_FRAMES: Duration = Duration::from_micros(33_333);
+/// How long the map may take to settle after a path.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Frames the report lists, slowest first.
+const WORST: usize = 8;
+/// The stage histogram's bucket edges, in ms: under the first, between
+/// each two, over the last.
+const BUCKETS: [f64; 7] = [0.25, 1.0, 2.0, 4.0, 8.0, 16.7, 33.3];
+
+/// OpenFreeMap's live Liberty, with its own 3D buildings.
+pub const LIBERTY: &str = "https://tiles.openfreemap.org/styles/liberty";
+/// Midtown Manhattan, by Times Square.
+const MANHATTAN: (f64, f64) = (-73.9855, 40.758);
+/// Where the Manhattan pan ends: down the avenues, by Washington Square.
+const MANHATTAN_SOUTH: (f64, f64) = (-73.9975, 40.731);
+/// Tokyo Station, and where the globe zoom starts over Asia.
+const TOKYO_STATION: (f64, f64) = (139.767, 35.681);
+const ASIA: (f64, f64) = (105.0, 30.0);
+
+/// Which style a scenario draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Style {
+    /// Liberty, or the style URL the bench was given.
+    Liberty,
+    /// The Terrain entry, `alps.json`.
+    Alps,
+}
+
+/// A scripted camera path.
+struct Scenario {
+    name: &'static str,
+    style: Style,
+    /// Liberty on the globe projection.
+    globe: bool,
+    /// Frames the path takes; a flight takes its legs instead.
+    frames: usize,
+    /// The camera at `f` in `0..=1`; a flight's first camera.
+    camera: fn(f64) -> CameraState,
+    flight: bool,
+}
+
+fn camera(lon: f64, lat: f64, zoom: f64, bearing: f64, pitch: f64) -> CameraState {
+    CameraState {
+        bearing,
+        pitch,
+        ..CameraState::new(Geodetic::new(lon, lat), zoom, &crate::web_mercator())
+    }
+}
+
+/// Ease in and out over `0..=1`.
+fn ease(f: f64) -> f64 {
+    f * f * (3.0 - 2.0 * f)
+}
+
+fn lerp(a: f64, b: f64, f: f64) -> f64 {
+    a + (b - a) * f
+}
+
+const SCENARIOS: &[Scenario] = &[
+    Scenario {
+        name: "buildings: zoom z12 → z16 at pitch 60, then pan, Manhattan",
+        style: Style::Liberty,
+        globe: false,
+        frames: 600,
+        // 5 s zooming in over Midtown, 5 s panning down the avenues.
+        camera: |f| {
+            let (lon, lat) = MANHATTAN;
+            let zoom = lerp(12.0, 16.0, ease((2.0 * f).min(1.0)));
+            let pan = (2.0 * f - 1.0).clamp(0.0, 1.0);
+            let (lon, lat) = (
+                lerp(lon, MANHATTAN_SOUTH.0, pan),
+                lerp(lat, MANHATTAN_SOUTH.1, pan),
+            );
+            camera(lon, lat, zoom, 29.0, 60.0)
+        },
+        flight: false,
+    },
+    Scenario {
+        name: "terrain: fast turns at z11.6, pitch 80, Alps",
+        style: Style::Alps,
+        globe: false,
+        frames: 360,
+        camera: |f| {
+            camera(
+                crate::ALPS.0,
+                crate::ALPS.1,
+                11.6,
+                -32.0 + 3.0 * 360.0 * f,
+                80.0,
+            )
+        },
+        flight: false,
+    },
+    Scenario {
+        name: "terrain: the Alps flight",
+        style: Style::Alps,
+        globe: false,
+        frames: 0,
+        camera: |_| camera(crate::ALPS.0, crate::ALPS.1, 11.6, -32.0, 72.0),
+        flight: true,
+    },
+    Scenario {
+        name: "globe: zoom z1.5 → z13 onto Tokyo",
+        style: Style::Liberty,
+        globe: true,
+        frames: 480,
+        camera: |f| {
+            let e = ease(f);
+            let lon = lerp(ASIA.0, TOKYO_STATION.0, ease(f.min(0.6) / 0.6));
+            let lat = lerp(ASIA.1, TOKYO_STATION.1, ease(f.min(0.6) / 0.6));
+            camera(lon, lat, lerp(1.5, 13.0, e), 0.0, lerp(0.0, 40.0, e))
+        },
+        flight: false,
+    },
+];
+
+/// The stages a frame's CPU time splits into, in the report's order.
+const STAGES: [&str; 14] = [
+    "arrivals",
+    "upload",
+    "terrain",
+    "plan",
+    "drape plan",
+    "place",
+    "placement",
+    "cull",
+    "bundles",
+    "drape passes",
+    "encode",
+    "submit",
+    "runtime other",
+    "host",
+];
+
+/// One frame: its CPU time (`Map::render`) and stages, GPU time, bytes
+/// uploaded and tiles arrived.
+#[derive(Clone, Debug)]
+struct Frame {
+    index: usize,
+    zoom: f64,
+    cpu: Duration,
+    /// Per stage in [`STAGES`].
+    stages: [Duration; STAGES.len()],
+    gpu: Option<Duration>,
+    /// The GPU's time by pass label, slowest first.
+    passes: Vec<(String, Duration)>,
+    uploaded: u64,
+    arrived: u32,
+}
+
+impl Frame {
+    fn stages(times: &FrameTimes, cpu: Duration) -> [Duration; STAGES.len()] {
+        let r = &times.render;
+        let named = [
+            times.arrivals,
+            times.upload,
+            times.terrain,
+            times.plan,
+            times.drape,
+            times.place,
+            times.placement,
+            r.cull,
+            r.bundles,
+            r.drape,
+            r.encode,
+            r.submit,
+        ];
+        let us = |v: u32| Duration::from_micros(u64::from(v));
+        let total = us(times.total);
+        let mut out = [Duration::ZERO; STAGES.len()];
+        for (o, v) in out.iter_mut().zip(named) {
+            *o = us(v);
+        }
+        let sum: Duration = out.iter().sum();
+        out[STAGES.len() - 2] = total.saturating_sub(sum);
+        out[STAGES.len() - 1] = cpu.saturating_sub(total);
+        out
+    }
+
+    /// What a display waits for: the slower of the CPU and the GPU.
+    fn time(&self) -> Duration {
+        self.cpu.max(self.gpu.unwrap_or_default())
+    }
+}
+
+#[derive(Debug)]
+struct PathResult {
+    name: &'static str,
+    style: String,
+    frames: Vec<Frame>,
+    settle: Duration,
+}
+
+/// The scenarios' frames.
+#[derive(Debug)]
+pub struct StutterReport {
+    about: Vec<String>,
+    size: (u32, u32),
+    gpu_timestamps: bool,
+    cpu_resolution: Duration,
+    paths: Vec<PathResult>,
+    warnings: Vec<String>,
+}
+
+/// Runs each scenario the settings' filter keeps. `liberty` is the style
+/// URL Liberty's scenarios draw, `alps` the Terrain entry's.
+pub(crate) fn run(
+    runtime: &Runtime,
+    settings: &Settings,
+    about: Vec<String>,
+    (liberty, alps): (&str, &str),
+    mut progress: impl FnMut(&str),
+) -> Result<StutterReport, String> {
+    let (width, height) = settings.physical_size();
+    let mut target = Target::texture(runtime, width, height, f64::from(settings.ratio));
+    let gpu_timestamps = runtime.stats().gpu_timestamps;
+    let mut warnings = Vec::new();
+    let mut paths = Vec::new();
+    let chosen = SCENARIOS.iter().filter(|s| {
+        settings
+            .filter
+            .as_ref()
+            .is_none_or(|f| s.name.contains(f.as_str()))
+    });
+    for scenario in chosen {
+        let style = match scenario.style {
+            Style::Liberty => liberty,
+            Style::Alps => alps,
+        };
+        progress(&format!("{}: loading its first view", scenario.name));
+        let mut map = crate::new_map(runtime, style, (scenario.camera)(0.0));
+        let epoch = clock::now();
+        frame(&mut map, &mut target, 0.0)?;
+        settle(&mut map, &mut target, &mut warnings)?;
+        if scenario.globe {
+            let tx =
+                orb_api::Transaction::from_commands(r#"[["setProjection", {"type": "globe"}]]"#)?;
+            map.edit(&tx).map_err(|e| e.to_string())?;
+            settle(&mut map, &mut target, &mut warnings)?;
+        }
+        let base = (clock::now() - epoch).as_secs_f64() * 1000.0;
+        progress(&format!("{}: moving", scenario.name));
+        let frames = run_path(
+            runtime,
+            &mut map,
+            &mut target,
+            (scenario, base),
+            settings.legs,
+            &mut warnings,
+        )?;
+        let ended = clock::now();
+        let mut now = base + frames.len() as f64 * FRAME.as_secs_f64() * 1000.0;
+        loop {
+            now += FRAME.as_secs_f64() * 1000.0;
+            let (report, _) = frame(&mut map, &mut target, now)?;
+            warnings.extend(crate::take_warnings(&mut map));
+            if report.idle || clock::now() - ended > SETTLE_TIMEOUT {
+                break;
+            }
+            std::thread::sleep(FRAME);
+        }
+        paths.push(PathResult {
+            name: scenario.name,
+            style: style.to_string(),
+            frames,
+            settle: clock::now() - ended,
+        });
+    }
+    if paths.is_empty() {
+        return Err("no scenario matches the filter".into());
+    }
+    warnings.sort();
+    warnings.dedup();
+    Ok(StutterReport {
+        about,
+        size: (width, height),
+        gpu_timestamps,
+        cpu_resolution: clock::resolution(),
+        paths,
+        warnings,
+    })
+}
+
+/// Moves the camera along the path once each 60 Hz frame from `base`
+/// (milliseconds), timing each; a flight flies its first `first_legs`.
+fn run_path(
+    runtime: &Runtime,
+    map: &mut Map,
+    target: &mut Target,
+    (scenario, base): (&Scenario, f64),
+    first_legs: Option<usize>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<Frame>, String> {
+    let mut legs = match scenario.flight {
+        true => crate::gestures::flight_legs(),
+        false => Vec::new(),
+    };
+    legs.truncate(first_legs.unwrap_or(usize::MAX));
+    legs.reverse();
+    let gpu_timestamps = runtime.stats().gpu_timestamps;
+    let mut frames = Vec::new();
+    runtime.set_gpu_timing(gpu_timestamps);
+    let started = clock::now();
+    for f in 1.. {
+        let now = base + (FRAME * f).as_secs_f64() * 1000.0;
+        if scenario.flight {
+            if !map.is_moving() {
+                let Some((target, options)) = legs.pop() else {
+                    break;
+                };
+                map.fly_to(&target, &options);
+            }
+        } else if f as usize > scenario.frames {
+            break;
+        } else {
+            map.jump_to_state((scenario.camera)(f64::from(f) / scenario.frames as f64));
+        }
+        let before = runtime.stats().uploaded_bytes;
+        // The target keeps two frames in flight, as a swapchain does.
+        let (report, cpu) = frame(map, target, now)?;
+        warnings.extend(crate::take_warnings(map));
+        frames.push(Frame {
+            index: f as usize,
+            zoom: map.zoom(),
+            cpu,
+            stages: Frame::stages(&report.times, cpu),
+            gpu: None,
+            passes: Vec::new(),
+            uploaded: runtime.stats().uploaded_bytes - before,
+            arrived: report.tiles_arrived,
+        });
+        let next = started + FRAME * f;
+        std::thread::sleep(next.saturating_sub(clock::now()));
+        // The frame's submissions, done by now unless the GPU is behind:
+        // collecting them waits for it then. Taken each frame, the
+        // timestamp queries never run out.
+        if gpu_timestamps {
+            let frame = frames.last_mut().expect("pushed");
+            frame.passes = by_name(runtime.gpu_timings().into_iter().flat_map(|s| s.passes));
+            frame.gpu = Some(frame.passes.iter().map(|(_, d)| *d).sum());
+        }
+    }
+    runtime.set_gpu_timing(false);
+    Ok(frames)
+}
+
+/// Durations summed by name, the longest first.
+fn by_name(parts: impl Iterator<Item = (String, Duration)>) -> Vec<(String, Duration)> {
+    let mut totals: Vec<(String, Duration)> = Vec::new();
+    for (name, d) in parts {
+        match totals.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, sum)) => *sum += d,
+            None => totals.push((name, d)),
+        }
+    }
+    totals.sort_by_key(|&(_, d)| std::cmp::Reverse(d));
+    totals
+}
+
+fn percentile(sorted: &[Duration], p: f64) -> Duration {
+    let i = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+    sorted.get(i).copied().unwrap_or_default()
+}
+
+fn sorted(xs: impl Iterator<Item = Duration>) -> Vec<Duration> {
+    let mut v: Vec<Duration> = xs.collect();
+    v.sort_unstable();
+    v
+}
+
+fn mib(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / f64::from(1 << 20))
+}
+
+fn over(xs: &[Duration], limit: Duration) -> usize {
+    xs.iter().filter(|&&t| t > limit).count()
+}
+
+impl StutterReport {
+    pub(crate) fn write(&self, out: &mut String) -> std::fmt::Result {
+        writeln!(out, "### Stutter bench")?;
+        writeln!(out)?;
+        for line in &self.about {
+            writeln!(out, "- {line}")?;
+        }
+        writeln!(
+            out,
+            "- {}×{} px offscreen; the camera moved once each 60 Hz frame, each path from a cold \
+             map at rest; GPU: {}; CPU clock resolution {}",
+            self.size.0,
+            self.size.1,
+            if self.gpu_timestamps {
+                "timestamp queries around every pass"
+            } else {
+                "**no timestamp queries**"
+            },
+            resolution(Some(self.cpu_resolution)),
+        )?;
+        writeln!(out)?;
+        writeln!(
+            out,
+            "| path | frames | CPU p50 | p99 | max | > 16.7 ms | > 33.3 ms | GPU p50 | p99 | max | \
+             > 16.7 ms | worst of both > 16.7 ms | tiles arrived | MiB uploaded (peak frame) | settle ms |"
+        )?;
+        writeln!(
+            out,
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+        )?;
+        for p in &self.paths {
+            let cpu = sorted(p.frames.iter().map(|f| f.cpu));
+            let gpu = sorted(p.frames.iter().filter_map(|f| f.gpu));
+            let worst = sorted(p.frames.iter().map(Frame::time));
+            let gpu_at = |q: f64| {
+                if gpu.is_empty() {
+                    "—".to_string()
+                } else {
+                    ms(percentile(&gpu, q))
+                }
+            };
+            writeln!(
+                out,
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({}) | {} |",
+                p.name,
+                p.frames.len(),
+                ms(percentile(&cpu, 0.5)),
+                ms(percentile(&cpu, 0.99)),
+                ms(percentile(&cpu, 1.0)),
+                over(&cpu, FRAME),
+                over(&cpu, TWO_FRAMES),
+                gpu_at(0.5),
+                gpu_at(0.99),
+                gpu_at(1.0),
+                over(&gpu, FRAME),
+                over(&worst, FRAME),
+                p.frames.iter().map(|f| f.arrived).sum::<u32>(),
+                mib(p.frames.iter().map(|f| f.uploaded).sum()),
+                mib(p.frames.iter().map(|f| f.uploaded).max().unwrap_or(0)),
+                if p.settle > SETTLE_TIMEOUT {
+                    format!("> {}", SETTLE_TIMEOUT.as_millis())
+                } else {
+                    format!("{:.0}", p.settle.as_secs_f64() * 1000.0)
+                },
+            )?;
+        }
+        writeln!(out)?;
+        writeln!(
+            out,
+            "Times in ms. CPU: `Map::render`; GPU: its submissions' passes; worst of both: the \
+             slower of the two, what a display waits for; settle: from the path's end until the \
+             map is idle."
+        )?;
+        for p in &self.paths {
+            writeln!(out)?;
+            writeln!(out, "#### {}", p.name)?;
+            writeln!(out)?;
+            writeln!(out, "- style: {}", p.style)?;
+            write_shares(out, p)?;
+            writeln!(out)?;
+            write_worst(out, p)?;
+            writeln!(out)?;
+            write_histogram(out, p)?;
+        }
+        writeln!(out)?;
+        writeln!(
+            out,
+            "Stages: arrivals: applying arrived results but for uploads and label commits; upload: \
+             arrived tiles' meshes, rows and images into the GPU, room made for them; terrain: the \
+             DEM tiles and cover; plan: the sources' tiles for the view; drape plan: drape slots \
+             chosen and their placements written; place: the view's tiles put in the scene; \
+             placement: building the placement lane's frame, applying its commits; cull: the \
+             cull's candidates laid out and placement rows written; bundles: the main bundles \
+             recorded again; drape passes: redrawn drape slots' bundles and passes; encode: the \
+             other passes built; submit: the passes submitted to the device; runtime other: paint, the camera, picking; host: \
+             `orb-api` around the runtime's frame."
+        )?;
+        for warning in &self.warnings {
+            writeln!(out, "- warning: {warning}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Each stage's share of the CPU time of the frames over 16.7 ms of it,
+/// and each pass's of the GPU time of those over 16.7 ms of that.
+fn write_shares(out: &mut String, p: &PathResult) -> std::fmt::Result {
+    let slow = |f: &&Frame| f.cpu > FRAME;
+    let stages = p
+        .frames
+        .iter()
+        .filter(slow)
+        .flat_map(|f| (STAGES.iter().zip(f.stages)).map(|(stage, d)| (stage.to_string(), d)));
+    write_share(out, "CPU", p.frames.iter().filter(slow).count(), stages)?;
+    let slow = |f: &&Frame| f.gpu.is_some_and(|g| g > FRAME);
+    let passes = p.frames.iter().filter(slow).flat_map(|f| f.passes.clone());
+    write_share(out, "GPU", p.frames.iter().filter(slow).count(), passes)
+}
+
+fn write_share(
+    out: &mut String,
+    what: &str,
+    frames: usize,
+    parts: impl Iterator<Item = (String, Duration)>,
+) -> std::fmt::Result {
+    if frames == 0 {
+        return writeln!(out, "- no frame took over 16.7 ms of {what}");
+    }
+    let totals = by_name(parts);
+    let all: Duration = totals.iter().map(|(_, d)| *d).sum();
+    let shares: Vec<String> = (totals.iter())
+        .map(|(name, d)| (name, 100.0 * d.as_secs_f64() / all.as_secs_f64().max(1e-9)))
+        .filter(|&(_, share)| share >= 0.5)
+        .map(|(name, share)| format!("{name} {share:.0}%"))
+        .collect();
+    writeln!(
+        out,
+        "- the {frames} frames over 16.7 ms of {what} spent it on: {}",
+        shares.join(", ")
+    )
+}
+
+/// The slowest frames, by what a display waits for, with their stages.
+fn write_worst(out: &mut String, p: &PathResult) -> std::fmt::Result {
+    let mut worst: Vec<&Frame> = p.frames.iter().collect();
+    worst.sort_by_key(|f| std::cmp::Reverse(f.time()));
+    worst.truncate(WORST);
+    write!(
+        out,
+        "| frame | zoom | CPU | GPU | GPU's slowest passes | tiles arrived | KiB uploaded |"
+    )?;
+    for stage in STAGES {
+        write!(out, " {stage} |")?;
+    }
+    writeln!(out)?;
+    writeln!(out, "|{}", "---|".repeat(7 + STAGES.len()))?;
+    for f in worst {
+        write!(
+            out,
+            "| {} | {:.2} | {} | {} | {} | {} | {:.0} |",
+            f.index,
+            f.zoom,
+            ms(f.cpu),
+            f.gpu.map_or("—".into(), ms),
+            (f.passes.iter().take(3))
+                .map(|(label, d)| format!("{label} {:.1}", d.as_secs_f64() * 1000.0))
+                .collect::<Vec<_>>()
+                .join(", "),
+            f.arrived,
+            f.uploaded as f64 / 1024.0,
+        )?;
+        for s in f.stages {
+            write!(out, " {} |", ms(s))?;
+        }
+        writeln!(out)?;
+    }
+    Ok(())
+}
+
+/// Per stage, how many frames spent each bucket's time on it, its p99 and
+/// max, and its share of the path's CPU time.
+fn write_histogram(out: &mut String, p: &PathResult) -> std::fmt::Result {
+    let edges: Vec<String> = BUCKETS.iter().map(|e| format!("{e}")).collect();
+    write!(out, "| stage | < {} |", edges[0])?;
+    for pair in edges.windows(2) {
+        write!(out, " {}–{} |", pair[0], pair[1])?;
+    }
+    writeln!(out, " > {} | p99 | max | share |", edges[edges.len() - 1])?;
+    writeln!(out, "|{}", "---|".repeat(BUCKETS.len() + 5))?;
+    let all: Duration = p.frames.iter().map(|f| f.cpu).sum();
+    for (i, stage) in STAGES.iter().enumerate() {
+        let times = sorted(p.frames.iter().map(|f| f.stages[i]));
+        let mut counts = [0usize; BUCKETS.len() + 1];
+        for t in &times {
+            let t = t.as_secs_f64() * 1000.0;
+            counts[BUCKETS.iter().take_while(|&&e| t >= e).count()] += 1;
+        }
+        write!(out, "| {stage} |")?;
+        for c in counts {
+            write!(out, " {c} |")?;
+        }
+        let total: Duration = times.iter().sum();
+        writeln!(
+            out,
+            " {} | {} | {:.0}% |",
+            ms(percentile(&times, 0.99)),
+            ms(percentile(&times, 1.0)),
+            100.0 * total.as_secs_f64() / all.as_secs_f64().max(1e-9),
+        )?;
+    }
+    Ok(())
+}

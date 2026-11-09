@@ -20,7 +20,8 @@
 GPU and CPU through the <code>orbis</code> package; the views of
 <code>cargo xtask bench</code>.
 <code>?experiment=gestures</code> runs rotate, tilt and zoom paths through the
-<code>orbis</code> package. It takes several minutes on a phone. Keep the phone
+<code>orbis</code> package; <code>?experiment=stutter</code> runs paths that
+bring many tiles in, with each frame's CPU time by stage. It takes several minutes on a phone. Keep the phone
 plugged in, the screen on and this tab in front, then copy the result into the
 issue.</p>
 <p id="status" data-state="running">starting…</p>
@@ -36,10 +37,13 @@ issue.</p>
 // warmup, rounds and ratio; for gestures, workers=<job workers> and
 // paths=city|alps (alps by default with style=terrain, at the terrain demo's
 // view), and engine=orbis|gl (gl: MapLibre GL JS along the same paths,
-// counting its labels' blinks and returns).
+// counting its labels' blinks and returns); for stutter, style=<url|key>
+// for its Liberty scenarios (live Liberty by default), filter=<substring of
+// a scenario's name>, legs=<the flight's first legs> and engine=orbis|gl.
 import { runFrames } from "./frames.js";
 import { runGestures } from "./gestures.js";
-import { demoStyle } from "./styles.js";
+import { runStutter } from "./stutter.js";
+import { demoStyle, LIVE } from "./styles.js";
 
 const params = new URLSearchParams(location.search);
 const format = params.get("format") ?? "mvt";
@@ -125,7 +129,15 @@ async function run() {
     const [w, h] = (params.get("size") ?? "1024x768").split("x").map(Number);
     const number = (name, fallback) => (params.has(name) ? Number(params.get(name)) : fallback);
     let report;
-    if (params.get("experiment") === "gestures") {
+    if (params.get("experiment") === "stutter") {
+      const liberty = params.has("style") ? style : LIVE;
+      lines[lines.length - 1] = `data: ${liberty}, and the Terrain entry`;
+      report = await runStutter({
+        liberty, size: [w, h], about: lines, show: (line) => show(line),
+        filter: params.get("filter") ?? undefined, legs: params.has("legs") ? Number(params.get("legs")) : undefined,
+        engine: params.get("engine") ?? "orbis",
+      });
+    } else if (params.get("experiment") === "gestures") {
       const paths = params.get("paths") ?? (["terrain", "alps"].includes(params.get("style")) ? "alps" : "city");
       const center = (params.get("at") ?? (paths === "alps" ? "7.7491,46.0207" : "139.74,35.685")).split(",").map(Number);
       report = await runGestures({

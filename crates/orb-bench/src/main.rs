@@ -1,12 +1,15 @@
-//! The bench: `cargo xtask bench [style URL | alps] [--format mvt|mlt]
-//! [--experiment frames|gestures|load|tiles] [--frames N] [--warmup N]
+//! The bench: `cargo xtask bench [style URL | alps | stutter] [--format mvt|mlt]
+//! [--experiment frames|gestures|load|tiles|stutter] [--frames N] [--warmup N]
 //! [--rounds N] [--samples N] [--size WxH] [--ratio R] [--at lon,lat]
 //! [--view zoom,pitch,bearing]... [--views file] [--filter s] [--nudge]
-//! [--paths city|alps]`.
+//! [--paths city|alps] [--legs N]`.
 //!
 //! Without a style URL it loads the committed Tokyo extract, as the browser
 //! bench (`web/demo/bench.html`) does; `alps` is the terrain demo's style
 //! (live tiles), at its view and with the gestures bench's Alps paths.
+//! `stutter` is `--experiment stutter`, whose Liberty scenarios draw
+//! OpenFreeMap's live Liberty unless a style URL (say, `cargo xtask h2h
+//! mirror`'s) stands in.
 //! `--views` reads cameras in mln-rs's `views.txt` format, keeping those
 //! whose style column is the style URL's last path segment (`liberty` for
 //! `…/styles/liberty`). Prints the Markdown report.
@@ -40,6 +43,7 @@ fn run() -> Result<(), String> {
         settings.paths = orb_bench::GesturePaths::Alps;
     }
     let mut views_file = None;
+    let mut style_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         if arg == "--nudge" {
@@ -60,10 +64,17 @@ fn run() -> Result<(), String> {
         } else if arg == "alps" {
             style = file("alps.json");
             about_data = style.clone();
+        } else if arg == "stutter" {
+            settings.experiment = orb_bench::Experiment::Stutter;
         } else {
             style = arg;
             about_data = style.clone();
+            style_given = true;
         }
+    }
+    if settings.experiment == orb_bench::Experiment::Stutter && !style_given {
+        style = orb_bench::LIBERTY.to_string();
+        about_data = format!("{style}, and the Terrain entry");
     }
     if let Some(path) = &views_file {
         let name = style_name(&style);

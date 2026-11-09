@@ -11,6 +11,9 @@
 //!   the view before (warm).
 //! - `tiles` ([`tiles`]): the committed Tokyo extract's tiles through a
 //!   tile job's stages in process: decode, layout and pack.
+//! - `stutter` ([`stutter`]): paths that bring many tiles in, each frame's
+//!   CPU time by stage, GPU time, uploads and arrivals, and the worst
+//!   frames' attribution.
 //!
 //! [`run`] returns a [`Report`], which formats as Markdown.
 
@@ -20,6 +23,7 @@ mod clock;
 mod gestures;
 mod load;
 mod report;
+mod stutter;
 mod tiles;
 
 use std::collections::BTreeMap;
@@ -31,6 +35,7 @@ use orb_api::{
     CameraState, Event, FrameReport, Geodetic, Map, MapEvent, MapOptions, Runtime, Target,
 };
 use report::{FramesReport, Summary, ViewResult};
+pub use stutter::{LIBERTY, StutterReport};
 pub use tiles::TilesReport;
 
 /// The committed Tokyo extract's view, by the Imperial Palace
@@ -68,6 +73,9 @@ pub enum Experiment {
     Load,
     /// The committed extract's tiles through decode, layout and pack.
     Tiles,
+    /// Paths bringing many tiles in: each frame's stages, the worst
+    /// frames.
+    Stutter,
 }
 
 /// The gestures bench's camera paths.
@@ -88,6 +96,7 @@ pub enum Report {
     Gestures(GesturesReport),
     Load(LoadReport),
     Tiles(TilesReport),
+    Stutter(StutterReport),
 }
 
 impl Report {
@@ -99,6 +108,7 @@ impl Report {
             Self::Gestures(r) => r.write(&mut out),
             Self::Load(r) => r.write(&mut out),
             Self::Tiles(r) => r.write(&mut out),
+            Self::Stutter(r) => r.write(&mut out),
         }
         .expect("writing to a String");
         out
@@ -159,6 +169,8 @@ pub struct Settings {
     pub filter: Option<String>,
     /// Frames alternate the zoom by [`NUDGE`] and are read back.
     pub nudge: bool,
+    /// Only a flight's first legs (`stutter`).
+    pub legs: Option<usize>,
 }
 
 impl Default for Settings {
@@ -177,6 +189,7 @@ impl Default for Settings {
             views: Vec::new(),
             filter: None,
             nudge: false,
+            legs: None,
         }
     }
 }
@@ -184,11 +197,13 @@ impl Default for Settings {
 impl Settings {
     /// Sets one option by name, as the tool's `--name value` gives it:
     /// `frames`, `warmup`, `rounds`, `samples`, `size` (`WxH`), `ratio`, `at`
-    /// (`lon,lat`), `experiment` (`frames`, `gestures`, `load` or `tiles`),
+    /// (`lon,lat`), `experiment` (`frames`, `gestures`, `load`, `tiles` or
+    /// `stutter`), `legs` (a flight's first legs, for `stutter`),
     /// `paths` (`city` or `alps`, the gestures bench's), `view`
     /// (`zoom,pitch,bearing`, adding a view to measure instead of the
     /// bench's own) or `filter` (a substring of the views' names, of
-    /// the gestures bench's paths', or of the tile bench's `z/x/y`).
+    /// the gestures or stutter bench's paths', or of the tile bench's
+    /// `z/x/y`).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let number = |value: &str| {
             value
@@ -207,6 +222,7 @@ impl Settings {
             "warmup" => self.warmup = count(value)?,
             "rounds" => self.rounds = count(value)?.max(1),
             "samples" => self.samples = count(value)?.max(1),
+            "legs" => self.legs = Some(count(value)?.max(1)),
             "ratio" => self.ratio = number(value)? as f32,
             "size" => {
                 let (w, h) = value.split_once('x').ok_or("size needs WxH")?;
@@ -239,7 +255,12 @@ impl Settings {
                     "gestures" => Experiment::Gestures,
                     "load" => Experiment::Load,
                     "tiles" => Experiment::Tiles,
-                    _ => return Err("experiment needs frames, gestures, load or tiles".into()),
+                    "stutter" => Experiment::Stutter,
+                    _ => {
+                        return Err(
+                            "experiment needs frames, gestures, load, tiles or stutter".into()
+                        );
+                    }
                 }
             }
             "paths" => {
@@ -411,6 +432,11 @@ pub fn run(
         }
         Experiment::Tiles => {
             return tiles::run(settings, about, data, progress).map(Report::Tiles);
+        }
+        Experiment::Stutter => {
+            let alps = format!("file://{}", data.join("alps.json").display());
+            return stutter::run(runtime, settings, about, (style, &alps), progress)
+                .map(Report::Stutter);
         }
         Experiment::Frames | Experiment::Gestures => {}
     }
