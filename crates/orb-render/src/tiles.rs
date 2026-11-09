@@ -698,21 +698,20 @@ impl Renderer {
             };
             let neighbours = dem_neighbours(tile, &layer_of);
             if image.padded != Some(neighbours) {
-                let zoom = f32::from(tile.z);
-                let (layer, prepare) = (image.layer, (neighbours, zoom, unpack));
-                jobs.push((found, layer, prepare));
+                let job = DemPrepare {
+                    layer: image.layer,
+                    neighbours,
+                    borders: image.padded.map(|was| changed_borders(was, neighbours)),
+                    zoom: f32::from(tile.z),
+                    unpack,
+                };
+                jobs.push((found, job));
             }
         }
-        for (found, layer, (neighbours, zoom, unpack)) in jobs {
+        for (found, job) in jobs {
             if let Some(image) = &mut self.entry_mut(found).image {
-                image.padded = Some(neighbours);
+                image.padded = Some(job.neighbours);
             }
-            let job = DemPrepare {
-                layer,
-                neighbours,
-                zoom,
-                unpack,
-            };
             self.images.prepare_dem(page, job);
         }
     }
@@ -1065,6 +1064,14 @@ pub fn dem_neighbours(
     layer_of: &dyn Fn(TileIndex) -> Option<u32>,
 ) -> [Option<u32>; 8] {
     OFFSETS.map(|offset| offset_tile(tile, offset).and_then(layer_of))
+}
+
+/// The borders ([`DemPrepare::borders`]) a tile prepared with neighbours
+/// `was` prepares again for neighbours `now`: those whose neighbour changed.
+pub fn changed_borders(was: [Option<u32>; 8], now: [Option<u32>; 8]) -> u8 {
+    (0..8)
+        .filter(|&k| was[k] != now[k])
+        .fold(0, |mask, k| mask | 1 << k)
 }
 
 /// Neighbour offsets in [`DemPrepare::neighbours`] order.

@@ -61,7 +61,7 @@ pub use scene::{
 };
 pub use tiles::{
     GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, TileBuild, TileKey, UploadError, WarpKey,
-    dem_neighbours, tile_latitudes,
+    changed_borders, dem_neighbours, tile_latitudes,
 };
 
 use crate::release::Release;

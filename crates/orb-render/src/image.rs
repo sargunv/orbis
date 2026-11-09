@@ -84,6 +84,12 @@ pub struct DemPrepare {
     /// The tiles at (dx, dy) = (−1, −1), (0, −1), (1, −1), (−1, 0), (1, 0),
     /// (−1, 1), (0, 1), (1, 1), at the same zoom.
     pub neighbours: [Option<u32>; 8],
+    /// `None` prepares the whole tile. `Some(mask)` prepares only the
+    /// borders toward the neighbours whose bits are set, in
+    /// [`neighbours`](Self::neighbours)' order: the layer was prepared
+    /// before, and only those neighbours changed since. A border is a
+    /// function of its own neighbour, so the rest stands.
+    pub borders: Option<u8>,
     /// The tile's zoom level.
     pub zoom: f32,
     /// GL JS's unpack vector: metres = `r·x + g·y + b·z − w`.
@@ -645,7 +651,13 @@ impl Images {
     pub(crate) fn prepare_dem(&mut self, id: PageId, job: DemPrepare) {
         let page = self.page_mut(id);
         assert_eq!(page.kind, PageKind::Dem, "only DEM pages are prepared");
-        page.pending.retain(|j| j.layer != job.layer);
+        // A job still waiting for the layer: this one takes its borders
+        // too, or the whole tile if either does.
+        let mut job = job;
+        if let Some(at) = page.pending.iter().position(|j| j.layer == job.layer) {
+            let waiting = page.pending.swap_remove(at);
+            job.borders = waiting.borders.zip(job.borders).map(|(a, b)| a | b);
+        }
         page.pending.push(job);
     }
 
@@ -801,6 +813,50 @@ mod prepare {
 
     /// A job slot's bytes; jobs are 64 bytes.
     const SLOT: u64 = 256;
+
+    /// A layer a job draws into, for its borders' rectangles.
+    #[derive(Clone, Copy)]
+    enum Border {
+        /// (dim + 4)² texels: the tile's at 2..dim + 2, then a border of
+        /// two texels from the neighbours.
+        Padded,
+        /// (dim + 2)² texels, texel i from the padded texels i..=i + 2.
+        Slopes,
+    }
+
+    impl Border {
+        /// The texels, `[x, y, width, height]`, that the neighbour `k`
+        /// ([`DemPrepare::neighbours`](super::DemPrepare::neighbours)'
+        /// order) of a `dim`-texel tile decides.
+        fn rect(self, dim: u32, k: usize) -> [u32; 4] {
+            const OFFSETS: [(i32, i32); 8] = [
+                (-1, -1),
+                (0, -1),
+                (1, -1),
+                (-1, 0),
+                (1, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1),
+            ];
+            let (dx, dy) = OFFSETS[k];
+            // The padded texels the neighbour fills along one axis, then
+            // the texels of this layer that read them.
+            let span = |d: i32| {
+                let (lo, hi) = match d {
+                    -1 => (0, 2),
+                    0 => (2, dim + 2),
+                    _ => (dim + 2, dim + 4),
+                };
+                match self {
+                    Self::Padded => (lo, hi),
+                    Self::Slopes => (lo.saturating_sub(2), hi.min(dim + 2)),
+                }
+            };
+            let ((x0, x1), (y0, y1)) = (span(dx), span(dy));
+            [x0, y0, x1 - x0, y1 - y0]
+        }
+    }
 
     #[derive(Debug)]
     pub(super) struct Draws {
@@ -966,10 +1022,33 @@ mod prepare {
                     [DEM_PADDED, DEM_SLOPES]
                         .map(|t| gpu.create_layer_view(page.page.texture(t), job.layer))
                 });
-                for (pipeline, group, target) in [
-                    (self.pad, targets.groups[slot][0], views[0]),
-                    (self.slope, targets.groups[slot][1], views[1]),
+                let dim = page.page.size(DEM_RAW)[0];
+                for (pipeline, group, target, border) in [
+                    (self.pad, targets.groups[slot][0], views[0], Border::Padded),
+                    (
+                        self.slope,
+                        targets.groups[slot][1],
+                        views[1],
+                        Border::Slopes,
+                    ),
                 ] {
+                    let mut commands = vec![
+                        RenderCommand::SetPipeline(pipeline),
+                        RenderCommand::SetBindGroup { index: 0, group },
+                    ];
+                    let triangle = RenderCommand::Draw {
+                        vertices: 0..3,
+                        instances: 0..1,
+                    };
+                    match job.borders {
+                        None => commands.push(triangle),
+                        Some(mask) => {
+                            for k in (0..8).filter(|k| mask & (1 << k) != 0) {
+                                commands.push(RenderCommand::SetScissor(border.rect(dim, k)));
+                                commands.push(triangle.clone());
+                            }
+                        }
+                    }
                     passes.push(Pass::Render(RenderPass {
                         label: "prepare".into(),
                         colors: vec![ColorAttachment {
@@ -979,18 +1058,53 @@ mod prepare {
                             load: LoadOp::Load,
                         }],
                         depth: None,
-                        commands: vec![
-                            RenderCommand::SetPipeline(pipeline),
-                            RenderCommand::SetBindGroup { index: 0, group },
-                            RenderCommand::Draw {
-                                vertices: 0..3,
-                                instances: 0..1,
-                            },
-                        ],
+                        commands,
                     }));
                 }
             }
             count
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::Border;
+
+        /// The neighbour, in `DemPrepare::neighbours`' order, whose texels
+        /// fill padded texel `p` of a `dim`-texel tile (`prepare_pad.wgsl`),
+        /// or `None` inside the tile.
+        fn filled_by(dim: i32, p: [i32; 2]) -> Option<usize> {
+            let d = p.map(|v| (v - 2).div_euclid(dim).clamp(-1, 1));
+            let k = ((d[1] + 1) * 3 + d[0] + 1) as usize;
+            (k != 4).then_some(if k > 4 { k - 1 } else { k })
+        }
+
+        fn inside(rect: [u32; 4], [x, y]: [i32; 2]) -> bool {
+            let [rx, ry, w, h] = rect.map(|v| v as i32);
+            (rx..rx + w).contains(&x) && (ry..ry + h).contains(&y)
+        }
+
+        #[test]
+        fn borders_are_the_texels_their_neighbours_decide() {
+            let dim = 5;
+            for k in 0..8 {
+                let padded = Border::Padded.rect(dim as u32, k);
+                for y in 0..dim + 4 {
+                    for x in 0..dim + 4 {
+                        let ours = filled_by(dim, [x, y]) == Some(k);
+                        assert_eq!(inside(padded, [x, y]), ours, "padded {k} at {x},{y}");
+                    }
+                }
+                let slopes = Border::Slopes.rect(dim as u32, k);
+                for y in 0..dim + 2 {
+                    for x in 0..dim + 2 {
+                        // Slope texel (x, y) reads padded texels x..=x + 2.
+                        let reads = (0..3)
+                            .any(|j| (0..3).any(|i| filled_by(dim, [x + i, y + j]) == Some(k)));
+                        assert_eq!(inside(slopes, [x, y]), reads, "slopes {k} at {x},{y}");
+                    }
+                }
+            }
         }
     }
 }

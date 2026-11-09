@@ -159,8 +159,8 @@ pub(crate) struct Terrain {
     /// their ranges alone. Which these are depends on the ranges held
     /// before, so nothing drawn reads them: no elevation, no border.
     culling: Vec<TileIndex>,
-    /// Per wanted DEM tile, its layer and the neighbours' layers its border
-    /// was last padded from ([`pads`](Self::pads)).
+    /// Per resident DEM tile padded, its layer and the neighbours' layers
+    /// its border was last padded from ([`pads`](Self::pads)).
     padded: HashMap<TileIndex, (u32, [Option<u32>; 8])>,
     /// DEM tiles arrived, left or are wanted anew since the elevations were
     /// last taken.
@@ -352,7 +352,8 @@ impl Terrain {
     /// wants, and the ancestors drawn while they load) from their ready
     /// neighbours among them, for the tiles whose neighbours changed since:
     /// a border is a function of what this camera reads, not of which tiles
-    /// were resident before.
+    /// were resident before. A tile whose layer was padded before pads
+    /// again only the borders whose neighbours changed.
     fn pads(&mut self, unpack: [f32; 4]) -> Vec<orb_render::DemPrepare> {
         let read = self.read();
         let pyramid = &self.pyramid;
@@ -362,24 +363,26 @@ impl Terrain {
                 .and_then(|_| pyramid.get(t))
                 .map(|d| d.layer)
         };
+        // A layer keeps what it was padded from while its tile stays.
+        self.padded
+            .retain(|&tile, (layer, _)| pyramid.get(tile).is_some_and(|d| d.layer == *layer));
         let mut jobs = Vec::new();
-        let mut padded = HashMap::new();
         for &tile in &read {
             let Some(dem) = pyramid.get(tile) else {
                 continue;
             };
-            let now = (dem.layer, orb_render::dem_neighbours(tile, &layer_of));
-            if self.padded.get(&tile) != Some(&now) {
+            let neighbours = orb_render::dem_neighbours(tile, &layer_of);
+            let was = self.padded.insert(tile, (dem.layer, neighbours));
+            if was != Some((dem.layer, neighbours)) {
                 jobs.push(orb_render::DemPrepare {
-                    layer: now.0,
-                    neighbours: now.1,
+                    layer: dem.layer,
+                    neighbours,
+                    borders: was.map(|(_, was)| orb_render::changed_borders(was, neighbours)),
                     zoom: f32::from(tile.z),
                     unpack,
                 });
             }
-            padded.insert(tile, now);
         }
-        self.padded = padded;
         jobs
     }
 
