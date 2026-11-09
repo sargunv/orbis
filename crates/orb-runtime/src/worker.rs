@@ -92,11 +92,28 @@ pub(crate) struct WorkerData {
     frames: Mutex<Frames>,
     /// Glyph metrics of the PBF ranges fetched so far.
     pub(crate) glyphs: GlyphCatalog,
-    /// Sprite metadata for icon layout.
-    icons: Mutex<Arc<SpriteIcons>>,
+    /// Sprite metadata for icon layout, and the layouts waiting for a
+    /// later set.
+    icons: Mutex<IconState>,
     /// Southeast Asian word data, and the URL it is fetched from.
     words: Mutex<Words>,
     word_url: Mutex<Option<String>>,
+}
+
+#[derive(Default)]
+struct IconState {
+    icons: Arc<SpriteIcons>,
+    /// By the set (`SpriteIcons::epoch`) each waits for.
+    waiting: Vec<(u32, Box<dyn FnOnce() + Send>)>,
+}
+
+impl std::fmt::Debug for IconState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IconState")
+            .field("icons", &self.icons)
+            .field("waiting", &self.waiting.len())
+            .finish()
+    }
 }
 
 /// The data labels in scripts written without spaces (Thai, Lao, Khmer,
@@ -293,9 +310,40 @@ impl TileWorker {
     }
 
     /// Sets the sprite metadata icons are laid out with, for this revision
-    /// and later ones.
+    /// and later ones, and runs the layouts that waited for it.
     pub fn set_icons(&self, icons: Arc<SpriteIcons>) {
-        *self.data.icons.lock().expect("icons poisoned") = icons;
+        let ready = {
+            let mut state = self.data.icons.lock().expect("icons poisoned");
+            let epoch = icons.epoch;
+            state.icons = icons;
+            let (ready, waiting) = std::mem::take(&mut state.waiting)
+                .into_iter()
+                .partition::<Vec<_>, _>(|(wants, _)| *wants <= epoch);
+            state.waiting = waiting;
+            ready
+        };
+        for (_, ready) in ready {
+            ready();
+        }
+    }
+
+    /// Whether a layout must wait for a later set of icons than this
+    /// worker has: the set `epoch` names ([`TileRequest::icons`]).
+    pub(crate) fn awaits_icons(&self, epoch: u32) -> bool {
+        self.data.icons.lock().expect("icons poisoned").icons.epoch < epoch
+    }
+
+    /// Runs `ready` once this worker has icons set `epoch`: now, or when
+    /// [`set_icons`](Self::set_icons) brings it.
+    pub(crate) fn with_icons(&self, epoch: u32, ready: Box<dyn FnOnce() + Send>) {
+        {
+            let mut state = self.data.icons.lock().expect("icons poisoned");
+            if state.icons.epoch < epoch {
+                state.waiting.push((epoch, ready));
+                return;
+            }
+        }
+        ready();
     }
 
     /// Applies an update from the map: the first update has every layer
@@ -591,7 +639,7 @@ impl TileWorker {
             nodes: request.nodes.as_deref(),
             rows_only: request.rows_only,
         };
-        let icons = Arc::clone(&self.data.icons.lock().expect("icons poisoned"));
+        let icons = Arc::clone(&self.data.icons.lock().expect("icons poisoned").icons);
         let words = self.data.words.lock().expect("words poisoned").clone();
         let symbols = tile::Symbols {
             glyphs: &self.data.glyphs,
@@ -826,6 +874,10 @@ pub struct TileRequest {
     /// A terrain DEM tile: also decode its elevations with this unpack
     /// vector, for the CPU ([`TileResult::dem`](crate::TileResult::dem)).
     pub dem_unpack: Option<DemUnpack>,
+    /// The set of sprite icons (`SpriteIcons::epoch`) the layout waits
+    /// for, fetched and decoded meanwhile: a style's sprites still loading
+    /// hold symbol layout, not the tile's request. 0 waits for none.
+    pub(crate) icons: u32,
 }
 
 /// GL JS's unpack vector of a DEM encoding: metres are
@@ -873,6 +925,7 @@ pub(crate) mod tests {
             nodes: None,
             rows_only: false,
             dem_unpack: None,
+            icons: 0,
         }
     }
 
@@ -1336,6 +1389,36 @@ pub(crate) mod tests {
         let gets = fetch.gets.lock().unwrap();
         let glyph_gets = gets.iter().filter(|u| u.contains("/glyphs/")).count();
         assert_eq!(glyph_gets, 1, "{gets:?}");
+    }
+
+    /// A tile asked for while the sprites load is fetched at once, and laid
+    /// out once the icons it waits for arrive.
+    #[test]
+    fn tiles_load_while_icons_do_and_lay_out_after() {
+        let fetch = Arc::new(AssetFetch::default());
+        let jobs = PoolJobs::new(
+            fetch.clone(),
+            Arc::new(NoImages),
+            Arc::new(orb_host::jobs::Inline),
+        );
+        let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
+        jobs.set_style(1, &StyleUpdate::default(), &worker);
+        jobs.prefetch_glyphs(1, worker.first_glyphs(symbol_request().zoom));
+        fetch.release();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let request = TileRequest {
+            icons: 1,
+            ..symbol_request()
+        };
+        jobs.load(request, Box::new(move |r| tx.send(r).unwrap()));
+        let gets = fetch.gets.lock().unwrap().clone();
+        assert!(gets.iter().any(|u| u.contains("/tiles/")), "{gets:?}");
+        assert_eq!(rx.try_iter().count(), 0, "layout waits for the icons");
+        let mut icons = SpriteIcons::default();
+        icons.epoch = 1;
+        jobs.set_icons(1, &Arc::new(icons), &worker);
+        let tile = rx.try_iter().next().expect("laid out").unwrap();
+        assert_eq!(tile.symbols.len(), 1);
     }
 
     #[test]

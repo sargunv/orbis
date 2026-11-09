@@ -1539,7 +1539,17 @@ impl Map {
             nodes,
             rows_only,
             dem_unpack: None,
+            icons: 0,
         };
+        // Symbol layout needs the sprites' metadata: while the sprites load,
+        // a source with symbol layers lays out once they're in (GL JS's
+        // worker awaits `getImages` alike), and its tiles load meanwhile.
+        if style.sprites_loading > 0
+            && (style.worker.plan().nodes.iter())
+                .any(|n| n.source == index && n.family == orb_layout::Family::SymbolIcon)
+        {
+            request.icons = style.icons.epoch + 1;
+        }
         match (edit, rows_only) {
             (None, _) => self.counts.loads += 1,
             (Some(_), false) => self.counts.relayouts += 1,
@@ -1876,6 +1886,7 @@ impl Map {
                 nodes: None,
                 rows_only: false,
                 dem_unpack: endpoint.dem_unpack.map(crate::DemUnpack),
+                icons: 0,
             });
         }
         terrain.loading += loads.len() as u32;

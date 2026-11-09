@@ -24,6 +24,10 @@ use orb_tile::{Layer, ValueRef};
 pub struct SpriteIcons {
     /// The device pixel ratio images are drawn at.
     pub pixel_ratio: f64,
+    /// How many sets of icons the map has handed its jobs for the style,
+    /// this one included: a tile's layout can wait for a later one
+    /// (`TileRequest::icons`).
+    pub epoch: u32,
     pub(crate) images: HashMap<String, IconImage>,
     /// The images' names, sorted: the `image` expression's available
     /// images.

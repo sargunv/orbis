@@ -223,6 +223,7 @@ impl crate::Map {
             nodes: None,
             rows_only: false,
             dem_unpack: None,
+            icons: 0,
         })
     }
 

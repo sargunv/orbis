@@ -782,6 +782,30 @@ mod tests {
         );
     }
 
+    /// A source with symbol layers loads its tiles while the sprites load:
+    /// only their layout waits for the icons.
+    #[test]
+    fn symbol_tiles_load_while_the_sprites_do() {
+        // Takes connections and never answers.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut offscreen = null_island(&format!(
+            r#"{{"version":8,"sprite":"http://{}/sprite",
+            "sources":{{"s":{{"type":"geojson","data":{{"type":"Point","coordinates":[0,0]}}}}}},
+            "layers":[{{"id":"label","type":"symbol","source":"s","layout":{{"text-field":"Null Island"}}}}]}}"#,
+            silent.local_addr().unwrap()
+        ));
+        let loading = (0..20).any(|_| {
+            let report = offscreen.frame();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            report.tiles_loading > 0
+        });
+        assert!(loading, "the source's tiles load");
+        assert!(
+            !offscreen.frame().loaded,
+            "the sprites keep the map loading"
+        );
+    }
+
     /// Raster tiles show at once until the map is first idle, as in GL JS,
     /// whose first view has no tiles to fade from; after that, new tiles
     /// fade in. Frames all show one instant, so a fade would never end.

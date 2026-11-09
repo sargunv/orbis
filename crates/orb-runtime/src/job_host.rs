@@ -186,6 +186,24 @@ impl GlyphLoads {
         request: TileRequest,
         done: LoadedDone,
     ) {
+        // Fetched and decoded while the sprites loaded, a tile with symbol
+        // layers lays out once their icons are in.
+        if worker.awaits_icons(request.icons) {
+            // Decoded now, the tile's frame waits in the worker's cache.
+            if !bytes.is_empty() {
+                let _ = worker.frame(&bytes, request.encoding, &request);
+            }
+            let (this, waiting) = (Arc::clone(self), Arc::clone(&worker));
+            let executor = Arc::clone(&self.executor);
+            let epoch = request.icons;
+            let ready = Box::new(move || {
+                executor.spawn(Box::new(move || {
+                    this.complete(waiting, bytes, request, done);
+                }));
+            });
+            worker.with_icons(epoch, ready);
+            return;
+        }
         let urls = match worker.build(&bytes, request.encoding, &request) {
             Ok(Built::Tile(build)) => return done(Ok(Loaded::Tile(build))),
             Err(e) => return done(Err(e)),

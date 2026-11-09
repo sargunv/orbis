@@ -115,6 +115,7 @@ impl Map {
                             }
                         }
                         if style.sprites_loading == 0 {
+                            style.icons.epoch += 1;
                             self.services.jobs.set_icons(
                                 style.id,
                                 &Arc::new(style.icons.clone()),

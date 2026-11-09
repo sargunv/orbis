@@ -47,16 +47,6 @@ impl Map {
         if !plan.nodes.iter().any(|n| n.source == index) {
             return None;
         }
-        // Symbol layout needs the sprites' metadata, so a source with symbol
-        // layers waits for them (GL JS's worker awaits `getImages` alike).
-        if style.sprites_loading > 0
-            && plan
-                .nodes
-                .iter()
-                .any(|n| n.source == index && n.family == Family::SymbolIcon)
-        {
-            return None;
-        }
         let zoom = self.camera.state().zoom(self.surface.projection());
         // The tallest extrusion, as this frame's paint has it.
         let height = (plan.nodes.iter().enumerate())
