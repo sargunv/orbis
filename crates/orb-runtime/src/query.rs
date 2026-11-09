@@ -984,14 +984,14 @@ impl Query<'_> {
     }
 
     /// The feature's tolerance in pixels, its line offset in pixels, and
-    /// its base and top in world units, under its state.
+    /// an extrusion's base and top in world units, under its state.
     fn feature(
         &self,
         layer: &HitLayer,
         at: &LayerAt,
         f: &FeatureRef<'_>,
         state: FeatureState<'_>,
-    ) -> (f32, f32, (f64, f64)) {
+    ) -> (f32, f32, Option<(f64, f64)>) {
         let zoom = self.zoom;
         let (radius, offset) = match &layer.paint {
             HitPaint::Circle { radius, stroke, .. } => (
@@ -1018,12 +1018,12 @@ impl Query<'_> {
         let elevation = match &layer.paint {
             HitPaint::Extrusion { base, height, .. } => {
                 let scale = self.view.height_scale();
-                (
+                Some((
                     f64::from(live(base, zoom, state, at.base.unwrap_or(f.base))) * scale,
                     f64::from(live(height, zoom, state, at.height.unwrap_or(f.height))) * scale,
-                )
+                ))
             }
-            _ => (0.0, 0.0),
+            _ => None,
         };
         (radius, offset, elevation)
     }
@@ -1334,30 +1334,41 @@ impl Scene<'_> {
                 }
             }
         }
-        // GL JS's `_flattenAndSortRenderedFeatures`: extrusions come
-        // nearest first across their layers, each where the layers above
-        // it end, unless a lower layer's extrusion is nearer still.
-        solid.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut solid = solid.into_iter().map(|(_, hit)| hit).peekable();
-        let mut flat = flat.into_iter().peekable();
-        let mut out = Vec::new();
-        let mut extrusions: Vec<usize> = self
+        let extrusions = self
             .layers
             .nodes
             .values()
             .filter(|l| matches!(l.paint, HitPaint::Extrusion { .. }))
             .map(|l| l.order)
             .collect();
-        extrusions.sort_unstable_by(|a, b| b.cmp(a));
-        extrusions.dedup();
-        for at in extrusions {
-            out.extend(std::iter::from_fn(|| flat.next_if(|f| f.1 > at)));
-            out.extend(std::iter::from_fn(|| solid.next_if(|s| s.1 >= at)));
-        }
-        out.extend(flat);
-        out.extend(solid);
-        out
+        stack(flat, solid, extrusions, |hit| hit.1)
     }
+}
+
+/// Answers topmost first, as GL JS's `_flattenAndSortRenderedFeatures`
+/// stacks them: `flat` is topmost first already, and extrusions come
+/// nearest first across their layers, each where the layers above it
+/// end, unless a lower layer's extrusion is nearer still. `extrusions`
+/// are the style's extrusion layers; `layer` gives an answer's.
+fn stack<T>(
+    flat: Vec<T>,
+    mut solid: Vec<(f64, T)>,
+    mut extrusions: Vec<usize>,
+    layer: impl Fn(&T) -> usize,
+) -> Vec<T> {
+    solid.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut solid = solid.into_iter().map(|(_, hit)| hit).peekable();
+    let mut flat = flat.into_iter().peekable();
+    extrusions.sort_unstable_by(|a, b| b.cmp(a));
+    extrusions.dedup();
+    let mut out = Vec::new();
+    for at in extrusions {
+        out.extend(std::iter::from_fn(|| flat.next_if(|f| layer(f) > at)));
+        out.extend(std::iter::from_fn(|| solid.next_if(|s| layer(s) >= at)));
+    }
+    out.extend(flat);
+    out.extend(solid);
+    out
 }
 
 enum Candidate<'a> {
@@ -1411,7 +1422,7 @@ impl ScreenHit {
         q: &Query<'_>,
         period: f64,
         (radius, offset): (f64, f64),
-        elevation: (f64, f64),
+        extrusion: Option<(f64, f64)>,
         (shift, (scale_with_map, on_map)): (DVec2, (bool, bool)),
     ) -> Option<Self> {
         if feature.kind == 2 && q.camera.pitch > 0.0 && (scale_with_map || on_map) {
@@ -1441,6 +1452,9 @@ impl ScreenHit {
         let mut max = Vec2::splat(f32::NEG_INFINITY);
         let project = |p: DVec2, height: f64| q.project_depth(transform(p) + wrap + shift, height);
         let clip_box = feature.clip_box();
+        // An extrusion's faces carry depths, its top's even when it has
+        // no height, as GL JS sorts every extrusion by depth.
+        let elevation = extrusion.unwrap_or_default();
         let solid = elevation.1 > elevation.0;
         let (mut parts, mut depths) = (Vec::new(), Vec::new());
         // Lines under pitch, as polygons.
@@ -1493,7 +1507,7 @@ impl ScreenHit {
                     .collect::<Option<Vec<_>>>()?
                     .into_iter()
                     .unzip();
-                if solid && rings.is_empty() {
+                if extrusion.is_some() && rings.is_empty() {
                     depths.push(depth);
                 }
                 rings.push(points);
@@ -2189,6 +2203,22 @@ mod tests {
         let depth = |min, max| hit.depth(DVec2::splat(min), DVec2::splat(max));
         assert_eq!(depth(9.0, 9.5), Some(0.2));
         assert_eq!(depth(20.0, 21.0), None);
+    }
+
+    /// GL JS's stacking: with extrusion layers 3 and 1 around a line
+    /// layer 2, above a fill layer 0, a nearer extrusion of layer 1 waits
+    /// under the line but still comes before a farther one of layer 3.
+    #[test]
+    fn extrusions_stack_by_depth() {
+        let order = |solid: Vec<(f64, (char, usize))>| -> String {
+            let flat = vec![('l', 2), ('f', 0)];
+            stack(flat, solid, vec![1, 3, 1], |h| h.1)
+                .into_iter()
+                .map(|h| h.0)
+                .collect()
+        };
+        assert_eq!(order(vec![(0.2, ('a', 3)), (0.4, ('b', 1))]), "albf");
+        assert_eq!(order(vec![(0.4, ('a', 3)), (0.2, ('b', 1))]), "lbaf");
     }
 
     /// A tile's geometry holds each feature once, polygons closed and
