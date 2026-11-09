@@ -85,6 +85,20 @@ impl Map {
         else {
             return None;
         };
+        // A source whose layers all hide at this zoom draws and loads
+        // nothing (GL JS's `used`), and its tiles stay cached. Draped
+        // layers on terrain draw at their slots' zooms.
+        let draping = renderer.terrain_on();
+        if !plan.nodes.iter().any(|n| {
+            let layer = &plan.style.layers[n.layer];
+            n.source == index
+                && (layer.is_visible_at(zoom)
+                    || (draping
+                        && n.family.is_draped()
+                        && layer.visibility == orb_style::Visibility::Visible))
+        }) {
+            return Some(pyramid.plan(&[]));
+        }
         // A hillshade the terrain shades reads the slopes over each terrain
         // tile's quarters (`terrain::slopes`): its source covers those,
         // whatever detail the terrain's cover keeps, as its other layers,

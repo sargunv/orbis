@@ -255,7 +255,7 @@ mod tests {
                 .unwrap();
         }
         std::fs::write(&tile, png).unwrap();
-        // A polygon that only low zooms draw; imagery only from zoom 5.
+        // A polygon that only low zooms draw, and imagery.
         let ring: Vec<String> = (0..=360)
             .map(|i| {
                 let a = f64::from(i).to_radians();
@@ -267,7 +267,7 @@ mod tests {
                 "shapes":{{"type":"geojson","data":{{"type":"Polygon","coordinates":[[{ring}]]}}}},
                 "imagery":{{"type":"raster","tiles":["file://{tile}"],"tileSize":256}}}},
               "layers":[{{"id":"fill","type":"fill","source":"shapes","maxzoom":4.5}},
-                {{"id":"raster","type":"raster","source":"imagery","minzoom":5}}]}}"#,
+                {{"id":"raster","type":"raster","source":"imagery"}}]}}"#,
             ring = ring.join(","),
             tile = tile.display(),
         );
@@ -291,7 +291,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
         };
-        // The scene holds exactly the low-zoom view's vector tiles.
+        // The scene holds exactly the low-zoom view's tiles.
         let (_, low, _) = crate::common::Offscreen::load(&options(0.0, 3.0)).unwrap();
         let capacity = crate::common::SceneCapacity {
             vertex_words: low.scene.vertex_words,
@@ -311,6 +311,50 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(report.tiles_drawn > 0);
+    }
+
+    /// A source whose layers all hide at the camera's zoom loads and draws
+    /// nothing there, as in GL JS.
+    #[test]
+    fn sources_load_nothing_where_their_layers_hide() {
+        let dir = std::env::temp_dir().join(format!("orbis-hidden-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tile = dir.join("tile.png");
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 256, 256);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[64u8, 128, 255, 255].repeat(256 * 256))
+                .unwrap();
+        }
+        std::fs::write(&tile, png).unwrap();
+        let path = dir.join("style.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"version":8,"sources":{{
+                    "imagery":{{"type":"raster","tiles":["file://{}"],"tileSize":256}}}},
+                  "layers":[{{"id":"raster","type":"raster","source":"imagery","maxzoom":7}}]}}"#,
+                tile.display()
+            ),
+        )
+        .unwrap();
+        let drawn = |zoom: f64| {
+            let options = crate::common::Options {
+                style: Some(format!("file://{}", path.display())),
+                at: Some((orb_crs::Geodetic::new(0.0, 0.0), zoom, 0.0, 0.0)),
+                ..tokyo(zoom)
+            };
+            let (_, report, _) = crate::common::Offscreen::load(&options).unwrap();
+            (report.tiles_drawn, report.scene.meshes)
+        };
+        let (shown, hidden) = (drawn(6.0), drawn(10.0));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(shown.0 > 0 && shown.1 > 0, "{shown:?}");
+        assert_eq!(hidden, (0, 0));
     }
 
     /// Tiles out of view stay cached by their memory, within a
