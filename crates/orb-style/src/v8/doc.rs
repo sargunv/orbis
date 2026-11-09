@@ -108,7 +108,7 @@ impl StyleDoc {
     pub fn parse_with(text: &str, previews: Previews) -> Result<Self, Diagnostics> {
         let style = crate::v8::parse_with(text, previews, &[])?;
         let root = json::parse(text).map_err(|e| error(e.to_string()))?;
-        Ok(Self::from_parts(style, &root))
+        Ok(Self::from_parts(style, &crate::v8::deref_layers(root)))
     }
 
     fn from_parts(style: Style, root: &Json) -> Self {

@@ -90,6 +90,7 @@ pub fn parse_with(
             return Err(cx.diagnostics);
         }
     };
+    let doc = deref_layers(doc);
     let style = parse_root(&mut cx, &doc, overrides);
     match style {
         Some(mut style) if cx.diagnostics.errors.is_empty() => {
@@ -97,6 +98,63 @@ pub fn parse_with(
             Ok(style)
         }
         _ => Err(cx.diagnostics),
+    }
+}
+
+/// The properties a layer with a `ref` takes from the layer it names.
+const REF_PROPERTIES: [&str; 7] = [
+    "type",
+    "source",
+    "source-layer",
+    "minzoom",
+    "maxzoom",
+    "filter",
+    "layout",
+];
+
+/// The document with each layer that has a `ref` replaced by a copy taking
+/// [`REF_PROPERTIES`] from the layer it names, as GL JS's `derefLayers`
+/// and MapLibre Native's parser read v8's deprecated layer references.
+pub(crate) fn deref_layers(mut doc: Json) -> Json {
+    let Some(layers) = doc_layers(&mut doc) else {
+        return doc;
+    };
+    let by_id: std::collections::HashMap<String, Json> = layers
+        .iter()
+        .filter_map(|l| Some((l.get("id")?.as_str()?.to_string(), l.clone())))
+        .collect();
+    for layer in layers.iter_mut() {
+        let Some(parent) = layer
+            .get("ref")
+            .and_then(Json::as_str)
+            .and_then(|id| by_id.get(id))
+        else {
+            continue;
+        };
+        let orb_expr::json::JsonValue::Object(members) = &mut layer.value else {
+            continue;
+        };
+        members.retain(|m| m.key != "ref" && !REF_PROPERTIES.contains(&m.key.as_str()));
+        if let orb_expr::json::JsonValue::Object(inherited) = &parent.value {
+            members.extend(
+                inherited
+                    .iter()
+                    .filter(|m| REF_PROPERTIES.contains(&m.key.as_str()))
+                    .cloned(),
+            );
+        }
+    }
+    doc
+}
+
+fn doc_layers(doc: &mut Json) -> Option<&mut Vec<Json>> {
+    let orb_expr::json::JsonValue::Object(members) = &mut doc.value else {
+        return None;
+    };
+    let layers = members.iter_mut().rev().find(|m| m.key == "layers")?;
+    match &mut layers.value.value {
+        orb_expr::json::JsonValue::Array(layers) => Some(layers),
+        _ => None,
     }
 }
 

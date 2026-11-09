@@ -881,3 +881,25 @@ fn extended_inputs_follow_the_preview() {
         "layers": [{"id": "f", "type": "fill", "source": "s", "filter": [">", ["pitch"], 10]}]}"#;
     assert!(parse_with(filter, Previews::ALL, &[]).is_err());
 }
+
+#[test]
+fn layer_refs_take_their_parents_type_source_filter_and_layout() {
+    let style = parse(
+        r#"{"version":8,"sources":{"s":{"type":"geojson","data":{"type":"FeatureCollection","features":[]}}},
+        "layers":[
+            {"id":"a","type":"line","source":"s","filter":["==","k",1],"layout":{"line-cap":"round"},"paint":{"line-color":"red"}},
+            {"id":"b","ref":"a","type":"fill","paint":{"line-color":"blue"}}
+        ]}"#,
+    )
+    .expect("parses");
+    assert!(style.warnings.is_empty(), "{:?}", style.warnings);
+    assert_eq!(style.layers.len(), 2);
+    assert_eq!(style.layers[1].id, "b");
+    assert_eq!(style.layers[1].ty, style.layers[0].ty);
+    assert_eq!(style.layers[1].source, style.layers[0].source);
+    let doc = StyleDoc::parse(
+        r#"{"version":8,"sources":{},"layers":[{"id":"a","type":"background"},{"id":"b","ref":"a"}]}"#,
+    )
+    .expect("parses");
+    assert!(!doc.to_json().contains("\"ref\""));
+}

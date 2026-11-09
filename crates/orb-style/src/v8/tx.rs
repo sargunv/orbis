@@ -245,7 +245,7 @@ impl Op {
             },
             "setStyle" => match arg(1) {
                 Some(style) if style.as_object().is_some() => Op::SetStyle {
-                    style: style.clone(),
+                    style: crate::v8::deref_layers(style.clone()),
                 },
                 _ => return Err("setStyle: only style objects are supported".into()),
             },
