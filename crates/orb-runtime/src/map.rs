@@ -1715,6 +1715,7 @@ impl Map {
             .map(|t| orb_symbol::GroundRef(t.snapshot() as Arc<dyn orb_symbol::Ground>));
         // Without symbol tiles there is nothing to place.
         if frame.layers.iter().all(|l| l.tiles.is_empty()) {
+            self.labels.nothing_to_place();
             self.placement_ms += self.services.clock.now() - started;
             return !self.labels.settling();
         }

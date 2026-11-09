@@ -429,17 +429,20 @@ pub(crate) struct Labels {
     glyphs: GlyphRows,
     /// The last commit applied.
     committed: Option<Committed>,
-    /// The placement out on the lane: its frame, and the world copies of
-    /// each bucket it draws, which its commit is applied against.
-    in_flight: Option<(Arc<orb_symbol::Frame>, WorldCopies)>,
+    /// The placement out on the lane: its frame, the world copies of each
+    /// bucket it draws, which its commit is applied against, and its
+    /// request's number.
+    in_flight: Option<(Arc<orb_symbol::Frame>, WorldCopies, u64)>,
     /// The frame the last placement was asked for, or `None` when the
     /// next frame needs placing whatever it is.
     last_frame: Option<Arc<orb_symbol::Frame>>,
     /// The frame of the last commit applied, and how many have been.
     placed: Option<Arc<orb_symbol::Frame>>,
     commits: u64,
-    /// Placements asked for so far: commit `n` is of request `n`.
+    /// Placements asked for so far, and the number of the last one
+    /// committed: a request the lane failed never commits.
     requests: u64,
+    committed_request: u64,
     /// Buckets of tiles that left the draw list, still drawn with their
     /// last words until a placement asked for since commits, then fading
     /// out from there (GL JS `holdingForFade`): what replaced them shows
@@ -569,6 +572,7 @@ impl Labels {
             placed: None,
             commits: 0,
             requests: 0,
+            committed_request: 0,
             held: HashMap::new(),
             drawn: Vec::new(),
             fade_duration: 300.0,
@@ -1010,9 +1014,9 @@ impl Labels {
             drawn.entry(t.bucket).or_default().push(t.view.id.wrap);
         }
         let frame = Arc::new(frame.clone());
-        self.in_flight = Some((Arc::clone(&frame), drawn));
-        self.last_frame = Some(frame);
         self.requests += 1;
+        self.in_flight = Some((Arc::clone(&frame), drawn, self.requests));
+        self.last_frame = Some(frame);
     }
 
     /// The lane couldn't place the frame asked of it: the next frame asks
@@ -1029,11 +1033,12 @@ impl Labels {
         renderer: &mut Renderer,
         mut committed: Committed,
     ) {
-        let Some((frame, drawn)) = self.in_flight.take() else {
+        let Some((frame, drawn, request)) = self.in_flight.take() else {
             return;
         };
         self.placed = Some(frame);
         self.commits += 1;
+        self.committed_request = request;
         // Buckets dropped since the placement was asked for have no meshes.
         self.retire(gpu, renderer.glyphs());
         let mut changed: HashMap<u64, Vec<(i32, orb_symbol::BucketStates)>> = HashMap::new();
@@ -1077,10 +1082,10 @@ impl Labels {
         let change = self.committed.as_ref().map_or(1.0, |c| {
             c.fade_change(committed.commit_time).clamp(0.0, 1.0) as f32
         });
-        let commits = self.commits;
+        let latest = self.committed_request;
         for (&bucket, held) in &mut self.held {
             match *held {
-                Held::Waiting { requests } if commits > requests => *held = Held::Fading,
+                Held::Waiting { requests } if latest > requests => *held = Held::Fading,
                 Held::Waiting { .. } => continue,
                 Held::Fading => {}
             }
@@ -1105,6 +1110,12 @@ impl Labels {
         self.held.entry(bucket).or_insert(Held::Waiting {
             requests: self.requests,
         });
+    }
+
+    /// The frame draws no labels, so no placement will cover the held
+    /// buckets, nor fade them: they go now.
+    pub(crate) fn nothing_to_place(&mut self) {
+        self.held.clear();
     }
 
     /// Its tile draws again, or left: placement has it as any bucket.

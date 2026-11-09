@@ -280,6 +280,14 @@ impl<T> TilePyramid<T> {
         }
     }
 
+    /// Counts `tile` as used by the last update, as if its plan had used
+    /// it: no eviction takes it before the next.
+    pub fn keep(&mut self, tile: TileIndex) {
+        if let Some(entry) = self.tiles.get_mut(&tile) {
+            entry.last_used = self.frame;
+        }
+    }
+
     /// Stores a loaded tile. Absent or already completed entries return
     /// their value back. After a drain, callers must reject old-generation
     /// results before they can reach newly requested entries.
@@ -843,6 +851,22 @@ mod tests {
         assert_eq!(evicted, [0, 1]);
         assert!(p.get(t(2, 2, 0)).is_some());
         assert!(p.is_loading(t(2, 3, 0)));
+    }
+
+    #[test]
+    fn kept_tiles_outlast_the_update_that_dropped_them() {
+        let mut p = TilePyramid::new(0, 14, 0);
+        for col in 0..2 {
+            p.update(&cover(&[(2, col, 0)]));
+            p.insert(t(2, col, 0), col);
+        }
+        p.update(&cover(&[(2, 2, 0)]));
+        p.keep(t(2, 1, 0));
+        assert_eq!(p.evict_lru(), Some(0));
+        assert_eq!(p.evict_lru(), None, "kept until the next update");
+        assert!(p.evict().is_empty());
+        p.update(&cover(&[(2, 2, 0)]));
+        assert_eq!(p.evict(), [1]);
     }
 
     #[test]

@@ -192,9 +192,14 @@ impl Map {
         let style = self.style.as_mut().expect("called with a style");
         style.draws.resize_with(style.sources.len(), || None);
         style.draws[index] = None;
-        let Some(update) = update else {
+        let Some(mut update) = update else {
             return;
         };
+        // Tiles held for their labels stay until a placement covers what
+        // replaced them ([`place_source`](Self::place_source)).
+        update
+            .used
+            .extend(style.held.get(index).into_iter().flatten().copied());
         let vector = style.worker.plan().image_kind(index).is_none();
         let SourceState::Ready {
             endpoint,
@@ -467,6 +472,11 @@ impl Map {
                     held.push(*tile);
                 }
             }
+        }
+        // Evicted sooner, held labels would vanish for the frames until
+        // that placement commits: arrivals that need room take other tiles.
+        for &tile in held.iter() {
+            pyramid.keep(tile);
         }
         let mut ordered = Vec::new();
         for draw in &draws {
