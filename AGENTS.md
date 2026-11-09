@@ -5,12 +5,12 @@ built and steered entirely by AI agents. One core renders on wgpu: in the
 browser through wasm and WebGPU, and natively through Vulkan, Metal and
 D3D12.
 
-Its aim is to beat [mln-rs](https://github.com/louwers/mln-rs), the
-file-by-file Rust port of MapLibre Native that MapLibre is weighing, on
-download size, load time, tile processing and rendering speed, in 2D and 3D,
-while drawing v8 styles correctly. Scope is the v8 spec (terrain, globe,
-sky and v8's `light` included) plus what it could reasonably grow into:
-projections, coordinate reference systems and tile matrix sets. Features
+Its aim is to be a modern, next generation renderer able to develop quickly,
+support new features, and perform better than the existing renderers
+(maplibre-native, maplibre-gl-js, mln-rs) on download size, load time,
+tile processing and rendering speed, in  2D and 3D, while drawing v8
+styles correctly. Scope is the v8 spec plus what it could reasonably grow
+into: projections, coordinate reference systems and tile matrix sets. Features
 beyond that don't belong. The C, Kotlin and Swift bindings
 (`orb-capi`, Diplomat) will be replaced by
 [maplibre-native-ffi](https://github.com/maplibre/maplibre-native-ffi)'s C
