@@ -381,22 +381,31 @@ impl<'f> Shape<'f> {
 }
 
 /// The meshes a tile has laid out, by tile layer, features and shape, for
-/// nodes that lay out alike.
+/// nodes that lay out alike: where in [`TileBuild::meshes`] each went, or
+/// none for an empty mesh, which no node keeps.
 #[derive(Default)]
-struct Laid<'f>(Vec<(&'f Layer, Vec<u32>, Shape<'f>, Mesh)>);
+struct Laid<'f>(Vec<(&'f Layer, Vec<u32>, Shape<'f>, Option<usize>)>);
 
 impl<'f> Laid<'f> {
     /// The mesh of `features` of `layer` in `shape`: laid out, or a copy
-    /// of an equal node's.
-    fn mesh(&mut self, layer: &'f Layer, features: &[u32], shape: Shape<'f>) -> Mesh {
+    /// of an equal node's among `meshes`. A non-empty mesh laid out here
+    /// must be the next pushed onto `meshes`.
+    fn mesh(
+        &mut self,
+        layer: &'f Layer,
+        features: &[u32],
+        shape: Shape<'f>,
+        meshes: &[NodeMesh],
+    ) -> Mesh {
         let earlier = self.0.iter().find(|(l, f, s, _)| {
-            std::ptr::eq(*l, layer) && *s == shape && f.as_slice() == features
+            std::ptr::eq(*l, layer) && f.as_slice() == features && *s == shape
         });
-        if let Some((_, _, _, mesh)) = earlier {
-            return mesh.clone();
+        if let Some(&(.., at)) = earlier {
+            return at.map_or_else(Mesh::default, |at| meshes[at].mesh.clone());
         }
         let mesh = shape.layout(layer, features);
-        self.0.push((layer, features.to_vec(), shape, mesh.clone()));
+        let at = (!mesh.is_empty()).then_some(meshes.len());
+        self.0.push((layer, features.to_vec(), shape, at));
         mesh
     }
 }
@@ -705,7 +714,7 @@ pub(crate) fn build(
                     // A layer of pieces is this node's alone.
                     let mesh = match origin {
                         Some(_) => shape.layout(layer, &features),
-                        None => laid.mesh(tile_layer, &features, shape),
+                        None => laid.mesh(tile_layer, &features, shape, &build.meshes),
                     };
                     if mesh.is_empty() {
                         continue;
