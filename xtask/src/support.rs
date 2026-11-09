@@ -2,10 +2,10 @@
 //! generated from the style spec's `v8.json` (types, and GL JS's and
 //! Native's support), orb-style's property table (each property's phase
 //! and the inputs Orbis reads) and the latest fixture results under
-//! `docs/scratch/rt`. Every `summary.json` there with a `tests` list is a
-//! fixture column, named by its directory (`native`, `chrome`,
-//! `query/native`, and any suite added later), so new suites join the
-//! matrix as they report. A test counts for a property when a directory
+//! `docs/scratch/rt`. Every `summary.json` there with a `tests` list from
+//! an unfiltered run is a fixture column, named by its directory
+//! (`native`, `chrome`, `query/native`, and any suite added later), so new
+//! suites join the matrix as they report. A test counts for a property when a directory
 //! of its id is named for it (`fill-color/default`, or a suite's
 //! `render-tests/fill-color/default`).
 
@@ -82,6 +82,14 @@ fn fixture_suites(dir: &Path) -> Result<Vec<Suite>, String> {
             .and_then(|p| p.strip_prefix(dir).ok())
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
+        // A filtered run would show every property outside its filter as
+        // untested.
+        if let Some(filter) = json["filter"].as_str().filter(|f| !f.is_empty()) {
+            eprintln!(
+                "support: skipping `{name}`, a run filtered to {filter:?}; run the whole suite"
+            );
+            continue;
+        }
         let tests = tests
             .iter()
             .filter_map(|t| {
