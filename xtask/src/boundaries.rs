@@ -48,6 +48,8 @@ const PLATFORM_DEPS: &[&str] = &[
 /// carry `#![forbid(unsafe_code)]`.
 const UNSAFE_ALLOWED: &[&str] = &[
     "orb-hal-wgpu",
+    // System font files are mapped, not copied (`fonts.rs`).
+    "orb-host-native",
     "orb-capi",
     "orb-web",
     // The binding emitters' test bridge: Diplomat's macro writes `extern "C"`.

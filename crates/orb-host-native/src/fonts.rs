@@ -91,13 +91,18 @@ impl State {
             id.hash(&mut h);
             h.finish()
         };
-        let face = self
-            .db
-            .with_face_data(id, |data, index| {
-                let bytes: orb_text::font::FontBytes = Arc::new(data.to_vec());
-                Face::identified(bytes, index, FontId(key)).map(Arc::new)
-            })
-            .flatten();
+        // Mapped, not read: CJK fallbacks are files of 20 to 60 MB, of
+        // which a map touches the few tables and glyphs it draws. The
+        // faces of one collection share its mapping.
+        // SAFETY: the mapping is of an installed font file, which nothing
+        // writes while it is installed (the system's are read-only), as
+        // browsers map them. A file changed under the map would show the
+        // change, not fault, unless truncated.
+        #[allow(unsafe_code)]
+        let shared = unsafe { self.db.make_shared_face_data(id) };
+        let face = shared
+            .and_then(|(bytes, index)| Face::identified(bytes, index, FontId(key)))
+            .map(Arc::new);
         self.faces.insert(id, face.clone());
         face
     }
