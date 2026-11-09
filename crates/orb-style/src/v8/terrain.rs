@@ -12,11 +12,7 @@ pub(crate) fn parse(
     let members = cx.object(json, "terrain")?;
     for m in members {
         if !matches!(m.key.as_str(), "source" | "exaggeration") {
-            cx.warn(
-                format!("terrain.{}", m.key),
-                m.key_span,
-                format!("unknown terrain property \"{}\"", m.key),
-            );
+            cx.warn_unknown("terrain", m);
         }
     }
     let Some(source_json) = json.get("source") else {

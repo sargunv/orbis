@@ -56,17 +56,9 @@ fn section<'a>(
             PropertyId::find(ty, paint, name).is_some() || (!paint && name == "visibility")
         };
         for m in members {
-            let member_path = format!("{path}.{}", m.key);
-            if known(&m.key) {
-                continue;
-            }
-            match m.key.strip_suffix("-transition") {
-                Some(base) if paint && known(base) => {}
-                _ => cx.warn(
-                    member_path,
-                    m.key_span,
-                    format!("unknown property \"{}\"", m.key),
-                ),
+            let transition = m.key.strip_suffix("-transition").filter(|_| paint);
+            if !known(&m.key) && !transition.is_some_and(known) {
+                cx.warn_unknown(&path, m);
             }
         }
     }
@@ -386,11 +378,7 @@ pub(crate) fn parse_layer(
     };
     for m in members {
         if !LAYER_KEYS.contains(&m.key.as_str()) {
-            cx.warn(
-                format!("{path}.{}", m.key),
-                m.key_span,
-                format!("unknown property \"{}\"", m.key),
-            );
+            cx.warn_unknown(&path, m);
         }
     }
     let minzoom = json

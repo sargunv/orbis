@@ -97,18 +97,10 @@ pub(crate) fn parse_json(
     previews: Previews,
     overrides: &[(String, Value<'static>)],
 ) -> Result<Style, Diagnostics> {
-    let mut cx = Cx {
-        previews,
-        ..Cx::default()
-    };
+    let mut cx = Cx::new(&[], previews);
     let style = parse_root(&mut cx, doc, overrides);
-    match style {
-        Some(mut style) if cx.diagnostics.errors.is_empty() => {
-            style.warnings = cx.diagnostics.warnings;
-            Ok(style)
-        }
-        _ => Err(cx.diagnostics),
-    }
+    let (style, warnings) = cx.finish(style)?;
+    Ok(Style { warnings, ..style })
 }
 
 /// The properties a layer with a `ref` takes from the layer it names.
@@ -170,7 +162,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
                     format!("\"{key}\" is not supported yet and is ignored"),
                 );
             }
-            key => cx.warn(key, m.key_span, format!("unknown property \"{key}\"")),
+            _ => cx.warn_unknown("", m),
         }
     }
     match doc.get("version") {
@@ -329,16 +321,9 @@ pub fn parse_layer(
     state: &[(String, Value<'static>)],
     previews: Previews,
 ) -> Result<(Layer, Vec<Diagnostic>), Diagnostics> {
-    let mut cx = Cx {
-        state: state.to_vec(),
-        previews,
-        ..Cx::default()
-    };
+    let mut cx = Cx::new(state, previews);
     let layer = layer::parse_layer(&mut cx, json, index, sources, &mut HashSet::new());
-    match layer {
-        Some(layer) if cx.diagnostics.errors.is_empty() => Ok((layer, cx.diagnostics.warnings)),
-        _ => Err(cx.diagnostics),
-    }
+    cx.finish(layer)
 }
 
 /// Parses a root sky with the current global state, returning its warnings.
@@ -347,17 +332,9 @@ pub(crate) fn parse_sky(
     state: &[(String, Value<'static>)],
     previews: Previews,
 ) -> Result<(Atmosphere, Vec<Diagnostic>), Diagnostics> {
-    let mut cx = Cx {
-        state: state.to_vec(),
-        previews,
-        ..Cx::default()
-    };
+    let mut cx = Cx::new(state, previews);
     let sky = sky::parse(&mut cx, json);
-    if cx.diagnostics.errors.is_empty() {
-        Ok((sky, cx.diagnostics.warnings))
-    } else {
-        Err(cx.diagnostics)
-    }
+    cx.finish(Some(sky))
 }
 
 /// Parses a root `terrain` against the style's sources, returning its
@@ -367,10 +344,8 @@ pub(crate) fn parse_terrain(
     sources: &[std::sync::Arc<Source>],
 ) -> Result<(Terrain, Vec<Diagnostic>), Diagnostics> {
     let mut cx = Cx::default();
-    match terrain::parse(&mut cx, json, sources) {
-        Some(terrain) if cx.diagnostics.errors.is_empty() => Ok((terrain, cx.diagnostics.warnings)),
-        _ => Err(cx.diagnostics),
-    }
+    let terrain = terrain::parse(&mut cx, json, sources);
+    cx.finish(terrain)
 }
 
 /// Parses a root `projection`, returning its plane (`None` for Web
@@ -384,11 +359,7 @@ pub(crate) fn parse_projection(
     Option<orb_crs::Globe>,
     Vec<Diagnostic>,
 ) {
-    let mut cx = Cx {
-        state: state.to_vec(),
-        previews,
-        ..Cx::default()
-    };
+    let mut cx = Cx::new(state, previews);
     let (plane, globe) = parse_surface(&mut cx, json);
     (plane, globe, cx.diagnostics.warnings)
 }
@@ -424,16 +395,18 @@ fn parse_surface(
     // PROJ-named parameters of a plane: `lon_0`, `lat_ts` and the like.
     let mut descriptor = orb_crs::Descriptor::default();
     for m in json.as_object().unwrap_or_default() {
-        let at = format!("projection.{}", m.key);
         match (m.key.as_str(), m.value.as_f64()) {
             ("type" | "transition", _) => {}
             (key, Some(n)) => {
-                let what = format!("projection parameter \"{key}\"");
+                let (at, what) = (
+                    format!("projection.{key}"),
+                    format!("projection parameter \"{key}\""),
+                );
                 if cx.preview(Preview::Crs, at, m.key_span, what) {
                     descriptor.params.push((key.to_string(), n));
                 }
             }
-            (key, None) => cx.warn(at, m.value.span, format!("unknown property \"{key}\"")),
+            (_, None) => cx.warn_unknown("projection", m),
         }
     }
     let transition = json.get("transition").and_then(|t| {
@@ -589,15 +562,9 @@ pub fn parse_source(
     json: &Json,
     previews: Previews,
 ) -> Result<(Source, Vec<Diagnostic>), Diagnostics> {
-    let mut cx = Cx {
-        previews,
-        ..Cx::default()
-    };
+    let mut cx = Cx::new(&[], previews);
     let source = source::parse_source(&mut cx, id, json, &format!("sources.{id}"));
-    match source {
-        Some(source) if cx.diagnostics.errors.is_empty() => Ok((source, cx.diagnostics.warnings)),
-        _ => Err(cx.diagnostics),
-    }
+    cx.finish(source)
 }
 
 /// The parse context: collects diagnostics with absolute paths.
@@ -611,6 +578,27 @@ pub(crate) struct Cx {
 }
 
 impl Cx {
+    /// A context resolving `global-state` reads to `state`, accepting the
+    /// inputs of `previews`.
+    fn new(state: &[(String, Value<'static>)], previews: Previews) -> Self {
+        Self {
+            diagnostics: Diagnostics::default(),
+            state: state.to_vec(),
+            previews,
+        }
+    }
+
+    /// What was parsed and its warnings; every diagnostic instead if
+    /// nothing was, or anything was an error.
+    fn finish<T>(self, parsed: Option<T>) -> Result<(T, Vec<Diagnostic>), Diagnostics> {
+        match parsed {
+            Some(parsed) if self.diagnostics.errors.is_empty() => {
+                Ok((parsed, self.diagnostics.warnings))
+            }
+            _ => Err(self.diagnostics),
+        }
+    }
+
     pub(crate) fn error(
         &mut self,
         path: impl Into<String>,
@@ -642,6 +630,16 @@ impl Cx {
             );
         }
         on
+    }
+
+    /// Warns of a member `prefix` (an object's path) doesn't define.
+    pub(crate) fn warn_unknown(&mut self, prefix: &str, member: &Member) {
+        let path = match prefix {
+            "" => member.key.clone(),
+            prefix => format!("{prefix}.{}", member.key),
+        };
+        let message = format!("unknown property \"{}\"", member.key);
+        self.warn(path, member.key_span, message);
     }
 
     pub(crate) fn warn(&mut self, path: impl Into<String>, span: Span, message: impl Into<String>) {

@@ -23,11 +23,7 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
             let what = format!("\"sky.{}\"", m.key);
             stars |= cx.preview(Preview::Stars, format!("sky.{}", m.key), m.key_span, what);
         } else if !NAMES.contains(&m.key.as_str()) && !m.key.ends_with("-transition") {
-            cx.warn(
-                format!("sky.{}", m.key),
-                m.key_span,
-                format!("unknown sky property \"{}\"", m.key),
-            );
+            cx.warn_unknown("sky", m);
         }
     }
     let prop = |name, ty: PropertyType, default| {

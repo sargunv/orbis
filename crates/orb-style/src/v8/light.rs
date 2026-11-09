@@ -49,11 +49,7 @@ pub(crate) fn parse(cx: &mut Cx, json: Option<&Json>) -> Light {
     if let Some(json) = json {
         for member in cx.object(json, "light").unwrap_or_default() {
             if !["anchor", "position", "color", "intensity"].contains(&member.key.as_str()) {
-                cx.warn(
-                    format!("light.{}", member.key),
-                    member.key_span,
-                    format!("unknown light property \"{}\"", member.key),
-                );
+                cx.warn_unknown("light", member);
             }
         }
     }
