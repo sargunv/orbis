@@ -210,11 +210,11 @@ pub enum SymbolSize {
     /// Per feature, from the placed symbol.
     #[default]
     Source,
-    /// Per zoom: the curve over the first `count` `(zoom, size)` stops.
+    /// Per zoom: the curve between the two `(zoom, size)` stops around
+    /// the frame's zoom (equal when it is outside the stops).
     Camera {
         curve: Curve,
-        stops: [[f32; 2]; SymbolSize::MAX_STOPS],
-        count: usize,
+        stops: [[f32; 2]; 2],
     },
     /// Per feature and zoom: the placed symbol's sizes at the tile's
     /// covering zooms, blended by the curve.
@@ -224,24 +224,15 @@ pub enum SymbolSize {
 }
 
 impl SymbolSize {
-    /// At most this many camera stops are kept; GL JS has no limit.
-    pub const MAX_STOPS: usize = 8;
-
     fn put(&self, b: &mut Block, at: usize) {
         use orb_shaders::layout::symbol_size as n;
         let (kind, size, curve, stops) = match self {
             Self::Constant(size) => (0, *size, Curve::Step, &[][..]),
             Self::Source => (1, 0.0, Curve::Step, &[][..]),
-            Self::Camera {
-                curve,
-                stops,
-                count,
-            } => (2, 0.0, *curve, &stops[..(*count).min(Self::MAX_STOPS)]),
+            Self::Camera { curve, stops } => (2, 0.0, *curve, &stops[..]),
             Self::Composite { curve } => (3, 0.0, *curve, &[][..]),
         };
-        b.u(at + n::KIND, &[kind])
-            .f(at + n::SIZE, &[size])
-            .u(at + n::STOP_COUNT, &[stops.len() as u32]);
+        b.u(at + n::KIND, &[kind]).f(at + n::SIZE, &[size]);
         b.curves(at + n::CURVE, &[curve])
             .f(at + n::STOPS, stops.as_flattened());
     }

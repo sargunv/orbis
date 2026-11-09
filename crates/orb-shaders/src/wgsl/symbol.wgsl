@@ -15,12 +15,12 @@ struct SymbolSize {
     kind: u32,
     // A constant size; unused otherwise.
     size: f32,
-    stop_count: u32,
-    _pad: u32,
+    _pad: vec2<u32>,
     // A camera or composite size's interpolation.
     curve: Curve,
-    // A camera size's (zoom, size) stops, two per vec4.
-    stops: array<vec4<f32>, 4>,
+    // A camera size's two stops around the frame's zoom: zoom, size, zoom,
+    // size.
+    stops: vec4<f32>,
 };
 
 struct SymbolNode {
@@ -175,23 +175,8 @@ fn feature_size(s: SymbolSize, packed: vec2<f32>, layout_size: f32, lo: f32, hi:
     switch s.kind {
         case 1u: { return packed.x; }
         case 2u: {
-            var lower = i32(s.stop_count) - 1;
-            loop {
-                if lower <= 0 { break; }
-                let stop = s.stops[u32(lower) / 2u];
-                let z = select(stop.z, stop.x, (u32(lower) & 1u) == 0u);
-                if z <= frame.zoom { break; }
-                lower -= 1;
-            }
-            let upper = min(lower + 1, i32(s.stop_count) - 1);
-            let a = s.stops[u32(lower) / 2u];
-            let b = s.stops[u32(upper) / 2u];
-            let za = select(a.z, a.x, (u32(lower) & 1u) == 0u);
-            let sa = select(a.w, a.y, (u32(lower) & 1u) == 0u);
-            let zb = select(b.z, b.x, (u32(upper) & 1u) == 0u);
-            let sb = select(b.w, b.y, (u32(upper) & 1u) == 0u);
-            let t = curve_factor(s.curve, frame.zoom, za, zb);
-            return min(mix(sa, sb, t), layout_size);
+            let t = curve_factor(s.curve, frame.zoom, s.stops.x, s.stops.z);
+            return min(mix(s.stops.y, s.stops.w, t), layout_size);
         }
         case 3u: {
             let t = curve_factor(s.curve, frame.zoom, lo, hi);

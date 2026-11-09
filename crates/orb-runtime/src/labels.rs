@@ -1444,8 +1444,8 @@ fn fade_out(words: &mut [u32], change: f32) {
     }
 }
 
-/// How a size property is drawn per frame.
-fn size_paint(property: &orb_style::PropertyRef<'_, f64>) -> orb_render::SymbolSize {
+/// How a size property is drawn per frame at `zoom`.
+fn size_paint(property: &orb_style::PropertyRef<'_, f64>, zoom: f64) -> orb_render::SymbolSize {
     let curve = || {
         let interpolation = property
             .as_expression()
@@ -1469,18 +1469,22 @@ fn size_paint(property: &orb_style::PropertyRef<'_, f64>) -> orb_render::SymbolS
         orb_style::Kind::Source => orb_render::SymbolSize::Source,
         orb_style::Kind::Composite => orb_render::SymbolSize::Composite { curve: curve() },
         orb_style::Kind::Camera => {
+            // The stops around `zoom`, which the shader blends at the
+            // frame's: paint is written again when the zoom changes, so a
+            // curve of any length draws exactly.
             let zooms = property
                 .as_expression()
                 .and_then(|e| e.zoom_curve())
                 .map_or(&[][..], |c| &c.stops);
-            let mut stops = [[0.0f32; 2]; orb_render::SymbolSize::MAX_STOPS];
-            for (stop, &zoom) in stops.iter_mut().zip(zooms) {
-                *stop = [zoom as f32, property.evaluate(zoom) as f32];
-            }
+            let lower = zooms.iter().rposition(|&z| z <= zoom).unwrap_or(0);
+            let upper = (lower + 1).min(zooms.len().saturating_sub(1));
+            let stop = |i: usize| {
+                let z = zooms.get(i).copied().unwrap_or(zoom);
+                [z as f32, property.evaluate(z) as f32]
+            };
             orb_render::SymbolSize::Camera {
                 curve: curve(),
-                stops,
-                count: zooms.len().min(orb_render::SymbolSize::MAX_STOPS),
+                stops: [stop(lower), stop(upper)],
             }
         }
     }
@@ -1556,12 +1560,15 @@ pub(crate) fn paint(
             viewport: l.get(part.translate_anchor).evaluate(zoom)
                 == orb_style::TranslateAnchor::Viewport,
         },
-        size: size_paint(&l.get(if is_text {
-            orb_style::TEXT_SIZE
-        } else {
-            orb_style::ICON_SIZE
-        })),
-        text_size: size_paint(&l.get(orb_style::TEXT_SIZE)),
+        size: size_paint(
+            &l.get(if is_text {
+                orb_style::TEXT_SIZE
+            } else {
+                orb_style::ICON_SIZE
+            }),
+            zoom,
+        ),
+        text_size: size_paint(&l.get(orb_style::TEXT_SIZE), zoom),
         is_text,
         pitch_with_map: pitch,
         rotate_with_map: rotate,
@@ -1647,6 +1654,28 @@ mod tests {
 
     use super::*;
     use crate::worker::TileWorker;
+
+    /// A camera size curve of any length draws exactly: the stops around
+    /// the zoom, beyond the eight the node uniform once held.
+    #[test]
+    fn camera_sizes_take_the_stops_around_the_zoom() {
+        let stops: Vec<String> = (0..12).map(|z| format!("{z}, {}", z * 2)).collect();
+        let style = orb_style::v8::parse(&format!(
+            r#"{{"version": 8, "sources": {{"s": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": []}}}}}},
+                "layers": [{{"id": "t", "type": "symbol", "source": "s",
+                "layout": {{"text-size": ["interpolate", ["linear"], ["zoom"], {}]}}}}]}}"#,
+            stops.join(", ")
+        ))
+        .unwrap();
+        let size = style.layers[0].get(orb_style::TEXT_SIZE);
+        let at = |zoom| match size_paint(&size, zoom) {
+            orb_render::SymbolSize::Camera { stops, .. } => stops,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(at(9.5), [[9.0, 18.0], [10.0, 20.0]]);
+        assert_eq!(at(11.0), [[11.0, 22.0], [11.0, 22.0]]);
+        assert_eq!(at(-1.0), [[0.0, 0.0], [1.0, 2.0]]);
+    }
 
     struct Harness {
         gpu: WgpuGpu,
