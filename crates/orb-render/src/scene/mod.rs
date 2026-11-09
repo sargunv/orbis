@@ -752,6 +752,10 @@ pub struct NodeCull {
     /// It draws symbols: held tiles' [`PlacementTarget::Labels`]
     /// placements too.
     pub labels: bool,
+    /// Its point quads lie on the surface (heatmap kernels, map-aligned
+    /// circles): on a globe each draws as a grid of cells that follows the
+    /// sphere (`types.wgsl`'s `SURFACE`).
+    pub surface: bool,
 }
 
 /// How a render node draws its visible chunks, which the cull pass
@@ -763,8 +767,9 @@ pub enum NodeDraw {
     /// the image's own tile units (a warped tile's mesh is in other units),
     /// so the cull doesn't narrow their bounds to the clip rectangles.
     Images,
-    /// Point families: 256 six-vertex instances per visible chunk. Anchors
-    /// are clipped, then the full footprints expanded.
+    /// Point families: 256 instances per visible chunk, each a quad of six
+    /// vertices (or a grid of such cells for a [`NodeCull::surface`] node on
+    /// a globe). Anchors are clipped, then the full footprints expanded.
     Points,
     /// Compacted indices: each candidate has a slot in the compacted index
     /// buffer, which the cull pass fills with the chunk's indices when it
@@ -789,6 +794,7 @@ impl NodeCull {
                 DRAPED
             }
             | if self.visible { 0 } else { HIDDEN }
+            | if self.surface { SURFACE } else { 0 }
     }
 }
 
@@ -808,6 +814,9 @@ const DRAPED: u32 = 1 << 8;
 /// The cull's flag on a node's draw word: the node draws nothing
 /// (`cull.wgsl`'s `HIDDEN`).
 const HIDDEN: u32 = 1 << 9;
+/// The cull's flag on a node's draw word: its point quads lie on the
+/// surface (`cull.wgsl`'s `SURFACE`).
+const SURFACE: u32 = 1 << 10;
 
 #[derive(Debug)]
 pub(crate) struct Scene {

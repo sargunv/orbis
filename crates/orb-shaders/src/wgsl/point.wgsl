@@ -14,11 +14,20 @@ fn pull_point(node_index: u32, instance: u32, out: ptr<function, Pulled>) -> boo
     return true;
 }
 
-fn point_corner(index: u32) -> vec2<f32> {
+// Vertex `index` of a point quad split into `cells` × `cells` (six
+// vertices a cell), in [-1, 1].
+fn point_corner(index: u32, cells: u32) -> vec2<f32> {
     let corners = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(1.0, -1.0),
-        vec2<f32>(-1.0, -1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0));
-    return corners[index % 6u];
+        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 1.0));
+    let cell = index / 6u;
+    let at = vec2<f32>(f32(cell % cells), f32(cell / cells)) + corners[index % 6u];
+    return at * (2.0 / f32(cells)) - 1.0;
+}
+
+// The cells per side of a node's point quads (`point_cells`).
+fn node_point_cells(surface: bool) -> u32 {
+    return point_cells(surface, frame.globe_amount, frame.globe_plane);
 }
 
 // Clip the anchor, never the footprint. Half-open rectangles give an

@@ -748,6 +748,7 @@ impl Renderer {
                         visible: true,
                         target: PlacementTarget::Map,
                         labels: family.is_symbol(),
+                        surface: false,
                     },
                 ),
             };
@@ -1250,9 +1251,14 @@ impl Renderer {
             }
             _ => 0.0,
         };
-        if margin != entry.cull.margin_px || elevation != entry.cull.elevation {
+        let surface = paint.on_surface();
+        if margin != entry.cull.margin_px
+            || elevation != entry.cull.elevation
+            || surface != entry.cull.surface
+        {
             entry.cull.margin_px = margin;
             entry.cull.elevation = elevation;
+            entry.cull.surface = surface;
             self.scene.set_node(node, entry.scene_cull());
         }
     }

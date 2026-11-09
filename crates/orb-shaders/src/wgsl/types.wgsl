@@ -192,6 +192,25 @@ const DRAPED: u32 = 256u;
 // A node's draw word flag: hidden, it draws nothing and keeps its
 // candidates.
 const HIDDEN: u32 = 512u;
+// A point node's draw word flag: its quads lie on the surface (heatmap
+// kernels, map-aligned circles), so on a globe each is a grid of cells
+// whose vertices go onto the sphere one by one.
+const SURFACE: u32 = 1024u;
+// A surface quad's cells per side on a globe. A single quad is a chord: its
+// middle sinks below the sphere, and seen from the eye a wide kernel's peak
+// slides toward the view's centre (a 60 px heatmap kernel at zoom 1, 30°
+// from the target, peaks 18 px short of its point). An even count puts a
+// vertex on the point itself; four cells keep the rest of the footprint
+// within a pixel or so of the sphere. GL JS tessellates these as 3 × 3
+// uneven cells (`CircleBucket`, granularity 3), which leaves that kernel's
+// peak 4 px short.
+const SURFACE_CELLS: u32 = 4u;
+
+// A point quad's cells per side: one, or SURFACE_CELLS for a surface
+// node's quads on a globe (`frame.globe_amount`, `frame.globe_plane`).
+fn point_cells(surface: bool, globe_amount: f32, globe_plane: u32) -> u32 {
+    return select(1u, SURFACE_CELLS, surface && globe_amount > 0.0 && globe_plane == 0u);
+}
 
 // A render node's slice of the candidate and visible lists.
 struct NodeCull {

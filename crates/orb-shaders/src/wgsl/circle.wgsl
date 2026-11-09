@@ -65,7 +65,7 @@ fn vs_circle(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
     if (node.table_mask & 16u) != 0u { stroke = table_color(row, 4u, node.curves[4], tile.zoom); }
     if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0]); }
     if from_state(state, node.state, 4u) { stroke = state_color(state, node.state, 4u, node.curves[4]); }
-    let corner = point_corner(index);
+    let corner = point_corner(index, node_point_cells((node.flags & 4u) != 0u));
     let shift = translate_world(node.translate, node.flags & 1u, tile);
     // On terrain, the ground under the anchor (GL JS `get_elevation`).
     let z = ground_elevation(tile, p) * frame.extrusion_scale;

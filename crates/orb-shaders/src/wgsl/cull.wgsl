@@ -203,7 +203,8 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
 
     if lane == 0u {
         let at = index * ARGS_WORDS;
-        let vertices = select(0u, select(CHUNK_VERTICES, 6u, points), written > 0u);
+        let cells = point_cells((node.draw & SURFACE) != 0u, frame.globe_amount, frame.globe_plane);
+        let vertices = select(0u, select(CHUNK_VERTICES, 6u * cells * cells, points), written > 0u);
         let instances = written * select(1u, 256u, points);
         atomicStore(&args[at], vertices);
         atomicStore(&args[at + 1u], instances);
