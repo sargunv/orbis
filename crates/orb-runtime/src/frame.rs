@@ -261,7 +261,13 @@ impl Map {
             requests.push(tile);
         }
         report.tiles_loading += *loading;
+        // Loads nothing wants now give way to those the view waits for.
+        let unwanted = pyramid.unwanted_loads();
         style.draws[index] = Some(update.draw);
+        let (id, key) = (style.id, style.worker.plan().sources[index].key);
+        for tile in unwanted {
+            self.services.jobs.cancel(id, key, tile);
+        }
         for tile in requests {
             self.send_job(index, tile, None, false, None);
         }

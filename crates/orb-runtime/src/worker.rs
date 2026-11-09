@@ -1399,6 +1399,59 @@ pub(crate) mod tests {
         assert_eq!(tiles, 1, "{gets:?}");
     }
 
+    /// Holds every tile fetch until the test answers it.
+    #[derive(Default)]
+    struct HeldTiles(Mutex<Vec<orb_host::FetchDone>>);
+
+    impl Fetch for HeldTiles {
+        fn get_range(&self, _: &str, _: u64, _: u64, _: orb_host::FetchDone) {
+            unreachable!("no archives")
+        }
+
+        fn get(&self, _: &str, done: orb_host::FetchDone) {
+            self.0.lock().unwrap().push(done);
+        }
+    }
+
+    /// Tile fetches take turns: those past [`crate::job_host::FETCHES`]
+    /// wait, and one given up while it waits never starts and answers
+    /// cancelled at once. One already fetching completes as usual, and
+    /// each that ends starts the next.
+    #[test]
+    fn loads_given_up_before_their_turn_never_fetch() {
+        let fetch = Arc::new(HeldTiles::default());
+        let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
+        host.set_style(1, Arc::new(TileWorker::new(SYMBOLS).unwrap()));
+        let n = crate::job_host::FETCHES as u32;
+        let (tx, rx) = std::sync::mpsc::channel();
+        for col in 0..n + 2 {
+            let tx = tx.clone();
+            let tile = TileIndex::new(14, col, 0);
+            let request = TileRequest {
+                location: TileLocation::Url(format!("local://{col}")),
+                ..request(tile)
+            };
+            host.load(request, Box::new(move |r| tx.send((col, r)).unwrap()));
+        }
+        assert_eq!(fetch.0.lock().unwrap().len(), n as usize);
+        // The first waits its turn: cancelled. The second fetches already.
+        host.cancel(1, 1, TileIndex::new(14, n, 0));
+        host.cancel(1, 1, TileIndex::new(14, 0, 0));
+        let answered: Vec<_> = rx.try_iter().collect();
+        assert!(
+            matches!(answered[..], [(col, Ok(crate::Loaded::Cancelled))] if col == n),
+            "{answered:?}"
+        );
+        // A fetch ends: the last waiting one starts.
+        let first = fetch.0.lock().unwrap().remove(0);
+        first(Err(orb_host::FetchError::NotFound));
+        assert!(matches!(
+            rx.try_iter().next(),
+            Some((0, Ok(crate::Loaded::Missing)))
+        ));
+        assert_eq!(fetch.0.lock().unwrap().len(), n as usize);
+    }
+
     /// A glyph range another context fetches for the job hosts: a tile
     /// that needs it waits for it rather than fetch it again.
     #[test]

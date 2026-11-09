@@ -2077,6 +2077,9 @@ impl Map {
         }
         terrain.loading += loads.len() as u32;
         report.tiles_loading += terrain.loading;
+        for tile in terrain.pyramid.unwanted_loads() {
+            self.services.jobs.cancel(style.id, terrain.key, tile);
+        }
         self.counts.loads += loads.len() as u32;
         for request in loads {
             self.load(request, None, true);

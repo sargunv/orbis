@@ -68,6 +68,12 @@ pub enum JobRequest {
         url: String,
         head: Vec<u8>,
     },
+    /// [`Jobs::cancel`].
+    Cancel {
+        style: u64,
+        source: u32,
+        tile: orb_crs::TileIndex,
+    },
 }
 
 /// A job host's answer to the request with `id`. Its large parts travel
@@ -91,6 +97,10 @@ pub enum JobReply {
     },
     /// The source doesn't have the tile.
     Missing {
+        id: u32,
+    },
+    /// The load was given up before its fetch started.
+    Cancelled {
         id: u32,
     },
     Features {
@@ -119,6 +129,7 @@ impl JobReply {
             | Self::Image { id }
             | Self::Dem { id, .. }
             | Self::Missing { id }
+            | Self::Cancelled { id }
             | Self::Features { id, .. }
             | Self::Answer { id, .. }
             | Self::Glyphs { id, .. }
@@ -141,6 +152,10 @@ pub trait Jobs: Send + Sync {
     /// Loads and lays out a tile. A tile that doesn't exist yields an empty
     /// result.
     fn load(&self, request: TileRequest, done: TileDone);
+    /// Gives up the load of `tile` of style `style`'s source `source`: one
+    /// whose fetch hasn't started never does and answers
+    /// [`TileResult::cancelled`]; others complete as usual.
+    fn cancel(&self, _style: u64, _source: u32, _tile: orb_crs::TileIndex) {}
     /// Starts fetching glyph ranges style `id`'s tiles are about to need,
     /// so that their layout finds them in.
     fn prefetch_glyphs(&self, _id: u64, _urls: Vec<String>) {}
@@ -227,6 +242,10 @@ impl Jobs for PoolJobs {
         self.host.cluster(request, done);
     }
 
+    fn cancel(&self, style: u64, source: u32, tile: orb_crs::TileIndex) {
+        self.host.cancel(style, source, tile);
+    }
+
     fn load(&self, request: TileRequest, done: TileDone) {
         let (decode, executor) = (Arc::clone(&self.decode), Arc::clone(&self.executor));
         let dem_unpack = request.dem_unpack;
@@ -236,6 +255,10 @@ impl Jobs for PoolJobs {
                 Ok(crate::Loaded::Tile(build)) => done(Ok(build.into())),
                 Ok(crate::Loaded::Missing) => done(Ok(TileResult {
                     missing: true,
+                    ..TileResult::default()
+                })),
+                Ok(crate::Loaded::Cancelled) => done(Ok(TileResult {
+                    cancelled: true,
                     ..TileResult::default()
                 })),
                 Ok(crate::Loaded::Image { bytes, kind }) => executor.spawn(Box::new(move || {
@@ -350,6 +373,10 @@ pub struct TileResult {
     /// The tileset doesn't have the tile; nearby zooms stand in.
     #[serde(skip)]
     pub missing: bool,
+    /// The map gave the load up before its fetch started
+    /// ([`Jobs::cancel`]): nothing was loaded.
+    #[serde(skip)]
+    pub cancelled: bool,
 }
 
 /// An image tile's texels, rows top to bottom.
@@ -452,6 +479,7 @@ impl From<TileBuild> for TileResult {
             image: None,
             dem: None,
             missing: false,
+            cancelled: false,
             hit_geometry,
         };
         result.link_hits();

@@ -410,6 +410,11 @@ impl Map {
             pyramid.insert_missing(tile);
             return None;
         }
+        // Given up before it loaded: a later plan that wants it asks again.
+        if build.cancelled {
+            pyramid.forget_loading(tile);
+            return None;
+        }
         // Neighbours' prepares refer to an image tile's layer, so only a
         // tile the pyramid still wants is uploaded.
         if !pyramid.is_loading(tile) {

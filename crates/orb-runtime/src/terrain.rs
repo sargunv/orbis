@@ -445,6 +445,14 @@ impl Terrain {
                 self.pyramid.insert_missing(tile);
                 return Ok(());
             }
+            // Given up before it loaded: a later cover that wants it asks
+            // again.
+            Ok(crate::TileResult {
+                cancelled: true, ..
+            }) => {
+                self.pyramid.forget_loading(tile);
+                return Ok(());
+            }
             Ok(crate::TileResult {
                 image: Some(image),
                 dem: Some(dem),

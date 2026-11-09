@@ -2,12 +2,14 @@
 //! query and glyph jobs need beyond a worker's CPU work. It keeps the style
 //! revisions requests name, shares fetches between the requests that need
 //! them (a source's data document, glyph ranges, word data, font files), and
-//! answers each request once. Natively [`PoolJobs`](crate::PoolJobs) runs one
-//! in the map's process; on the web every job worker runs one behind the
-//! page's messages. Image tiles come out as their encoded bytes: each
-//! platform decodes them its own way.
+//! answers each request once. Tile fetches take turns, [`FETCHES`] at once,
+//! so that a load its map gives up before its turn
+//! ([`cancel`](JobHost::cancel)) never starts. Natively
+//! [`PoolJobs`](crate::PoolJobs) runs one in the map's process; on the web
+//! every job worker runs one behind the page's messages. Image tiles come
+//! out as their encoded bytes: each platform decodes them its own way.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +21,7 @@ use crate::loader::TileLoader;
 use crate::style::ImageKind;
 use crate::worker::{Built, StyleUpdate, TileRequest, TileWorker};
 use crate::{FeatureRequest, FeaturesDone, SpriteIcons, TileBuild};
+use orb_crs::TileIndex;
 
 /// What a tile load came to.
 #[derive(Debug)]
@@ -31,6 +34,60 @@ pub enum Loaded {
     },
     /// The source doesn't have the tile.
     Missing,
+    /// Its map gave the load up before its fetch started
+    /// ([`JobHost::cancel`]).
+    Cancelled,
+}
+
+/// Tile fetches a job host runs at once. Natively they feed the fetch
+/// threads; in a browser they keep the network queue short, so that loads
+/// given up wait here, where they can be dropped, rather than there.
+pub(crate) const FETCHES: usize = 16;
+
+/// A load its map can give up: its style, source and tile.
+type LoadKey = (u64, u32, TileIndex);
+
+/// Tile fetches running, and those waiting for a turn in request order.
+#[derive(Default)]
+struct Fetches {
+    running: usize,
+    waiting: VecDeque<(Option<LoadKey>, Waiting)>,
+    /// A thread starts waiting fetches: one whose fetch completes as it
+    /// starts hands its turn on without starting more itself.
+    starting: bool,
+}
+
+/// Starts a fetch with its turn, or, given none, answers it cancelled.
+type Waiting = Box<dyn FnOnce(Option<Turn>) + Send>;
+
+/// A running fetch's turn: dropped, the next waiting fetch starts.
+struct Turn(Arc<Mutex<Fetches>>);
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        self.0.lock().expect("fetches poisoned").running -= 1;
+        start_waiting(&self.0);
+    }
+}
+
+/// Starts waiting fetches while turns are free, unless another call
+/// already does.
+fn start_waiting(fetches: &Arc<Mutex<Fetches>>) {
+    let mut state = fetches.lock().expect("fetches poisoned");
+    if state.starting {
+        return;
+    }
+    state.starting = true;
+    while state.running < FETCHES {
+        let Some((_, fetch)) = state.waiting.pop_front() else {
+            break;
+        };
+        state.running += 1;
+        drop(state);
+        fetch(Some(Turn(Arc::clone(fetches))));
+        state = fetches.lock().expect("fetches poisoned");
+    }
+    state.starting = false;
 }
 
 /// Called once with a load's outcome, on any thread.
@@ -48,6 +105,7 @@ type GlyphWaiters = HashMap<(u64, String), Vec<Box<dyn FnOnce() + Send>>>;
 pub struct JobHost {
     fetch: Arc<dyn Fetch>,
     loader: Arc<TileLoader>,
+    fetches: Arc<Mutex<Fetches>>,
     executor: Arc<dyn Executor>,
     /// The latest revision of the current style and of the one before it,
     /// whose requests may still be in flight.
@@ -264,6 +322,7 @@ impl JobHost {
     pub fn new(fetch: Arc<dyn Fetch>, executor: Arc<dyn Executor>) -> Arc<Self> {
         Arc::new(Self {
             loader: TileLoader::new(Arc::clone(&fetch)),
+            fetches: Arc::default(),
             glyphs: Arc::new(GlyphLoads {
                 fetch: Arc::clone(&fetch),
                 executor: Arc::clone(&executor),
@@ -398,45 +457,91 @@ impl JobHost {
             self.load_data(worker, url, request, done);
             return;
         }
-        let executor = Arc::clone(&self.executor);
+        let (executor, loader) = (Arc::clone(&self.executor), Arc::clone(&self.loader));
+        // A whole tile's load, which its map may give up; not a relayout.
+        let key = (request.nodes.is_none() && !request.rows_only).then_some((
+            request.style,
+            request.source,
+            request.tile,
+        ));
         if let Some(kind) = worker.image_kind(request.source) {
-            self.loader.load(
-                request.location,
-                request.tile,
+            let fetch: Waiting = Box::new(move |turn| {
+                let Some(turn) = turn else {
+                    return done(Ok(Loaded::Cancelled));
+                };
+                loader.load(
+                    request.location,
+                    request.tile,
+                    request.encoding,
+                    Box::new(move |fetched| {
+                        drop(turn);
+                        match fetched {
+                            // An archive's left-out tile draws nothing.
+                            Ok((bytes, _)) if bytes.is_empty() => {
+                                done(Ok(Loaded::Tile(TileBuild::default())))
+                            }
+                            Ok((bytes, _)) => done(Ok(Loaded::Image { bytes, kind })),
+                            Err(e) => done(missing(e)),
+                        }
+                    }),
+                );
+            });
+            return self.take_turn(key, fetch);
+        }
+        let newest = Arc::clone(&self.newest);
+        let fetch: Waiting = Box::new(move |turn| {
+            let Some(turn) = turn else {
+                return done(Ok(Loaded::Cancelled));
+            };
+            let data_tile = request.data_tile();
+            loader.load(
+                request.location.clone(),
+                data_tile,
                 request.encoding,
-                Box::new(move |fetched| match fetched {
-                    // An archive's left-out tile draws nothing.
-                    Ok((bytes, _)) if bytes.is_empty() => {
-                        done(Ok(Loaded::Tile(TileBuild::default())))
-                    }
-                    Ok((bytes, _)) => done(Ok(Loaded::Image { bytes, kind })),
-                    Err(e) => done(missing(e)),
+                Box::new(move |fetched| {
+                    drop(turn);
+                    executor.spawn(Box::new(move || match fetched {
+                        _ if newest.load(Ordering::Relaxed) > request.style => {
+                            done(Err(format!("style {} was replaced", request.style)))
+                        }
+                        Ok((bytes, encoding)) => {
+                            let request = TileRequest {
+                                encoding,
+                                ..request
+                            };
+                            glyphs.complete(worker, Arc::new(bytes), request, done)
+                        }
+                        Err(e) => done(missing(e)),
+                    }));
                 }),
             );
-            return;
+        });
+        self.take_turn(key, fetch);
+    }
+
+    /// Runs `fetch` in its turn: at once while fewer than [`FETCHES`] run,
+    /// or once one ends.
+    fn take_turn(&self, key: Option<LoadKey>, fetch: Waiting) {
+        (self.fetches.lock().expect("fetches poisoned").waiting).push_back((key, fetch));
+        start_waiting(&self.fetches);
+    }
+
+    /// Gives up the load of `tile` of style `style`'s source `source`: if
+    /// its fetch hasn't started, it never does, and the load answers
+    /// [`Loaded::Cancelled`]. One already fetching completes as usual.
+    pub fn cancel(&self, style: u64, source: u32, tile: TileIndex) {
+        let key = Some((style, source, tile));
+        let given_up: Vec<Waiting> = {
+            let mut fetches = self.fetches.lock().expect("fetches poisoned");
+            let (given_up, kept) = std::mem::take(&mut fetches.waiting)
+                .into_iter()
+                .partition(|(k, _)| *k == key);
+            fetches.waiting = kept;
+            given_up.into_iter().map(|(_, fetch)| fetch).collect()
+        };
+        for fetch in given_up {
+            fetch(None);
         }
-        let data_tile = request.data_tile();
-        let newest = Arc::clone(&self.newest);
-        self.loader.load(
-            request.location.clone(),
-            data_tile,
-            request.encoding,
-            Box::new(move |fetched| {
-                executor.spawn(Box::new(move || match fetched {
-                    _ if newest.load(Ordering::Relaxed) > request.style => {
-                        done(Err(format!("style {} was replaced", request.style)))
-                    }
-                    Ok((bytes, encoding)) => {
-                        let request = TileRequest {
-                            encoding,
-                            ..request
-                        };
-                        glyphs.complete(worker, Arc::new(bytes), request, done)
-                    }
-                    Err(e) => done(missing(e)),
-                }));
-            }),
-        );
     }
 
     /// Loads a tile of a source whose data is one document (GeoJSON by

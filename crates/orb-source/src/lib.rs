@@ -76,6 +76,8 @@ enum StandIn {
 struct Entry<T> {
     state: State<T>,
     last_used: u64,
+    /// Loading, its load was given up ([`unwanted_loads`](TilePyramid::unwanted_loads)).
+    given_up: bool,
 }
 
 /// One source's tiles: loading, ready and cached.
@@ -295,6 +297,7 @@ impl<T> TilePyramid<T> {
             self.tiles.entry(tile).or_insert(Entry {
                 state: State::Loading,
                 last_used: frame,
+                given_up: false,
             });
         }
         for tile in &update.used {
@@ -302,6 +305,25 @@ impl<T> TilePyramid<T> {
                 entry.last_used = frame;
             }
         }
+    }
+
+    /// Loading tiles the last update didn't use, each once: nothing draws
+    /// them or waits for them now, so their loads may be cancelled, as GL
+    /// JS aborts the requests of tiles it drops. One a later update wants
+    /// again stays loading until its result comes back; a cancelled one
+    /// is then forgotten ([`forget_loading`](Self::forget_loading)) and
+    /// requested anew.
+    pub fn unwanted_loads(&mut self) -> Vec<TileIndex> {
+        let frame = self.frame;
+        (self.tiles.iter_mut())
+            .filter(|(_, e)| {
+                matches!(e.state, State::Loading) && e.last_used != frame && !e.given_up
+            })
+            .map(|(&tile, e)| {
+                e.given_up = true;
+                tile
+            })
+            .collect()
     }
 
     /// Counts `tile` as used by the last update, as if its plan had used
@@ -1079,6 +1101,24 @@ mod tests {
                 regions: vec![t(3, 1, 2)]
             }]
         );
+    }
+
+    /// Loads the view stopped wanting are given up once each; a given-up
+    /// load the view wants again stays loading until its result, then is
+    /// asked for anew.
+    #[test]
+    fn loads_the_view_left_are_given_up_once() {
+        let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
+        let (here, there) = (cover(&[(3, 1, 2)]), cover(&[(3, 6, 6)]));
+        p.update(&here);
+        assert!(p.unwanted_loads().is_empty());
+        p.update(&there);
+        assert_eq!(p.unwanted_loads(), [t(3, 1, 2)]);
+        assert!(p.unwanted_loads().is_empty());
+        // Back before the cancelled load answers: nothing asks twice.
+        assert!(p.update(&here).request.is_empty());
+        p.forget_loading(t(3, 1, 2));
+        assert_eq!(p.update(&here).request, [t(3, 1, 2)]);
     }
 
     #[test]

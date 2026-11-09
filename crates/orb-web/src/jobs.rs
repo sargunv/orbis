@@ -342,6 +342,10 @@ impl WorkerJobs {
                 missing: true,
                 ..TileResult::default()
             }),
+            JobReply::Cancelled { .. } => Ok(TileResult {
+                cancelled: true,
+                ..TileResult::default()
+            }),
             // A DEM tile, decoded by the core in the job worker.
             JobReply::Dem {
                 width, elevations, ..
@@ -606,6 +610,27 @@ impl Jobs for WorkerJobs {
         );
     }
 
+    fn cancel(&self, style: u64, source: u32, tile: TileIndex) {
+        let key = (style, source, tile);
+        let worker = {
+            let state = self.state.lock().expect("jobs poisoned");
+            state.sent_to.values().find_map(|(worker, request)| {
+                let request = request.as_ref()?;
+                (load_key(request) == key && request.nodes.is_none()).then_some(*worker)
+            })
+        };
+        if let Some(worker) = worker {
+            self.post(
+                worker,
+                &bytes(&wire::encode(&JobRequest::Cancel {
+                    style,
+                    source,
+                    tile,
+                })),
+            );
+        }
+    }
+
     fn features(&self, request: orb_runtime::FeatureRequest, done: orb_runtime::FeaturesDone) {
         let (source, tile) = (request.tile.source, request.tile.data_tile());
         self.send(
@@ -684,6 +709,14 @@ impl JobWorker {
                 self.host.add_archive_head(&url, &head);
                 return Ok(None);
             }
+            JobRequest::Cancel {
+                style,
+                source,
+                tile,
+            } => {
+                self.host.cancel(style, source, tile);
+                return Ok(None);
+            }
             JobRequest::Glyphs { style, urls } => {
                 self.host.expect_glyphs(style, urls);
                 return Ok(None);
@@ -731,6 +764,9 @@ impl JobWorker {
                 JobAnswer::Load(Ok(Loaded::Tile(build))) => tile_reply(id, build),
                 JobAnswer::Load(Ok(Loaded::Missing)) => {
                     reply(&JobReply::Missing { id }, None, None)
+                }
+                JobAnswer::Load(Ok(Loaded::Cancelled)) => {
+                    reply(&JobReply::Cancelled { id }, None, None)
                 }
                 // A terrain DEM tile's texels, for the GPU and its
                 // elevations for the CPU.
