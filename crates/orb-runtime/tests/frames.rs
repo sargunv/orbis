@@ -857,6 +857,35 @@ mod tests {
         assert_eq!((report.idle, shown), (true, Some(1.0)));
     }
 
+    /// While the camera moves, frames come at the display's rate and the
+    /// view is about to change: `prepare` leaves arrivals to them.
+    #[test]
+    fn prepare_leaves_a_moving_camera_to_its_frames() {
+        let mut offscreen = null_island(
+            r#"{"version":8,
+            "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
+            "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
+        );
+        offscreen.frame();
+        let target = orb_runtime::CameraTarget {
+            zoom: Some(offscreen.map.zoom() + 0.5),
+            ..Default::default()
+        };
+        let options = orb_runtime::EaseOptions {
+            duration: 60_000.0,
+            ..Default::default()
+        };
+        offscreen.map.ease_to(&target, options);
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_millis(300) {
+            let (map, gpu) = (&mut offscreen.map, &mut offscreen.gpu);
+            let renderer = offscreen.renderer.as_mut().expect("made by the frame");
+            map.prepare(gpu, renderer, offscreen.viewport, 1.0);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(offscreen.map.shown_labels().is_empty());
+    }
+
     /// A source with symbol layers loads its tiles while the sprites load:
     /// only their layout waits for the icons.
     #[test]

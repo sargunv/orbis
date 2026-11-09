@@ -1139,7 +1139,9 @@ impl Map {
     /// camera or drawing: for a host that hears of arrivals between
     /// frames, so that each request goes out without waiting for the next
     /// frame. The frames after it draw as they would without it. Nothing
-    /// before the first [`render`](Self::render).
+    /// before the first [`render`](Self::render), nor while the camera
+    /// moves: frames come at the display's rate then, and what it would
+    /// ask for is for a view about to change.
     pub fn prepare(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1147,7 +1149,7 @@ impl Map {
         viewport: Viewport,
         pixel_ratio: f32,
     ) {
-        if self.born.is_some() && self.renderer == Some(renderer.id()) {
+        if self.born.is_some() && self.renderer == Some(renderer.id()) && !self.is_moving() {
             self.frame(gpu, renderer, None, viewport, pixel_ratio);
         }
     }
