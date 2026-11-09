@@ -375,8 +375,10 @@ impl Map {
                 return None;
             };
             // Raster tiles fade in over their layers' longest duration;
-            // still output shows them at once.
+            // still output, and a map not yet idle once (as GL JS's first
+            // view, which has no tiles to fade from), shows them at once.
             let fades = self.mode == RenderMode::Continuous
+                && self.events.idled
                 && !matches!(plan.source_def(source).kind, SourceKind::Image(_));
             fade_ms = plan
                 .nodes

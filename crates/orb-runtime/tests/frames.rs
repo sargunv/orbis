@@ -782,6 +782,61 @@ mod tests {
         );
     }
 
+    /// Raster tiles show at once until the map is first idle, as in GL JS,
+    /// whose first view has no tiles to fade from; after that, new tiles
+    /// fade in. Frames all show one instant, so a fade would never end.
+    #[test]
+    fn raster_tiles_skip_fades_until_first_idle() {
+        let dir = std::env::temp_dir().join(format!("orbis-raster-fade-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tile = dir.join("tile.png");
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 256, 256);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_image_data(&[64u8, 128, 255, 255].repeat(256 * 256))
+                .unwrap();
+        }
+        std::fs::write(&tile, png).unwrap();
+        let mut offscreen = null_island(&format!(
+            r#"{{"version":8,
+            "sources":{{"imagery":{{"type":"raster","tiles":["file://{}"],"tileSize":256}}}},
+            "layers":[{{"id":"raster","type":"raster","source":"imagery"}}]}}"#,
+            tile.display()
+        ));
+        // Frames at one instant until idle, or until a few after the
+        // tiles are in; whether it idled.
+        let idles = |offscreen: &mut crate::common::Offscreen| {
+            let started = std::time::Instant::now();
+            let mut settled = 0;
+            while started.elapsed() < std::time::Duration::from_secs(10) && settled < 10 {
+                let report = offscreen.frame();
+                offscreen.time -= 1000.0 / 60.0;
+                if report.idle {
+                    return true;
+                }
+                if report.tiles_loading == 0 && report.tiles_drawn > 0 {
+                    settled += 1;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            false
+        };
+        let first = idles(&mut offscreen);
+        offscreen.map.jump_to_state(orb_runtime::CameraState::new(
+            orb_crs::Geodetic::new(150.0, 40.0),
+            6.0,
+            &offscreen.map.projection(),
+        ));
+        let later = idles(&mut offscreen);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(first, "the first view's tiles show at once");
+        assert!(!later, "later tiles fade in");
+    }
+
     /// A map of `style` at Null Island, with labels faded over GL JS's
     /// default 300 ms and placed on the placement thread with local fonts.
     fn null_island(style: &str) -> crate::common::Offscreen {
