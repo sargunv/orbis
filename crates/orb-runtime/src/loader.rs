@@ -90,7 +90,7 @@ impl TileLoader {
         if let Ok(range) = Range::new(0, head.len() as u64) {
             let reader = self.reader(url);
             let mut reader = reader.lock().expect("reader poisoned");
-            if reader.wants(pmtiles::HEAD) {
+            if reader.wants(range) {
                 let _ = reader.insert(range, head);
             }
         }

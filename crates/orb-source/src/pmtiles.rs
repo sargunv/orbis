@@ -475,10 +475,11 @@ impl Reader {
     }
 
     /// Whether the read of `range` a lookup asked for is still wanted:
-    /// false once another read's bytes were inserted.
+    /// false once another read's bytes were inserted. Any first read is
+    /// wanted until one is in.
     pub fn wants(&self, range: Range) -> bool {
         match &self.header {
-            None => range == self.first,
+            None => range.offset == 0,
             Some(_) if range.offset == 0 => false,
             Some(header) if range == header.root => self.root.is_none(),
             Some(_) => !self.leaves.iter().any(|(r, _)| *r == range),
@@ -666,6 +667,16 @@ mod tests {
         let root = Header::parse(&small[..HEADER_LEN as usize]).unwrap().root;
         assert_eq!(reads, [HEAD, HEADER, root]);
         assert!(!reader.read_failed(root), "only the first read falls back");
+
+        // A first read that failed for another reason (the network) still
+        // takes a head handed over (the map's, say).
+        let mut reader = Reader::default();
+        assert!(reader.read_failed(HEAD));
+        assert!(reader.wants(HEAD));
+        reader.insert(HEAD, &large[..HEAD.length as usize]).unwrap();
+        let mut reads = Vec::new();
+        read(&mut reader, &large, TileIndex::new(9, 1, 1), &mut reads);
+        assert_eq!(reads.len(), 1, "a leaf alone: {reads:?}");
     }
 
     /// The 32 leaf directories kept are the ones used last.
