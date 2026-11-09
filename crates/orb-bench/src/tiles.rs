@@ -202,7 +202,9 @@ impl TilesReport {
             out,
             "- the committed Tokyo extract's tiles through decode, layout (reduced Liberty, \
              ideographs from system fonts, no icons) and pack on one thread, timed by its CPU clock; {} timed rounds \
-             after an untimed one, each from a new worker",
+             after an untimed one, each from a new worker. The CPU clock runs 1.5–2.5 times as long on an efficiency \
+             core as on a performance one, so compare runs interleaved in one session; across sessions, \
+             compare instructions retired (`/usr/bin/time -l`)",
             self.samples
         )?;
         writeln!(out)?;

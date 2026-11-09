@@ -5,7 +5,10 @@
 //! Cold samples make a new runtime first (outside the time), so the map
 //! compiles its pipelines and starts its job threads' work from nothing;
 //! warm samples share one runtime that drew the view before, as a second
-//! map in an app does. The two interleave, so drift hits both alike.
+//! map in an app does. The two interleave, so drift hits both alike. The
+//! process and the driver's own shader caches stay warm across runtimes,
+//! so a first start from nothing is `orbis render` in a new process
+//! (`cargo xtask h2h stills`).
 
 use std::fmt::Write;
 use std::time::Duration;

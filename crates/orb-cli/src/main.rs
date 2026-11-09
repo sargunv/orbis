@@ -298,11 +298,13 @@ fn tile_list(tms: &TileMatrixSet, file: &str) -> Result<Vec<(String, TileIndex)>
             (Ok(z), Ok(col), Ok(row)) if z <= 30 => (z as u8, col, row),
             _ => return Err(format!("{}: want [name] z col row", at())),
         };
-        // `native_row` is its own inverse.
-        let index = TileIndex::new(z, col, tms.native_row(TileIndex::new(z, col, row)));
-        if !tms.contains(index) {
+        // A native row has the same range as a top-down one, so check
+        // before flipping it; `native_row` is its own inverse.
+        let native = TileIndex::new(z, col, row);
+        if z > tms.max_zoom() || !tms.contains(native) {
             return Err(format!("{}: {z}/{col}/{row} is outside {}", at(), tms.id()));
         }
+        let index = TileIndex::new(z, col, tms.native_row(native));
         tiles.push((name.map_or_else(|| format!("z{z}"), str::to_string), index));
     }
     Ok(tiles)
