@@ -70,7 +70,7 @@ async function runPath(container, style, jobWorkers, center, path, show) {
     const load = performance.now() - created;
     show(`${label}: moving`);
     const acks = [];
-    const off = map.on("render", (ack) => acks.push({ t: performance.now(), ms: ack.ms, placement: ack.placementMs }));
+    const off = map.on("render", (ack) => acks.push({ t: performance.now(), ms: ack.ms, placement: ack.times.placement }));
     const longs = [];
     const observer = typeof PerformanceObserver !== "undefined" &&
       PerformanceObserver.supportedEntryTypes?.includes("longtask")
@@ -177,7 +177,8 @@ function labelCounter() {
 }
 
 let glModule;
-async function loadGl() {
+/** MapLibre GL JS, with its worker and the pmtiles protocol. */
+export async function loadGl() {
   if (!glModule) {
     const [gl, { Protocol }, { default: workerUrl }] = await Promise.all([
       import("maplibre-gl"), import("pmtiles"), import("maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url"),
@@ -189,17 +190,22 @@ async function loadGl() {
   return glModule;
 }
 
-/** Runs one path through GL JS on a fresh map; resolves to its row. */
-async function runGlPath(container, styleUrl, center, path, show) {
-  const maplibregl = await loadGl();
+/** The style at `styleUrl` as GL JS takes it: its URLs absolute. */
+export async function glStyle(styleUrl) {
   const style = await (await fetch(styleUrl)).json();
-  // GL JS wants absolute URLs.
   const absolute = (url) => new URL(url, new URL(styleUrl, location.href)).href;
-  if (style.sprite) style.sprite = absolute(style.sprite);
+  if (typeof style.sprite === "string") style.sprite = absolute(style.sprite);
   if (style.glyphs) style.glyphs = absolute(style.glyphs).replace(/%7B/g, "{").replace(/%7D/g, "}");
   for (const source of Object.values(style.sources)) {
     if (source.url?.startsWith("pmtiles://")) source.url = `pmtiles://${absolute(source.url.slice(10))}`;
   }
+  return style;
+}
+
+/** Runs one path through GL JS on a fresh map; resolves to its row. */
+async function runGlPath(container, styleUrl, center, path, show) {
+  const maplibregl = await loadGl();
+  const style = await glStyle(styleUrl);
   show(`${path.name}: loading (GL JS)`);
   const created = performance.now();
   const map = new maplibregl.Map({ container, style, ...path.camera(center, 0), interactive: false, attributionControl: false });

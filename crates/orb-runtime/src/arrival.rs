@@ -162,6 +162,7 @@ impl Map {
                     }
                     let mut kept = false;
                     if generation == self.tile_generation {
+                        self.tiles_arrived += u32::from(edit.is_none());
                         match edit {
                             None if terrain => {
                                 self.apply_terrain_tile(gpu, renderer, source, tile, result)
@@ -525,6 +526,7 @@ impl Map {
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
         let mut grow = under_budget(renderer, atlas.bytes(), self.budget);
+        let uploading = self.services.clock.now();
         let uploaded = loop {
             atlas.release_ramps(gpu, self.retired_ramps.drain(..));
             use orb_render::UploadError::{Invalid, NoRoom};
@@ -580,6 +582,7 @@ impl Map {
             }
         };
         drop(images);
+        self.upload_ms += self.services.clock.now() - uploading;
         let SourceState::Ready { pyramid, .. } = &mut style.sources[source] else {
             unreachable!("checked above");
         };

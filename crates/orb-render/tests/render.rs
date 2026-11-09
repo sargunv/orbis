@@ -119,8 +119,13 @@ impl Harness {
         // The atlas grows pages as images arrive, as a map tells its
         // renderer.
         self.renderer.set_images(self.images.bindings());
-        self.renderer
-            .render(&mut self.gpu, &frame, self.target, [0.0, 0.0, 1.0, 1.0])
+        self.renderer.render(
+            &mut self.gpu,
+            &frame,
+            self.target,
+            [0.0, 0.0, 1.0, 1.0],
+            &|| 0.0,
+        )
     }
 
     fn frame(pixel_ratio: f32) -> FrameBlock {
@@ -1387,7 +1392,8 @@ fn render_at(h: &mut Harness, time: f32) -> [u8; 4] {
         time,
         ..Harness::frame(1.0)
     };
-    h.renderer.render(&mut h.gpu, &frame, h.target, [0.0; 4]);
+    h.renderer
+        .render(&mut h.gpu, &frame, h.target, [0.0; 4], &|| 0.0);
     pixel(&pollster::block_on(h.gpu.read_texture(h.target)), 16, 16)
 }
 
@@ -1551,7 +1557,9 @@ fn sky_gradient_composites_over_the_host_backing() {
     h.renderer.set_atmosphere(&mut h.gpu, Some(sky), view);
     let frame = Harness::frame(1.0);
     let clear = [0.0, 0.0, 1.0, 1.0];
-    let report = h.renderer.render(&mut h.gpu, &frame, h.target, clear);
+    let report = h
+        .renderer
+        .render(&mut h.gpu, &frame, h.target, clear, &|| 0.0);
     assert_eq!(report.draws, 1);
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
     // At row 15, GL JS's squared horizon weight is (1 - 16.5/32)^2.
@@ -1569,7 +1577,8 @@ fn sky_gradient_composites_over_the_host_backing() {
     assert_eq!(pixel(&pixels, 32, 40), CLEAR);
     // Removing the style's sky restores transparent/background output.
     h.renderer.set_atmosphere(&mut h.gpu, None, view);
-    h.renderer.render(&mut h.gpu, &frame, h.target, clear);
+    h.renderer
+        .render(&mut h.gpu, &frame, h.target, clear, &|| 0.0);
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
     assert_eq!(pixel(&pixels, 32, 15), CLEAR);
 }

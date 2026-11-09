@@ -107,7 +107,7 @@ const ALPS_PATHS: &[Path] = &[
 
 /// The terrain demo's flight (`web/demo/data/alps-flight.json`): `flyTo`
 /// legs, as the demos fly them.
-fn flight_legs() -> Vec<(CameraTarget, FlyOptions)> {
+pub(crate) fn flight_legs() -> Vec<(CameraTarget, FlyOptions)> {
     let json: serde_json::Value =
         serde_json::from_str(include_str!("../../../web/demo/data/alps-flight.json"))
             .expect("the flight parses");
@@ -144,7 +144,7 @@ struct PathResult {
     /// `Map::render` per frame, sorted.
     cpu: Vec<Duration>,
     /// The render thread's placement work per frame
-    /// (`FrameReport::placement_us`), sorted.
+    /// (`FrameTimes::placement`), sorted.
     placement: Vec<Duration>,
     /// Bytes uploaded in the frame that uploaded most.
     peak_bytes: u64,
@@ -263,7 +263,7 @@ pub(crate) fn run(
             // The target keeps two frames in flight, as a swapchain does.
             let (report, time) = frame(&mut map, target, now)?;
             cpu.push(time);
-            placement.push(Duration::from_micros(u64::from(report.placement_us)));
+            placement.push(Duration::from_micros(u64::from(report.times.placement)));
             peak_bytes = peak_bytes.max(uploaded(runtime) - before);
             let atlas = report.memory.drape_atlas;
             let resized = atlas_was.is_some_and(|was| was != atlas);

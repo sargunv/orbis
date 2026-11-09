@@ -32,8 +32,8 @@ pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};
 pub use orb_host::{Request, RequestTransform};
 pub use orb_runtime::{
-    CameraState, ClusterQuery, FeatureTarget, FrameReport, HOST_TILES, Hit, HostTile, MapEvent, Op,
-    Preview, Previews, StyleDoc, StyleImage, Transaction, VideoRequest, json,
+    CameraState, ClusterQuery, FeatureTarget, FrameReport, FrameTimes, HOST_TILES, Hit, HostTile,
+    MapEvent, Op, Preview, Previews, StyleDoc, StyleImage, Transaction, VideoRequest, json,
 };
 pub use regions::{RegionDefinition, RegionEvent, RegionInfo};
 pub use target::Target;

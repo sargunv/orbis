@@ -58,7 +58,9 @@ pub use jobs::{
     packed_header, unpack, unpremultiply,
 };
 pub use loader::TileLocation;
-pub use map::{FrameReport, GridTile, Images, JobCounts, Map, Memory, RenderMode, Services};
+pub use map::{
+    FrameReport, FrameTimes, GridTile, Images, JobCounts, Map, Memory, RenderMode, Services,
+};
 pub use orb_camera::input::{Button, Input};
 pub use orb_camera::{
     AnimationId, Bounds, CameraEvent, CameraState, CameraTarget, Constraints, EaseOptions,

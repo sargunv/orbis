@@ -12,7 +12,7 @@ use orb_render::GpuTile;
 use orb_render::ImageAtlas;
 use orb_render::{
     Family, FrameBlock, FrameStats, PageId, RenderNode, Renderer, SceneCapacity, SceneStats,
-    TargetFormat,
+    TargetFormat, micros,
 };
 use orb_source::Draw;
 use orb_style::SourceKind;
@@ -97,15 +97,62 @@ pub struct FrameReport {
     pub loaded: bool,
     /// GPU memory by pool, and the tile cache.
     pub memory: Memory,
-    /// Microseconds this thread spent on placement: building the frame the
-    /// placement lane places and applying its commits,
-    /// not the placement itself, which is the lane's (inline on a host
-    /// without a placement thread or worker).
-    pub placement_us: u32,
+    /// Where the frame's CPU time went.
+    pub times: FrameTimes,
+    /// What [`Map::prepare`] spent since the last frame drawn, summed.
+    pub prepared: FrameTimes,
+    /// Tiles whose results arrived and applied (vector, raster and DEM)
+    /// since the last frame drawn, in its preparations or in it.
+    pub tiles_arrived: u32,
     /// Only compiling pipelines keep the frame from being complete: a
     /// host whose GPU wakes it when a pipeline compiles needs no frames
     /// until then.
     pub compiling: bool,
+}
+
+/// Where a frame's CPU time went on this thread, in microseconds of the
+/// services' clock. What it doesn't name (paint, the camera, picking) is
+/// the rest of `total`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameTimes {
+    /// The whole frame.
+    pub total: u32,
+    /// Applying what arrived (tile results, edits, styles, sprites), but
+    /// for uploads and label commits.
+    pub arrivals: u32,
+    /// Arrived tiles' meshes, rows and images uploaded, and room made for
+    /// them.
+    pub upload: u32,
+    /// The terrain's DEM tiles and cover.
+    pub terrain: u32,
+    /// The sources' tiles for the view: covered, asked for, retired.
+    pub plan: u32,
+    /// The terrain's drape slots chosen and their placements written.
+    pub drape: u32,
+    /// The view's tiles put in the scene, their slots written.
+    pub place: u32,
+    /// Placement on this thread: building the frame the placement lane
+    /// places and applying its commits, not the placement itself, which
+    /// is the lane's (inline on a host without a placement thread or
+    /// worker).
+    pub placement: u32,
+    /// The renderer's share: the cull's layout, bundles, drape passes and
+    /// encoding.
+    pub render: orb_render::RenderTimes,
+}
+
+impl FrameTimes {
+    /// Adds a prepared frame's times, which draw nothing.
+    fn add_prepared(&mut self, t: &FrameTimes) {
+        self.total += t.total;
+        self.arrivals += t.arrivals;
+        self.upload += t.upload;
+        self.terrain += t.terrain;
+        self.plan += t.plan;
+        self.drape += t.drape;
+        self.place += t.place;
+        self.placement += t.placement;
+    }
 }
 
 /// The map's memory against its budget, in bytes.
@@ -397,8 +444,13 @@ pub struct Map {
     pub(crate) label_epoch: u64,
     /// The last frame's picking state; queries project from it.
     pub(crate) picking: std::cell::RefCell<crate::query::Picking>,
-    /// This frame's placement time so far, in milliseconds.
+    /// This frame's placement and upload times so far, in milliseconds,
+    /// and the tiles that arrived.
     pub(crate) placement_ms: f64,
+    pub(crate) upload_ms: f64,
+    pub(crate) tiles_arrived: u32,
+    /// What preparing spent since the last frame drawn.
+    prepared: (FrameTimes, u32),
     /// Arrived tiles wait for the next frame: this one spent its budget.
     pub(crate) tiles_deferred: bool,
     /// Tiles that arrived when the scene had no room for them, while other
@@ -586,6 +638,9 @@ impl Map {
             image_fades_until: f64::NEG_INFINITY,
             picking: Default::default(),
             placement_ms: 0.0,
+            upload_ms: 0.0,
+            tiles_arrived: 0,
+            prepared: Default::default(),
             tiles_deferred: false,
             waiting: Vec::new(),
             candidates_dropped: 0,
@@ -1227,9 +1282,16 @@ impl Map {
         pixel_ratio: f32,
     ) -> FrameReport {
         let frame_time = self.frame_time;
+        let clock = Arc::clone(&self.services.clock);
+        let started = clock.now();
         renderer.set_antialias_3d(gpu, self.antialias_3d);
-        self.placement_ms = 0.0;
+        (self.placement_ms, self.upload_ms, self.tiles_arrived) = (0.0, 0.0, 0);
         self.apply_arrivals(gpu, renderer, pixel_ratio);
+        let mut times = FrameTimes {
+            // Uploads and label commits are stages of their own.
+            arrivals: micros(started + self.upload_ms + self.placement_ms, clock.now()),
+            ..FrameTimes::default()
+        };
         // The camera moves for this frame on what has arrived.
         let moving = match target {
             Some(_) => {
@@ -1312,9 +1374,12 @@ impl Map {
         if self.style.is_some() {
             // Terrain's DEM and cover first: the sources cover over its
             // elevations, and drape over its tiles.
+            let at = clock.now();
             if drawing {
                 frame_terrain = self.update_terrain(gpu, renderer, &view, &mut report);
             }
+            let planning = clock.now();
+            times.terrain = micros(at, planning);
             let elevation = self.terrain_elevation();
             // Failed tiles due for a retry go, so the plan asks for them.
             let now = self.services.clock.now();
@@ -1327,10 +1392,14 @@ impl Map {
             for (index, update) in plan.into_iter().enumerate() {
                 self.apply_source(index, update, &mut report);
             }
+            let draping = clock.now();
+            times.plan = micros(planning, draping);
             let drape = match drawing {
                 true => self.plan_drape(gpu, renderer, &view),
                 false => None,
             };
+            let placing = clock.now();
+            times.drape = micros(draping, placing);
             redrew = drape.as_ref().is_some_and(|d| !d.redraw.is_empty());
             if drawing {
                 self.place_background(
@@ -1355,13 +1424,21 @@ impl Map {
             }
             self.trim_cache(renderer);
             renderer.shrink(gpu);
+            times.place = micros(placing, clock.now());
         }
         let labels_settled = self.place_labels(gpu, renderer, &view, now);
-        report.placement_us = (self.placement_ms * 1000.0).round() as u32;
+        times.placement = micros(0.0, self.placement_ms);
+        times.upload = micros(0.0, self.upload_ms);
         let Some(target) = target else {
             self.globe_warps.end_frame();
+            times.total = micros(started, clock.now());
+            self.prepared.0.add_prepared(&times);
+            self.prepared.1 += self.tiles_arrived;
             return report;
         };
+        let (prepared, arrived) = std::mem::take(&mut self.prepared);
+        report.prepared = prepared;
+        report.tiles_arrived = self.tiles_arrived + arrived;
 
         if !self.retired_ramps.is_empty() {
             let mut images = self.services.images.0.lock().expect("images poisoned");
@@ -1457,7 +1534,8 @@ impl Map {
         {
             renderer.set_images(atlas.bindings());
         }
-        report.frame = renderer.render(gpu, &frame, target, clear);
+        report.frame = renderer.render(gpu, &frame, target, clear, &|| clock.now());
+        times.render = report.frame.times;
         // A frame that left something out for a compiling pipeline isn't
         // complete.
         report.compiling = report.idle && report.frame.waited;
@@ -1484,6 +1562,8 @@ impl Map {
             self.events.push(MapEvent::Error { message });
         }
         self.candidates_dropped = dropped;
+        times.total = micros(started, clock.now());
+        report.times = times;
         report
     }
 
@@ -2143,6 +2223,7 @@ impl Map {
         {
             self.warnings.push(format!("terrain tile {tile:?}: {e}"));
         }
+        self.upload_ms += self.services.clock.now() - now;
     }
 
     /// Installs a style that `load_style_url` fetched, unless a later

@@ -127,6 +127,30 @@ pub struct FrameStats {
     /// Something in the frame waited for a pipeline (nodes, terrain, the
     /// DEM prepare, the sky): the frame isn't complete.
     pub waited: bool,
+    pub times: RenderTimes,
+}
+
+/// Where [`Renderer::render`]'s CPU time went, in microseconds of the
+/// caller's clock. What it doesn't name (binding, pipelines, targets) is
+/// the rest of its time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RenderTimes {
+    /// The cull's candidates laid out again and tile placement rows
+    /// written.
+    pub cull: u32,
+    /// The main pass's bundles recorded again.
+    pub bundles: u32,
+    /// The drape passes of slots redrawn: their bundles and passes.
+    pub drape: u32,
+    /// The frame's other passes built.
+    pub encode: u32,
+    /// The passes submitted to the device.
+    pub submit: u32,
+}
+
+/// Microseconds from `from` to `to`, two readings of a millisecond clock.
+pub fn micros(from: f64, to: f64) -> u32 {
+    ((to - from) * 1000.0).round().max(0.0) as u32
 }
 
 /// A render node: its family, and the source an image node draws the
@@ -1502,13 +1526,15 @@ impl Renderer {
         }
     }
 
-    /// Draws a frame into `target`, cleared to `clear` (premultiplied RGBA).
+    /// Draws a frame into `target`, cleared to `clear` (premultiplied RGBA),
+    /// timing its stages on `clock` (milliseconds).
     pub fn render(
         &mut self,
         gpu: &mut dyn Gpu,
         frame: &FrameBlock,
         target: TextureId,
         clear: [f64; 4],
+        clock: &dyn Fn() -> f64,
     ) -> FrameStats {
         self.destroy_retired_pages(gpu);
         self.bind_scene(gpu);
@@ -1520,7 +1546,7 @@ impl Renderer {
                 bytemuck::cast_slice(&self.node_words[nodes.start * stride..nodes.end * stride]),
             );
         }
-        let mut stats = self.record(gpu, frame, target, clear);
+        let mut stats = self.record(gpu, frame, target, clear, clock);
         stats.draws += u32::from(self.atmosphere.enabled);
         self.end_surface_warps();
         stats
@@ -1589,8 +1615,12 @@ impl Renderer {
         frame: &FrameBlock,
         target: TextureId,
         clear: [f64; 4],
+        clock: &dyn Fn() -> f64,
     ) -> FrameStats {
+        let mut times = RenderTimes::default();
+        let started = clock();
         let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame);
+        times.cull = micros(started, clock());
         // A node the bundles left out for want of candidates draws once
         // it has some.
         if candidates_rebuilt
@@ -1675,6 +1705,7 @@ impl Renderer {
             self.invalidate_bundle(gpu);
         }
         let bundle_recorded = self.bundles.is_empty();
+        let recording = clock();
         if bundle_recorded {
             let indexed = self.nodes.iter().any(|n| n.cull.draw == NodeDraw::Indexed);
             let index_buffer = RenderCommand::SetIndexBuffer {
@@ -1789,6 +1820,8 @@ impl Renderer {
             self.bundles
                 .push(gpu.create_render_bundle(&layers, &commands));
         }
+        let draping = clock();
+        times.bundles = micros(recording, draping);
         let zooms = match self.terrain.as_ref().filter(|_| terrain_on) {
             Some(terrain) => terrain.pending_zooms().to_vec(),
             None => Vec::new(),
@@ -1797,6 +1830,8 @@ impl Renderer {
             .into_iter()
             .filter_map(|zoom| Some((zoom, self.drape_bundle(gpu, frame, zoom)?)))
             .collect();
+        let encoding = clock();
+        let mut drape_passes = 0;
 
         let mut passes = Vec::with_capacity(3);
         let mut stats = FrameStats {
@@ -1862,6 +1897,7 @@ impl Renderer {
             }
         }
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
+            let passing = clock();
             let depth = self.extrusions.depth().expect("sized above");
             let b = self.scene.buffers();
             // Shaded hillshades light their slopes' slots: blank until
@@ -1880,6 +1916,7 @@ impl Renderer {
                 &self.downsampler,
                 &mut passes,
             );
+            drape_passes = micros(passing, clock());
         }
         let mut first = !terrain_on;
         let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
@@ -1915,7 +1952,12 @@ impl Renderer {
             target,
             clear,
         ));
+        let submitting = clock();
         gpu.submit(&passes);
+        times.submit = micros(submitting, clock());
+        times.drape = micros(draping, encoding) + drape_passes;
+        times.encode = micros(encoding, submitting).saturating_sub(drape_passes);
+        stats.times = times;
         // Every check passed only if nothing was compiling or compiled
         // during the frame.
         let end = gpu.poll_pipelines();

@@ -55,8 +55,8 @@ try {
       const s = e.detail;
       globalThis.__frames.push({
         t: performance.now(), ms: s.ms, jobs: s.jobsDone, meshes: s.meshesUploaded,
-        pending: s.pipelinesPending, placement: s.placementMs, loading: s.tilesLoading,
-        bundle: s.bundleRecorded, slots: s.slotsRedrawn,
+        pending: s.pipelinesPending, placement: s.times.placement, loading: s.tilesLoading,
+        bundle: s.bundleRecorded,
       });
     });
   });

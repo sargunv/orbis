@@ -132,10 +132,16 @@ pub struct FrameStats {
     pub bundle_recorded: bool,
     #[wasm_bindgen(readonly, js_name = placementsWritten)]
     pub placements_written: u32,
-    /// Milliseconds of the frame spent on placement on this thread:
-    /// building the frame the placement worker places, applying commits.
-    #[wasm_bindgen(readonly, js_name = placementMs)]
-    pub placement_ms: f64,
+    /// Where the frame's CPU time went.
+    #[wasm_bindgen(readonly)]
+    pub times: FrameTimes,
+    /// What `prepare` spent since the last frame, summed: work between
+    /// frames.
+    #[wasm_bindgen(readonly)]
+    pub prepared: FrameTimes,
+    /// Tiles whose results arrived and applied since the last frame.
+    #[wasm_bindgen(readonly, js_name = tilesArrived)]
+    pub tiles_arrived: u32,
     #[wasm_bindgen(readonly, js_name = paintsWritten)]
     pub paints_written: u32,
     #[wasm_bindgen(readonly, js_name = uploadedFromWasm)]
@@ -159,6 +165,74 @@ pub struct FrameStats {
     /// GPU memory against the budget.
     #[wasm_bindgen(readonly)]
     pub memory: FrameMemory,
+}
+
+/// Where a frame's CPU time went, in milliseconds: orb-runtime's
+/// `FrameTimes`, the renderer's stages flattened. What it doesn't name is
+/// the rest of `total`.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameTimes {
+    #[wasm_bindgen(readonly)]
+    pub total: f64,
+    /// Applying arrived results, but for uploads and label commits.
+    #[wasm_bindgen(readonly)]
+    pub arrivals: f64,
+    /// Arrived tiles' meshes, rows and images uploaded.
+    #[wasm_bindgen(readonly)]
+    pub upload: f64,
+    /// The terrain's DEM tiles and cover.
+    #[wasm_bindgen(readonly)]
+    pub terrain: f64,
+    /// The sources' tiles for the view.
+    #[wasm_bindgen(readonly)]
+    pub plan: f64,
+    /// Drape slots chosen and their placements written.
+    #[wasm_bindgen(readonly)]
+    pub drape: f64,
+    /// The view's tiles put in the scene.
+    #[wasm_bindgen(readonly)]
+    pub place: f64,
+    /// Placement on this thread: building the placement worker's frame,
+    /// applying commits.
+    #[wasm_bindgen(readonly)]
+    pub placement: f64,
+    /// The cull's candidates laid out and placement rows written.
+    #[wasm_bindgen(readonly)]
+    pub cull: f64,
+    /// The main pass's bundles recorded again.
+    #[wasm_bindgen(readonly)]
+    pub bundles: f64,
+    /// Redrawn drape slots' bundles and passes.
+    #[wasm_bindgen(readonly, js_name = drapePasses)]
+    pub drape_passes: f64,
+    /// The other passes built.
+    #[wasm_bindgen(readonly)]
+    pub encode: f64,
+    /// The passes submitted to the device.
+    #[wasm_bindgen(readonly)]
+    pub submit: f64,
+}
+
+impl From<&orb_runtime::FrameTimes> for FrameTimes {
+    fn from(t: &orb_runtime::FrameTimes) -> Self {
+        let ms = |us: u32| f64::from(us) / 1000.0;
+        Self {
+            total: ms(t.total),
+            arrivals: ms(t.arrivals),
+            upload: ms(t.upload),
+            terrain: ms(t.terrain),
+            plan: ms(t.plan),
+            drape: ms(t.drape),
+            place: ms(t.place),
+            placement: ms(t.placement),
+            cull: ms(t.render.cull),
+            bundles: ms(t.render.bundles),
+            drape_passes: ms(t.render.drape),
+            encode: ms(t.render.encode),
+            submit: ms(t.render.submit),
+        }
+    }
 }
 
 /// The map's GPU memory by pool, in bytes but `cached_tiles`: the scene's
@@ -931,7 +1005,9 @@ impl OrbisMap {
             tiles_loading: report.tiles_loading,
             bundle_recorded: report.frame.bundle_recorded,
             placements_written: report.frame.placements_written,
-            placement_ms: f64::from(report.placement_us) / 1000.0,
+            times: FrameTimes::from(&report.times),
+            prepared: FrameTimes::from(&report.prepared),
+            tiles_arrived: report.tiles_arrived,
             paints_written: report.frame.paints_written,
             uploaded_from_wasm: uploaded.from_core as f64,
             uploaded_from_js: uploaded.from_js as f64,
