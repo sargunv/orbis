@@ -70,27 +70,21 @@ impl Map {
                     let lift = lift.unwrap_or(0.0).max(0.0) as f32;
                     return renderer.cull_elevation(i as u32).max(lift);
                 }
-                if n.family != Family::FillExtrusion {
-                    return renderer.cull_elevation(i as u32);
-                }
-                let (top, base) = (
-                    layer.get(orb_style::EXTRUSION_HEIGHT),
-                    layer.get(orb_style::EXTRUSION_BASE),
-                );
-                let per_feature =
-                    |kind| matches!(kind, orb_style::Kind::Source | orb_style::Kind::Composite);
-                if per_feature(top.kind()) || per_feature(base.kind()) {
-                    // Not the paint's, the most the tiles laid out so far
-                    // have held.
-                    let tallest = (top.max_value(zoom))
-                        .zip(base.max_value(zoom))
-                        .map(|(t, b)| t.max(b));
-                    if tallest.is_none() {
-                        unbounded.extrusions.push(n.key);
+                // A per-feature extrusion's paint height is the node's row
+                // maxima, raised by every tile laid out so far: its bound
+                // stands in.
+                match (n.family == Family::FillExtrusion)
+                    .then(|| extrusion_bound(layer, zoom))
+                    .flatten()
+                {
+                    Some((tallest, bounded)) => {
+                        if !bounded {
+                            unbounded.extrusions.push(n.key);
+                        }
+                        tallest
                     }
-                    return tallest.unwrap_or(0.0).max(0.0) as f32;
+                    None => renderer.cull_elevation(i as u32),
                 }
-                renderer.cull_elevation(i as u32)
             })
             .fold(0.0f32, f32::max);
         // Circles and heatmaps draw from the tile their point is in alone,
@@ -1158,6 +1152,45 @@ mod tests {
         assert_eq!(rows[0].origin, rows[1].origin);
         assert_eq!(rows[0].scale, rows[1].scale);
     }
+
+    #[test]
+    fn an_extrusion_bound_keeps_its_constant_part() {
+        let bound = |paint: &str| {
+            let style = orb_style::v8::parse(&format!(
+                r#"{{"version": 8,
+                    "sources": {{"b": {{"type": "geojson", "data": {{"type": "FeatureCollection", "features": []}}}}}},
+                    "layers": [{{"id": "e", "type": "fill-extrusion", "source": "b", "paint": {paint}}}]}}"#
+            ))
+            .unwrap();
+            extrusion_bound(&style.layers[0], 10.0)
+        };
+        assert_eq!(bound(r#"{"fill-extrusion-height": 300}"#), None);
+        // A base no expression bounds leaves the constant height standing.
+        assert_eq!(
+            bound(r#"{"fill-extrusion-height": 300, "fill-extrusion-base": ["get", "b"]}"#),
+            Some((300.0, false))
+        );
+        assert_eq!(
+            bound(r#"{"fill-extrusion-height": ["min", ["get", "h"], 800]}"#),
+            Some((800.0, true))
+        );
+    }
+}
+
+/// For an extrusion layer whose height or base varies per feature, the
+/// most either can give at `zoom`, a constant one's value included, and
+/// whether both set a bound: where one doesn't (a bare `get`), the tiles
+/// the cover holds tell the rest. `None` when every feature shares both.
+fn extrusion_bound(layer: &orb_style::Layer, zoom: f64) -> Option<(f32, bool)> {
+    let top = layer.get(orb_style::EXTRUSION_HEIGHT);
+    let base = layer.get(orb_style::EXTRUSION_BASE);
+    let per_feature = |kind| matches!(kind, orb_style::Kind::Source | orb_style::Kind::Composite);
+    if !per_feature(top.kind()) && !per_feature(base.kind()) {
+        return None;
+    }
+    let bounds = [top.max_value(zoom), base.max_value(zoom)];
+    let tallest = bounds.into_iter().flatten().fold(0.0, f64::max) as f32;
+    Some((tallest, bounds.iter().all(Option::is_some)))
 }
 
 /// A source's layers whose height in the cover no expression bounds: the
