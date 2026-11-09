@@ -308,6 +308,17 @@ impl JobHost {
             .map(|(_, w)| Arc::clone(w))
     }
 
+    /// Starts fetching glyph ranges for style `id`, as tiles that need
+    /// them would: tiles that ask meanwhile wait on these fetches.
+    pub fn prefetch_glyphs(&self, id: u64, urls: Vec<String>) {
+        let Some(worker) = self.worker(id) else {
+            return;
+        };
+        for url in urls {
+            self.glyphs.wait(&worker, id, url, Box::new(|| {}));
+        }
+    }
+
     /// Loads and lays out a tile.
     pub fn load(&self, request: TileRequest, done: LoadedDone) {
         let Some(worker) = self.worker(request.style) else {

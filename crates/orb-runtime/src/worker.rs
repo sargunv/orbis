@@ -393,6 +393,46 @@ impl TileWorker {
         &self.plan
     }
 
+    /// The glyph ranges the labels shown at `zoom` will most likely ask
+    /// for first: Basic Latin's range of each font stack their text is set
+    /// in, where that doesn't depend on the feature, and that this worker
+    /// hasn't fetched.
+    pub(crate) fn first_glyphs(&self, zoom: f64) -> Vec<String> {
+        use orb_expr::Kind;
+        let style = &self.plan.style;
+        let template = style.glyphs.as_deref();
+        let policy = orb_text::FontPolicy {
+            glyphs_url: template.is_some(),
+            local_ideographs: false,
+        };
+        let mut requests = orb_text::GlyphRequests::default();
+        for node in &self.plan.nodes {
+            let layer = &style.layers[node.layer];
+            if node.family != orb_layout::Family::SymbolIcon || !layer.is_visible_at(zoom) {
+                continue;
+            }
+            let text = layer.get(orb_style::TEXT_FIELD);
+            let font = layer.get(orb_style::TEXT_FONT);
+            let has_text = text
+                .constant()
+                .is_none_or(|s| s.iter().any(|s| !s.text.is_empty()));
+            if !has_text || !matches!(font.kind(), Kind::Constant | Kind::Camera) {
+                continue;
+            }
+            let stack = font.evaluate(zoom);
+            if !stack.is_empty() {
+                let label = orb_text::Label::from_text("a");
+                requests.add_label(&label, &orb_text::FontStack::new(&stack), false, false);
+            }
+        }
+        let faces = &style.font_faces;
+        let missing = self.data.glyphs.missing(&requests, template, policy, faces);
+        missing
+            .into_iter()
+            .filter(|url| self.is_glyph_range(url))
+            .collect()
+    }
+
     /// The plane GeoJSON tiles in and sources' tile matrix sets.
     /// Layout grid units (8192 a tile side) per ground metre at a tile's
     /// centre, in its source's tile matrix set: GL JS's
@@ -1260,6 +1300,39 @@ pub(crate) mod tests {
                 .iter()
                 .all(|r| r.as_ref().is_ok_and(|t| t.symbols.len() == 1))
         );
+        let gets = fetch.gets.lock().unwrap();
+        let glyph_gets = gets.iter().filter(|u| u.contains("/glyphs/")).count();
+        assert_eq!(glyph_gets, 1, "{gets:?}");
+    }
+
+    /// A range fetched ahead of the tiles serves their layout and the
+    /// atlas's bitmaps: one fetch in all.
+    #[test]
+    fn prefetched_ranges_serve_layout_and_bitmaps() {
+        let fetch = Arc::new(AssetFetch::default());
+        let jobs = PoolJobs::new(
+            fetch.clone(),
+            Arc::new(NoImages),
+            Arc::new(orb_host::jobs::Inline),
+        );
+        let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
+        jobs.set_style(1, &StyleUpdate::default(), &worker);
+        let first = worker.first_glyphs(symbol_request().zoom);
+        assert_eq!(first, ["local://glyphs/Noto Sans Regular/0-255.pbf"]);
+        jobs.prefetch_glyphs(1, first.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        jobs.load(symbol_request(), Box::new(move |r| tx.send(r).unwrap()));
+        fetch.release();
+        let tile = rx.try_iter().next().expect("laid out").unwrap();
+        assert_eq!(tile.symbols.len(), 1);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let raster = crate::GlyphRaster::Pbf {
+            url: first[0].clone(),
+            code_points: vec!['a'.into()],
+        };
+        jobs.raster(raster, Box::new(move |r| tx.send(r).unwrap()));
+        let bitmaps = rx.try_iter().next().expect("drawn").unwrap();
+        assert_eq!(bitmaps.len(), 1);
         let gets = fetch.gets.lock().unwrap();
         let glyph_gets = gets.iter().filter(|u| u.contains("/glyphs/")).count();
         assert_eq!(glyph_gets, 1, "{gets:?}");

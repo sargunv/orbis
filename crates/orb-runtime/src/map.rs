@@ -255,6 +255,9 @@ pub(crate) struct LoadedStyle {
     pub(crate) image_namespace: Option<u64>,
     pub(crate) sprites_started: bool,
     pub(crate) sprites_loading: u32,
+    /// Whether the glyphs labels start with were asked for
+    /// ([`TileWorker::first_glyphs`]).
+    pub(crate) glyphs_fetched: bool,
     /// Sprite metadata loaded so far, and the images the host added; the
     /// jobs get it once every sprite has resolved, before tiles with symbol
     /// layers are requested.
@@ -933,6 +936,7 @@ impl Map {
             image_namespace: None,
             sprites_started: false,
             sprites_loading: 0,
+            glyphs_fetched: false,
             icons: crate::SpriteIcons::default(),
             image_edits: Vec::new(),
             added_images: Default::default(),
@@ -1119,6 +1123,17 @@ impl Map {
             .as_deref()
             .map(|s| crate::light::frame_light(&s.light, zoom, self.camera.state().bearing));
         let mut frame_terrain = None;
+        if let Some(style) = &mut self.style
+            && !std::mem::replace(&mut style.glyphs_fetched, true)
+        {
+            // A style's first frame fetches the glyphs its labels start
+            // with beside its sources' TileJSON, not after the tiles that
+            // need them.
+            let urls = style.worker.first_glyphs(zoom);
+            if !urls.is_empty() {
+                self.services.jobs.prefetch_glyphs(style.id, urls);
+            }
+        }
         if self.style.is_some() {
             // Terrain's DEM and cover first: the sources cover over its
             // elevations, and drape over its tiles.

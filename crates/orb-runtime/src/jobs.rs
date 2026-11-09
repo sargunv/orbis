@@ -123,6 +123,9 @@ pub trait Jobs: Send + Sync {
     /// Loads and lays out a tile. A tile that doesn't exist yields an empty
     /// result.
     fn load(&self, request: TileRequest, done: TileDone);
+    /// Starts fetching glyph ranges style `id`'s tiles are about to need,
+    /// so that their layout finds them in.
+    fn prefetch_glyphs(&self, _id: u64, _urls: Vec<String>) {}
     /// Rasterizes glyphs for the atlas: one deduplicated job per unit, run
     /// by the unit's owner worker.
     fn raster(&self, request: GlyphRaster, done: RasterDone);
@@ -184,6 +187,10 @@ impl Jobs for PoolJobs {
 
     fn raster(&self, request: GlyphRaster, done: RasterDone) {
         self.host.raster(request, done);
+    }
+
+    fn prefetch_glyphs(&self, id: u64, urls: Vec<String>) {
+        self.host.prefetch_glyphs(id, urls);
     }
 
     fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone) {
