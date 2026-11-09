@@ -79,12 +79,11 @@ pub(crate) fn property_at(cx: &mut Cx, json: Option<&Json>, path: &str, prop: &P
     let Some(json) = json else {
         return Slot::constant(Value::Null, false);
     };
-    let path = path.to_string();
     if prop.ramp {
         return match PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state) {
             Ok(parsed) => Slot::expression_any(parsed, true),
             Err(errors) => {
-                cx.errors_at(&path, errors);
+                cx.errors_at(path, errors);
                 Slot::constant(Value::Null, false)
             }
         };
@@ -106,7 +105,7 @@ pub(crate) fn property_at(cx: &mut Cx, json: Option<&Json>, path: &str, prop: &P
             .collect();
         return Slot::list(items);
     }
-    property_at_one(cx, json, &path, prop)
+    property_at_one(cx, json, path, prop)
 }
 
 /// [`property_at`] for a typed property outside a layer.
@@ -410,8 +409,10 @@ pub(crate) fn parse_layer(
         .map(|id| {
             let prop = id.prop();
             let section = if prop.paint { &paint } else { &layout };
-            let path = format!("{}.{}", section.path, prop.name);
-            property_at(cx, section.get(prop.name), &path, prop)
+            let json = section.get(prop.name);
+            // Only a property the layer sets has diagnostics to locate.
+            let path = json.map_or_else(String::new, |_| format!("{}.{}", section.path, prop.name));
+            property_at(cx, json, &path, prop)
         })
         .collect();
     let (source, source_layer, filter) = match ty {
