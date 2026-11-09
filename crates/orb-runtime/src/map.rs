@@ -662,6 +662,21 @@ impl Map {
         self.budget = bytes;
     }
 
+    /// What a job host that starts afresh needs to take this map's requests
+    /// (a web job worker that replaces a lost one): the style's id, the
+    /// whole style as its first update has it, and its sprite metadata.
+    /// `None` before a style loads.
+    pub fn jobs_style(&self) -> Option<(u64, crate::StyleUpdate, crate::SpriteIcons)> {
+        let style = self.style.as_ref()?;
+        let update = full_update(
+            &style.doc,
+            self.version,
+            self.labels.ideographs.clone(),
+            self.surface.tiles(),
+        );
+        Some((style.id, update, style.icons.clone()))
+    }
+
     /// Requests every tile that failed (the network, say) again now, as
     /// when the host learns the network is back; until then each waits out
     /// its backoff, retried while frames are drawn.

@@ -12,10 +12,15 @@
 //! A tile, its relayouts and its queries go to job worker
 //! `hash(source, tile) mod N`, which has its data; a glyph unit to its
 //! owner worker. A worker that is lost (its wasm trapped, or it died) fails
-//! the requests it had, which the map retries, and its share goes to the
-//! next worker on.
+//! the requests it had, which the map retries. The page puts another in its
+//! place, which this sends the style; or, past the page's limit, its share
+//! goes to the next worker on. A tile that was loading on a lost worker is
+//! a suspect: its next load goes alone, with no other suspect in flight, so
+//! a loss then is its own. A suspect lost again is quarantined: it loads as
+//! missing, so its ancestor stands in, rather than take down a worker each
+//! time it is retried.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
@@ -69,8 +74,17 @@ struct State {
     rasters: HashMap<u32, RasterDone>,
     features: HashMap<u32, orb_runtime::FeaturesDone>,
     answers: HashMap<u32, orb_runtime::QueryDone>,
-    /// The worker each request went to, until it answers.
-    sent_to: HashMap<u32, u32>,
+    /// The worker each request went to, until it answers, and the tile a
+    /// load is for.
+    sent_to: HashMap<u32, (u32, Option<LoadKey>)>,
+    /// Tiles whose loads were lost with a worker, by how many times: one
+    /// is a suspect, two quarantine it.
+    lost_loads: HashMap<LoadKey, u8>,
+    /// The suspect's load in flight, and the loads of those waiting.
+    suspect: Option<u32>,
+    suspects: VecDeque<(TileRequest, TileDone)>,
+    /// The PMTiles archive heads the map read, for a replacement worker.
+    heads: Vec<(String, Arc<Vec<u8>>)>,
     /// Workers lost.
     lost: Vec<bool>,
     /// Bytes of packed headers copied into this worker's wasm memory.
@@ -78,6 +92,12 @@ struct State {
     /// Replies received.
     done: u32,
 }
+
+/// A load's style, source and tile.
+type LoadKey = (u64, u32, TileIndex);
+
+/// Losses of one tile's loads that quarantine it.
+const QUARANTINE: u8 = 2;
 
 /// What the render worker's jobs have done so far.
 #[derive(Clone, Copy, Debug)]
@@ -132,30 +152,98 @@ impl WorkerJobs {
         self.complete(Some(gpu), message, buffer, reply)
     }
 
-    /// Job worker `worker` is lost: the requests it had fail, and the next
+    /// Job worker `worker` is lost: the requests it had fail. With
+    /// `replacement`, another worker took its place and gets the style
+    /// first (if one has loaded) and the archive heads; without, the next
     /// worker on takes its share.
-    pub(crate) fn lost(&self, worker: u32, why: &str) {
-        let ids: Vec<u32> = {
+    pub(crate) fn lost(
+        &self,
+        worker: u32,
+        why: &str,
+        replacement: Option<Option<(u64, StyleUpdate, SpriteIcons)>>,
+    ) {
+        let (lost, heads, next) = {
             let mut state = self.state.lock().expect("jobs poisoned");
             let Some(lost) = state.lost.get_mut(worker as usize) else {
                 return;
             };
-            *lost = true;
-            state
+            *lost = replacement.is_none();
+            let lost: Vec<(u32, Option<LoadKey>)> = state
                 .sent_to
                 .iter()
-                .filter(|&(_, &w)| w == worker)
-                .map(|(&id, _)| id)
-                .collect()
+                .filter(|&(_, &(w, _))| w == worker)
+                .map(|(&id, &(_, load))| (id, load))
+                .collect();
+            for load in lost.iter().filter_map(|(_, load)| *load) {
+                let n = state.lost_loads.entry(load).or_default();
+                *n = n.saturating_add(1);
+            }
+            let next = match state.suspect {
+                Some(id) if lost.iter().any(|&(i, _)| i == id) => {
+                    state.suspect = None;
+                    state.suspects.pop_front()
+                }
+                _ => None,
+            };
+            (lost, state.heads.clone(), next)
         };
-        for id in ids {
-            let message = format!("job worker {worker} lost: {why}");
-            let _ = self.complete(
-                None,
-                JobReply::Error { id, message },
-                None,
-                &JsValue::UNDEFINED,
-            );
+        if let Some(style) = replacement {
+            if let Some((style, update, icons)) = style {
+                let update = Box::new(update);
+                self.post(
+                    worker,
+                    &bytes(&wire::encode(&JobRequest::Style { style, update })),
+                );
+                self.post(
+                    worker,
+                    &bytes(&wire::encode(&JobRequest::Icons { style, icons })),
+                );
+            }
+            for (url, head) in heads {
+                let head = (*head).clone();
+                self.post(
+                    worker,
+                    &bytes(&wire::encode(&JobRequest::ArchiveHead { url, head })),
+                );
+            }
+        }
+        for (id, load) in lost {
+            let mut message = format!("job worker {worker} lost: {why}");
+            if load.is_some_and(|load| self.quarantined(load)) {
+                message.push_str("; the tile it was loading is left out from now on");
+                self.complete_load(id, Ok(quarantine(message)));
+            } else {
+                let _ = self.complete(
+                    None,
+                    JobReply::Error { id, message },
+                    None,
+                    &JsValue::UNDEFINED,
+                );
+            }
+        }
+        if let Some((request, done)) = next {
+            self.load(request, done);
+        }
+    }
+
+    fn quarantined(&self, load: LoadKey) -> bool {
+        let state = self.state.lock().expect("jobs poisoned");
+        state
+            .lost_loads
+            .get(&load)
+            .is_some_and(|&n| n >= QUARANTINE)
+    }
+
+    /// Completes load `id` with `result`, without a reply.
+    fn complete_load(&self, id: u32, result: Result<TileResult, String>) {
+        let done = {
+            let mut state = self.state.lock().expect("jobs poisoned");
+            state.sent_to.remove(&id);
+            state.done += 1;
+            state.pending.remove(&id)
+        };
+        if let Some(done) = done {
+            done(result);
         }
     }
 
@@ -170,7 +258,7 @@ impl WorkerJobs {
     ) -> Result<(), JsError> {
         let id = message.id();
         let mut state = self.state.lock().expect("jobs poisoned");
-        state.sent_to.remove(&id);
+        let sent = state.sent_to.remove(&id);
         if let Some(done) = state.features.remove(&id) {
             drop(state);
             done(match message {
@@ -203,6 +291,16 @@ impl WorkerJobs {
             .pending
             .remove(&id)
             .ok_or_else(|| JsError::new(&format!("reply to unknown job {id}")))?;
+        // A suspect answered: it didn't take its worker down.
+        let next = if state.suspect == Some(id) {
+            state.suspect = None;
+            if let Some((_, Some(load))) = sent {
+                state.lost_loads.remove(&load);
+            }
+            state.suspects.pop_front()
+        } else {
+            None
+        };
         let result = match message {
             JobReply::Missing { .. } => Ok(TileResult {
                 missing: true,
@@ -261,7 +359,20 @@ impl WorkerJobs {
         };
         drop(state);
         done(result);
+        if let Some((request, done)) = next {
+            self.load(request, done);
+        }
         Ok(())
+    }
+}
+
+/// A quarantined tile's load: missing, so its ancestor stands in, with why
+/// as a warning.
+fn quarantine(why: String) -> TileResult {
+    TileResult {
+        missing: true,
+        warnings: (!why.is_empty()).then_some(why).into_iter().collect(),
+        ..TileResult::default()
     }
 }
 
@@ -303,6 +414,7 @@ impl WorkerJobs {
     fn send(
         &self,
         preferred: u32,
+        load: Option<LoadKey>,
         keep: impl FnOnce(&mut State, u32),
         make: impl FnOnce(u32) -> JobRequest,
     ) {
@@ -321,7 +433,7 @@ impl WorkerJobs {
             );
             return;
         };
-        state.sent_to.insert(id, worker);
+        state.sent_to.insert(id, (worker, load));
         drop(state);
         self.post(worker, &bytes(&wire::encode(&make(id))));
     }
@@ -344,6 +456,15 @@ impl Jobs for WorkerJobs {
     }
 
     fn add_archive_head(&self, url: &str, head: &Arc<Vec<u8>>) {
+        {
+            let mut state = self.state.lock().expect("jobs poisoned");
+            state.heads.retain(|(u, _)| u != url);
+            state.heads.push((url.to_string(), Arc::clone(head)));
+            // As many as a job host keeps.
+            if state.heads.len() > 8 {
+                state.heads.remove(0);
+            }
+        }
         self.broadcast(&bytes(&wire::encode(&JobRequest::ArchiveHead {
             url: url.to_string(),
             head: (**head).clone(),
@@ -361,15 +482,37 @@ impl Jobs for WorkerJobs {
         // A unit's owner worker rasterizes it.
         self.send(
             request.owner(self.workers),
+            None,
             |state, id| drop(state.rasters.insert(id, done)),
             |id| JobRequest::Raster { id, request },
         );
     }
 
     fn load(&self, request: TileRequest, done: TileDone) {
+        let load = (request.style, request.source, request.tile);
+        let suspect = {
+            let mut state = self.state.lock().expect("jobs poisoned");
+            match state.lost_loads.get(&load) {
+                Some(&n) if n >= QUARANTINE => {
+                    drop(state);
+                    return done(Ok(quarantine(String::new())));
+                }
+                Some(_) if state.suspect.is_some() => {
+                    state.suspects.push_back((request, done));
+                    return;
+                }
+                found => found.is_some(),
+            }
+        };
         self.send(
             owner(request.source, request.tile, self.workers),
-            |state, id| drop(state.pending.insert(id, done)),
+            Some(load),
+            |state, id| {
+                state.pending.insert(id, done);
+                if suspect {
+                    state.suspect = Some(id);
+                }
+            },
             |id| JobRequest::Load { id, request },
         );
     }
@@ -377,6 +520,7 @@ impl Jobs for WorkerJobs {
     fn features(&self, request: orb_runtime::FeatureRequest, done: orb_runtime::FeaturesDone) {
         self.send(
             owner(request.tile.source, request.tile.tile, self.workers),
+            None,
             |state, id| drop(state.features.insert(id, done)),
             |id| JobRequest::Features { id, request },
         );
@@ -385,6 +529,7 @@ impl Jobs for WorkerJobs {
     fn cluster(&self, request: orb_runtime::ClusterRequest, done: orb_runtime::QueryDone) {
         self.send(
             owner(request.tile.source, request.tile.tile, self.workers),
+            None,
             |state, id| drop(state.answers.insert(id, done)),
             |id| JobRequest::Cluster { id, request },
         );
@@ -420,6 +565,12 @@ impl JobWorker {
     #[wasm_bindgen(js_name = setShaperLoader)]
     pub fn set_shaper_loader(&mut self, loader: js_sys::Function) {
         crate::host::ShaperFiles::set_loader(loader);
+    }
+
+    /// Traps, as a bug would: the page replaces the worker. To exercise
+    /// that recovery.
+    pub fn trap(&self) {
+        panic!("a trap asked for");
     }
 
     /// Handles a request from the page: a [`JobRequest`] in

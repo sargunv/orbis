@@ -4,9 +4,12 @@
 import init, { createMap as createCoreMap, reloadRegions, setRequestHook, type OrbisMap as Core } from "../pkg/core.js";
 import { onRegionsChanged } from "./regions.ts";
 import { answerWorker, connectModule, connectWorker } from "./requests.ts";
-import { spawnPlacement, spawnWorkers } from "./workers.ts";
+import { spawnJob, spawnPlacement } from "./workers.ts";
 
 export type { Core };
+
+/** How many times each job worker slot is given a new worker. */
+const REPLACEMENTS = 3;
 
 /** GL JS's map options the core takes at creation (`MapOptions`). */
 export interface CoreOptions {
@@ -34,6 +37,10 @@ export interface Host {
   /** Traps the placement worker's wasm, as a bug would, to exercise its
    * replacement. */
   trapPlacementWorker(): void;
+  /** Traps job worker `index`'s wasm, to exercise its replacement. */
+  trapJobWorker(index: number): void;
+  /** How many job workers the map has. */
+  readonly jobWorkers: number;
   /** Draws on a new GPU after a loss, on the same canvas. */
   recover(): Promise<void>;
   destroy(): void;
@@ -52,10 +59,9 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   // Replies still on their way when the map stops find it gone.
   let stopped = false;
   const reply = (apply: (data: unknown) => void) => receive((data) => { if (!stopped) apply(data); });
-  const spawned = spawnWorkers(module, jobWorkers);
-  const { ports } = spawned;
-  const workers = spawned.workers.slice(0, -1);
-  let placement = { port: spawned.placement, worker: spawned.workers[spawned.workers.length - 1] };
+  const jobs = Array.from({ length: jobWorkers }, () => spawnJob(module));
+  const ports = jobs.map((j) => j.port);
+  let placement = spawnPlacement(module);
   await init({ module_or_path: module });
   connectModule(setRequestHook);
   const core = await createCoreMap(canvas, style, options, callbacks.wake, ports.length,
@@ -82,17 +88,37 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   };
   listen();
   // A job worker whose wasm trapped says so and closes; one that dies
-  // fires `error`. Either way its requests fail and are retried on the
-  // others.
+  // fires `error`. Either way its requests fail, and another takes its
+  // place, which the map sends its style; a slot that has lost
+  // REPLACEMENTS workers is given up, and its share goes to the others.
   const released = ports.map(connectWorker);
-  ports.forEach((port, i) => {
+  const replaced = jobs.map(() => 0);
+  const listenJob = (i: number) => {
+    const { port, worker } = jobs[i];
+    let gone = false;
+    const lose = (why: string) => {
+      if (gone || stopped) return;
+      gone = true;
+      worker.terminate();
+      port.close();
+      released[i]();
+      const replace = replaced[i]++ < REPLACEMENTS;
+      if (replace) {
+        jobs[i] = spawnJob(module);
+        ports[i] = jobs[i].port;
+        released[i] = connectWorker(ports[i]);
+        listenJob(i);
+      }
+      core.jobWorkerLost(i, why, replace);
+    };
     port.onmessage = reply((data) => {
       const lost = (data as { lost?: string }).lost;
-      if (lost !== undefined) core.jobWorkerLost(i, lost);
+      if (lost !== undefined) lose(lost);
       else if (!answerWorker(port, data)) core.receiveJob(data);
     });
-    workers[i].addEventListener("error", (e) => { e.preventDefault(); if (!stopped) core.jobWorkerLost(i, e.message || "the worker died"); });
-  });
+    worker.addEventListener("error", (e) => { e.preventDefault(); lose(e.message || "the worker died"); });
+  };
+  jobs.forEach((_, i) => listenJob(i));
   const regions = onRegionsChanged(reloadRegions);
   callbacks.setup(core);
   let size: [number, number, number] | undefined;
@@ -104,6 +130,8 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
     },
     loseDevice: () => core.loseDevice(),
     trapPlacementWorker: () => placement.port.postMessage({ trap: true }),
+    trapJobWorker: (index) => ports[index % ports.length].postMessage({ trap: true }),
+    jobWorkers: ports.length,
     async recover() {
       await core.recover(canvas);
       if (size) core.resize(...size);
@@ -113,7 +141,7 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
       for (const port of [...ports, placement.port]) port.close();
       regions();
       for (const r of released) r();
-      for (const w of [...workers, placement.worker]) w.terminate();
+      for (const w of [...jobs.map((j) => j.worker), placement.worker]) w.terminate();
       core.free();
     },
   };

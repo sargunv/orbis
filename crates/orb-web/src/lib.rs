@@ -751,10 +751,14 @@ impl OrbisMap {
     }
 
     /// Job worker `worker` is lost (its wasm trapped, or it died): the
-    /// requests it had fail and are retried on the others.
+    /// requests it had fail, and the map retries them. With `replaced`,
+    /// the page put another worker in its place, which the map sends its
+    /// style; without, the others take its share.
     #[wasm_bindgen(js_name = jobWorkerLost)]
-    pub fn job_worker_lost(&mut self, worker: u32, why: &str) {
-        self.worker_jobs.lost(worker, why);
+    pub fn job_worker_lost(&mut self, worker: u32, why: &str, replaced: bool) {
+        let replacement = replaced.then(|| self.map.jobs_style());
+        self.worker_jobs.lost(worker, why, replacement);
+        wake(self.id);
     }
 
     /// The placement worker is lost (its wasm trapped, or it died) and the

@@ -237,6 +237,11 @@ export class OrbisMap {
   /** Traps the placement worker's wasm, as a bug would, to exercise its
    * replacement: labels place again within a frame or two. */
   trapPlacementWorker(): void { this.#host.trapPlacementWorker(); }
+  /** Traps every job worker's wasm, as a bug would, to exercise their
+   * replacement: tiles load again on the new workers. */
+  trapJobWorkers(): void {
+    for (let i = 0; i < this.#host.jobWorkers; i++) this.#host.trapJobWorker(i);
+  }
 
   /** The last frame's counters. */
   get stats(): FrameStats | undefined { return this.#stats; }

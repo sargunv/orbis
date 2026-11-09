@@ -13,6 +13,7 @@ export function expose(map) {
     getStyle: async () => JSON.stringify(await map.getStyle()),
     loseDevice: () => map.loseDevice(),
     trapPlacementWorker: () => map.trapPlacementWorker(),
+    trapJobWorkers: () => map.trapJobWorkers(),
     setRequestTransform,
   };
   map.on("render", (ack) => window.dispatchEvent(new CustomEvent("orbis-frame", { detail: ack })));

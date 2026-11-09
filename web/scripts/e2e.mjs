@@ -330,6 +330,21 @@ async function edits(browser, server) {
   assert.ok(before > 0 && after > 0, `labels before the trap ${before}, after ${after}`);
   console.log(`edits: placement worker trapped and replaced; ${before} → ${after} labels`);
 
+  // Job workers that trap are replaced, and the new ones have the style
+  // with the app's edits: tiles of a new view load and draw, the grid's
+  // among them.
+  await page.evaluate(() => globalThis.orbis.trapJobWorkers());
+  await page.waitForTimeout(100);
+  await page.evaluate(() => globalThis.orbis.map.camera.jumpTo({ center: [139.741, 35.6835], zoom: 16.2 }));
+  await page.waitForTimeout(50);
+  await idle();
+  const drawn = await page.evaluate(async () => {
+    const { map } = globalThis.orbis;
+    return { all: (await map.queryRenderedFeatures()).length, grid: (await map.queryRenderedFeatures(undefined, { layers: ["grid"] })).length };
+  });
+  assert.ok(drawn.all > 0 && drawn.grid > 0, `features after the trap ${JSON.stringify(drawn)}`);
+  console.log(`edits: job workers trapped and replaced; ${drawn.all} features drawn, ${drawn.grid} of the grid`);
+
   // A device loss keeps what the app set at run time:
   // feature state (the grid's feature 7 above), images, a
   // GeoJSON source's diffed data and a transformed request.

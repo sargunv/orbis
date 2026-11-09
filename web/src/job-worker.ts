@@ -19,7 +19,7 @@ self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAs
   // Styles with `font-faces` draw their files with shaper.wasm.
   jobs.setShaperLoader(loadShaper);
   // A trap (a Rust panic) leaves the wasm unusable: the worker says it is
-  // lost and closes, and the map fails and retries what it had here.
+  // lost and closes, and the page replaces it.
   const trapped = (e: unknown) => {
     if (!(e instanceof WebAssembly.RuntimeError)) return false;
     port.postMessage({ lost: e.message });
@@ -38,6 +38,7 @@ self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAs
       return;
     }
     try {
+      if ((data as { trap?: boolean }).trap) jobs.trap();
       const reply = await jobs.receive(data);
       if (reply) port.postMessage(reply, [reply.message.buffer, reply.buffer, reply.image].filter(Boolean));
     } catch (e) {
