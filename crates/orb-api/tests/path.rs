@@ -303,13 +303,14 @@ fn dem(
     max_zoom: u8,
     metres: impl Fn(f64, f64) -> f64,
 ) -> (String, DemDir) {
+    // One directory per call: tests run in parallel, and the clock may
+    // give two of them the same time, then one's drop would delete the
+    // other's tiles under its fresh map.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "orb-path-dem-{}-{}",
+        "orb-path-dem-{}-{}-{name}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
     const SIZE: u32 = 256;
     for z in 0..=max_zoom {
