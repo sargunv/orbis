@@ -475,9 +475,15 @@ impl View {
     /// Projects a world position `z` world units above the datum. On a
     /// globe, positions beyond the horizon are `None` too.
     pub fn project_3d(&self, world: DVec2, z: f64) -> Option<DVec2> {
+        self.project_depth(world, z).map(|(px, _)| px)
+    }
+
+    /// [`project_3d`](Self::project_3d) with the position's depth: its clip
+    /// z over w, 0 at the near plane and 1 at the far one.
+    pub fn project_depth(&self, world: DVec2, z: f64) -> Option<(DVec2, f64)> {
         if let Some(low) = self.low_plane() {
             let (world, z) = self.to_low(low, world, z);
-            return low.project_3d(world, z);
+            return low.project_depth(world, z);
         }
         let clip = match &self.globe {
             Some(globe) => {
@@ -491,11 +497,12 @@ impl View {
             None => self.view_proj * (world - self.camera_world).extend(z).extend(1.0),
         };
         (clip.w > 0.0).then(|| {
-            let ndc = clip.truncate().truncate() / clip.w;
-            DVec2::new(
+            let ndc = clip.truncate() / clip.w;
+            let px = DVec2::new(
                 (ndc.x + 1.0) * 0.5 * self.viewport.width,
                 (1.0 - ndc.y) * 0.5 * self.viewport.height,
-            )
+            );
+            (px, ndc.z)
         })
     }
 

@@ -245,6 +245,15 @@ impl FeatureRef<'_> {
             .then(|| (f64::from(lo), f64::from(hi)))
     }
 
+    /// Whether its bounds meet the tile's half-open square, as GL JS's
+    /// `FeatureIndex::insert` asks before it indexes a feature: a copy held
+    /// wholly in a tile's buffer answers only from the tile it lies in.
+    fn meets_square(&self) -> bool {
+        let b = |i: usize| self.bounds[i] as i32;
+        let extent = self.extent as i32;
+        b(0) < extent && b(1) < extent && b(2) >= 0 && b(3) >= 0
+    }
+
     fn id(&self) -> Option<String> {
         let mut r = Reader::new(self.id?);
         r.text().ok()
@@ -848,7 +857,8 @@ fn live(p: &Property<f32>, zoom: f64, state: FeatureState<'_>, fallback: f32) ->
 
 /// A feature a query may report, in the order that puts upper ones last:
 /// its layer, then tiles before labels, then its tile's rank (GL JS's
-/// tile order, [`tile_rank`]) or a label's, then the drawing order.
+/// tile order, [`tile_rank`]) or a label's ([`label_rank`]), then the
+/// drawing order (a label's feature index).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Order {
     layer: usize,
@@ -892,13 +902,19 @@ impl Query<'_> {
     /// in logical pixels, as the renderer places it: on the terrain, on the
     /// globe or its low-zoom plane. `None` behind the eye or the horizon.
     fn project(&self, world: DVec2, height: f64) -> Option<Vec2> {
+        self.project_depth(world, height).map(|(p, _)| p)
+    }
+
+    /// [`project`](Self::project) with the position's depth, 0 at the near
+    /// plane and 1 at the far one.
+    fn project_depth(&self, world: DVec2, height: f64) -> Option<(Vec2, f64)> {
         let ground = self
             .elevation
             .and_then(|e| e.at(world))
             .map_or(0.0, |metres| metres * self.view.height_scale());
         self.view
-            .project_3d(world, ground + height)
-            .map(|p| p.as_vec2())
+            .project_depth(world, ground + height)
+            .map(|(p, depth)| (p.as_vec2(), depth))
     }
 
     /// Pixels per pixel at the view's centre, at a world position: the
@@ -1149,7 +1165,7 @@ impl Scene<'_> {
                 }
             }
         }
-        for (i, label) in self.labels.iter().enumerate() {
+        for label in self.labels.iter() {
             let Some(layer) = self.layers.nodes.get(&label.node) else {
                 continue;
             };
@@ -1157,10 +1173,10 @@ impl Scene<'_> {
                 Order {
                     layer: layer.order,
                     label: true,
-                    tile: i as u64,
+                    tile: label_rank(label.key.tile),
                     mesh: 0,
                     copy: 0,
-                    feature: 0,
+                    feature: label.key.feature,
                 },
                 Candidate::Label { layer, label },
             ));
@@ -1182,6 +1198,9 @@ impl Scene<'_> {
                 at,
             } => {
                 let f = mesh.feature(record).ok()?;
+                if !f.meets_square() {
+                    return None;
+                }
                 let id = f.id();
                 let state = match (self.states, &id) {
                     (Some(states), Some(id)) if layer.paint.reads_state() => {
@@ -1261,7 +1280,9 @@ impl Scene<'_> {
             .find_map(|(_, mesh)| mesh.id_of(key.feature))
     }
 
-    /// The topmost feature under `point`, in pixels of `view`.
+    /// The topmost feature under `point`, in pixels of `view`: the first
+    /// a point query answers, the nearest extrusion among them where one
+    /// is uppermost.
     pub(crate) fn hit_test(
         &self,
         view: &View,
@@ -1269,20 +1290,8 @@ impl Scene<'_> {
         zoom: f64,
         point: DVec2,
     ) -> Option<Hit> {
-        if !point.is_finite() {
-            return None;
-        }
-        let q = Query {
-            view,
-            camera,
-            zoom,
-            elevation: self.elevation,
-        };
-        self.candidates(&q, point, point)
-            .iter()
-            .filter_map(|(_, c)| self.project(&q, c))
-            .find(|(screen, ..)| screen.contains(point))
-            .map(|(_, hit, _)| hit)
+        let hits = self.query(view, camera, zoom, point, point, None);
+        hits.into_iter().next().map(|(hit, ..)| hit)
     }
 
     /// Every feature drawn touching the pixel box `min..max` (a point when
@@ -1307,7 +1316,7 @@ impl Scene<'_> {
             elevation: self.elevation,
         };
         let mut seen = std::collections::HashSet::new();
-        let mut out = Vec::new();
+        let (mut flat, mut solid) = (Vec::new(), Vec::new());
         for (order, c) in self.candidates(&q, min, max) {
             let layer = match c {
                 Candidate::Feature { layer, .. } | Candidate::Label { layer, .. } => layer,
@@ -1319,9 +1328,34 @@ impl Scene<'_> {
                 continue;
             };
             if screen.intersects(min, max) && seen.insert((order.layer, key)) {
-                out.push((hit, order.layer, key));
+                match screen.depth(min, max) {
+                    Some(depth) => solid.push((depth, (hit, order.layer, key))),
+                    None => flat.push((hit, order.layer, key)),
+                }
             }
         }
+        // GL JS's `_flattenAndSortRenderedFeatures`: extrusions come
+        // nearest first across their layers, each where the layers above
+        // it end, unless a lower layer's extrusion is nearer still.
+        solid.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut solid = solid.into_iter().map(|(_, hit)| hit).peekable();
+        let mut flat = flat.into_iter().peekable();
+        let mut out = Vec::new();
+        let mut extrusions: Vec<usize> = self
+            .layers
+            .nodes
+            .values()
+            .filter(|l| matches!(l.paint, HitPaint::Extrusion { .. }))
+            .map(|l| l.order)
+            .collect();
+        extrusions.sort_unstable_by(|a, b| b.cmp(a));
+        extrusions.dedup();
+        for at in extrusions {
+            out.extend(std::iter::from_fn(|| flat.next_if(|f| f.1 > at)));
+            out.extend(std::iter::from_fn(|| solid.next_if(|s| s.1 >= at)));
+        }
+        out.extend(flat);
+        out.extend(solid);
         out
     }
 }
@@ -1351,6 +1385,9 @@ struct ScreenHit {
     kind: u32,
     radius: f32,
     parts: Vec<Vec<Vec<Vec2>>>,
+    /// An extrusion's faces' depths (0 near, 1 far): per part, its outer
+    /// ring's points'. Empty for everything flat.
+    depths: Vec<Vec<f64>>,
     /// A line label's collision circles: centre and radius.
     circles: Vec<(Vec2, f32)>,
     /// The regions its tile draws in, and how far past them in pixels a
@@ -1402,9 +1439,10 @@ impl ScreenHit {
         let wrap = DVec2::new(f64::from(copy.wrap) * period, 0.0);
         let mut min = Vec2::splat(f32::INFINITY);
         let mut max = Vec2::splat(f32::NEG_INFINITY);
-        let project = |p: DVec2, height: f64| q.project(transform(p) + wrap + shift, height);
+        let project = |p: DVec2, height: f64| q.project_depth(transform(p) + wrap + shift, height);
         let clip_box = feature.clip_box();
-        let mut parts = Vec::new();
+        let solid = elevation.1 > elevation.0;
+        let (mut parts, mut depths) = (Vec::new(), Vec::new());
         // Lines under pitch, as polygons.
         let mut buffered = Vec::new();
         for part in feature.parts().ok()? {
@@ -1449,26 +1487,35 @@ impl ScreenHit {
                     }
                     continue;
                 }
-                let points = line
+                let (points, depth): (Vec<Vec2>, Vec<f64>) = line
                     .iter()
-                    .map(|p| q.project(transform(*p) + wrap + shift, elevation.1))
-                    .collect::<Option<Vec<_>>>()?;
+                    .map(|p| project(*p, elevation.1))
+                    .collect::<Option<Vec<_>>>()?
+                    .into_iter()
+                    .unzip();
+                if solid && rings.is_empty() {
+                    depths.push(depth);
+                }
                 rings.push(points);
             }
             parts.push(rings);
-            if elevation.1 > elevation.0 {
+            if solid {
                 for ring in &part {
                     for (a, b) in ring
                         .iter()
                         .zip(ring.iter().cycle().skip(1))
                         .take(ring.len())
                     {
-                        parts.push(vec![vec![
+                        let (face, depth) = [
                             project(*a, elevation.0)?,
                             project(*b, elevation.0)?,
                             project(*b, elevation.1)?,
                             project(*a, elevation.1)?,
-                        ]]);
+                        ]
+                        .into_iter()
+                        .unzip();
+                        parts.push(vec![face]);
+                        depths.push(depth);
                     }
                 }
             }
@@ -1502,6 +1549,7 @@ impl ScreenHit {
             kind,
             radius,
             parts,
+            depths,
             circles: Vec::new(),
             min,
             max,
@@ -1578,6 +1626,7 @@ impl ScreenHit {
             kind: 0,
             radius: 0.0,
             parts,
+            depths: Vec::new(),
             circles,
             min,
             max,
@@ -1616,6 +1665,7 @@ impl ScreenHit {
             kind: LABEL,
             radius: 0.0,
             parts,
+            depths: Vec::new(),
             circles,
             clips: Vec::new(),
             clip_pad: 0.0,
@@ -1654,10 +1704,7 @@ impl ScreenHit {
                     .any(|pair| distance(p, pair[0], pair[1]) <= self.radius)
             }),
             LABEL => part.first().is_some_and(|outer| inside(p, outer)),
-            _ => {
-                part.first().is_some_and(|outer| inside(p, outer))
-                    && !part.iter().skip(1).any(|hole| inside(p, hole))
-            }
+            _ => polygon_meets(part, p, p),
         })
     }
 
@@ -1671,22 +1718,11 @@ impl ScreenHit {
         if self.max.cmplt(min).any() || self.min.cmpgt(max).any() {
             return false;
         }
-        let in_box = |q: Vec2| q.cmpge(min).all() && q.cmple(max).all();
-        let corners = [min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y)];
-        let edges_touch = |ring: &[Vec2], radius: f32, closed: bool| {
-            let n = ring.len();
-            let segments = if closed { n } else { n.saturating_sub(1) };
-            (0..segments).any(|i| {
-                let (a, b) = (ring[i], ring[(i + 1) % n]);
-                segment_box_distance(a, b, min, max) <= radius
-            }) || (n == 1 && point_box_distance(ring[0], min, max) <= radius)
-        };
         if self.clipped
             && !self.clips.is_empty()
             && !self.clips.iter().any(|clip| {
-                clip.iter().copied().any(in_box)
-                    || corners.iter().any(|&c| inside(c, clip))
-                    || edges_touch(clip, self.clip_pad, true)
+                polygon_meets(std::slice::from_ref(clip), min, max)
+                    || ring_touches(clip, min, max, self.clip_pad, true)
             })
         {
             return false;
@@ -1705,17 +1741,77 @@ impl ScreenHit {
                 .any(|&q| point_box_distance(q, min, max) <= self.radius),
             1 => part
                 .iter()
-                .any(|ring| edges_touch(ring, self.radius, false)),
-            _ => {
-                let Some(outer) = part.first() else {
-                    return false;
-                };
-                outer.iter().copied().any(in_box)
-                    || corners.iter().any(|&c| inside(c, outer))
-                    || part.iter().any(|ring| edges_touch(ring, 0.0, true))
-            }
+                .any(|ring| ring_touches(ring, min, max, self.radius, false)),
+            _ => polygon_meets(part, min, max),
         })
     }
+
+    /// How near the query `min..max` meets an extrusion, as GL JS's
+    /// `checkIntersection` takes it: the nearest of the faces it meets, a
+    /// point at its depth on the face, a box at the face's nearest corner.
+    /// `None` for flat features.
+    fn depth(&self, min: DVec2, max: DVec2) -> Option<f64> {
+        let (min, max) = (min.as_vec2(), max.as_vec2());
+        self.parts
+            .iter()
+            .zip(&self.depths)
+            .filter(|(part, _)| polygon_meets(part, min, max))
+            .map(|(part, depth)| match (min == max, part.first()) {
+                (true, Some(outer)) => plane_depth(min, outer, depth),
+                _ => depth.iter().copied().fold(f64::INFINITY, f64::min),
+            })
+            .reduce(f64::min)
+    }
+}
+
+/// Whether a polygon (its outer ring, then its holes) meets the box
+/// `min..max`, or holds the point when they are equal.
+fn polygon_meets(part: &[Vec<Vec2>], min: Vec2, max: Vec2) -> bool {
+    let Some(outer) = part.first() else {
+        return false;
+    };
+    if min == max {
+        return inside(min, outer) && !part[1..].iter().any(|hole| inside(min, hole));
+    }
+    let corners = [min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y)];
+    outer
+        .iter()
+        .any(|q| q.cmpge(min).all() && q.cmple(max).all())
+        || corners.iter().any(|&c| inside(c, outer))
+        || part
+            .iter()
+            .any(|ring| ring_touches(ring, min, max, 0.0, true))
+}
+
+/// Whether a ring's edges (closing it if `closed`) come within `radius`
+/// of the box `min..max`.
+fn ring_touches(ring: &[Vec2], min: Vec2, max: Vec2, radius: f32, closed: bool) -> bool {
+    let n = ring.len();
+    let segments = if closed { n } else { n.saturating_sub(1) };
+    (0..segments).any(|i| segment_box_distance(ring[i], ring[(i + 1) % n], min, max) <= radius)
+        || (n == 1 && point_box_distance(ring[0], min, max) <= radius)
+}
+
+/// The depth at `p` of the plane through a planar face, from its points
+/// and their depths: barycentric over its first triangle with area, as
+/// GL JS's `getIntersectionDistance` takes it.
+fn plane_depth(p: Vec2, face: &[Vec2], depth: &[f64]) -> f64 {
+    let Some(b) = (1..face.len()).find(|&i| face[i] != face[0]) else {
+        return f64::INFINITY;
+    };
+    let (a, p) = (face[0].as_dvec2(), p.as_dvec2());
+    let (ab, ap) = (face[b].as_dvec2() - a, p - a);
+    for c in b + 1..face.len() {
+        let ac = face[c].as_dvec2() - a;
+        let denom = ab.dot(ab) * ac.dot(ac) - ab.dot(ac) * ab.dot(ac);
+        let v = (ac.dot(ac) * ap.dot(ab) - ab.dot(ac) * ap.dot(ac)) / denom;
+        let w = (ab.dot(ab) * ap.dot(ac) - ab.dot(ac) * ap.dot(ab)) / denom;
+        let d = depth[0] * (1.0 - v - w) + depth[b] * v + depth[c] * w;
+        if d.is_finite() {
+            return d;
+        }
+    }
+    f64::INFINITY
 }
 
 /// Whether a drawn copy's regions hold a feature's centroid, as layout
@@ -1755,6 +1851,15 @@ fn owns(f: &FeatureRef<'_>, mapping: &TileMapping, copy: &DrawnCopy, period: f64
 fn tile_rank(tile: TileIndex, drawn: usize) -> u64 {
     let z = u64::from(31u8.saturating_sub(tile.z));
     (z << 58) | (u64::from(tile.row) << 30) | (u64::from(tile.col) << 2) | (drawn as u64 & 3)
+}
+
+/// A label's tile's rank among its layer's labels, highest first: GL JS
+/// answers labels bucket by bucket in `sortTilesIn` order (lower zooms
+/// first, then rows and columns from the first), each bucket's features
+/// last first.
+fn label_rank(tile: TileIndex) -> u64 {
+    let key = (u64::from(tile.z) << 58) | (u64::from(tile.row) << 29) | u64::from(tile.col);
+    u64::MAX - key
 }
 
 /// A line widened by `half` on each side, as polygons: a quadrilateral a
@@ -2059,6 +2164,31 @@ mod tests {
             distance(Vec2::new(5., 2.), Vec2::ZERO, Vec2::new(10., 0.)),
             2.
         );
+    }
+
+    /// A point meets a face at the face's depth under it; a box at the
+    /// face's nearest corner. Leading repeated points don't count.
+    #[test]
+    fn face_depths() {
+        let face = [Vec2::ZERO, Vec2::ZERO, Vec2::new(10., 0.), Vec2::splat(10.)];
+        let depth = [0.2, 0.2, 0.4, 0.8];
+        let at = plane_depth(Vec2::new(5., 5.), &face, &depth);
+        assert!((at - 0.5).abs() < 1e-9, "{at}");
+        let hit = ScreenHit {
+            clipped: false,
+            kind: 0,
+            radius: 0.0,
+            parts: vec![vec![face.to_vec()]],
+            depths: vec![depth.to_vec()],
+            circles: Vec::new(),
+            clips: Vec::new(),
+            clip_pad: 0.0,
+            min: Vec2::ZERO,
+            max: Vec2::splat(10.),
+        };
+        let depth = |min, max| hit.depth(DVec2::splat(min), DVec2::splat(max));
+        assert_eq!(depth(9.0, 9.5), Some(0.2));
+        assert_eq!(depth(20.0, 21.0), None);
     }
 
     /// A tile's geometry holds each feature once, polygons closed and
