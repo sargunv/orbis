@@ -1,7 +1,8 @@
 //! `cargo xtask web`: builds `core.wasm` and its JS bindings into
 //! `web/pkg/` and reports its sizes, raw, brotli and by crate (twiggy).
 //! Size is watched, not a gate: it warns when a module grows past its
-//! watch level, and never fails.
+//! watch level, and never fails. `--names` also writes core.wasm with its
+//! function names, for `pnpm -C web coverage`.
 //!
 //! `cargo xtask pages`: the above, then the Vite build of the site
 //! `.github/workflows/pages.yml` deploys, into `web/dist/`.
@@ -13,6 +14,8 @@ use std::process::Command;
 use crate::cargo;
 
 const OUT_DIR: &str = "web/pkg";
+/// Where `cargo xtask web --names` writes `core.wasm` with its function names.
+const NAMED_CORE: &str = "target/web/core-names.wasm";
 
 /// The brotli sizes, in KiB, past which `core.wasm` and `shaper.wasm` warn:
 /// a few percent above what each weighs now, so crossing one means
@@ -43,12 +46,15 @@ const CRATES: &[&str] = &[
     "std",
 ];
 
-pub(crate) fn build() -> Result<(), String> {
+/// Builds both modules; `names` also writes `core.wasm` with its function
+/// names to [`NAMED_CORE`], for `pnpm -C web coverage`.
+pub(crate) fn build(names: bool) -> Result<(), String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let out = root.join(OUT_DIR);
     let built = root.join("target/wasm32-unknown-unknown/wasm-release/orb_web.wasm");
 
-    let core = module(&root, "orb-web", "core")?;
+    let named = names.then(|| root.join(NAMED_CORE));
+    let core = module(&root, "orb-web", "core", named.as_deref())?;
     report_crates(&built);
     let js = std::fs::read(out.join("core.js")).map_err(|e| format!("core.js: {e}"))?;
     eprintln!(
@@ -59,7 +65,7 @@ pub(crate) fn build() -> Result<(), String> {
     );
     watch("core.wasm", core.brotli, CORE_WATCH_KIB);
     // `font-faces` drawing, loaded the first time a style declares a file.
-    let shaper = module(&root, "orb-shaper", "shaper")?;
+    let shaper = module(&root, "orb-shaper", "shaper", None)?;
     eprintln!(
         "shaper.wasm: {} KiB raw, {} KiB brotli (lazy)",
         shaper.raw / 1024,
@@ -80,7 +86,7 @@ fn watch(name: &str, brotli: usize, level_kib: usize) {
 }
 
 pub(crate) fn pages() -> Result<(), String> {
-    build()?;
+    build(false)?;
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     run(Command::new("pnpm")
         .current_dir(root.join("web"))
@@ -93,8 +99,9 @@ struct Sizes {
 }
 
 /// Builds `package`, binds it as `<name>.js` and `<name>_bg.wasm` in
-/// [`OUT_DIR`] and shrinks it.
-fn module(root: &Path, package: &str, name: &str) -> Result<Sizes, String> {
+/// [`OUT_DIR`] and shrinks it; and shrinks it into `names` too, keeping
+/// its function names.
+fn module(root: &Path, package: &str, name: &str, names: Option<&Path>) -> Result<Sizes, String> {
     let built = root.join(format!(
         "target/wasm32-unknown-unknown/wasm-release/{}.wasm",
         package.replace('-', "_")
@@ -116,7 +123,21 @@ fn module(root: &Path, package: &str, name: &str) -> Result<Sizes, String> {
         .args(["--target", "web", "--out-name", name, "--out-dir"])
         .arg(&out))?;
     let wasm = out.join(format!("{name}_bg.wasm"));
-    run(Command::new("wasm-opt")
+    if let Some(names) = names {
+        let dir = names.parent().expect("a file in a directory");
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        run(wasm_opt(&wasm, names).arg("-g"))?;
+        eprintln!("{name}.wasm with its names: {}", names.display());
+    }
+    run(&mut wasm_opt(&wasm, &wasm))?;
+    let bytes = std::fs::read(&wasm).map_err(|e| format!("{}: {e}", wasm.display()))?;
+    sizes(&bytes)
+}
+
+/// Shrinks `input` into `output`.
+fn wasm_opt(input: &Path, output: &Path) -> Command {
+    let mut command = Command::new("wasm-opt");
+    command
         .args([
             "-Oz",
             "--converge",
@@ -135,11 +156,10 @@ fn module(root: &Path, package: &str, name: &str) -> Result<Sizes, String> {
             "--enable-multivalue",
             "--enable-reference-types",
         ])
-        .arg(&wasm)
+        .arg(input)
         .arg("-o")
-        .arg(&wasm))?;
-    let bytes = std::fs::read(&wasm).map_err(|e| format!("{}: {e}", wasm.display()))?;
-    sizes(&bytes)
+        .arg(output);
+    command
 }
 
 fn sizes(bytes: &[u8]) -> Result<Sizes, String> {

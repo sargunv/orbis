@@ -42,7 +42,9 @@ cargo xtask <task>
   apple [--test] [--ios-sim[=name]]  hosts/apple/OrbisC.xcframework (macOS,
                iOS, iOS simulator) and the Swift package; --test runs the
                Swift smoke test; --ios-sim runs the iOS app on a simulator
-  web          build core.wasm into web/pkg, report sizes
+  web [--names]  build core.wasm into web/pkg, report sizes; --names also
+               writes it with its function names to target/web/core-names.wasm
+               (for `pnpm -C web coverage`)
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
   rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|lavapipe|all]
@@ -86,7 +88,7 @@ fn main() -> ExitCode {
         Some("capi") => capi::build().map(|_| ()),
         Some("android") => android::run(&args[1..]),
         Some("apple") => apple::run(&args[1..]),
-        Some("web") => web::build(),
+        Some("web") => web::build(args.iter().any(|a| a == "--names")),
         Some("pages") => web::pages(),
         Some("rt") => rt(&args[1..]),
         Some("bench") if args.iter().any(|a| a == "--compare") => compare::bench(&args[1..]),
@@ -143,7 +145,7 @@ fn rt(args: &[String]) -> Result<(), String> {
         .windows(2)
         .any(|pair| pair[0] == "--platform" && ["chrome", "all"].contains(&pair[1].as_str()))
     {
-        web::build()?;
+        web::build(false)?;
     }
     let mut command = vec!["run", "--release", "-p", "orb-fixtures", "--"];
     command.extend(args.iter().map(String::as_str));

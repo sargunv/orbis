@@ -14,7 +14,8 @@
     "bench": "node scripts/bench.mjs",
     "flight": "node scripts/flight.mjs",
     "load": "node scripts/load.mjs",
-    "memory": "node scripts/memory.mjs"
+    "memory": "node scripts/memory.mjs",
+    "coverage": "node scripts/coverage.mjs"
   },
   "devDependencies": {
     "@fontsource-variable/atkinson-hyperlegible-next": "5.3.0",
