@@ -8,7 +8,7 @@ use orb_text::{
     Content, FontStack, Glyph, GlyphKey, GlyphMap, GlyphMetrics, GlyphRequests, Label, Section,
     Variant, VerticalAlign, WritingMode,
 };
-use orb_tile::{TileFrame, Value as TileValue};
+use orb_tile::{Ancestor, TileFrame, Value as TileValue};
 use serde_json::Value;
 
 use super::{anchor, assert_same, image, num, nums};
@@ -301,6 +301,11 @@ struct Case<'a> {
 }
 
 fn run<'a>(name: &'a str, json: &str) -> Case<'a> {
+    run_in(name, json, None)
+}
+
+/// [`run`] for the slice at `ancestor` of the case's tile.
+fn run_in<'a>(name: &'a str, json: &str, ancestor: Option<Ancestor>) -> Case<'a> {
     let golden: Value = serde_json::from_str(json).expect("golden parses");
     let spec = &golden["case"];
     let frame = tile(spec["tile"].as_str().unwrap());
@@ -328,8 +333,10 @@ fn run<'a>(name: &'a str, json: &str) -> Case<'a> {
     }
     let tile = TileParams {
         source_layer: spec["sourceLayer"].as_str().unwrap(),
-        overscaling: spec.get("overscaling").map_or(1.0, num),
+        overscaling: spec.get("overscaling").map_or(1.0, num)
+            / ancestor.map_or(1.0, |a| f64::from(a.scale)),
         pixel_ratio: spec.get("pixelRatio").map_or(1.0, num),
+        ancestor,
     };
     let context = LayoutContext {
         glyphs: &glyph_map,
@@ -717,5 +724,43 @@ fn every_case_places_symbols() {
     for (name, json) in CASES {
         let case = run(name, json);
         assert!(!case.bucket.is_empty(), "{name} is empty");
+    }
+}
+
+/// An overzoom slice laid out in its ancestor keeps the symbols GL JS lays
+/// out in the whole ancestor whose anchors fall in the slice: over a
+/// case's tile cut in four and in sixteen, every instance is laid out once.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+fn slices_keep_their_ancestors_symbols() {
+    for (name, json) in CASES {
+        let golden: Value = serde_json::from_str(json).unwrap();
+        let mut want: Vec<(i64, i64, u32)> = golden["out"]["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                let at = |k| num(&i[k]) as i64;
+                (at("anchorX"), at("anchorY"), num(&i["featureIndex"]) as u32)
+            })
+            .collect();
+        want.sort_unstable();
+        for scale in [2u32, 4] {
+            let mut got = Vec::new();
+            for cell in (0..scale * scale).map(|c| [c % scale, c / scale]) {
+                let case = run_in(name, json, Some(Ancestor { scale, cell }));
+                for instance in &case.bucket.instances {
+                    // Anchors are kept to a unit, a finer one in the
+                    // slice where they aren't rounded (polygons' poles).
+                    let ancestor = |i: usize| {
+                        let v = i64::from(instance.anchor[i]) + i64::from(cell[i]) * 8192;
+                        v.div_euclid(i64::from(scale))
+                    };
+                    got.push((ancestor(0), ancestor(1), instance.feature));
+                }
+            }
+            got.sort_unstable();
+            assert_eq!(got, want, "{name} in slices of {scale}");
+        }
     }
 }

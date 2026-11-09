@@ -6,7 +6,7 @@ use orb_text::{Shaping, WritingMode};
 use serde_json::Value;
 
 use super::{anchor, assert_same, image, line, lines, num, nums};
-use crate::anchors::{Anchor, LabelExtent, center_anchor, check_max_angle, line_anchors};
+use crate::anchors::{Anchor, LabelExtent, Square, center_anchor, check_max_angle, line_anchors};
 use crate::collision::{CollisionFeature, Shape, collision_feature};
 use crate::geometry::{Point, to_i16};
 use crate::icon::{IconTextFit, PositionedIcon, apply_text_fit, fit_icon_to_text, shape_icon};
@@ -103,7 +103,8 @@ fn get_anchors_matches_gl_js() {
             num(&case["glyphSize"]),
             num(&case["boxScale"]),
             num(&case["overscaling"]),
-            8192.0,
+            Square::tile(8192.0),
+            None,
             &mut out,
         );
         let expected = case["out"].as_array().unwrap();
@@ -127,6 +128,7 @@ fn get_center_anchor_matches_gl_js() {
             extent(case),
             num(&case["glyphSize"]),
             num(&case["boxScale"]),
+            Square::tile(8192.0),
         );
         match (&got, case["out"].is_null()) {
             (None, true) => {}

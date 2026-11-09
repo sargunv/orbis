@@ -4,7 +4,51 @@
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 
-use crate::geometry::{Point, js_max};
+use crate::geometry::{Point, js_max, js_round};
+
+/// GL JS's tile in a tile's units: the square anchors fall in and the grid
+/// they round to. An overzoom slice laying out its labels in its ancestor
+/// (`orb_tile::Ancestor`) has the ancestor's, `grid` of its units to one
+/// of the ancestor's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Square {
+    pub(crate) min: Point,
+    pub(crate) size: f64,
+    pub(crate) grid: f64,
+}
+
+impl Square {
+    /// The tile's own square, `extent` units wide.
+    #[cfg(test)]
+    pub(crate) const fn tile(extent: f64) -> Self {
+        Self {
+            min: Point::new(0.0, 0.0),
+            size: extent,
+            grid: 1.0,
+        }
+    }
+
+    fn contains(self, x: f64, y: f64) -> bool {
+        x >= self.min.x
+            && x < self.min.x + self.size
+            && y >= self.min.y
+            && y < self.min.y + self.size
+    }
+
+    fn on_edge(self, p: Point) -> bool {
+        let max = Point::new(self.min.x + self.size, self.min.y + self.size);
+        p.x == self.min.x || p.x == max.x || p.y == self.min.y || p.y == max.y
+    }
+
+    /// `Point._round` on the square's grid.
+    pub(crate) fn round(self, p: Point) -> Point {
+        if self.grid == 1.0 {
+            return p.round();
+        }
+        let g = self.grid;
+        Point::new(js_round(p.x / g) * g, js_round(p.y / g) * g)
+    }
+}
 
 /// Where a symbol sits, in tile units (GL JS `Anchor`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,6 +119,7 @@ pub(crate) fn center_anchor(
     label: LabelExtent,
     glyph_size: f64,
     box_scale: f64,
+    square: Square,
 ) -> Option<Anchor> {
     let angle_window_size = label.angle_window_size(glyph_size, box_scale);
     let label_length = label.length() * box_scale;
@@ -86,7 +131,10 @@ pub(crate) fn center_anchor(
         let segment_distance = a.dist(b);
         if prev_distance + segment_distance > center_distance {
             let t = (center_distance - prev_distance) / segment_distance;
-            let point = Point::new(interpolate(a.x, b.x, t), interpolate(a.y, b.y, t)).round();
+            let point = square.round(Point::new(
+                interpolate(a.x, b.x, t),
+                interpolate(a.y, b.y, t),
+            ));
             let anchor = Anchor {
                 point,
                 angle: b.angle_to(a),
@@ -102,7 +150,9 @@ pub(crate) fn center_anchor(
 }
 
 /// Anchors every `spacing` along the line where the label fits and its
-/// corners stay under `max_angle` (GL JS `getAnchors`).
+/// corners stay under `max_angle` (GL JS `getAnchors`), in `square`. Those
+/// outside `window` (`[min, max]`), if there is one, are left out as if
+/// dropped afterwards.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn line_anchors(
     line: &[Point],
@@ -112,16 +162,15 @@ pub(crate) fn line_anchors(
     glyph_size: f64,
     box_scale: f64,
     overscaling: f64,
-    tile_extent: f64,
+    square: Square,
+    window: Option<[Point; 2]>,
     out: &mut Vec<Anchor>,
 ) {
     let angle_window_size = label.angle_window_size(glyph_size, box_scale);
     let shaped_label_length = label.length();
     let label_length = shaped_label_length * box_scale;
 
-    let first = line[0];
-    let is_line_continued =
-        first.x == 0.0 || first.x == tile_extent || first.y == 0.0 || first.y == tile_extent;
+    let is_line_continued = square.on_edge(line[0]);
 
     if spacing - label_length < spacing / 4.0 {
         spacing = label_length + spacing / 4.0;
@@ -141,7 +190,8 @@ pub(crate) fn line_anchors(
         max_angle,
         label_length,
         is_line_continued,
-        tile_extent,
+        square,
+        window,
     };
     sample.run(offset, false, out);
 }
@@ -153,12 +203,15 @@ struct Resample<'a> {
     max_angle: f64,
     label_length: f64,
     is_line_continued: bool,
-    tile_extent: f64,
+    square: Square,
+    window: Option<[Point; 2]>,
 }
 
 impl Resample<'_> {
     fn run(&self, offset: f64, place_at_middle: bool, out: &mut Vec<Anchor>) {
-        let start = out.len();
+        // Whether the line has an anchor, in the window or not: past the
+        // first, those outside it aren't checked.
+        let mut placed = false;
         let half_label_length = self.label_length / 2.0;
         let line_length = line_length(self.line);
         let mut distance = 0.0;
@@ -175,15 +228,19 @@ impl Resample<'_> {
                 let x = interpolate(a.x, b.x, t);
                 let y = interpolate(a.y, b.y, t);
 
-                if x >= 0.0
-                    && x < self.tile_extent
-                    && y >= 0.0
-                    && y < self.tile_extent
+                if self.square.contains(x, y)
                     && marked_distance - half_label_length >= 0.0
                     && marked_distance + half_label_length <= line_length
                 {
+                    let point = self.square.round(Point::new(x, y));
+                    let wanted = self.window.is_none_or(|[lo, hi]| {
+                        (lo.x..=hi.x).contains(&point.x) && (lo.y..=hi.y).contains(&point.y)
+                    });
+                    if placed && !wanted {
+                        continue;
+                    }
                     let anchor = Anchor {
-                        point: Point::new(x, y).round(),
+                        point,
                         angle,
                         segment: Some(i),
                     };
@@ -196,14 +253,17 @@ impl Resample<'_> {
                             self.max_angle,
                         )
                     {
-                        out.push(anchor);
+                        placed = true;
+                        if wanted {
+                            out.push(anchor);
+                        }
                     }
                 }
             }
             distance += segment_dist;
         }
 
-        if !place_at_middle && out.len() == start && !self.is_line_continued {
+        if !place_at_middle && !placed && !self.is_line_continued {
             self.run(distance / 2.0, true, out);
         }
     }

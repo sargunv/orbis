@@ -10,9 +10,9 @@ use orb_text::{
     Anchor, FontStack, GlyphMap, GlyphRequests, Justify, Label, ONE_EM, ShapeContext, ShapeOptions,
     Shaping, WordBreaker, WritingMode, shape_text, unicode,
 };
-use orb_tile::{GeometryType, Layer, Value};
+use orb_tile::{Ancestor, GeometryType, Layer, Value};
 
-use crate::anchors::{self, Anchor as SymbolAnchor, LabelExtent};
+use crate::anchors::{self, Anchor as SymbolAnchor, LabelExtent, Square};
 use crate::bucket::{
     AnchorOffset, NONE, PlacedSymbol, Quad, SizeKind, SortKeyRange, SymbolBucket, SymbolInstance,
     SymbolStream, SymbolWritingMode, instance_flags, justification, quad_flags,
@@ -21,7 +21,7 @@ use crate::collision::{CollisionFeature, Shape, collision_feature};
 use crate::geometry::{EXTENT, Point, js_max, js_min, js_round, to_i16, to_u16};
 use crate::icon::{IconImage, IconTextFit, PositionedIcon, fit_icon_to_text, shape_icon};
 use crate::key::stable_key;
-use crate::lines::{Lines, clip_line};
+use crate::lines::{Lines, clip_line_rounding};
 use crate::merge_lines::merge_lines;
 use crate::pole::pole_of_inaccessibility;
 use crate::quads::{GlyphQuadContext, SymbolQuad, Texture, glyph_quads, icon_quads};
@@ -292,6 +292,55 @@ pub struct TileParams<'a> {
     pub overscaling: f64,
     /// The device pixel ratio images are drawn at.
     pub pixel_ratio: f64,
+    /// For an overzoom slice laying out in its ancestor, where the slice
+    /// is in it: the layer is the ancestor's, laid out as GL JS lays it out
+    /// at `overscaling` times the ancestor's scale, keeping the symbols
+    /// whose anchors fall in the slice, in the slice's units.
+    pub ancestor: Option<Ancestor>,
+}
+
+/// How the layer's units map to the tile's: scaled by `scale` (the
+/// ancestor's size in tiles), then moved back by `offset`.
+#[derive(Clone, Copy, Debug)]
+struct Units {
+    scale: f64,
+    offset: Point,
+}
+
+impl Units {
+    fn new(ancestor: Option<Ancestor>) -> Self {
+        ancestor.map_or(
+            Self {
+                scale: 1.0,
+                offset: Point::new(0.0, 0.0),
+            },
+            |a| Self {
+                scale: f64::from(a.scale),
+                offset: Point::new(f64::from(a.cell[0]) * EXTENT, f64::from(a.cell[1]) * EXTENT),
+            },
+        )
+    }
+
+    /// A vertex as GL JS loads it in the layer's tile, in this tile's units.
+    fn point(self, p: [i32; 2], extent: u32) -> Point {
+        let p = load_point(p, extent);
+        if self.scale == 1.0 {
+            return p;
+        }
+        Point::new(
+            p.x * self.scale - self.offset.x,
+            p.y * self.scale - self.offset.y,
+        )
+    }
+
+    /// GL JS's tile: the layer's.
+    fn square(self) -> Square {
+        Square {
+            min: Point::new(-self.offset.x, -self.offset.y),
+            size: EXTENT * self.scale,
+            grid: self.scale,
+        }
+    }
 }
 
 /// Glyph, image and word-break data for the tile.
@@ -311,8 +360,10 @@ pub fn add_glyph_requests(
     requests: &mut GlyphRequests,
 ) {
     let allow_vertical_placement = style.allow_vertical_placement();
+    // In the layer's own units: an overzoom slice's ancestor holds it.
+    let units = Units::new(None);
     for feature in features {
-        if is_skipped(layer, feature, style) {
+        if is_skipped(layer, feature, style, units) {
             continue;
         }
         if let Some(label) = &feature.text {
@@ -327,19 +378,77 @@ pub fn add_glyph_requests(
 }
 
 /// Point labels of points all outside the tile are dropped before layout.
-fn is_skipped(layer: &Layer, feature: &SymbolFeature, style: &LayerLayout) -> bool {
+fn is_skipped(layer: &Layer, feature: &SymbolFeature, style: &LayerLayout, units: Units) -> bool {
     let index = feature.index as usize;
     style.placement == Placement::Point
         && layer.geometry_type(index) == GeometryType::Point
         && layer.geometry(index).parts().all(|part| {
             part.rings()
                 .flatten()
-                .all(|&p| is_outside_tile(load_point(p, layer.extent())))
+                .all(|&p| is_outside_tile(units.point(p, layer.extent())))
         })
 }
 
 fn is_outside_tile(p: Point) -> bool {
     p.x < 0.0 || p.x >= EXTENT || p.y < 0.0 || p.y >= EXTENT
+}
+
+/// The square of tile units a bucket's line vertices hold: three tiles
+/// past the tile on every side.
+const LINE_REACH: [f64; 2] = [-3.0 * EXTENT, 4.0 * EXTENT - 1.0];
+
+fn fits_i16(p: Point) -> bool {
+    let range = LINE_REACH[0]..=LINE_REACH[1];
+    range.contains(&p.x) && range.contains(&p.y)
+}
+
+/// The stretch of `line` around `anchor` (in the tile) within
+/// [`LINE_REACH`], ends cut where it leaves, and the anchor on it.
+fn trim_line(line: &[Point], anchor: &SymbolAnchor) -> (Vec<Point>, SymbolAnchor) {
+    let segment = anchor.segment.expect("an anchor along the line");
+    let mut first = segment;
+    while first > 0 && fits_i16(line[first]) {
+        first -= 1;
+    }
+    let mut last = segment + 1;
+    while last + 1 < line.len() && fits_i16(line[last]) {
+        last += 1;
+    }
+    let mut points = line[first..=last].to_vec();
+    // Where a segment from `from`, inside, to `to` leaves the square.
+    let leave = |from: Point, to: Point| {
+        let mut t: f64 = 1.0;
+        for (a, b) in [(from.x, to.x), (from.y, to.y)] {
+            for edge in LINE_REACH {
+                if (b - edge) * (a - edge) < 0.0 {
+                    t = t.min((edge - a) / (b - a));
+                }
+            }
+        }
+        Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t)
+    };
+    if !fits_i16(points[0]) {
+        let from = if first == segment {
+            anchor.point
+        } else {
+            points[1]
+        };
+        points[0] = leave(from, points[0]);
+    }
+    let n = points.len();
+    if !fits_i16(points[n - 1]) {
+        let from = if last == segment + 1 {
+            anchor.point
+        } else {
+            points[n - 2]
+        };
+        points[n - 1] = leave(from, points[n - 1]);
+    }
+    let anchor = SymbolAnchor {
+        segment: Some(segment - first),
+        ..*anchor
+    };
+    (points, anchor)
 }
 
 /// Scales a vertex to [`EXTENT`] and rounds it, as GL JS `loadGeometry`.
@@ -361,7 +470,7 @@ struct Geometry {
     parts: Vec<Range<usize>>,
 }
 
-fn load_geometry(layer: &Layer, index: usize) -> Geometry {
+fn load_geometry(layer: &Layer, index: usize, units: Units) -> Geometry {
     let extent = layer.extent();
     let kind = layer.geometry_type(index);
     let mut lines = Vec::new();
@@ -369,7 +478,7 @@ fn load_geometry(layer: &Layer, index: usize) -> Geometry {
     for part in layer.geometry(index).parts() {
         let start = lines.len();
         for ring in part.rings() {
-            let points = ring.iter().map(|&p| load_point(p, extent));
+            let points = ring.iter().map(|&p| units.point(p, extent));
             match kind {
                 GeometryType::Point => lines.extend(points.map(|p| vec![p])),
                 GeometryType::LineString => lines.push(points.collect()),
@@ -401,12 +510,13 @@ pub fn layout(
         feature: &'f SymbolFeature,
         geometry: Geometry,
     }
+    let units = Units::new(tile.ancestor);
     let mut prepared: Vec<Prepared<'_>> = features
         .iter()
-        .filter(|f| !is_skipped(layer, f, style))
+        .filter(|f| !is_skipped(layer, f, style, units))
         .map(|feature| Prepared {
             feature,
-            geometry: load_geometry(layer, feature.index as usize),
+            geometry: load_geometry(layer, feature.index as usize, units),
         })
         .collect();
     prepared.retain(|p| !p.geometry.lines.is_empty());
@@ -520,6 +630,7 @@ struct Builder<'a> {
     quads: Vec<SymbolQuad>,
     anchors: Vec<SymbolAnchor>,
     clipped: Lines,
+    units: Units,
 }
 
 impl<'a> Builder<'a> {
@@ -540,6 +651,7 @@ impl<'a> Builder<'a> {
             quads: Vec::new(),
             anchors: Vec::new(),
             clipped: Lines::default(),
+            units: Units::new(tile.ancestor),
         }
     }
 
@@ -813,14 +925,21 @@ impl<'a> Builder<'a> {
             Placement::Line => {
                 let mut clipped = std::mem::take(&mut self.clipped);
                 clipped.clear();
-                clip_line(
+                let square = self.units.square();
+                let min = square.min;
+                clip_line_rounding(
                     geometry.lines.iter().map(Vec::as_slice),
-                    0.0,
-                    0.0,
-                    EXTENT,
-                    EXTENT,
+                    [min.x, min.y, min.x + square.size, min.y + square.size],
+                    |p| square.round(p),
                     &mut clipped,
                 );
+                // Laid out in an ancestor, the anchors that matter are the
+                // tile's and those near enough to keep a repeated label
+                // from it.
+                let window = self.tile.ancestor.map(|_| {
+                    let m = symbol_min_distance;
+                    [Point::new(-m, -m), Point::new(EXTENT + m, EXTENT + m)]
+                });
                 let mut anchors = std::mem::take(&mut self.anchors);
                 for line in clipped.iter() {
                     anchors.clear();
@@ -831,8 +950,9 @@ impl<'a> Builder<'a> {
                         extent,
                         GLYPH_SIZE,
                         text_max_box_scale,
-                        self.tile.overscaling,
-                        EXTENT,
+                        self.tile.overscaling * self.units.scale,
+                        square,
+                        window,
                         &mut anchors,
                     );
                     let mut shared_line = None;
@@ -856,6 +976,7 @@ impl<'a> Builder<'a> {
                         extent,
                         GLYPH_SIZE,
                         text_max_box_scale,
+                        self.units.square(),
                     ) {
                         self.add_symbol(&symbols, &anchor, line, &mut None);
                     }
@@ -871,7 +992,7 @@ impl<'a> Builder<'a> {
                         if rings.is_empty() {
                             continue;
                         }
-                        let pole = pole_of_inaccessibility(&rings, 16.0);
+                        let pole = pole_of_inaccessibility(&rings, 16.0 * self.units.scale);
                         self.add_symbol(&symbols, &SymbolAnchor::at(pole), &[], &mut None);
                     }
                 }
@@ -940,10 +1061,23 @@ impl<'a> Builder<'a> {
         if is_outside_tile(anchor.point) {
             return;
         }
+        // An ancestor's line may reach past what the bucket's 16 bits hold.
+        let trimmed;
+        let (anchor, line_range) = if self.tile.ancestor.is_some()
+            && anchor.segment.is_some()
+            && !line.iter().all(|&p| fits_i16(p))
+        {
+            trimmed = trim_line(line, anchor);
+            (
+                &trimmed.1,
+                self.line_range(&trimmed.1, &trimmed.0, &mut None),
+            )
+        } else {
+            (anchor, self.line_range(anchor, line, shared_line))
+        };
         let style = self.style;
         let f = &s.feature.layout;
         let text_along_line = style.text_along_line();
-        let line_range = self.line_range(anchor, line, shared_line);
         let elevation = f.height_offset;
         if elevation > self.bucket.max_height_offset {
             self.bucket.max_height_offset = elevation;

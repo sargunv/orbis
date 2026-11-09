@@ -469,12 +469,12 @@ fn tile_images(features: &[SymbolFeature], icons: &SpriteIcons) -> (TileImages, 
     (images, missing)
 }
 
-/// Lays out a prepared layer. `slots` maps a feature's tile index to its
+/// Lays out a prepared layer, in its labels' `ancestor` if they have one
+/// (`Layer::labelled`). `slots` maps a feature's tile index to its
 /// property-row slot.
 pub(crate) fn layout(
     prepared: Prepared,
-    layer: &Layer,
-    source_layer: &str,
+    (layer, ancestor): (&Layer, Option<orb_tile::Ancestor>),
     glyphs: orb_text::GlyphMap,
     icons: &SpriteIcons,
     slots: &HashMap<u32, u32>,
@@ -486,11 +486,13 @@ pub(crate) fn layout(
         &prepared.features,
         &prepared.style,
         TileParams {
-            source_layer,
+            source_layer: layer.name(),
             // Orbis slices overzoomed tiles to their own extent, so every
-            // tile lays out at its own scale.
+            // tile lays out at its own scale; one laid out in its ancestor
+            // takes the ancestor's on top.
             overscaling: 1.0,
             pixel_ratio: icons.pixel_ratio,
+            ancestor,
         },
         LayoutContext {
             glyphs: &glyphs,

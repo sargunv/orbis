@@ -147,6 +147,7 @@ impl LayerBuilder {
             vertices: self.vertices,
             properties,
             clip: self.clip,
+            labels: None,
         }
     }
 }

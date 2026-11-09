@@ -26,6 +26,7 @@ pub use column::{Bitmap, Column, ColumnData, Value, ValueRef};
 pub use decode::DecodeError;
 pub use dem::DemGrid;
 pub use geometry::{FeatureGeometry, GeometryType, Part};
+pub use overzoom::Ancestor;
 
 #[cfg(test)]
 mod tests;
@@ -67,6 +68,9 @@ pub struct Layer {
     /// units, when known (GeoJSON tiling, overzoom slices; an overzoom
     /// slice keeps its lines further).
     clip: Option<i32>,
+    /// What an overzoom slice lays its labels out from, when that is an
+    /// ancestor's slice ([`Layer::labelled`]).
+    labels: Option<Box<overzoom::Labels>>,
 }
 
 impl Layer {
@@ -158,6 +162,7 @@ impl Layer {
                 .iter()
                 .map(|(k, c)| size_of::<(String, Column)>() + k.len() + c.bytes())
                 .sum::<usize>()
+            + self.labels.as_ref().map_or(0, |l| l.layer.bytes())
     }
 
     /// Every property column with its key.

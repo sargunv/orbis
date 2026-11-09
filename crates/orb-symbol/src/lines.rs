@@ -59,6 +59,16 @@ pub(crate) fn clip_line<'a>(
     y2: f64,
     out: &mut Lines,
 ) {
+    clip_line_rounding(lines, [x1, y1, x2, y2], Point::round, out);
+}
+
+/// [`clip_line`] with intersections rounded by `round`.
+pub(crate) fn clip_line_rounding<'a>(
+    lines: impl IntoIterator<Item = &'a [Point]>,
+    [x1, y1, x2, y2]: [f64; 4],
+    round: impl Fn(Point) -> Point,
+    out: &mut Lines,
+) {
     for line in lines {
         let mut open = false;
         for pair in line.windows(2) {
@@ -67,33 +77,57 @@ pub(crate) fn clip_line<'a>(
             if p0.x < x1 && p1.x < x1 {
                 continue;
             } else if p0.x < x1 {
-                p0 = Point::new(x1, p0.y + (p1.y - p0.y) * ((x1 - p0.x) / (p1.x - p0.x))).round();
+                p0 = round(Point::new(
+                    x1,
+                    p0.y + (p1.y - p0.y) * ((x1 - p0.x) / (p1.x - p0.x)),
+                ));
             } else if p1.x < x1 {
-                p1 = Point::new(x1, p0.y + (p1.y - p0.y) * ((x1 - p0.x) / (p1.x - p0.x))).round();
+                p1 = round(Point::new(
+                    x1,
+                    p0.y + (p1.y - p0.y) * ((x1 - p0.x) / (p1.x - p0.x)),
+                ));
             }
 
             if p0.y < y1 && p1.y < y1 {
                 continue;
             } else if p0.y < y1 {
-                p0 = Point::new(p0.x + (p1.x - p0.x) * ((y1 - p0.y) / (p1.y - p0.y)), y1).round();
+                p0 = round(Point::new(
+                    p0.x + (p1.x - p0.x) * ((y1 - p0.y) / (p1.y - p0.y)),
+                    y1,
+                ));
             } else if p1.y < y1 {
-                p1 = Point::new(p0.x + (p1.x - p0.x) * ((y1 - p0.y) / (p1.y - p0.y)), y1).round();
+                p1 = round(Point::new(
+                    p0.x + (p1.x - p0.x) * ((y1 - p0.y) / (p1.y - p0.y)),
+                    y1,
+                ));
             }
 
             if p0.x >= x2 && p1.x >= x2 {
                 continue;
             } else if p0.x >= x2 {
-                p0 = Point::new(x2, p0.y + (p1.y - p0.y) * ((x2 - p0.x) / (p1.x - p0.x))).round();
+                p0 = round(Point::new(
+                    x2,
+                    p0.y + (p1.y - p0.y) * ((x2 - p0.x) / (p1.x - p0.x)),
+                ));
             } else if p1.x >= x2 {
-                p1 = Point::new(x2, p0.y + (p1.y - p0.y) * ((x2 - p0.x) / (p1.x - p0.x))).round();
+                p1 = round(Point::new(
+                    x2,
+                    p0.y + (p1.y - p0.y) * ((x2 - p0.x) / (p1.x - p0.x)),
+                ));
             }
 
             if p0.y >= y2 && p1.y >= y2 {
                 continue;
             } else if p0.y >= y2 {
-                p0 = Point::new(p0.x + (p1.x - p0.x) * ((y2 - p0.y) / (p1.y - p0.y)), y2).round();
+                p0 = round(Point::new(
+                    p0.x + (p1.x - p0.x) * ((y2 - p0.y) / (p1.y - p0.y)),
+                    y2,
+                ));
             } else if p1.y >= y2 {
-                p1 = Point::new(p0.x + (p1.x - p0.x) * ((y2 - p0.y) / (p1.y - p0.y)), y2).round();
+                p1 = round(Point::new(
+                    p0.x + (p1.x - p0.x) * ((y2 - p0.y) / (p1.y - p0.y)),
+                    y2,
+                ));
             }
 
             if !open || out.last_point() != Some(p0) {

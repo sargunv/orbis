@@ -328,6 +328,19 @@ fn stable_ids<'l>(source: &orb_style::Source, layer: &'l Layer) -> Option<&'l or
     }
 }
 
+/// The canonical tile of `canonical`'s `ancestor`, if it has one.
+fn in_ancestor(
+    canonical: Option<orb_expr::CanonicalTile>,
+    ancestor: Option<orb_tile::Ancestor>,
+) -> Option<orb_expr::CanonicalTile> {
+    let up = ancestor.map_or(0, |a| a.scale.trailing_zeros());
+    canonical.map(|c| orb_expr::CanonicalTile {
+        z: c.z - up as u8,
+        x: c.x >> up,
+        y: c.y >> up,
+    })
+}
+
 /// Lays out the symbol layers of `source` the selection needs. Returns the
 /// glyph range URLs this worker must fetch first, if any.
 fn build_symbols(
@@ -358,10 +371,10 @@ fn build_symbols(
         let Some((layer, _)) = node_layer(frame, plan, node, zoom) else {
             continue;
         };
-        // Labels lay out along GL JS's slice of an overzoomed tile's lines.
-        let labelled = layer.labelled();
+        // Labels lay out where GL JS lays them out (`Layer::labelled`).
+        let (labelled, ancestor) = layer.labelled();
         let layer = &*labelled;
-        let features = features(plan, node, layer, (zoom, canonical));
+        let features = features(plan, node, layer, (zoom, in_ancestor(canonical, ancestor)));
         if features.is_empty() {
             continue;
         }
@@ -380,13 +393,13 @@ fn build_symbols(
         {
             missing.push(url.to_string());
         }
-        prepared.push((node, labelled, features, p));
+        prepared.push((node, labelled, ancestor, features, p));
     }
     if !missing.is_empty() {
         return Err(missing);
     }
     let mut built = Vec::with_capacity(prepared.len());
-    for (node, layer, features, mut p) in prepared {
+    for (node, layer, ancestor, features, mut p) in prepared {
         let layer = &*layer;
         let requests = std::mem::take(&mut p.requests);
         let resolved = symbols.glyphs.resolve(
@@ -411,8 +424,7 @@ fn build_symbols(
             layer_key,
             crate::symbol::layout(
                 p,
-                layer,
-                layer.name(),
+                (layer, ancestor),
                 resolved.glyphs,
                 symbols.icons,
                 &slots,
@@ -470,7 +482,16 @@ pub(crate) fn build(
         let Some((layer, name)) = node_layer(frame, plan, node, zoom) else {
             continue;
         };
-        let selected = features(plan, node, layer, (zoom, canonical));
+        // Symbol rows follow the features their layout selected.
+        let selected = match layer.ancestor_labels() {
+            Some((labels, ancestor)) if node.family.is_symbol() => features(
+                plan,
+                node,
+                labels,
+                (zoom, in_ancestor(canonical, Some(ancestor))),
+            ),
+            _ => features(plan, node, layer, (zoom, canonical)),
+        };
         if selected.is_empty() {
             continue;
         }

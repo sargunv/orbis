@@ -750,14 +750,7 @@ impl TileWorker {
                 }
                 _ => self.decode(bytes, encoding, index, &data, data_tile, data_tile.z)?,
             };
-            let frame = if data_zoom < tile.z {
-                let depth = tile.z - data_zoom;
-                let mask = (1u32 << depth) - 1;
-                frame.overzoom(depth, tile.col & mask, tile.row & mask)
-            } else {
-                frame
-            };
-            return Ok(Arc::new(frame));
+            return Ok(Arc::new(overzoom(frame, tile, data_zoom)));
         }
         let key = (source, began, tile);
         let frames = &self.data.frames;
@@ -783,13 +776,14 @@ impl TileWorker {
         tile: TileIndex,
         data_zoom: u8,
     ) -> Result<TileFrame, String> {
+        let depth = tile.z - data_zoom;
         let frame = if let SourceKind::GeoJson(geojson) = &self.plan.source_def(index).kind {
             let mut cached = data.geojson.lock().expect("GeoJSON index poisoned");
             cached
                 .get_or_insert_with(|| self.geojson_index(bytes, geojson))
                 .as_mut()
                 .map_err(|e| e.clone())?
-                .tile(tile.z, tile.col as i32, tile.row)
+                .tile(data_zoom, (tile.col >> depth) as i32, tile.row >> depth)
                 .unwrap_or_default()
         } else if bytes.is_empty() {
             // An archive's left-out tile.
@@ -801,14 +795,33 @@ impl TileWorker {
             }
             .map_err(|e| e.to_string())?
         };
-        Ok(if data_zoom < tile.z {
-            let depth = tile.z - data_zoom;
-            let mask = (1u32 << depth) - 1;
-            frame.overzoom(depth, tile.col & mask, tile.row & mask)
-        } else {
-            frame
-        })
+        Ok(overzoom(frame, tile, data_zoom))
     }
+}
+
+/// The zoom GL JS stops slicing an overzoomed vector tile at, laying its
+/// descendants out from that zoom's slice, overscaled: four zooms
+/// (`zoomLevelsToOverscale`) below its default `maxZoom`, 22.
+const VECTOR_LABEL_ZOOM: u8 = 18;
+
+/// `tile`'s slice of `frame`, its ancestor's at `data_zoom`, with its labels
+/// laid out where GL JS lays them out: in the tile it overscales, the
+/// source's last tile or its slice at [`VECTOR_LABEL_ZOOM`]. (MapLibre
+/// Native overscales the last tile at any depth, so its anchors round to
+/// that tile's units, which grow coarse far below it.)
+fn overzoom(frame: TileFrame, tile: TileIndex, data_zoom: u8) -> TileFrame {
+    if data_zoom >= tile.z {
+        return frame;
+    }
+    let depth = tile.z - data_zoom;
+    let mask = (1u32 << depth) - 1;
+    let labels_zoom = data_zoom.max(VECTOR_LABEL_ZOOM).min(tile.z);
+    frame.overzoom(
+        depth,
+        tile.col & mask,
+        tile.row & mask,
+        labels_zoom - data_zoom,
+    )
 }
 
 #[cfg(test)]

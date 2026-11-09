@@ -107,6 +107,7 @@ fn run_with(
         source_layer: layer.name(),
         overscaling: 1.0,
         pixel_ratio: 1.0,
+        ancestor: None,
     };
     let context = LayoutContext {
         glyphs: &glyphs,
