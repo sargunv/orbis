@@ -1476,7 +1476,18 @@ impl Map {
             renderer.shrink(gpu);
             times.place = micros(placing, clock.now());
         }
-        let labels_settled = self.place_labels(gpu, renderer, &view, now);
+        // Everything the frame shows has arrived, labels aside.
+        let data_loaded = self.style.as_ref().is_some_and(|s| {
+            s.sprites_loading == 0
+                && s.sprite_pixels_loading == 0
+                && s.sources
+                    .iter()
+                    .all(|source| !matches!(source, SourceState::Resolving))
+        }) && report.tiles_loading == 0
+            && !self.tiles_deferred
+            && self.waiting.is_empty()
+            && self.pending.is_empty();
+        let labels_settled = self.place_labels(gpu, renderer, &view, now, data_loaded);
         times.placement = micros(0.0, self.placement_ms);
         times.upload = micros(0.0, self.upload_ms);
         let Some(target) = target else {
@@ -1509,17 +1520,7 @@ impl Map {
             }
             picking.drew(view.clone(), *self.camera.state(), drawn, report.generation);
         }
-        report.loaded = self.style.as_ref().is_some_and(|s| {
-            s.sprites_loading == 0
-                && s.sprite_pixels_loading == 0
-                && s.sources
-                    .iter()
-                    .all(|source| !matches!(source, SourceState::Resolving))
-        }) && report.tiles_loading == 0
-            && !self.tiles_deferred
-            && self.waiting.is_empty()
-            && self.pending.is_empty()
-            && labels_settled;
+        report.loaded = data_loaded && labels_settled;
         report.idle = report.loaded
             && !redrew
             && !fading
@@ -1994,14 +1995,16 @@ impl Map {
     }
 
     /// Retires dropped buckets, rasterizes new glyphs and asks the lane to
-    /// place when the drawn buckets or the camera changed. Returns whether
-    /// labels have settled.
+    /// place when the drawn buckets or the camera changed; still output
+    /// once the rest of what it shows has arrived (`loaded`). Returns
+    /// whether labels have settled.
     fn place_labels(
         &mut self,
         gpu: &mut dyn Gpu,
         renderer: &mut Renderer,
         view: &View,
         now: f64,
+        loaded: bool,
     ) -> bool {
         let extrusion = self.extrusion_scale();
         let Some(style) = &self.style else {
@@ -2081,7 +2084,11 @@ impl Map {
         }
         self.labels.resend_if_restarted();
         let settled = self.labels.is_placed(&frame);
-        if self.labels.wants_placement(&frame) {
+        // Still output shows one placement, of everything it shows: one of
+        // what has arrived so far is work no picture keeps. Tile mode
+        // placed three to seven times a tile, over its whole grid.
+        let wanted = loaded || self.mode == RenderMode::Continuous;
+        if wanted && self.labels.wants_placement(&frame) {
             self.labels.placing(&frame);
             let placing = self.services.clock.now();
             let done = self.reply(move |committed| Message::Placed { epoch, committed });
