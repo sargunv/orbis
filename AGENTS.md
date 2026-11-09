@@ -101,7 +101,7 @@ Advice that cost time to learn, not rules:
   after other performance techniques hit a wall, as long as the result
   doesn't depend on the path. One exception, by the owner's choice:
   MapLibre Native's label stabilisers (previous anchor first, shown labels
-  placed first) are a map option, on by default for continuous maps. The path
+  placed first in tilted views, no further) are a map option, on by default for continuous maps. The path
   tests run with it off.
 - Fix causes rather than hiding them behind fades, fallbacks or flattening.
 - GL JS (with its fixtures) and MapLibre Native are both guides to correct
