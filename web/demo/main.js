@@ -49,14 +49,14 @@ const searchOf = (query) => {
   const search = query.toString().replace(/=(?=&|$)/g, "");
   return search ? `?${search}` : "";
 };
-/** The app's URL for `next` with `camera` as its hash. */
-function urlFor(next, camera) {
+/** The app's URL for `next` with `camera` as its hash; `fly` keeps its flight. */
+function urlFor(next, camera, { fly = true } = {}) {
   const query = params();
   query.delete("format");
   query.delete("flight");
   const style = styleParam(next);
   if (style) query.set("style", style); else query.delete("style");
-  if (next.scene.flight) query.set("flight", "");
+  if (next.scene.flight && fly) query.set("flight", "");
   return `${location.pathname}${searchOf(query)}${camera ? hashOf(camera) : ""}`;
 }
 function hashOf({ center: [lon, lat], zoom, bearing = 0, pitch = 0 }) {
@@ -341,7 +341,7 @@ if (start.has("edit")) setEditing(true);
   const camera = hashCamera();
   let first;
   try { first = sceneFor(start, camera); } catch (e) { say(String(e.message), { error: true }); throw e; }
-  history.replaceState(history.state, "", urlFor(first, camera));
+  history.replaceState(history.state, "", urlFor(first, camera, { fly: start.has("flight") }));
   await load(first, { camera: camera ?? first.scene.camera ?? (first.scene.basemap ? LIVE_CAMERA : undefined) });
 }
 

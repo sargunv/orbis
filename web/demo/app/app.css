@@ -31,6 +31,8 @@
   --lift: 0 0 0 1px rgb(23 32 42 / 0.10), 0 2px 10px rgb(23 32 42 / 0.14);
   --lift-high: 0 0 0 1px rgb(23 32 42 / 0.10), 0 12px 40px rgb(23 32 42 / 0.22);
   --mark-ring: #17202a;
+  /* Behind the map, where a globe leaves space. */
+  --page: #dfe3e6;
   color-scheme: light;
 }
 :root[data-tone="dark"] {
@@ -47,6 +49,7 @@
   --lift: 0 0 0 1px rgb(255 255 255 / 0.10), 0 2px 10px rgb(0 0 0 / 0.40);
   --lift-high: 0 0 0 1px rgb(255 255 255 / 0.10), 0 12px 40px rgb(0 0 0 / 0.55);
   --mark-ring: #eef1f4;
+  --page: #05070b;
   color-scheme: dark;
 }
 
@@ -55,7 +58,7 @@ html, body { margin: 0; height: 100%; }
 body {
   font: 400 var(--text-md)/1.4 var(--font);
   color: var(--ink);
-  background: #dfe3e6;
+  background: var(--page);
   overflow: hidden;
   -webkit-tap-highlight-color: transparent;
 }
