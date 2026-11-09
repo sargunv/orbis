@@ -11,6 +11,7 @@ diplomat-tool = "0.17.0"
 orb-crs.workspace = true
 orb-host.workspace = true
 orb-source.workspace = true
+orb-style.workspace = true
 orb-text.workspace = true
 orb-tile.workspace = true
 # Typed staging preserves wire types; tooling only, pinned to this API.

@@ -13,6 +13,7 @@ mod fixtures;
 mod h2h;
 mod labels;
 mod pmtiles;
+mod support;
 mod sweep;
 mod unicode;
 mod web;
@@ -44,6 +45,9 @@ cargo xtask <task>
                Pages workflow runs it and deploys on every push to main
   rt [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]
                the GL JS fixtures
+  support      docs/style-support.md, the style support matrix, from the
+               spec's v8.json, orb-style's property table and the latest
+               fixture results in docs/scratch/rt; run it after the fixtures
   bench [args]  native benchmarks (release): --experiment frames (GPU/CPU
                frame timings; --nudge for whole frames read back), gestures,
                load (style load to first complete still) or tiles (the
@@ -83,6 +87,7 @@ fn main() -> ExitCode {
         }
         Some("h2h") => h2h::run(&args[1..]),
         Some("sweep") => sweep::run(&args[1..]),
+        Some("support") => support::run(),
         Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
             expression_fixtures::bundle()
         }

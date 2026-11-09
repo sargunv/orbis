@@ -4456,6 +4456,7 @@ dependencies = [
  "orb-crs",
  "orb-host",
  "orb-source",
+ "orb-style",
  "orb-text",
  "orb-tile",
  "serde_json",

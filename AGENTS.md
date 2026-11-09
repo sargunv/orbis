@@ -73,6 +73,7 @@ Playwright.
 | `cargo xtask bench [style\|alps] [--experiment frames\|gestures\|load\|tiles] [--views f] [--nudge]` | native GPU and CPU frame timings, gesture paths, fresh-map loads, and the Tokyo extract's tiles through decode/layout/pack |
 | `cargo xtask h2h stills\|tiles\|frames\|size\|web\|all\|mirror [--offline] [--bin name=path/orbis] [--network cold\|rtt=ms]` | Orbis against mln-rs (pinned; built into the shared cache `~/Library/Caches/orbis-h2h`) on a local caching mirror of OpenFreeMap (`--offline` once it holds what the views need): per-process stills over mln-rs's views, tile blocks, nudged frames, binary sizes, web load against GL JS and mln-rs's web build; `--bin` adds an Orbis build copied aside, for A/B runs interleaved in one session |
 | `cargo xtask rt [--suite render\|query] [--filter <s>] [--platform native\|chrome\|all]` | the GL JS render or query fixtures |
+| `cargo xtask support` | `docs/style-support.md`, the generated style support matrix (previews, phases, and per property what the spec, GL JS, Native and Orbis accept, with fixture results); run it after a full fixture run |
 | `cargo xtask sweep [--dry-run] [--keep-hours N]` | prune stale build artifacts when the disk runs low |
 
 ## Changing a dependency
