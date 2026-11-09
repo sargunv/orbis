@@ -685,3 +685,27 @@ fn a_style_url_over_a_style_diffs() {
     assert_eq!(jobs.loads, 0, "{jobs:?}");
     assert_matches_fresh(&mut map);
 }
+
+/// A camera move started after a projection edit runs on the new surface:
+/// the edit's surface reaches the camera at once, not at the next frame,
+/// where it would stop the move.
+#[test]
+fn a_move_after_a_projection_edit_runs() {
+    let mut map = tokyo();
+    edit(&mut map, r#"[["setProjection", {"type": "globe"}]]"#);
+    let target = orb_runtime::CameraTarget {
+        zoom: Some(map.map.zoom() - 4.0),
+        ..Default::default()
+    };
+    map.map.ease_to(
+        &target,
+        orb_runtime::EaseOptions {
+            duration: 200.0,
+            ..Default::default()
+        },
+    );
+    map.frame();
+    assert!(map.map.is_moving(), "the move survives the first frame");
+    settle(&mut map);
+    assert!((map.map.zoom() - target.zoom.unwrap()).abs() < 1e-6);
+}
