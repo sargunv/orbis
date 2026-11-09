@@ -607,7 +607,12 @@ fn node_paint(
                     } else {
                         0
                     },
-                curves: [curves[0], curves[1], curves[2], opacity_curve],
+                curves: [
+                    node.elevation.as_ref().map_or(curves[0], |e| e.zoom),
+                    curves[1],
+                    curves[2],
+                    opacity_curve,
+                ],
                 state: lookup,
                 elevation: node.elevation.as_ref().map(|e| e.paint(&properties, zoom)),
             })
@@ -828,7 +833,7 @@ fn is_per_feature(kind: Kind) -> bool {
 
 /// How a composite value's rows blend between the tile's zoom and the
 /// next.
-fn expression_curve(expression: &orb_expr::PropertyExpression) -> Curve {
+pub(crate) fn expression_curve(expression: &orb_expr::PropertyExpression) -> Curve {
     use orb_expr::Interpolation;
     let interpolation = Some(expression)
         .filter(|e| e.kind() == Kind::Composite)

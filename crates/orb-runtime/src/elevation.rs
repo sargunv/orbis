@@ -24,6 +24,10 @@ pub(crate) struct ElevationColor {
     interpolation: Option<Interpolation>,
     /// `fill-extrusion-color` at each stop.
     pub(crate) colors: Vec<Slot>,
+    /// How the stops from rows or state blend toward the next zoom: the
+    /// colour's zoom curve, which they share, even where the first stop
+    /// (whose curve the shader reads for all) is the node's.
+    pub(crate) zoom: Curve,
 }
 
 impl ElevationColor {
@@ -77,6 +81,7 @@ impl ElevationColor {
             labels,
             interpolation,
             colors: colors.into_iter().map(slot).collect(),
+            zoom: crate::paint::expression_curve(expression),
         })
     }
 

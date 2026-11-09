@@ -785,6 +785,41 @@ fn extrusion_walls_take_the_colour_at_each_height() {
     assert!(top.is_some_and(|p| p[2] > 200), "the top is blue: {top:?}");
 }
 
+/// A stop from the feature's data or state under a zoom curve blends
+/// toward the next zoom, though the first stop is the node's: at z2.5, a
+/// roof halfway from white to black.
+#[test]
+fn extrusion_elevation_stops_blend_between_zooms() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    for top in [
+        r#"["get", "top"]"#,
+        r##"["coalesce", ["feature-state", "top"], "#ffffff"]"##,
+    ] {
+        let style = format!(
+            r##"{{"version": 8, "center": [0, 0], "zoom": 2.5, "light": {{"intensity": 0}},
+          "sources": {{"b": {{"type": "geojson", "data": {{"type": "Feature", "id": 1,
+            "properties": {{"top": "#ffffff"}}, "geometry": {{"type": "Polygon",
+            "coordinates": [[[-10, -5], [10, -5], [10, 5], [-10, 5], [-10, -5]]]}}}}}}}},
+          "layers": [
+            {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
+            {{"id": "b", "type": "fill-extrusion", "source": "b", "paint": {{
+              "fill-extrusion-height": 4000,
+              "fill-extrusion-color": ["interpolate", ["linear"], ["zoom"],
+                2, ["interpolate", ["linear"], ["elevation"], 0, "#000000", 4000, {top}],
+                3, "#000000"]}}}}]}}"##
+        );
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(&style).expect("style");
+        let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+        let roof = pixel(&image.pixels, SIZE / 2, SIZE / 2);
+        let lit = (0.5 + 0.03) * 255.0;
+        assert!(
+            (f32::from(roof[0]) - lit).abs() <= 3.0,
+            "{top}: {roof:?}, not {lit}"
+        );
+    }
+}
+
 #[test]
 fn padding_draws_the_center_where_it_projects() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
