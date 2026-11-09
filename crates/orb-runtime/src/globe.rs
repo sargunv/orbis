@@ -130,9 +130,10 @@ impl GlobeWarps {
         })
     }
 
-    /// Cells per side to cut the tile's geometry along on the globe.
-    pub(crate) fn grid(&self, tms: &TileMatrixSet, tile: TileIndex) -> u32 {
-        self.series(tms, tile).map_or(1, |s| s.grid())
+    /// Cells per side (across, down) to cut the tile's geometry along on
+    /// the globe.
+    pub(crate) fn grid(&self, tms: &TileMatrixSet, tile: TileIndex) -> [u32; 2] {
+        self.series(tms, tile).map_or([1; 2], |s| s.grid())
     }
 
     /// The tile's patches in the scene and their anchor's ECEF position,
@@ -149,12 +150,8 @@ impl GlobeWarps {
             set: crate::terrain::hash(tms.id()),
             tile,
         };
-        let warp = renderer.surface_warp(gpu, key, series.cells, || {
-            series
-                .patches
-                .iter()
-                .flat_map(|p| p.points.iter().flat_map(|v| v.as_vec3().to_array()))
-                .collect()
+        let warp = renderer.surface_warp(gpu, key, || {
+            crate::meshes::series_words(&series, |v| v.as_vec3().to_array())
         })?;
         Some((warp, series.anchor))
     }
@@ -203,6 +200,7 @@ fn lift(series: Series) -> Series<DVec3> {
     let lift = |v: glam::DVec2| v.extend(0.0);
     Series {
         anchor: lift(series.anchor),
+        window: series.window,
         cells: series.cells,
         patches: series
             .patches
@@ -211,7 +209,7 @@ fn lift(series: Series) -> Series<DVec3> {
                 points: p.points.map(lift),
             })
             .collect(),
-        max_segment: series.max_segment,
+        max_cell: series.max_cell,
         scale: series.scale,
     }
 }

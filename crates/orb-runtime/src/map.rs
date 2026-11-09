@@ -1795,8 +1795,8 @@ impl Map {
                 Some(_) => [false; 2],
                 None => orb_crs::sphere::poles(&endpoint.tms, tile),
             };
-            if grid > 1 || poles.contains(&true) {
-                let cells = bend.map_or(grid, |b| b.cells.max(grid));
+            if grid.iter().any(|&c| c > 1) || poles.contains(&true) {
+                let cells = bend.map_or(grid, |b| [0, 1].map(|i| b.cells[i].max(grid[i])));
                 bend = Some(crate::Bend { cells, poles });
             }
         }

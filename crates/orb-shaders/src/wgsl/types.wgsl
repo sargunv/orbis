@@ -123,8 +123,9 @@ struct Tile {
     // Lowest and highest terrain elevation under it as two i16s, in
     // units of TERRAIN_RANGE_UNIT metres.
     terrain_range: u32,
-    // A warped tile's quadratic patches on the plane: first word in
-    // `props` and patches per side; 0 patches for an affine tile.
+    // A warped tile's quadratic patches on the plane (`project.wgsl`):
+    // first word in `props` and patches per side, x | y << 16; 0 for an
+    // affine tile.
     warp_base: u32,
     warp_cells: u32,
     // On a globe, its patches in space (27 words each) around

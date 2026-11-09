@@ -313,9 +313,8 @@ pub struct RowGlobe {
     pub on_plane: bool,
 }
 
-/// A tile's biquadratic patches in the property arena (`GpuPerVertex`): `cells`² of them over the tile, row by row, with
-/// [`WARP_PATCH_WORDS`] f32 each on a plane and [`GLOBE_PATCH_WORDS`] on a
-/// globe.
+/// A tile's biquadratic patches in the property arena (`GpuPerVertex`),
+/// as [`warp_words`] lays them out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TileWarp {
     base: u32,
@@ -342,7 +341,8 @@ impl TileWarp {
         self.base
     }
 
-    /// Its patches per tile side; 0 for none.
+    /// Its patches per side, packed as [`warp_words`] has them; 0 for
+    /// none.
     pub fn cells(self) -> u32 {
         self.cells
     }
@@ -414,9 +414,25 @@ impl ClipRect {
 const TILE_WORDS: usize = layout::tile::WORDS;
 /// Words per biquadratic patch of a planar warp: nine nodes' positions
 /// (`project.wgsl`).
-pub const WARP_PATCH_WORDS: usize = 18;
+const WARP_PATCH_WORDS: usize = 18;
 /// Words per biquadratic patch on a globe: nine nodes' positions in space.
-pub const GLOBE_PATCH_WORDS: usize = 27;
+const GLOBE_PATCH_WORDS: usize = 27;
+/// Words of a warp's window, before its patches.
+const WARP_WINDOW_WORDS: usize = 4;
+
+/// A warp as the scene takes it (`project.wgsl`): its patches per side
+/// (x then y) packed, and its words: `window` (the rectangle of the tile
+/// the patches span, min then max in tile fractions, y down), then the
+/// patches' nodes row by row, nine positions each.
+pub fn warp_words(
+    cells: [u32; 2],
+    window: [f32; 4],
+    nodes: impl IntoIterator<Item = f32>,
+) -> (u32, Vec<f32>) {
+    debug_assert!(cells.iter().all(|&c| (1..=0xffff).contains(&c)));
+    let words = window.into_iter().chain(nodes).collect();
+    (cells[0] | cells[1] << 16, words)
+}
 const CHUNK_WORDS: usize = layout::chunk::WORDS;
 const CANDIDATE_WORDS: usize = layout::candidate::WORDS;
 const VISIBLE_WORDS: usize = layout::visible::WORDS;
@@ -1197,18 +1213,20 @@ impl Scene {
         self.candidates_dirty = true;
     }
 
-    /// Uploads a warp's patches (`cells`² of them, row by row) for tile
-    /// rows to draw through: [`WARP_PATCH_WORDS`] f32 each on a plane,
-    /// [`GLOBE_PATCH_WORDS`] on a globe.
+    /// Uploads a warp ([`warp_words`]) for tile rows to draw through:
+    /// [`WARP_PATCH_WORDS`] f32 per patch on a plane, [`GLOBE_PATCH_WORDS`]
+    /// on a globe.
     pub(crate) fn add_warp(
         &mut self,
         gpu: &mut dyn Gpu,
         cells: u32,
         patches: &[f32],
     ) -> Result<TileWarp, OutOfSpace> {
-        let count = (cells * cells) as usize;
+        let count = ((cells & 0xffff) * (cells >> 16)) as usize;
         debug_assert!(
-            patches.len() == count * WARP_PATCH_WORDS || patches.len() == count * GLOBE_PATCH_WORDS
+            [WARP_PATCH_WORDS, GLOBE_PATCH_WORDS]
+                .iter()
+                .any(|words| patches.len() == WARP_WINDOW_WORDS + count * words)
         );
         let range = self
             .prop_arena

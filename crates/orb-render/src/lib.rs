@@ -49,10 +49,10 @@ pub use paint::{
 };
 pub use scene::Pixels;
 pub use scene::{
-    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLight, FrameTerrain,
-    GLOBE_PATCH_WORDS, ImageAtlas, ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData,
-    MeshId, MeshSize, NodeCull, NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity,
-    SceneStats, TileId, TileRow, TileWarp, WARP_PATCH_WORDS, Words,
+    ARGS_WORDS, ClipRect, DemRef, FrameBlock, FrameGlobe, FrameLight, FrameTerrain, ImageAtlas,
+    ImageBindings, ImageKey, ImageMetadata, ImageUpload, MeshData, MeshId, MeshSize, NodeCull,
+    NodeDraw, OutOfSpace, PlacementTarget, RowGlobe, SceneCapacity, SceneStats, TileId, TileRow,
+    TileWarp, Words, warp_words,
 };
 pub use scene::{DESKTOP_BUDGET, MOBILE_BUDGET, PoolMemory, SceneMemory};
 pub use scene::{

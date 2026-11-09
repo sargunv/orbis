@@ -307,6 +307,12 @@ impl Projection {
         self.plane.contains(g.lon.to_radians(), g.lat.to_radians())
     }
 
+    /// Whether `forward` puts a position it contains on the world's edge
+    /// instead of projecting it: Web Mercator's past ±85.05°.
+    pub fn clamps(&self, g: Geodetic) -> bool {
+        self.plane.clamps(g.lon.to_radians(), g.lat.to_radians())
+    }
+
     /// World units per ground metre at `g`, along the parallel. Ground
     /// metres are on the sphere of the WGS84 semi-major axis, the sphere
     /// style zoom is defined on, so that zoom, resolution and scale agree

@@ -119,14 +119,14 @@ pub fn layout_in_extent(
 /// and `lineMetrics` progress runs along its whole lines, so neither
 /// starts again at the slice's edges. `parameters` is called with a slot.
 /// With `cells`, lines get a vertex wherever they cross a grid of `cells`
-/// × `cells` over the slice, as `TileFrame::subdivided` gives the slice's
+/// (across, down) over the slice, as `TileFrame::subdivided` gives the slice's
 /// own, for a curved warp. With `metrics`, vertices carry their progress.
 pub fn layout_overscaled(
     layer: &Layer,
     features: &[u32],
     parameters: impl FnMut(usize) -> LineLayout,
     ancestor: Ancestor,
-    cells: Option<u32>,
+    cells: Option<[u32; 2]>,
     metrics: bool,
 ) -> Mesh {
     let overscale = f64::from(ancestor.scale);
@@ -147,7 +147,9 @@ pub fn layout_overscaled(
             0.0
         },
         overscale,
-        step: cells.filter(|&c| c > 1).map(|c| 8192.0 / f64::from(c)),
+        step: cells
+            .filter(|c| c.iter().any(|&c| c > 1))
+            .map(|c| c.map(|c| 8192.0 / f64::from(c))),
         metrics,
     };
     lay_out(layer, features, parameters, place, &frame)
@@ -162,8 +164,8 @@ struct Frame {
     /// whose units its distance resets count: an overzoom slice's scale in
     /// its data tile, 1 otherwise.
     overscale: f64,
-    /// The grid lines get a vertex at, if any, this far apart.
-    step: Option<f64>,
+    /// The grid lines get a vertex at, if any, this far apart (x then y).
+    step: Option<[f64; 2]>,
     /// Whether vertices carry their progress ([`METRICS_STRIDE`]).
     metrics: bool,
 }
@@ -249,7 +251,7 @@ fn lay_out(
 }
 
 /// Adds a vertex to `line` wherever it crosses a grid line `step` apart.
-fn subdivide(line: &mut ClippedLine, step: f64) {
+fn subdivide(line: &mut ClippedLine, step: [f64; 2]) {
     let n = line.points.len();
     let mut points = Vec::with_capacity(n);
     let mut crossings = Vec::new();

@@ -1,31 +1,71 @@
 // Tile data units → camera-relative world (`project_tile`).
 //
 // An affine tile is `origin + (x, -y) * scale`. A warped tile (the planner's
-// `GpuPerVertex` plan) is `origin` plus one of its `warp_cells`² biquadratic
-// patches, from f64 positions on the CPU (orb-crs `Series`): each patch is
-// its 3×3 nodes' positions (corners, edge midpoints, centre; row by row, top
-// to bottom), 18 f32 in `props`, interpolated by quadratic Lagrange
-// polynomials in parameters s (right) and t (down) in [-1, 1]. Neighbours
-// share their edges' nodes, so tiles and patches meet exactly.
+// `GpuPerVertex` plan) is `origin` plus one of its biquadratic patches, from
+// f64 positions on the CPU (orb-crs `Series`). Its words in `props` are its
+// window, the rectangle of the tile the patches span (min then max, in tile
+// fractions, y down), then the patches row by row over an even grid of the
+// window, `warp_cells` holding patches per side as x | y << 16. Each patch
+// is its 3×3 nodes' positions (corners, edge midpoints, centre; row by row,
+// top to bottom), 18 f32, interpolated by quadratic Lagrange polynomials in
+// parameters s (right) and t (down) in [-1, 1]. Neighbours share their
+// edges' nodes, so tiles and patches meet exactly. Past a side of the
+// window short of the tile's edge, points stay on that side, as the
+// target's clamp puts them (Web Mercator's past ±85.05°); past the tile's
+// own edges, its edge patches extrapolate.
 
-// The point's patch among `count` per side (its index) and its
-// parameters there.
-fn warp_cell(tile: Tile, count: u32, p: vec2<f32>) -> vec3<f32> {
-    let cells = f32(count);
-    let u = p / tile.extent * cells;
-    let cell = clamp(floor(u), vec2<f32>(0.0), vec2<f32>(cells - 1.0));
-    let st = (u - cell) * 2.0 - 1.0;
-    return vec3<f32>(st, f32(u32(cell.y) * count + u32(cell.x)));
+const WARP_WINDOW_WORDS: u32 = 4u;
+
+// Where a point of a warp's tile is among its patches.
+struct WarpCell {
+    // Its parameters in its patch.
+    st: vec2<f32>,
+    // Its patch's first word in `props`.
+    at: u32,
+    // Parameters per tile fraction, along x and y.
+    per: vec2<f32>,
+};
+
+// The patch of the warp at `base` (`cells` packed, `words` per patch)
+// holding tile point `uv` (fractions).
+fn warp_cell(base: u32, cells: u32, words: u32, uv: vec2<f32>) -> WarpCell {
+    let lo = vec2<f32>(bitcast<f32>(prop_at(base)), bitcast<f32>(prop_at(base + 1u)));
+    let hi = vec2<f32>(bitcast<f32>(prop_at(base + 2u)), bitcast<f32>(prop_at(base + 3u)));
+    let kept = clamp(
+        uv,
+        select(vec2<f32>(-3.0e38), lo, lo > vec2<f32>(0.0)),
+        select(vec2<f32>(3.0e38), hi, hi < vec2<f32>(1.0)),
+    );
+    let count = vec2<u32>(cells & 0xffffu, cells >> 16u);
+    let n = vec2<f32>(count);
+    let u = (kept - lo) / (hi - lo) * n;
+    let cell = clamp(floor(u), vec2<f32>(0.0), n - 1.0);
+    var c: WarpCell;
+    c.st = (u - cell) * 2.0 - 1.0;
+    c.at = base + WARP_WINDOW_WORDS + (u32(cell.y) * count.x + u32(cell.x)) * words;
+    c.per = 2.0 * n / (hi - lo);
+    return c;
 }
 
-// The point's planar patch (its first word in `props`) and its parameters.
-fn warp_patch(tile: Tile, p: vec2<f32>) -> vec3<f32> {
-    let c = warp_cell(tile, tile.warp_cells, p);
-    return vec3<f32>(c.xy, f32(tile.warp_base + u32(c.z) * 18u));
+// Whether a tile's planar position holds all of it: an affine tile's, or
+// a warp's whose window is the whole tile.
+fn warp_whole(tile: Tile) -> bool {
+    if tile.warp_cells == 0u {
+        return true;
+    }
+    let b = tile.warp_base;
+    let window = vec4<f32>(bitcast<f32>(prop_at(b)), bitcast<f32>(prop_at(b + 1u)),
+        bitcast<f32>(prop_at(b + 2u)), bitcast<f32>(prop_at(b + 3u)));
+    return all(window == vec4<f32>(0.0, 0.0, 1.0, 1.0));
 }
 
-fn warp_node(at: f32, k: u32) -> vec2<f32> {
-    let i = u32(at) + 2u * k;
+// The point's planar patch.
+fn warp_patch(tile: Tile, p: vec2<f32>) -> WarpCell {
+    return warp_cell(tile.warp_base, tile.warp_cells, 18u, p / tile.extent);
+}
+
+fn warp_node(at: u32, k: u32) -> vec2<f32> {
+    let i = at + 2u * k;
     return vec2<f32>(bitcast<f32>(prop_at(i)), bitcast<f32>(prop_at(i + 1u)));
 }
 
@@ -38,7 +78,7 @@ fn lagrange_slope(s: f32) -> vec3<f32> {
 }
 
 // Σ a[i] b[j] node(i, j).
-fn warp_sum(at: f32, a: vec3<f32>, b: vec3<f32>) -> vec2<f32> {
+fn warp_sum(at: u32, a: vec3<f32>, b: vec3<f32>) -> vec2<f32> {
     var sum = vec2<f32>(0.0);
     for (var j = 0u; j < 3u; j++) {
         let row = warp_node(at, 3u * j) * a.x + warp_node(at, 3u * j + 1u) * a.y
@@ -53,7 +93,7 @@ fn tile_to_world(tile: Tile, p: vec2<f32>) -> vec2<f32> {
         return tile_affine(tile, p);
     }
     let w = warp_patch(tile, p);
-    return tile_origin(tile) + warp_sum(w.z, lagrange(w.x), lagrange(w.y));
+    return tile_origin(tile) + warp_sum(w.at, lagrange(w.st.x), lagrange(w.st.y));
 }
 
 // World units per data unit at `p`: the tile's scale, or a warp's local
@@ -66,9 +106,9 @@ fn tile_scale_at(tile: Tile, p: vec2<f32>) -> f32 {
     // The sphere's metres per data unit, in plane world units at the
     // target: pixels there and here are the same size.
     let w = globe_patch(tile, p);
-    let ds = globe_sum(w.z, lagrange_slope(w.x), lagrange(w.y));
-    let dt = globe_sum(w.z, lagrange(w.x), lagrange_slope(w.y));
-    let metres = sqrt(length(cross(ds, dt))) * 2.0 * f32(tile.globe_cells) / tile.extent;
+    let ds = globe_sum(w.at, lagrange_slope(w.st.x), lagrange(w.st.y)) * w.per.x;
+    let dt = globe_sum(w.at, lagrange(w.st.x), lagrange_slope(w.st.y)) * w.per.y;
+    let metres = sqrt(length(cross(ds, dt))) / tile.extent;
     let globe = metres / frame.globe_metres;
     if (tile.globe_flags & 1u) != 0u {
         return globe;
@@ -80,28 +120,26 @@ fn plane_scale_at(tile: Tile, p: vec2<f32>) -> f32 {
     if tile.warp_cells == 0u {
         return tile.scale;
     }
-    let per_unit = 2.0 * f32(tile.warp_cells) / tile.extent;
     let w = warp_patch(tile, p);
-    let ds = warp_sum(w.z, lagrange_slope(w.x), lagrange(w.y));
-    let dt = warp_sum(w.z, lagrange(w.x), lagrange_slope(w.y));
-    // Parameters span 2 per patch side: 2 · cells per tile side.
-    return sqrt(abs(ds.x * dt.y - ds.y * dt.x)) * per_unit;
+    let ds = warp_sum(w.at, lagrange_slope(w.st.x), lagrange(w.st.y)) * w.per.x;
+    let dt = warp_sum(w.at, lagrange(w.st.x), lagrange_slope(w.st.y)) * w.per.y;
+    return sqrt(abs(ds.x * dt.y - ds.y * dt.x)) / tile.extent;
 }
 
 // On a low-zoom surface (frame.globe_amount > 0), every tile's patches are
-// in space: nine nodes' camera-relative ECEF metres (on a low-zoom plane,
-// its world units at height 0), 27 f32, around its row's `globe_origin`.
-fn globe_patch(tile: Tile, p: vec2<f32>) -> vec3<f32> {
-    let c = warp_cell(tile, tile.globe_cells, p);
-    return vec3<f32>(c.xy, f32(tile.globe_base + u32(c.z) * 27u));
+// in space, laid out as planar ones: nine nodes' camera-relative ECEF metres
+// (on a low-zoom plane, its world units at height 0), 27 f32, around its
+// row's `globe_origin`.
+fn globe_patch(tile: Tile, p: vec2<f32>) -> WarpCell {
+    return warp_cell(tile.globe_base, tile.globe_cells, 27u, p / tile.extent);
 }
 
-fn globe_node(at: f32, k: u32) -> vec3<f32> {
-    let i = u32(at) + 3u * k;
+fn globe_node(at: u32, k: u32) -> vec3<f32> {
+    let i = at + 3u * k;
     return vec3<f32>(bitcast<f32>(prop_at(i)), bitcast<f32>(prop_at(i + 1u)), bitcast<f32>(prop_at(i + 2u)));
 }
 
-fn globe_sum(at: f32, a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+fn globe_sum(at: u32, a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
     var sum = vec3<f32>(0.0);
     for (var j = 0u; j < 3u; j++) {
         let row = globe_node(at, 3u * j) * a.x + globe_node(at, 3u * j + 1u) * a.y
@@ -171,9 +209,11 @@ fn tile_surface(tile: Tile, p: vec2<f32>) -> Ground {
         // A point past the tile (a translated label or fill, a stroke's
         // edge) goes onto the sphere at the tile's edge through its
         // patches, and on from there exactly: the patches don't extend.
+        // Only a plane position that holds the whole tile carries it on
+        // (not one Web Mercator clamps part of).
         let edge = clamp(p, vec2<f32>(0.0), vec2<f32>(tile.extent));
         g.globe = sphere_at(tile.globe_base, tile.globe_cells, tile_globe_origin(tile), edge / tile.extent);
-        if any(edge != p) && g.on_plane && frame.globe_plane == 0u {
+        if any(edge != p) && g.on_plane && frame.globe_plane == 0u && warp_whole(tile) {
             g.globe += mercator_sphere(g.flat) - mercator_sphere(tile_to_world(tile, edge));
         }
     }
@@ -195,16 +235,12 @@ fn mercator_sphere(world: vec2<f32>) -> vec3<f32> {
 }
 
 // A tile's point on the sphere, camera-relative, from its patches in space
-// (first word `base` in `props`, `cells` per side) around `origin`, at `uv`
+// (first word `base` in `props`, `cells` packed) around `origin`, at `uv`
 // (fractions of the tile, y down). Other tile tables (terrain's) call it
 // with their own rows' terms.
 fn sphere_at(base: u32, cells: u32, origin: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
-    let count = f32(cells);
-    let u = uv * count;
-    let cell = clamp(floor(u), vec2<f32>(0.0), vec2<f32>(count - 1.0));
-    let st = (u - cell) * 2.0 - 1.0;
-    let at = f32(base + (u32(cell.y) * cells + u32(cell.x)) * 27u);
-    return origin + globe_sum(at, lagrange(st.x), lagrange(st.y));
+    let c = warp_cell(base, cells, 27u, uv);
+    return origin + globe_sum(c.at, lagrange(c.st.x), lagrange(c.st.y));
 }
 
 // Tile point `p` translated by `shift` world units along the map (fill

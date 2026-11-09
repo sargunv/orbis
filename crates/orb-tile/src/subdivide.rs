@@ -7,22 +7,22 @@ use crate::{GeometryType, Layer, TileFrame, clip_ring};
 
 impl TileFrame {
     /// The frame with a vertex wherever a line or polygon-ring segment
-    /// crosses a line of a grid of `cells` × `cells` over each layer's
+    /// crosses a line of a grid of `cells` (across, down) over each layer's
     /// extent (polygon rings' implicit closing segments included).
     /// Polygons are first clipped to the box line layout keeps (the tile
     /// square and a sixteenth of it around), so the edges clipping makes
     /// are cut too and lie outside the tile, where no stroke of them shows.
     /// Points, ids and properties are unchanged.
-    pub fn subdivided(&self, cells: u32) -> Self {
+    pub fn subdivided(&self, cells: [u32; 2]) -> Self {
         Self {
             layers: self.layers.iter().map(|l| subdivide(l, cells)).collect(),
         }
     }
 }
 
-fn subdivide(layer: &Layer, cells: u32) -> Layer {
+fn subdivide(layer: &Layer, cells: [u32; 2]) -> Layer {
     let extent = layer.extent as i32;
-    let step = f64::from(layer.extent) / f64::from(cells.max(1));
+    let step = cells.map(|c| f64::from(layer.extent) / f64::from(c.max(1)));
     let mut out = Layer {
         feature_parts: vec![0],
         part_rings: vec![0],
@@ -78,11 +78,11 @@ fn subdivide(layer: &Layer, cells: u32) -> Layer {
     out
 }
 
-/// The points where segment `a`–`b` crosses grid lines `step` apart, in
-/// order from `a`, without its ends. Each crossing is computed from the
-/// segment's ends in a fixed order, so a segment shared by two rings (or
-/// two tiles) gets the same points either way.
-pub fn grid_crossings(a: [i32; 2], b: [i32; 2], step: f64, out: &mut Vec<[i32; 2]>) {
+/// The points where segment `a`–`b` crosses grid lines `step` apart (x
+/// then y), in order from `a`, without its ends. Each crossing is computed
+/// from the segment's ends in a fixed order, so a segment shared by two
+/// rings (or two tiles) gets the same points either way.
+pub fn grid_crossings(a: [i32; 2], b: [i32; 2], step: [f64; 2], out: &mut Vec<[i32; 2]>) {
     out.clear();
     let (lo, hi, flip) = if a <= b { (a, b, false) } else { (b, a, true) };
     let mut ts: Vec<(f64, [i32; 2])> = Vec::new();
@@ -92,6 +92,7 @@ pub fn grid_crossings(a: [i32; 2], b: [i32; 2], step: f64, out: &mut Vec<[i32; 2
             continue;
         }
         let (min, max) = (p.min(q), p.max(q));
+        let step = step[axis];
         let mut k = (min / step).floor() + 1.0;
         while k * step < max {
             let line = k * step;
@@ -143,7 +144,7 @@ mod tests {
         let frame = TileFrame {
             layers: vec![b.finish()],
         };
-        let cut = frame.subdivided(8);
+        let cut = frame.subdivided([8, 8]);
         let layer = &cut.layers[0];
         let ring = |f: usize| -> Vec<[i32; 2]> {
             let part = layer.geometry(f).parts().next().unwrap();
@@ -169,8 +170,8 @@ mod tests {
     #[test]
     fn shared_segments_cut_alike_both_ways() {
         let (mut ab, mut ba) = (Vec::new(), Vec::new());
-        grid_crossings([3, 7], [4001, 2999], 512.0, &mut ab);
-        grid_crossings([4001, 2999], [3, 7], 512.0, &mut ba);
+        grid_crossings([3, 7], [4001, 2999], [512.0, 256.0], &mut ab);
+        grid_crossings([4001, 2999], [3, 7], [512.0, 256.0], &mut ba);
         ba.reverse();
         assert_eq!(ab, ba);
         assert!(ab.len() > 8);

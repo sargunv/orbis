@@ -14,15 +14,20 @@ use crate::image;
 /// image quads.
 pub(crate) const IMAGE_SOURCE_CELLS: u32 = 16;
 
-/// A series' planar patches as the scene takes them: cells per side and
-/// their words.
+/// A series' patches as the scene takes them, `node` giving a node's
+/// words.
+pub(crate) fn series_words<V: Copy, const N: usize>(
+    series: &orb_crs::Series<V>,
+    node: impl Fn(V) -> [f32; N],
+) -> (u32, Vec<f32>) {
+    let [lo, hi] = series.window.map(|c| c.as_vec2());
+    let nodes = (series.patches.iter()).flat_map(|p| p.points.iter().flat_map(|&v| node(v)));
+    orb_render::warp_words(series.cells, [lo.x, lo.y, hi.x, hi.y], nodes)
+}
+
+/// A series' planar patches as the scene takes them.
 pub(crate) fn series_patches(series: &orb_crs::Series) -> (u32, Vec<f32>) {
-    let patches = series
-        .patches
-        .iter()
-        .flat_map(|p| p.points.iter().flat_map(|v| [v.x as f32, v.y as f32]))
-        .collect();
-    (series.cells, patches)
+    series_words(series, |v| v.as_vec2().to_array())
 }
 
 /// An image tile's mesh: on a globe, a grid in the tile's own space that
@@ -46,7 +51,8 @@ pub(crate) fn image_mesh(
         // bends.
         (Some(quad), _, false) => image::Warped::quad(bounds, quad, IMAGE_SOURCE_CELLS),
         (Some(quad), _, true) => {
-            let cells = globe_warps.grid(tms, tile).max(IMAGE_SOURCE_CELLS);
+            let [x, y] = globe_warps.grid(tms, tile);
+            let cells = x.max(y).max(IMAGE_SOURCE_CELLS);
             image::Warped::quad(bounds, quad, cells)
         }
         (None, true, false) => {
@@ -60,10 +66,9 @@ pub(crate) fn image_mesh(
         (None, false, false) => return Ok(None),
         // On a globe, a grid fine enough for the sphere to bend.
         (None, _, true) => {
-            let (cells, poles) = (
-                globe_warps.grid(tms, tile),
-                orb_crs::sphere::poles(tms, tile),
-            );
+            // A square grid, as fine as the finer side needs.
+            let [x, y] = globe_warps.grid(tms, tile);
+            let (cells, poles) = (x.max(y), orb_crs::sphere::poles(tms, tile));
             if cells <= 1 && poles == [false; 2] {
                 return Ok(None);
             }

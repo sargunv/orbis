@@ -605,7 +605,9 @@ impl TileWorker {
         // A warped tile's geometry follows the warp's curve; the cached
         // frame keeps the tile's own, for queries.
         let frame = match request.bend {
-            Some(bend) if bend.cells > 1 => Arc::new(frame.subdivided(bend.cells)),
+            Some(bend) if bend.cells.iter().any(|&c| c > 1) => {
+                Arc::new(frame.subdivided(bend.cells))
+            }
             _ => frame,
         };
         let select = Select {

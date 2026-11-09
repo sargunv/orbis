@@ -25,7 +25,7 @@ struct TerrainTile {
     dem_scale: f32,
     // Its block of drape slots.
     slot: u32,
-    // On a globe: its patches in space (`globe_cells` per side from word
+    // On a globe: its patches in space (`project.wgsl`'s layout, from word
     // `globe_base` of the props) around `globe_origin`, camera-relative
     // metres, and the poles its skirts close (bit 0 north, bit 1 south).
     globe_origin: array<f32, 3>,

@@ -18,11 +18,11 @@ pub const NORTH_POLE_Y: i16 = i16::MIN;
 pub const SOUTH_POLE_Y: i16 = i16::MAX;
 
 /// How a tile's fills bend onto a curved surface: cut along a grid of
-/// `cells` per side, and in a world's top or bottom row on a globe, their
-/// edges on the world's edge fanned out to the pole.
+/// `cells` (across, down), and in a world's top or bottom row on a globe,
+/// their edges on the world's edge fanned out to the pole.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Bend {
-    pub cells: u32,
+    pub cells: [u32; 2],
     /// Whether the north and south poles take caps.
     pub poles: [bool; 2],
 }
@@ -34,7 +34,7 @@ pub fn layout(layer: &Layer, features: &[u32]) -> Mesh {
     layout_subdivided(layer, features, None)
 }
 
-/// [`layout`], with triangles cut along a grid of `cells` × `cells` over the
+/// [`layout`], with triangles cut along a grid of `bend`'s cells over the
 /// tile, for a tile drawn through a curved warp onto another plane: edges
 /// then follow the curve (earcut drops the collinear vertices that cut the
 /// rings), and the vertices on the tile's edges are its neighbours'. Edges
@@ -102,12 +102,9 @@ pub(crate) fn layout_clipped(
             }
             earcut.earcut(flat.iter().copied(), &holes, &mut triangles);
             if let Some(bend) = bend {
-                if bend.cells > 1 {
-                    subdivide(
-                        &mut points,
-                        &mut triangles,
-                        f64::from(extent) / f64::from(bend.cells),
-                    );
+                if bend.cells.iter().any(|&c| c > 1) {
+                    let step = bend.cells.map(|c| f64::from(extent) / f64::from(c));
+                    subdivide(&mut points, &mut triangles, step);
                 }
                 let edge = extent as i16;
                 let [north, south] = bend.poles;
@@ -197,11 +194,11 @@ fn cap(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, y: i16, pole: i16) 
     }
 }
 
-/// Cuts triangles along a grid of lines `step` apart into convex pieces,
+/// Cuts triangles along a grid of lines `step` apart (x then y) into convex pieces,
 /// fanned into triangles. A cut on an edge is computed from the edge's ends
 /// in a fixed order, so the triangles (and tiles) sharing an edge cut it
 /// alike and the mesh stays watertight.
-fn subdivide(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, step: f64) {
+fn subdivide(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, step: [f64; 2]) {
     let mut index: std::collections::HashMap<[i32; 2], u32> = points
         .iter()
         .enumerate()
@@ -211,14 +208,14 @@ fn subdivide(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, step: f64) {
     let (mut a, mut b) = (Vec::new(), Vec::new());
     for t in triangles.as_chunks::<3>().0 {
         let corners = t.map(|i| points[i as usize].map(i32::from));
-        let cell = |v: i32| (f64::from(v) / step).floor() as i64;
+        let cell = |axis: usize, v: i32| (f64::from(v) / step[axis]).floor() as i64;
         let (x0, x1) = (
-            corners.iter().map(|p| cell(p[0])).min(),
-            corners.iter().map(|p| cell(p[0])).max(),
+            corners.iter().map(|p| cell(0, p[0])).min(),
+            corners.iter().map(|p| cell(0, p[0])).max(),
         );
         let (y0, y1) = (
-            corners.iter().map(|p| cell(p[1])).min(),
-            corners.iter().map(|p| cell(p[1])).max(),
+            corners.iter().map(|p| cell(1, p[1])).min(),
+            corners.iter().map(|p| cell(1, p[1])).max(),
         );
         let (Some(x0), Some(x1), Some(y0), Some(y1)) = (x0, x1, y0, y1) else {
             continue;
@@ -231,11 +228,12 @@ fn subdivide(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, step: f64) {
             for cx in x0..=x1 {
                 a.clear();
                 a.extend_from_slice(&corners);
+                let [sx, sy] = step;
                 let bounds = [
-                    (0, (cx as f64 * step).round() as i32, true),
-                    (0, ((cx + 1) as f64 * step).round() as i32, false),
-                    (1, (cy as f64 * step).round() as i32, true),
-                    (1, ((cy + 1) as f64 * step).round() as i32, false),
+                    (0, (cx as f64 * sx).round() as i32, true),
+                    (0, ((cx + 1) as f64 * sx).round() as i32, false),
+                    (1, (cy as f64 * sy).round() as i32, true),
+                    (1, ((cy + 1) as f64 * sy).round() as i32, false),
                 ];
                 for (axis, bound, keep_above) in bounds {
                     clip(&a, axis, bound, keep_above, &mut b);
@@ -398,7 +396,7 @@ mod subdivide_tests {
     fn subdivision_keeps_area_and_cuts_at_grid_lines() {
         let mut points = vec![[0i16, 0], [4096, 0], [4096, 4096], [0, 4096]];
         let mut triangles = vec![0, 1, 2, 0, 2, 3];
-        subdivide(&mut points, &mut triangles, 512.0);
+        subdivide(&mut points, &mut triangles, [512.0; 2]);
         let area: f64 = triangles
             .as_chunks::<3>()
             .0
@@ -432,7 +430,7 @@ mod subdivide_tests {
     fn caps_fan_the_world_edge_to_the_pole() {
         let mut points = vec![[0i16, 0], [4096, 0], [4096, 4096], [0, 4096]];
         let mut triangles = vec![0, 1, 2, 0, 2, 3];
-        subdivide(&mut points, &mut triangles, 512.0);
+        subdivide(&mut points, &mut triangles, [512.0; 2]);
         let before = triangles.len() / 3;
         cap(&mut points, &mut triangles, 0, NORTH_POLE_Y);
         // One triangle per grid cell along the top edge, to one pole vertex.

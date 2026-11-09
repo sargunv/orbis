@@ -59,8 +59,8 @@ pub struct ImageBuild<'a> {
     pub pixels: Pixels<'a>,
     /// Its mesh, or `None` for its square.
     pub mesh: Option<Arc<ImageMesh>>,
-    /// Planar patches it draws through on a globe: cells per side and their
-    /// words (`crate::scene::WARP_PATCH_WORDS` each).
+    /// Planar patches it draws through on a globe, as
+    /// [`warp_words`](crate::warp_words) has them.
     pub patches: Option<(u32, &'a [f32])>,
     /// When it arrived, in the frame's milliseconds, if it fades in: it
     /// then cross-fades from its nearest resident ancestor, unless resident
@@ -121,8 +121,8 @@ pub struct MeshBuild<'a> {
 }
 
 /// A tile to upload, all of it or none: its meshes by node, and the
-/// planar patches it draws through on another plane (cells per side and
-/// their words). Symbol streams join with
+/// planar patches it draws through on another plane (as
+/// [`warp_words`](crate::warp_words) has them). Symbol streams join with
 /// [`add_symbol_mesh`](Renderer::add_symbol_mesh).
 #[derive(Clone, Copy, Debug)]
 pub struct TileBuild<'a> {
@@ -733,22 +733,22 @@ impl Renderer {
     }
 
     /// A tile's patches on the low-zoom surface, uploaded the first time a
-    /// placement needs them: `cells` per side, their words from `patches`
-    /// (`crate::scene::GLOBE_PATCH_WORDS` each). `None` when the property
+    /// placement needs them: `patches` makes them, as
+    /// [`warp_words`](crate::warp_words) has them. `None` when the property
     /// memory has no room.
     pub fn surface_warp(
         &mut self,
         gpu: &mut dyn Gpu,
         key: WarpKey,
-        cells: u32,
-        patches: impl FnOnce() -> Vec<f32>,
+        patches: impl FnOnce() -> (u32, Vec<f32>),
     ) -> Option<TileWarp> {
         let frame = self.surface_warps.frame;
         if let Some((warp, used)) = self.surface_warps.warps.get_mut(&key) {
             *used = frame;
             return Some(*warp);
         }
-        let warp = self.scene.add_warp(gpu, cells, &patches()).ok()?;
+        let (cells, words) = patches();
+        let warp = self.scene.add_warp(gpu, cells, &words).ok()?;
         self.surface_warps.warps.insert(key, (warp, frame));
         Some(warp)
     }

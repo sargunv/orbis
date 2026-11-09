@@ -267,7 +267,7 @@ enum Shape<'f> {
         params: Vec<line::LineLayout>,
         /// The data tile's lines an overzoom slice's lay out along
         /// (`Layer::overscaled_lines`), and the bend's grid.
-        overscaled: Option<(ByAddress<'f>, orb_tile::Ancestor, Option<u32>)>,
+        overscaled: Option<(ByAddress<'f>, orb_tile::Ancestor, Option<[u32; 2]>)>,
         /// Whether vertices carry their progress (`StylePlan::line_metrics`).
         metrics: bool,
     },

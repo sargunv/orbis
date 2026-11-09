@@ -75,12 +75,12 @@ pub fn series(tms: &TileMatrixSet, tile: TileIndex, tolerance: f64) -> Option<Se
     let dx = map(c + DVec2::new(h, 0.0))? - map(c - DVec2::new(h, 0.0))?;
     let dy = map(c + DVec2::new(0.0, h))? - map(c - DVec2::new(0.0, h))?;
     let span = (dx.cross(dy).length() / (4.0 * h * h)).sqrt();
-    Series::fit(map, tolerance * span, span, MAX_CELLS)
+    Series::fit(map, crate::warp::WHOLE, tolerance * span, span, MAX_PATCHES)
 }
 
-/// The most patches per side of a tile on the sphere: a whole-world tile
-/// needs 32 at an eighth of a pixel.
-const MAX_CELLS: u32 = 32;
+/// The most patches of a tile on the sphere: a whole-world tile needs 32
+/// per side at an eighth of a pixel.
+const MAX_PATCHES: u32 = 32 * 32;
 
 #[cfg(test)]
 mod tests {
@@ -123,13 +123,13 @@ mod tests {
                     assert!(error <= limit * 1.5, "{tile:?} {uv}: {error} m of {limit}");
                 }
             }
-            assert!(series.max_segment > 0.0);
+            assert!(series.max_cell.cmpgt(DVec2::ZERO).all());
         }
         // The whole world in one tile still fits.
         let world = series(&tms, TileIndex::new(0, 0, 0), 1.0 / 2048.0).unwrap();
         assert!(
-            world.cells <= 16 && world.grid() > 1,
-            "{} cells",
+            world.cells[0] * world.cells[1] <= 256 && world.grid().iter().all(|&c| c > 1),
+            "{:?} cells",
             world.cells
         );
     }

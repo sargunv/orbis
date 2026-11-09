@@ -94,6 +94,12 @@ impl Family {
         }
     }
 
+    /// Whether `forward` puts a position it contains on the world's edge
+    /// instead of projecting it: Web Mercator's past ±85.05°.
+    pub(crate) fn clamps(&self, lat: f64) -> bool {
+        matches!(self, Self::WebMercator) && lat.abs() > MERCATOR_MAX_LAT
+    }
+
     /// Where a projection's default world extent comes from: the positions
     /// it shows with moderate distortion.
     pub(crate) fn shows(&self, lon: f64, lat: f64) -> bool {
@@ -194,6 +200,10 @@ impl Plane {
     pub(crate) fn contains(&self, lon: f64, lat: f64) -> bool {
         let (lon, lat) = self.local(lon, lat);
         self.family.contains(lon, lat)
+    }
+
+    pub(crate) fn clamps(&self, lon: f64, lat: f64) -> bool {
+        self.family.clamps(self.local(lon, lat).1)
     }
 
     pub(crate) fn shows(&self, lon: f64, lat: f64) -> bool {
