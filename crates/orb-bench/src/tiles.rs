@@ -56,7 +56,10 @@ pub(crate) fn run(
     let mut encodings = Vec::new();
     for (name, encoding) in [("mvt", Encoding::Mvt), ("mlt", Encoding::Mlt)] {
         progress(&format!("{name}: reading the extract"));
-        let tiles = read_archive(&data.join(format!("tokyo-{name}.pmtiles")))?;
+        let mut tiles = read_archive(&data.join(format!("tokyo-{name}.pmtiles")))?;
+        if let Some(filter) = &settings.filter {
+            tiles.retain(|(t, _)| format!("{}/{}/{}", t.z, t.col, t.row).contains(filter.as_str()));
+        }
         let style_path = data.join(format!("tokyo-{name}.json"));
         let style = std::fs::read_to_string(&style_path)
             .map_err(|e| format!("{}: {e}", style_path.display()))?

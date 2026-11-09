@@ -155,7 +155,7 @@ pub struct Settings {
     /// The views to measure instead of the bench's own (`--view`,
     /// repeatable, or `--views <file>`).
     pub views: Vec<View>,
-    /// Only views whose name contains this.
+    /// Only views whose name contains this, or tiles whose `z/x/y` does.
     pub filter: Option<String>,
     /// Frames alternate the zoom by [`NUDGE`] and are read back.
     pub nudge: bool,
@@ -187,8 +187,8 @@ impl Settings {
     /// (`lon,lat`), `experiment` (`frames`, `gestures`, `load` or `tiles`),
     /// `paths` (`city` or `alps`, the gestures bench's), `view`
     /// (`zoom,pitch,bearing`, adding a view to measure instead of the
-    /// bench's own) or `filter` (a substring of the views' names, or of
-    /// the gestures bench's paths').
+    /// bench's own) or `filter` (a substring of the views' names, of
+    /// the gestures bench's paths', or of the tile bench's `z/x/y`).
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let number = |value: &str| {
             value
