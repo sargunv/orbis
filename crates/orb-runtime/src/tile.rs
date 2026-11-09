@@ -689,6 +689,9 @@ pub(crate) fn build(
             };
             let geometry = &mut build.hits[hit_layer].1;
             let mut hits = crate::MeshHits::new(hit_layer as u32);
+            // Unless its producer said, a scan of the layer's vertices:
+            // once per layer, not once per building.
+            let clip_buffer = (node.family == Family::FillExtrusion).then(|| layer.clip_buffer());
             for &f in features.iter().filter(|_| kind.is_some()) {
                 let i = f as usize;
                 let shape = layer.geometry_type(i);
@@ -728,7 +731,7 @@ pub(crate) fn build(
                     // to own it as drawing does.
                     LayerType::FillExtrusion => [
                         f32::from(u8::from(
-                            bend.is_none() && layer.is_whole(i, layer.clip_buffer()),
+                            bend.is_none() && layer.is_whole(i, clip_buffer.unwrap_or_default()),
                         )),
                         0.0,
                         at(orb_style::EXTRUSION_HEIGHT),
