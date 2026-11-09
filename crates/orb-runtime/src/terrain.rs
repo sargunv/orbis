@@ -4,8 +4,13 @@
 //!
 //! Terrain tiles are 512 logical pixels at their zoom, covered as GL JS's
 //! terrain covers; each samples the DEM tile at its zoom less `delta`, so
-//! that its 128-cell grid has one vertex per DEM pixel: GL JS's density
-//! for 256- and 512-pixel DEM tiles alike. A terrain tile's drape slots
+//! that it spans 128 DEM pixels and its grid has a vertex at each: the
+//! DEM detail of GL JS's terrain, whose tiles are twice the DEM tiles'
+//! size, one DEM zoom deeper. Over 512-pixel DEM tiles GL JS's tiles are
+//! 1024 pixels with the same 128 cells, so the renderer draws every
+//! second vertex there (`orb_render`'s grid step), GL JS's mesh density;
+//! slots and covers stay 512 pixels, so one atlas size serves every
+//! DEM. A terrain tile's drape slots
 //! are drawn at a zoom of its own ([`drape_zoom`]), whatever the camera's,
 //! and redrawn only when the draped content under it changes.
 
@@ -132,6 +137,8 @@ pub(crate) struct Terrain {
     pub(crate) loading: u32,
     /// DEM zooms below a terrain tile's.
     delta: u8,
+    /// The DEM tiles' size in logical pixels.
+    tile_px: f64,
     min_zoom: u8,
     max_zoom: u8,
     /// This frame's terrain tiles.
@@ -173,6 +180,7 @@ impl Terrain {
             page: None,
             loading: 0,
             delta,
+            tile_px,
             min_zoom,
             max_zoom,
             tiles: Vec::new(),
@@ -351,6 +359,7 @@ impl Terrain {
             unpack,
             exaggeration,
             skirt,
+            dem_tile_px: self.tile_px as f32,
         };
         renderer.set_terrain(gpu, Some((self.page, paint)));
         let requests = self.update(view, tms, renderer.drape_room(gpu) as usize);

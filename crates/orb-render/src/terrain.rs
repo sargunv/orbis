@@ -37,9 +37,28 @@ pub(crate) fn room(gpu: &dyn Gpu, stacks: u32) -> u32 {
 /// The drape atlas's format: draped layers draw into it with pipelines of
 /// their own when the target's differs; mip levels are written as storage.
 pub const DRAPE_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
-/// Grid cells per terrain tile side (`terrain.wgsl`'s `GRID`): one per
-/// DEM pixel at the DEM zoom the runtime picks.
+/// Grid vertices per terrain tile side less one (`terrain.wgsl`'s `GRID`):
+/// one per DEM pixel at the DEM zoom the runtime picks. The mesh drawn
+/// uses every [`grid_step`]th of them.
 pub const TERRAIN_GRID: u32 = 128;
+/// The grid steps the mesh has index ranges for: cells of 1, 2 and 4
+/// vertices a side.
+const GRID_STEPS: [u32; 3] = [1, 2, 4];
+
+/// The grid step a terrain over DEM tiles of `tile_px` logical pixels
+/// draws with: GL JS's mesh density, whose terrain tiles are twice the DEM
+/// tiles' size with 128 cells. A vertex every 4 logical pixels over
+/// 256-pixel DEM tiles, every 8 over 512-pixel ones, which costs a
+/// quarter of the vertices with nothing lost the drape and its shading
+/// don't carry (a quarter less GPU time over the Alps).
+fn grid_step(tile_px: f32) -> u32 {
+    let step = (tile_px / 256.0).round().max(1.0) as u32;
+    *GRID_STEPS
+        .iter()
+        .rev()
+        .find(|&&s| s <= step)
+        .expect("a step of 1")
+}
 /// Terrain units per tile side (`terrain.wgsl`'s `TERRAIN_EXTENT`).
 pub const TERRAIN_EXTENT: f32 = 8192.0;
 const NO_DEM: u32 = u32::MAX;
@@ -56,6 +75,9 @@ pub struct TerrainPaint {
     pub exaggeration: f32,
     /// World units the tile skirts hang below their edges.
     pub skirt: f32,
+    /// The DEM source's tile size in logical pixels, which sets the
+    /// mesh's density ([`grid_step`]).
+    pub dem_tile_px: f32,
 }
 
 /// A terrain tile to draw this frame.
@@ -167,7 +189,9 @@ pub(crate) struct Terrain {
     clear: RenderPipelineId,
     grid: BufferId,
     grid_indices: BufferId,
-    index_count: u32,
+    /// The index range of each grid step's mesh, and the step drawn.
+    grid_ranges: [std::ops::Range<u32>; GRID_STEPS.len()],
+    grid_step: u32,
     tiles: BufferId,
     tile_capacity: u32,
     tile_count: u32,
@@ -299,7 +323,7 @@ impl Terrain {
         });
         gpu.destroy_shader_module(drape_module);
 
-        let (grid, indices) = grid();
+        let (grid, indices, grid_ranges) = grid();
         let grid_buffer = gpu.create_buffer(&BufferDesc {
             label: "terrain grid",
             size: grid.len() as u64 * 4,
@@ -336,7 +360,8 @@ impl Terrain {
             clear,
             grid: grid_buffer,
             grid_indices,
-            index_count: indices.len() as u32,
+            grid_ranges,
+            grid_step: 1,
             tiles: gpu.create_buffer(&BufferDesc {
                 label: "terrain tiles",
                 size: 64 * terrain_tile::WORDS as u64 * 4,
@@ -679,6 +704,7 @@ impl Terrain {
             self.forget_group(gpu);
             self.dem = Some(dem);
         }
+        self.grid_step = grid_step(paint.dem_tile_px);
         let state = self.layout_state;
         let mut b = orb_shaders::Block::new(params::WORDS);
         b.f(params::UNPACK, &paint.unpack)
@@ -996,6 +1022,8 @@ impl Terrain {
             let wanted = shaded && shades.iter().any(Option::is_some);
             (!shaded || wanted).then(|| self.pipeline(gpu, samples, shaded))
         });
+        let step = GRID_STEPS.iter().position(|&s| s == self.grid_step);
+        let indices = self.grid_ranges[step.expect("a grid step")].clone();
         let draw = |pipeline, layer_group, shade: Option<BindGroupId>| {
             let mut commands = vec![
                 RenderCommand::SetPipeline(pipeline),
@@ -1013,7 +1041,7 @@ impl Terrain {
                     offset: 0,
                 },
                 RenderCommand::DrawIndexed {
-                    indices: 0..self.index_count,
+                    indices: indices.clone(),
                     base_vertex: 0,
                     instances: 0..self.tile_count,
                 },
@@ -1178,50 +1206,58 @@ impl Terrain {
 }
 
 /// The shared tile mesh: `(GRID + 1)²` vertices, then a skirt copy of
-/// each edge vertex; two triangles per cell and per edge segment.
-fn grid() -> (Vec<u32>, Vec<u32>) {
+/// each edge vertex; and per [`GRID_STEPS`] step, the index range of two
+/// triangles per cell of that many vertices a side and per edge segment.
+fn grid() -> (Vec<u32>, Vec<u32>, [std::ops::Range<u32>; GRID_STEPS.len()]) {
     let n = TERRAIN_GRID;
     let side = n + 1;
     let pack = |x: u32, y: u32, skirt: u32| x | y << 8 | skirt << 16;
     let mut vertices: Vec<u32> = (0..side)
         .flat_map(|y| (0..side).map(move |x| pack(x, y, 0)))
         .collect();
-    let mut indices = Vec::with_capacity((n * n * 6 + 4 * n * 6) as usize);
     let at = |x: u32, y: u32| y * side + x;
-    for y in 0..n {
-        for x in 0..n {
-            indices.extend([
-                at(x, y),
-                at(x, y + 1),
-                at(x + 1, y + 1),
-                at(x, y),
-                at(x + 1, y + 1),
-                at(x + 1, y),
-            ]);
-        }
-    }
     // Edges in order along each side: north, south, west, east.
+    let edge = |edge_index: u32, i: u32| match edge_index {
+        0 => (i, 0),
+        1 => (i, n),
+        2 => (0, i),
+        _ => (n, i),
+    };
+    let skirt_base = vertices.len() as u32;
     for edge_index in 0..4 {
-        let edge = |i: u32| match edge_index {
-            0 => (i, 0),
-            1 => (i, n),
-            2 => (0, i),
-            _ => (n, i),
-        };
-        let base = vertices.len() as u32;
         for i in 0..side {
-            let (x, y) = edge(i);
+            let (x, y) = edge(edge_index, i);
             vertices.push(pack(x, y, 1));
         }
-        for i in 0..n {
-            let (x0, y0) = edge(i);
-            let (x1, y1) = edge(i + 1);
-            let (a, b) = (at(x0, y0), at(x1, y1));
-            let (sa, sb) = (base + i, base + i + 1);
-            indices.extend([a, sa, sb, a, sb, b]);
-        }
     }
-    (vertices, indices)
+    let mut indices = Vec::new();
+    let ranges = GRID_STEPS.map(|s| {
+        let start = indices.len() as u32;
+        for y in (0..n).step_by(s as usize) {
+            for x in (0..n).step_by(s as usize) {
+                indices.extend([
+                    at(x, y),
+                    at(x, y + s),
+                    at(x + s, y + s),
+                    at(x, y),
+                    at(x + s, y + s),
+                    at(x + s, y),
+                ]);
+            }
+        }
+        for edge_index in 0..4 {
+            let base = skirt_base + edge_index * side;
+            for i in (0..n).step_by(s as usize) {
+                let (x0, y0) = edge(edge_index, i);
+                let (x1, y1) = edge(edge_index, i + s);
+                let (a, b) = (at(x0, y0), at(x1, y1));
+                let (sa, sb) = (base + i, base + i + s);
+                indices.extend([a, sa, sb, a, sb, b]);
+            }
+        }
+        start..indices.len() as u32
+    });
+    (vertices, indices, ranges)
 }
 
 impl crate::release::Release for Terrain {
@@ -1249,16 +1285,27 @@ mod tests {
 
     #[test]
     fn the_grid_has_cells_and_skirts() {
-        let (vertices, indices) = grid();
+        let (vertices, indices, ranges) = grid();
         let side = TERRAIN_GRID + 1;
         assert_eq!(vertices.len() as u32, side * side + 4 * side);
-        assert_eq!(
-            indices.len() as u32,
-            TERRAIN_GRID * TERRAIN_GRID * 6 + 4 * TERRAIN_GRID * 6
-        );
         assert!(indices.iter().all(|&i| (i as usize) < vertices.len()));
         let skirts = vertices.iter().filter(|v| *v >> 16 == 1).count() as u32;
         assert_eq!(skirts, 4 * side);
+        for (step, range) in GRID_STEPS.into_iter().zip(ranges) {
+            let n = TERRAIN_GRID / step;
+            assert_eq!(range.len() as u32, n * n * 6 + 4 * n * 6, "step {step}");
+            // Every vertex it reads lies on its step's grid.
+            for &i in &indices[range.start as usize..range.end as usize] {
+                let (x, y) = (vertices[i as usize] & 255, vertices[i as usize] >> 8 & 255);
+                assert_eq!((x % step, y % step), (0, 0), "step {step}");
+            }
+        }
+    }
+
+    #[test]
+    fn coarser_dem_tiles_draw_with_gl_js_density() {
+        let steps = [64.0, 256.0, 512.0, 1024.0, 4096.0].map(grid_step);
+        assert_eq!(steps, [1, 1, 2, 4, 4]);
     }
 
     #[test]
