@@ -80,9 +80,7 @@ impl WgpuGpu {
                     & (wgpu::Features::PIPELINE_CACHE
                         | wgpu::Features::TIMESTAMP_QUERY
                         | wgpu::Features::CLIP_DISTANCES),
-                // WebGPU's defaults, lowered where the adapter falls short
-                // of them: the iOS simulator has 15 inter-stage variables.
-                required_limits: wgpu::Limits::default().or_worse_values_from(&adapter.limits()),
+                required_limits: crate::device_limits(&adapter),
                 ..Default::default()
             })
             .await

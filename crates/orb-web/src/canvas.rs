@@ -133,6 +133,7 @@ impl Canvas {
                 // clip distances clip cut buildings without discarding.
                 required_features: adapter.features()
                     & (wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::CLIP_DISTANCES),
+                required_limits: orb_hal_wgpu::device_limits(&adapter),
                 ..Default::default()
             })
             .await

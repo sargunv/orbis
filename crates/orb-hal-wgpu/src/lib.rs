@@ -27,6 +27,26 @@ pub use timing::SubmitTimes;
 /// The wgpu this HAL is built on, for hosts that hand it windows.
 pub use wgpu;
 
+/// The largest buffer, and storage binding, Orbis asks a device for.
+const LARGEST_BUFFER: u64 = 1 << 30;
+
+/// The limits Orbis asks `adapter`'s device for: WebGPU's defaults, lowered
+/// where the adapter falls short of them (the iOS simulator has 15
+/// inter-stage variables), with buffers and storage bindings as large as it
+/// allows up to 1 GiB. The scene's pools grow within one storage binding,
+/// up to the map's memory budget and past it for the tiles in view: at
+/// WebGPU's default 128 MiB, a pitched view over a dense city ran out.
+pub fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    let offered = adapter.limits();
+    let mut limits = wgpu::Limits::default().or_worse_values_from(&offered);
+    limits.max_buffer_size =
+        (offered.max_buffer_size.min(LARGEST_BUFFER)).max(limits.max_buffer_size);
+    limits.max_storage_buffer_binding_size = (offered.max_storage_buffer_binding_size)
+        .min(LARGEST_BUFFER as _)
+        .max(limits.max_storage_buffer_binding_size);
+    limits
+}
+
 /// The wgpu device and queue, and every resource created through them.
 #[derive(Debug)]
 pub struct WgpuGpu {
