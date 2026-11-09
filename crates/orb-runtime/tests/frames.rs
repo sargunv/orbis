@@ -577,6 +577,52 @@ mod tests {
         );
     }
 
+    /// A layer that drew, hidden by its zoom while the pipelines it draws
+    /// with change (here the 3D sample count), holds no frame back while
+    /// it hides, and draws what a fresh map does when a zoom shows it
+    /// again.
+    #[test]
+    fn a_layer_shown_again_after_its_pipelines_changed_draws() {
+        let style = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/extrusion.json"
+        ))
+        .unwrap()
+        .replacen(
+            r#""source": "blocks","#,
+            r#""source": "blocks", "minzoom": 18,"#,
+            1,
+        );
+        let at = (orb_crs::Geodetic::new(0.0, 0.0), 19.0, -20.0, 60.0);
+        let load = |antialias: bool| {
+            let options = crate::common::Options {
+                style: None,
+                encoding: "mvt".into(),
+                at: Some(at),
+            };
+            let mut offscreen =
+                crate::common::Offscreen::new(&options, orb_runtime::SceneCapacity::default())
+                    .unwrap();
+            offscreen.map.set_style_json(&style).unwrap();
+            offscreen.map.set_antialias_3d(antialias);
+            settle(&mut offscreen);
+            offscreen
+        };
+        let mut moved = load(true);
+        let centre = glam::DVec2::new(512.0, 384.0);
+        zoom_by(&mut moved.map, moved.viewport, centre, -3.0);
+        settle(&mut moved);
+        moved.map.set_antialias_3d(false);
+        settle(&mut moved);
+        zoom_by(&mut moved.map, moved.viewport, centre, 3.0);
+        settle(&mut moved);
+        let fresh = load(false);
+        assert_eq!(
+            crate::common::differing_pixels(&moved.pixels(), &fresh.pixels()),
+            0
+        );
+    }
+
     #[test]
     fn point_and_line_families_keep_camera_only_uploads_to_placements() {
         for style in [

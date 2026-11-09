@@ -1296,10 +1296,11 @@ impl Renderer {
         gpu.poll_pipelines()
     }
 
-    /// Makes the pipelines the nodes shown need (their layers draw at this
-    /// zoom) and that aren't made yet, in draw order: the device compiles
-    /// them in the order they are asked for (the cull's was first), and
-    /// [`prioritize`](Self::prioritize) moves what the view shows ahead.
+    /// Makes the pipelines the nodes shown (their layers draw at this
+    /// zoom) or that have drawn need and that aren't made yet, in draw
+    /// order: the device compiles them in the order they are asked for
+    /// (the cull's was first), and [`prioritize`](Self::prioritize) moves
+    /// what the view shows ahead.
     /// A still compiles what its zoom shows and no more, while the
     /// compiles still overlap the tiles' loading. A node shown for the
     /// first time records the bundles again, which left it out.
@@ -1312,7 +1313,10 @@ impl Renderer {
         let own_drape = self.target.color != DRAPE_FORMAT;
         let (mut started, mut draped) = (false, false);
         for i in 0..self.nodes.len() {
-            if !self.nodes[i].cull.visible {
+            // A node that drew keeps its pipelines made for what it draws
+            // into (the 3D sample count, the terrain's drape) while it
+            // hides: the bundles record it, and it may show again.
+            if !self.nodes[i].cull.visible && !self.nodes[i].drawn {
                 continue;
             }
             let node = &mut self.nodes[i];
