@@ -50,7 +50,7 @@ pub(crate) fn forget(map: u32) {
     POSTS.with(|posts| posts.borrow_mut().remove(&map));
 }
 
-/// [`Jobs`] for the map on the page: each tile goes to the job worker with
+/// [`Jobs`] for the map: each tile goes to the job worker with
 /// the fewest requests in flight, and its relayouts and queries follow it
 /// there, where its data was decoded.
 pub(crate) struct WorkerJobs {
@@ -113,7 +113,7 @@ fn load_key(request: &TileRequest) -> LoadKey {
 /// Losses of one tile's loads that quarantine it.
 const QUARANTINE: u8 = 2;
 
-/// What the render worker's jobs have done so far.
+/// What the map's jobs have done so far.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct JobStats {
     pub header_bytes: u64,

@@ -1,18 +1,18 @@
 //! Labels placed in a worker of their own: both ends of the
-//! protocol between the render worker and the placement worker.
+//! protocol between the map and the placement worker.
 //!
-//! The page's JS owns the transport, a `MessagePort`, and passes messages
-//! through unread. The render worker's [`WorkerPlacement`] posts a bucket's
+//! The web package's JS owns the transport, a `MessagePort`, and passes
+//! messages through unread. The map's [`WorkerPlacement`] posts a bucket's
 //! tables once and a frame per placement; the [`PlacementWorker`] answers
 //! each frame, in order, with its commit. Payloads are
 //! [`orb_runtime::wire`]'s bytes, in transferred
 //! buffers.
 //!
-//! Messages, render worker to placement worker: `{ingest, buffer}` (a
+//! Messages, map to placement worker: `{ingest, buffer}` (a
 //! bucket id and its packed tables), `{remove}` (a bucket id),
 //! `{ground: buffer}` (the terrain's elevation pyramid for the frames that
 //! follow, empty for none; sent when the terrain changes) and
-//! `{place: buffer}` (a packed frame). Placement worker to render worker:
+//! `{place: buffer}` (a packed frame). Placement worker to map:
 //! `{committed: buffer}`, one per frame.
 
 use std::cell::RefCell;
@@ -186,7 +186,7 @@ impl PlacementWorker {
         panic!("a trap asked for");
     }
 
-    /// Handles a message from the render worker; returns the reply to post
+    /// Handles a message from the map; returns the reply to post
     /// back, transferring its `committed` buffer, or nothing.
     pub fn receive(&mut self, message: &JsValue) -> Result<JsValue, JsError> {
         let get = |key: &str| Reflect::get(message, &key.into()).unwrap_or(JsValue::UNDEFINED);

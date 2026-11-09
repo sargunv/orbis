@@ -129,7 +129,7 @@ fn read_bitmap(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
 
 /// Decodes an image into an `ImageBitmap` with straight alpha and no colour
 /// conversion, on the page or in a worker. Its pixels stay with the
-/// browser: a job worker transfers the bitmap to the render worker, which
+/// browser: a job worker transfers the bitmap to the map's thread, which
 /// copies it to a texture.
 pub(crate) async fn decode_bitmap(bytes: &[u8]) -> Result<web_sys::ImageBitmap, JsValue> {
     let parts = js_sys::Array::of1(&Uint8Array::from(bytes));

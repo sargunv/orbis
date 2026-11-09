@@ -29,7 +29,7 @@
     "typescript": "7.0.2",
     "vite": "8.3.5"
   },
-  "description": "Orbis on the web: a GPU-driven map renderer in a render worker or on the page",
+  "description": "Orbis on the web: a GPU-driven map renderer in a worker or on the page",
   "exports": {
     ".": "./src/index.ts"
   }
