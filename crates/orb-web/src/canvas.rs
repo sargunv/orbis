@@ -164,6 +164,7 @@ impl Canvas {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
+        warm_image_copies(device.clone(), queue.clone());
         let gpu = WgpuGpu::new(device, queue);
         // A map waiting only for pipelines draws when one arrives.
         gpu.set_compile_wake(std::rc::Rc::new(move || crate::wake(map)));
@@ -178,4 +179,62 @@ impl Canvas {
             lost,
         })
     }
+}
+
+/// Copies a 1×1 bitmap to a texture, in the background. A page's first
+/// image copy makes the browser's copying context (about 10 ms on the
+/// page's thread in Chrome): made now, while the style loads, rather than
+/// when the first raster tile arrives.
+fn warm_image_copies(device: wgpu::Device, queue: wgpu::Queue) {
+    use wasm_bindgen::JsCast;
+    wasm_bindgen_futures::spawn_local(async move {
+        let bitmap = async {
+            let pixels = web_sys::ImageData::new_with_sw(1, 1)?;
+            let global = js_sys::global();
+            let create = js_sys::Reflect::get(&global, &"createImageBitmap".into())?
+                .dyn_into::<js_sys::Function>()?;
+            let promise = create
+                .call1(&global, &pixels)?
+                .dyn_into::<js_sys::Promise>()?;
+            wasm_bindgen_futures::JsFuture::from(promise)
+                .await?
+                .dyn_into::<web_sys::ImageBitmap>()
+        };
+        let Ok(bitmap) = bitmap.await else {
+            return;
+        };
+        let size = wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        };
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("warm image copies"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        queue.copy_external_image_to_texture(
+            &wgpu::CopyExternalImageSourceInfo {
+                source: wgpu::ExternalImageSource::ImageBitmap(bitmap.clone()),
+                origin: wgpu::Origin2d::ZERO,
+                flip_y: false,
+            },
+            wgpu::CopyExternalImageDestInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+                color_space: wgpu::PredefinedColorSpace::Srgb,
+                premultiplied_alpha: false,
+            },
+            size,
+        );
+        bitmap.close();
+        texture.destroy();
+    });
 }

@@ -46,8 +46,9 @@ export interface Host {
   destroy(): void;
 }
 
-/** The map on this thread, drawing into `canvas`. */
-export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasElement, style: string,
+/** The map on this thread, drawing into `canvas`, once `compiling` has
+ * compiled core.wasm; its workers start meanwhile. */
+export async function startMain(compiling: Promise<WebAssembly.Module>, canvas: HTMLCanvasElement, style: string,
   options: CoreOptions, jobWorkers: number, callbacks: HostCallbacks): Promise<Host> {
   const receive = (apply: (data: unknown) => void) => ({ data }: MessageEvent) => {
     try {
@@ -59,14 +60,22 @@ export async function startMain(module: WebAssembly.Module, canvas: HTMLCanvasEl
   // Replies still on their way when the map stops find it gone.
   let stopped = false;
   const reply = (apply: (data: unknown) => void) => receive((data) => { if (!stopped) apply(data); });
-  const jobs = Array.from({ length: jobWorkers }, () => spawnJob(module));
+  const jobs = Array.from({ length: jobWorkers }, () => spawnJob(compiling));
   const ports = jobs.map((j) => j.port);
-  let placement = spawnPlacement(module);
-  await init({ module_or_path: module });
-  connectModule(setRequestHook);
-  const core = await createCoreMap(canvas, style, options, callbacks.wake, ports.length,
-    (worker: number, message: unknown) => ports[worker].postMessage(message),
-    (message: unknown, transfer: Transferable[]) => placement.port.postMessage(message, transfer));
+  let placement = spawnPlacement(compiling);
+  let module: WebAssembly.Module;
+  let core: Core;
+  try {
+    module = await compiling;
+    await init({ module_or_path: module });
+    connectModule(setRequestHook);
+    core = await createCoreMap(canvas, style, options, callbacks.wake, ports.length,
+      (worker: number, message: unknown) => ports[worker].postMessage(message),
+      (message: unknown, transfer: Transferable[]) => placement.port.postMessage(message, transfer));
+  } catch (e) {
+    for (const { worker } of [...jobs, placement]) worker.terminate();
+    throw e;
+  }
   // A placement worker whose wasm trapped says so and closes; one that
   // dies fires `error`. Either way another takes its place, and the map
   // sends it what it places from.

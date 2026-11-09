@@ -40,12 +40,16 @@ pub(crate) async fn decode_image(bytes: &[u8]) -> Result<DecodedImage, JsValue> 
     image
 }
 
-/// Reads a bitmap's straight RGBA8 texels through an `OffscreenCanvas`.
+/// Reads a bitmap's straight RGBA8 texels through an `OffscreenCanvas`
+/// that reads back often: the CPU draws it, without the GPU context (about
+/// 10 ms to create on a page) and readback a GPU canvas costs.
 fn read_bitmap(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
     let (width, height) = (bitmap.width(), bitmap.height());
     let canvas = web_sys::OffscreenCanvas::new(width, height)?;
+    let options = js_sys::Object::new();
+    Reflect::set(&options, &"willReadFrequently".into(), &true.into())?;
     let context: web_sys::OffscreenCanvasRenderingContext2d = canvas
-        .get_context("2d")?
+        .get_context_with_context_options("2d", &options)?
         .ok_or_else(|| JsValue::from_str("no 2d context"))?
         .dyn_into()?;
     context.draw_image_with_image_bitmap(bitmap, 0.0, 0.0)?;

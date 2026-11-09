@@ -262,9 +262,6 @@ pub async fn create_map(
     let jobs: Arc<dyn Jobs> = worker_jobs.clone();
     let lane: Arc<dyn orb_runtime::PlacementLane> = WorkerPlacement::new(id, place);
     WAKES.with(|wakes| wakes.borrow_mut().insert(id, on_wake));
-    let canvas = Canvas::new(canvas.into(), size, id)
-        .await
-        .map_err(|e| JsError::new(&e))?;
     let images = orb_runtime::Images::default();
     let services = Services {
         clock: Arc::new(crate::host::WebClock),
@@ -305,7 +302,11 @@ pub async fn create_map(
     if let Some(skirts) = option("terrainSkirts").and_then(|v| v.as_bool()) {
         map.set_terrain_skirts(skirts);
     }
+    // The style loads while the GPU device is made.
     map.load_style_url(&style_url);
+    let canvas = Canvas::new(canvas.into(), size, id)
+        .await
+        .map_err(|e| JsError::new(&e))?;
     Ok(OrbisMap {
         id,
         map,

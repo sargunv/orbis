@@ -11,18 +11,19 @@ export interface Spawned {
   port: MessagePort;
 }
 
-/** A job worker. */
-export function spawnJob(module: WebAssembly.Module): Spawned {
-  const channel = new MessageChannel();
-  const worker = new Worker(new URL("./job-worker.ts", import.meta.url), { type: "module" });
-  worker.postMessage({ module, port: channel.port2 }, [channel.port2]);
-  return { worker, port: channel.port1 };
+/** A job worker. It loads its script while `module` compiles, and gets
+ * it once it has. */
+export function spawnJob(module: WebAssembly.Module | Promise<WebAssembly.Module>): Spawned {
+  return spawn(new Worker(new URL("./job-worker.ts", import.meta.url), { type: "module" }), module);
 }
 
-/** The placement worker. */
-export function spawnPlacement(module: WebAssembly.Module): Spawned {
+/** The placement worker, as a job worker. */
+export function spawnPlacement(module: WebAssembly.Module | Promise<WebAssembly.Module>): Spawned {
+  return spawn(new Worker(new URL("./placement-worker.ts", import.meta.url), { type: "module" }), module);
+}
+
+function spawn(worker: Worker, module: WebAssembly.Module | Promise<WebAssembly.Module>): Spawned {
   const channel = new MessageChannel();
-  const worker = new Worker(new URL("./placement-worker.ts", import.meta.url), { type: "module" });
-  worker.postMessage({ module, port: channel.port2 }, [channel.port2]);
+  void Promise.resolve(module).then((module) => worker.postMessage({ module, port: channel.port2 }, [channel.port2]), () => {});
   return { worker, port: channel.port1 };
 }

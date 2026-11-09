@@ -551,9 +551,11 @@ async function noWebgpu(): Promise<string | undefined> {
 /** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on.
  * Rejects, saying why, where the browser has no WebGPU. */
 export async function createMap(options: MapOptions): Promise<OrbisMap> {
+  // core.wasm downloads and compiles while WebGPU is checked.
+  const module = WebAssembly.compileStreaming(fetch(CORE));
+  module.catch(() => {});
   const missing = await noWebgpu();
   if (missing) throw new Error(`Orbis needs WebGPU, and ${missing}`);
-  const module = WebAssembly.compileStreaming(fetch(CORE));
   const frame = document.createElement("div");
   Object.assign(frame.style, { position: "relative", width: "100%", height: "100%", overflow: "hidden" });
   const canvas = document.createElement("canvas");
@@ -575,7 +577,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     localIdeographFontFamily: options.localIdeographFontFamily, antialias: options.antialias,
     terrainSkirts: options.terrainSkirts,
   };
-  const host = await startMain(await module, canvas, style, core, options.jobWorkers ?? defaultJobWorkers(), {
+  const host = await startMain(module, canvas, style, core, options.jobWorkers ?? defaultJobWorkers(), {
     wake: () => map?.wake(),
     error: (e) => (map ? map.fail(e) : console.error(e)),
     setup: (core) => {
