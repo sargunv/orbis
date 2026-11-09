@@ -88,54 +88,45 @@ fn clip_line(
         } else {
             0.0
         };
-        let mut intersect = |edge| {
+        // Where the segment crosses `edge`, and how far along it.
+        let cross = |edge| {
             let t = (edge - av) / (bv - av);
             let mut xy = [
                 a.xy[0] + (b.xy[0] - a.xy[0]) * t,
                 a.xy[1] + (b.xy[1] - a.xy[1]) * t,
             ];
             xy[axis] = edge;
-            slice.points.push(Point {
+            let point = Point {
                 xy,
                 importance: 1.0,
-            });
-            t
+            };
+            (point, t)
         };
-        if av < start {
-            if bv >= start {
-                let t = intersect(start);
-                if metrics {
-                    slice.start = length + seg_length * t;
-                }
-            }
+        let enter = if av < start {
+            (bv >= start).then_some(start)
         } else if av > end {
-            if bv <= end {
-                let t = intersect(end);
-                if metrics {
-                    slice.start = length + seg_length * t;
-                }
-            }
+            (bv <= end).then_some(end)
         } else {
             slice.points.push(a);
+            None
+        };
+        if let Some(edge) = enter {
+            let (point, t) = cross(edge);
+            slice.points.push(point);
+            if metrics {
+                slice.start = length + seg_length * t;
+            }
         }
-        let edge = if bv < start && av >= start {
+        let exit = if bv < start && av >= start {
             Some(start)
         } else if bv > end && av <= end {
             Some(end)
         } else {
             None
         };
-        if let Some(edge) = edge {
-            let t = (edge - av) / (bv - av);
-            let mut xy = [
-                a.xy[0] + (b.xy[0] - a.xy[0]) * t,
-                a.xy[1] + (b.xy[1] - a.xy[1]) * t,
-            ];
-            xy[axis] = edge;
-            slice.points.push(Point {
-                xy,
-                importance: 1.0,
-            });
+        if let Some(edge) = exit {
+            let (point, t) = cross(edge);
+            slice.points.push(point);
             if !polygon {
                 if metrics {
                     slice.end = length + seg_length * t;

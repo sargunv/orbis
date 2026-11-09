@@ -28,6 +28,9 @@
 //! BSD-3-Clause; copyright and terms in `LICENSE-MapLibre` alongside this module.
 //! Distance follows the pinned shader's two-tile-unit quantization.
 
+use std::ops::{Add, Mul, Sub};
+
+use glam::DVec2;
 use orb_tile::{Ancestor, GeometryType, Layer};
 
 use crate::clip::{ClippedLine, clip_polyline};
@@ -378,68 +381,28 @@ pub fn feature_clips(layer: &Layer, feature: usize) -> Option<[f64; 2]> {
     (clips[0].is_finite() && clips[1].is_finite() && clips[1] > clips[0]).then_some(clips)
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Point {
-    x: f64,
-    y: f64,
+type Point = DVec2;
+
+fn point([x, y]: [i32; 2]) -> Point {
+    Point::new(x.into(), y.into())
 }
 
-impl From<[i32; 2]> for Point {
-    fn from([x, y]: [i32; 2]) -> Self {
-        Self {
-            x: x.into(),
-            y: y.into(),
-        }
-    }
+/// GL JS's `Point` operations that glam's differ from in their last bit.
+trait JsPoint {
+    /// Divided by its length (glam multiplies by its reciprocal); a zero
+    /// vector stays zero.
+    fn unit(self) -> Self;
+    fn js_round(self) -> Self;
 }
 
-impl Point {
-    fn add(self, p: Self) -> Self {
-        Self {
-            x: self.x + p.x,
-            y: self.y + p.y,
-        }
-    }
-    fn sub(self, p: Self) -> Self {
-        Self {
-            x: self.x - p.x,
-            y: self.y - p.y,
-        }
-    }
-    fn mul(self, n: f64) -> Self {
-        Self {
-            x: self.x * n,
-            y: self.y * n,
-        }
-    }
-    fn dot(self, p: Self) -> f64 {
-        self.x * p.x + self.y * p.y
-    }
-    fn mag(self) -> f64 {
-        self.dot(self).sqrt()
-    }
+impl JsPoint for Point {
     fn unit(self) -> Self {
-        let mag = self.mag();
-        if mag == 0.0 {
-            self
-        } else {
-            Self {
-                x: self.x / mag,
-                y: self.y / mag,
-            }
-        }
+        let mag = self.length();
+        if mag == 0.0 { self } else { self / mag }
     }
-    fn perp(self) -> Self {
-        Self {
-            x: -self.y,
-            y: self.x,
-        }
-    }
-    fn round(self) -> Self {
-        Self {
-            x: js_round(self.x),
-            y: js_round(self.y),
-        }
+
+    fn js_round(self) -> Self {
+        Point::new(js_round(self.x), js_round(self.y))
     }
 }
 
@@ -517,20 +480,20 @@ impl Extrusion<'_> {
         let mut current: Option<Point> = None;
         let mut next_normal: Option<Point> = None;
         if line.closed {
-            let last = Point::from(points[points.len() - 1]);
+            let last = point(points[points.len() - 1]);
             current = Some(last);
             self.distance_point = Some(last);
-            next_normal = Some(Point::from(points[0]).sub(last).unit().perp());
+            next_normal = Some(point(points[0]).sub(last).unit().perp());
         }
         for i in 0..len {
             self.at_clip = (i == 0 && line.start_clipped) || (i == len - 1 && line.end_clipped);
             let next = if i == len - 1 {
-                line.closed.then(|| Point::from(points[1]))
+                line.closed.then(|| point(points[1]))
             } else {
-                Some(Point::from(points[(i + 1) % points.len()]))
+                Some(point(points[(i + 1) % points.len()]))
             };
             let prev = current;
-            let p = Point::from(points[i % points.len()]);
+            let p = point(points[i % points.len()]);
             let normal = next.map_or_else(
                 || next_normal.expect("last segment normal"),
                 |n| n.sub(p).unit().perp(),
@@ -556,9 +519,9 @@ impl Extrusion<'_> {
 
             if sharp && i > 0 {
                 let delta = p.sub(prev.expect("middle vertex"));
-                let distance = delta.mag();
+                let distance = delta.length();
                 if distance > 2.0 * sharp_offset {
-                    let before = p.sub(delta.mul(sharp_offset / distance).round());
+                    let before = p.sub(delta.mul(sharp_offset / distance).js_round());
                     self.add_current_vertex(before, prev_normal, 0.0, 0.0, false, prev_normal);
                 }
             }
@@ -605,8 +568,8 @@ impl Extrusion<'_> {
                     join_normal = if miter_length > 100.0 {
                         normal.mul(-1.0)
                     } else {
-                        let bevel_length = miter_length * prev_normal.add(normal).mag()
-                            / prev_normal.sub(normal).mag();
+                        let bevel_length = miter_length * prev_normal.add(normal).length()
+                            / prev_normal.sub(normal).length();
                         join_normal
                             .perp()
                             .mul(bevel_length * if turns_left { -1.0 } else { 1.0 })
@@ -712,9 +675,9 @@ impl Extrusion<'_> {
             current = Some(p);
             if sharp && i < len - 1 {
                 let delta = next.expect("middle vertex").sub(p);
-                let distance = delta.mag();
+                let distance = delta.length();
                 if distance > 2.0 * sharp_offset {
-                    let after = p.add(delta.mul(sharp_offset / distance).round());
+                    let after = p.add(delta.mul(sharp_offset / distance).js_round());
                     self.add_current_vertex(after, normal, 0.0, 0.0, false, normal);
                     current = Some(after);
                 }
@@ -732,7 +695,7 @@ impl Extrusion<'_> {
         offset_normal: Point,
     ) {
         if let Some(prev) = self.distance_point {
-            self.distance += p.sub(prev).mag();
+            self.distance += p.sub(prev).length();
         }
         self.distance_point = Some(p);
         let left = Point {

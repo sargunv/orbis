@@ -1,36 +1,20 @@
 //! Vector overzoom, following pinned GL JS's `sliceVectorTileLayer` and
 //! `clipGeometry`, before layout.
 //!
-//! Polygons and points keep GL JS's buffer past the child's square. Lines
-//! keep a whole tile, the margin line layout keeps (`orb_layout::line`): a
-//! wide stroke crossing the child's edge needs its line to go on well past
-//! it, or the end of the stroke shows inside the tile. (GL JS's buffer is
-//! 28 px at z19.8; a 140 px road crossing a tile edge at 57° lost a corner
-//! on each side of it.) Such a line splits where it crosses the buffer's
-//! square: the pieces inside are GL JS's slice of it, so dash phase and
-//! line-label anchors start where GL JS's do, and the pieces outside only
-//! carry the stroke on across the edge.
-//!
-//! A polygon whole in the source tile stays whole in a child its bounds
-//! meet, unclipped, while it reaches no further than one child past it and
-//! past the child holding its centroid (`slice_feature`): a building
-//! crossing the child's edge is then drawn once, entire, by the child
-//! owning its centroid, not clipped by every child per fragment, which
-//! turns off the GPU's hidden-surface removal. Each polygon of a
-//! multipolygon decides alone.
-//!
-//! GL JS slices only so far below a source's last tile, then lays deeper
-//! tiles out from that slice, overscaled. A slice deeper than where its
-//! labels lay out carries that ancestor's slice for them (`Labels`), so
-//! line labels run on across slice edges as GL JS's do. Where that
-//! ancestor is the data tile itself, as it always is for GeoJSON (GL JS
-//! and MapLibre Native overscale a GeoJSON source's last tile whole), its
-//! slices share the data tile's layer, and their lines lay out along it
-//! too ([`Layer::overscaled_lines`]): dash, pattern and gradient run on
-//! across slice edges as along the data tile's lines.
-//!
-//! A slice keeps only the features it meets; [`Layer::data_feature`]
-//! gives each one's index in the data tile.
+//! - Polygons and points keep GL JS's buffer past the slice's square.
+//!   Lines keep a whole tile, line layout's margin, so a wide stroke
+//!   crossing the edge doesn't end inside the tile; they split where they
+//!   cross the buffer, and the pieces inside are GL JS's slice (its dash
+//!   phase and label anchors).
+//! - A polygon whole in its data tile stays whole and unclipped in the
+//!   slices it meets, drawn once by the slice holding its centroid
+//!   (`slice_feature`, [`Layer::is_whole`]).
+//! - Below where GL JS stops slicing, a slice lays its labels out in that
+//!   ancestor's slice (`Labels`); when the ancestor is the data tile, as
+//!   always for GeoJSON, its lines lay out along the data tile's too
+//!   ([`Layer::overscaled_lines`]), so dash, pattern and gradient run on
+//!   across slice edges.
+//! - A slice keeps only the features it meets ([`Layer::data_feature`]).
 
 use std::borrow::Cow;
 use std::sync::Arc;
