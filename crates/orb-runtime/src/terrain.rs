@@ -210,13 +210,42 @@ impl Terrain {
         (zd <= z).then_some(zd)
     }
 
-    /// The ready DEM tile a tile at `tile` reads, or its nearest ready
-    /// ancestor while it loads.
+    /// The ready DEM tile standing for DEM tile `tile`: itself, or its
+    /// nearest ready ancestor while it loads.
+    fn ready(&self, tile: TileIndex) -> Option<TileIndex> {
+        let mut at = tile;
+        loop {
+            if self.pyramid.get(at).is_some() {
+                return Some(at);
+            }
+            if at.z <= self.min_zoom {
+                return None;
+            }
+            at = at.parent()?;
+        }
+    }
+
+    /// The DEM tiles this camera reads: each wanted tile that is ready, or
+    /// the ancestor standing for it. The elevations hold these, and these
+    /// alone are padded.
+    fn read(&self) -> Vec<TileIndex> {
+        let mut read: Vec<TileIndex> = (self.wanted.iter())
+            .filter_map(|&t| self.ready(t))
+            .collect();
+        read.sort();
+        read.dedup();
+        read
+    }
+
+    /// The DEM tile a tile at `tile` reads among those the elevations hold
+    /// (its own, or the nearest ancestor of it held), as placement's
+    /// [`TerrainElevation`] finds it: never one the pyramid keeps from an
+    /// earlier view or for its range alone.
     fn dem_for(&self, tile: TileIndex) -> Option<(TileIndex, &DemTile)> {
         let mut at = scaled(tile, self.dem_zoom(tile.z)?);
         loop {
-            if let Some(dem) = self.pyramid.get(at) {
-                return Some((at, dem));
+            if self.elevation.dems.contains_key(&at) {
+                return Some((at, self.pyramid.get(at)?));
             }
             if at.z <= self.min_zoom {
                 return None;
@@ -321,12 +350,7 @@ impl Terrain {
     /// a border is a function of what this camera reads, not of which tiles
     /// were resident before.
     fn pads(&mut self, unpack: [f32; 4]) -> Vec<orb_render::DemPrepare> {
-        let mut read: Vec<TileIndex> = (self.tiles.iter())
-            .filter_map(|t| self.dem_for(t.index).map(|(at, _)| at))
-            .chain(self.wanted.iter().copied())
-            .collect();
-        read.sort();
-        read.dedup();
+        let read = self.read();
         let pyramid = &self.pyramid;
         let layer_of = |t: TileIndex| {
             read.binary_search(&t)
@@ -460,22 +484,14 @@ impl Terrain {
     pub(crate) fn elevation(&mut self, tms: &TileMatrixSet) -> &Arc<TerrainElevation> {
         if std::mem::take(&mut self.stale) {
             // Each tile, or while it loads its nearest ready ancestor.
-            let held = |tiles: &[TileIndex]| {
-                let mut dems = HashMap::new();
-                for &tile in tiles {
-                    let mut at = Some(tile);
-                    while let Some(t) = at {
-                        if let Some(dem) = self.pyramid.get(t) {
-                            dems.insert(t, Arc::clone(&dem.dem));
-                            break;
-                        }
-                        at = t.parent().filter(|_| t.z > self.min_zoom);
-                    }
-                }
-                dems
+            let held = |tiles: Vec<TileIndex>| -> HashMap<TileIndex, Arc<Dem>> {
+                (tiles.into_iter())
+                    .filter_map(|t| Some((t, Arc::clone(&self.pyramid.get(t)?.dem))))
+                    .collect()
             };
-            let dems = held(&self.wanted);
-            let mut culling = held(&self.culling);
+            let dems = held(self.read());
+            let culling = self.culling.iter().filter_map(|&t| self.ready(t));
+            let mut culling = held(culling.collect());
             culling.retain(|t, _| !dems.contains_key(t));
             let same = |a: &HashMap<TileIndex, Arc<Dem>>, b: &HashMap<TileIndex, Arc<Dem>>| {
                 a.len() == b.len()
@@ -1344,6 +1360,24 @@ mod tests {
         assert!(elevation.range(child, 11).is_some());
         let placed = TerrainElevation::from_pyramid(&elevation.pyramid()).unwrap();
         assert_eq!(placed.dems.keys().collect::<Vec<_>>(), [&drawn]);
+    }
+
+    #[test]
+    fn drawn_tiles_stand_on_the_dem_tiles_placement_reads() {
+        let tms = tms();
+        let quad = |z, c, r| TileIndex::new(z, c, r);
+        let (coarse, cached) = (quad(9, 265, 180), quad(10, 530, 360));
+        let mut terrain = terrain_with(&[(coarse, hills(256, 0.0)), (cached, hills(256, 7.0))]);
+        // A cover coarsened to the drape's room reads the zoom 9 tile; the
+        // zoom 10 one under it stays cached from a closer view.
+        terrain.wanted = vec![coarse];
+        let jobs = terrain.pads([0.0; 4]);
+        assert_eq!(jobs.len(), 1, "the cached tile isn't padded");
+        let elevation = Arc::clone(terrain.elevation(&tms));
+        let tile = quad(11, 1060, 720);
+        assert_eq!(elevation.dem_for(tile).map(|(t, _)| t), Some(coarse));
+        let (dem, _) = terrain.ground(tile);
+        assert_eq!((dem.layer, dem.depth), (0, 2), "the coarse tile's layer");
     }
 
     #[test]
