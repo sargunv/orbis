@@ -36,7 +36,7 @@ pub use atmosphere::{AtmospherePaint, AtmosphereView, GlobeSky};
 pub use layer_composite::Blend;
 pub use terrain::{
     DRAPE_FORMAT, DRAPE_SLOT_PX, DrapeLayout, TERRAIN_EXTENT, TERRAIN_GRID, TerrainDem,
-    TerrainGlobe, TerrainPaint, TerrainSlopes, TerrainTile,
+    TerrainGlobe, TerrainPaint, TerrainTile,
 };
 
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
@@ -61,7 +61,7 @@ pub use scene::{
 };
 pub use tiles::{
     GpuTile, ImageBuild, ImageMesh, MeshBuild, MeshRows, TileBuild, TileKey, UploadError, WarpKey,
-    dem_neighbours,
+    dem_neighbours, tile_latitudes,
 };
 
 use crate::release::Release;
@@ -157,8 +157,8 @@ struct Node {
     /// terrain layer that composites it.
     stack: Option<u8>,
     terrain_layer: Option<u8>,
-    /// A hillshade the terrain pass shades from the frame's bearing rather
-    /// than draping it ([`Renderer::set_shaded_on_terrain`]).
+    /// A hillshade the terrain pass lights from the frame's bearing: it
+    /// drapes its unlit slopes ([`Renderer::set_shaded_on_terrain`]).
     shaded: bool,
     /// Its style layer's key, layer opacity and blend mode
     /// (`*-layer-opacity`, `*-layer-blend`): below opacity 1 or blending
@@ -171,17 +171,14 @@ struct Node {
 }
 
 impl Node {
-    /// A hillshade the terrain pass shades: it draws no placements.
+    /// A hillshade the terrain pass lights: its stack holds its slopes.
     fn shades_on_terrain(&self) -> bool {
-        self.terrain_layer.is_some() && self.stack.is_none()
+        self.shaded && self.stack.is_some()
     }
 
     /// What the cull sees of it.
     fn scene_cull(&self) -> NodeCull {
-        NodeCull {
-            visible: self.cull.visible && !self.shades_on_terrain(),
-            ..self.cull
-        }
+        self.cull
     }
 }
 
@@ -808,9 +805,10 @@ impl Renderer {
     /// a terrain layer of one stack, and a layer that composites once
     /// (below opacity 1 or blending other than normally) has a terrain
     /// layer of its own, which composites as the layer's. A shaded
-    /// hillshade ends its stack: the terrain layer shades it over that
-    /// stack and under the next, which draws the layers above it (one
-    /// hillshade a terrain layer; another starts the next).
+    /// hillshade ends its stack and draws its slopes into one of its own:
+    /// the terrain layer lights them over the stack before and under the
+    /// next, which draws the layers above it (one hillshade a terrain
+    /// layer; another starts the next).
     fn assign_stacks(&mut self) {
         let on = self.terrain.as_ref().is_some_and(|t| t.paint.is_some());
         let mut stacks = 0u8;
@@ -830,18 +828,21 @@ impl Renderer {
             node.stack = None;
             node.terrain_layer = draped.then(|| layers.len() as u8 - 1);
             if let Some(layer) = layers.last_mut().filter(|_| draped) {
-                if shaded {
-                    layer.shade = Some(i as u32);
+                let mut next = || {
+                    stacks = stacks.saturating_add(1);
+                    stacks - 1
+                };
+                node.stack = Some(if shaded {
+                    let slopes = next();
+                    layer.shade = Some((i as u32, slopes));
+                    slopes
                 } else {
                     let part = match layer.shade {
                         Some(_) => &mut layer.above,
                         None => &mut layer.below,
                     };
-                    node.stack = Some(*part.get_or_insert_with(|| {
-                        stacks = stacks.saturating_add(1);
-                        stacks - 1
-                    }));
-                }
+                    *part.get_or_insert_with(next)
+                });
             }
             node.cull.target = match node.stack {
                 Some(stack) => PlacementTarget::Drape(stack),
@@ -851,10 +852,10 @@ impl Renderer {
         self.terrain_layers = layers;
     }
 
-    /// Makes node `node`, a hillshade, one the terrain pass shades from
-    /// the frame's bearing between drape stacks, or one it drapes: a
-    /// viewport-anchored hillshade turns with the map, and no drape slot
-    /// should.
+    /// Makes node `node`, a hillshade, one the terrain pass lights from
+    /// the frame's bearing between drape stacks, draping its slopes, or one
+    /// it drapes lit: a viewport-anchored hillshade turns with the map,
+    /// and no drape slot should.
     pub fn set_shaded_on_terrain(&mut self, gpu: &mut dyn Gpu, node: u32, shaded: bool) {
         let n = &mut self.nodes[node as usize];
         if n.shaded == shaded {
@@ -869,10 +870,16 @@ impl Renderer {
         }
     }
 
-    /// Whether node `node` is a hillshade the terrain pass shades now,
-    /// drawing no drape slots.
+    /// Whether node `node` is a hillshade the terrain pass lights now,
+    /// draping its slopes.
     pub fn shades_on_terrain(&self, node: u32) -> bool {
         self.nodes[node as usize].shades_on_terrain()
+    }
+
+    /// The drape stack node `node` draws into while terrain is on, if it
+    /// is draped.
+    pub fn drape_stack(&self, node: u32) -> Option<u8> {
+        self.nodes[node as usize].stack
     }
 
     /// Drape stacks of the current nodes while terrain is on.
@@ -961,10 +968,10 @@ impl Renderer {
     }
 
     /// Redraws these terrain tiles' drape slots this frame, each at its
-    /// drape zoom: their drape placements are in the scene, and every
-    /// draped node's paint at that zoom was set
+    /// drape zoom, in the stacks given: their drape placements are in the
+    /// scene, and every draped node's paint at that zoom was set
     /// ([`set_drape_paint`](Self::set_drape_paint)).
-    pub fn redraw_drape(&mut self, tile_slots: &[(u32, u8)]) {
+    pub fn redraw_drape(&mut self, tile_slots: &[(u32, u8, &[u8])]) {
         if let Some(terrain) = &mut self.terrain {
             terrain.redraw(tile_slots);
         }
@@ -1026,26 +1033,11 @@ impl Renderer {
         true
     }
 
-    /// This frame's terrain tiles, and where each shaded hillshade reads
-    /// their slopes: `slopes(node, i)` for each quarter of tile `i`, west
-    /// to east, then north to south.
-    pub fn set_terrain_tiles(
-        &mut self,
-        gpu: &mut dyn Gpu,
-        tiles: &[TerrainTile],
-        slopes: impl Fn(u32, usize) -> [Option<TerrainSlopes>; 4],
-    ) {
-        let Some(terrain) = &mut self.terrain else {
-            return;
-        };
-        terrain.set_tiles(gpu, tiles);
-        let words: Vec<u32> = (self.terrain_layers.iter())
-            .filter_map(|l| l.shade)
-            .flat_map(|node| (0..tiles.len()).map(move |i| (node, i)))
-            .flat_map(|(node, i)| slopes(node, i))
-            .flat_map(|quarter| self.tiles.shade_words(quarter))
-            .collect();
-        terrain.set_shade_tiles(gpu, &words);
+    /// This frame's terrain tiles.
+    pub fn set_terrain_tiles(&mut self, gpu: &mut dyn Gpu, tiles: &[TerrainTile]) {
+        if let Some(terrain) = &mut self.terrain {
+            terrain.set_tiles(gpu, tiles);
+        }
     }
 
     fn node_uniform(&self, node: u32) -> BindingResource {
@@ -1100,8 +1092,7 @@ impl Renderer {
     /// A page of tile textures, `size` texels per tile, for image nodes to
     /// bind.
     pub fn create_page(&mut self, gpu: &mut dyn Gpu, kind: PageKind, size: [u32; 2]) -> PageId {
-        self.images
-            .create_page(gpu, kind, size, &mut self.downsampler)
+        self.images.create_page(gpu, kind, size)
     }
 
     /// Destroys a page. Nodes that bind it must be rebound or replaced.
@@ -1332,7 +1323,9 @@ impl Renderer {
             }
             let family = node.family;
             if node.shades_on_terrain() {
-                // The terrain pass shades it.
+                // Its slopes into the drape atlas, which the terrain pass
+                // lights.
+                self.images.make_slopes(gpu);
                 continue;
             }
             if node.stack.is_some() {
@@ -1411,7 +1404,9 @@ impl Renderer {
         {
             out.extend(terrain.pipelines());
         }
-        if node.stack.is_some()
+        if node.shades_on_terrain() {
+            out.extend(self.images.slopes_pipeline().map(PipelineId::from));
+        } else if node.stack.is_some()
             && let Some(d) = self.drape_pipelines.as_ref()
         {
             out.extend(
@@ -1752,9 +1747,9 @@ impl Renderer {
             Some(terrain) => terrain.pending_zooms().to_vec(),
             None => Vec::new(),
         };
-        let drape: Vec<RenderBundleId> = zooms
+        let drape: Vec<(u8, RenderBundleId)> = zooms
             .into_iter()
-            .filter_map(|zoom| self.drape_bundle(gpu, frame, zoom))
+            .filter_map(|zoom| Some((zoom, self.drape_bundle(gpu, frame, zoom)?)))
             .collect();
 
         let mut passes = Vec::with_capacity(3);
@@ -1823,13 +1818,12 @@ impl Renderer {
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
             let depth = self.extrusions.depth().expect("sized above");
             let b = self.scene.buffers();
-            // Shaded hillshades draw once their slopes can be prepared,
-            // with their mip levels.
-            let prepared = self.images.prepare_ready(gpu) && self.downsampler.ready(gpu);
+            // Shaded hillshades light their slopes' slots: blank until
+            // they draw there.
             let shades: Vec<Option<BindGroupId>> = (self.terrain_layers.iter())
                 .map(|l| {
-                    let node = &self.nodes[l.shade? as usize];
-                    (prepared && node.cull.visible).then_some(node.group)
+                    let node = &self.nodes[l.shade?.0 as usize];
+                    node.cull.visible.then_some(node.group)
                 })
                 .collect();
             stats.draws += terrain.passes(
@@ -2084,6 +2078,7 @@ impl Renderer {
             .as_ref()
             .filter(|_| scene != self.draw_group && self.target.color != DRAPE_FORMAT);
         let pipeline = match (drape, node.family.is_image()) {
+            _ if node.shades_on_terrain() => self.images.slopes_pipeline(),
             (Some(d), true) => d.images.get(node.family),
             (Some(d), false) => d.paint.get(node.family),
             (None, true) => self.images.pipeline(node.family),

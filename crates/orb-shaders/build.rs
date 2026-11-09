@@ -101,7 +101,6 @@ mod reflect {
         ("Atmosphere", "atmosphere"),
         ("Terrain", "terrain"),
         ("TerrainTile", "terrain_tile"),
-        ("ShadeTile", "shade_tile"),
         ("Job", "prepare_job"),
         ("Candidate", "candidate"),
     ];

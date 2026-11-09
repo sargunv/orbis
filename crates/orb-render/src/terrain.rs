@@ -4,14 +4,15 @@
 //!
 //! Each terrain tile has a block of drape slots, one per drape stack (a run
 //! of draped layers between layers that draw in 3D or on screen, or a
-//! hillshade the terrain shades). Slots are squares of one mipmapped
-//! atlas, sized to the slots in use: a new one takes the kept slots'
-//! texels, so none redraws for it. A frame redraws only the slots the
-//! runtime marks: their drape placements, the draped nodes' only
-//! candidates, map them into the atlas, so one pass redraws them all,
-//! replaying a bundle of the draped nodes per drape zoom among them, then
-//! a compute pass downsamples their mip levels. Each terrain layer (a stack, or two around a hillshade shaded
-//! between them from the frame's bearing) draws into a texture of its own
+//! hillshade the terrain shades, whose stack holds its unlit slopes).
+//! Slots are squares of one mipmapped atlas, sized to the slots in use: a
+//! new one takes the kept slots' texels, so none redraws for it. A frame
+//! redraws only the slots the runtime marks: their drape placements, the
+//! draped nodes' only candidates, map them into the atlas, so one pass
+//! redraws them all, replaying a bundle of the draped nodes per drape zoom
+//! among them, then a compute pass downsamples their mip levels. Each
+//! terrain layer (a stack, or two around a hillshade lit between them from
+//! its slopes' stack and the frame's bearing) draws into a texture of its own
 //! with the depth extrusions share, composited in the map at its place.
 
 use crate::TargetFormat;
@@ -84,7 +85,7 @@ fn grid_step(tile_px: f32) -> u32 {
 pub const TERRAIN_EXTENT: f32 = 8192.0;
 const NO_DEM: u32 = u32::MAX;
 const NONE: u32 = u32::MAX;
-use orb_shaders::layout::{shade_tile, terrain as params, terrain_tile};
+use orb_shaders::layout::{terrain as params, terrain_tile};
 /// Uniform slices are 256-byte aligned on every backend.
 const UNIFORM_STRIDE: u64 = 256;
 
@@ -114,6 +115,9 @@ pub struct TerrainTile {
     pub slot: u32,
     /// On a globe, where it lies on the sphere.
     pub globe: Option<TerrainGlobe>,
+    /// Latitudes of its top and bottom edges, in degrees, which a shaded
+    /// hillshade's slopes shrink by.
+    pub latitudes: [f32; 2],
 }
 
 /// What one terrain draw composites in the map: a stack's slots, or the
@@ -121,19 +125,9 @@ pub struct TerrainTile {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TerrainLayer {
     pub(crate) below: Option<u8>,
-    /// The hillshade node, which draws no slots.
-    pub(crate) shade: Option<u32>,
+    /// The hillshade node, and the stack its unlit slopes draw into.
+    pub(crate) shade: Option<(u32, u8)>,
     pub(crate) above: Option<u8>,
-}
-
-/// Where a shaded hillshade reads a quarter of a terrain tile's slopes: an
-/// image tile of its source, and the quarter's uv → that tile's uv as
-/// `uv · scale + offset`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TerrainSlopes {
-    pub tile: crate::GpuTile,
-    pub offset: [f32; 2],
-    pub scale: f32,
 }
 
 /// A terrain tile on a globe: its patches in
@@ -180,6 +174,20 @@ impl DrapeLayout {
     }
 }
 
+/// Sorted atlas slots as runs side by side in a row of an atlas
+/// `columns` slots wide: `[column, row, slots]`.
+fn slot_runs(slots: &[u32], columns: u32) -> Vec<[u32; 3]> {
+    let mut runs: Vec<[u32; 3]> = Vec::new();
+    for &slot in slots {
+        let (x, y) = (slot % columns, slot / columns);
+        match runs.last_mut() {
+            Some(run) if run[1] == y && run[0] + run[2] == x => run[2] += 1,
+            _ => runs.push([x, y, 1]),
+        }
+    }
+    runs
+}
+
 #[derive(Debug)]
 struct Atlas {
     /// One layer, mipmapped.
@@ -217,9 +225,6 @@ pub(crate) struct Terrain {
     tile_capacity: u32,
     tile_count: u32,
     params: BufferId,
-    /// Shaded hillshades' slope tiles, each's for every terrain tile.
-    shade_tiles: BufferId,
-    shade_capacity: u64,
     /// The terrain layers, and each's group over its slice of
     /// `stack_uniforms`, made for as many as the style has.
     layers: Vec<TerrainLayer>,
@@ -240,8 +245,9 @@ pub(crate) struct Terrain {
     occlusion_pipeline: Option<RenderPipelineId>,
     target_size: [u32; 2],
     target_samples: u32,
-    /// Atlas slots to redraw this frame, and the drape zooms they draw at.
-    pending: Vec<u32>,
+    /// Atlas slots to redraw this frame with the drape zoom each draws at,
+    /// and those zooms.
+    pending: Vec<(u32, u8)>,
     pending_zooms: Vec<u8>,
     pub(crate) paint: Option<TerrainPaint>,
     /// The atmosphere's uniform, for fog.
@@ -277,7 +283,12 @@ impl Terrain {
             label: "terrain",
             entries: &[
                 uniform(0, vf),
-                storage(1),
+                // Terrain tiles: a shaded hillshade reads their latitudes.
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: vf,
+                    ty: BindingType::Storage { read_only: true },
+                },
                 storage(2),
                 BindGroupLayoutEntry {
                     binding: 3,
@@ -304,11 +315,6 @@ impl Terrain {
                 uniform(7, vf),
                 // The scene's property arena: globe patches.
                 storage(8),
-                BindGroupLayoutEntry {
-                    binding: 9,
-                    visibility: fs,
-                    ty: BindingType::Storage { read_only: true },
-                },
             ],
         });
         let stack_layout = gpu.create_bind_group_layout(&BindGroupLayoutDesc {
@@ -391,12 +397,6 @@ impl Terrain {
             tile_capacity: 64,
             tile_count: 0,
             params,
-            shade_tiles: gpu.create_buffer(&BufferDesc {
-                label: "terrain shade tiles",
-                size: 64 * shade_tile::WORDS as u64 * 4,
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            }),
-            shade_capacity: 64,
             layers: Vec::new(),
             stack_groups: Vec::new(),
             stack_uniforms: None,
@@ -469,14 +469,10 @@ impl Terrain {
             self.stack_uniforms = Some(buffer);
         }
         let buffer = self.stack_uniforms.expect("made above");
-        let mut shades = 0;
         for (i, layer) in layers.iter().enumerate() {
             let stack = |s: Option<u8>| s.map_or(NONE, u32::from);
-            let shade = layer.shade.map_or(NONE, |_| {
-                shades += 1;
-                shades - 1
-            });
-            let words = [stack(layer.below), stack(layer.above), shade, 0];
+            let slopes = stack(layer.shade.map(|(_, s)| s));
+            let words = [stack(layer.below), stack(layer.above), slopes, 0];
             gpu.write_buffer(
                 buffer,
                 UNIFORM_STRIDE * i as u64,
@@ -484,25 +480,6 @@ impl Terrain {
             );
         }
         self.layers = layers.to_vec();
-    }
-
-    /// The shaded hillshades' slope tiles: a `ShadeTile` per quarter of
-    /// a terrain tile, each hillshade's after the one before.
-    pub(crate) fn set_shade_tiles(&mut self, gpu: &mut dyn Gpu, words: &[u32]) {
-        let entries = (words.len() / shade_tile::WORDS) as u64;
-        if entries > self.shade_capacity {
-            gpu.destroy_buffer(self.shade_tiles);
-            self.shade_capacity = entries.next_power_of_two();
-            self.shade_tiles = gpu.create_buffer(&BufferDesc {
-                label: "terrain shade tiles",
-                size: self.shade_capacity * shade_tile::WORDS as u64 * 4,
-                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            });
-            self.forget_group(gpu);
-        }
-        if !words.is_empty() {
-            gpu.write_buffer(self.shade_tiles, 0, bytemuck::cast_slice(words));
-        }
     }
 
     /// Sizes the atlas for `tile_slots` blocks of `stacks` slots
@@ -641,11 +618,14 @@ impl Terrain {
         self.group.take().map(|(group, _)| group).release(gpu);
     }
 
-    /// Redraws tile slots' every stack this frame, each at its drape zoom.
-    pub(crate) fn redraw(&mut self, tile_slots: &[(u32, u8)]) {
+    /// Redraws tile slots' stacks this frame: per tile slot, its drape
+    /// zoom and the stacks to redraw.
+    pub(crate) fn redraw(&mut self, tile_slots: &[(u32, u8, &[u8])]) {
         let stacks = self.layout_state.stacks;
-        for &(tile, zoom) in tile_slots {
-            self.pending.extend((0..stacks).map(|s| tile * stacks + s));
+        for &(tile, zoom, redrawn) in tile_slots {
+            let slots = (redrawn.iter().map(|&s| u32::from(s))).filter(|&s| s < stacks);
+            self.pending
+                .extend(slots.map(|s| (tile * stacks + s, zoom)));
             self.pending_zooms.push(zoom);
         }
         self.pending_zooms.sort_unstable();
@@ -689,6 +669,7 @@ impl Terrain {
                         .u(n::GLOBE_BASE, &[g.warp.base()]);
                     b.u(n::GLOBE_CELLS, &[g.warp.cells()]).u(n::POLES, &[poles]);
                 }
+                b.f(n::LATITUDES, &t.latitudes);
                 b.0
             })
             .collect();
@@ -895,7 +876,7 @@ impl Terrain {
         &mut self,
         gpu: &mut dyn Gpu,
         (frame, props): (BufferId, BufferId),
-        (drape, shades): (&[RenderBundleId], &[Option<BindGroupId>]),
+        (drape, shades): (&[(u8, RenderBundleId)], &[Option<BindGroupId>]),
         (depth, depth_store): (TextureId, StoreOp),
         downsampler: &crate::downsample::Downsampler,
         passes: &mut Vec<Pass>,
@@ -917,7 +898,7 @@ impl Terrain {
             self.pending.dedup();
             let columns = self.layout_state.columns;
             let regions: Vec<[u32; 4]> = (self.pending.iter())
-                .map(|&s| {
+                .map(|&(s, _)| {
                     [
                         0,
                         s % columns * DRAPE_SLOT_PX,
@@ -939,7 +920,22 @@ impl Terrain {
                 ]
             };
             let mut commands = quads(self.clear, atlas.clear);
-            commands.push(RenderCommand::ExecuteBundles(drape.to_vec()));
+            // Each zoom's bundle replays once per run of its redrawn slots
+            // side by side, scissored to it: what a coarse tile standing in
+            // draws spans far more than the slots it draws into (all of the
+            // atlas), and would otherwise be rasterized there only to be
+            // discarded.
+            for &(zoom, bundle) in drape {
+                let slots: Vec<u32> = (self.pending.iter())
+                    .filter(|p| p.1 == zoom)
+                    .map(|p| p.0)
+                    .collect();
+                for [x, y, width] in slot_runs(&slots, columns) {
+                    let px = DRAPE_SLOT_PX;
+                    commands.push(RenderCommand::SetScissor([x * px, y * px, width * px, px]));
+                    commands.push(RenderCommand::ExecuteBundles(vec![bundle]));
+                }
+            }
             passes.push(Pass::Render(RenderPass {
                 label: "drape".into(),
                 colors: vec![ColorAttachment {
@@ -1014,10 +1010,6 @@ impl Terrain {
                         BindGroupEntry {
                             binding: 8,
                             resource: BindingResource::buffer(props),
-                        },
-                        BindGroupEntry {
-                            binding: 9,
-                            resource: BindingResource::buffer(self.shade_tiles),
                         },
                     ],
                 });
@@ -1276,13 +1268,7 @@ impl crate::release::Release for Terrain {
         self.forget_group(gpu);
         let layouts = (self.layout, self.stack_layout, self.clear_layout);
         let pipelines = (self.pipelines, self.clear, self.occlusion_pipeline);
-        let buffers = (
-            self.grid,
-            self.grid_indices,
-            self.tiles,
-            self.params,
-            self.shade_tiles,
-        );
+        let buffers = (self.grid, self.grid_indices, self.tiles, self.params);
         (layouts, pipelines, buffers, self.stack_uniforms).release(gpu);
         (self.stack_groups, self.linear, self.targets).release(gpu);
     }
@@ -1291,6 +1277,15 @@ impl crate::release::Release for Terrain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redrawn_slots_replay_in_runs_along_rows() {
+        // Four columns: 2, 3 run together; 4 starts the next row.
+        assert_eq!(
+            slot_runs(&[0, 2, 3, 4, 5, 7], 4),
+            [[0, 0, 1], [2, 0, 2], [0, 1, 2], [3, 1, 1]]
+        );
+    }
 
     #[test]
     fn the_grid_has_cells_and_skirts() {

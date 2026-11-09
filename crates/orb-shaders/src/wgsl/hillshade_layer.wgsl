@@ -19,3 +19,18 @@ fn fs_hillshade(in: ImageOut) -> @location(0) vec4<f32> {
     let latitude = mix(in.latitudes.x, in.latitudes.y, v_pos.y);
     return hillshade_color(pixel, latitude);
 }
+
+// A hillshade the terrain shades: its slopes, unlit, into its drape stack,
+// where the terrain pass lights them from the frame's bearing
+// (`terrain_shade.wgsl`). Premultiplied, so mip levels and slot edges
+// that average with blank texels keep the slopes in proportion.
+@fragment
+fn fs_hillshade_slopes(in: ImageOut) -> @location(0) vec4<f32> {
+    if image_clipped(in) {
+        discard;
+    }
+    let v_pos = image_pos(in) / IMAGE_EXTENT;
+    let size = vec2<f32>(textureDimensions(images));
+    let pixel = sample_image(in, (v_pos * (size - 2.0) + 1.0) / size, node.nearest);
+    return vec4<f32>(pixel.rg, 0.0, 1.0);
+}

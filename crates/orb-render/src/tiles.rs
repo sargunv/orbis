@@ -26,7 +26,6 @@ use orb_layout::{Chunk, TileBox};
 
 use crate::Renderer;
 use crate::image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
-use crate::terrain::TerrainSlopes;
 
 /// A tile the renderer holds, from an upload; [`Renderer::release_tile`]
 /// frees it.
@@ -203,25 +202,6 @@ impl Tiles {
         self.sources.get(&source).map(|s| s.page)
     }
 
-    /// A shaded hillshade's words for a terrain tile reading `slopes`
-    /// (`terrain_shade.wgsl`'s `ShadeTile`): its offset, the slope tile's
-    /// latitudes, its scale and layer, or no layer.
-    pub(crate) fn shade_words(&self, slopes: Option<TerrainSlopes>) -> Vec<u32> {
-        use orb_shaders::layout::shade_tile as n;
-        let mut b = orb_shaders::Block::new(n::WORDS);
-        let found = slopes.and_then(|s| {
-            let entry = self.entries.get(s.tile.0 as usize)?.as_ref()?;
-            Some((s, entry.image.as_ref()?.layer, entry.key.tile))
-        });
-        let Some((s, layer, tile)) = found else {
-            return b.u(n::LAYER, &[u32::MAX]).0.clone();
-        };
-        let latitudes = [tile.row, tile.row + 1].map(|row| latitude(tile.z, row));
-        b.f(n::OFFSET, &s.offset).f(n::LATITUDES, &latitudes);
-        b.f(n::SCALE, &[s.scale]).u(n::LAYER, &[layer]);
-        b.0
-    }
-
     fn layer_of(&self, source: u32, tile: TileIndex) -> Option<u32> {
         let found = *self.sources.get(&source)?.tiles.get(&tile)?;
         self.entry(found).image.as_ref().map(|i| i.layer)
@@ -295,9 +275,7 @@ impl Renderer {
         let page = match self.tiles.page(key.source) {
             Some(page) => page,
             None => {
-                let page = self
-                    .images
-                    .create_page(gpu, kind, size, &mut self.downsampler);
+                let page = self.images.create_page(gpu, kind, size);
                 for node in &mut self.nodes {
                     if node.source == Some(key.source)
                         && let Some(image) = &mut node.image
@@ -878,7 +856,7 @@ impl Renderer {
     ) -> Result<(), OutOfSpace> {
         let image = entry.image.as_ref().expect("image tiles hold an image");
         let tile = entry.key.tile;
-        let [top, bottom] = [tile.row, tile.row + 1].map(|row| latitude(tile.z, row));
+        let [top, bottom] = tile_latitudes(tile);
         let mut row = [0; IMAGE_ROW_WORDS];
         row[..3].copy_from_slice(&[image.layer, top.to_bits(), bottom.to_bits()]);
         row[3..].copy_from_slice(&image.fade.words());
@@ -1085,13 +1063,16 @@ fn offset_tile(tile: TileIndex, (dx, dy): (i32, i32)) -> Option<TileIndex> {
     Some(TileIndex::new(tile.z, col as u32, row as u32))
 }
 
-/// The latitude of a row edge of the Web Mercator tile grid, in degrees.
-fn latitude(z: u8, row: u32) -> f32 {
-    let n = (1u64 << z) as f64;
-    ((1.0 - 2.0 * f64::from(row) / n) * std::f64::consts::PI)
-        .sinh()
-        .atan()
-        .to_degrees() as f32
+/// The latitudes of a Web Mercator tile's top and bottom edges, in
+/// degrees, which hillshade slopes shrink by.
+pub fn tile_latitudes(tile: TileIndex) -> [f32; 2] {
+    let n = (1u64 << tile.z) as f64;
+    [tile.row, tile.row + 1].map(|row| {
+        ((1.0 - 2.0 * f64::from(row) / n) * std::f64::consts::PI)
+            .sinh()
+            .atan()
+            .to_degrees() as f32
+    })
 }
 
 #[cfg(test)]

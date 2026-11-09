@@ -8,7 +8,8 @@
 // Drape slots are squares of the drape atlas, `slot_px` texels per side,
 // `columns` per row; a tile's slot for stack `s` is `slot * stacks + s`.
 // A terrain layer draws a stack's slots, or two stacks' around a
-// hillshade it shades between them (`terrain_shade.wgsl`).
+// hillshade it shades between them from a third's slopes
+// (`terrain_shade.wgsl`).
 // Mip levels never mix slots, and samples keep to the slot at the level
 // they read, as a texture of its own would clamp to its edge.
 
@@ -31,6 +32,9 @@ struct TerrainTile {
     globe_base: u32,
     globe_cells: u32,
     poles: u32,
+    // Latitudes of its top and bottom edges, in degrees, for a hillshade
+    // it shades.
+    latitudes: vec2<f32>,
 };
 
 struct Terrain {
@@ -49,11 +53,11 @@ struct Terrain {
 };
 
 // A terrain layer: the stacks drawn below and above its shaded hillshade,
-// or NO_STACK, and that hillshade's index among the shaded ones.
+// and the stack holding that hillshade's slopes, or NO_STACK.
 struct Layer {
     below: u32,
     above: u32,
-    shade: u32,
+    slopes: u32,
     _pad: u32,
 };
 

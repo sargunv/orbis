@@ -531,6 +531,9 @@ impl WgpuGpu {
             RenderCommand::ExecuteBundles(ids) => {
                 pass.execute_bundles(ids.iter().map(|id| &self.render_bundles[id.0]))
             }
+            &RenderCommand::SetScissor([x, y, width, height]) => {
+                pass.set_scissor(x, y, width, height)
+            }
         }
     }
 }
@@ -550,6 +553,7 @@ trait RenderEncoder<'p> {
     fn draw_indirect(&mut self, buffer: &'p wgpu::Buffer, offset: u64);
     fn draw_indexed_indirect(&mut self, buffer: &'p wgpu::Buffer, offset: u64);
     fn execute_bundles(&mut self, bundles: impl Iterator<Item = &'p wgpu::RenderBundle>);
+    fn set_scissor(&mut self, x: u32, y: u32, width: u32, height: u32);
 }
 
 impl<'p> RenderEncoder<'p> for wgpu::RenderPass<'_> {
@@ -582,6 +586,9 @@ impl<'p> RenderEncoder<'p> for wgpu::RenderPass<'_> {
     fn execute_bundles(&mut self, bundles: impl Iterator<Item = &'p wgpu::RenderBundle>) {
         wgpu::RenderPass::execute_bundles(self, bundles);
     }
+    fn set_scissor(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        wgpu::RenderPass::set_scissor_rect(self, x, y, width, height);
+    }
 }
 
 impl<'p> RenderEncoder<'p> for wgpu::RenderBundleEncoder<'p> {
@@ -613,6 +620,9 @@ impl<'p> RenderEncoder<'p> for wgpu::RenderBundleEncoder<'p> {
     }
     fn execute_bundles(&mut self, _: impl Iterator<Item = &'p wgpu::RenderBundle>) {
         panic!("render bundles cannot execute bundles");
+    }
+    fn set_scissor(&mut self, _: u32, _: u32, _: u32, _: u32) {
+        panic!("render bundles cannot set a scissor");
     }
 }
 

@@ -123,10 +123,11 @@ impl Map {
         }) {
             return Some(pyramid.plan(&[]));
         }
-        // A hillshade the terrain shades reads the slopes over each terrain
-        // tile's quarters (`terrain::slopes`): its source covers those,
-        // whatever detail the terrain's cover keeps, as its other layers,
-        // all draped, draw into the terrain tiles' slots from any cover.
+        // A hillshade the terrain shades drapes its slopes: its source
+        // covers each terrain tile's quarters, whatever detail the
+        // terrain's cover keeps, so that a slot holds the source's detail
+        // at its drape zoom; its other layers, all draped, draw into the
+        // terrain tiles' slots from any cover.
         let nodes = || (plan.nodes.iter().enumerate()).filter(|(_, n)| n.source == index);
         let shaded = nodes().any(|(i, _)| renderer.shades_on_terrain(i as u32))
             && nodes().all(|(_, n)| n.family.is_draped());
@@ -290,6 +291,14 @@ impl Map {
                 .iter()
                 .any(|n| n.source == index && n.family.is_draped())
         });
+        // The drape stacks its layers draw into: its rows go into those
+        // slots alone.
+        let mut stacks: Vec<u8> = (style.worker.plan().nodes.iter().enumerate())
+            .filter(|(_, n)| n.source == index)
+            .filter_map(|(i, _)| renderer.drape_stack(i as u32))
+            .collect();
+        stacks.sort_unstable();
+        stacks.dedup();
         let terrain = style.terrain.as_ref();
         let source_key = style.worker.plan().sources[index].key;
         let SourceState::Ready {
@@ -452,7 +461,9 @@ impl Map {
                 };
                 let mut rows: Vec<TileRow> = draws.iter().flat_map(|d| map_rows(d)).collect();
                 if let Some(drape) = draped {
-                    draws.iter().for_each(|d| drape.rows(tms, d, at, &mut rows));
+                    draws
+                        .iter()
+                        .for_each(|d| drape.rows(tms, d, (at, &stacks), &mut rows));
                 }
                 report.tiles_drawn += rows.len() as u32;
                 if renderer.place(resident.gpu, extent, &rows).is_err() {
@@ -569,8 +580,8 @@ impl Map {
     /// redraw, by what is draped under each tile. Nothing
     /// here depends on the camera but which tiles there are, and the
     /// bearing under a viewport-anchored translate. Viewport-anchored
-    /// hillshades turn with the map too: the terrain pass shades them
-    /// between drape stacks, from the frame's bearing.
+    /// hillshades turn with the map too: they drape their slopes, which
+    /// the terrain pass lights from the frame's bearing.
     pub(crate) fn plan_drape(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -613,13 +624,7 @@ impl Map {
         let images_revision = atlas.revision();
         drop(images);
         let draped: Vec<usize> = (0..style.sources.len())
-            .filter(|&i| {
-                (plan.nodes.iter().enumerate()).any(|(index, n)| {
-                    n.source == i
-                        && n.family.is_draped()
-                        && !renderer.shades_on_terrain(index as u32)
-                })
-            })
+            .filter(|&i| (plan.nodes.iter()).any(|n| n.source == i && n.family.is_draped()))
             .collect();
         let period = self.surface.period();
         let sources = &style.sources;
@@ -651,9 +656,21 @@ impl Map {
         let drawn_tiles: HashMap<usize, HashSet<TileIndex>> = (draped.iter())
             .filter_map(|&i| Some((i, draws[i].as_ref()?.iter().map(|d| d.tile).collect())))
             .collect();
+        // Each draped source's stacks: a slot's stack redraws when what
+        // the sources drawing into it drape there changes.
+        let stacks = layout.stacks as usize;
+        let mut source_stacks = vec![Vec::new(); style.sources.len()];
+        for (index, node) in plan.nodes.iter().enumerate() {
+            if let (Some(stack), Some(stacks)) = (
+                renderer.drape_stack(index as u32),
+                source_stacks.get_mut(node.source),
+            ) {
+                stacks.push(usize::from(stack));
+            }
+        }
         let content = |t: orb_crs::CoveredTile| {
             let zoom = crate::terrain::drape_zoom(&surface, t.index);
-            let mut parts = Vec::new();
+            let mut parts = vec![Vec::new(); stacks];
             for &i in &draped {
                 let (
                     Some(draws),
@@ -686,13 +703,26 @@ impl Map {
                             (drawn.contains(&n) && pyramid.get(n).is_some()).then_some(0)
                         })
                     });
-                    let regions = draw.regions.clone();
-                    parts.push((i, draw.tile, draw.wrap, regions, meshes, held, borders));
+                    let part = (
+                        i,
+                        draw.tile,
+                        draw.wrap,
+                        &draw.regions,
+                        meshes,
+                        held,
+                        borders,
+                    );
+                    let part = crate::terrain::hash(part);
+                    for &stack in source_stacks[i].iter().filter(|&&s| s < stacks) {
+                        parts[stack].push(part);
+                    }
                 }
             }
             let paint = paint.drape_key(zoom, bearing);
             let states = style.states.zoom_key(zoom);
-            crate::terrain::hash((revision, parts, zoom, paint, states))
+            (parts.into_iter())
+                .map(|parts| crate::terrain::hash((revision, parts, zoom, paint, states)))
+                .collect()
         };
         let globe_warps = &mut self.globe_warps;
         let mut globe = |tile: TileIndex| {
@@ -706,36 +736,12 @@ impl Map {
         };
         let terrain = style.terrain.as_mut().expect("checked above");
         let (tiles, redraw) = terrain.plan(&surface, view, (layout, &moves), &content, &mut globe);
-        // A shaded hillshade draws where its layer does at the tile's
-        // drape zoom, as draped layers do.
-        let covered = &terrain.tiles;
-        let drawn: HashMap<usize, HashSet<TileIndex>> = (plan.nodes.iter().enumerate())
-            .filter(|&(index, _)| renderer.shades_on_terrain(index as u32))
-            .map(|(_, n)| {
-                let tiles = draws[n.source].iter().flatten().map(|d| d.tile).collect();
-                (n.source, tiles)
+        renderer.set_terrain_tiles(gpu, &tiles);
+        let slots: Vec<(u32, u8, &[u8])> = (redraw.iter())
+            .map(|(tile, slot, stacks)| {
+                let zoom = crate::terrain::drape_zoom(&surface, tile.index);
+                (*slot, zoom, &stacks[..])
             })
-            .collect();
-        let slopes = |node: u32, i: usize| {
-            let node = &plan.nodes[node as usize];
-            let tile = covered[i].index;
-            let zoom = crate::terrain::drape_zoom(&surface, tile);
-            match (&sources[node.source], drawn.get(&node.source)) {
-                (
-                    SourceState::Ready {
-                        endpoint, pyramid, ..
-                    },
-                    Some(drawn),
-                ) if plan.style.layers[node.layer].is_visible_at(f64::from(zoom)) => tile
-                    .children()
-                    .map(|q| crate::terrain::slopes((endpoint, pyramid), drawn, |r| r.gpu, q)),
-                _ => [None; 4],
-            }
-        };
-        renderer.set_terrain_tiles(gpu, &tiles, slopes);
-        let slots: Vec<(u32, u8)> = redraw
-            .iter()
-            .map(|&(tile, slot)| (slot, crate::terrain::drape_zoom(&surface, tile.index)))
             .collect();
         renderer.redraw_drape(&slots);
         Some(DrapePlan {
@@ -828,7 +834,7 @@ impl Map {
             .collect();
         report.tiles_drawn += rows.len() as u32;
         // Into each slot, the background's quad on its terrain tile.
-        for (drape, (terrain, _)) in drape
+        for (drape, (terrain, _, _)) in drape
             .iter()
             .flat_map(|d| d.redraw.iter().map(move |r| (d, r)))
         {
@@ -838,7 +844,9 @@ impl Map {
                 regions: vec![terrain.index],
             };
             let tile_zoom = tms.style_zoom(terrain.index);
-            drape.rows(tms, &draw, Placement { tile_zoom, ..at }, &mut rows);
+            let stacks: Vec<u8> = (0..drape.layout.stacks as u8).collect();
+            let at = (Placement { tile_zoom, ..at }, &stacks[..]);
+            drape.rows(tms, &draw, at, &mut rows);
         }
         if renderer.place(tile, 8192, &rows).is_err() {
             self.warnings
@@ -854,18 +862,28 @@ pub(crate) struct DrapePlan {
     /// The surface's matrix set, which terrain tiles are of.
     pub(crate) surface: TileMatrixSet,
     pub(crate) layout: orb_render::DrapeLayout,
-    pub(crate) redraw: Vec<(orb_crs::CoveredTile, u32)>,
+    pub(crate) redraw: Vec<crate::terrain::Redraw>,
     /// The farthest a draped fill or line is translated, logical pixels.
     pub(crate) reach_px: f64,
 }
 
 impl DrapePlan {
     /// The drape rows of `draw`, placed `at`, into every redrawn slot it
-    /// overlaps.
-    fn rows(&self, tms: &TileMatrixSet, draw: &Draw, at: Placement, out: &mut Vec<TileRow>) {
+    /// overlaps: into the slots of `stacks`, those its layers draw into.
+    fn rows(
+        &self,
+        tms: &TileMatrixSet,
+        draw: &Draw,
+        (at, stacks): (Placement, &[u8]),
+        out: &mut Vec<TileRow>,
+    ) {
         let drawn = crate::terrain::Drawn::of(tms, draw, at.frame, at.period);
-        for &(terrain, slot) in &self.redraw {
-            if drawn.overlaps(&self.surface, terrain, self.reach_px) {
+        for (terrain, slot, redrawn) in &self.redraw {
+            let (terrain, slot) = (*terrain, *slot);
+            let stacks: Vec<u8> = (stacks.iter().copied())
+                .filter(|s| redrawn.contains(s))
+                .collect();
+            if !stacks.is_empty() && drawn.overlaps(&self.surface, terrain, self.reach_px) {
                 let zoom = f64::from(crate::terrain::drape_zoom(&self.surface, terrain.index));
                 let map = placements(tms, draw, Placement { zoom, ..at });
                 crate::terrain::drape_rows(
@@ -873,7 +891,7 @@ impl DrapePlan {
                     drawn,
                     at.extent,
                     (terrain, slot),
-                    &self.layout,
+                    (&self.layout, &stacks),
                     self.reach_px,
                     map,
                     out,

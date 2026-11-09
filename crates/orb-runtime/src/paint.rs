@@ -179,11 +179,18 @@ pub(crate) fn drape(
             .filter(|(_, n)| n.family.is_draped())
         {
             let layer = &plan.style.layers[node.layer];
-            // A shaded hillshade draws no slots.
-            let paint = (layer.is_visible_at(at.zoom) && !renderer.shades_on_terrain(index as u32))
+            // A shaded hillshade drapes its slopes, unlit: the terrain pass
+            // lights them from the frame's bearing, so its slots don't
+            // turn with it.
+            let shaded = renderer.shades_on_terrain(index as u32);
+            let at = PaintAt {
+                bearing: if shaded { 0.0 } else { at.bearing },
+                ..at
+            };
+            let paint = (layer.is_visible_at(at.zoom))
                 .then(|| node_paint(gpu, renderer, (style, plan), index as u32, at, atlas))
                 .flatten();
-            turns |= paint.is_some() && turns_with_bearing(layer, at.zoom);
+            turns |= paint.is_some() && !shaded && turns_with_bearing(layer, at.zoom);
             changed |= renderer.set_drape_paint(gpu, index as u32, zoom, paint.as_ref());
         }
         let drape = &mut style.paint.drape;

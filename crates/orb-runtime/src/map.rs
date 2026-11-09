@@ -1298,6 +1298,8 @@ impl Map {
         // A prepared frame leaves the terrain's cover and drape, whose
         // redraws are the drawn frame's, to the next one.
         let drawing = target.is_some();
+        // Slots redrawn: the next frame drops their drape placements.
+        let mut redrew = false;
         if self.style.is_some() {
             // Terrain's DEM and cover first: the sources cover over its
             // elevations, and drape over its tiles.
@@ -1320,6 +1322,7 @@ impl Map {
                 true => self.plan_drape(gpu, renderer, &view),
                 false => None,
             };
+            redrew = drape.as_ref().is_some_and(|d| !d.redraw.is_empty());
             if drawing {
                 self.place_background(
                     gpu,
@@ -1382,6 +1385,7 @@ impl Map {
             && self.pending.is_empty()
             && labels_settled;
         report.idle = report.loaded
+            && !redrew
             && !fading
             && !self.labels.fading(now)
             && !self.transitions.running()
@@ -2029,8 +2033,9 @@ impl Map {
             true => 2.0 * std::f64::consts::PI * 6_371_008.8 / zoom.max(0.0).exp2() / 5.0,
             false => 0.0,
         };
-        // Viewport-anchored hillshades turn with the map: the terrain pass
-        // shades them between drape stacks, which the cover's room counts.
+        // Viewport-anchored hillshades turn with the map: they drape their
+        // slopes into a stack of their own, which the cover's room counts,
+        // and the terrain pass lights them.
         for (index, node) in plan.nodes.iter().enumerate() {
             if node.family != Family::Hillshade {
                 continue;
@@ -2040,7 +2045,8 @@ impl Map {
                 .get(orb_style::HILLSHADE_ILLUMINATION_ANCHOR)
                 .evaluate(zoom)
                 == orb_style::IlluminationAnchor::Viewport;
-            // Shading reads its tiles as the surface's.
+            // Its source covers the terrain tiles' quarters, as the
+            // surface's tiles.
             let on_surface = matches!(&style.sources[node.source],
                 SourceState::Ready { endpoint, .. } if endpoint.tms == *self.surface.tms());
             renderer.set_shaded_on_terrain(gpu, index as u32, viewport && on_surface);

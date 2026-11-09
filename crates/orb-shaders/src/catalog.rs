@@ -203,6 +203,16 @@ pub const HILLSHADE_SHADER: Shader = Shader {
     compute: "",
 };
 
+/// A hillshade the terrain shades, drawing its unlit slopes into its
+/// drape stack.
+pub const HILLSHADE_SLOPES_SHADER: Shader = Shader {
+    label: "hillshade slopes",
+    parts: &[TYPES, DRAW, IMAGE, HILLSHADE, wgsl!("hillshade_layer")],
+    vertex: "vs_hillshade",
+    fragment: "fs_hillshade_slopes",
+    compute: "",
+};
+
 pub const COLOR_RELIEF_SHADER: Shader = Shader {
     label: "color relief",
     parts: &[TYPES, DRAW, IMAGE, DEM, COLOR_RELIEF],
@@ -316,6 +326,7 @@ pub const SHADERS: &[Shader] = &[
     HEATMAP_SHADER,
     RASTER_SHADER,
     HILLSHADE_SHADER,
+    HILLSHADE_SLOPES_SHADER,
     COLOR_RELIEF_SHADER,
     PREPARE_PAD_SHADER,
     PREPARE_SLOPE_SHADER,

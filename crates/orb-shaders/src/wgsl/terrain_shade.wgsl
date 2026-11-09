@@ -1,50 +1,22 @@
-// A terrain layer that shades a hillshade between its stacks:
-// lit from the frame's bearing on every frame, so no drape slot
-// turns with the map. The hillshade's node group is group 2: its paint
-// (`hillshade.wgsl`'s `node`) and its source's prepared slopes. Each
-// quarter of a terrain tile reads one slope tile (raster covers refine a
-// zoom deeper than terrain tiles): `shade_tiles[(shade * tiles + tile) * 4
-// + quarter]`, quarters west to east, then north to south.
+// A terrain layer that shades a hillshade between its stacks: lit from the
+// frame's bearing on every frame, so no drape slot turns with the map. The
+// hillshade draws its slopes, unlit, into a stack of their own
+// (`hillshade_layer.wgsl`'s `fs_hillshade_slopes`), from whatever tiles its
+// source draws there, as any draped layer does. Its node group is group 2:
+// its paint (`hillshade.wgsl`'s `node`).
 
-struct ShadeTile {
-    // Quarter uv → slope tile uv: `uv * scale + offset`.
-    offset: vec2<f32>,
-    // Latitudes of the slope tile's top and bottom edges, in degrees.
-    latitudes: vec2<f32>,
-    scale: f32,
-    // The slope tile's layer, or NO_SLOPES.
-    layer: u32,
-};
-
-const NO_SLOPES: u32 = 0xffffffffu;
-
-@group(0) @binding(9) var<storage, read> shade_tiles: array<ShadeTile>;
 @group(2) @binding(0) var<uniform> node: HillshadeNode;
-@group(2) @binding(1) var slopes: texture_2d_array<f32>;
-@group(2) @binding(2) var slope_linear: sampler;
-@group(2) @binding(3) var slope_nearest: sampler;
 
-// The hillshade at the fragment, from mipmapped slopes in the distance.
+// The hillshade at the fragment, from its slopes' slot: premultiplied by
+// how much of the footprint the source covers.
 fn shade_color(in: TerrainOut) -> vec4<f32> {
-    let ddx = dpdx(in.uv);
-    let ddy = dpdy(in.uv);
-    let q = min(vec2<u32>(in.uv * 2.0), vec2<u32>(1u));
-    let shade = shade_tiles[(layer.shade * terrain.tiles + in.tile.x) * 4u + q.x + 2u * q.y];
-    if shade.layer == NO_SLOPES {
+    let slopes = drape_color(in, layer.slopes);
+    if slopes.a < 0.5 / 255.0 {
         return vec4<f32>(0.0);
     }
-    let uv = (in.uv * 2.0 - vec2<f32>(q)) * shade.scale + shade.offset;
-    let size = vec2<f32>(textureDimensions(slopes));
-    let at = (uv * (size - 2.0) + 1.0) / size;
-    // Slope uv per terrain tile uv.
-    let k = 2.0 * shade.scale * (size - 2.0) / size;
-    var pixel: vec4<f32>;
-    if node.nearest != 0u {
-        pixel = textureSampleLevel(slopes, slope_nearest, at, shade.layer, 0.0);
-    } else {
-        pixel = textureSampleGrad(slopes, slope_linear, at, shade.layer, ddx * k, ddy * k);
-    }
-    return hillshade_color(pixel, mix(shade.latitudes.x, shade.latitudes.y, uv.y));
+    let pixel = vec4<f32>(slopes.rg / slopes.a, 1.0, 1.0);
+    let latitudes = terrain_tiles[in.tile.x].latitudes;
+    return hillshade_color(pixel, mix(latitudes.x, latitudes.y, in.uv.y)) * slopes.a;
 }
 
 @fragment

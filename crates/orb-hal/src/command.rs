@@ -133,4 +133,8 @@ pub enum RenderCommand {
     },
     /// Replays bundles; only valid in a pass, not inside a bundle.
     ExecuteBundles(Vec<RenderBundleId>),
+    /// Limits the draws after it, bundles' included, to a rectangle of
+    /// the targets in texels: `[x, y, width, height]`. Only valid in a
+    /// pass, not inside a bundle.
+    SetScissor([u32; 4]),
 }

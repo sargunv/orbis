@@ -520,7 +520,10 @@ fn an_alpine_gesture_draws_what_a_fresh_map_does() {
     let start = (Geodetic::new(7.95, 46.0), 11.2, 0.0, 30.0);
     let end = (Geodetic::new(7.85, 45.95), 12.4, 60.0, 75.0);
     let (alps, _dem) = alps();
-    assert_same("alps", both_ways(&alps, start, end, 30));
+    // The hillshade drapes its slopes: they round by where in the atlas
+    // their slot is, as the terrain gesture's lines do, a step in a channel
+    // at scattered pixels.
+    assert_within("alps", both_ways(&alps, start, end, 30), 1);
 }
 
 /// A view at rest over the Alps stays put: frames after idle cover the
@@ -579,7 +582,8 @@ fn every_terrain_view_fits_the_drape_atlas() {
     // Detail enough to compare: the DEM's 11 zooms overzoomed by 8.
     let start = (crest, 16.0, -120.0, 30.0);
     let end = (crest, 19.0, -167.1, 0.0);
-    assert_same("crest", both_ways(&alps, start, end, 20));
+    // A step at scattered pixels, as in the alpine gesture.
+    assert_within("crest", both_ways(&alps, start, end, 20), 1);
 }
 
 /// The terrain demo's Alps (live tiles), turned at a pitch of 72° with the
@@ -888,4 +892,54 @@ fn stable_labels_converge_and_stay_put() {
             "placing the view again ({i}) moved labels"
         );
     }
+}
+
+/// Ground that showed its hillshade keeps it while the terrain under it
+/// turns coarser: zoomed out half a level, the terrain's tiles there are a
+/// zoom coarser and their hillshade tiles haven't arrived, so the finer
+/// ones the hillshade drew before stand in, as they would on a flat map.
+/// The first frame after the zoom, before anything can arrive, shades the
+/// middle of the view (ground the first view showed) as the settled view
+/// does: no more of it is bare background.
+#[test]
+fn coarser_terrain_keeps_the_hillshade_it_drew() {
+    const GROUND: [u8; 3] = [0xd8, 0xe0, 0xc8];
+    let at = Geodetic::new(7.85, 45.95);
+    let (dem, _dir) = dem("relief", (7.82, 45.93, 7.88, 45.97), 15, |lon, lat| {
+        1500.0 + 400.0 * (lon * 900.0).sin() * (lat * 700.0).cos()
+    });
+    let dem = dem.trim_end_matches(',');
+    let style = format!(
+        r##"{{"version": 8, "sources": {{{dem}}},
+            "terrain": {{"source": "relief"}},
+            "layers": [
+              {{"id": "ground", "type": "background", "paint": {{"background-color": "#d8e0c8"}}}},
+              {{"id": "relief", "type": "hillshade", "source": "relief"}}
+            ]}}"##
+    );
+    // Bare ground in the middle half of the view, which the first view
+    // covers too.
+    let bare = |pixels: &[u8]| {
+        let (w, h) = (WIDTH as usize, HEIGHT as usize);
+        (h / 4..h * 3 / 4)
+            .flat_map(|y| (w / 4..w * 3 / 4).map(move |x| (y * w + x) * 4))
+            .filter(|&i| pixels[i..i + 3] == GROUND)
+            .count()
+    };
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    map.jump_to(&camera((at, 14.4, 0.0, 0.0)));
+    settle(&mut map, &mut target);
+    map.jump_to(&camera((at, 13.9, 0.0, 0.0)));
+    map.render(&mut target, 0.0).unwrap();
+    let first = bare(&target.read_pixels().unwrap());
+    settle(&mut map, &mut target);
+    let settled = bare(&target.read_pixels().unwrap());
+    let middle = WIDTH as usize * HEIGHT as usize / 4;
+    assert!(
+        first <= settled + middle / 100,
+        "{first} of {middle} pixels in the middle are bare in the first frame, {settled} once settled"
+    );
 }

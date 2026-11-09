@@ -16,7 +16,7 @@
 use crate::release::Release;
 use crate::scene::{PageTexture, Pixels, TilePage};
 use orb_hal::*;
-use orb_shaders::{COLOR_RELIEF_SHADER, HILLSHADE_SHADER, RASTER_SHADER};
+use orb_shaders::{COLOR_RELIEF_SHADER, HILLSHADE_SHADER, HILLSHADE_SLOPES_SHADER, RASTER_SHADER};
 
 use crate::{Family, OutOfSpace, TargetFormat};
 
@@ -124,7 +124,7 @@ struct Page {
     targets: Option<prepare::Targets>,
 }
 
-/// A raster page's or DEM slopes' mip bindings, for one revision of its
+/// A raster page's mip bindings, for one revision of its
 /// texture: views of each level, the downsampler's group per level after
 /// the first, and the regions they read (whole layers).
 #[derive(Debug)]
@@ -184,6 +184,8 @@ pub(crate) struct Images {
     relief_layout: BindGroupLayoutId,
     /// Raster, hillshade and color relief, made for their first node.
     pipelines: ImagePipelines,
+    /// Shaded hillshades' slopes into the drape atlas, made for the first.
+    slopes: Option<RenderPipelineId>,
     linear: SamplerId,
     nearest: SamplerId,
     /// Bound by nodes whose source has no page yet.
@@ -277,6 +279,7 @@ impl Images {
             image_layout,
             relief_layout,
             pipelines: ImagePipelines::default(),
+            slopes: None,
             linear,
             nearest,
             placeholder: placeholder_array,
@@ -322,6 +325,30 @@ impl Images {
         })
     }
 
+    /// Makes the pipeline shaded hillshades drape their slopes with, if
+    /// it isn't made.
+    pub(crate) fn make_slopes(&mut self, gpu: &mut dyn Gpu) -> RenderPipelineId {
+        let target = TargetFormat {
+            color: crate::DRAPE_FORMAT,
+            sample_count: 1,
+        };
+        let layouts = [self.draw_layout, self.image_layout];
+        *self.slopes.get_or_insert_with(|| {
+            crate::draw_pipeline(
+                gpu,
+                &HILLSHADE_SLOPES_SHADER,
+                PrimitiveTopology::TriangleList,
+                target,
+                &layouts,
+            )
+        })
+    }
+
+    /// The pipeline shaded hillshades drape their slopes with, made or not.
+    pub(crate) fn slopes_pipeline(&self) -> Option<RenderPipelineId> {
+        self.slopes
+    }
+
     /// The bind group layout of raster and hillshade nodes' groups.
     pub(crate) fn image_layout(&self) -> BindGroupLayoutId {
         self.image_layout
@@ -358,7 +385,6 @@ impl Images {
         gpu: &mut dyn Gpu,
         kind: PageKind,
         [width, height]: [u32; 2],
-        downsampler: &mut crate::downsample::Downsampler,
     ) -> PageId {
         let sampled = TextureUsages::TEXTURE_BINDING;
         // Host images are copied in as render targets, and the prepare
@@ -372,11 +398,10 @@ impl Images {
             usage,
             mip_levels: 1,
         };
-        // Mipmapped: a compute pass makes the levels, raster pages' once
+        // Raster pages are mipmapped: a compute pass makes the levels once
         // a raster node draws.
         if kind == PageKind::Dem {
             self.make_prepare(gpu);
-            downsampler.make(gpu);
         }
         let levels = |border: u32| 32 - (width.max(height) + 2 * border).max(1).leading_zeros();
         let textures = match kind {
@@ -385,16 +410,10 @@ impl Images {
                 mip_levels: levels(0),
                 ..texture("raster tiles", 0, uploaded)
             }],
-            // Slopes are mipmapped too, for the terrain pass's shaded
-            // hillshades in the distance.
             PageKind::Dem => vec![
                 texture("dem tiles", 0, uploaded),
                 texture("padded dem tiles", 2, uploaded),
-                PageTexture {
-                    usage: uploaded | TextureUsages::STORAGE_BINDING,
-                    mip_levels: levels(1),
-                    ..texture("hillshade slopes", 1, uploaded)
-                },
+                texture("hillshade slopes", 1, uploaded),
             ],
         };
         let page = Page {
@@ -520,9 +539,9 @@ impl Images {
         }
     }
 
-    /// The compute pass that makes mip levels for raster layers uploaded,
-    /// and DEM slopes prepared, since the last, if any, after the passes
-    /// that extend their edges; and its dispatches.
+    /// The compute pass that makes mip levels for raster layers uploaded
+    /// since the last, if any, after the passes that extend their edges;
+    /// and its dispatches.
     pub(crate) fn mip_pass(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -545,12 +564,8 @@ impl Images {
             if page.mips.as_ref().is_some_and(|m| m.revision != revision) {
                 destroy_mips(gpu, page.mips.take().expect("checked"));
             }
-            let index = match page.kind {
-                PageKind::Raster => 0,
-                PageKind::Dem => DEM_SLOPES,
-            };
-            let texture = page.page.texture(index);
-            let levels = page.page.mip_levels(index);
+            let texture = page.page.texture(0);
+            let levels = page.page.mip_levels(0);
             let mips = page.mips.get_or_insert_with(|| {
                 let regions = gpu.create_buffer(&BufferDesc {
                     label: "image mip regions",
@@ -568,7 +583,7 @@ impl Images {
                     groups,
                 }
             });
-            let [side, _] = page.page.size(index);
+            let [side, _] = page.page.size(0);
             let edges = std::mem::take(&mut page.edges);
             if !edges.is_empty() {
                 let count = edges.len() as u32;
@@ -908,11 +923,7 @@ mod prepare {
                     groups: Vec::new(),
                 }
             });
-            let mipmapped = page.page.mip_levels(DEM_SLOPES) > 1;
             for (slot, job) in page.pending.drain(..).enumerate() {
-                if mipmapped && !page.mip_layers.contains(&job.layer) {
-                    page.mip_layers.push(job.layer);
-                }
                 gpu.write_buffer(
                     targets.jobs,
                     slot as u64 * SLOT,
@@ -992,7 +1003,12 @@ impl crate::release::Release for Images {
             }
         }
         let draws = self.prepare.map(|d| (d.layout, d.pad, d.slope));
-        let fixed = (self.image_layout, self.relief_layout, self.pipelines.0);
+        let fixed = (
+            self.image_layout,
+            self.relief_layout,
+            self.pipelines.0,
+            self.slopes,
+        );
         (fixed, self.linear, self.nearest).release(gpu);
         (self.placeholder, self.placeholder_ramp, draws, self.edges).release(gpu);
     }

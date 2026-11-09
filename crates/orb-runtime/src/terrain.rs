@@ -23,10 +23,9 @@ use orb_camera::View;
 use orb_crs::{CoveredTile, TileIndex, TileMatrixSet, WorldRect};
 use orb_hal::Gpu;
 use orb_render::{
-    ClipRect, DRAPE_SLOT_PX, DemRef, DrapeLayout, GpuTile, PageId, PlacementTarget, Renderer,
-    TerrainDem, TerrainSlopes, TerrainTile, TileRow,
+    ClipRect, DRAPE_SLOT_PX, DemRef, DrapeLayout, PageId, PlacementTarget, Renderer, TerrainDem,
+    TerrainTile, TileRow,
 };
-use orb_source::endpoint::TileEndpoint;
 use orb_source::{Draw, TilePyramid};
 use orb_tile::DemGrid;
 
@@ -109,12 +108,17 @@ fn bilinear(dim: u32, uv: DVec2, texel: impl Fn(i64, i64) -> f32) -> f64 {
     top + (bottom - top) * f.y
 }
 
-/// A terrain tile's drape slots and the content they were drawn with.
+/// A terrain tile's drape slots and the content each stack's was drawn
+/// with.
 #[derive(Debug)]
 struct Slot {
     index: u32,
-    content: u64,
+    content: Vec<u64>,
 }
+
+/// A tile slot to redraw: its terrain tile, tile slot, and the stacks
+/// whose content changed.
+pub(crate) type Redraw = (CoveredTile, u32, Vec<u8>);
 
 /// The style zoom a terrain tile's drape slots are drawn at, whatever the
 /// camera's: the tile's own, where it spans its 512 logical pixels, at
@@ -547,17 +551,18 @@ impl Terrain {
     }
 
     /// This frame's terrain tiles for the renderer, with slots assigned
-    /// from `layout` after the atlas's `moves`, and which tile slots to
-    /// redraw: those whose draped content, as `content` hashes it,
-    /// changed. On a globe, `globe` places a tile on the sphere.
+    /// from `layout` after the atlas's `moves`, and which tile slots'
+    /// stacks to redraw: those whose draped content, as `content` hashes
+    /// it per stack, changed. On a globe, `globe` places a tile on the
+    /// sphere.
     pub(crate) fn plan(
         &mut self,
         tms: &TileMatrixSet,
         view: &View,
         (layout, moves): (DrapeLayout, &[(u32, u32)]),
-        content: &dyn Fn(CoveredTile) -> u64,
+        content: &dyn Fn(CoveredTile) -> Vec<u64>,
         globe: &mut dyn FnMut(TileIndex) -> Option<orb_render::TerrainGlobe>,
-    ) -> (Vec<TerrainTile>, Vec<(CoveredTile, u32)>) {
+    ) -> (Vec<TerrainTile>, Vec<Redraw>) {
         if layout.generation != self.generation {
             self.generation = layout.generation;
             self.slots.clear();
@@ -576,16 +581,21 @@ impl Terrain {
             let content = content(tile);
             let slot = match self.slots.get_mut(&tile) {
                 Some(slot) => {
-                    if slot.content != content {
+                    let changed: Vec<u8> = (0..content.len())
+                        .filter(|&s| slot.content.get(s) != content.get(s))
+                        .map(|s| s as u8)
+                        .collect();
+                    if !changed.is_empty() {
                         slot.content = content;
-                        redraw.push((tile, slot.index));
+                        redraw.push((tile, slot.index, changed));
                     }
                     slot.index
                 }
                 None => {
                     let index = free.next().expect("the atlas holds every tile");
+                    let every = (0..content.len() as u8).collect();
                     self.slots.insert(tile, Slot { index, content });
-                    redraw.push((tile, index));
+                    redraw.push((tile, index, every));
                     index
                 }
             };
@@ -606,6 +616,7 @@ impl Terrain {
                 dem,
                 slot,
                 globe: globe(tile.index),
+                latitudes: orb_render::tile_latitudes(tile.index),
             });
         }
         (out, redraw)
@@ -619,43 +630,6 @@ fn within(tile: TileIndex, at: TileIndex) -> ([f32; 2], f32) {
     let scale = 0.5f32.powi(i32::from(depth));
     let d = |v: u32| (v - (v >> depth << depth)) as f32 * scale;
     ([d(tile.col), d(tile.row)], scale)
-}
-
-/// Where a hillshade the terrain shades reads the slopes over `tile`, a
-/// quarter of a terrain tile: the tile its source draws
-/// there, itself or an ancestor, as a slot would draw it; where the source
-/// draws deeper, the nearest resident tile at the quarter's zoom or above.
-/// None outside the source's bounds, as nothing draws there. The source's
-/// tiles are the surface's.
-pub(crate) fn slopes<T>(
-    (endpoint, pyramid): (&TileEndpoint, &TilePyramid<T>),
-    drawn: &HashSet<TileIndex>,
-    gpu: impl Fn(&T) -> GpuTile,
-    tile: TileIndex,
-) -> Option<TerrainSlopes> {
-    let start = scaled(tile, tile.z.min(pyramid.max_zoom()));
-    if !endpoint.contains(start) {
-        return None;
-    }
-    let found = |wanted: &dyn Fn(TileIndex) -> bool| {
-        let mut at = start;
-        loop {
-            if let Some(resident) = pyramid.get(at).filter(|_| wanted(at)) {
-                return Some((at, resident));
-            }
-            if at.z <= pyramid.min_zoom() {
-                return None;
-            }
-            at = at.parent()?;
-        }
-    };
-    let (at, resident) = found(&|at| drawn.contains(&at)).or_else(|| found(&|_| true))?;
-    let (offset, scale) = within(tile, at);
-    Some(TerrainSlopes {
-        tile: gpu(resident),
-        offset,
-        scale,
-    })
 }
 
 /// Coarsens a cover until it has at most `budget` tiles (or no tiles
@@ -755,7 +729,8 @@ fn terrain_bounds(surface: &TileMatrixSet, terrain: CoveredTile) -> WorldRect {
 /// Drape placements of a drawn tile (`extent` data units a side, mapped
 /// by its map placements `map_rows`, placed at the terrain tile's
 /// [`drape_zoom`]) for a terrain tile and its tile slot: one row set per
-/// drape stack, each mapping the tile's data into the stack's slot,
+/// drape stack of `stacks` (those its source's layers draw into), each
+/// mapping the tile's data into the stack's slot,
 /// clipped to the terrain tile and the `reach_px` (logical pixels) a
 /// translation moves content into it from, bounded by the terrain tile,
 /// with pixel sizes in slot texels at the drape zoom.
@@ -765,7 +740,7 @@ pub(crate) fn drape_rows(
     drawn: Drawn,
     extent: u32,
     (terrain, slot): (CoveredTile, u32),
-    layout: &DrapeLayout,
+    (layout, stacks): (&DrapeLayout, &[u8]),
     reach_px: f64,
     map_rows: impl Iterator<Item = TileRow>,
     out: &mut Vec<TileRow>,
@@ -803,8 +778,8 @@ pub(crate) fn drape_rows(
         if !any {
             continue;
         }
-        for stack in 0..layout.stacks {
-            let [cx, cy] = layout.corner(slot, stack);
+        for &stack in stacks {
+            let [cx, cy] = layout.corner(slot, u32::from(stack));
             let corner = DVec2::new(f64::from(cx), -f64::from(cy));
             let o = corner + (origin - t_origin) * k;
             out.push(TileRow {
@@ -814,7 +789,7 @@ pub(crate) fn drape_rows(
                 bound,
                 px_scale: px_scale as f32,
                 drape_zoom: f32::from(zoom),
-                target: PlacementTarget::Drape(stack as u8),
+                target: PlacementTarget::Drape(stack),
                 // Slots are flat: the terrain carries them onto a globe.
                 globe: None,
                 ..row
@@ -1517,7 +1492,7 @@ mod tests {
             drawn,
             4096,
             (terrain, 1),
-            &layout,
+            (&layout, &[0, 1]),
             0.0,
             [row].into_iter(),
             &mut rows,
