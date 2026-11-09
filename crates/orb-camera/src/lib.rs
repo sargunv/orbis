@@ -633,7 +633,8 @@ impl View {
             return low.cover_low(tms, tile_px, max_zoom);
         }
         if let Some(globe) = &self.globe {
-            return self.cover_globe(globe, tms, tile_px, max_zoom);
+            let metres = height * globe.metres_per_px / self.world_per_px;
+            return self.cover_globe(globe, tms, tile_px, max_zoom, metres);
         }
         let center_zoom = (tms.tile_span(0) / (self.world_per_px * tile_px)).log2();
         self.cover_tiles(tms, zooms, height, terrain, margin_px, |index, offset| {
@@ -656,7 +657,7 @@ impl View {
         }
         // Any set's tiles wrap the globe directly.
         if let Some(globe) = &self.globe {
-            return self.cover_globe(globe, tms, tile_px, max_zoom);
+            return self.cover_globe(globe, tms, tile_px, max_zoom, 0.0);
         }
         let scale = self.world_per_px * tile_px;
         self.cover_tiles(tms, 0..=max_zoom, 0.0, None, 0.0, |index, offset| {
@@ -809,17 +810,25 @@ impl View {
     /// distance and pitch terms: the tile under the eye gets the target's
     /// zoom, and tiles coarsen with distance, with their angle from
     /// straight down, and (being smaller on the sphere) toward the poles.
+    ///
+    /// Content standing up to `height` metres over a tile (extrusions,
+    /// lifted labels) keeps it covered while that content can show: past
+    /// the ground's horizon by the angle it peeks over it, and above the
+    /// view's bottom edge, as GL JS's `expandCullingToContentElevation`.
     fn cover_globe(
         &self,
         globe: &GlobeView,
         tms: &TileMatrixSet,
         tile_px: f64,
         max_zoom: u8,
+        height: f64,
     ) -> Vec<CoveredTile> {
         let eye = globe.target + globe.eye;
         let eye_dir = eye.normalize();
-        let horizon = globe.horizon_angle();
-        // Points that can face the eye lie in front of the horizon's plane.
+        let height = height.max(0.0);
+        let horizon = globe.horizon_angle() + (sphere::RADIUS / (sphere::RADIUS + height)).acos();
+        // Points that can face the eye, or hold content that can, lie in
+        // front of the horizon's plane.
         let horizon_plane = sphere::RADIUS * horizon.cos();
         let center_distance = globe.eye.length();
         let projection = tms.projection();
@@ -836,7 +845,7 @@ impl View {
         // points.
         let under = projection.forward(sphere::geodetic(eye_dir));
         let period = projection.wrap_period();
-        let frustum = GlobeFrustum::new(globe);
+        let frustum = GlobeFrustum::new(globe, height);
         tms.cover_with(0..=0, None, max_zoom, |index, _| {
             let b = tms.tile_bounds(index);
             // A grid of the tile's points on the sphere, row by row: 5×5
@@ -906,7 +915,7 @@ impl View {
                 lo = lo.min(local);
                 hi = hi.max(local);
             }
-            let (lo, hi) = (lo - bulge, hi + bulge);
+            let (lo, hi) = (lo - bulge, hi + bulge + DVec3::Z * height);
             let corners = box_corners(lo, hi).map(|c| center + frame * c);
             // Outside if the box is wholly behind the horizon's plane or
             // outside a plane of the frustum, or if the frustum, cut off
@@ -1010,7 +1019,9 @@ struct GlobeFrustum {
 }
 
 impl GlobeFrustum {
-    fn new(globe: &GlobeView) -> Self {
+    /// The view's frustum, its far end pushed out for content standing up
+    /// to `height` metres, which shows past the ground's horizon.
+    fn new(globe: &GlobeView, height: f64) -> Self {
         let inverse = globe.view_proj.inverse();
         let ndc = box_corners(DVec3::new(-1.0, -1.0, 0.0), DVec3::ONE);
         let mut corners = ndc.map(|c| inverse.project_point3(c) + globe.target);
@@ -1049,7 +1060,11 @@ impl GlobeFrustum {
         } else {
             ring
         };
-        let far = rays.min(visible);
+        // Content standing on the sphere shows farther along a ray that
+        // grazes it, by up to the tangent's length from it to the
+        // content's top.
+        let shell = sphere::RADIUS + height;
+        let far = rays.min(visible) + (shell * shell - sphere::RADIUS * sphere::RADIUS).sqrt();
         for i in 0..4 {
             let (near, along) = (corners[i], corners[i + 4] - corners[i]);
             let s = ((far - depth(near)) / along.dot(forward)).clamp(0.0, 1.0);
@@ -1630,6 +1645,30 @@ mod tests {
             let (a, b) = (plane.project(world).unwrap(), globe.project(world).unwrap());
             assert!(a.distance(b) < 0.05, "lat {lat}: {a} vs {b}");
         }
+    }
+
+    /// Content lifted 500 km over the ground (a `symbol-height-offset`)
+    /// keeps tiles past the ground's horizon covered, as it shows over it.
+    #[test]
+    fn globe_cover_keeps_tiles_under_lifted_content() {
+        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let view = globe_view(Geodetic::new(0.0, 0.0), 4.5, 80.0, 0.0);
+        let globe = view.globe().unwrap();
+        let lift = 500e3 * view.world_per_px() / globe.metres_per_px;
+        let plain = view.cover_volume(&tms, 512.0, 0..=22, 0.0, None, 0.0);
+        let lifted = view.cover_volume(&tms, 512.0, 0..=22, lift, None, 0.0);
+        assert!(plain.iter().all(|t| lifted.contains(t)));
+        let eye = (globe.target + globe.eye).normalize();
+        let past: Vec<_> = (lifted.iter())
+            .filter(|t| !plain.contains(t))
+            .map(|t| {
+                let world = tms.tile_bounds(t.index).center();
+                sphere::ecef(tms.projection().inverse(world), 0.0).angle_between(eye)
+            })
+            .collect();
+        assert!(!past.is_empty());
+        // Some of the added tiles lie past the ground's horizon.
+        assert!(past.iter().any(|&a| a > globe.horizon_angle()), "{past:?}");
     }
 
     #[test]

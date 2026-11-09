@@ -48,10 +48,27 @@ impl Map {
             return None;
         }
         let zoom = self.camera.state().zoom(self.surface.projection());
-        // The tallest extrusion, as this frame's paint has it.
+        // The tallest extrusion, as this frame's paint has it, or the
+        // highest a symbol layer lifts its labels (`symbol-height-offset`,
+        // where every feature shares it at this zoom): their tiles stay
+        // covered while the lifted content can show, as in GL JS.
         let height = (plan.nodes.iter().enumerate())
             .filter(|(_, n)| n.source == index)
-            .map(|(i, _)| renderer.cull_elevation(i as u32))
+            .map(|(i, n)| {
+                let offset = n
+                    .family
+                    .is_symbol()
+                    .then(|| plan.style.layers[n.layer].get(orb_style::SYMBOL_HEIGHT_OFFSET));
+                let lifted = offset
+                    .filter(|o| {
+                        matches!(
+                            o.kind(),
+                            orb_style::Kind::Constant | orb_style::Kind::Camera
+                        )
+                    })
+                    .map_or(0.0, |o| o.evaluate(zoom).max(0.0) as f32);
+                renderer.cull_elevation(i as u32).max(lifted)
+            })
             .fold(0.0f32, f32::max);
         // Circles and heatmaps draw from the tile their point is in alone,
         // where GL JS draws the copies in its neighbours' buffers too: a
