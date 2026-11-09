@@ -537,6 +537,98 @@ fn paint_reads_the_camera_with_the_expressions_preview() {
     assert_eq!(centre(&mut off), [0, 0, 0, 255]);
 }
 
+/// style-spec#1889: behind a globe, the backdrop with stars on it, which
+/// turn with the globe. Off, the style's sky draws as it would without
+/// them: nothing behind the globe from orbit.
+#[test]
+fn stars_and_backdrop_draw_behind_the_globe_with_their_preview() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let style = r##"{"version": 8, "projection": {"type": "globe"}, "center": [0, 0], "zoom": 0,
+      "sky": {"backdrop-color": "#000020", "star-opacity": 1, "atmosphere-blend": 0},
+      "sources": {}, "layers": [{"id": "background", "type": "background",
+        "paint": {"background-color": "#808080"}}]}"##;
+    let draw = |previews, lon| {
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                previews,
+                ..MapOptions::default()
+            },
+        );
+        map.set_style_json(style).expect("style");
+        map.jump_to(&CameraTarget {
+            center: Some(orb_api::Geodetic::new(lon, 0.0)),
+            ..CameraTarget::default()
+        });
+        map.snapshot(WIDE, WIDE, 1.0).expect("snapshot").pixels
+    };
+    // A corner, off the globe, and the centre.
+    const WIDE: u32 = 256;
+    let at = |pixels: &[u8], x: u32, y: u32| -> [u8; 4] {
+        let i = ((y * WIDE + x) * 4) as usize;
+        pixels[i..i + 4].try_into().unwrap()
+    };
+    let corners = |pixels: &[u8]| -> Vec<[u8; 4]> {
+        (0..40)
+            .flat_map(|y| (0..40).map(move |x| (x, y)))
+            .map(|(x, y)| at(pixels, x, y))
+            .collect()
+    };
+    let on = draw(orb_api::Previews::ALL, 0.0);
+    let sky = corners(&on);
+    let backdrop = sky.iter().filter(|&&p| p == [0, 0, 0x20, 255]).count();
+    assert!(backdrop > sky.len() / 2, "{sky:?}");
+    assert!(sky.iter().any(|p| p[0] > 60), "no stars: {sky:?}");
+    assert_eq!(at(&on, WIDE / 2, WIDE / 2), [128, 128, 128, 255]);
+    // The same view draws the same stars; a turned globe, others.
+    assert_eq!(corners(&draw(orb_api::Previews::ALL, 0.0)), sky);
+    assert_ne!(corners(&draw(orb_api::Previews::ALL, 40.0)), sky);
+    let off = draw(orb_api::Previews::NONE, 0.0);
+    assert!(corners(&off).iter().all(|p| p[3] == 0));
+}
+
+/// With `orbis:atmosphere`, the globe's scattering tints a sunlit surface
+/// rather than lifting it toward white as GL JS's gamma-encoded addition
+/// does.
+#[test]
+fn the_atmosphere_preview_composites_scattering_in_linear_light() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let style = r##"{"version": 8, "projection": {"type": "globe"}, "center": [0, 0], "zoom": 0,
+      "sky": {"atmosphere-blend": 1}, "light": {"anchor": "map", "position": [1.15, 270, 60]},
+      "sources": {}, "layers": [{"id": "background", "type": "background",
+        "paint": {"background-color": "#808080"}}]}"##;
+    let draw = |previews: orb_api::Previews| {
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                previews,
+                ..MapOptions::default()
+            },
+        );
+        map.set_style_json(style).expect("style");
+        map.snapshot(WIDE, WIDE, 1.0).expect("snapshot").pixels
+    };
+    const WIDE: u32 = 512;
+    // Blue across the middle row, over the grey surface.
+    let lift = |pixels: &[u8], x: u32| {
+        let i = ((WIDE / 2 * WIDE + x) * 4) as usize;
+        pixels[i + 2].saturating_sub(128)
+    };
+    let linear = draw(orb_api::Previews::ALL);
+    let gl = draw(orb_api::Previews::NONE);
+    // Somewhere across the middle row the sun is up: GL JS's model lifts it
+    // most there.
+    let x = (WIDE * 3 / 8..WIDE * 5 / 8)
+        .max_by_key(|&x| lift(&gl, x))
+        .unwrap();
+    let (gl, linear) = (lift(&gl, x), lift(&linear, x));
+    assert!(gl > 20, "GL JS's model lifts the face by {gl}");
+    assert!(
+        linear > 0 && linear * 2 < gl,
+        "{linear} against GL JS's {gl}"
+    );
+}
+
 /// With `orbis:expressions`, each building takes its own opacity from its
 /// data: over black, a building at a quarter draws a quarter as bright as
 /// one at full. Off, both draw opaque.

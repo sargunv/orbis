@@ -1597,6 +1597,9 @@ fn sky_gradient_composites_over_the_host_backing() {
         horizon_fog_blend: 0.5,
         fog_ground_blend: 0.5,
         atmosphere_blend: 0.8,
+        backdrop_color: [0.0; 4],
+        star_opacity: 0.0,
+        linear_scatter: false,
     };
     let view = sky_view();
     h.renderer.set_atmosphere(&mut h.gpu, Some(sky), view);
@@ -1626,6 +1629,57 @@ fn sky_gradient_composites_over_the_host_backing() {
         .render(&mut h.gpu, &frame, h.target, clear, &|| 0.0);
     let pixels = pollster::block_on(h.gpu.read_texture(h.target));
     assert_eq!(pixel(&pixels, 32, 15), CLEAR);
+}
+
+#[test]
+fn stars_show_on_the_backdrop_above_the_horizon_where_the_sky_is_clear() {
+    let mut h = Harness::new();
+    let backdrop = [0.0, 0.0, 0.1, 1.0];
+    let mut sky = orb_render::AtmospherePaint {
+        sky_color: [0.0; 4],
+        horizon_color: [0.0; 4],
+        fog_color: [1.0; 4],
+        sky_horizon_blend: 0.5,
+        horizon_fog_blend: 0.5,
+        fog_ground_blend: 0.5,
+        atmosphere_blend: 0.0,
+        backdrop_color: backdrop,
+        star_opacity: 1.0,
+        linear_scatter: false,
+    };
+    let view = sky_view();
+    let frame = Harness::frame(1.0);
+    let draw = |h: &mut Harness, sky| {
+        h.renderer.set_atmosphere(&mut h.gpu, Some(sky), view);
+        h.renderer
+            .render(&mut h.gpu, &frame, h.target, [0.0; 4], &|| 0.0);
+        pollster::block_on(h.gpu.read_texture(h.target))
+    };
+    let pixels = draw(&mut h, sky);
+    let base = backdrop.map(|v| (v * 255.0).round() as u8);
+    let lit = |pixels: &[u8], rows: std::ops::Range<u32>| {
+        rows.flat_map(|y| (0..SIZE).map(move |x| (x, y)))
+            .filter(|&(x, y)| pixel(pixels, x, y)[..3] != base[..3])
+            .count()
+    };
+    // Below the horizon, the backdrop alone: what the map draws on.
+    assert_eq!(lit(&pixels, 33..SIZE), 0);
+    assert_eq!(pixel(&pixels, 10, 50), base);
+    let stars = lit(&pixels, 0..32);
+    assert!(stars > 8, "{stars} pixels lit by stars");
+    // An opaque sky covers them.
+    sky.sky_color = [0.2, 0.3, 0.5, 1.0];
+    sky.horizon_color = [0.2, 0.3, 0.5, 1.0];
+    let pixels = draw(&mut h, sky);
+    let top = pixel(&pixels, 10, 10);
+    assert!(top[2].abs_diff(128) <= 1, "{top:?}");
+    let covered = (0..31).flat_map(|y| (0..SIZE).map(move |x| (x, y)));
+    assert!(
+        covered
+            .into_iter()
+            .all(|(x, y)| pixel(&pixels, x, y) == top)
+    );
+    assert_eq!(lit(&pixels, 33..SIZE), 0);
 }
 
 /// A flat view whose horizon is row 32, looking along +z with a 60° field

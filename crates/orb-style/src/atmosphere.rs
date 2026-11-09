@@ -15,4 +15,8 @@ pub struct Atmosphere {
     pub horizon_fog_blend: Property<f32>,
     pub sky_horizon_blend: Property<f32>,
     pub atmosphere_blend: Property<f32>,
+    /// style-spec#1889: the colour behind the stars and the sky, and the
+    /// stars' opacity; transparent and 0 unless its preview is on.
+    pub backdrop_color: Property<Color>,
+    pub star_opacity: Property<f32>,
 }

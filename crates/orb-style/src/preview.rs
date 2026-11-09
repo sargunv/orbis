@@ -26,16 +26,23 @@ pub enum Preview {
     /// whatever the spec's `property-type` says, among them the camera's
     /// `["pitch"]` and `["bearing"]` in paint drawn per frame.
     Expressions,
+    /// style-spec#1889: `sky.backdrop-color` and `sky.star-opacity`, a
+    /// colour and a fixed pattern of stars behind the sky.
+    Stars,
+    /// The globe's scattering composited in linear light.
+    Atmosphere,
 }
 
 impl Preview {
     /// Every preview, in the order the docs list them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::Equirectangular,
         Self::EqualEarth,
         Self::ProjectionTransition,
+        Self::Stars,
         Self::Crs,
         Self::Expressions,
+        Self::Atmosphere,
     ];
 
     /// The name a map enables it by: the proposal's `style-spec#n`, or
@@ -45,8 +52,10 @@ impl Preview {
             Self::Equirectangular => "style-spec#1623",
             Self::EqualEarth => "style-spec#1865",
             Self::ProjectionTransition => "style-spec#1866",
+            Self::Stars => "style-spec#1889",
             Self::Crs => "orbis:crs",
             Self::Expressions => "orbis:expressions",
+            Self::Atmosphere => "orbis:atmosphere",
         }
     }
 
@@ -66,11 +75,17 @@ impl Preview {
             Self::ProjectionTransition => {
                 "`projection.transition`: the `[start, end]` zooms a low-zoom projection hands over to Mercator between, or `false` for none. The interpolation syntax stays supported."
             }
+            Self::Stars => {
+                "`sky.backdrop-color` (default transparent), the colour the map is drawn on, and `sky.star-opacity` (0 to 1, default 0), a fixed procedural pattern of stars on it that turns with the globe. Both take expressions like the rest of `sky`. The draw order is backdrop, stars, then the sky, which covers them where it's opaque and reveals them as it fades with altitude; on a flat map they show above the horizon where the sky is transparent."
+            }
             Self::Crs => {
                 "Coordinate reference systems as the projection type (`EPSG:3413`, or a parametric kind such as `polar-stereographic` with PROJ-named numeric parameters beside the `type`) and OGC 2D tile matrix sets on sources (`tileMatrixSet`: a registered identifier or an inline document). Our own design; no proposal yet."
             }
             Self::Expressions => {
                 "Each property reads every input Orbis honours in the phase it is evaluated in, whatever the spec's `property-type` says; the support matrix lists them. Among them are the camera's `[\"pitch\"]` and `[\"bearing\"]` (degrees) in paint drawn every frame, for values the same for every feature. Our own design; no proposal yet."
+            }
+            Self::Atmosphere => {
+                "The globe's scattering (`sky.atmosphere-blend`) composited in linear light rather than added gamma-encoded as GL JS does: a map's sunlit face keeps its colours, tinted, rather than lifted toward white, the haze gathers toward the limb, and over the sky and the backdrop it adds to what they show. No style input; a rendering change of our own."
             }
         }
     }

@@ -45,6 +45,10 @@ pub(crate) fn atmosphere(
             horizon_fog_blend: a.horizon_fog_blend.evaluate(zoom),
             fog_ground_blend: a.fog_ground_blend.evaluate(zoom),
             atmosphere_blend: a.atmosphere_blend.evaluate(zoom),
+            backdrop_color: a.backdrop_color.evaluate(zoom).premultiplied(),
+            star_opacity: a.star_opacity.evaluate(zoom),
+            linear_scatter: style
+                .is_some_and(|s| s.previews.contains(orb_style::Preview::Atmosphere)),
         });
     let (fog_near, fog_far) = view.fog_range_px();
     let (horizon, horizon_normal) = view.sky_horizon_line();

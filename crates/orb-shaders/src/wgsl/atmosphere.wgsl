@@ -14,6 +14,8 @@ struct Atmosphere {
     sky_color: vec4<f32>,
     horizon_color: vec4<f32>,
     fog_color: vec4<f32>,
+    // style-spec#1889's backdrop, premultiplied, behind the stars and sky.
+    backdrop_color: vec4<f32>,
     // Logical pixels, y down.
     horizon: vec2<f32>,
     horizon_normal: vec2<f32>,
@@ -26,8 +28,10 @@ struct Atmosphere {
     // The fog's depth range along the view, in pixels (`View::fog_range_px`).
     fog_near: f32,
     fog_far: f32,
-    _pad0: f32,
-    _pad1: f32,
+    // style-spec#1889's stars, 0 to 1.
+    star_opacity: f32,
+    // 1 to composite the scattering in linear light (`orbis:atmosphere`).
+    scatter_linear: f32,
     // Clip → camera-relative space on Earth-fixed axes, for view rays.
     ray_inverse: mat4x4<f32>,
     // The globe, mixed in by `globe_amount` (0 on a flat surface): the eye
@@ -57,15 +61,14 @@ fn atmosphere_ray(a: Atmosphere, px: vec2<f32>, viewport: vec2<f32>) -> vec3<f32
 
 const ATMOSPHERE_GAMMA: f32 = 2.2;
 
-// The sky at a logical pixel: GL JS's gradient from the horizon colour to
-// the sky colour above the horizon, or transparent below it. On a globe
-// the gradient starts at the limb and the sky fades to space.
-fn atmosphere_sky(a: Atmosphere, px: vec2<f32>, viewport: vec2<f32>) -> vec4<f32> {
+// How far a logical pixel is above the horizon (positive above it), with
+// `ray` the view ray through it, and the sky's opacity there. On a globe
+// the distance is measured from the limb and the sky fades to space.
+fn atmosphere_horizon(a: Atmosphere, px: vec2<f32>, ray: vec3<f32>) -> vec2<f32> {
     var distance = dot(px - a.horizon, a.horizon_normal);
     var opacity = 1.0;
     if a.globe_amount > 0.0 {
         // In units of the radius, for precision.
-        let ray = atmosphere_ray(a, px, viewport);
         let center = -a.globe_eye.xyz / a.globe_eye.w;
         let globe_distance = length(center);
         let angle = acos(clamp(dot(ray, center) / globe_distance, -1.0, 1.0));
@@ -77,6 +80,15 @@ fn atmosphere_sky(a: Atmosphere, px: vec2<f32>, viewport: vec2<f32>) -> vec4<f32
         let through = 1.0 - smoothstep(0.0, ATMOSPHERE_HEIGHT, lowest);
         opacity = mix(1.0, inside * through * (1.0 - a.sky_atmosphere_blend), a.globe_amount);
     }
+    return vec2<f32>(distance, opacity);
+}
+
+// The sky at a pixel `horizon` gives (`atmosphere_horizon`): GL JS's
+// gradient from the horizon colour to the sky colour above the horizon, or
+// transparent below it.
+fn atmosphere_sky(a: Atmosphere, horizon: vec2<f32>) -> vec4<f32> {
+    let distance = horizon.x;
+    let opacity = horizon.y;
     if distance <= 0.0 {
         return vec4<f32>(0.0);
     }
@@ -85,6 +97,84 @@ fn atmosphere_sky(a: Atmosphere, px: vec2<f32>, viewport: vec2<f32>) -> vec4<f32
         color = mix(a.sky_color, a.horizon_color, pow(1.0 - distance / a.sky_horizon_blend, 2.0));
     }
     return color * opacity;
+}
+
+// style-spec#1889's stars along a view ray (unit, Earth-fixed axes, so
+// they turn with the globe), `pixel` radians to a logical pixel; the
+// premultiplied colour, before `star_opacity`. Two layers of hashed points,
+// a sparse bright one and a dense faint one, each one point at most per
+// cell of a cube about the eye, with cells of near-equal angle. A star is
+// a Gaussian sized in logical pixels at least 0.7 device pixels wide, so
+// it looks the same at any resolution and doesn't shimmer as it moves.
+fn atmosphere_stars(ray: vec3<f32>, pixel: f32, pixel_ratio: f32) -> vec4<f32> {
+    // The face the ray leaves the cube through, and where on it, in
+    // equal-angle coordinates in [-1, 1].
+    let m = abs(ray);
+    var face: u32;
+    var axes: mat3x3<f32>;
+    if m.x >= m.y && m.x >= m.z {
+        face = select(1u, 0u, ray.x > 0.0);
+        axes = mat3x3<f32>(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(sign(ray.x), 0.0, 0.0));
+    } else if m.y >= m.z {
+        face = select(3u, 2u, ray.y > 0.0);
+        axes = mat3x3<f32>(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, sign(ray.y), 0.0));
+    } else {
+        face = select(5u, 4u, ray.z > 0.0);
+        axes = mat3x3<f32>(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, sign(ray.z)));
+    }
+    let local = transpose(axes) * ray;
+    let uv = atan(local.xy / local.z) * (4.0 / ATMOSPHERE_PI);
+    var sum = vec4<f32>(0.0);
+    // Cells per face edge, the share of cells with a star, and the faintest
+    // and brightest stars' peak and width (logical pixels).
+    let cells = array<f32, 2>(48.0, 128.0);
+    let share = array<f32, 2>(0.22, 0.42);
+    let peak = array<vec2<f32>, 2>(vec2<f32>(0.35, 1.0), vec2<f32>(0.12, 0.45));
+    let width = array<vec2<f32>, 2>(vec2<f32>(0.8, 1.35), vec2<f32>(0.6, 0.8));
+    for (var layer = 0u; layer < 2u; layer++) {
+        let n = cells[layer];
+        let at = (uv * 0.5 + 0.5) * n;
+        let cell = floor(at);
+        // This cell and the three nearest the ray, within the face.
+        let toward = select(vec2<f32>(-1.0), vec2<f32>(1.0), at - cell > vec2<f32>(0.5));
+        for (var k = 0u; k < 4u; k++) {
+            let c = cell + toward * vec2<f32>(f32(k & 1u), f32(k >> 1u));
+            if any(c < vec2<f32>(0.0)) || any(c >= vec2<f32>(n)) {
+                continue;
+            }
+            let h = atmosphere_hash(vec3<u32>(vec2<u32>(c), face * 2u + layer));
+            let r = vec3<f32>(h >> vec3<u32>(8u)) / 16777216.0;
+            if r.z >= share[layer] {
+                continue;
+            }
+            // Brightness skewed faint, as stars' magnitudes are.
+            let bright = pow(r.z / share[layer], 3.0);
+            let star_uv = (c + 0.15 + 0.7 * r.xy) / n * 2.0 - 1.0;
+            let star = axes * normalize(vec3<f32>(tan(star_uv * (ATMOSPHERE_PI / 4.0)), 1.0));
+            let w = max(mix(width[layer].x, width[layer].y, bright), 0.7 / pixel_ratio);
+            // The same light spread wider when a star is widened.
+            let p = mix(peak[layer].x, peak[layer].y, bright) * pow(mix(width[layer].x, width[layer].y, bright) / w, 2.0);
+            let d = length(ray - star) / pixel / w;
+            let tint = f32(h.x & 255u) / 255.0;
+            let color = mix(vec3<f32>(0.78, 0.86, 1.0), vec3<f32>(1.0, 0.9, 0.76), tint);
+            sum += vec4<f32>(color, 1.0) * p * exp(-0.5 * d * d);
+        }
+    }
+    let alpha = min(sum.a, 1.0);
+    return vec4<f32>(sum.rgb * (alpha / max(sum.a, 1e-6)), alpha);
+}
+
+// A 3D hash of a star cell: Jarzynski and Olano's pcg3d.
+fn atmosphere_hash(seed: vec3<u32>) -> vec3<u32> {
+    var v = seed * 1664525u + 1013904223u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v ^= v >> vec3<u32>(16u);
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    return v;
 }
 
 // A ray's intersections with a sphere about the origin: (near, far), near

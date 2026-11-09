@@ -22,6 +22,13 @@ pub struct AtmospherePaint {
     pub fog_ground_blend: f32,
     /// How much the globe's atmosphere shows: 0 none, 1 GL JS's full halo.
     pub atmosphere_blend: f32,
+    /// style-spec#1889: the premultiplied colour behind the stars and the
+    /// sky, and the stars' opacity, 0 to 1.
+    pub backdrop_color: [f32; 4],
+    pub star_opacity: f32,
+    /// `orbis:atmosphere`: the scattering composited in linear light rather
+    /// than added gamma-encoded, as GL JS does.
+    pub linear_scatter: bool,
 }
 
 /// A globe view's sphere, for its sky and scattering.
@@ -127,7 +134,10 @@ impl Atmosphere {
         if let Some(p) = paint {
             b.f(n::SKY_COLOR, &p.sky_color)
                 .f(n::HORIZON_COLOR, &p.horizon_color);
-            b.f(n::FOG_COLOR, &p.fog_color);
+            b.f(n::FOG_COLOR, &p.fog_color)
+                .f(n::BACKDROP_COLOR, &p.backdrop_color)
+                .f(n::STAR_OPACITY, &[p.star_opacity])
+                .f(n::SCATTER_LINEAR, &[f32::from(u8::from(p.linear_scatter))]);
             b.f(
                 n::SKY_HORIZON_BLEND,
                 &[p.sky_horizon_blend * view.height / 2.0],

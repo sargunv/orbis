@@ -77,10 +77,14 @@ const MAPTERHORN = { type: "raster-dem", tiles: ["https://tiles.mapterhorn.com/{
  * its water (#80deea) fading to a horizon and fog of its land (#e2dfda),
  * so far terrain dissolves into the map's own ground, and a rim of
  * atmosphere at low zoom that thins out as it hands over to Mercator.
+ * Behind it, style-spec#1889's night: a deep blue-black backdrop with
+ * stars that fade out by zoom 6, by when the sky covers them anyway.
  */
 const PROTOMAPS_SKY = { "sky-color": "#9fd3e0", "horizon-color": "#eef1ef", "fog-color": "#e6e4df",
   "sky-horizon-blend": 0.6, "horizon-fog-blend": 0.6, "fog-ground-blend": 0.6,
-  "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 0.45, 2, 0.36, 4, 0.2, 8, 0] };
+  "atmosphere-blend": ["interpolate", ["linear"], ["zoom"], 0, 0.45, 2, 0.36, 4, 0.2, 8, 0],
+  "backdrop-color": "#060a17",
+  "star-opacity": ["interpolate", ["linear"], ["zoom"], 2, 1, 6, 0] };
 
 /**
  * Protomaps Light (v5) with what it lacks for a 3D map: Mapterhorn's
@@ -144,7 +148,7 @@ export const GROUPS = [
         detail: "Protomaps Light on the globe in 3D: Mapterhorn terrain, hillshade, buildings, sky and atmosphere",
         url: protomaps("light"), projection: { type: "globe" }, sky: PROTOMAPS_SKY, restyle: protomaps3d,
         camera: { center: [10, 30], zoom: 1.5 }, constraints: { minZoom: 0 }, flight: alpsFlight.legs, light: true,
-        swatch: ["#e2dfda", "#80deea", "#9fd3e0"],
+        dark: true, swatch: ["#e2dfda", "#80deea", "#060a17"],
         unsupported: { native: "MapLibre Native has no globe projection" } },
       { key: "equal-earth", name: "Equal Earth", detail: "The whole world equal-area, handing over to Web Mercator by zoom 7",
         url: LIVE, projection: { type: "equal-earth" }, camera: { center: [0, 10], zoom: 0.5 },

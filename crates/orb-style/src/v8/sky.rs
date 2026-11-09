@@ -14,8 +14,15 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
         "sky-horizon-blend",
         "atmosphere-blend",
     ];
+    /// style-spec#1889's properties, behind its preview.
+    const STARS: &[&str] = &["backdrop-color", "star-opacity"];
+    let mut stars = false;
     for m in cx.object(json, "sky").unwrap_or_default() {
-        if !NAMES.contains(&m.key.as_str()) && !m.key.ends_with("-transition") {
+        let name = m.key.strip_suffix("-transition").unwrap_or(&m.key);
+        if STARS.contains(&name) {
+            let what = format!("\"sky.{}\"", m.key);
+            stars |= cx.preview(Preview::Stars, format!("sky.{}", m.key), m.key_span, what);
+        } else if !NAMES.contains(&m.key.as_str()) && !m.key.ends_with("-transition") {
             cx.warn(
                 format!("sky.{}", m.key),
                 m.key_span,
@@ -38,18 +45,20 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
             ..Prop::ROOT
         }
     };
-    let color = |cx: &mut Cx, name, default| {
+    let color = |cx: &mut Cx, name: &'static str, default| {
+        let on = stars || !STARS.contains(&name);
         typed_property_at(
             cx,
-            json.get(name),
+            json.get(name).filter(|_| on),
             &format!("sky.{name}"),
             &prop(name, PropertyType::Color, default),
         )
     };
-    let number = |cx: &mut Cx, name, default| {
+    let number = |cx: &mut Cx, name: &'static str, default| {
+        let on = stars || !STARS.contains(&name);
         typed_property_at(
             cx,
-            json.get(name),
+            json.get(name).filter(|_| on),
             &format!("sky.{name}"),
             &prop(name, PropertyType::Number, default),
         )
@@ -62,6 +71,8 @@ pub(crate) fn parse(cx: &mut Cx, json: &Json) -> Atmosphere {
         horizon_fog_blend: number(cx, "horizon-fog-blend", "0.8"),
         sky_horizon_blend: number(cx, "sky-horizon-blend", "0.8"),
         atmosphere_blend: number(cx, "atmosphere-blend", "0.8"),
+        backdrop_color: color(cx, "backdrop-color", "\"transparent\""),
+        star_opacity: number(cx, "star-opacity", "0"),
     }
 }
 
@@ -91,6 +102,38 @@ mod tests {
         assert!(
             crate::v8::parse(
                 r#"{"version":8,"sky":{"sky-horizon-blend":2},"sources":{},"layers":[]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn stars_and_backdrop_need_their_preview() {
+        let json = r##"{"version":8,"sky":{"star-opacity":["interpolate",["linear"],["zoom"],0,1,6,0],
+            "backdrop-color":"#000010","star-opacity-transition":{"duration":0}},"sources":{},"layers":[]}"##;
+        let off = crate::v8::parse(json).unwrap();
+        assert_eq!(off.warnings.len(), 3);
+        let sky = off.atmosphere.unwrap();
+        assert_eq!(sky.star_opacity.evaluate(0.0), 0.0);
+        assert_eq!(sky.backdrop_color.evaluate(0.0).straight()[3], 0.0);
+        let on = crate::v8::parse_with(
+            json,
+            crate::Previews::default().with(crate::Preview::Stars),
+            &[],
+        )
+        .unwrap();
+        assert!(on.warnings.is_empty(), "{:?}", on.warnings);
+        let sky = on.atmosphere.unwrap();
+        assert_eq!(sky.star_opacity.evaluate(3.0), 0.5);
+        assert_eq!(
+            sky.backdrop_color.evaluate(0.0).straight(),
+            [0.0, 0.0, 16.0 / 255.0, 1.0]
+        );
+        assert!(
+            crate::v8::parse_with(
+                r#"{"version":8,"sky":{"star-opacity":2},"sources":{},"layers":[]}"#,
+                crate::Previews::ALL,
+                &[]
             )
             .is_err()
         );
