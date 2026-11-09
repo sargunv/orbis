@@ -29,6 +29,21 @@ impl<'a> FeatureGeometry<'a> {
         Self { layer, parts }
     }
 
+    /// The parts in `range`, counted from this geometry's first, as a
+    /// geometry of their own.
+    pub fn slice(&self, range: Range<usize>) -> Self {
+        let parts = self.parts.start + range.start..self.parts.start + range.end;
+        assert!(
+            parts.end <= self.parts.end,
+            "parts {range:?} of {}",
+            self.parts.len()
+        );
+        Self {
+            layer: self.layer,
+            parts,
+        }
+    }
+
     pub fn parts(&self) -> impl ExactSizeIterator<Item = Part<'a>> + 'a {
         let layer = self.layer;
         self.parts.clone().map(move |p| Part {

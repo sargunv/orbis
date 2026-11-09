@@ -327,6 +327,24 @@ mod tests {
     }
 
     #[test]
+    fn geometry_slices_parts() {
+        let mut b = LayerBuilder::new("x", 4096);
+        b.begin_feature(None, GeometryType::Polygon);
+        for i in 0..5 {
+            b.begin_part();
+            b.begin_ring();
+            for v in [[i, 0], [i + 1, 0], [i + 1, 1]] {
+                b.push_vertex(v);
+            }
+        }
+        let layer = b.finish();
+        let firsts: Vec<i32> = (layer.geometry(0).slice(1..4).parts())
+            .map(|p| p.rings().next().unwrap()[0][0])
+            .collect();
+        assert_eq!(firsts, [1, 2, 3]);
+    }
+
+    #[test]
     fn column_types() {
         let layer = sample();
         let class = layer.property("class").unwrap();

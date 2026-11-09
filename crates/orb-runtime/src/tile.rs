@@ -195,8 +195,7 @@ fn split_features(layer: &Layer, features: Vec<u32>, parts_split: Parts) -> Spli
                 builder.set_property(key, value.to_owned());
             }
         }
-        let geometry = layer.geometry(feature);
-        for part in geometry.parts().skip(parts.start).take(parts.len()) {
+        for part in layer.geometry(feature).slice(parts.clone()).parts() {
             builder.begin_part();
             for ring in part.rings() {
                 builder.begin_ring();
