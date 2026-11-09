@@ -865,7 +865,7 @@ impl<'a> Evaluator<'_, 'a> {
         let number = |a: f64, b: f64| a + t * (b - a);
         Ok(match (&lower, &upper) {
             (Value::Number(a), Value::Number(b)) => Value::Number(number(*a, *b)),
-            (Value::Color(a), Value::Color(b)) => Value::Color(Color::interpolate(*a, *b, t)),
+            (Value::Color(a), Value::Color(b)) => Value::Color(a.mix(b, t)),
             (Value::Array(a), Value::Array(b)) => Value::Array(Cow::Owned(
                 a.iter()
                     .enumerate()

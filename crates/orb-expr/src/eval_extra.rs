@@ -414,7 +414,7 @@ impl<'a> Evaluator<'_, 'a> {
                             unreachable!("typed color array")
                         };
                         Value::Color(if space == ColorSpace::Rgb {
-                            crate::Color::interpolate(*a, *b, t)
+                            a.mix(b, t)
                         } else {
                             crate::color_spaces::interpolate(*a, *b, t, space)
                         })

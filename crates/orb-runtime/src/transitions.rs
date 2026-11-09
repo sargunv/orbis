@@ -3,7 +3,7 @@
 //! frame a transition runs, the plan's style is overlaid with the eased
 //! values as constants, by [`PropertyId`]: the overlay copies only the
 //! eased layers, and the paint writes from it. A new style ends them.
-//! Values interpolate as GL JS's do: numbers, colours (premultiplied) and
+//! Values interpolate as GL JS's do: numbers, colours (straight components) and
 //! pairs, eased cubic in-out. Per-feature values (data or feature state)
 //! change at once, which is also what GL JS does with feature state.
 

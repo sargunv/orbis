@@ -42,12 +42,16 @@ impl Color {
         }
     }
 
-    /// `self` to `other` by `t`, in premultiplied components as the style
-    /// spec interpolates colours.
+    /// `self` to `other` by `t`, in straight components: `interpolate` in
+    /// `rgb` space and paint transitions, as GL JS blends both. A
+    /// transparent colour's hue steers the blend, which premultiplied
+    /// components (MapLibre Native's) would lose.
     pub fn mix(&self, other: &Self, t: f64) -> Self {
-        let [a, b] = [self.premultiplied, other.premultiplied];
-        let at = |i: usize| f64::from(a[i]) + (f64::from(b[i]) - f64::from(a[i])) * t;
-        Self::from_premultiplied(at(0), at(1), at(2), at(3))
+        let [r, g, b, a] = std::array::from_fn(|i| {
+            let (x, y) = (f64::from(self.straight[i]), f64::from(other.straight[i]));
+            x + t * (y - x)
+        });
+        Self::new(r, g, b, a)
     }
 
     /// Parses a CSS colour: a keyword (including `transparent`), hex with 3,
@@ -66,16 +70,6 @@ impl Color {
     /// Straight (not premultiplied) `[r, g, b, a]` in `0..=1`.
     pub fn straight(&self) -> [f32; 4] {
         self.straight
-    }
-
-    /// Linear interpolation of the straight components, as GL JS's
-    /// `interpolate` does for colours in `rgb` space.
-    pub(crate) fn interpolate(from: Self, to: Self, t: f64) -> Self {
-        let [r, g, b, a] = std::array::from_fn(|i| {
-            let (x, y) = (f64::from(from.straight[i]), f64::from(to.straight[i]));
-            x + t * (y - x)
-        });
-        Self::new(r, g, b, a)
     }
 }
 
@@ -486,6 +480,9 @@ mod tests {
         assert_eq!(c.premultiplied(), [0.0; 4]);
         assert_eq!(c.straight(), [1.0, 0.0, 0.0, 0.0]);
         assert_eq!(c.to_string(), "rgba(255,0,0,0)");
+        // The hue steers a blend toward another colour.
+        let mid = c.mix(&Color::parse("blue").unwrap(), 0.5);
+        assert_eq!(mid.straight(), [0.5, 0.0, 0.5, 0.5]);
     }
 
     #[test]
