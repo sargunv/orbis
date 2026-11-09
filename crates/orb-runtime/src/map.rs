@@ -1159,10 +1159,13 @@ impl Map {
     /// (tiles, glyphs, a placement), as a frame would, without moving the
     /// camera or drawing: for a host that hears of arrivals between
     /// frames, so that each request goes out without waiting for the next
-    /// frame. The frames after it draw as they would without it. Nothing
-    /// before the first [`render`](Self::render), nor while the camera
-    /// moves: frames come at the display's rate then, and what it would
-    /// ask for is for a view about to change.
+    /// frame. The frames after it draw as they would without it. Before
+    /// the first [`render`](Self::render), it takes in the style and asks
+    /// for its first tiles, at the services' clock's time (which should be
+    /// the host's frame clock). Nothing while the camera moves: frames come
+    /// at the display's rate then, and what it would ask for is for a view
+    /// about to change; nor with another renderer than the frames' (after
+    /// a device loss, the next frame takes the new one).
     pub fn prepare(
         &mut self,
         gpu: &mut dyn Gpu,
@@ -1170,9 +1173,13 @@ impl Map {
         viewport: Viewport,
         pixel_ratio: f32,
     ) {
-        if self.born.is_some() && self.renderer == Some(renderer.id()) && !self.is_moving() {
-            self.frame(gpu, renderer, None, viewport, pixel_ratio);
+        if self.renderer.is_some_and(|id| id != renderer.id()) || self.is_moving() {
+            return;
         }
+        if self.born.is_none() {
+            self.frame_time = self.services.clock.now();
+        }
+        self.frame(gpu, renderer, None, viewport, pixel_ratio);
     }
 
     /// A frame at `self.frame_time`, drawn into `target`, or only

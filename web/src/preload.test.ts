@@ -30,3 +30,27 @@ test("the page's request transform applies, and a refused request isn't fetched"
   assert.deepEqual(fetched, ["https://c.test/ok?signed"]);
   setRequestTransform(undefined);
 });
+
+test("the first glyph range of each constant font stack shown at the camera's zoom is fetched ahead", async () => {
+  fetched.length = 0;
+  const label = (layout: object, extra: object = {}) =>
+    ({ type: "symbol", layout: { "text-field": "{name}", ...layout }, ...extra });
+  preloadStyle({
+    version: 8, glyphs: "https://g.test/{fontstack}/{range}.pbf", sources: {},
+    layers: [
+      label({ "text-font": ["A", "B"] }),
+      label({}),
+      label({ "text-font": ["literal", ["C"]] }),
+      label({ "text-font": ["step", ["zoom"], ["literal", ["D"]], 8, ["literal", ["E"]]] }),
+      label({ "text-font": ["F"] }, { minzoom: 10 }),
+      label({ "text-font": ["G"], visibility: "none" }),
+      { type: "line", layout: {} },
+    ],
+  }, 1, 5);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(fetched.sort(), [
+    "https://g.test/A,B/0-255.pbf", "https://g.test/C/0-255.pbf",
+    "https://g.test/Open Sans Regular,Arial Unicode MS Regular/0-255.pbf",
+  ]);
+  for (const url of fetched) assert.ok(takePreload(url), url);
+});

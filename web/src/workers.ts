@@ -11,6 +11,23 @@ export interface Spawned {
   port: MessagePort;
 }
 
+/** A map's job workers and placement worker. */
+export interface Workers {
+  jobs: Spawned[];
+  placement: Spawned;
+}
+
+/** `jobs` job workers and the placement worker, loading their scripts
+ * while `module` compiles. */
+export function spawnWorkers(module: Promise<WebAssembly.Module>, jobs: number): Workers {
+  return { jobs: Array.from({ length: jobs }, () => spawnJob(module)), placement: spawnPlacement(module) };
+}
+
+/** Stops workers a map didn't start with. */
+export function terminateWorkers({ jobs, placement }: Workers): void {
+  for (const { worker } of [...jobs, placement]) worker.terminate();
+}
+
 /** A job worker. It loads its script while `module` compiles, and gets
  * it once it has. */
 export function spawnJob(module: WebAssembly.Module | Promise<WebAssembly.Module>): Spawned {

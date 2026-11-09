@@ -9,7 +9,7 @@ import { startMain, type Core, type Host } from "./hosts.ts";
 import { Videos, type VideoEventObject } from "./videos.ts";
 import { attachInput } from "./input.ts";
 import { preloadStyle } from "./preload.ts";
-import { defaultJobWorkers } from "./workers.ts";
+import { defaultJobWorkers, spawnWorkers, terminateWorkers } from "./workers.ts";
 import { transaction, type FeatureTarget, type Transaction } from "./transaction.ts";
 import type {
   Bounds, Camera, CameraOptions, Constraints, EaseOptions, Feature, FitOptions, FlyOptions, FreeCamera, Padding,
@@ -199,7 +199,9 @@ export class OrbisMap {
     const online = () => { this.#host.core.retryFailedTiles(); this.#request(); };
     addEventListener("online", online);
     this.#detach.push(() => removeEventListener("online", online));
-    this.#request();
+    // The style goes in and its tiles are asked for as soon as the app's
+    // own setup has run, without waiting for the first frame.
+    this.wake();
   }
 
   /** The canvas the map draws into and takes input from. */
@@ -611,13 +613,17 @@ async function noWebgpu(): Promise<string | undefined> {
 /** Creates a map filling `options.container`. Resolves once it can take calls; its style loads on.
  * Rejects, saying why, where the browser has no WebGPU. */
 export async function createMap(options: MapOptions): Promise<OrbisMap> {
-  // The style's first fetches start, and core.wasm downloads and compiles,
-  // while WebGPU is checked.
-  preloadStyle(options.style, options.pixelRatio ?? devicePixelRatio);
+  // The style's first fetches start, core.wasm downloads and compiles,
+  // and the workers load, while WebGPU is checked.
+  preloadStyle(options.style, options.pixelRatio ?? devicePixelRatio, options.camera?.zoom);
   const module = WebAssembly.compileStreaming(fetch(CORE));
   module.catch(() => {});
+  const workers = spawnWorkers(module, options.jobWorkers ?? defaultJobWorkers());
   const missing = await noWebgpu();
-  if (missing) throw new Error(`Orbis needs WebGPU, and ${missing}`);
+  if (missing) {
+    terminateWorkers(workers);
+    throw new Error(`Orbis needs WebGPU, and ${missing}`);
+  }
   const frame = document.createElement("div");
   Object.assign(frame.style, { position: "relative", width: "100%", height: "100%", overflow: "hidden" });
   const canvas = document.createElement("canvas");
@@ -639,7 +645,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     localIdeographFontFamily: options.localIdeographFontFamily, antialias: options.antialias,
     terrainSkirts: options.terrainSkirts, previews: options.previews, stableLabels: options.stableLabels,
   };
-  const host = await startMain(module, canvas, style, core, options.jobWorkers ?? defaultJobWorkers(), {
+  const host = await startMain(module, workers, canvas, style, core, {
     wake: () => map?.wake(),
     error: (e) => (map ? map.fail(e) : console.error(e)),
     setup: (core) => {

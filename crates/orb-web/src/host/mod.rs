@@ -33,28 +33,31 @@ impl ImageDecode for WebImageDecode {
 }
 
 thread_local! {
-    /// The browser's word segmenter, made once per context.
-    static WORDS: Option<JsValue> = word_segmenter();
+    /// The browser's word segmenter, made once per context when first
+    /// asked for: making one takes 4–6 ms, which a worker's first tiles
+    /// would wait for.
+    static WORDS: Option<JsValue> = word_segmenter_class().and_then(|segmenter| {
+        let options = js_sys::Object::new();
+        Reflect::set(&options, &"granularity".into(), &"word".into()).ok()?;
+        let args = js_sys::Array::of2(&JsValue::UNDEFINED, &options);
+        Reflect::construct(&segmenter, &args).ok()
+    });
 }
 
-/// `new Intl.Segmenter(undefined, {granularity: "word"})`, as GL JS makes
-/// it, where the browser has one.
-fn word_segmenter() -> Option<JsValue> {
+/// `Intl.Segmenter`, where the browser has one; GL JS makes its word
+/// segmenter as `new Intl.Segmenter(undefined, {granularity: "word"})`.
+fn word_segmenter_class() -> Option<js_sys::Function> {
     let intl = Reflect::get(&js_sys::global(), &"Intl".into()).ok()?;
-    let segmenter = Reflect::get(&intl, &"Segmenter".into())
+    Reflect::get(&intl, &"Segmenter".into())
         .ok()?
         .dyn_into::<js_sys::Function>()
-        .ok()?;
-    let options = js_sys::Object::new();
-    Reflect::set(&options, &"granularity".into(), &"word".into()).ok()?;
-    let args = js_sys::Array::of2(&JsValue::UNDEFINED, &options);
-    Reflect::construct(&segmenter, &args).ok()
+        .ok()
 }
 
 /// Words in scripts written without spaces, from the browser's
 /// `Intl.Segmenter` (as GL JS takes them), where it has one.
 pub(crate) fn browser_words() -> Option<orb_text::WordBreaker> {
-    WORDS.with(Option::is_some).then(|| {
+    word_segmenter_class().is_some().then(|| {
         orb_text::WordBreaker::from_host(Box::new(|text: &str| {
             WORDS.with(|segmenter| word_starts(segmenter.as_ref(), text))
         }))

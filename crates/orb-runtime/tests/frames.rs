@@ -857,6 +857,29 @@ mod tests {
         assert_eq!((report.idle, shown), (true, Some(1.0)));
     }
 
+    /// Before the first frame, `prepare` takes the style in and asks for
+    /// what it shows, so the first frame draws it all, labels placed.
+    #[test]
+    fn prepare_before_the_first_frame_asks_for_the_view() {
+        let mut offscreen = null_island(
+            r#"{"version":8,
+            "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
+            "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
+        );
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_millis(500) {
+            let (map, gpu, format) = (&mut offscreen.map, &mut offscreen.gpu, offscreen.format);
+            let renderer = offscreen
+                .renderer
+                .get_or_insert_with(|| map.create_renderer(gpu, format));
+            map.prepare(gpu, renderer, offscreen.viewport, 1.0);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let report = offscreen.frame();
+        let shown = offscreen.map.shown_labels().get("Null Island").copied();
+        assert_eq!((report.idle, shown), (true, Some(1.0)));
+    }
+
     /// While the camera moves, frames come at the display's rate and the
     /// view is about to change: `prepare` leaves arrivals to them.
     #[test]

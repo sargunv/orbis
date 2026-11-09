@@ -5,7 +5,7 @@ import init, { createMap as createCoreMap, reloadRegions, setPreloads, setReques
 import { takePreload } from "./preload.ts";
 import { onRegionsChanged } from "./regions.ts";
 import { answerWorker, connectModule, connectWorker } from "./requests.ts";
-import { spawnJob, spawnPlacement } from "./workers.ts";
+import { spawnJob, spawnPlacement, terminateWorkers, type Workers } from "./workers.ts";
 
 export type { Core };
 
@@ -50,9 +50,9 @@ export interface Host {
 }
 
 /** The map on this thread, drawing into `canvas`, once `compiling` has
- * compiled core.wasm; its workers start meanwhile. */
-export async function startMain(compiling: Promise<WebAssembly.Module>, canvas: HTMLCanvasElement, style: string,
-  options: CoreOptions, jobWorkers: number, callbacks: HostCallbacks): Promise<Host> {
+ * compiled core.wasm; `workers`, spawned on the same module, are its. */
+export async function startMain(compiling: Promise<WebAssembly.Module>, workers: Workers, canvas: HTMLCanvasElement,
+  style: string, options: CoreOptions, callbacks: HostCallbacks): Promise<Host> {
   const receive = (apply: (data: unknown) => void) => ({ data }: MessageEvent) => {
     try {
       apply(data);
@@ -63,9 +63,9 @@ export async function startMain(compiling: Promise<WebAssembly.Module>, canvas: 
   // Replies still on their way when the map stops find it gone.
   let stopped = false;
   const reply = (apply: (data: unknown) => void) => receive((data) => { if (!stopped) apply(data); });
-  const jobs = Array.from({ length: jobWorkers }, () => spawnJob(compiling));
+  const jobs = workers.jobs;
   const ports = jobs.map((j) => j.port);
-  let placement = spawnPlacement(compiling);
+  let placement = workers.placement;
   let module: WebAssembly.Module;
   let core: Core;
   try {
@@ -77,7 +77,7 @@ export async function startMain(compiling: Promise<WebAssembly.Module>, canvas: 
       (worker: number, message: unknown) => ports[worker].postMessage(message),
       (message: unknown, transfer: Transferable[]) => placement.port.postMessage(message, transfer));
   } catch (e) {
-    for (const { worker } of [...jobs, placement]) worker.terminate();
+    terminateWorkers(workers);
     throw e;
   }
   // A placement worker whose wasm trapped says so and closes; one that
