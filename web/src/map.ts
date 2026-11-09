@@ -637,7 +637,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
   const core = {
     fadeDuration: options.fadeDuration, crossSourceCollisions: options.crossSourceCollisions,
     localIdeographFontFamily: options.localIdeographFontFamily, antialias: options.antialias,
-    terrainSkirts: options.terrainSkirts, previews: options.previews,
+    terrainSkirts: options.terrainSkirts, previews: options.previews, stableLabels: options.stableLabels,
   };
   const host = await startMain(module, canvas, style, core, options.jobWorkers ?? defaultJobWorkers(), {
     wake: () => map?.wake(),

@@ -189,6 +189,12 @@ export interface MapOptions {
    * preview that is off warns and its inputs fall back to their defaults.
    * None by default. */
   previews?: readonly string[] | "all";
+  /** Whether labels keep their place while the camera moves, as MapLibre
+   * Native keeps them: a label tries its previous variable anchor first (in
+   * tilted views, only that anchor), and in tilted views labels shown before
+   * are placed before new and hidden ones. What labels show then depends on
+   * how the camera got there; off, on the camera alone. True by default. */
+  stableLabels?: boolean;
   /** How many job workers lay out tiles; by default
    * `clamp(hardwareConcurrency − 2, 1, 4)`. */
   jobWorkers?: number;

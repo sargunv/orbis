@@ -131,6 +131,14 @@ pub struct Frame {
     pub ground: Option<GroundRef>,
     /// Where labels collide.
     pub scope: Scope,
+    /// In [`Scope::Viewport`], labels keep their place across placements
+    /// as MapLibre Native keeps them: each label tries its previous
+    /// variable anchor first (in tilted views, only that anchor), and in
+    /// tilted views labels shown before are placed before new ones, and
+    /// those before labels hidden before. What a placement shows then
+    /// depends on the placements before it; without this it depends on
+    /// the frame alone.
+    pub stable_labels: bool,
 }
 
 /// Where a placement collides labels.
@@ -586,6 +594,7 @@ impl Placer {
             Scope::Tiles(tiles) => self.place_tiles(frame, tiles),
             Scope::Viewport | Scope::Still => {
                 let mut placer = Pass::new(camera, self.prev.as_ref(), ground);
+                placer.stable = frame.stable_labels && frame.scope == Scope::Viewport;
                 placer.run(&self.buckets, &layers, frame.cross_source_collisions);
                 placer.now
             }
@@ -724,6 +733,8 @@ struct Pass<'a> {
     /// The layer being placed, topmost first, and its part's sort key.
     layer: u32,
     sort_key: f64,
+    /// Labels keep their place ([`Frame::stable_labels`]).
+    stable: bool,
 }
 
 impl<'a> Pass<'a> {
@@ -744,7 +755,18 @@ impl<'a> Pass<'a> {
             record: None,
             layer: 0,
             sort_key: 0.0,
+            stable: false,
         }
+    }
+
+    /// The previous placement, when labels keep their place.
+    fn stable_prev(&self) -> Option<&'a Decisions> {
+        self.prev.filter(|_| self.stable)
+    }
+
+    /// The view is tilted (MapLibre Native's `isTiltedView`).
+    fn tilted(&self) -> bool {
+        self.camera.pitch != 0.0
     }
 
     /// Places `layers`, topmost first.
@@ -811,7 +833,7 @@ impl<'a> Pass<'a> {
         let pixel_ratio = 512.0 / EXTENT;
         let text_translation = translation(self.camera, &tile.view, p.text_translate);
         let icon_translation = translation(self.camera, &tile.view, p.icon_translate);
-        let order: Vec<usize> = if p.z_order_viewport_y {
+        let mut order: Vec<usize> = if p.z_order_viewport_y {
             let (sin, cos) = (
                 libm::sin(-self.camera.bearing),
                 libm::cos(-self.camera.bearing),
@@ -829,6 +851,15 @@ impl<'a> Pass<'a> {
         } else {
             range.collect()
         };
+        // MapLibre Native's `getSortedSymbols`: in a tilted view, labels
+        // shown before go first, then new ones, then those hidden before.
+        if let Some(prev) = self.stable_prev().filter(|_| self.tilted()) {
+            order.sort_by_key(|&i| match prev.placements.get(&b.ids[i]) {
+                Some(p) if p.text || p.icon => 0,
+                None => 1,
+                Some(_) => 2,
+            });
+        }
         for i in order {
             let instance = &t.instances[i];
             let id = b.ids[i];
@@ -1125,9 +1156,23 @@ impl<'a> Pass<'a> {
         let width = text_box.x2 - text_box.x1;
         let height = text_box.y2 - text_box.y1;
         let scale = f64::from(instance.text_box_scale);
-        // GL JS tries each label's previous anchor first, so where a label
-        // stands depends on the placements before it. Orbis tries anchors in
-        // the style's order: a frame's labels depend on its camera alone.
+        // Anchors in the style's order, so that a frame's labels depend on
+        // its camera alone; or, as MapLibre Native does when labels keep
+        // their place, the label's previous anchor first, and in a tilted
+        // view that anchor alone.
+        let reordered: Vec<AnchorOffset>;
+        let mut offsets = offsets;
+        if let Some(prev) = self.stable_prev().and_then(|p| p.variable_offsets.get(&id))
+            && let Some(found) = offsets.iter().position(|o| o.text_anchor() == prev.anchor)
+            && found != 0
+        {
+            let first = offsets[found];
+            let rest = offsets.iter().filter(|o| o.text_anchor() != prev.anchor);
+            reordered = std::iter::once(first)
+                .chain(rest.filter(|_| !self.tilted()).copied())
+                .collect();
+            offsets = &reordered;
+        }
         let passes = if p.text_overlap == Overlap::Never {
             1
         } else {
@@ -1450,6 +1495,7 @@ mod tests {
             lng: 0.0,
             ground: None,
             scope: Scope::Viewport,
+            stable_labels: false,
         }
     }
 
@@ -1918,5 +1964,106 @@ mod tests {
         }];
         let c = placer.place(&frame(layer, 0.0, 300.0));
         assert_eq!(word(&c.changed[0].2, 0) & state::OPACITY, 127);
+    }
+
+    /// Where label 2 stands after two placements: centred or below its
+    /// anchor (`top`), with label 1 of an upper layer pushing it below in
+    /// the first, then at `block` (or gone) in the second. `None`: hidden.
+    fn second_anchor(stable: bool, pitch: f64, block: Option<i16>) -> Option<f32> {
+        let mut t = labels(&[(2, [4096, 4112])]);
+        t.anchor_offsets = [1, 4]
+            .map(|anchor| AnchorOffset {
+                anchor,
+                offset: [0.0; 2],
+            })
+            .to_vec();
+        t.instances[0].anchor_offsets = [0, 2];
+        let mut placer = Placer::default();
+        placer.ingest(1, t);
+        placer.ingest(2, labels(&[(1, [4096, 4096])]));
+        if let Some(y) = block {
+            placer.ingest(3, labels(&[(3, [4096, y])]));
+        }
+        let mut p = params(7);
+        p.variable_placement = true;
+        let place = |placer: &mut Placer, upper: u64, now: f64| {
+            let mut f = frame(
+                vec![
+                    LayerFrame {
+                        params: p.clone(),
+                        tiles: vec![tile(1, 0)],
+                    },
+                    LayerFrame {
+                        params: params(8),
+                        tiles: vec![tile(upper, 0)],
+                    },
+                ],
+                now,
+                300.0,
+            );
+            f.camera.pitch = pitch;
+            f.stable_labels = stable;
+            placer.place(&f);
+        };
+        place(&mut placer, 2, 0.0);
+        let states = &placer.buckets[&(1, 0)].states;
+        assert_eq!(f32::from_bits(states.text[2]), 8.0, "pushed below");
+        place(&mut placer, if block.is_some() { 3 } else { 0 }, 1000.0);
+        let states = &placer.buckets[&(1, 0)].states;
+        shown(word(states, 0)).then(|| f32::from_bits(states.text[2]))
+    }
+
+    #[test]
+    fn stable_labels_try_their_previous_anchor_first() {
+        // Label 1 leaves: a stable label stays below, others centre again.
+        assert_eq!(second_anchor(false, 0.0, None), Some(0.0));
+        assert_eq!(second_anchor(true, 0.0, None), Some(8.0));
+        assert_eq!(second_anchor(true, 0.5, None), Some(8.0));
+        // Something now stands below: untilted, a stable label falls back
+        // to the next anchor; tilted, MapLibre Native tries the previous
+        // anchor alone.
+        assert_eq!(second_anchor(false, 0.5, Some(4136)), Some(0.0));
+        assert_eq!(second_anchor(true, 0.0, Some(4136)), Some(0.0));
+        assert_eq!(second_anchor(true, 0.5, Some(4136)), None);
+    }
+
+    #[test]
+    fn stable_labels_place_shown_ones_first_in_tilted_views() {
+        // Labels X and Y of one bucket overlap; label Z of an upper layer
+        // overlaps X alone. With Z, Y shows; without, X wins in bucket
+        // order unless, in a tilted view, Y shown before goes first.
+        let shown_after = |stable: bool, pitch: f64| {
+            let mut placer = Placer::default();
+            placer.ingest(1, labels(&[(1, [4096, 4096]), (2, [4140, 4096])]));
+            placer.ingest(2, labels(&[(3, [4050, 4096])]));
+            let mut both = frame(
+                vec![
+                    LayerFrame {
+                        params: params(7),
+                        tiles: vec![tile(1, 0)],
+                    },
+                    LayerFrame {
+                        params: params(8),
+                        tiles: vec![tile(2, 0)],
+                    },
+                ],
+                0.0,
+                300.0,
+            );
+            both.camera.pitch = pitch;
+            both.stable_labels = stable;
+            placer.place(&both);
+            let states = &placer.buckets[&(1, 0)].states;
+            assert!(!shown(word(states, 0)) && shown(word(states, 1)));
+            let mut alone = both.clone();
+            alone.layers.pop();
+            alone.now = 1000.0;
+            placer.place(&alone);
+            let states = &placer.buckets[&(1, 0)].states;
+            [0, 1].map(|i| shown(word(states, i)))
+        };
+        assert_eq!(shown_after(false, 0.5), [true, false]);
+        assert_eq!(shown_after(true, 0.0), [true, false]);
+        assert_eq!(shown_after(true, 0.5), [false, true]);
     }
 }

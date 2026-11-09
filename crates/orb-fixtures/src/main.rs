@@ -303,6 +303,10 @@ pub(crate) fn map(runtime: &Runtime, metadata: &Metadata) -> Map {
             local_ideograph_font_family: metadata.local_ideographs.clone(),
             antialias: false,
             terrain_skirts: metadata.terrain_skirts,
+            // GL JS's tests expect labels placed for the camera alone,
+            // not as MapLibre Native's stabilisers keep them from the
+            // placements while the test loads.
+            stable_labels: false,
             ..MapOptions::default()
         },
     );

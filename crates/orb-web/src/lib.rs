@@ -231,11 +231,11 @@ impl From<&orb_runtime::Memory> for FrameMemory {
 /// until it moves. Video sources play on the page (`web/src/videos.ts`):
 /// see [`take_events`](OrbisMap::take_events) and
 /// [`video_frame`](OrbisMap::video_frame); canvas sources show what
-/// [`source_frame`](OrbisMap::source_frame) hands in. `options` holds GL
-/// JS's map options by name, each optional: `fadeDuration`,
+/// [`source_frame`](OrbisMap::source_frame) hands in. `options` holds map
+/// options by name, each optional: `fadeDuration`,
 /// `crossSourceCollisions`, `localIdeographFontFamily` (`false` draws the
 /// style's glyphs), `antialias` and `terrainSkirts`; and Orbis's
-/// `previews`, an array of preview names or `"all"`.
+/// `previews`, an array of preview names or `"all"`, and `stableLabels`.
 #[wasm_bindgen(js_name = createMap)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_map(
@@ -308,6 +308,9 @@ pub async fn create_map(
             web_sys::console::warn_1(&format!("orbis: unknown previews {unknown:?}").into());
         }
         map.set_previews(previews);
+    }
+    if let Some(stable) = option("stableLabels").and_then(|v| v.as_bool()) {
+        map.set_stable_labels(stable);
     }
     // The style loads while the GPU device is made.
     map.load_style_url(&style_url);

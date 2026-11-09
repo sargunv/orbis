@@ -51,6 +51,14 @@ pub struct MapOptions {
     /// v8 spec, which warn and fall back to their defaults while off. None
     /// by default.
     pub previews: crate::Previews,
+    /// Whether labels keep their place while the camera moves, as
+    /// MapLibre Native keeps them: a label tries its previous variable
+    /// anchor first (in tilted views, only that anchor), and in tilted views
+    /// labels shown before are placed before new and hidden ones. What
+    /// labels show then depends on how the camera got there; off, it
+    /// depends on the camera alone. On by default; still and tile output
+    /// places afresh either way.
+    pub stable_labels: bool,
 }
 
 impl Default for MapOptions {
@@ -64,6 +72,7 @@ impl Default for MapOptions {
             antialias: true,
             terrain_skirts: true,
             previews: crate::Previews::NONE,
+            stable_labels: true,
         }
     }
 }
@@ -219,6 +228,7 @@ impl Map {
         map.set_antialias_3d(options.antialias);
         map.set_terrain_skirts(options.terrain_skirts);
         map.set_previews(options.previews);
+        map.set_stable_labels(options.stable_labels);
         Self {
             shared: runtime.shared.clone(),
             runtime: runtime.clone(),

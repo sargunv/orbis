@@ -628,6 +628,16 @@ impl Map {
         self.labels.cross_source_collisions = collide;
     }
 
+    /// Whether labels keep their place while the camera moves, as in
+    /// MapLibre Native (on by default): a label tries its previous variable
+    /// anchor first, and in tilted views labels shown before are placed
+    /// first. What labels show then depends on how the camera got there;
+    /// off, it depends on the camera alone. Still and tile output places
+    /// afresh either way.
+    pub fn set_stable_labels(&mut self, stable: bool) {
+        self.labels.stable_labels = stable;
+    }
+
     /// Draws ideographs (CJK and the like) of the default font stack with
     /// this CSS font family instead of the style's glyph PBFs, as GL JS's
     /// `localIdeographFontFamily` does; `sans-serif` by default, `None` to

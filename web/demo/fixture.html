@@ -118,6 +118,9 @@ window.fixture = async (r) => {
     constraints: { maxPitch: r.max_pitch }, fadeDuration: r.fade_duration, antialias: false,
     crossSourceCollisions: r.cross_source_collisions, localIdeographFontFamily: r.local_ideographs ?? false,
     terrainSkirts: r.terrain_skirts,
+    // GL JS's tests expect labels placed for the camera alone, not as MapLibre
+    // Native's stabilisers keep them from the placements while the test loads.
+    stableLabels: false,
   });
   map.on("warning", ({ message }) => warnings.push(message));
   map.on("error", ({ message }) => warnings.push(message));

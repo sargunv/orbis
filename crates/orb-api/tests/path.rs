@@ -59,6 +59,15 @@ fn steep() -> Constraints {
     }
 }
 
+/// A map's options for these tests: labels that depend on the camera
+/// alone, which MapLibre Native's stabilisers (on by default) don't.
+fn options() -> MapOptions {
+    MapOptions {
+        stable_labels: false,
+        ..MapOptions::default()
+    }
+}
+
 /// A camera: centre, zoom, bearing, pitch.
 type At = (Geodetic, f64, f64, f64);
 
@@ -87,7 +96,7 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
 
-    let mut moved = Map::new(&runtime, MapOptions::default());
+    let mut moved = Map::new(&runtime, options());
     moved.set_constraints(steep());
     moved.set_style_json(style).unwrap();
     moved.jump_to(&camera(start));
@@ -126,7 +135,7 @@ fn fresh_at(
     style: &str,
     at: At,
 ) -> (Vec<u8>, orb_api::CameraState) {
-    let mut fresh = Map::new(runtime, MapOptions::default());
+    let mut fresh = Map::new(runtime, options());
     fresh.set_constraints(steep());
     fresh.set_style_json(style).unwrap();
     fresh.jump_to(&camera(at));
@@ -248,7 +257,7 @@ fn panning_frame_by_frame_draws_what_a_fresh_map_does() {
     let style = tokyo("", "");
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
-    let mut map = Map::new(&runtime, MapOptions::default());
+    let mut map = Map::new(&runtime, options());
     map.set_style_json(&style).unwrap();
     // A circle of about 300 m around the station.
     let at = |f: u32| {
@@ -507,7 +516,7 @@ fn an_alpine_view_at_rest_redoes_nothing() {
     let (alps, _dem) = alps();
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
-    let mut map = Map::new(&runtime, MapOptions::default());
+    let mut map = Map::new(&runtime, options());
     map.set_style_json(&alps).unwrap();
     map.jump_to(&camera((Geodetic::new(7.95, 46.0), 11.2, 0.0, 30.0)));
     settle(&mut map, &mut target);
@@ -537,7 +546,7 @@ fn every_terrain_view_fits_the_drape_atlas() {
         (Geodetic::new(7.57349, 45.87721), 14.58, 43.5, 85.0),
         (crest, 22.0, -167.1, 0.0),
     ] {
-        let mut map = Map::new(&runtime, MapOptions::default());
+        let mut map = Map::new(&runtime, options());
         map.set_style_json(&alps).unwrap();
         map.jump_to(&camera(at));
         settle(&mut map, &mut target);
@@ -575,7 +584,7 @@ fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
     let at = |bearing| (Geodetic::new(7.7491, 46.0207), 11.6, bearing, 72.0);
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
-    let mut moved = Map::new(&runtime, MapOptions::default());
+    let mut moved = Map::new(&runtime, options());
     moved.set_style_json(&style).unwrap();
     moved.edit(&hide).unwrap();
     moved.jump_to(&camera(at(-72.0)));
@@ -604,7 +613,7 @@ fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
     }
     let turned = target.read_pixels().unwrap();
     drop(moved);
-    let mut fresh = Map::new(&runtime, MapOptions::default());
+    let mut fresh = Map::new(&runtime, options());
     fresh.set_style_json(&style).unwrap();
     fresh.edit(&hide).unwrap();
     fresh.jump_to(&camera(at(-32.0)));
@@ -652,7 +661,7 @@ fn a_fast_zoom_drapes_state_paint_of_its_new_zoom() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
     let at = |zoom| (Geodetic::new(lon, lat), zoom, 0.0, 0.0);
-    let mut moved = Map::new(&runtime, MapOptions::default());
+    let mut moved = Map::new(&runtime, options());
     moved.set_style_json(&style).unwrap();
     moved.edit(&hover).unwrap();
     moved.jump_to(&camera(at(10.0)));
@@ -661,7 +670,7 @@ fn a_fast_zoom_drapes_state_paint_of_its_new_zoom() {
     moved.render(&mut target, 0.0).unwrap();
     let jumped = centre(&target.read_pixels().unwrap());
     drop(moved);
-    let mut fresh = Map::new(&runtime, MapOptions::default());
+    let mut fresh = Map::new(&runtime, options());
     fresh.set_style_json(&style).unwrap();
     fresh.edit(&hover).unwrap();
     fresh.jump_to(&camera(at(16.0)));
@@ -685,7 +694,7 @@ fn camera_only_frames_write_no_rows() {
     ] {
         let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
         let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
-        let mut map = Map::new(&runtime, MapOptions::default());
+        let mut map = Map::new(&runtime, options());
         map.set_style_json(&style).unwrap();
         let at = |step: f64| (STATION, 14.2 + step * 0.01, step, 20.0);
         map.jump_to(&camera(at(0.0)));
@@ -723,7 +732,7 @@ fn zoom_22_draws_to_the_pixel() {
         e = lon + 0.01,
         n = lat + 0.01,
     );
-    let mut map = Map::new(&runtime, MapOptions::default());
+    let mut map = Map::new(&runtime, options());
     map.set_style_json(&style).unwrap();
     // A few metres apart: tens of pixels at zoom 22.
     for (dlon, dlat) in [(0.0, 0.0), (2.37e-6, -1.13e-6), (-3.11e-6, 0.9e-6)] {
@@ -759,7 +768,7 @@ fn zoom_22_draws_to_the_pixel() {
 fn an_emptied_view_gives_its_memory_back() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
-    let mut map = Map::new(&runtime, MapOptions::default());
+    let mut map = Map::new(&runtime, options());
     map.set_style_json(&tokyo("", "")).expect("style");
     let mut memory = |map: &mut Map, at: At| {
         map.jump_to(&camera(at));
@@ -795,7 +804,7 @@ fn an_emptied_view_gives_its_memory_back() {
         let s = report.memory.scene;
         [s.vertices.allocated, s.indices.allocated, s.props.allocated]
     };
-    let mut fresh = Map::new(&runtime, MapOptions::default());
+    let mut fresh = Map::new(&runtime, options());
     fresh.set_style_json(empty).expect("style");
     assert_eq!(
         pools(&mut map, &mut target),
@@ -805,4 +814,60 @@ fn an_emptied_view_gives_its_memory_back() {
         ocean >> 20,
         emptied >> 20
     );
+}
+
+/// MapLibre Native's label stabilisers, on by default, make what labels
+/// show depend on how the camera got there; they must still settle. After
+/// a turning, tilting zoom the labels at rest stay put however often the
+/// same view is placed again.
+#[test]
+fn stable_labels_converge_and_stay_put() {
+    assert!(MapOptions::default().stable_labels);
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&tokyo("", "")).unwrap();
+    let start = (Geodetic::new(139.72, 35.67), 12.6, 0.0, 0.0);
+    let end = (STATION, 15.4, 35.0, 50.0);
+    map.jump_to(&camera(start));
+    settle(&mut map, &mut target);
+    let lerp = |a: f64, b: f64, t: f64| a + (b - a) * t;
+    for step in 1..=30 {
+        let t = f64::from(step) / 30.0;
+        map.jump_to(&camera((
+            Geodetic::new(
+                lerp(start.0.lon, end.0.lon, t),
+                lerp(start.0.lat, end.0.lat, t),
+            ),
+            lerp(start.1, end.1, t),
+            lerp(start.2, end.2, t),
+            lerp(start.3, end.3, t),
+        )));
+        map.render(&mut target, 0.0).unwrap();
+        std::thread::sleep(Duration::from_millis(8));
+    }
+    settle(&mut map, &mut target);
+    let shown = |map: &Map| {
+        let mut names: Vec<Box<str>> = map
+            .shown_labels()
+            .into_iter()
+            .filter(|&(_, opacity)| opacity > 0.5)
+            .map(|(name, _)| name)
+            .collect();
+        names.sort();
+        names
+    };
+    let rest = shown(&map);
+    assert!(rest.len() > 10, "labels show at rest: {rest:?}");
+    // A bearing a millionth of a degree off places the view again.
+    for i in 0..4 {
+        let nudge = if i % 2 == 0 { 1e-6 } else { 0.0 };
+        map.jump_to(&camera((end.0, end.1, end.2 + nudge, end.3)));
+        settle(&mut map, &mut target);
+        assert_eq!(
+            shown(&map),
+            rest,
+            "placing the view again ({i}) moved labels"
+        );
+    }
 }

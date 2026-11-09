@@ -12,7 +12,7 @@ export type { Core };
 /** How many times each job worker slot is given a new worker. */
 const REPLACEMENTS = 3;
 
-/** GL JS's map options the core takes at creation (`MapOptions`). */
+/** The map options the core takes at creation (`MapOptions`). */
 export interface CoreOptions {
   fadeDuration?: number;
   crossSourceCollisions?: boolean;
@@ -20,6 +20,7 @@ export interface CoreOptions {
   antialias?: boolean;
   terrainSkirts?: boolean;
   previews?: readonly string[] | "all";
+  stableLabels?: boolean;
 }
 
 export interface HostCallbacks {

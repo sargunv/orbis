@@ -172,6 +172,7 @@ fn same_inputs(a: &orb_symbol::Frame, b: &orb_symbol::Frame) -> bool {
         && a.cross_source_collisions == b.cross_source_collisions
         && a.ground == b.ground
         && a.scope == b.scope
+        && a.stable_labels == b.stable_labels
 }
 
 /// Per bucket, the world copies a placement draws.
@@ -459,6 +460,9 @@ pub(crate) struct Labels {
     pub(crate) cross_source_collisions: bool,
     /// The map's `localIdeographFontFamily`, for local raster jobs.
     pub(crate) ideographs: Option<String>,
+    /// Labels keep their place across placements, as in MapLibre Native
+    /// ([`orb_symbol::Frame::stable_labels`]).
+    pub(crate) stable_labels: bool,
 }
 
 impl std::fmt::Debug for Labels {
@@ -580,6 +584,7 @@ impl Labels {
             fade_duration: 300.0,
             cross_source_collisions: true,
             ideographs: Some("sans-serif".into()),
+            stable_labels: true,
         }
     }
 
@@ -1315,6 +1320,7 @@ impl Labels {
             lng: camera.target.lon,
             ground: None,
             scope: orb_symbol::Scope::Viewport,
+            stable_labels: self.stable_labels,
         }
     }
 
@@ -1789,6 +1795,7 @@ mod tests {
                 lng: 0.0,
                 ground: None,
                 scope: orb_symbol::Scope::Viewport,
+                stable_labels: false,
             }
         }
 
