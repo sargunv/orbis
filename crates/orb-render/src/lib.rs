@@ -163,6 +163,10 @@ struct Node {
     /// (`*-layer-opacity`, `*-layer-blend`): below opacity 1 or blending
     /// other than normally, the layer composites once.
     composite: Option<(u32, f32, Blend)>,
+    /// It has drawn since it was made: its pipelines were asked for, and
+    /// the bundles record it. Until then it costs nothing, neither
+    /// pipelines nor targets nor passes.
+    drawn: bool,
 }
 
 impl Node {
@@ -202,7 +206,8 @@ pub struct Renderer {
     symbol_passes: [BindGroupId; 3],
     symbol_pass_buffer: BufferId,
     symbol_pass_layout: BindGroupLayoutId,
-    /// Nodes changed since pipelines were last made for them.
+    /// Nodes changed since pipelines were last made for them, or one
+    /// may have started to draw.
     pipelines_stale: bool,
     /// Pipelines the device had compiled when the bundles were recorded.
     made_seen: u32,
@@ -778,6 +783,7 @@ impl Renderer {
                 terrain_layer: None,
                 shaded: false,
                 composite: None,
+                drawn: false,
             });
         }
         // Every group that bound the old uniforms is gone.
@@ -1261,6 +1267,7 @@ impl Renderer {
         let entry = &mut self.nodes[node as usize];
         if entry.cull.visible != visible {
             entry.cull.visible = visible;
+            self.pipelines_stale |= visible && !entry.drawn;
             self.scene.set_node(node, entry.scene_cull());
         }
     }
@@ -1283,19 +1290,28 @@ impl Renderer {
         self.atmosphere.set(gpu, self.target, frame, paint, view);
     }
 
-    /// Asks for the pipelines the nodes need and counts those compiling:
-    /// a frame is complete only once none are.
+    /// Asks for the pipelines the nodes that draw need and counts those
+    /// compiling: a frame is complete only once none are.
     pub fn pipelines(&mut self, gpu: &mut dyn Gpu) -> PipelineCounts {
-        if std::mem::take(&mut self.pipelines_stale) {
+        if std::mem::take(&mut self.pipelines_stale) | self.scene.take_nodes_filled() {
             self.make_pipelines(gpu);
         }
         gpu.poll_pipelines()
     }
 
-    /// Makes the pipelines the nodes draw with that aren't made yet, in
-    /// draw order: the device compiles them in the order they are asked
-    /// for (the cull's was first), and [`prioritize`](Self::prioritize)
-    /// moves what the view shows ahead.
+    /// Whether node `i` draws now: it is shown at this zoom and has
+    /// meshes. Only such nodes ask for pipelines, so a still compiles what
+    /// it shows and no more.
+    fn draws(&self, i: usize) -> bool {
+        self.nodes[i].cull.visible && self.scene.node_has_meshes(i as u32)
+    }
+
+    /// Makes the pipelines the nodes that draw need and that aren't made
+    /// yet, in draw order: the device compiles them in the order they are
+    /// asked for (the cull's was first), and
+    /// [`prioritize`](Self::prioritize) moves what the view shows ahead.
+    /// A node drawing for the first time records the bundles again, which
+    /// left it out.
     fn make_pipelines(&mut self, gpu: &mut dyn Gpu) {
         let layouts = [self.draw_layout, self.node_layout];
         let drape_target = TargetFormat {
@@ -1303,8 +1319,16 @@ impl Renderer {
             sample_count: 1,
         };
         let own_drape = self.target.color != DRAPE_FORMAT;
+        let (mut started, mut draped) = (false, false);
         for i in 0..self.nodes.len() {
-            let node = &self.nodes[i];
+            if !self.draws(i) {
+                continue;
+            }
+            let node = &mut self.nodes[i];
+            if !std::mem::replace(&mut node.drawn, true) {
+                started = true;
+                draped |= node.stack.is_some();
+            }
             let family = node.family;
             if node.shades_on_terrain() {
                 // The terrain pass shades it.
@@ -1328,12 +1352,22 @@ impl Renderer {
                         self.draw_layout,
                         family,
                     );
+                    if family == Family::Raster {
+                        self.downsampler.make(gpu);
+                    }
                 } else {
                     drape.paint.make(gpu, drape_target, &layouts, family);
                 }
                 continue;
             }
             self.make_node_pipeline(gpu, i);
+        }
+        if started {
+            self.invalidate_bundle(gpu);
+        }
+        if draped && let Some(terrain) = self.terrain.as_mut() {
+            // Slots drawn without them lack those layers.
+            terrain.redraw_all();
         }
     }
 
@@ -1358,6 +1392,10 @@ impl Renderer {
             }
             Family::Raster | Family::Hillshade | Family::ColorRelief => {
                 self.images.make(gpu, family);
+                if family == Family::Raster {
+                    // Raster pages are mipmapped.
+                    self.downsampler.make(gpu);
+                }
             }
             Family::Heatmap => self.heatmaps.make(gpu),
             Family::FillExtrusion => self.extrusions.make(gpu),
@@ -1566,16 +1604,21 @@ impl Renderer {
         let size = frame
             .viewport
             .map(|v| (v * frame.pixel_ratio).max(1.0) as u32);
+        // Only nodes that have drawn have targets.
         let mut resized = self.extrusions.resize(
             gpu,
             size,
-            self.nodes.iter().filter(|n| n.extrusion.is_some()).count() + terrain_layers,
+            self.nodes
+                .iter()
+                .filter(|n| n.drawn && n.extrusion.is_some())
+                .count()
+                + terrain_layers,
         );
         if let Some(terrain) = self.terrain.as_mut().filter(|_| terrain_on) {
             terrain.set_layers(gpu, &self.terrain_layers);
             resized |= terrain.resize(gpu, &mut self.composites, size, self.extrusions.samples);
         }
-        for node in &mut self.nodes {
+        for node in self.nodes.iter_mut().filter(|n| n.drawn) {
             if let Some(extrusion) = &mut node.extrusion {
                 resized |= self
                     .extrusions
@@ -1757,6 +1800,7 @@ impl Renderer {
         }
         for (index, node) in self.nodes.iter_mut().enumerate() {
             if let Some(heatmap) = &mut node.heatmap
+                && node.drawn
                 && cull_ready
                 && self.heatmaps.ready(gpu, &self.composites)
                 && let Some(pass) = self.heatmaps.prepare(
@@ -1797,7 +1841,11 @@ impl Renderer {
         let extrusions_ready = cull_ready && self.extrusions.ready(gpu, &self.composites);
         let (draw_group, buffers) = (self.draw_group, *self.scene.buffers());
         for (index, node) in self.nodes.iter_mut().enumerate() {
-            let Some(target) = node.extrusion.as_mut().filter(|_| extrusions_ready) else {
+            let Some(target) = node
+                .extrusion
+                .as_mut()
+                .filter(|_| extrusions_ready && node.drawn)
+            else {
                 continue;
             };
             let pass = self.extrusions.prepare(
@@ -1962,6 +2010,10 @@ impl Renderer {
             {
                 commands.extend(self.composites.commands(composite));
             }
+            return true;
+        }
+        if !node.drawn {
+            // Nothing to draw yet: drawing records the bundles again.
             return true;
         }
         if let Some(extrusion) = &node.extrusion {

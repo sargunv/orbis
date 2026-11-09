@@ -365,11 +365,12 @@ impl Images {
             usage,
             mip_levels: 1,
         };
+        // Mipmapped: a compute pass makes the levels, raster pages' once
+        // a raster node draws.
         if kind == PageKind::Dem {
             self.make_prepare(gpu);
+            downsampler.make(gpu);
         }
-        // Mipmapped: a compute pass makes the levels.
-        downsampler.make(gpu);
         let levels = |border: u32| 32 - (width.max(height) + 2 * border).max(1).leading_zeros();
         let textures = match kind {
             PageKind::Raster => vec![PageTexture {
