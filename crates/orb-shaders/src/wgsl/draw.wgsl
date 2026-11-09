@@ -41,7 +41,9 @@ fn terrain_depth_visibility(ndc: vec3<f32>) -> f32 {
 fn dem_pixel(p: vec2<i32>, layer: u32) -> f32 {
     let hi = vec2<i32>(textureDimensions(dem_pages)) - 1;
     let texel = textureLoad(dem_pages, clamp(p, vec2<i32>(0), hi), layer, 0);
-    return dot(vec4<f32>(texel.rgb * 255.0, -1.0), frame.dem_unpack);
+    // `dem_elevation`'s decode (`dem.wgsl`), terrarium's voids at sea level.
+    let void = frame.dem_unpack.w == 32768.0 && all(texel.rgb == vec3<f32>(0.0));
+    return select(dot(vec4<f32>(texel.rgb * 255.0, -1.0), frame.dem_unpack), 0.0, void);
 }
 
 // The terrain's elevation in metres, with exaggeration, under data point

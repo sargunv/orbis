@@ -2,6 +2,9 @@
 //! the terrain's camera, queries and culling (a CPU DEM, never a GPU
 //! readback).
 
+/// Terrarium's unpack offset: its black texel, −32768 m, marks no data.
+const TERRARIUM_OFFSET: f64 = 32768.0;
+
 /// A square DEM tile's elevations in metres, without exaggeration, rows
 /// top to bottom. Pixel `(i, j)` describes the cell centred at tile
 /// coordinate `((i + 0.5) / dim, (j + 0.5) / dim)`, as GL JS's `DEMData`
@@ -16,7 +19,9 @@ pub struct DemGrid {
 
 impl DemGrid {
     /// Decodes RGBA8 texels with GL JS's unpack vector: metres are
-    /// `r·x + g·y + b·z − w` over the 0–255 channels.
+    /// `r·x + g·y + b·z − w` over the 0–255 channels, except that
+    /// terrarium's no-data texel, black (−32768 m), reads as sea level, as
+    /// the GPU's decode reads it (`dem.wgsl`).
     pub fn from_rgba(dim: u32, texels: &[u8], unpack: [f64; 4]) -> Result<Self, String> {
         if texels.len() != (dim * dim * 4) as usize {
             return Err(format!(
@@ -31,6 +36,9 @@ impl DemGrid {
             .0
             .iter()
             .map(|t| {
+                if offset == TERRARIUM_OFFSET && t[..3] == [0, 0, 0] {
+                    return 0.0;
+                }
                 (f64::from(t[0]) * r + f64::from(t[1]) * g + f64::from(t[2]) * b - offset) as f32
             })
             .collect();
@@ -107,5 +115,19 @@ mod tests {
         assert_eq!(grid.texel(5, 5), 10.0, "clamped to the last pixel");
         assert_eq!((grid.min(), grid.max()), (-256.0, 258.5));
         assert!(DemGrid::from_rgba(3, &texels, terrarium).is_err());
+    }
+
+    #[test]
+    fn terrarium_no_data_is_sea_level() {
+        let terrarium = [256.0, 1.0, 1.0 / 256.0, 32768.0];
+        let mapbox = [6553.6, 25.6, 0.1, 10000.0];
+        // Voids, whatever their alpha, beside 258.5 m and −256 m.
+        let texels = [0, 0, 0, 255, 129, 2, 128, 255, 127, 0, 0, 255, 0, 0, 0, 0];
+        let grid = DemGrid::from_rgba(2, &texels, terrarium).unwrap();
+        assert_eq!((grid.texel(0, 0), grid.texel(1, 1)), (0.0, 0.0));
+        assert_eq!((grid.min(), grid.max()), (-256.0, 258.5));
+        // Mapbox's black is −10000 m, within Earth's range: data.
+        let grid = DemGrid::from_rgba(2, &texels, mapbox).unwrap();
+        assert_eq!(grid.texel(0, 0), -10000.0);
     }
 }
