@@ -89,8 +89,8 @@ pub struct FrameBlock {
     pub time: f32,
     /// The terrain elevated content stands on, if any.
     pub terrain: Option<FrameTerrain>,
-    /// v8's `light`; without it extrusions are black.
-    pub light: Option<FrameLight>,
+    /// v8's `light`.
+    pub light: FrameLight,
     /// The view's globe, when it is one at its zoom.
     pub globe: Option<FrameGlobe>,
 }
@@ -197,11 +197,9 @@ pub(crate) fn write_frame(gpu: &mut dyn Gpu, buffer: BufferId, frame: &FrameBloc
         b.f(f::TERRAIN_EXAGGERATION, &[t.exaggeration]);
         b.f(f::DEM_DIM, &[t.dem_dim]);
     }
-    if let Some(light) = frame.light {
-        let [red, green, blue] = light.color;
-        b.f(f::LIGHT_COLOR, &[red, green, blue, light.intensity]);
-        b.f(f::LIGHT_POSITION, &light.position);
-    }
+    let [red, green, blue] = frame.light.color;
+    b.f(f::LIGHT_COLOR, &[red, green, blue, frame.light.intensity]);
+    b.f(f::LIGHT_POSITION, &frame.light.position);
     let globe = frame.globe.map(|g| {
         b.f(f::GLOBE_VIEW_PROJ, g.view_proj.as_flattened());
         b.f(f::GLOBE_HORIZON, &g.horizon);
@@ -517,8 +515,6 @@ pub struct PoolMemory {
     pub used: u64,
     pub allocated: u64,
     pub ceiling: u64,
-    /// The largest free block: how fragmented the pool is.
-    pub largest_free: u64,
 }
 
 /// The scene's GPU memory by pool.
@@ -2002,7 +1998,6 @@ impl Scene {
             used: bytes(arena.used()),
             allocated: bytes(allocated),
             ceiling: bytes(ceiling.max(allocated)),
-            largest_free: bytes(arena.largest_free()),
         };
         let props = bytes(c.prop_words);
         SceneMemory {
@@ -2012,15 +2007,11 @@ impl Scene {
                 used: bytes(self.compacted_words),
                 allocated: bytes(c.compacted_words),
                 ceiling: bytes(c.max_compacted_words.max(c.compacted_words)),
-                largest_free: bytes(
-                    c.compacted_words - self.compacted_words.min(c.compacted_words),
-                ),
             },
             props: PoolMemory {
                 used: bytes(self.prop_arena.used()),
                 allocated: props,
                 ceiling: bytes(c.max_prop_words.max(c.prop_words)),
-                largest_free: bytes(self.prop_arena.largest_free()),
             },
             tables: (u64::from(c.placements) * TILE_WORDS as u64
                 + u64::from(c.chunks) * CHUNK_WORDS as u64

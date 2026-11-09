@@ -189,7 +189,19 @@ impl LayerType {
 
     /// A v8 type by its name.
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::V8.into_iter().find(|t| t.name() == name)
+        Some(match name {
+            "background" => Self::Background,
+            "fill" => Self::Fill,
+            "fill-extrusion" => Self::FillExtrusion,
+            "line" => Self::Line,
+            "circle" => Self::Circle,
+            "heatmap" => Self::Heatmap,
+            "raster" => Self::Raster,
+            "hillshade" => Self::Hillshade,
+            "color-relief" => Self::ColorRelief,
+            "symbol" => Self::Symbol,
+            _ => return None,
+        })
     }
 
     /// The type's properties: a contiguous run of the table.

@@ -135,7 +135,7 @@ pub struct TileWorker {
     /// The map's `localIdeographFontFamily`.
     ideographs: Option<String>,
     /// The plane GeoJSON tiles in, and sources' tile matrix sets.
-    surface: crate::SurfaceTiles,
+    surface: crate::surface::SurfaceTiles,
 }
 
 /// A tile job's outcome: the laid-out tile, or what its labels need first.
@@ -162,7 +162,7 @@ impl TileWorker {
             &[],
             0,
             None,
-            crate::SurfaceTiles::default(),
+            crate::surface::SurfaceTiles::default(),
         ))
     }
 
@@ -181,7 +181,7 @@ impl TileWorker {
         new_data: &[u32],
         revision: u64,
         ideographs: Option<String>,
-        surface: crate::SurfaceTiles,
+        surface: crate::surface::SurfaceTiles,
     ) -> Self {
         let plan = StylePlan::new(style, layer_keys, source_keys, revision);
         let data = match previous {
@@ -472,7 +472,7 @@ impl TileWorker {
         })
     }
 
-    pub(crate) fn surface(&self) -> &crate::SurfaceTiles {
+    pub(crate) fn surface(&self) -> &crate::surface::SurfaceTiles {
         &self.surface
     }
 
@@ -797,7 +797,7 @@ pub struct StyleUpdate {
     pub local_ideographs: Option<String>,
     /// The plane GeoJSON sources tile in and the tile matrix sets of
     /// sources not in `WebMercatorQuad`.
-    pub surface: crate::SurfaceTiles,
+    pub surface: crate::surface::SurfaceTiles,
 }
 
 /// A tile for a job to load and lay out.
@@ -1051,7 +1051,7 @@ pub(crate) mod tests {
             "layers":[{"id":"c","type":"circle","source":"geo"}]}"#;
         let plain = TileWorker::new(style).unwrap();
         let worker = TileWorker {
-            surface: crate::SurfaceTiles {
+            surface: crate::surface::SurfaceTiles {
                 plane: Some(polar_plane()),
                 sources: Vec::new(),
             },
@@ -1104,7 +1104,7 @@ pub(crate) mod tests {
                 }],
             )],
             local_ideographs: Some("Hiragino Sans".into()),
-            surface: crate::SurfaceTiles {
+            surface: crate::surface::SurfaceTiles {
                 plane: Some(polar_plane()),
                 sources: vec![("geo".into(), TileMatrixSet::by_id("NZTM2000Quad").unwrap())],
             },

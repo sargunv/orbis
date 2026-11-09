@@ -14,9 +14,10 @@ use orb_host::jobs::Executor;
 use orb_host::{Fetch, FetchError, FontFiles};
 
 use crate::glyphs::{GlyphRaster, LocalGlyphs, RasterDone};
+use crate::loader::TileLoader;
 use crate::style::ImageKind;
 use crate::worker::{Built, StyleUpdate, TileRequest, TileWorker};
-use crate::{FeatureRequest, FeaturesDone, SpriteIcons, TileBuild, TileLoader};
+use crate::{FeatureRequest, FeaturesDone, SpriteIcons, TileBuild};
 
 /// What a tile load came to.
 #[derive(Debug)]
@@ -32,7 +33,7 @@ pub enum Loaded {
 }
 
 /// Called once with a load's outcome, on any thread.
-pub type LoadedDone = Box<dyn FnOnce(Result<Loaded, String>) + Send>;
+pub(crate) type LoadedDone = Box<dyn FnOnce(Result<Loaded, String>) + Send>;
 
 /// Loads of a source's data document in flight, by style and source: the
 /// requests waiting on each.

@@ -50,13 +50,13 @@ fn run(placer: &mut Placer, message: Message) {
 /// panics fails, and the thread goes on with a fresh placer; a thread that
 /// died is replaced. Either way the lane has `restarted`.
 #[derive(Debug)]
-pub struct ThreadPlacement {
+pub(crate) struct ThreadPlacement {
     sender: Mutex<Sender<Message>>,
     restarted: Arc<AtomicBool>,
 }
 
 impl ThreadPlacement {
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         let restarted = Arc::new(AtomicBool::new(false));
         Arc::new(Self {
             sender: Mutex::new(spawn(Arc::clone(&restarted))),

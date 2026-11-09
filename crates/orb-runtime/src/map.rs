@@ -470,7 +470,7 @@ pub(crate) fn full_update(
     doc: &StyleDoc,
     revision: u64,
     local_ideographs: Option<String>,
-    surface: crate::SurfaceTiles,
+    surface: crate::surface::SurfaceTiles,
 ) -> StyleUpdate {
     StyleUpdate {
         revision,
@@ -505,7 +505,7 @@ pub(crate) fn revise(
     new_data: &[u32],
     revision: u64,
     local_ideographs: Option<String>,
-    surface: crate::SurfaceTiles,
+    surface: crate::surface::SurfaceTiles,
 ) -> TileWorker {
     TileWorker::with_style(
         previous,
@@ -1159,9 +1159,15 @@ impl Map {
             }
             style.symbol_tiles.clear();
         }
-        let frame_light = model
-            .as_deref()
-            .map(|s| crate::light::frame_light(&s.light, zoom, self.camera.state().bearing));
+        let default_light;
+        let light = match model.as_deref() {
+            Some(s) => &s.light,
+            None => {
+                default_light = orb_style::v8::default_light();
+                &default_light
+            }
+        };
+        let frame_light = crate::light::frame_light(light, zoom, self.camera.state().bearing);
         let mut frame_terrain = None;
         if let Some(style) = &mut self.style
             && !std::mem::replace(&mut style.glyphs_fetched, true)

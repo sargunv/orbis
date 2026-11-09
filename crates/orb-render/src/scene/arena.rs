@@ -51,7 +51,8 @@ impl Arena {
     }
 
     /// The largest block one allocation can take.
-    pub(crate) fn largest_free(&self) -> u32 {
+    #[cfg(test)]
+    fn largest_free(&self) -> u32 {
         self.free.values().copied().max().unwrap_or(0)
     }
 

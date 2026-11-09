@@ -177,8 +177,6 @@ pub struct FrameMemory {
     pub vertices_allocated: f64,
     #[wasm_bindgen(readonly, js_name = verticesCeiling)]
     pub vertices_ceiling: f64,
-    #[wasm_bindgen(readonly, js_name = verticesLargestFree)]
-    pub vertices_largest_free: f64,
     #[wasm_bindgen(readonly, js_name = indicesUsed)]
     pub indices_used: f64,
     #[wasm_bindgen(readonly, js_name = indicesAllocated)]
@@ -189,10 +187,6 @@ pub struct FrameMemory {
     pub compacted_used: f64,
     #[wasm_bindgen(readonly, js_name = compactedAllocated)]
     pub compacted_allocated: f64,
-    #[wasm_bindgen(readonly, js_name = propsUsed)]
-    pub props_used: f64,
-    #[wasm_bindgen(readonly, js_name = propsAllocated)]
-    pub props_allocated: f64,
     /// Tile pages, glyph pages and the icon and pattern atlas.
     #[wasm_bindgen(readonly)]
     pub textures: f64,
@@ -213,14 +207,11 @@ impl From<&orb_runtime::Memory> for FrameMemory {
             vertices_used: s.vertices.used as f64,
             vertices_allocated: s.vertices.allocated as f64,
             vertices_ceiling: s.vertices.ceiling as f64,
-            vertices_largest_free: s.vertices.largest_free as f64,
             indices_used: s.indices.used as f64,
             indices_allocated: s.indices.allocated as f64,
             indices_ceiling: s.indices.ceiling as f64,
             compacted_used: s.compacted.used as f64,
             compacted_allocated: s.compacted.allocated as f64,
-            props_used: s.props.used as f64,
-            props_allocated: s.props.allocated as f64,
             textures: (m.tile_textures + m.glyph_textures + m.image_atlas) as f64,
             cached_tiles: m.cached_tiles,
             cached: m.cached as f64,

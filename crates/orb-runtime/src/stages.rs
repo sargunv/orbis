@@ -41,7 +41,7 @@ impl Stages {
             &[],
             0,
             local_ideographs,
-            crate::SurfaceTiles::default(),
+            crate::surface::SurfaceTiles::default(),
         );
         if let Some(local) = local {
             worker.set_local_glyphs(local);

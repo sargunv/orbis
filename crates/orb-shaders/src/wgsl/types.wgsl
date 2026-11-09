@@ -55,14 +55,12 @@ struct Frame {
     dem_unpack: vec4<f32>,
     terrain_exaggeration: f32,
     dem_dim: f32,
-    // The target's clip w (orb-camera's `View::camera_to_center`).
-    camera_to_center: f32,
-    _pad4: f32,
     // v8's `light` (see lighting.wgsl): its premultiplied colour with its
     // intensity in w, and its position in GL JS's extrusion axes.
     light_color: vec4<f32>,
     light_position: vec3<f32>,
-    _pad5: f32,
+    // The target's clip w (orb-camera's `View::camera_to_center`).
+    camera_to_center: f32,
     // The low-zoom surface (orb-render's `FrameGlobe`), the sphere or a plane
     // as `globe_plane` says: camera-relative ECEF metres →
     // clip, the horizon plane (`dot(xyz, p) + w`: 1 under the eye, 0 at the
@@ -76,10 +74,8 @@ struct Frame {
     // 1 when the low-zoom surface is a plane (its world units, z up, no
     // horizon) rather than the sphere.
     globe_plane: u32,
-    _pad6: vec2<f32>,
     // The eye, camera-relative ECEF metres.
     globe_eye: vec3<f32>,
-    _pad7: f32,
     // The camera's world position as whole quanta and a remainder (orb-
     // render's `quantum`): rows' origins less it are camera-relative
     // (`tile_origin`).

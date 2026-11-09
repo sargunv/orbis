@@ -15,7 +15,8 @@ use orb_style::Encoding;
 
 pub use orb_source::endpoint::TileLocation;
 
-pub type LoadDone = Box<dyn FnOnce(Result<(Vec<u8>, Encoding), FetchError>) + Send + 'static>;
+pub(crate) type LoadDone =
+    Box<dyn FnOnce(Result<(Vec<u8>, Encoding), FetchError>) + Send + 'static>;
 type Archives = VecDeque<(String, Arc<Mutex<Reader>>)>;
 /// A shared fetch's bytes, for each load that waits on it.
 type Shared = Result<Arc<Vec<u8>>, FetchError>;
@@ -23,7 +24,7 @@ type Waiter = Box<dyn FnOnce(Shared) + Send>;
 /// Fetches in flight, by URL and byte range: the loads waiting on each.
 type InFlight = HashMap<(String, Option<Range>), Vec<Waiter>>;
 
-pub struct TileLoader {
+pub(crate) struct TileLoader {
     fetch: Arc<dyn Fetch>,
     archives: Mutex<Archives>,
     in_flight: Mutex<InFlight>,
@@ -58,7 +59,7 @@ pub(crate) fn falls_back(error: &FetchError) -> bool {
 }
 
 impl TileLoader {
-    pub fn new(fetch: Arc<dyn Fetch>) -> Arc<Self> {
+    pub(crate) fn new(fetch: Arc<dyn Fetch>) -> Arc<Self> {
         Arc::new(Self {
             fetch,
             archives: Mutex::new(VecDeque::new()),
@@ -86,7 +87,7 @@ impl TileLoader {
 
     /// Archive `url` begins with `head`, which the map read for its
     /// header: its loads start from these bytes rather than read them.
-    pub fn add_head(&self, url: &str, head: &[u8]) {
+    pub(crate) fn add_head(&self, url: &str, head: &[u8]) {
         if let Ok(range) = Range::new(0, head.len() as u64) {
             let reader = self.reader(url);
             let mut reader = reader.lock().expect("reader poisoned");
@@ -133,7 +134,7 @@ impl TileLoader {
         }
     }
 
-    pub fn load(
+    pub(crate) fn load(
         self: &Arc<Self>,
         location: TileLocation,
         tile: TileIndex,

@@ -880,7 +880,7 @@ pub enum SymbolTable {
 }
 
 /// How many [`SymbolTable`]s a layer's tile has.
-pub const SYMBOL_TABLES: usize = 14;
+pub(crate) const SYMBOL_TABLES: usize = 14;
 
 /// The scalars of a layer's bucket ([`orb_symbol::SymbolBucket`] without
 /// its tables).
@@ -905,23 +905,23 @@ pub struct ResultSymbols {
     /// The layer's key.
     pub layer: u32,
     pub meta: SymbolMeta,
-    pub tables: [crate::Stream; SYMBOL_TABLES],
+    pub tables: [crate::jobs::Stream; SYMBOL_TABLES],
     /// By glyph id; `None` for requests nothing could draw.
     pub glyphs: Vec<Option<GlyphKey>>,
     pub images: Vec<String>,
 }
 
 impl ResultSymbols {
-    pub fn table(&self, table: SymbolTable) -> &crate::Stream {
+    pub fn table(&self, table: SymbolTable) -> &crate::jobs::Stream {
         &self.tables[table as usize]
     }
 
     /// The layer's tables copied into word streams.
     pub(crate) fn new(layer: u32, build: &SymbolBuild) -> Self {
         let b = &build.bucket;
-        let words = |rows: &[u32]| crate::Stream::Core(rows.to_vec());
+        let words = |rows: &[u32]| crate::jobs::Stream::Core(rows.to_vec());
         let cast = |bytes: &[u8]| {
-            crate::Stream::Core(
+            crate::jobs::Stream::Core(
                 bytes
                     .as_chunks::<4>()
                     .0

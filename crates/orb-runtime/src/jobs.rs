@@ -313,7 +313,7 @@ pub struct TileResult {
     pub ids: Vec<String>,
     pub meshes: Vec<ResultMesh>,
     /// Per source layer laid out, the geometry its meshes' hits point into.
-    pub hit_geometry: Vec<Arc<crate::HitGeometry>>,
+    pub hit_geometry: Vec<Arc<crate::query::HitGeometry>>,
     /// Per symbol layer laid out, its bucket. Its icon and text nodes'
     /// meshes carry property rows only.
     pub symbols: Vec<ResultSymbols>,
@@ -362,7 +362,7 @@ impl ImagePixels {
 /// One render node's share of a finished tile.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResultMesh {
-    pub hits: Arc<crate::MeshHits>,
+    pub hits: Arc<crate::query::MeshHits>,
     /// The node's key.
     pub node: u32,
     pub extent: u32,
@@ -551,7 +551,7 @@ pub(crate) mod tests {
     #[test]
     fn packs_and_unpacks() {
         let mesh = |node, vertices: Vec<u32>, props: Vec<u32>| NodeMesh {
-            hits: crate::MeshHits::default(),
+            hits: crate::query::MeshHits::default(),
             node,
             extent: 4096,
             mesh: Mesh {

@@ -4,8 +4,8 @@ use orb_hal::{Gpu, TextureDesc, TextureFormat, TextureId, TextureUsages};
 use orb_hal_wgpu::WgpuGpu;
 use orb_layout::fill;
 use orb_render::{
-    Blend, ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameStats, MeshData, NodePaint,
-    PlacementTarget, Renderer, SceneCapacity, TargetFormat, TileRow, Words,
+    Blend, ClipRect, Curve, DemRef, Family, FillPaint, FrameBlock, FrameLight, FrameStats,
+    MeshData, NodePaint, PlacementTarget, Renderer, SceneCapacity, TargetFormat, TileRow, Words,
 };
 use orb_tile::{GeometryType, LayerBuilder};
 
@@ -147,7 +147,11 @@ impl Harness {
             roll: 0.0,
             camera_to_center: 1.0,
             terrain: None,
-            light: None,
+            light: FrameLight {
+                color: [1.0; 3],
+                intensity: 0.5,
+                position: [0.0, 0.0, 1.0],
+            },
             globe: None,
         }
     }

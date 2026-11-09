@@ -1779,7 +1779,7 @@ mod tests {
     #[test]
     fn a_trapped_placement_lane_places_again() {
         let mut h = Harness::new(SceneCapacity::default());
-        h.labels.lane = crate::ThreadPlacement::new();
+        h.labels.lane = crate::placement::ThreadPlacement::new();
         let mut resident = h.tile();
         h.upload(&mut resident).unwrap();
         let bucket = resident.symbols[0].bucket;

@@ -29,7 +29,7 @@ pub struct TileBuild {
     pub(crate) ids: Vec<String>,
     pub(crate) meshes: Vec<NodeMesh>,
     /// Per source layer laid out, the geometry its nodes' hits point into.
-    pub(crate) hits: Vec<(String, crate::HitGeometry)>,
+    pub(crate) hits: Vec<(String, crate::query::HitGeometry)>,
     /// Per symbol layer laid out, by layer key: its bucket. Its icon and
     /// text nodes' meshes carry property rows only.
     pub(crate) symbols: Vec<(u32, SymbolBuild)>,
@@ -70,7 +70,7 @@ pub(crate) struct Select<'a> {
 pub(crate) struct NodeMesh {
     /// The node's key.
     pub(crate) node: u32,
-    pub(crate) hits: crate::MeshHits,
+    pub(crate) hits: crate::query::MeshHits,
     /// Data units per tile side.
     pub(crate) extent: u32,
     pub(crate) mesh: Mesh,
@@ -498,7 +498,7 @@ pub(crate) fn build(
             None => {
                 build
                     .hits
-                    .push((name.to_string(), crate::HitGeometry::default()));
+                    .push((name.to_string(), crate::query::HitGeometry::default()));
                 build.hits.len() - 1
             }
         };
@@ -688,7 +688,7 @@ pub(crate) fn build(
                 _ => None,
             };
             let geometry = &mut build.hits[hit_layer].1;
-            let mut hits = crate::MeshHits::new(hit_layer as u32);
+            let mut hits = crate::query::MeshHits::new(hit_layer as u32);
             // Unless its producer said, a scan of the layer's vertices:
             // once per layer, not once per building.
             let clip_buffer = (node.family == Family::FillExtrusion).then(|| layer.clip_buffer());

@@ -60,7 +60,7 @@ pub(crate) struct Resident {
     /// The node's key.
     pub(crate) node: u32,
     pub(crate) mesh: MeshId,
-    pub(crate) hits: Arc<crate::MeshHits>,
+    pub(crate) hits: Arc<crate::query::MeshHits>,
     /// The style revisions its geometry and its rows were laid out with.
     pub(crate) layout_rev: u64,
     pub(crate) rows_rev: u64,

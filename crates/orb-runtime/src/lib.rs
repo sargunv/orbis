@@ -49,15 +49,15 @@ mod worker;
 pub use events::MapEvent;
 pub use video::{NO_VIDEO, VideoRequest};
 
-pub use features::{FeatureRequest, FeatureSelect, FeaturesDone, TileFeature};
+pub use features::{FeatureRequest, FeaturesDone, TileFeature};
 pub use geojson::{ClusterQuery, ClusterRequest};
 pub use glyphs::{FontFiles, GlyphBitmap, GlyphRaster, LocalGlyphs, RasterDone};
-pub use job_host::{JobHost, Loaded, LoadedDone};
+pub use job_host::{JobHost, Loaded};
 pub use jobs::{
-    ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, ResultMesh, Stream, TileDone, TileImage,
-    TileResult, pack, packed_header, unpack,
+    ImagePixels, JobReply, JobRequest, Jobs, PoolJobs, TileDone, TileImage, TileResult, pack,
+    packed_header, unpack,
 };
-pub use loader::{LoadDone, TileLoader, TileLocation};
+pub use loader::TileLocation;
 pub use map::{FrameReport, GridTile, Images, JobCounts, Map, Memory, RenderMode, Services};
 pub use orb_camera::input::{Button, Input};
 pub use orb_camera::{
@@ -73,13 +73,12 @@ pub use orb_render::{
 };
 pub use orb_source::endpoint::{HOST_TILES, HostTile};
 pub use orb_style::v8::{FeatureTarget, Op, StyleDoc, Transaction};
-pub use placement::{InlinePlacement, PlaceDone, PlacementLane, ThreadPlacement};
+pub use placement::{InlinePlacement, PlaceDone, PlacementLane};
 pub use queries::QueryDone;
-pub use query::{Hit, HitGeometry, MeshHits};
+pub use query::Hit;
 pub use style::ImageKind;
 pub use style_image::StyleImage;
-pub use surface::SurfaceTiles;
-pub use symbol::{ResultSymbols, SYMBOL_TABLES, SpriteIcons, SymbolMeta, SymbolTable};
+pub use symbol::SpriteIcons;
 pub use terrain::TerrainElevation;
-pub use tile::{ImageRef, TileBuild};
+pub use tile::TileBuild;
 pub use worker::{Built, DemUnpack, StyleUpdate, TileRequest, TileWorker};
