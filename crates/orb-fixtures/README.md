@@ -23,7 +23,10 @@ The harness follows GL JS's
 at the pinned commit. Its defaults are 512 × 512 logical pixels, pixelRatio
 1, allowed 0.00025, threshold 0.1285 and a 60 000 ms timeout. Physical sizes
 are floored after multiplying by pixelRatio; the camera uses the logical
-viewport. Readback is unpremultiplied before comparison. When a test has
+viewport. Readback is unpremultiplied before comparison, truncating and
+wrapping modulo 256 as GL JS's harness does in its `Uint8Array`: the globe's
+atmosphere adds light over transparent pixels, which then hold more colour
+than alpha, and the expected images keep those wrapped bytes. When a test has
 several `expected*.png` files, the smallest difference counts, as upstream.
 
 The comparator (`src/pixelmatch.rs`) is a Rust port of **pixelmatch 8.0.0**,
@@ -89,7 +92,9 @@ off the query box, so only Ocean answers.
   serves the demo build and the mirror's assets over loopback and opens
   `web/demo/fixture.html` in headless Chromium with animation frames unpaced.
   The page draws each fixture through the `orbis` package as a host would and
-  returns straight RGBA from `readPixels`. Videos stay on their first frame.
+  returns the canvas's premultiplied RGBA from
+  `readPixels({ premultiplied: true })`, which Rust unpremultiplies as it
+  does the native readback. Videos stay on their first frame.
   A failed render reloads the page. Discovery, metadata, scope, expected-image
   selection and pixelmatch stay in Rust. Install the tools with
   `mise install`, `pnpm -C web install` and
