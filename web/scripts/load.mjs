@@ -170,8 +170,11 @@ try {
           if (title.startsWith("done ")) {
             const done = JSON.parse(title.slice(5));
             Object.assign(row, done);
+            // A build from before the page reported its time origin is
+            // asked for it.
+            const origin = done.origin ?? await page.evaluate(() => performance.timeOrigin);
             const started = styleRequest?.timing().startTime;
-            if (started > 0) row.style = started - done.origin;
+            if (started > 0) row.style = started - origin;
           } else {
             row.error = title;
           }
