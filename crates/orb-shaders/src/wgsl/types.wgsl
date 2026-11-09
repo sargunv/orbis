@@ -277,8 +277,20 @@ fn inside_clips(tile: Tile, p: vec2<f32>) -> bool {
     return owned(tile, p) && landed(tile, p);
 }
 
+// A fragment's interpolated tile position, snapped to 1/16 unit for the
+// clip tests. Interpolation leaves it off by up to a few thousandths of a
+// unit near a tile's far edge, so a fragment on a seam (a seam through
+// pixel centres, as on a globe turned 45° about a tile corner) could land
+// just past both tiles' half-open rectangles and draw in neither. Every
+// rectangle's edge is a whole unit: snapped, both tiles see the seam where
+// it is and exactly one owns it.
+fn clip_snapped(p: vec2<f32>) -> vec2<f32> {
+    return round(p * 16.0) / 16.0;
+}
+
 // Whether the placement draws data at `p`, in its clip rectangles.
-fn owned(tile: Tile, p: vec2<f32>) -> bool {
+fn owned(tile: Tile, at: vec2<f32>) -> bool {
+    let p = clip_snapped(at);
     for (var i = 0u; i < 4u; i++) {
         let lo = unpack_i16x2(tile.clips[i].x);
         let hi = unpack_i16x2(tile.clips[i].y);
@@ -290,7 +302,8 @@ fn owned(tile: Tile, p: vec2<f32>) -> bool {
 }
 
 // Whether `p` lies where the placement's content may land (`bound`).
-fn landed(tile: Tile, p: vec2<f32>) -> bool {
+fn landed(tile: Tile, at: vec2<f32>) -> bool {
+    let p = clip_snapped(at);
     return all(p >= unpack_i16x2(tile.bound.x)) && all(p < unpack_i16x2(tile.bound.y));
 }
 
