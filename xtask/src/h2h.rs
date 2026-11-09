@@ -295,12 +295,12 @@ impl H2h {
         let manifest = root.join("xtask/h2h/Cargo.toml");
         let target = cache.join("target");
         let uses = |n: &str| engines.iter().any(|e| e.name() == n);
+        let profile = if options.block == "size" {
+            "dist"
+        } else {
+            "release"
+        };
         if uses("orbis") {
-            let profile = if options.block == "size" {
-                "dist"
-            } else {
-                "release"
-            };
             crate::cargo(&[
                 "build",
                 "--profile",
@@ -311,11 +311,6 @@ impl H2h {
                 "orb-bench",
             ])?;
         }
-        let profile = if options.block == "size" {
-            "dist"
-        } else {
-            "release"
-        };
         // mln-rs builds even when it isn't an engine: its checkout has the
         // views.
         eprintln!(
@@ -520,13 +515,13 @@ impl H2h {
             }
         }
         let mut csv = String::from(
-            "engine,view,run,wall_ms,cpu_ms,rss_mb,ginstr,internal_ms,requests,kbytes,misses,fetched\n",
+            "engine,view,run,wall_ms,cpu_ms,rss_mb,ginstr,internal_ms,requests,kbytes,misses,not_found,failed,fetched\n",
         );
         for r in &rows {
             let opt = |v: Option<f64>| v.map_or(String::new(), |v| format!("{v:.3}"));
             writeln!(
                 csv,
-                "{},{},{},{:.2},{},{},{},{},{},{:.1},{},{}",
+                "{},{},{},{:.2},{},{},{},{},{},{:.1},{},{},{},{}",
                 r.engine,
                 r.view,
                 r.run,
@@ -538,6 +533,8 @@ impl H2h {
                 r.net.requests,
                 r.net.bytes as f64 / 1024.0,
                 r.net.misses,
+                r.net.not_found,
+                r.net.failed,
                 r.net.fetched
             )
             .expect("a String");
@@ -616,11 +613,14 @@ impl H2h {
                 }
             }
         }
-        let fetched: u64 = rows.iter().map(|r| r.net.fetched).sum();
-        let misses: u64 = rows.iter().map(|r| r.net.misses).sum();
+        let mut net = Stats::default();
+        for r in &rows {
+            net.add(&r.net);
+        }
         writeln!(
             out,
-            "\nWall: exec to exit; CPU: user + system, and instructions retired, from `/usr/bin/time`; requests: what the engine asked the mirror for. Timed runs fetched {fetched} resources upstream and missed {misses}. Raw rows: {}.",
+            "\nWall: exec to exit; CPU: user + system, and instructions retired, from `/usr/bin/time`; requests: what the engine asked the mirror for. Timed runs: {}. Raw rows: {}.",
+            net.answers(),
             csv_path.display()
         )
         .expect("a String");
@@ -667,6 +667,7 @@ impl H2h {
             // Per engine and set, each run's totals; and each run's requests.
             let mut totals: SetTotals = BTreeMap::new();
             let mut requests: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+            let mut net = Stats::default();
             let mut sets: Vec<String> = Vec::new();
             for run in 0..runs {
                 for engine in &self.engines {
@@ -677,10 +678,12 @@ impl H2h {
                     );
                     self.mirror.reset();
                     let t = timed(&command(engine))?;
+                    let stats = self.mirror.stats();
+                    net.add(&stats);
                     requests
                         .entry(engine.name().into())
                         .or_default()
-                        .push(self.mirror.stats().requests as f64);
+                        .push(stats.requests as f64);
                     let mut run_totals: BTreeMap<String, (f64, f64, usize)> = BTreeMap::new();
                     for line in t.stdout.lines() {
                         let f: Vec<&str> = line.split_whitespace().collect();
@@ -764,7 +767,7 @@ impl H2h {
                 let r = median(requests.get_mut(*name).map_or(&mut Vec::new(), |v| v));
                 write!(out, " {name} {:.0};", r.unwrap_or(0.0)).expect("a String");
             }
-            writeln!(out, " times in ms, medians of per-set totals; the `startup` set is the first tile, with the style's load.\n").expect("a String");
+            writeln!(out, " times in ms, medians of per-set totals; the `startup` set is the first tile, with the style's load. Timed runs: {}.\n", net.answers()).expect("a String");
         }
         Ok(out)
     }
@@ -906,6 +909,7 @@ impl H2h {
         for s in &sums {
             write!(out, " **{s:.1}** |").expect("a String");
         }
+        out.push_str(&" |".repeat(usize::from(names.len() > 1) + orbis.len()));
         writeln!(
             out,
             "\n\nMedian ms a frame: Orbis renders continuously into a texture and reads each frame back (`orb-bench --nudge`); mln-rs renders each frame as a Static-mode still and reads it back (its own still bench)."
@@ -1002,7 +1006,6 @@ type SetTotals = BTreeMap<(String, String), Vec<(f64, f64, usize)>>;
 struct StillRow {
     engine: String,
     view: String,
-    #[allow(dead_code)]
     run: usize,
     t: Timed,
     net: Stats,
@@ -1131,8 +1134,33 @@ struct Stats {
     bytes: u64,
     /// Answered 404 because the cache lacked them (offline).
     misses: u64,
+    /// Answered 404 because upstream did (kept in the cache): a few are
+    /// normal, many mean the cached TileJSON names a planet build upstream
+    /// has dropped (delete the mirror's cache to take the current one).
+    not_found: u64,
+    /// Answered 502: upstream failed or answered something else.
+    failed: u64,
     /// Fetched upstream.
     fetched: u64,
+}
+
+impl Stats {
+    fn add(&mut self, other: &Self) {
+        self.requests += other.requests;
+        self.bytes += other.bytes;
+        self.misses += other.misses;
+        self.not_found += other.not_found;
+        self.failed += other.failed;
+        self.fetched += other.fetched;
+    }
+
+    /// What the mirror did besides answering from its cache.
+    fn answers(&self) -> String {
+        format!(
+            "{} fetched upstream, {} missed offline, {} kept upstream 404s, {} failed",
+            self.fetched, self.misses, self.not_found, self.failed
+        )
+    }
 }
 
 /// A caching mirror of [`UPSTREAM`] on 127.0.0.1, a thread per
@@ -1266,8 +1294,8 @@ impl Shared {
             "/__stats" => {
                 let s = *self.stats.lock().expect("stats");
                 let json = format!(
-                    "{{\"requests\":{},\"bytes\":{},\"misses\":{},\"fetched\":{}}}",
-                    s.requests, s.bytes, s.misses, s.fetched
+                    "{{\"requests\":{},\"bytes\":{},\"misses\":{},\"not_found\":{},\"failed\":{},\"fetched\":{}}}",
+                    s.requests, s.bytes, s.misses, s.not_found, s.failed, s.fetched
                 );
                 return (200, "application/json".into(), json.into_bytes());
             }
@@ -1287,6 +1315,7 @@ impl Shared {
             name.push(suffix);
             PathBuf::from(name)
         };
+        let mut missed = false;
         let (mut status, mut kind, mut body) =
             if let Ok(status) = std::fs::read_to_string(with(".__status")) {
                 (
@@ -1301,7 +1330,7 @@ impl Shared {
                     body,
                 )
             } else if self.offline {
-                self.stats.lock().expect("stats").misses += 1;
+                missed = true;
                 (404, String::new(), Vec::new())
             } else {
                 match self.fetch(path, &with(".__f"), &with(".__type"), &with(".__status")) {
@@ -1322,7 +1351,14 @@ impl Shared {
         } else if status != 200 && status != 404 {
             status = 502;
         }
-        self.stats.lock().expect("stats").bytes += body.len() as u64;
+        let mut stats = self.stats.lock().expect("stats");
+        stats.bytes += body.len() as u64;
+        match status {
+            404 if missed => stats.misses += 1,
+            404 => stats.not_found += 1,
+            502 => stats.failed += 1,
+            _ => {}
+        }
         (status, kind, body)
     }
 
