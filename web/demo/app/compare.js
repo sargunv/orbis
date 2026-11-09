@@ -1,109 +1,220 @@
-// The comparison: another engine's map of the same style over the app's,
-// clipped to the right of a draggable divider, so each side shows one map
-// and takes its own input. The map that last took input leads and the
-// other jumps to its camera, so the two don't echo each other's moves.
-// The other map takes Orbis's style as it stands (the entry's projection
-// and sky applied) and follows the style editor's edits.
+// The comparison: two maps of the same style side by side, split by a
+// draggable divider, each side drawn by the engine it picks (Orbis, GL JS or
+// MapLibre Native) and taking its own input. The app's Orbis map draws the
+// first side that picks Orbis; every other side gets a map of its own over
+// it, clipped to that side. The map that last took input leads and the
+// others jump to its camera, so they don't echo each other's moves. The
+// other maps take Orbis's style as it stands (the entry's projection and
+// sky applied) and follow the style editor's edits.
 //
-// An engine loads only when a comparison opens. Each is a module with a
+// An engine loads only when a side picks it. Each is a module with a
 // `label` and `open(container, { style, camera, constraints })`, which
-// returns the map as `{ camera, jumpTo, onMove, stop, setStyle, loaded,
-// remove }`; `unsupported(scene)` says why it can't show an entry.
+// returns, or resolves to, the map as `{ camera, jumpTo, onMove, stop,
+// setStyle, loaded, remove }`. In ENGINES, `unsupported(scene)` says why it
+// can't show an entry, `once` why it can't draw both sides, and `isolated`
+// that it needs a cross-origin isolated page (isolation.js).
 import { h } from "./dom.js";
 import { HIGHLIGHT_PREFIX } from "./highlight.js";
+import { isolate, isolated } from "./isolation.js";
 
 const ENGINES = {
-  gljs: { load: () => import("./gljs.js"), unsupported: (scene) => scene.notInGlJs },
+  orbis: { name: "Orbis", load: () => import("./orbis.js") },
+  gljs: { name: "GL JS", load: () => import("./gljs.js"), unsupported: (scene) => scene.unsupported?.gljs },
+  // Of two Native maps on a page, one sometimes stopped short of its last
+  // update until the next input moved it.
+  native: { name: "MapLibre Native", load: () => import("./native.js"), unsupported: (scene) => scene.unsupported?.native,
+    once: "MapLibre Native draws one side at a time", isolated: true },
 };
+/** What `?compare` alone compares. */
+const DEFAULT = ["orbis", "gljs"];
+const SIDES = ["left", "right"];
+
+/** The engines `?compare=<left>,<right>` names, `?compare` alone the default, and no `?compare` none. */
+export function parsePair(value) {
+  if (value === null) return null;
+  const named = value.split(",");
+  const [left, right] = DEFAULT.map((fallback, i) => (ENGINES[named[i]] ? named[i] : fallback));
+  if (left !== right || !ENGINES[left].once) return [left, right];
+  return [left, left === DEFAULT[1] ? DEFAULT[0] : DEFAULT[1]];
+}
+/** `?compare`'s value for `pair`: empty for the default. */
+export const formatPair = (pair) => (pair.every((key, i) => key === DEFAULT[i]) ? "" : pair.join(","));
 
 // Where the divider sits, as a fraction of the stage's width; it stays for
 // the next comparison.
 let split = 0.5;
 
-/** The toggle in the app's menu, and the comparison while it's open. */
-export function comparison({ onToggle }) {
-  const engine = ENGINES.gljs;
+/**
+ * The switch in the app's menu, and the comparison while it's open.
+ * `onChange(pair)` hears each change of engines (null when it closes);
+ * `beforeReload` runs before a reload into isolation.
+ */
+export function comparison({ onChange, beforeReload }) {
   const toggle = document.getElementById("compare-toggle");
-  const note = document.getElementById("compare-note");
-  let wanted = false;
+  let pair = null;
+  let last = DEFAULT;
   let map;
   let scene;
   let shown;
-  let attempt = 0;
+  let isolating;
 
-  async function update() {
-    const id = ++attempt;
+  // A side's engine that needs isolation reloads the page into it, once.
+  function checkIsolation() {
+    const needed = pair?.some((key) => ENGINES[key].isolated && !(scene && ENGINES[key].unsupported?.(scene)));
+    if (!needed || isolated() || isolating) return;
+    // On success the page reloads; on failure the sides that need it say why.
+    isolating = isolate(Object.keys(ENGINES).filter((k) => ENGINES[k].isolated), { beforeReload });
+    isolating.catch(update);
+  }
+
+  function update() {
     shown?.close();
     shown = undefined;
-    const reason = scene && engine.unsupported(scene);
-    toggle.disabled = !map || Boolean(reason);
-    toggle.setAttribute("aria-checked", String(wanted && !reason));
-    note.textContent = reason ?? "";
-    note.hidden = !reason;
-    if (!wanted || !map || reason) return;
-    const module = await engine.load();
-    if (id === attempt) shown = show(module, map, scene);
+    toggle.disabled = !map;
+    toggle.setAttribute("aria-checked", String(Boolean(pair)));
+    if (!pair || !map) return;
+    shown = show(map, scene, pair, { isolating, onPick });
   }
-  const run = () => update().catch((e) => console.error(e));
-
+  function onPick(side, key) {
+    pair = pair.map((k, i) => (i === side ? key : k));
+    last = pair;
+    onChange(pair);
+    checkIsolation();
+    update();
+  }
   toggle.addEventListener("click", () => {
-    wanted = toggle.getAttribute("aria-checked") !== "true";
-    onToggle(wanted);
-    run();
+    pair = pair ? null : last;
+    onChange(pair);
+    checkIsolation();
+    update();
   });
 
   return {
-    set wanted(on) { wanted = on; run(); },
+    /** Compares the engines of `next`, a pair of ENGINES' keys, or closes with null. */
+    want(next) {
+      pair = next;
+      if (pair) last = pair;
+      checkIsolation();
+      update();
+    },
     /** Compares `next`'s map of `entry`, once its style is in; with no map, closes. */
-    attach(next, entry) { map = next; scene = entry; run(); },
-    /** The other map's camera and whether it's settled, for the headless checks. */
-    get other() { return shown && { camera: shown.other.camera(), loaded: shown.other.loaded() }; },
+    attach(next, entry) { map = next; scene = entry; update(); },
+    /** Each side's engine, camera, whether it's settled and leads, and its note, for the headless checks. */
+    get sides() { return shown?.sides(); },
   };
 }
 
-function show(engine, map, scene) {
+function show(map, scene, pair, { isolating, onPick }) {
   const stage = map.container.parentElement;
-  // The engine gets a box of its own inside the clipped layer: GL JS's
-  // stylesheet makes its container `position: relative`, which would undo
-  // the layer's absolute inset and leave the map no height.
-  const inner = h("div", { class: "compare-engine" });
-  const container = h("div", { class: "compare-map" }, inner);
-  const divider = h("div", {
-    class: "compare-divider", role: "slider", tabindex: "0", "aria-label": "Divider between the maps",
-    "aria-valuemin": "0", "aria-valuemax": "100",
-  });
-  const labels = [h("span", { class: "compare-label own" }, "Orbis"),
-    h("span", { class: "compare-label other" }, engine.label)];
-  map.container.after(container, divider, ...labels);
-
   const style = () => {
     const now = map.getStyle();
     return { ...now, layers: now.layers.filter((l) => !l.id.startsWith(HIGHLIGHT_PREFIX)) };
   };
-  const other = engine.open(inner, { style: style(), camera: map.camera.current, constraints: scene.constraints });
+  // The app's map, as a map the others follow and lead.
+  const own = {
+    camera: () => map.camera.current,
+    jumpTo: (camera) => map.camera.jumpTo(camera),
+    stop: () => map.camera.stop(),
+    loaded: () => document.getElementById("app").dataset.map === "idle",
+  };
+  const ownSide = pair.indexOf("orbis");
+  let closed = false;
+  const sides = pair.map((key, index) => {
+    const engine = ENGINES[key];
+    const side = { key, index, engine, map: index === ownSide ? own : undefined, note: undefined };
+    const select = h("select", { class: "compare-engine-picker", "aria-label": `The ${SIDES[index]} map's engine`,
+      onchange: () => onPick(index, select.value) },
+    Object.entries(ENGINES).map(([k, e]) => {
+      const reason = e.unsupported?.(scene) ?? (e.once && pair[1 - index] === k ? e.once : undefined);
+      return h("option", { value: k, selected: k === key, disabled: Boolean(reason) && k !== key,
+        title: reason }, reason ? `${e.name} (can't)` : e.name);
+    }));
+    side.select = select;
+    side.label = h("label", { class: `compare-label ${SIDES[index]}` }, select);
+    if (side.map) return side;
+    // Every side but the app map's gets a box of its own inside a layer
+    // clipped to its side: GL JS's stylesheet makes its container
+    // `position: relative`, which would undo the layer's absolute inset
+    // and leave the map no height.
+    side.inner = h("div", { class: "compare-engine" });
+    side.layer = h("div", { class: `compare-map ${SIDES[index]}` }, side.inner);
+    const say = (text) => {
+      side.note = text;
+      side.inner.replaceChildren(h("p", { class: "compare-note" }, text));
+    };
+    const reason = engine.unsupported?.(scene);
+    if (reason) say(reason);
+    else if (engine.isolated && !crossOriginIsolated) {
+      if (!isolating) say(`${engine.name} needs a cross-origin isolated page`);
+      else {
+        say(`Reloading so ${engine.name} can share memory between threads…`);
+        isolating.catch((e) => say(`${engine.name} can't run here: ${e instanceof Error ? e.message : e}`));
+      }
+    } else {
+      side.inner.append(h("p", { class: "compare-note" }, `Loading ${engine.name}…`));
+      side.opening = (async () => {
+        const module = await engine.load();
+        if (closed) return;
+        side.inner.replaceChildren();
+        const opened = await module.open(side.inner,
+          { style: style(), camera: map.camera.current, constraints: scene.constraints });
+        if (closed) { opened.remove(); return; }
+        side.map = opened;
+        const option = select.querySelector(`option[value="${key}"]`);
+        option.textContent = module.label;
+        // It opened at the camera of when it started; it catches up with the leader's.
+        opened.jumpTo(leader.camera());
+        offs.push(opened.onMove(() => { if (leader === opened) follow(opened); }));
+      })().catch((e) => {
+        if (closed) return;
+        console.error(e);
+        say(`${engine.name} couldn't start: ${e instanceof Error ? e.message : e}`);
+      });
+    }
+    return side;
+  });
+  const divider = h("div", {
+    class: "compare-divider", role: "slider", tabindex: "0", "aria-label": "Divider between the maps",
+    "aria-valuemin": "0", "aria-valuemax": "100",
+  });
+  const added = [...sides.map((s) => s.layer).filter(Boolean), divider, ...sides.map((s) => s.label)];
+  map.container.after(...added);
 
-  // Input on a map makes it lead and stops the other's motion, such as a
-  // drag's momentum. The capture phase sees it before either map does.
-  let leader = "orbis";
+  // Input on a side makes its map lead and stops the others' motion, such
+  // as a drag's momentum; input off the maps (the zoom buttons, say) makes
+  // the app's lead. The capture phase sees it before any map does.
+  let leader = own;
+  const maps = () => [own, ...sides.map((s) => s.map).filter((m) => m && m !== own)];
+  const follow = (from) => {
+    const camera = from.camera();
+    for (const m of maps()) if (m !== from) m.jumpTo(camera);
+  };
   const listening = new AbortController();
   const { signal } = listening;
   for (const type of ["pointerdown", "wheel", "keydown"]) {
     stage.addEventListener(type, (e) => {
-      if (e.target === divider) return;
-      const next = container.contains(e.target) ? "other" : "orbis";
+      if (e.target === divider || sides.some((s) => s.label.contains(e.target))) return;
+      const layer = sides.find((s) => s.layer?.contains(e.target));
+      // A press keeps its pointer on the map it began on, so a release over
+      // the chrome still ends a GL JS drag, which listens on its container.
+      if (layer && type === "pointerdown" && !e.target.hasPointerCapture(e.pointerId)) {
+        e.target.setPointerCapture(e.pointerId);
+      }
+      const next = layer?.map ?? own;
       if (next === leader) return;
       leader = next;
-      if (leader === "other") map.camera.stop(); else other.stop();
+      for (const m of maps()) if (m !== leader) m.stop();
     }, { capture: true, passive: true, signal });
   }
-  const offs = [
-    map.on("move", () => { if (leader === "orbis") other.jumpTo(map.camera.current); }),
-    other.onMove(() => { if (leader === "other") map.camera.jumpTo(other.camera()); }),
-  ];
+  const offs = [map.on("move", () => { if (leader === own) follow(own); })];
   // Style edits, at most once a frame.
   let restyle = 0;
   offs.push(map.on("styledata", () => {
-    restyle ||= requestAnimationFrame(() => { restyle = 0; other.setStyle(style()); });
+    restyle ||= requestAnimationFrame(() => {
+      restyle = 0;
+      const next = style();
+      for (const m of maps()) if (m !== own) m.setStyle(next);
+    });
   }));
 
   // The divider: a drag or the arrow keys move it.
@@ -128,13 +239,17 @@ function show(engine, map, scene) {
   }, { signal });
 
   return {
-    other,
+    sides: () => sides.map((s) => ({
+      engine: s.key, note: s.note, own: s.map === own, leads: Boolean(s.map) && s.map === leader,
+      camera: s.map?.camera(), loaded: s.map?.loaded() ?? false,
+    })),
     close() {
+      closed = true;
       listening.abort();
       for (const off of offs) off();
       cancelAnimationFrame(restyle);
-      other.remove();
-      for (const element of [container, divider, ...labels]) element.remove();
+      for (const s of sides) if (s.map !== own) s.map?.remove();
+      for (const element of added) element.remove();
     },
   };
 }

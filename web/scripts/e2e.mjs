@@ -17,9 +17,12 @@
 //   source eases its paint by the style's transition and requests no
 //   tiles, and back goes back without a reload; a click opens a feature
 //   popup only while the style editor is open.
-// - `compare`: the comparison with GL JS on the Tokyo extract: the plain
-//   page fetches none of GL JS, `&compare` shows both maps at one camera,
-//   and a drag on either side moves both.
+// - `compare`: the comparison on the Tokyo extract: the plain page fetches
+//   no other engine and isn't isolated; each pair of engines (Orbis, GL JS
+//   and MapLibre Native, Orbis and GL JS twice too) loads only its engines,
+//   isolates the page only for Native, fills the stage on both sides, and
+//   a drag on either side reaches that side's map, which leads the other;
+//   Native draws one side at a time.
 // - `gestures`: Compose's gesture set on the scenario page, from input
 //   synthesized through the DevTools protocol (mouse and touch): mouse and
 //   touch flings, measured against mln-ffi's pan decay (the release
@@ -34,7 +37,7 @@
 //   --ignored` does the same natively.
 //
 //   pnpm e2e [--only=scenario,edits,editor,switching,compare,gestures,offline]
-//     [--writes=500] [--at=#13/35.6830/139.7520]
+//     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -676,55 +679,116 @@ async function offline(browser, server) {
   await page.close();
 }
 
+/** The comparison's pairs the check opens, as `?compare=` values: `""` is Orbis and GL JS. */
+const PAIRS = arg("pairs", ";gljs,orbis;orbis,native;native,gljs;orbis,orbis;gljs,gljs").split(";");
+const ENGINE_REQUESTS = {
+  gljs: /maplibre-gl|\/gljs-/,
+  native: /\/native-|\/native\/\d|isolate\.js/,
+};
+
 async function compare(browser, server) {
-  const page = await browser.newPage({ viewport: { width: 800, height: 500 } });
-  const pageErrors = [];
-  page.on("pageerror", (e) => pageErrors.push(e.message));
-  const requests = [];
-  page.on("request", (r) => requests.push(r.url()));
-  const gl = () => requests.filter((url) => /maplibre-gl|gljs/.test(url));
-  const idle = () => page.waitForFunction(() => document.getElementById("app").dataset.map === "idle", null,
+  // One context, as one browser: the isolating service worker, once
+  // registered, stays for later pages.
+  const context = await browser.newContext({ viewport: { width: 800, height: 500 } });
+  const open = async (url) => {
+    const page = await context.newPage();
+    const pageErrors = [];
+    page.on("pageerror", (e) => pageErrors.push(e.message));
+    // Console errors explain a failure, but resources missing on purpose (the
+    // Tokyo extract's glyph ranges) log some.
+    const logged = [];
+    page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource/.test(m.text())) logged.push(m.text()); });
+    const requests = [];
+    page.on("request", (r) => requests.push(r.url()));
+    await page.goto(url);
+    const loaded = (engine) => requests.filter((url) => ENGINE_REQUESTS[engine].test(url));
+    return { page, pageErrors, loaded, logged };
+  };
+  const idle = (page) => page.waitForFunction(() => document.getElementById("app").dataset.map === "idle", null,
     { timeout: 60_000 });
+  // Every side's map at one camera once they settle. A page comparing with
+  // Native reloads into isolation first, which ends a wait in the page, so
+  // this polls.
+  const settled = async ({ page, logged }, name) => {
+    const state = () => page.evaluate(() => {
+      const sides = window.app?.map && app.compare.sides;
+      const own = sides && app.map.camera.current;
+      const close = (a, b) => Math.abs(a - b) < 1e-7;
+      const done = Boolean(sides?.every((s) => s.loaded) && document.getElementById("app").dataset.map === "idle"
+        && sides.every(({ camera }) => close(camera.center[0], own.center[0]) && close(camera.center[1], own.center[1])
+          && close(camera.zoom, own.zoom) && close(camera.bearing, own.bearing)));
+      return { done, own, sides };
+    }).catch((e) => ({ done: false, error: e.message }));
+    const start = Date.now();
+    for (let now = await state(); !now.done; now = await state()) {
+      if (Date.now() - start > 60_000) {
+        throw new Error(`${name}: the maps didn't settle at one camera: ${JSON.stringify(now)}; logged ${JSON.stringify(logged)}`);
+      }
+      await page.waitForTimeout(100);
+    }
+  };
 
-  await page.goto(`${server.url}?style=tokyo-mvt`);
-  await idle();
-  assert.deepEqual(gl(), [], "the plain page fetches no GL JS");
-
-  // Both maps at one camera once they settle.
-  const settled = () => page.waitForFunction(() => {
-    const other = app.compare.other;
-    const own = app.map.camera.current;
-    if (!other?.loaded || document.getElementById("app").dataset.map !== "idle") return false;
-    const close = (a, b) => Math.abs(a - b) < 1e-7;
-    return close(other.camera.center[0], own.center[0]) && close(other.camera.center[1], own.center[1])
-      && close(other.camera.zoom, own.zoom) && close(other.camera.bearing, own.bearing);
-  }, null, { timeout: 60_000 });
-  await page.goto(`${server.url}?style=tokyo-mvt&compare#15/35.687/139.74`);
-  await settled();
-  assert.ok(gl().length > 0, "?compare loads GL JS");
-  assert.equal(await page.locator(".compare-map canvas").count(), 1);
-  // GL JS's canvas fills the stage, and input right of the divider reaches it.
-  const box = await page.locator(".compare-map canvas").boundingBox();
-  assert.ok(box && box.width === 800 && box.height === 500, `GL JS's canvas fills the stage: ${JSON.stringify(box)}`);
-  assert.ok(await page.evaluate(() => document.querySelector(".compare-map").contains(document.elementFromPoint(600, 250))),
-    "the right half is GL JS's");
-  assert.equal(await page.getAttribute("#compare-toggle", "aria-checked"), "true");
-
-  // A drag on either side of the divider moves both maps.
-  for (const [side, x] of [["Orbis", 200], ["GL JS", 600]]) {
-    const before = await page.evaluate(() => app.map.camera.current.center);
-    await page.mouse.move(x, 250);
-    await page.mouse.down();
-    await page.mouse.move(x - 100, 300, { steps: 10 });
-    await page.mouse.up();
-    await settled();
-    const after = await page.evaluate(() => app.map.camera.current.center);
-    assert.ok(Math.hypot(after[0] - before[0], after[1] - before[1]) > 1e-4,
-      `a drag on the ${side} side moves the maps`);
+  {
+    const { page, pageErrors, loaded } = await open(`${server.url}?style=tokyo-mvt`);
+    await idle(page);
+    assert.deepEqual([...loaded("gljs"), ...loaded("native")], [], "the plain page fetches no other engine");
+    assert.equal(await page.evaluate(() => crossOriginIsolated), false);
+    assert.deepEqual(pageErrors, []);
+    await page.close();
   }
-  assert.deepEqual(pageErrors, []);
-  console.log("compare: the plain page fetches no GL JS; both maps share a camera and follow drags on either side");
-  await page.close();
+
+  {
+    // Native draws one side at a time: a second is GL JS instead, and the
+    // other side's picker offers no Native.
+    const { page } = await open(`${server.url}?style=tokyo-mvt&compare=native,native`);
+    await page.waitForFunction(() => app.compare.sides?.length === 2 && crossOriginIsolated, null, { timeout: 60_000 });
+    assert.deepEqual(await page.evaluate(() => app.compare.sides.map((s) => s.engine)), ["native", "gljs"]);
+    assert.equal(await page.evaluate(() => document.querySelector('.compare-label.right option[value="native"]').disabled), true,
+      "the right side offers no second Native");
+    await page.close();
+  }
+
+  for (const pair of PAIRS) {
+    const engines = pair ? pair.split(",") : ["orbis", "gljs"];
+    const opened = await open(`${server.url}?style=tokyo-mvt&compare${pair ? `=${pair}` : ""}#15/35.687/139.74`);
+    const { page, pageErrors, loaded } = opened;
+    const name = engines.join(" and ");
+    await settled(opened, name);
+    // Only a page comparing with MapLibre Native is isolated; it reloads into it.
+    assert.equal(await page.evaluate(() => crossOriginIsolated), engines.includes("native"), `${name}: isolation`);
+    for (const engine of ["gljs", "native"]) {
+      assert.equal(loaded(engine).length > 0, engines.includes(engine), `${name}: ${engine} loads only when picked`);
+    }
+    // Each side's canvas fills the stage, and the side's half is its own.
+    const sides = await page.evaluate(() => app.compare.sides);
+    assert.deepEqual(sides.map((s) => s.engine), engines);
+    for (const [i, side] of ["left", "right"].entries()) {
+      const box = await page.locator(sides[i].own ? "#map canvas" : `.compare-map.${side} canvas`).first().boundingBox();
+      assert.ok(box && box.width === 800 && box.height === 500, `${name}: the ${side} canvas fills the stage: ${JSON.stringify(box)}`);
+      assert.ok(await page.evaluate(([own, side, x]) => document.querySelector(own ? "#map" : `.compare-map.${side}`)
+        .contains(document.elementFromPoint(x, 250)), [sides[i].own, side, 200 + 400 * i]), `${name}: the ${side} half is its map's`);
+    }
+    // A drag on either side reaches that side's map, which leads; the other follows.
+    for (const [i, x] of [600, 200, 600].entries()) {
+      const side = i % 2 === 0 ? 1 : 0;
+      const before = await page.evaluate(() => app.map.camera.current.center);
+      await page.mouse.move(x, 250);
+      await page.mouse.down();
+      await page.mouse.move(x - 100, 300, { steps: 10 });
+      await page.mouse.up();
+      await settled(opened, name);
+      const after = await page.evaluate(() => ({ center: app.map.camera.current.center, leads: app.compare.sides.map((s) => s.leads) }));
+      assert.ok(Math.hypot(after.center[0] - before[0], after.center[1] - before[1]) > 1e-4,
+        `${name}: a drag on the ${engines[side]} side moves the maps`);
+      assert.ok(after.leads[side], `${name}: the ${engines[side]} side leads after its drag`);
+    }
+    assert.deepEqual(pageErrors, [], name);
+    await page.close();
+  }
+  await context.close();
+  console.log(`compare: the plain page fetches no other engine and isn't isolated; ${PAIRS.length} pairs `
+    + "fill the stage, load only their engines, isolate only for MapLibre Native, and follow drags on either side; "
+    + "a second Native is GL JS");
 }
 
 /** The slope at the newest sample of the least-squares quadratic through

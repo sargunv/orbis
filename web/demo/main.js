@@ -7,15 +7,16 @@
 //
 // URL: `?style=<key|url>` (styles.js), `&flight` (fly an entry's looping
 // flight, as picking it does; without it the map stays put and settles),
-// `&debug`, `&edit`, `&compare` (GL JS's map of the style over the right
-// of Orbis's, app/compare.js), `&lose=<ms>` (lose the GPU that long after
+// `&debug`, `&edit`, `&compare[=<left>,<right>]` (two engines' maps of
+// the style side by side, Orbis and GL JS by default, app/compare.js),
+// `&lose=<ms>` (lose the GPU that long after
 // loading, to show recovery), and the camera as
 // `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
 import { GROUPS, LIVE_CAMERA, sceneFor, sceneUrl } from "./styles.js";
 import { expose, hashCamera } from "./expose.js";
 import { attribution } from "./app/attribution.js";
-import { comparison } from "./app/compare.js";
+import { comparison, formatPair, parsePair } from "./app/compare.js";
 import { editor as createEditor } from "./app/editor.js";
 import { Highlighter, targetOf } from "./app/highlight.js";
 import { hud as createHud } from "./app/hud.js";
@@ -78,17 +79,27 @@ function hashOf({ center: [lon, lat], zoom, bearing = 0, pitch = 0 }) {
 function writeHash() {
   if (map) history.replaceState(history.state, "", `${location.pathname}${location.search}${hashOf(map.camera.current)}`);
 }
-function setFlag(name, on) {
+/** Sets the URL's `name` to `value` (`true` for a bare flag), or removes it for a falsy one. */
+function setParam(name, value) {
   const query = params();
-  if (on) query.set(name, ""); else query.delete(name);
+  if (value === true) query.set(name, "");
+  else if (value) query.set(name, value);
+  else query.delete(name);
   history.replaceState(history.state, "", `${location.pathname}${searchOf(query)}${location.hash}`);
 }
+const setFlag = (name, on) => setParam(name, on);
 
 // The chrome.
 const attributionControl = attribution();
 const picker = createPicker(GROUPS, { onPick: (scene, format) => go({ scene, format }) });
 const hudControl = createHud();
-const compare = comparison({ onToggle: (on) => { menu.hidePopover(); setFlag("compare", on); } });
+const compare = comparison({
+  onChange(pair) {
+    if (menu.matches(":popover-open")) menu.hidePopover();
+    setParam("compare", pair && (formatPair(pair) || true));
+  },
+  beforeReload: () => writeHash(),
+});
 const editor = createEditor({
   onClose: () => setEditing(false),
   onReplaced: () => { highlighter?.reset(); clearPopup(); },
@@ -419,7 +430,7 @@ window.app = { get map() { return map; }, editor, compare, get scene() { return 
 // Start.
 const start = params();
 setDebug(start.has("debug"));
-compare.wanted = start.has("compare");
+compare.want(parsePair(start.get("compare")));
 if (start.has("edit")) setEditing(true);
 {
   const camera = hashCamera();

@@ -41,13 +41,13 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * camera where a bounded dataset has data, or a view in range (the globe
  * no smaller than at zoom 0), on both maps of a comparison. `projection` is a v8 projection
  * the map switches to once the style loads, and `sky` a v8 sky it puts
- * in place of the style's then too. `notInGlJs` says why the
- * comparison with GL JS (app/compare.js) can't show the entry.
+ * in place of the style's then too. `unsupported` says, by engine, why
+ * that engine can't show the entry in the comparison (app/compare.js).
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
- *   projection?: object, sky?: object, notInGlJs?: string }} Scene
+ *   projection?: object, sky?: object, unsupported?: { gljs?: string, native?: string } }} Scene
  */
 
 /** A blue sky around the globe, a subtle rim at low zoom that thins out as it hands over to Mercator. */
@@ -62,14 +62,15 @@ export const GROUPS = [
     scenes: [
       { key: "globe", name: "Globe", detail: "Liberty on the v8 globe under a v8 sky, Web Mercator from zoom 12",
         url: LIVE, projection: { type: "globe" }, sky: GLOBE_SKY, camera: { center: [10, 30], zoom: 1.5 },
-        constraints: { minZoom: 0 }, dark: true, swatch: ["#f8f4f0", "#a0c8f0", "#02040b"] },
+        constraints: { minZoom: 0 }, dark: true, swatch: ["#f8f4f0", "#a0c8f0", "#02040b"],
+        unsupported: { native: "MapLibre Native has no globe projection" } },
       { key: "equal-earth", name: "Equal Earth", detail: "The whole world equal-area, handing over to Web Mercator by zoom 7",
         url: LIVE, projection: { type: "equal-earth" }, camera: { center: [0, 10], zoom: 0.5 },
         swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"],
-        notInGlJs: "GL JS has no Equal Earth projection" },
+        unsupported: { gljs: "GL JS has no Equal Earth projection", native: "MapLibre Native has no Equal Earth projection" } },
       { key: "arctic", name: "Arctic", detail: "A polar stereographic CRS, EPSG:3413", url: arctic, dark: true,
         swatch: ["#24476b", "#e9eef2", "#9aa6ad"],
-        notInGlJs: "GL JS can't draw tile matrix sets" },
+        unsupported: { gljs: "GL JS can't draw tile matrix sets", native: "MapLibre Native can't draw tile matrix sets" } },
       { key: "alps", name: "Alps terrain", detail: "3D terrain, sky and a looping camera flight", url: alps,
         flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
     ],

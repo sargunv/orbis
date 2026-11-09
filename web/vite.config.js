@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, extname, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
@@ -90,6 +90,49 @@ function extractStyles() {
   };
 }
 
+// Files served at fixed paths, outside the hashed assets: the service
+// worker that isolates a page for an engine that needs it (app/isolation.js)
+// at the base, so its scope covers the demo; and MapLibre Native's browser
+// module (app/native.js), whose `.mjs` finds its `.wasm` and starts its
+// threads' workers by their own names beside it, so they keep them, under
+// the version's directory. `virtual:native-module` exports that module's URL.
+function fixedFiles() {
+  const id = "virtual:native-module";
+  const require = createRequire(import.meta.url);
+  const native = dirname(require.resolve("@maplibre/native-ffi-opengl-wasm32/package.json"));
+  const { version } = require("@maplibre/native-ffi-opengl-wasm32/package.json");
+  const dir = `native/${version}/webgl/`;
+  const files = async () => {
+    const out = { "isolate.js": resolve(demo, "isolate.js") };
+    for (const name of ["maplibre_native_ffi.mjs", "maplibre_native_ffi.wasm", "LICENSE"]) out[`${dir}${name}`] = resolve(native, name);
+    for (const entry of await readdir(resolve(native, "licenses"))) out[`${dir}licenses/${entry}`] = resolve(native, "licenses", entry);
+    return out;
+  };
+  const types = { ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };
+  return {
+    name: "fixed-files",
+    resolveId: (source) => (source === id ? `\0${id}` : undefined),
+    load(source) {
+      if (source === `\0${id}`) return `export const version = ${JSON.stringify(version)};\nexport default ${JSON.stringify(`${base}${dir}maplibre_native_ffi.mjs`)};`;
+    },
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        const path = new URL(req.url, "http://x").pathname;
+        const file = path.startsWith(base) && (await files())[path.slice(base.length)];
+        if (!file) { next(); return; }
+        res.setHeader("content-type", types[extname(file)] ?? "text/plain");
+        res.end(await readFile(file));
+      });
+    },
+    async generateBundle() {
+      if (this.environment?.name && this.environment.name !== "client") return;
+      for (const [fileName, path] of Object.entries(await files())) {
+        this.emitFile({ type: "asset", fileName, source: await readFile(path) });
+      }
+    },
+  };
+}
+
 export default defineConfig({
   root: demo,
   base,
@@ -98,10 +141,10 @@ export default defineConfig({
   resolve: { alias: { orbis: fileURLToPath(new URL("./src/index.ts", import.meta.url)) } },
   server: { fs: { allow: [web] } },
   define: { __ORBIS_COMMIT__: JSON.stringify(commit()) },
-  plugins: [extractStyles(), paintSpec()],
-  // The comparison imports GL JS on demand; bundling it up front saves the
-  // dev server a reload when one first opens.
-  optimizeDeps: { include: ["maplibre-gl", "pmtiles"] },
+  plugins: [extractStyles(), paintSpec(), fixedFiles()],
+  // The comparison imports GL JS and MapLibre Native on demand; bundling
+  // them up front saves the dev server a reload when one first opens.
+  optimizeDeps: { include: ["maplibre-gl", "pmtiles", "@maplibre/native-ffi"] },
   build: {
     outDir: "../dist",
     emptyOutDir: true,
