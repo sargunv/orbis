@@ -425,9 +425,8 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     );
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
-    // The drape atlas is a whole number of slots wide, not a power of two,
-    // so a sample's coordinate rounds by where its tile's slot is, which
-    // the gesture decides: a step in a channel.
+    // The drape differs from a fresh map's by a step in a channel at a few
+    // hundred pixels along draped lines' edges, by a cause not yet found.
     assert_within("terrain", both_ways(&style, start, end, 30), 1);
 }
 
@@ -554,8 +553,8 @@ fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
     fresh.edit(&hide).unwrap();
     fresh.jump_to(&camera(at(-32.0)));
     settle(&mut fresh, &mut target);
-    // The terrain filters several drape texels into a pixel, each of which
-    // may round a step apart (see the terrain gesture): two.
+    // The drape differs a little as in the terrain gesture, and two fresh
+    // maps here differ too: two steps.
     assert_within("live-alps", (turned, target.read_pixels().unwrap()), 2);
 }
 
