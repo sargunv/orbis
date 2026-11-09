@@ -92,8 +92,10 @@ export async function serveDemo({ isolated = false, assets, offline = false, mou
         body = body.toString().replaceAll("local://", here).replaceAll("http://localhost:2900/", here);
         if (offline) body = body.replaceAll("https://", `${here}https/`).replaceAll("mapbox://", `${here}mapbox/`);
       }
+      // Cacheable for ten minutes, as GitHub Pages serves the demo: the
+      // workers that load one script share one download.
       await send(req, res, pathname, path, { "content-type": types[extname(path)] ?? "application/octet-stream",
-        ...isolation }, body);
+        "cache-control": "max-age=600", ...isolation }, body);
     } catch {
       res.writeHead(404).end();
     }

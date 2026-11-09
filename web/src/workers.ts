@@ -31,16 +31,18 @@ export function terminateWorkers({ jobs, placement }: Workers): void {
 /** A job worker. It loads its script while `module` compiles, and gets
  * it once it has. */
 export function spawnJob(module: WebAssembly.Module | Promise<WebAssembly.Module>): Spawned {
-  return spawn(new Worker(new URL("./job-worker.ts", import.meta.url), { type: "module" }), module);
+  return spawn(module, false);
 }
 
 /** The placement worker, as a job worker. */
 export function spawnPlacement(module: WebAssembly.Module | Promise<WebAssembly.Module>): Spawned {
-  return spawn(new Worker(new URL("./placement-worker.ts", import.meta.url), { type: "module" }), module);
+  return spawn(module, true);
 }
 
-function spawn(worker: Worker, module: WebAssembly.Module | Promise<WebAssembly.Module>): Spawned {
+function spawn(module: WebAssembly.Module | Promise<WebAssembly.Module>, placement: boolean): Spawned {
+  const worker = new Worker(new URL("./helper-worker.ts", import.meta.url), { type: "module" });
   const channel = new MessageChannel();
-  void Promise.resolve(module).then((module) => worker.postMessage({ module, port: channel.port2 }, [channel.port2]), () => {});
+  void Promise.resolve(module)
+    .then((module) => worker.postMessage({ module, port: channel.port2, placement }, [channel.port2]), () => {});
   return { worker, port: channel.port1 };
 }
