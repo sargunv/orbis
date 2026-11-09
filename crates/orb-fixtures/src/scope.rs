@@ -35,7 +35,8 @@ pub(crate) fn runtime_reason(message: &str) -> Option<&'static str> {
 /// locally instead; GeoJSON data that isn't GeoJSON, which leaves its
 /// source empty).
 pub(crate) fn mirrors_gl_js(message: &str) -> bool {
-    message.contains("its glyphs are drawn with local fonts instead") || message.contains("GeoJSON")
+    message.contains("its glyphs are drawn with local fonts instead")
+        || message.ends_with(orb_style::v8::EMPTY_SOURCE)
 }
 
 /// The skip reason of a parser warning that an edit raised at runtime:
@@ -55,7 +56,7 @@ pub(crate) fn reasons(style: &Style) -> BTreeSet<String> {
             // empty, not something Orbis doesn't support.
             !w.message
                 .starts_with("GeoJSON nested object and array property values")
-                && !w.message.ends_with("draws nothing")
+                && !w.message.ends_with(orb_style::v8::EMPTY_SOURCE)
         })
         .map(|w| parse_reason(&w.message))
         .collect()

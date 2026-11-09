@@ -335,6 +335,10 @@ fn parse_raster_dem(cx: &mut Cx, json: &Json, path: &str) -> Option<RasterDemSou
     })
 }
 
+/// How a warning about a GeoJSON source's missing or invalid data ends: the
+/// source loads empty and the rest of the style draws.
+pub const EMPTY_SOURCE: &str = "the source draws nothing";
+
 fn parse_geojson_source(cx: &mut Cx, json: &Json, path: &str) -> Option<GeoJsonSource> {
     let errors = cx.diagnostics.errors.len();
     let at = |key: &str| format!("{path}.{key}");
@@ -346,18 +350,14 @@ fn parse_geojson_source(cx: &mut Cx, json: &Json, path: &str) -> Option<GeoJsonS
             cx.warn(
                 at("data"),
                 json.span,
-                "GeoJSON source needs data; it draws nothing",
+                format!("GeoJSON source needs data; {EMPTY_SOURCE}"),
             );
             GeoJsonData::Inline(Vec::new())
         }
         Some(data) => match data.as_str() {
             Some(url) => GeoJsonData::Url(url.to_string()),
             None => GeoJsonData::Inline(crate::v8::geojson::convert(data).unwrap_or_else(|e| {
-                cx.warn(
-                    at("data"),
-                    data.span,
-                    format!("{e}; the source draws nothing"),
-                );
+                cx.warn(at("data"), data.span, format!("{e}; {EMPTY_SOURCE}"));
                 Vec::new()
             })),
         },

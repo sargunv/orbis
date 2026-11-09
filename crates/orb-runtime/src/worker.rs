@@ -652,9 +652,10 @@ impl TileWorker {
     ) -> Result<crate::geojson::Index, String> {
         let features = match &geojson.data {
             GeoJsonData::Inline(features) => features.clone(),
-            GeoJsonData::Url(_) => orb_style::v8::parse_geojson(
-                std::str::from_utf8(bytes).map_err(|e| e.to_string())?,
-            )?,
+            GeoJsonData::Url(_) => std::str::from_utf8(bytes)
+                .map_err(|e| e.to_string())
+                .and_then(orb_style::v8::parse_geojson)
+                .map_err(|e| format!("{e}; {}", orb_style::v8::EMPTY_SOURCE))?,
         };
         let plane = self.surface.plane.clone().map(Arc::new);
         crate::geojson::Index::new(features, geojson, plane)
@@ -765,12 +766,19 @@ impl TileWorker {
         let depth = tile.z - data_zoom;
         let frame = if let SourceKind::GeoJson(geojson) = &self.plan.source_def(index).kind {
             let mut cached = data.geojson.lock().expect("GeoJSON index poisoned");
-            cached
-                .get_or_insert_with(|| self.geojson_index(bytes, geojson))
-                .as_mut()
-                .map_err(|e| e.clone())?
-                .tile(data_zoom, (tile.col >> depth) as i32, tile.row >> depth)
-                .unwrap_or_default()
+            let fresh = cached.is_none();
+            match cached.get_or_insert_with(|| self.geojson_index(bytes, geojson)) {
+                Ok(index) => index
+                    .tile(data_zoom, (tile.col >> depth) as i32, tile.row >> depth)
+                    .unwrap_or_default(),
+                // A source whose index can't be built (a document that
+                // isn't GeoJSON) fails the tile that tried, which reports
+                // why, and is empty after, as in MapLibre Native, rather
+                // than failing every tile and every retry with the same
+                // error.
+                Err(e) if fresh => return Err(e.clone()),
+                Err(_) => TileFrame::default(),
+            }
         } else if bytes.is_empty() {
             // An archive's left-out tile.
             TileFrame::default()
@@ -1175,7 +1183,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn geojson_errors_are_terminal_and_clusters_draw() {
+    fn geojson_errors_empty_the_source_and_clusters_draw() {
         let worker =
             TileWorker::new(&INLINE.replace("\"data\":{", "\"cluster\":true,\"data\":{")).unwrap();
         assert!(!worker.plan.nodes.is_empty());
@@ -1238,9 +1246,20 @@ pub(crate) mod tests {
             .to_string();
         let worker = TileWorker::new(&INLINE.replace(&data, "\"test://data.json\"")).unwrap();
         let tile = request(TileIndex::new(0, 0, 0));
-        assert!(worker.build(b"invalid", Encoding::Mvt, &tile).is_err());
+        let error = worker
+            .build(b"invalid", Encoding::Mvt, &tile)
+            .err()
+            .unwrap();
+        assert!(error.ends_with(orb_style::v8::EMPTY_SOURCE), "{error}");
         assert!(worker.has_data(&tile));
-        assert!(worker.build(b"{}", Encoding::Mvt, &tile).is_err());
+        // The tile that read the document reported it; the source is
+        // empty after, for its retry and every other tile.
+        for tile in [tile, request(TileIndex::new(1, 1, 0))] {
+            let Ok(Built::Tile(build)) = worker.build(b"{}", Encoding::Mvt, &tile) else {
+                panic!("an empty tile");
+            };
+            assert!(build.meshes.iter().all(|m| m.mesh.is_empty()));
+        }
     }
 
     #[test]

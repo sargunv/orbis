@@ -47,7 +47,9 @@ images. Its licence is [`LICENSE-pixelmatch`](LICENSE-pixelmatch).
 
 **Scope.** Parser and runtime diagnostics decide what is skipped; the report
 keeps the original messages next to stable, deduplicated skip reasons.
-GeoJSON property-conversion warnings are informational. Operations this
+GeoJSON property-conversion warnings are informational, and a warning that
+a GeoJSON source's data is missing or invalid (so the source draws nothing)
+is one GL JS raises too, so it neither skips nor fails a test. Operations this
 runner cannot apply (`addImage`, waits for events or milliseconds) and
 metadata it cannot honour (report cropping, non-default camera limits, debug
 views, unknown options) skip the test. Timeouts and custom thresholds are

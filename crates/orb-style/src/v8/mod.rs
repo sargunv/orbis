@@ -27,7 +27,7 @@ pub use geojson::{apply_diffs, parse_geojson};
 pub use light::default_light;
 pub use orb_expr::json::Span;
 pub use orb_expr::{Diagnostic, Filter};
-pub use source::tms_definition;
+pub use source::{EMPTY_SOURCE, tms_definition};
 pub use tx::{FeatureTarget, Op, Transaction};
 
 // The native model this front end builds.
