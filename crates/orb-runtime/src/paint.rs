@@ -559,15 +559,39 @@ fn node_paint(
         }),
         Family::FillExtrusion => {
             let e = layer;
+            // Per feature (`orbis:expressions`), from the rows' flags: the
+            // layer composites at full opacity.
+            let opacity = e.get(orb_style::EXTRUSION_OPACITY);
+            let gradient = e.get(orb_style::EXTRUSION_VERTICAL_GRADIENT);
+            let opacity_rows = is_per_feature(opacity.kind());
+            let gradient_rows = is_per_feature(gradient.kind());
+            let opacity_curve = opacity_rows
+                .then(|| opacity.as_expression().map(expression_curve))
+                .flatten()
+                .unwrap_or(Curve::Step);
             NodePaint::Extrusion(orb_render::ExtrusionPaint {
                 color,
                 height: numbers[1],
                 base: numbers[2],
-                opacity: e.get(orb_style::EXTRUSION_OPACITY).evaluate(zoom),
+                opacity: if opacity_rows {
+                    1.0
+                } else {
+                    opacity.evaluate(zoom)
+                },
                 translate,
-                vertical_gradient: e.get(orb_style::EXTRUSION_VERTICAL_GRADIENT).evaluate(zoom),
-                table_mask,
-                curves: [curves[0], curves[1], curves[2]],
+                vertical_gradient: gradient.evaluate(zoom),
+                table_mask: table_mask
+                    | if opacity_rows {
+                        orb_render::EXTRUSION_OPACITY_ROWS
+                    } else {
+                        0
+                    }
+                    | if gradient_rows {
+                        orb_render::EXTRUSION_GRADIENT_ROWS
+                    } else {
+                        0
+                    },
+                curves: [curves[0], curves[1], curves[2], opacity_curve],
                 state: lookup,
             })
         }
@@ -776,9 +800,19 @@ fn line_paint(
 
 /// How a property's row values blend with zoom.
 pub(crate) fn curve(property: &PaintProperty<'_>) -> Curve {
+    property.expression().map_or(Curve::Step, expression_curve)
+}
+
+/// Whether values of `kind` come from per-feature rows.
+fn is_per_feature(kind: Kind) -> bool {
+    matches!(kind, Kind::Source | Kind::Composite)
+}
+
+/// How a composite value's rows blend between the tile's zoom and the
+/// next.
+fn expression_curve(expression: &orb_expr::PropertyExpression) -> Curve {
     use orb_expr::Interpolation;
-    let interpolation = property
-        .expression()
+    let interpolation = Some(expression)
         .filter(|e| e.kind() == Kind::Composite)
         .and_then(|e| e.zoom_curve())
         .and_then(|c| c.interpolation);

@@ -537,6 +537,50 @@ fn paint_reads_the_camera_with_the_expressions_preview() {
     assert_eq!(centre(&mut off), [0, 0, 0, 255]);
 }
 
+/// With `orbis:expressions`, each building takes its own opacity from its
+/// data: over black, a building at a quarter draws a quarter as bright as
+/// one at full. Off, both draw opaque.
+#[test]
+fn extrusion_opacity_follows_the_feature_with_the_expressions_preview() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let style = r##"{"version": 8, "center": [0, 0], "zoom": 2, "sources": {"b": {"type": "geojson",
+        "data": {"type": "FeatureCollection", "features": [
+          {"type": "Feature", "properties": {"o": 1}, "geometry": {"type": "Polygon",
+            "coordinates": [[[-10, -5], [-1, -5], [-1, 5], [-10, 5], [-10, -5]]]}},
+          {"type": "Feature", "properties": {"o": 0.25}, "geometry": {"type": "Polygon",
+            "coordinates": [[[1, -5], [10, -5], [10, 5], [1, 5], [1, -5]]]}}]}}},
+      "layers": [
+        {"id": "background", "type": "background", "paint": {"background-color": "#000000"}},
+        {"id": "b", "type": "fill-extrusion", "source": "b", "paint": {
+          "fill-extrusion-color": "#ffffff", "fill-extrusion-height": 1000,
+          "fill-extrusion-opacity": ["get", "o"],
+          "fill-extrusion-vertical-gradient": ["==", ["get", "o"], 1]}}]}"##;
+    let draw = |previews| {
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                previews,
+                ..MapOptions::default()
+            },
+        );
+        map.set_style_json(style).expect("style");
+        let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+        let roof = |x| pixel(&image.pixels, x, SIZE / 2);
+        (roof(SIZE / 2 - 12), roof(SIZE / 2 + 12))
+    };
+    let (full, quarter) = draw(orb_api::Previews::ALL);
+    assert!(full[0] > 100, "{full:?}");
+    for c in 0..3 {
+        let expected = f32::from(full[c]) * 0.25;
+        assert!(
+            (f32::from(quarter[c]) - expected).abs() <= 2.0,
+            "{quarter:?} is not a quarter of {full:?}"
+        );
+    }
+    let (a, b) = draw(orb_api::Previews::NONE);
+    assert_eq!(a, b, "without the preview both draw opaque");
+}
+
 #[test]
 fn padding_draws_the_center_where_it_projects() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");

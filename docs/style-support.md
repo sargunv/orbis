@@ -180,12 +180,12 @@ fixture run.
 |---|---|---|---|---|---|---|---|---|
 | `fill-extrusion-rounded-corner-distance` | layout | tile | constant | 6.2.0 | 13.4.0 | constant | 5/8 | — |
 | `fill-extrusion-color` | paint | frame | zoom, data, state, elevation | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state +camera | 8/8 | — |
-| `fill-extrusion-opacity` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom +camera | 3/3 | — |
+| `fill-extrusion-opacity` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom +camera, data | 3/3 | — |
 | `fill-extrusion-height` | paint | frame | zoom, data, state | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state | 5/6 | — |
 | `fill-extrusion-base` | paint | frame | zoom, data, state | 0.27.0; data 0.27.0 | 5.1.0; data 5.1.0 | zoom, data, state | 6/6 | — |
 | `fill-extrusion-translate` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom | 4/4 | 1/1 |
 | `fill-extrusion-translate-anchor` | paint | frame | zoom | 0.27.0 | 5.1.0 | zoom | 2/2 | — |
-| `fill-extrusion-vertical-gradient` | paint | frame | zoom | 0.50.0 | 7.0.0 | zoom | 2/3 | — |
+| `fill-extrusion-vertical-gradient` | paint | frame | zoom | 0.50.0 | 7.0.0 | zoom +data | 2/3 | — |
 | `fill-extrusion-pattern` | paint | tile | zoom, data | 0.27.0; data 0.49.0 | 5.1.0; data 6.5.0 | zoom, data | 7/9 | — |
 
 ### raster

@@ -16,6 +16,8 @@ const EXTRUSION_ROW_PATTERN: u32 = 6u;
 // The feature's centroid (two i16s), and 1 when the building is whole in
 // the tile's data.
 const EXTRUSION_ROW_CENTROID: u32 = 9u;
+// Flags: bit 0 the whole building, bit 1 its vertical gradient, bits 8-15
+// and 16-23 its opacity at the tile's zoom and the next, when per feature.
 const EXTRUSION_ROW_WHOLE: u32 = 10u;
 const EXTRUSION_ROW_WORDS: u32 = 11u;
 const CIRCLE_ROW_WORDS: u32 = 14u;

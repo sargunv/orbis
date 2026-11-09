@@ -11,11 +11,16 @@ struct ExtrusionNode {
     vertical_gradient: u32,
     opacity: f32,
     image_from: u32, image_to: u32,
-    curves: array<Curve, 3>,
+    // Color, height, base, and per-feature opacity.
+    curves: array<Curve, 4>,
     pattern: Pattern,
     state: StateLookup,
 };
 @group(1) @binding(0) var<uniform> node: ExtrusionNode;
+// `table_mask` bits beyond the row slots: opacity and the vertical gradient
+// per feature, from the row's flags word.
+const EXTRUSION_OPACITY_ROWS: u32 = 8u;
+const EXTRUSION_GRADIENT_ROWS: u32 = 16u;
 struct ExtrusionOut {
     @builtin(position) position: vec4<f32>,
     //planes @builtin(clip_distances) clip: array<f32, 4>,
@@ -95,7 +100,7 @@ fn clips_split(tile: Tile) -> bool {
 // building cut at the source's buffer draws from every placement.
 fn extrusion_drawn(v: Pulled) -> u32 {
     let row = prop_row(v, vertex_at(v.vertex + 1u), v.row_words);
-    if prop_at(row + EXTRUSION_ROW_WHOLE) == 0u {
+    if (prop_at(row + EXTRUSION_ROW_WHOLE) & 1u) == 0u {
         return select(EXTRUSION_CUT, EXTRUSION_CUT_SPLIT, clips_split(tile_at(v.tile)));
     }
     return select(0u, EXTRUSION_WHOLE, inside_clips(tile_at(v.tile), unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID))));
@@ -130,6 +135,18 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     if from_state(state, node.state, 0u) { color = state_color(state, node.state, 0u, node.curves[0]); }
     if from_state(state, node.state, 1u) { height = state_number(state, node.state, 1u, node.curves[1]); }
     if from_state(state, node.state, 2u) { base = state_number(state, node.state, 2u, node.curves[2]); }
+    // Per-feature opacity and vertical gradient (`orbis:expressions`),
+    // packed beside the whole-building bit.
+    let flags = prop_at(row + EXTRUSION_ROW_WHOLE);
+    var opacity = 1.0;
+    if (node.table_mask & EXTRUSION_OPACITY_ROWS) != 0u {
+        let at = vec2<f32>(f32((flags >> 8u) & 255u), f32((flags >> 16u) & 255u)) / 255.0;
+        opacity = mix(at.x, at.y, curve_t(node.curves[3], tile.zoom));
+    }
+    var vertical_gradient = node.vertical_gradient != 0u;
+    if (node.table_mask & EXTRUSION_GRADIENT_ROWS) != 0u {
+        vertical_gradient = (flags & 2u) != 0u;
+    }
     // On terrain, raise the roof by the ground under the feature's
     // centroid and give ground-level parts a 10 m basement,
     // so buildings don't hang over slopes (GL JS's `a_centroid`).
@@ -152,7 +169,7 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     out.tile_pos = pos;
     out.tile = v.tile;
     var gradient = 1.0;
-    if normal.z == 0.0 && node.vertical_gradient != 0u {
+    if normal.z == 0.0 && vertical_gradient {
         gradient = light_wall_gradient(top + gradient_base, gradient_height);
     }
     if node.pattern.enabled != 0u {
@@ -167,10 +184,10 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
         out.pattern_pos = pattern_pos;
         // The pattern's texels multiply the light, as GL JS shades them at
         // mid luminance.
-        out.color = vec4<f32>(clamp(light_factor(normal, 0.5, gradient), light_floor(), vec3<f32>(1.0)), 1.0);
+        out.color = vec4<f32>(clamp(light_factor(normal, 0.5, gradient), light_floor(), vec3<f32>(1.0)), 1.0) * opacity;
         return out;
     }
-    out.color = vec4<f32>(light_surface(color.rgb, normal, gradient), 1.0);
+    out.color = vec4<f32>(light_surface(color.rgb, normal, gradient), 1.0) * opacity;
     return out;
 }
 fn extrusion_shade(in: ExtrusionOut) -> vec4<f32> {

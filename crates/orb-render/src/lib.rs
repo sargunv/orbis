@@ -42,9 +42,10 @@ pub use terrain::{
 pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, PageKind};
 pub use orb_layout::{Family, pack_color};
 pub use paint::{
-    CirclePaint, ColorReliefPaint, Curve, ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod,
-    HillshadePaint, LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, StateLookup,
-    SymbolPaint, SymbolSize, Translate,
+    CirclePaint, ColorReliefPaint, Curve, EXTRUSION_GRADIENT_ROWS, EXTRUSION_OPACITY_ROWS,
+    ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod, HillshadePaint, LinePaint,
+    MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, StateLookup, SymbolPaint, SymbolSize,
+    Translate,
 };
 pub use scene::Pixels;
 pub use scene::{

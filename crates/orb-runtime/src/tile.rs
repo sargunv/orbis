@@ -613,11 +613,34 @@ pub(crate) fn build(
                 }
                 if node.family == Family::FillExtrusion {
                     let whole = orb_layout::extrusion::whole(layer, &features, bend.is_some());
+                    // Per-feature opacity and vertical gradient
+                    // (`orbis:expressions`) share the flags word.
+                    let opacity = style_layer.get(orb_style::EXTRUSION_OPACITY);
+                    let gradient = style_layer.get(orb_style::EXTRUSION_VERTICAL_GRADIENT);
+                    let per_feature = |kind| matches!(kind, Kind::Source | Kind::Composite);
+                    let composite = opacity.kind() == Kind::Composite;
+                    let opacity = per_feature(opacity.kind()).then(|| opacity.bind(layer));
+                    let gradient = per_feature(gradient.kind()).then(|| gradient.bind(layer));
+                    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
                     for (i, &feature) in features.iter().enumerate() {
+                        let f = feature as usize;
                         let [x, y] = orb_layout::extrusion::centroid(layer, feature, 8192);
                         rows[i * row_words + layout::EXTRUSION_ROW_CENTROID] =
                             u32::from(x as u16) | u32::from(y as u16) << 16;
-                        rows[i * row_words + layout::EXTRUSION_ROW_WHOLE] = u32::from(whole[i]);
+                        let mut flags = u32::from(whole[i]);
+                        if let Some(gradient) = &gradient {
+                            flags |= u32::from(gradient.evaluate(zoom, f)) << 1;
+                        }
+                        if let Some(opacity) = &opacity {
+                            let at = opacity.evaluate(zoom, f);
+                            let next = if composite {
+                                opacity.evaluate(zoom + 1.0, f)
+                            } else {
+                                at
+                            };
+                            flags |= byte(at) << 8 | byte(next) << 16;
+                        }
+                        rows[i * row_words + layout::EXTRUSION_ROW_WHOLE] = flags;
                     }
                 }
                 rows

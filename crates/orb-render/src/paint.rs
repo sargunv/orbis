@@ -178,10 +178,20 @@ pub struct ExtrusionPaint {
     pub opacity: f32,
     pub translate: Translate,
     pub vertical_gradient: bool,
+    /// Bits 0–2: colour, height and base from the property row; 3 and 4:
+    /// opacity and the vertical gradient from its flags word
+    /// ([`EXTRUSION_OPACITY_ROWS`], [`EXTRUSION_GRADIENT_ROWS`]).
     pub table_mask: u32,
-    pub curves: [Curve; 3],
+    /// Colour, height, base and per-feature opacity.
+    pub curves: [Curve; 4],
     pub state: StateLookup,
 }
+
+/// [`ExtrusionPaint::table_mask`]'s bit for opacity per feature.
+pub const EXTRUSION_OPACITY_ROWS: u32 = 1 << 3;
+/// [`ExtrusionPaint::table_mask`]'s bit for the vertical gradient per
+/// feature.
+pub const EXTRUSION_GRADIENT_ROWS: u32 = 1 << 4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NodePaint {
