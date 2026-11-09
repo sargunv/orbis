@@ -18,7 +18,38 @@ pub use catalog::*;
 
 #[cfg(feature = "ir")]
 mod ir {
+    use std::sync::OnceLock;
+
+    /// Where each of a shader's modules lies in the inflated whole, by
+    /// entry point.
+    type Ranges = &'static [(&'static str, std::ops::Range<usize>)];
+
     include!(concat!(env!("OUT_DIR"), "/ir.rs"));
+
+    /// A shader's modules by entry point.
+    type Modules = Vec<(&'static str, &'static [u8])>;
+
+    /// Every shader's modules by label, inflated the first time a shader
+    /// asks (a fraction of a millisecond).
+    pub(crate) fn modules() -> &'static [(&'static str, Modules)] {
+        static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
+        static MODULES: OnceLock<Vec<(&str, Modules)>> = OnceLock::new();
+        MODULES.get_or_init(|| {
+            let bytes = BYTES.get_or_init(|| {
+                let deflated = include_bytes!(concat!(env!("OUT_DIR"), "/ir.deflate"));
+                miniz_oxide::inflate::decompress_to_vec(deflated)
+                    .expect("inflates the build's modules")
+            });
+            (IR.iter())
+                .map(|&(label, entries)| {
+                    let modules = entries
+                        .iter()
+                        .map(|(entry, at)| (*entry, &bytes[at.clone()]));
+                    (label, modules.collect())
+                })
+                .collect()
+        })
+    }
 }
 
 #[cfg(all(test, feature = "ir"))]
@@ -36,10 +67,10 @@ impl Shader {
     pub fn ir(&self) -> Option<EntryModules> {
         #[cfg(feature = "ir")]
         {
-            ir::IR
+            ir::modules()
                 .iter()
                 .find(|(label, _)| *label == self.label)
-                .map(|&(_, modules)| modules)
+                .map(|(_, modules)| modules.as_slice())
         }
         #[cfg(not(feature = "ir"))]
         None

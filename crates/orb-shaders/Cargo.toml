@@ -8,9 +8,13 @@ version.workspace = true
 
 [features]
 # Each shader's naga module, parsed at build time (`Shader::ir`).
-ir = []
+ir = ["dep:miniz_oxide"]
+
+[dependencies]
+miniz_oxide = { workspace = true, optional = true }
 
 [build-dependencies]
+miniz_oxide.workspace = true
 naga = { workspace = true, features = ["serialize"] }
 postcard.workspace = true
 
