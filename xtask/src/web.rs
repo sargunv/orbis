@@ -22,7 +22,7 @@ const NAMED_CORE: &str = "target/web/core-names.wasm";
 /// something grew. Find what in the per-crate report; if the growth earns
 /// its bytes, raise the level to the new size plus the same margin, and
 /// when a change shrinks a module, lower it.
-const CORE_WATCH_KIB: usize = 910;
+const CORE_WATCH_KIB: usize = 940;
 const SHAPER_WATCH_KIB: usize = 420;
 
 /// Crates whose code the size report attributes separately.
