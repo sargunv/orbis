@@ -307,6 +307,29 @@ fn clips_box(tile: Tile) -> vec4<f32> {
     return vec4<f32>(max(lo, unpack_i16x2(tile.bound.x)), min(hi, unpack_i16x2(tile.bound.y)));
 }
 
+// A placement's clip as its fragments test it (`clip_drawn`), packed as
+// a clip rectangle: the one rectangle it owns where it lands everywhere
+// and its tile is affine, so the test reads no tile; otherwise
+// CLIP_FETCHED, and fragments test the tile's rectangles and bound. On a
+// pitched city view, reading the tile in every line and fill fragment
+// cost a fifth of the frame.
+const CLIP_FETCHED: vec2<u32> = vec2<u32>(0x80008000u, 0x80008000u);
+fn fragment_clip(tile: Tile) -> vec2<u32> {
+    if draped_placement(tile) || tile.warp_cells != 0u {
+        return CLIP_FETCHED;
+    }
+    // None owned: an empty rectangle, never CLIP_FETCHED's.
+    var clip = vec2<u32>(0x7fff7fffu, 0u);
+    var owned = 0u;
+    for (var i = 0u; i < 4u; i++) {
+        if all(unpack_i16x2(tile.clips[i].x) < unpack_i16x2(tile.clips[i].y)) {
+            clip = tile.clips[i];
+            owned++;
+        }
+    }
+    return select(clip, CLIP_FETCHED, owned > 1u);
+}
+
 // Whether `p` lies where the placement's content may land (`bound`).
 fn landed(tile: Tile, p: vec2<f32>) -> bool {
     return all(p >= unpack_i16x2(tile.bound.x)) && all(p < unpack_i16x2(tile.bound.y));

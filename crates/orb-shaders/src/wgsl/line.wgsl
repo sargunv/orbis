@@ -65,6 +65,7 @@ struct LineOut {
     // in a drape slot, so a translated line moves whole into it, bounded
     // by the slot where it lands (`tile_pos`).
     @location(13) owner_pos: vec2<f32>,
+    @location(14) @interpolate(flat) clip: vec2<u32>,
 };
 
 fn line_prop(row: u32, state: u32, bit: u32, constant: f32, tile_zoom: f32) -> f32 {
@@ -183,12 +184,13 @@ fn line_vertex(v: Pulled) -> LineOut {
     out.tile_pos = extruded;
     out.owner_pos = select(extruded, extruded - vec2<f32>(shift.x, -shift.y) / tile.scale, draped_placement(tile));
     out.tile = v.tile;
+    out.clip = fragment_clip(tile);
     return out;
 }
 
 @fragment
 fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
-    if !owned(tile_at(in.tile), in.owner_pos) || !landed(tile_at(in.tile), in.tile_pos) {
+    if !clip_drawn(in.clip, in.tile, in.owner_pos, in.tile_pos) {
         discard;
     }
     let dist = length(in.normal) * in.width2.x;

@@ -124,6 +124,16 @@ fn pull_indexed(node_index: u32, index: u32, stride: u32, out: ptr<function, Pul
     return true;
 }
 
+// Whether a fragment the placement of tile `tile` owns at `owner` and
+// lands at `p` is its to draw, by its `fragment_clip`.
+fn clip_drawn(clip: vec2<u32>, tile: u32, owner: vec2<f32>, p: vec2<f32>) -> bool {
+    if all(clip == CLIP_FETCHED) {
+        let t = tile_at(tile);
+        return owned(t, owner) && landed(t, p);
+    }
+    return all(p >= unpack_i16x2(clip.x)) && all(p < unpack_i16x2(clip.y));
+}
+
 fn prop_row(v: Pulled, slot: u32, stride: u32) -> u32 {
     return v.prop_base + slot * stride;
 }

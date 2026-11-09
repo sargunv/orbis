@@ -39,6 +39,7 @@ struct FillOut {
     // where it was on a globe and in a drape slot (`tile_pos` is where it
     // lands there), so a translated fill moves whole.
     @location(7) owner_pos: vec2<f32>,
+    @location(8) @interpolate(flat) clip: vec2<u32>,
 };
 
 @vertex
@@ -113,6 +114,7 @@ fn fill_vertex(v: Pulled) -> FillOut {
     }
     out.owner_pos = select(out.tile_pos, pos, draped_placement(tile));
     out.tile = v.tile;
+    out.clip = fragment_clip(tile);
     return out;
 }
 
@@ -122,6 +124,9 @@ fn fill_vertex(v: Pulled) -> FillOut {
 // triangles and can stray just past the tile's edge, where no other
 // placement draws; there it belongs to the edge.
 fn fill_drawn(in: FillOut) -> bool {
+    if any(in.clip != CLIP_FETCHED) {
+        return clip_drawn(in.clip, in.tile, in.owner_pos, in.tile_pos);
+    }
     let tile = tile_at(in.tile);
     var owner = in.owner_pos;
     if tile.warp_cells != 0u {
@@ -143,7 +148,7 @@ fn fs_fill(in: FillOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_fill_outline(in: FillOut) -> @location(0) vec4<f32> {
-    if !owned(tile_at(in.tile), in.owner_pos) || !landed(tile_at(in.tile), in.tile_pos) {
+    if !clip_drawn(in.clip, in.tile, in.owner_pos, in.tile_pos) {
         discard;
     }
     let dist = length(in.screen - in.position.xy);
