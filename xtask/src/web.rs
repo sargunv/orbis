@@ -22,8 +22,8 @@ const NAMED_CORE: &str = "target/web/core-names.wasm";
 /// something grew. Find what in the per-crate report; if the growth earns
 /// its bytes, raise the level to the new size plus the same margin, and
 /// when a change shrinks a module, lower it.
-const CORE_WATCH_KIB: usize = 940;
-const SHAPER_WATCH_KIB: usize = 420;
+const CORE_WATCH_KIB: usize = 880;
+const SHAPER_WATCH_KIB: usize = 405;
 
 /// Crates whose code the size report attributes separately.
 const CRATES: &[&str] = &[
@@ -153,6 +153,13 @@ fn wasm_opt(input: &Path, output: &Path) -> Command {
             "--low-memory-unused",
             "--strip-producers",
             "--strip-target-features",
+            // By default binaryen inlines every function that has one
+            // caller, at any size, which welds whole features into a few
+            // giant functions. V8 compiles a function whole the first time
+            // it runs, so a map's first frame would wait on code it never
+            // runs. Kept apart, functions compile only when they run, and
+            // the module compresses better.
+            "--one-caller-inline-max-function-size=20",
             "--enable-simd",
             "--enable-bulk-memory",
             "--enable-sign-ext",
