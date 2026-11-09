@@ -203,6 +203,12 @@ export interface MapOptions {
   /** How tiles coarsen with distance in pitched views. MapLibre Native's
    * defaults where left out. */
   tileLod?: TileLod;
+  /** What a vector tile the tileset doesn't have (HTTP 404) draws: its
+   * nearest ancestor, overzoomed (`"parent"`, the default), or nothing
+   * (`"empty"`), as GL JS and MapLibre Native draw it. Raster and
+   * raster-dem tiles draw their ancestor either way, and other failures
+   * (server errors, the network) do too, retried later. */
+  missingTiles?: "parent" | "empty";
   /** How many job workers lay out tiles; by default
    * `clamp(hardwareConcurrency − 2, 1, 4)`. */
   jobWorkers?: number;

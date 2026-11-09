@@ -311,8 +311,9 @@ impl From<&orb_runtime::Memory> for FrameMemory {
 /// options by name, each optional: `fadeDuration`,
 /// `crossSourceCollisions`, `localIdeographFontFamily` (`false` draws the
 /// style's glyphs), `antialias` and `terrainSkirts`; and Orbis's
-/// `previews`, an array of preview names or `"all"`, `stableLabels`, and
-/// `tileLod` (as [`OrbisMap::set_tile_lod`] takes it).
+/// `previews`, an array of preview names or `"all"`, `stableLabels`,
+/// `tileLod` (as [`OrbisMap::set_tile_lod`] takes it) and `missingTiles`,
+/// `"parent"` or `"empty"` ([`orb_runtime::MissingTiles`]).
 #[wasm_bindgen(js_name = createMap)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_map(
@@ -397,6 +398,17 @@ pub async fn create_map(
     }
     if let Some(lod) = option("tileLod").filter(JsValue::is_object) {
         map.set_tile_lod(camera::tile_lod(map.tile_lod(), &lod));
+    }
+    match option("missingTiles")
+        .and_then(|v| v.as_string())
+        .as_deref()
+    {
+        Some("parent") => map.set_missing_tiles(orb_runtime::MissingTiles::Parent),
+        Some("empty") => map.set_missing_tiles(orb_runtime::MissingTiles::Empty),
+        Some(other) => web_sys::console::warn_1(
+            &format!("orbis: unknown missingTiles {other:?}; known: parent, empty").into(),
+        ),
+        None => {}
     }
     // The style loads while the GPU device is made.
     map.load_style_url(&style_url);

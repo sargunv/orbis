@@ -312,6 +312,8 @@ pub(crate) fn map(runtime: &Runtime, metadata: &Metadata) -> Map {
             // not as MapLibre Native's stabilisers keep them from the
             // placements while the test loads.
             stable_labels: false,
+            // Both engines draw nothing where a vector tile 404s.
+            missing_tiles: orb_api::MissingTiles::Empty,
             ..MapOptions::default()
         },
     );

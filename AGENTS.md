@@ -69,7 +69,7 @@ Playwright.
 | `mise x -- cargo xtask android [--run]` | `liborbis.so`, the AAR and the reference app; `--run` installs it on this worktree's emulator (logcat tag `Orbis`) |
 | `cargo xtask apple [--test] [--ios-sim[=name]]` | the xcframework and Swift package; `--test` runs the Swift smoke test |
 | `cargo run --release -p orb-demo -- [style] [--at lon,lat,z[,bearing,pitch]]` | native demo window |
-| `cargo run --release -p orb-cli -- render <style> -o out.png [--at …] [--size WxH] [--state-dir d] [--previews all\|names]` | a still picture of a style; `tiles` renders a tile pyramid, or `--list`ed tiles with `--times` per tile (`--still`: as Still-mode views) |
+| `cargo run --release -p orb-cli -- render <style> -o out.png [--at …] [--size WxH] [--state-dir d] [--previews all\|names] [--missing-tiles parent\|empty]` | a still picture of a style; `tiles` renders a tile pyramid, or `--list`ed tiles with `--times` per tile (`--still`: as Still-mode views) |
 | `cargo xtask web` / `cargo xtask pages` | `core.wasm` into `web/pkg` with its sizes (a warning when one grows past its watch level); `pages` also builds the site into `web/dist` |
 | `pnpm -C web dev` | the demo at `/orbis/` (after `cargo xtask web`) |
 | `pnpm -C web typecheck` / `test` / `e2e [--only=…]` | the package's types, unit tests, and headless-Chromium end-to-end checks |

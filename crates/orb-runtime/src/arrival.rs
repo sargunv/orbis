@@ -412,7 +412,14 @@ impl Map {
             &mut self.events,
         );
         if build.missing {
-            pyramid.insert_missing(tile);
+            // A vector tile left out of its tileset may mean no data there
+            // ([`MissingTiles`]); an image tile's ancestor fills the hole.
+            if self.missing_tiles == crate::MissingTiles::Empty && plan.image_kind(source).is_none()
+            {
+                pyramid.insert_empty(tile);
+            } else {
+                pyramid.insert_missing(tile);
+            }
             return None;
         }
         // Given up before it loaded: a later plan that wants it asks again.

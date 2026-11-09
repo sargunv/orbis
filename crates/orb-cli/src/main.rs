@@ -21,8 +21,11 @@
 //!
 //! Both commands take `--state-dir <dir>`, the runtime's state directory
 //! (compiled pipelines where the platform keeps none, the HTTP cache), so a
-//! later run starts warm, and `--previews <names|all>`, the comma-separated
-//! previews (style inputs beyond the approved spec) the style may use.
+//! later run starts warm; `--previews <names|all>`, the comma-separated
+//! previews (style inputs beyond the approved spec) the style may use; and
+//! `--missing-tiles <parent|empty>`, what a vector tile that 404s draws:
+//! its nearest ancestor (the default) or nothing, as GL JS and MapLibre
+//! Native draw it.
 
 #![forbid(unsafe_code)]
 
@@ -31,8 +34,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use orb_api::{
-    CameraState, Geodetic, Image, Map, MapOptions, Preview, Previews, Runtime, RuntimeOptions,
-    TileMatrixSet, TileRequest,
+    CameraState, Geodetic, Image, Map, MapOptions, MissingTiles, Preview, Previews, Runtime,
+    RuntimeOptions, TileMatrixSet, TileRequest,
 };
 use orb_crs::TileIndex;
 
@@ -142,6 +145,17 @@ fn previews(args: &Args) -> Result<Previews, String> {
     }
 }
 
+/// `--missing-tiles`: what a vector tile that 404s draws.
+fn missing_tiles(args: &Args) -> Result<MissingTiles, String> {
+    match args.get(&["--missing-tiles"]) {
+        None | Some("parent") => Ok(MissingTiles::Parent),
+        Some("empty") => Ok(MissingTiles::Empty),
+        Some(other) => Err(format!(
+            "--missing-tiles takes parent or empty, not {other}"
+        )),
+    }
+}
+
 /// A URL as given, or a path as a `file://` URL.
 fn style_url(style: &str) -> Result<String, String> {
     if style.contains("://") {
@@ -184,6 +198,7 @@ fn render(
         MapOptions {
             camera,
             previews: previews(args)?,
+            missing_tiles: missing_tiles(args)?,
             ..MapOptions::default()
         },
     );
@@ -237,6 +252,7 @@ fn tiles(
         runtime,
         MapOptions {
             previews: previews(args)?,
+            missing_tiles: missing_tiles(args)?,
             ..MapOptions::default()
         },
     );

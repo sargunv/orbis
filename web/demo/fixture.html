@@ -121,6 +121,8 @@ window.fixture = async (r) => {
     // GL JS's tests expect labels placed for the camera alone, not as MapLibre
     // Native's stabilisers keep them from the placements while the test loads.
     stableLabels: false,
+    // Both engines draw nothing where a vector tile 404s.
+    missingTiles: "empty",
   });
   map.on("warning", ({ message }) => warnings.push(message));
   map.on("error", ({ message }) => warnings.push(message));

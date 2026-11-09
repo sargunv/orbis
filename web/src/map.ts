@@ -476,7 +476,7 @@ export async function createMap(options: MapOptions): Promise<OrbisMap> {
     fadeDuration: options.fadeDuration, crossSourceCollisions: options.crossSourceCollisions,
     localIdeographFontFamily: options.localIdeographFontFamily, antialias: options.antialias,
     terrainSkirts: options.terrainSkirts, previews: options.previews, stableLabels: options.stableLabels,
-    tileLod: options.tileLod,
+    tileLod: options.tileLod, missingTiles: options.missingTiles,
   };
   const frame = document.createElement("div");
   Object.assign(frame.style, { position: "relative", width: "100%", height: "100%", overflow: "hidden" });

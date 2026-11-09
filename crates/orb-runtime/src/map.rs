@@ -401,6 +401,26 @@ impl Retired {
     }
 }
 
+/// What a vector tile the tileset doesn't have (HTTP 404, a missing file)
+/// draws.
+///
+/// Raster and raster-dem tiles draw their nearest ancestor either way, as
+/// GL JS and MapLibre Native draw them: a tileset leaves a vector tile out
+/// because nothing is in it, where a hole in imagery or elevation is a
+/// hole in coverage that coarser data fills. Other failures (server
+/// errors, the network) also draw the nearest ancestor, and the tile is
+/// requested again later, whatever this says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MissingTiles {
+    /// Its nearest ancestor in the tileset, overzoomed: a tileset that
+    /// stops at a coarser zoom in places still shows its data there.
+    #[default]
+    Parent,
+    /// Nothing: the tile counts as loaded with no data, as GL JS and
+    /// MapLibre Native count it.
+    Empty,
+}
+
 /// How a map renders: interactively, or the still output of
 /// servers and snapshots.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -474,6 +494,8 @@ pub struct Map {
     pub(crate) terrain_skirts: bool,
     /// How covers coarsen with distance ([`Map::set_tile_lod`]).
     tile_lod: orb_camera::TileLod,
+    /// What a vector tile that 404s draws ([`Map::set_missing_tiles`]).
+    pub(crate) missing_tiles: MissingTiles,
     /// The previews styles parse with ([`Map::set_previews`]).
     previews: orb_style::Previews,
     pub(crate) antialias_3d: bool,
@@ -666,6 +688,7 @@ impl Map {
             retired: Retired::default(),
             terrain_skirts: true,
             tile_lod: orb_camera::TileLod::default(),
+            missing_tiles: MissingTiles::Parent,
             previews: orb_style::Previews::NONE,
             antialias_3d: true,
             nodes_stale: false,
@@ -768,6 +791,13 @@ impl Map {
     /// [`TileLod::sanitized`]: orb_camera::TileLod::sanitized
     pub fn set_tile_lod(&mut self, lod: orb_camera::TileLod) {
         self.tile_lod = lod.sanitized();
+    }
+
+    /// Sets what a vector tile the tileset doesn't have draws: its nearest
+    /// ancestor by default, or nothing ([`MissingTiles`]). Applies to tiles
+    /// that arrive afterwards.
+    pub fn set_missing_tiles(&mut self, missing: MissingTiles) {
+        self.missing_tiles = missing;
     }
 
     /// How the covers' tiles coarsen with distance.

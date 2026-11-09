@@ -1,0 +1,131 @@
+//! A tile the tileset doesn't have (a missing file, as HTTP 404): a vector
+//! tile draws its parent or nothing, as `MapOptions::missing_tiles` says;
+//! a raster tile draws its parent either way.
+
+use std::path::Path;
+
+use orb_api::{Map, MapOptions, MissingTiles, Runtime, RuntimeOptions};
+
+fn varint(mut n: u64, out: &mut Vec<u8>) {
+    while n >= 128 {
+        out.push(n as u8 | 128);
+        n >>= 7;
+    }
+    out.push(n as u8);
+}
+
+/// A length-delimited protobuf field.
+fn message(field: u64, bytes: &[u8], out: &mut Vec<u8>) {
+    varint(field << 3 | 2, out);
+    varint(bytes.len() as u64, out);
+    out.extend_from_slice(bytes);
+}
+
+fn uint(field: u64, n: u64, out: &mut Vec<u8>) {
+    varint(field << 3, out);
+    varint(n, out);
+}
+
+/// A vector tile whose layer `l` holds one polygon over the whole tile.
+fn full_tile() -> Vec<u8> {
+    let zigzag = |n: i64| ((n << 1) ^ (n >> 63)) as u64;
+    let mut geometry = Vec::new();
+    // MoveTo(-64, -64), LineTo ×3 around the buffered square, ClosePath.
+    for n in [9, zigzag(-64), zigzag(-64), 26]
+        .into_iter()
+        .chain(
+            [(4224, 0), (0, 4224), (-4224, 0)]
+                .into_iter()
+                .flat_map(|(x, y)| [zigzag(x), zigzag(y)]),
+        )
+        .chain([15])
+    {
+        varint(n, &mut geometry);
+    }
+    let mut feature = Vec::new();
+    uint(3, 3, &mut feature);
+    message(4, &geometry, &mut feature);
+    let mut layer = Vec::new();
+    uint(15, 2, &mut layer);
+    message(1, b"l", &mut layer);
+    message(2, &feature, &mut layer);
+    uint(5, 4096, &mut layer);
+    let mut tile = Vec::new();
+    message(3, &layer, &mut tile);
+    tile
+}
+
+/// A 256-pixel blue PNG.
+fn blue_png(path: &Path) {
+    let file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+    let mut encoder = png::Encoder::new(file, 256, 256);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let pixels: Vec<u8> = [0, 0, 255, 255].repeat(256 * 256);
+    encoder
+        .write_header()
+        .unwrap()
+        .write_image_data(&pixels)
+        .unwrap();
+}
+
+/// The middle pixel of a still at zoom 1.5, where only zoom 0's tile exists.
+fn middle(source: &str, layer: &str, missing_tiles: MissingTiles) -> [u8; 4] {
+    let style = format!(
+        r##"{{"version": 8, "center": [10, 10], "zoom": 1.5,
+            "sources": {{"s": {source}}},
+            "layers": [
+              {{"id": "bg", "type": "background", "paint": {{"background-color": "#ffffff"}}}},
+              {layer}]}}"##
+    );
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut map = Map::new(
+        &runtime,
+        MapOptions {
+            missing_tiles,
+            ..MapOptions::default()
+        },
+    );
+    map.set_viewport(64.0, 64.0);
+    map.set_style_json(&style).unwrap();
+    let image = map.snapshot(64, 64, 1.0).unwrap();
+    let i = (32 * 64 + 32) * 4;
+    image.pixels[i..i + 4].try_into().unwrap()
+}
+
+#[test]
+fn a_child_tile_that_404s_draws_its_parent_or_nothing() {
+    let dir = std::env::temp_dir().join(format!("orb-missing-tiles-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("v/0/0")).unwrap();
+    std::fs::create_dir_all(dir.join("r/0/0")).unwrap();
+    std::fs::write(dir.join("v/0/0/0.pbf"), full_tile()).unwrap();
+    blue_png(&dir.join("r/0/0/0.png"));
+
+    let vector = format!(
+        r#"{{"type": "vector", "maxzoom": 4, "tiles": ["file://{}/v/{{z}}/{{x}}/{{y}}.pbf"]}}"#,
+        dir.display()
+    );
+    let fill = r##"{"id": "f", "type": "fill", "source": "s", "source-layer": "l",
+        "paint": {"fill-color": "#ff0000"}}"##;
+    let raster = format!(
+        r#"{{"type": "raster", "maxzoom": 4, "tiles": ["file://{}/r/{{z}}/{{x}}/{{y}}.png"]}}"#,
+        dir.display()
+    );
+    let image =
+        r#"{"id": "r", "type": "raster", "source": "s", "paint": {"raster-fade-duration": 0}}"#;
+
+    let red = [255, 0, 0, 255];
+    let white = [255, 255, 255, 255];
+    let blue = [0, 0, 255, 255];
+    let results = [
+        middle(&vector, fill, MissingTiles::Parent),
+        middle(&vector, fill, MissingTiles::Empty),
+        middle(&raster, image, MissingTiles::Parent),
+        middle(&raster, image, MissingTiles::Empty),
+    ];
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(results[0], red, "the vector parent stands in");
+    assert_eq!(results[1], white, "the vector tile is empty");
+    assert_eq!(results[2], blue, "the raster parent stands in");
+    assert_eq!(results[3], blue, "the raster parent stands in either way");
+}

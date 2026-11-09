@@ -63,6 +63,11 @@ pub struct MapOptions {
     /// tile level of detail (maplibre-native-ffi's tile options), whose
     /// defaults it takes.
     pub tile_lod: orb_camera::TileLod,
+    /// What a vector tile the tileset doesn't have (HTTP 404) draws: its
+    /// nearest ancestor by default, or nothing, as GL JS and MapLibre
+    /// Native draw it. Raster and raster-dem tiles draw their ancestor
+    /// either way ([`MissingTiles`](orb_runtime::MissingTiles)).
+    pub missing_tiles: orb_runtime::MissingTiles,
 }
 
 impl Default for MapOptions {
@@ -78,6 +83,7 @@ impl Default for MapOptions {
             previews: crate::Previews::NONE,
             stable_labels: true,
             tile_lod: orb_camera::TileLod::default(),
+            missing_tiles: orb_runtime::MissingTiles::Parent,
         }
     }
 }
@@ -235,6 +241,7 @@ impl Map {
         map.set_previews(options.previews);
         map.set_stable_labels(options.stable_labels);
         map.set_tile_lod(options.tile_lod);
+        map.set_missing_tiles(options.missing_tiles);
         Self {
             shared: runtime.shared.clone(),
             runtime: runtime.clone(),

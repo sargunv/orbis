@@ -23,6 +23,7 @@ export interface CoreOptions {
   previews?: readonly string[] | "all";
   stableLabels?: boolean;
   tileLod?: TileLod;
+  missingTiles?: "parent" | "empty";
 }
 
 export interface HostCallbacks {
