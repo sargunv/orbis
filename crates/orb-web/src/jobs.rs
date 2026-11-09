@@ -50,9 +50,9 @@ pub(crate) fn forget(map: u32) {
     POSTS.with(|posts| posts.borrow_mut().remove(&map));
 }
 
-/// [`Jobs`] for the render worker: each tile goes to job worker
-/// `hash(source, tile) mod N`, so a tile's relayouts and queries find its
-/// data where it was decoded.
+/// [`Jobs`] for the map on the page: each tile goes to the job worker with
+/// the fewest requests in flight, and its relayouts and queries follow it
+/// there, where its data was decoded.
 pub(crate) struct WorkerJobs {
     /// The map whose job workers these are.
     map: u32,
