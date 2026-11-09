@@ -32,9 +32,8 @@ fetch reports.
 ## GL JS
 
 Pinned in `xtask/src/fixtures.rs` (`COMMIT`, currently `2b68611a`). The
-task downloads about 160 MiB and writes about 95 MiB: the render and query
-test directories whose names start with the prefixes listed there, and the
-assets their styles reference through `local://` URLs, including the
+task downloads about 160 MiB and writes about 131 MiB: every render and query
+test (1736 and 137), and the assets their styles reference through `local://` URLs, including the
 `@fontsource` files GL JS's test server serves from npm, checked against the
 `integrity` hash in GL JS's `package-lock.json`.
 

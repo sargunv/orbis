@@ -5,7 +5,7 @@
 //! [`MIRROR_SHA256`] and moves it into place; when the mirror there already
 //! matches, it does nothing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -22,44 +22,7 @@ const COMMIT: &str = "2b68611a4e2d4f7f076f6c6ebf758e2d53f91471";
 
 /// The mirror's [`content_hash`] at [`COMMIT`]. Changing the pin changes it:
 /// a fetch that doesn't match reports the hash it got, for review.
-const MIRROR_SHA256: &str = "490ca5fe904f4cd58af1e9a9921806fc3be2144c2bfe38e2a1b8749f1f3feb4f";
-
-/// The test directory prefixes the mirrored milestones need, for the render and
-/// query suites alike. Matching is by prefix, so `fill-` already covers
-/// `fill-extrusion-*`; `color-relief` and `sprites` have no trailing dash
-/// because upstream names those directories exactly that. The style
-/// engine's directories (`runtime-styling` and the feature and global state
-/// ones) drive maps through `operations`.
-const PREFIXES: [&str; 25] = [
-    "background-",
-    "circle-",
-    "color-relief",
-    "feature-state",
-    "fill-",
-    "filter",
-    "global-state",
-    "heatmap-",
-    "hillshade-",
-    "icon-",
-    // `image` and `video` sources.
-    "image",
-    "light",
-    "line-",
-    // The globe and its vertical perspective, and the
-    // identity and Mercator projections' tests beside them.
-    "projection",
-    "raster-",
-    "remove-feature-state",
-    "runtime-styling",
-    "sprites",
-    "sky",
-    "symbol-",
-    "terrain",
-    "text-",
-    "video",
-    "visibility",
-    "zoom-history",
-];
+const MIRROR_SHA256: &str = "50e969da8a7b7590b1fbc6d8b1ab60ba74010112add708f53f9d8d5524939889";
 
 const TESTS: &str = "test/integration/render/tests/";
 const QUERY: &str = "test/integration/query/tests/";
@@ -193,7 +156,7 @@ fn mirror(out: &Path) -> Result<(), String> {
     let mut written = extract(&archive, out, &expanded.wanted)?;
     fontsource(&scanned.lock, out, &mut expanded.dangling, &mut written)?;
     if written.render_total() == 0 {
-        return Err("no render tests matched the mirrored prefixes".to_string());
+        return Err("the tarball holds no render tests".to_string());
     }
     fs::write(
         out.join(SOURCE_MD),
@@ -249,15 +212,31 @@ struct Scanned {
     assets: BTreeSet<String>,
     /// The repository's `package-lock.json`.
     lock: String,
-    /// Test cases (one per `style.json`) per prefix.
+    /// Test cases (one per `style.json`) per top-level directory.
     tests: Tests,
 }
 
-/// Test counts per prefix, for the render and query suites.
+/// Test counts per top-level directory, for the render and query suites.
 #[derive(Default)]
 struct Tests {
-    render: [usize; PREFIXES.len()],
-    query: [usize; PREFIXES.len()],
+    render: BTreeMap<String, usize>,
+    query: BTreeMap<String, usize>,
+}
+
+impl Tests {
+    /// Counts the test of a `style.json` at `rel` in its suite's tests.
+    fn count(&mut self, rel: &str, query: bool) {
+        if !rel.ends_with("/style.json") {
+            return;
+        }
+        let suite = if query {
+            &mut self.query
+        } else {
+            &mut self.render
+        };
+        let top = rel.split('/').next().unwrap_or(rel);
+        *suite.entry(top.to_string()).or_default() += 1;
+    }
 }
 
 /// One mirrored style: the assets it references and the glyphs it can reach.
@@ -269,7 +248,8 @@ struct Style {
     stacks: Option<BTreeSet<String>>,
 }
 
-/// First pass: the referenced URLs, the asset tree and the per-prefix counts.
+/// First pass: the referenced URLs, the asset tree and the per-directory
+/// counts.
 fn scan(archive: &[u8]) -> Result<Scanned, String> {
     let mut scanned = Scanned {
         styles: Vec::new(),
@@ -305,9 +285,6 @@ fn scan(archive: &[u8]) -> Result<Scanned, String> {
         } else {
             continue;
         };
-        let Some(prefix) = prefix_of(rel) else {
-            continue;
-        };
         if !rel.ends_with("/style.json") {
             continue;
         }
@@ -322,20 +299,9 @@ fn scan(archive: &[u8]) -> Result<Scanned, String> {
                 .collect(),
             stacks: fontstacks(&style).map_err(|e| format!("{path}: {e}"))?,
         });
-        let counts = if query {
-            &mut scanned.tests.query[prefix]
-        } else {
-            &mut scanned.tests.render[prefix]
-        };
-        *counts += 1;
+        scanned.tests.count(rel, query);
     }
     Ok(scanned)
-}
-
-/// The index into [`PREFIXES`] of the top-level directory of a test path.
-fn prefix_of(rel: &str) -> Option<usize> {
-    let top = rel.split('/').next()?;
-    PREFIXES.iter().position(|prefix| top.starts_with(prefix))
 }
 
 /// The `local://` paths in a style document, without the scheme.
@@ -589,11 +555,11 @@ struct Written {
 
 impl Written {
     fn render_total(&self) -> usize {
-        self.tests.render.iter().sum()
+        self.tests.render.values().sum()
     }
 
     fn query_total(&self) -> usize {
-        self.tests.query.iter().sum()
+        self.tests.query.values().sum()
     }
 }
 
@@ -613,20 +579,10 @@ fn extract(archive: &[u8], out: &Path, wanted: &BTreeSet<String>) -> Result<Writ
         };
         let mut query = false;
         let target = if let Some(rel) = path.strip_prefix(TESTS) {
-            let Some(prefix) = prefix_of(rel) else {
-                continue;
-            };
-            if rel.ends_with("/style.json") {
-                written.tests.render[prefix] += 1;
-            }
+            written.tests.count(rel, false);
             out.join("render").join(rel)
         } else if let Some(rel) = path.strip_prefix(QUERY) {
-            let Some(prefix) = prefix_of(rel) else {
-                continue;
-            };
-            if rel.ends_with("/style.json") {
-                written.tests.query[prefix] += 1;
-            }
+            written.tests.count(rel, true);
             query = true;
             out.join("query").join(rel)
         } else if let Some(rel) = path.strip_prefix(ASSETS) {
@@ -713,9 +669,11 @@ fn fontsource(
 
 fn source_md(tests: &Tests, written: &Written, dangling: &BTreeSet<String>) -> String {
     let mut rows = String::new();
-    for (i, prefix) in PREFIXES.iter().enumerate() {
-        let (render, query) = (tests.render[i], tests.query[i]);
-        rows.push_str(&format!("| `{prefix}*` | {render} | {query} |\n"));
+    let dirs: BTreeSet<&String> = tests.render.keys().chain(tests.query.keys()).collect();
+    for dir in dirs {
+        let render = tests.render.get(dir).copied().unwrap_or(0);
+        let query = tests.query.get(dir).copied().unwrap_or(0);
+        rows.push_str(&format!("| `{dir}` | {render} | {query} |\n"));
     }
     let dangling = if dangling.is_empty() {
         String::new()
@@ -752,8 +710,8 @@ fetch, and set `MIRROR_SHA256` to the hash the fetch reports.
 ## Contents
 
 Every test directory under `test/integration/render/tests/` (mirrored into
-`render/`) and `test/integration/query/tests/` (into `query/`) whose top-level
-name starts with one of the prefixes in the table below, at its original nested
+`render/`) and `test/integration/query/tests/` (into `query/`), counted by
+top-level directory in the table below, at its original nested
 path (`render/<dir>/<variant>/style.json`, `expected.png`, ...); and every file
 under `test/integration/assets/` that a mirrored `style.json` references through
 a `local://` URL. `{{fontstack}}` stands for each `text-font` stack the
@@ -767,7 +725,7 @@ which GL JS's test server serves from npm, mirrors that file of the
 `@fontsource/<name>` package the repository's `package-lock.json` pins into
 `assets/fonts/`.
 
-| Prefix | Render tests | Query tests |
+| Directory | Render tests | Query tests |
 | --- | --- | --- |
 {rows}
 - Render tests: {render}
