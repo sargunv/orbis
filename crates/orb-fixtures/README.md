@@ -68,7 +68,18 @@ test does, then `queryRenderedFeatures` runs at the test's point or box, and
 the features are compared with `expected.json` the way GL JS's query
 harness compares them: without `layer`, coordinates within 1e-6 degrees. A
 test passes when the same features come back; whether they come in GL JS's
-order is reported separately. It runs natively and in Chrome.
+order is reported separately, and so are failures that differ only in
+geometry. It runs natively and in Chrome.
+
+Those geometry-only failures are overzoomed polygons. GL JS slices an
+overzoomed tile into its children and clips each polygon to the child's
+buffer; then it re-encodes the slice, and `vt-pbf` truncates each
+coordinate delta, so every vertex after a clip point moves by up to one
+unit. Orbis's slices keep a polygon its data tile holds whole unclipped and
+answer with it whole, so these answers can't match GL JS's to 1e-6 degrees.
+The same shift decides `line-width-features-in/tilt-inside`: GL JS's copy of
+the border Burlington shares with Ocean moves one unit (half a pixel) west,
+off the query box, so only Ocean answers.
 
 ## Platforms
 

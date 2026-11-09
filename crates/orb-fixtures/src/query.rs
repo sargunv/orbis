@@ -3,7 +3,9 @@
 //! or box and its features are compared with `expected.json`, as GL JS's
 //! query harness compares them: without `layer`, coordinates within 1e-6
 //! degrees. A test passes when the same features come back; whether they
-//! come in GL JS's order is reported apart.
+//! come in GL JS's order is reported apart, and so are failures that
+//! differ only in geometry: which tile's copy of a feature answered, or
+//! how that tile clipped it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -58,7 +60,7 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     paths.retain(|path| test_id(path, &fixtures).contains(filter));
     let assets = assets(root);
     let mut totals = Counts::default();
-    let mut ordered = 0;
+    let (mut ordered, mut shapes) = (0, 0);
     let mut prefixes: BTreeMap<String, Counts> = BTreeMap::new();
     let mut results = Vec::new();
     for path in paths {
@@ -67,6 +69,9 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
         let status = result["status"].as_str().expect("our status");
         if status == "pass" && result["in_order"] == true {
             ordered += 1;
+        }
+        if result["geometry_only"] == true {
+            shapes += 1;
         }
         prefixes.entry(prefix(&id)).or_default().add(status);
         totals.add(status);
@@ -77,6 +82,7 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
         "total_seconds": started.elapsed().as_secs_f64(),
         "totals": totals.json(),
         "in_order": ordered,
+        "geometry_only": shapes,
         "prefixes": prefixes.iter().map(|(p, c)| (p.clone(), c.json())).collect::<BTreeMap<_, _>>(),
         "tests": results,
     });
@@ -89,6 +95,10 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     print!("{:<12} ", "");
     totals.print("TOTAL");
     println!("  {ordered} of {} passes in GL JS's order", totals.pass);
+    println!(
+        "  {shapes} of {} failures differ only in geometry",
+        totals.fail
+    );
     Ok(summary)
 }
 
@@ -182,9 +192,13 @@ fn run_test(
     result["diagnostics"] = json!(diagnostics);
     result["seconds"] = json!(started.elapsed().as_secs_f64());
     if !same {
+        let shapes = compare(&without_geometry(&actual), &without_geometry(&expected)).0;
+        result["geometry_only"] = json!(shapes);
         eprintln!(
-            "FAIL query {name} {id}: {} features, expected {}",
-            result["actual"], result["expected"]
+            "FAIL query {name} {id}: {} features, expected {}{}",
+            result["actual"],
+            result["expected"],
+            if shapes { " (geometry only)" } else { "" }
         );
         let dir = output.join("failures").join(id);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -238,6 +252,17 @@ fn compare(actual: &Value, expected: &Value) -> (bool, bool) {
         }
     }
     (true, false)
+}
+
+/// The features without their geometry.
+fn without_geometry(features: &Value) -> Value {
+    let mut features = features.clone();
+    for feature in features.as_array_mut().into_iter().flatten() {
+        if let Some(f) = feature.as_object_mut() {
+            f.remove("geometry");
+        }
+    }
+    features
 }
 
 fn close(a: &Value, b: &Value) -> bool {
