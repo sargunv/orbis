@@ -173,8 +173,9 @@ fn fs_terrain_depth(@builtin(position) position: vec4<f32>) -> @location(0) vec4
     return vec4<f32>(position.z, 0.0, 0.0, 0.0);
 }
 
-// Where a fragment samples its tile's drape slots: the texel in a slot and
-// the footprint's gradients, the same in every slot. Trilinear and
+// Where a fragment samples its tile's drape slots of `slot_px` texels: the
+// texel in a slot and the footprint's gradients, the same in every slot of
+// that size (the colour page's, or the slope page's). Trilinear and
 // anisotropic, as GL JS samples its render-to-texture tiles, and kept in
 // the slot as a texture of its own would clamp to its edge.
 struct DrapeSample {
