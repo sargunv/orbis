@@ -39,6 +39,8 @@ impl Deps {
     /// The feature's geometry (`within`, `distance`): evaluation needs it
     /// in the context. Implies [`PROPERTIES`](Self::PROPERTIES).
     pub(crate) const GEOMETRY: Self = Self(4096 | 2048 | 2);
+    /// The camera beyond its zoom: `pitch` and `bearing` (Orbis's own).
+    pub(crate) const CAMERA: Self = Self(8192);
 
     pub(crate) fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0 && other.0 != 0
@@ -177,6 +179,10 @@ pub(crate) enum Call {
         within: bool,
         geometries: Vec<crate::geometry::Geometry>,
     },
+    /// The camera's pitch, degrees.
+    Pitch,
+    /// The camera's bearing, degrees.
+    Bearing,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -484,6 +490,7 @@ impl Op {
                 Call::Image => Deps::IMAGE,
                 Call::SupportedScript => Deps::SCRIPT,
                 Call::Geometry { .. } => Deps::GEOMETRY,
+                Call::Pitch | Call::Bearing => Deps::CAMERA,
                 _ => Deps::NONE,
             },
             Op::Zoom => Deps::ZOOM,

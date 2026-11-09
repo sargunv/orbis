@@ -12,7 +12,7 @@ use orb_render::{
 };
 use orb_style::{
     Kind, LINE_CAP, LINE_DASHARRAY, LINE_GRADIENT, LINE_PATTERN, LINE_WIDTH, LayerType, LineCap,
-    TranslateAnchor,
+    TranslateAnchor, Value,
 };
 
 use crate::image;
@@ -34,6 +34,8 @@ pub(crate) struct PaintState {
     zoom_history: ZoomHistory,
     /// The draped nodes' paint at drape zooms.
     drape: DrapePaint,
+    /// The pitch and bearing paint that reads the camera was written at.
+    camera: Option<(f64, f64)>,
 }
 
 impl PaintState {
@@ -43,15 +45,48 @@ impl PaintState {
     }
 }
 
-/// Writes this frame's node paint: at `zoom` and `bearing`, with paint
-/// transitions eased in at `now`. Returns whether the pattern
+/// The plan with its paint's camera reads (`["pitch"]`, `["bearing"]`,
+/// with the `orbis:expressions` preview) resolved to the camera's: `None`
+/// when no paint reads the camera.
+pub(crate) fn at_camera(plan: &StylePlan, pitch: f64, bearing: f64) -> Option<StylePlan> {
+    if plan.camera_layers.is_empty() {
+        return None;
+    }
+    let mut style = (*plan.style).clone();
+    for &index in &plan.camera_layers {
+        let layer = Arc::make_mut(&mut style.layers[index]);
+        let ids: Vec<_> = layer.slots().map(|(id, _)| id).collect();
+        for id in ids {
+            let slot = layer.slot_mut(id);
+            let Some(folded) = slot
+                .as_expression()
+                .and_then(|e| e.at_camera(pitch, bearing))
+            else {
+                continue;
+            };
+            *slot = if folded.kind() == Kind::Constant {
+                let value = folded.expression().evaluate(0.0).ok();
+                orb_style::Slot::constant(value.map_or(Value::Null, Value::into_owned), true)
+            } else {
+                orb_style::Slot::expression(folded)
+            };
+        }
+    }
+    Some(StylePlan {
+        style: Arc::new(style),
+        ..plan.clone()
+    })
+}
+
+/// Writes this frame's node paint: at `zoom`, `bearing` and `pitch`, with
+/// paint transitions eased in at `now`. Returns whether the pattern
 /// and dash cross-fade is still fading, and images the style lacks.
 pub(crate) fn frame(
     gpu: &mut dyn Gpu,
     renderer: &mut Renderer,
     style: &mut LoadedStyle,
     transitions: &mut crate::transitions::Transitions,
-    (zoom, bearing): (f64, f64),
+    (zoom, bearing, pitch): (f64, f64, f64),
     now: f64,
     atlas: &mut ImageAtlas,
 ) -> (bool, Vec<String>) {
@@ -60,6 +95,13 @@ pub(crate) fn frame(
     if style.states.prepare(gpu, renderer, plan, zoom) {
         style.paint.invalidate();
     }
+    // Paint that reads the camera is written again as it moves.
+    let camera = at_camera(plan, pitch, bearing);
+    if camera.is_some() && style.paint.camera != Some((pitch, bearing)) {
+        style.paint.camera = Some((pitch, bearing));
+        style.paint.invalidate();
+    }
+    let plan = camera.as_ref().unwrap_or(plan);
     let crossfade = style.paint.zoom_history.update(zoom, now);
     let fading = crossfade.mix < 1.0
         && plan.nodes.iter().any(|n| {
@@ -95,13 +137,20 @@ pub(crate) fn drape(
     renderer: &mut Renderer,
     (style, plan): (&mut LoadedStyle, &StylePlan),
     zooms: &std::collections::BTreeSet<u8>,
-    (generation, bearing): (u64, f64),
+    (generation, bearing, pitch): (u64, f64, f64),
     atlas: &mut ImageAtlas,
 ) {
+    let camera = at_camera(plan, pitch, bearing);
+    let plan = camera.as_ref().unwrap_or(plan);
     let drape = &mut style.paint.drape;
     if drape.generation != Some(generation) {
         // A new atlas, or one whose slots all draw again.
         drape.generation = Some(generation);
+        drape.painted.clear();
+    }
+    // Paint that reads the camera is draped again as it moves.
+    if camera.is_some() && drape.camera != Some((pitch, bearing)) {
+        drape.camera = Some((pitch, bearing));
         drape.painted.clear();
     }
     if drape.bearing != bearing {
@@ -185,6 +234,8 @@ struct DrapePaint {
     bearing: f64,
     /// The drape layout generation written for.
     generation: Option<u64>,
+    /// The pitch and bearing paint that reads the camera was draped at.
+    camera: Option<(f64, f64)>,
 }
 
 #[derive(Debug, Default)]

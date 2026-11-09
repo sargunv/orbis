@@ -1216,7 +1216,7 @@ impl Map {
                 renderer,
                 style,
                 &mut self.transitions,
-                (zoom, self.camera.state().bearing),
+                (zoom, self.camera.state().bearing, self.camera.state().pitch),
                 now,
                 images.atlas.as_mut().expect("initialized"),
             );

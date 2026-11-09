@@ -475,6 +475,68 @@ fn a_camera_given_keeps_its_pitch_and_bearing() {
     }
 }
 
+/// With the `orbis:expressions` preview, paint reads the camera's pitch
+/// and bearing, and follows them as the camera moves: a map moved to a
+/// camera draws as one made there. Without it, the value warns and draws
+/// the default.
+#[test]
+fn paint_reads_the_camera_with_the_expressions_preview() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let style = r##"{"version": 8, "center": [0, 0], "zoom": 2, "sources": {},
+      "layers": [{"id": "background", "type": "background", "paint": {
+        "background-color": ["interpolate", ["linear"], ["pitch"], 0, "#ff0000", 60, "#0000ff"],
+        "background-opacity": ["step", ["bearing"], 1, 90, 0.5]}}]}"##;
+    let at = |pitch: f64, bearing: f64| orb_api::CameraState {
+        pitch,
+        bearing,
+        ..orb_api::CameraState::new(
+            orb_api::Geodetic::new(0.0, 0.0),
+            2.0,
+            orb_api::TileMatrixSet::by_id("WebMercatorQuad")
+                .unwrap()
+                .projection(),
+        )
+    };
+    let map = |previews| {
+        let mut map = Map::new(
+            &runtime,
+            MapOptions {
+                camera: Some(at(0.0, 0.0)),
+                previews,
+                ..MapOptions::default()
+            },
+        );
+        map.set_style_json(style).expect("style");
+        map
+    };
+    let centre = |map: &mut Map| {
+        let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+        pixel(&image.pixels, SIZE / 2, SIZE / 2)
+    };
+    let mut moved = map(orb_api::Previews::ALL);
+    assert_eq!(centre(&mut moved), [255, 0, 0, 255], "flat");
+    for (pitch, bearing, expected) in [
+        (60.0, 0.0, [0, 0, 255, 255]),
+        (30.0, 0.0, [128, 0, 128, 255]),
+        (60.0, 120.0, [0, 0, 128, 128]),
+    ] {
+        moved.jump_to_state(at(pitch, bearing));
+        let mut fresh = map(orb_api::Previews::ALL);
+        fresh.jump_to_state(at(pitch, bearing));
+        for (how, map) in [("moved", &mut moved), ("fresh", &mut fresh)] {
+            let got = centre(map);
+            assert!(
+                got.iter().zip(expected).all(|(a, b)| a.abs_diff(b) <= 1),
+                "{how} to pitch {pitch} bearing {bearing}: {got:?}, not {expected:?}"
+            );
+        }
+    }
+    // Off, the values are the defaults: opaque black.
+    let mut off = map(orb_api::Previews::NONE);
+    off.jump_to_state(at(60.0, 120.0));
+    assert_eq!(centre(&mut off), [0, 0, 0, 255]);
+}
+
 #[test]
 fn padding_draws_the_center_where_it_projects() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");

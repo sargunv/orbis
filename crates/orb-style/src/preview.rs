@@ -21,15 +21,21 @@ pub enum Preview {
     /// or a parametric kind with PROJ-named numeric parameters beside the
     /// `type`) and OGC tile matrix sets on sources (`tileMatrixSet`).
     Crs,
+    /// Extended expressions: a property reads each input Orbis honours in
+    /// its evaluation [`Phase`](crate::Phase) ([`Prop::extended`](crate::Prop)),
+    /// whatever the spec's `property-type` says, among them the camera's
+    /// `["pitch"]` and `["bearing"]` in paint drawn per frame.
+    Expressions,
 }
 
 impl Preview {
     /// Every preview, in the order the docs list them.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Equirectangular,
         Self::EqualEarth,
         Self::ProjectionTransition,
         Self::Crs,
+        Self::Expressions,
     ];
 
     /// The name a map enables it by: the proposal's `style-spec#n`, or
@@ -40,6 +46,7 @@ impl Preview {
             Self::EqualEarth => "style-spec#1865",
             Self::ProjectionTransition => "style-spec#1866",
             Self::Crs => "orbis:crs",
+            Self::Expressions => "orbis:expressions",
         }
     }
 
@@ -61,6 +68,9 @@ impl Preview {
             }
             Self::Crs => {
                 "Coordinate reference systems as the projection type (`EPSG:3413`, or a parametric kind such as `polar-stereographic` with PROJ-named numeric parameters beside the `type`) and OGC 2D tile matrix sets on sources (`tileMatrixSet`: a registered identifier or an inline document). Our own design; no proposal yet."
+            }
+            Self::Expressions => {
+                "Each property reads every input Orbis honours in the phase it is evaluated in, whatever the spec's `property-type` says; the support matrix lists them. Among them are the camera's `[\"pitch\"]` and `[\"bearing\"]` (degrees) in paint drawn every frame, for values the same for every feature. Our own design; no proposal yet."
             }
         }
     }

@@ -2,7 +2,7 @@
 //! into GL JS's `PropertyValue` kinds.
 
 use crate::eval::interpolation_factor;
-use crate::ir::{Deps, Interpolation, Ir, NodeId, Op};
+use crate::ir::{Call, Deps, Interpolation, Ir, NodeId, Op};
 use crate::json::Json;
 use crate::legacy::lower_function;
 use crate::parse::{Annotation, Parser, is_expression};
@@ -40,6 +40,12 @@ pub struct PropertySpec {
     pub zoom: bool,
     /// The property is data-driven: it may depend on the feature.
     pub feature: bool,
+    /// It may read `feature-state` (data-driven paint, as the spec's
+    /// validator has it; not layout).
+    pub state: bool,
+    /// It may read the camera beyond its zoom (`pitch`, `bearing`), for a
+    /// value the same for every feature: Orbis's own extension.
+    pub camera: bool,
     /// The property may use `interpolate`.
     pub interpolated: bool,
     /// Strings expand `{token}`s: legacy string stops (`convertFunction`)
@@ -230,9 +236,21 @@ impl PropertyExpression {
         if !feature_constant && !spec.feature {
             return Err("data expressions not supported");
         }
+        if deps.contains(Deps::FEATURE_STATE) && !spec.state {
+            return Err(
+                "\"feature-state\" data expressions are not supported with layout properties.",
+            );
+        }
         let zoom_constant = !deps.contains(Deps::ZOOM);
         if !zoom_constant && !spec.zoom {
             return Err("zoom expressions not supported");
+        }
+        let camera = deps.contains(Deps::CAMERA);
+        if camera && !spec.camera {
+            return Err("camera expressions not supported");
+        }
+        if camera && !feature_constant {
+            return Err("camera expressions cannot read the feature");
         }
         let mut memo = vec![None; ir.nodes.len()];
         let curve = match find_zoom_curve(ir, ir.root(), &mut memo)? {
@@ -262,6 +280,7 @@ impl PropertyExpression {
             }),
         };
         let kind = match (&curve, feature_constant) {
+            (None, true) if camera => Kind::Camera,
             (None, true) => Kind::Constant,
             (None, false) => Kind::Source,
             (Some(_), true) => Kind::Camera,
@@ -276,6 +295,47 @@ impl PropertyExpression {
 
     pub fn kind(&self) -> Kind {
         self.kind
+    }
+
+    /// Whether the value reads the camera beyond its zoom: `pitch` or
+    /// `bearing`.
+    pub fn reads_camera(&self) -> bool {
+        self.expression.deps().contains(Deps::CAMERA)
+    }
+
+    /// The value with its camera reads resolved to `pitch` and `bearing`:
+    /// a camera value over its zoom curve, or a constant without one.
+    /// `None` when it reads no camera.
+    pub fn at_camera(&self, pitch: f64, bearing: f64) -> Option<Self> {
+        if !self.reads_camera() {
+            return None;
+        }
+        let mut ir = self.expression.ir.clone();
+        // Post order: operands come before the nodes that read them.
+        for i in 0..ir.nodes.len() {
+            let value = match ir.nodes[i].op {
+                Op::Call(Call::Pitch, _) => pitch,
+                Op::Call(Call::Bearing, _) => bearing,
+                _ => f64::NAN,
+            };
+            if !value.is_nan() {
+                ir.nodes[i].op = Op::Literal(crate::Value::Number(value));
+            }
+            let mut deps = ir.nodes[i].op.own_deps();
+            ir.nodes[i]
+                .op
+                .for_each_child(|c| deps = deps | ir.nodes[c as usize].deps);
+            ir.nodes[i].deps = deps;
+        }
+        Some(Self {
+            expression: Expression { ir },
+            kind: if self.curve.is_some() {
+                Kind::Camera
+            } else {
+                Kind::Constant
+            },
+            curve: self.curve.clone(),
+        })
     }
 
     /// Whether the value reads `feature-state`.

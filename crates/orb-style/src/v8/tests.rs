@@ -813,3 +813,71 @@ fn previews_gate_projections_and_tile_matrix_sets() {
     );
     assert_eq!(paths(&off), ["projection.lon_0", "sources.a.tileMatrixSet"]);
 }
+
+/// With `orbis:expressions`, paint Orbis evaluates per frame reads the
+/// camera; without it, such a value warns and is the default. Inputs no
+/// phase honours stay errors, as do the spec's own limits.
+#[test]
+fn extended_inputs_follow_the_preview() {
+    let layer = |paint: &str, layout: &str| {
+        format!(
+            r#"{{"version": 8, "sources": {{"s": {{"type": "geojson",
+                "data": {{"type": "FeatureCollection", "features": []}}}}}},
+                "layers": [{{"id": "f", "type": "fill", "source": "s",
+                "paint": {{{paint}}}, "layout": {{{layout}}}}}]}}"#
+        )
+    };
+    let pitch = r#""fill-opacity": ["interpolate", ["linear"], ["pitch"], 0, 1, 60, 0.5]"#;
+    let on = parse_with(&layer(pitch, ""), Previews::ALL, &[]).unwrap();
+    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
+    let opacity = on.layers[0].get(FILL_OPACITY);
+    assert_eq!(opacity.kind(), Kind::Camera);
+    let folded = opacity
+        .as_expression()
+        .unwrap()
+        .at_camera(30.0, 0.0)
+        .unwrap();
+    assert_eq!(folded.kind(), Kind::Constant);
+    assert_eq!(
+        folded.expression().evaluate(0.0).unwrap(),
+        Value::Number(0.75)
+    );
+
+    let off = parse(&layer(pitch, "")).unwrap();
+    assert_eq!(off.warnings.len(), 1, "{:?}", off.warnings);
+    assert_eq!(off.warnings[0].path, "layers[0].paint.fill-opacity");
+    assert!(off.warnings[0].message.contains("orbis:expressions"));
+    assert!(!off.layers[0].get(FILL_OPACITY).is_set());
+
+    for (paint, layout) in [
+        // Not honoured: the camera where tiles are laid out, or with data.
+        (
+            r#""fill-translate": ["literal", [0, 0]], "fill-pattern": ["case", [">", ["pitch"], 1], "a", "b"]"#,
+            "",
+        ),
+        (r#""fill-opacity": ["*", ["pitch"], ["get", "x"]]"#, ""),
+        ("", r#""fill-sort-key": ["pitch"]"#),
+        // The spec's validator: no feature state in layout.
+        ("", r#""fill-sort-key": ["feature-state", "x"]"#),
+    ] {
+        for previews in [Previews::NONE, Previews::ALL] {
+            assert!(
+                parse_with(&layer(paint, layout), previews, &[]).is_err(),
+                "{paint} {layout}"
+            );
+        }
+    }
+    // Patterns are laid out per tile: feature state parses, as GL JS has
+    // it, but warns.
+    let state = parse(&layer(
+        r#""fill-pattern": ["coalesce", ["feature-state", "p"], "a"]"#,
+        "",
+    ))
+    .unwrap();
+    assert_eq!(state.warnings[0].path, "layers[0].paint.fill-pattern");
+    // Filters run per tile.
+    let filter = r#"{"version": 8, "sources": {"s": {"type": "geojson",
+        "data": {"type": "FeatureCollection", "features": []}}},
+        "layers": [{"id": "f", "type": "fill", "source": "s", "filter": [">", ["pitch"], 10]}]}"#;
+    assert!(parse_with(filter, Previews::ALL, &[]).is_err());
+}

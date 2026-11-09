@@ -43,6 +43,9 @@ pub(crate) struct StylePlan {
     pub(crate) sources: Vec<PlanSource>,
     /// What the compiled plan leaves out, beyond the parser's warnings.
     pub(crate) warnings: Vec<String>,
+    /// The layers whose paint reads the camera beyond its zoom
+    /// ([`crate::paint::at_camera`]).
+    pub(crate) camera_layers: Vec<usize>,
 }
 
 /// A source some node draws from.
@@ -313,6 +316,13 @@ impl StylePlan {
             });
         }
 
+        let camera_layers = (style.layers.iter().enumerate())
+            .filter(|(_, l)| {
+                l.slots()
+                    .any(|(_, s)| s.as_expression().is_some_and(|e| e.reads_camera()))
+            })
+            .map(|(i, _)| i)
+            .collect();
         Self {
             revision,
             style,
@@ -321,6 +331,7 @@ impl StylePlan {
             nodes,
             sources,
             warnings,
+            camera_layers,
         }
     }
 

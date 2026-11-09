@@ -49,6 +49,14 @@ impl Filter {
             lower_filter(&mut parser, json, "")
         };
         match root {
+            // Filters run per tile, which knows no camera beyond its zoom.
+            Some(root) if parser.ir.node(root).deps.contains(crate::ir::Deps::CAMERA) => {
+                Err(vec![Diagnostic {
+                    path: String::new(),
+                    span: json.span,
+                    message: "camera expressions not supported".into(),
+                }])
+            }
             Some(root) => Ok(Self {
                 expression: Expression {
                     ir: parser.ir.compact(root),

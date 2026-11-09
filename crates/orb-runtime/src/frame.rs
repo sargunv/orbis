@@ -572,7 +572,7 @@ impl Map {
         let bearing = self.camera.state().bearing;
         let mut images = self.services.images.0.lock().expect("images poisoned");
         let atlas = images.atlas.as_mut().expect("initialized");
-        let at = (layout.generation, bearing);
+        let at = (layout.generation, bearing, self.camera.state().pitch);
         crate::paint::drape(gpu, renderer, (style, plan), &zooms, at, atlas);
         let images_revision = atlas.revision();
         drop(images);

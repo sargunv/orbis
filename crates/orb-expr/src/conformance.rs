@@ -117,6 +117,8 @@ pub(crate) fn fixture_spec(fixture: &Json) -> (PropertySpec, Option<Type>) {
             default: None,
             zoom: false,
             feature: false,
+            state: false,
+            camera: false,
             interpolated: false,
             tokens: false,
         }
@@ -129,6 +131,10 @@ pub(crate) fn fixture_spec(fixture: &Json) -> (PropertySpec, Option<Type>) {
         default: field("default").cloned(),
         zoom: parameters.contains(&"zoom"),
         feature: matches!(property_type, "data-driven" | "cross-faded-data-driven"),
+        // GL JS evaluates state wherever data is allowed; only the style
+        // validator rejects it in layout.
+        state: matches!(property_type, "data-driven" | "cross-faded-data-driven"),
+        camera: false,
         interpolated,
         tokens: field("tokens").and_then(Json::as_bool).unwrap_or(false),
     };

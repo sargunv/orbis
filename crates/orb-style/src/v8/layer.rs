@@ -142,7 +142,29 @@ pub(crate) fn typed_property_at<T: PropertyValue>(
 }
 
 fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
-    match PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state) {
+    let parsed =
+        PropertyExpression::parse_with_state(json, &prop.spec(), &cx.state).or_else(|errors| {
+            // Inputs beyond the spec's that Orbis honours: accepted with
+            // the preview, else a warning and the default.
+            let extended = (!prop.extended.is_empty())
+                .then(|| {
+                    let spec = prop.spec_with(prop.orbis_inputs());
+                    PropertyExpression::parse_with_state(json, &spec, &cx.state).ok()
+                })
+                .flatten();
+            match extended {
+                Some(parsed) => {
+                    let what = format!("this value of \"{}\"", prop.name);
+                    if cx.preview(Preview::Expressions, path, json.span, what) {
+                        Ok(parsed)
+                    } else {
+                        Err(Vec::new())
+                    }
+                }
+                None => Err(errors),
+            }
+        });
+    match parsed {
         Err(errors) => {
             cx.errors_at(path, errors);
             Slot::constant(Value::Null, false)
@@ -158,7 +180,21 @@ fn property_at_one(cx: &mut Cx, json: &Json, path: &str, prop: &Prop) -> Slot {
             check_constant(cx, prop, json, &value, path);
             Slot::constant(value, true)
         }
-        Ok(parsed) => Slot::expression(parsed),
+        Ok(parsed) => {
+            // The spec's validator lets data-driven paint read state, but
+            // values laid out per tile (patterns, dashes) never see it.
+            if parsed.reads_feature_state() && !prop.orbis_inputs().contains(Inputs::STATE) {
+                cx.warn(
+                    path,
+                    json.span,
+                    format!(
+                        "\"{}\" is evaluated per tile, without feature state",
+                        prop.name
+                    ),
+                );
+            }
+            Slot::expression(parsed)
+        }
     }
 }
 

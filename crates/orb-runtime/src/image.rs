@@ -417,6 +417,8 @@ mod tests {
             default: None,
             zoom: false,
             feature: false,
+            state: false,
+            camera: false,
             interpolated: true,
             tokens: false,
         };

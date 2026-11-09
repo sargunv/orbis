@@ -15,6 +15,8 @@ fn spec(ty: PropertyType, zoom: bool, feature: bool, interpolated: bool) -> Prop
         default: None,
         zoom,
         feature,
+        state: feature,
+        camera: false,
         interpolated,
         tokens: false,
     }
