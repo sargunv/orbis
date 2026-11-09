@@ -2109,7 +2109,10 @@ impl Renderer {
         );
         let level = self.drape_zooms.get_mut(&zoom).expect("found above");
         level.bundle[page] = Some((bundle, groups));
-        level.waiting[page] = waiting;
+        // Slots drawn by an earlier recording keep lacking what it left
+        // out, though this one, whose nodes may have no candidates in the
+        // slots it draws, leaves out nothing.
+        level.waiting[page] += waiting;
         Some(bundle)
     }
 
@@ -2297,9 +2300,10 @@ struct DrapeZoom {
     /// nodes drawing into its stacks with the node groups it binds.
     scene: [Option<BindGroupId>; 2],
     bundle: [Option<(RenderBundleId, Vec<BindGroupId>)>; 2],
-    /// Draped nodes the slots last drawn at this zoom left out, per page,
-    /// waiting for a pipeline: each zoom keeps its own, as a frame records
-    /// only the bundles of the zooms its redrawn slots draw at.
+    /// Draped nodes the slots drawn at this zoom since they were all last
+    /// redrawn left out, per page, waiting for a pipeline: each zoom keeps
+    /// its own, as a frame records only the bundles of the zooms its
+    /// redrawn slots draw at.
     waiting: [u32; 2],
 }
 
