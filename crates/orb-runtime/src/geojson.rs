@@ -68,11 +68,11 @@ impl Index {
     }
 
     /// Tile `z/x/y`, x wrapping; `None` past the source's `maxzoom`.
-    pub(crate) fn tile(&mut self, z: u8, x: i32, y: u32) -> Option<TileFrame> {
+    pub(crate) fn tile(&mut self, z: u8, x: i32, y: u32) -> Option<Arc<TileFrame>> {
         match self {
             Self::Tiles(index) => index.tile(z, x, y),
             Self::Clusters { clusters, max_zoom } => {
-                (z <= *max_zoom).then(|| clusters.tile(z, x, y))
+                (z <= *max_zoom).then(|| Arc::new(clusters.tile(z, x, y)))
             }
         }
     }
@@ -133,9 +133,10 @@ pub(crate) fn host_frame(text: &str, tile: orb_crs::TileIndex) -> Result<TileFra
             layer: layer.key.clone(),
             ..geojson::Options::default()
         };
-        let mut index = geojson::Index::new(features, options)?;
-        if let Some(tiled) = index.tile(tile.z, tile.col as i32, tile.row) {
-            frame.layers.extend(tiled.layers);
+        let tiled = geojson::Index::new(features, options)?.tile(tile.z, tile.col as i32, tile.row);
+        // The index is gone: the tile is this frame's alone.
+        if let Some(tiled) = tiled {
+            frame.layers.extend(Arc::unwrap_or_clone(tiled).layers);
         }
     }
     Ok(frame)

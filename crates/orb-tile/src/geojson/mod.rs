@@ -105,7 +105,7 @@ enum Shape {
 struct Projected {
     id: Option<Value>,
     tags: Arc<Vec<(String, Value)>>,
-    shape: Shape,
+    shape: Arc<Shape>,
     min: [f64; 2],
     max: [f64; 2],
 }
@@ -115,7 +115,7 @@ impl Projected {
         let mut feature = Self {
             id,
             tags,
-            shape,
+            shape: Arc::new(shape),
             min: [f64::INFINITY; 2],
             max: [f64::NEG_INFINITY; 2],
         };
@@ -133,7 +133,7 @@ impl Projected {
     }
 
     fn each_point(&self, mut f: impl FnMut(&Point)) {
-        match &self.shape {
+        match &*self.shape {
             Shape::Points(points) => points.iter().for_each(f),
             Shape::Lines(lines) => lines.iter().flat_map(|l| &l.points).for_each(f),
             Shape::Polygons(polygons) => {
@@ -160,7 +160,7 @@ type Key = (u8, u32, u32);
 #[derive(Debug)]
 struct Tile {
     source: Option<Vec<Projected>>,
-    frame: TileFrame,
+    frame: Arc<TileFrame>,
 }
 
 /// A reusable spatial index. Initial tiling stops at `index_max_zoom` or
@@ -204,7 +204,7 @@ impl Index {
 
     /// Returns a tile, wrapping x around the world. Missing tiles are empty.
     /// Requests above `max_zoom` are absent; the runtime overzooms the parent.
-    pub fn tile(&mut self, z: u8, x: i32, y: u32) -> Option<TileFrame> {
+    pub fn tile(&mut self, z: u8, x: i32, y: u32) -> Option<Arc<TileFrame>> {
         if z > self.options.max_zoom || y >= 1u32 << z {
             return None;
         }
@@ -221,7 +221,7 @@ impl Index {
                 }
             }
         }
-        self.tiles.get(&key).map(|tile| tile.frame.clone())
+        self.tiles.get(&key).map(|tile| Arc::clone(&tile.frame))
     }
 
     fn split(&mut self, features: Vec<Projected>, key: Key, target: Option<Key>) {
@@ -229,7 +229,7 @@ impl Index {
         while let Some((features, key @ (z, x, y))) = stack.pop() {
             let count: usize = features.iter().map(Projected::count).sum();
             self.tiles.entry(key).or_insert_with(|| Tile {
-                frame: tile::create(&features, key, &self.options),
+                frame: Arc::new(tile::create(&features, key, &self.options)),
                 source: None,
             });
             let stop = z == self.options.max_zoom

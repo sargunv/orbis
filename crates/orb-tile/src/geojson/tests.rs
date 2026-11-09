@@ -15,7 +15,13 @@ fn options() -> Options {
         ..Options::default()
     }
 }
-fn frame(features: Vec<Feature>, options: Options, z: u8, x: i32, y: u32) -> TileFrame {
+fn frame(
+    features: Vec<Feature>,
+    options: Options,
+    z: u8,
+    x: i32,
+    y: u32,
+) -> std::sync::Arc<TileFrame> {
     Index::new(features, options)
         .unwrap()
         .tile(z, x, y)

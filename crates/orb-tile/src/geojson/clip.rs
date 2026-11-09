@@ -17,7 +17,7 @@ pub(super) fn clip(
         if f.max[axis] < start || f.min[axis] >= end {
             continue;
         }
-        let shape = match &f.shape {
+        let shape = match &*f.shape {
             Shape::Points(points) => Shape::Points(
                 points
                     .iter()
@@ -194,7 +194,7 @@ fn shift(features: Vec<Projected>, offset: f64) -> Vec<Projected> {
                     p.xy[0] += offset;
                 }
             };
-            match &mut f.shape {
+            match Arc::make_mut(&mut f.shape) {
                 Shape::Points(points) => {
                     for p in points {
                         p.xy[0] += offset;

@@ -18,7 +18,7 @@ pub(super) fn create(features: &[Projected], (z, x, y): Key, options: &Options) 
     let mut b = LayerBuilder::new(&options.layer, options.extent);
     b.clipped_at(options.buffer.round() as i32);
     for f in features {
-        let ty = match f.shape {
+        let ty = match *f.shape {
             Shape::Points(_) => GeometryType::Point,
             Shape::Lines(_) => GeometryType::LineString,
             Shape::Polygons(_) => GeometryType::Polygon,
@@ -31,7 +31,7 @@ pub(super) fn create(features: &[Projected], (z, x, y): Key, options: &Options) 
             b.set_property(key, value.clone());
         }
         let mut parts = 0;
-        match &f.shape {
+        match &*f.shape {
             Shape::Points(points) => {
                 b.begin_part();
                 b.begin_ring();

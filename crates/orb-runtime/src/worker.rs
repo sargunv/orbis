@@ -719,11 +719,11 @@ impl TileWorker {
             let data_tile = request.data_tile();
             let frame = match answer {
                 orb_source::endpoint::HostTile::GeoJson(text) => {
-                    crate::geojson::host_frame(text, data_tile)?
+                    Arc::new(crate::geojson::host_frame(text, data_tile)?)
                 }
                 _ => self.decode(bytes, encoding, index, &data, data_tile, data_tile.z)?,
             };
-            return Ok(Arc::new(overzoom(frame, tile, data_zoom)));
+            return Ok(overzoom(frame, tile, data_zoom));
         }
         let key = (source, began, tile);
         let frames = &self.data.frames;
@@ -740,8 +740,7 @@ impl TileWorker {
             let whole_frame = match cached {
                 Some(frame) => frame,
                 None => {
-                    let frame =
-                        Arc::new(self.decode(bytes, encoding, index, &data, whole, data_zoom)?);
+                    let frame = self.decode(bytes, encoding, index, &data, whole, data_zoom)?;
                     let mut frames = frames.lock().expect("frames poisoned");
                     frames.insert(whole_key, Arc::clone(&frame));
                     frame
@@ -749,7 +748,7 @@ impl TileWorker {
             };
             Arc::new(slice(&whole_frame, tile, data_zoom, geojson))
         } else {
-            Arc::new(self.decode(bytes, encoding, index, &data, tile, data_zoom)?)
+            self.decode(bytes, encoding, index, &data, tile, data_zoom)?
         };
         let mut frames = frames.lock().expect("frames poisoned");
         frames.insert(key, Arc::clone(&frame));
@@ -765,7 +764,7 @@ impl TileWorker {
         data: &SourceData,
         tile: TileIndex,
         data_zoom: u8,
-    ) -> Result<TileFrame, String> {
+    ) -> Result<Arc<TileFrame>, String> {
         let depth = tile.z - data_zoom;
         let frame = if let SourceKind::GeoJson(geojson) = &self.plan.source_def(index).kind {
             let mut cached = data.geojson.lock().expect("GeoJSON index poisoned");
@@ -780,16 +779,17 @@ impl TileWorker {
                 // than failing every tile and every retry with the same
                 // error.
                 Err(e) if fresh => return Err(e.clone()),
-                Err(_) => TileFrame::default(),
+                Err(_) => Arc::default(),
             }
         } else if bytes.is_empty() {
             // An archive's left-out tile.
-            TileFrame::default()
+            Arc::default()
         } else {
             match encoding {
                 Encoding::Mvt => orb_tile::mvt::decode(bytes),
                 Encoding::Mlt => orb_tile::mlt::decode(bytes),
             }
+            .map(Arc::new)
             .map_err(|e| e.to_string())?
         };
         Ok(overzoom(frame, tile, data_zoom))
@@ -806,11 +806,11 @@ const VECTOR_LABEL_ZOOM: u8 = 18;
 /// source's last tile or its slice at [`VECTOR_LABEL_ZOOM`]. (MapLibre
 /// Native overscales the last tile at any depth, so its anchors round to
 /// that tile's units, which grow coarse far below it.)
-fn overzoom(frame: TileFrame, tile: TileIndex, data_zoom: u8) -> TileFrame {
+fn overzoom(frame: Arc<TileFrame>, tile: TileIndex, data_zoom: u8) -> Arc<TileFrame> {
     if data_zoom >= tile.z {
         return frame;
     }
-    slice(&Arc::new(frame), tile, data_zoom, false)
+    Arc::new(slice(&frame, tile, data_zoom, false))
 }
 
 /// [`overzoom`] of an ancestor's frame that stays whole. A GeoJSON
