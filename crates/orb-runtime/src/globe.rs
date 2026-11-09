@@ -36,15 +36,14 @@ pub(crate) struct GlobeWarps {
     frame: u64,
 }
 
-/// A tile's patches on the low-zoom surface, and its footprint there.
-type OnGlobe = (Option<Arc<Series<DVec3>>>, Option<Footprint>);
-
 /// A tile's places, each made when first asked for.
 #[derive(Debug, Default)]
 struct Tile {
-    /// On the low-zoom surface: its patches, and on a low-zoom plane its
-    /// footprint, for the cover.
-    globe: Option<OnGlobe>,
+    /// On the low-zoom surface: its patches.
+    globe: Option<Option<Arc<Series<DVec3>>>>,
+    /// On a low-zoom plane: its footprint, for the cover, which visits
+    /// many tiles that never draw (so it doesn't fit their patches).
+    low_footprint: Option<Option<Footprint>>,
     /// On the surface's plane: its footprint, and a vector tile's patches
     /// (`None` across a wrapping plane's seam, or bent too much).
     footprint: Option<Option<Footprint>>,
@@ -106,26 +105,12 @@ impl GlobeWarps {
         self.onto(tms, false)
     }
 
-    fn globe(&self, tms: &TileMatrixSet, tile: TileIndex) -> OnGlobe {
-        let warp = self.plane.map(|_| self.onto(tms, true));
-        self.tile(tms, tile, |t| {
-            let made = t.globe.get_or_insert_with(|| match &warp {
-                None => (
-                    orb_crs::sphere::series(tms, tile, TOLERANCE).map(Arc::new),
-                    None,
-                ),
-                Some(warp) => (
-                    warp.series(tile, PLANE_TOLERANCE).map(lift).map(Arc::new),
-                    warp.footprint(tile),
-                ),
-            });
-            made.clone()
-        })
-    }
-
-    /// Where the tile lands on the low-zoom plane.
+    /// Where the tile lands on the low-zoom plane; `None` on the sphere.
     pub(crate) fn footprint(&self, tms: &TileMatrixSet, tile: TileIndex) -> Option<Footprint> {
-        self.globe(tms, tile).1
+        let warp = self.plane.map(|_| self.onto(tms, true))?;
+        self.tile(tms, tile, |t| {
+            *t.low_footprint.get_or_insert_with(|| warp.footprint(tile))
+        })
     }
 
     /// The tile's patches on the low-zoom surface, or `None` where its
@@ -135,7 +120,14 @@ impl GlobeWarps {
         tms: &TileMatrixSet,
         tile: TileIndex,
     ) -> Option<Arc<Series<DVec3>>> {
-        self.globe(tms, tile).0
+        let warp = self.plane.map(|_| self.onto(tms, true));
+        self.tile(tms, tile, |t| {
+            let made = t.globe.get_or_insert_with(|| match &warp {
+                None => orb_crs::sphere::series(tms, tile, TOLERANCE).map(Arc::new),
+                Some(warp) => warp.series(tile, PLANE_TOLERANCE).map(lift).map(Arc::new),
+            });
+            made.clone()
+        })
     }
 
     /// Cells per side to cut the tile's geometry along on the globe.
