@@ -75,6 +75,13 @@ Playwright.
 | `cargo xtask rt [--suite render\|query] [--filter <s>] [--platform native\|chrome\|all]` | the GL JS render or query fixtures |
 | `cargo xtask sweep [--dry-run] [--keep-hours N]` | prune stale build artifacts when the disk runs low |
 
+## Changing a dependency
+
+Don't vendor dependencies. To change one, fork it to `github.com/sargunv/`,
+put the change on a branch there, and point Cargo at it with
+`[patch.crates-io]` (a `git` URL and `branch`; `Cargo.lock` pins the commit).
+Add the upstream fix to #35 so the patch can go once it's released.
+
 ## The machine
 
 Several agent sessions often share this machine.
