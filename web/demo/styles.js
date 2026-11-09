@@ -38,7 +38,8 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * A picker entry. `basemap` entries keep the camera when switched to; the
  * rest open at their own. `swatch` is [land, water, line] for the picker's
  * chip; `dark` styles turn the app's chrome dark. `constraints` keep the
- * camera where a bounded dataset has data. `projection` is a v8 projection
+ * camera where a bounded dataset has data, or a view in range (the globe
+ * no smaller than at zoom 0), on both maps of a comparison. `projection` is a v8 projection
  * the map switches to once the style loads, and `sky` a v8 sky it puts
  * in place of the style's then too. `notInGlJs` says why the
  * comparison with GL JS (app/compare.js) can't show the entry.
@@ -61,7 +62,7 @@ export const GROUPS = [
     scenes: [
       { key: "globe", name: "Globe", detail: "Liberty on the v8 globe under a v8 sky, Web Mercator from zoom 12",
         url: LIVE, projection: { type: "globe" }, sky: GLOBE_SKY, camera: { center: [10, 30], zoom: 1.5 },
-        dark: true, swatch: ["#f8f4f0", "#a0c8f0", "#02040b"] },
+        constraints: { minZoom: 0 }, dark: true, swatch: ["#f8f4f0", "#a0c8f0", "#02040b"] },
       { key: "equal-earth", name: "Equal Earth", detail: "The whole world equal-area, handing over to Web Mercator by zoom 7",
         url: LIVE, projection: { type: "equal-earth" }, camera: { center: [0, 10], zoom: 0.5 },
         swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"],
