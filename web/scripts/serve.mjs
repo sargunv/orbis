@@ -2,6 +2,7 @@
 // Chromium with WebGPU, for the snapshot and bench scripts.
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +20,10 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/ja
 // URLs pointing there; `offline` points its `https://` and `mapbox://` URLs
 // at its `https/` and `mapbox/` directories too (MapLibre Native's cache).
 // `mounts` serves more directories, by path prefix (`{ "mlnrs/": dir }`).
-export async function serveDemo({ isolated = false, assets, offline = false, mounts = {} } = {}) {
+// `builds` serves other builds of web/dist beside this one, by label, for
+// A/B runs in one session: `@<label>/load.html` is that build's page, and
+// its content-hashed assets are found under `assets/` with this build's.
+export async function serveDemo({ isolated = false, assets, offline = false, mounts = {}, builds = {} } = {}) {
   await build({ configFile: fileURLToPath(new URL("../vite.config.js", import.meta.url)), logLevel: "warn" });
   const isolation = isolated
     ? { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp" }
@@ -30,8 +34,13 @@ export async function serveDemo({ isolated = false, assets, offline = false, mou
     let pathname = decodeURIComponent(url.pathname.slice("/orbis/".length));
     if (!pathname || pathname.endsWith("/")) pathname += "index.html";
     const mount = Object.keys(mounts).find((prefix) => pathname.startsWith(prefix));
-    const [dir, file] = mount ? [mounts[mount], pathname.slice(mount.length)]
-      : assets && pathname.startsWith("fixtures/") ? [assets, pathname.slice(9)] : [root, pathname];
+    const page = pathname.match(/^@([^/]+)\/(.*)$/);
+    let [dir, file] = mount ? [mounts[mount], pathname.slice(mount.length)]
+      : assets && pathname.startsWith("fixtures/") ? [assets, pathname.slice(9)]
+        : page && builds[page[1]] ? [builds[page[1]], page[2]] : [root, pathname];
+    if (dir === root && file.startsWith("assets/") && !existsSync(join(root, file))) {
+      dir = Object.values(builds).find((other) => existsSync(join(other, file))) ?? dir;
+    }
     const path = normalize(join(dir, file));
     try {
       if (!path.startsWith(dir)) { res.writeHead(403).end(); return; }

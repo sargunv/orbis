@@ -3,8 +3,9 @@
 // (`?engine=orbis`), the pinned GL JS (`gljs`) or mln-rs's web build
 // (`mlnrs`, its module at `?mlnrs=<url>`), timed from this script's start
 // to the engine's first `idle`. The title becomes `done {json}` with
-// `performance.now()` at the script's start, the map's creation and idle,
-// or `error <message>`.
+// `performance.now()` at the script's start, the map's creation and idle
+// (and `performance.timeOrigin`, to place them against the harness's
+// request times), or `error <message>`.
 const t0 = performance.now();
 const params = new URLSearchParams(location.search);
 const engine = params.get("engine") ?? "orbis";
@@ -40,7 +41,7 @@ const engines = {
 try {
   const [created, idle] = await engines[engine]();
   await idle();
-  document.title = "done " + JSON.stringify({ script: t0, created, idle: performance.now() });
+  document.title = "done " + JSON.stringify({ origin: performance.timeOrigin, script: t0, created, idle: performance.now() });
 } catch (e) {
   document.title = "error " + e;
 }
