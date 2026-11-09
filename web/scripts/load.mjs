@@ -8,7 +8,11 @@
 // threads need, for every engine alike.
 //
 //   pnpm load --style=<url> [--runs=5] [--engines=orbis,gljs,mlnrs]
-//     [--views=ams13,paris14p60,world2,tokyo16] [--out=<dir>]
+//     [--views=ams13,paris14p60,world2,tokyo16] [--throttle=<Mbit/s>] [--out=<dir>]
+//
+// `--throttle` sends the engines' own files compressed over a link of that
+// bandwidth (`serveDemo`'s `throttle`), as a first visit downloads them;
+// the style's tiles and fonts come as fast as their server sends them.
 //
 // `cargo xtask h2h web` runs it against its local mirror of OpenFreeMap
 // (`--style=<mirror>/styles/liberty`), after `cargo xtask web`.
@@ -62,6 +66,7 @@ const SETTINGS = {
 const settings = option("settings", "normal").split(",");
 for (const s of settings) if (!SETTINGS[s]) throw new Error(`--settings: no ${s}; ${Object.keys(SETTINGS).join(", ")}`);
 const viewport = cache ? { width: 512, height: 512 } : { width: 1024, height: 768 };
+const throttle = option("throttle") && (Number(option("throttle")) * 1e6) / 8;
 const out = option("out", fileURLToPath(new URL("../../target/h2h/web/", import.meta.url)));
 const MLNRS = {
   name: "@bartlwrs/mln-rs@0.1.0",
@@ -131,7 +136,7 @@ const mounts = {
   ...(engines.includes("mlnrs") ? { "mlnrs/": await mlnrs() } : {}),
   ...(extracted ? { "real-world/": extracted } : {}),
 };
-const server = await serveDemo({ isolated: true, mounts, builds });
+const server = await serveDemo({ isolated: true, mounts, builds, throttle, unthrottled: ["real-world/"] });
 if (extracted) {
   rmSync(extracted, { recursive: true, force: true });
   extractCache(cache, extracted, `${server.url}real-world/`);
@@ -222,5 +227,5 @@ for (const [what, from] of [["the page's script", "script"], ["the style's fetch
   }
   lines.push("");
 }
-lines.push(`Medians [min–max]. Style ${cache ? `the real-world render tests, from ${cache}` : style}; mln-rs ${MLNRS.name}; GL JS ${gljs}. "Idle" is each engine's own event; GL JS's may not wait for symbol fades. Rows and screenshots: ${out}`);
+lines.push(`Medians [min–max]. ${throttle ? `Engine files compressed over a ${option("throttle")} Mbit/s link. ` : ""}Style ${cache ? `the real-world render tests, from ${cache}` : style}; mln-rs ${MLNRS.name}; GL JS ${gljs}. "Idle" is each engine's own event; GL JS's may not wait for symbol fades. Rows and screenshots: ${out}`);
 console.log(lines.join("\n"));

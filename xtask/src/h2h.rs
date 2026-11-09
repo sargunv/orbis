@@ -52,6 +52,8 @@ cargo xtask h2h <stills|tiles|frames|size|all|web|mirror> [options]
   --network warm|cold|rtt=<ms>  the local mirror (default), the live server,
                        or the mirror with every answer delayed
   --offline            the mirror answers misses with 404 instead of filling
+  --throttle <Mbit/s>  for `web`: the engines' own files, compressed, over a
+                       link of that bandwidth, as a first visit loads them
   --bin <name>=<path>  another Orbis build as an engine: an `orbis` binary,
                        `orb-bench` beside it for frames (copy both aside)
   --engines a,b        engines and their order (default orbis, every --bin,
@@ -138,6 +140,7 @@ struct Options {
     engines: Option<Vec<String>>,
     frames: usize,
     port: u16,
+    throttle: Option<String>,
 }
 
 impl Options {
@@ -154,6 +157,7 @@ impl Options {
             engines: None,
             frames: 40,
             port: 18731,
+            throttle: None,
         };
         let mut args = args.iter();
         while let Some(arg) = args.next() {
@@ -174,6 +178,7 @@ impl Options {
                 "--views" => options.views = Some(PathBuf::from(value()?)),
                 "--style" => options.style = value()?,
                 "--offline" => options.offline = true,
+                "--throttle" => options.throttle = Some(value()?),
                 "--network" => {
                     let v = value()?;
                     options.network = match v.as_str() {
@@ -964,6 +969,7 @@ fn web(options: &Options, mirror: &Mirror) -> Result<(), String> {
         .current_dir(root().join("web"))
         .args(["load", &format!("--style={base}/styles/{}", options.style)])
         .arg(format!("--runs={}", options.runs.unwrap_or(5)))
+        .args(options.throttle.iter().map(|t| format!("--throttle={t}")))
         .stderr(std::process::Stdio::inherit());
     let output = command
         .output()

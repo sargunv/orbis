@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import { chromium } from "playwright";
 import { build } from "vite";
 
@@ -23,11 +24,37 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/ja
 // `builds` serves other builds of web/dist beside this one, by label, for
 // A/B runs in one session: `@<label>/load.html` is that build's page, and
 // its content-hashed assets are found under `assets/` with this build's.
-export async function serveDemo({ isolated = false, assets, offline = false, mounts = {}, builds = {} } = {}) {
+// `throttle` (bytes a second) sends whole files compressed, as a web host
+// does (brotli when the browser asks for it, else gzip), through one link
+// of that bandwidth shared by every response, but those under the
+// `unthrottled` path prefixes.
+export async function serveDemo({ isolated = false, assets, offline = false, mounts = {}, builds = {},
+  throttle, unthrottled = [] } = {}) {
   await build({ configFile: fileURLToPath(new URL("../vite.config.js", import.meta.url)), logLevel: "warn" });
   const isolation = isolated
     ? { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp" }
     : {};
+  const compressed = new Map();
+  let linkFree = 0;
+  const send = async (req, res, pathname, path, headers, body) => {
+    if (!throttle || unthrottled.some((prefix) => pathname.startsWith(prefix))) {
+      res.writeHead(200, headers);
+      res.end(body);
+      return;
+    }
+    const br = /\bbr\b/.test(req.headers["accept-encoding"] ?? "");
+    const key = `${br}:${path}`;
+    if (!compressed.has(key)) compressed.set(key, br ? brotliCompressSync(body) : gzipSync(body, { level: 9 }));
+    body = compressed.get(key);
+    res.writeHead(200, { ...headers, "content-encoding": br ? "br" : "gzip", "content-length": body.length });
+    for (let at = 0; at < body.length; at += 16384) {
+      const chunk = body.subarray(at, at + 16384);
+      linkFree = Math.max(linkFree, performance.now()) + (chunk.length / throttle) * 1000;
+      await new Promise((resolve) => setTimeout(resolve, linkFree - performance.now()));
+      res.write(chunk);
+    }
+    res.end();
+  };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
     if (!url.pathname.startsWith("/orbis/")) { res.writeHead(404).end(); return; }
@@ -65,9 +92,8 @@ export async function serveDemo({ isolated = false, assets, offline = false, mou
         body = body.toString().replaceAll("local://", here).replaceAll("http://localhost:2900/", here);
         if (offline) body = body.replaceAll("https://", `${here}https/`).replaceAll("mapbox://", `${here}mapbox/`);
       }
-      res.writeHead(200, { "content-type": types[extname(path)] ?? "application/octet-stream",
-        ...isolation });
-      res.end(body);
+      await send(req, res, pathname, path, { "content-type": types[extname(path)] ?? "application/octet-stream",
+        ...isolation }, body);
     } catch {
       res.writeHead(404).end();
     }
