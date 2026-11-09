@@ -258,13 +258,15 @@ fn test_id(path: &Path, fixtures: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// The layer family a fixture tests, by its top-level directory. Longer
-/// prefixes first, so `fill-extrusion-*` isn't counted as `fill-*`.
+/// The family a fixture is of, by its top-level directory: a layer type, or
+/// one of the larger groups of the rest. Longer prefixes first, so
+/// `fill-extrusion-*` isn't counted as `fill-*`.
 fn prefix(id: &str) -> &str {
     const FAMILIES: &[&str] = &[
         "background-",
         "circle-",
         "color-relief",
+        "combinations",
         "feature-state",
         "fill-extrusion-",
         "fill-",
@@ -274,12 +276,15 @@ fn prefix(id: &str) -> &str {
         "hillshade-",
         "icon-",
         "line-",
+        "projection",
         "raster-",
+        "regressions",
         "remove-feature-state",
         "runtime-styling",
         "sprites",
         "sky",
         "symbol-",
+        "terrain",
         "text-",
         "visibility",
         "zoom-history",
