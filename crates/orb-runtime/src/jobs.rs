@@ -433,6 +433,9 @@ pub struct ResultMesh {
     pub vertices: Stream,
     pub indices: Stream,
     pub props: Stream,
+    /// The earlier mesh of the result whose vertices, and whose indices,
+    /// equal its own, which it leaves empty ([`TileResult::vertices`]).
+    pub shares: [Option<u32>; 2],
     /// Words per feature of the property rows.
     pub row_words: u32,
     /// Per paint property, the largest number in the property rows.
@@ -473,6 +476,7 @@ impl From<TileBuild> for TileResult {
                     vertices: Stream::Core(m.mesh.vertices),
                     indices: Stream::Core(m.mesh.indices),
                     props: Stream::Core(m.props),
+                    shares: [None; 2],
                     row_words: m.row_words,
                     maxima: m.maxima,
                     images: m.images,
@@ -500,6 +504,7 @@ impl From<TileBuild> for TileResult {
             hit_geometry,
         };
         result.link_hits();
+        result.share_geometry();
         result
     }
 }
@@ -528,6 +533,47 @@ impl<'de> serde::Deserialize<'de> for Stream {
 }
 
 impl TileResult {
+    /// A mesh's vertices: its own, or those of the mesh it shares them
+    /// with.
+    pub(crate) fn vertices<'a>(&'a self, mesh: &'a ResultMesh) -> &'a Stream {
+        mesh.shares[0].map_or(&mesh.vertices, |of| &self.meshes[of as usize].vertices)
+    }
+
+    /// A mesh's indices: its own, or those of the mesh it shares them
+    /// with.
+    pub(crate) fn indices<'a>(&'a self, mesh: &'a ResultMesh) -> &'a Stream {
+        mesh.shares[1].map_or(&mesh.indices, |of| &self.meshes[of as usize].indices)
+    }
+
+    /// Points each mesh's vertices and indices that equal an earlier
+    /// mesh's at that mesh, leaving its own empty. A road's casing and
+    /// its fill lay out the same lines, and a fill and its outline the
+    /// same vertices: as GL JS and Native group layers that lay out alike
+    /// into one bucket, the words pack, cross to the map and upload once.
+    fn share_geometry(&mut self) {
+        for i in 1..self.meshes.len() {
+            let (earlier, rest) = self.meshes.split_at_mut(i);
+            let mesh = &mut rest[0];
+            let streams = [&mut mesh.vertices, &mut mesh.indices];
+            for (s, stream) in streams.into_iter().enumerate() {
+                let Stream::Core(words) = stream else {
+                    continue;
+                };
+                if words.is_empty() {
+                    continue;
+                }
+                let same = earlier.iter().position(|e| {
+                    let theirs = [&e.vertices, &e.indices][s];
+                    matches!(theirs, Stream::Core(w) if w == words)
+                });
+                if let Some(of) = same {
+                    *stream = Stream::Core(Vec::new());
+                    mesh.shares[s] = Some(of as u32);
+                }
+            }
+        }
+    }
+
     /// Points its meshes' hits at its hit geometry.
     fn link_hits(&mut self) {
         for mesh in &mut self.meshes {
@@ -627,7 +673,8 @@ pub(crate) mod tests {
     }
 
     /// The header is postcard; the streams follow it raw, where the
-    /// result's host bytes say.
+    /// result's host bytes say, a mesh's words that equal an earlier
+    /// one's once.
     #[test]
     fn packs_and_unpacks() {
         let mesh = |node, vertices: Vec<u32>, props: Vec<u32>| NodeMesh {
@@ -647,9 +694,13 @@ pub(crate) mod tests {
         };
         let bytes = pack(TileBuild {
             revision: 1 << 33 | 5,
-            nodes: vec![3, 4],
+            nodes: vec![3, 4, 5],
             warnings: vec!["é".into()],
-            meshes: vec![mesh(3, vec![1, 2, 3], vec![9; 12]), mesh(4, vec![], vec![])],
+            meshes: vec![
+                mesh(3, vec![1, 2, 3], vec![9; 12]),
+                mesh(4, vec![], vec![]),
+                mesh(5, vec![1, 2, 3], vec![8; 12]),
+            ],
             ..TileBuild::default()
         });
         let words: Vec<u32> = bytes
@@ -674,6 +725,11 @@ pub(crate) mod tests {
         };
         assert_eq!(stream(&result.meshes[0].vertices), [1, 2, 3]);
         assert_eq!(stream(&result.meshes[0].props), [9; 12]);
+        let shared = &result.meshes[2];
+        assert_eq!(shared.shares, [Some(0), None]);
+        assert!(stream(&shared.vertices).is_empty());
+        assert_eq!(stream(result.vertices(shared)), [1, 2, 3]);
+        assert_eq!(stream(&shared.props), [8; 12]);
         assert!(packed_header(&bytes[..3]).is_err());
         assert!(unpack(&bytes[4..8], HostBytesId(0)).is_err());
     }

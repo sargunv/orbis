@@ -301,9 +301,10 @@ pub(crate) fn upload_mesh(
     warnings: &mut Vec<String>,
 ) -> Result<(), OutOfSpace> {
     let node = plan.node(mesh.node).expect("meshes of planned nodes") as u32;
+    // Alone, it uploads the words it shares too.
     let data = MeshData {
-        vertices: words(&mesh.vertices, result.host_bytes),
-        indices: words(&mesh.indices, result.host_bytes),
+        vertices: words(result.vertices(mesh), result.host_bytes),
+        indices: words(result.indices(mesh), result.host_bytes),
         props: words(&mesh.props, result.host_bytes),
         row_words: mesh.row_words,
         chunks: &mesh.chunks,
@@ -346,15 +347,18 @@ pub(crate) fn upload(
     warnings: &mut Vec<String>,
 ) -> Result<ResidentTile, OutOfSpace> {
     // Symbol nodes' rows go up with their layer's bucket.
-    let meshes: Vec<&ResultMesh> = result
+    let (indices, meshes): (Vec<usize>, Vec<&ResultMesh>) = result
         .meshes
         .iter()
-        .filter(|m| {
+        .enumerate()
+        .filter(|(_, m)| {
             !plan
                 .node(m.node)
                 .is_some_and(|i| plan.nodes[i].family.is_symbol())
         })
-        .collect();
+        .unzip();
+    // A mesh shares another's words as the build's index of that mesh.
+    let build_index = |of: u32| indices.binary_search(&(of as usize)).ok();
     let rows: Vec<ResolvedRows> = meshes
         .iter()
         .map(|m| resolve_rows(gpu, plan, result, m, atlas, namespace, states, warnings))
@@ -373,6 +377,9 @@ pub(crate) fn upload(
                 chunks: &m.chunks,
             },
             rows: rows.rows(),
+            shares: m.shares.map(|of| {
+                of.map(|of| build_index(of).expect("a mesh shares an earlier one's words"))
+            }),
         })
         .collect();
     let build = orb_render::TileBuild {

@@ -284,6 +284,61 @@ fn pools_grow_into_larger_buffers_keeping_their_meshes() {
     assert!(!h.renderer.grow_for(&mut h.gpu, &[huge]));
 }
 
+/// A mesh drawing another's vertices and indices takes no pool words of
+/// its own, and keeps drawing them when that mesh goes; they free with
+/// the last.
+#[test]
+fn shared_geometry_lives_until_its_last_mesh() {
+    let mut h = Harness::new();
+    red_fill(&mut h);
+    let square = left_half_square();
+    let data = MeshData::new(&square, &[], 0);
+    let shared = MeshData {
+        vertices: Words::Core(&[]),
+        indices: Words::Core(&[]),
+        ..data
+    };
+    let build = |data, shares| orb_render::MeshBuild {
+        node: 0,
+        extent: EXTENT,
+        data,
+        rows: Default::default(),
+        shares,
+    };
+    let meshes = [build(data, [None; 2]), build(shared, [Some(0); 2])];
+    let key = orb_render::TileKey {
+        source: 0,
+        tile: orb_crs::TileIndex::new(0, 0, 0),
+    };
+    let tile_build = orb_render::TileBuild {
+        key,
+        meshes: &meshes,
+        patches: None,
+    };
+    let (tile, ids) = h
+        .renderer
+        .upload_tile(&mut h.gpu, &tile_build, false)
+        .unwrap();
+    h.renderer
+        .place(tile, EXTENT, &[full_view_tile(0.0)])
+        .unwrap();
+    let used = |h: &Harness| {
+        let m = h.renderer.memory();
+        (m.vertices.used, m.indices.used)
+    };
+    let words = (
+        square.vertices.len() as u64 * 4,
+        square.indices.len() as u64 * 4,
+    );
+    assert_eq!(used(&h), words);
+    h.renderer.remove_mesh(tile, ids[0]);
+    assert_eq!(pixel(&h.render(), 4, 32), RED);
+    assert_eq!(used(&h), words);
+    h.renderer.remove_mesh(tile, ids[1]);
+    assert_eq!(pixel(&h.render(), 4, 32), CLEAR);
+    assert_eq!(used(&h), (0, 0));
+}
+
 fn red_fill(h: &mut Harness) {
     h.renderer.set_nodes(&mut h.gpu, &[Family::Fill]);
     h.renderer.set_paint(

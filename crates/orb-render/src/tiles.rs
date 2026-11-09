@@ -115,6 +115,9 @@ pub struct MeshBuild<'a> {
     pub extent: u32,
     pub data: MeshData<'a>,
     pub rows: MeshRows<'a>,
+    /// The earlier mesh of the build whose vertices, and whose indices,
+    /// it draws instead of its own (left out of `data`).
+    pub shares: [Option<usize>; 2],
 }
 
 /// A tile to upload, all of it or none: its meshes by node, and the
@@ -477,9 +480,18 @@ impl Renderer {
         let tile = self
             .add_tile(gpu, build.key, build.patches)
             .map_err(|_| UploadError::NoRoom)?;
-        let mut ids = Vec::with_capacity(build.meshes.len());
+        let mut ids: Vec<MeshId> = Vec::with_capacity(build.meshes.len());
         for mesh in build.meshes {
-            match self.add_mesh(gpu, tile, (mesh.node, mesh.extent), &mesh.data, &mesh.rows) {
+            let shares = mesh.shares.map(|of| of.map(|of| ids[of]));
+            let added = self.add_mesh_sharing(
+                gpu,
+                tile,
+                (mesh.node, mesh.extent),
+                &mesh.data,
+                &mesh.rows,
+                shares,
+            );
+            match added {
                 Ok(id) => ids.push(id),
                 Err(OutOfSpace) => {
                     self.release_tile(tile);
@@ -521,8 +533,24 @@ impl Renderer {
         data: &MeshData<'_>,
         rows: &MeshRows<'_>,
     ) -> Result<MeshId, OutOfSpace> {
+        self.add_mesh_sharing(gpu, tile, (node, extent), data, rows, [None; 2])
+    }
+
+    /// [`add_mesh`](Self::add_mesh) drawing the vertices, the indices or
+    /// both of meshes of the same tile (`shares`).
+    fn add_mesh_sharing(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        tile: GpuTile,
+        (node, extent): (u32, u32),
+        data: &MeshData<'_>,
+        rows: &MeshRows<'_>,
+        shares: [Option<MeshId>; 2],
+    ) -> Result<MeshId, OutOfSpace> {
         let part = self.part(tile, extent);
-        let id = self.scene.insert_mesh(gpu, part, node, data)?;
+        let id = self
+            .scene
+            .insert_mesh_sharing(gpu, part, node, data, shares)?;
         if let Err(e) = self.attach(gpu, id, rows) {
             self.scene.remove_mesh(id);
             return Err(e);

@@ -827,6 +827,9 @@ pub(crate) struct Scene {
     vertex_arena: Arena,
     index_arena: Arena,
     prop_arena: Arena,
+    /// Vertex and index ranges more than one mesh draws, by their first
+    /// word: how many meshes beyond the first. The last to go frees it.
+    shared: [std::collections::HashMap<u32, u32>; 2],
     /// The growable pools' first sizes, which they don't shrink below.
     first_words: [u32; 3],
     tiles: Vec<Option<TileEntry>>,
@@ -977,6 +980,7 @@ impl Scene {
             vertex_arena: Arena::new(c.vertex_words),
             index_arena: Arena::new(c.index_words),
             prop_arena,
+            shared: Default::default(),
             first_words: [c.vertex_words, c.index_words, c.prop_words],
             tiles: Vec::new(),
             free_tiles: Vec::new(),
@@ -1361,6 +1365,20 @@ impl Scene {
         node: u32,
         mesh: &MeshData<'_>,
     ) -> Result<MeshId, OutOfSpace> {
+        self.insert_mesh_sharing(gpu, tile, node, mesh, [None; 2])
+    }
+
+    /// [`insert_mesh`](Self::insert_mesh) drawing the vertices, the
+    /// indices or both of earlier meshes (`shares`), whose words it
+    /// leaves out of `mesh`.
+    pub(crate) fn insert_mesh_sharing(
+        &mut self,
+        gpu: &mut dyn Gpu,
+        tile: TileId,
+        node: u32,
+        mesh: &MeshData<'_>,
+        shares: [Option<MeshId>; 2],
+    ) -> Result<MeshId, OutOfSpace> {
         assert!(
             (node as usize) < self.nodes.len(),
             "unknown render node {node}"
@@ -1370,23 +1388,48 @@ impl Scene {
         if self.chunk_slots.available() < len(mesh.chunks.len())? {
             return Err(OutOfSpace);
         }
-        let vertices = self
-            .vertex_arena
-            .alloc(mesh.vertices.len())
-            .ok_or(OutOfSpace)?;
-        let Some(indices) = self.index_arena.alloc(mesh.indices.len()) else {
-            self.vertex_arena.free(vertices);
+        // A shared range is the earlier mesh's; the others are allocated.
+        let ranges = shares.map(|of| {
+            of.map(|of| {
+                let entry = self.meshes[of.0 as usize].as_ref().expect("live mesh");
+                [entry.vertices.clone(), entry.indices.clone()]
+            })
+        });
+        let vertices = match &ranges[0] {
+            Some([vertices, _]) => Some(vertices.clone()),
+            None => self.vertex_arena.alloc(mesh.vertices.len()),
+        };
+        let indices = match &ranges[1] {
+            Some([_, indices]) => Some(indices.clone()),
+            None => self.index_arena.alloc(mesh.indices.len()),
+        };
+        let props = self.prop_arena.alloc(mesh.props.len());
+        let (Some(vertices), Some(indices), Some(prop_range)) =
+            (vertices.clone(), indices.clone(), props.clone())
+        else {
+            if let (Some(range), None) = (vertices, &ranges[0]) {
+                self.vertex_arena.free(range);
+            }
+            if let (Some(range), None) = (indices, &ranges[1]) {
+                self.index_arena.free(range);
+            }
+            if let Some(range) = props {
+                self.prop_arena.free(range);
+            }
             return Err(OutOfSpace);
         };
-        let Some(prop_range) = self.prop_arena.alloc(mesh.props.len()) else {
-            self.vertex_arena.free(vertices);
-            self.index_arena.free(indices);
-            return Err(OutOfSpace);
-        };
-
-        mesh.vertices
-            .write(gpu, self.buffers.vertices, vertices.start);
-        mesh.indices.write(gpu, self.buffers.indices, indices.start);
+        for (pool, (range, words, buffer)) in [
+            (&vertices, mesh.vertices, self.buffers.vertices),
+            (&indices, mesh.indices, self.buffers.indices),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            match ranges[pool] {
+                Some(_) => *self.shared[pool].entry(range.start).or_default() += 1,
+                None => words.write(gpu, buffer, range.start),
+            }
+        }
         mesh.props.write(gpu, self.buffers.props, prop_range.start);
 
         let mut chunk_ids = Vec::with_capacity(mesh.chunks.len());
@@ -1577,11 +1620,28 @@ impl Scene {
         for chunk in entry.chunk_slots {
             self.chunk_slots.free(chunk);
         }
-        self.vertex_arena.free(entry.vertices);
-        self.index_arena.free(entry.indices);
+        if self.release_shared(0, &entry.vertices) {
+            self.vertex_arena.free(entry.vertices);
+        }
+        if self.release_shared(1, &entry.indices) {
+            self.index_arena.free(entry.indices);
+        }
         self.prop_arena.free(entry.props);
         self.prop_arena.free(entry.state);
         self.prop_arena.free(entry.symbol_states);
+    }
+
+    /// Drops a mesh's hold on a vertex (`pool` 0) or index (1) range:
+    /// whether it was the last, and the range is free.
+    fn release_shared(&mut self, pool: usize, range: &Range<u32>) -> bool {
+        let Some(others) = self.shared[pool].get_mut(&range.start) else {
+            return true;
+        };
+        *others -= 1;
+        if *others == 0 {
+            self.shared[pool].remove(&range.start);
+        }
+        false
     }
 
     /// Writes the frame block, and the candidate lists if meshes or
