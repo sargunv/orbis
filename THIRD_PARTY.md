@@ -1,6 +1,6 @@
 # Third-party code and data
 
-Orbis's own code is under the BSD-2-Clause licence in [LICENSE](LICENSE).
+Orbis's own code is under the BSD-3-Clause licence in [LICENSE](LICENSE).
 This file lists what the tree ports, vendors or mirrors from other projects,
 and the terms each carries. Rust and npm dependencies are fetched by Cargo and
 pnpm and keep their own licences; they are not repeated here.

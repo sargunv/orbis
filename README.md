@@ -49,7 +49,7 @@ cargo xtask check                      # fmt, clippy (native and wasm32), tests,
 
 ## Licence
 
-Orbis is under the [BSD-2-Clause licence](LICENSE), as MapLibre Native is.
+Orbis is under the [BSD-3-Clause licence](LICENSE), as MapLibre GL JS is.
 It ports code from MapLibre GL JS and other projects, tests against GL JS's
 fixtures (fetched by `cargo xtask fixtures`, not committed), and ships
 OpenStreetMap-derived demo data under ODbL; see
