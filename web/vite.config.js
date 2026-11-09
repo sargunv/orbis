@@ -99,6 +99,9 @@ export default defineConfig({
   server: { fs: { allow: [web] } },
   define: { __ORBIS_COMMIT__: JSON.stringify(commit()) },
   plugins: [extractStyles(), paintSpec()],
+  // The comparison imports GL JS on demand; bundling it up front saves the
+  // dev server a reload when one first opens.
+  optimizeDeps: { include: ["maplibre-gl", "pmtiles"] },
   build: {
     outDir: "../dist",
     emptyOutDir: true,

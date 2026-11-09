@@ -4,13 +4,15 @@
 //
 // URL: `?style=<key|url>` (styles.js), `&flight` (fly an entry's looping
 // flight, as picking it does; without it the map stays put and settles),
-// `&debug`, `&edit`, `&lose=<ms>` (lose the GPU that long after loading,
-// to show recovery),
-// and the camera as `#zoom/lat/lon[/bearing/pitch]`.
+// `&debug`, `&edit`, `&compare` (GL JS's map of the style over the right
+// of Orbis's, app/compare.js), `&lose=<ms>` (lose the GPU that long after
+// loading, to show recovery), and the camera as
+// `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
 import { GROUPS, LIVE_CAMERA, sceneFor, sceneUrl } from "./styles.js";
 import { expose, hashCamera } from "./expose.js";
 import { attribution } from "./app/attribution.js";
+import { comparison } from "./app/compare.js";
 import { editor as createEditor } from "./app/editor.js";
 import { Highlighter, targetOf } from "./app/highlight.js";
 import { hud as createHud } from "./app/hud.js";
@@ -77,6 +79,7 @@ function setFlag(name, on) {
 const attributionControl = attribution();
 const picker = createPicker(GROUPS, { onPick: (scene, format) => go({ scene, format }) });
 const hudControl = createHud();
+const compare = comparison({ onToggle: (on) => { menu.hidePopover(); setFlag("compare", on); } });
 const editor = createEditor({
   onClose: () => setEditing(false),
   onReplaced: () => { highlighter?.reset(); clearPopup(); },
@@ -198,6 +201,8 @@ function go(next) {
     const projection = (scene) => scene.projection ?? { type: "mercator" };
     if (JSON.stringify(projection(current.scene)) !== JSON.stringify(projection(next.scene))) {
       map.edit((tx) => tx.setProjection(projection(next.scene)));
+      // The comparison reopens with the projection, if it can draw it.
+      compare.attach(map, next.scene);
     }
     current = next;
     picker.show(next.scene, next.format);
@@ -212,6 +217,7 @@ async function load(next, { camera }) {
   current = next;
   tone();
   picker.show(next.scene, next.format);
+  compare.attach(undefined, next.scene);
   app.dataset.map = "loading";
   say(`Loading ${next.scene.name}…`);
   let created;
@@ -240,6 +246,7 @@ async function load(next, { camera }) {
     if (next.scene.calls) await map.edit((tx) => { for (const [name, ...args] of next.scene.calls) tx[name](...args); });
     await editor.attach(map);
     attributionControl.update(editor.style);
+    compare.attach(map, next.scene);
   });
   map.on("load", () => { if (!toast.classList.contains("error")) say(""); });
   map.on("warning", ({ message }) => console.warn(message));
@@ -331,11 +338,12 @@ function wireFeatures(target) {
 }
 
 // Hooks for the headless checks and the console.
-window.app = { get map() { return map; }, editor, get scene() { return current?.scene.key; } };
+window.app = { get map() { return map; }, editor, compare, get scene() { return current?.scene.key; } };
 
 // Start.
 const start = params();
 setDebug(start.has("debug"));
+compare.wanted = start.has("compare");
 if (start.has("edit")) setEditing(true);
 {
   const camera = hashCamera();

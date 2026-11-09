@@ -50,12 +50,13 @@ const CITIES = {
  * chip; `dark` styles turn the app's chrome dark. `constraints` keep the
  * camera where a bounded dataset has data. `projection` is a v8 projection
  * the map switches to once the style loads; `calls` are GL JS map calls
- * (`[name, ...args]`) applied then too.
+ * (`[name, ...args]`) applied then too. `notInGlJs` says why the
+ * comparison with GL JS (app/compare.js) can't show the entry.
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
- *   projection?: object, calls?: unknown[][] }} Scene
+ *   projection?: object, calls?: unknown[][], notInGlJs?: string }} Scene
  */
 
 /** The world, for layers that cover everything. */
@@ -108,20 +109,26 @@ export const GROUPS = [
         dark: true, swatch: ["#f8f4f0", "#a0c8f0", "#02040b"] },
       { key: "dusk", name: "Liberty at dusk", detail: "Layer blends: a multiplied tint, glowing roads",
         url: LIVE, calls: DUSK, camera: { center: [139.767, 35.681], zoom: 12.5 }, dark: true,
-        swatch: ["#4c4f6e", "#6f86b8", "#ff9d4d"] },
+        swatch: ["#4c4f6e", "#6f86b8", "#ff9d4d"],
+        notInGlJs: "GL JS can't draw layer blends" },
       { key: "blue-marble", name: "Blue Marble globe", detail: "NASA imagery in EPSG:4326 tiles, to the poles",
-        url: blueMarble, dark: true, swatch: ["#2f4a2a", "#0b2a5c", "#d8d0b8"] },
+        url: blueMarble, dark: true, swatch: ["#2f4a2a", "#0b2a5c", "#d8d0b8"],
+        notInGlJs: "GL JS can't draw tile matrix sets" },
       { key: "alps", name: "Alps terrain flight", detail: "3D terrain, sky and a looping camera flight", url: alps,
         flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
       { key: "arctic", name: "Arctic", detail: "Polar stereographic, EPSG:3413", url: arctic, dark: true,
-        swatch: ["#24476b", "#e9eef2", "#9aa6ad"] },
+        swatch: ["#24476b", "#e9eef2", "#9aa6ad"],
+        notInGlJs: "GL JS can't draw tile matrix sets" },
       { key: "equal-earth", name: "Equal Earth", detail: "The whole world equal-area, handing over to Web Mercator by zoom 7",
         url: LIVE, projection: { type: "equal-earth" }, camera: { center: [0, 10], zoom: 0.5 },
-        swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"] },
+        swatch: ["#f8f4f0", "#a0c8f0", "#e9ac77"],
+        notInGlJs: "GL JS has no Equal Earth projection" },
       { key: "nz", name: "New Zealand", detail: "Transverse Mercator, NZTM2000", url: nz,
-        swatch: ["#f8f4f0", "#a0c8f0", "#bfd6a8"] },
+        swatch: ["#f8f4f0", "#a0c8f0", "#bfd6a8"],
+        notInGlJs: "GL JS can't reproject vector tiles" },
       { key: "greenland", name: "Greenland ice flow", detail: "Polar imagery warped onto Web Mercator", url: greenland,
-        constraints: { bounds: [-76, 58, -8, 84.5], maxZoom: 8 }, swatch: ["#f4f7fa", "#a0c8f0", "#7b4fb0"] },
+        constraints: { bounds: [-76, 58, -8, 84.5], maxZoom: 8 }, swatch: ["#f4f7fa", "#a0c8f0", "#7b4fb0"],
+        notInGlJs: "GL JS can't reproject raster tiles" },
       { key: "radar", name: "Weather radar", detail: "An image source: a radar frame over the northeast US",
         url: LIVE, calls: RADAR, camera: { center: [-75.789, 41.874], zoom: 5 },
         swatch: ["#f8f4f0", "#a0c8f0", "#44b85c"] },

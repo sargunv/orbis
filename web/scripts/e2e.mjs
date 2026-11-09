@@ -13,20 +13,23 @@
 //   `--writes` writes.
 // - `editor`: the map app's style editor, queries and hover state on the
 //   editor sample (`?style=playground&edit`), and frames per edit.
+// - `compare`: the comparison with GL JS on the Tokyo extract: the plain
+//   page fetches none of GL JS, `&compare` shows both maps at one camera,
+//   and a drag on either side moves both.
 // - `offline` (only when asked for: it needs the network): downloads the
 //   live map's view at `--at` from the Offline areas dialog, then reloads
 //   with every request but the demo server's failing and checks the map
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,editor,offline]
+//   pnpm e2e [--only=scenario,edits,editor,compare,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520]
 import assert from "node:assert/strict";
 import { decodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor").split(",");
+const only = arg("only", "scenario,edits,editor,compare").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -551,10 +554,57 @@ async function offline(browser, server) {
   await page.close();
 }
 
+async function compare(browser, server) {
+  const page = await browser.newPage({ viewport: { width: 800, height: 500 } });
+  const pageErrors = [];
+  page.on("pageerror", (e) => pageErrors.push(e.message));
+  const requests = [];
+  page.on("request", (r) => requests.push(r.url()));
+  const gl = () => requests.filter((url) => /maplibre-gl|gljs/.test(url));
+  const idle = () => page.waitForFunction(() => document.getElementById("app").dataset.map === "idle", null,
+    { timeout: 60_000 });
+
+  await page.goto(`${server.url}?style=tokyo-mvt`);
+  await idle();
+  assert.deepEqual(gl(), [], "the plain page fetches no GL JS");
+
+  // Both maps at one camera once they settle.
+  const settled = () => page.waitForFunction(() => {
+    const other = app.compare.other;
+    const own = app.map.camera.current;
+    if (!other?.loaded || document.getElementById("app").dataset.map !== "idle") return false;
+    const close = (a, b) => Math.abs(a - b) < 1e-7;
+    return close(other.camera.center[0], own.center[0]) && close(other.camera.center[1], own.center[1])
+      && close(other.camera.zoom, own.zoom) && close(other.camera.bearing, own.bearing);
+  }, null, { timeout: 60_000 });
+  await page.goto(`${server.url}?style=tokyo-mvt&compare#15/35.687/139.74`);
+  await settled();
+  assert.ok(gl().length > 0, "?compare loads GL JS");
+  assert.equal(await page.locator(".compare-map canvas").count(), 1);
+  assert.equal(await page.getAttribute("#compare-toggle", "aria-checked"), "true");
+
+  // A drag on either side of the divider moves both maps.
+  for (const [side, x] of [["Orbis", 200], ["GL JS", 600]]) {
+    const before = await page.evaluate(() => app.map.camera.current.center);
+    await page.mouse.move(x, 250);
+    await page.mouse.down();
+    await page.mouse.move(x - 100, 300, { steps: 10 });
+    await page.mouse.up();
+    await settled();
+    const after = await page.evaluate(() => app.map.camera.current.center);
+    assert.ok(Math.hypot(after[0] - before[0], after[1] - before[1]) > 1e-4,
+      `a drag on the ${side} side moves the maps`);
+  }
+  assert.deepEqual(pageErrors, []);
+  console.log("compare: the plain page fetches no GL JS; both maps share a camera and follow drags on either side");
+  await page.close();
+}
+
 const CHECKS = {
   scenario,
   edits,
   editor,
+  compare,
   offline,
 };
 const server = await serveDemo();
