@@ -383,6 +383,15 @@ impl StylePlan {
             .expect("plan sources exist")
     }
 
+    /// Whether a line node's vertices carry their progress for
+    /// `line-gradient` (`orb_layout::line::METRICS_STRIDE`): those of a
+    /// GeoJSON source with `lineMetrics`, as GL JS's carry `a_uv_x`.
+    pub(crate) fn line_metrics(&self, node: &NodePlan) -> bool {
+        node.family == Family::Line
+            && matches!(&self.source_def(node.source).kind,
+                SourceKind::GeoJson(g) if g.options.line_metrics)
+    }
+
     /// Whether a node draws paint from the feature-state table, so its
     /// tiles carry feature ids.
     pub(crate) fn reads_state(&self, node: &NodePlan) -> bool {

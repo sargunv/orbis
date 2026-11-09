@@ -106,6 +106,9 @@ pub struct LinePaint {
     pub dash: Option<PatternPaint>,
     /// Sample the per-feature gradient ramp in property word 19.
     pub gradient: bool,
+    /// The vertices carry their progress, as a `lineMetrics` source's do
+    /// (`orb_layout::line::METRICS_STRIDE`).
+    pub metrics: bool,
     pub state: StateLookup,
 }
 
@@ -379,7 +382,8 @@ impl NodePaint {
                     .f(n::DASH_FADE, &[dash.mix]);
                 b.f(n::DASH_FLOOR_WIDTH, &[dash.floor_width]);
                 b.u(n::DASHED, &[u32::from(p.dash.is_some())])
-                    .u(n::GRADIENT, &[u32::from(p.gradient)]);
+                    .u(n::GRADIENT, &[u32::from(p.gradient)])
+                    .u(n::METRICS, &[u32::from(p.metrics)]);
             }
             Self::Circle(p) => {
                 use circle_node as n;

@@ -268,6 +268,8 @@ enum Shape<'f> {
         /// The data tile's lines an overzoom slice's lay out along
         /// (`Layer::overscaled_lines`), and the bend's grid.
         overscaled: Option<(ByAddress<'f>, orb_tile::Ancestor, Option<u32>)>,
+        /// Whether vertices carry their progress (`StylePlan::line_metrics`).
+        metrics: bool,
     },
 }
 
@@ -286,7 +288,7 @@ impl<'f> Shape<'f> {
         layer: &Layer,
         features: &[u32],
         style_layer: &orb_style::Layer,
-        (family, overscaled): (Family, Option<(&'f Layer, orb_tile::Ancestor)>),
+        (family, overscaled, metrics): (Family, Option<(&'f Layer, orb_tile::Ancestor)>, bool),
         zoom: f64,
         bend: Option<orb_layout::fill::Bend>,
         units_per_metre: f64,
@@ -334,6 +336,7 @@ impl<'f> Shape<'f> {
                     params: features.iter().map(|&f| params(f as usize)).collect(),
                     overscaled: overscaled
                         .map(|(data, ancestor)| (ByAddress(data), ancestor, bend.map(|b| b.cells))),
+                    metrics,
                 }
             }
             _ => unreachable!("vector nodes have feature selections"),
@@ -350,16 +353,27 @@ impl<'f> Shape<'f> {
             }
             Self::Circle(keys) => point::layout_sorted(layer, features, |slot| keys[slot]),
             Self::Heatmap => point::layout(layer, features),
-            Self::Line { params, overscaled } => {
+            Self::Line {
+                params,
+                overscaled,
+                metrics,
+            } => {
                 let params = |slot: usize| params[slot];
                 match overscaled {
                     Some((data, ancestor, cells)) => {
                         let data_features: Vec<u32> = (features.iter())
                             .map(|&f| layer.data_feature(f as usize))
                             .collect();
-                        line::layout_overscaled(data.0, &data_features, params, *ancestor, *cells)
+                        line::layout_overscaled(
+                            data.0,
+                            &data_features,
+                            params,
+                            *ancestor,
+                            *cells,
+                            *metrics,
+                        )
                     }
-                    None => line::layout_in_extent(layer, features, params, 8192),
+                    None => line::layout_in_extent(layer, features, params, 8192, *metrics),
                 }
             }
         }
@@ -675,7 +689,7 @@ pub(crate) fn build(
                         layer,
                         &features,
                         style_layer,
-                        (node.family, overscaled),
+                        (node.family, overscaled, plan.line_metrics(node)),
                         zoom,
                         bend,
                         units_per_metre,

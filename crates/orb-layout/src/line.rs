@@ -1,6 +1,6 @@
 //! The line family: CPU extrusion of line strings and closed polygon outlines.
 //!
-//! Vertex layout, 5 u32 words (20 bytes):
+//! Vertex layout, 4 u32 words (16 bytes), and a fifth with `lineMetrics`:
 //! - Word 0: `x as u16 | (y as u16) << 16`, signed i16 tile units.
 //! - Word 1: signed i8 `extrude_x`, `extrude_y`, `offset_x`, `offset_y`,
 //!   in successive bytes. Both vectors are scaled by 63 and rounded like
@@ -10,9 +10,11 @@
 //!   half the distance in normalized 8192 units. An overzoom slice's lines
 //!   run on from its data tile's (`layout_overscaled`), past 15 bits.
 //! - Word 3: feature slot (position in the selection).
-//! - Word 4: f32 progress within this tiled line, before clip-range remapping.
-//!   With GeoJSON metrics, word 2 stores global progress × 32767, quantized
-//!   by two, as GL JS does. Word 4 retains precision for per-clip ramps.
+//! - Word 4, only from a source with `lineMetrics` (GL JS's `a_uv_x`): f32
+//!   progress within this tiled line, before clip-range remapping, which
+//!   only `line-gradient` reads. With metrics, word 2 stores global
+//!   progress × 32767, quantized by two, as GL JS does; word 4 retains
+//!   precision for per-clip ramps.
 //!
 //! Lines are clipped to `[-extent, 2 · extent]²`, which holds any source
 //! buffer (GL JS's GeoJSON buffer reaches at most a tile) and fits i16: a
@@ -33,7 +35,10 @@ use crate::fill::pack_position;
 use crate::{Mesh, MeshBuilder};
 
 /// Words per line vertex.
-pub const STRIDE: usize = 5;
+pub const STRIDE: usize = 4;
+/// Words per line vertex from a source with `lineMetrics`: the progress
+/// `line-gradient` reads follows.
+pub const METRICS_STRIDE: usize = 5;
 /// Half the line distance, in word 2's bits 2–31.
 const DISTANCE_MASK: u32 = u32::MAX >> 2;
 const EXTRUDE_SCALE: f64 = 63.0;
@@ -79,17 +84,19 @@ pub fn layout(
     features: &[u32],
     parameters: impl FnMut(usize) -> LineLayout,
 ) -> Mesh {
-    layout_in_extent(layer, features, parameters, layer.extent())
+    layout_in_extent(layer, features, parameters, layer.extent(), false)
 }
 
 /// Rescales source positions before rounding sharp-corner subdivisions and
 /// line distances. GL JS buckets use extent 8192 regardless of source extent.
-/// The returned positions and chunk bounds use `output_extent`.
+/// The returned positions and chunk bounds use `output_extent`. With
+/// `metrics`, vertices carry their progress ([`METRICS_STRIDE`]).
 pub fn layout_in_extent(
     layer: &Layer,
     features: &[u32],
     parameters: impl FnMut(usize) -> LineLayout,
     output_extent: u32,
+    metrics: bool,
 ) -> Mesh {
     let extent = i32::try_from(output_extent).expect("extent fits i32");
     let scale = f64::from(output_extent) / f64::from(layer.extent());
@@ -99,6 +106,7 @@ pub fn layout_in_extent(
         sharp_corner_offset: 15.0 * f64::from(extent) / 512.0,
         overscale: 1.0,
         step: None,
+        metrics,
     };
     lay_out(layer, features, parameters, place, &frame)
 }
@@ -112,13 +120,14 @@ pub fn layout_in_extent(
 /// starts again at the slice's edges. `parameters` is called with a slot.
 /// With `cells`, lines get a vertex wherever they cross a grid of `cells`
 /// × `cells` over the slice, as `TileFrame::subdivided` gives the slice's
-/// own, for a curved warp.
+/// own, for a curved warp. With `metrics`, vertices carry their progress.
 pub fn layout_overscaled(
     layer: &Layer,
     features: &[u32],
     parameters: impl FnMut(usize) -> LineLayout,
     ancestor: Ancestor,
     cells: Option<u32>,
+    metrics: bool,
 ) -> Mesh {
     let overscale = f64::from(ancestor.scale);
     let grid = 8192.0 / f64::from(layer.extent());
@@ -139,6 +148,7 @@ pub fn layout_overscaled(
         },
         overscale,
         step: cells.filter(|&c| c > 1).map(|c| 8192.0 / f64::from(c)),
+        metrics,
     };
     lay_out(layer, features, parameters, place, &frame)
 }
@@ -154,6 +164,8 @@ struct Frame {
     overscale: f64,
     /// The grid lines get a vertex at, if any, this far apart.
     step: Option<f64>,
+    /// Whether vertices carry their progress ([`METRICS_STRIDE`]).
+    metrics: bool,
 }
 
 fn lay_out(
@@ -169,7 +181,12 @@ fn lay_out(
         extent <= i32::from(i16::MAX) - margin,
         "extent {extent} plus margin exceeds i16 positions"
     );
-    let mut builder = MeshBuilder::new(STRIDE);
+    let stride = if frame.metrics {
+        METRICS_STRIDE
+    } else {
+        STRIDE
+    };
+    let mut builder = MeshBuilder::new(stride);
     let distance_scale = 8192.0 / f64::from(extent);
     for (slot, &feature) in features.iter().enumerate() {
         let feature = feature as usize;
@@ -221,6 +238,7 @@ fn lay_out(
                         total_distance,
                         last: None,
                         at_clip: false,
+                        metrics: frame.metrics,
                     }
                     .add_line(&line, &params, frame.sharp_corner_offset);
                 }
@@ -477,6 +495,8 @@ struct Extrusion<'a> {
     /// Whether the vertex being added is where the line was clipped: GL
     /// JS has no vertex there to reset its distance at.
     at_clip: bool,
+    /// Whether vertices carry their progress ([`METRICS_STRIDE`]).
+    metrics: bool,
 }
 
 impl Extrusion<'_> {
@@ -754,16 +774,15 @@ impl Extrusion<'_> {
             | u32::from(up) << 1
             | ((self.scaled_distance() / 2.0) as u32 & DISTANCE_MASK) << 2;
         let data = u32::from(x) | u32::from(y) << 8 | u32::from(ox) << 16 | u32::from(oy) << 24;
-        let vertex = self.builder.push_vertex(
-            position,
-            &[
-                pack_position(position[0], position[1]),
-                data,
-                flags,
-                self.slot,
-                (self.progress() as f32).to_bits(),
-            ],
-        );
+        let words = [
+            pack_position(position[0], position[1]),
+            data,
+            flags,
+            self.slot,
+            (self.progress() as f32).to_bits(),
+        ];
+        let stride = if self.metrics { METRICS_STRIDE } else { STRIDE };
+        let vertex = self.builder.push_vertex(position, &words[..stride]);
         if let [Some(e1), Some(e2)] = self.edges {
             self.builder.push_triangle(e1, vertex, e2);
         }
@@ -1292,8 +1311,9 @@ mod tests {
         b.set_property("geojsonvt_clip_start", orb_tile::Value::F64(0.25));
         b.set_property("geojsonvt_clip_end", orb_tile::Value::F64(0.75));
         let layer = b.finish();
-        let mesh = layout(&layer, &[0], |_| params(LineJoin::Miter, LineCap::Butt));
-        let vertices = mesh.vertices.as_chunks::<STRIDE>().0;
+        let butt = |_| params(LineJoin::Miter, LineCap::Butt);
+        let mesh = layout_in_extent(&layer, &[0], butt, 8192, true);
+        let vertices = mesh.vertices.as_chunks::<METRICS_STRIDE>().0;
         let first = vertices.first().unwrap();
         let last = vertices.last().unwrap();
         assert_eq!(first[2] >> 2, (0.25 * 32767.0 / 2.0) as u32);
@@ -1306,6 +1326,9 @@ mod tests {
             .unwrap();
         assert_eq!(f32::from_bits(corner[4]), 0.5);
         assert_eq!(corner[2] >> 2, (0.5 * 32767.0 / 2.0) as u32);
+        // Without metrics, vertices end at the feature slot.
+        let mesh = layout(&layer, &[0], butt);
+        assert_eq!(mesh.vertices.len() / STRIDE, vertices.len());
     }
 
     #[test]
@@ -1318,22 +1341,22 @@ mod tests {
         );
         b.set_property("geojsonvt_clip_start", orb_tile::Value::F64(0.0));
         b.set_property("geojsonvt_clip_end", orb_tile::Value::F64(1.0));
-        let mesh = layout(&b.finish(), &[0], |_| {
-            params(LineJoin::Miter, LineCap::Butt)
-        });
-        let first = &mesh.vertices[..STRIDE];
+        let butt = |_| params(LineJoin::Miter, LineCap::Butt);
+        let mesh = layout_in_extent(&b.finish(), &[0], butt, 8192, true);
+        let first = &mesh.vertices[..METRICS_STRIDE];
         assert_eq!(f32::from_bits(first[4]), 904.0 / 6000.0);
         assert_eq!(first[2] >> 2, (904.0 / 6000.0 * 32767.0 / 2.0) as u32);
     }
 
-    /// Distances (word 2) and progress (word 4) at each position.
+    /// Distances (word 2) and progress (word 4) at each position, of a
+    /// mesh with metrics.
     fn distances(mesh: &Mesh) -> Vec<([i16; 2], u32, f32)> {
-        let positions = positions(mesh);
-        let words = mesh.vertices.as_chunks::<STRIDE>().0;
-        positions
-            .into_iter()
-            .zip(words)
-            .map(|(p, v)| (p, (v[2] >> 2) * 2, f32::from_bits(v[4])))
+        let words = mesh.vertices.as_chunks::<METRICS_STRIDE>().0;
+        (words.iter())
+            .map(|v| {
+                let p = [v[0] as u16 as i16, (v[0] >> 16) as u16 as i16];
+                (p, (v[2] >> 2) * 2, f32::from_bits(v[4]))
+            })
             .collect()
     }
 
@@ -1368,7 +1391,7 @@ mod tests {
             }
             let layer = b.finish();
             let butt = params(LineJoin::Miter, LineCap::Butt);
-            let whole = distances(&layout(&layer, &[0], |_| butt));
+            let whole = distances(&layout_in_extent(&layer, &[0], |_| butt, 8192, true));
             // Without metrics, the whole line's distance resets once.
             let resets = whole.iter().filter(|&&(_, d, _)| d == 0).count();
             assert_eq!(
@@ -1378,7 +1401,7 @@ mod tests {
             let mut matched = 0;
             for cell in (0..scale * scale).map(|c| [c % scale, c / scale]) {
                 let ancestor = Ancestor { scale, cell };
-                let slice = layout_overscaled(&layer, &[0], |_| butt, ancestor, None);
+                let slice = layout_overscaled(&layer, &[0], |_| butt, ancestor, None, true);
                 for (q, d, progress) in distances(&slice) {
                     let p = [0, 1].map(|i| i32::from(q[i]) + (cell[i] * 8192) as i32);
                     if p.iter().any(|v| v % scale as i32 != 0) {
@@ -1432,6 +1455,7 @@ mod tests {
             total_distance: 0.0,
             last: None,
             at_clip: false,
+            metrics: false,
         };
         extrusion.add_half_vertex(
             Point { x: -10.0, y: 20.0 },

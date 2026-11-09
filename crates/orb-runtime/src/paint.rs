@@ -618,6 +618,7 @@ fn node_paint(
             curves,
             dash: None,
             gradient: false,
+            metrics: plan.line_metrics(node),
             state: lookup,
         }),
         image => unreachable!("{image:?} nodes are painted above"),

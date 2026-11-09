@@ -1158,6 +1158,7 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
             table_mask: 0,
             curves: [Curve::Step; 6],
             gradient: true,
+            metrics: true,
             dash: Some(PatternPaint {
                 from: dash,
                 to: dash,
@@ -1175,12 +1176,14 @@ fn line_texture_rows_are_stable_and_retirement_recycles_sdf_storage() {
     b.begin_ring();
     b.push_vertex([0, 2048]);
     b.push_vertex([4096, 2048]);
-    let mesh = orb_layout::line::layout(&b.finish(), &[0], |_| orb_layout::line::LineLayout {
+    // With `lineMetrics`, vertices carry the progress the ramp reads.
+    let butt = |_| orb_layout::line::LineLayout {
         join: orb_layout::line::LineJoin::Miter,
         cap: orb_layout::line::LineCap::Butt,
         miter_limit: 2.0,
         round_limit: 1.05,
-    });
+    };
+    let mesh = orb_layout::line::layout_in_extent(&b.finish(), &[0], butt, 4096, true);
     let tile = h.tile();
     h.renderer
         .place(tile, EXTENT, &[full_view_tile(0.0)])

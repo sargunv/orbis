@@ -1,10 +1,11 @@
 // Line family, after GL JS 2b68611a4e2d4f7f076f6c6ebf758e2d53f91471's
 // src/shaders/glsl/line.{vertex,fragment}.glsl (BSD-3-Clause).
-// Vertex, 5 words (20 bytes): [x i16 | y i16 << 16,
+// Vertex, 4 words (16 bytes): [x i16 | y i16 << 16,
 // extrude.x i8 | extrude.y i8 << 8 | offset.x i8 << 16 | offset.y i8 << 24,
-// flags (bit 0 round, bit 1 up; bits 2–15 half line distance), feature slot, f32 local progress].
-// With GeoJSON metrics the packed distance is global progress * 32767 / 2;
-// the last word retains full precision within the clip for gradient ramps.
+// flags (bit 0 round, bit 1 up; bits 2–31 half line distance), feature slot],
+// and from a source with `lineMetrics` (`node.metrics`) a fifth, f32 local
+// progress. With metrics the packed distance is global progress * 32767 / 2;
+// the fifth word retains full precision within the clip for gradient ramps.
 // Both vectors are scaled by 63 with JavaScript rounding. Offset normals are
 // bounded join miters, easing toward segment normals near hairpins.
 // Property row (`LINE_ROW_*`): color, opacity, width, gap width, offset,
@@ -36,13 +37,14 @@ struct LineNode {
     dash_floor_width: f32,
     dashed: u32,
     gradient: u32,
-    _pad: u32,
+    // 1 when vertices carry a fifth word, their progress.
+    metrics: u32,
     state: StateLookup,
 };
 
 @group(1) @binding(0) var<uniform> node: LineNode;
 
-const LINE_STRIDE: u32 = 5u;
+const LINE_STRIDE: u32 = 4u;
 const EXTRUDE_SCALE: f32 = 1.0 / 63.0;
 
 // A dashed, patterned or gradient line's varyings (`vs_line_styled`).
@@ -112,7 +114,7 @@ fn vs_line_styled(@builtin(vertex_index) index: u32) -> StyledLineOut {
 
 fn pulled_line(index: u32) -> StyledLineOut {
     var v: Pulled;
-    if !pull_indexed(node.index, index, LINE_STRIDE, &v) {
+    if !pull_indexed(node.index, index, LINE_STRIDE + node.metrics, &v) {
         var out: StyledLineOut;
         out.position = discarded_vertex();
         return out;
@@ -193,7 +195,7 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
         out.floorwidth = bitcast<f32>(prop_at(row + 4u + select(0u, 1u, floor(frame.zoom) > tile.zoom)));
     }
     out.images = pattern_ids(row, LINE_ROW_PATTERN, node.image_from, node.image_to, node.table_mask, node.pattern);
-    out.progress = bitcast<f32>(vertex_at(v.vertex + 4u));
+    if node.metrics != 0u { out.progress = bitcast<f32>(vertex_at(v.vertex + 4u)); }
     if node.gradient != 0u { out.ramp = prop_at(row + LINE_ROW_GRADIENT); }
     if node.dashed != 0u {
         out.images = vec2<u32>(node.dash_from, node.dash_to);
