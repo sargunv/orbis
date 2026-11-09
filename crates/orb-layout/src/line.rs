@@ -764,12 +764,14 @@ impl Extrusion<'_> {
 
     fn add_half_vertex(&mut self, p: Point, extrude: Point, offset: Point, round: bool, up: bool) {
         let position = [p.x as i16, p.y as i16];
-        // Cast through an integer before i8 so overflow wraps like GL JS's
-        // Uint8 storage, rather than saturating Rust's float-to-i8 conversion.
-        let x = js_round(EXTRUDE_SCALE * extrude.x) as i64 as i8 as u8;
-        let y = js_round(EXTRUDE_SCALE * extrude.y) as i64 as i8 as u8;
-        let ox = js_round(EXTRUDE_SCALE * offset.x) as i64 as i8 as u8;
-        let oy = js_round(EXTRUDE_SCALE * offset.y) as i64 as i8 as u8;
+        // A byte holds extrusions up to about twice the half width; a
+        // longer miter (a `line-miter-limit` above 2) saturates, as
+        // MapLibre Native clamps it. GL JS's Uint8 storage wraps instead,
+        // folding the join's far side back over the line.
+        let x = js_round(EXTRUDE_SCALE * extrude.x) as i8 as u8;
+        let y = js_round(EXTRUDE_SCALE * extrude.y) as i8 as u8;
+        let ox = js_round(EXTRUDE_SCALE * offset.x) as i8 as u8;
+        let oy = js_round(EXTRUDE_SCALE * offset.y) as i8 as u8;
         let flags = u32::from(round)
             | u32::from(up) << 1
             | ((self.scaled_distance() / 2.0) as u32 & DISTANCE_MASK) << 2;
@@ -861,6 +863,29 @@ mod tests {
             .iter()
             .map(|v| [(v[1] >> 16) as u8 as i8, (v[1] >> 24) as u8 as i8])
             .collect()
+    }
+
+    #[test]
+    fn miters_longer_than_a_byte_holds_saturate() {
+        // MapLibre Native's `line-miter-limit/global-state`: a 53° peak
+        // with a limit of 5 mitres 2.24 half widths up, past the 127 / 63
+        // a byte holds. Its tips stop there, straight off the vertex,
+        // where GL JS's wrapped byte points it down.
+        let peak = line(
+            &[[0, 200], [100, 0], [200, 200]],
+            &LineLayout {
+                miter_limit: 5.0,
+                ..params(LineJoin::Miter, LineCap::Butt)
+            },
+        );
+        let tips: Vec<_> = positions(&peak)
+            .iter()
+            .zip(data(&peak))
+            .filter(|(p, _)| **p == [100, 0])
+            .map(|(_, d)| [d[0], d[1]])
+            .collect();
+        assert!(tips.contains(&[0, -128]), "{tips:?}");
+        assert!(tips.contains(&[0, 127]), "{tips:?}");
     }
 
     #[test]
