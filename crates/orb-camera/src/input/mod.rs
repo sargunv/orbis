@@ -1,23 +1,31 @@
 //! Gestures: pointer, touch, wheel and keyboard input turned into
-//! camera moves, with inertia. Host-independent: hosts
-//! feed [`Input`]s with their timestamps and call [`Interaction::frame`]
-//! once a display frame; every move goes through the
-//! [`Camera`] store, which reports the camera events.
+//! camera moves. Host-independent: hosts feed [`Input`]s with their
+//! timestamps and call [`Interaction::frame`] once a display frame; every
+//! move goes through the [`Camera`] store's public moves, which report the
+//! camera events, and every release continues with the store's
+//! [`GestureMomentum`].
 //!
-//! GL JS's handlers are the reference for what each gesture does and at
-//! what rate: drag to pan, right- or Ctrl-drag to rotate and tilt, wheel
-//! and trackpad zoom, double-click and double-tap zoom, two-finger tap to
-//! zoom out, tap-and-drag zoom, two-finger pinch, twist and vertical tilt,
-//! and the arrow and `+`/`-` keys.
+//! The gesture set is MapLibre Compose's: drag to pan; right- or
+//! Ctrl-drag to rotate and tilt; Shift-drag to zoom to a box; wheel and
+//! trackpad zoom; double-click or double-tap to zoom in, Shift-double-click
+//! or a two-finger tap to zoom out; double-tap-and-drag to zoom; two-finger
+//! pinch, twist and vertical tilt; the arrow, `+`/`=` and `-` keys. Each
+//! gesture's rates and thresholds are GL JS's. Releases are Compose's: the
+//! velocity of the last 100 ms ([`velocity`]), a glide with mln-ffi's
+//! default decays, a glide the gesture caught added to one going the same
+//! way, and the bearing settling on north within 7°.
 
 mod rates;
+mod velocity;
 
 use rates::*;
-
-use std::collections::VecDeque;
+use velocity::VelocityTracker;
 
 use crate::animate::{Glide, Track};
-use crate::{Camera, CameraTarget, EaseOptions, Easing};
+use crate::{
+    AnchoredMomentum, Camera, CameraTarget, EaseOptions, Easing, GestureMomentum, MomentumDecay,
+    MomentumSnap, MomentumVelocity, PanMomentum,
+};
 use glam::DVec2;
 
 /// What kind of device a pointer is.
@@ -52,6 +60,8 @@ pub enum Key {
     Down,
     ZoomIn,
     ZoomOut,
+    /// Cancels a box zoom.
+    Escape,
 }
 
 /// The unit of a wheel delta, as DOM `deltaMode` gives it.
@@ -81,7 +91,7 @@ pub enum Input {
         position: DVec2,
     },
     /// The platform took the pointer away (a system gesture, lost
-    /// capture): no click and no inertia.
+    /// capture): no click and no momentum.
     PointerCancel {
         id: u32,
     },
@@ -146,8 +156,14 @@ enum Mode {
     Pressed {
         rotate: bool,
         button: Button,
+        shift: bool,
     },
     Pan,
+    /// Shift-drag: the box from `origin` to the pointer is where the map
+    /// zooms on release.
+    BoxZoom {
+        origin: DVec2,
+    },
     /// Mouse rotation and tilt.
     Rotate,
     Pinch(Pinch),
@@ -160,10 +176,9 @@ enum Mode {
     Ignored,
 }
 
-/// One applied gesture step, for inertia.
+/// One applied gesture step, for the release velocity.
 #[derive(Clone, Copy, Debug, Default)]
-struct Sample {
-    time: f64,
+struct Step {
     pan: DVec2,
     zoom: f64,
     bearing: f64,
@@ -171,13 +186,174 @@ struct Sample {
     around: Option<DVec2>,
 }
 
-impl Sample {
-    fn at(time: f64) -> Self {
-        Self {
-            time,
+/// Per second, at release.
+#[derive(Clone, Copy, Debug, Default)]
+struct Release {
+    pan: Option<DVec2>,
+    zoom: Option<f64>,
+    bearing: Option<f64>,
+    pitch: Option<f64>,
+    zoom_anchor: Option<DVec2>,
+    bearing_anchor: Option<DVec2>,
+}
+
+/// What a gesture has moved so far, and how fast.
+#[derive(Debug, Default)]
+struct Tracking {
+    /// Totals since the gesture began: pixels, levels, degrees.
+    pan: DVec2,
+    zoom: f64,
+    bearing: f64,
+    pitch: f64,
+    /// Pan x and y, zoom, bearing, pitch.
+    trackers: [VelocityTracker; 5],
+    zoom_anchor: Option<DVec2>,
+    bearing_anchor: Option<DVec2>,
+    /// The gesture turned the map, so the bearing may settle.
+    rotated: bool,
+    /// How fast a momentum this gesture caught still moved.
+    boost: Option<MomentumVelocity>,
+    /// A pinch's release, staged when it continued as a one-finger pan,
+    /// and when.
+    staged: Option<(f64, Release)>,
+}
+
+impl Tracking {
+    fn reset(&mut self, now: f64, boost: Option<MomentumVelocity>) {
+        *self = Self {
+            boost,
             ..Self::default()
+        };
+        self.record(now, Step::default());
+    }
+
+    /// Adds a step's samples: to each part it moves, and to each part the
+    /// gesture moves already, which stands still otherwise.
+    fn record(&mut self, now: f64, step: Step) {
+        self.pan += step.pan;
+        self.zoom += step.zoom;
+        self.bearing += step.bearing;
+        self.pitch += step.pitch;
+        if step.zoom != 0.0 {
+            self.zoom_anchor = step.around;
+        }
+        if step.bearing != 0.0 {
+            self.bearing_anchor = step.around;
+            self.rotated = true;
+        }
+        let values = [self.pan.x, self.pan.y, self.zoom, self.bearing, self.pitch];
+        let moved = [
+            step.pan != DVec2::ZERO,
+            step.pan != DVec2::ZERO,
+            step.zoom != 0.0,
+            step.bearing != 0.0,
+            step.pitch != 0.0,
+        ];
+        let start = self.trackers.iter().all(VelocityTracker::is_empty);
+        for ((tracker, value), moved) in self.trackers.iter_mut().zip(values).zip(moved) {
+            if moved || start || !tracker.is_empty() {
+                tracker.add(now, value);
+            }
         }
     }
+
+    /// The release at `now`.
+    fn release(&mut self, now: f64) -> Release {
+        let [x, y, zoom, bearing, pitch] = self.trackers.each_ref().map(|t| t.velocity(now));
+        let some = |v: f64| (v != 0.0 && v.is_finite()).then_some(v);
+        let mut release = Release {
+            pan: (x != 0.0 || y != 0.0).then_some(DVec2::new(x, y)),
+            zoom: some(zoom),
+            bearing: some(bearing),
+            pitch: some(pitch),
+            zoom_anchor: self.zoom_anchor,
+            bearing_anchor: self.bearing_anchor,
+        };
+        // A pinch that ended moments ago keeps what it had, as Compose's
+        // contact changes do; a pan carried on longer than the velocity
+        // horizon has left it behind.
+        if let Some((at, staged)) = self.staged.take()
+            && now - at <= 100.0
+        {
+            if release.zoom.is_none() {
+                release.zoom = staged.zoom;
+                release.zoom_anchor = staged.zoom_anchor;
+            }
+            if release.bearing.is_none() {
+                release.bearing = staged.bearing;
+                release.bearing_anchor = staged.bearing_anchor;
+            }
+            if release.pitch.is_none() {
+                release.pitch = staged.pitch;
+            }
+        }
+        release
+    }
+
+    /// A pinch continues as a one-finger pan: its zoom, turn and tilt end
+    /// here, and its pan carries on.
+    fn stage(&mut self, now: f64) {
+        let release = self.release(now);
+        self.staged = Some((now, release));
+        for tracker in &mut self.trackers[2..] {
+            tracker.reset();
+        }
+    }
+
+    /// The momentum a release continues with: mln-ffi's default decays,
+    /// a caught momentum added to each part going its way, and the bearing
+    /// settling on north if the gesture turned the map (Compose's
+    /// `resolveGestureMomentum`). `None` when nothing moves or settles.
+    fn momentum(&self, release: Release, glide: bool) -> Option<GestureMomentum> {
+        let release = if glide { release } else { Release::default() };
+        let boost = self.boost.unwrap_or_default();
+        let pan = release.pan.and_then(|mut v| {
+            if v.is_nan() || v.length() < MomentumDecay::PAN.min_speed {
+                return None;
+            }
+            if v.dot(boost.pan) > 0.0 {
+                v += boost.pan;
+            }
+            Some(PanMomentum::new(v))
+        });
+        let speed = |v: Option<f64>, decay: MomentumDecay, boost: f64| {
+            v.filter(|v| v.abs() >= decay.min_speed).map(|v| {
+                if v.signum() == boost.signum() {
+                    v + boost
+                } else {
+                    v
+                }
+            })
+        };
+        let zoom = speed(release.zoom, MomentumDecay::ZOOM, boost.zoom)
+            .map(|v| AnchoredMomentum::zoom(Some(v)).with_anchor(release.zoom_anchor));
+        let bearing = speed(release.bearing, MomentumDecay::BEARING, boost.bearing);
+        let bearing = (bearing.is_some() || self.rotated).then(|| {
+            AnchoredMomentum::bearing(bearing)
+                .with_anchor(release.bearing_anchor)
+                .with_snap(self.rotated.then_some(MomentumSnap::BEARING))
+        });
+        let pitch = speed(release.pitch, MomentumDecay::PITCH, boost.pitch)
+            .map(|v| AnchoredMomentum::pitch(Some(v)));
+        let momentum = GestureMomentum {
+            pan,
+            zoom,
+            bearing,
+            pitch,
+        };
+        (momentum != GestureMomentum::default()).then_some(momentum)
+    }
+}
+
+/// How a gesture ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum End {
+    /// The platform took it away: nothing continues.
+    Cancel,
+    /// Released without a fling (a tap, a box): only snaps.
+    Settle,
+    /// Released: it glides on.
+    Glide,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,9 +364,6 @@ enum WheelKind {
 
 /// GL JS's mouse-wheel step, which trackpads never produce exactly.
 const WHEEL_STEP: f64 = 4.000_244_140_625;
-/// GL JS's inertia sample buffer and velocity window, in milliseconds.
-const BUFFER_CUTOFF: f64 = 160.0;
-const VELOCITY_WINDOW: f64 = 60.0;
 /// Trackpad zoom stays one move until this long after its last event.
 const TRACKPAD_END: f64 = 200.0;
 
@@ -199,7 +372,7 @@ const TRACKPAD_END: f64 = 200.0;
 pub struct Interaction {
     pointers: Vec<Pointer>,
     mode: Mode,
-    samples: VecDeque<Sample>,
+    tracking: Tracking,
     /// The last tap, for double taps: where and when.
     last_tap: Option<(DVec2, f64, PointerKind)>,
     wheel_kind: Option<WheelKind>,
@@ -214,7 +387,7 @@ impl Default for Interaction {
         Self {
             pointers: Vec::new(),
             mode: Mode::Idle,
-            samples: VecDeque::new(),
+            tracking: Tracking::default(),
             last_tap: None,
             wheel_kind: None,
             last_wheel: f64::NEG_INFINITY,
@@ -228,6 +401,15 @@ impl Interaction {
     /// A gesture is under way: hosts keep pointer capture and scrolling off.
     pub fn is_active(&self) -> bool {
         !matches!(self.mode, Mode::Idle) || self.wheel_hold_until.is_some()
+    }
+
+    /// The box a Shift-drag zooms to, corner to corner in logical pixels,
+    /// while it is drawn: hosts show it.
+    pub fn box_zoom(&self) -> Option<[DVec2; 2]> {
+        match self.mode {
+            Mode::BoxZoom { origin } => Some([origin, self.pointers.first()?.position]),
+            _ => None,
+        }
     }
 
     /// Clicks and double clicks recognized since the last call.
@@ -275,7 +457,6 @@ impl Interaction {
             Input::Blur => {
                 self.pointers.clear();
                 self.mode = Mode::Idle;
-                self.samples.clear();
                 camera.release();
                 true
             }
@@ -307,7 +488,7 @@ impl Interaction {
             down: position,
             down_at: now,
         });
-        camera.hold();
+        let caught = camera.hold();
         match (self.mode, self.pointers.len()) {
             (Mode::Idle, 1) => {
                 self.mode = if touch && self.follows_tap(kind, position, now) {
@@ -319,10 +500,10 @@ impl Interaction {
                     Mode::Pressed {
                         rotate: button == Button::Secondary || (modifiers.ctrl && !touch),
                         button,
+                        shift: modifiers.shift && !touch,
                     }
                 };
-                self.samples.clear();
-                self.record(Sample::at(now));
+                self.tracking.reset(now, caught);
             }
             (Mode::Pressed { .. } | Mode::Pan | Mode::TapDrag { .. }, 2) if touch => {
                 let [a, b] = [self.pointers[0].position, self.pointers[1].position];
@@ -341,7 +522,7 @@ impl Interaction {
                     tap: now - self.pointers[0].down_at < TAP_INTERVAL
                         && matches!(self.mode, Mode::Pressed { .. }),
                 });
-                self.record(Sample::at(now));
+                self.tracking.record(now, Step::default());
             }
             _ => self.mode = Mode::Ignored,
         }
@@ -355,27 +536,37 @@ impl Interaction {
         let last = self.pointers[index].position;
         self.pointers[index].position = position;
         match &mut self.mode {
-            Mode::Pressed { rotate, .. } => {
-                if position.distance(self.pointers[index].down) > CLICK_TOLERANCE {
-                    let rotate = *rotate;
-                    self.mode = if rotate { Mode::Rotate } else { Mode::Pan };
-                    let down = self.pointers[index].down;
+            Mode::Pressed {
+                rotate,
+                shift,
+                button,
+            } => {
+                let down = self.pointers[index].down;
+                if position.distance(down) > CLICK_TOLERANCE {
+                    self.mode = match (*rotate, *shift && *button == Button::Primary) {
+                        (true, _) => Mode::Rotate,
+                        (false, true) => Mode::BoxZoom { origin: down },
+                        (false, false) => Mode::Pan,
+                    };
                     self.step(camera, down, position, now);
                 }
             }
             Mode::Pan | Mode::Rotate => self.step(camera, last, position, now),
+            Mode::BoxZoom { .. } => {}
             Mode::TapDrag { origin, moved } => {
                 let (origin, dy) = (*origin, position.y - last.y);
                 *moved = *moved || position.distance(origin) > CLICK_TOLERANCE;
                 if *moved {
                     let zoom = dy / 128.0;
                     camera.zoom_by(origin, zoom);
-                    self.record(Sample {
-                        time: now,
-                        zoom,
-                        around: Some(origin),
-                        ..Sample::default()
-                    });
+                    self.tracking.record(
+                        now,
+                        Step {
+                            zoom,
+                            around: Some(origin),
+                            ..Step::default()
+                        },
+                    );
                 }
             }
             Mode::Pinch(_) if self.pointers.len() < 2 => {
@@ -408,20 +599,25 @@ impl Interaction {
                 let center = center(camera);
                 camera.rotate_by(center, bearing);
                 camera.pitch_by(pitch);
-                self.record(Sample {
-                    time: now,
-                    bearing,
-                    pitch,
-                    ..Sample::default()
-                });
+                self.tracking.record(
+                    now,
+                    Step {
+                        bearing,
+                        pitch,
+                        ..Step::default()
+                    },
+                );
             }
+            Mode::BoxZoom { .. } => {}
             _ => {
                 camera.pan(from, to);
-                self.record(Sample {
-                    time: now,
-                    pan: delta,
-                    ..Sample::default()
-                });
+                self.tracking.record(
+                    now,
+                    Step {
+                        pan: delta,
+                        ..Step::default()
+                    },
+                );
             }
         }
     }
@@ -459,11 +655,13 @@ impl Interaction {
             camera.pitch_by(pitch);
             pinch.last = points;
             pinch.tap = false;
-            self.record(Sample {
-                time: now,
-                pitch,
-                ..Sample::default()
-            });
+            self.tracking.record(
+                now,
+                Step {
+                    pitch,
+                    ..Step::default()
+                },
+            );
             return;
         }
         let (mid, last_mid) = ((a + b) / 2.0, (la + lb) / 2.0);
@@ -514,14 +712,16 @@ impl Interaction {
         pinch.last = points;
         if pan != DVec2::ZERO || zoom != 0.0 || bearing != 0.0 {
             pinch.tap = false;
-            self.record(Sample {
-                time: now,
-                pan,
-                zoom,
-                bearing,
-                around: Some(mid),
-                ..Sample::default()
-            });
+            self.tracking.record(
+                now,
+                Step {
+                    pan,
+                    zoom,
+                    bearing,
+                    around: Some(mid),
+                    ..Step::default()
+                },
+            );
         }
     }
 
@@ -540,7 +740,7 @@ impl Interaction {
                     self.mode = if tap {
                         Mode::Pinch(pinch)
                     } else {
-                        self.record(Sample::at(now));
+                        self.tracking.stage(now);
                         Mode::Pan
                     };
                     return true;
@@ -549,16 +749,27 @@ impl Interaction {
                     let mid = (pinch.last[0] + pinch.last[1]) / 2.0;
                     self.zoom_step(camera, mid, -1.0, now);
                 }
-                self.finish(camera, now, !cancelled && !pinch.tap);
+                let end = match (cancelled, pinch.tap) {
+                    (true, _) => End::Cancel,
+                    (false, true) => End::Settle,
+                    (false, false) => End::Glide,
+                };
+                self.finish(camera, now, end);
             }
             Mode::Pan if !self.pointers.is_empty() => {}
-            Mode::Pressed { button, .. } => {
+            Mode::Pressed { button, shift, .. } => {
                 if self.pointers.is_empty() {
                     if !cancelled {
-                        self.tap(camera, pointer, button, now);
+                        self.tap(camera, pointer, button, shift, now);
                     }
-                    self.finish(camera, now, false);
+                    self.finish(camera, now, End::Settle);
                 }
+            }
+            Mode::BoxZoom { origin } => {
+                if !cancelled {
+                    self.zoom_to_box(camera, origin, position.unwrap_or(pointer.position), now);
+                }
+                self.finish(camera, now, End::Cancel);
             }
             Mode::TapDrag { origin, moved } => {
                 if self.pointers.is_empty() {
@@ -568,13 +779,24 @@ impl Interaction {
                             .push(InteractEvent::DoubleClick { position: origin });
                         self.zoom_step(camera, origin, 1.0, now);
                     }
-                    self.finish(camera, now, moved && !cancelled);
+                    let end = match (cancelled, moved) {
+                        (true, _) => End::Cancel,
+                        (false, true) => End::Glide,
+                        (false, false) => End::Settle,
+                    };
+                    self.finish(camera, now, end);
                 }
             }
-            Mode::Pan | Mode::Rotate => self.finish(camera, now, !cancelled),
+            Mode::Pan | Mode::Rotate => {
+                self.finish(
+                    camera,
+                    now,
+                    if cancelled { End::Cancel } else { End::Glide },
+                );
+            }
             Mode::Ignored | Mode::Idle => {
                 if self.pointers.is_empty() {
-                    self.finish(camera, now, false);
+                    self.finish(camera, now, End::Cancel);
                 }
             }
         }
@@ -583,7 +805,14 @@ impl Interaction {
 
     /// A press released without moving: a click, perhaps the second of a
     /// double click.
-    fn tap(&mut self, camera: &mut Camera, pointer: Pointer, button: Button, now: f64) {
+    fn tap(
+        &mut self,
+        camera: &mut Camera,
+        pointer: Pointer,
+        button: Button,
+        shift: bool,
+        now: f64,
+    ) {
         let position = pointer.position;
         self.events.push(InteractEvent::Click { position, button });
         if button != Button::Primary || now - pointer.down_at > TAP_INTERVAL {
@@ -592,20 +821,23 @@ impl Interaction {
         if self.follows_tap(pointer.kind, position, now) {
             self.last_tap = None;
             self.events.push(InteractEvent::DoubleClick { position });
-            self.zoom_step(camera, position, 1.0, now);
+            // Shift-double-click zooms out.
+            self.zoom_step(camera, position, if shift { -1.0 } else { 1.0 }, now);
         } else {
             self.last_tap = Some((position, now, pointer.kind));
         }
     }
 
-    /// Ends the gesture with every pointer up, gliding on with what its
-    /// last moves had of speed.
-    fn finish(&mut self, camera: &mut Camera, now: f64, inertia: bool) {
+    /// Ends the gesture with every pointer up: a release glides on with
+    /// the speed its last moves had, and settles.
+    fn finish(&mut self, camera: &mut Camera, now: f64, end: End) {
         self.mode = Mode::Idle;
-        if inertia && let Some(glide) = self.inertia(camera, now) {
-            camera.glide(glide, now);
+        if end != End::Cancel {
+            let release = self.tracking.release(now);
+            if let Some(momentum) = self.tracking.momentum(release, end == End::Glide) {
+                camera.start_momentum(&momentum, Some(now));
+            }
         }
-        self.samples.clear();
         if self.wheel_hold_until.is_none() {
             camera.release();
         }
@@ -618,84 +850,29 @@ impl Interaction {
         })
     }
 
-    fn record(&mut self, sample: Sample) {
-        self.prune(sample.time);
-        self.samples.push_back(sample);
-    }
-
-    /// Drops samples older than the inertia buffer at `now`.
-    fn prune(&mut self, now: f64) {
-        while self
-            .samples
-            .front()
-            .is_some_and(|s| now - s.time > BUFFER_CUTOFF)
-        {
-            self.samples.pop_front();
+    /// Zooms so the box from `a` to `b` fills the view, centred on its
+    /// middle (GL JS `BoxZoomHandler`); a box without area does nothing.
+    fn zoom_to_box(&mut self, camera: &mut Camera, a: DVec2, b: DVec2, now: f64) {
+        let size = (b - a).abs();
+        let viewport = camera.viewport();
+        if size.x < 1.0 || size.y < 1.0 {
+            return;
         }
-    }
-
-    /// GL JS's `HandlerInertia._onMoveEnd`: speed over the last moves up
-    /// to the release, so a gesture held still before release glides less.
-    fn inertia(&mut self, camera: &Camera, now: f64) -> Option<Glide> {
-        self.prune(now);
-        let samples: Vec<_> = self.samples.iter().copied().collect();
-        let mut first = samples.len().saturating_sub(2);
-        while first > 0 && samples[first - 1].time >= now - VELOCITY_WINDOW {
-            first -= 1;
-        }
-        let window = &samples[first..];
-        if window.len() < 2 {
-            return None;
-        }
-        let duration = now - window[0].time;
-        let mut total = Sample::default();
-        for s in window {
-            total.around = s.around.or(total.around);
-        }
-        for s in &window[1..] {
-            total.pan += s.pan;
-            total.zoom += s.zoom;
-            total.bearing += s.bearing;
-            total.pitch += s.pitch;
-        }
-        let mut glide = Glide {
-            around: total.around,
-            ..Glide::default()
+        let Some(center) = camera.unproject((a + b) / 2.0) else {
+            return;
         };
-        if total.pan.length() > 0.0 {
-            let (amount, duration) = PAN_INERTIA.ease(total.pan.length(), duration);
-            // Never glide past the horizon, where the pan would turn back
-            // (GL JS `handlePanInertia`).
-            let view = camera.view();
-            let horizon = (camera.viewport().height / 2.0 - view.sky_horizon()).abs();
-            let length = amount.abs().min(horizon * 0.75);
-            glide.pan = Some(Track {
-                amount: total.pan.normalize() * length,
-                duration,
-                easing: Easing::INERTIA,
-            });
-        }
-        let track = |inertia: &Inertia, amount: f64| {
-            (amount != 0.0).then(|| {
-                let (amount, duration) = inertia.ease(amount, duration);
-                Track {
-                    amount,
-                    duration,
-                    easing: Easing::INERTIA,
-                }
-            })
-        };
-        glide.zoom = track(&ZOOM_INERTIA, total.zoom);
-        glide.bearing = track(&BEARING_INERTIA, total.bearing).map(|mut t| {
-            t.amount = t.amount.clamp(-179.0, 179.0);
-            t
-        });
-        glide.pitch = track(&PITCH_INERTIA, total.pitch);
-        (glide.pan.is_some()
-            || glide.zoom.is_some()
-            || glide.bearing.is_some()
-            || glide.pitch.is_some())
-        .then_some(glide)
+        let zoom = (viewport.width / size.x)
+            .min(viewport.height / size.y)
+            .log2();
+        camera.user_ease(
+            &CameraTarget {
+                center: Some(center),
+                zoom: Some(camera.zoom() + zoom),
+                ..CameraTarget::default()
+            },
+            EaseOptions::default(),
+            now,
+        );
     }
 
     /// Double-click, double-tap and two-finger-tap zoom: one level around
@@ -798,6 +975,13 @@ impl Interaction {
     /// GL JS's `KeyboardHandler`: arrows pan, Shift-arrows rotate and
     /// tilt, `+` and `-` zoom; each an eased step.
     fn key(&mut self, camera: &mut Camera, key: Key, modifiers: Modifiers, now: f64) -> bool {
+        if key == Key::Escape {
+            let boxing = matches!(self.mode, Mode::BoxZoom { .. });
+            if boxing {
+                self.mode = Mode::Ignored;
+            }
+            return boxing;
+        }
         let state = *camera.state();
         let mut target = CameraTarget {
             center: Some(state.target),
@@ -818,6 +1002,7 @@ impl Interaction {
             (Key::Right, false) => target.offset = DVec2::new(-KEY_PAN, 0.0),
             (Key::Up, false) => target.offset = DVec2::new(0.0, KEY_PAN),
             (Key::Down, false) => target.offset = DVec2::new(0.0, -KEY_PAN),
+            (Key::Escape, _) => unreachable!("handled above"),
         }
         camera.user_ease(
             &target,

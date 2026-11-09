@@ -7,7 +7,7 @@ use glam::DVec2;
 use orb_camera::input::{Input, InteractEvent};
 use orb_camera::{
     AnimationId, Bounds, CameraState, CameraTarget, Constraints, EaseOptions, FitOptions,
-    FlyOptions, FreeCamera, Viewport,
+    FlyOptions, FreeCamera, GestureMomentum, Viewport,
 };
 use orb_crs::Geodetic;
 
@@ -39,6 +39,13 @@ impl Map {
     /// frame on.
     pub fn fly_to(&mut self, target: &CameraTarget, options: &FlyOptions) -> AnimationId {
         self.camera.fly_to(target, options, None)
+    }
+
+    /// Continues a gesture the host recognized itself with `momentum`
+    /// from the next frame on (mln-ffi's end-phase camera delta). `None`
+    /// when nothing moves or settles over time.
+    pub fn start_momentum(&mut self, momentum: &GestureMomentum) -> Option<AnimationId> {
+        self.camera.start_momentum(momentum, None)
     }
 
     /// Stops the running animation where it is, as interrupted.
@@ -81,6 +88,12 @@ impl Map {
     /// used it, so hosts can stop the platform's default.
     pub fn input(&mut self, input: Input, time: f64) -> bool {
         self.input.handle(&mut self.camera, input, time)
+    }
+
+    /// The box a Shift-drag zooms to while it is drawn, corner to corner
+    /// in logical pixels, for the host to show.
+    pub fn box_zoom(&self) -> Option<[DVec2; 2]> {
+        self.input.box_zoom()
     }
 
     /// Whether an animation, a glide or a gesture moves the camera, or

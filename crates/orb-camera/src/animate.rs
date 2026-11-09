@@ -1,5 +1,6 @@
-//! Camera animations: `easeTo` and `flyTo` after GL JS, and glides (inertia
-//! and smooth wheel zoom) whose properties ease independently.
+//! Camera animations: `easeTo` and `flyTo` after GL JS, glides (smooth
+//! wheel zoom) whose properties ease independently, and gesture momentum
+//! (`crate::momentum`).
 
 use glam::DVec2;
 use orb_crs::Geodetic;
@@ -23,8 +24,9 @@ impl Easing {
     pub const DEFAULT: Self = Self::Bezier([0.25, 0.1, 0.25, 1.0]);
     /// GL JS's `easeOut`, for keyboard and double-click moves.
     pub(crate) const EASE_OUT: Self = Self::Bezier([0.0, 0.0, 0.58, 1.0]);
-    /// GL JS's inertia easing.
-    pub(crate) const INERTIA: Self = Self::Bezier([0.0, 0.0, 0.3, 1.0]);
+    /// MapLibre Native's default transition curve, which momentum snaps
+    /// settle along.
+    pub(crate) const SNAP: Self = Self::Bezier([0.0, 0.0, 0.25, 1.0]);
 
     /// Progress at time fraction `t` in [0, 1].
     pub fn at(&self, t: f64) -> f64 {
@@ -33,6 +35,16 @@ impl Easing {
             Self::Linear => t,
             Self::Bezier([x1, y1, x2, y2]) => bezier(x1, y1, x2, y2, t),
         }
+    }
+
+    /// The rate of progress at time fraction `t`: the curve's slope.
+    pub fn slope(&self, t: f64) -> f64 {
+        const H: f64 = 1e-5;
+        let (a, b) = ((t - H).max(0.0), (t + H).min(1.0));
+        if b <= a {
+            return 0.0;
+        }
+        (self.at(b) - self.at(a)) / (b - a)
     }
 }
 
@@ -150,9 +162,8 @@ pub(crate) struct Track<T> {
     pub easing: Easing,
 }
 
-/// A move continued over time by deltas: inertia after a gesture, or a
-/// smooth wheel zoom. Each property eases on its own schedule, so a short
-/// zoom fling needn't end with a long pan's.
+/// A move continued over time by deltas: a smooth wheel zoom. Each
+/// property eases on its own schedule.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Glide {
     /// Pixels the ground moves on screen.
@@ -215,6 +226,8 @@ pub(crate) enum Motion {
         /// Each track's progress so far.
         done: [f64; 4],
     },
+    /// A gesture's momentum, which the store steps within its limits.
+    Momentum(Box<crate::momentum::Momentum>),
 }
 
 /// van Wijk and Nuij's "Smooth and efficient zooming and panning", as GL JS
@@ -411,6 +424,10 @@ impl Motion {
             Self::Ease { options, .. } => options.duration,
             Self::Fly { duration, .. } => *duration,
             Self::Glide { glide, .. } => glide.duration(),
+            Self::Momentum(momentum) => match momentum.active() {
+                true => f64::INFINITY,
+                false => 0.0,
+            },
         }
     }
 
@@ -418,7 +435,7 @@ impl Motion {
     pub(crate) fn destination(&self) -> Option<DVec2> {
         match self {
             Self::Ease { to_world, .. } | Self::Fly { to_world, .. } => Some(*to_world),
-            Self::Glide { .. } => None,
+            Self::Glide { .. } | Self::Momentum(_) => None,
         }
     }
 
@@ -436,7 +453,7 @@ impl Motion {
             Self::Fly {
                 from, to, easing, ..
             } => (from, to, easing.at(t)),
-            Self::Glide { .. } => return,
+            Self::Glide { .. } | Self::Momentum(_) => return,
         };
         if ground == to.elevation || !(0.0..1.0).contains(&k) {
             return;
@@ -608,6 +625,7 @@ impl Motion {
                 }
                 *done = p;
             }
+            Self::Momentum(_) => unreachable!("the store steps momentum"),
         }
     }
 }
@@ -622,7 +640,7 @@ mod tests {
             Easing::Linear,
             Easing::DEFAULT,
             Easing::EASE_OUT,
-            Easing::INERTIA,
+            Easing::SNAP,
         ] {
             assert!(easing.at(0.0).abs() < 1e-6, "{easing:?}");
             assert!((easing.at(1.0) - 1.0).abs() < 1e-6, "{easing:?}");

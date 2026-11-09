@@ -511,6 +511,7 @@ impl ApplicationHandler<Wake> for App {
                     WinitKey::Named(NamedKey::ArrowDown) => Key::Down,
                     WinitKey::Character("+" | "=") => Key::ZoomIn,
                     WinitKey::Character("-" | "_") => Key::ZoomOut,
+                    WinitKey::Named(NamedKey::Escape) => Key::Escape,
                     _ => return,
                 };
                 let modifiers = state.modifiers;

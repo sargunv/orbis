@@ -554,9 +554,24 @@ impl OrbisMap {
                     set(&object, "user", user.into());
                     "camera"
                 }
-                MapEvent::Camera(orb_runtime::CameraEvent::AnimationEnd { id, interrupted }) => {
+                MapEvent::Camera(orb_runtime::CameraEvent::AnimationEnd {
+                    id,
+                    interrupted,
+                    velocity,
+                }) => {
                     set(&object, "id", (id.0 as f64).into());
                     set(&object, "interrupted", interrupted.into());
+                    let v = js_sys::Object::new();
+                    for (key, value) in [
+                        ("panX", velocity.pan.x),
+                        ("panY", velocity.pan.y),
+                        ("zoom", velocity.zoom),
+                        ("bearing", velocity.bearing),
+                        ("pitch", velocity.pitch),
+                    ] {
+                        set(&v, key, value.into());
+                    }
+                    set(&object, "velocity", v.into());
                     "animationend"
                 }
                 MapEvent::Click { position, button } => {

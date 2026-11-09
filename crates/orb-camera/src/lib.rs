@@ -15,6 +15,7 @@ mod animate;
 mod fit;
 mod free;
 pub mod input;
+mod momentum;
 mod moves;
 mod store;
 mod terrain;
@@ -22,6 +23,10 @@ mod terrain;
 pub use animate::{CameraTarget, EaseOptions, Easing, FlyOptions};
 pub use fit::{FitOptions, Padding};
 pub use free::FreeCamera;
+pub use momentum::{
+    AnchoredMomentum, DecayModel, GestureMomentum, MomentumDecay, MomentumSnap, MomentumVelocity,
+    PanMomentum,
+};
 pub use moves::{Bounds, Constraints};
 pub use store::{AnimationId, Camera, CameraEvent, Change, Phase};
 pub use terrain::Elevation;
@@ -405,9 +410,8 @@ impl View {
             .max(0.0)
     }
 
-    /// Top logical row of the apparent horizon, including the reference's
-    /// finite planar horizon adjustment. Sky starts here and extends upward.
-    /// Without roll it is [`sky_horizon_line`](Self::sky_horizon_line)'s.
+    /// Top logical row of the apparent horizon without roll, for tests.
+    #[cfg(test)]
     pub(crate) fn sky_horizon(&self) -> f64 {
         self.center.y - self.horizon_offset()
     }

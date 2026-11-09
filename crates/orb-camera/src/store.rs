@@ -10,6 +10,7 @@ use orb_crs::Projection;
 
 use crate::animate::{CameraTarget, EaseOptions, FlyOptions, Glide, Motion, Track};
 use crate::fit::FitOptions;
+use crate::momentum::{GestureMomentum, Momentum, MomentumVelocity, Stage};
 use crate::moves::{Bounds, Constraints, wrap_bearing};
 use crate::{CameraState, Elevation, FreeCamera, Surface, View, Viewport};
 
@@ -46,8 +47,14 @@ pub enum CameraEvent {
         user: bool,
     },
     /// An animation stopped: it arrived, or another move or user input
-    /// interrupted it.
-    AnimationEnd { id: AnimationId, interrupted: bool },
+    /// interrupted it. `velocity` is how fast an interrupted momentum still
+    /// moved, which the next gesture can add to its own release; zero for
+    /// every other end.
+    AnimationEnd {
+        id: AnimationId,
+        interrupted: bool,
+        velocity: MomentumVelocity,
+    },
 }
 
 const CHANGES: [Change; 4] = [Change::Move, Change::Zoom, Change::Rotate, Change::Pitch];
@@ -379,7 +386,7 @@ impl Camera {
         Some(target)
     }
 
-    /// Continues a user's move with a glide (inertia, smooth wheel zoom). A
+    /// Continues a user's move with a glide (smooth wheel zoom). A
     /// glide started during another adds what that one had left.
     pub(crate) fn glide(&mut self, mut glide: Glide, now: f64) -> AnimationId {
         if let Some(rest) = self
@@ -396,14 +403,49 @@ impl Camera {
         self.start(Motion::glide(glide), Some(now), true, false)
     }
 
+    /// Continues a gesture with `momentum` from host time `start`
+    /// (milliseconds, the release's), or from the next frame without one.
+    /// It replaces any animation. Returns `None` when nothing moves and
+    /// nothing settles over time; snaps that settle at once without motion
+    /// apply here.
+    pub fn start_momentum(
+        &mut self,
+        momentum: &GestureMomentum,
+        start: Option<f64>,
+    ) -> Option<AnimationId> {
+        self.stop();
+        let mut next = self.state;
+        let stage = Stage {
+            surface: &self.surface,
+            viewport: self.viewport,
+            constraints: &self.constraints,
+        };
+        let planned = Momentum::new(momentum, &mut next, &stage);
+        if next != self.state {
+            self.user_write(next);
+        }
+        Some(self.start(Motion::Momentum(Box::new(planned?)), start, true, false))
+    }
+
     /// Stops the running animation, if any, as interrupted.
     pub fn stop(&mut self) {
-        if let Some(running) = self.running.take() {
-            self.events.push(CameraEvent::AnimationEnd {
-                id: running.id,
-                interrupted: true,
-            });
-        }
+        self.interrupt();
+    }
+
+    /// Stops the running animation as interrupted, returning how fast a
+    /// momentum still moved.
+    fn interrupt(&mut self) -> Option<MomentumVelocity> {
+        let running = self.running.take()?;
+        let velocity = match &running.motion {
+            Motion::Momentum(momentum) => Some(momentum.velocity()),
+            _ => None,
+        };
+        self.events.push(CameraEvent::AnimationEnd {
+            id: running.id,
+            interrupted: true,
+            velocity: velocity.unwrap_or_default(),
+        });
+        velocity
     }
 
     pub fn is_animating(&self) -> bool {
@@ -411,11 +453,13 @@ impl Camera {
     }
 
     /// User input holds the camera: movement continues, frame to frame,
-    /// until [`release`](Self::release). Stops any animation.
-    pub fn hold(&mut self) {
-        self.stop();
+    /// until [`release`](Self::release). Stops any animation, and returns
+    /// how fast a momentum it stopped still moved.
+    pub fn hold(&mut self) -> Option<MomentumVelocity> {
+        let velocity = self.interrupt();
         self.held = true;
         self.user = true;
+        velocity
     }
 
     pub fn release(&mut self) {
@@ -479,9 +523,17 @@ impl Camera {
         let mut next = self.state;
         let elapsed = now - *running.started.get_or_insert(now);
         running.elapsed = elapsed;
-        running
-            .motion
-            .apply(&mut next, elapsed, &self.surface, self.viewport);
+        match &mut running.motion {
+            Motion::Momentum(momentum) => {
+                let stage = Stage {
+                    surface: &self.surface,
+                    viewport: self.viewport,
+                    constraints: &self.constraints,
+                };
+                momentum.apply(&mut next, elapsed, &stage);
+            }
+            motion => motion.apply(&mut next, elapsed, &self.surface, self.viewport),
+        }
         self.user = running.user;
         let done = elapsed >= running.motion.duration();
         // Written while the move still runs, so its elevation stays its own.
@@ -491,6 +543,7 @@ impl Camera {
             self.events.push(CameraEvent::AnimationEnd {
                 id: running.id,
                 interrupted: false,
+                velocity: MomentumVelocity::default(),
             });
             // At rest: on the terrain.
             self.write(self.state);
@@ -918,7 +971,8 @@ mod tests {
         let events = camera.take_events();
         assert!(events.contains(&CameraEvent::AnimationEnd {
             id,
-            interrupted: false
+            interrupted: false,
+            velocity: Default::default(),
         }));
         let progress = changes(&events)
             .iter()
@@ -970,7 +1024,8 @@ mod tests {
         let events = camera.take_events();
         assert!(events.contains(&CameraEvent::AnimationEnd {
             id,
-            interrupted: true
+            interrupted: true,
+            velocity: Default::default(),
         }));
         // Held: the move hasn't ended.
         assert!(!changes(&events).contains(&(Change::Move, Phase::End)));

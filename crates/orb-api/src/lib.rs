@@ -24,8 +24,9 @@ use std::sync::Arc;
 pub use map::{Event, Image, Map, MapOptions, STILL_TIMEOUT, TileRequest};
 pub use orb_camera::input::{Button, Input, Key, Modifiers, PointerKind, WheelUnit};
 pub use orb_camera::{
-    AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints, EaseOptions, Easing,
-    FitOptions, FlyOptions, FreeCamera, Padding, Phase,
+    AnchoredMomentum, AnimationId, Bounds, CameraEvent, CameraTarget, Change, Constraints,
+    DecayModel, EaseOptions, Easing, FitOptions, FlyOptions, FreeCamera, GestureMomentum,
+    MomentumDecay, MomentumSnap, MomentumVelocity, Padding, PanMomentum, Phase,
 };
 pub use orb_crs::{Geodetic, Projection, TileIndex, TileMatrixSet};
 pub use orb_hal_wgpu::{RawSurface, SubmitTimes, Surface};

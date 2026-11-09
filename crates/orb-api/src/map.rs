@@ -11,7 +11,7 @@ use glam::DVec2;
 use orb_camera::input::Input;
 use orb_camera::{
     AnimationId, Bounds, CameraTarget, Constraints, EaseOptions, FitOptions, FlyOptions,
-    FreeCamera, Padding,
+    FreeCamera, GestureMomentum, Padding,
 };
 use orb_crs::Geodetic;
 use orb_crs::{TileIndex, TileMatrixSet};
@@ -472,6 +472,18 @@ impl Map {
         self.map.fly_to(target, options)
     }
 
+    /// Continues a gesture the host recognized itself: each part of
+    /// `momentum` glides on from its release velocity and slows by its
+    /// decay, from the next frame on, then settles on its snap (mln-ffi's
+    /// `mln_gesture_momentum`). Any input or camera move stops it; its
+    /// [`CameraEvent::AnimationEnd`](crate::CameraEvent::AnimationEnd) then reports the speed it had left.
+    /// `None` when nothing moves or settles over time. [`input`](Self::input)
+    /// gestures end with one of their own.
+    pub fn start_momentum(&mut self, momentum: &GestureMomentum) -> Option<AnimationId> {
+        self.dirty = true;
+        self.map.start_momentum(momentum)
+    }
+
     /// Whether the camera's target stands on the terrain at rest (GL JS
     /// `centerClampedToGround`, on by default). Off, it keeps the
     /// elevation it is given, and the camera orbits a point in the air.
@@ -529,6 +541,12 @@ impl Map {
         let used = self.map.input(input, time);
         self.dirty |= used;
         used
+    }
+
+    /// The box a Shift-drag zooms to while it is drawn, corner to corner
+    /// in logical pixels: hosts show it.
+    pub fn box_zoom(&self) -> Option<[DVec2; 2]> {
+        self.map.box_zoom()
     }
 
     /// The topmost feature at a point in logical pixels, from the last

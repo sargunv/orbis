@@ -7,7 +7,8 @@
 use glam::DVec2;
 use orb_camera::input::{Button, Input, Key, Modifiers, PointerKind, WheelUnit};
 use orb_camera::{
-    Bounds, CameraTarget, Constraints, EaseOptions, Easing, FitOptions, FlyOptions, Padding,
+    AnchoredMomentum, Bounds, CameraTarget, Constraints, DecayModel, EaseOptions, Easing,
+    FitOptions, FlyOptions, GestureMomentum, MomentumDecay, MomentumSnap, Padding, PanMomentum,
 };
 use orb_crs::Geodetic;
 use wasm_bindgen::prelude::*;
@@ -127,6 +128,75 @@ fn easing(options: &JsValue) -> Easing {
         (Some(x1), Some(y1), Some(x2), Some(y2)) => Easing::Bezier([x1, y1, x2, y2]),
         _ => Easing::DEFAULT,
     }
+}
+
+/// A `MomentumDecay` object over `default`: `model` `"friction"` (with
+/// `halfLife`, `stopSpeed`) or `"ease"` (with `distance`, `duration`,
+/// `easing`), and `minSpeed`, `maxSpeed`, `maxDistance`.
+fn decay(value: &JsValue, default: MomentumDecay) -> MomentumDecay {
+    if !value.is_object() {
+        return default;
+    }
+    let (half_life, stop_speed) = match default.model {
+        DecayModel::Friction {
+            half_life,
+            stop_speed,
+        } => (half_life, stop_speed),
+        DecayModel::Ease { .. } => (140.0, 1.0),
+    };
+    let model = match get(value, "model").as_string().as_deref() {
+        Some("ease") => DecayModel::Ease {
+            distance: number(value, "distance").unwrap_or(0.0),
+            duration: number(value, "duration").unwrap_or(0.0),
+            easing: if get(value, "easing").is_undefined() {
+                Easing::Bezier([0.0, 0.0, 0.25, 1.0])
+            } else {
+                easing(value)
+            },
+        },
+        _ => DecayModel::Friction {
+            half_life: number(value, "halfLife").unwrap_or(half_life),
+            stop_speed: number(value, "stopSpeed").unwrap_or(stop_speed),
+        },
+    };
+    MomentumDecay {
+        model,
+        min_speed: number(value, "minSpeed").unwrap_or(default.min_speed),
+        max_speed: number(value, "maxSpeed").unwrap_or(default.max_speed),
+        max_distance: number(value, "maxDistance").unwrap_or(default.max_distance),
+    }
+}
+
+/// An `AnchoredMomentum` object: `velocity`, `anchor` `[x, y]`, `decay`,
+/// and `snap`, `true` for the part's default or a `MomentumSnap` over it.
+fn anchored(
+    value: &JsValue,
+    part: fn(Option<f64>) -> AnchoredMomentum,
+    snap_default: MomentumSnap,
+) -> Option<AnchoredMomentum> {
+    if !value.is_object() {
+        return None;
+    }
+    let base = part(number(value, "velocity"));
+    let snap = get(value, "snap");
+    let snap = if snap.as_bool() == Some(true) {
+        Some(snap_default)
+    } else if snap.is_object() {
+        Some(MomentumSnap {
+            spacing: number(&snap, "spacing").unwrap_or(snap_default.spacing),
+            offset: number(&snap, "offset").unwrap_or(snap_default.offset),
+            tolerance: number(&snap, "tolerance").unwrap_or(snap_default.tolerance),
+            duration: number(&snap, "duration").unwrap_or(snap_default.duration),
+        })
+    } else {
+        None
+    };
+    Some(AnchoredMomentum {
+        anchor: pair(&get(value, "anchor")).map(DVec2::from),
+        decay: decay(&get(value, "decay"), base.decay),
+        snap,
+        ..base
+    })
 }
 
 fn modifiers(bits: u32) -> Modifiers {
@@ -262,6 +332,7 @@ impl OrbisMap {
             "ArrowDown" => Key::Down,
             "+" | "=" => Key::ZoomIn,
             "-" | "_" => Key::ZoomOut,
+            "Escape" => Key::Escape,
             _ => return false,
         };
         let modifiers = modifiers(modifiers_bits);
@@ -405,6 +476,46 @@ impl OrbisMap {
             }
         }
         object.into()
+    }
+
+    /// Continues a gesture the page recognized itself with a
+    /// `GestureMomentum` object (`pan`, `zoom`, `bearing`, `pitch`), from
+    /// the next frame; returns the animation's id, or -1 when nothing
+    /// moves.
+    #[wasm_bindgen(js_name = startMomentum)]
+    pub fn start_momentum(&mut self, options: &JsValue) -> f64 {
+        let pan = get(options, "pan");
+        let momentum = GestureMomentum {
+            pan: pair(&get(&pan, "velocity")).map(|v| PanMomentum {
+                decay: decay(&get(&pan, "decay"), MomentumDecay::PAN),
+                ..PanMomentum::new(DVec2::from(v))
+            }),
+            zoom: anchored(
+                &get(options, "zoom"),
+                AnchoredMomentum::zoom,
+                MomentumSnap::ZOOM,
+            ),
+            bearing: anchored(
+                &get(options, "bearing"),
+                AnchoredMomentum::bearing,
+                MomentumSnap::BEARING,
+            ),
+            pitch: anchored(
+                &get(options, "pitch"),
+                AnchoredMomentum::pitch,
+                MomentumSnap::PITCH,
+            ),
+        };
+        self.map
+            .start_momentum(&momentum)
+            .map_or(-1.0, |id| id.0 as f64)
+    }
+
+    /// The box a Shift-drag zooms to while it is drawn, `[x0, y0, x1, y1]`
+    /// in CSS pixels, or undefined.
+    #[wasm_bindgen(js_name = boxZoom)]
+    pub fn box_zoom(&self) -> Option<Vec<f64>> {
+        self.map.box_zoom().map(|[a, b]| vec![a.x, a.y, b.x, b.y])
     }
 
     /// Stops the running animation, as interrupted.

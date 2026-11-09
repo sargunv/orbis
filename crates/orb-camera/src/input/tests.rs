@@ -39,13 +39,34 @@ impl Rig {
     }
 
     fn down(&mut self, id: u32, kind: PointerKind, x: f64, y: f64) {
+        self.down_with(id, kind, x, y, Modifiers::default());
+    }
+
+    fn down_with(&mut self, id: u32, kind: PointerKind, x: f64, y: f64, modifiers: Modifiers) {
         self.send(Input::PointerDown {
             id,
             kind,
             button: Button::Primary,
             position: DVec2::new(x, y),
-            modifiers: Modifiers::default(),
+            modifiers,
         });
+    }
+
+    /// A mouse drag from `x` to the right at `speed` px per 16 ms move,
+    /// released at once; returns where the ground under its start ends up
+    /// once everything settles, relative to the release point.
+    fn fling(&mut self, x: f64, speed: f64) -> f64 {
+        let ground = self.camera.unproject(DVec2::new(x, 300.0)).unwrap();
+        self.down(1, PointerKind::Mouse, x, 300.0);
+        let mut at = x;
+        for _ in 0..8 {
+            self.now += 16.0;
+            at += speed;
+            self.to(1, at, 300.0);
+        }
+        self.up(1, at, 300.0);
+        self.settle();
+        self.camera.project(ground).unwrap().x - at
     }
 
     fn to(&mut self, id: u32, x: f64, y: f64) {
@@ -99,15 +120,17 @@ fn dragging_pans_and_glides_on() {
     assert!(under.distance(DVec2::new(500.0, 300.0)) < 1e-6, "{under}");
     rig.up(1, 500.0, 300.0);
     let frames = rig.settle();
-    // GL JS's velocity window: the last 10 px over the 48 ms to release,
-    // 62.5 px/s after its linearity, gliding 2.6 px over 83 ms.
+    // 10 px every 32 ms is 312.5 px/s; mln-ffi's pan friction (half-life
+    // 140 ms, stopping at 10 px/s) glides (312.5 − 10) / (ln 2 / 0.14 s)
+    // = 61.1 px over ln(31.25) / (ln 2 / 0.14 s) = 695 ms.
     assert!(
-        (4..=6).contains(&frames),
-        "inertia runs for a while: {frames}"
+        (42..=45).contains(&frames),
+        "momentum runs for a while: {frames}"
     );
     let after = rig.camera.project(ground).unwrap();
+    let glide = 302.5 / (std::f64::consts::LN_2 / 0.14);
     assert!(
-        (after.x - 502.6).abs() < 0.1,
+        (after.x - 500.0 - glide).abs() < 0.01,
         "and carries on in the same direction: {after}"
     );
     assert!((after.y - 300.0).abs() < 1e-6);
@@ -125,12 +148,12 @@ fn dragging_pans_and_glides_on() {
             )
         })
         .count();
-    assert_eq!(ends, 1, "one move, inertia included");
+    assert_eq!(ends, 1, "one move, momentum included");
     assert!(rig.input.take_events().is_empty(), "a drag isn't a click");
 }
 
 #[test]
-fn holding_still_before_release_stops_inertia() {
+fn holding_still_before_release_stops_momentum() {
     let mut rig = Rig::new();
     rig.down(1, PointerKind::Mouse, 400.0, 300.0);
     rig.now += 16.0;
@@ -352,8 +375,145 @@ fn input_interrupts_animations() {
             .take_events()
             .contains(&CameraEvent::AnimationEnd {
                 id,
-                interrupted: true
+                interrupted: true,
+                velocity: Default::default(),
             })
     );
     assert!(!rig.camera.is_animating());
+}
+
+#[test]
+fn flinging_a_glide_again_adds_its_speed() {
+    let mut rig = Rig::new();
+    let alone = rig.fling(100.0, 10.0);
+    // 10 px per 16 ms is 625 px/s: (625 − 10) / (ln 2 / 0.14 s) = 124 px.
+    assert!(
+        (alone - 615.0 / (std::f64::consts::LN_2 / 0.14)).abs() < 0.01,
+        "{alone}"
+    );
+
+    // Caught 100 ms into a glide and flung again the same way, the second
+    // glide starts with what the first had left.
+    let mut rig = Rig::new();
+    let ground = rig.camera.unproject(DVec2::new(100.0, 300.0)).unwrap();
+    rig.down(1, PointerKind::Mouse, 100.0, 300.0);
+    for i in 1..=8 {
+        rig.now += 16.0;
+        rig.to(1, 100.0 + 10.0 * f64::from(i), 300.0);
+    }
+    rig.up(1, 180.0, 300.0);
+    for _ in 0..6 {
+        rig.frame();
+    }
+    let caught = rig.camera.project(ground).unwrap().x - 180.0;
+    let boosted = rig.fling(300.0, 10.0);
+    assert!(
+        boosted > alone * 1.5,
+        "{boosted} vs {alone} (caught after {caught})"
+    );
+
+    // Flung back the other way, it starts from rest.
+    let mut rig = Rig::new();
+    rig.fling(100.0, 10.0);
+    let back = rig.fling(600.0, -10.0);
+    assert!((back + alone).abs() < 0.01, "{back}");
+}
+
+#[test]
+fn turning_near_north_settles_on_north() {
+    let mut rig = Rig::new();
+    rig.down(1, PointerKind::Touch, 300.0, 300.0);
+    rig.down(2, PointerKind::Touch, 500.0, 300.0);
+    // Turn 19.5° counterclockwise: 14° arm the rotation, 5.5° turn the map.
+    for i in 1..=10 {
+        let angle = -(f64::from(i) / 10.0 * 19.5).to_radians();
+        let offset = DVec2::new(angle.cos(), angle.sin()) * 100.0;
+        rig.now += 16.0;
+        rig.to(1, 400.0 - offset.x, 300.0 - offset.y);
+        rig.to(2, 400.0 + offset.x, 300.0 + offset.y);
+    }
+    let turned = rig.camera.state().bearing;
+    assert!((3.0..7.0).contains(&turned), "{turned}");
+    // Held still, then released: no glide, but the bearing settles.
+    rig.now += 300.0;
+    rig.up(1, 0.0, 0.0);
+    rig.up(2, 0.0, 0.0);
+    let frames = rig.settle();
+    assert!(rig.camera.state().bearing.abs() < 1e-9);
+    assert!((17..=20).contains(&frames), "300 ms: {frames}");
+
+    // Beyond 7°, it stays.
+    let mut rig = Rig::new();
+    rig.down(1, PointerKind::Touch, 300.0, 300.0);
+    rig.down(2, PointerKind::Touch, 500.0, 300.0);
+    for i in 1..=10 {
+        let angle = -(f64::from(i) * 3.0).to_radians();
+        let offset = DVec2::new(angle.cos(), angle.sin()) * 100.0;
+        rig.now += 16.0;
+        rig.to(1, 400.0 - offset.x, 300.0 - offset.y);
+        rig.to(2, 400.0 + offset.x, 300.0 + offset.y);
+    }
+    rig.now += 300.0;
+    let turned = rig.camera.state().bearing;
+    rig.up(1, 0.0, 0.0);
+    rig.up(2, 0.0, 0.0);
+    rig.settle();
+    assert!(turned > 7.0 && rig.camera.state().bearing == turned);
+}
+
+#[test]
+fn shift_drag_zooms_to_a_box() {
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    let mut rig = Rig::new();
+    let zoom = rig.camera.zoom();
+    let middle = rig.camera.unproject(DVec2::new(300.0, 250.0)).unwrap();
+    rig.down_with(1, PointerKind::Mouse, 100.0, 100.0, shift);
+    rig.now += 16.0;
+    rig.to(1, 500.0, 400.0);
+    assert_eq!(
+        rig.input.box_zoom(),
+        Some([DVec2::new(100.0, 100.0), DVec2::new(500.0, 400.0)])
+    );
+    // The box draws; the map stays.
+    assert_eq!(rig.camera.zoom(), zoom);
+    rig.up(1, 500.0, 400.0);
+    assert_eq!(rig.input.box_zoom(), None);
+    rig.settle();
+    // 400 × 300 px in 800 × 600: one level in, on the box's middle.
+    assert!((rig.camera.zoom() - (zoom + 1.0)).abs() < 1e-9);
+    let at = rig.camera.project(middle).unwrap();
+    assert!(at.distance(DVec2::new(400.0, 300.0)) < 1e-6, "{at}");
+    assert!(rig.input.take_events().is_empty(), "a box isn't a click");
+
+    // Escape drops it.
+    rig.down_with(1, PointerKind::Mouse, 100.0, 100.0, shift);
+    rig.to(1, 300.0, 300.0);
+    rig.send(Input::Key {
+        key: Key::Escape,
+        modifiers: Modifiers::default(),
+    });
+    assert_eq!(rig.input.box_zoom(), None);
+    rig.up(1, 300.0, 300.0);
+    rig.settle();
+    assert!((rig.camera.zoom() - (zoom + 1.0)).abs() < 1e-9);
+}
+
+#[test]
+fn shift_double_click_zooms_out() {
+    let shift = Modifiers {
+        shift: true,
+        ..Modifiers::default()
+    };
+    let mut rig = Rig::new();
+    let zoom = rig.camera.zoom();
+    for _ in 0..2 {
+        rig.down_with(1, PointerKind::Mouse, 200.0, 200.0, shift);
+        rig.up(1, 200.0, 200.0);
+        rig.now += 100.0;
+    }
+    rig.settle();
+    assert!((rig.camera.zoom() - (zoom - 1.0)).abs() < 1e-9);
 }
