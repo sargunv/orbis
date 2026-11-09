@@ -213,7 +213,7 @@ fn line_vertex(v: Pulled) -> StyledLineOut {
     out.tile_pos = extruded;
     out.owner_pos = select(extruded, extruded - vec2<f32>(shift.x, -shift.y) / tile.scale, draped_placement(tile));
     out.tile = v.tile;
-    out.clip = fragment_clip(tile);
+    out.clip = fragment_clip(tile, any(shift != vec2<f32>(0.0)));
     return out;
 }
 

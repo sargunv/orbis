@@ -114,7 +114,7 @@ fn fill_vertex(v: Pulled) -> FillOut {
     }
     out.owner_pos = select(out.tile_pos, pos, draped_placement(tile));
     out.tile = v.tile;
-    out.clip = fragment_clip(tile);
+    out.clip = fragment_clip(tile, any(shift != vec2<f32>(0.0)));
     return out;
 }
 

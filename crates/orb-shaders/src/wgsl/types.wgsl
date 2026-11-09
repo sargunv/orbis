@@ -326,14 +326,17 @@ fn clips_box(tile: Tile) -> vec4<f32> {
 }
 
 // A placement's clip as its fragments test it (`clip_drawn`), packed as
-// a clip rectangle: the one rectangle it owns where it lands everywhere
-// and its tile is affine, so the test reads no tile; otherwise
-// CLIP_FETCHED, and fragments test the tile's rectangles and bound. On a
-// pitched city view, reading the tile in every line and fill fragment
-// cost a fifth of the frame.
+// a clip rectangle: the one rectangle it owns, within its bound, where its
+// tile is affine and its content lands where it was (`moved` false, or a
+// map placement, which owns where content lands), so the test reads no
+// tile; otherwise CLIP_FETCHED, and fragments test the tile's rectangles
+// and bound. On a pitched city view, reading the tile in every line and
+// fill fragment cost a fifth of the frame, and redrawing drape slots over
+// the Alps a third of the drape pass.
 const CLIP_FETCHED: vec2<u32> = vec2<u32>(0x80008000u, 0x80008000u);
-fn fragment_clip(tile: Tile) -> vec2<u32> {
-    if draped_placement(tile) || tile.warp_cells != 0u {
+fn fragment_clip(tile: Tile, moved: bool) -> vec2<u32> {
+    let draped = draped_placement(tile);
+    if (draped && moved) || tile.warp_cells != 0u {
         return CLIP_FETCHED;
     }
     // None owned: an empty rectangle, never CLIP_FETCHED's.
@@ -345,7 +348,21 @@ fn fragment_clip(tile: Tile) -> vec2<u32> {
             owned++;
         }
     }
-    return select(clip, CLIP_FETCHED, owned > 1u);
+    if owned > 1u {
+        return CLIP_FETCHED;
+    }
+    if draped && owned == 1u {
+        let lo = max(unpack_i16x2(clip.x), unpack_i16x2(tile.bound.x));
+        let hi = min(unpack_i16x2(clip.y), unpack_i16x2(tile.bound.y));
+        clip = vec2<u32>(pack_i16x2(lo), pack_i16x2(max(lo, hi)));
+    }
+    return clip;
+}
+
+// `v`'s whole components as i16 pairs, x low.
+fn pack_i16x2(v: vec2<f32>) -> u32 {
+    let i = vec2<i32>(v);
+    return (bitcast<u32>(i.x) & 0xffffu) | (bitcast<u32>(i.y) << 16u);
 }
 
 // Whether `p` lies where the placement's content may land (`bound`).
