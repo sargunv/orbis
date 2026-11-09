@@ -79,6 +79,10 @@ Several agent sessions often share this machine.
 - Make temporary files with `mktemp`, never fixed names in `/tmp`.
 - The disk is shared: keep one `target/` per worktree, run
   `cargo xtask sweep` when space runs low, and delete only what you made.
+- Builds share one compiler cache: `~/.cargo/config.toml` wraps rustc in
+  sccache (60 GiB). Dependencies compiled in one worktree are reused by the
+  next; don't set `CARGO_TARGET_DIR` as an environment variable, which
+  changes the cache keys (use `--target-dir`).
 - Shell tools move a command to the background when it outlives the call's
   timeout (two minutes by default), and nothing wakes you when it ends. Give
   builds, checks and fixture runs the longest timeout allowed, and wait for
