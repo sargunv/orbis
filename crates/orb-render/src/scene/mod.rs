@@ -265,6 +265,13 @@ pub struct TileRow {
     pub warp: TileWarp,
     /// On a globe view, where it is on the sphere.
     pub globe: Option<RowGlobe>,
+    /// Which of the tiles around it at its zoom (bit `3 (dy + 1) + dx + 1`,
+    /// rows down) are each placed alone over their whole square, and so
+    /// draw entire the whole polygons whose centroid they hold
+    /// (`orb_tile::Layer::is_whole`): this placement leaves those to
+    /// them, and draws a whole polygon it doesn't own anywhere else
+    /// clipped to its regions. 0 leaves nothing to a neighbour.
+    pub neighbours: u16,
 }
 
 impl TileRow {
@@ -298,6 +305,7 @@ impl TileRow {
             put(t::GLOBE_FLAGS, &[u32::from(!globe.on_plane)]);
         }
         put(t::DRAPE_ZOOM, &[self.drape_zoom.to_bits()]);
+        put(t::NEIGHBOURS, &[u32::from(self.neighbours)]);
         words
     }
 }
@@ -772,6 +780,10 @@ pub struct NodeCull {
     /// circles): on a globe each draws as a grid of cells that follows the
     /// sphere (`types.wgsl`'s `SURFACE`).
     pub surface: bool,
+    /// Its meshes draw past their placements' clip rectangles: a whole
+    /// extrusion draws entire from the placement owning it
+    /// (`extrusion.wgsl`), so the cull keeps chunks by their own bounds.
+    pub unclipped: bool,
 }
 
 /// How a render node draws its visible chunks, which the cull pass
@@ -811,6 +823,7 @@ impl NodeCull {
             }
             | if self.visible { 0 } else { HIDDEN }
             | if self.surface { SURFACE } else { 0 }
+            | if self.unclipped { UNCLIPPED } else { 0 }
     }
 }
 
@@ -833,6 +846,9 @@ const HIDDEN: u32 = 1 << 9;
 /// The cull's flag on a node's draw word: its point quads lie on the
 /// surface (`cull.wgsl`'s `SURFACE`).
 const SURFACE: u32 = 1 << 10;
+/// The cull's flag on a node's draw word: its meshes draw past the clip
+/// rectangles (`cull.wgsl`'s `UNCLIPPED`).
+const UNCLIPPED: u32 = 1 << 11;
 
 #[derive(Debug)]
 pub(crate) struct Scene {

@@ -115,11 +115,23 @@ struct Split {
     groups: Vec<Vec<u32>>,
 }
 
+/// How [`split_features`] may split a feature into its parts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Parts {
+    /// Never: overscaled lines lay out whole features.
+    Keep,
+    /// Where the feature alone is larger than [`MESH_POINTS`].
+    Large,
+    /// Always, one piece a part: an extrusion draws each polygon whole
+    /// from the tile owning its centroid (`orb_tile::Layer::is_whole`).
+    Each,
+}
+
 /// Splits `features` of `layer` into groups for [`MESH_POINTS`]. Only the
 /// geometry decides it, so a job that sends only property rows splits as
 /// the layout did. A single part larger than the cap stays whole, and a
-/// feature larger than it stays whole unless `split_parts`.
-fn split_features(layer: &Layer, features: Vec<u32>, split_parts: bool) -> Split {
+/// feature larger than it as `parts` says.
+fn split_features(layer: &Layer, features: Vec<u32>, parts_split: Parts) -> Split {
     let part_points = |feature: u32| -> Vec<usize> {
         layer
             .geometry(feature as usize)
@@ -134,7 +146,12 @@ fn split_features(layer: &Layer, features: Vec<u32>, split_parts: bool) -> Split
         let mut start = 0;
         let mut total = 0;
         for (i, &n) in parts.iter().enumerate() {
-            if split_parts && i > start && total + n > MESH_POINTS {
+            let split = match parts_split {
+                Parts::Keep => false,
+                Parts::Large => total + n > MESH_POINTS,
+                Parts::Each => true,
+            };
+            if i > start && split {
                 pieces.push((feature, start..i, total));
                 start = i;
                 total = 0;
@@ -166,6 +183,7 @@ fn split_features(layer: &Layer, features: Vec<u32>, split_parts: bool) -> Split
     }
     let properties: Vec<_> = layer.properties().collect();
     let mut builder = LayerBuilder::new(layer.name(), layer.extent());
+    builder.clipped_like(layer);
     for (feature, parts, _) in &pieces {
         let feature = *feature as usize;
         builder.begin_feature(None, layer.geometry_type(feature));
@@ -648,15 +666,20 @@ pub(crate) fn build(
             .then(|| layer.overscaled_lines())
             .flatten();
         // Large layers draw as several meshes (see `split_features`);
-        // symbol nodes' rows follow their whole bucket, and overscaled
-        // lines lay out whole features.
+        // symbol nodes' rows follow their whole bucket, overscaled lines
+        // lay out whole features, and extrusions each polygon alone.
         let split = if node.family.is_symbol() {
             Split {
                 pieces: None,
                 groups: vec![selected],
             }
         } else {
-            split_features(layer, selected, overscaled.is_none())
+            let parts = match node.family {
+                Family::FillExtrusion => Parts::Each,
+                _ if overscaled.is_some() => Parts::Keep,
+                _ => Parts::Large,
+            };
+            split_features(layer, selected, parts)
         };
         let tile_layer = layer;
         let tile_promote = match &source_def.kind {
@@ -902,9 +925,6 @@ pub(crate) fn build(
             };
             let geometry = &mut build.hits[hit_layer].1;
             let mut hits = crate::query::MeshHits::new(hit_layer as u32);
-            // Unless its producer said, a scan of the layer's vertices:
-            // once per layer, not once per building.
-            let clip_buffer = (node.family == Family::FillExtrusion).then(|| layer.clip_buffer());
             // What a hit test reads of each feature's paint.
             let dimensions: &[_] = match style_layer.ty {
                 LayerType::Circle => &[orb_style::CIRCLE_RADIUS, orb_style::CIRCLE_STROKE_WIDTH],
@@ -945,16 +965,7 @@ pub(crate) fn build(
                         let offset = at(2);
                         [at(0) / 2.0, at(1), offset.abs(), offset]
                     }
-                    // Whether it's whole, as layout keeps it, for picking
-                    // to own it as drawing does.
-                    LayerType::FillExtrusion => [
-                        f32::from(u8::from(
-                            bend.is_none() && layer.is_whole(i, clip_buffer.unwrap_or_default()),
-                        )),
-                        0.0,
-                        at(0),
-                        at(1),
-                    ],
+                    LayerType::FillExtrusion => [0.0, 0.0, at(0), at(1)],
                     _ => [0.0; 4],
                 };
                 let parts = kind != crate::query::LABEL;
@@ -1145,9 +1156,10 @@ mod tests {
     }
 
     /// OpenFreeMap merges a dense z14 tile's buildings into a few
-    /// multipolygons (lower Manhattan: one of 36,347 points). A feature
-    /// over the cap splits by its parts into pieces that keep its
-    /// properties and id; picking still names the tile's feature.
+    /// multipolygons (lower Manhattan: one of 36,347 points). An
+    /// extrusion's feature splits into its polygons, which keep its
+    /// properties and id, and those into meshes under the cap; picking
+    /// still names the tile's feature.
     #[test]
     fn merged_buildings_split_by_parts() {
         let plan = plan(
@@ -1205,13 +1217,14 @@ mod tests {
         assert_eq!(picked[0], [(0, Some("7".to_string()), 3600)]);
         assert!(picked[1..picked.len() - 1].iter().all(Vec::is_empty));
         assert_eq!(picked.last().unwrap(), &[(1, Some("8".to_string()), 1)]);
-        // A property row a piece.
+        // A property row a polygon: each is whole, or not, alone, with
+        // its own centroid (`orb_tile::Layer::is_whole`).
         let rows: usize = result
             .meshes
             .iter()
             .map(|m| m.props.len() / m.row_words as usize)
             .sum();
-        assert_eq!(rows, expected.len() + 1);
+        assert_eq!(rows, 3601);
     }
 
     /// A mesh's hits, pointed at its build's geometry.

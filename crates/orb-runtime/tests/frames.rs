@@ -608,7 +608,9 @@ mod tests {
             assert_eq!(report.frame.dispatches, 1);
             assert!(!report.frame.bundle_recorded);
             assert_eq!(report.frame.paints_written, 0);
-            assert!(report.frame.placements_written < report.tiles_drawn);
+            // Only placements: a tile's rows are written again where it
+            // or the tiles drawn around it changed (`TileRow::neighbours`).
+            assert!(report.frame.placements_written <= report.tiles_drawn);
             assert!(report.tiles_drawn > 0);
         }
         // Switching 1×/4× rebuilds dependent targets and bundles once; the

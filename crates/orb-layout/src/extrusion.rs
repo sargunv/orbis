@@ -1,9 +1,11 @@
 //! Flat extrusions, following GL JS's pinned `fill_extrusion_bucket.ts`.
 //! Four words: i16 position, feature slot, i16 normal.xy (scale 16384,
 //! bottom/top in x's low bit), then i16 normal.z and u16 edge distance.
-//! Roofs reuse fill triangulation. A building whole in the tile's data (no
-//! edge on the source's buffer clip) keeps its roof and walls past the tile
-//! square: the one placement holding its centroid draws it all (`whole`).
+//! Roofs reuse fill triangulation. A building whole in the tile's data, one
+//! polygon with no edge on the source's buffer clip that the tile owning
+//! its centroid keeps whole too ([`Layer::is_whole`]), keeps its roof and
+//! walls past the tile square: the placement holding its centroid draws it
+//! all (`whole`).
 //! A building the source cut at its buffer is clipped to the square, roof
 //! and walls; walls clip original segments independently, so clipping never
 //! introduces a wall across the tile square.
@@ -109,10 +111,11 @@ pub fn centroid(layer: &Layer, feature: u32, output_extent: u32) -> [i16; 2] {
     [clamp(mean(x)), clamp(mean(y))]
 }
 
-/// Which of `features` are whole in `layer`'s data ([`Layer::is_whole`])
-/// and can be drawn entire by the tile owning their centroid, where its
-/// placement maps past the square: none for a tile `bent` onto a curved
-/// surface, whose patches end there.
+/// Which of `features` are whole in `layer`'s data ([`Layer::is_whole`]:
+/// one polygon each, the tile owning its centroid keeping it whole too)
+/// and can be drawn entire by that tile, where its placement maps past
+/// the square: none for a tile `bent` onto a curved surface, whose
+/// patches end there.
 pub fn whole(layer: &Layer, features: &[u32], bent: bool) -> Vec<bool> {
     let buffer = layer.clip_buffer();
     (features.iter())

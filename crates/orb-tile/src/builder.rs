@@ -24,6 +24,7 @@ pub struct LayerBuilder {
     keys: HashMap<String, usize>,
     columns: Vec<(String, Vec<(u32, Value)>)>,
     clip: Option<i32>,
+    whole_reach: Option<i32>,
 }
 
 impl LayerBuilder {
@@ -40,6 +41,7 @@ impl LayerBuilder {
             keys: HashMap::new(),
             columns: Vec::new(),
             clip: None,
+            whole_reach: None,
         }
     }
 
@@ -123,6 +125,21 @@ impl LayerBuilder {
         self
     }
 
+    /// Polygons keep whole as far past the square as in an overzoom
+    /// slice: `reach` ([`Layer::whole_reach`]).
+    pub(crate) fn whole_within(&mut self, reach: i32) -> &mut Self {
+        self.whole_reach = Some(reach);
+        self
+    }
+
+    /// Clipped as `layer` was, and keeping polygons whole as far past the
+    /// square: for a layer of `layer`'s features or their parts.
+    pub fn clipped_like(&mut self, layer: &Layer) -> &mut Self {
+        self.clip = Some(layer.clip_buffer());
+        self.whole_reach = layer.whole_reach;
+        self
+    }
+
     pub fn finish(mut self) -> Layer {
         let len = self.types.len();
         self.feature_parts.push(len_u32(self.part_rings.len()));
@@ -147,6 +164,7 @@ impl LayerBuilder {
             vertices: self.vertices,
             properties,
             clip: self.clip,
+            whole_reach: self.whole_reach,
             labels: None,
             data_features: None,
         }

@@ -191,6 +191,7 @@ fn full_view_tile(offset_x: f32) -> TileRow {
         target: PlacementTarget::Map,
         warp: orb_render::TileWarp::NONE,
         globe: None,
+        neighbours: 0,
     }
 }
 

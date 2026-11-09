@@ -389,6 +389,7 @@ impl Map {
             }
         }
         let period = self.surface.period();
+        let whole = whole_draws(tms, &draws);
         let placed = &mut style.placed[index];
         // Labels past a Web Mercator tile go on exactly on a globe.
         let on_mercator = view.globe().is_some() && *tms.projection() == mercator_projection();
@@ -455,12 +456,14 @@ impl Map {
                     tile_zoom: resident.zoom,
                 };
                 let map_rows = |draw: &Draw| -> Vec<TileRow> {
+                    let neighbours = neighbours(tms, draw, &whole, period != 0.0);
                     placements(tms, draw, at)
                         .map(|mut row| {
                             if let Some((dem, range)) = ground {
                                 row.dem = dem;
                                 row.terrain_range = range;
                             }
+                            row.neighbours = neighbours;
                             row
                         })
                         .collect()
@@ -1098,8 +1101,63 @@ pub(crate) fn placements<'a>(
                 origin: origin.to_array(),
                 on_plane,
             }),
+            neighbours: 0,
         }
     })
+}
+
+/// The draws among `draws` placed alone over their tile's whole square:
+/// each draws entire the whole polygons whose centroid it holds.
+fn whole_draws(tms: &TileMatrixSet, draws: &[Draw]) -> HashSet<(TileIndex, i32)> {
+    // Within rounding of its bounds: not a tile of a partial matrix that
+    // reaches past its set's extent.
+    let full = |tile| {
+        let (area, own) = (tms.tile_area(tile), tms.tile_bounds(tile));
+        let off = (area.min - own.min).abs().max((area.max - own.max).abs());
+        off.max_element() <= own.size().x * 1e-9
+    };
+    (draws.iter())
+        .filter(|d| d.regions == [d.tile] && full(d.tile))
+        .map(|d| (d.tile, d.wrap))
+        .collect()
+}
+
+/// [`TileRow::neighbours`] of `draw`: which tiles around its own, at its
+/// zoom, are among `whole` ([`whole_draws`]), across the antimeridian
+/// into the next world copy where the surface wraps. A building whole in
+/// a tile is whole in the tile at its zoom holding its centroid too
+/// (`orb_tile::Layer::is_whole`), but that tile may be drawn at another
+/// zoom, or not at all: then the tile draws its part itself.
+fn neighbours(
+    tms: &TileMatrixSet,
+    draw: &Draw,
+    whole: &HashSet<(TileIndex, i32)>,
+    wraps: bool,
+) -> u16 {
+    let TileIndex { z, col, row } = draw.tile;
+    let (cols, rows) = tms.matrix_size(z);
+    let (cols, rows) = (i64::from(cols), i64::from(rows));
+    let mut bits = 0;
+    for dy in -1..=1i64 {
+        for dx in -1..=1i64 {
+            let (mut c, r, mut wrap) = (i64::from(col) + dx, i64::from(row) + dy, draw.wrap);
+            if (dx, dy) == (0, 0) || !(0..rows).contains(&r) {
+                continue;
+            }
+            if !(0..cols).contains(&c) {
+                if !wraps {
+                    continue;
+                }
+                wrap += c.div_euclid(cols) as i32;
+                c = c.rem_euclid(cols);
+            }
+            let tile = TileIndex::new(z, c as u32, r as u32);
+            if whole.contains(&(tile, wrap)) {
+                bits |= 1 << (3 * (dy + 1) + dx + 1);
+            }
+        }
+    }
+    bits
 }
 
 /// Web Mercator, which a globe's sphere wraps.
@@ -1175,6 +1233,46 @@ mod tests {
         }
         assert_eq!(rows[0].origin, rows[1].origin);
         assert_eq!(rows[0].scale, rows[1].scale);
+    }
+
+    /// A tile leaves a whole building to the tile around it holding its
+    /// centroid only where that tile is drawn alone over its square at the
+    /// same zoom (#143): not where a deeper tile, an ancestor standing in
+    /// with regions, or nothing is drawn there. Across the antimeridian the
+    /// neighbour is the next world copy's.
+    #[test]
+    fn whole_buildings_are_left_only_to_neighbours_drawn_whole() {
+        let tms = TileMatrixSet::by_id("WebMercatorQuad").unwrap();
+        let draw = |z, col, row, wrap| Draw {
+            tile: TileIndex::new(z, col, row),
+            wrap,
+            regions: vec![TileIndex::new(z, col, row)],
+        };
+        let draws = [
+            // The tile, its neighbours east and south-west.
+            draw(3, 4, 4, 0),
+            draw(3, 5, 4, 0),
+            draw(3, 3, 5, 0),
+            // North of it, deeper tiles.
+            draw(4, 8, 6, 0),
+            draw(4, 9, 6, 0),
+            // West, an ancestor's region.
+            Draw {
+                regions: vec![TileIndex::new(3, 3, 4)],
+                ..draw(2, 1, 2, 0)
+            },
+            // At the world's west edge, and the copy west of it.
+            draw(3, 0, 1, 0),
+            draw(3, 7, 1, -1),
+            draw(3, 7, 2, 0),
+        ];
+        let whole = whole_draws(&tms, &draws);
+        let bits = |d: &Draw| neighbours(&tms, d, &whole, true);
+        // East (dx 1, dy 0) is bit 5, south-west (dx -1, dy 1) bit 6.
+        assert_eq!(bits(&draws[0]), 1 << 5 | 1 << 6);
+        // West (bit 3) is the copy west of it; south-west (bit 6) isn't.
+        assert_eq!(bits(&draws[6]), 1 << 3);
+        assert_eq!(neighbours(&tms, &draws[6], &whole, false), 0);
     }
 
     #[test]

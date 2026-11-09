@@ -11,11 +11,13 @@
 //! line-label anchors start where GL JS's do, and the pieces outside only
 //! carry the stroke on across the edge.
 //!
-//! A polygon whole in the source tile (`Layer::is_whole`) stays whole in a
-//! child its bounds meet, unclipped, while it reaches no further than one
-//! child past it: a building crossing the child's edge is then drawn once,
-//! entire, by the child owning its centroid, not clipped by every child
-//! per fragment, which turns off the GPU's hidden-surface removal.
+//! A polygon whole in the source tile stays whole in a child its bounds
+//! meet, unclipped, while it reaches no further than one child past it and
+//! past the child holding its centroid (`slice_feature`): a building
+//! crossing the child's edge is then drawn once, entire, by the child
+//! owning its centroid, not clipped by every child per fragment, which
+//! turns off the GPU's hidden-surface removal. Each polygon of a
+//! multipolygon decides alone.
 //!
 //! GL JS slices only so far below a source's last tile, then lays deeper
 //! tiles out from that slice, overscaled. A slice deeper than where its
@@ -196,7 +198,7 @@ impl Layer {
             return Cow::Borrowed(self);
         }
         let mut builder = LayerBuilder::new(self.name(), self.extent());
-        builder.clipped_at(b);
+        builder.clipped_like(self);
         for f in 0..self.len() {
             copy_feature(&mut builder, self, f, |r| !lines(f) || inside(r));
         }
@@ -277,7 +279,7 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
         * 8192.0
         / f64::from(layer.extent());
     let mut builder = LayerBuilder::new(layer.name(), 8192);
-    builder.clipped_at(buffer.round() as i32);
+    builder.clipped_at(buffer.round() as i32).whole_within(8192);
     let source_buffer = layer.clip_buffer();
     let place = |p: &[i32; 2]| {
         [
@@ -285,10 +287,17 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
             f64::from(p[1]) * scale - offset[1],
         ]
     };
+    // The data tile's square in the slice's units, and how far past it
+    // the source clipped.
+    let data = Data {
+        min: [-offset[0], -offset[1]],
+        size: 2f64.powi(i32::from(depth)) * 8192.0,
+        buffer: f64::from(source_buffer) * scale,
+    };
     let mut kept = Vec::new();
     for feature in 0..layer.len() {
         let kind = layer.geometry_type(feature);
-        let parts = slice_feature(layer, feature, source_buffer, buffer, place);
+        let parts = slice_feature(layer, feature, (source_buffer, &data), buffer, place);
         if parts.is_empty() {
             continue;
         }
@@ -306,14 +315,8 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
             builder.begin_part();
             for ring in part {
                 builder.begin_ring();
-                let end = ring.len()
-                    - usize::from(
-                        kind == GeometryType::Polygon
-                            && ring.len() > 1
-                            && ring.first() == ring.last(),
-                    );
-                for point in &ring[..end] {
-                    builder.push_vertex(point.map(|v| (v + 0.5).floor() as i32));
+                for point in ring {
+                    builder.push_vertex(point);
                 }
             }
         }
@@ -323,38 +326,36 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
     sliced
 }
 
+/// A slice's data tile, in the slice's units: its square and its source's
+/// clip buffer.
+struct Data {
+    min: [f64; 2],
+    size: f64,
+    buffer: f64,
+}
+
 /// A feature's parts in a slice `buffer` past the square, placed by
-/// `place`; none when nothing of it is left.
+/// `place` and rounded to the slice's grid; none when nothing of it is
+/// left.
+///
+/// A polygon whole in its data tile (no edge on the source's clip line,
+/// `source_buffer`) stays unclipped while every slice at this depth that
+/// holds it would keep it so too, as [`Layer::is_whole`] decides for one:
+/// it reaches no further than one slice past this slice and past the slice
+/// holding its centroid, and that slice's data tile, when another, holds
+/// it whole as well. The slice holding its centroid then draws it whole,
+/// and every other leaves it to that one. Each polygon of a feature
+/// decides alone.
 fn slice_feature(
     layer: &Layer,
     feature: usize,
-    source_buffer: i32,
+    (source_buffer, data): (i32, &Data),
     buffer: f64,
     place: impl Fn(&[i32; 2]) -> Point,
-) -> Vec<Vec<Vec<Point>>> {
+) -> Vec<Vec<Vec<[i32; 2]>>> {
     let kind = layer.geometry_type(feature);
-    let whole = (kind == GeometryType::Polygon && layer.is_whole(feature, source_buffer))
-        .then(|| {
-            let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
-            for part in layer.geometry(feature).parts() {
-                for p in part.rings().flatten() {
-                    let p = place(p);
-                    lo = [lo[0].min(p[0]), lo[1].min(p[1])];
-                    hi = [hi[0].max(p[0]), hi[1].max(p[1])];
-                }
-            }
-            (lo, hi)
-        })
-        .filter(|&(lo, hi)| {
-            lo.iter()
-                .chain(&hi)
-                .all(|v| (-8192.0..=16384.0).contains(v))
-        });
-    if let Some((lo, hi)) = whole
-        && (lo.iter().any(|&v| v > 8192.0 + buffer) || hi.iter().any(|&v| v < -buffer))
-    {
-        return Vec::new();
-    }
+    let extent = layer.extent() as i32;
+    let round = |p: &Point| p.map(|v| (v + 0.5).floor() as i32);
     let reach = if kind == GeometryType::LineString {
         8192.0
     } else {
@@ -362,6 +363,36 @@ fn slice_feature(
     };
     let mut parts = Vec::new();
     for part in layer.geometry(feature).parts() {
+        if kind == GeometryType::Polygon && !crate::part_cut(&part, source_buffer, extent) {
+            let rings: Vec<Vec<[i32; 2]>> = part
+                .rings()
+                .map(|ring| {
+                    let mut ring: Vec<[i32; 2]> = ring.iter().map(|p| round(&place(p))).collect();
+                    if ring.len() > 1 && ring.first() == ring.last() {
+                        ring.pop();
+                    }
+                    ring
+                })
+                .collect();
+            let owner = crate::owner_keeps(rings.iter().map(Vec::as_slice), 8192, 8192);
+            if let Some(owner) = owner
+                && in_owner_data(&rings, owner, data)
+            {
+                let outside = |p: &[i32; 2]| {
+                    let b = buffer.round() as i32;
+                    [p[0] < -b, p[0] > 8192 + b, p[1] < -b, p[1] > 8192 + b]
+                };
+                // Kept where its bounds meet the buffer's square.
+                let away = (rings.iter().flatten())
+                    .map(outside)
+                    .reduce(|a, b| std::array::from_fn(|i| a[i] && b[i]))
+                    .is_some_and(|a| a.iter().any(|&o| o));
+                if !away {
+                    parts.push(rings);
+                }
+                continue;
+            }
+        }
         let mut rings = Vec::new();
         for ring in part.rings() {
             let mut points: Vec<Point> = ring.iter().map(&place).collect();
@@ -369,21 +400,53 @@ fn slice_feature(
                 points.push(points[0]);
             }
             let mut geometry = vec![points];
-            for axis in (0..2).filter(|_| whole.is_none()) {
+            for axis in 0..2 {
                 geometry = clip(geometry, kind, -reach, 8192.0 + reach, axis);
             }
-            if kind == GeometryType::LineString {
+            let pieces = if kind == GeometryType::LineString {
                 let (lo, hi) = (-buffer, 8192.0 + buffer);
-                rings.extend(geometry.into_iter().flat_map(|l| split(&l, lo, hi)));
+                geometry
+                    .into_iter()
+                    .flat_map(|l| split(&l, lo, hi))
+                    .collect()
             } else {
-                rings.extend(geometry);
-            }
+                geometry
+            };
+            rings.extend(pieces.into_iter().map(|ring| {
+                let end = ring.len()
+                    - usize::from(
+                        kind == GeometryType::Polygon
+                            && ring.len() > 1
+                            && ring.first() == ring.last(),
+                    );
+                ring[..end].iter().map(round).collect::<Vec<_>>()
+            }));
         }
         if !rings.is_empty() {
             parts.push(rings);
         }
     }
     parts
+}
+
+/// Whether the data tile of the slice holding a polygon's centroid
+/// (`owner`, relative to this slice) holds `rings` whole: this slice's own
+/// does, and a neighbour's does where they reach no further past it than
+/// the source clipped.
+fn in_owner_data(rings: &[Vec<[i32; 2]>], owner: [i64; 2], data: &Data) -> bool {
+    // The owner's data tile, relative to this slice's.
+    let tile =
+        [0, 1].map(|a| (((owner[a] as f64 + 0.5) * 8192.0 - data.min[a]) / data.size).floor());
+    if tile == [0.0; 2] {
+        return true;
+    }
+    rings.iter().flatten().all(|p| {
+        (0..2).all(|a| {
+            let lo = data.min[a] + tile[a] * data.size - data.buffer;
+            let hi = data.min[a] + (tile[a] + 1.0) * data.size + data.buffer;
+            (lo..=hi).contains(&f64::from(p[a]))
+        })
+    })
 }
 
 /// Splits a line where it crosses the square `lo..=hi`, at points shared
@@ -541,6 +604,122 @@ mod tests {
             l.property("class").unwrap().get(0),
             Some(ValueRef::Str("primary"))
         );
+    }
+
+    /// Buildings larger than a slice, at z15, z16 and z19 below a z14 data
+    /// tile (#143): every slice whose square a building meets draws its
+    /// part there, itself (cut, or whole and owning its centroid) or by
+    /// leaving it to the slice beside it holding the centroid, which keeps
+    /// it whole too. Layout splits a multipolygon into its polygons.
+    fn bounds(points: &[[i32; 2]]) -> ([i32; 2], [i32; 2]) {
+        (points.iter()).fold(([i32::MAX; 2], [i32::MIN; 2]), |(lo, hi), p| {
+            (
+                [0, 1].map(|a| lo[a].min(p[a])),
+                [0, 1].map(|a| hi[a].max(p[a])),
+            )
+        })
+    }
+
+    #[test]
+    fn every_slice_a_building_meets_draws_its_part() {
+        let rect =
+            |x0: i32, y0: i32, x1: i32, y1: i32| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        // A long slab across slices at every depth.
+        let slab = vec![rect(1000, 1900, 3100, 2100)];
+        // A building whose vertices crowd its east end, which pulls its
+        // centroid into a slice that would cut it.
+        let mut crowded = rect(900, 2600, 2200, 2700);
+        crowded.splice(2..2, (1..20).map(|i| [2200, 2600 + 5 * i]));
+        // A block's buildings merged into one multipolygon, as
+        // OpenMapTiles merges them: no slice holds every part.
+        let block = vec![
+            rect(1950, 3000, 2150, 3100),
+            rect(3000, 3000, 3200, 3150),
+            rect(400, 3000, 500, 3100),
+            rect(60, 3300, 3900, 3400),
+        ];
+        let mut b = LayerBuilder::new("building", 4096);
+        b.clipped_at(64);
+        let buildings = [slab, vec![crowded], block];
+        for parts in &buildings {
+            b.begin_feature(None, GeometryType::Polygon);
+            for ring in parts {
+                b.begin_part();
+                b.begin_ring();
+                ring.iter().for_each(|&p| b.push_vertex(p));
+            }
+        }
+        let source = Arc::new(TileFrame {
+            layers: vec![b.finish()],
+        });
+        for depth in [1u8, 2, 5] {
+            let n = 1u32 << depth;
+            let cell = 4096 / n as i32;
+            let slices: Vec<Vec<Layer>> = (0..n)
+                .map(|row| {
+                    (0..n)
+                        .map(|col| source.overzoom(depth, col, row, 0).layers.remove(0))
+                        .collect()
+                })
+                .collect();
+            // How slice `(col, row)` draws polygon `part` of `feature`:
+            // `None` without it, else whether whole and its centroid's
+            // slice, relative to this one.
+            let drawn = |col: i64, row: i64, feature: usize, part: &[[i32; 2]]| {
+                let layer = slices.get(row as usize)?.get(col as usize)?;
+                let f = (0..layer.len()).find(|&f| layer.data_feature(f) as usize == feature)?;
+                // The slice's piece of `part`: within its bounds, in data
+                // units.
+                let (lo, hi) = bounds(part);
+                let piece = layer.geometry(f).parts().find(|p| {
+                    p.rings().flatten().all(|v| {
+                        (0..2).all(|a| {
+                            let o = [col, row][a] as i32 * cell;
+                            let d = o + v[a] * cell / 8192;
+                            (lo[a] - 1..=hi[a] + 1).contains(&d)
+                        })
+                    })
+                })?;
+                let mut one = LayerBuilder::new("building", 8192);
+                one.clipped_like(layer);
+                one.begin_feature(None, GeometryType::Polygon);
+                one.begin_part();
+                for ring in piece.rings() {
+                    one.begin_ring();
+                    ring.iter().for_each(|&p| one.push_vertex(p));
+                }
+                let one = one.finish();
+                let whole = one.is_whole(0, one.clip_buffer());
+                let owner = crate::owner_keeps(piece.rings(), 8192, i32::MAX / 4);
+                Some((whole, owner.expect("a polygon")))
+            };
+            for (feature, parts) in buildings.iter().enumerate() {
+                for part in parts {
+                    let (lo, hi) = bounds(part);
+                    for row in lo[1] / cell..=(hi[1] - 1) / cell {
+                        for col in lo[0] / cell..=(hi[0] - 1) / cell {
+                            let (col, row) = (i64::from(col), i64::from(row));
+                            let at = format!(
+                                "z{} slice {col},{row}, feature {feature} {part:?}",
+                                14 + depth
+                            );
+                            let (whole, owner) = drawn(col, row, feature, part)
+                                .unwrap_or_else(|| panic!("{at}: dropped"));
+                            if !whole || owner == [0, 0] {
+                                continue;
+                            }
+                            let (c, r) = (col + owner[0], row + owner[1]);
+                            let there = drawn(c, r, feature, part);
+                            assert_eq!(
+                                there,
+                                Some((true, [0, 0])),
+                                "{at}: left to slice {c},{r}, which doesn't draw it whole"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

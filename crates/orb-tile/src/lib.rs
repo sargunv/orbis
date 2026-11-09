@@ -32,6 +32,54 @@ pub use subdivide::grid_crossings;
 #[cfg(test)]
 mod tests;
 
+/// Whether an edge of polygon `part` lies on the line its source clipped
+/// along, `buffer` past the square of `extent` (none when `buffer` is 0).
+pub(crate) fn part_cut(part: &Part<'_>, buffer: i32, extent: i32) -> bool {
+    let (lo, hi) = (-buffer, extent + buffer);
+    let cut = |a: [i32; 2], b: [i32; 2]| {
+        buffer > 0 && (0..2).any(|axis| a[axis] == b[axis] && (a[axis] == lo || a[axis] == hi))
+    };
+    part.rings().any(|ring| {
+        let n = ring.len();
+        (0..n).any(|i| cut(ring[i], ring[(i + 1) % n]))
+    })
+}
+
+/// The tile, relative to this one, holding a polygon's centroid as layout
+/// takes it (`orb_layout::extrusion::centroid`: the mean of its rings'
+/// vertices, a closed ring's repeated last one left out), when its rings
+/// lie within `reach` of that tile's square and of this one's, and so are
+/// whole in both. Tiles of `extent` units.
+pub(crate) fn owner_keeps<'r>(
+    rings: impl Iterator<Item = &'r [[i32; 2]]>,
+    extent: i32,
+    reach: i32,
+) -> Option<[i64; 2]> {
+    let (mut sum, mut n) = ([0i64; 2], 0i64);
+    let (mut lo, mut hi) = ([i32::MAX; 2], [i32::MIN; 2]);
+    for ring in rings {
+        let closed = ring.len() > 1 && ring[0] == ring[ring.len() - 1];
+        for p in &ring[..ring.len() - usize::from(closed)] {
+            sum = [sum[0] + i64::from(p[0]), sum[1] + i64::from(p[1])];
+            lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+            hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return None;
+    }
+    let (extent, reach) = (i64::from(extent), i64::from(reach));
+    let owner = sum.map(|s| s.div_euclid(n * extent));
+    let within = |tile: [i64; 2]| {
+        (0..2).all(|a| {
+            i64::from(lo[a]) >= tile[a] * extent - reach
+                && i64::from(hi[a]) <= (tile[a] + 1) * extent + reach
+        })
+    };
+    (within([0, 0]) && within(owner)).then_some(owner)
+}
+
 /// A decoded vector tile.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TileFrame {
@@ -69,6 +117,10 @@ pub struct Layer {
     /// units, when known (GeoJSON tiling, overzoom slices; an overzoom
     /// slice keeps its lines further).
     clip: Option<i32>,
+    /// How far past the square a polygon may reach and still be drawn
+    /// whole ([`Layer::is_whole`]), when it isn't the clip buffer: an
+    /// overzoom slice keeps polygons unclipped to one slice past it.
+    whole_reach: Option<i32>,
     /// What an overzoom slice lays its labels out from, when that is an
     /// ancestor's slice ([`Layer::labelled`]).
     labels: Option<Box<overzoom::Labels>>,
@@ -95,21 +147,33 @@ impl Layer {
         })
     }
 
-    /// Whether polygon `feature` is whole in this tile's data: none of its
-    /// edges lies on the line the source clipped along, `buffer` past the
-    /// square ([`clip_buffer`](Self::clip_buffer), which callers take once).
-    /// A whole building can be drawn entire by the tile owning its centroid.
+    /// How far past the square a polygon may reach and still be drawn
+    /// whole: one slice for an overzoom slice, else the clip buffer
+    /// `buffer` ([`clip_buffer`](Self::clip_buffer)).
+    pub fn whole_reach(&self, buffer: i32) -> i32 {
+        self.whole_reach.unwrap_or(buffer)
+    }
+
+    /// Whether `feature` is one polygon drawn whole, entire past the
+    /// square, by the one tile at this zoom that holds its centroid, with
+    /// `buffer` the layer's [`clip_buffer`](Self::clip_buffer), which
+    /// callers take once. It is whole when no edge of it lies on the line
+    /// the source clipped along and the tile owning its centroid keeps it
+    /// whole too: it reaches no further past that tile than
+    /// [`whole_reach`](Self::whole_reach). Every tile of the zoom holding
+    /// the polygon decides alike, so a tile that leaves it to its owner
+    /// knows the owner draws it. A feature of several polygons never is:
+    /// a tile holds only the parts its buffer meets, so tiles would place
+    /// its centroid apart; layout splits it into its polygons first.
     pub fn is_whole(&self, feature: usize, buffer: i32) -> bool {
-        let (lo, hi) = (-buffer, self.extent as i32 + buffer);
-        let cut = |a: [i32; 2], b: [i32; 2]| {
-            buffer > 0 && (0..2).any(|axis| a[axis] == b[axis] && (a[axis] == lo || a[axis] == hi))
-        };
-        self.geometry(feature).parts().all(|part| {
-            part.rings().all(|ring| {
-                let n = ring.len();
-                (0..n).all(|i| !cut(ring[i], ring[(i + 1) % n]))
-            })
-        })
+        let geometry = self.geometry(feature);
+        if self.types[feature] != GeometryType::Polygon || geometry.parts().len() != 1 {
+            return false;
+        }
+        let part = geometry.parts().next().expect("one part");
+        let extent = self.extent as i32;
+        !part_cut(&part, buffer, extent)
+            && owner_keeps(part.rings(), extent, self.whole_reach(buffer)).is_some()
     }
 
     pub fn name(&self) -> &str {

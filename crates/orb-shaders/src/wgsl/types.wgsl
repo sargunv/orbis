@@ -146,6 +146,9 @@ struct Tile {
     // A drape placement's style zoom, which the drape pass of that zoom
     // draws (its frame's `zoom`); 0 for map placements.
     drape_zoom: f32,
+    // The tiles around it at its zoom that draw whole the polygons they
+    // own, bit 3 (dy + 1) + dx + 1 (`TileRow::neighbours`).
+    neighbours: u32,
 };
 
 
@@ -205,6 +208,9 @@ const HIDDEN: u32 = 512u;
 // kernels, map-aligned circles), so on a globe each is a grid of cells
 // whose vertices go onto the sphere one by one.
 const SURFACE: u32 = 1024u;
+// A node's draw word flag: its meshes draw past their placements' clip
+// rectangles (whole extrusions), so the cull keeps chunks by their bounds.
+const UNCLIPPED: u32 = 2048u;
 // A surface quad's cells per side on a globe. A single quad is a chord: its
 // middle sinks below the sphere, and seen from the eye a wide kernel's peak
 // slides toward the view's centre (a 60 px heatmap kernel at zoom 1, 30°

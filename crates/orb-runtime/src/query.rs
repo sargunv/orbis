@@ -336,8 +336,7 @@ impl MeshHits {
     /// a label's feature, which labels pick from placement), with the
     /// node's `[radius, stroke, height, base]` of it: a circle's radius
     /// and stroke width; half a line's width, its gap width, and its
-    /// offset's size and offset; whether an extrusion is whole (1 or 0),
-    /// its height and base.
+    /// offset's size and offset; an extrusion's height and base.
     pub(crate) fn push(
         &mut self,
         geometry: &HitGeometry,
@@ -1024,7 +1023,6 @@ impl Query<'_> {
                     live(offset, zoom, state, at.offset.unwrap_or(f.base)),
                 )
             }
-            // Its radius slot says whether it's whole.
             HitPaint::Extrusion { .. } => (0.0, 0.0),
             _ => (f.radius, 0.0),
         };
@@ -1222,15 +1220,14 @@ impl Scene<'_> {
                     _ => None,
                 };
                 let (radius, offset, elevation) = q.feature(layer, &at, &f, state);
-                // A whole building is drawn entire by the one tile whose
-                // regions hold its centroid, and picks as it draws.
-                let whole = matches!(layer.paint, HitPaint::Extrusion { .. }) && f.radius == 1.0;
-                if whole && !owns(&f, mapping, copy, self.period) {
-                    return None;
-                }
+                // A building answers from every drawn copy holding it,
+                // clipped to the copy's regions, as GL JS's tiles answer:
+                // the copies' pieces make up what's drawn, whether a copy
+                // draws it whole or clipped (the extrusion shader's
+                // `extrusion_drawn`).
                 let screen = ScreenHit::project(
                     &f,
-                    layer.source_layer.is_some() && !whole,
+                    layer.source_layer.is_some(),
                     mapping,
                     copy,
                     q,
@@ -1849,36 +1846,6 @@ fn plane_depth(p: Vec2, face: &[Vec2], depth: &[f64]) -> f64 {
         }
     }
     f64::INFINITY
-}
-
-/// Whether a drawn copy's regions hold a feature's centroid, as layout
-/// takes it (`orb_layout::extrusion::centroid`, in 8192 units a tile) and
-/// the extrusion shader tests it: half open, x from the left and y from
-/// the top.
-fn owns(f: &FeatureRef<'_>, mapping: &TileMapping, copy: &DrawnCopy, period: f64) -> bool {
-    let (mut sum, mut n) = ([0i64; 2], 0i64);
-    for ring in f.parts().unwrap_or_default().into_iter().flatten() {
-        let points = ring.as_chunks::<2>().0;
-        let closed = points.len() > 1 && points.first() == points.last();
-        for p in &points[..points.len() - usize::from(closed)] {
-            let [x, y] = point(p);
-            sum = [sum[0] + i64::from(x), sum[1] + i64::from(y)];
-            n += 1;
-        }
-    }
-    if n == 0 {
-        return false;
-    }
-    let scale = 8192.0 / f64::from(f.extent);
-    let mean = |s: i64| ((s as f64 / n as f64) * scale).floor();
-    let centroid = mapping.mapper(8192)(DVec2::new(mean(sum[0]), mean(sum[1])))
-        + DVec2::new(f64::from(copy.wrap) * period, 0.0);
-    copy.clips.iter().any(|corners| {
-        let lo = corners.iter().fold(DVec2::INFINITY, |a, &c| a.min(c));
-        let hi = corners.iter().fold(DVec2::NEG_INFINITY, |a, &c| a.max(c));
-        // World y runs up: a tile's top edge is its regions' highest.
-        (lo.x..hi.x).contains(&centroid.x) && centroid.y > lo.y && centroid.y <= hi.y
-    })
 }
 
 /// A tile's rank among a layer's features, highest first: GL JS answers a

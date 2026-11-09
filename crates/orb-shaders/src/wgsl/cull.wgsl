@@ -60,7 +60,7 @@ fn outside_planes(p: vec4<f32>, margin: vec2<f32>) -> u32 {
 }
 
 // Whether any of the candidate's chunk can draw: its bounds, inside the
-// tile's clip rectangles, standing on the ground and raised by
+// tile's clip rectangles (unless its meshes draw past them), standing on the ground and raised by
 // `elevation`, not wholly outside one plane of the view volume.
 //
 // No function-scope arrays: this is inlined once per cull mode, and two
@@ -68,7 +68,7 @@ fn outside_planes(p: vec4<f32>, margin: vec2<f32>) -> u32 {
 // corners, the tile's copied clip rectangles) miscompiled on an Adreno 830
 // (Chrome 156, Vulkan): the dispatch wrote nothing or lost the device.
 // A test in orb-shaders keeps the cull shader free of them.
-fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation: f32, draped: bool) -> bool {
+fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation: f32, draped: bool, unclipped_meshes: bool) -> bool {
     let point_instances = draw == DRAW_POINTS;
     let chunk = chunks[candidate.chunk];
     let tile = tiles[candidate.tile];
@@ -81,11 +81,12 @@ fn candidate_visible(candidate: Candidate, margin_px: f32, draw: u32, elevation:
     // per fragment in their own units.
     var clip_lo = vec2<f32>(1e9);
     var clip_hi = vec2<f32>(-1e9);
-    if draw == DRAW_IMAGES {
+    let unclipped = draw == DRAW_IMAGES || unclipped_meshes;
+    if unclipped {
         clip_lo = lo;
         clip_hi = hi;
     }
-    for (var i = 0u; i < 4u && draw != DRAW_IMAGES; i++) {
+    for (var i = 0u; i < 4u && !unclipped; i++) {
         let clip = tiles[candidate.tile].clips[i];
         let c_lo = max(lo, unpack_i16x2(clip.x));
         let c_hi = min(hi, unpack_i16x2(clip.y));
@@ -179,7 +180,7 @@ fn cull_listed(index: u32, lane: u32, node: NodeCull, draw: u32) {
         var candidate: Candidate;
         if i < count {
             candidate = candidates[node.visible_base + i];
-            keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, draw, node.elevation, (node.draw & DRAPED) != 0u));
+            keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, draw, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
         }
         // Inclusive Hillis–Steele scan of `keep` across the workgroup.
         scan[lane] = keep;
@@ -226,7 +227,7 @@ fn cull_indexed(index: u32, batch: u32, lane: u32, node: NodeCull) {
     let i = start + lane;
     if lane < INDEXED_BATCH && i < count {
         let candidate = candidates[node.visible_base + i];
-        let keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u));
+        let keep = select(0u, 1u, candidate_visible(candidate, node.margin_px, DRAW_INDEXED, node.elevation, (node.draw & DRAPED) != 0u, (node.draw & UNCLIPPED) != 0u));
         let chunk = chunks[candidate.chunk];
         if keep == 1u {
             atomicMax(&extent, candidate.slot + chunk.index_count - node.index_base);

@@ -131,16 +131,31 @@ fn clips_split(tile: Tile) -> bool {
 }
 // How a building draws from this placement: 0 not at all, EXTRUSION_WHOLE,
 // or cut: EXTRUSION_CUT, or EXTRUSION_CUT_SPLIT where the placement clips to
-// several rectangles. A whole building belongs to the one placement holding
-// its centroid (half open, as points are owned), which draws all of it,
-// past its clip rectangles: its walls and their pattern run on unbroken. A
-// building cut at the source's buffer draws from every placement.
+// several rectangles. A whole building belongs to the placement holding its
+// centroid (half open, as points are owned), which draws all of it, past
+// its clip rectangles: its walls and their pattern run on unbroken. Every
+// other placement leaves it to the tile around it holding its centroid
+// where that tile is placed alone over its whole square (`neighbours`),
+// which then owns it and keeps it whole too; where that tile is drawn at
+// another zoom or not at all, a placement draws its own part, as it draws
+// a building cut at the source's buffer.
 fn extrusion_drawn(v: Pulled) -> u32 {
     let row = prop_row(v, vertex_at(v.vertex + 1u), v.row_words);
+    let tile = tile_at(v.tile);
+    let cut = select(EXTRUSION_CUT, EXTRUSION_CUT_SPLIT, clips_split(tile));
     if (prop_at(row + EXTRUSION_ROW_WHOLE) & 1u) == 0u {
-        return select(EXTRUSION_CUT, EXTRUSION_CUT_SPLIT, clips_split(tile_at(v.tile)));
+        return cut;
     }
-    return select(0u, EXTRUSION_WHOLE, inside_clips(tile_at(v.tile), unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID))));
+    let centroid = unpack_i16x2(prop_at(row + EXTRUSION_ROW_CENTROID));
+    if inside_clips(tile, centroid) {
+        return EXTRUSION_WHOLE;
+    }
+    let cell = floor(centroid / tile.extent) + 1.0;
+    if all(cell >= vec2<f32>(0.0)) && all(cell <= vec2<f32>(2.0))
+        && ((tile.neighbours >> u32(3.0 * cell.y + cell.x)) & 1u) != 0u {
+        return 0u;
+    }
+    return cut;
 }
 // Whether a cut building's fragment at `tile_pos` lies in its placement.
 // Shared tile edges can contain real vertical walls: they have zero ground

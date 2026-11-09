@@ -794,6 +794,7 @@ impl Renderer {
                         target: PlacementTarget::Map,
                         labels: family.is_symbol(),
                         surface: false,
+                        unclipped: family == Family::FillExtrusion,
                     },
                 ),
             };

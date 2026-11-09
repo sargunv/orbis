@@ -581,6 +581,103 @@ fn extrusion_opacity_follows_the_feature_with_the_expressions_preview() {
     assert_eq!(a, b, "without the preview both draw opaque");
 }
 
+/// Buildings larger than an overzoom slice draw whole at z15, z16 and z19
+/// below a source's z14 tiles, looking down and tilted, where the view's
+/// tiles span several zooms (#143): a long slab, a building whose
+/// vertices crowd one end (its centroid's slice would cut it), and a
+/// block merged into one multipolygon, no slice holding every part.
+#[test]
+fn large_buildings_draw_whole_across_overzoom_slices() {
+    const VIEW: u32 = 256;
+    let rect =
+        |x0: f64, y0: f64, x1: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+    let slab = rect(0.0040, 0.0100, 0.0170, 0.0108);
+    let mut crowded = rect(0.0035, 0.0060, 0.0125, 0.0066);
+    crowded.splice(
+        2..2,
+        (1..20).map(|i| [0.0125, 0.0060 + 0.00003 * f64::from(i)]),
+    );
+    let block = vec![
+        rect(0.0105, 0.0140, 0.0118, 0.0147),
+        rect(0.0170, 0.0140, 0.0180, 0.0149),
+        rect(0.0020, 0.0140, 0.0027, 0.0147),
+        rect(0.0010, 0.0160, 0.0210, 0.0166),
+    ];
+    let polygon = |ring: &Vec<[f64; 2]>| format!("[{ring:?}]");
+    let feature = |kind: &str, coordinates: String| {
+        format!(
+            r#"{{"type": "Feature", "properties": {{}}, "geometry": {{"type": "{kind}", "coordinates": {coordinates}}}}}"#
+        )
+    };
+    let parts: Vec<String> = block.iter().map(polygon).collect();
+    let features = [
+        feature("Polygon", polygon(&slab)),
+        feature("Polygon", polygon(&crowded)),
+        feature("MultiPolygon", format!("[{}]", parts.join(", "))),
+    ]
+    .join(", ");
+    let rings: Vec<&Vec<[f64; 2]>> = [&slab, &crowded].into_iter().chain(&block).collect();
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    for (lon, lat, zoom, bearing, pitch) in [
+        (0.011, 0.012, 15.0, 0.0, 0.0),
+        (0.011, 0.012, 15.5, 20.0, 60.0),
+        (0.008, 0.011, 16.0, 0.0, 0.0),
+        (0.008, 0.011, 16.3, -30.0, 60.0),
+        (0.0082, 0.0063, 16.0, 0.0, 0.0),
+        (0.0082, 0.0063, 16.2, 10.0, 50.0),
+        (0.0110, 0.0104, 19.0, 0.0, 0.0),
+        (0.0110, 0.0098, 19.0, 18.3, 68.0),
+        (0.0082, 0.0063, 19.0, 0.0, 0.0),
+        (0.0110, 0.0160, 19.0, 0.0, 60.0),
+    ] {
+        let style = format!(
+            r##"{{"version": 8, "center": [{lon}, {lat}], "zoom": {zoom}, "bearing": {bearing}, "pitch": {pitch},
+              "sources": {{"b": {{"type": "geojson", "maxzoom": 14,
+                "data": {{"type": "FeatureCollection", "features": [{features}]}}}}}},
+              "layers": [
+                {{"id": "background", "type": "background", "paint": {{"background-color": "#000000"}}}},
+                {{"id": "b", "type": "fill-extrusion", "source": "b", "paint": {{
+                  "fill-extrusion-color": "#ffffff", "fill-extrusion-height": 1}}}}]}}"##
+        );
+        let mut map = Map::new(&runtime, MapOptions::default());
+        map.set_style_json(&style).expect("style");
+        let image = map.snapshot(VIEW, VIEW, 1.0).expect("snapshot");
+        let mut seen = 0;
+        for ring in &rings {
+            let (lo, hi) = ring
+                .iter()
+                .fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), p| {
+                    (
+                        [lo[0].min(p[0]), lo[1].min(p[1])],
+                        [hi[0].max(p[0]), hi[1].max(p[1])],
+                    )
+                });
+            for i in 1..120 {
+                for j in 1..40 {
+                    let x = lo[0] + (hi[0] - lo[0]) * (0.05 + 0.9 * f64::from(i) / 120.0);
+                    let y = lo[1] + (hi[1] - lo[1]) * (0.1 + 0.8 * f64::from(j) / 40.0);
+                    let Some(p) = map.project(orb_api::Geodetic::new(x, y)) else {
+                        continue;
+                    };
+                    if !(4.0..f64::from(VIEW) - 4.0).contains(&p.x)
+                        || !(4.0..f64::from(VIEW) - 4.0).contains(&p.y)
+                    {
+                        continue;
+                    }
+                    let at = ((p.y as u32 * VIEW + p.x as u32) * 4) as usize;
+                    let px = &image.pixels[at..at + 4];
+                    assert!(
+                        px[0] > 100,
+                        "z{zoom} at {lon},{lat} pitch {pitch}: ({x}, {y}) at {p} is {px:?}, not the roof"
+                    );
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen > 20, "z{zoom} at {lon},{lat}: {seen} points in view");
+    }
+}
+
 /// A per-feature extrusion opacity is a property of each building, not the
 /// layer: a value that is zero without a feature still draws the buildings
 /// it makes opaque, and a building at zero hides nothing behind it.

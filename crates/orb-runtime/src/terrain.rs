@@ -1499,6 +1499,7 @@ mod tests {
             target: PlacementTarget::Map,
             warp: orb_render::TileWarp::NONE,
             globe: None,
+            neighbours: 0,
         };
         let mut rows = Vec::new();
         drape_rows(
