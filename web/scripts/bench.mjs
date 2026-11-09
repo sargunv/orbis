@@ -66,6 +66,11 @@ try {
     if (!from.includes("/maplibre-gl")) errors++;
   });
   page.on("pageerror", (e) => { errors++; console.error(`page: ${e.message}`); });
+  // The gestures page's own intervals are between animation frames, which
+  // keep their pace while the GPU runs behind: the GPU process's presents
+  // show what reached the screen.
+  const tracing = params.get("experiment") === "gestures" && !android
+    ? await startTrace(await page.context().newCDPSession(page)) : null;
   for (const engine of engines) {
     params.set("engine", engine);
     await page.goto(`${server.url}bench.html?${params}`);
@@ -80,9 +85,65 @@ try {
     }
     process.stdout.write(`${await page.locator("#markdown").inputValue()}\n`);
   }
+  if (tracing) process.stdout.write(presentsReport(await tracing.stop()));
   if (errors) throw new Error(`${errors} page warnings/errors`);
 } finally {
   if (android) await cleanup();
   else await browser.close();
   server.close();
+}
+
+/** Traces the page's user timing marks and the GPU process's presents; `stop()` resolves to the events. */
+async function startTrace(cdp) {
+  await cdp.send("Tracing.start", { categories: "blink.user_timing,gpu,viz", transferMode: "ReturnAsStream" });
+  return {
+    async stop() {
+      const done = new Promise((resolve) => cdp.once("Tracing.tracingComplete", resolve));
+      await cdp.send("Tracing.end");
+      const { stream } = await done;
+      const chunks = [];
+      for (let eof = false; !eof;) {
+        const read = await cdp.send("IO.read", { handle: stream });
+        chunks.push(read.data);
+        eof = read.eof;
+      }
+      const trace = JSON.parse(chunks.join(""));
+      return Array.isArray(trace) ? trace : trace.traceEvents;
+    },
+  };
+}
+
+/**
+ * The GPU process's presents between each path's `gestures:<engine>:<path>:start`
+ * and `:end` marks (gestures.js), as a Markdown table: their intervals and
+ * how many are late, as the page counts its animation frames'.
+ */
+function presentsReport(events) {
+  const times = (name) => events.filter((e) => e.name === name).map((e) => e.ts / 1000).sort((a, b) => a - b);
+  const mac = times("ImageTransportSurfaceOverlayMac::Present");
+  const presents = mac.length ? mac : times("Display::DrawAndSwap");
+  const marks = new Map(events.filter((e) => e.name.startsWith("gestures:")).map((e) => [e.name, e.ts / 1000]));
+  const late = [16.7, 25];
+  const at = (s, p) => s[Math.min(s.length - 1, Math.round((s.length - 1) * p))]?.toFixed(1) ?? "—";
+  const rows = [];
+  for (const [name, start] of marks) {
+    if (!name.endsWith(":start")) continue;
+    const [, engine, path] = name.split(":");
+    const end = marks.get(name.replace(/:start$/, ":end"));
+    const shown = presents.filter((t) => t > start && t <= end);
+    const gaps = shown.slice(1).map((t, i) => t - shown[i]).sort((a, b) => a - b);
+    rows.push(`| ${engine === "gl" ? "GL JS" : "Orbis"} | ${path} | ${shown.length} | ${[0.5, 0.95, 0.99, 1].map((p) => at(gaps, p)).join(" | ")} | ` +
+      `${late.map((l) => gaps.filter((g) => g > l + 1).length).join(" | ")} |`);
+  }
+  if (!rows.length) return "";
+  return [
+    "### GPU process presents while the camera moved", "",
+    `| engine | path | presents | interval p50 | p95 | p99 | max | ${late.map((l) => `gaps > ${l} ms`).join(" | ")} |`,
+    "|---|---|---|---|---|---|---|---|---|",
+    ...rows, "",
+    `From a Chrome trace (${mac.length ? "ImageTransportSurfaceOverlayMac::Present" : "Display::DrawAndSwap"}): every frame the browser ` +
+      "showed, whichever engine drew it, in the order they ran; gaps with 1 ms of slack. A GPU running behind shows here and not " +
+      "in the page's intervals. Headless Chrome's presents wander a couple of ms around the display frame, so gaps over 16.7 ms " +
+      "count that too; over 25 ms, a frame missed.", "",
+  ].join("\n");
 }

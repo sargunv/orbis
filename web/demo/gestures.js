@@ -6,7 +6,9 @@
 // main-thread long tasks, and how long the map takes to reach `idle` after
 // the path ends (a backlog of frames shows there). Frame pacing: each
 // frame is stamped with its animation frame's time, as both engines draw
-// in one, and gaps over 16.7 and 25 ms between them count. `paths=dense`
+// in one, and gaps over 16.7 and 25 ms between them count; marks around
+// each path let `pnpm bench` count the GPU process's presents, which show
+// a GPU running behind where animation frames don't. `paths=dense`
 // pans, zooms and turns at pitch 60 around z15 over central Paris;
 // `paths=alps` runs the terrain demo's view instead: rotate and pan at
 // z11.6, pitch 72, three fast turns at pitch 80, and its 60 s flight
@@ -86,7 +88,8 @@ function pacing(times) {
 const PACING_HEAD = `interval p50 | p95 | p99 | max | ${LATE.map((l) => `gaps > ${l} ms`).join(" | ")}`;
 const pacingCells = (r) => `${r.interval.map(ms).join(" | ")} | ${r.late.join(" | ")}`;
 const PACING_NOTE = "Interval: between the animation frames that drew a frame while the camera moved, each a display frame " +
-  `when the map keeps up; gaps over ${LATE.join(" and ")} ms (with ${LATE_SLACK} ms for the coarsened clock) are frames that came late.`;
+  `when the map keeps up; gaps over ${LATE.join(" and ")} ms (with ${LATE_SLACK} ms for the coarsened clock) are frames that came late ` +
+  "on the page's thread. Animation frames keep their pace while the GPU runs behind: `pnpm bench` adds the GPU process's presents.";
 
 /** The page's long tasks from now until `stop()`, as `{ start, duration }`. */
 function longTasks() {
@@ -121,6 +124,7 @@ async function runPath(container, style, jobWorkers, center, path, show) {
     const off = map.on("render", (ack) => acks.push({ t: frameTime(), ms: ack.ms, placement: ack.times.placement }));
     const { longs, stop } = longTasks();
     const started = await nextFrame();
+    performance.mark(`gestures:orbis:${path.name}:start`);
     if (path.flight) {
       for (const leg of path.flight) await map.camera.flyTo(leg);
     } else {
@@ -130,6 +134,7 @@ async function runPath(container, style, jobWorkers, center, path, show) {
       }
     }
     const ended = performance.now();
+    performance.mark(`gestures:orbis:${path.name}:end`);
     await idle(map, label);
     const settle = performance.now() - ended;
     stop();
@@ -262,6 +267,7 @@ async function runGlPath(container, style, center, path, show) {
     const drawn = () => times.push(frameTime());
     map.on("render", drawn);
     const { longs, stop } = longTasks();
+    performance.mark(`gestures:gl:${path.name}:start`);
     for (let f = 1; f <= PATH_FRAMES; f++) {
       map.jumpTo(path.camera(center, f / PATH_FRAMES));
       await nextFrame();
@@ -270,6 +276,7 @@ async function runGlPath(container, style, center, path, show) {
     map.off("render", drawn);
     stop();
     const ended = performance.now();
+    performance.mark(`gestures:gl:${path.name}:end`);
     // A repaint ends in `idle` once nothing is left to do.
     const settled = idle(map, path.name);
     map.triggerRepaint();
