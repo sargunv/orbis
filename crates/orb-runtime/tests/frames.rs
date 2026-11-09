@@ -697,6 +697,94 @@ mod tests {
     /// layer's label, drawn with local fonts.
     #[test]
     fn placement_commits_show_labels() {
+        let mut offscreen = null_island(
+            r#"{"version":8,
+            "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
+            "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
+        );
+        assert!(
+            offscreen.map.shown_labels().is_empty(),
+            "nothing placed yet"
+        );
+        // The commit comes from the placement thread.
+        let started = std::time::Instant::now();
+        let mut shown = 0.0;
+        while shown < 1.0 && started.elapsed() < std::time::Duration::from_secs(10) {
+            let report = offscreen.frame();
+            if report.idle && report.tiles_drawn > 0 {
+                shown = offscreen
+                    .map
+                    .shown_labels()
+                    .get("Null Island")
+                    .copied()
+                    .unwrap_or(0.0);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(shown, 1.0, "the label was placed and faded in");
+    }
+
+    /// Until the map is first idle, labels show at once rather than fade,
+    /// as GL JS skips fades before its first `idle`: a map's first view is
+    /// complete as soon as its data is. Here a raster tile that never
+    /// arrives keeps the map from idling, and frames all show one instant, so a
+    /// fade would never end. Two labels collide until the map turns a
+    /// quarter, and then both show in full at once.
+    #[test]
+    fn labels_skip_fades_until_first_idle() {
+        // Takes connections and never answers.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let point = |name: &str, lon: f64| {
+            format!(
+                r#"{{"type":"Feature","properties":{{"name":"{name}"}},"geometry":{{"type":"Point","coordinates":[{lon},20]}}}}"#
+            )
+        };
+        let style = format!(
+            r#"{{"version":8,
+            "sources":{{"r":{{"type":"raster","tiles":["http://{}/{{z}}/{{x}}/{{y}}.png"]}},
+                "s":{{"type":"geojson","data":{{"type":"FeatureCollection","features":[{},{}]}}}}}},
+            "layers":[{{"id":"r","type":"raster","source":"r"}},
+                {{"id":"label","type":"symbol","source":"s","layout":{{"text-field":["get","name"]}}}}]}}"#,
+            silent.local_addr().unwrap(),
+            point("Null Island", 20.0),
+            point("Gulf of Guinea", 27.0),
+        );
+        let mut offscreen = null_island(&style);
+        offscreen.map.jump_to_state(orb_runtime::CameraState::new(
+            orb_crs::Geodetic::new(23.5, 20.0),
+            1.5,
+            &offscreen.map.projection(),
+        ));
+        // Frames until `shown` labels show; their opacities.
+        let frames_until = |offscreen: &mut crate::common::Offscreen, shown: usize| {
+            let started = std::time::Instant::now();
+            while started.elapsed() < std::time::Duration::from_secs(10) {
+                let report = offscreen.frame();
+                offscreen.time -= 1000.0 / 60.0;
+                assert!(!report.idle, "the raster keeps the map from idling");
+                let labels = offscreen.map.shown_labels();
+                let opacities: Vec<f32> = labels.values().copied().filter(|&o| o > 0.0).collect();
+                if opacities.len() == shown {
+                    return opacities;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            panic!("{shown} labels didn't show");
+        };
+        assert_eq!(frames_until(&mut offscreen, 1), [1.0], "one has room");
+        let mut turned = *offscreen.map.camera();
+        turned.bearing = 90.0;
+        offscreen.map.jump_to_state(turned);
+        assert_eq!(
+            frames_until(&mut offscreen, 2),
+            [1.0, 1.0],
+            "both have room"
+        );
+    }
+
+    /// A map of `style` at Null Island, with labels faded over GL JS's
+    /// default 300 ms and placed on the placement thread with local fonts.
+    fn null_island(style: &str) -> crate::common::Offscreen {
         let options = crate::common::Options {
             style: None,
             encoding: "mvt".into(),
@@ -725,34 +813,8 @@ mod tests {
         );
         offscreen.map = crate::common::Map::new(services, Some(camera));
         offscreen.renderer = None;
+        offscreen.map.set_style_json(style).unwrap();
         offscreen
-            .map
-            .set_style_json(
-                r#"{"version":8,
-                "sources":{"s":{"type":"geojson","data":{"type":"Point","coordinates":[0,0]}}},
-                "layers":[{"id":"label","type":"symbol","source":"s","layout":{"text-field":"Null Island"}}]}"#,
-            )
-            .unwrap();
-        assert!(
-            offscreen.map.shown_labels().is_empty(),
-            "nothing placed yet"
-        );
-        // The commit comes from the placement thread.
-        let started = std::time::Instant::now();
-        let mut shown = 0.0;
-        while shown < 1.0 && started.elapsed() < std::time::Duration::from_secs(10) {
-            let report = offscreen.frame();
-            if report.idle && report.tiles_drawn > 0 {
-                shown = offscreen
-                    .map
-                    .shown_labels()
-                    .get("Null Island")
-                    .copied()
-                    .unwrap_or(0.0);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        assert_eq!(shown, 1.0, "the label was placed and faded in");
     }
 
     #[test]

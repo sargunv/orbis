@@ -602,7 +602,8 @@ impl Map {
     }
 
     /// Sets how long labels fade in and out, milliseconds (GL JS
-    /// `fadeDuration`, 300 by default; 0 for still output).
+    /// `fadeDuration`, 300 by default; 0 for still output). As in GL JS,
+    /// labels don't fade until the map is first idle.
     pub fn set_fade_duration(&mut self, ms: f64) {
         self.labels.fade_duration = ms;
     }
@@ -1682,7 +1683,9 @@ impl Map {
             )
         };
         let mut frame = frame_at(view, view.camera_world(), self.camera.state());
-        if self.mode != RenderMode::Continuous {
+        // Labels show at once until the map is first idle, as in GL JS: a
+        // map's first view doesn't wait for fades.
+        if self.mode != RenderMode::Continuous || !self.events.idled {
             frame.fade_duration = 0.0;
         }
         frame.scope = match &self.mode {

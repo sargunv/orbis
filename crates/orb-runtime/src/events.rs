@@ -81,6 +81,8 @@ pub(crate) struct EventQueue {
     pub(crate) queue: Vec<MapEvent>,
     loaded: bool,
     idle: bool,
+    /// The map has been idle once (GL JS `_idleTriggered`).
+    pub(crate) idled: bool,
     /// Sources with data this frame, by plan index.
     pub(crate) sources: BTreeSet<usize>,
 }
@@ -98,6 +100,7 @@ impl EventQueue {
         }
         if idle && !self.idle {
             self.queue.push(MapEvent::Idle);
+            self.idled = true;
         }
         self.idle = idle;
     }
