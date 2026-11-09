@@ -10,14 +10,15 @@ import { build } from "vite";
 
 const root = fileURLToPath(new URL("../dist/", import.meta.url));
 const androidSerial = fileURLToPath(new URL("../../scripts/android-serial", import.meta.url));
-const types = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".css": "text/css" };
+const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".css": "text/css" };
 
 // Resolves to { url, close } once listening on a free local port.
 // `isolated` serves the pages cross-origin isolated, which refines
 // `performance.now()` from 100 µs to 5 µs in Chrome. `assets` serves that
 // directory at `fixtures/` too (the GL JS fixtures'), its JSON's `local://`
-// URLs pointing there.
-export async function serveDemo({ isolated = false, assets } = {}) {
+// URLs pointing there. `mounts` serves more directories, by path prefix
+// (`{ "mlnrs/": dir }`).
+export async function serveDemo({ isolated = false, assets, mounts = {} } = {}) {
   await build({ configFile: fileURLToPath(new URL("../vite.config.js", import.meta.url)), logLevel: "warn" });
   const isolation = isolated
     ? { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp" }
@@ -27,7 +28,9 @@ export async function serveDemo({ isolated = false, assets } = {}) {
     if (!url.pathname.startsWith("/orbis/")) { res.writeHead(404).end(); return; }
     let pathname = decodeURIComponent(url.pathname.slice("/orbis/".length));
     if (!pathname || pathname.endsWith("/")) pathname += "index.html";
-    const [dir, file] = assets && pathname.startsWith("fixtures/") ? [assets, pathname.slice(9)] : [root, pathname];
+    const mount = Object.keys(mounts).find((prefix) => pathname.startsWith(prefix));
+    const [dir, file] = mount ? [mounts[mount], pathname.slice(mount.length)]
+      : assets && pathname.startsWith("fixtures/") ? [assets, pathname.slice(9)] : [root, pathname];
     const path = normalize(join(dir, file));
     try {
       if (!path.startsWith(dir)) { res.writeHead(403).end(); return; }

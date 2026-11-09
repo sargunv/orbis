@@ -68,6 +68,7 @@ Playwright.
 | `pnpm -C web snapshot out.png '#z/lat/lon' [--style=<key>\|URL]` | a screenshot of the demo in headless Chromium |
 | `pnpm -C web measure` / `pnpm -C web bench` | input latency and main-thread time against GL JS; frame timings in Chrome |
 | `cargo xtask bench [style\|alps] [--experiment frames\|gestures\|load\|tiles] [--views f] [--nudge]` | native GPU and CPU frame timings, gesture paths, fresh-map loads, and the Tokyo extract's tiles through decode/layout/pack |
+| `cargo xtask h2h stills\|tiles\|frames\|size\|web\|all [--bin name=path/orbis] [--network cold\|rtt=ms]` | Orbis against mln-rs (pinned; built into the shared cache `~/Library/Caches/orbis-h2h`) on a local caching mirror of OpenFreeMap: per-process stills over mln-rs's views, tile blocks, nudged frames, binary sizes, web load against GL JS and mln-rs's web build; `--bin` adds an Orbis build copied aside, for A/B runs interleaved in one session |
 | `cargo xtask rt [--suite render\|query] [--filter <s>] [--platform native\|chrome\|all]` | the GL JS render or query fixtures |
 | `cargo xtask sweep [--dry-run] [--keep-hours N]` | prune stale build artifacts when the disk runs low |
 
@@ -106,3 +107,8 @@ Advice that cost time to learn, not rules:
   then.
 - On tile-based GPUs (Apple, phones), per-pass GPU timestamps show where
   work waits, not where it is. Compare whole-frame times.
+- Other sessions' builds make wall times noisy. Compare a change in one
+  session, interleaved: copy the old `orbis` and `orb-bench` aside and run
+  `cargo xtask h2h … --bin before=<copy>/orbis`. Instructions retired (the
+  stills table) and `bench --experiment tiles`'s thread CPU times barely
+  move with load; wall times do.

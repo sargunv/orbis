@@ -10,6 +10,7 @@ mod boundaries;
 mod capi;
 mod expression_fixtures;
 mod fixtures;
+mod h2h;
 mod labels;
 mod pmtiles;
 mod sweep;
@@ -49,6 +50,10 @@ cargo xtask <task>
                extract's tiles through decode, layout and pack); --views
                <file> takes mln-rs's views.txt cameras; web/demo/bench.html
                runs the frames and gestures benches in a browser
+  h2h <stills|tiles|frames|size|all|web|mirror> [options]  Orbis against mln-rs
+               (pinned, built into the shared h2h cache) over a local
+               caching mirror of OpenFreeMap: per-process stills, tile
+               blocks, nudged frames, binary sizes; `h2h help` lists options
   sweep [--dry-run] [--target-dir <path>] [--keep-hours <n>]  prune stale build
                artifacts: keep every build compiled in the last <n> hours
                (default 6) and the 2 newest builds of each crate
@@ -76,6 +81,7 @@ fn main() -> ExitCode {
             command.extend(args.iter().skip(1).map(String::as_str));
             cargo(&command)
         }
+        Some("h2h") => h2h::run(&args[1..]),
         Some("sweep") => sweep::run(&args[1..]),
         Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
             expression_fixtures::bundle()

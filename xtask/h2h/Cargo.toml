@@ -1,0 +1,24 @@
+# mln-rs's side of `cargo xtask h2h`: the same stills, tiles and nudged
+# frames as `orbis` and `orb-bench` time, through mln-rs (a Rust port of
+# MapLibre Native) at a pinned commit. Its own workspace: xtask builds it
+# into the h2h cache's target directory, apart from Orbis's.
+[package]
+name = "mln-h2h"
+version = "0.0.0"
+edition = "2024"
+license = "BSD-3-Clause"
+publish = false
+
+[dependencies]
+mln-rs = { git = "https://github.com/louwers/mln-rs", rev = "38cc1a177559e61e168bef9e6ea6a42ed0aae378" }
+rustix = { version = "1.1.6", default-features = false, features = ["std", "time"] }
+
+[workspace]
+
+# Orbis's `dist` profile, for a like-for-like binary size.
+[profile.dist]
+inherits = "release"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
