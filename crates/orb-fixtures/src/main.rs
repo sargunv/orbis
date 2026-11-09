@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod chrome;
+mod dem;
 mod fetch;
 mod images;
 mod metadata;
@@ -173,6 +174,13 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
         Backend::Chrome(c) => c.version.clone(),
         _ => Value::Null,
     };
+    let voids: Vec<Value> = (dem::voids(&assets).into_iter())
+        .map(|(tile, black)| {
+            let tile = tile.strip_prefix(&assets).unwrap_or(&tile).display();
+            eprintln!("note: {tile} has {black} black texels, no data under terrarium");
+            json!({"tile": tile.to_string(), "black": black})
+        })
+        .collect();
     let summary = json!({
         "filter": filter,
         "platform": {"name":name,"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"browser":browser},
@@ -181,6 +189,7 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
         "totals": total.json(),
         "prefixes": prefixes.iter().map(|(p,c)| (p.clone(), c.json())).collect::<BTreeMap<_,_>>(),
         "skip_reasons": skip_counts.iter().map(|(reason,count)| json!({"reason":reason,"count":count})).collect::<Vec<_>>(),
+        "dem_voids": voids,
         "tests": results,
     });
     write_json(&output.join("summary.json"), &summary)?;
@@ -286,7 +295,10 @@ fn run_test(
         serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     let metadata = Metadata::read(&value);
     let mut reasons = metadata.skips.clone();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = dem::lint(&value, metadata.width, metadata.height, assets);
+    if !diagnostics.is_empty() {
+        reasons.insert(dem::IMPLAUSIBLE.into());
+    }
     let mut map = match backend {
         Backend::Native(runtime) => Some(map(runtime, &metadata)),
         Backend::Chrome(_) => None,

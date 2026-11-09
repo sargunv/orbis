@@ -41,7 +41,13 @@ GeoJSON property-conversion warnings are informational. Operations this
 runner cannot apply (`addImage`, waits for events or milliseconds) and
 metadata it cannot honour (report cropping, non-default camera limits, debug
 views, unknown options) skip the test. Timeouts and custom thresholds are
-honoured. Load errors and timeouts are failures, not skips; so is anything
+honoured. A lint (`src/dem.rs`) decodes the DEM tiles near each test's
+camera with the encoding its style declares; a tile outside Earth's
+elevations (−12 000 to 9 000 m) skips the test as
+`fixture:implausible-dem`, its diagnostics naming the tile and what the
+other encodings read. Seven tests decode GL JS's terrarium-encoded Grand
+Canyon tiles as `mapbox`, mountains 800 km high in GL JS's expected images
+too. Each run also notes the tiles with black texels, terrarium's voids. Load errors and timeouts are failures, not skips; so is anything
 the renderer silently leaves out.
 
 **Operations** apply after the map first goes idle, as GL JS applies them

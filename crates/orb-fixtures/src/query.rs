@@ -136,7 +136,11 @@ fn run_test(
                 .filter(|r| r != "property:interactive"),
         );
     }
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = crate::dem::lint(&style, metadata.width, metadata.height, assets);
+    if !diagnostics.is_empty() {
+        reasons.insert(crate::dem::IMPLAUSIBLE.into());
+        result["diagnostics"] = json!(diagnostics);
+    }
     let actual = match (query.filter(|_| reasons.is_empty()), backend) {
         (None, _) => None,
         (Some(query), Backend::Chrome(chrome)) => Some(chrome.query(&text, &metadata, query)?),
