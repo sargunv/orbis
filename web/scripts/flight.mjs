@@ -1,15 +1,18 @@
-// Flies the demo's Alps flight (`data/alps-flight.json`, as `?style=alps&flight`
+// Flies the demo's Alps flight (`data/alps-flight.json`, as `?style=terrain&flight`
 // flies it) once in headless Chromium and reports its frame pacing: the
 // intervals between frames reaching the page and between frames the GPU
 // process presents, the render CPU of each, and the slowest frames' counters.
 //
 //   pnpm flight [--engine=orbis|gljs] [--pkg=dir] [--trace=out.json]
-//     [--size=WxH] [--ratio=r] [--legs=n]
+//     [--size=WxH] [--ratio=r] [--legs=n] [--gpu=1|out.json]
 //
 // `--engine=gljs` flies the pinned MapLibre GL JS over the same style and
 // legs instead. `--pkg` serves another build of `core.wasm` (a copy of
 // web/pkg) for A/B runs. `--trace` keeps the Chrome trace the present
-// intervals come from.
+// intervals come from. `--gpu` times Orbis's passes with timestamp
+// queries (`setGpuTiming`) and reports the GPU time of each pass label and
+// the slowest submissions' passes; `--gpu=out.json` also keeps every
+// submission's.
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,22 +97,40 @@ try {
       return { started, ended: performance.now() };
     }, legs);
   } else {
-    await page.goto(`${server.url}?style=alps`);
+    await page.goto(`${server.url}?style=terrain`);
     await page.waitForFunction(() => globalThis.orbis?.map, null, { timeout: 120_000 });
     await page.evaluate(() => new Promise((r) => globalThis.orbis.map.once("idle").then(r)));
-    fly = (legs) => page.evaluate(async (legs) => {
+    fly = (legs) => page.evaluate(async ([legs, gpu]) => {
       const map = globalThis.orbis.map;
+      const submissions = [];
+      let collecting = Promise.resolve();
+      const collect = () => collecting = collecting.then(async () => {
+        const at = performance.now();
+        for (const s of await map.gpuTimings()) submissions.push({ at, ...s });
+      });
+      let timer;
+      if (gpu) {
+        map.setGpuTiming(true);
+        // Two queries a pass and 4096 between collections.
+        timer = setInterval(collect, 250);
+      }
       const started = await new Promise((r) => requestAnimationFrame(r));
       for (const leg of legs) await map.camera.flyTo(leg);
-      return { started, ended: performance.now() };
-    }, legs);
+      const ended = performance.now();
+      if (gpu) {
+        clearInterval(timer);
+        await collect();
+        map.setGpuTiming(false);
+      }
+      return { started, ended, submissions };
+    }, [legs, !!args.gpu]);
   }
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Tracing.start", {
     categories: "devtools.timeline,v8.gc,disabled-by-default-devtools.timeline,toplevel,gpu",
     transferMode: "ReturnAsStream",
   });
-  const { started, ended } = await fly(legs);
+  const { started, ended, submissions } = await fly(legs);
   const traced = new Promise((r) => cdp.once("Tracing.tracingComplete", r));
   await cdp.send("Tracing.end");
   const { stream } = await traced;
@@ -133,6 +154,12 @@ try {
     report.slowest = gaps.sort((a, b) => b.gap - a.gap).slice(0, 8)
       .map(({ gap, frame }) => ({ ...frame, gap: +gap.toFixed(1), t: +(frame.t - started).toFixed(0) }));
   }
+  if (submissions?.length) {
+    report.gpu = gpuReport(submissions);
+    if (args.gpu.endsWith(".json")) {
+      writeFileSync(args.gpu, JSON.stringify(submissions.map((s) => ({ ...s, at: s.at - started }))));
+    }
+  }
   console.log(JSON.stringify(report));
 } finally {
   await browser.close();
@@ -152,8 +179,31 @@ function pacing(xs) {
   };
 }
 
+/** Per-pass-label GPU times over `submissions` (`gpuTimings`'s), the
+ * distribution of their spans (GPU time), and the slowest submissions. */
+function gpuReport(submissions) {
+  const labels = {};
+  for (const s of submissions) {
+    for (const [label, ms] of s.passes) {
+      const l = labels[label] ??= { n: 0, ms: 0, max: 0 };
+      l.n++; l.ms += ms; l.max = Math.max(l.max, ms);
+    }
+  }
+  const passes = Object.entries(labels).sort((a, b) => b[1].ms - a[1].ms)
+    .map(([label, l]) => ({ label, n: l.n, totalMs: +l.ms.toFixed(0), meanMs: +(l.ms / l.n).toFixed(3), maxMs: +l.max.toFixed(2) }));
+  const slowest = [...submissions].sort((a, b) => b.span - a.span).slice(0, 6).map((s) => {
+    const byLabel = {};
+    for (const [label, ms] of s.passes) byLabel[label] = +((byLabel[label] ?? 0) + ms).toFixed(2);
+    return { span: +s.span.toFixed(2), passes: byLabel };
+  });
+  return { submissions: submissions.length, span: pacing(submissions.map((s) => s.span)), passes, slowest };
+}
+
 /** The intervals between the GPU process's presents in `trace`, within the
- * flight (the trace spans it). */
+ * flight (the trace spans it), and how long the GPU process waits per
+ * present for the page's GPU work before compositing it (on a Mac): about
+ * a WebGPU frame's GPU time, since the compositor reads the canvas after
+ * it. A frame whose GPU time runs past the refresh misses it. */
 function presents(trace) {
   const d = JSON.parse(readFileSync(trace, "utf8"));
   const events = Array.isArray(d) ? d : d.traceEvents;
@@ -161,5 +211,7 @@ function presents(trace) {
   const mac = named("ImageTransportSurfaceOverlayMac::Present");
   const ts = mac.length ? mac : named("Display::DrawAndSwap");
   const gaps = ts.slice(1).map((t, i) => (t - ts[i]) / 1000);
-  return { count: ts.length, ...pacing(gaps.length ? gaps : [0]) };
+  const waited = events.filter((e) => e.name === "IOSurfaceImageBacking::WaitForCommandsToBeScheduled")
+    .reduce((sum, e) => sum + (e.dur ?? 0), 0) / 1000;
+  return { count: ts.length, ...pacing(gaps.length ? gaps : [0]), waitMs: +(waited / Math.max(1, ts.length)).toFixed(2) };
 }

@@ -19,14 +19,18 @@ pub struct SubmitTimes {
     /// Pass labels and their GPU durations, in submission order; empty
     /// without timestamp queries.
     pub passes: Vec<(String, Duration)>,
+    /// From the first pass's start to the last one's end: what the
+    /// submission took on the GPU. On tiled GPUs passes overlap, so their
+    /// durations sum to more.
+    pub span: Duration,
     /// Encoding the passes for wgpu and submitting them.
     pub cpu: Duration,
 }
 
 impl SubmitTimes {
-    /// Every pass's GPU time.
+    /// The submission's GPU time, its [`span`](Self::span).
     pub fn gpu(&self) -> Duration {
-        self.passes.iter().map(|(_, d)| *d).sum()
+        self.span
     }
 
     /// The GPU time of the pass labelled `label`, if it ran.
@@ -197,19 +201,24 @@ impl WgpuGpu {
             }
             submissions
                 .into_iter()
-                .map(|(passes, cpu)| SubmitTimes {
-                    passes: passes
+                .map(|(passes, cpu)| {
+                    let ns = |ticks: u64| Duration::from_nanos((ticks as f64 * period) as u64);
+                    let (mut start, mut end) = (u64::MAX, 0);
+                    let passes = passes
                         .into_iter()
                         .map(|(label, first)| {
-                            let first = first as usize;
-                            let elapsed = ticks[first + 1].saturating_sub(ticks[first]);
-                            (
-                                label,
-                                Duration::from_nanos((elapsed as f64 * period) as u64),
-                            )
+                            let [begin, finish] =
+                                [ticks[first as usize], ticks[first as usize + 1]];
+                            start = start.min(begin);
+                            end = end.max(finish);
+                            (label, ns(finish.saturating_sub(begin)))
                         })
-                        .collect(),
-                    cpu,
+                        .collect();
+                    SubmitTimes {
+                        passes,
+                        span: ns(end.saturating_sub(start)),
+                        cpu,
+                    }
                 })
                 .collect()
         }

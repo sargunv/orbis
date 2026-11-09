@@ -266,6 +266,10 @@ export type FrameStats = Fields<CoreStats> & {
 export interface GpuSubmission {
   /** Each pass's label and GPU time; empty without timestamp queries. */
   passes: [string, number][];
+  /** From the first pass's start to the last one's end on the GPU: the
+   * submission's GPU time (tiled GPUs overlap passes, whose times then sum
+   * to more); 0 without timestamp queries. */
+  span: number;
   /** Encoding and submitting the passes. */
   cpu: number;
 }

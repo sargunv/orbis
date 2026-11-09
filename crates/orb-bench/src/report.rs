@@ -133,7 +133,7 @@ impl FramesReport {
         }
         writeln!(
             out,
-            "- GPU: timestamp queries around every pass, {} in flight; resolution {}{}",
+            "- GPU: timestamp queries around every pass, a frame's GPU time from its first pass's start to its last one's end, {} in flight; resolution {}{}",
             if s.nudge { "one frame" } else { "two frames" },
             resolution(self.gpu_resolution),
             coarse_note(gpu_stat),

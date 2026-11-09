@@ -20,6 +20,8 @@ use crate::{GesturePaths, Settings, clock, frame, settle};
 
 /// A 60 Hz display's frame.
 const FRAME: Duration = Duration::from_micros(16_667);
+/// Frames between collections of GPU times.
+const GPU_COLLECT: u32 = 20;
 /// Frames per path: 6 s at 60 Hz.
 const PATH_FRAMES: usize = 360;
 /// A label that all but vanishes (opacity under 0.1) and is back in full
@@ -143,6 +145,9 @@ struct PathResult {
     name: &'static str,
     /// `Map::render` per frame, sorted.
     cpu: Vec<Duration>,
+    /// Each submission's GPU time (first pass's start to last one's end),
+    /// sorted; empty without timestamp queries.
+    gpu: Vec<Duration>,
     /// The render thread's placement work per frame
     /// (`FrameTimes::placement`), sorted.
     placement: Vec<Duration>,
@@ -237,6 +242,10 @@ pub(crate) fn run(
         let mut labels: std::collections::HashMap<Box<str>, Option<usize>> = Default::default();
         let (mut blinks, mut blink_frames, mut returns, mut drops) = (0, 0, 0, 0);
         let (mut rebuilds, mut rows) = (0, 0);
+        // GPU times, collected now and then: each collection waits for the
+        // GPU, and the queries hold a few dozen frames' passes.
+        runtime.set_gpu_timing(true);
+        let mut gpu = Vec::new();
         let started = clock::now();
         let mut now = base;
         for f in 1.. {
@@ -297,9 +306,15 @@ pub(crate) fn run(
                 }
             }
             warnings.extend(crate::take_warnings(&mut map));
+            if f % GPU_COLLECT == 0 {
+                gpu.extend(runtime.gpu_timings().iter().map(orb_api::SubmitTimes::gpu));
+            }
             let next = started + FRAME * f;
             std::thread::sleep(next.saturating_sub(clock::now()));
         }
+        gpu.extend(runtime.gpu_timings().iter().map(orb_api::SubmitTimes::gpu));
+        runtime.set_gpu_timing(false);
+        gpu.sort_unstable();
         let ended = clock::now();
         loop {
             now += FRAME.as_secs_f64() * 1000.0;
@@ -317,6 +332,7 @@ pub(crate) fn run(
         paths.push(PathResult {
             name: path.name,
             cpu,
+            gpu,
             placement,
             peak_bytes,
             drape,
@@ -363,22 +379,25 @@ impl GesturesReport {
         writeln!(out)?;
         writeln!(
             out,
-            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | drape atlas MiB max (mean) | drape resizes | settle ms | label blinks (frames) | label returns (drops) | placement p50 | p95 | max |"
+            "| path | render CPU p50 | p95 | p99 | max | frames > 16.7 ms | GPU p50 | p99 | max | frames loading | candidate rebuilds | rows written per frame | peak MiB/frame | drape atlas MiB max (mean) | drape resizes | settle ms | label blinks (frames) | label returns (drops) | placement p50 | p95 | max |"
         )?;
         writeln!(
             out,
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
         )?;
         for p in &self.paths {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} ({:.0}) | {} | {} | {} ({}) | {} ({}) | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} ({:.0}) | {} | {} | {} ({}) | {} ({}) | {} | {} | {} |",
                 p.name,
                 ms(p.at(0.5)),
                 ms(p.at(0.95)),
                 ms(p.at(0.99)),
                 ms(p.at(1.0)),
                 p.cpu.iter().filter(|&&t| t > FRAME).count(),
+                ms(percentile(&p.gpu, 0.5)),
+                ms(percentile(&p.gpu, 0.99)),
+                ms(percentile(&p.gpu, 1.0)),
                 p.loading,
                 p.rebuilds,
                 p.rows as f64 / p.cpu.len().max(1) as f64,
@@ -404,6 +423,8 @@ impl GesturesReport {
         writeln!(
             out,
             "Times in ms of `Map::render` (applying arrived tiles, uploads, placement, encoding); \
+             GPU: each submission's, from its first pass's start to its last one's end, where \
+             the device has timestamp queries; \
              settle: from the \
              path's end until the map is idle; candidate rebuilds: frames that laid the cull's \
              candidates out again; label blinks: labels shown in full that all but \

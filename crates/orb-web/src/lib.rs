@@ -937,20 +937,22 @@ impl OrbisMap {
     }
 
     /// Each submission's times since the last call, once the GPU has
-    /// finished them: `{ passes: [label, ms][], cpu: ms }`, passes timed
-    /// where the device has timestamp queries.
+    /// finished them: `{ passes: [label, ms][], span: ms, cpu: ms }`,
+    /// passes and their span (first start to last end) timed where the
+    /// device has timestamp queries.
     #[wasm_bindgen(js_name = gpuTimings)]
     pub fn gpu_timings(&mut self) -> js_sys::Promise {
         let timings = self.canvas.take_timings();
         wasm_bindgen_futures::future_to_promise(async move {
             let out = js_sys::Array::new();
-            for (passes, cpu) in timings.await {
+            for (passes, span, cpu) in timings.await {
                 let pairs = js_sys::Array::new();
                 for (label, ms) in passes {
                     pairs.push(&js_sys::Array::of2(&label.into(), &ms.into()));
                 }
                 let submission = js_sys::Object::new();
                 js_sys::Reflect::set(&submission, &"passes".into(), &pairs)?;
+                js_sys::Reflect::set(&submission, &"span".into(), &span.into())?;
                 js_sys::Reflect::set(&submission, &"cpu".into(), &cpu.into())?;
                 out.push(&submission);
             }

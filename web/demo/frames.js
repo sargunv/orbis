@@ -91,7 +91,7 @@ export async function runFrames({ style, center, size, ratio, frames, warmup, ro
         for (let f = warmup; f < cpu.length; f++) {
           const passes = submissions[f].passes;
           timestamps ||= passes.length > 0;
-          s.gpu.push(passes.reduce((sum, [, t]) => sum + t, 0));
+          s.gpu.push(submissions[f].span);
           for (const label of ["cull", "main", "extrusion"]) {
             const pass = passes.find(([l]) => l === label);
             if (pass) s[label].push(pass[1]);
@@ -114,7 +114,7 @@ export async function runFrames({ style, center, size, ratio, frames, warmup, ro
     `- ${w}×${h} px (${size[0]}×${size[1]} @${ratio}x) at ${center[0]}, ${center[1]}; ${rounds} rounds × ${frames} ` +
       `repaints after ${warmup} warm-up per view, one a display frame`,
     timestamps
-      ? "- GPU: timestamp queries around every pass (`setGpuTiming`)"
+      ? "- GPU: timestamp queries around every pass (`setGpuTiming`), a frame's GPU time from its first pass's start to its last one's end"
       : "- GPU: **no timestamp queries: no GPU times**",
     "",
     "| view | GPU mean | p90 | cull pass | main pass | extrusion pass | render CPU | encode+submit CPU | draws | dispatches |",

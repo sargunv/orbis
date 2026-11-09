@@ -8,8 +8,9 @@ use wasm_bindgen::JsValue;
 /// A frame's pixels, once read back.
 pub(crate) type Pixels = std::pin::Pin<Box<dyn std::future::Future<Output = Vec<u8>>>>;
 
-/// A submission's times, milliseconds: per pass on the GPU, and the CPU's.
-pub(crate) type Timed = (Vec<(String, f64)>, f64);
+/// A submission's times, milliseconds: per pass and in all on the GPU,
+/// and the CPU's.
+pub(crate) type Timed = (Vec<(String, f64)>, f64, f64);
 
 /// A canvas and the device drawing into it.
 #[derive(Debug)]
@@ -71,7 +72,7 @@ impl Canvas {
                 .into_iter()
                 .map(|t| {
                     let passes = t.passes.into_iter().map(|(l, d)| (l, ms(d))).collect();
-                    (passes, ms(t.cpu))
+                    (passes, ms(t.span), ms(t.cpu))
                 })
                 .collect()
         })
