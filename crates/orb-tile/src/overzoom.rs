@@ -91,6 +91,39 @@ impl Layer {
         }
     }
 
+    /// Polygon ring `ring` of this layer as GL JS's slice clips it. A
+    /// slice keeps a whole polygon unclipped for its fill
+    /// ([`Layer::is_whole`]), but an outline starts where GL JS's clipped
+    /// ring does, and that sets its dash, pattern and gradient phase.
+    pub fn outline<'a>(&self, ring: &'a [[i32; 2]]) -> Cow<'a, [[i32; 2]]> {
+        let Some(b) = self.clip else {
+            return Cow::Borrowed(ring);
+        };
+        let (lo, hi) = (-b, self.extent() as i32 + b);
+        if ring.iter().flatten().all(|v| (lo..=hi).contains(v)) {
+            return Cow::Borrowed(ring);
+        }
+        let mut points: Vec<Point> = ring.iter().map(|p| p.map(f64::from)).collect();
+        if ring.first() != ring.last() {
+            points.push(points[0]);
+        }
+        let mut geometry = vec![points];
+        for axis in 0..2 {
+            geometry = clip(geometry, GeometryType::Polygon, lo.into(), hi.into(), axis);
+        }
+        let mut clipped: Vec<[i32; 2]> = geometry
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+            .iter()
+            .map(|p| p.map(|v| (v + 0.5).floor() as i32))
+            .collect();
+        if clipped.len() > 1 && clipped.first() == clipped.last() {
+            clipped.pop();
+        }
+        Cow::Owned(clipped)
+    }
+
     /// The ancestor's slice labels lay out from, if they lay out in one.
     pub fn ancestor_labels(&self) -> Option<(&Layer, Ancestor)> {
         self.labels.as_deref().map(|l| (&l.layer, l.ancestor))
@@ -464,6 +497,37 @@ mod tests {
         assert_eq!(
             l.property("class").unwrap().get(0),
             Some(ValueRef::Str("primary"))
+        );
+    }
+
+    #[test]
+    fn whole_polygons_outline_as_gl_js_slices_them() {
+        let mut b = LayerBuilder::new("buildings", 4096);
+        b.begin_feature(None, GeometryType::Polygon);
+        b.begin_part();
+        b.begin_ring();
+        for p in [[1900, 100], [2200, 100], [2200, 200], [1900, 200]] {
+            b.push_vertex(p);
+        }
+        let child = TileFrame {
+            layers: vec![b.finish()],
+        }
+        .overzoom(1, 0, 0, 1);
+        let l = &child.layers[0];
+        let ring = l
+            .geometry(0)
+            .parts()
+            .next()
+            .unwrap()
+            .rings()
+            .next()
+            .unwrap();
+        // The fill keeps the building whole across the slice's edge.
+        assert_eq!(ring, [[7600, 400], [8800, 400], [8800, 800], [7600, 800]]);
+        // Its outline is GL JS's ring, cut at the slice's buffer.
+        assert_eq!(
+            *l.outline(ring),
+            [[7600, 400], [8448, 400], [8448, 800], [7600, 800]]
         );
     }
 

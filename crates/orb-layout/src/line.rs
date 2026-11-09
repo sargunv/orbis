@@ -101,6 +101,10 @@ pub fn layout_in_extent(
         let clips = feature_clips(layer, feature);
         for part in layer.geometry(feature).parts() {
             for ring in part.rings() {
+                let ring = match kind {
+                    GeometryType::Polygon => layer.outline(ring),
+                    _ => ring.into(),
+                };
                 let scaled: Vec<_> = ring
                     .iter()
                     .map(|p| {
