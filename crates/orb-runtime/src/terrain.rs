@@ -1322,6 +1322,31 @@ mod tests {
     }
 
     #[test]
+    fn dems_kept_for_their_ranges_pad_no_borders_and_hold_no_elevations() {
+        let tms = tms();
+        let quad = |z, c, r| TileIndex::new(z, c, r);
+        let (drawn, culling) = (quad(10, 530, 360), quad(10, 531, 360));
+        let mut terrain = terrain_with(&[(drawn, hills(256, 0.0)), (culling, hills(256, 7.0))]);
+        terrain.wanted = vec![drawn];
+        terrain.culling = vec![culling];
+        // The drawn tile's east border is its own edge, not its resident
+        // neighbour's.
+        let jobs = terrain.pads([0.0; 4]);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].neighbours, [None; 8]);
+        // The cover reads the neighbour's range; nothing reads its
+        // elevations, nor sends them to placement.
+        let elevation = Arc::clone(terrain.elevation(&tms));
+        let under = |t: TileIndex| tms.tile_bounds(t).center();
+        assert!(elevation.at(under(drawn)).is_some());
+        assert!(elevation.at(under(culling)).is_none());
+        let child = tms.tile_bounds(quad(11, 1062, 720));
+        assert!(elevation.range(child, 11).is_some());
+        let placed = TerrainElevation::from_pyramid(&elevation.pyramid()).unwrap();
+        assert_eq!(placed.dems.keys().collect::<Vec<_>>(), [&drawn]);
+    }
+
+    #[test]
     fn kept_blocks_encode_as_resampling_did() {
         let tms = tms();
         // DEM tiles of 128 pixels and multiples, as DEM sources serve
