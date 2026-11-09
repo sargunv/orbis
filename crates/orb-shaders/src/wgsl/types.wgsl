@@ -156,12 +156,14 @@ const TERRAIN_RANGE_UNIT: f32 = 4.0;
 
 // A run of at most 256 triangles of one mesh.
 struct Chunk {
-    // First index in the index arena's u16 indices (`index_at`).
+    // First index in the index arena's u16 indices (`index_at`); a symbol
+    // chunk's first entry in its layer's quad order instead.
     first_index: u32,
     index_count: u32,
     // First word of the mesh's vertices in the vertex arena.
     vertex_base: u32,
-    // The mesh's vertex that the chunk's indices count from.
+    // The mesh's vertex that the chunk's indices count from (0 for
+    // symbol chunks, which have no indices).
     first_vertex: u32,
     // First word of the mesh's property rows in the property arena.
     prop_base: u32,

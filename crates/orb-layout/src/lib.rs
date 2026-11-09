@@ -27,5 +27,5 @@ mod round_corners;
 pub use family::{Family, ImageKey, ImageMetadata, pack_color};
 pub use mesh::{
     CHUNK_INDICES, Chunk, MAX_CHUNK_INSTANCES, MAX_CHUNK_TRIANGLES, Mesh, MeshBuilder, TileBox,
-    index_at, pack_indices,
+    pack_indices,
 };

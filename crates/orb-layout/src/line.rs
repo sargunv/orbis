@@ -1330,7 +1330,7 @@ mod tests {
         let positions = positions(&mesh);
         for chunk in &mesh.chunks {
             for i in chunk.first_index..chunk.first_index + chunk.index_count {
-                let index = chunk.first_vertex + u32::from(crate::index_at(&mesh.indices, i));
+                let index = chunk.first_vertex + u32::from(crate::mesh::index_at(&mesh.indices, i));
                 let p = positions[index as usize];
                 assert!((chunk.bounds.min[0]..=chunk.bounds.max[0]).contains(&p[0]));
                 assert!((chunk.bounds.min[1]..=chunk.bounds.max[1]).contains(&p[1]));

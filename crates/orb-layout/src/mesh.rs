@@ -85,7 +85,7 @@ pub fn pack_indices(indices: impl IntoIterator<Item = u16>) -> Vec<u32> {
 }
 
 /// Index `i` of indices packed by [`pack_indices`].
-pub fn index_at(words: &[u32], i: u32) -> u16 {
+pub(crate) fn index_at(words: &[u32], i: u32) -> u16 {
     (words[i as usize / 2] >> (16 * (i % 2))) as u16
 }
 
