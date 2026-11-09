@@ -419,44 +419,63 @@ impl Warp {
 
     /// The rectangle of the tile (fractions, y down) the target plane
     /// projects: the whole tile, less the bands along its sides that it
-    /// clamps onto its edge (a geographic tile's polar rows on Web
-    /// Mercator), found to within 2⁻³⁰ of the tile's side. `None` if it
-    /// clamps all of it. Positions it doesn't contain are left to the
-    /// fit, which gives up on them.
+    /// clamps onto its edge throughout (a geographic tile's polar rows on
+    /// Web Mercator), found to within 2⁻³⁰ of the tile's side. `None` if it
+    /// clamps all of it. A side where the clamped part doesn't end along
+    /// one line across the tile (a polar set's tile on Web Mercator, where
+    /// it ends along a parallel's curve) is left whole: cutting it would
+    /// hold drawn positions on the cut. Those, and positions the target
+    /// doesn't contain, are left to the fit, which gives up on them.
     fn window(&self, tile: TileIndex) -> Option<[DVec2; 2]> {
         const STEPS: u32 = 16;
         let mut window = WHOLE;
         // Rows first, along the whole width, then columns along the rows
         // kept: each side's band, from the side's edge inward.
         for (axis, side) in [(1, 0), (1, 1), (0, 0), (0, 1)] {
-            let drawn = |window: &[DVec2; 2], t: f64| {
-                (0..=STEPS).all(|k| {
-                    let across = window[0][1 - axis]
-                        + (window[1][1 - axis] - window[0][1 - axis]) * f64::from(k)
-                            / f64::from(STEPS);
+            // How many of a line's samples the target clamps: `Some(true)`
+            // all, `Some(false)` none, `None` some.
+            let clamped = |window: &[DVec2; 2], t: f64| {
+                let (mut any, mut all) = (false, true);
+                for k in 0..=STEPS {
                     let mut uv = DVec2::ZERO;
                     uv[axis] = t;
-                    uv[1 - axis] = across;
-                    !self.clamped(tile, uv)
-                })
+                    uv[1 - axis] = window[0][1 - axis]
+                        + (window[1][1 - axis] - window[0][1 - axis]) * f64::from(k)
+                            / f64::from(STEPS);
+                    let c = self.clamped(tile, uv);
+                    (any, all) = (any || c, all && c);
+                }
+                (any == all).then_some(all)
             };
             let (edge, inner) = (window[side][axis], window[1 - side][axis]);
             let at = |k: u32| edge + (inner - edge) * f64::from(k) / f64::from(STEPS);
-            let first = (0..=STEPS).find(|&k| drawn(&window, at(k)))?;
-            if first == 0 {
-                continue;
-            }
-            // Between a line not drawn throughout and one that is.
+            // The first line from the edge not clamped throughout must be
+            // drawn throughout, and not the edge itself, for a band to cut.
+            let first = (0..=STEPS)
+                .map(|k| (k, clamped(&window, at(k))))
+                .find(|&(_, line)| line != Some(true));
+            let first = match first {
+                None => return None,
+                Some((k, Some(false))) if k > 0 => k,
+                Some(_) => continue,
+            };
+            // Between a line clamped throughout and one drawn throughout,
+            // with no line between that is partly both.
             let (mut out, mut kept) = (at(first - 1), at(first));
-            while (kept - out).abs() > 1.0 / f64::from(1u32 << 30) {
-                let mid = (out + kept) / 2.0;
-                if drawn(&window, mid) {
-                    kept = mid;
-                } else {
-                    out = mid;
+            let sharp = loop {
+                if (kept - out).abs() <= 1.0 / f64::from(1u32 << 30) {
+                    break true;
                 }
+                let mid = (out + kept) / 2.0;
+                match clamped(&window, mid) {
+                    Some(false) => kept = mid,
+                    Some(true) => out = mid,
+                    None => break false,
+                }
+            };
+            if sharp {
+                window[side][axis] = kept;
             }
-            window[side][axis] = kept;
         }
         Some(window)
     }
@@ -1144,5 +1163,36 @@ mod tests {
             .projection()
             .inverse(crs84.tile_point(TileIndex::new(2, 5, 0), series.window[0]));
         assert!((top.lat - 85.051_128_779_806_59).abs() < 1e-6, "{top:?}");
+    }
+
+    /// Where Web Mercator's clamp ends along a curve across a tile (a
+    /// polar or UTM set's tiles near 85°), the series isn't cut to a
+    /// window: any it gives follows the true position everywhere.
+    #[test]
+    fn series_near_the_clamp_follow_it_everywhere() {
+        let to = *mercator().projection();
+        for id in ["UPSArcticWGS84Quad", "UTM31WGS84Quad", "WorldCRS84Quad"] {
+            let tms = TileMatrixSet::by_id(id).unwrap();
+            let warp = Warp::new(tms.clone(), to);
+            for z in tms.min_zoom()..5 {
+                let ((c0, r0), (w, h)) = (tms.matrix_start(z), tms.matrix_size(z));
+                for tile in (r0..r0 + h).flat_map(|r| (c0..c0 + w).map(move |c| (c, r))) {
+                    let tile = TileIndex::new(z, tile.0, tile.1);
+                    let Some(series) = warp.series(tile, 1.0 / 2048.0) else {
+                        continue;
+                    };
+                    let limit = series.scale / 2048.0;
+                    for k in 0..=16 {
+                        for l in 0..=16 {
+                            let uv = DVec2::new(f64::from(k), f64::from(l)) / 16.0;
+                            let exact = warp.map(tile, uv).unwrap();
+                            let p = series.position(uv);
+                            let p = DVec2::new(warp.unwrap(p.x, exact.x), p.y);
+                            assert!(p.distance(exact) <= limit * 2.0, "{id} {tile:?} {uv}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
