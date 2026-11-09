@@ -21,6 +21,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 ureq.workspace = true
 rusqlite.workspace = true
 flate2.workspace = true
+png.workspace = true
 tar.workspace = true
 sha2.workspace = true
 base64.workspace = true

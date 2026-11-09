@@ -8,6 +8,7 @@ mod apple;
 mod bindings;
 mod boundaries;
 mod capi;
+mod compare;
 mod expression_fixtures;
 mod fixtures;
 mod h2h;
@@ -56,7 +57,10 @@ cargo xtask <task>
                load (style load to first complete still) or tiles (the
                extract's tiles through decode, layout and pack); --views
                <file> takes mln-rs's views.txt cameras; web/demo/bench.html
-               runs the frames and gestures benches in a browser
+               runs the frames and gestures benches in a browser;
+               --compare <rev> [--runs N] builds <rev> in a temporary
+               worktree and runs both builds N times (default 3),
+               interleaved, reporting each number as <rev> → this tree
   h2h <stills|tiles|frames|size|all|web|mirror> [options]  Orbis against mln-rs
                (pinned, built into the shared h2h cache) over a local
                caching mirror of OpenFreeMap: per-process stills, tile
@@ -85,6 +89,7 @@ fn main() -> ExitCode {
         Some("web") => web::build(),
         Some("pages") => web::pages(),
         Some("rt") => rt(&args[1..]),
+        Some("bench") if args.iter().any(|a| a == "--compare") => compare::bench(&args[1..]),
         Some("bench") => {
             let mut command = vec!["run", "--release", "-p", "orb-bench", "--"];
             command.extend(args.iter().skip(1).map(String::as_str));

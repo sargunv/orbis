@@ -74,12 +74,15 @@ Playwright.
 | `pnpm -C web dev` | the demo at `/orbis/` (after `cargo xtask web`) |
 | `pnpm -C web typecheck` / `test` / `e2e [--only=…]` | the package's types, unit tests, and headless-Chromium end-to-end checks |
 | `pnpm -C web snapshot out.png '#z/lat/lon' [--style=<key>\|URL]` | a screenshot of the demo in headless Chromium |
-| `pnpm -C web measure` / `pnpm -C web bench` | input latency and main-thread time against GL JS; frame timings in Chrome |
+| `pnpm -C web measure [--style=… --at=lon,lat,z,bearing,pitch]` | input-to-present latency, overlay skew and main-thread time against GL JS, on the Tokyo extract or a dense, tilted scene |
+| `pnpm -C web bench [--experiment=gestures --paths=city\|dense\|alps\|globe --engine=orbis,gl] [--style=terrain\|globe] [--globe]` | frame timings in Chrome; gesture paths with frame pacing (gaps over 16.7 and 25 ms), in Orbis and then GL JS |
 | `pnpm -C web bench --experiment=stutter [--engine=gl] [--filter=s] [--legs=n] [--style=url]` | the stutter paths in Chrome: frame intervals, render CPU by stage, work between frames, GPU passes; `--engine=gl` drives GL JS along them |
+| `pnpm -C web load --style=…\|--cache=…\|--scene=terrain\|globe [--engines=orbis,gljs,mlnrs,native]` | page script to first idle against GL JS, mln-rs's and MapLibre Native's web builds; `--scene` loads the Terrain entry or Liberty's globe at three views |
+| `pnpm -C web memory [--cache=…\|--style=…] [--engines=orbis,gljs,native]` | JS heap, wasm memory, renderer footprint and the GPU process's graphics memory after loading the real-world render tests and after a gesture tour |
 | `pnpm -C web flight [--engine=gljs] [--pkg=dir]` | the Alps demo's 60 s flight in headless Chrome: page frame intervals and the GPU process's presents, Orbis or GL JS; `--pkg` serves another `web/pkg` for A/B runs |
-| `cargo xtask bench [style\|alps] [--experiment frames\|gestures\|load\|tiles] [--views f] [--nudge]` | native GPU and CPU frame timings, gesture paths, fresh-map loads, and the Tokyo extract's tiles through decode/layout/pack |
+| `cargo xtask bench [style\|alps] [--experiment frames\|gestures\|load\|tiles] [--views f] [--nudge] [--compare <rev> [--runs N]]` | native GPU and CPU frame timings, gesture paths, fresh-map loads, and the Tokyo extract's tiles through decode/layout/pack; `--compare` builds `<rev>` in a temporary worktree and reports both builds' interleaved runs as `<rev> → this tree` |
 | `cargo xtask bench stutter [style] [--filter s] [--legs n]` | paths that bring many tiles in (Liberty's 3D buildings over Manhattan, the Terrain entry's turns and flight, a globe zoom): each frame's CPU by stage, GPU passes, uploads and arrivals, the worst frames and a stage histogram; `style` (say `cargo xtask h2h mirror`'s Liberty) stands in for live Liberty |
-| `cargo xtask h2h stills\|tiles\|frames\|size\|web\|all\|mirror [--offline] [--bin name=path/orbis] [--network cold\|rtt=ms] [--throttle Mbit/s]` | Orbis against mln-rs (pinned; built into the shared cache `~/Library/Caches/orbis-h2h`) on a local caching mirror of OpenFreeMap (`--offline` once it holds what the views need): per-process stills over mln-rs's views, tile blocks, nudged frames, binary sizes, web load against GL JS and mln-rs's web build (`--throttle`: its engine files compressed over a link that slow); `--bin` adds an Orbis build copied aside, for A/B runs interleaved in one session |
+| `cargo xtask h2h stills\|tiles\|frames\|size\|web\|all\|mirror [--offline] [--compare <rev>] [--bin name=path/orbis] [--diff <dir>] [--network cold\|rtt=ms] [--throttle Mbit/s]` | Orbis against mln-rs (pinned; built into the shared cache `~/Library/Caches/orbis-h2h`) on a local caching mirror of OpenFreeMap (`--offline` once it holds what the views need): per-process stills over mln-rs's views, tile blocks, nudged frames, binary sizes, web load against GL JS and mln-rs's web build (`--throttle`: its engine files compressed over a link that slow); `--compare` adds `<rev>`'s build as an engine, for A/B runs interleaved in one session (`--bin`: any build); `--diff` checks each build's stills against an earlier run's with pixelmatch, so a speedup from drawing less shows |
 | `cargo xtask rt [--suite render\|query\|native-render\|native-query\|native-expression] [--filter <s>] [--platform native\|chrome\|all]` | the GL JS render or query fixtures, or MapLibre Native's render, query or expression suites (the ones mln-rs runs), graded as Native's runner grades them |
 | `cargo xtask support` | `docs/style-support.md`, the generated style support matrix (previews, phases, and per property what the spec, GL JS, Native and Orbis accept, with fixture results); run it after a full fixture run |
 | `cargo xtask sweep [--dry-run] [--keep-hours N]` | prune stale build artifacts when the disk runs low |
@@ -162,8 +165,9 @@ Advice that cost time to learn, not rules:
   entries, or move them into a short "Done" list at the bottom, rather than
   leaving them ticked in place.
 - Other sessions' builds make wall times noisy. Compare a change in one
-  session, interleaved: copy the old `orbis` and `orb-bench` aside and run
-  `cargo xtask h2h … --bin before=<copy>/orbis`. Instructions retired (the
+  session, interleaved: `cargo xtask bench … --compare origin/main` or
+  `cargo xtask h2h … --compare origin/main`, with `h2h stills --diff
+  target/h2h/png` to check both builds draw the same. Instructions retired (the
   stills table, or `/usr/bin/time -l` around any run) barely move with
   load. CPU times move too: under load more work lands on efficiency
   cores, where the same work takes 1.5–2.5× the CPU time.

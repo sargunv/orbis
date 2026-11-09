@@ -4531,6 +4531,7 @@ dependencies = [
  "orb-style",
  "orb-text",
  "orb-tile",
+ "png",
  "rusqlite",
  "serde_json",
  "sha2",

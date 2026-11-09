@@ -38,6 +38,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// The fixtures' pixelmatch port, for `--diff`.
+#[path = "../../crates/orb-fixtures/src/pixelmatch.rs"]
+mod pixelmatch;
+
 const UPSTREAM: &str = "https://tiles.openfreemap.org";
 /// The mln-rs commit `xtask/h2h/Cargo.toml` pins.
 const MLN_RS: &str = "louwers/mln-rs@38cc1a17";
@@ -55,15 +59,40 @@ cargo xtask h2h <stills|tiles|frames|size|all|web|mirror> [options]
   --throttle <Mbit/s>  for `web`: the engines' own files, compressed, over a
                        link of that bandwidth, as a first visit loads them
   --bin <name>=<path>  another Orbis build as an engine: an `orbis` binary,
-                       `orb-bench` beside it for frames (copy both aside)
-  --engines a,b        engines and their order (default orbis, every --bin,
-                       mln-rs)
+                       `orb-bench` beside it for frames
+  --compare <rev>      <rev>'s build as an engine named <rev>: built in a
+                       temporary worktree, as `bench --compare` does
+  --diff <dir>         for `stills`: each Orbis engine's stills against
+                       <dir>/orbis-<view>.png (a copy of an earlier run's
+                       target/h2h/png, or that directory itself to compare
+                       this run's builds), mismatched pixels by pixelmatch,
+                       diff images in target/h2h/diff
+  --engines a,b        engines and their order (default orbis, every --bin
+                       and --compare, mln-rs)
   --frames N           frames per view for `frames` (default 40)
   --port N             the mirror's port for `mirror` (default 18731)
 ";
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
-    let options = Options::parse(args)?;
+    let mut options = Options::parse(args)?;
+    // Kept until the run ends: its worktree goes with it.
+    let _compared = match options.compare.clone() {
+        Some(_) if ["web", "mirror"].contains(&options.block.as_str()) => {
+            return Err(format!(
+                "h2h: --compare builds native engines, not `{}`'s; `pnpm -C web load --builds` compares web builds",
+                options.block
+            ));
+        }
+        Some(rev) => {
+            let build =
+                crate::compare::Build::new(&rev, &["orb-cli", "orb-bench"], options.profile())?;
+            options
+                .bins
+                .push((rev.replace('/', "-"), build.bin.join("orbis")));
+            Some(build)
+        }
+        None => None,
+    };
     let cache = cache_dir()?;
     let delay = match options.network {
         Network::Rtt(ms) => Duration::from_millis(ms),
@@ -141,9 +170,20 @@ struct Options {
     frames: usize,
     port: u16,
     throttle: Option<String>,
+    compare: Option<String>,
+    diff: Option<PathBuf>,
 }
 
 impl Options {
+    /// The builds' profile: `size` measures what ships.
+    fn profile(&self) -> &'static str {
+        if self.block == "size" {
+            "dist"
+        } else {
+            "release"
+        }
+    }
+
     fn parse(args: &[String]) -> Result<Self, String> {
         let mut options = Self {
             block: String::new(),
@@ -158,6 +198,8 @@ impl Options {
             frames: 40,
             port: 18731,
             throttle: None,
+            compare: None,
+            diff: None,
         };
         let mut args = args.iter();
         while let Some(arg) = args.next() {
@@ -179,6 +221,8 @@ impl Options {
                 "--style" => options.style = value()?,
                 "--offline" => options.offline = true,
                 "--throttle" => options.throttle = Some(value()?),
+                "--compare" => options.compare = Some(value()?),
+                "--diff" => options.diff = Some(PathBuf::from(value()?)),
                 "--network" => {
                     let v = value()?;
                     options.network = match v.as_str() {
@@ -300,11 +344,7 @@ impl H2h {
         let manifest = root.join("xtask/h2h/Cargo.toml");
         let target = cache.join("target");
         let uses = |n: &str| engines.iter().any(|e| e.name() == n);
-        let profile = if options.block == "size" {
-            "dist"
-        } else {
-            "release"
-        };
+        let profile = options.profile();
         if uses("orbis") {
             crate::cargo(&[
                 "build",
@@ -627,6 +667,62 @@ impl H2h {
             "\nWall: exec to exit; CPU: user + system, and instructions retired, from `/usr/bin/time`; requests: what the engine asked the mirror for. Timed runs: {}. Raw rows: {}.",
             net.answers(),
             csv_path.display()
+        )
+        .expect("a String");
+        if let Some(dir) = &self.options.diff {
+            out.push_str(&self.diff_stills(&views, dir)?);
+        }
+        Ok(out)
+    }
+
+    /// `--diff`: each Orbis engine's last still of each view against
+    /// `dir`'s `orbis-<view>.png`, by pixelmatch (threshold 0.1, as GL JS's
+    /// render tests default to, anti-aliased pixels aside).
+    fn diff_stills(&self, views: &[(String, [String; 8])], dir: &Path) -> Result<String, String> {
+        let diffs = self.out.join("diff");
+        std::fs::create_dir_all(&diffs).map_err(|e| format!("{}: {e}", diffs.display()))?;
+        let mut out = format!(
+            "\n### Stills against {}\n\n| view | engine | mismatched px | of all |\n|---|---|---|---|\n",
+            dir.display()
+        );
+        for (view, _) in views {
+            let reference = dir.join(format!("orbis-{view}.png"));
+            for engine in &self.engines {
+                let Engine::Orbis { name, .. } = engine else {
+                    continue;
+                };
+                let still = self.out.join("png").join(format!("{name}-{view}.png"));
+                if still.canonicalize().ok() == reference.canonicalize().ok() {
+                    continue;
+                }
+                let (a, b) = (Rgba::read(&still)?, Rgba::read(&reference)?);
+                if (a.width, a.height) != (b.width, b.height) {
+                    writeln!(
+                        out,
+                        "| {view} | {name} | {}×{} against {}×{} |  |",
+                        a.width, a.height, b.width, b.height
+                    )
+                    .expect("a String");
+                    continue;
+                }
+                let (count, image) = pixelmatch::compare(
+                    &a.pixels,
+                    &b.pixels,
+                    a.width as usize,
+                    a.height as usize,
+                    0.1,
+                );
+                if count > 0 {
+                    Rgba { pixels: image, ..a }.write(&diffs.join(format!("{name}-{view}.png")))?;
+                }
+                let share = count as f64 / f64::from(a.width * a.height) * 100.0;
+                writeln!(out, "| {view} | {name} | {count} | {share:.3}% |").expect("a String");
+            }
+        }
+        writeln!(
+            out,
+            "\nMismatched: pixels pixelmatch tells apart (threshold 0.1, anti-aliasing aside); diff images of those that differ in {}.",
+            diffs.display()
         )
         .expect("a String");
         Ok(out)
@@ -1008,6 +1104,54 @@ type Metric<'a> = (&'a str, &'a dyn Fn(&StillRow) -> Option<f64>, usize);
 
 /// Per engine and tile set, each run's wall and CPU totals and tile count.
 type SetTotals = BTreeMap<(String, String), Vec<(f64, f64, usize)>>;
+
+/// An 8-bit RGBA image, for `--diff`.
+struct Rgba {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+impl Rgba {
+    fn read(path: &Path) -> Result<Self, String> {
+        let error = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+        let file = std::fs::File::open(path).map_err(|e| error(&e))?;
+        let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let mut reader = decoder.read_info().map_err(|e| error(&e))?;
+        let mut bytes = vec![
+            0;
+            reader
+                .output_buffer_size()
+                .ok_or_else(|| error(&"too large"))?
+        ];
+        let info = reader.next_frame(&mut bytes).map_err(|e| error(&e))?;
+        bytes.truncate(info.buffer_size());
+        let pixels = match info.color_type {
+            png::ColorType::Rgba => bytes,
+            png::ColorType::Rgb => (bytes.as_chunks::<3>().0.iter())
+                .flat_map(|&[r, g, b]| [r, g, b, 255])
+                .collect(),
+            other => return Err(error(&format!("{other:?} PNG, not RGB(A)"))),
+        };
+        Ok(Self {
+            width: info.width,
+            height: info.height,
+            pixels,
+        })
+    }
+
+    fn write(&self, path: &Path) -> Result<(), String> {
+        let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), self.width, self.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .and_then(|mut w| w.write_image_data(&self.pixels))
+            .map_err(|e| format!("{}: {e}", path.display()))
+    }
+}
 
 struct StillRow {
     engine: String,
