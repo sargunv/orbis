@@ -142,7 +142,7 @@ fn tiles_repeat_byte_for_byte() {
     );
 }
 
-/// Each tile's picture is drawn with a tile of its neighbours around it, so
+/// Each tile places its labels with its neighbours' (tile scope), so
 /// two tiles that share an edge both see a label anchored a few pixels from
 /// it, which crosses it: both show it or neither does.
 #[test]
@@ -237,5 +237,74 @@ fn a_style_that_fails_to_load_fails_a_snapshot_at_once() {
         started.elapsed().as_secs() < 10,
         "took {:?}",
         started.elapsed()
+    );
+}
+
+/// A hillshade tile's edge pixels shade from its neighbours' elevations, as
+/// in a view: over a plane sloping evenly across tiles, the tile shades
+/// evenly to its edges.
+#[test]
+fn hillshade_tiles_shade_their_edges_from_their_neighbours() {
+    const Z: u8 = 12;
+    let (col, row) = (2048u32, 2048u32);
+    let dir = std::env::temp_dir().join(format!("orbis-tile-dem-{}", std::process::id()));
+    // Terrarium tiles of the 3×3 block around the tile, rising 8 m a DEM
+    // pixel (some 10 m wide) eastward and 4 m southward.
+    for x in col - 1..=col + 1 {
+        for y in row - 1..=row + 1 {
+            let mut pixels = Vec::with_capacity((TILE * TILE * 4) as usize);
+            for py in 0..TILE {
+                for px in 0..TILE {
+                    let east = (x + 1 - col) * TILE + px;
+                    let south = (y + 1 - row) * TILE + py;
+                    let metres = 8 * east + 4 * south;
+                    let v = (metres + 32768) * 256;
+                    pixels.extend([(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]);
+                }
+            }
+            let path = dir.join(format!("{Z}/{x}/{y}.png"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+            let mut encoder = png::Encoder::new(file, TILE, TILE);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&pixels).unwrap();
+        }
+    }
+    let style = format!(
+        r#"{{"version":8,
+            "sources":{{"dem":{{"type":"raster-dem","encoding":"terrarium","tileSize":{TILE},
+              "maxzoom":{Z},"tiles":["file://{}/{{z}}/{{x}}/{{y}}.png"]}}}},
+            "layers":[
+              {{"id":"bg","type":"background","paint":{{"background-color":"white"}}}},
+              {{"id":"shade","type":"hillshade","source":"dem"}}
+            ]}}"#,
+        dir.display()
+    );
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&style).unwrap();
+    let pixels = render_tile(&mut map, Z, col, row);
+    std::fs::remove_dir_all(&dir).unwrap();
+    let at = |x: u32, y: u32| {
+        let i = ((y * TILE + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2]]
+    };
+    let middle = at(TILE / 2, TILE / 2);
+    let mut worst = (0, 0, 0);
+    for i in 0..TILE {
+        for (x, y) in [(0, i), (TILE - 1, i), (i, 0), (i, TILE - 1)] {
+            let step = (0..3)
+                .map(|c| at(x, y)[c].abs_diff(middle[c]))
+                .max()
+                .unwrap();
+            worst = worst.max((step, x, y));
+        }
+    }
+    assert!(middle != [255, 255, 255], "the plane isn't shaded");
+    assert!(
+        worst.0 <= 2,
+        "an edge pixel shades apart: {worst:?} against {middle:?}"
     );
 }

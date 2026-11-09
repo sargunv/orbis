@@ -137,14 +137,17 @@ impl Map {
             .clamp(pyramid.min_zoom(), pyramid.max_zoom());
         // Tile mode draws the middle tile of its grid and places labels over
         // the whole grid: a source whose content crosses tile edges (labels,
-        // circles, heatmaps) covers the grid. The grid's edges are tile
-        // edges: tiles that only touch it hold nothing the middle shows.
+        // circles, heatmaps) covers the grid, as does a DEM source, whose
+        // tiles' borders (slopes at the edges) come from their drawn
+        // neighbours. The grid's edges are tile edges: tiles that only
+        // touch it hold nothing the middle shows.
         let grid_view;
         let (view, margin) = match &self.mode {
             RenderMode::Tile(_) => {
-                let crosses = nodes().any(|(_, n)| {
-                    n.family.is_symbol() || matches!(n.family, Family::Circle | Family::Heatmap)
-                });
+                let crosses = endpoint.dem_unpack.is_some()
+                    || nodes().any(|(_, n)| {
+                        n.family.is_symbol() || matches!(n.family, Family::Circle | Family::Heatmap)
+                    });
                 let middle = view.viewport();
                 grid_view = self.view(orb_camera::Viewport {
                     width: 3.0 * middle.width,
