@@ -338,20 +338,29 @@ fn parse_raster_dem(cx: &mut Cx, json: &Json, path: &str) -> Option<RasterDemSou
 fn parse_geojson_source(cx: &mut Cx, json: &Json, path: &str) -> Option<GeoJsonSource> {
     let errors = cx.diagnostics.errors.len();
     let at = |key: &str| format!("{path}.{key}");
-    let Some(data) = json.get("data") else {
-        cx.error(at("data"), json.span, "GeoJSON source needs data");
-        return None;
-    };
-    let data = if let Some(url) = data.as_str() {
-        GeoJsonData::Url(url.to_string())
-    } else {
-        match crate::v8::geojson::convert(data) {
-            Ok(features) => GeoJsonData::Inline(features),
-            Err(e) => {
-                cx.error(at("data"), data.span, e);
-                return None;
-            }
+    // Missing or invalid inline data leaves the source empty and the rest
+    // of the style drawing, as MapLibre Native does (GL JS rejects the
+    // style).
+    let data = match json.get("data") {
+        None => {
+            cx.warn(
+                at("data"),
+                json.span,
+                "GeoJSON source needs data; it draws nothing",
+            );
+            GeoJsonData::Inline(Vec::new())
         }
+        Some(data) => match data.as_str() {
+            Some(url) => GeoJsonData::Url(url.to_string()),
+            None => GeoJsonData::Inline(crate::v8::geojson::convert(data).unwrap_or_else(|e| {
+                cx.warn(
+                    at("data"),
+                    data.span,
+                    format!("{e}; the source draws nothing"),
+                );
+                Vec::new()
+            })),
+        },
     };
     let mut options = orb_tile::geojson::Options::default();
     for (key, target, scale, max) in [
@@ -598,6 +607,21 @@ mod tests {
                 "{option}"
             );
         }
-        assert!(parse(r#"{"type":"geojson"}"#).is_err());
+    }
+
+    #[test]
+    fn missing_or_invalid_inline_geojson_draws_nothing() {
+        for source in [
+            r#"{"type":"geojson"}"#,
+            r#"{"type":"geojson","data":42}"#,
+            r#"{"type":"geojson","data":{"type":"Model","geometry":[1,2]}}"#,
+        ] {
+            let style = parse(source).unwrap_or_else(|e| panic!("{source}: {e:?}"));
+            assert_eq!(style.warnings.len(), 1, "{source}");
+            let SourceKind::GeoJson(geojson) = &style.sources[0].kind else {
+                panic!("{source}");
+            };
+            assert_eq!(geojson.data, GeoJsonData::Inline(Vec::new()));
+        }
     }
 }

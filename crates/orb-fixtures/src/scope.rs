@@ -50,8 +50,11 @@ pub(crate) fn reasons(style: &Style) -> BTreeSet<String> {
         .warnings
         .iter()
         .filter(|w| {
+            // Informational, and bad GeoJSON data, which leaves its source
+            // empty, not something Orbis doesn't support.
             !w.message
                 .starts_with("GeoJSON nested object and array property values")
+                && !w.message.ends_with("draws nothing")
         })
         .map(|w| parse_reason(&w.message))
         .collect()
