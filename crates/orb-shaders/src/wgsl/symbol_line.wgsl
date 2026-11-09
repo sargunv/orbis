@@ -242,6 +242,12 @@ fn line_glyph(tile: Tile, base: u32, placed: Placed, quad: u32, font_scale: f32)
         }
         let end = select(q.p, anchor + (anchor - q.p), behind);
         let c = clip_pair(tile, anchor, end);
+        // As for several glyphs below: the segment's slope picks the
+        // horizontal glyph or its vertical alternative.
+        let steep = abs(c.w - c.y) > abs(c.z - c.x) * aspect;
+        if (placed.writing_mode == 1u && steep) || (placed.writing_mode == 2u && !steep) {
+            return fail;
+        }
         flip = select(c.x > c.z, c.y < c.w, placed.writing_mode == 2u);
     }
     // 0, 1: the first and last glyph; 2, 3: both flipped; 4: this glyph.
