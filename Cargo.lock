@@ -2512,6 +2512,7 @@ version = "0.0.0"
 dependencies = [
  "mlt-core",
  "orb-crs",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]

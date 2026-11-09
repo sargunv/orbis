@@ -24,11 +24,20 @@ fn subdivide(layer: &Layer, cells: [u32; 2]) -> Layer {
     let extent = layer.extent as i32;
     let step = cells.map(|c| f64::from(layer.extent) / f64::from(c.max(1)));
     let mut out = Layer {
+        name: layer.name.clone(),
+        extent: layer.extent,
+        ids: layer.ids.clone(),
+        types: layer.types.clone(),
         feature_parts: vec![0],
         part_rings: vec![0],
         ring_vertices: vec![0],
         vertices: Vec::with_capacity(layer.vertices.len()),
-        ..layer.clone()
+        properties: layer.properties.clone(),
+        clip: layer.clip,
+        buffer: 0,
+        whole_reach: layer.whole_reach,
+        labels: layer.labels.clone(),
+        data_features: layer.data_features.clone(),
     };
     let mut clipped = Vec::new();
     let mut crossings = Vec::new();
@@ -75,6 +84,8 @@ fn subdivide(layer: &Layer, cells: [u32; 2]) -> Layer {
         }
         out.feature_parts.push((out.part_rings.len() - 1) as u32);
     }
+    // Clipping polygons may bring them closer.
+    out.buffer = (layer.clip).unwrap_or_else(|| crate::reach(&out.vertices, layer.extent));
     out
 }
 

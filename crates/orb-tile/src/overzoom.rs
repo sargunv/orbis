@@ -181,7 +181,11 @@ impl Layer {
     /// The layer without the pieces of lines an overzoom slice keeps past
     /// its buffer for their strokes.
     fn within_buffer(&self) -> Cow<'_, Layer> {
-        let (b, e) = (self.clip_buffer(), self.extent() as i32);
+        // Only a producer that clipped keeps lines past its buffer.
+        if self.clip.is_none() {
+            return Cow::Borrowed(self);
+        }
+        let (b, e) = (self.buffer, self.extent() as i32);
         let inside = |r: &[[i32; 2]]| {
             r.len() < 2
                 || [0, 1]
@@ -194,45 +198,31 @@ impl Layer {
                 .parts()
                 .any(|p| p.rings().any(|r| !inside(r)))
         });
-        if self.clip.is_none() || !outer {
+        if !outer {
             return Cow::Borrowed(self);
         }
         let mut builder = LayerBuilder::new(self.name(), self.extent());
         builder.clipped_like(self);
         for f in 0..self.len() {
-            copy_feature(&mut builder, self, f, |r| !lines(f) || inside(r));
+            builder.begin_feature(None, self.geometry_type(f));
+            for part in self.geometry(f).parts() {
+                let mut rings = part.rings().filter(|&r| !lines(f) || inside(r)).peekable();
+                if rings.peek().is_some() {
+                    builder.begin_part();
+                }
+                for ring in rings {
+                    builder.begin_ring();
+                    ring.iter().for_each(|&p| builder.push_vertex(p));
+                }
+            }
         }
-        let mut layer = builder.finish();
+        let mut layer = Layer {
+            ids: self.ids.clone(),
+            properties: self.properties.clone(),
+            ..builder.finish()
+        };
         layer.data_features.clone_from(&self.data_features);
         Cow::Owned(layer)
-    }
-}
-
-/// Adds feature `f` of `from` to `builder`, with the rings `keep` keeps.
-fn copy_feature(
-    builder: &mut LayerBuilder,
-    from: &Layer,
-    f: usize,
-    keep: impl Fn(&[[i32; 2]]) -> bool,
-) {
-    builder.begin_feature(None, from.geometry_type(f));
-    if let Some(id) = from.ids().get(f) {
-        builder.set_id(id.to_owned());
-    }
-    for (key, column) in from.properties() {
-        if let Some(value) = column.get(f) {
-            builder.set_property(key, value.to_owned());
-        }
-    }
-    for part in from.geometry(f).parts() {
-        let mut rings = part.rings().filter(|r| keep(r)).peekable();
-        if rings.peek().is_some() {
-            builder.begin_part();
-        }
-        for ring in rings {
-            builder.begin_ring();
-            ring.iter().for_each(|&p| builder.push_vertex(p));
-        }
     }
 }
 
@@ -294,23 +284,15 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
         size: 2f64.powi(i32::from(depth)) * 8192.0,
         buffer: f64::from(source_buffer) * scale,
     };
-    let mut kept = Vec::new();
+    let mut rows = Vec::new();
     for feature in 0..layer.len() {
         let kind = layer.geometry_type(feature);
         let parts = slice_feature(layer, feature, (source_buffer, &data), buffer, place);
         if parts.is_empty() {
             continue;
         }
-        kept.push(layer.data_feature(feature));
+        rows.push(feature as u32);
         builder.begin_feature(None, kind);
-        if let Some(id) = layer.ids().get(feature) {
-            builder.set_id(id.to_owned());
-        }
-        for (key, column) in layer.properties() {
-            if let Some(value) = column.get(feature) {
-                builder.set_property(key, value.to_owned());
-            }
-        }
         for part in parts {
             builder.begin_part();
             for ring in part {
@@ -321,8 +303,9 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
             }
         }
     }
-    let mut sliced = builder.finish();
-    sliced.data_features = Some(kept);
+    let mut sliced = builder.finish_selecting(layer, &rows);
+    let kept = rows.iter().map(|&f| layer.data_feature(f as usize));
+    sliced.data_features = Some(kept.collect());
     sliced
 }
 

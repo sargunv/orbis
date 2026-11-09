@@ -136,6 +136,46 @@ impl Column {
         })
     }
 
+    /// The column of rows `rows` (in any order, repeats allowed), as a
+    /// layer of those features has it: a string column keeps only the
+    /// dictionary entries they use.
+    pub fn select(&self, rows: &[u32]) -> Self {
+        let ranks: Vec<Option<usize>> = rows.iter().map(|&r| self.rank(r as usize)).collect();
+        let present = Bitmap::from_rows(rows.len(), (ranks.iter().enumerate()).filter_map(|(i, r)| r.map(|_| i)));
+        let kept = || ranks.iter().flatten().copied();
+        let data = match &self.data {
+            ColumnData::Bool(v) => ColumnData::Bool(kept().map(|i| v[i]).collect()),
+            ColumnData::I64(v) => ColumnData::I64(kept().map(|i| v[i]).collect()),
+            ColumnData::U64(v) => ColumnData::U64(kept().map(|i| v[i]).collect()),
+            ColumnData::F64(v) => ColumnData::F64(kept().map(|i| v[i]).collect()),
+            ColumnData::Str { dictionary, codes } => {
+                let mut remap = vec![u32::MAX; dictionary.len()];
+                let mut kept_dictionary = Vec::new();
+                let codes = kept()
+                    .map(|i| {
+                        let code = &mut remap[codes[i] as usize];
+                        if *code == u32::MAX {
+                            *code = kept_dictionary.len() as u32;
+                            kept_dictionary.push(dictionary[codes[i] as usize].clone());
+                        }
+                        *code
+                    })
+                    .collect();
+                ColumnData::Str {
+                    dictionary: kept_dictionary,
+                    codes,
+                }
+            }
+            ColumnData::Mixed(v) => ColumnData::Mixed(kept().map(|i| v[i].clone()).collect()),
+        };
+        Self::new(present, data)
+    }
+
+    /// Whether no row has a value.
+    pub(crate) fn is_absent(&self) -> bool {
+        self.data_len() == 0
+    }
+
     /// Where `row`'s value is among the present ones, if it has one.
     fn rank(&self, row: usize) -> Option<usize> {
         if !self.present.get(row) {
@@ -199,6 +239,15 @@ impl Bitmap {
         self.len == 0
     }
 
+    /// `len` bits, set at `rows`, ascending.
+    pub(crate) fn from_rows(len: usize, rows: impl Iterator<Item = usize>) -> Self {
+        let mut words = vec![0u64; len.div_ceil(64)];
+        for row in rows {
+            words[row / 64] |= 1 << (row % 64);
+        }
+        Self { words, len }
+    }
+
     pub fn push(&mut self, bit: bool) {
         if self.len.is_multiple_of(64) {
             self.words.push(0);
@@ -231,5 +280,27 @@ mod tests {
         }
         assert_eq!(b.len(), 130);
         assert!((0..130).all(|i| b.get(i) == (i % 3 == 0)));
+        let rows = Bitmap::from_rows(130, (0..130).filter(|i| i % 3 == 0));
+        assert_eq!(rows, b);
+    }
+
+    #[test]
+    fn select_keeps_rows_and_the_strings_they_use() {
+        // 100 rows, every third with a value, cycling through 3 strings.
+        let present = Bitmap::from_rows(100, (0..100).step_by(3));
+        let dictionary = ["a", "b", "c"].map(String::from).to_vec();
+        let codes = (0..34).map(|i| i % 3).collect();
+        let column = Column::new(present, ColumnData::Str { dictionary, codes });
+        // Rows 3 ("b") twice, 4 (none), 99 ("a"), 70 (none).
+        let selected = column.select(&[3, 3, 4, 99, 70]);
+        assert_eq!(selected.len(), 5);
+        let values: Vec<_> = (0..5).map(|r| selected.get(r)).collect();
+        let (b, a) = (Some(ValueRef::Str("b")), Some(ValueRef::Str("a")));
+        assert_eq!(values, [b, b, None, a, None]);
+        let ColumnData::Str { dictionary, .. } = selected.data() else {
+            panic!("a string column")
+        };
+        assert_eq!(dictionary, &["b", "a"]);
+        assert!(column.select(&[1, 2]).is_absent());
     }
 }

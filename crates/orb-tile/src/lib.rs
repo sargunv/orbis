@@ -80,6 +80,17 @@ pub(crate) fn owner_keeps<'r>(
     (within([0, 0]) && within(owner)).then_some(owner)
 }
 
+/// The farthest any of `vertices` lies past the square of `extent`, 0 when
+/// none does: how far past it their source clipped, when it doesn't say,
+/// as a source clips the same distance on every side and clipped vertices
+/// land on that line.
+fn reach(vertices: &[[i32; 2]], extent: u32) -> i32 {
+    let extent = extent as i32;
+    let (lo, hi) = (vertices.iter().flatten())
+        .fold((0, extent), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    lo.saturating_neg().max(hi - extent)
+}
+
 /// A decoded vector tile.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TileFrame {
@@ -117,6 +128,8 @@ pub struct Layer {
     /// units, when known (GeoJSON tiling, overzoom slices; an overzoom
     /// slice keeps its lines further).
     clip: Option<i32>,
+    /// [`Layer::clip_buffer`], taken when the layer is built.
+    buffer: i32,
     /// How far past the square a polygon may reach and still be drawn
     /// whole ([`Layer::is_whole`]), when it isn't the clip buffer: an
     /// overzoom slice keeps polygons unclipped to one slice past it.
@@ -133,18 +146,10 @@ impl Layer {
     /// How far past the tile square geometry was clipped: as its producer
     /// says, else the farthest any vertex lies past the square (a source
     /// clips the same distance on every side, and clipped vertices land on
-    /// that line). 0 when nothing reaches past it.
+    /// that line). 0 when nothing reaches past it. Taken once, when the
+    /// layer is built.
     pub fn clip_buffer(&self) -> i32 {
-        self.clip.unwrap_or_else(|| {
-            let extent = self.extent as i32;
-            self.vertices
-                .iter()
-                .flatten()
-                .map(|&v| (-v).max(v - extent))
-                .max()
-                .unwrap_or(0)
-                .max(0)
-        })
+        self.buffer
     }
 
     /// How far past the square a polygon may reach and still be drawn

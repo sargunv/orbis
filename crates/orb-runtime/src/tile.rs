@@ -225,20 +225,11 @@ fn split_features(
             groups,
         };
     }
-    let properties: Vec<_> = layer.properties().collect();
     let mut builder = LayerBuilder::new(layer.name(), layer.extent());
     builder.clipped_like(layer);
     for (feature, parts, _) in &pieces {
         let feature = *feature as usize;
         builder.begin_feature(None, layer.geometry_type(feature));
-        if let Some(id) = layer.ids().get(feature) {
-            builder.set_id(id.to_owned());
-        }
-        for (key, column) in &properties {
-            if let Some(value) = column.get(feature) {
-                builder.set_property(key, value.to_owned());
-            }
-        }
         for part in layer.geometry(feature).slice(parts.clone()).parts() {
             builder.begin_part();
             for ring in part.rings() {
@@ -249,9 +240,9 @@ fn split_features(
             }
         }
     }
-    let origin = pieces.iter().map(|(feature, ..)| *feature).collect();
+    let origin: Vec<u32> = pieces.iter().map(|(feature, ..)| *feature).collect();
     Split {
-        pieces: Some((builder.finish(), origin)),
+        pieces: Some((builder.finish_selecting(layer, &origin), origin)),
         groups,
     }
 }

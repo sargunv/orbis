@@ -9,6 +9,7 @@ version.workspace = true
 [dependencies]
 orb-crs.workspace = true
 mlt-core.workspace = true
+rustc-hash.workspace = true
 
 [lints]
 workspace = true

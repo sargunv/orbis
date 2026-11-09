@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use crate::{Bitmap, Column, ColumnData, GeometryType, Layer, Value};
 
@@ -21,7 +21,7 @@ pub struct LayerBuilder {
     part_rings: Vec<u32>,
     ring_vertices: Vec<u32>,
     vertices: Vec<[i32; 2]>,
-    keys: HashMap<String, usize>,
+    keys: FxHashMap<String, usize>,
     columns: Vec<(String, Vec<(u32, Value)>)>,
     clip: Option<i32>,
     whole_reach: Option<i32>,
@@ -38,7 +38,7 @@ impl LayerBuilder {
             part_rings: Vec::new(),
             ring_vertices: Vec::new(),
             vertices: Vec::new(),
-            keys: HashMap::new(),
+            keys: FxHashMap::default(),
             columns: Vec::new(),
             clip: None,
             whole_reach: None,
@@ -135,7 +135,7 @@ impl LayerBuilder {
     /// Clipped as `layer` was, and keeping polygons whole as far past the
     /// square: for a layer of `layer`'s features or their parts.
     pub fn clipped_like(&mut self, layer: &Layer) -> &mut Self {
-        self.clip = Some(layer.clip_buffer());
+        self.clip = Some(layer.buffer);
         self.whole_reach = layer.whole_reach;
         self
     }
@@ -147,6 +147,21 @@ impl LayerBuilder {
 
     pub fn finish(self) -> Layer {
         self.finish_with(Vec::new())
+    }
+
+    /// Finishes a layer of features of `from`, its `rows`, one per feature
+    /// begun: their ids and properties are those rows' of `from`, and none
+    /// set here.
+    pub fn finish_selecting(self, from: &Layer, rows: &[u32]) -> Layer {
+        assert_eq!(rows.len(), self.types.len(), "one row per feature");
+        let mut layer = self.finish();
+        layer.ids = from.ids.select(rows);
+        layer.properties = (from.properties.iter())
+            .map(|(key, column)| (key, column.select(rows)))
+            .filter(|(_, column)| !column.is_absent())
+            .map(|(key, column)| (key.clone(), column))
+            .collect();
+        layer
     }
 
     /// Finishes the layer with `coded` columns besides those set through
@@ -162,6 +177,7 @@ impl LayerBuilder {
             .map(|(key, values)| (key, typed_column(len, values)))
             .chain(coded)
             .collect();
+        let buffer = (self.clip).unwrap_or_else(|| crate::reach(&self.vertices, self.extent));
 
         Layer {
             name: self.name,
@@ -174,6 +190,7 @@ impl LayerBuilder {
             vertices: self.vertices,
             properties,
             clip: self.clip,
+            buffer,
             whole_reach: self.whole_reach,
             labels: None,
             data_features: None,
@@ -233,12 +250,7 @@ fn kind<'a>(values: impl Iterator<Item = &'a Value>) -> Kind {
 
 /// Which of `len` features have a value, from those that do, ascending.
 fn presence(len: usize, features: impl Iterator<Item = u32>) -> Bitmap {
-    let mut present = Bitmap::new();
-    let mut next = features.map(|f| f as usize).peekable();
-    for feature in 0..len {
-        present.push(next.next_if_eq(&feature).is_some());
-    }
-    present
+    Bitmap::from_rows(len, features.map(|f| f as usize))
 }
 
 fn number(value: &Value) -> f64 {
@@ -275,7 +287,7 @@ fn typed_column(len: usize, values: Vec<(u32, Value)>) -> Column {
         Kind::F64 | Kind::Number => ColumnData::F64(values.map(|v| number(&v)).collect()),
         Kind::Str => {
             let mut dictionary = Vec::new();
-            let mut lookup: HashMap<String, u32> = HashMap::new();
+            let mut lookup: FxHashMap<String, u32> = FxHashMap::default();
             let codes = values
                 .map(|v| match v {
                     Value::Str(s) => *lookup.entry(s).or_insert_with_key(|s| {
@@ -307,7 +319,7 @@ pub(crate) struct CodedColumns<'a> {
 
 impl<'a> CodedColumns<'a> {
     pub(crate) fn new(keys: &'a [&'a str], values: &'a [Value]) -> Self {
-        let mut first: HashMap<&str, u32> = HashMap::new();
+        let mut first: FxHashMap<&str, u32> = FxHashMap::default();
         let key_of = (keys.iter().enumerate())
             .map(|(i, k)| *first.entry(k).or_insert(len_u32(i)))
             .collect();
@@ -334,7 +346,7 @@ impl<'a> CodedColumns<'a> {
         let values = self.values;
         // Per value, the first value equal to it, so that equal strings
         // share a code; then per value, its code in the column being typed.
-        let mut first: HashMap<&str, u32> = HashMap::new();
+        let mut first: FxHashMap<&str, u32> = FxHashMap::default();
         let canonical: Vec<u32> = (values.iter().enumerate())
             .map(|(i, v)| match v {
                 Value::Str(s) => *first.entry(s).or_insert(len_u32(i)),
