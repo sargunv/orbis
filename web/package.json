@@ -12,6 +12,7 @@
     "snapshot": "node scripts/snapshot.mjs",
     "measure": "node scripts/measure.mjs",
     "bench": "node scripts/bench.mjs",
+    "flight": "node scripts/flight.mjs",
     "load": "node scripts/load.mjs"
   },
   "devDependencies": {

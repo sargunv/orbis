@@ -5,8 +5,9 @@
 // interval between frames reaching the page, the render CPU time of each,
 // main-thread long tasks, and how long the map takes to reach `idle` after
 // the path ends (a backlog of frames shows there). `paths=alps` runs the
-// terrain demo's view instead: rotate and pan at z11.6, pitch 72, and its
-// 60 s flight (`data/alps-flight.json`), flown as the demo flies it.
+// terrain demo's view instead: rotate and pan at z11.6, pitch 72, three
+// fast turns at pitch 80, and its 60 s flight (`data/alps-flight.json`),
+// flown as the demo flies it.
 // `engine=gl` drives MapLibre GL JS along the same paths instead and
 // counts its labels' blinks and returns as the native bench counts
 // Orbis's, from `style.placement`'s opacities after each frame.
@@ -30,9 +31,11 @@ const CITY_PATHS = [
   },
 ];
 /** The terrain demo's view: z11.6, bearing −32, pitch 72. */
-const alpsView = (center, lon, bearing) => ({ center: [center[0] + lon, center[1]], zoom: 11.6, bearing, pitch: 72 });
+const alpsView = (center, lon, bearing, pitch = 72) =>
+  ({ center: [center[0] + lon, center[1]], zoom: 11.6, bearing, pitch });
 const ALPS_PATHS = [
   { name: "rotate at z11.6, pitch 72", camera: (center, f) => alpsView(center, 0, -32 + 360 * f) },
+  { name: "fast turns at z11.6, pitch 80", camera: (center, f) => alpsView(center, 0, -32 + 3 * 360 * f, 80) },
   { name: "pan at z11.6, pitch 72", camera: (center, f) => alpsView(center, 0.15 * Math.sin(f * 2 * Math.PI), -32) },
   { name: "Alps flight (60 s)", camera: (center) => alpsView(center, 0, -32), flight: alpsFlight.legs },
 ];

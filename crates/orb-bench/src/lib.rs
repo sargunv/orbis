@@ -187,7 +187,8 @@ impl Settings {
     /// (`lon,lat`), `experiment` (`frames`, `gestures`, `load` or `tiles`),
     /// `paths` (`city` or `alps`, the gestures bench's), `view`
     /// (`zoom,pitch,bearing`, adding a view to measure instead of the
-    /// bench's own) or `filter` (a substring of the views' names).
+    /// bench's own) or `filter` (a substring of the views' names, or of
+    /// the gestures bench's paths').
     pub fn set(&mut self, name: &str, value: &str) -> Result<(), String> {
         let number = |value: &str| {
             value

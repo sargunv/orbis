@@ -70,10 +70,14 @@ const CITY_PATHS: &[Path] = &[
 
 /// The terrain demo's view: z11.6, bearing −32, pitch 72.
 fn alps_view(s: &Settings, lon: f64, bearing: f64) -> CameraState {
+    alps_pitched(s, lon, bearing, 72.0)
+}
+
+fn alps_pitched(s: &Settings, lon: f64, bearing: f64, pitch: f64) -> CameraState {
     let center = orb_api::Geodetic::new(s.center.lon + lon, s.center.lat);
     CameraState {
         bearing,
-        pitch: 72.0,
+        pitch,
         ..CameraState::new(center, 11.6, &crate::web_mercator())
     }
 }
@@ -82,6 +86,11 @@ const ALPS_PATHS: &[Path] = &[
     Path {
         name: "rotate at z11.6, pitch 72",
         camera: |s, f| alps_view(s, 0.0, -32.0 + 360.0 * f),
+        flight: false,
+    },
+    Path {
+        name: "fast turns at z11.6, pitch 80",
+        camera: |s, f| alps_pitched(s, 0.0, -32.0 + 3.0 * 360.0 * f, 80.0),
         flight: false,
     },
     Path {
@@ -200,7 +209,13 @@ pub(crate) fn run(
         GesturePaths::City => CITY_PATHS,
         GesturePaths::Alps => ALPS_PATHS,
     };
-    for path in paths_run {
+    let chosen = paths_run.iter().filter(|p| {
+        settings
+            .filter
+            .as_ref()
+            .is_none_or(|f| p.name.contains(f.as_str()))
+    });
+    for path in chosen {
         // A map per path, so each starts cold.
         progress(&format!("{}: loading its first view", path.name));
         let start = (path.camera)(settings, 0.0);
@@ -295,11 +310,10 @@ pub(crate) fn run(
             now += FRAME.as_secs_f64() * 1000.0;
             let (report, _) = frame(&mut map, target, now)?;
             warnings.extend(crate::take_warnings(&mut map));
-            if report.idle {
+            // A map that doesn't settle in time is a result: reported as
+            // the timeout passed.
+            if report.idle || clock::now() - ended > SETTLE_TIMEOUT {
                 break;
-            }
-            if clock::now() - ended > SETTLE_TIMEOUT {
-                return Err(format!("{}: timed out settling", path.name));
             }
             std::thread::sleep(FRAME);
         }
@@ -363,7 +377,7 @@ impl GesturesReport {
         for p in &self.paths {
             writeln!(
                 out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} ({:.0}) | {} | {:.0} | {} ({}) | {} ({}) | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {:.1} | {:.1} | {:.0} ({:.0}) | {} | {} | {} ({}) | {} ({}) | {} | {} | {} |",
                 p.name,
                 ms(p.at(0.5)),
                 ms(p.at(0.95)),
@@ -377,7 +391,11 @@ impl GesturesReport {
                 p.drape.0 as f64 / (1024.0 * 1024.0),
                 p.drape.1 as f64 / (1024.0 * 1024.0) / p.cpu.len().max(1) as f64,
                 p.drape.2,
-                p.settle.as_secs_f64() * 1000.0,
+                if p.settle > SETTLE_TIMEOUT {
+                    format!("> {}", SETTLE_TIMEOUT.as_millis())
+                } else {
+                    format!("{:.0}", p.settle.as_secs_f64() * 1000.0)
+                },
                 p.blinks,
                 p.blink_frames,
                 p.returns,
