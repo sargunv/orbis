@@ -9,13 +9,14 @@
 //! or a DEM tile's pixels as the transferred `buffer` and an image tile as
 //! the transferred `image` bitmap. The page copies only a packed tile's
 //! header into wasm memory; the payload goes from the buffer to the GPU.
-//! A tile goes to the job worker with the fewest requests in flight, and
-//! its relayouts and queries follow it there, where its data is; a glyph
-//! unit goes to its owner worker. A worker that is lost (its wasm trapped, or it died) fails
-//! the queries it had, which the map retries, and its rasters go again
-//! (their glyphs' atlas rows wait for them). The page puts
-//! another in its place, which this sends the style; or, past the page's
-//! limit, its share goes to the next worker on. The loads it had go again
+//! A tile goes to the job worker with the fewest requests in flight (an
+//! overzoomed one to its ancestor's), and its relayouts and queries follow
+//! it there, where its data is; a glyph unit goes to its owner worker. A
+//! worker that is lost (its wasm trapped, or it died) fails the queries it
+//! had, which the map retries, and its rasters go again (their glyphs'
+//! atlas rows wait for them). The page puts another in its place, which
+//! this sends the style; or, past the page's limit, its share goes to the
+//! next worker on. The loads it had go again
 //! at once, as suspects: one at a time, with no other suspect in flight, so
 //! a loss then is likely its own. A suspect lost again is quarantined: it
 //! loads as missing, so its ancestor stands in, rather than take down a
