@@ -16,20 +16,27 @@
 // - `compare`: the comparison with GL JS on the Tokyo extract: the plain
 //   page fetches none of GL JS, `&compare` shows both maps at one camera,
 //   and a drag on either side moves both.
+// - `gestures`: Compose's gesture set on the scenario page, from input
+//   synthesized through the DevTools protocol (mouse and touch): mouse and
+//   touch flings, measured against mln-ffi's pan decay (the release
+//   velocity from the page's own event times, then the glide's distance,
+//   half-life and length), a pinch's zoom glide, Shift-drag box zoom with
+//   its box shown, Shift-double-click, double-tap, two-finger tap and
+//   double-tap-drag zoom, and a turn near north settling on north.
 // - `offline` (only when asked for: it needs the network): downloads the
 //   live map's view at `--at` from the Offline areas dialog, then reloads
 //   with every request but the demo server's failing and checks the map
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,editor,compare,offline]
+//   pnpm e2e [--only=scenario,edits,editor,compare,gestures,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520]
 import assert from "node:assert/strict";
 import { decodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor,compare").split(",");
+const only = arg("only", "scenario,edits,editor,compare,gestures").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -605,11 +612,240 @@ async function compare(browser, server) {
   await page.close();
 }
 
+/** The slope at the newest sample of the least-squares quadratic through
+ * the samples of the last 100 ms back to the first gap over 40 ms, per
+ * second, and zero for a release more than 40 ms after it: Compose's
+ * `VelocityTracker1D`, written apart from the core's for a check. */
+function releaseVelocity(samples, release) {
+  const [newest] = samples.at(-1);
+  if (release - newest > 40) return 0;
+  const points = [];
+  let previous = newest;
+  for (const [t, v] of [...samples].reverse()) {
+    if (newest - t > 100 || previous - t > 40) break;
+    previous = t;
+    points.push([t - newest, v]);
+  }
+  if (points.length < 3) return 0;
+  // Normal equations for y = a + b x + c x², solved by elimination.
+  const m = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  for (const [x, y] of points) {
+    const p = [1, x, x * x];
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) m[i][j] += p[i] * p[j];
+      m[i][3] += p[i] * y;
+    }
+  }
+  for (let i = 0; i < 3; i++) {
+    for (let k = i + 1; k < 3; k++) {
+      const f = m[k][i] / m[i][i];
+      for (let j = i; j < 4; j++) m[k][j] -= f * m[i][j];
+    }
+  }
+  const c = m[2][3] / m[2][2];
+  const b = (m[1][3] - m[1][2] * c) / m[1][1];
+  return b * 1000;
+}
+
+/** mln-ffi's (and MapLibre Compose's) pan momentum: friction halving the
+ * speed every 140 ms, stopping at 10 px/s, from releases of 200 to
+ * 10 000 px/s. */
+const PAN = { halfLife: 140, stop: 10, min: 200, max: 10_000 };
+
+async function gestures(browser, server) {
+  const { page, errors } = await open(browser, { width: 400, height: 300 });
+  await page.goto(`${server.url}scenario.html`);
+  const scenario = (fn, arg) => page.evaluate(([fn, arg]) => window.scenario.then((s) => new Function("s", "arg", `return (${fn})(s, arg)`)(s, arg)), [fn.toString(), arg]);
+  const cdp = await page.context().newCDPSession(page);
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const SHIFT = 8;
+  const mouse = (type, x, y, { button = "left", modifiers = 0, clickCount = 1 } = {}) =>
+    cdp.send("Input.dispatchMouseEvent", {
+      type, x, y, button, modifiers, clickCount,
+      buttons: type === "mouseReleased" ? 0 : { left: 1, right: 2 }[button],
+    });
+  const touch = (type, points) =>
+    cdp.send("Input.dispatchTouchEvent", { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
+  /** The camera at rest, at zoom 4 over the box unless `at` says otherwise. */
+  const reset = (at = {}) => scenario(async (s, at) => {
+    s.map.camera.jumpTo({ center: [0, 0], zoom: 4, bearing: 0, pitch: 0, ...at });
+    await s.idle();
+  }, at);
+  const camera = () => scenario(async (s) => { await s.idle(); return s.map.camera.current; });
+
+  // The page logs pointer events (before the map takes them) and, on each
+  // camera move, the frame's time and where the origin shows.
+  await scenario((s) => {
+    const raf = window.requestAnimationFrame;
+    let frameTime = 0;
+    window.requestAnimationFrame = (callback) => raf((t) => { frameTime = t; callback(t); });
+    window.gestureLog = { pointers: [], frames: [], atRelease: null };
+    for (const type of ["pointerdown", "pointermove", "pointerup"]) {
+      addEventListener(type, (e) => {
+        window.gestureLog.pointers.push({ type, t: e.timeStamp, x: e.clientX, y: e.clientY, kind: e.pointerType });
+        if (type === "pointerup") window.gestureLog.atRelease = { t: e.timeStamp, at: s.map.project([0, 0]) };
+      }, true);
+    }
+    s.map.on("move", () => window.gestureLog.frames.push({ t: frameTime, at: s.map.project([0, 0]), zoom: s.map.camera.current.zoom }));
+  });
+  const log = (clear) => page.evaluate((clear) => {
+    const out = structuredClone(window.gestureLog);
+    if (clear) Object.assign(window.gestureLog, { pointers: [], frames: [], atRelease: null });
+    return out;
+  }, clear);
+
+  /** A horizontal fling: `steps` moves of `dx` px, one a frame (the
+   * protocol answers each once a frame has taken it), released at once.
+   * Returns the measurements against mln-ffi's decay. */
+  async function fling(kind, dx, steps = 8) {
+    await reset();
+    await log(true);
+    let x = 40;
+    if (kind === "mouse") await mouse("mousePressed", x, 100); else await touch("touchStart", [[x, 100]]);
+    for (let i = 0; i < steps; i++) {
+      x += dx;
+      if (kind === "mouse") await mouse("mouseMoved", x, 100); else await touch("touchMove", [[x, 100]]);
+    }
+    if (kind === "mouse") await mouse("mouseReleased", x, 100); else await touch("touchEnd", []);
+    await camera();
+    const { pointers, frames, atRelease } = await log(true);
+    const moves = pointers.filter((p) => p.type === "pointermove").map((p) => [p.t, p.x]);
+    const velocity = releaseVelocity(moves, atRelease.t);
+    const k = Math.LN2 / (PAN.halfLife / 1000);
+    const speed = Math.min(velocity, PAN.max);
+    const expected = speed >= PAN.min ? {
+      distance: (speed - PAN.stop) / k,
+      duration: Math.log(speed / PAN.stop) / k * 1000,
+    } : { distance: 0, duration: 0 };
+    const glide = frames.filter((f) => f.t > atRelease.t);
+    const last = glide.at(-1) ?? { t: atRelease.t, at: atRelease.at };
+    const distance = last.at[0] - atRelease.at[0];
+    // The remaining distance plus stop / k falls as e^(−kt): its log's
+    // slope over the glide's frames gives the measured half-life.
+    const fit = glide.slice(0, -1).map((f) => [(f.t - atRelease.t) / 1000,
+      Math.log(last.at[0] - f.at[0] + PAN.stop / k)]).filter(([, y]) => Number.isFinite(y));
+    const n = fit.length;
+    const [sx, sy] = fit.reduce(([a, b], [x, y]) => [a + x, b + y], [0, 0]);
+    const sxx = fit.reduce((a, [x]) => a + x * x, 0);
+    const sxy = fit.reduce((a, [x, y]) => a + x * y, 0);
+    const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    return {
+      kind, velocity, distance, expected,
+      halfLife: (Math.LN2 / -slope) * 1000,
+      duration: last.t - atRelease.t,
+      frames: glide.length,
+    };
+  }
+
+  const results = [];
+  for (const [kind, dx] of [["mouse", 6], ["mouse", 20], ["touch", 10], ["touch", 30]]) {
+    const r = await fling(kind, dx);
+    results.push(r);
+    assert.ok(r.velocity > PAN.min, `${kind} fling of ${dx} px/move: ${r.velocity} px/s`);
+    assert.ok(Math.abs(r.distance - r.expected.distance) < Math.max(1, r.expected.distance * 0.02),
+      `${kind}: glided ${r.distance.toFixed(1)} px, mln-ffi's decay gives ${r.expected.distance.toFixed(1)} from ${r.velocity.toFixed(0)} px/s`);
+    assert.ok(Math.abs(r.halfLife - PAN.halfLife) < 5, `${kind}: half-life ${r.halfLife.toFixed(1)} ms`);
+    // Frames land on vsync: the last moving one is the first at or after
+    // the end (allowing a dropped frame).
+    assert.ok(r.duration >= r.expected.duration - 1 && r.duration < r.expected.duration + 40,
+      `${kind}: glided ${r.duration.toFixed(0)} ms of ${r.expected.duration.toFixed(0)}`);
+  }
+
+  // A slow drag and a drag held still before release don't glide.
+  for (const held of [0, 120]) {
+    await reset();
+    await log(true);
+    await mouse("mousePressed", 40, 100);
+    for (let i = 1; i <= 8; i++) await mouse("mouseMoved", 40 + (held ? 10 : 1) * i, 100);
+    await wait(held);
+    await mouse("mouseReleased", held ? 120 : 48, 100);
+    await camera();
+    const { frames, atRelease } = await log(true);
+    assert.equal(frames.filter((f) => f.t > atRelease.t + 1).length, 0, held ? "held still" : "slow");
+  }
+
+  // A pinch spreading fast keeps zooming after release, by at most 2.5.
+  await reset();
+  await log(true);
+  await touch("touchStart", [[90, 100], [110, 100]]);
+  for (let i = 1; i <= 8; i++) await touch("touchMove", [[90 - 8 * i, 100], [110 + 8 * i, 100]]);
+  const pinched = await scenario((s) => s.map.camera.current.zoom);
+  await touch("touchEnd", []);
+  const pinchEnd = (await camera()).zoom;
+  assert.ok(pinchEnd - pinched > 0.1 && pinchEnd - pinched <= 2.5, `pinch glide: ${pinched} → ${pinchEnd}`);
+
+  // Shift-drag draws a box and zooms to it: 100 × 80 in 200 × 200 is one level.
+  await reset();
+  await mouse("mousePressed", 50, 50, { modifiers: SHIFT });
+  await mouse("mouseMoved", 100, 90, { modifiers: SHIFT });
+  await mouse("mouseMoved", 150, 130, { modifiers: SHIFT });
+  const shown = await page.evaluate(() => [...document.querySelectorAll("#map div")]
+    .map((d) => d.getBoundingClientRect()).find((r) => r.width === 100 && r.height === 80 && r.left === 50 && r.top === 50));
+  assert.ok(shown, "the box shows while it's drawn");
+  await mouse("mouseReleased", 150, 130, { modifiers: SHIFT });
+  const boxed = await camera();
+  assert.ok(Math.abs(boxed.zoom - 5) < 1e-6, `box zoom: ${boxed.zoom}`);
+
+  // Shift-double-click zooms out; double-tap zooms in; a two-finger tap
+  // zooms out; double-tap-and-drag zooms.
+  const zoomAfter = async (gesture) => { await reset(); await gesture(); return (await camera()).zoom - 4; };
+  const clicks = await zoomAfter(async () => {
+    for (const clickCount of [1, 2]) {
+      await mouse("mousePressed", 100, 100, { modifiers: SHIFT, clickCount });
+      await mouse("mouseReleased", 100, 100, { modifiers: SHIFT, clickCount });
+      await wait(50);
+    }
+  });
+  assert.ok(Math.abs(clicks + 1) < 1e-6, `shift-double-click: ${clicks}`);
+  const taps = await zoomAfter(async () => {
+    for (let i = 0; i < 2; i++) { await touch("touchStart", [[100, 100]]); await touch("touchEnd", []); await wait(50); }
+  });
+  assert.ok(Math.abs(taps - 1) < 1e-6, `double-tap: ${taps}`);
+  const twoFinger = await zoomAfter(async () => {
+    await touch("touchStart", [[80, 100], [120, 100]]);
+    await wait(50);
+    await touch("touchEnd", []);
+  });
+  assert.ok(Math.abs(twoFinger + 1) < 1e-6, `two-finger tap: ${twoFinger}`);
+  const quick = await zoomAfter(async () => {
+    await touch("touchStart", [[100, 60]]);
+    await touch("touchEnd", []);
+    await wait(50);
+    await touch("touchStart", [[100, 60]]);
+    for (let i = 1; i <= 8; i++) await touch("touchMove", [[100, 60 + 8 * i]]);
+    await wait(100);
+    await touch("touchEnd", []);
+  });
+  assert.ok(Math.abs(quick - 0.5) < 0.05, `double-tap-drag 64 px down: ${quick}`);
+
+  // A right-drag turn of a few degrees, held, settles on north.
+  await reset();
+  await mouse("mousePressed", 100, 100, { button: "right" });
+  for (let i = 1; i <= 4; i++) await mouse("mouseMoved", 100 + 2 * i, 100, { button: "right" });
+  const turned = await scenario((s) => s.map.camera.current.bearing);
+  await wait(100);
+  await mouse("mouseReleased", 108, 100, { button: "right" });
+  const settled = await camera();
+  assert.ok(Math.abs(turned) > 3 && Math.abs(turned) < 7, `turned ${turned}`);
+  assert.ok(Math.abs(settled.bearing) < 1e-9, `settled at ${settled.bearing}`);
+
+  assert.deepEqual(errors, []);
+  await page.close();
+  for (const r of results) {
+    console.log(`gestures: ${r.kind} fling at ${r.velocity.toFixed(0)} px/s glided ${r.distance.toFixed(1)} px `
+      + `(mln-ffi: ${r.expected.distance.toFixed(1)}) over ${r.duration.toFixed(0)} ms `
+      + `(${r.expected.duration.toFixed(0)}) in ${r.frames} frames, half-life ${r.halfLife.toFixed(1)} ms (140)`);
+  }
+  console.log(`gestures: pinch glide +${(pinchEnd - pinched).toFixed(2)} levels; box, shift-double-click, double-tap, `
+    + `two-finger tap, double-tap-drag (${quick.toFixed(3)}) and north snap (from ${turned.toFixed(1)}°) as expected`);
+}
+
 const CHECKS = {
   scenario,
   edits,
   editor,
   compare,
+  gestures,
   offline,
 };
 const server = await serveDemo();

@@ -81,6 +81,59 @@ export interface FlyOptions extends CameraOptions {
   easing?: Easing;
 }
 
+/** How one part of a momentum slows from its release speed, in the
+ * part's unit (pixels, zoom levels, degrees): maplibre-native-ffi's
+ * `mln_momentum_decay`. Left out, each setting takes the part's default:
+ * friction with a 140 ms half-life. */
+export interface MomentumDecay {
+  /** "friction" halves the speed every `halfLife` ms until `stopSpeed`;
+   * "ease" moves `distance` over `duration` ms along `easing`. */
+  model?: "friction" | "ease";
+  halfLife?: number;
+  stopSpeed?: number;
+  distance?: number;
+  duration?: number;
+  easing?: Easing;
+  /** A slower release doesn't move. */
+  minSpeed?: number;
+  /** A faster friction release counts as this. */
+  maxSpeed?: number;
+  /** The farthest the part moves. */
+  maxDistance?: number;
+}
+
+/** Where a part settles once it stops: the nearest of the values every
+ * `spacing` from `offset`, within `tolerance`, eased over `duration` ms. */
+export interface MomentumSnap {
+  spacing?: number;
+  offset?: number;
+  tolerance?: number;
+  duration?: number;
+}
+
+/** A zoom, bearing or pitch that keeps changing after release. */
+export interface AnchoredMomentum {
+  /** Zoom levels, or degrees, per second at release; without it the part
+   * only settles. */
+  velocity?: number;
+  /** The point the change keeps in place; the center without one. */
+  anchor?: Point;
+  decay?: MomentumDecay;
+  /** `true` for the part's default: the nearest whole zoom level within
+   * 0.5, north within 7°, flat within 7°. */
+  snap?: boolean | MomentumSnap;
+}
+
+/** How a gesture the page recognized itself keeps moving the camera after
+ * release: maplibre-native-ffi's `mln_gesture_momentum`. */
+export interface GestureMomentum {
+  /** Pixels per second the content moved on screen at release. */
+  pan?: { velocity: Point; decay?: MomentumDecay };
+  zoom?: AnchoredMomentum;
+  bearing?: AnchoredMomentum;
+  pitch?: AnchoredMomentum;
+}
+
 export interface Padding {
   top: number;
   right: number;

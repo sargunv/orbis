@@ -1,7 +1,8 @@
 // DOM input to the map's gestures (orb-camera's input): pointer events for
 // mouse, pen and touch, wheel, keys and focus. Each call carries the
-// event's timestamp, which inertia and double taps measure, on the clock
-// frames' timestamps use.
+// event's timestamp, which release velocities and double taps measure, on
+// the clock frames' timestamps use. A Shift-drag's box shows over the
+// canvas while it is drawn.
 
 import type { Core } from "./hosts.ts";
 
@@ -14,6 +15,26 @@ const modifiers = (e: KeyboardEvent | MouseEvent) =>
 export function attachInput(canvas: HTMLCanvasElement, core: () => Core | undefined, changed: () => void): () => void {
   canvas.tabIndex = 0;
   canvas.style.touchAction = "none";
+  const box = document.createElement("div");
+  Object.assign(box.style, {
+    position: "absolute", display: "none", pointerEvents: "none", boxSizing: "border-box",
+    border: "2px dotted #202020", background: "rgba(255, 255, 255, 0.5)",
+  });
+  canvas.after(box);
+  // Shows the box a Shift-drag zooms to, if any, over the canvas.
+  const showBox = (ui: Core | undefined) => {
+    const corners = ui?.boxZoom();
+    if (!corners) {
+      box.style.display = "none";
+      return;
+    }
+    const [x0, y0, x1, y1] = corners;
+    Object.assign(box.style, {
+      display: "block",
+      left: `${canvas.offsetLeft + Math.min(x0, x1)}px`, top: `${canvas.offsetTop + Math.min(y0, y1)}px`,
+      width: `${Math.abs(x1 - x0)}px`, height: `${Math.abs(y1 - y0)}px`,
+    });
+  };
   // Where the canvas is while pointers are captured: `offsetX` would lay
   // the page out again on every move once overlays have moved.
   let origin: DOMRect | null = null;
@@ -36,18 +57,26 @@ export function attachInput(canvas: HTMLCanvasElement, core: () => Core | undefi
   };
   const move = (e: PointerEvent) => {
     const [x, y] = at(e);
-    if (core()?.pointerMove(e.pointerId, x, y, e.timeStamp)) changed();
+    const ui = core();
+    if (ui?.pointerMove(e.pointerId, x, y, e.timeStamp)) {
+      showBox(ui);
+      changed();
+    }
   };
   const up = (e: PointerEvent) => {
     const [x, y] = at(e);
-    if (core()?.pointerUp(e.pointerId, x, y, e.timeStamp)) changed();
+    const ui = core();
+    if (ui?.pointerUp(e.pointerId, x, y, e.timeStamp)) changed();
+    showBox(ui);
   };
   const lost = () => {
     captured = Math.max(0, captured - 1);
     origin = null;
   };
   const cancel = (e: PointerEvent) => {
-    if (core()?.pointerCancel(e.pointerId, e.timeStamp)) changed();
+    const ui = core();
+    if (ui?.pointerCancel(e.pointerId, e.timeStamp)) changed();
+    showBox(ui);
   };
   const wheel = (e: WheelEvent) => {
     if (core()?.wheel(e.offsetX, e.offsetY, e.deltaX, e.deltaY, e.deltaMode, modifiers(e), e.timeStamp)) {
@@ -56,12 +85,19 @@ export function attachInput(canvas: HTMLCanvasElement, core: () => Core | undefi
     }
   };
   const key = (e: KeyboardEvent) => {
-    if (core()?.key(e.key, modifiers(e), e.timeStamp)) {
+    const ui = core();
+    if (ui?.key(e.key, modifiers(e), e.timeStamp)) {
       e.preventDefault();
+      showBox(ui);
       changed();
     }
   };
-  const blur = (e: FocusEvent) => { core()?.blur(e.timeStamp); changed(); };
+  const blur = (e: FocusEvent) => {
+    const ui = core();
+    ui?.blur(e.timeStamp);
+    showBox(ui);
+    changed();
+  };
   const menu = (e: Event) => e.preventDefault();
   const listeners: [string, EventListener, AddEventListenerOptions?][] = [
     ["pointerdown", down as EventListener],
@@ -77,5 +113,6 @@ export function attachInput(canvas: HTMLCanvasElement, core: () => Core | undefi
   for (const [type, listener, options] of listeners) canvas.addEventListener(type, listener, options);
   return () => {
     for (const [type, listener, options] of listeners) canvas.removeEventListener(type, listener, options);
+    box.remove();
   };
 }

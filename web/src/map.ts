@@ -13,7 +13,7 @@ import { defaultJobWorkers } from "./workers.ts";
 import { transaction, type FeatureTarget, type Transaction } from "./transaction.ts";
 import type {
   Bounds, Camera, CameraOptions, Constraints, EaseOptions, Feature, FitOptions, FlyOptions, FreeCamera, Padding,
-  FrameStats, GpuSubmission, Hit, LngLat, MapEvents, MapOptions, Point, QueryGeometry, QueryOptions,
+  FrameStats, GestureMomentum, GpuSubmission, Hit, LngLat, MapEvents, MapOptions, Point, QueryGeometry, QueryOptions,
   SourceQueryOptions, StyleImageData, StyleImageOptions,
 } from "./types.ts";
 
@@ -116,6 +116,19 @@ export class CameraControl {
     if (!target) return Promise.resolve(false);
     const move = { ...options, ...target, offset: undefined };
     return options.linear ? this.easeTo(move) : this.flyTo(move);
+  }
+
+  /** Continues a gesture the page recognized itself: each part glides on
+   * from its release velocity and slows by its decay, then settles on its
+   * snap. Input or a camera move stops it. Resolves true once it ends on
+   * its own, false when stopped. The map's own gestures end this way. */
+  startMomentum(momentum: GestureMomentum): Promise<boolean> {
+    const id = this.#core().startMomentum(momentum);
+    if (id < 0) {
+      this.#changed();
+      return Promise.resolve(true);
+    }
+    return this.#track(id);
   }
 
   /** Stops the running animation; its promise resolves false. */
