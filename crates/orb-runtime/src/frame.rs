@@ -25,7 +25,7 @@ impl Map {
         renderer: &Renderer,
         view: &View,
         elevation: Option<&crate::terrain::TerrainElevation>,
-    ) -> Vec<Option<orb_source::Update>> {
+    ) -> Vec<Option<SourcePlan>> {
         let sources = self.style.as_ref().map_or(0, |s| s.sources.len());
         let at = |index| self.plan_source(renderer, view, index, elevation);
         (0..sources).map(at).collect()
@@ -40,7 +40,7 @@ impl Map {
         view: &View,
         index: usize,
         elevation: Option<&crate::terrain::TerrainElevation>,
-    ) -> Option<orb_source::Update> {
+    ) -> Option<SourcePlan> {
         let style = self.style.as_ref()?;
         let plan = style.worker.plan();
         // A source only the terrain reads.
@@ -121,7 +121,7 @@ impl Map {
                         && n.family.is_draped()
                         && layer.visibility == orb_style::Visibility::Visible))
         }) {
-            return Some(pyramid.plan(&[]));
+            return Some(SourcePlan::of(pyramid.plan(&[])));
         }
         // A hillshade the terrain shades drapes its slopes: its source
         // covers each terrain tile's quarters, whatever detail the
@@ -143,33 +143,61 @@ impl Map {
                 .collect();
             cover.sort();
             cover.dedup();
-            return Some(pyramid.plan(&cover));
+            return Some(SourcePlan::of(pyramid.plan(&cover)));
         }
         let tms = &endpoint.tms;
         // Tile mode draws the middle tile of its grid and places labels over
         // the whole grid: a source whose content crosses tile edges (labels,
-        // circles, heatmaps) covers the grid, as does a DEM source, whose
-        // tiles' borders (slopes at the edges) come from their drawn
-        // neighbours. The grid's edges are tile edges: tiles that only
-        // touch it hold nothing the middle shows.
+        // circles, heatmaps; extrusions and fill outlines at the edges)
+        // covers the grid, as does a DEM source, whose tiles' borders
+        // (slopes at the edges) come from their drawn neighbours. The
+        // grid's edges are tile edges: tiles that only touch it hold
+        // nothing the middle shows. Of a vector source's tiles around the
+        // middle, only what reaches into it is needed: they lay out that
+        // alone (`neighbours`, `TileRequest::neighbour`).
         let grid_view;
-        let (view, margin) = match &self.mode {
+        let (cover_view, margin, middle) = match &self.mode {
             RenderMode::Tile(_) => {
-                let crosses = endpoint.dem_unpack.is_some()
-                    || nodes().any(|(_, n)| {
-                        n.family.is_symbol() || matches!(n.family, Family::Circle | Family::Heatmap)
-                    });
+                let dem = endpoint.dem_unpack.is_some();
+                let crossing =
+                    nodes().any(|(_, n)| n.family.crosses_tiles() || n.family.reaches_edges());
                 let middle = view.viewport();
                 grid_view = self.view(orb_camera::Viewport {
                     width: 3.0 * middle.width,
                     height: 3.0 * middle.height,
                 });
-                (if crosses { &grid_view } else { view }, -0.5)
+                match (dem, crossing) {
+                    (true, _) => (&grid_view, -0.5, None),
+                    (false, true) => (&grid_view, -0.5, Some(view)),
+                    (false, false) => (view, -0.5, None),
+                }
             }
-            _ => (view, f64::from(reach)),
+            _ => (view, f64::from(reach), None),
         };
         let warps = &self.globe_warps;
-        let cover = match (view.low_plane(), *warped) {
+        let volume = |view: &View, height: f32| {
+            view.cover_volume(
+                tms,
+                endpoint.cover_px,
+                pyramid.max_zoom(),
+                f64::from(height) * self.extrusion_scale(),
+                elevation.map(|e| e as &dyn orb_camera::Elevation),
+                margin,
+            )
+        };
+        // Heights no expression bounds: the highest the covered tiles hold,
+        // as each laid out, widens the cover. It comes from this cover's own
+        // tiles, not from what loaded before, so a map reached by a gesture
+        // covers what a fresh one does; in Tile mode from the middle's
+        // alone, as its neighbours lay out only what crosses into it.
+        let lifted = |cover: &[orb_crs::CoveredTile]| {
+            (cover.iter())
+                .filter(|_| !unbounded.is_empty())
+                .filter_map(|t| pyramid.get(t.index))
+                .map(|tile| unbounded.tallest(tile))
+                .fold(height, f32::max)
+        };
+        let cover_of = |view: &View| match (view.low_plane(), *warped) {
             // On a low-zoom plane every set's tiles land through its warp.
             (Some(low), _) => {
                 low.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
@@ -177,37 +205,35 @@ impl Map {
                 })
             }
             (None, false) => {
-                let volume = |height: f32| {
-                    view.cover_volume(
-                        tms,
-                        endpoint.cover_px,
-                        pyramid.max_zoom(),
-                        f64::from(height) * self.extrusion_scale(),
-                        elevation.map(|e| e as &dyn orb_camera::Elevation),
-                        margin,
-                    )
-                };
-                let cover = volume(height);
-                // Heights no expression bounds: the highest the covered
-                // tiles hold, as each laid out, widens the cover. It comes
-                // from this cover's own tiles, not from what loaded before,
-                // so a map reached by a gesture covers what a fresh one does.
-                let lifted = (cover.iter())
-                    .filter(|_| !unbounded.is_empty())
-                    .filter_map(|t| pyramid.get(t.index))
-                    .map(|tile| unbounded.tallest(tile))
-                    .fold(0.0f32, f32::max);
-                if lifted > height {
-                    volume(lifted)
-                } else {
-                    cover
+                let cover = volume(view, height);
+                match lifted(&cover) {
+                    lift if lift > height => volume(view, lift),
+                    _ => cover,
                 }
             }
             (None, true) => view.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
                 warps.surface_footprint(tms, tile)
             }),
         };
-        Some(pyramid.plan(&cover))
+        let Some(middle) = middle else {
+            return Some(SourcePlan {
+                update: pyramid.plan(&cover_of(cover_view)),
+                neighbours: Vec::new(),
+            });
+        };
+        let drawn = cover_of(middle);
+        let cover = match (cover_view.low_plane(), *warped) {
+            (None, false) => volume(cover_view, lifted(&drawn)),
+            _ => cover_of(cover_view),
+        };
+        let neighbours = (cover.iter())
+            .map(|t| t.index)
+            .filter(|&t| !drawn.iter().any(|d| d.index == t))
+            .collect();
+        Some(SourcePlan {
+            update: pyramid.plan(&cover),
+            neighbours,
+        })
     }
 
     /// Applies source `index`'s plan: its pyramid records it, its requests
@@ -215,14 +241,19 @@ impl Map {
     /// wait for [`place_source`](Self::place_source).
     pub(crate) fn apply_source(
         &mut self,
+        renderer: &mut Renderer,
         index: usize,
-        update: Option<orb_source::Update>,
+        plan: Option<SourcePlan>,
         report: &mut FrameReport,
     ) {
         let style = self.style.as_mut().expect("called with a style");
         style.draws.resize_with(style.sources.len(), || None);
         style.draws[index] = None;
-        let Some(mut update) = update else {
+        let Some(SourcePlan {
+            mut update,
+            neighbours,
+        }) = plan
+        else {
             return;
         };
         // Tiles held for their labels stay until a placement covers what
@@ -241,6 +272,18 @@ impl Map {
         else {
             return;
         };
+        // A tile laid out as a neighbour that is drawn now loads again
+        // whole, as a fresh map's would; its job finds the tile's data
+        // decoded already.
+        for &tile in &update.cover {
+            if neighbours.contains(&tile) || !pyramid.get(tile).is_some_and(|r| r.neighbour) {
+                continue;
+            }
+            let resident = pyramid.remove(tile).expect("checked above");
+            (self.retired_ramps).extend(remove_resident(renderer, resident, &mut style.states));
+            update.draw.retain(|d| d.tile != tile);
+            update.request.push(tile);
+        }
         pyramid.commit(&update);
         let tms = &endpoint.tms;
         let mut requests = Vec::new();
@@ -269,7 +312,8 @@ impl Map {
             self.services.jobs.cancel(id, key, tile);
         }
         for tile in requests {
-            self.send_job(index, tile, None, false, None);
+            let neighbour = neighbours.contains(&tile);
+            self.send_tile_job(index, tile, (None, false, neighbour), None);
         }
     }
 
@@ -1314,6 +1358,24 @@ fn extrusion_bound(layer: &orb_style::Layer, zoom: f64) -> Option<(f32, bool)> {
     let bounds = [top.max_value(zoom), base.max_value(zoom)];
     let tallest = bounds.into_iter().flatten().fold(0.0, f64::max) as f32;
     Some((tallest, bounds.iter().all(Option::is_some)))
+}
+
+/// A source's plan for a frame ([`Map::plan_source`]).
+pub(crate) struct SourcePlan {
+    pub(crate) update: orb_source::Update,
+    /// Tiles of the cover only what reaches into the tiles beside them is
+    /// needed of: in Tile mode, the drawn tile's neighbours, which lay out
+    /// that alone (`TileRequest::neighbour`).
+    pub(crate) neighbours: Vec<TileIndex>,
+}
+
+impl SourcePlan {
+    fn of(update: orb_source::Update) -> Self {
+        Self {
+            update,
+            neighbours: Vec::new(),
+        }
+    }
 }
 
 /// A source's layers whose height in the cover no expression bounds: the

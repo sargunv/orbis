@@ -35,6 +35,25 @@ impl Family {
         matches!(self, Self::SymbolIcon | Self::SymbolText)
     }
 
+    /// Whether what the family draws of a tile crosses its edges: labels,
+    /// and circles and heatmaps, which draw from their point's tile alone.
+    pub fn crosses_tiles(self) -> bool {
+        matches!(
+            self,
+            Self::SymbolIcon | Self::SymbolText | Self::Circle | Self::Heatmap
+        )
+    }
+
+    /// Whether what the family draws of the features at a tile's edges
+    /// reaches past them: an extrusion draws each polygon whole from the
+    /// tile owning its centroid, and a fill's outline, a line primitive,
+    /// owns its pixels by where the line lies, so a segment on an edge
+    /// rasterizes on either side. Every family neither this nor
+    /// [`crosses_tiles`](Self::crosses_tiles) draws within its tile.
+    pub fn reaches_edges(self) -> bool {
+        matches!(self, Self::FillExtrusion | Self::FillOutline)
+    }
+
     /// Whether terrain drapes the family's layers over its surface rather
     /// than drawing them in 3D or on screen (GL JS's render to texture).
     pub fn is_draped(self) -> bool {

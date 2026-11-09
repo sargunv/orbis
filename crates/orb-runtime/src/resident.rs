@@ -38,6 +38,9 @@ pub(crate) struct ResidentTile {
     /// What it costs to keep: GPU bytes of its meshes and texture layer,
     /// and its picking data (see [`tile_cost`]).
     pub(crate) cost: u64,
+    /// Laid out as a neighbour of the tile Tile mode draws: only what
+    /// reaches into the tiles beside it. Drawn, it loads again whole.
+    pub(crate) neighbour: bool,
 }
 
 impl ResidentTile {
@@ -50,6 +53,7 @@ impl ResidentTile {
             zoom,
             symbols: Vec::new(),
             cost: 0,
+            neighbour: false,
         }
     }
 }

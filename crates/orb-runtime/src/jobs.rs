@@ -364,6 +364,9 @@ pub struct TileResult {
     pub nodes: Vec<u32>,
     /// Meshes carry property rows only (a column job).
     pub rows_only: bool,
+    /// Laid out as a neighbour of the tile Tile mode draws: only what
+    /// reaches into the tiles beside it.
+    pub neighbour: bool,
     /// Feature ids the meshes' state ids index.
     pub ids: Vec<String>,
     pub meshes: Vec<ResultMesh>,
@@ -492,6 +495,7 @@ impl From<TileBuild> for TileResult {
             revision: build.revision,
             nodes: build.nodes,
             rows_only: build.rows_only,
+            neighbour: build.neighbour,
             ids: build.ids,
             host_bytes: None,
             warnings: build.warnings,

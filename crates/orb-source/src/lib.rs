@@ -459,6 +459,17 @@ impl<T> TilePyramid<T> {
             })
     }
 
+    /// Removes `tile` if it's ready, used or not.
+    pub fn remove(&mut self, tile: TileIndex) -> Option<T> {
+        if !matches!(self.tiles.get(&tile)?.state, State::Ready(_)) {
+            return None;
+        }
+        match self.tiles.remove(&tile)?.state {
+            State::Ready(value) => Some(value),
+            _ => unreachable!("checked above"),
+        }
+    }
+
     /// Evicts `tile` if it's ready and the last update didn't use it.
     pub fn evict_unused(&mut self, tile: TileIndex) -> Option<T> {
         let entry = self.tiles.get(&tile)?;

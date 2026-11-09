@@ -1440,7 +1440,7 @@ impl Map {
             }
             let plan = self.plan_frame(renderer, &view, elevation.as_deref());
             for (index, update) in plan.into_iter().enumerate() {
-                self.apply_source(index, update, &mut report);
+                self.apply_source(renderer, index, update, &mut report);
             }
             let draping = clock.now();
             times.plan = micros(planning, draping);
@@ -1807,6 +1807,23 @@ impl Map {
         rows_only: bool,
         edit: Option<u64>,
     ) {
+        // A neighbour's relayouts and rows lay out as it did: its meshes
+        // hold its features at the edges alone.
+        let neighbour = edit.is_some()
+            && matches!(&self.style.as_ref().expect("jobs need a style").sources[index],
+                SourceState::Ready { pyramid, .. } if pyramid.get(tile).is_some_and(|r| r.neighbour));
+        self.send_tile_job(index, tile, (nodes, rows_only, neighbour), edit);
+    }
+
+    /// [`send_job`](Self::send_job), for a neighbour of the tile Tile mode
+    /// draws if `neighbour` ([`TileRequest::neighbour`]).
+    pub(crate) fn send_tile_job(
+        &mut self,
+        index: usize,
+        tile: TileIndex,
+        (nodes, rows_only, neighbour): (Option<Vec<u32>>, bool, bool),
+        edit: Option<u64>,
+    ) {
         let style = self.style.as_mut().expect("jobs need a style");
         // A video's tile waits for a frame from the host.
         let key = style.worker.plan().sources[index].key;
@@ -1864,6 +1881,7 @@ impl Map {
             encoding: endpoint.encoding,
             nodes,
             rows_only,
+            neighbour,
             dem_unpack: None,
             icons: 0,
         };
@@ -2214,6 +2232,7 @@ impl Map {
                 encoding: endpoint.encoding,
                 nodes: None,
                 rows_only: false,
+                neighbour: false,
                 dem_unpack: endpoint.dem_unpack.map(crate::DemUnpack),
                 icons: 0,
             });

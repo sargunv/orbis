@@ -613,6 +613,7 @@ impl TileWorker {
         let select = Select {
             nodes: request.nodes.as_deref(),
             rows_only: request.rows_only,
+            neighbour: request.neighbour,
         };
         let icons = Arc::clone(&self.data.icons.lock().expect("icons poisoned").icons);
         let words = self.data.words.lock().expect("words poisoned").clone();
@@ -897,6 +898,14 @@ pub struct TileRequest {
     pub nodes: Option<Vec<u32>>,
     /// Only property rows: a column job.
     pub(crate) rows_only: bool,
+    /// A neighbour of the tile Tile mode draws: only what reaches into the
+    /// tiles beside it lays out, the nodes whose content crosses tile
+    /// edges and the features at its edges of those whose features reach
+    /// past them ([`Family::crosses_tiles`], [`Family::reaches_edges`]).
+    ///
+    /// [`Family::crosses_tiles`]: orb_layout::Family::crosses_tiles
+    /// [`Family::reaches_edges`]: orb_layout::Family::reaches_edges
+    pub(crate) neighbour: bool,
     /// A terrain DEM tile: also decode its elevations with this unpack
     /// vector, for the CPU ([`TileResult::dem`](crate::TileResult::dem)).
     pub dem_unpack: Option<DemUnpack>,
@@ -951,6 +960,7 @@ pub(crate) mod tests {
             encoding: Encoding::Mvt,
             nodes: None,
             rows_only: false,
+            neighbour: false,
             dem_unpack: None,
             icons: 0,
         }
@@ -1029,6 +1039,7 @@ pub(crate) mod tests {
                 &TileRequest {
                     nodes: Some(vec![crate::style::node_key(1, 0)]),
                     rows_only: true,
+                    neighbour: false,
                     ..request(tile)
                 },
             )

@@ -94,6 +94,7 @@ impl Stages {
             encoding: self.encoding,
             nodes: None,
             rows_only: false,
+            neighbour: false,
             dem_unpack: None,
             icons: 0,
         }

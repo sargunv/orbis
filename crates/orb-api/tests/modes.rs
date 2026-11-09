@@ -142,6 +142,24 @@ fn tiles_repeat_byte_for_byte() {
     );
 }
 
+/// A tile laid out first as a neighbour (only what reaches into the tile
+/// drawn) loads whole once drawn: it draws what a fresh map's does.
+#[test]
+fn a_tile_drawn_after_its_neighbour_matches_a_fresh_one() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
+    let center = tile_at(Geodetic::new(139.755, 35.686), 15);
+    let mut fresh = Map::new(&runtime, MapOptions::default());
+    fresh.set_style_json(&tokyo()).unwrap();
+    let first = render_tile(&mut fresh, 15, center.col, center.row);
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(&tokyo()).unwrap();
+    render_tile(&mut map, 15, center.col - 1, center.row);
+    assert!(
+        render_tile(&mut map, 15, center.col, center.row) == first,
+        "a tile drawn after its neighbour differs from a fresh map's"
+    );
+}
+
 /// Each tile places its labels with its neighbours' (tile scope), so
 /// two tiles that share an edge both see a label anchored a few pixels from
 /// it, which crosses it: both show it or neither does.

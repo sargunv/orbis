@@ -632,6 +632,7 @@ impl Map {
             globe: Some(globe),
         });
         resident.series = series;
+        resident.neighbour = build.neighbour;
         self.counts.meshes_uploaded += build.meshes.len() as u32;
         record_maxima(&mut style.nodes, &build.meshes, &mut style.paint);
         resident.cost = tile_cost(renderer, &resident);

@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ops::Range;
 
 use orb_layout::{Family, ImageKey, pack_color};
 use orb_layout::{Mesh, extrusion, fill, line, point};
@@ -26,6 +27,8 @@ pub struct TileBuild {
     pub(crate) nodes: Vec<u32>,
     /// Only property rows: meshes have no geometry.
     pub(crate) rows_only: bool,
+    /// Laid out as a neighbour ([`Select::neighbour`]).
+    pub(crate) neighbour: bool,
     /// Feature ids, as GL JS keys feature state, that meshes refer to.
     pub(crate) ids: Vec<String>,
     pub(crate) meshes: Vec<NodeMesh>,
@@ -57,6 +60,11 @@ pub(crate) struct Select<'a> {
     pub(crate) nodes: Option<&'a [u32]>,
     /// Property rows (with their images and feature ids) only.
     pub(crate) rows_only: bool,
+    /// Only what reaches into the tiles beside this one (a neighbour of
+    /// the tile Tile mode draws): the nodes whose content crosses tile
+    /// edges, and of those whose features reach past them, the features
+    /// at the edges (`Family::crosses_tiles`, `Family::reaches_edges`).
+    pub(crate) neighbour: bool,
 }
 
 /// One render node's share of a tile.
@@ -115,6 +123,22 @@ struct Split {
     groups: Vec<Vec<u32>>,
 }
 
+/// How far inside a tile's edges a neighbour's features reach past them,
+/// in data units: a pixel, with room to spare at any tile size and scale.
+fn edge_band(layer: &Layer) -> i32 {
+    (layer.extent() / 128).max(1) as i32
+}
+
+/// Whether `geometry` comes within `band` data units of its tile's edges,
+/// or past them. A segment that does has an end that does: the square
+/// `band` inside the edges is convex.
+fn reaches_edge(layer: &Layer, geometry: &orb_tile::FeatureGeometry<'_>, band: i32) -> bool {
+    let (lo, hi) = (band, layer.extent() as i32 - band);
+    geometry.parts().any(|part| {
+        (part.rings()).any(|ring| (ring.iter()).any(|&[x, y]| x < lo || x > hi || y < lo || y > hi))
+    })
+}
+
 /// How [`split_features`] may split a feature into its parts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Parts {
@@ -130,8 +154,14 @@ enum Parts {
 /// Splits `features` of `layer` into groups for [`MESH_POINTS`]. Only the
 /// geometry decides it, so a job that sends only property rows splits as
 /// the layout did. A single part larger than the cap stays whole, and a
-/// feature larger than it as `parts` says.
-fn split_features(layer: &Layer, features: Vec<u32>, parts_split: Parts) -> Split {
+/// feature larger than it as `parts` says. With an `edge` band, only the
+/// pieces that reach the tile's edges ([`reaches_edge`]) are kept.
+fn split_features(
+    layer: &Layer,
+    features: Vec<u32>,
+    parts_split: Parts,
+    edge: Option<i32>,
+) -> Split {
     let part_points = |feature: u32| -> Vec<usize> {
         layer
             .geometry(feature as usize)
@@ -143,6 +173,7 @@ fn split_features(layer: &Layer, features: Vec<u32>, parts_split: Parts) -> Spli
     let mut pieces = Vec::new();
     for &feature in &features {
         let parts = part_points(feature);
+        let from = pieces.len();
         let mut start = 0;
         let mut total = 0;
         for (i, &n) in parts.iter().enumerate() {
@@ -159,6 +190,15 @@ fn split_features(layer: &Layer, features: Vec<u32>, parts_split: Parts) -> Spli
             total += n;
         }
         pieces.push((feature, start..parts.len(), total));
+        if let Some(band) = edge {
+            let geometry = layer.geometry(feature as usize);
+            let own = pieces.split_off(from);
+            pieces.extend(
+                (own.into_iter()).filter(|(_, parts, _)| {
+                    reaches_edge(layer, &geometry.slice(parts.clone()), band)
+                }),
+            );
+        }
     }
     let mut groups = vec![Vec::new()];
     let mut total = 0;
@@ -171,10 +211,13 @@ fn split_features(layer: &Layer, features: Vec<u32>, parts_split: Parts) -> Spli
         groups.last_mut().expect("pushed above").push(i as u32);
         total += n;
     }
-    if pieces.len() == features.len() {
+    let whole = |(feature, parts, _): &(u32, Range<usize>, usize)| {
+        parts.start == 0 && parts.end == layer.geometry(*feature as usize).parts().len()
+    };
+    if pieces.iter().all(whole) {
         let groups = groups
             .into_iter()
-            .map(|g| g.into_iter().map(|i| features[i as usize]).collect())
+            .map(|g| g.into_iter().map(|i| pieces[i as usize].0).collect())
             .collect();
         return Split {
             pieces: None,
@@ -616,6 +659,7 @@ pub(crate) fn build(
     let mut build = TileBuild {
         revision: plan.revision,
         rows_only: select.rows_only,
+        neighbour: select.neighbour,
         ..TileBuild::default()
     };
     build.symbols = build_symbols(
@@ -638,7 +682,10 @@ pub(crate) fn build(
     let mut ids: HashMap<String, u32> = HashMap::new();
     let source_def = plan.source_def(source);
     for node in &plan.nodes {
-        if node.source != source || select.nodes.is_some_and(|n| !n.contains(&node.key)) {
+        if node.source != source
+            || select.nodes.is_some_and(|n| !n.contains(&node.key))
+            || (select.neighbour && !node.family.crosses_tiles() && !node.family.reaches_edges())
+        {
             continue;
         }
         build.nodes.push(node.key);
@@ -656,7 +703,13 @@ pub(crate) fn build(
         };
         // Where `within` and `distance` find the features' geometry.
         let geometry_tile = in_ancestor(canonical, ancestor);
-        let selected = features(plan, node, layer, (zoom, geometry_tile), groups.of(layer));
+        let mut selected = features(plan, node, layer, (zoom, geometry_tile), groups.of(layer));
+        // A neighbour draws into the tiles beside it only what lies at its
+        // edges, of a family that reaches past them.
+        let edge = (select.neighbour && node.family.reaches_edges()).then(|| edge_band(layer));
+        if let Some(band) = edge {
+            selected.retain(|&f| reaches_edge(layer, &layer.geometry(f as usize), band));
+        }
         if selected.is_empty() {
             continue;
         }
@@ -678,7 +731,7 @@ pub(crate) fn build(
                 _ if overscaled.is_some() => Parts::Keep,
                 _ => Parts::Large,
             };
-            split_features(layer, selected, parts)
+            split_features(layer, selected, parts, edge)
         };
         let tile_layer = layer;
         let tile_promote = match &source_def.kind {
