@@ -161,6 +161,9 @@ Advice that cost time to learn, not rules:
   size, style parity and clean, modern Rust. Fix small follow-ups in the
   same piece of work. File an issue only for something substantial in that
   focus, and drop the rest with a line in the commit or the closing comment.
+- Label an issue `blocked` only when it needs the owner (their hardware,
+  accounts or a decision) and nothing in it can move without them. Split
+  the owner's part into its own issue so the rest stays workable.
 - Keep tracking issues easy to scan: what's open on top. Remove finished
   entries, or move them into a short "Done" list at the bottom, rather than
   leaving them ticked in place.
