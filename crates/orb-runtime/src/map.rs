@@ -16,7 +16,7 @@ use orb_render::{
 };
 use orb_source::Draw;
 use orb_style::SourceKind;
-use orb_style::v8::StyleDoc;
+use orb_style::v8::{StyleDoc, Transaction};
 
 use crate::MapEvent;
 use crate::frame::*;
@@ -183,6 +183,8 @@ pub(crate) enum Message {
     },
     Sprite {
         generation: u64,
+        /// The style's sprite load it answers ([`LoadedStyle::sprite_epoch`]).
+        epoch: u64,
         result: Result<Vec<crate::sprite::SpriteImage>, String>,
     },
     TileJson {
@@ -257,6 +259,14 @@ pub(crate) struct LoadedStyle {
     pub(crate) image_namespace: Option<u64>,
     pub(crate) sprites_started: bool,
     pub(crate) sprites_loading: u32,
+    /// Counts the style's sprite loads: replies to an earlier one, which
+    /// a new `sprite` superseded, are dropped.
+    pub(crate) sprite_epoch: u64,
+    /// The names the style's sprites gave images.
+    pub(crate) sprite_names: HashSet<String>,
+    /// While another sprite loads in place of the old one, the old one's
+    /// names: those the new one lacks leave once it is in.
+    pub(crate) stale_sprites: Option<HashSet<String>>,
     /// Whether the glyphs labels start with were asked for
     /// ([`TileWorker::first_glyphs`]).
     pub(crate) glyphs_fetched: bool,
@@ -270,7 +280,7 @@ pub(crate) struct LoadedStyle {
     /// afresh (after a device loss) adds them again.
     pub(crate) added_images: std::collections::BTreeMap<String, Arc<crate::StyleImage>>,
     /// Image names reported missing since they were last added.
-    pub(crate) reported_missing: std::collections::HashSet<String>,
+    pub(crate) reported_missing: HashSet<String>,
     /// The scene tile of the background layers' quads.
     pub(crate) background: Option<GpuTile>,
     /// Tiles with placements in publication order, parallel to sources.
@@ -785,8 +795,12 @@ impl Map {
         }
     }
 
-    /// Loads a v8 style from a URL; it replaces the current one when it
-    /// arrives.
+    /// Loads a v8 style from a URL. Without a style it installs when it
+    /// arrives; over one it applies as the diff from it (GL JS's `setStyle`
+    /// with `diff: true`): sources defined alike keep their tiles, layers of
+    /// the same id, type and source data keep their meshes, and their paint
+    /// eases by the v8 `transition`. Root values `transition`, `sky`,
+    /// `projection` and the rest follow the new document; the camera stays.
     pub fn load_style_url(&mut self, url: &str) {
         self.style_error = None;
         self.style_request += 1;
@@ -955,6 +969,9 @@ impl Map {
             image_namespace: None,
             sprites_started: false,
             sprites_loading: 0,
+            sprite_epoch: 0,
+            sprite_names: Default::default(),
+            stale_sprites: None,
             glyphs_fetched: false,
             icons: crate::SpriteIcons::default(),
             image_edits: Vec::new(),
@@ -1483,10 +1500,10 @@ impl Map {
     }
 
     fn start_sprites(&mut self, gpu: &mut dyn Gpu, pixel_ratio: f32) {
-        let mut images = self.services.images.0.lock().expect("images poisoned");
-        let retired = std::mem::take(&mut images.retired);
-        let retired_ramps = std::mem::take(&mut images.retired_ramps);
-        let images = images.atlas.as_mut().expect("renderer initializes images");
+        let mut guard = self.services.images.0.lock().expect("images poisoned");
+        let retired = std::mem::take(&mut guard.retired);
+        let retired_ramps = std::mem::take(&mut guard.retired_ramps);
+        let images = guard.atlas.as_mut().expect("renderer initializes images");
         images.release_ramps(
             gpu,
             retired_ramps
@@ -1500,20 +1517,61 @@ impl Map {
         if style.sprites_started {
             return;
         }
-        style.image_namespace = Some(images.namespace());
+        // Another sprite loads into the same namespace, over the old one.
+        style
+            .image_namespace
+            .get_or_insert_with(|| images.namespace());
         style.sprites_started = true;
+        style.sprite_epoch += 1;
+        let epoch = style.sprite_epoch;
         let worker = Arc::clone(&style.worker);
         let sprites = &worker.plan().style.sprites;
         style.sprites_loading = sprites.len() as u32;
         style.icons.pixel_ratio = f64::from(pixel_ratio);
+        if sprites.is_empty() && style.stale_sprites.is_some() {
+            drop(guard);
+            self.sprites_done(gpu);
+            return;
+        }
         for sprite in sprites {
             let generation = self.generation;
-            let done = self.reply(move |result| Message::Sprite { generation, result });
+            let done = self.reply(move |result| Message::Sprite {
+                generation,
+                epoch,
+                result,
+            });
             let (fetch, decode) = (
                 self.services.fetch.as_ref(),
                 self.services.image_decode.clone(),
             );
             crate::sprite::load(fetch, decode, sprite, pixel_ratio, done);
+        }
+    }
+
+    /// Every sprite of the style has resolved: the jobs lay icons out with
+    /// them. After another sprite replaced the old one, the old one's
+    /// images it lacks go, and symbol layers lay out again.
+    pub(crate) fn sprites_done(&mut self, gpu: &mut dyn Gpu) {
+        let Some(style) = &mut self.style else { return };
+        let reload = style.stale_sprites.take();
+        if let Some(stale) = &reload {
+            let namespace = style.image_namespace.expect("sprite namespace");
+            let mut images = self.services.images.0.lock().expect("images poisoned");
+            let atlas = images.atlas.as_mut().expect("initialized");
+            for name in stale {
+                if !style.sprite_names.contains(name) && !style.added_images.contains_key(name) {
+                    style.icons.remove(name);
+                    atlas.clear(gpu, namespace, name);
+                }
+            }
+            style.paint.invalidate();
+        }
+        style.icons.epoch += 1;
+        self.services
+            .jobs
+            .set_icons(style.id, &Arc::new(style.icons.clone()), &style.worker);
+        if reload.is_some() {
+            self.relayout_symbols();
         }
     }
 
@@ -2005,14 +2063,32 @@ impl Map {
         if request != self.style_request {
             return;
         }
-        let installed = result
-            .map_err(|e| e.to_string())
-            .and_then(|json| self.set_document(&json, Some(url)));
+        let installed = result.map_err(|e| e.to_string()).and_then(|json| {
+            if self.style.is_some() {
+                self.diff_document(&json, url)
+            } else {
+                self.set_document(&json, Some(url))
+            }
+        });
         if let Err(e) = installed {
             let message = format!("style: {e}");
             self.style_error = Some(message.clone());
             self.fail(message);
         }
+    }
+
+    /// Applies a fetched style as the diff from the loaded one; it loads
+    /// (`styleload`) as a new one would.
+    fn diff_document(&mut self, json: &str, base: &str) -> Result<(), String> {
+        let resolved = orb_source::endpoint::resolve_style_urls(json, base);
+        let tx = Transaction::from_commands(&format!(r#"[["setStyle",{resolved}]]"#))?;
+        let id = self.style_id;
+        self.edit(&tx)?;
+        // A diff that needed a reload installed the document, which said so.
+        if self.style_id == id {
+            self.events.push(MapEvent::StyleLoad);
+        }
+        Ok(())
     }
 
     /// Asks the host to open and close video sources' players, and puts

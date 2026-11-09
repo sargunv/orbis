@@ -270,7 +270,8 @@ fn sky_survives_layer_edits_and_sky_replacement_restyles() {
         &mut doc,
         r##"[["setStyle",{"version":8,"sky":{"sky-color":"blue"},"sources":{},"layers":[{"id":"bg","type":"background","paint":{"background-color":"green"}}]}]]"##,
     );
-    assert!(patch.changes.contains(&Change::Restyle));
+    assert!(!patch.changes.contains(&Change::Restyle));
+    assert!(patch.changes.contains(&Change::Root));
     assert_eq!(
         doc.style()
             .atmosphere
@@ -287,7 +288,8 @@ fn sky_survives_layer_edits_and_sky_replacement_restyles() {
 fn sky_rebinds_changed_global_state() {
     let mut doc = StyleDoc::parse(r##"{"version":8,"state":{"sky":{"default":"red"}},"sky":{"sky-color":["global-state","sky"]},"sources":{},"layers":[]}"##).unwrap();
     let patch = commands(&mut doc, r#"[["setGlobalStateProperty","sky","blue"]]"#);
-    assert!(patch.changes.contains(&Change::Restyle));
+    assert!(!patch.changes.contains(&Change::Restyle));
+    assert!(patch.changes.contains(&Change::Root));
     assert_eq!(
         doc.style()
             .atmosphere
@@ -309,6 +311,8 @@ fn terrain_switches_without_a_reload_and_follows_its_source() {
         r#"[["setTerrain",{"source":"dem","exaggeration":2}]]"#,
     );
     assert!(!patch.changes.contains(&Change::Restyle));
+    // Frames read it from the new snapshot.
+    assert!(patch.changes.contains(&Change::Root));
     assert_eq!(doc.style().terrain.as_ref().unwrap().exaggeration, 2.0);
     // Layer edits keep it.
     commands(
@@ -447,4 +451,45 @@ fn source_diffs_change_the_record_and_the_features_alike() {
             "{bad}"
         );
     }
+}
+
+/// GL JS's `setStyle` with `diff: true` between two basemaps on one
+/// source: the source and same-id layers keep their keys, paint shows as
+/// paint changes, and another sprite reloads only the sprite.
+#[test]
+fn set_style_between_basemaps_keeps_shared_sources() {
+    let style = |sprite: &str, color: &str| {
+        format!(
+            r##"{{"version":8,"sprite":"https://s/{sprite}","glyphs":"https://g/{{fontstack}}/{{range}}.pbf","sources":{{"v":{{"type":"vector","tiles":["https://t/{{z}}/{{x}}/{{y}}"]}}}},"layers":[{{"id":"bg","type":"background","paint":{{"background-color":"{color}"}}}},{{"id":"water","type":"fill","source":"v","source-layer":"water","paint":{{"fill-color":"{color}"}}}}]}}"##
+        )
+    };
+    let mut doc = StyleDoc::parse(&style("light", "white")).unwrap();
+    let sources: Vec<_> = doc.source_keys().collect();
+    let layers: Vec<_> = doc.layer_keys().collect();
+    let patch = commands(
+        &mut doc,
+        &format!(r#"[["setStyle",{}]]"#, style("dark", "black")),
+    );
+    assert_eq!(doc.source_keys().collect::<Vec<_>>(), sources);
+    assert_eq!(doc.layer_keys().collect::<Vec<_>>(), layers);
+    assert!(patch.changes.contains(&Change::Sprite));
+    assert!(!patch.changes.contains(&Change::Restyle));
+    assert!(
+        !patch
+            .changes
+            .iter()
+            .any(|c| matches!(c, Change::SourceAdded(_) | Change::SourceRemoved(_)))
+    );
+    assert_eq!(
+        patch
+            .changes
+            .iter()
+            .filter(|c| matches!(c, Change::Paint { .. }))
+            .count(),
+        2
+    );
+    // Other glyphs load every label again.
+    let other = style("dark", "black").replace("https://g/", "https://h/");
+    let patch = commands(&mut doc, &format!(r#"[["setStyle",{other}]]"#));
+    assert!(patch.changes.contains(&Change::Restyle));
 }

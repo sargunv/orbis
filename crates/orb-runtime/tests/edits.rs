@@ -585,3 +585,103 @@ fn projection_switches_load_nothing() {
         );
     }
 }
+
+/// A scratch directory of this test's own, removed when it drops.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("orb-edits-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The Tokyo style with its URLs absolute, to write elsewhere.
+fn tokyo_json() -> String {
+    let path = std::path::Path::new(crate::common::DEMO_DATA)
+        .join("tokyo-mvt.json")
+        .canonicalize()
+        .unwrap();
+    let json = std::fs::read_to_string(&path).unwrap();
+    orb_source::endpoint::resolve_style_urls(&json, &format!("file://{}", path.display()))
+}
+
+/// Another sprite in a style edit loads the sprite and lays the symbol
+/// layers out again from cached tiles, loading no tile; images the new
+/// sprite lacks leave, as a fresh load of the edited style shows.
+#[test]
+fn another_sprite_loads_only_the_sprite() {
+    let scratch = Scratch::new("sprite");
+    // Half the extract's sprite, the same sheet.
+    for name in ["ofm.json", "ofm@2x.json"] {
+        let path = std::path::Path::new(crate::common::DEMO_DATA)
+            .join("sprites")
+            .join(name);
+        let text = std::fs::read_to_string(path).unwrap();
+        let json = orb_expr::json::parse(&text).unwrap();
+        let members = json.as_object().unwrap();
+        let half: Vec<String> = (members.iter().take(members.len() / 2))
+            .map(|m| format!("{:?}:{}", m.key, m.value))
+            .collect();
+        let path = scratch.0.join(name.replace("ofm", "half"));
+        std::fs::write(path, format!("{{{}}}", half.join(","))).unwrap();
+    }
+    for name in ["ofm.png", "ofm@2x.png"] {
+        let from = std::path::Path::new(crate::common::DEMO_DATA)
+            .join("sprites")
+            .join(name);
+        if from.exists() {
+            std::fs::copy(from, scratch.0.join(name.replace("ofm", "half"))).unwrap();
+        }
+    }
+    let mut map = tokyo();
+    edit(&mut map, r#"[["setTransition", {"duration": 0}]]"#);
+    settle(&mut map);
+    let sprite = format!("file://{}/half", scratch.0.display());
+    let (_, _, jobs) = measure(&mut map, &format!(r#"[["setSprite", {sprite:?}]]"#));
+    assert_eq!(jobs.loads, 0, "{jobs:?}");
+    assert!(jobs.relayouts > 0, "symbols lay out again: {jobs:?}");
+    assert_matches_fresh(&mut map);
+}
+
+/// A style URL loaded over a style applies as the diff from it: its
+/// source keeps its tiles, paint eases by the transition, and the map
+/// then draws what a fresh load of the new style draws.
+#[test]
+fn a_style_url_over_a_style_diffs() {
+    let scratch = Scratch::new("url");
+    let next = tokyo_json().replace("rgb(158,189,255)", "rgb(40,60,200)");
+    assert_ne!(next, tokyo_json());
+    let path = scratch.0.join("next.json");
+    std::fs::write(&path, next).unwrap();
+    let mut map = tokyo();
+    let before = map.map.job_counts();
+    map.map
+        .load_style_url(&format!("file://{}", path.display()));
+    let started = Instant::now();
+    let mut loaded = false;
+    let mut eased = false;
+    while !loaded || map.map.transitioning() {
+        map.frame();
+        loaded |= map
+            .map
+            .take_events()
+            .iter()
+            .any(|e| matches!(e, orb_runtime::MapEvent::StyleLoad));
+        eased |= map.map.transitioning();
+        assert!(started.elapsed().as_secs() < 30, "the style did not arrive");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(eased, "the water's colour eases");
+    settle(&mut map);
+    let jobs = delta(before, map.map.job_counts());
+    assert_eq!(jobs.loads, 0, "{jobs:?}");
+    assert_matches_fresh(&mut map);
+}

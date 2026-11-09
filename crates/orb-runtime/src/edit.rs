@@ -287,6 +287,15 @@ impl Map {
             state.rows_epoch = version;
             relayout.entry(node.source).or_default().push(node.key);
         }
+        // Another sprite loads over the old one, next frame.
+        if patch.changes.contains(&Change::Sprite) {
+            style.sprites_started = false;
+            let names = std::mem::take(&mut style.sprite_names);
+            style
+                .stale_sprites
+                .get_or_insert_with(Default::default)
+                .extend(names);
+        }
         style.paint.invalidate();
         self.style = Some(style);
         for index in added {

@@ -65,11 +65,16 @@ impl Map {
                     url,
                     result,
                 } => self.apply_style(request, &url, result),
-                Message::Sprite { generation, result } => {
+                Message::Sprite {
+                    generation,
+                    epoch,
+                    result,
+                } => {
+                    let mut done = false;
                     if let Some(style) = self
                         .style
                         .as_mut()
-                        .filter(|_| generation == self.generation)
+                        .filter(|s| generation == self.generation && epoch == s.sprite_epoch)
                     {
                         style.sprites_loading -= 1;
                         match result {
@@ -82,13 +87,19 @@ impl Map {
                                     self.services.images.0.lock().expect("images poisoned");
                                 let atlas = atlas.atlas.as_mut().expect("initialized");
                                 for image in sprites {
+                                    let namespace =
+                                        style.image_namespace.expect("sprite namespace");
+                                    // Another sprite's image of the name
+                                    // gives way, keeping its atlas id.
+                                    if style.icons.contains(&image.name) {
+                                        atlas.clear(gpu, namespace, &image.name);
+                                    }
+                                    style.sprite_names.insert(image.name.clone());
                                     style.icons.add(
                                         &image.name,
                                         [image.width, image.height],
                                         &image.metadata,
                                     );
-                                    let namespace =
-                                        style.image_namespace.expect("sprite namespace");
                                     // Patterns and icons pad differently.
                                     let mut upload = |pattern: bool| {
                                         let id = if pattern {
@@ -114,14 +125,10 @@ impl Map {
                                 }
                             }
                         }
-                        if style.sprites_loading == 0 {
-                            style.icons.epoch += 1;
-                            self.services.jobs.set_icons(
-                                style.id,
-                                &Arc::new(style.icons.clone()),
-                                &style.worker,
-                            );
-                        }
+                        done = style.sprites_loading == 0;
+                    }
+                    if done {
+                        self.sprites_done(gpu);
                     }
                 }
                 Message::TileJson {

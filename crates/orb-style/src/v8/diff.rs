@@ -85,8 +85,9 @@ fn layer_changes(
     }
 }
 
-/// The root keys whose change needs a full reload.
-const RESTYLE_ROOT: &[&str] = &["sprite", "glyphs", "font-faces", "light", "sky"];
+/// The root keys whose change needs a full reload: every label's glyphs
+/// load again.
+const RESTYLE_ROOT: &[&str] = &["glyphs", "font-faces"];
 
 /// The new snapshot and the patch from `doc` to `draft`.
 pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diagnostics> {
@@ -141,11 +142,21 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         {
             changes.push(Change::Restyle);
         }
+        if !same_opt(member(&doc.root, "sprite"), member(&draft.root, "sprite")) {
+            changes.push(Change::Sprite);
+        }
         if !same_opt(
             member(&doc.root, "projection"),
             member(&draft.root, "projection"),
         ) {
             changes.push(Change::Projection);
+        }
+        // Sky, light, terrain, transition, the camera defaults: frames read
+        // them from the new snapshot.
+        if (doc.root.iter().chain(draft.root.iter()))
+            .any(|m| !same_opt(member(&doc.root, &m.key), member(&draft.root, &m.key)))
+        {
+            changes.push(Change::Root);
         }
         warnings.extend(root.warnings.iter().cloned());
         style = Style {
@@ -174,8 +185,8 @@ pub(crate) fn diff(doc: &StyleDoc, draft: &Draft) -> Result<(Style, Patch), Diag
         let (sky, w) = crate::v8::parse_sky(json, &new_state)?;
         style.atmosphere = Some(sky);
         warnings.extend(w);
-        if !changes.contains(&Change::Restyle) {
-            changes.push(Change::Restyle);
+        if !changes.contains(&Change::Root) {
+            changes.push(Change::Root);
         }
     }
 

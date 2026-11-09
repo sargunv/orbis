@@ -91,6 +91,12 @@ pub enum LayoutChange {
 pub enum Change {
     /// The document needs a full reload (a sprite change, say).
     Restyle,
+    /// The root `sprite` changed: its images load again in place of the
+    /// old ones, and symbol layers lay out again with them.
+    Sprite,
+    /// A root value frames read from the style (sky, light, terrain,
+    /// transition, camera defaults) changed.
+    Root,
     /// The root `projection` changed: every tile lays out again for the
     /// new surface, from cached data.
     Projection,
@@ -139,7 +145,8 @@ impl Change {
     pub fn class(&self) -> Class {
         match self {
             Self::Restyle => Class::Restyle,
-            Self::Projection | Self::SourceData(_) => Class::Relayout,
+            Self::Root => Class::Block,
+            Self::Projection | Self::Sprite | Self::SourceData(_) => Class::Relayout,
             Self::SourceAdded(_) | Self::SourceRemoved(_) => Class::Reload,
             Self::LayerAdded(_) | Self::LayerRemoved(_) | Self::LayersReordered => Class::Nodes,
             Self::Visibility(_) => Class::Block,

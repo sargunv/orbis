@@ -32,6 +32,8 @@ export interface Transaction {
   setLight(light: object): Transaction;
   /** v8 root `transition`. */
   setTransition(transition: object): Transaction;
+  /** v8 `sprite` (a URL or `[{id, url}]`), or `null` for none: its images load in place of the old ones. */
+  setSprite(sprite: string | object[] | null): Transaction;
 }
 
 /** GL JS's `GeoJSONSourceDiff`: features by id (or the source's `promoteId`). */
@@ -58,7 +60,7 @@ const CALLS = [
   "setPaintProperty", "setLayoutProperty", "setFilter", "setLayerZoomRange",
   "addLayer", "removeLayer", "moveLayer", "addSource", "removeSource", "setSourceData", "updateSourceData",
   "setGlobalStateProperty", "setFeatureState", "removeFeatureState", "setStyle",
-  "setProjection", "setSky", "setTerrain", "setLight", "setTransition",
+  "setProjection", "setSky", "setTerrain", "setLight", "setTransition", "setSprite",
 ] as const;
 
 /** A transaction's calls as the JSON array the core applies. */

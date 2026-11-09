@@ -80,7 +80,8 @@ pub enum Op {
         style: Json,
     },
     /// Sets or removes a root property other than sources and layers:
-    /// GL JS's `setTerrain`, `setSky`, `setLight` and `setTransition`.
+    /// GL JS's `setTerrain`, `setSky`, `setLight`, `setTransition` and
+    /// `setSprite`.
     SetRoot {
         key: String,
         value: Option<Json>,
@@ -266,6 +267,10 @@ impl Op {
             },
             "setTransition" => Op::SetRoot {
                 key: "transition".into(),
+                value: arg(1).cloned(),
+            },
+            "setSprite" => Op::SetRoot {
+                key: "sprite".into(),
                 value: arg(1).cloned(),
             },
             other => return Err(format!("unsupported operation {other}")),

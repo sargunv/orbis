@@ -694,6 +694,14 @@ impl OrbisMap {
             .map_err(|e| JsError::new(&e))
     }
 
+    /// Loads the style at `url` as the diff from the current one (GL JS's
+    /// `setStyle` with `diff: true`): shared sources keep their tiles, and
+    /// paint eases by the style's `transition`. `styleload` follows.
+    #[wasm_bindgen(js_name = setStyleUrl)]
+    pub fn set_style_url(&mut self, url: &str) {
+        self.map.load_style_url(url);
+    }
+
     /// Applies GL JS map calls as one transaction: a JSON array
     /// such as `[["setPaintProperty", "water", "fill-color", "blue"],
     /// ["setFeatureState", {"source": "s", "id": 1}, {"hover": true}]]`.

@@ -346,6 +346,20 @@ export class OrbisMap {
     return JSON.parse(await this.#host.core.queryCluster(source, "expansionZoom", clusterId, 0, 0) as string);
   }
 
+  /** Shows another style (a URL, or a style object) as the diff from this
+   * one, like GL JS's `setStyle(style, {diff: true})`: sources defined alike
+   * keep their tiles, layers alike keep their meshes, and paint eases by the
+   * new style's `transition`. The camera stays. `styleload` fires once the
+   * new style is in; a style with another tile grid, or other glyphs, loads
+   * every tile afresh. */
+  setStyle(style: string | object): void {
+    const url = typeof style === "string"
+      ? new URL(style, location.href).href
+      : `data:application/json,${encodeURIComponent(JSON.stringify(style))}`;
+    this.#host.core.setStyleUrl(url);
+    this.#request();
+  }
+
   /** Applies GL JS map calls as one transaction, or throws and applies
    * none; returns the style generation whose frames show it in full
    * (`render` events carry it). */
