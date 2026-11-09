@@ -21,18 +21,25 @@ mod ir {
     include!(concat!(env!("OUT_DIR"), "/ir.rs"));
 }
 
+#[cfg(all(test, feature = "ir"))]
+mod split;
+
+/// A shader's naga modules by entry point, postcard-encoded.
+pub type EntryModules = &'static [(&'static str, &'static [u8])];
+
 impl Shader {
-    /// Its naga module, which the build script parsed from
-    /// [`source`](Self::source), postcard-encoded (the `ir` feature):
-    /// devices that compile with naga make the module from it rather than
-    /// parse the WGSL.
-    pub fn ir(&self) -> Option<&'static [u8]> {
+    /// Its naga modules, which the build script parsed from
+    /// [`source`](Self::source), one per entry point with only what it
+    /// uses, postcard-encoded (the `ir` feature): devices that compile
+    /// with naga make each stage's module from these rather than parse the
+    /// WGSL and split it per stage.
+    pub fn ir(&self) -> Option<EntryModules> {
         #[cfg(feature = "ir")]
         {
             ir::IR
                 .iter()
                 .find(|(label, _)| *label == self.label)
-                .map(|&(_, bytes)| bytes)
+                .map(|&(_, modules)| modules)
         }
         #[cfg(not(feature = "ir"))]
         None
@@ -146,28 +153,33 @@ mod tests {
         }
     }
 
-    /// Each build-made module is the one the shader's WGSL parses to, and
-    /// decodes to a valid module.
+    /// Each build-made module is the one the shader's WGSL parses to for
+    /// its entry point, every entry point has one, and each decodes to a
+    /// valid module.
     #[cfg(feature = "ir")]
     #[test]
     fn modules_are_their_sources() {
         for shader in SHADERS {
             let ir = shader
                 .ir()
-                .unwrap_or_else(|| panic!("{}: no module", shader.label));
-            let parsed = validate(shader);
-            assert!(
-                postcard::to_allocvec(&parsed).unwrap() == ir,
-                "{}: the build's module differs",
-                shader.label
-            );
-            let made: naga::Module = postcard::from_bytes(ir).expect("decodes");
-            naga::valid::Validator::new(
-                naga::valid::ValidationFlags::all(),
-                naga::valid::Capabilities::CLIP_DISTANCES,
-            )
-            .validate(&made)
-            .unwrap_or_else(|e| panic!("{}: {e}", shader.label));
+                .unwrap_or_else(|| panic!("{}: no modules", shader.label));
+            let parsed = split::entry_modules(&validate(shader));
+            assert_eq!(ir.len(), parsed.len(), "{}", shader.label);
+            for (&(entry, bytes), (name, one)) in ir.iter().zip(&parsed) {
+                assert_eq!(entry, name, "{}", shader.label);
+                assert!(
+                    postcard::to_allocvec(one).unwrap() == bytes,
+                    "{} {entry}: the build's module differs",
+                    shader.label
+                );
+                let made: naga::Module = postcard::from_bytes(bytes).expect("decodes");
+                naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::CLIP_DISTANCES,
+                )
+                .validate(&made)
+                .unwrap_or_else(|e| panic!("{} {entry}: {e}", shader.label));
+            }
         }
     }
 }

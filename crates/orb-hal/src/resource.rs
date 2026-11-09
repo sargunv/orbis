@@ -163,10 +163,11 @@ pub struct ShaderModuleDesc<'a> {
     pub label: &'a str,
     /// WGSL.
     pub source: Cow<'a, str>,
-    /// `source` as a naga module, postcard-encoded, when the build made one
-    /// (`orb_shaders::Shader::ir`): a device that compiles with naga makes
-    /// the module from it rather than parse `source`.
-    pub ir: Option<&'static [u8]>,
+    /// `source` as naga modules, one per entry point and postcard-encoded,
+    /// when the build made them (`orb_shaders::Shader::ir`): a device that
+    /// compiles with naga makes each stage's module from these rather than
+    /// parse `source`.
+    pub ir: Option<&'static [(&'static str, &'static [u8])]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

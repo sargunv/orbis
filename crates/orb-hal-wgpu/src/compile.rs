@@ -31,9 +31,10 @@ use crate::convert;
 pub(crate) struct Module {
     pub(crate) label: String,
     pub(crate) source: String,
-    /// `source` as a naga module, postcard-encoded.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    ir: Option<&'static [u8]>,
+    /// Natively, `source` as one naga module per entry point,
+    /// postcard-encoded, and each made when a stage first uses it.
+    #[cfg(not(target_arch = "wasm32"))]
+    entries: Vec<EntryModule>,
     made: OnceLock<wgpu::ShaderModule>,
     /// The browser's module for async compiles.
     #[cfg(target_arch = "wasm32")]
@@ -41,39 +42,67 @@ pub(crate) struct Module {
 }
 
 impl Module {
-    pub(crate) fn new(label: &str, source: String, ir: Option<&'static [u8]>) -> Shared<Self> {
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+    pub(crate) fn new(label: &str, source: String, ir: Option<IrModules>) -> Shared<Self> {
         Shared::new(Self {
             label: label.to_owned(),
             source,
-            ir,
+            #[cfg(not(target_arch = "wasm32"))]
+            entries: (ir.into_iter().flatten())
+                .map(|&(entry, bytes)| EntryModule {
+                    entry,
+                    bytes,
+                    made: OnceLock::new(),
+                })
+                .collect(),
             made: OnceLock::new(),
             #[cfg(target_arch = "wasm32")]
             raw: Default::default(),
         })
     }
 
-    fn get(&self, device: &wgpu::Device) -> &wgpu::ShaderModule {
+    /// The module for a stage at `entry`: natively the build's module of
+    /// that entry point when there is one, which skips parsing the WGSL
+    /// (most of a module's cost) and wgpu's split of a module per stage;
+    /// the WGSL's otherwise.
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+    fn get(&self, device: &wgpu::Device, entry: &str) -> &wgpu::ShaderModule {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(one) = self.entries.iter().find(|e| e.entry == entry)
+            && let Some(module) = one
+                .made
+                .get_or_init(|| {
+                    let module = postcard::from_bytes::<naga::Module>(one.bytes).ok()?;
+                    Some(device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some(&self.label),
+                        source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module)),
+                    }))
+                })
+                .as_ref()
+        {
+            return module;
+        }
         self.made.get_or_init(|| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(&self.label),
-                source: self.naga_source(),
+                source: wgpu::ShaderSource::Wgsl(self.source.as_str().into()),
             })
         })
     }
+}
 
-    /// The module to make: natively the build's naga module when there is
-    /// one, which skips parsing the WGSL (most of a module's cost), and the
-    /// WGSL otherwise.
-    fn naga_source(&self) -> wgpu::ShaderSource<'_> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(module) = self
-            .ir
-            .and_then(|bytes| postcard::from_bytes::<naga::Module>(bytes).ok())
-        {
-            return wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(module));
-        }
-        wgpu::ShaderSource::Wgsl(self.source.as_str().into())
-    }
+/// A shader's modules by entry point, postcard-encoded
+/// ([`ShaderModuleDesc::ir`](orb_hal::ShaderModuleDesc::ir)).
+pub(crate) type IrModules = &'static [(&'static str, &'static [u8])];
+
+/// One entry point's module, made when a stage first uses it (`None`
+/// if it doesn't decode: the WGSL's is made instead).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug)]
+struct EntryModule {
+    entry: &'static str,
+    bytes: &'static [u8],
+    made: OnceLock<Option<wgpu::ShaderModule>>,
 }
 
 #[derive(Debug)]
@@ -94,6 +123,10 @@ impl Stage {
                 .map(|&(k, v)| (k.to_owned(), v))
                 .collect(),
         }
+    }
+
+    fn module(&self, device: &wgpu::Device) -> &wgpu::ShaderModule {
+        self.module.get(device, &self.entry_point)
     }
 
     fn constants(&self) -> Vec<(&str, f64)> {
@@ -176,7 +209,7 @@ impl Job {
                     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                         label: Some(&job.label),
                         layout: Some(&job.layout),
-                        module: job.compute.module.get(device),
+                        module: job.compute.module(device),
                         entry_point: Some(&job.compute.entry_point),
                         compilation_options: wgpu::PipelineCompilationOptions {
                             constants: &constants,
@@ -229,7 +262,7 @@ impl RenderJob {
             label: Some(&self.label),
             layout: Some(&self.layout),
             vertex: wgpu::VertexState {
-                module: self.vertex.module.get(device),
+                module: self.vertex.module(device),
                 entry_point: Some(&self.vertex.entry_point),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &vertex_constants,
@@ -261,7 +294,7 @@ impl RenderJob {
                 ..Default::default()
             },
             fragment: Some(wgpu::FragmentState {
-                module: self.fragment.module.get(device),
+                module: self.fragment.module(device),
                 entry_point: Some(&self.fragment.entry_point),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &fragment_constants,
