@@ -9,9 +9,17 @@
 // parts negated, as its wall normals point and its `sphericalToCartesian`
 // places v8's light.
 fn light_factor(normal: vec3<f32>, luminance: f32, gradient: f32) -> vec3<f32> {
-    let ndotl = clamp(dot(normal, frame.light_position), 0.0, 1.0);
+    return light_factor_facing(light_facing(normal), luminance, gradient);
+}
+
+// How far a surface facing `normal` turns to the light, 0 to 1.
+fn light_facing(normal: vec3<f32>) -> f32 {
+    return clamp(dot(normal, frame.light_position), 0.0, 1.0);
+}
+
+fn light_factor_facing(facing: f32, luminance: f32, gradient: f32) -> vec3<f32> {
     let i = frame.light_color.w;
-    return mix(1.0 - i, max(1.0 + i - luminance, 1.0), ndotl) * frame.light_color.rgb * gradient;
+    return mix(1.0 - i, max(1.0 + i - luminance, 1.0), facing) * frame.light_color.rgb * gradient;
 }
 
 // A wall's vertical gradient: darker toward its foot, over its first
@@ -27,6 +35,11 @@ fn light_floor() -> vec3<f32> {
 
 // A lit colour, with GL JS's lift of 0.03.
 fn light_surface(color: vec3<f32>, normal: vec3<f32>, gradient: f32) -> vec3<f32> {
+    return light_lit(color, light_facing(normal), gradient);
+}
+
+// `light_surface` for a surface turned `facing` to the light.
+fn light_lit(color: vec3<f32>, facing: f32, gradient: f32) -> vec3<f32> {
     let luminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-    return clamp((color + vec3<f32>(0.03)) * light_factor(normal, luminance, gradient), light_floor(), vec3<f32>(1.0));
+    return clamp((color + vec3<f32>(0.03)) * light_factor_facing(facing, luminance, gradient), light_floor(), vec3<f32>(1.0));
 }

@@ -614,6 +614,80 @@ fn extrusions_at_zero_opacity_hide_nothing() {
     assert_eq!(centre, beside, "the tall one at zero hides none of it");
 }
 
+/// `["elevation"]` in an extrusion's colour is the height above the
+/// ground: seen from above, each roof takes the colour at its own height,
+/// with stops from the feature's data and then its state. Unlit (light
+/// intensity 0), a colour draws 0.03 brighter.
+#[test]
+fn extrusion_roofs_take_the_colour_at_their_height() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let style = r##"{"version": 8, "center": [0, 0], "zoom": 2, "light": {"intensity": 0},
+      "sources": {"b": {"type": "geojson", "data": {"type": "FeatureCollection", "features": [
+          {"type": "Feature", "id": 1, "properties": {"h": 1000, "top": "#ffffff"}, "geometry": {"type": "Polygon",
+            "coordinates": [[[-10, -5], [-1, -5], [-1, 5], [-10, 5], [-10, -5]]]}},
+          {"type": "Feature", "id": 2, "properties": {"h": 3000, "top": "#ffffff"}, "geometry": {"type": "Polygon",
+            "coordinates": [[[1, -5], [10, -5], [10, 5], [1, 5], [1, -5]]]}}]}}},
+      "layers": [
+        {"id": "background", "type": "background", "paint": {"background-color": "#000000"}},
+        {"id": "b", "type": "fill-extrusion", "source": "b", "paint": {
+          "fill-extrusion-height": ["get", "h"],
+          "fill-extrusion-color": ["interpolate", ["linear"], ["elevation"],
+            0, "#000000", 4000, ["coalesce", ["feature-state", "top"], ["get", "top"]]]}}]}"##;
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(style).expect("style");
+    let roofs = |map: &mut Map| {
+        let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+        let roof = |x| pixel(&image.pixels, x, SIZE / 2);
+        (roof(SIZE / 2 - 12), roof(SIZE / 2 + 12))
+    };
+    let near = |got: [u8; 4], expected: [f32; 3]| {
+        let lit = expected.map(|c| (c + 0.03) * 255.0);
+        assert!(
+            (0..3).all(|i| (f32::from(got[i]) - lit[i]).abs() <= 2.0),
+            "{got:?}, not {lit:?}"
+        );
+    };
+    let (low, high) = roofs(&mut map);
+    near(low, [0.25; 3]);
+    near(high, [0.75; 3]);
+    map.edit(&commands(
+        r##"[["setFeatureState", {"source": "b", "id": 2}, {"top": "#ff0000"}]]"##,
+    ))
+    .expect("state");
+    let (low, high) = roofs(&mut map);
+    near(low, [0.25; 3]);
+    near(high, [0.75, 0.0, 0.0]);
+}
+
+/// Walls take the colour at each fragment's height: a building coloured
+/// red below 50 m and blue above, seen from the side, shows both, and its
+/// roof blue.
+#[test]
+fn extrusion_walls_take_the_colour_at_each_height() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    let style = r##"{"version": 8, "center": [0, 0], "zoom": 14.5, "pitch": 60, "bearing": 30,
+      "light": {"intensity": 0},
+      "sources": {"b": {"type": "geojson", "data": {"type": "Polygon",
+        "coordinates": [[[-0.0002, -0.0002], [0.0002, -0.0002], [0.0002, 0.0002], [-0.0002, 0.0002], [-0.0002, -0.0002]]]}}},
+      "layers": [
+        {"id": "background", "type": "background", "paint": {"background-color": "#000000"}},
+        {"id": "b", "type": "fill-extrusion", "source": "b", "paint": {
+          "fill-extrusion-height": 100, "fill-extrusion-vertical-gradient": false,
+          "fill-extrusion-color": ["step", ["elevation"], "#ff0000", 50, "#0000ff"]}}]}"##;
+    let mut map = Map::new(&runtime, MapOptions::default());
+    map.set_style_json(style).expect("style");
+    let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+    let count = |f: fn(&[u8]) -> bool| image.pixels.chunks(4).filter(|p| f(p)).count();
+    let red = count(|p| p[0] > 200 && p[2] < 40);
+    let blue = count(|p| p[2] > 200 && p[0] < 40);
+    assert!(red > 40 && blue > 40, "{red} red and {blue} blue pixels");
+    // Down the middle, the roof and upper walls come first.
+    let top = (0..SIZE)
+        .map(|y| pixel(&image.pixels, SIZE / 2, y))
+        .find(|p| p[0] > 100 || p[2] > 100);
+    assert!(top.is_some_and(|p| p[2] > 200), "the top is blue: {top:?}");
+}
+
 #[test]
 fn padding_draws_the_center_where_it_projects() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");

@@ -20,12 +20,18 @@ const EXTRUSION_ROW_CENTROID: u32 = 9u;
 // and 16-23 its opacity at the tile's zoom and the next, when per feature.
 const EXTRUSION_ROW_WHOLE: u32 = 10u;
 const EXTRUSION_ROW_WORDS: u32 = 11u;
+// Then, for a colour over the elevation, two words for each of its stops
+// after the first that come from the row.
 const CIRCLE_ROW_WORDS: u32 = 14u;
 const HEATMAP_ROW_WORDS: u32 = 4u;
 const SYMBOL_ROW_WORDS: u32 = 10u;
 
 // The most light sources a hillshade node holds.
 const MAX_LIGHTS: u32 = 4u;
+// The most stops and input operators of an extrusion's colour over the
+// elevation (`extrusion.wgsl`'s `ElevationColor`).
+const MAX_ELEVATION_STOPS: u32 = 16u;
+const MAX_ELEVATION_OPS: u32 = 4u;
 
 struct Frame {
     // Camera-relative world → clip.

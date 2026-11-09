@@ -2,6 +2,7 @@
 //! composite it at their layer opacity once. The shared depth attachment
 //! keeps occlusion between 3D layers and the terrain.
 use crate::offscreen::{Apart, Composites, Mode, Offscreen};
+use crate::paint::ElevationShape;
 use crate::release::Release;
 use crate::scene::SceneBuffers;
 use orb_hal::*;
@@ -9,10 +10,10 @@ use orb_shaders::{EXTRUSION_CUT_SHADER, EXTRUSION_PLANES_SHADER, EXTRUSION_SHADE
 
 #[derive(Debug)]
 pub(crate) struct Extrusions {
-    /// Whole buildings; cut ones clipped per fragment, which alone discard;
-    /// and where clip distances are, cut ones clipped by planes; at one
-    /// sample and at four.
-    pipelines: [[Option<RenderPipelineId>; 2]; 3],
+    /// Per shape of colour over the elevation: whole buildings; cut ones
+    /// clipped per fragment, which alone discard; and where clip distances
+    /// are, cut ones clipped by planes; at one sample and at four.
+    pipelines: Vec<(ElevationShape, Pipelines)>,
     layouts: [BindGroupLayoutId; 2],
     pub(crate) samples: u32,
     depth: Option<TextureId>,
@@ -22,10 +23,12 @@ pub(crate) struct Extrusions {
 /// An extrusion layer's node, drawn apart.
 pub(crate) type NodeExtrusion = Apart;
 
+type Pipelines = [[Option<RenderPipelineId>; 2]; 3];
+
 impl Extrusions {
     pub(crate) fn new(scene: BindGroupLayoutId, node: BindGroupLayoutId) -> Self {
         Self {
-            pipelines: [[None; 2]; 3],
+            pipelines: Vec::new(),
             layouts: [scene, node],
             samples: 4,
             depth: None,
@@ -34,15 +37,26 @@ impl Extrusions {
         }
     }
 
-    /// The whole, cut and planes pipelines at the current sample count.
-    fn slot(&self) -> [Option<RenderPipelineId>; 3] {
-        self.pipelines.map(|p| p[usize::from(self.samples == 4)])
+    /// The whole, cut and planes pipelines for `shape` at the current
+    /// sample count.
+    fn slot(&self, shape: ElevationShape) -> [Option<RenderPipelineId>; 3] {
+        let samples = usize::from(self.samples == 4);
+        (self.pipelines.iter())
+            .find(|(s, _)| *s == shape)
+            .map_or([None; 3], |(_, p)| p.map(|p| p[samples]))
     }
 
-    /// Makes the pipelines at the current sample count, for the first
-    /// extrusion node.
-    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu) {
+    /// Makes the pipelines for `shape` at the current sample count, for
+    /// the first extrusion node of that shape.
+    pub(crate) fn make(&mut self, gpu: &mut dyn Gpu, shape: ElevationShape) {
         let samples = usize::from(self.samples == 4);
+        let index = match self.pipelines.iter().position(|(s, _)| *s == shape) {
+            Some(i) => i,
+            None => {
+                self.pipelines.push((shape, [[None; 2]; 3]));
+                self.pipelines.len() - 1
+            }
+        };
         let (whole, cut) = (EXTRUSION_SHADER, EXTRUSION_CUT_SHADER);
         // With clip distances, the cut pipeline keeps the buildings of
         // placements with several clip rectangles, and the planes one draws
@@ -67,9 +81,11 @@ impl Extrusions {
             )),
         ];
         for (kind, stages) in stages.into_iter().enumerate() {
-            if let (None, Some((vertex, fragment))) = (self.pipelines[kind][samples], stages) {
-                let pipeline = self.pipeline(gpu, vertex, fragment);
-                self.pipelines[kind][samples] = Some(pipeline);
+            if let (None, Some((vertex, fragment))) =
+                (self.pipelines[index].1[kind][samples], stages)
+            {
+                let pipeline = self.pipeline(gpu, vertex, fragment, shape);
+                self.pipelines[index].1[kind][samples] = Some(pipeline);
             }
         }
     }
@@ -81,7 +97,9 @@ impl Extrusions {
         gpu: &mut dyn Gpu,
         (vertex, vertex_entry): (Shader, &str),
         (fragment, fragment_entry): (Shader, &str),
+        shape: ElevationShape,
     ) -> RenderPipelineId {
+        let [vertex_constants, fragment_constants] = shape.constants();
         let vertex_module = crate::shader_module(gpu, &vertex);
         let apart = vertex.label != fragment.label;
         let fragment_module = if apart {
@@ -96,12 +114,12 @@ impl Extrusions {
             vertex: ShaderStage {
                 module: vertex_module,
                 entry_point: vertex_entry,
-                constants: &[],
+                constants: &vertex_constants,
             },
             fragment: ShaderStage {
                 module: fragment_module,
                 entry_point: fragment_entry,
-                constants: &[],
+                constants: &fragment_constants,
             },
             targets: &[ColorTargetState {
                 format: TextureFormat::Rgba8Unorm,
@@ -122,17 +140,24 @@ impl Extrusions {
         pipeline
     }
 
-    /// Whether the pipelines at the current sample count, and the
-    /// composites', compiled.
+    /// Whether every shape's pipelines made at the current sample count,
+    /// and the composites', compiled.
     pub(crate) fn ready(&self, gpu: &mut dyn Gpu, composites: &Composites) -> bool {
-        let slot = self.slot();
-        slot[0].is_some()
-            && slot.iter().flatten().all(|&p| gpu.pipeline_ready(p.into()))
+        let samples = usize::from(self.samples == 4);
+        let made: Vec<_> = (self.pipelines.iter())
+            .flat_map(|(_, p)| p.map(|p| p[samples]))
+            .collect();
+        made.iter().any(Option::is_some)
+            && made.iter().flatten().all(|&p| gpu.pipeline_ready(p.into()))
             && composites.ready(gpu, Mode::Over)
     }
 
-    pub(crate) fn pipelines(&self) -> Vec<PipelineId> {
-        self.slot().iter().flatten().map(|&p| p.into()).collect()
+    pub(crate) fn pipelines(&self, shape: ElevationShape) -> Vec<PipelineId> {
+        self.slot(shape)
+            .iter()
+            .flatten()
+            .map(|&p| p.into())
+            .collect()
     }
     pub(crate) fn set_antialias(&mut self, antialias: bool) -> bool {
         let samples = if antialias { 4 } else { 1 };
@@ -213,10 +238,10 @@ impl Extrusions {
         node: &mut NodeExtrusion,
         (scene, group): (BindGroupId, BindGroupId),
         buffers: &SceneBuffers,
-        index: u32,
+        (index, shape): (u32, ElevationShape),
         first: bool,
     ) -> RenderPass {
-        let pipelines = self.slot();
+        let pipelines = self.slot(shape);
         let bundle = *node.bundle.get_or_insert_with(|| {
             let draw = RenderCommand::DrawIndexedIndirect {
                 buffer: buffers.args,
@@ -272,6 +297,7 @@ impl Extrusions {
 
 impl crate::release::Release for Extrusions {
     fn release(self, gpu: &mut dyn Gpu) {
-        (self.pipelines, self.depth).release(gpu);
+        let pipelines: Vec<Pipelines> = self.pipelines.into_iter().map(|(_, p)| p).collect();
+        (pipelines, self.depth).release(gpu);
     }
 }

@@ -13,6 +13,8 @@ use orb_layout::Family;
 use orb_shaders::layout;
 use orb_style::{Color, LayerType, PropertyRef, SourceKind, Style, Value};
 
+use crate::elevation::ElevationColor;
+
 /// Node keys a layer has: a fill and its outline, or a symbol layer's
 /// icons and text, take one each.
 const LAYER_NODES: u32 = 2;
@@ -77,6 +79,8 @@ pub(crate) struct NodePlan {
     pub(crate) source: usize,
     /// Stable across revisions.
     pub(crate) key: u32,
+    /// An extrusion's colour over the elevation, drawn per fragment.
+    pub(crate) elevation: Option<Arc<ElevationColor>>,
 }
 
 /// A paint property as the renderer packs it.
@@ -217,6 +221,7 @@ impl StylePlan {
                         family: Family::Fill,
                         source: usize::MAX,
                         key,
+                        elevation: None,
                     });
                     continue;
                 }
@@ -281,11 +286,23 @@ impl StylePlan {
                     sources.len() - 1
                 }
             };
+            let elevation = match ElevationColor::of(layer) {
+                Some(Ok(color)) => Some(Arc::new(color)),
+                Some(Err(why)) => {
+                    warn(
+                        index,
+                        &format!("fill-extrusion-color: {why}; it draws at the ground"),
+                    );
+                    None
+                }
+                None => None,
+            };
             nodes.push(NodePlan {
                 layer: index,
                 family,
                 source,
                 key,
+                elevation,
             });
             // A symbol layer draws its icons, then its text (GL JS
             // `drawSymbols`).
@@ -295,6 +312,7 @@ impl StylePlan {
                     family: Family::SymbolText,
                     source,
                     key: key + 1,
+                    elevation: None,
                 });
             }
             // GL JS antialiases fills by drawing their outlines after them.
@@ -304,6 +322,7 @@ impl StylePlan {
                     family: Family::FillOutline,
                     source,
                     key: key + 1,
+                    elevation: None,
                 });
             }
         }
@@ -351,11 +370,23 @@ impl StylePlan {
         match node.family {
             Family::Fill | Family::FillOutline => layout::FILL_ROW_WORDS,
             Family::Line => layout::LINE_ROW_WORDS,
-            Family::FillExtrusion => layout::EXTRUSION_ROW_WORDS,
+            Family::FillExtrusion => {
+                layout::EXTRUSION_ROW_WORDS + node.elevation.as_ref().map_or(0, |e| e.row_words())
+            }
             Family::Circle => layout::CIRCLE_ROW_WORDS,
             Family::Heatmap => layout::HEATMAP_ROW_WORDS,
             Family::SymbolIcon | Family::SymbolText => layout::SYMBOL_ROW_WORDS,
             image => unreachable!("{image:?} nodes have no property rows"),
+        }
+    }
+
+    /// The first of property `slot`'s two words in a row of the node: an
+    /// extrusion's elevation colours after the first follow the family's
+    /// words.
+    pub(crate) fn row_word(&self, node: &NodePlan, slot: usize) -> usize {
+        match node.family {
+            Family::FillExtrusion if slot > 2 => layout::EXTRUSION_ROW_WORDS + 2 * (slot - 3),
+            _ => 2 * slot,
         }
     }
 
@@ -419,7 +450,7 @@ impl StylePlan {
     }
 
     /// A node's paint properties in property-row order.
-    pub(crate) fn paint_properties(&self, node: &NodePlan) -> Vec<PaintProperty<'_>> {
+    pub(crate) fn paint_properties<'a>(&'a self, node: &'a NodePlan) -> Vec<PaintProperty<'a>> {
         use PaintProperty::{Color as C, Number as N};
         use orb_style::{
             BACKGROUND_COLOR, BACKGROUND_OPACITY, CIRCLE_BLUR, CIRCLE_COLOR, CIRCLE_OPACITY,
@@ -439,11 +470,25 @@ impl StylePlan {
                 };
                 vec![color, N(l.get(FILL_OPACITY))]
             }
-            LayerType::FillExtrusion => vec![
-                C(l.get(EXTRUSION_COLOR)),
-                N(l.get(EXTRUSION_HEIGHT)),
-                N(l.get(EXTRUSION_BASE)),
-            ],
+            // Over the elevation, a colour per stop
+            // ([`crate::elevation::colour_slot`]).
+            LayerType::FillExtrusion => match &node.elevation {
+                Some(e) => {
+                    let color = |slot| C(PropertyRef::of(slot, EXTRUSION_COLOR.id()));
+                    let mut properties = vec![
+                        color(&e.colors[0]),
+                        N(l.get(EXTRUSION_HEIGHT)),
+                        N(l.get(EXTRUSION_BASE)),
+                    ];
+                    properties.extend(e.colors[1..].iter().map(color));
+                    properties
+                }
+                None => vec![
+                    C(l.get(EXTRUSION_COLOR)),
+                    N(l.get(EXTRUSION_HEIGHT)),
+                    N(l.get(EXTRUSION_BASE)),
+                ],
+            },
             LayerType::Line => vec![
                 C(l.get(LINE_COLOR)),
                 N(l.get(LINE_OPACITY)),

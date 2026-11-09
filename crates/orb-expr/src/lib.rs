@@ -19,6 +19,7 @@
 mod color;
 mod color_spaces;
 mod context;
+mod elevation;
 mod eval;
 mod eval_extra;
 mod filter;
@@ -39,6 +40,7 @@ use std::fmt;
 
 pub use color::Color;
 pub use context::{CanonicalTile, EvaluationContext, FeatureGeometry};
+pub use elevation::{ElevationCurve, ElevationOp};
 pub use eval::{EvalError, interpolation_factor};
 pub use filter::{Filter, FilterGroups};
 pub use ir::Interpolation;

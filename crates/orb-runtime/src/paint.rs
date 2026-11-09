@@ -527,7 +527,12 @@ fn node_paint(
     let mut curves = [Curve::Step; 6];
     let mut numbers = [0.0f32; 6];
     let mut color = [0.0f32; 4];
-    for (slot, property) in properties.iter().enumerate() {
+    // An extrusion's further elevation colours are its curve's.
+    let base_slots = match node.family {
+        Family::FillExtrusion => 3,
+        _ => properties.len(),
+    };
+    for (slot, property) in properties.iter().enumerate().take(base_slots) {
         if property.per_feature() {
             table_mask |= 1 << slot;
             curves[slot] = curve(property);
@@ -604,6 +609,7 @@ fn node_paint(
                     },
                 curves: [curves[0], curves[1], curves[2], opacity_curve],
                 state: lookup,
+                elevation: node.elevation.as_ref().map(|e| e.paint(&properties, zoom)),
             })
         }
         Family::Line => NodePaint::Line(LinePaint {

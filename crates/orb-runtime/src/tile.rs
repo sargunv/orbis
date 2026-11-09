@@ -775,7 +775,8 @@ pub(crate) fn build(
                             (start, a)
                         };
                         maxima[slot] = maxima[slot].max(a).max(b);
-                        rows[i * row_words + slot * 2..][..2].copy_from_slice(&[start, end]);
+                        rows[i * row_words + plan.row_word(node, slot)..][..2]
+                            .copy_from_slice(&[start, end]);
                     }
                 }
                 if node.family == Family::FillExtrusion {

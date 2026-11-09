@@ -45,6 +45,8 @@ pub struct Prop {
     /// A colour ramp over `heatmap-density`, `line-progress` or
     /// `elevation`, kept as an expression.
     pub ramp: bool,
+    /// `["elevation"]` is an expression parameter.
+    pub elevation: bool,
     /// When it is evaluated; the section's default until [`Prop::at`]
     /// gives one.
     pub(crate) phase: Option<Phase>,
@@ -87,7 +89,7 @@ impl Phase {
     /// The inputs a value evaluated in this phase could follow: a tile
     /// knows its zoom and its features; placement and frames know the
     /// camera; only frames read feature state; a layer-wide value has no
-    /// feature.
+    /// feature; the shaders know the elevation of what they draw.
     pub const fn honours(self) -> Inputs {
         match self {
             Self::Tile => Inputs::ZOOM.union(Inputs::DATA),
@@ -95,8 +97,9 @@ impl Phase {
             Self::Frame => Inputs::ZOOM
                 .union(Inputs::CAMERA)
                 .union(Inputs::DATA)
-                .union(Inputs::STATE),
-            Self::Layer => Inputs::ZOOM.union(Inputs::CAMERA),
+                .union(Inputs::STATE)
+                .union(Inputs::ELEVATION),
+            Self::Layer => Inputs::ZOOM.union(Inputs::CAMERA).union(Inputs::ELEVATION),
         }
     }
 }
@@ -116,12 +119,15 @@ impl Inputs {
     pub const DATA: Self = Self(4);
     /// `["feature-state"]`.
     pub const STATE: Self = Self(8);
+    /// `["elevation"]`: a DEM's, or the height on an extrusion.
+    pub const ELEVATION: Self = Self(16);
 
-    pub const ALL: [(Self, &'static str); 4] = [
+    pub const ALL: [(Self, &'static str); 5] = [
         (Self::ZOOM, "zoom"),
         (Self::CAMERA, "camera"),
         (Self::DATA, "data"),
         (Self::STATE, "state"),
+        (Self::ELEVATION, "elevation"),
     ];
 
     #[must_use]
@@ -157,9 +163,10 @@ impl Prop {
     pub(crate) const ROOT: Self = prop("", PropertyType::Number, None).in_phase(Phase::Layer);
 
     /// What the spec lets it read: its expression parameters, which are
-    /// zoom, data where it is data-driven, and state where it is
+    /// zoom, data where it is data-driven, state where it is
     /// data-driven paint drawn per frame (not cross-faded patterns and
-    /// dashes, which are laid out per tile).
+    /// dashes, which are laid out per tile), and the elevation where the
+    /// spec lists it.
     pub const fn spec_inputs(&self) -> Inputs {
         let mut inputs = Inputs::NONE;
         if self.zoom {
@@ -170,6 +177,9 @@ impl Prop {
             if self.paint && !matches!(self.phase(), Phase::Tile) {
                 inputs = inputs.union(Inputs::STATE);
             }
+        }
+        if self.elevation {
+            inputs = inputs.union(Inputs::ELEVATION);
         }
         inputs
     }
@@ -204,6 +214,7 @@ impl Prop {
             feature: data || inputs.contains(Inputs::STATE),
             state: inputs.contains(Inputs::STATE) || (self.paint && data),
             camera: inputs.contains(Inputs::CAMERA),
+            elevation: inputs.contains(Inputs::ELEVATION),
             interpolated: self.interpolated,
             tokens: self.tokens,
         }
@@ -230,6 +241,7 @@ pub const fn prop(name: &'static str, ty: PropertyType, default: Option<&'static
         paint: false,
         list: false,
         ramp: false,
+        elevation: false,
         phase: None,
         extended: Inputs::NONE,
     }
@@ -282,6 +294,10 @@ impl Prop {
     }
     const fn ramp(mut self) -> Self {
         self.ramp = true;
+        self
+    }
+    const fn elevation(mut self) -> Self {
+        self.elevation = true;
         self
     }
     const fn range(mut self, minimum: f64, maximum: Option<f64>) -> Self {
@@ -553,7 +569,8 @@ properties! {
     }
     FillExtrusion {
         layout EXTRUSION_ROUNDED_CORNER: f32 = prop("fill-extrusion-rounded-corner-distance", NUMBER, Some("0")).range(0.0, None).zoom_independent();
-        paint EXTRUSION_COLOR: Color = prop("fill-extrusion-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().extends(Inputs::CAMERA);
+        /// Per fragment over `["elevation"]`, the height above the ground.
+        paint EXTRUSION_COLOR: Color = prop("fill-extrusion-color", COLOR, Some("\"#000000\"")).data_driven().interpolated().elevation().extends(Inputs::CAMERA);
         paint EXTRUSION_OPACITY: f32 = prop("fill-extrusion-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA).extends(Inputs::DATA);
         paint EXTRUSION_HEIGHT: f32 = prop("fill-extrusion-height", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
         paint EXTRUSION_BASE: f32 = prop("fill-extrusion-base", NUMBER, Some("0")).data_driven().interpolated().range(0.0, None);
@@ -634,7 +651,7 @@ properties! {
     ColorRelief {
         paint COLOR_RELIEF_OPACITY: f32 = prop("color-relief-opacity", NUMBER, Some("1")).interpolated().range(0.0, Some(1.0)).extends(Inputs::CAMERA);
         /// A colour ramp over `["elevation"]`, not zoom or the feature.
-        paint COLOR_RELIEF_COLOR: Ramp = prop("color-relief-color", COLOR, None).zoom_independent().interpolated().ramp();
+        paint COLOR_RELIEF_COLOR: Ramp = prop("color-relief-color", COLOR, None).zoom_independent().interpolated().ramp().elevation();
         /// `resampling`, which raster, hillshade and color-relief layers share.
         paint COLOR_RELIEF_RESAMPLE: Resampling = prop("resampling", enumeration::<Resampling>(), Some("\"linear\""));
     }

@@ -435,6 +435,7 @@ mod tests {
             feature: false,
             state: false,
             camera: false,
+            elevation: true,
             interpolated: true,
             tokens: false,
         };

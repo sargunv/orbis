@@ -188,6 +188,85 @@ pub struct ExtrusionPaint {
     /// Colour, height, base and per-feature opacity.
     pub curves: [Curve; 4],
     pub state: StateLookup,
+    /// The colour over the elevation, drawn per fragment.
+    pub elevation: Option<ElevationPaint>,
+}
+
+use orb_shaders::layout::{MAX_ELEVATION_OPS, MAX_ELEVATION_STOPS};
+
+/// An extrusion's colour as a curve over the elevation, the height above
+/// the ground (`extrusion.wgsl`'s `ElevationColor`): its input is the
+/// elevation through `input`, and between stops, the colours mix by
+/// `curve` ([`Curve::Step`] for a `step`). Stop `i`'s colour is property
+/// slot 0 for the first, `2 + i` after, which may come from the feature's
+/// state; else from its row where bit `i` of `rows` is set, else `colors`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ElevationPaint {
+    /// Operator codes (`extrusion.wgsl`'s `elevation_op`, less one) and
+    /// their constants, innermost first.
+    pub input: [(u32, f32); MAX_ELEVATION_OPS],
+    pub ops: usize,
+    /// Past the stops, the largest float.
+    pub labels: [f32; MAX_ELEVATION_STOPS],
+    /// Premultiplied, packed.
+    pub colors: [u32; MAX_ELEVATION_STOPS],
+    pub stops: usize,
+    pub rows: u32,
+    pub curve: Curve,
+}
+
+/// What an extrusion node's pipelines are specialised for: the shape of
+/// its colour over the elevation (`extrusion.wgsl`'s overrides), none by
+/// default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct ElevationShape {
+    stops: u32,
+    input: u32,
+    curve: u32,
+    /// Stops from features' rows (bit 0) or state (bit 1).
+    dynamic: u32,
+}
+
+impl ElevationShape {
+    /// The vertex and fragment stages' override constants.
+    pub(crate) fn constants(self) -> [Vec<(&'static str, f64)>; 2] {
+        if self.stops == 0 {
+            return [Vec::new(), Vec::new()];
+        }
+        let stops = ("elevation_stops", f64::from(self.stops));
+        [
+            vec![stops],
+            vec![
+                stops,
+                ("elevation_input", f64::from(self.input)),
+                ("elevation_curve", f64::from(self.curve)),
+                ("elevation_dynamic", f64::from(self.dynamic)),
+            ],
+        ]
+    }
+}
+
+impl ExtrusionPaint {
+    pub(crate) fn elevation_shape(&self) -> ElevationShape {
+        let Some(e) = &self.elevation else {
+            return ElevationShape::default();
+        };
+        // Colour slots: 0, and 3 on (height and base between).
+        let state = self.state.mask & !0b110 != 0;
+        ElevationShape {
+            stops: e.stops as u32,
+            input: (e.input[..e.ops].iter().enumerate())
+                .map(|(i, &(code, _))| (code + 1) << (5 * i))
+                .sum(),
+            curve: match e.curve {
+                Curve::Step => 0,
+                Curve::Exponential(1.0) => 1,
+                Curve::Exponential(_) => 2,
+                Curve::CubicBezier(_) => 3,
+            },
+            dynamic: u32::from(e.rows != 0) | u32::from(state) << 1,
+        }
+    }
 }
 
 /// [`ExtrusionPaint::table_mask`]'s bit for opacity per feature.
@@ -355,6 +434,17 @@ impl NodePaint {
                 b.f(n::OPACITY, &[p.opacity]);
                 b.curves(n::CURVES, &p.curves).state(n::STATE, p.state);
                 b.pattern([n::IMAGE_FROM, n::IMAGE_TO, n::PATTERN], pattern);
+                if let Some(e) = &p.elevation {
+                    use elevation_color as c;
+                    let at = n::ELEVATION;
+                    b.u(at + c::ROWS, &[e.rows])
+                        .curves(at + c::CURVE, &[e.curve]);
+                    for (i, &(_, constant)) in e.input[..e.ops].iter().enumerate() {
+                        b.f(at + c::INPUT + i, &[constant]);
+                    }
+                    b.f(at + c::LABELS, &e.labels)
+                        .u(at + c::COLORS, &e.colors[..e.stops]);
+                }
             }
             Self::Line(p) | Self::LinePattern(p, _) => {
                 use line_node as n;

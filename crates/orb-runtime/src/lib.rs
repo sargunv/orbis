@@ -7,6 +7,7 @@
 mod arrival;
 mod camera;
 mod edit;
+mod elevation;
 mod events;
 mod features;
 mod frame;

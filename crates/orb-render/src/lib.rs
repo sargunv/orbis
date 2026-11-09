@@ -43,9 +43,9 @@ pub use image::{DemPrepare, IMAGE_EXTENT, IMAGE_ROW_WORDS, ImageFade, PageId, Pa
 pub use orb_layout::{Family, pack_color};
 pub use paint::{
     CirclePaint, ColorReliefPaint, Curve, EXTRUSION_GRADIENT_ROWS, EXTRUSION_OPACITY_ROWS,
-    ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod, HillshadePaint, LinePaint,
-    MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, StateLookup, SymbolPaint, SymbolSize,
-    Translate,
+    ElevationPaint, ExtrusionPaint, FillPaint, HeatmapPaint, HillshadeMethod, HillshadePaint,
+    LinePaint, MAX_LIGHTS, NodePaint, PatternPaint, RasterPaint, StateLookup, SymbolPaint,
+    SymbolSize, Translate,
 };
 pub use scene::Pixels;
 pub use scene::{
@@ -182,6 +182,8 @@ struct Node {
     /// A line node has dashes, a pattern or a gradient: it draws with the
     /// styled line pipeline.
     styled: bool,
+    /// What an extrusion node's pipelines are specialised for.
+    elevation: paint::ElevationShape,
     /// On terrain, the drape stack a draped node draws into, and the
     /// terrain layer that composites it.
     stack: Option<u8>,
@@ -405,7 +407,8 @@ impl Renderer {
                 storage(3, vs, true),
                 storage(4, vs, true),
                 storage(5, vs, true),
-                storage(6, vs, true),
+                // Extrusions' fragments read colours over the elevation.
+                storage(6, vf, true),
                 storage(7, vs, true),
                 storage(8, ShaderStages::FRAGMENT, true),
                 BindGroupLayoutEntry {
@@ -818,6 +821,7 @@ impl Renderer {
                 separate_halo: false,
                 along_line: false,
                 styled: false,
+                elevation: paint::ElevationShape::default(),
                 stack: None,
                 terrain_layer: None,
                 shaded: false,
@@ -1293,6 +1297,16 @@ impl Renderer {
             }
         }
         let entry = &mut self.nodes[node as usize];
+        if let NodePaint::Extrusion(p) | NodePaint::ExtrusionPattern(p, _) = paint {
+            let shape = p.elevation_shape();
+            if entry.elevation != shape {
+                entry.elevation = shape;
+                self.pipelines_stale |= entry.drawn;
+                if let Some(e) = &mut entry.extrusion {
+                    e.forget_bundle(gpu);
+                }
+            }
+        }
         if words != entry.written {
             let (node, stride) = (node as usize, (self.node_stride / 4) as usize);
             self.node_words[node * stride..][..words.len()].copy_from_slice(&words);
@@ -1472,7 +1486,7 @@ impl Renderer {
                 }
             }
             Family::Heatmap => self.heatmaps.make(gpu),
-            Family::FillExtrusion => self.extrusions.make(gpu),
+            Family::FillExtrusion => self.extrusions.make(gpu, self.nodes[i].elevation),
         }
     }
 
@@ -1506,7 +1520,7 @@ impl Renderer {
         }
         match node.family {
             Family::Heatmap => out.extend(self.heatmaps.pipelines()),
-            Family::FillExtrusion => out.extend(self.extrusions.pipelines()),
+            Family::FillExtrusion => out.extend(self.extrusions.pipelines(node.elevation)),
             Family::SymbolIcon | Family::SymbolText => {
                 out.extend(
                     self.symbol_pipelines[usize::from(node.along_line)].map(PipelineId::from),
@@ -1960,7 +1974,7 @@ impl Renderer {
                 target,
                 (draw_group, node.group),
                 &buffers,
-                index as u32,
+                (index as u32, node.elevation),
                 first,
             );
             passes.push(Pass::Render(pass));

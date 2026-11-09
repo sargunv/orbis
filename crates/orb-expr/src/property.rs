@@ -46,6 +46,10 @@ pub struct PropertySpec {
     /// It may read the camera beyond its zoom (`pitch`, `bearing`), for a
     /// value the same for every feature: Orbis's own extension.
     pub camera: bool,
+    /// It reads `["elevation"]` per point, which varies within a feature
+    /// as its data does between them: a colour relief's ramp, an
+    /// extrusion's colour.
+    pub elevation: bool,
     /// The property may use `interpolate`.
     pub interpolated: bool,
     /// Strings expand `{token}`s: legacy string stops (`convertFunction`)
@@ -81,9 +85,11 @@ pub enum Kind {
     Constant,
     /// Varies with zoom only, through a zoom curve.
     Camera,
-    /// Varies with the feature only.
+    /// Varies with the feature only (or the point on it, for a property
+    /// that reads `["elevation"]`).
     Source,
-    /// Varies with zoom and the feature, through a top-level zoom curve.
+    /// Varies with zoom and the feature (or the point), through a
+    /// top-level zoom curve.
     Composite,
 }
 
@@ -252,6 +258,10 @@ impl PropertyExpression {
         if camera && !feature_constant {
             return Err("camera expressions cannot read the feature");
         }
+        let elevation = spec.elevation && deps.contains(Deps::ELEVATION);
+        if camera && elevation {
+            return Err("camera expressions cannot read the elevation");
+        }
         let mut memo = vec![None; ir.nodes.len()];
         let curve = match find_zoom_curve(ir, ir.root(), &mut memo)? {
             None if !zoom_constant => return Err(TOP_LEVEL),
@@ -279,7 +289,7 @@ impl PropertyExpression {
                 _ => unreachable!("a zoom curve is a step or interpolate"),
             }),
         };
-        let kind = match (&curve, feature_constant) {
+        let kind = match (&curve, feature_constant && !elevation) {
             (None, true) if camera => Kind::Camera,
             (None, true) => Kind::Constant,
             (None, false) => Kind::Source,
@@ -295,6 +305,14 @@ impl PropertyExpression {
 
     pub fn kind(&self) -> Kind {
         self.kind
+    }
+
+    pub(crate) fn from_parts(expression: Expression, kind: Kind, curve: Option<ZoomCurve>) -> Self {
+        Self {
+            expression,
+            kind,
+            curve,
+        }
     }
 
     /// Whether the value reads the camera beyond its zoom: `pitch` or
