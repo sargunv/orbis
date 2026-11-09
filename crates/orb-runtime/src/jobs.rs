@@ -34,10 +34,18 @@ pub enum JobRequest {
         style: u64,
         icons: SpriteIcons,
     },
-    /// [`Jobs::prefetch_glyphs`].
+    /// [`Jobs::prefetch_glyphs`]: glyph ranges the sender fetches once
+    /// for every job host and hands in with [`GlyphRange`](Self::GlyphRange)
+    /// ([`JobHost::expect_glyphs`](crate::JobHost::expect_glyphs)).
     Glyphs {
         style: u64,
         urls: Vec<String>,
+    },
+    /// One of them, fetched or failed.
+    GlyphRange {
+        style: u64,
+        url: String,
+        bytes: Result<Vec<u8>, String>,
     },
     Load {
         id: u32,

@@ -57,6 +57,8 @@ pub(crate) struct WorkerJobs {
     map: u32,
     workers: u32,
     state: Mutex<State>,
+    /// Itself, for fetches that answer later.
+    me: std::sync::Weak<WorkerJobs>,
 }
 
 impl std::fmt::Debug for WorkerJobs {
@@ -121,13 +123,14 @@ impl WorkerJobs {
     pub(crate) fn new(map: u32, workers: u32, post: js_sys::Function) -> Arc<Self> {
         POSTS.with(|posts| posts.borrow_mut().insert(map, post));
         let workers = workers.max(1);
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
             map,
             workers,
             state: Mutex::new(State {
                 lost: vec![false; workers as usize],
                 ..State::default()
             }),
+            me: me.clone(),
         })
     }
 
@@ -535,8 +538,26 @@ impl Jobs for WorkerJobs {
     }
 
     fn prefetch_glyphs(&self, style: u64, urls: Vec<String>) {
-        // Each worker lays out with its own glyph metrics.
-        self.broadcast(&bytes(&wire::encode(&JobRequest::Glyphs { style, urls })));
+        // The page fetches each range once and hands it to every worker,
+        // which lays out with its own metrics; their tiles that need one
+        // meanwhile wait for it rather than fetch it again.
+        let request = JobRequest::Glyphs {
+            style,
+            urls: urls.clone(),
+        };
+        self.broadcast(&bytes(&wire::encode(&request)));
+        for url in urls {
+            let (me, fetching) = (self.me.clone(), url.clone());
+            let done = Box::new(move |fetched: Result<Vec<u8>, orb_host::FetchError>| {
+                let Some(jobs) = me.upgrade() else {
+                    return;
+                };
+                let bytes = fetched.map_err(|e| format!("glyphs {url}: {e}"));
+                let range = JobRequest::GlyphRange { style, url, bytes };
+                jobs.broadcast(&self::bytes(&wire::encode(&range)));
+            });
+            crate::regions::service().get(&fetching, done);
+        }
     }
 
     fn raster(&self, request: GlyphRaster, done: RasterDone) {
@@ -666,7 +687,11 @@ impl JobWorker {
                 return Ok(None);
             }
             JobRequest::Glyphs { style, urls } => {
-                self.host.prefetch_glyphs(style, urls);
+                self.host.expect_glyphs(style, urls);
+                return Ok(None);
+            }
+            JobRequest::GlyphRange { style, url, bytes } => {
+                self.host.glyph_range(style, url, bytes);
                 return Ok(None);
             }
             JobRequest::Cluster { id, request } => {

@@ -134,47 +134,69 @@ impl GlyphLoads {
         waiting.insert(key.clone(), vec![ready]);
         drop(waiting);
         let (this, worker) = (Arc::clone(self), Arc::clone(worker));
-        let url = key.1.clone();
         self.fetch.get(
             &key.1.clone(),
             Box::new(move |fetched| {
-                let files = worker
-                    .data
-                    .glyphs
-                    .files()
-                    .filter(|_| worker.declares_font(&url));
-                if let Ok(bytes) = &fetched
-                    && worker.is_glyph_range(&url)
-                {
-                    let mut recent = this.recent.lock().expect("ranges poisoned");
-                    recent.insert(&url, Arc::new(bytes.clone()));
-                }
-                let finish = move |prepared: Result<(), String>| {
-                    let bytes = prepared.and(fetched.as_deref().map_err(ToString::to_string));
-                    worker.add_resource(&url, bytes);
-                    if let Some(words) = worker.word_breaker() {
-                        this.words
-                            .lock()
-                            .expect("words poisoned")
-                            .get_or_insert(words);
-                    }
-                    let waiters = this
-                        .waiting
-                        .lock()
-                        .expect("glyph loads poisoned")
-                        .remove(&key)
-                        .unwrap_or_default();
-                    for ready in waiters {
-                        ready();
-                    }
-                };
-                // A font file opens once the engine is in.
-                match files {
-                    Some(files) => files.prepare(Box::new(finish)),
-                    None => finish(Ok(())),
-                }
+                this.arrived(worker, key, fetched.map_err(|e| e.to_string()));
             }),
         );
+    }
+
+    /// Marks style `style`'s `url` as coming from elsewhere ([`arrived`](Self::arrived)):
+    /// layouts that need it meanwhile wait for it rather than fetch it.
+    fn expect(&self, worker: &TileWorker, style: u64, url: String) {
+        if worker.data.glyphs.has(&url) {
+            return;
+        }
+        let mut waiting = self.waiting.lock().expect("glyph loads poisoned");
+        waiting.entry((style, url)).or_default();
+    }
+
+    /// `key`'s resource is in (or failed): `worker` takes it, and the
+    /// layouts waiting for it go on.
+    fn arrived(
+        self: &Arc<Self>,
+        worker: Arc<TileWorker>,
+        key: (u64, String),
+        fetched: Result<Vec<u8>, String>,
+    ) {
+        let url = key.1.clone();
+        let files = worker
+            .data
+            .glyphs
+            .files()
+            .filter(|_| worker.declares_font(&url));
+        if let Ok(bytes) = &fetched
+            && worker.is_glyph_range(&url)
+        {
+            let mut recent = self.recent.lock().expect("ranges poisoned");
+            recent.insert(&url, Arc::new(bytes.clone()));
+        }
+        let this = Arc::clone(self);
+        let finish = move |prepared: Result<(), String>| {
+            let bytes = prepared.and(fetched.as_deref().map_err(Clone::clone));
+            worker.add_resource(&url, bytes);
+            if let Some(words) = worker.word_breaker() {
+                this.words
+                    .lock()
+                    .expect("words poisoned")
+                    .get_or_insert(words);
+            }
+            let waiters = this
+                .waiting
+                .lock()
+                .expect("glyph loads poisoned")
+                .remove(&key)
+                .unwrap_or_default();
+            for ready in waiters {
+                ready();
+            }
+        };
+        // A font file opens once the engine is in.
+        match files {
+            Some(files) => files.prepare(Box::new(finish)),
+            None => finish(Ok(())),
+        }
     }
 
     /// Builds a tile on this thread, fetching the glyph ranges and word
@@ -336,6 +358,27 @@ impl JobHost {
         for url in urls {
             self.glyphs.wait(&worker, id, url, Box::new(|| {}));
         }
+    }
+
+    /// Glyph ranges style `id`'s tiles are about to need that another
+    /// context fetches and hands in with [`glyph_range`](Self::glyph_range):
+    /// tiles that need them meanwhile wait for them rather than fetch them.
+    pub fn expect_glyphs(&self, id: u64, urls: Vec<String>) {
+        let Some(worker) = self.worker(id) else {
+            return;
+        };
+        for url in urls {
+            self.glyphs.expect(&worker, id, url);
+        }
+    }
+
+    /// A glyph range [`expect_glyphs`](Self::expect_glyphs) announced,
+    /// fetched (or failed) elsewhere.
+    pub fn glyph_range(&self, id: u64, url: String, fetched: Result<Vec<u8>, String>) {
+        let Some(worker) = self.worker(id) else {
+            return;
+        };
+        self.glyphs.arrived(worker, (id, url), fetched);
     }
 
     /// PMTiles archive `url` begins with `head`: loads of its tiles start

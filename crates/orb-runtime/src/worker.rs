@@ -1404,6 +1404,29 @@ pub(crate) mod tests {
         assert_eq!(glyph_gets, 1, "{gets:?}");
     }
 
+    /// A glyph range another context fetches for the job hosts: a tile
+    /// that needs it waits for it rather than fetch it again.
+    #[test]
+    fn expected_ranges_arrive_from_elsewhere() {
+        let fetch = Arc::new(AssetFetch::default());
+        let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
+        let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
+        host.set_style(1, Arc::clone(&worker));
+        let first = worker.first_glyphs(symbol_request().zoom);
+        host.expect_glyphs(1, first.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        host.load(symbol_request(), Box::new(move |r| tx.send(r).unwrap()));
+        assert_eq!(rx.try_iter().count(), 0, "layout waits for the range");
+        let path = format!("{ASSETS}/{}", first[0].strip_prefix("local://").unwrap());
+        host.glyph_range(1, first[0].clone(), Ok(std::fs::read(path).unwrap()));
+        let Some(Ok(crate::Loaded::Tile(tile))) = rx.try_iter().next() else {
+            panic!("laid out")
+        };
+        assert_eq!(tile.symbols.len(), 1);
+        let gets = fetch.gets.lock().unwrap();
+        assert!(!gets.iter().any(|u| u.contains("/glyphs/")), "{gets:?}");
+    }
+
     /// A tile asked for while the sprites load is fetched at once, and laid
     /// out once the icons it waits for arrive.
     #[test]
