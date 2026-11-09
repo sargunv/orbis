@@ -127,7 +127,10 @@ Advice that cost time to learn, not rules:
 - Fix causes rather than hiding them behind fades, fallbacks or flattening.
 - GL JS (with its fixtures) and MapLibre Native are both guides to correct
   behaviour, not pixel targets, and neither is assumed better. Measure both
-  and aim for whichever does a thing best.
+  and aim for whichever does a thing best. Orbis is a next-generation
+  MapLibre renderer, not a GL JS port: "GL JS does it too" is never enough
+  reason to design, keep, defer or close something. Check what Native does
+  (mln-rs is a readable port of it) and take the better of the two.
 - `cargo xtask check --affected` is the fast loop; run the fixtures now and
   then.
 - On tile-based GPUs (Apple, phones), per-pass GPU timestamps show where
