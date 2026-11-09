@@ -29,9 +29,11 @@ pollster.workspace = true
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 wgpu = { workspace = true, features = ["metal"] }
 
-[target.'cfg(any(windows, target_os = "linux", target_os = "android"))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 wgpu = { workspace = true, features = ["vulkan"] }
 
+# D3D12 is on every Windows 10+ machine (VMs, Remote Desktop and WARP too);
+# Vulkan there depends on the vendor's driver.
 [target.'cfg(windows)'.dependencies]
 wgpu = { workspace = true, features = ["dx12"] }
 

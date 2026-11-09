@@ -1,7 +1,7 @@
 //! Native pipeline caches: warm starts use native pipeline caches. Where
 //! the driver supports them (Vulkan), pipelines are made
-//! through one cache, whose data the host keeps between runs; browsers and
-//! Metal keep their own.
+//! through one cache, whose data the host keeps between runs; browsers,
+//! Metal and D3D12 drivers keep their own.
 //!
 //! The data is sealed with a SHA-256 of wgpu's whole blob: wgpu checks its
 //! header (driver, version, length) but not the payload, which goes to the
