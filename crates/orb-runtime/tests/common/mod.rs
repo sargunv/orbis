@@ -273,14 +273,12 @@ pub(crate) fn take_warnings(map: &mut Map) -> Vec<String> {
         .collect()
 }
 
-/// Pixels that differ by more than one level in a channel. Glyphs sit where
-/// the shared atlas packed them, which depends on the order they arrived,
-/// and filtering at another texel origin can round one level apart.
+/// Pixels that differ.
 pub(crate) fn differing_pixels(a: &[u8], b: &[u8]) -> usize {
     a.as_chunks::<4>()
         .0
         .iter()
         .zip(b.as_chunks::<4>().0)
-        .filter(|(a, b)| a.iter().zip(*b).any(|(x, y)| x.abs_diff(*y) > 1))
+        .filter(|(a, b)| a != b)
         .count()
 }

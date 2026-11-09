@@ -122,13 +122,10 @@ fn fresh_at(
     (target.read_pixels().unwrap(), fresh.camera())
 }
 
-/// Asserts the two pictures equal, to one step in a channel: the GPU cull
-/// compacts chunks in no fixed order, so overlapping translucent pieces of
-/// one layer may blend in either order and round apart, even between two
-/// fresh maps. On failure, writes both and their difference to a fresh
-/// directory and names it.
+/// Asserts the two pictures equal. On failure, writes both and their
+/// difference to a fresh directory and names it.
 fn assert_same(name: &str, pair: (Vec<u8>, Vec<u8>)) {
-    assert_within(name, pair, 1);
+    assert_within(name, pair, 0);
 }
 
 /// [`assert_same`] to `steps` in a channel.
@@ -396,7 +393,10 @@ fn a_terrain_gesture_draws_what_a_fresh_map_does() {
     );
     let start = (Geodetic::new(139.70, 35.66), 12.0, 0.0, 30.0);
     let end = (STATION, 13.8, 40.0, 60.0);
-    assert_same("terrain", both_ways(&style, start, end, 30));
+    // The drape atlas is a whole number of slots wide, not a power of two,
+    // so a sample's coordinate rounds by where its tile's slot is, which
+    // the gesture decides: a step in a channel.
+    assert_within("terrain", both_ways(&style, start, end, 30), 1);
 }
 
 /// Ridges against the sky over the Alps: a turn and tilt to a pitch of
@@ -521,7 +521,7 @@ fn turning_over_the_live_alps_draws_what_a_fresh_map_does() {
     fresh.jump_to(&camera(at(-32.0)));
     settle(&mut fresh, &mut target);
     // The terrain filters several drape texels into a pixel, each of which
-    // may round a step apart (`assert_same`'s translucent pieces): two.
+    // may round a step apart (see the terrain gesture): two.
     assert_within("live-alps", (turned, target.read_pixels().unwrap()), 2);
 }
 

@@ -323,9 +323,11 @@ struct LineGlyph {
 
 struct SymbolOut {
     @builtin(position) position: vec4<f32>,
-    // Glyph or image texel coordinates over page size, and the page layer.
+    // The page layer, the bitmap's padded rectangle's origin on it, and
+    // the quad's texels from there (see `atlas_uv`).
     @location(0) @interpolate(flat) layer: u32,
     @location(1) tex: vec2<f32>,
+    @location(7) @interpolate(flat) origin: vec2<f32>,
     // Gamma scale, size and total opacity.
     @location(2) data: vec3<f32>,
     @location(3) fill: vec4<f32>,
@@ -518,6 +520,7 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
         final_pos = vec4<f32>(px_to_clip(plane_pos + glyph_offset_px), 0.0, 1.0);
     }
     out.position = final_pos;
+    out.tex = corner_tex;
 
     // Texels: the padded rectangle's origin plus the quad's texels.
     let image = (flags & Q_IMAGE) != 0u;
@@ -527,14 +530,14 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
             return out;
         }
         out.layer = rect >> 24u;
-        out.tex = (vec2<f32>(f32(rect & 0xfffu), f32((rect >> 12u) & 0xfffu)) + corner_tex) / node.image_page;
+        out.origin = vec2<f32>(f32(rect & 0xfffu), f32((rect >> 12u) & 0xfffu));
     } else {
         let atlas_row = vertex_at(base + vertex_at(base + H_GLYPHS) + texture);
         // The glyph row table is the property arena's first block.
         let g = atlas_row * 4u;
         let origin = prop_at(g);
         out.layer = prop_at(g + 2u);
-        out.tex = (vec2<f32>(f32(origin & 0xffffu), f32(origin >> 16u)) + corner_tex) / node.glyph_page;
+        out.origin = vec2<f32>(f32(origin & 0xffffu), f32(origin >> 16u));
         if prop_at(g + 1u) == 0u {
             // Not rasterized yet: nothing to draw.
             out.position = discarded_vertex();
@@ -557,22 +560,31 @@ fn vs_symbol(@builtin(vertex_index) index: u32, @builtin(instance_index) instanc
 
 const SDF_PX: f32 = 8.0;
 
+// Where a fragment samples its page. The quad's texels round to 1/1024
+// texel, so adding the rectangle's whole-texel origin is exact in f32 and
+// the sampler's filter weights don't depend on where the atlas packed the
+// bitmap, which the order glyphs and images arrived in decides.
+fn atlas_uv(in: SymbolOut, page: f32) -> vec2<f32> {
+    return (in.origin + round(in.tex * 1024.0) / 1024.0) / page;
+}
+
 @fragment
 fn fs_symbol(in: SymbolOut) -> @location(0) vec4<f32> {
     let image = (in.kind & 2u) != 0u;
     let sdf = (in.kind & 1u) != 0u;
     let total_opacity = in.data.z;
+    let uv = atlas_uv(in, select(node.glyph_page, node.image_page, image));
     if image && !sdf {
         if (in.kind & 4u) != 0u {
-            return textureSampleLevel(image_pages, atlas_sampler, in.tex, in.layer, 0.0) * total_opacity;
+            return textureSampleLevel(image_pages, atlas_sampler, uv, in.layer, 0.0) * total_opacity;
         }
-        return textureSampleLevel(image_pages, nearest_sampler, in.tex, in.layer, 0.0) * total_opacity;
+        return textureSampleLevel(image_pages, nearest_sampler, uv, in.layer, 0.0) * total_opacity;
     }
     var dist: f32;
     if image {
-        dist = textureSampleLevel(image_pages, atlas_sampler, in.tex, in.layer, 0.0).a;
+        dist = textureSampleLevel(image_pages, atlas_sampler, uv, in.layer, 0.0).a;
     } else {
-        dist = textureSampleLevel(glyph_pages, atlas_sampler, in.tex, in.layer, 0.0).r;
+        dist = textureSampleLevel(glyph_pages, atlas_sampler, uv, in.layer, 0.0).r;
     }
     let is_text = (node.flags & IS_TEXT) != 0u;
     let size = in.data.y;
