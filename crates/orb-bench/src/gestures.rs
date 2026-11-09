@@ -243,9 +243,15 @@ pub(crate) fn run(
         let (mut blinks, mut blink_frames, mut returns, mut drops) = (0, 0, 0, 0);
         let (mut rebuilds, mut rows) = (0, 0);
         // GPU times, collected now and then: each collection waits for the
-        // GPU, and the queries hold a few dozen frames' passes.
+        // GPU, and the queries hold a few dozen frames' passes. Submissions
+        // without timed passes (a page's growth copies) took no measured
+        // GPU time, so they aren't samples.
         runtime.set_gpu_timing(true);
         let mut gpu = Vec::new();
+        let collect = |gpu: &mut Vec<Duration>| {
+            let timed = runtime.gpu_timings().into_iter();
+            gpu.extend(timed.filter(|s| !s.passes.is_empty()).map(|s| s.gpu()));
+        };
         let started = clock::now();
         let mut now = base;
         for f in 1.. {
@@ -307,12 +313,12 @@ pub(crate) fn run(
             }
             warnings.extend(crate::take_warnings(&mut map));
             if f % GPU_COLLECT == 0 {
-                gpu.extend(runtime.gpu_timings().iter().map(orb_api::SubmitTimes::gpu));
+                collect(&mut gpu);
             }
             let next = started + FRAME * f;
             std::thread::sleep(next.saturating_sub(clock::now()));
         }
-        gpu.extend(runtime.gpu_timings().iter().map(orb_api::SubmitTimes::gpu));
+        collect(&mut gpu);
         runtime.set_gpu_timing(false);
         gpu.sort_unstable();
         let ended = clock::now();
