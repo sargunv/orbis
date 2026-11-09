@@ -37,6 +37,8 @@ pub struct Update {
     pub request: Vec<TileIndex>,
     /// Tiles the plan uses, drawn or standing by: the cache keeps them.
     pub used: Vec<TileIndex>,
+    /// The cover's tiles the source has (at or above its least zoom).
+    pub cover: Vec<TileIndex>,
 }
 
 #[derive(Debug)]
@@ -86,6 +88,8 @@ pub struct TilePyramid<T> {
     frame: u64,
     /// Failures in a row of tiles that last failed, for their backoff.
     failures: HashMap<TileIndex, u32>,
+    /// The last committed plan's cover.
+    cover: HashSet<TileIndex>,
 }
 
 impl<T> TilePyramid<T> {
@@ -97,6 +101,7 @@ impl<T> TilePyramid<T> {
             cache_size,
             frame: 0,
             failures: HashMap::new(),
+            cover: HashSet::new(),
         }
     }
 
@@ -196,6 +201,7 @@ impl<T> TilePyramid<T> {
             }
             debug_assert!(ideal.z <= self.max_zoom, "cover deeper than the source");
             update.used.push(ideal);
+            update.cover.push(ideal);
             match self.tiles.get(&ideal).map(|e| &e.state) {
                 None => {
                     if requested.insert(ideal) {
@@ -267,6 +273,8 @@ impl<T> TilePyramid<T> {
     pub fn commit(&mut self, update: &Update) {
         self.frame += 1;
         let frame = self.frame;
+        self.cover.clear();
+        self.cover.extend(&update.cover);
         for &tile in &update.request {
             self.tiles.entry(tile).or_insert(Entry {
                 state: State::Loading,
@@ -343,6 +351,16 @@ impl<T> TilePyramid<T> {
             _ => true,
         });
         waiting
+    }
+
+    /// Forgets a loading tile whose load completed unused, as if it had
+    /// never been requested: a later plan that needs it requests it again.
+    pub fn forget_loading(&mut self, tile: TileIndex) {
+        if let Some(entry) = self.tiles.get(&tile)
+            && matches!(entry.state, State::Loading)
+        {
+            self.tiles.remove(&tile);
+        }
     }
 
     /// Marks a loading tile as absent from the tileset: its nearest
@@ -443,6 +461,41 @@ impl<T> TilePyramid<T> {
         match self.tiles.remove(&found)?.state {
             State::Ready(value) => Some(value),
             _ => unreachable!("filtered to ready tiles"),
+        }
+    }
+
+    /// Whether the last committed plan's cover holds `tile`.
+    pub fn covers(&self, tile: TileIndex) -> bool {
+        self.cover.contains(&tile)
+    }
+
+    /// Evicts a ready tile that only stands in: one the last plan's cover
+    /// doesn't hold, standing in for no missing tile. A fresh view of the
+    /// cover would never have loaded it, so it makes room for the cover's
+    /// tiles; `near`'s ancestors, which draw in its place, go first.
+    pub fn evict_stand_in(&mut self, near: Option<TileIndex>) -> Option<T> {
+        let within = |outer: TileIndex, t: TileIndex| {
+            t.z >= outer.z
+                && TileIndex::new(outer.z, t.col >> (t.z - outer.z), t.row >> (t.z - outer.z))
+                    == outer
+        };
+        let stands_in = |tile: TileIndex| {
+            self.is_ready(tile)
+                && !self.cover.contains(&tile)
+                && !self
+                    .tiles
+                    .iter()
+                    .any(|(&t, e)| matches!(e.state, State::Missing) && within(tile, t))
+        };
+        let ancestors = std::iter::successors(near, |t| t.parent());
+        let found = ancestors
+            .skip(1)
+            .take_while(|t| t.z >= self.min_zoom)
+            .find(|&t| stands_in(t))
+            .or_else(|| self.tiles.keys().copied().find(|&t| stands_in(t)))?;
+        match self.tiles.remove(&found)?.state {
+            State::Ready(value) => Some(value),
+            _ => unreachable!("checked ready"),
         }
     }
 
@@ -940,6 +993,58 @@ mod tests {
         assert_eq!(p.evict_within(t(2, 0, 0)), Some("inside"));
         assert_eq!(p.evict_within(t(2, 0, 0)), None);
         assert_eq!(p.get(t(3, 4, 4)), Some(&"outside"));
+    }
+
+    #[test]
+    fn evicts_tiles_that_only_stand_in() {
+        let mut p = TilePyramid::new(0, 14, 8);
+        p.update(&cover(&[(1, 0, 0), (2, 3, 0), (3, 7, 7)]));
+        p.insert(t(1, 0, 0), "grandparent");
+        p.insert(t(2, 3, 0), "in the cover");
+        p.insert(t(3, 7, 7), "elsewhere");
+        p.update(&cover(&[(2, 0, 0)]));
+        p.insert(t(2, 0, 0), "parent");
+        // Zoomed in: the parent and grandparent stand in for the children,
+        // and a finer tile for its ancestor.
+        let view = cover(&[
+            (3, 0, 0),
+            (3, 1, 0),
+            (3, 1, 1),
+            (3, 0, 1),
+            (2, 3, 0),
+            (2, 3, 3),
+        ]);
+        p.update(&view);
+        assert!(p.covers(t(3, 0, 0)) && !p.covers(t(2, 0, 0)));
+        let near = Some(t(3, 0, 0));
+        assert_eq!(p.evict_stand_in(near), Some("parent"));
+        assert_eq!(p.evict_stand_in(near), Some("grandparent"));
+        assert_eq!(p.evict_stand_in(near), Some("elsewhere"));
+        // A tile of the cover never goes.
+        assert_eq!(p.evict_stand_in(near), None);
+        assert_eq!(p.get(t(2, 3, 0)), Some(&"in the cover"));
+    }
+
+    #[test]
+    fn forgotten_loads_are_requested_again() {
+        let mut p: TilePyramid<()> = TilePyramid::new(0, 14, 8);
+        let view = cover(&[(1, 0, 0)]);
+        assert_eq!(p.update(&view).request, [t(1, 0, 0)]);
+        p.forget_loading(t(1, 0, 0));
+        assert_eq!(p.update(&view).request, [t(1, 0, 0)]);
+    }
+
+    #[test]
+    fn keeps_ancestors_standing_in_for_missing_tiles() {
+        let mut p = TilePyramid::new(0, 14, 8);
+        p.update(&cover(&[(1, 0, 0)]));
+        p.insert(t(1, 0, 0), "parent");
+        let view = cover(&[(2, 0, 0), (2, 1, 0)]);
+        p.update(&view);
+        p.insert_missing(t(2, 1, 0));
+        p.update(&view);
+        assert_eq!(p.evict_stand_in(Some(t(2, 0, 0))), None);
+        assert_eq!(p.get(t(1, 0, 0)), Some(&"parent"));
     }
 
     #[test]

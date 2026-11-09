@@ -431,6 +431,25 @@ pub(crate) fn evict_unused(sources: &mut [SourceState], first: usize) -> Option<
         })
 }
 
+/// Evicts a tile that only stands in for a tile of a cover ([`TilePyramid::
+/// evict_stand_in`]), `first`'s first and the ancestors of its `tile`
+/// before others, to make room for `tile`.
+pub(crate) fn evict_stand_in(
+    sources: &mut [SourceState],
+    first: usize,
+    tile: TileIndex,
+) -> Option<ResidentTile> {
+    let others = (0..sources.len()).filter(|&s| s != first);
+    std::iter::once(first)
+        .chain(others)
+        .find_map(|s| match &mut sources[s] {
+            SourceState::Ready { pyramid, .. } => {
+                pyramid.evict_stand_in((s == first).then_some(tile))
+            }
+            _ => None,
+        })
+}
+
 /// What a tile result's meshes take in the scene, as [`upload`] inserts
 /// them.
 pub(crate) fn mesh_sizes(plan: &StylePlan, result: &TileResult) -> Vec<MeshSize> {

@@ -422,8 +422,11 @@ impl Map {
         // Room: what's free first; then unused tiles go, this source's
         // before others'; under the budget the pools grow before they do.
         // While other tiles load (they free the stand-ins they replace),
-        // this one waits; otherwise the tiles it replaces go, then it gives
-        // way to what stands in.
+        // this one waits. Otherwise the tiles it replaces go, then, for a
+        // tile of the cover, tiles that only stand in (a fresh view of
+        // this cover would hold none of them), its own ancestors first.
+        // A tile the cover has left since it was requested is forgotten;
+        // one of the cover gives way, to be tried again later.
         let others_loading = style
             .sources
             .iter()
@@ -469,9 +472,15 @@ impl Map {
                     grow = true;
                     continue;
                 }
+                None if others_loading => None,
                 None => match &mut style.sources[source] {
-                    SourceState::Ready { pyramid, .. } if !others_loading => {
-                        pyramid.evict_within(tile)
+                    SourceState::Ready { pyramid, .. } => {
+                        let covered = pyramid.covers(tile);
+                        pyramid.evict_within(tile).or_else(|| {
+                            covered
+                                .then(|| evict_stand_in(&mut style.sources, source, tile))
+                                .flatten()
+                        })
                     }
                     _ => None,
                 },
@@ -488,6 +497,7 @@ impl Map {
         let SourceState::Ready { pyramid, .. } = &mut style.sources[source] else {
             unreachable!("checked above");
         };
+        let covered = pyramid.covers(tile);
         let mut resident = match uploaded {
             Ok(resident) => resident,
             Err(Some(e)) => {
@@ -496,15 +506,20 @@ impl Map {
                 return None;
             }
             Err(None) if others_loading => return Some(build),
-            // Even the tiles in view don't leave room: draw what stands in,
-            // and say so.
+            Err(None) if !covered => {
+                pyramid.forget_loading(tile);
+                return None;
+            }
+            // Even the tiles in view don't leave room: what's loaded stands
+            // in, and the tile is tried again after a while (the view may
+            // have changed), as after a failed fetch.
             Err(None) => {
                 let message = format!(
                     "tile {tile:?} doesn't fit in scene memory with the tiles in view; \
-                     a coarser tile stands in"
+                     what's loaded stands in until it's tried again"
                 );
                 self.events.push(MapEvent::Error { message });
-                pyramid.insert_missing(tile);
+                pyramid.insert_failed(tile, self.services.clock.now());
                 return None;
             }
         };

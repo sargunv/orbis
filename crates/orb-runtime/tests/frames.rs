@@ -201,9 +201,61 @@ mod tests {
         assert_eq!(differing, 0, "pixels differ from an unbounded scene");
     }
 
+    /// Coarser tiles left standing in by a zoom don't crowd out the tiles
+    /// that replace them: a scene with room for the view, but not for the
+    /// view and the levels zoomed through, ends where a fresh map does.
+    /// Tiles that found no room were once marked missing, and their
+    /// stand-ins drew, without the layers of the finer zoom, for good.
+    #[test]
+    fn stand_ins_make_room_for_the_tiles_they_stand_in_for() {
+        let at = |zoom, pitch| crate::common::Options {
+            style: None,
+            encoding: "mvt".into(),
+            at: Some((orb_crs::Geodetic::new(139.765, 35.68), zoom, -12.0, pitch)),
+        };
+        let (fresh, report, _) = crate::common::Offscreen::load(&at(15.0, 45.0)).unwrap();
+        let used = report.scene;
+        let reference = fresh.pixels();
+        let capacity = crate::common::SceneCapacity {
+            vertex_words: used.vertex_words * 5 / 4,
+            index_words: used.index_words * 2,
+            prop_words: (used.prop_words * 2).max(1024),
+            ..crate::common::SceneCapacity::fixed()
+        };
+        let zoom_in = |capacity| {
+            let (mut offscreen, _, _) =
+                crate::common::Offscreen::load_with(&at(13.0, 0.0), capacity).unwrap();
+            let mut most = 0;
+            for step in 1..=4 {
+                let t = f64::from(step) / 4.0;
+                crate::common::move_camera(&mut offscreen.map, |c| {
+                    *c = crate::common::camera(&at(13.0 + 2.0 * t, 45.0 * t)).unwrap();
+                });
+                let mut report = offscreen.frame();
+                while !report.idle {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    report = offscreen.frame();
+                }
+                report = offscreen.frame();
+                most = most.max(report.scene.vertex_words);
+                crate::common::take_warnings(&mut offscreen.map);
+            }
+            (offscreen, most)
+        };
+        let (_, most) = zoom_in(crate::common::SceneCapacity::default());
+        assert!(
+            most > capacity.vertex_words,
+            "the path must need its stand-ins gone to fit: {most} words, {} room",
+            capacity.vertex_words
+        );
+        let (zoomed, _) = zoom_in(capacity);
+        let differing = crate::common::differing_pixels(&zoomed.pixels(), &reference);
+        assert_eq!(differing, 0, "pixels differ from a fresh map");
+    }
+
     /// A tile the scene can't hold even with nothing else to wait for is
-    /// an error event and a warning, never a silent hole: its coarser
-    /// stand-in draws instead.
+    /// an error event, never a silent hole: what's loaded stands in, and
+    /// the tile is tried again later.
     #[test]
     fn tiles_that_cannot_fit_are_errors() {
         let capacity = crate::common::SceneCapacity {
