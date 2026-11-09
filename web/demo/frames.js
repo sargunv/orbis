@@ -5,8 +5,9 @@
 // timestamp queries (`setGpuTiming`) and the page's render CPU per frame.
 import { createMap } from "orbis";
 
-/** Name, zoom, pitch, and whether the style gains `BUILDINGS_3D`: the
- * native bench's views. */
+/** Name, zoom, pitch, and whether the style gains `BUILDINGS_3D` (when
+ * it has OpenMapTiles' buildings and no extrusions): the native bench's
+ * views. */
 const VIEWS = [
   ["z12", 12, 0, false],
   ["z15", 15, 0, false],
@@ -69,8 +70,11 @@ export async function runFrames({ style, center, size, ratio, frames, warmup, ro
       const loaded = idle(map, name);
       map.camera.jumpTo({ center, zoom, pitch, bearing: 0 });
       await loaded;
-      if (buildings) {
-        const before = (await map.getStyle()).layers.find((l) => l.type === "symbol")?.id;
+      // A style with extrusions of its own (the Globe entry's), or without
+      // OpenMapTiles' buildings, draws as it is.
+      const now = await map.getStyle();
+      if (buildings && now.sources.openmaptiles && !now.layers.some((l) => l.type === "fill-extrusion")) {
+        const before = now.layers.find((l) => l.type === "symbol")?.id;
         const built = idle(map, name);
         await map.edit((tx) => tx.addLayer(BUILDINGS_3D, before));
         await built;

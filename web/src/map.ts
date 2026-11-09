@@ -437,7 +437,10 @@ export class OrbisMap {
     }
   }
 
+  /** A failure, as the map's `error` event or on the console; none once
+   * removed, when calls still on their way fail for that alone. */
   #error(e: unknown): void {
+    if (this.#removed) return;
     const message = String(e instanceof Error ? e.message : e);
     if (this.#events.has("error")) this.#events.emit("error", { message });
     else console.error(`orbis: ${message}`);
