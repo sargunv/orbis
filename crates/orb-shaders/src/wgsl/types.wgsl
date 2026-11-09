@@ -331,8 +331,8 @@ fn clips_box(tile: Tile) -> vec4<f32> {
 // map placement, which owns where content lands), so the test reads no
 // tile; otherwise CLIP_FETCHED, and fragments test the tile's rectangles
 // and bound. On a pitched city view, reading the tile in every line and
-// fill fragment cost a fifth of the frame, and redrawing drape slots over
-// the Alps a third of the drape pass.
+// fill fragment cost a fifth of the frame; redrawing drape slots over the
+// Alps, a quarter of the drape pass, image fragments included.
 const CLIP_FETCHED: vec2<u32> = vec2<u32>(0x80008000u, 0x80008000u);
 fn fragment_clip(tile: Tile, moved: bool) -> vec2<u32> {
     let draped = draped_placement(tile);

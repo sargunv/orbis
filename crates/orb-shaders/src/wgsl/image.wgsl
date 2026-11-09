@@ -37,6 +37,8 @@ struct ImageOut {
     @location(3) @interpolate(flat) latitudes: vec2<f32>,
     // Its fade's three row words.
     @location(6) @interpolate(flat) fade: vec3<u32>,
+    // The placement's clip as fragments test it (`fragment_clip`).
+    @location(7) @interpolate(flat) clip: vec2<u32>,
 };
 
 const NO_ANCESTOR: u32 = 0xffffffffu;
@@ -73,6 +75,7 @@ fn image_vertex(node_index: u32, instance: u32, index: u32) -> ImageOut {
     out.layer = prop_at(v.prop_base);
     out.latitudes = bitcast<vec2<f32>>(vec2<u32>(prop_at(v.prop_base + 1u), prop_at(v.prop_base + 2u)));
     out.fade = vec3<u32>(prop_at(v.prop_base + 3u), prop_at(v.prop_base + 4u), prop_at(v.prop_base + 5u));
+    out.clip = fragment_clip(tile, false);
     return out;
 }
 
@@ -108,6 +111,9 @@ fn image_pos(in: ImageOut) -> vec2<f32> {
 // where no other placement draws; it belongs to the edge.
 fn image_clipped(in: ImageOut) -> bool {
     let p = clamp(in.clip_pos, vec2<f32>(0.0), vec2<f32>(IMAGE_EXTENT - 0.5));
+    if any(in.clip != CLIP_FETCHED) {
+        return any(p < unpack_i16x2(in.clip.x)) || any(p >= unpack_i16x2(in.clip.y));
+    }
     return !inside_clips(tile_at(in.tile), p);
 }
 
