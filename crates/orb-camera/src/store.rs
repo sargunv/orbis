@@ -437,8 +437,9 @@ impl Camera {
     /// Zooms by `delta` levels around a pixel.
     pub fn zoom_by(&mut self, at: DVec2, delta: f64) {
         let mut next = self.state;
+        let least = next.least_zoom(&self.constraints, &self.surface);
         let zoom = (next.zoom(&self.surface.projection) + delta)
-            .clamp(self.constraints.min_zoom, self.constraints.max_zoom);
+            .clamp(least, self.constraints.max_zoom.max(least));
         next.zoom_around(&self.surface, self.viewport, at, zoom);
         self.user_write(next);
     }
@@ -621,11 +622,8 @@ impl Camera {
                 ..self.state
             };
             at.set_zoom(projection, z);
-            at.limit_zoom(
-                self.constraints.min_zoom,
-                self.constraints.max_zoom,
-                projection,
-            );
+            let least = at.least_zoom(&self.constraints, surface);
+            at.limit_zoom(least, self.constraints.max_zoom, projection);
             at.zoom(projection)
         });
         let mut around = None;
@@ -778,6 +776,53 @@ mod tests {
         assert_eq!(camera.state().roll, -170.0);
         // Without terrain nothing takes the elevation back.
         assert_eq!(camera.state().elevation, 300.0);
+    }
+
+    /// On the globe the least zoom bounds its size at any latitude, for
+    /// wheel zooms and eases too: the least globe, dragged north, zooms
+    /// in by the step asked for rather than jumping to the least style
+    /// zoom, and zooming or easing out there stops at the same size.
+    #[test]
+    fn globe_zooms_keep_the_least_size() {
+        let surface = Surface {
+            projection: mercator(),
+            globe: Some(orb_crs::Globe::V8),
+        };
+        let viewport = Viewport {
+            width: 800.0,
+            height: 600.0,
+        };
+        let start = CameraState::new(Geodetic::new(0.0, 0.0), 2.0, &mercator());
+        let mut camera = Camera::new(start, surface, viewport);
+        camera.set_constraints(Constraints {
+            min_zoom: 1.0,
+            ..Constraints::default()
+        });
+        let middle = DVec2::new(400.0, 300.0);
+        camera.zoom_by(middle, -10.0);
+        assert!((camera.state().globe_zoom() - 1.0).abs() < 1e-9);
+        for _ in 0..10 {
+            camera.pan(middle, middle + DVec2::new(0.0, 20.0));
+        }
+        assert!(camera.state().target.lat > 65.0);
+        assert!((camera.state().globe_zoom() - 1.0).abs() < 1e-9);
+        camera.zoom_by(middle, 0.1);
+        assert!((camera.state().globe_zoom() - 1.1).abs() < 1e-3);
+        camera.zoom_by(middle, -1.0);
+        assert!((camera.state().globe_zoom() - 1.0).abs() < 1e-9);
+        camera.ease_to(
+            &CameraTarget {
+                zoom: Some(-5.0),
+                ..CameraTarget::default()
+            },
+            EaseOptions {
+                duration: 0.0,
+                easing: Easing::Linear,
+            },
+            Some(0.0),
+        );
+        camera.frame(0.0);
+        assert!((camera.state().globe_zoom() - 1.0).abs() < 1e-9);
     }
 
     /// On the globe, eases and flights that don't set a zoom keep its size

@@ -124,6 +124,18 @@ impl CameraState {
             crate::equator_circumference_px_per_m(Geodetic::new(0.0, 0.0)) / zoom.exp2();
     }
 
+    /// The least style zoom `constraints` allow at the target. On the
+    /// sphere the least zoom bounds its size as it is at the equator (GL
+    /// JS's globe `defaultConstrain`), so the smallest globe is as small
+    /// over a pole, where its style zoom is lower.
+    pub(crate) fn least_zoom(&self, constraints: &Constraints, surface: &Surface) -> f64 {
+        if constraints.bounds.is_none() && self.on_sphere(surface) {
+            constraints.min_zoom + self.zoom(&surface.projection) - self.globe_zoom()
+        } else {
+            constraints.min_zoom
+        }
+    }
+
     /// Keeps the style zoom within limits, keeping the target.
     pub(crate) fn limit_zoom(&mut self, min: f64, max: f64, projection: &Projection) {
         let zoom = self.zoom(projection);
@@ -316,17 +328,8 @@ impl CameraState {
     ) {
         let projection = &surface.projection;
         let sphere = constraints.bounds.is_none() && self.on_sphere(surface);
-        if sphere {
-            // The least zoom bounds the sphere's size as it is at the
-            // equator (GL JS's globe `defaultConstrain`), so the smallest
-            // globe is as small over a pole.
-            if self.globe_zoom() < constraints.min_zoom {
-                self.set_globe_zoom(constraints.min_zoom);
-            }
-            self.limit_zoom(f64::NEG_INFINITY, constraints.max_zoom, projection);
-        } else {
-            self.limit_zoom(constraints.min_zoom, constraints.max_zoom, projection);
-        }
+        let least = self.least_zoom(constraints, surface);
+        self.limit_zoom(least, constraints.max_zoom, projection);
         self.pitch = self.pitch.clamp(
             constraints.min_pitch,
             constraints.max_pitch.max(constraints.min_pitch),
