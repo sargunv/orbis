@@ -21,7 +21,7 @@ mod overzoom;
 mod subdivide;
 
 pub use builder::LayerBuilder;
-pub use clip::clip_ring;
+pub use clip::{Coord, clip_ring, clip_square, clip_step};
 pub use column::{Bitmap, Column, ColumnData, Value, ValueRef};
 pub use decode::DecodeError;
 pub use dem::DemGrid;

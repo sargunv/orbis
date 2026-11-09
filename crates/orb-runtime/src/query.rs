@@ -286,34 +286,15 @@ impl FeatureRef<'_> {
 }
 
 /// Closed polygon ring `ring` clipped to the box `lo..hi` on both axes
-/// (Sutherland–Hodgman), closed; empty when nothing of it is inside.
-fn clip_ring(ring: &[DVec2], lo: f64, hi: f64) -> Vec<DVec2> {
-    let mut points = ring.to_vec();
-    if points.len() > 1 && points.first() == points.last() {
-        points.pop();
+/// (`orb_tile::clip_square`), closed; empty when nothing of it is inside.
+fn clip_ring(ring: &[[f64; 2]], lo: f64, hi: f64) -> Vec<DVec2> {
+    let closing = ring.len() > 1 && ring.first() == ring.last();
+    let mut out = Vec::new();
+    orb_tile::clip_square(&ring[..ring.len() - usize::from(closing)], lo, hi, &mut out);
+    if let Some(&first) = out.first() {
+        out.push(first);
     }
-    for axis in 0..2 {
-        for (bound, keep_above) in [(lo, true), (hi, false)] {
-            let inside = |p: DVec2| (p[axis] >= bound) == keep_above || p[axis] == bound;
-            let mut out = Vec::with_capacity(points.len() + 4);
-            for (i, &b) in points.iter().enumerate() {
-                let a = points[(i + points.len() - 1) % points.len()];
-                if inside(a) != inside(b) {
-                    let t = (bound - a[axis]) / (b[axis] - a[axis]);
-                    out.push(a + (b - a) * t);
-                }
-                if inside(b) {
-                    out.push(b);
-                }
-            }
-            points = out;
-            if points.is_empty() {
-                return points;
-            }
-        }
-    }
-    points.push(points[0]);
-    points
+    out.into_iter().map(DVec2::from).collect()
 }
 
 fn point(words: &[u32; 2]) -> [i32; 2] {
@@ -1483,15 +1464,11 @@ impl ScreenHit {
             let part: Vec<Vec<DVec2>> = part
                 .iter()
                 .map(|ring| {
-                    let ring: Vec<DVec2> = ring
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|p| DVec2::new(f64::from(p[0] as i32), f64::from(p[1] as i32)))
-                        .collect();
+                    let point = |p: &[u32; 2]| p.map(|v| f64::from(v as i32));
+                    let ring = ring.as_chunks::<2>().0.iter().map(point);
                     match clip_box {
-                        Some((lo, hi)) => clip_ring(&ring, lo, hi),
-                        None => ring,
+                        Some((lo, hi)) => clip_ring(&ring.collect::<Vec<_>>(), lo, hi),
+                        None => ring.map(DVec2::from).collect(),
                     }
                 })
                 .filter(|ring| !ring.is_empty())
@@ -2136,11 +2113,13 @@ mod tests {
     /// layer's buffer: a square reaching past the box keeps what's in it.
     #[test]
     fn rings_clip_to_the_box() {
-        let ring: Vec<DVec2> = [[-100.0, 10.0], [50.0, 10.0], [50.0, 300.0], [-100.0, 300.0]]
-            .into_iter()
-            .chain([[-100.0, 10.0]])
-            .map(DVec2::from)
-            .collect();
+        let ring = [
+            [-100.0, 10.0],
+            [50.0, 10.0],
+            [50.0, 300.0],
+            [-100.0, 300.0],
+            [-100.0, 10.0],
+        ];
         let clipped = clip_ring(&ring, -20.0, 220.0);
         assert_eq!(clipped.first(), clipped.last());
         let (lo, hi) = clipped.iter().fold(
@@ -2149,7 +2128,7 @@ mod tests {
         );
         assert_eq!((lo, hi), (DVec2::new(-20.0, 10.0), DVec2::new(50.0, 220.0)));
         // Wholly outside, nothing.
-        let away: Vec<DVec2> = ring.iter().map(|p| *p + DVec2::new(1000.0, 0.0)).collect();
+        let away = ring.map(|[x, y]| [x + 1000.0, y]);
         assert!(clip_ring(&away, -20.0, 220.0).is_empty());
     }
 

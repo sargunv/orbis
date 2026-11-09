@@ -4,7 +4,7 @@
 //! Vertex layout, 2 words: `x | y << 16` as i16 tile units, then the feature
 //! slot.
 
-use orb_tile::{GeometryType, Layer, clip_ring};
+use orb_tile::{GeometryType, Layer, clip_ring, clip_step};
 
 use crate::{Mesh, MeshBuilder};
 
@@ -236,7 +236,7 @@ fn subdivide(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, step: [f64; 2
                     (1, ((cy + 1) as f64 * sy).round() as i32, false),
                 ];
                 for (axis, bound, keep_above) in bounds {
-                    clip(&a, axis, bound, keep_above, &mut b);
+                    clip_step(&a, axis, bound, keep_above, &mut b);
                     std::mem::swap(&mut a, &mut b);
                 }
                 a.dedup();
@@ -263,42 +263,6 @@ fn subdivide(points: &mut Vec<[i16; 2]>, triangles: &mut Vec<u32>, step: [f64; 2
         }
     }
     *triangles = out;
-}
-
-/// One Sutherland–Hodgman step of a convex polygon against an axis-aligned
-/// line, keeping the side above (`keep_above`) or below it.
-fn clip(polygon: &[[i32; 2]], axis: usize, bound: i32, keep_above: bool, out: &mut Vec<[i32; 2]>) {
-    out.clear();
-    let inside = |p: &[i32; 2]| {
-        if keep_above {
-            p[axis] >= bound
-        } else {
-            p[axis] <= bound
-        }
-    };
-    let Some(&last) = polygon.last() else { return };
-    let mut prev = last;
-    for &p in polygon {
-        let cross = || {
-            let (lo, hi) = if prev <= p { (prev, p) } else { (p, prev) };
-            let t = f64::from(bound - lo[axis]) / f64::from(hi[axis] - lo[axis]);
-            let other = 1 - axis;
-            let mut q = [0; 2];
-            q[axis] = bound;
-            q[other] = (f64::from(lo[other]) + t * f64::from(hi[other] - lo[other])).round() as i32;
-            q
-        };
-        match (inside(&prev), inside(&p)) {
-            (true, true) => out.push(p),
-            (true, false) => out.push(cross()),
-            (false, true) => {
-                out.push(cross());
-                out.push(p);
-            }
-            (false, false) => {}
-        }
-        prev = p;
-    }
 }
 
 pub(crate) fn pack_position(x: i16, y: i16) -> u32 {
