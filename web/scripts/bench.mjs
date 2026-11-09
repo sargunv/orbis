@@ -6,7 +6,8 @@
 // `--name=value` pairs become the page's query (format, style, frames,
 // warmup, rounds, size, ratio, at, experiment; workers (job workers),
 // paths and engine for `--experiment=gestures`; filter, legs and engine
-// for `--experiment=stutter`). Gesture paths are city, dense (pan, zoom
+// for `--experiment=stutter`, whose `--engine=both` interleaves Orbis and GL
+// JS path by path after an untimed pass of each). Gesture paths are city, dense (pan, zoom
 // and turn at pitch 60: give it a dense style, such as a `cargo xtask h2h
 // mirror`'s Liberty `--at=2.35,48.857`), alps (the default with
 // `--style=terrain`) or globe (the default with `--style=globe`, the live
@@ -57,7 +58,7 @@ try {
     if (!["error", "warning"].includes(m.type())) return;
     console.error(`page: ${m.text()}`);
     // GL JS's console warnings are about the style, not the run.
-    if (engine !== "gl") errors++;
+    if (engine !== "gl" && engine !== "both") errors++;
   });
   page.on("pageerror", (e) => { errors++; console.error(`page: ${e.message}`); });
   for (engine of engines) {

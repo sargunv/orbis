@@ -4,9 +4,11 @@
 // reached the page, `render`'s CPU time by stage (`FrameStats.times`), the
 // work `prepare` did on the page between it and the last (applying tiles
 // that arrived between frames), the bytes uploaded and the tiles that
-// arrived; the GPU's submissions where timestamp queries exist. `engine=gl` drives MapLibre GL JS along the same
-// paths and records its frame pacing, the CPU time of its `_render` and the
-// tiles that load each frame.
+// arrived; the GPU's submissions where timestamp queries exist. `engine=gl`
+// drives MapLibre GL JS along the same paths and records its frame pacing,
+// the CPU time of its `_render` and the tiles that load each frame;
+// `engine=both` runs each path through both, interleaved after an untimed
+// pass of each, and sets their pacing side by side.
 import { createMap } from "orbis";
 import alps from "./data/alps.json?url";
 import alpsFlight from "./data/alps-flight.json";
@@ -266,36 +268,20 @@ function histogram(frames) {
   ];
 }
 
-/** Runs each scenario `filter` keeps; resolves to the Markdown report. */
-export async function runStutter({ liberty, size, about, show, filter, legs, engine = "orbis" }) {
-  const gl = engine === "gl";
-  const container = document.createElement("div");
-  Object.assign(container.style, { width: `${size[0]}px`, height: `${size[1]}px`, position: "relative" });
-  document.body.append(container);
-  const rows = [];
-  try {
-    for (const scenario of SCENARIOS.filter((s) => !filter || s.name.includes(filter))) {
-      const style = scenario.style === "alps" ? alps : liberty;
-      const flight = alpsFlight.legs.slice(0, legs ?? alpsFlight.legs.length);
-      const run = gl ? runGl : runOrbis;
-      rows.push({ scenario, style, ...(await run(container, scenario, style, flight, show)) });
-    }
-  } finally {
-    container.remove();
-  }
-  if (!rows.length) throw new Error("no scenario matches the filter");
+const ENGINES = { orbis: { name: "Orbis", run: runOrbis }, gl: { name: "MapLibre GL JS", run: runGl } };
+
+/** Intervals between a path's frames, sorted. */
+const intervals = (f) => sorted(f.slice(1).map((x, i) => x.t - f[i].t));
+
+/** One engine's table and per-path details. */
+function engineReport(rows, gl) {
   const lines = [
-    `### Stutter bench (page, ${gl ? "MapLibre GL JS" : "Orbis"})`, "",
-    ...about.map((line) => `- ${line}`),
-    `- ${size[0]}×${size[1]} CSS px; the camera moved once a display frame (\`jumpTo\`; a flight's legs through ` +
-      "`flyTo`), each path from a fresh map at rest",
-    "",
     `| path | frames | interval p50 | p99 | max | > 25 ms | > 33.3 ms | render CPU p50 | p99 | max | > 16.7 ms |${gl ? "" : " between frames p99 | max | GPU p50 | p99 | max | > 16.7 ms |"} tiles arrived |${gl ? "" : " MiB uploaded |"} long tasks (max ms) | settle ms |`,
     `|${"---|".repeat(gl ? 14 : 21)}`,
   ];
   for (const r of rows) {
     const f = r.frames;
-    const gaps = sorted(f.slice(1).map((x, i) => x.t - f[i].t));
+    const gaps = intervals(f);
     const cpu = sorted(f.map((x) => x.cpu));
     const gpu = sorted(f.filter((x) => x.gpu !== undefined).map((x) => x.gpu));
     const cells = [r.scenario.name, f.length, ms(at(gaps, 0.5)), ms(at(gaps, 0.99)), ms(at(gaps, 1)), over(gaps, 1.5 * FRAME),
@@ -309,10 +295,12 @@ export async function runStutter({ liberty, size, about, show, filter, legs, eng
     cells.push(`${r.longTasks.length} (${ms(Math.max(0, ...r.longTasks))})`, r.settle.toFixed(0));
     lines.push(`| ${cells.join(" | ")} |`);
   }
-  lines.push("", "Times in ms. Interval: between frames reaching the page while the camera moves (over 25 ms: a refresh missed); render CPU: " +
+  lines.push("", "Times in ms. Interval: between frames reaching the page while the camera moves (over 25 ms: a refresh missed; " +
+    "a GPU running behind doesn't show here, the page's frames go on); render CPU: " +
     (gl ? "GL JS's `_render`" : "the frame's `render`") + "; long tasks: the page's, over 50 ms; settle: from the " +
     "path's end until the map is idle." + (gl ? "" : " Between frames: `prepare`'s work on the page since the frame " +
-    "before (arrived tiles applied and asked for between frames); GPU: the frame's passes, where the device has timestamp queries."));
+    "before (arrived tiles applied and asked for between frames); GPU: the frame's passes, where the device has timestamp " +
+    "queries; uploaded and tiles arrived: since the frame before, between frames included."));
   for (const r of rows) {
     lines.push("", `#### ${r.scenario.name}`, "", `- style: ${r.style}`);
     if (!gl) {
@@ -324,6 +312,72 @@ export async function runStutter({ liberty, size, about, show, filter, legs, eng
   }
   if (!gl) {
     lines.push("", "Stages as `cargo xtask bench stutter` names them; page: the package's `render` around the runtime's frame.");
+  }
+  return lines;
+}
+
+/** Each path's pacing through each engine, side by side. */
+function comparison(results) {
+  const lines = [
+    "| path | engine | interval p50 | p99 | max | > 25 ms | > 33.3 ms | render CPU p99 | max | tiles arrived | long tasks |",
+    `|${"---|".repeat(11)}`,
+  ];
+  results.orbis.forEach((_, i) => {
+    for (const [key, rows] of Object.entries(results)) {
+      const { scenario, frames, longTasks } = rows[i];
+      const gaps = intervals(frames);
+      const cpu = sorted(frames.map((x) => x.cpu));
+      const cells = [scenario.name, ENGINES[key].name, ms(at(gaps, 0.5)), ms(at(gaps, 0.99)), ms(at(gaps, 1)),
+        over(gaps, 1.5 * FRAME), over(gaps, 2 * FRAME), ms(at(cpu, 0.99)), ms(at(cpu, 1)),
+        frames.reduce((sum, x) => sum + x.arrived, 0), longTasks.length];
+      lines.push(`| ${cells.join(" | ")} |`);
+    }
+  });
+  lines.push("", "Times in ms, as in each engine's table below. Neither interval shows a GPU running behind: Orbis's GPU " +
+    "columns below do; GL JS isn't GPU-timed here.");
+  return lines;
+}
+
+/** Runs each scenario `filter` keeps through `engine`: orbis, gl, or both
+ * (per path an untimed pass of each, then each timed in turn, so the HTTP
+ * cache, the shader caches and drift treat them alike); resolves to the
+ * Markdown report. */
+export async function runStutter({ liberty, size, about, show, filter, legs, engine = "orbis" }) {
+  const keys = engine === "both" ? ["orbis", "gl"] : [engine];
+  if (!keys.every((key) => ENGINES[key])) throw new Error("engine must be orbis, gl or both");
+  const container = document.createElement("div");
+  Object.assign(container.style, { width: `${size[0]}px`, height: `${size[1]}px`, position: "relative" });
+  document.body.append(container);
+  const results = Object.fromEntries(keys.map((key) => [key, []]));
+  const flight = alpsFlight.legs.slice(0, legs ?? alpsFlight.legs.length);
+  try {
+    for (const scenario of SCENARIOS.filter((s) => !filter || s.name.includes(filter))) {
+      const style = scenario.style === "alps" ? alps : liberty;
+      if (keys.length > 1) {
+        for (const key of keys) {
+          await ENGINES[key].run(container, scenario, style, flight, (line) => show(`${line}, untimed`));
+        }
+      }
+      for (const key of keys) {
+        results[key].push({ scenario, style, ...(await ENGINES[key].run(container, scenario, style, flight, show)) });
+      }
+    }
+  } finally {
+    container.remove();
+  }
+  if (!results[keys[0]].length) throw new Error("no scenario matches the filter");
+  const both = keys.length > 1;
+  const lines = [
+    `### Stutter bench (page, ${keys.map((key) => ENGINES[key].name).join(" and ")})`, "",
+    ...about.map((line) => `- ${line}`),
+    `- ${size[0]}×${size[1]} CSS px; the camera moved once a display frame (\`jumpTo\`; a flight's legs through ` +
+      "`flyTo`), each path from a fresh map at rest" +
+      (both ? "; per path an untimed pass of each engine, then each timed in turn" : ""),
+  ];
+  if (both) lines.push("", ...comparison(results));
+  for (const key of keys) {
+    if (both) lines.push("", `### ${ENGINES[key].name}`);
+    lines.push("", ...engineReport(results[key], key === "gl"));
   }
   return `${lines.join("\n")}\n`;
 }
