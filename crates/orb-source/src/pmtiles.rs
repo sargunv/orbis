@@ -399,25 +399,60 @@ pub enum Lookup {
     Missing,
 }
 
-#[derive(Debug, Default)]
+/// What a reader reads first: the header and, the spec requires, the root
+/// directory within the first 16 KiB, in one round trip.
+pub const HEAD: Range = Range {
+    offset: 0,
+    length: 16384,
+};
+const HEADER: Range = Range {
+    offset: 0,
+    length: HEADER_LEN,
+};
+
+/// Reads an archive's directories as [`Lookup::Read`] asks: [`HEAD`] first,
+/// then the leaves a tile's lookup needs, keeping the last 32 used.
+#[derive(Debug)]
 pub struct Reader {
     header: Option<Header>,
     root: Option<Vec<Entry>>,
+    /// Least recently used first.
     leaves: VecDeque<(Range, Vec<Entry>)>,
+    /// The first read: [`HEAD`], or the header alone for an archive
+    /// shorter than that.
+    first: Range,
+}
+
+impl Default for Reader {
+    fn default() -> Self {
+        Self {
+            header: None,
+            root: None,
+            leaves: VecDeque::new(),
+            first: HEAD,
+        }
+    }
 }
 
 impl Reader {
+    /// Keeps the bytes a [`Lookup::Read`] of `range` asked for. The first
+    /// read may be any prefix of the archive at least a header long: the
+    /// root directory is kept too when it is within it.
     pub fn insert(&mut self, range: Range, bytes: &[u8]) -> Result<(), String> {
         if bytes.len() as u64 != range.length {
             return Err("short PMTiles range".into());
         }
-        if range
-            == (Range {
-                offset: 0,
-                length: HEADER_LEN,
-            })
-        {
-            self.header = Some(Header::parse(bytes)?);
+        if range.offset == 0 && range.length >= HEADER_LEN && range.length <= HEAD.length {
+            let header = Header::parse(&bytes[..HEADER_LEN as usize])?;
+            let root = header.root;
+            let end = (root.offset + root.length) as usize;
+            if end <= bytes.len() {
+                let decoded = header
+                    .internal_compression
+                    .decode(&bytes[root.offset as usize..end])?;
+                self.root = Some(directory(&decoded)?);
+            }
+            self.header = Some(header);
             return Ok(());
         }
         let header = self.header.as_ref().ok_or("PMTiles header missing")?;
@@ -426,30 +461,46 @@ impl Reader {
             self.root = Some(entries);
         } else {
             self.leaves.retain(|(r, _)| *r != range);
-            while self.leaves.len() >= 32
-                || self
-                    .leaves
-                    .iter()
-                    .map(|(_, d)| d.len() * std::mem::size_of::<Entry>())
-                    .sum::<usize>()
-                    + entries.len() * std::mem::size_of::<Entry>()
-                    > CACHE_BYTES
-            {
-                if self.leaves.pop_front().is_none() {
+            let size = |d: &Vec<Entry>| d.len() * std::mem::size_of::<Entry>();
+            let mut bytes: usize = self.leaves.iter().map(|(_, d)| size(d)).sum();
+            while self.leaves.len() >= 32 || bytes + size(&entries) > CACHE_BYTES {
+                let Some((_, oldest)) = self.leaves.pop_front() else {
                     break;
-                }
+                };
+                bytes -= size(&oldest);
             }
             self.leaves.push_back((range, entries));
         }
         Ok(())
     }
 
-    pub fn lookup(&self, tile: TileIndex) -> Result<Lookup, String> {
+    /// Whether the read of `range` a lookup asked for is still wanted:
+    /// false once another read's bytes were inserted.
+    pub fn wants(&self, range: Range) -> bool {
+        match &self.header {
+            None => range == self.first,
+            Some(_) if range.offset == 0 => false,
+            Some(header) if range == header.root => self.root.is_none(),
+            Some(_) => !self.leaves.iter().any(|(r, _)| *r == range),
+        }
+    }
+
+    /// The read of `range` failed. True when that was the first read of
+    /// [`HEAD`], which an archive shorter than 16 KiB can't answer: lookups
+    /// read the header alone from now on.
+    pub fn read_failed(&mut self, range: Range) -> bool {
+        if range != HEAD || self.header.is_some() {
+            return false;
+        }
+        self.first = HEADER;
+        true
+    }
+
+    /// Where `tile` is, or the read that finds out. A leaf directory used
+    /// becomes the most recently used.
+    pub fn lookup(&mut self, tile: TileIndex) -> Result<Lookup, String> {
         let Some(header) = &self.header else {
-            return Ok(Lookup::Read(Range {
-                offset: 0,
-                length: HEADER_LEN,
-            }));
+            return Ok(Lookup::Read(self.first));
         };
         if tile.z < header.minzoom || tile.z > header.maxzoom {
             return Ok(Lookup::Missing);
@@ -459,11 +510,12 @@ impl Reader {
         for depth in 0..4 {
             let dir = if depth == 0 {
                 self.root.as_ref()
+            } else if let Some(at) = self.leaves.iter().position(|(r, _)| *r == range) {
+                let used = self.leaves.remove(at).expect("found");
+                self.leaves.push_back(used);
+                self.leaves.back().map(|(_, d)| d)
             } else {
-                self.leaves
-                    .iter()
-                    .find(|(r, _)| *r == range)
-                    .map(|(_, d)| d)
+                None
             };
             let Some(dir) = dir else {
                 return Ok(Lookup::Read(range));
@@ -509,62 +561,145 @@ impl Reader {
 mod tests {
     use super::*;
 
-    /// Writes an archive whose bodies arrived out of order, then reads
-    /// every tile back through the reader, small and with leaf directories.
+    /// An archive of every tile at zoom `z` but some, written with their
+    /// bodies out of order (as tiles may arrive): each body names its tile.
+    fn archive(z: u8) -> Vec<u8> {
+        let side = 1u32 << z;
+        let mut tiles = Vec::new();
+        let mut data = Vec::new();
+        for row in (0..side).rev() {
+            for col in (0..side).rev().filter(|c| (c + row) % 7 != 3) {
+                let body = format!("{z}/{col}/{row}").into_bytes();
+                tiles.push(Entry {
+                    id: tile_id(TileIndex::new(z, col, row)).unwrap(),
+                    offset: data.len() as u64,
+                    length: body.len() as u64,
+                    run: 0,
+                });
+                data.extend(body);
+            }
+        }
+        let contents = Contents {
+            tile_type: TileType::Mvt,
+            tile_compression: Compression::None,
+            minzoom: z,
+            maxzoom: z,
+            bounds: [-180.0, -85.0, 180.0, 85.0],
+            metadata: "{}".into(),
+        };
+        let mut archive = write_head(&mut tiles, &contents).unwrap();
+        archive.extend(data);
+        archive
+    }
+
+    /// Looks `tile` up in `archive` as a server would answer, failing reads
+    /// past its end; the directory reads go in `reads`.
+    fn read(
+        reader: &mut Reader,
+        archive: &[u8],
+        tile: TileIndex,
+        reads: &mut Vec<Range>,
+    ) -> Option<Vec<u8>> {
+        loop {
+            match reader.lookup(tile).unwrap() {
+                Lookup::Read(range) => {
+                    reads.push(range);
+                    let (at, end) = (
+                        range.offset as usize,
+                        (range.offset + range.length) as usize,
+                    );
+                    match archive.get(at..end) {
+                        Some(bytes) => reader.insert(range, bytes).unwrap(),
+                        None => assert!(reader.read_failed(range), "{range:?}"),
+                    }
+                }
+                Lookup::Tile { range, .. } => {
+                    let at = range.offset as usize;
+                    break Some(archive[at..at + range.length as usize].to_vec());
+                }
+                Lookup::Missing => break None,
+            }
+        }
+    }
+
+    /// Every tile reads back through the reader, from a small archive and
+    /// from one with leaf directories.
     #[test]
     fn written_archives_read_back() {
         for z in [3u8, 9] {
             let side = 1u32 << z;
-            let mut tiles = Vec::new();
-            let mut data = Vec::new();
-            // Reverse order, as tiles may arrive; some tiles left out.
-            for row in (0..side).rev() {
-                for col in (0..side).rev().filter(|c| (c + row) % 7 != 3) {
-                    let body = format!("{z}/{col}/{row}").into_bytes();
-                    tiles.push(Entry {
-                        id: tile_id(TileIndex::new(z, col, row)).unwrap(),
-                        offset: data.len() as u64,
-                        length: body.len() as u64,
-                        run: 0,
-                    });
-                    data.extend(body);
-                }
-            }
-            let contents = Contents {
-                tile_type: TileType::Mvt,
-                tile_compression: Compression::None,
-                minzoom: z,
-                maxzoom: z,
-                bounds: [-180.0, -85.0, 180.0, 85.0],
-                metadata: "{}".into(),
-            };
-            let mut archive = write_head(&mut tiles, &contents).unwrap();
-            archive.extend(data);
+            let archive = archive(z);
             let header = Header::parse(&archive[..HEADER_LEN as usize]).unwrap();
             assert_eq!(header.leaves_length > 0, z == 9, "leaves only when needed");
             let mut reader = Reader::default();
             for (col, row) in [(0, 0), (side - 1, side - 1), (5, 2), (2, 5), (side / 2, 1)] {
-                let tile = TileIndex::new(z, col, row);
-                let found = loop {
-                    match reader.lookup(tile).unwrap() {
-                        Lookup::Read(range) => {
-                            let at = range.offset as usize;
-                            reader
-                                .insert(range, &archive[at..at + range.length as usize])
-                                .unwrap();
-                        }
-                        Lookup::Tile { range, .. } => {
-                            let at = range.offset as usize;
-                            break Some(archive[at..at + range.length as usize].to_vec());
-                        }
-                        Lookup::Missing => break None,
-                    }
-                };
+                let found = read(
+                    &mut reader,
+                    &archive,
+                    TileIndex::new(z, col, row),
+                    &mut Vec::new(),
+                );
                 let expected =
                     ((col + row) % 7 != 3).then(|| format!("{z}/{col}/{row}").into_bytes());
                 assert_eq!(found, expected, "{z}/{col}/{row}");
             }
         }
+    }
+
+    /// The first read brings the header and the root together; an archive
+    /// shorter than 16 KiB fails that read and is read header first.
+    #[test]
+    fn first_read_has_the_root() {
+        let large = archive(9);
+        let mut reads = Vec::new();
+        let mut reader = Reader::default();
+        read(&mut reader, &large, TileIndex::new(9, 1, 1), &mut reads);
+        assert_eq!(reads.len(), 2, "the head and a leaf: {reads:?}");
+        assert_eq!(reads[0], HEAD);
+        assert!(!reader.wants(HEAD) && !reader.wants(reads[1]));
+
+        let small = archive(3);
+        assert!(small.len() < HEAD.length as usize);
+        let mut reads = Vec::new();
+        let mut reader = Reader::default();
+        read(&mut reader, &small, TileIndex::new(3, 1, 1), &mut reads);
+        let root = Header::parse(&small[..HEADER_LEN as usize]).unwrap().root;
+        assert_eq!(reads, [HEAD, HEADER, root]);
+        assert!(!reader.read_failed(root), "only the first read falls back");
+    }
+
+    /// The 32 leaf directories kept are the ones used last.
+    #[test]
+    fn leaves_are_kept_least_recently_used_first() {
+        let archive = archive(9);
+        let mut reader = Reader::default();
+        // One tile in each of 33 leaves.
+        let mut tiles: Vec<(TileIndex, Range)> = Vec::new();
+        'find: for row in 0..512 {
+            for col in 0..512 {
+                let tile = TileIndex::new(9, col, row);
+                let mut reads = Vec::new();
+                read(&mut reader, &archive, tile, &mut reads);
+                if let Some(&leaf) = reads.iter().find(|r| **r != HEAD) {
+                    tiles.push((tile, leaf));
+                    if tiles.len() == 33 {
+                        break 'find;
+                    }
+                }
+            }
+        }
+        assert_eq!(tiles.len(), 33);
+        let mut reader = Reader::default();
+        let mut reads = Vec::new();
+        for (tile, _) in &tiles[..32] {
+            read(&mut reader, &archive, *tile, &mut reads);
+        }
+        // Using the first leaf again keeps it over the second.
+        read(&mut reader, &archive, tiles[0].0, &mut reads);
+        read(&mut reader, &archive, tiles[32].0, &mut reads);
+        assert!(!reader.wants(tiles[0].1));
+        assert!(reader.wants(tiles[1].1));
+        assert!(!reader.wants(tiles[2].1));
     }
 
     #[test]
@@ -625,6 +760,7 @@ mod tests {
             header: Some(header),
             root: Some(entries),
             leaves: VecDeque::new(),
+            first: HEAD,
         };
         assert!(matches!(
             reader.lookup(TileIndex::new(1, 0, 0)).unwrap(),

@@ -190,6 +190,8 @@ pub(crate) enum Message {
         /// The source's key.
         source: u32,
         result: Result<String, FetchError>,
+        /// A PMTiles archive's URL and first bytes, for the jobs.
+        head: Option<(String, Vec<u8>)>,
     },
     Tile {
         generation: u64,
@@ -968,24 +970,36 @@ impl Map {
                 Some(url) => {
                     let generation = self.generation;
                     if let Some(archive) = url.strip_prefix("pmtiles://") {
-                        let header = orb_source::pmtiles::HEADER_LEN;
+                        // Its first bytes, the header and root directory,
+                        // go to the jobs too.
+                        let url = archive.to_string();
                         let done = self.reply(move |result: Result<Vec<u8>, FetchError>| {
-                            let result = result.and_then(|bytes| {
-                                orb_source::endpoint::archive_tilejson(&bytes)
-                                    .map_err(FetchError::Range)
+                            let header = orb_source::pmtiles::HEADER_LEN as usize;
+                            let read = result.and_then(|bytes| {
+                                orb_source::endpoint::archive_tilejson(
+                                    bytes.get(..header).unwrap_or(&bytes),
+                                )
+                                .map(|tilejson| (tilejson, bytes))
+                                .map_err(FetchError::Range)
                             });
+                            let (result, head) = match read {
+                                Ok((tilejson, bytes)) => (Ok(tilejson), Some((url, bytes))),
+                                Err(e) => (Err(e), None),
+                            };
                             Message::TileJson {
                                 generation,
                                 source: key,
                                 result,
+                                head,
                             }
                         });
-                        self.services.fetch.get_range(archive, 0, header, done);
+                        crate::loader::read_head(&self.services.fetch, archive, done);
                     } else {
                         self.fetch_text(url, move |result| Message::TileJson {
                             generation,
                             source: key,
                             result,
+                            head: None,
                         });
                     }
                     SourceState::Resolving

@@ -319,6 +319,12 @@ impl JobHost {
         }
     }
 
+    /// PMTiles archive `url` begins with `head`: loads of its tiles start
+    /// from these bytes.
+    pub fn add_archive_head(&self, url: &str, head: &[u8]) {
+        self.loader.add_head(url, head);
+    }
+
     /// Loads and lays out a tile.
     pub fn load(&self, request: TileRequest, done: LoadedDone) {
         let Some(worker) = self.worker(request.style) else {

@@ -426,6 +426,17 @@ impl Job {
                                         }
                                     }
                                 }
+                                // An archive shorter than the first read is
+                                // read header first.
+                                Err(e)
+                                    if crate::loader::falls_back(&e)
+                                        && reader
+                                            .lock()
+                                            .expect("reader poisoned")
+                                            .read_failed(range) =>
+                                {
+                                    job.start(task, tries)
+                                }
                                 Err(e) => job.arrived(task, tries, Err(e)),
                             }),
                         );
@@ -1171,23 +1182,26 @@ impl Tile {
     fn read(self, tile: TileIndex, reads: u8, done: FetchDone) {
         let lookup = self.reader.lock().expect("reader poisoned").lookup(tile);
         match lookup {
-            Ok(Lookup::Read(range)) if reads < 5 => {
+            Ok(Lookup::Read(range)) if reads < 6 => {
                 let storage = self.storage.clone();
                 storage.read(
                     &self.key.clone(),
                     Some((range.offset, range.length)),
-                    Box::new(move |read| match read {
-                        Ok(Some(bytes))
-                            if self
-                                .reader
-                                .lock()
-                                .expect("reader poisoned")
-                                .insert(range, &bytes)
-                                .is_ok() =>
-                        {
-                            self.read(tile, reads + 1, done)
+                    Box::new(move |read| {
+                        let mut reader = self.reader.lock().expect("reader poisoned");
+                        let kept = match read {
+                            Ok(Some(bytes)) => reader.insert(range, &bytes).is_ok(),
+                            _ => false,
+                        };
+                        // An extract shorter than the first read is read
+                        // header first.
+                        let again = kept || reader.read_failed(range);
+                        drop(reader);
+                        if again {
+                            self.read(tile, reads + 1, done);
+                        } else {
+                            pass(&*self.inner, &self.url, None, done);
                         }
-                        _ => pass(&*self.inner, &self.url, None, done),
                     }),
                 );
             }

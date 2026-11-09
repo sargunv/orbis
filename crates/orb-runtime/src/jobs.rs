@@ -50,6 +50,11 @@ pub enum JobRequest {
         id: u32,
         request: GlyphRaster,
     },
+    /// [`Jobs::add_archive_head`].
+    ArchiveHead {
+        url: String,
+        head: Vec<u8>,
+    },
 }
 
 /// A job host's answer to the request with `id`. Its large parts travel
@@ -126,6 +131,10 @@ pub trait Jobs: Send + Sync {
     /// Starts fetching glyph ranges style `id`'s tiles are about to need,
     /// so that their layout finds them in.
     fn prefetch_glyphs(&self, _id: u64, _urls: Vec<String>) {}
+    /// PMTiles archive `url` begins with `head`, which the map read for its
+    /// header: loads of its tiles start from these bytes rather than read
+    /// them again.
+    fn add_archive_head(&self, url: &str, head: &Arc<Vec<u8>>);
     /// Rasterizes glyphs for the atlas: one deduplicated job per unit, run
     /// by the unit's owner worker.
     fn raster(&self, request: GlyphRaster, done: RasterDone);
@@ -191,6 +200,10 @@ impl Jobs for PoolJobs {
 
     fn prefetch_glyphs(&self, id: u64, urls: Vec<String>) {
         self.host.prefetch_glyphs(id, urls);
+    }
+
+    fn add_archive_head(&self, url: &str, head: &Arc<Vec<u8>>) {
+        self.host.add_archive_head(url, head);
     }
 
     fn features(&self, request: crate::FeatureRequest, done: crate::FeaturesDone) {

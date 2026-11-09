@@ -343,6 +343,13 @@ impl Jobs for WorkerJobs {
         })));
     }
 
+    fn add_archive_head(&self, url: &str, head: &Arc<Vec<u8>>) {
+        self.broadcast(&bytes(&wire::encode(&JobRequest::ArchiveHead {
+            url: url.to_string(),
+            head: (**head).clone(),
+        })));
+    }
+
     fn set_icons(&self, style: u64, icons: &Arc<SpriteIcons>, _: &Arc<TileWorker>) {
         self.broadcast(&bytes(&wire::encode(&JobRequest::Icons {
             style,
@@ -433,6 +440,10 @@ impl JobWorker {
             }
             JobRequest::Icons { style, icons } => {
                 self.host.set_icons(style, Arc::new(icons));
+                return Ok(None);
+            }
+            JobRequest::ArchiveHead { url, head } => {
+                self.host.add_archive_head(&url, &head);
                 return Ok(None);
             }
             JobRequest::Cluster { id, request } => {

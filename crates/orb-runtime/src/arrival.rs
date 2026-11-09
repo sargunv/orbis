@@ -127,6 +127,7 @@ impl Map {
                     generation,
                     source,
                     result,
+                    head,
                 } => {
                     let Some(style) = self
                         .style
@@ -135,6 +136,9 @@ impl Map {
                     else {
                         continue;
                     };
+                    if let Some((url, head)) = head {
+                        self.services.jobs.add_archive_head(&url, &Arc::new(head));
+                    }
                     let plan = style.worker.plan();
                     let Some(index) = plan.source(source) else {
                         continue;
