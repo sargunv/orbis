@@ -9,7 +9,7 @@
 // for `--experiment=stutter`). Gesture paths are city, dense (pan, zoom
 // and turn at pitch 60 over Paris, on live Liberty unless `--style` gives
 // another, such as a `cargo xtask h2h mirror`'s Liberty), alps (the
-// default with `--style=terrain`) or globe (the default with
+// default with `--style=alps`) or globe (the default with
 // `--style=globe` or `--globe`, live Liberty or `--style` on the globe).
 // `--engine=both` runs the gestures or stutter experiment in Orbis and GL
 // JS, interleaved path by path on one page (stutter after an untimed pass

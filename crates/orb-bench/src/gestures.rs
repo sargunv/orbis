@@ -38,7 +38,7 @@ const SETTLE_TIMEOUT: Duration = Duration::from_secs(120);
 struct Path {
     name: &'static str,
     camera: fn(&Settings, f64) -> CameraState,
-    /// Flies the terrain demo's flight from the first camera instead.
+    /// Flies the Alps terrain style's flight from the first camera instead.
     flight: bool,
 }
 
@@ -70,7 +70,7 @@ const CITY_PATHS: &[Path] = &[
     },
 ];
 
-/// The terrain demo's view: z11.6, bearing −32, pitch 72.
+/// The Alps terrain style's view: z11.6, bearing −32, pitch 72.
 fn alps_view(s: &Settings, lon: f64, bearing: f64) -> CameraState {
     alps_pitched(s, lon, bearing, 72.0)
 }
@@ -107,7 +107,7 @@ const ALPS_PATHS: &[Path] = &[
     },
 ];
 
-/// The terrain demo's flight (`web/demo/data/alps-flight.json`): `flyTo`
+/// The Alps terrain style's flight (`web/demo/data/alps-flight.json`): `flyTo`
 /// legs, as the demos fly them.
 pub(crate) fn flight_legs() -> Vec<(CameraTarget, FlyOptions)> {
     let json: serde_json::Value =

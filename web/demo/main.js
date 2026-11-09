@@ -15,7 +15,7 @@
 // loading, to show recovery), and the camera as
 // `#zoom/lat/lon[/bearing/pitch]`.
 import { createMap } from "orbis";
-import { GROUPS, LIVE_CAMERA, sceneFor, sceneUrl } from "./styles.js";
+import { DEFAULT_SCENE, GROUPS, LIVE_CAMERA, sceneFor, sceneStyle, sceneUrl } from "./styles.js";
 import { expose, hashCamera } from "./expose.js";
 import { attribution } from "./app/attribution.js";
 import { comparison, formatPair, parsePair } from "./app/compare.js";
@@ -60,7 +60,7 @@ function say(text, { error = false } = {}) {
 // URL state.
 function styleParam({ scene, format }) {
   if (scene.formats) return `${scene.key}-${format}`;
-  return scene.key === "liberty" ? null : scene.key;
+  return scene.key === DEFAULT_SCENE.key ? null : scene.key;
 }
 const searchOf = (query) => {
   const search = query.toString().replace(/=(?=&|$)/g, "");
@@ -259,7 +259,8 @@ function go(next, { camera, history: mode = "push" } = {}) {
   map.camera.stop();
   map.camera.setConstraints(next.scene.constraints ?? {});
   if (camera) map.camera.jumpTo(camera);
-  if (sceneUrl(previous.scene, previous.format) === sceneUrl(next.scene, next.format)) {
+  if (sceneUrl(previous.scene, previous.format) === sceneUrl(next.scene, next.format)
+    && !previous.scene.restyle && !next.scene.restyle) {
     // The same style on another surface or under another sky: one edit,
     // and nothing loads again.
     const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -282,9 +283,15 @@ function go(next, { camera, history: mode = "push" } = {}) {
   styleLoading = true;
   void showLight();
   app.dataset.map = "loading";
-  // The style's `styleload` applies the entry's projection and sky. The
-  // style's own camera is a fresh page's (load), never a switch's.
-  map.setStyle(sceneUrl(next.scene, next.format));
+  // The style's `styleload` applies the entry's projection and sky, unless
+  // it restyles, which puts them in the style. The style's own camera is a
+  // fresh page's (load), never a switch's.
+  sceneStyle(next.scene, next.format).then((style) => { if (switched === switches) map.setStyle(style); }, (e) => {
+    if (switched !== switches) return;
+    styleLoading = false;
+    app.dataset.map = "error";
+    say(e instanceof Error ? e.message : String(e), { error: true });
+  });
   const loaded = map.on("styleload", () => {
     loaded();
     startFlight(switched);
@@ -319,7 +326,7 @@ async function load(next, { camera }) {
   try {
     created = await createMap({
       container,
-      style: sceneUrl(next.scene, next.format),
+      style: await sceneStyle(next.scene, next.format),
       camera,
       constraints: next.scene.constraints,
       // The demo shows what Orbis can do beyond the spec too.
@@ -339,14 +346,15 @@ async function load(next, { camera }) {
     if (app.dataset.map === "loading" || toast.textContent.startsWith("Loading")) say(message, { error: true });
   });
   // Each style, the first and those switched to: the entry's projection and
-  // sky, then the editor, attribution and comparison read it.
+  // sky (unless it restyles, which put them in the style), then the editor,
+  // attribution and comparison read it.
   map.on("styleload", async () => {
     const { scene } = current;
     styleLoading = false;
     highlighter.reset();
     const loaded = await map.getStyle();
     styleSky = loaded.sky ?? null;
-    if (scene.projection || scene.sky) {
+    if (!scene.restyle && (scene.projection || scene.sky)) {
       await map.edit((tx) => {
         if (scene.projection) tx.setProjection(scene.projection);
         if (scene.sky) tx.setSky(scene.sky);

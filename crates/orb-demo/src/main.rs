@@ -6,7 +6,7 @@
 //! [--format mvt|mlt] [--flight flight.json] [--cache dir] [--count-frames seconds]`
 //!
 //! Frame counters are shown in the window title. `--flight` flies a loop
-//! of `flyTo` legs until the user takes the camera (the terrain demo:
+//! of `flyTo` legs until the user takes the camera (the Alps terrain style:
 //! `file://$PWD/web/demo/data/alps.json --flight
 //! web/demo/data/alps-flight.json`). `--cache <dir>` keeps state there
 //! between runs: the HTTP cache and the driver's pipelines.

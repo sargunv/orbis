@@ -5,7 +5,7 @@
 //! [--paths city|alps] [--legs N]`.
 //!
 //! Without a style URL it loads the committed Tokyo extract, as the browser
-//! bench (`web/demo/bench.html`) does; `alps` is the terrain demo's style
+//! bench (`web/demo/bench.html`) does; `alps` is the Alps terrain style
 //! (live tiles), at its view and with the gestures bench's Alps paths.
 //! `stutter` is `--experiment stutter`, whose Liberty scenarios draw
 //! OpenFreeMap's live Liberty unless a style URL (say, `cargo xtask h2h
@@ -38,7 +38,7 @@ fn run() -> Result<(), String> {
     let mut about_data = "Tokyo extract (mvt, reduced Liberty)".to_string();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "alps") {
-        // The terrain demo's view and paths, unless the options say otherwise.
+        // The Alps terrain style's view and paths, unless the options say otherwise.
         settings.center = orb_api::Geodetic::new(orb_bench::ALPS.0, orb_bench::ALPS.1);
         settings.paths = orb_bench::GesturePaths::Alps;
     }
@@ -74,7 +74,7 @@ fn run() -> Result<(), String> {
     }
     if settings.experiment == orb_bench::Experiment::Stutter && !style_given {
         style = orb_bench::LIBERTY.to_string();
-        about_data = format!("{style}, and the Terrain entry");
+        about_data = format!("{style}, and the Alps terrain style");
     }
     if let Some(path) = &views_file {
         let name = style_name(&style);

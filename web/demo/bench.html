@@ -36,7 +36,7 @@ issue.</p>
 // by default), globe (that style on the globe under the demo's sky);
 // size=WxH, at=lon,lat, experiment=frames|gestures|stutter; for frames, frames,
 // warmup, rounds and ratio; for gestures, workers=<job workers> and
-// paths=city|dense|alps|globe (alps by default with style=terrain, globe
+// paths=city|dense|alps|globe (alps by default with style=alps, globe
 // with style=globe or globe, each at its own view; dense on live Liberty
 // unless style says otherwise), and engine=orbis|gl|both (gl: MapLibre
 // GL JS along the same paths, counting its labels' blinks and returns;
@@ -54,7 +54,7 @@ const params = new URLSearchParams(location.search);
 const format = params.get("format") ?? "mvt";
 if (!["mvt", "mlt"].includes(format)) throw new Error("format must be mvt or mlt");
 const experiment = params.get("experiment") ?? "frames";
-const paths = params.get("paths") ?? (["terrain", "alps"].includes(params.get("style")) ? "alps"
+const paths = params.get("paths") ?? (params.get("style") === "alps" ? "alps"
   : params.has("globe") || params.get("style") === "globe" ? "globe" : "city");
 /** Without a style: live Liberty for the dense and globe paths, which go beyond the Tokyo extract. */
 const scene = experiment === "gestures" && ["dense", "globe"].includes(paths) ? "live" : "tokyo";
@@ -152,7 +152,7 @@ async function run() {
     let report;
     if (experiment === "stutter") {
       const liberty = params.has("style") ? demoStyle(params) : LIVE;
-      lines[lines.length - 1] = `data: ${liberty}, and the Terrain entry`;
+      lines[lines.length - 1] = `data: ${liberty}, and the Alps terrain style`;
       report = await runStutter({
         liberty, size: [w, h], about: lines, show: (line) => show(line),
         filter: params.get("filter") ?? undefined, legs: params.has("legs") ? Number(params.get("legs")) : undefined,

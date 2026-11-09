@@ -10,7 +10,7 @@
 // each path let `pnpm bench` count the GPU process's presents, which show
 // a GPU running behind where animation frames don't. `paths=dense`
 // pans, zooms and turns at pitch 60 around z15 over central Paris;
-// `paths=alps` runs the terrain demo's view instead: rotate and pan at
+// `paths=alps` runs the Alps terrain style's view instead: rotate and pan at
 // z11.6, pitch 72, three fast turns at pitch 80, and its 60 s flight
 // (`data/alps-flight.json`), flown as the demo flies it; `paths=globe`
 // spins, zooms and turns the globe.
@@ -40,7 +40,7 @@ const CITY_PATHS = [
     camera: (center, f) => ({ center, zoom: 14 - 2 * Math.cos(3 * f * 2 * Math.PI), bearing: 0, pitch: 0 }),
   },
 ];
-/** The terrain demo's view: z11.6, bearing −32, pitch 72. */
+/** The Alps terrain style's view: z11.6, bearing −32, pitch 72. */
 const alpsView = (center, lon, bearing, pitch = 72) =>
   ({ center: [center[0] + lon, center[1]], zoom: 11.6, bearing, pitch });
 const ALPS_PATHS = [

@@ -18,7 +18,7 @@
 //   tiles, and back goes back without a reload; a click opens a feature
 //   popup only while the style editor is open; picking any entry keeps
 //   the camera, its style's own camera never applying.
-// - `light`: the Terrain entry's light switch, offline: `&light=viewport`
+// - `light`: the Alps terrain style's light switch, offline: `&light=viewport`
 //   anchors its hillshade and light to the viewport as the style loads,
 //   the ⋯ menu's switch edits them in place and keeps the URL and the
 //   editor in step, and another entry hides it and drops `&light`.
@@ -717,7 +717,7 @@ async function light(browser, server) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
-  await page.goto(`${server.url}?style=terrain&light=viewport&edit`);
+  await page.goto(`${server.url}?style=alps&light=viewport&edit`);
   const choice = page.locator("#light-choice");
   await page.waitForFunction(() => app.map && !document.getElementById("light-choice").hidden, null,
     { timeout: 60_000 });

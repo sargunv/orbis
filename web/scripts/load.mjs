@@ -27,7 +27,7 @@
 // page told it has 2 cores (`cores2`: `navigator.hardwareConcurrency`,
 // which sizes each engine's worker pool; the machine's cores stay).
 //
-// `--scene=terrain` loads the demo's Terrain entry (live OpenFreeMap and
+// `--scene=terrain` loads the Alps terrain style (live OpenFreeMap and
 // Mapterhorn tiles) and `--scene=globe` Liberty on the globe under the
 // demo's sky (`--style`, by default the live Liberty), each at three views,
 // in Orbis and GL JS by default. `--engines` takes `native` too: MapLibre
@@ -76,7 +76,7 @@ const mounts = {
 };
 const server = await serveDemo({ isolated: true, mounts, builds, throttle, unthrottled: ["real-world/"] });
 if (extracted) extractCache(cache, extracted, `${server.url}real-world/`);
-// The Terrain entry's style, by its name in the build.
+// The Alps terrain style, by its name in the build.
 if (scene === "terrain") {
   const dist = fileURLToPath(new URL("../dist/assets/", import.meta.url));
   style = `${server.url}assets/${readdirSync(dist).find((f) => /^alps-.*\.json$/.test(f))}`;

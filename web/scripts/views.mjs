@@ -19,7 +19,7 @@ export const VIEWS = {
     norway: "10.8181,64.863174,12,0,0", sanfrancisco: "-122.448635,37.7669995,15,0,0",
     uruguay: "-56.509552,-32.865788,9,0,0",
   },
-  // The demo's Terrain entry: its own view, the Matterhorn close up, the Bernese Alps from afar.
+  // The Alps terrain style (`alps.json`): its own view, the Matterhorn close up, the Bernese Alps from afar.
   terrain: { alps11p72: "7.7491,46.0207,11.6,-32,72", matterhorn13p60: "7.6586,45.9763,13,60,60", oberland9p45: "8.0,46.55,9,0,45" },
   // Liberty on the globe.
   globe: { world1: "10,30,1.5,0,0", europe3p40: "10,48,3,20,40", japan5p30: "138,36,5,-20,30" },

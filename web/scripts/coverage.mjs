@@ -49,7 +49,7 @@ const SCENES = {
   liberty: { style: "liberty", at: VIEWS.liberty.ams13 },
   paris: { style: "liberty", at: VIEWS.liberty.paris14p60 },
   globe: { style: "globe", at: VIEWS.globe.europe3p40 },
-  terrain: { style: "terrain", at: VIEWS.terrain.alps11p72 },
+  terrain: { style: "alps", at: VIEWS.terrain.alps11p72 },
   raster: { style: "osm", at: "-0.12,51.51,12,0,0" },
   tokyo: { style: "tokyo-mvt", at: "139.74,35.687,15,0,0" },
   "tokyo-mlt": { style: "tokyo-mlt", at: "139.74,35.687,15,0,0" },

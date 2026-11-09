@@ -5,7 +5,7 @@
 //! each stage's per-frame times.
 //!
 //! The scenarios: Liberty's 3D buildings over Manhattan, zooming z12 → z16
-//! at pitch 60 and panning on across new ground; the Terrain entry's fast
+//! at pitch 60 and panning on across new ground; the Alps terrain style's fast
 //! turns and its flight (`web/demo/data/alps.json`); and Liberty on the
 //! globe, zooming from the whole world onto Tokyo. Each starts cold from
 //! its first camera at rest and runs at a 60 Hz pace, as the gestures bench
@@ -47,7 +47,7 @@ const ASIA: (f64, f64) = (105.0, 30.0);
 enum Style {
     /// Liberty, or the style URL the bench was given.
     Liberty,
-    /// The Terrain entry, `alps.json`.
+    /// The Alps terrain style, `alps.json`.
     Alps,
 }
 
@@ -228,7 +228,7 @@ pub struct StutterReport {
 }
 
 /// Runs each scenario the settings' filter keeps. `liberty` is the style
-/// URL Liberty's scenarios draw, `alps` the Terrain entry's.
+/// URL Liberty's scenarios draw, `alps` the Alps terrain style.
 pub(crate) fn run(
     runtime: &Runtime,
     settings: &Settings,

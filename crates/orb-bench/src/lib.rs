@@ -41,7 +41,7 @@ pub use tiles::TilesReport;
 /// The committed Tokyo extract's view, by the Imperial Palace
 /// (`web/demo/data/README.md`).
 pub const TOKYO: (f64, f64) = (139.74, 35.685);
-/// The terrain demo's view over the Valais Alps: Zermatt and the
+/// The Alps terrain style's view over the Valais Alps: Zermatt and the
 /// Matterhorn, as `web/demo/data/alps-flight.json` ends.
 pub const ALPS: (f64, f64) = (7.7491, 46.0207);
 /// Name, zoom, pitch, and whether the style gains [`BUILDINGS_3D`].
@@ -84,7 +84,7 @@ pub enum GesturePaths {
     /// Rotate and tilt at z14, zoom z12 → z16 → z12: a city's streets.
     #[default]
     City,
-    /// The terrain demo's view over the Alps (`web/demo/data/alps.json`):
+    /// The Alps terrain style's view (`web/demo/data/alps.json`):
     /// rotate and pan at z11.6, pitch 72, and its 60 s flight.
     Alps,
 }

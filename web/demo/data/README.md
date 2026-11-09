@@ -26,9 +26,13 @@ sprites once served.
   symbol layers, in Liberty's order. It inherits OSM Liberty's BSD code and
   CC BY design licences; see [STYLE-LICENSE.md](STYLE-LICENSE.md).
   Upstream style SHA-256: `408245464e76791801a64393c403433d09e8110eb9516040f8dc2b62584eee2a`.
-- `alps.json` and `alps-flight.json`: the Terrain entry (`?style=terrain&flight`
-  on the web, `--flight` natively), written for this
-  repository. It draws OpenFreeMap's planet tiles (data as above) over
+- `alps.json` and `alps-flight.json`: the Alps terrain style and its
+  flight, written for this repository. No picker entry shows the style;
+  `?style=alps` opens it on the web (`&flight` flies the flight), as the
+  flight script, the stutter bench and `orb-bench` measure terrain on it,
+  and the native demo flies it with `--flight`. The flight's legs are
+  `flyTo` options looped until the user takes the camera; the Globe entry
+  flies them too. It draws OpenFreeMap's planet tiles (data as above) over
   [Mapterhorn](https://mapterhorn.com/)'s terrain tiles, fetched at run time
   and not committed: Terrarium-encoded WebP from open elevation data,
   around the Alps mainly Copernicus GLO-30 (© DLR e.V. 2010–2014 and
@@ -36,8 +40,13 @@ sprites once served.
   the European Union and ESA), swisstopo's swissALTI3D (open government
   data) and Austria's BEV ALS-DGM (CC BY 4.0); every source and licence is
   in [Mapterhorn's attribution list](https://mapterhorn.com/attribution).
-  The flight's legs are `flyTo` options looped until the user takes the
-  camera.
+- The Globe entry, the web demo's default, commits no style: it loads
+  Protomaps Light live from `api.protomaps.com` and `protomaps3d` in
+  `../styles.js` adds Mapterhorn's terrain and a hillshade from it, a
+  map-anchored light, the buildings layer's `height` and `min_height`
+  extruded, the globe projection and a sky from Protomaps Light's palette,
+  so it keeps tracking Protomaps' upstream style. Old `?style=terrain`
+  links open it.
 - `osm-carto.json`: OpenStreetMap's standard raster tiles from
   `tile.openstreetmap.org`, under its [tile usage policy](https://operations.osmfoundation.org/policies/tiles/):
   attributed, fetched only as the map shows them, with the browser's

@@ -1,4 +1,4 @@
-// Flies the demo's Alps flight (`data/alps-flight.json`, as `?style=terrain&flight`
+// Flies the demo's Alps flight (`data/alps-flight.json`, as `?style=alps&flight`
 // flies it) once in headless Chromium and reports its frame pacing: the
 // intervals between frames reaching the page and between frames the GPU
 // process presents, the render CPU of each, and the slowest frames' counters.
@@ -97,7 +97,7 @@ try {
       return { started, ended: performance.now() };
     }, legs);
   } else {
-    await page.goto(`${server.url}?style=terrain`);
+    await page.goto(`${server.url}?style=alps`);
     await page.waitForFunction(() => globalThis.orbis?.map, null, { timeout: 120_000 });
     await page.evaluate(() => new Promise((r) => globalThis.orbis.map.once("idle").then(r)));
     fly = (legs) => page.evaluate(async ([legs, gpu]) => {

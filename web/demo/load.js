@@ -1,5 +1,5 @@
 // The load-timing page (`web/scripts/load.mjs` and `memory.mjs` drive it):
-// one map of `?style=` (a URL or a catalogue key, such as `terrain`; with
+// one map of `?style=` (a URL or a catalogue key, such as `alps`; with
 // `?globe`, on the globe under the demo's sky) at
 // `?at=lon,lat,zoom,bearing,pitch` in Orbis (`?engine=orbis`), the pinned
 // GL JS (`gljs`), MapLibre Native's browser build (`native`, which needs

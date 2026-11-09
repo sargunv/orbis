@@ -683,7 +683,7 @@ fn every_terrain_view_fits_the_drape_atlas() {
     assert_within("crest", both_ways(&alps, start, end, 20), 1);
 }
 
-/// The terrain demo's Alps (live tiles), turned at a pitch of 72° with the
+/// The Alps terrain style's view (live tiles), turned at a pitch of 72° with the
 /// camera never stopping: once loaded, a frame mid-turn draws what a fresh
 /// map at rest at its camera draws, ridges against the sky and every drape
 /// slot's edge. What a slot's filter reads past its tile never depends on
