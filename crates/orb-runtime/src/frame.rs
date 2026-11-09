@@ -709,7 +709,8 @@ impl Map {
                     let borders = endpoint.dem_unpack.map(|_| {
                         let drawn = &drawn_tiles[&i];
                         orb_render::dem_neighbours(draw.tile, &|n| {
-                            (drawn.contains(&n) && pyramid.get(n).is_some()).then_some(0)
+                            (pyramid.get(n).filter(|_| drawn.contains(&n)))
+                                .map(|r| crate::terrain::hash(r.gpu) as u32)
                         })
                     });
                     let part = (
