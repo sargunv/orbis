@@ -6,7 +6,12 @@
 //
 //   pnpm measure [--android [--physical] | --headed] [--runs=3]
 //     [--configs=orbis,gljs] [--no-capture] [--no-annotation] [--profile]
+//     [--style=<url or key>] [--at=lon,lat,zoom,bearing,pitch]
 //   pnpm measure --pipelines [--runs=3] [--android [--physical]]
+//
+// `--style` and `--at` measure another scene than the Tokyo extract at
+// z15: a dense city at pitch 60, such as a `cargo xtask h2h mirror`'s
+// Liberty at `--at=2.35,48.857,15,0,60`.
 //
 // `--pipelines` measures pipeline creation instead: measure.html
 // `?pipelines` (web/demo/pipelines.js) loads the Tokyo extract `--runs`
@@ -44,6 +49,8 @@ const physical = args.includes("--physical");
 const android = physical || args.includes("--android");
 const runs = Number(option("runs", "3"));
 const configs = option("configs", "orbis,gljs").split(",");
+// The page's style and starting camera, for a dense or tilted scene.
+const view = Object.fromEntries(["style", "at"].filter((k) => option(k)).map((k) => [k, option(k)]));
 // Busy time and idle frames only, without frame capture (whose PNG encoding
 // also loads the device).
 const capture = !args.includes("--no-capture");
@@ -126,7 +133,7 @@ async function run(page, config, viewport) {
   await cdp.send("Performance.enable");
   const busy = async () => (await cdp.send("Performance.getMetrics")).metrics
     .find((m) => m.name === "TaskDuration").value * 1000;
-  const query = new URLSearchParams({ engine, ...(annotation ? {} : { annotation: "0" }) });
+  const query = new URLSearchParams({ engine, ...(annotation ? {} : { annotation: "0" }), ...view });
   await page.goto("about:blank");
   const before = await busy();
   await page.goto(`${server.url}measure.html?${query}`);

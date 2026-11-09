@@ -32,23 +32,26 @@ issue.</p>
 <div id="result" class="scroll"></div>
 <textarea id="markdown" readonly hidden></textarea>
 <script type="module">
-// Query: format=mvt|mlt or style=<url> (the Tokyo extract by default);
-// size=WxH, at=lon,lat, experiment=frames|gestures; for frames, frames,
+// Query: format=mvt|mlt or style=<url or catalogue key> (the Tokyo extract
+// by default), globe (that style on the globe under the demo's sky);
+// size=WxH, at=lon,lat, experiment=frames|gestures|stutter; for frames, frames,
 // warmup, rounds and ratio; for gestures, workers=<job workers> and
-// paths=city|alps (alps by default with style=terrain, at the terrain demo's
-// view), and engine=orbis|gl (gl: MapLibre GL JS along the same paths,
-// counting its labels' blinks and returns); for stutter, style=<url|key>
-// for its Liberty scenarios (live Liberty by default), filter=<substring of
-// a scenario's name>, legs=<the flight's first legs> and engine=orbis|gl.
+// paths=city|dense|alps|globe (alps by default with style=terrain, globe
+// with style=globe or globe, each at its own view), and engine=orbis|gl
+// (gl: MapLibre GL JS along the same paths, counting its labels' blinks
+// and returns); for stutter, style=<url|key> for its Liberty scenarios
+// (live Liberty by default), filter=<substring of a scenario's name>,
+// legs=<the flight's first legs> and engine=orbis|gl.
 import { runFrames } from "./frames.js";
-import { runGestures } from "./gestures.js";
+import { PATH_CENTERS, runGestures } from "./gestures.js";
 import { runStutter } from "./stutter.js";
-import { demoStyle, LIVE } from "./styles.js";
+import { demoStyle, demoStyleWithScene, LIVE } from "./styles.js";
 
 const params = new URLSearchParams(location.search);
 const format = params.get("format") ?? "mvt";
 if (!["mvt", "mlt"].includes(format)) throw new Error("format must be mvt or mlt");
-const style = demoStyle(params, "tokyo");
+/** The style's URL, or the style with the globe in it: `run` resolves it. */
+let style;
 const status = document.getElementById("status");
 const markdown = document.getElementById("markdown");
 
@@ -71,7 +74,15 @@ async function about() {
   lines.push(`user agent: ${navigator.userAgent}`);
   lines.push(`browser, WebGPU; devicePixelRatio ${devicePixelRatio}; ` +
     `${navigator.hardwareConcurrency ?? "?"} threads; cross-origin isolated: ${crossOriginIsolated}`);
-  lines.push(params.has("style") ? `data: ${style}` : `data: Tokyo extract (${format}, reduced Liberty)`);
+  // The display's frame interval, over 60 animation frames.
+  const frame = await new Promise((resolve) => {
+    const times = [];
+    const step = (t) => { times.push(t); if (times.length < 61) requestAnimationFrame(step); else resolve((t - times[0]) / 60); };
+    requestAnimationFrame(step);
+  });
+  lines.push(`display frame ${frame.toFixed(2)} ms`);
+  const data = params.has("style") ? `data: ${params.get("style")}` : `data: Tokyo extract (${format}, reduced Liberty)`;
+  lines.push(typeof style === "string" ? data : `${data}, ${style.projection ? "on the globe, " : ""}fetched by the page`);
   return lines;
 }
 
@@ -124,13 +135,14 @@ async function run() {
   const lock = await navigator.wakeLock?.request("screen").catch(() => null);
   try {
     if (!navigator.gpu) throw new Error("this browser has no WebGPU");
+    style ??= await demoStyleWithScene(params, "tokyo");
     const lines = await about();
     const started = performance.now();
     const [w, h] = (params.get("size") ?? "1024x768").split("x").map(Number);
     const number = (name, fallback) => (params.has(name) ? Number(params.get(name)) : fallback);
     let report;
     if (params.get("experiment") === "stutter") {
-      const liberty = params.has("style") ? style : LIVE;
+      const liberty = params.has("style") ? demoStyle(params) : LIVE;
       lines[lines.length - 1] = `data: ${liberty}, and the Terrain entry`;
       report = await runStutter({
         liberty, size: [w, h], about: lines, show: (line) => show(line),
@@ -138,8 +150,9 @@ async function run() {
         engine: params.get("engine") ?? "orbis",
       });
     } else if (params.get("experiment") === "gestures") {
-      const paths = params.get("paths") ?? (["terrain", "alps"].includes(params.get("style")) ? "alps" : "city");
-      const center = (params.get("at") ?? (paths === "alps" ? "7.7491,46.0207" : "139.74,35.685")).split(",").map(Number);
+      const paths = params.get("paths") ?? (["terrain", "alps"].includes(params.get("style")) ? "alps"
+        : params.has("globe") || params.get("style") === "globe" ? "globe" : "city");
+      const center = params.get("at")?.split(",").map(Number) ?? PATH_CENTERS[paths];
       report = await runGestures({
         style, center, paths, size: [w, h], about: lines,
         jobWorkers: params.has("workers") ? Number(params.get("workers")) : undefined,

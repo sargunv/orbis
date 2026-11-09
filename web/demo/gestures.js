@@ -4,10 +4,14 @@
 // native bench times `Map::render` alone, this times what a user sees: the
 // interval between frames reaching the page, the render CPU time of each,
 // main-thread long tasks, and how long the map takes to reach `idle` after
-// the path ends (a backlog of frames shows there). `paths=alps` runs the
+// the path ends (a backlog of frames shows there). Frame pacing: each
+// frame is stamped with its animation frame's time, as both engines draw
+// in one, and gaps over 16.7 and 25 ms between them count. `paths=dense`
+// pans, zooms and turns at pitch 60 around z15; `paths=alps` runs the
 // terrain demo's view instead: rotate and pan at z11.6, pitch 72, three
 // fast turns at pitch 80, and its 60 s flight (`data/alps-flight.json`),
-// flown as the demo flies it.
+// flown as the demo flies it; `paths=globe` spins, zooms and turns the
+// globe.
 // `engine=gl` drives MapLibre GL JS along the same paths instead and
 // counts its labels' blinks and returns as the native bench counts
 // Orbis's, from `style.placement`'s opacities after each frame.
@@ -16,6 +20,9 @@ import alpsFlight from "./data/alps-flight.json";
 
 /** Frames per path: 6 s at 60 Hz. */
 const PATH_FRAMES = 360;
+/** Gaps between frames over these (ms) count, each with 1 ms for the browser's coarsened clock. */
+const LATE = [16.7, 25];
+const LATE_SLACK = 1;
 const CITY_PATHS = [
   {
     name: "rotate and tilt at z14",
@@ -39,7 +46,20 @@ const ALPS_PATHS = [
   { name: "pan at z11.6, pitch 72", camera: (center, f) => alpsView(center, 0.15 * Math.sin(f * 2 * Math.PI), -32) },
   { name: "Alps flight (60 s)", camera: (center) => alpsView(center, 0, -32), flight: alpsFlight.legs },
 ];
-const PATH_SETS = { city: CITY_PATHS, alps: ALPS_PATHS };
+/** Dense city views at pitch 60: what a user's pan, pinch and twist do in a city. */
+const DENSE_PATHS = [
+  { name: "pan at z15, pitch 60", camera: ([lon, lat], f) => ({ center: [lon + 0.012 * Math.sin(f * 2 * Math.PI), lat], zoom: 15, bearing: 30, pitch: 60 }) },
+  { name: "zoom z14 → z17 → z14, pitch 60", camera: (center, f) => ({ center, zoom: 15.5 - 1.5 * Math.cos(f * 2 * Math.PI), bearing: 30, pitch: 60 }) },
+  { name: "rotate at z15, pitch 60", camera: (center, f) => ({ center, zoom: 15, bearing: 30 + 360 * f, pitch: 60 }) },
+];
+const GLOBE_PATHS = [
+  { name: "spin the globe at z1.5", camera: ([lon, lat], f) => ({ center: [lon + 360 * f, lat], zoom: 1.5, bearing: 0, pitch: 0 }) },
+  { name: "zoom z1.5 → z6 → z1.5", camera: (center, f) => ({ center, zoom: 3.75 - 2.25 * Math.cos(f * 2 * Math.PI), bearing: 0, pitch: 0 }) },
+  { name: "turn and tilt at z3", camera: (center, f) => ({ center, zoom: 3, bearing: 360 * f, pitch: 20 - 20 * Math.cos(f * 2 * Math.PI) }) },
+];
+const PATH_SETS = { city: CITY_PATHS, dense: DENSE_PATHS, alps: ALPS_PATHS, globe: GLOBE_PATHS };
+/** Where each path set runs unless the page says otherwise. */
+export const PATH_CENTERS = { city: [139.74, 35.685], dense: [139.74, 35.685], alps: [7.7491, 46.0207], globe: [10, 30] };
 const LOAD_TIMEOUT = 120_000;
 /** Within this many frames, a label that all but vanished (under 0.1) and is back in full (0.9) blinked, or returned. */
 const FLASH_FRAMES = 10;
@@ -51,6 +71,21 @@ const percentile = (xs, p) => {
 };
 const ms = (x) => (Number.isFinite(x) ? x.toFixed(1) : "—");
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+/** The current animation frame's time: a frame drawn in it reaches the screen with that frame. */
+const frameTime = () => document.timeline.currentTime;
+
+/** Frame pacing from frames' times: the gaps' percentiles and how many are late. */
+function pacing(times) {
+  const gaps = times.slice(1).map((t, i) => t - times[i]);
+  return {
+    interval: [0.5, 0.95, 0.99, 1].map((p) => percentile(gaps, p)),
+    late: LATE.map((limit) => gaps.filter((g) => g > limit + LATE_SLACK).length),
+  };
+}
+const PACING_HEAD = `interval p50 | p95 | p99 | max | ${LATE.map((l) => `gaps > ${l} ms`).join(" | ")}`;
+const pacingCells = (r) => `${r.interval.map(ms).join(" | ")} | ${r.late.join(" | ")}`;
+const PACING_NOTE = "Interval: between the animation frames that drew a frame while the camera moved, each a display frame " +
+  `when the map keeps up; gaps over ${LATE.join(" and ")} ms (with ${LATE_SLACK} ms for the coarsened clock) are frames that came late.`;
 
 function idle(map, label) {
   return new Promise((resolve, reject) => {
@@ -70,7 +105,7 @@ async function runPath(container, style, jobWorkers, center, path, show) {
     const load = performance.now() - created;
     show(`${label}: moving`);
     const acks = [];
-    const off = map.on("render", (ack) => acks.push({ t: performance.now(), ms: ack.ms, placement: ack.times.placement }));
+    const off = map.on("render", (ack) => acks.push({ t: frameTime(), ms: ack.ms, placement: ack.times.placement }));
     const longs = [];
     const observer = typeof PerformanceObserver !== "undefined" &&
       PerformanceObserver.supportedEntryTypes?.includes("longtask")
@@ -94,14 +129,11 @@ async function runPath(container, style, jobWorkers, center, path, show) {
     const moving = acks.filter((a) => a.t > started && a.t <= ended);
     const after = acks.filter((a) => a.t > ended);
     const longsAfter = longs.filter((l) => l.start > ended).map((l) => l.duration);
-    const gaps = moving.slice(1).map((a, i) => a.t - moving[i].t);
     const cpu = moving.map((a) => a.ms);
     return {
-      path: path.name, frames: moving.length, load,
-      interval: [0.5, 0.95, 0.99, 1].map((p) => percentile(gaps, p)),
+      path: path.name, frames: moving.length, load, ...pacing(moving.map((a) => a.t)),
       cpu: [0.5, 0.95, 1].map((p) => percentile(cpu, p)),
       placement: [0.5, 0.95].map((p) => percentile(moving.map((a) => a.placement), p)),
-      missed: gaps.filter((g) => g > 50).length,
       longs: longs.length, longest: Math.max(0, ...longs.map((l) => l.duration)),
       settle, settleCpu: Math.max(0, ...after.map((a) => a.ms)), settleLong: Math.max(0, ...longsAfter),
     };
@@ -190,25 +222,27 @@ export async function loadGl() {
   return glModule;
 }
 
-/** The style at `styleUrl` as GL JS takes it: its URLs absolute. */
-export async function glStyle(styleUrl) {
-  const style = await (await fetch(styleUrl)).json();
-  const absolute = (url) => new URL(url, new URL(styleUrl, location.href)).href;
-  if (typeof style.sprite === "string") style.sprite = absolute(style.sprite);
-  if (style.glyphs) style.glyphs = absolute(style.glyphs).replace(/%7B/g, "{").replace(/%7D/g, "}");
-  for (const source of Object.values(style.sources)) {
+/** `style`, a URL or a style, as GL JS takes it: with absolute URLs. */
+export async function glStyle(style) {
+  const base = typeof style === "string" ? new URL(style, location.href) : new URL(location.href);
+  const doc = typeof style === "string" ? await (await fetch(style)).json() : structuredClone(style);
+  const absolute = (url) => new URL(url, base).href;
+  if (typeof doc.sprite === "string") doc.sprite = absolute(doc.sprite);
+  if (doc.glyphs) doc.glyphs = absolute(doc.glyphs).replace(/%7B/g, "{").replace(/%7D/g, "}");
+  for (const source of Object.values(doc.sources)) {
     if (source.url?.startsWith("pmtiles://")) source.url = `pmtiles://${absolute(source.url.slice(10))}`;
   }
-  return style;
+  return doc;
 }
 
 /** Runs one path through GL JS on a fresh map; resolves to its row. */
-async function runGlPath(container, styleUrl, center, path, show) {
+async function runGlPath(container, style, center, path, show) {
   const maplibregl = await loadGl();
-  const style = await glStyle(styleUrl);
   show(`${path.name}: loading (GL JS)`);
   const created = performance.now();
-  const map = new maplibregl.Map({ container, style, ...path.camera(center, 0), interactive: false, attributionControl: false });
+  // GL JS stops pitch at 60° unless told otherwise; Orbis goes to 85°.
+  const map = new maplibregl.Map({ container, style: await glStyle(style), ...path.camera(center, 0), maxPitch: 85,
+    interactive: false, attributionControl: false });
   try {
     await idle(map, path.name);
     const load = performance.now() - created;
@@ -216,19 +250,20 @@ async function runGlPath(container, styleUrl, center, path, show) {
     const texts = new WeakMap();
     const counter = labelCounter();
     const times = [];
+    const drawn = () => times.push(frameTime());
+    map.on("render", drawn);
     for (let f = 1; f <= PATH_FRAMES; f++) {
       map.jumpTo(path.camera(center, f / PATH_FRAMES));
-      times.push(await nextFrame());
+      await nextFrame();
       counter.frame(f, glShown(map, maplibregl, texts));
     }
+    map.off("render", drawn);
     const ended = performance.now();
     // A repaint ends in `idle` once nothing is left to do.
     const settled = idle(map, path.name);
     map.triggerRepaint();
     await settled;
-    const gaps = times.slice(1).map((t, i) => t - times[i]);
-    return { path: path.name, load, frames: times.length, interval: [0.5, 0.95, 1].map((p) => percentile(gaps, p)),
-      ...counter.counts, settle: performance.now() - ended };
+    return { path: path.name, load, frames: times.length, ...pacing(times), ...counter.counts, settle: performance.now() - ended };
   } finally {
     map.remove();
   }
@@ -244,36 +279,27 @@ async function runGlGestures({ style, center, run, size, about, show, container 
     `- ${size[0]}×${size[1]} CSS px at ${center[0]}, ${center[1]}; ${PATH_FRAMES} frames a path, ` +
       "the camera moved once a display frame (`jumpTo`), each path from a fresh map at rest",
     "",
-    "| path | load to idle ms | frames | interval p50 | p95 | max | label blinks (frames) | label returns (drops) | idle after ms |",
-    "|---|---|---|---|---|---|---|---|---|",
-    ...rows.map((r) => `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${r.interval.map(ms).join(" | ")} | ` +
+    `| path | load to idle ms | frames | ${PACING_HEAD} | label blinks (frames) | label returns (drops) | idle after ms |`,
+    "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ...rows.map((r) => `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ` +
       `${r.blinks} (${r.blinkFrames}) | ${r.returns} (${r.drops}) | ${r.settle.toFixed(0)} |`),
     "",
-    `Label blinks: label texts drawn in full that all but vanished (opacity under 0.1) and were back in full within ${FLASH_FRAMES} ` +
+    `Times in ms. ${PACING_NOTE} Label blinks: label texts drawn in full that all but vanished (opacity under 0.1) and were back in full within ${FLASH_FRAMES} ` +
       `frames, and the frames they were gone; label returns: back in full within ${RETURN_FRAMES} frames (1 s), blinks included, of the label texts drawn in full that all but vanished. ` +
       "Opacities are `style.placement`'s, moved on by the fade since its commit, over the tiles GL JS draws.",
   ].join("\n") + "\n";
 }
 
-/** Runs every path of `paths` (`city` or `alps`); resolves to the Markdown report. */
+/** Runs every path of `paths` (a key of PATH_SETS); resolves to the Markdown report. */
 export async function runGestures({ style, center, paths, jobWorkers, size, about, show, engine = "orbis" }) {
   const run = PATH_SETS[paths];
-  if (!run) throw new Error("paths must be city or alps");
-  if (engine === "gl") {
-    const container = document.createElement("div");
-    Object.assign(container.style, { width: `${size[0]}px`, height: `${size[1]}px`, position: "relative" });
-    document.body.append(container);
-    try {
-      return await runGlGestures({ style, center, run, size, about, show, container });
-    } finally {
-      container.remove();
-    }
-  }
+  if (!run) throw new Error(`paths must be one of ${Object.keys(PATH_SETS).join(", ")}`);
   const container = document.createElement("div");
   Object.assign(container.style, { width: `${size[0]}px`, height: `${size[1]}px`, position: "relative" });
   document.body.append(container);
   const rows = [];
   try {
+    if (engine === "gl") return await runGlGestures({ style, center, run, size, about, show, container });
     for (const path of run) rows.push(await runPath(container, style, jobWorkers, center, path, show));
   } finally {
     container.remove();
@@ -285,15 +311,16 @@ export async function runGestures({ style, center, paths, jobWorkers, size, abou
       "the camera moved once a display frame (`jumpTo`; a flight's legs through `flyTo`), each path from a fresh map at rest; " +
       `${jobWorkers ?? "default"} job workers`,
     "",
-    "| path | load to idle ms | frames | interval p50 | p95 | p99 | max | gaps > 50 ms | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max | placement p50 | p95 |",
-    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
-    ...rows.map((r) => `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${r.interval.map(ms).join(" | ")} | ${r.missed} | ` +
+    `| path | load to idle ms | frames | ${PACING_HEAD} | render CPU p50 | p95 | max | long tasks (max ms) | idle after ms | after: render CPU max | page long task max | placement p50 | p95 |`,
+    "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ...rows.map((r) => `| ${r.path} | ${r.load.toFixed(0)} | ${r.frames} | ${pacingCells(r)} | ` +
       `${r.cpu.map(ms).join(" | ")} | ${r.longs} (${ms(r.longest)}) | ${r.settle.toFixed(0)} | ${ms(r.settleCpu)} | ${ms(r.settleLong)} | ${r.placement.map(ms).join(" | ")} |`),
     "",
-    "Times in ms. Interval: between frames reaching the page while the camera moves; render CPU: the frame's " +
+    `Times in ms. ${PACING_NOTE} Render CPU: the frame's ` +
       "`render`; long tasks: the page's, over 50 ms; idle after: " +
       "from the path's end until the map's `idle` event; after: the frames and the page's long tasks from the path's end to `idle`; " +
       "placement: the page thread's share of render CPU (building the placement worker's frame, applying commits; 0.2 ms).",
   ];
   return `${lines.join("\n")}\n`;
 }
+

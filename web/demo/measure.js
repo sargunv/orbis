@@ -12,8 +12,10 @@ const status = document.getElementById("status");
 const container = document.getElementById("map");
 // Where the circle is: right of the starting centre, so pinches and twists
 // around the centre move it.
-const CENTER = [139.74, 35.685];
-const ZOOM = 15;
+// `?at=lon,lat,zoom,bearing,pitch` moves the start, for a dense or tilted view.
+const [lon, lat, ZOOM, BEARING, PITCH] = (params.get("at") ?? "139.74,35.685,15,0,0").split(",").map(Number);
+const CENTER = [lon, lat];
+const START = { center: CENTER, zoom: ZOOM, bearing: BEARING || 0, pitch: PITCH || 0 };
 const OFFSET_PX = 120;
 
 // Main-thread frames, counted for the idle check.
@@ -36,7 +38,7 @@ const circleLngLat = (project, unproject) => {
 async function startOrbis() {
   const { createMap } = await import("orbis");
   const map = await createMap({ container, style: demoStyle(params, "tokyo"),
-    camera: { center: CENTER, zoom: ZOOM } });
+    camera: START });
   await map.once("idle");
   const at = circleLngLat((l) => map.project(l), (p) => map.unproject(p));
   await map.edit((tx) => tx
@@ -56,7 +58,7 @@ async function startOrbis() {
   await map.once("idle");
   // Resolves once idle, at once if it is.
   const idle = () => (map.stats?.idle && !map.camera.moving ? Promise.resolve() : map.once("idle"));
-  const home = () => { map.camera.jumpTo({ center: CENTER, zoom: ZOOM, bearing: 0, pitch: 0 }); return idle(); };
+  const home = () => { map.camera.jumpTo(START); return idle(); };
   return { idle, home, stats: () => map.stats };
 }
 
@@ -68,15 +70,16 @@ async function startGlJs() {
   await import("maplibre-gl/dist/maplibre-gl.css");
   maplibregl.setWorkerUrl(workerUrl);
   maplibregl.addProtocol("pmtiles", new Protocol().tile);
-  const style = await (await fetch(demoStyle(params, "tokyo"))).json();
+  const styleUrl = demoStyle(params, "tokyo");
+  const style = await (await fetch(styleUrl)).json();
   // GL JS wants absolute URLs.
-  const absolute = (url) => new URL(url, location.href).href;
+  const absolute = (url) => new URL(url, styleUrl).href;
   style.sprite = absolute(style.sprite);
   style.glyphs = absolute(style.glyphs).replace(/%7B/g, "{").replace(/%7D/g, "}");
   for (const source of Object.values(style.sources)) {
     if (source.url?.startsWith("pmtiles://")) source.url = `pmtiles://${absolute(source.url.slice(10))}`;
   }
-  const map = new maplibregl.Map({ container, style, center: CENTER, zoom: ZOOM, attributionControl: false });
+  const map = new maplibregl.Map({ container, style, ...START, maxPitch: 85, attributionControl: false });
   await map.once("idle");
   const at = circleLngLat((l) => { const p = map.project(l); return [p.x, p.y]; }, (p) => map.unproject(p).toArray());
   map.addSource("measure", { type: "geojson", data: { type: "Feature", geometry: { type: "Point", coordinates: at }, properties: {} } });
@@ -93,7 +96,7 @@ async function startGlJs() {
   map.on("render", () => renders++);
   await map.once("idle");
   const idle = () => (map.loaded() && !map.isMoving() ? Promise.resolve() : map.once("idle"));
-  const home = () => { map.jumpTo({ center: CENTER, zoom: ZOOM, bearing: 0, pitch: 0 }); return idle(); };
+  const home = () => { map.jumpTo(START); return idle(); };
   return { idle, home, stats: () => null };
 }
 

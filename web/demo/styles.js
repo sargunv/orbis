@@ -174,3 +174,17 @@ export function demoStyle(params, fallback = "live") {
   const { scene, format } = sceneFor(params);
   return sceneUrl(scene, format);
 }
+
+/**
+ * As `demoStyle`, with the scene's projection and sky (the globe's) put in
+ * the style itself, fetched, so that every engine loads them with it;
+ * `globe` in `params` puts the globe scene's in any style. Otherwise the
+ * style's URL.
+ */
+export async function demoStyleWithScene(params, fallback = "live") {
+  const url = demoStyle(params, fallback);
+  const scene = params.has("globe") ? SCENES.globe : params.get("style") ? sceneFor(params).scene : {};
+  if (!scene.projection && !scene.sky) return url;
+  const style = await (await fetch(url)).json();
+  return { ...style, ...(scene.projection && { projection: scene.projection }), ...(scene.sky && { sky: scene.sky }) };
+}
