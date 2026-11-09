@@ -30,9 +30,7 @@ pub use glyph::{
     GlyphRequests, LocalFont, Provider, Variant, glyphs_url, provider,
 };
 pub use label::{Content, IMAGE_PADDING, Images, InlineImage, Label, Section, VerticalAlign};
-pub use segment::WordBreaker;
-#[cfg(feature = "sea-export")]
-pub use segment::sea_dictionary_bytes;
+pub use segment::{HostWords, WordBreaker};
 pub use shaping::{
     Anchor, DEFAULT_OFFSET, GlyphSource, Justify, ONE_EM, PositionedGlyph, PositionedLine,
     ShapeContext, ShapeOptions, ShapedSection, Shaping, WritingMode, shape_text,

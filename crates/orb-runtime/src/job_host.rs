@@ -56,9 +56,8 @@ pub struct JobHost {
     /// The host's local fonts, if any.
     local: Mutex<Option<Arc<dyn LocalGlyphs>>>,
     files: Mutex<Option<Arc<dyn FontFiles>>>,
-    /// Where the Southeast Asian word data is, for hosts that load it
-    /// lazily.
-    word_data_url: Mutex<Option<String>>,
+    /// The host's word breaker, if it has one.
+    words: Mutex<Option<Arc<orb_text::WordBreaker>>>,
 }
 
 impl std::fmt::Debug for JobHost {
@@ -72,8 +71,6 @@ struct GlyphLoads {
     fetch: Arc<dyn Fetch>,
     executor: Arc<dyn Executor>,
     waiting: Mutex<GlyphWaiters>,
-    /// The word data once a style's worker has loaded it, for the others.
-    words: Mutex<Option<Arc<orb_text::WordBreaker>>>,
     /// Glyph ranges fetched lately, whole: the atlas's raster jobs draw
     /// their bitmaps from these rather than fetch them again (workers keep
     /// metrics only).
@@ -176,12 +173,6 @@ impl GlyphLoads {
         let finish = move |prepared: Result<(), String>| {
             let bytes = prepared.and(fetched.as_deref().map_err(Clone::clone));
             worker.add_resource(&url, bytes);
-            if let Some(words) = worker.word_breaker() {
-                this.words
-                    .lock()
-                    .expect("words poisoned")
-                    .get_or_insert(words);
-            }
             let waiters = this
                 .waiting
                 .lock()
@@ -273,7 +264,6 @@ impl JobHost {
                 fetch: Arc::clone(&fetch),
                 executor: Arc::clone(&executor),
                 waiting: Mutex::default(),
-                words: Mutex::new(None),
                 recent: Mutex::default(),
             }),
             fetch,
@@ -282,7 +272,7 @@ impl JobHost {
             data_loads: Arc::default(),
             local: Mutex::new(None),
             files: Mutex::new(None),
-            word_data_url: Mutex::new(None),
+            words: Mutex::new(None),
         })
     }
 
@@ -298,10 +288,11 @@ impl JobHost {
         *self.files.lock().expect("font files poisoned") = Some(files);
     }
 
-    /// Fetches the Southeast Asian word data from `url` when labels first
-    /// need it, rather than compiling it in.
-    pub fn set_word_data_url(&self, url: &str) {
-        *self.word_data_url.lock().expect("word data poisoned") = Some(url.to_string());
+    /// Breaks words in scripts written without spaces with the host's
+    /// segmenter (the browser's `Intl.Segmenter`, as GL JS does), for the
+    /// styles set from now on, rather than with compiled dictionaries.
+    pub fn set_word_breaker(&self, breaker: orb_text::WordBreaker) {
+        *self.words.lock().expect("words poisoned") = Some(Arc::new(breaker));
     }
 
     /// Makes a revision of style `id` available to later requests.
@@ -314,10 +305,8 @@ impl JobHost {
         if let Some(files) = &*self.files.lock().expect("font files poisoned") {
             worker.set_font_files(Arc::clone(files));
         }
-        if let Some(words) = &*self.glyphs.words.lock().expect("words poisoned") {
+        if let Some(words) = &*self.words.lock().expect("words poisoned") {
             worker.set_word_breaker(Arc::clone(words));
-        } else if let Some(url) = &*self.word_data_url.lock().expect("word data poisoned") {
-            worker.set_word_data_url(url);
         }
         let mut styles = self.styles.lock().expect("styles poisoned");
         styles.retain(|(i, _)| *i + 1 >= id && *i != id);

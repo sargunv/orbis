@@ -422,23 +422,6 @@ pub(crate) fn prepare(
     }
 }
 
-/// Whether any label has two neighbouring characters of a script written
-/// without spaces, between which GL JS asks its word segmenter for a break.
-pub(crate) fn needs_word_breaks(prepared: &Prepared) -> bool {
-    prepared.features.iter().any(|f| {
-        f.text
-            .iter()
-            .flat_map(|t| &t.sections)
-            .any(|s| match &s.content {
-                Content::Text(text) => text.chars().zip(text.chars().skip(1)).any(|(a, b)| {
-                    orb_text::unicode::is_written_without_spaces(a)
-                        && orb_text::unicode::is_written_without_spaces(b)
-                }),
-                Content::Image(_) => false,
-            })
-    })
-}
-
 /// The images a layer's features name that the style has, numbered for
 /// layout, and those it hasn't.
 fn tile_images(features: &[SymbolFeature], icons: &SpriteIcons) -> (TileImages, Vec<String>) {

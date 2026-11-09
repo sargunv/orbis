@@ -58,7 +58,6 @@ pub(crate) fn build() -> Result<(), String> {
         js.len() / 1024,
     );
     watch("core.wasm", core.brotli, CORE_WATCH_KIB);
-    word_data(&out)?;
     // `font-faces` drawing, loaded the first time a style declares a file.
     let shaper = module(&root, "orb-shaper", "shaper")?;
     eprintln!(
@@ -149,21 +148,6 @@ fn sizes(bytes: &[u8]) -> Result<Sizes, String> {
         raw: bytes.len(),
         brotli: brotli.len(),
     })
-}
-
-/// Writes the Southeast Asian word data the job workers fetch when labels
-/// first need it.
-fn word_data(out: &Path) -> Result<(), String> {
-    let bytes = orb_text::sea_dictionary_bytes();
-    let path = out.join("seasia.bin");
-    std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-    let s = sizes(&bytes)?;
-    eprintln!(
-        "seasia.bin: {} KiB raw, {} KiB brotli (lazy)",
-        s.raw / 1024,
-        s.brotli / 1024
-    );
-    Ok(())
 }
 
 /// Prints the code size per crate of the build before wasm-opt, which

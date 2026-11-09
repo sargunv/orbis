@@ -43,17 +43,10 @@ pub struct TileBuild {
 pub(crate) struct Symbols<'a> {
     pub(crate) glyphs: &'a GlyphCatalog,
     pub(crate) icons: &'a SpriteIcons,
-    pub(crate) words: WordData<'a>,
+    /// How words break in scripts written without spaces, if they do.
+    pub(crate) words: Option<&'a orb_text::WordBreaker>,
     /// The map's `localIdeographFontFamily`.
     pub(crate) ideographs: Option<&'a str>,
-}
-
-/// The Southeast Asian word data a build has, or where to fetch it.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum WordData<'a> {
-    Ready(&'a orb_text::WordBreaker),
-    Fetch(&'a str),
-    Unavailable,
 }
 
 /// Which of a source's nodes to lay out.
@@ -387,12 +380,6 @@ fn build_symbols(
                 missing.push(url);
             }
         }
-        if let WordData::Fetch(url) = symbols.words
-            && !missing.iter().any(|m| m == url)
-            && crate::symbol::needs_word_breaks(&p)
-        {
-            missing.push(url.to_string());
-        }
         prepared.push((node, labelled, ancestor, features, p));
     }
     if !missing.is_empty() {
@@ -428,10 +415,7 @@ fn build_symbols(
                 resolved.glyphs,
                 symbols.icons,
                 &slots,
-                match symbols.words {
-                    WordData::Ready(breaker) => Some(breaker),
-                    _ => None,
-                },
+                symbols.words,
             ),
         ));
     }
@@ -811,7 +795,7 @@ mod tests {
         Symbols {
             glyphs: &GLYPHS,
             icons: &ICONS,
-            words: WordData::Unavailable,
+            words: None,
             ideographs: None,
         }
     }

@@ -21,6 +21,7 @@ orb-hal-wgpu.workspace = true
 orb-host.workspace = true
 orb-runtime.workspace = true
 orb-symbol.workspace = true
+orb-text.workspace = true
 orb-tile.workspace = true
 # Event names and keys cross to the page every frame: interned, they're
 # decoded once.

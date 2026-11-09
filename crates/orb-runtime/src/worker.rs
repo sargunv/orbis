@@ -95,9 +95,8 @@ pub(crate) struct WorkerData {
     /// Sprite metadata for icon layout, and the layouts waiting for a
     /// later set.
     icons: Mutex<IconState>,
-    /// Southeast Asian word data, and the URL it is fetched from.
+    /// How labels in scripts written without spaces break.
     words: Mutex<Words>,
-    word_url: Mutex<Option<String>>,
 }
 
 #[derive(Default)]
@@ -116,30 +115,23 @@ impl std::fmt::Debug for IconState {
     }
 }
 
-/// The data labels in scripts written without spaces (Thai, Lao, Khmer,
-/// Burmese) break lines with.
+/// How labels in scripts written without spaces (Thai, Lao, Khmer,
+/// Burmese) break lines: natively with the compiled dictionaries; on the
+/// web the job hosts set the browser's segmenter
+/// ([`JobHost::set_word_breaker`](crate::JobHost::set_word_breaker)). Without
+/// one, such text offers no breaks, as in GL JS without `Intl.Segmenter`.
 #[derive(Clone, Debug)]
-enum Words {
-    Ready(Arc<orb_text::WordBreaker>),
-    /// Fetched from this URL before text that needs it is laid out.
-    Fetch(String),
-    /// Such text offers no breaks, as in GL JS without `Intl.Segmenter`.
-    Unavailable,
-}
+#[cfg_attr(target_arch = "wasm32", derive(Default))]
+struct Words(Option<Arc<orb_text::WordBreaker>>);
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for Words {
-    /// Native builds compile the data in; the web fetches it lazily.
     fn default() -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            static COMPILED: std::sync::OnceLock<Arc<orb_text::WordBreaker>> =
-                std::sync::OnceLock::new();
-            Self::Ready(Arc::clone(
-                COMPILED.get_or_init(|| Arc::new(orb_text::WordBreaker::southeast_asian())),
-            ))
-        }
-        #[cfg(target_arch = "wasm32")]
-        Self::Unavailable
+        static COMPILED: std::sync::OnceLock<Arc<orb_text::WordBreaker>> =
+            std::sync::OnceLock::new();
+        Self(Some(Arc::clone(COMPILED.get_or_init(|| {
+            Arc::new(orb_text::WordBreaker::southeast_asian())
+        }))))
     }
 }
 
@@ -229,25 +221,6 @@ impl TileWorker {
     /// Adds a resource a build asked for (or its failure) for later
     /// builds, which report a failure.
     pub(crate) fn add_resource(&self, url: &str, bytes: Result<&[u8], String>) {
-        let mut words = self.data.words.lock().expect("words poisoned");
-        let word_url = self.data.word_url.lock().expect("words poisoned");
-        if word_url.as_deref() == Some(url) {
-            // Tiles that waited on the same fetch each bring it back.
-            if !matches!(*words, Words::Fetch(_)) {
-                return;
-            }
-            *words = match bytes.and_then(orb_text::WordBreaker::from_bytes) {
-                Ok(breaker) => Words::Ready(Arc::new(breaker)),
-                Err(e) => {
-                    self.data.glyphs.warn(format!(
-                        "word data {url}: {e}; labels in Thai, Lao, Khmer or Burmese do not wrap"
-                    ));
-                    Words::Unavailable
-                }
-            };
-            return;
-        }
-        drop(words);
         if self.declares_font(url) {
             self.data.glyphs.insert_font(url, bytes);
             return;
@@ -255,27 +228,10 @@ impl TileWorker {
         self.data.glyphs.insert(url, bytes);
     }
 
-    /// Fetches the Southeast Asian word data from `url` when text first
-    /// needs it (the web, which doesn't compile it in), unless it is here.
-    pub fn set_word_data_url(&self, url: &str) {
-        let mut words = self.data.words.lock().expect("words poisoned");
-        if matches!(*words, Words::Unavailable) {
-            *words = Words::Fetch(url.to_string());
-            *self.data.word_url.lock().expect("words poisoned") = Some(url.to_string());
-        }
-    }
-
-    /// The word data, once loaded, to hand to workers of other styles.
-    pub(crate) fn word_breaker(&self) -> Option<Arc<orb_text::WordBreaker>> {
-        match &*self.data.words.lock().expect("words poisoned") {
-            Words::Ready(breaker) => Some(Arc::clone(breaker)),
-            _ => None,
-        }
-    }
-
-    /// Uses word data another worker loaded.
+    /// Breaks words in scripts written without spaces with `breaker`, for
+    /// this revision and later ones.
     pub(crate) fn set_word_breaker(&self, breaker: Arc<orb_text::WordBreaker>) {
-        *self.data.words.lock().expect("words poisoned") = Words::Ready(breaker);
+        *self.data.words.lock().expect("words poisoned") = Words(Some(breaker));
     }
 
     /// Draws local glyphs with the host's fonts, for this revision and
@@ -291,16 +247,9 @@ impl TileWorker {
     }
 
     /// Whether `url`, fetched for a tile's text, is a glyph range: not a
-    /// declared font file or the word data.
+    /// declared font file.
     pub(crate) fn is_glyph_range(&self, url: &str) -> bool {
         !self.declares_font(url)
-            && self
-                .data
-                .word_url
-                .lock()
-                .expect("words poisoned")
-                .as_deref()
-                != Some(url)
     }
 
     /// Draws declared font files (`font-faces`) with the host's engine, for
@@ -643,11 +592,7 @@ impl TileWorker {
             glyphs: &self.data.glyphs,
             icons: &icons,
             ideographs: self.ideographs.as_deref(),
-            words: match &words {
-                Words::Ready(breaker) => tile::WordData::Ready(breaker),
-                Words::Fetch(url) => tile::WordData::Fetch(url),
-                Words::Unavailable => tile::WordData::Unavailable,
-            },
+            words: words.0.as_deref(),
         };
         let bend = request.bend;
         match tile::build(
@@ -964,35 +909,35 @@ pub(crate) mod tests {
 
     const INLINE: &str = r#"{"version":8,"sources":{"geo":{"type":"geojson","maxzoom":2,"data":{"type":"Feature","properties":{"color":"red"},"geometry":{"type":"Polygon","coordinates":[[[-20,-20],[20,-20],[20,20],[-20,20],[-20,-20]]]}}}},"layers":[{"id":"fill","type":"fill","source":"geo","paint":{"fill-color":["get","color"]}},{"id":"line","type":"line","source":"geo"}]}"#;
 
-    /// Thai labels wait for the Southeast Asian word data where the host
-    /// loads it lazily; natively it is compiled in.
+    /// Thai labels break where the word breaker says: the compiled
+    /// dictionaries natively, or the host's segmenter.
     #[test]
-    fn thai_labels_wait_for_lazy_word_data() {
+    fn thai_labels_break_with_the_host_segmenter() {
         const THAI: &str = r#"{"version":8,"glyphs":"test://{fontstack}/{range}.pbf",
             "sources":{"geo":{"type":"geojson","data":{"type":"Feature",
                 "properties":{"name":"ราชอาณาจักรไทย"},"geometry":{"type":"Point","coordinates":[0,0]}}}},
             "layers":[{"id":"t","type":"symbol","source":"geo","layout":{"text-field":"{name}"}}]}"#;
         let tile = TileIndex::new(0, 0, 0);
         let compiled = TileWorker::new(THAI).unwrap();
-        assert!(compiled.word_breaker().is_some());
         assert!(matches!(
             compiled.build(&[], Encoding::Mvt, &request(tile)).unwrap(),
             Built::Tile(_)
         ));
 
-        let lazy = TileWorker::new(THAI).unwrap();
-        *lazy.data.words.lock().unwrap() = Words::Unavailable;
-        lazy.set_word_data_url("test://seasia.bin");
-        let Built::Fetch(urls) = lazy.build(&[], Encoding::Mvt, &request(tile)).unwrap() else {
-            panic!("Thai text waits for word data")
-        };
-        assert_eq!(urls, ["test://seasia.bin"]);
-        lazy.add_resource(&urls[0], Ok(&orb_text::sea_dictionary_bytes()));
-        assert!(lazy.word_breaker().is_some());
+        let host = TileWorker::new(THAI).unwrap();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
+        host.set_word_breaker(Arc::new(orb_text::WordBreaker::from_host(Box::new(
+            move |text: &str| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                vec![0, text.len()]
+            },
+        ))));
         assert!(matches!(
-            lazy.build(&[], Encoding::Mvt, &request(tile)).unwrap(),
+            host.build(&[], Encoding::Mvt, &request(tile)).unwrap(),
             Built::Tile(_)
         ));
+        assert!(asked.load(std::sync::atomic::Ordering::Relaxed) > 0);
     }
 
     #[test]
@@ -1221,20 +1166,6 @@ pub(crate) mod tests {
         assert!(worker.build(b"invalid", Encoding::Mvt, &tile).is_err());
         assert!(worker.has_data(&tile));
         assert!(worker.build(b"{}", Encoding::Mvt, &tile).is_err());
-    }
-
-    /// Tiles that waited on one word data fetch each hand it back; the
-    /// second is not a glyph range.
-    #[test]
-    fn word_data_arriving_twice_is_not_a_glyph_range() {
-        let worker = TileWorker::new(INLINE).unwrap();
-        *worker.data.words.lock().unwrap() = Words::Unavailable;
-        worker.set_word_data_url("test://seasia.bin");
-        worker.add_resource("test://seasia.bin", Err("offline".into()));
-        worker.add_resource("test://seasia.bin", Err("offline".into()));
-        let warnings = worker.data.glyphs.take_warnings();
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].starts_with("word data"), "{warnings:?}");
     }
 
     #[test]

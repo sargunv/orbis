@@ -9,22 +9,16 @@ version.workspace = true
 [features]
 default = ["sea-dictionaries"]
 # ICU4X's Thai, Lao, Khmer and Burmese dictionaries (≈1 MB), compiled in.
-# The web loads them lazily instead.
-sea-dictionaries = ["dep:icu_provider"]
-# Reads those dictionaries from bytes (`WordBreaker::from_bytes`), as the web
-# loads them; `sea_dictionary_bytes` writes them with `sea-dictionaries`.
-sea-buffer = ["dep:icu_provider", "icu_provider/deserialize_postcard_1", "icu_provider/sync", "icu_segmenter/serde"]
+# The web asks the browser's `Intl.Segmenter` instead.
+sea-dictionaries = ["dep:icu_provider", "icu_provider/sync"]
 # Glyphs from font bytes: HarfRust shaping, skrifa outlines, coverage
 # (`font`). Native hosts link it; the web loads it as `shaper.wasm`.
 fonts = ["dep:harfrust", "dep:skrifa", "dep:wuff", "dep:zeno"]
-# `sea_dictionary_bytes`, for the build that writes the web's copy.
-sea-export = ["sea-dictionaries", "dep:postcard", "icu_segmenter/datagen"]
 
 [dependencies]
 serde.workspace = true
 harfrust = { version = "0.15.0", default-features = false, features = ["std"], optional = true }
 icu_provider = { version = "2.4.0", default-features = false, optional = true }
-postcard = { workspace = true, optional = true }
 icu_segmenter = { version = "2.4.0", default-features = false, features = ["compiled_data"] }
 skrifa = { version = "0.49.0", default-features = false, features = ["std"], optional = true }
 zeno = { version = "0.3.3", default-features = false, features = ["eval", "std"], optional = true }

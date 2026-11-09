@@ -22,16 +22,16 @@ orb-shaders.workspace = true
 orb-source.workspace = true
 orb-style.workspace = true
 orb-symbol.workspace = true
-orb-text = { workspace = true, features = ["sea-buffer"] }
+orb-text.workspace = true
 orb-tile.workspace = true
 
-# Native builds compile the Southeast Asian word data in; the web loads it.
+# Native builds compile the Southeast Asian word data in; the web asks the
+# browser's segmenter.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 orb-text = { workspace = true, features = ["sea-dictionaries"] }
 
 [dev-dependencies]
 orb-host-native.workspace = true
-orb-text = { workspace = true, features = ["sea-export"] }
 orb-hal-wgpu.workspace = true
 png.workspace = true
 pollster.workspace = true

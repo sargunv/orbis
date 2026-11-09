@@ -32,6 +32,69 @@ impl ImageDecode for WebImageDecode {
     }
 }
 
+thread_local! {
+    /// The browser's word segmenter, made once per context.
+    static WORDS: Option<JsValue> = word_segmenter();
+}
+
+/// `new Intl.Segmenter(undefined, {granularity: "word"})`, as GL JS makes
+/// it, where the browser has one.
+fn word_segmenter() -> Option<JsValue> {
+    let intl = Reflect::get(&js_sys::global(), &"Intl".into()).ok()?;
+    let segmenter = Reflect::get(&intl, &"Segmenter".into())
+        .ok()?
+        .dyn_into::<js_sys::Function>()
+        .ok()?;
+    let options = js_sys::Object::new();
+    Reflect::set(&options, &"granularity".into(), &"word".into()).ok()?;
+    let args = js_sys::Array::of2(&JsValue::UNDEFINED, &options);
+    Reflect::construct(&segmenter, &args).ok()
+}
+
+/// Words in scripts written without spaces, from the browser's
+/// `Intl.Segmenter` (as GL JS takes them), where it has one.
+pub(crate) fn browser_words() -> Option<orb_text::WordBreaker> {
+    WORDS.with(Option::is_some).then(|| {
+        orb_text::WordBreaker::from_host(Box::new(|text: &str| {
+            WORDS.with(|segmenter| word_starts(segmenter.as_ref(), text))
+        }))
+    })
+}
+
+/// The byte offsets at which `segmenter`'s words in `text` start, and
+/// the text's end.
+fn word_starts(segmenter: Option<&JsValue>, text: &str) -> Vec<usize> {
+    let mut starts = Vec::new();
+    // The segments' UTF-16 indices, in order.
+    let mut indices = Vec::new();
+    if let Some(segmenter) = segmenter
+        && let Ok(segment) = Reflect::get(segmenter, &"segment".into())
+        && let Ok(segment) = segment.dyn_into::<js_sys::Function>()
+        && let Ok(segments) = segment.call1(segmenter, &text.into())
+        && let Ok(Some(iter)) = js_sys::try_iter(&segments)
+    {
+        for item in iter.flatten() {
+            if let Some(index) = Reflect::get(&item, &"index".into())
+                .ok()
+                .and_then(|i| i.as_f64())
+            {
+                indices.push(index as usize);
+            }
+        }
+    }
+    let mut indices = indices.into_iter().peekable();
+    let mut utf16 = 0;
+    for (byte, c) in text.char_indices() {
+        while indices.next_if(|&i| i <= utf16).is_some_and(|i| i == utf16) {
+            starts.push(byte);
+        }
+        utf16 += c.len_utf16();
+    }
+    starts.push(text.len());
+    starts.dedup();
+    starts
+}
+
 /// Decodes an image to straight RGBA8 texels.
 pub(crate) async fn decode_image(bytes: &[u8]) -> Result<DecodedImage, JsValue> {
     let bitmap = decode_bitmap(bytes).await?;

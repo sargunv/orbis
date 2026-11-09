@@ -14,8 +14,6 @@ self.onmessage = async ({ data: { module, port } }: MessageEvent<{ module: WebAs
   await init({ module_or_path: module });
   const jobs = new JobWorker();
   onRegionsChanged(reloadRegions);
-  // Thai, Lao, Khmer and Burmese word breaks load when labels need them.
-  jobs.setWordDataUrl(new URL("../pkg/seasia.bin", import.meta.url).href);
   // Styles with `font-faces` draw their files with shaper.wasm.
   jobs.setShaperLoader(loadShaper);
   // A trap (a Rust panic) leaves the wasm unusable: the worker says it is

@@ -640,14 +640,10 @@ impl JobWorker {
         let host = JobHost::new(crate::regions::service(), Arc::new(orb_host::jobs::Inline));
         host.set_local_glyphs(Arc::new(crate::host::CanvasGlyphs));
         host.set_font_files(Arc::new(crate::host::ShaperFiles));
+        if let Some(words) = crate::host::browser_words() {
+            host.set_word_breaker(words);
+        }
         Self { host }
-    }
-
-    /// Fetches the Southeast Asian word data from `url` when labels first
-    /// need it, rather than compiling it into `core.wasm`.
-    #[wasm_bindgen(js_name = setWordDataUrl)]
-    pub fn set_word_data_url(&mut self, url: String) {
-        self.host.set_word_data_url(&url);
     }
 
     /// How this worker loads `shaper.wasm` for `font-faces` files:

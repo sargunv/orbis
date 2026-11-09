@@ -4,7 +4,8 @@
 //! corrects `Intl.Segmenter`: a cluster ending in a virama or ZWJ joins the
 //! next one, and so does one followed by a spacing mark. Word boundaries are
 //! only asked for inside scripts written without spaces, from ICU4X's
-//! dictionary segmenter with the Southeast Asian dictionaries.
+//! dictionary segmenter with the Southeast Asian dictionaries, or from the
+//! host's (the browser's `Intl.Segmenter`, which GL JS asks).
 
 use std::ops::Range;
 
@@ -53,12 +54,31 @@ pub(crate) fn is_cluster(grapheme: &str) -> bool {
 /// Finds words in scripts written without spaces (Thai, Lao, Khmer,
 /// Burmese), which offer no other line breaks.
 ///
-/// Built from data: [`WordBreaker::southeast_asian`] with the
-/// `sea-dictionaries` feature (compiled in). Without one, no break is offered
-/// inside such text, as GL JS behaves without `Intl.Segmenter`.
-#[derive(Debug)]
+/// From [`WordBreaker::southeast_asian`]'s compiled dictionaries (the
+/// `sea-dictionaries` feature), or the host's segmenter
+/// ([`WordBreaker::from_host`]). Without one, no break is offered inside
+/// such text, as GL JS behaves without `Intl.Segmenter`.
 pub struct WordBreaker {
-    segmenter: icu_segmenter::WordSegmenter,
+    breaks: Breaks,
+}
+
+/// A segmenter's word starts in a text, as byte offsets, its end included.
+pub type HostWords = dyn Fn(&str) -> Vec<usize> + Send + Sync;
+
+enum Breaks {
+    #[cfg(feature = "sea-dictionaries")]
+    Dictionaries(Box<icu_segmenter::WordSegmenter>),
+    Host(Box<HostWords>),
+}
+
+impl std::fmt::Debug for WordBreaker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.breaks {
+            #[cfg(feature = "sea-dictionaries")]
+            Breaks::Dictionaries(_) => "WordBreaker(dictionaries)",
+            Breaks::Host(_) => "WordBreaker(host)",
+        })
+    }
 }
 
 impl WordBreaker {
@@ -76,116 +96,25 @@ impl WordBreaker {
         segmenter
             .load_dictionary_unstable(&sea::Dictionaries)
             .expect("compiled dictionary data");
-        Self { segmenter }
+        Self {
+            breaks: Breaks::Dictionaries(Box::new(segmenter)),
+        }
     }
 
-    /// The same dictionaries from `sea_dictionary_bytes`' container, as
-    /// the web loads them.
-    #[cfg(feature = "sea-buffer")]
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        use icu_segmenter::options::WordBreakOptions;
-        use icu_segmenter::provider::Baked;
-        let dictionaries = buffer::Dictionaries::parse(bytes)?;
-        let mut segmenter = icu_segmenter::WordSegmenter::try_new_for_non_complex_scripts_unstable(
-            &Baked,
-            WordBreakOptions::default(),
-        )
-        .map_err(|e| e.to_string())?;
-        segmenter
-            .load_dictionary_with_buffer_provider(&dictionaries)
-            .map_err(|e| e.to_string())?;
-        Ok(Self { segmenter })
+    /// The host's segmenter: `words(text)` answers the byte offsets at
+    /// which a word begins, and the text's end.
+    pub fn from_host(words: Box<HostWords>) -> Self {
+        Self {
+            breaks: Breaks::Host(words),
+        }
     }
 
     /// The byte offsets at which a word begins.
     pub(crate) fn word_starts(&self, text: &str) -> Vec<usize> {
-        self.segmenter.as_borrowed().segment_str(text).collect()
-    }
-}
-
-/// The four dictionary attributes ICU4X's Southeast Asian segmenters ask
-/// for.
-#[cfg(any(feature = "sea-buffer", feature = "sea-export"))]
-const SEA_DICTIONARIES: [&str; 4] = ["burmesedict", "khmerdict", "laodict", "thaidict"];
-
-/// A container of the compiled Southeast Asian dictionaries for
-/// [`WordBreaker::from_bytes`]: `ORBSEA1`, then per dictionary its
-/// attribute (a byte of length, then UTF-8) and its postcard bytes (four
-/// bytes of little-endian length, then the data).
-#[cfg(feature = "sea-export")]
-pub fn sea_dictionary_bytes() -> Vec<u8> {
-    use icu_provider::prelude::*;
-    use icu_segmenter::provider::{Baked, SegmenterDictionaryExtendedV2};
-    let mut out = b"ORBSEA1".to_vec();
-    for attribute in SEA_DICTIONARIES {
-        let request = DataRequest {
-            id: DataIdentifierBorrowed::for_marker_attributes(
-                DataMarkerAttributes::from_str_or_panic(attribute),
-            ),
-            ..Default::default()
-        };
-        let response: DataResponse<SegmenterDictionaryExtendedV2> =
-            Baked.load(request).expect("compiled dictionary");
-        let data = postcard::to_allocvec(response.payload.get()).expect("serializable dictionary");
-        out.push(attribute.len() as u8);
-        out.extend(attribute.as_bytes());
-        out.extend((data.len() as u32).to_le_bytes());
-        out.extend(data);
-    }
-    out
-}
-
-#[cfg(feature = "sea-buffer")]
-mod buffer {
-    use icu_provider::buf::BufferFormat;
-    use icu_provider::prelude::*;
-    use icu_segmenter::provider::SegmenterDictionaryExtendedV2;
-
-    /// Serves the container's dictionaries as postcard buffers.
-    pub(super) struct Dictionaries(Vec<(String, Box<[u8]>)>);
-
-    impl Dictionaries {
-        pub(super) fn parse(mut bytes: &[u8]) -> Result<Self, String> {
-            let bad = || "not a Southeast Asian dictionary container".to_string();
-            bytes = bytes.strip_prefix(b"ORBSEA1").ok_or_else(bad)?;
-            let mut entries = Vec::new();
-            while let Some((&len, rest)) = bytes.split_first() {
-                let (name, rest) = rest.split_at_checked(usize::from(len)).ok_or_else(bad)?;
-                let (size, rest) = rest.split_at_checked(4).ok_or_else(bad)?;
-                let size = u32::from_le_bytes(size.try_into().expect("four bytes")) as usize;
-                let (data, rest) = rest.split_at_checked(size).ok_or_else(bad)?;
-                let name = std::str::from_utf8(name).map_err(|_| bad())?;
-                entries.push((name.to_string(), data.into()));
-                bytes = rest;
-            }
-            if !super::SEA_DICTIONARIES
-                .iter()
-                .all(|a| entries.iter().any(|(n, _)| n == a))
-            {
-                return Err(bad());
-            }
-            Ok(Self(entries))
-        }
-    }
-
-    impl DynamicDataProvider<BufferMarker> for Dictionaries {
-        fn load_data(
-            &self,
-            marker: DataMarkerInfo,
-            request: DataRequest,
-        ) -> Result<DataResponse<BufferMarker>, DataError> {
-            // The CJ dictionary, and anything else, is not served.
-            let attribute = request.id.marker_attributes.as_str();
-            let data = (marker.id == SegmenterDictionaryExtendedV2::INFO.id)
-                .then(|| self.0.iter().find(|(name, _)| name == attribute))
-                .flatten()
-                .ok_or_else(|| DataErrorKind::IdentifierNotFound.with_req(marker, request))?;
-            let mut metadata = DataResponseMetadata::default();
-            metadata.buffer_format = Some(BufferFormat::Postcard1);
-            Ok(DataResponse {
-                metadata,
-                payload: DataPayload::from_owned_buffer(data.1.clone()),
-            })
+        match &self.breaks {
+            #[cfg(feature = "sea-dictionaries")]
+            Breaks::Dictionaries(segmenter) => segmenter.as_borrowed().segment_str(text).collect(),
+            Breaks::Host(words) => words(text),
         }
     }
 }
@@ -223,24 +152,6 @@ mod sea {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The web's container breaks words as the compiled dictionaries do.
-    #[cfg(all(feature = "sea-export", feature = "sea-buffer"))]
-    #[test]
-    fn dictionary_bytes_break_as_compiled_data() {
-        let compiled = WordBreaker::southeast_asian();
-        let loaded = WordBreaker::from_bytes(&sea_dictionary_bytes()).unwrap();
-        for text in ["ราชอาณาจักรไทย", "ພາສາລາວ", "ភាសាខ្មែរ", "မြန်မာဘာသာ"]
-        {
-            assert_eq!(
-                loaded.word_starts(text),
-                compiled.word_starts(text),
-                "{text}"
-            );
-        }
-        assert!(loaded.word_starts("ราชอาณาจักรไทย").len() > 2);
-        assert!(WordBreaker::from_bytes(b"nonsense").is_err());
-    }
 
     fn split(text: &str) -> Vec<&str> {
         graphemes(text).into_iter().map(|r| &text[r]).collect()
