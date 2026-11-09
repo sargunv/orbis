@@ -104,7 +104,8 @@ pub struct TargetFormat {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameStats {
     pub dispatches: u32,
-    /// Draws issued: one indirect draw per node, and prepare passes'.
+    /// Draws issued: the main bundles' (a node with candidates, a
+    /// layer's composite), and other passes'.
     pub draws: u32,
     /// Whether the bundle was re-recorded this frame.
     pub bundle_recorded: bool,
@@ -168,6 +169,10 @@ struct Node {
     /// and the bundles record it. Until then it costs nothing, neither
     /// pipelines nor targets nor passes.
     drawn: bool,
+    /// A bundle recorded since the last invalidation left it out: it had
+    /// no candidates, so its draw would have drawn nothing. Candidates
+    /// arriving for it record the bundles again.
+    left_out: std::cell::Cell<bool>,
 }
 
 impl Node {
@@ -212,6 +217,8 @@ pub struct Renderer {
     /// Nodes the main bundle left out, waiting for a pipeline (draped
     /// nodes a drape bundle left out: [`DrapeZoom::waiting`]).
     waiting: u32,
+    /// Nodes the main bundles record draws for.
+    recorded: u32,
     node_uniforms: BufferId,
     node_stride: u64,
     /// The node uniforms as written, and the nodes changed since the last
@@ -559,6 +566,7 @@ impl Renderer {
             pipelines_stale: false,
             made_seen: 0,
             waiting: 0,
+            recorded: 0,
             node_uniforms,
             node_stride,
             node_words: vec![0; (node_stride / 4) as usize * capacity.nodes as usize],
@@ -778,6 +786,7 @@ impl Renderer {
                 shaded: false,
                 composite: None,
                 drawn: false,
+                left_out: Default::default(),
             });
         }
         // Every group that bound the old uniforms is gone.
@@ -1084,6 +1093,9 @@ impl Renderer {
 
     fn invalidate_bundle(&mut self, gpu: &mut dyn Gpu) {
         self.drop_bundles(gpu);
+        for node in &self.nodes {
+            node.left_out.set(false);
+        }
         for zoom in self.drape_zooms.values_mut() {
             zoom.forget_bundle(gpu);
         }
@@ -1487,7 +1499,6 @@ impl Renderer {
         }
         let mut stats = self.record(gpu, frame, target, clear);
         stats.draws += u32::from(self.atmosphere.enabled);
-        stats.draws -= stats.nodes_waiting;
         self.end_surface_warps();
         stats
     }
@@ -1557,6 +1568,14 @@ impl Renderer {
         clear: [f64; 4],
     ) -> FrameStats {
         let (candidates, candidates_rebuilt) = self.scene.prepare(gpu, frame);
+        // A node the bundles left out for want of candidates draws once
+        // it has some.
+        if candidates_rebuilt
+            && (self.nodes.iter().enumerate())
+                .any(|(i, n)| n.left_out.get() && self.scene.node_candidates(i as u32) > 0)
+        {
+            self.invalidate_bundle(gpu);
+        }
         // A heatmap hidden, or with nothing to draw, composites nothing.
         for (i, node) in self.nodes.iter_mut().enumerate() {
             if let Some(heatmap) = &mut node.heatmap
@@ -1681,7 +1700,7 @@ impl Renderer {
                 self.layers.clear(gpu);
                 ready.cull = false;
             }
-            self.waiting = 0;
+            (self.waiting, self.recorded) = (0, 0);
             for g in 0..self.layers.groups.len() {
                 if self.layers.groups[g].drawn_elsewhere() {
                     continue;
@@ -1693,9 +1712,11 @@ impl Renderer {
                 }];
                 for i in self.layers.groups[g].nodes.clone() {
                     let groups = (self.draw_group, self.nodes[i].group);
+                    let before = group.len();
                     if !self.node_commands(gpu, &ready, i, groups, &mut group) {
                         self.waiting += 1;
                     }
+                    self.recorded += u32::from(group.len() > before);
                 }
                 self.layers.groups[g].bundle = Some(gpu.create_render_bundle(
                     &RenderBundleDesc {
@@ -1736,9 +1757,11 @@ impl Renderer {
                     None => {}
                 }
                 let groups = (self.draw_group, self.nodes[i].group);
+                let before = commands.len();
                 if !member && !self.node_commands(gpu, &ready, i, groups, &mut commands) {
                     self.waiting += 1;
                 }
+                self.recorded += u32::from(commands.len() > before);
             }
             self.bundles
                 .push(gpu.create_render_bundle(&layers, &commands));
@@ -1754,7 +1777,7 @@ impl Renderer {
 
         let mut passes = Vec::with_capacity(3);
         let mut stats = FrameStats {
-            draws: self.nodes.len() as u32,
+            draws: self.recorded,
             bundle_recorded,
             candidates,
             candidates_rebuilt,
@@ -2033,6 +2056,13 @@ impl Renderer {
                 let composite = &o.composite;
                 commands.extend(self.composites.commands(composite));
             }
+            return true;
+        }
+        // Without candidates its draw draws nothing: on sparse views most
+        // of a style's nodes, each a pipeline, bindings and an indirect
+        // draw the CPU encodes and the GPU reads every frame.
+        if self.scene.node_candidates(i as u32) == 0 {
+            node.left_out.set(true);
             return true;
         }
         if node.family.is_symbol() {
