@@ -147,6 +147,7 @@ impl Map {
                 .map(|(key, diffs)| (key.0, diffs.clone()))
                 .collect(),
             state: doc.global_state(),
+            previews: doc.style().previews,
             glyphs: doc.style().glyphs.clone(),
             font_faces: doc.style().font_faces.clone(),
             local_ideographs: self.labels.ideographs.clone(),
@@ -350,6 +351,7 @@ impl Map {
             layers: doc.layer_keys().map(|k| k.0).collect(),
             sources: doc.source_keys().map(|k| k.0).collect(),
             state: doc.global_state(),
+            previews: doc.style().previews,
             glyphs: doc.style().glyphs.clone(),
             font_faces: doc.style().font_faces.clone(),
             local_ideographs: self.labels.ideographs.clone(),

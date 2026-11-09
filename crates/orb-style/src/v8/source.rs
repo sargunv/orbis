@@ -55,9 +55,13 @@ pub(crate) fn parse_source(cx: &mut Cx, id: &str, json: &Json, path: &str) -> Op
         "image" | "video" | "canvas" => SourceKind::Image(parse_image(cx, json, path, ty)?),
         _ => unreachable!("checked against SOURCE_TYPES"),
     };
-    let tile_matrix_set = match json.get("tileMatrixSet") {
+    let tms_path = format!("{path}.tileMatrixSet");
+    let tile_matrix_set = match json
+        .get("tileMatrixSet")
+        .filter(|tms| cx.preview(Preview::Crs, &tms_path, tms.span, "\"tileMatrixSet\""))
+    {
         None => None,
-        Some(tms) => Some(parse_tms(cx, tms, &format!("{path}.tileMatrixSet"))?),
+        Some(tms) => Some(parse_tms(cx, tms, &tms_path)?),
     };
     Some(Source {
         id: id.to_string(),
@@ -364,24 +368,13 @@ fn parse_geojson_source(cx: &mut Cx, json: &Json, path: &str) -> Option<GeoJsonS
             }
         }
     }
-    for key in ["maxzoom", "indexMaxZoom", "indexMaxPoints"] {
-        if let Some(v) = json.get(key)
-            && let Some(n) = cx.number(v, &at(key))
-        {
-            let max = if key == "indexMaxPoints" {
-                usize::MAX as f64
-            } else {
-                24.0
-            };
-            if n < 0.0 || n > max || n.fract() != 0.0 {
-                cx.error(at(key), v.span, format!("expected an integer in 0..={max}"));
-            } else {
-                match key {
-                    "maxzoom" => options.max_zoom = n as u8,
-                    "indexMaxZoom" => options.index_max_zoom = n as u8,
-                    _ => options.index_max_points = n as usize,
-                }
-            }
+    if let Some(v) = json.get("maxzoom")
+        && let Some(n) = cx.number(v, &at("maxzoom"))
+    {
+        if !(0.0..=24.0).contains(&n) || n.fract() != 0.0 {
+            cx.error(at("maxzoom"), v.span, "expected an integer in 0..=24");
+        } else {
+            options.max_zoom = n as u8;
         }
     }
     for (key, target) in [
@@ -536,7 +529,7 @@ mod tests {
         };
         assert_eq!(s.options, orb_tile::geojson::Options::default());
         assert!(matches!(&s.data, GeoJsonData::Inline(features) if features.is_empty()));
-        let style = parse(r#"{"type":"geojson","data":"data.json","maxzoom":12,"tolerance":1.25,"buffer":32,"lineMetrics":true,"generateId":true,"indexMaxZoom":3,"indexMaxPoints":17}"#).unwrap();
+        let style = parse(r#"{"type":"geojson","data":"data.json","maxzoom":12,"tolerance":1.25,"buffer":32,"lineMetrics":true,"generateId":true}"#).unwrap();
         let SourceKind::GeoJson(s) = &style.sources[0].kind else {
             panic!()
         };
@@ -546,8 +539,6 @@ mod tests {
         assert_eq!(s.options.buffer, 512.0);
         assert_eq!(s.options.extent, 8192);
         assert!(s.options.line_metrics && s.options.generate_id);
-        assert_eq!(s.options.index_max_zoom, 3);
-        assert_eq!(s.options.index_max_points, 17);
         let style = parse(r#"{"type":"geojson","data":"data.json","promoteId":{"_geojsonTileLayer":"name"},"cluster":true}"#).unwrap();
         let SourceKind::GeoJson(s) = &style.sources[0].kind else {
             panic!()

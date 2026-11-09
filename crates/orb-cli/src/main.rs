@@ -21,7 +21,8 @@
 //!
 //! Both commands take `--state-dir <dir>`, the runtime's state directory
 //! (compiled pipelines where the platform keeps none, the HTTP cache), so a
-//! later run starts warm.
+//! later run starts warm, and `--previews <names|all>`, the comma-separated
+//! previews (style inputs beyond the approved spec) the style may use.
 
 #![forbid(unsafe_code)]
 
@@ -30,8 +31,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use orb_api::{
-    CameraState, Geodetic, Image, Map, MapOptions, Runtime, RuntimeOptions, TileMatrixSet,
-    TileRequest,
+    CameraState, Geodetic, Image, Map, MapOptions, Preview, Previews, Runtime, RuntimeOptions,
+    TileMatrixSet, TileRequest,
 };
 use orb_crs::TileIndex;
 
@@ -127,6 +128,20 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
+/// `--previews`: the previews to enable, comma-separated names or `all`.
+fn previews(args: &Args) -> Result<Previews, String> {
+    let Some(names) = args.get(&["--previews"]) else {
+        return Ok(Previews::NONE);
+    };
+    match Previews::from_names(names.split(',').map(str::trim)) {
+        (previews, unknown) if unknown.is_empty() => Ok(previews),
+        (_, unknown) => Err(format!(
+            "unknown previews {unknown:?}; known: all, {}",
+            Preview::ALL.map(Preview::name).join(", ")
+        )),
+    }
+}
+
 /// A URL as given, or a path as a `file://` URL.
 fn style_url(style: &str) -> Result<String, String> {
     if style.contains("://") {
@@ -168,6 +183,7 @@ fn render(
         runtime,
         MapOptions {
             camera,
+            previews: previews(args)?,
             ..MapOptions::default()
         },
     );
@@ -217,7 +233,13 @@ fn tiles(
         return Err("--still draws WebMercatorQuad tiles".into());
     }
     let times = args.has("--times");
-    let mut map = Map::new(runtime, MapOptions::default());
+    let mut map = Map::new(
+        runtime,
+        MapOptions {
+            previews: previews(args)?,
+            ..MapOptions::default()
+        },
+    );
     map.load_style_url(style);
     let started = Instant::now();
     for (name, index) in &list {

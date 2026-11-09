@@ -365,7 +365,12 @@ fn global_state_resolves_at_parse() {
     assert_eq!(l.get(LINE_WIDTH).evaluate_state(0.0, &[], None), 2.0);
     let state = [("w".to_string(), Value::Number(5.0))];
     assert_eq!(l.get(LINE_WIDTH).evaluate_state(0.0, &state, None), 5.0);
-    let s = parse_with_state(text, &[("c".into(), Value::String("blue".into()))]).unwrap();
+    let s = parse_with(
+        text,
+        Previews::NONE,
+        &[("c".into(), Value::String("blue".into()))],
+    )
+    .unwrap();
     assert_eq!(
         line(&s).get(LINE_COLOR).constant(),
         Some(Color::parse("blue").unwrap())
@@ -520,9 +525,13 @@ fn glyphs_urls_need_their_tokens() {
 #[test]
 fn projections_parse_to_globes() {
     let globe = |projection: &str| {
-        let style = parse(&format!(
-            r#"{{"version": 8, "projection": {projection}, "sources": {{}}, "layers": []}}"#
-        ))
+        let style = parse_with(
+            &format!(
+                r#"{{"version": 8, "projection": {projection}, "sources": {{}}, "layers": []}}"#
+            ),
+            Previews::ALL,
+            &[],
+        )
         .unwrap();
         (style.globe, style.warnings.len())
     };
@@ -597,7 +606,7 @@ fn projections_read_the_global_state() {
     assert_eq!(style.globe, Some(orb_crs::Globe::SPHERE));
     let state = vec![("kind".to_string(), Value::String("mercator".into()))];
     let json = orb_expr::json::parse(r#"{"type": ["global-state", "kind"]}"#).unwrap();
-    assert_eq!(parse_projection(&json, &state).0, None);
+    assert_eq!(parse_projection(&json, &state, Previews::NONE).0, None);
 }
 
 /// style-spec's `layer-blend` validation test: every mode of both
@@ -655,7 +664,7 @@ fn layer_blends_parse() {
 
 #[test]
 fn parses_projection_and_source_matrix_sets() {
-    let style = crate::v8::parse(
+    let style = crate::v8::parse_with(
         r#"{
             "version": 8,
             "projection": {"type": "EPSG:3413"},
@@ -673,6 +682,8 @@ fn parses_projection_and_source_matrix_sets() {
             },
             "layers": []
         }"#,
+        Previews::ALL,
+        &[],
     )
     .unwrap();
     assert!(style.warnings.is_empty(), "{:?}", style.warnings);
@@ -694,9 +705,13 @@ fn parses_projection_and_source_matrix_sets() {
 #[test]
 fn world_planes_adapt_to_mercator() {
     let style = |projection: &str| {
-        crate::v8::parse(&format!(
-            r#"{{"version": 8, "projection": {projection}, "sources": {{}}, "layers": []}}"#
-        ))
+        crate::v8::parse_with(
+            &format!(
+                r#"{{"version": 8, "projection": {projection}, "sources": {{}}, "layers": []}}"#
+            ),
+            Previews::ALL,
+            &[],
+        )
         .unwrap()
     };
     let equal_earth = orb_crs::Projection::from_descriptor("equal-earth").unwrap();
@@ -726,11 +741,75 @@ fn world_planes_adapt_to_mercator() {
     let reversed = style(r#"{"type": "equal-earth", "transition": [9, 8]}"#);
     assert_eq!(reversed.warnings.len(), 1);
     assert_eq!(reversed.globe.unwrap().handover, Some([6.0, 7.0]));
-    let bad_tms = crate::v8::parse(
+    let bad_tms = crate::v8::parse_with(
         r#"{"version": 8, "sources": {"a": {"type": "raster", "tiles": ["a"],
             "tileMatrixSet": "GNOSISGlobalGrid"}}, "layers": []}"#,
+        Previews::ALL,
+        &[],
     )
     .unwrap_err();
     let paths: Vec<_> = bad_tms.errors.iter().map(|e| e.path.as_str()).collect();
     assert_eq!(paths, ["sources.a.tileMatrixSet"]);
+}
+
+/// With their previews off, inputs beyond the approved spec warn and fall
+/// back to the default: Web Mercator, and sources in `WebMercatorQuad`.
+#[test]
+fn previews_gate_projections_and_tile_matrix_sets() {
+    let style = |previews: Previews, projection: &str| {
+        crate::v8::parse_with(
+            &format!(
+                r#"{{"version": 8, "projection": {projection}, "sources": {{"a": {{"type": "raster",
+                    "tiles": ["a"], "tileMatrixSet": "UPSArcticWGS84Quad"}}}}, "layers": []}}"#
+            ),
+            previews,
+            &[],
+        )
+        .unwrap()
+    };
+    let paths = |style: &Style| -> Vec<String> {
+        let mut paths: Vec<String> = style.warnings.iter().map(|w| w.path.clone()).collect();
+        paths.sort();
+        paths
+    };
+    for (projection, preview) in [
+        (r#"{"type": "equal-earth"}"#, Preview::EqualEarth),
+        (r#"{"type": "natural-earth"}"#, Preview::Equirectangular),
+        (r#"{"type": "equirectangular"}"#, Preview::Equirectangular),
+        (
+            r#"{"type": ["interpolate", ["linear"], ["zoom"], 5, "equal-earth", 7, "mercator"]}"#,
+            Preview::EqualEarth,
+        ),
+        (r#"{"type": "EPSG:3413"}"#, Preview::Crs),
+    ] {
+        let off = style(Previews::NONE, projection);
+        assert_eq!((off.projection, off.globe), (None, None), "{projection}");
+        assert_eq!(
+            paths(&off),
+            ["projection.type", "sources.a.tileMatrixSet"],
+            "{projection}"
+        );
+        let warning = off.warnings.iter().find(|w| w.path == "projection.type");
+        assert!(warning.unwrap().message.contains(preview.name()));
+        assert!(off.tile_matrix_sets().is_empty());
+        let on = style(Previews::NONE.with(preview).with(Preview::Crs), projection);
+        assert!(on.warnings.is_empty(), "{projection}: {:?}", on.warnings);
+        assert!(
+            on.projection.is_some() || on.globe.is_some(),
+            "{projection}"
+        );
+    }
+    // A spec projection keeps working; the transition and parameters are
+    // ignored without their previews.
+    let off = style(
+        Previews::NONE.with(Preview::Crs),
+        r#"{"type": "globe", "transition": false}"#,
+    );
+    assert_eq!(off.globe, Some(orb_crs::Globe::V8));
+    assert_eq!(paths(&off), ["projection.transition"]);
+    let off = style(
+        Previews::NONE.with(Preview::EqualEarth),
+        r#"{"type": "equal-earth", "lon_0": 150}"#,
+    );
+    assert_eq!(paths(&off), ["projection.lon_0", "sources.a.tileMatrixSet"]);
 }

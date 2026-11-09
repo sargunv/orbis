@@ -295,6 +295,8 @@ async function load(next, { camera }) {
       style: sceneUrl(next.scene, next.format),
       camera,
       constraints: next.scene.constraints,
+      // The demo shows what Orbis can do beyond the spec too.
+      previews: "all",
     });
   } catch (e) {
     app.dataset.map = "error";

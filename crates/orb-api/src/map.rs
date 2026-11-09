@@ -47,6 +47,10 @@ pub struct MapOptions {
     /// tiles of different detail; translucent terrain shows them (GL JS
     /// `terrainSkirtLength`).
     pub terrain_skirts: bool,
+    /// The previews its styles may use: style inputs beyond the approved
+    /// v8 spec, which warn and fall back to their defaults while off. None
+    /// by default.
+    pub previews: crate::Previews,
 }
 
 impl Default for MapOptions {
@@ -59,6 +63,7 @@ impl Default for MapOptions {
             local_ideograph_font_family: Some("sans-serif".into()),
             antialias: true,
             terrain_skirts: true,
+            previews: crate::Previews::NONE,
         }
     }
 }
@@ -203,6 +208,7 @@ impl Map {
         map.set_local_ideograph_font_family(options.local_ideograph_font_family.as_deref());
         map.set_antialias_3d(options.antialias);
         map.set_terrain_skirts(options.terrain_skirts);
+        map.set_previews(options.previews);
         Self {
             shared: runtime.shared.clone(),
             runtime: runtime.clone(),

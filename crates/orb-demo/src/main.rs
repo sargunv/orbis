@@ -22,8 +22,8 @@ use std::time::Instant;
 use glam::DVec2;
 use orb_api::{
     Button, CameraState, CameraTarget, Error, Event, FlyOptions, Geodetic, Input, Key, Map,
-    MapEvent, MapOptions, Modifiers, PointerKind, Runtime, RuntimeOptions, Target, TileMatrixSet,
-    WheelUnit,
+    MapEvent, MapOptions, Modifiers, PointerKind, Previews, Runtime, RuntimeOptions, Target,
+    TileMatrixSet, WheelUnit,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
@@ -233,6 +233,8 @@ impl State {
                 camera: camera(options),
                 // The opaque window has no page behind transparent pixels.
                 clear_color: [1.0; 4],
+                // The demo shows what Orbis can do beyond the spec too.
+                previews: Previews::ALL,
                 ..MapOptions::default()
             },
         );

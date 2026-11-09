@@ -73,6 +73,7 @@ pub use orb_render::{
 };
 pub use orb_source::endpoint::{HOST_TILES, HostTile};
 pub use orb_style::v8::{FeatureTarget, Op, StyleDoc, Transaction};
+pub use orb_style::{Preview, Previews};
 pub use placement::{InlinePlacement, PlaceDone, PlacementLane};
 pub use queries::QueryDone;
 pub use query::Hit;

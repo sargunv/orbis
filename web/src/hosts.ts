@@ -19,6 +19,7 @@ export interface CoreOptions {
   localIdeographFontFamily?: string | false;
   antialias?: boolean;
   terrainSkirts?: boolean;
+  previews?: readonly string[] | "all";
 }
 
 export interface HostCallbacks {

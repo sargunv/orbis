@@ -310,7 +310,7 @@ impl TileWorker {
             let diffs = update.source_diffs.iter().find(|(k, _)| k == key);
             let source = match update.source_json.iter().find(|(k, ..)| k == key) {
                 Some((_, id, json)) => Arc::new(
-                    orb_style::v8::parse_source(id, json)
+                    orb_style::v8::parse_source(id, json, update.previews)
                         .map_err(|d| d.to_string())?
                         .0,
                 ),
@@ -332,9 +332,15 @@ impl TileWorker {
         for (index, key) in update.layers.iter().enumerate() {
             let layer = match update.layer_json.iter().find(|(k, _)| k == key) {
                 Some((_, json)) => Arc::new(
-                    orb_style::v8::parse_layer(json, index, &sources, &update.state)
-                        .map_err(|d| d.to_string())?
-                        .0,
+                    orb_style::v8::parse_layer(
+                        json,
+                        index,
+                        &sources,
+                        &update.state,
+                        update.previews,
+                    )
+                    .map_err(|d| d.to_string())?
+                    .0,
                 ),
                 None => old
                     .and_then(|plan| {
@@ -362,6 +368,7 @@ impl TileWorker {
             globe: None,
             projection: None,
             state: Vec::new(),
+            previews: update.previews,
             sources,
             layers,
             warnings: Vec::new(),
@@ -815,6 +822,8 @@ pub struct StyleUpdate {
     /// job hosts apply them to the data they hold.
     pub source_diffs: Vec<(u32, Vec<Arc<Json>>)>,
     pub state: Vec<(String, Value<'static>)>,
+    /// The previews the style is parsed with.
+    pub previews: orb_style::Previews,
     /// The style's glyph PBF URL template.
     pub glyphs: Option<String>,
     /// The style's declared font files.
@@ -1126,6 +1135,7 @@ pub(crate) mod tests {
                 ),
             )],
             state: vec![("k".into(), Value::Number(2.0))],
+            previews: orb_style::Previews::ALL,
             glyphs: Some("test://glyphs/{fontstack}/{range}.pbf".into()),
             font_faces: vec![(
                 "Noto Sans".into(),

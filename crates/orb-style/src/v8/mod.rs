@@ -58,20 +58,24 @@ impl fmt::Display for Diagnostics {
 impl std::error::Error for Diagnostics {}
 
 /// Parses and validates a v8 style document, its `global-state` reads
-/// resolved to the root `state` defaults.
+/// resolved to the root `state` defaults, with no previews.
 pub fn parse(text: &str) -> Result<Style, Diagnostics> {
-    parse_with_state(text, &[])
+    parse_with(text, Previews::NONE, &[])
 }
 
-/// Parses a style whose global state is its root `state` defaults
-/// overridden by `overrides`: `global-state` reads fold to
+/// Parses a style with `previews` enabled, whose global state is its root
+/// `state` defaults overridden by `overrides`: `global-state` reads fold to
 /// those values, so they classify as constants where they are the only
 /// input.
-pub fn parse_with_state(
+pub fn parse_with(
     text: &str,
+    previews: Previews,
     overrides: &[(String, Value<'static>)],
 ) -> Result<Style, Diagnostics> {
-    let mut cx = Cx::default();
+    let mut cx = Cx {
+        previews,
+        ..Cx::default()
+    };
     let doc = match json::parse(text) {
         Ok(doc) => doc,
         Err(e) => {
@@ -222,6 +226,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         sources,
         layers,
         warnings: Vec::new(),
+        previews: cx.previews,
     })
 }
 
@@ -269,9 +274,11 @@ pub fn parse_layer(
     index: usize,
     sources: &[std::sync::Arc<Source>],
     state: &[(String, Value<'static>)],
+    previews: Previews,
 ) -> Result<(Layer, Vec<Diagnostic>), Diagnostics> {
     let mut cx = Cx {
         state: state.to_vec(),
+        previews,
         ..Cx::default()
     };
     let layer = layer::parse_layer(&mut cx, json, index, sources, &mut HashSet::new());
@@ -285,9 +292,11 @@ pub fn parse_layer(
 pub(crate) fn parse_sky(
     json: &Json,
     state: &[(String, Value<'static>)],
+    previews: Previews,
 ) -> Result<(Atmosphere, Vec<Diagnostic>), Diagnostics> {
     let mut cx = Cx {
         state: state.to_vec(),
+        previews,
         ..Cx::default()
     };
     let sky = sky::parse(&mut cx, json);
@@ -316,6 +325,7 @@ pub(crate) fn parse_terrain(
 pub(crate) fn parse_projection(
     json: &Json,
     state: &[(String, Value<'static>)],
+    previews: Previews,
 ) -> (
     Option<orb_crs::Projection>,
     Option<orb_crs::Globe>,
@@ -323,6 +333,7 @@ pub(crate) fn parse_projection(
 ) {
     let mut cx = Cx {
         state: state.to_vec(),
+        previews,
         ..Cx::default()
     };
     let (plane, globe) = parse_surface(&mut cx, json);
@@ -332,16 +343,18 @@ pub(crate) fn parse_projection(
 /// v8 `projection`, returning the plane the map draws on and the low-zoom
 /// surface its tiles draw on. Its `type` is `mercator`, `globe` (GL JS's
 /// interpolation from a vertical perspective through zoom 11 to Mercator
-/// from zoom 12), `vertical-perspective`, a low-zoom plane
-/// (style-spec#1865: `equal-earth`, `natural-earth`, `equirectangular`,
-/// handing over to Mercator between zooms 6 and 7), GL JS's zoom
-/// interpolation from one of them to `mercator`, or a coordinate reference
-/// system `orb_crs` registers (`EPSG:3413`, or a parametric kind such as
+/// from zoom 12), `vertical-perspective`, or GL JS's zoom interpolation
+/// from one of them to `mercator`. Previews add more: a low-zoom plane
+/// (`equal-earth`, style-spec#1865; `natural-earth` and `equirectangular`,
+/// style-spec#1623), handing over to Mercator between zooms 6 and 7, and
+/// the zoom interpolation from one of them; a coordinate reference system
+/// `orb_crs` registers (`EPSG:3413`, or a parametric kind such as
 /// `polar-stereographic` with PROJ-named numeric parameters beside the
-/// `type`), which is the plane itself. style-spec#1866's `transition`,
-/// `[start, end]` or `false`, replaces the zooms it hands over between; a
-/// CRS with a `transition` is a low-zoom plane over Web Mercator. Others
-/// warn and stay Web Mercator.
+/// `type`), which is the plane itself; and style-spec#1866's `transition`,
+/// `[start, end]` or `false`, replacing the zooms it hands over between
+/// (a CRS with a `transition` is a low-zoom plane over Web Mercator).
+/// Others, and inputs of previews that are off, warn and stay Web
+/// Mercator.
 fn parse_surface(
     cx: &mut Cx,
     json: &Json,
@@ -354,31 +367,45 @@ fn parse_surface(
         cx.warn(path, ty.span, format!("{message}; drawing Web Mercator"));
         (None, None)
     };
-    const SUPPORTED: &str = "only \"mercator\", \"globe\", \"vertical-perspective\", \"equal-earth\", \"natural-earth\", \"equirectangular\", zoom interpolations from the last four to \"mercator\" and registered coordinate reference systems are supported";
+    const SUPPORTED: &str = "only \"mercator\", \"globe\", \"vertical-perspective\" and zoom interpolations from the last to \"mercator\" are supported, with previews for more";
     // PROJ-named parameters of a plane: `lon_0`, `lat_ts` and the like.
     let mut descriptor = orb_crs::Descriptor::default();
     for m in json.as_object().unwrap_or_default() {
+        let at = format!("projection.{}", m.key);
         match (m.key.as_str(), m.value.as_f64()) {
             ("type" | "transition", _) => {}
-            (key, Some(n)) => descriptor.params.push((key.to_string(), n)),
-            (key, None) => cx.warn(
-                format!("projection.{key}"),
-                m.value.span,
-                "expected a number",
-            ),
+            (key, Some(n)) => {
+                let what = format!("projection parameter \"{key}\"");
+                if cx.preview(Preview::Crs, at, m.key_span, what) {
+                    descriptor.params.push((key.to_string(), n));
+                }
+            }
+            (key, None) => cx.warn(at, m.value.span, format!("unknown property \"{key}\"")),
         }
     }
     let transition = json.get("transition").and_then(|t| {
+        let at = "projection.transition";
+        if !cx.preview(Preview::ProjectionTransition, at, t.span, "\"transition\"") {
+            return None;
+        }
         let parsed = parse_transition(t);
         if parsed.is_none() {
             cx.warn(
-                "projection.transition",
+                at,
                 t.span,
                 "expected [start, end] zooms with start < end, or false",
             );
         }
         parsed
     });
+    // The preview a type needs, if it is beyond the spec: a world plane's,
+    // or a coordinate reference system's.
+    let needs = |kind: &str| match kind {
+        "mercator" | "globe" | "vertical-perspective" => None,
+        "equal-earth" => Some(Preview::EqualEarth),
+        "natural-earth" | "equirectangular" => Some(Preview::Equirectangular),
+        _ => Some(Preview::Crs),
+    };
     // A type from the global state: `["global-state", name]`.
     let from_state = ty.as_array().and_then(|items| match items {
         [op, name] if op.as_str() == Some("global-state") => {
@@ -392,6 +419,11 @@ fn parse_surface(
     });
     let (low, handover) = if let Some(name) = from_state.as_deref().or(ty.as_str()) {
         if name == "mercator" {
+            return (None, None);
+        }
+        if let Some(preview) = needs(name)
+            && !cx.preview(preview, path, ty.span, format!("projection \"{name}\""))
+        {
             return (None, None);
         }
         descriptor.kind = name.to_string();
@@ -431,8 +463,15 @@ fn parse_surface(
             .get(2)
             .and_then(Json::as_array)
             .is_some_and(|a| a.len() == 1 && a[0].as_str() == Some("zoom"));
-        let low = text(4)
-            .filter(|&t| t != "globe")
+        let low_kind = text(4).filter(|&t| t != "globe" && t != "mercator");
+        if let Some(kind) = low_kind
+            && let Some(preview) = needs(kind)
+            && low_surface(&orb_crs::Descriptor::named(kind)).is_some()
+            && !cx.preview(preview, path, ty.span, format!("projection \"{kind}\""))
+        {
+            return (None, None);
+        }
+        let low = low_kind
             .and_then(|t| low_surface(&orb_crs::Descriptor::named(t)))
             .and_then(Result::ok);
         match (text(0), linear, zoom, number(3), low, number(5), text(6)) {
@@ -492,8 +531,15 @@ pub(crate) fn parse_transition(json: &Json) -> Option<Option<[f64; 2]>> {
 }
 
 /// Parses one source, `id`, of a style. Returns it and its warnings.
-pub fn parse_source(id: &str, json: &Json) -> Result<(Source, Vec<Diagnostic>), Diagnostics> {
-    let mut cx = Cx::default();
+pub fn parse_source(
+    id: &str,
+    json: &Json,
+    previews: Previews,
+) -> Result<(Source, Vec<Diagnostic>), Diagnostics> {
+    let mut cx = Cx {
+        previews,
+        ..Cx::default()
+    };
     let source = source::parse_source(&mut cx, id, json, &format!("sources.{id}"));
     match source {
         Some(source) if cx.diagnostics.errors.is_empty() => Ok((source, cx.diagnostics.warnings)),
@@ -507,6 +553,8 @@ pub(crate) struct Cx {
     diagnostics: Diagnostics,
     /// The global state `global-state` reads resolve to.
     state: Vec<(String, Value<'static>)>,
+    /// The previews whose inputs are accepted; others warn.
+    pub(crate) previews: Previews,
 }
 
 impl Cx {
@@ -521,6 +569,26 @@ impl Cx {
             span,
             message: message.into(),
         });
+    }
+
+    /// Whether `preview` is on; when it is off, warns that `what`, at
+    /// `path`, needs it, so the caller falls back to the default.
+    pub(crate) fn preview(
+        &mut self,
+        preview: Preview,
+        path: impl Into<String>,
+        span: Span,
+        what: impl fmt::Display,
+    ) -> bool {
+        let on = self.previews.contains(preview);
+        if !on {
+            self.warn(
+                path,
+                span,
+                format!("{what} needs the \"{preview}\" preview, which is off; ignored"),
+            );
+        }
+        on
     }
 
     pub(crate) fn warn(&mut self, path: impl Into<String>, span: Span, message: impl Into<String>) {

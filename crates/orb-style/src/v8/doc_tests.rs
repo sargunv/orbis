@@ -331,7 +331,7 @@ fn terrain_switches_without_a_reload_and_follows_its_source() {
 /// over the same plane doesn't.
 #[test]
 fn planes_and_tile_matrix_sets_restyle() {
-    let mut doc = doc();
+    let mut doc = StyleDoc::parse_with(STYLE, Previews::ALL).unwrap();
     let patch = commands(&mut doc, r#"[["setProjection", {"type": "globe"}]]"#);
     assert!(!patch.changes.contains(&Change::Restyle));
     assert!(patch.changes.contains(&Change::Projection));

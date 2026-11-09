@@ -622,6 +622,7 @@ mod tests {
         let source = orb_style::v8::parse_source(
             "s",
             &json::parse(r#"{"type": "raster", "tiles": ["https://x/{z}/{x}/{y}.png"], "tileSize": 256, "maxzoom": 3}"#).unwrap(),
+            orb_style::Previews::NONE,
         )
         .unwrap()
         .0;

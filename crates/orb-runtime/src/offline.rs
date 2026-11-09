@@ -618,7 +618,9 @@ impl Job {
             Then::Style => match std::str::from_utf8(bytes)
                 .map_err(|e| e.to_string())
                 .and_then(|text| {
-                    orb_style::v8::parse(text)
+                    // What a style could use is fetched, whatever previews
+                    // the maps that read the region enable.
+                    orb_style::v8::parse_with(text, orb_style::Previews::ALL, &[])
                         .map_err(|e| e.to_string())
                         .map(|s| (s, text))
                 }) {

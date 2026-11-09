@@ -99,9 +99,14 @@ fn layer_id(json: &Json) -> Option<&str> {
 }
 
 impl StyleDoc {
-    /// Parses a v8 document.
+    /// Parses a v8 document with no previews.
     pub fn parse(text: &str) -> Result<Self, Diagnostics> {
-        let style = crate::v8::parse(text)?;
+        Self::parse_with(text, Previews::NONE)
+    }
+
+    /// Parses a v8 document with `previews` enabled; its edits keep them.
+    pub fn parse_with(text: &str, previews: Previews) -> Result<Self, Diagnostics> {
+        let style = crate::v8::parse_with(text, previews, &[])?;
         let root = json::parse(text).map_err(|e| error(e.to_string()))?;
         Ok(Self::from_parts(style, &root))
     }

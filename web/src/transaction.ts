@@ -22,7 +22,7 @@ export interface Transaction {
   setFeatureState(feature: FeatureTarget, state: Record<string, unknown>): Transaction;
   removeFeatureState(feature: Partial<FeatureTarget>, key?: string): Transaction;
   setStyle(style: object): Transaction;
-  /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"`, `"mercator"`, `"equal-earth"`, `"natural-earth"`, `"equirectangular"` or a coordinate reference system such as `"EPSG:3413"`, with an optional `transition: [start, end] | false`. Another CRS plane reloads every tile. */
+  /** v8 `projection`: `{type: "globe"}`, `"vertical-perspective"` or `"mercator"`; with previews, `"equal-earth"`, `"natural-earth"`, `"equirectangular"` or a coordinate reference system such as `"EPSG:3413"`, and `transition: [start, end] | false`. Another CRS plane reloads every tile. */
   setProjection(projection: object): Transaction;
   /** v8 `sky`, or `null` for none. */
   setSky(sky: object | null): Transaction;

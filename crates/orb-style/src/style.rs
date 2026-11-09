@@ -44,6 +44,9 @@ pub struct Style {
     pub layers: Vec<std::sync::Arc<Layer>>,
     /// What parsed but isn't supported or rendered yet.
     pub warnings: Vec<Diagnostic>,
+    /// The previews it was parsed with: inputs beyond the approved spec
+    /// that it may use.
+    pub previews: crate::Previews,
 }
 impl Style {
     pub fn source(&self, id: &str) -> Option<&Source> {

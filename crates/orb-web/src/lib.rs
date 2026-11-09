@@ -234,7 +234,8 @@ impl From<&orb_runtime::Memory> for FrameMemory {
 /// [`source_frame`](OrbisMap::source_frame) hands in. `options` holds GL
 /// JS's map options by name, each optional: `fadeDuration`,
 /// `crossSourceCollisions`, `localIdeographFontFamily` (`false` draws the
-/// style's glyphs), `antialias` and `terrainSkirts`.
+/// style's glyphs), `antialias` and `terrainSkirts`; and Orbis's
+/// `previews`, an array of preview names or `"all"`.
 #[wasm_bindgen(js_name = createMap)]
 #[allow(clippy::too_many_arguments)]
 pub async fn create_map(
@@ -292,6 +293,21 @@ pub async fn create_map(
     }
     if let Some(skirts) = option("terrainSkirts").and_then(|v| v.as_bool()) {
         map.set_terrain_skirts(skirts);
+    }
+    if let Some(previews) = option("previews").filter(|v| !v.is_undefined()) {
+        let names: Vec<String> = match previews.as_string() {
+            Some(name) => vec![name],
+            None => js_sys::Array::from(&previews)
+                .iter()
+                .filter_map(|v| v.as_string())
+                .collect(),
+        };
+        let (previews, unknown) =
+            orb_runtime::Previews::from_names(names.iter().map(String::as_str));
+        if !unknown.is_empty() {
+            web_sys::console::warn_1(&format!("orbis: unknown previews {unknown:?}").into());
+        }
+        map.set_previews(previews);
     }
     // The style loads while the GPU device is made.
     map.load_style_url(&style_url);

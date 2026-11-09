@@ -389,6 +389,8 @@ pub struct Map {
     pub(crate) terrain_seen: u64,
     /// Terrain tiles hang skirts ([`Map::set_terrain_skirts`]).
     pub(crate) terrain_skirts: bool,
+    /// The previews styles parse with ([`Map::set_previews`]).
+    previews: orb_style::Previews,
     pub(crate) antialias_3d: bool,
     /// The plane the map draws on and its sources' tile matrix sets: the
     /// style's, planned for its tiles.
@@ -501,6 +503,7 @@ pub(crate) fn full_update(
             })
             .collect(),
         state: doc.global_state(),
+        previews: doc.style().previews,
         glyphs: doc.style().glyphs.clone(),
         font_faces: doc.style().font_faces.clone(),
         local_ideographs,
@@ -574,6 +577,7 @@ impl Map {
             renderer: None,
             retired: Retired::default(),
             terrain_skirts: true,
+            previews: orb_style::Previews::NONE,
             antialias_3d: true,
             nodes_stale: false,
             capacity: SceneCapacity::default(),
@@ -641,6 +645,13 @@ impl Map {
         );
         // Without a style, no bucket is on the old lane.
         self.labels.lane = lane;
+    }
+
+    /// The previews, style inputs beyond the approved v8 spec, that styles
+    /// set after this may use; none by default. With a preview off, its
+    /// inputs warn and fall back to their defaults.
+    pub fn set_previews(&mut self, previews: orb_style::Previews) {
+        self.previews = previews;
     }
 
     /// Whether terrain tiles hang skirts below their edges, hiding the
@@ -831,7 +842,7 @@ impl Map {
         // A fetched style's relative URLs are relative to it.
         let resolved = base.map(|base| orb_source::endpoint::resolve_style_urls(json, base));
         let text = resolved.as_deref().unwrap_or(json);
-        let doc = StyleDoc::parse(text).map_err(|d| d.to_string())?;
+        let doc = StyleDoc::parse_with(text, self.previews).map_err(|d| d.to_string())?;
         // A style URL still loading is superseded, and the old style's
         // paint transitions with it.
         self.style_request += 1;
@@ -2366,6 +2377,7 @@ mod tests {
             wake: Arc::new(|| {}),
         };
         let mut map = Map::new(services, None);
+        map.set_previews(orb_style::Previews::ALL);
         map.load_style_url("https://example.com/maps/polar.json");
         let (_, done) = fetch.pending.lock().unwrap().pop().unwrap();
         done(Ok(br#"{"version": 8, "projection": {"type": "EPSG:3413"},
