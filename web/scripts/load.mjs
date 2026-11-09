@@ -20,43 +20,39 @@
 // `--cache=<cache-style.db>` loads MapLibre Native's five real-world render
 // tests instead (chicago, nepal, norway, sanfrancisco, uruguay), 512×512 at
 // their cameras, served offline from that render-test cache (mln-rs keeps
-// it at tools/render-test/testdata/metrics/); what the cache lacks is a 404
+// it at tools/render-test/testdata/metrics/; `--cache=default` finds it in
+// the checkout `cargo xtask h2h` builds); what the cache lacks is a 404
 // for every engine alike. `--settings=normal,cpu4x,cores2` repeats each
 // load with the page's thread throttled 4× over CDP (`cpu4x`) and with the
 // page told it has 2 cores (`cores2`: `navigator.hardwareConcurrency`,
 // which sizes each engine's worker pool; the machine's cores stay).
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+//
+// `--scene=terrain` loads the demo's Terrain entry (live OpenFreeMap and
+// Mapterhorn tiles) and `--scene=globe` Liberty on the globe under the
+// demo's sky (`--style`, by default the live Liberty), each at three views,
+// in Orbis and GL JS by default. `--engines` takes `native` too: MapLibre
+// Native's browser build, as the demo's comparison loads it.
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inflateSync } from "node:zlib";
 import { launchChromium, serveDemo } from "./serve.mjs";
+import { extractCache, median, MLNRS, mlnrs, realWorldCache, VIEWS as CAMERAS } from "./views.mjs";
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const cache = option("cache");
-const style = option("style");
-if (!style && !cache) {
-  throw new Error("--style=<url> is required, e.g. a `cargo xtask h2h mirror`'s /styles/liberty, or --cache=<cache-style.db>");
+const scene = option("scene");
+if (scene && !["terrain", "globe"].includes(scene)) throw new Error("--scene takes terrain or globe");
+const cache = option("cache") === "default" ? realWorldCache() : option("cache");
+let style = option("style", scene === "globe" ? "https://tiles.openfreemap.org/styles/liberty" : undefined);
+if (!style && !cache && !scene) {
+  throw new Error("--style=<url> is required, e.g. a `cargo xtask h2h mirror`'s /styles/liberty, or --cache=<cache-style.db>, or --scene");
 }
 const runs = Number(option("runs", "5"));
-const engines = option("engines", "orbis,gljs,mlnrs").split(",");
+const engines = option("engines", scene ? "orbis,gljs" : "orbis,gljs,mlnrs").split(",");
 // Other builds of web/dist, as `--builds=before=<dir>`, run as engine
 // `orbis@before` beside this tree's `orbis`.
 const builds = Object.fromEntries(option("builds", "").split(",").filter(Boolean).map((b) => b.split("=")));
-// mln-rs's liberty-compare cameras as lon,lat,zoom,bearing,pitch, or the
-// real-world render tests' (their `setCenter` and `setZoom`).
-const VIEWS = cache ? {
-  chicago: "-87.6942445,41.8703965,13,0,0", nepal: "85.48805250000001,28.115547,13,0,0",
-  norway: "10.8181,64.863174,12,0,0", sanfrancisco: "-122.448635,37.7669995,15,0,0",
-  uruguay: "-56.509552,-32.865788,9,0,0",
-} : {
-  ams13: "4.89,52.37,13,0,0", paris14p60: "2.35,48.857,14,90,60",
-  world2: "10,30,1.5,0,0", tokyo16: "139.70,35.69,16,0,0",
-};
+const VIEWS = CAMERAS[cache ? "realWorld" : scene ?? "liberty"];
 const views = option("views", Object.keys(VIEWS).join(",")).split(",");
 const SETTINGS = {
   normal: async () => {},
@@ -68,67 +64,6 @@ for (const s of settings) if (!SETTINGS[s]) throw new Error(`--settings: no ${s}
 const viewport = cache ? { width: 512, height: 512 } : { width: 1024, height: 768 };
 const throttle = option("throttle") && (Number(option("throttle")) * 1e6) / 8;
 const out = option("out", fileURLToPath(new URL("../../target/h2h/web/", import.meta.url)));
-const MLNRS = {
-  name: "@bartlwrs/mln-rs@0.1.0",
-  tarball: "https://registry.npmjs.org/@bartlwrs/mln-rs/-/mln-rs-0.1.0.tgz",
-  integrity: "sha512-6rLjFbfTOpqYJz7HC4r4Ci3IrF34WuRjFZxHRW4+2vyLatA6VHMGcVYw3bV8SffvfH6+zplemkOCudP380ydAA==",
-};
-
-/** The h2h cache, as `cargo xtask h2h` finds it. */
-function cacheDir() {
-  if (process.env.ORB_H2H_CACHE) return process.env.ORB_H2H_CACHE;
-  if (process.platform === "darwin") return join(homedir(), "Library/Caches/orbis-h2h");
-  return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "orbis-h2h");
-}
-
-/** mln-rs's web build, unpacked into the cache: its `dist/` directory. */
-async function mlnrs() {
-  const dir = join(cacheDir(), "mln-rs-web-0.1.0");
-  const dist = join(dir, "package/dist/");
-  if (existsSync(join(dist, "index.js"))) return dist;
-  const bytes = Buffer.from(await (await fetch(MLNRS.tarball)).arrayBuffer());
-  const integrity = "sha512-" + createHash("sha512").update(bytes).digest("base64");
-  if (integrity !== MLNRS.integrity) throw new Error(`${MLNRS.tarball}: integrity ${integrity}, not ${MLNRS.integrity}`);
-  const partial = `${dir}.partial-${process.pid}`;
-  rmSync(partial, { recursive: true, force: true });
-  mkdirSync(partial, { recursive: true });
-  writeFileSync(join(partial, "package.tgz"), bytes);
-  execFileSync("tar", ["-xzf", join(partial, "package.tgz"), "-C", partial]);
-  rmSync(dir, { recursive: true, force: true });
-  execFileSync("mv", [partial, dir]);
-  return dist;
-}
-
-const median = (v) => { const s = [...v].sort((a, b) => a - b); return s.length ? s[Math.floor((s.length - 1) / 2)] : NaN; };
-
-/**
- * The cache's real-world styles, their tiles, sprites and glyphs as files
- * under `dir`, the styles' `local://` and `mapbox://` URLs pointing at `base`.
- */
-function extractCache(db, dir, base) {
-  const cached = new DatabaseSync(db, { readOnly: true });
-  const bytes = (data, compressed) => (compressed ? inflateSync(data) : Buffer.from(data));
-  const write = (path, data) => {
-    mkdirSync(dirname(join(dir, path)), { recursive: true });
-    writeFileSync(join(dir, path), data);
-  };
-  for (const { url, data, compressed } of cached.prepare("SELECT url, data, compressed FROM resources").all()) {
-    const style = url.match(/^http:\/\/styles\/(.*\.json)$/)?.[1];
-    const asset = url.match(/^mapbox:\/\/((?:sprites|fonts)\/.*)$/)?.[1];
-    if (style) {
-      const doc = bytes(data, compressed).toString().replaceAll("local://", base).replaceAll("mapbox://", base);
-      write(`styles/${style}`, doc);
-    } else if (asset) {
-      write(decodeURIComponent(asset), bytes(data, compressed));
-    }
-  }
-  const tiles = cached.prepare("SELECT url_template, z, x, y, data, compressed FROM tiles WHERE url_template LIKE 'http://mvt-fixtures/%'");
-  for (const { url_template, z, x, y, data, compressed } of tiles.all()) {
-    const path = url_template.slice("http://".length).replace("{z}", z).replace("{x}", x).replace("{y}", y);
-    write(path, bytes(data, compressed));
-  }
-  cached.close();
-}
 
 mkdirSync(out, { recursive: true });
 const extracted = cache ? join(out, "real-world/") : undefined;
@@ -137,9 +72,11 @@ const mounts = {
   ...(extracted ? { "real-world/": extracted } : {}),
 };
 const server = await serveDemo({ isolated: true, mounts, builds, throttle, unthrottled: ["real-world/"] });
-if (extracted) {
-  rmSync(extracted, { recursive: true, force: true });
-  extractCache(cache, extracted, `${server.url}real-world/`);
+if (extracted) extractCache(cache, extracted, `${server.url}real-world/`);
+// The Terrain entry's style, by its name in the build.
+if (scene === "terrain") {
+  const dist = fileURLToPath(new URL("../dist/assets/", import.meta.url));
+  style = `${server.url}assets/${readdirSync(dist).find((f) => /^alps-.*\.json$/.test(f))}`;
 }
 const styleOf = (view) => (cache ? `${server.url}real-world/styles/${view}.json` : style);
 const browser = await launchChromium();
@@ -156,6 +93,7 @@ try {
         page.on("pageerror", (e) => errors.push(e.message));
         const query = new URLSearchParams({
           engine: engine.split("@")[0], style: styleOf(view), at: VIEWS[view], mlnrs: `${new URL(server.url).pathname}mlnrs/index.js`,
+          ...(scene === "globe" && { globe: "" }),
         });
         const row = { engine, view, setting, run };
         // When the style's fetch starts, on the epoch clock: from whichever
@@ -230,5 +168,6 @@ for (const [what, from] of [["the page's script", "script"], ["the style's fetch
   }
   lines.push("");
 }
-lines.push(`Medians [min–max]. ${throttle ? `Engine files compressed over a ${option("throttle")} Mbit/s link. ` : ""}Style ${cache ? `the real-world render tests, from ${cache}` : style}; mln-rs ${MLNRS.name}; GL JS ${gljs}. "Idle" is each engine's own event; GL JS's may not wait for symbol fades. Rows and screenshots: ${out}`);
+const about = cache ? `the real-world render tests, from ${cache}` : `${style}${scene === "globe" ? " on the globe" : ""}`;
+lines.push(`Medians [min–max]. ${throttle ? `Engine files compressed over a ${option("throttle")} Mbit/s link. ` : ""}Style ${about}; mln-rs ${MLNRS.name}; GL JS ${gljs}. "Idle" is each engine's own event (MapLibre Native's: its snapshot fully loaded, polled each frame); GL JS's may not wait for symbol fades. Rows and screenshots: ${out}`);
 console.log(lines.join("\n"));
