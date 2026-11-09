@@ -144,12 +144,21 @@ pub const FILL_OUTLINE_SHADER: Shader = Shader {
     compute: "",
 };
 
+/// Lines without dashes, a pattern or a gradient.
 pub const LINE_SHADER: Shader = Shader {
     label: "line",
     parts: &[TYPES, DRAW, PATTERN, LINE],
     vertex: "vs_line",
     fragment: "fs_line",
     compute: "",
+};
+
+/// Dashed, patterned and gradient lines, whose fragments read images.
+pub const LINE_STYLED_SHADER: Shader = Shader {
+    label: "line styled",
+    vertex: "vs_line_styled",
+    fragment: "fs_line_styled",
+    ..LINE_SHADER
 };
 
 pub const CIRCLE_SHADER: Shader = Shader {
@@ -320,6 +329,7 @@ pub const SHADERS: &[Shader] = &[
     FILL_SHADER,
     FILL_OUTLINE_SHADER,
     LINE_SHADER,
+    LINE_STYLED_SHADER,
     CIRCLE_SHADER,
     SYMBOL_SHADERS[0],
     SYMBOL_SHADERS[1],

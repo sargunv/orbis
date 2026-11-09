@@ -45,7 +45,8 @@ struct LineNode {
 const LINE_STRIDE: u32 = 5u;
 const EXTRUDE_SCALE: f32 = 1.0 / 63.0;
 
-struct LineOut {
+// A dashed, patterned or gradient line's varyings (`vs_line_styled`).
+struct StyledLineOut {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
     @location(1) normal: vec2<f32>,
@@ -55,17 +56,33 @@ struct LineOut {
     @location(4) blur: f32,
     @location(5) tile_pos: vec2<f32>,
     @location(6) @interpolate(flat) tile: u32,
-    @location(7) linesofar: f32,
-    @location(8) floorwidth: f32,
-    @location(9) @interpolate(flat) images: vec2<u32>,
-    @location(10) opacity: f32,
-    @location(11) progress: f32,
-    @location(12) @interpolate(flat) ramp: u32,
     // Where the placement owns the line: where it lands, but where it was
     // in a drape slot, so a translated line moves whole into it, bounded
     // by the slot where it lands (`tile_pos`).
-    @location(13) owner_pos: vec2<f32>,
-    @location(14) @interpolate(flat) clip: vec2<u32>,
+    @location(7) owner_pos: vec2<f32>,
+    @location(8) @interpolate(flat) clip: vec2<u32>,
+    @location(9) linesofar: f32,
+    @location(10) floorwidth: f32,
+    @location(11) @interpolate(flat) images: vec2<u32>,
+    @location(12) opacity: f32,
+    @location(13) progress: f32,
+    @location(14) @interpolate(flat) ramp: u32,
+};
+
+// A plain line's (`vs_line`): the styled line's first nine. Every vertex
+// output is stored and every fragment interpolates it: on a pitched city
+// view the styled ones cost plain lines a tenth of their main pass.
+struct LineOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) normal: vec2<f32>,
+    @location(2) width2: vec2<f32>,
+    @location(3) gamma_scale: f32,
+    @location(4) blur: f32,
+    @location(5) tile_pos: vec2<f32>,
+    @location(6) @interpolate(flat) tile: u32,
+    @location(7) owner_pos: vec2<f32>,
+    @location(8) @interpolate(flat) clip: vec2<u32>,
 };
 
 fn line_prop(row: u32, state: u32, bit: u32, constant: f32, tile_zoom: f32) -> f32 {
@@ -84,17 +101,27 @@ fn signed_byte(w: u32, shift: u32) -> f32 {
 
 @vertex
 fn vs_line(@builtin(vertex_index) index: u32) -> LineOut {
+    let s = pulled_line(index);
+    return LineOut(s.position, s.color, s.normal, s.width2, s.gamma_scale, s.blur, s.tile_pos, s.tile, s.owner_pos, s.clip);
+}
+
+@vertex
+fn vs_line_styled(@builtin(vertex_index) index: u32) -> StyledLineOut {
+    return pulled_line(index);
+}
+
+fn pulled_line(index: u32) -> StyledLineOut {
     var v: Pulled;
     if !pull_indexed(node.index, index, LINE_STRIDE, &v) {
-        var out: LineOut;
+        var out: StyledLineOut;
         out.position = discarded_vertex();
         return out;
     }
     return line_vertex(v);
 }
 
-fn line_vertex(v: Pulled) -> LineOut {
-    var out: LineOut;
+fn line_vertex(v: Pulled) -> StyledLineOut {
+    var out: StyledLineOut;
     let tile = tile_at(v.tile);
     let pos = unpack_i16x2(vertex_at(v.vertex));
     let data = vertex_at(v.vertex + 1u);
@@ -188,14 +215,27 @@ fn line_vertex(v: Pulled) -> LineOut {
     return out;
 }
 
+// A line's coverage of a fragment, antialiased across its edges.
+fn line_alpha(normal: vec2<f32>, width2: vec2<f32>, blur: f32, gamma_scale: f32) -> f32 {
+    let dist = length(normal) * width2.x;
+    let blur2 = (blur + 1.0 / frame.pixel_ratio) * gamma_scale;
+    return clamp(min(dist - (width2.y - blur2), width2.x - dist) / blur2, 0.0, 1.0);
+}
+
 @fragment
 fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
     if !clip_drawn(in.clip, in.tile, in.owner_pos, in.tile_pos) {
         discard;
     }
-    let dist = length(in.normal) * in.width2.x;
-    let blur2 = (in.blur + 1.0 / frame.pixel_ratio) * in.gamma_scale;
-    var alpha = clamp(min(dist - (in.width2.y - blur2), in.width2.x - dist) / blur2, 0.0, 1.0);
+    return in.color * line_alpha(in.normal, in.width2, in.blur, in.gamma_scale);
+}
+
+@fragment
+fn fs_line_styled(in: StyledLineOut) -> @location(0) vec4<f32> {
+    if !clip_drawn(in.clip, in.tile, in.owner_pos, in.tile_pos) {
+        discard;
+    }
+    var alpha = line_alpha(in.normal, in.width2, in.blur, in.gamma_scale);
     if node.pattern.enabled != 0u {
         let a = image_at(in.images.x);
         let b = image_at(in.images.y);

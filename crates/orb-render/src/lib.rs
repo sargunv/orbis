@@ -69,8 +69,8 @@ use std::collections::BTreeMap;
 
 use orb_hal::*;
 use orb_shaders::{
-    CIRCLE_SHADER, CULL_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, SYMBOL_SHADERS,
-    Shader,
+    CIRCLE_SHADER, CULL_SHADER, FILL_OUTLINE_SHADER, FILL_SHADER, LINE_SHADER, LINE_STYLED_SHADER,
+    SYMBOL_SHADERS, Shader,
 };
 use scene::Scene;
 
@@ -154,6 +154,9 @@ struct Node {
     separate_halo: bool,
     /// A symbol node places its labels along lines.
     along_line: bool,
+    /// A line node has dashes, a pattern or a gradient: it draws with the
+    /// styled line pipeline.
+    styled: bool,
     /// On terrain, the drape stack a draped node draws into, and the
     /// terrain layer that composites it.
     stack: Option<u8>,
@@ -179,6 +182,11 @@ impl Node {
     /// A hillshade the terrain pass lights: its stack holds its slopes.
     fn shades_on_terrain(&self) -> bool {
         self.shaded && self.stack.is_some()
+    }
+
+    /// Its paint pipeline's family, and whether it's the styled line's.
+    fn paint_kind(&self) -> (Family, bool) {
+        (self.family, self.styled)
     }
 
     /// What the cull sees of it.
@@ -781,6 +789,7 @@ impl Renderer {
                 image,
                 separate_halo: false,
                 along_line: false,
+                styled: false,
                 stack: None,
                 terrain_layer: None,
                 shaded: false,
@@ -1226,6 +1235,19 @@ impl Renderer {
                 std::mem::take(&mut self.bundles).release(gpu);
             }
         }
+        let styled = match paint {
+            NodePaint::Line(p) => p.dash.is_some() || p.gradient,
+            NodePaint::LinePattern(..) => true,
+            _ => false,
+        };
+        if entry.styled != styled {
+            entry.styled = styled;
+            if entry.drawn {
+                self.pipelines_stale = true;
+                self.invalidate_bundle(gpu);
+            }
+        }
+        let entry = &mut self.nodes[node as usize];
         if words != entry.written {
             let (node, stride) = (node as usize, (self.node_stride / 4) as usize);
             self.node_words[node * stride..][..words.len()].copy_from_slice(&words);
@@ -1333,7 +1355,7 @@ impl Renderer {
                 started = true;
                 draped |= node.stack.is_some();
             }
-            let family = node.family;
+            let (family, kind) = (node.family, node.paint_kind());
             if node.shades_on_terrain() {
                 // Its slopes into the drape atlas, which the terrain pass
                 // lights.
@@ -1362,7 +1384,7 @@ impl Renderer {
                         self.downsampler.make(gpu);
                     }
                 } else {
-                    drape.paint.make(gpu, drape_target, &layouts, family);
+                    drape.paint.make(gpu, drape_target, &layouts, kind);
                 }
                 continue;
             }
@@ -1382,7 +1404,8 @@ impl Renderer {
         let family = self.nodes[i].family;
         match family {
             Family::Fill | Family::FillOutline | Family::Line | Family::Circle => {
-                self.paint.make(gpu, self.target, &layouts, family);
+                let kind = self.nodes[i].paint_kind();
+                self.paint.make(gpu, self.target, &layouts, kind);
             }
             Family::SymbolIcon | Family::SymbolText => {
                 let layouts = [self.draw_layout, self.node_layout, self.symbol_pass_layout];
@@ -1423,7 +1446,7 @@ impl Renderer {
         {
             out.extend(
                 d.paint
-                    .get(node.family)
+                    .get(node.paint_kind())
                     .or_else(|| {
                         node.family
                             .is_image()
@@ -1452,7 +1475,7 @@ impl Renderer {
                     out.extend(self.images.prepare_pipelines());
                 }
             }
-            family => out.extend(self.paint.get(family).map(PipelineId::from)),
+            _ => out.extend(self.paint.get(node.paint_kind()).map(PipelineId::from)),
         }
     }
 
@@ -2110,9 +2133,9 @@ impl Renderer {
         let pipeline = match (drape, node.family.is_image()) {
             _ if node.shades_on_terrain() => self.images.slopes_pipeline(),
             (Some(d), true) => d.images.get(node.family),
-            (Some(d), false) => d.paint.get(node.family),
+            (Some(d), false) => d.paint.get(node.paint_kind()),
             (None, true) => self.images.pipeline(node.family),
-            (None, false) => self.paint.get(node.family),
+            (None, false) => self.paint.get(node.paint_kind()),
         };
         let Some(pipeline) = pipeline.filter(|&p| gpu.pipeline_ready(p.into())) else {
             return false;
@@ -2228,22 +2251,24 @@ fn shader_module(gpu: &mut dyn Gpu, shader: &Shader) -> ShaderModuleId {
 /// made for the family's first node.
 #[derive(Clone, Copy, Debug, Default)]
 struct PaintPipelines {
-    pipelines: [Option<RenderPipelineId>; 4],
+    pipelines: [Option<RenderPipelineId>; 5],
 }
 
 impl PaintPipelines {
-    fn index(family: Family) -> Option<usize> {
+    /// The slot of a node's [`Node::paint_kind`].
+    fn index((family, styled): (Family, bool)) -> Option<usize> {
         Some(match family {
             Family::Fill => 0,
             Family::FillOutline => 1,
+            Family::Line if styled => 4,
             Family::Line => 2,
             Family::Circle => 3,
             _ => return None,
         })
     }
 
-    fn get(&self, family: Family) -> Option<RenderPipelineId> {
-        self.pipelines[Self::index(family)?]
+    fn get(&self, kind: (Family, bool)) -> Option<RenderPipelineId> {
+        self.pipelines[Self::index(kind)?]
     }
 
     fn make(
@@ -2251,15 +2276,16 @@ impl PaintPipelines {
         gpu: &mut dyn Gpu,
         target: TargetFormat,
         layouts: &[BindGroupLayoutId],
-        family: Family,
+        kind: (Family, bool),
     ) {
-        let Some(index) = Self::index(family) else {
+        let Some(index) = Self::index(kind) else {
             return;
         };
-        let (shader, topology) = match family {
-            Family::Fill => (&FILL_SHADER, PrimitiveTopology::TriangleList),
-            Family::FillOutline => (&FILL_OUTLINE_SHADER, PrimitiveTopology::LineList),
-            Family::Line => (&LINE_SHADER, PrimitiveTopology::TriangleList),
+        let (shader, topology) = match index {
+            0 => (&FILL_SHADER, PrimitiveTopology::TriangleList),
+            1 => (&FILL_OUTLINE_SHADER, PrimitiveTopology::LineList),
+            2 => (&LINE_SHADER, PrimitiveTopology::TriangleList),
+            4 => (&LINE_STYLED_SHADER, PrimitiveTopology::TriangleList),
             _ => (&CIRCLE_SHADER, PrimitiveTopology::TriangleList),
         };
         self.pipelines[index]
