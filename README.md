@@ -10,26 +10,15 @@ renders on wgpu: in the browser through wasm and WebGPU, and natively through
 Vulkan, Metal and D3D12. AI agents write and steer it; a person sets them
 going and reviews the result.
 
-MapLibre is weighing a Rust renderer made by porting MapLibre Native's C++
-core file by file ([mln-rs](https://github.com/louwers/mln-rs)). Orbis takes
-the other road, a design of its own for the same spec, and sets out to beat
-that port where users feel it: a smaller download, faster loading, faster
-tile processing and faster rendering, in 2D and in 3D.
-
 **Scope.** The v8 spec, including terrain, the globe, sky and the light on
-extrusions, plus what the spec could reasonably grow into: other
-projections, coordinate reference systems and tile matrix sets. A style's
-root `projection` can name a CRS such as `{"type": "EPSG:3413"}`, and a
-source's `tileMatrixSet` can name or define its tile grid. Nothing beyond
-that: no style dialect of its own and no lighting beyond v8's `light`.
+extrusions, plus what the spec could reasonably grow into, such as other
+projections, coordinate reference systems and tile matrix sets.
 
-**Status.** Experimental and unpublished; every API can change. The C,
-Kotlin and Swift bindings will be replaced by
-[maplibre-native-ffi](https://github.com/maplibre/maplibre-native-ffi)'s C
-API. `cargo xtask rt` measures it against GL JS's render fixtures,
-`cargo xtask web` reports its download size and `cargo xtask bench` its
-frame times. The live demo is at
-<https://code.sargunv.dev/orbis/>.
+**Status.** Experimental and unpublished; every API can change. Mostly works
+well, though 3d terrain is rough and there's no WebGL compatibility for older
+hosts.
+
+The live demo is at <https://code.sargunv.dev/orbis/>.
 
 ## Build and run
 
@@ -49,8 +38,7 @@ cargo xtask check                      # fmt, clippy (native and wasm32), tests,
 
 ## Licence
 
-Orbis is under the [BSD-3-Clause licence](LICENSE), as MapLibre GL JS is.
-It ports code from MapLibre GL JS and other projects, tests against GL JS's
-fixtures (fetched by `cargo xtask fixtures`, not committed), and ships
-OpenStreetMap-derived demo data under ODbL; see
-[THIRD_PARTY.md](THIRD_PARTY.md).
+Orbis is under the [BSD-3-Clause licence](LICENSE).
+
+The repo contains OpenStreetMap-derived demo data under
+ODbL; see [THIRD_PARTY.md](THIRD_PARTY.md).
