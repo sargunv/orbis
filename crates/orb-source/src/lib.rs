@@ -561,8 +561,6 @@ impl<T> TilePyramid<T> {
         )
     }
 
-    /// Partitions a missing ideal into loaded descendants and uncovered
-    /// regions. Empty descendants cover their region without drawing it.
     /// The tiles with a known descendant, the only branches worth
     /// descending: walking the cached tiles' ancestors bounds this by cache
     /// size × depth, not 4^depth.
@@ -578,6 +576,8 @@ impl<T> TilePyramid<T> {
         branches
     }
 
+    /// Partitions a missing ideal into loaded descendants and uncovered
+    /// regions. Empty descendants cover their region without drawing it.
     fn descendant_coverage(
         &self,
         tile: TileIndex,
