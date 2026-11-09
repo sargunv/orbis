@@ -93,9 +93,12 @@ Several agent sessions often share this machine.
 
 Advice that cost time to learn, not rules:
 
-- What a frame shows should depend only on its camera and the loaded data,
-  never on how the camera got there. Breaking this caused many bugs; the path
-  tests in `orb-api` check it.
+- What a frame shows should never depend on how the camera got there: once
+  its data has loaded, a map reached by a gesture looks like a fresh one at
+  that camera. Breaking this caused many bugs; the path tests in `orb-api`
+  check it. Spreading load work across frames is fine as a last resort,
+  after other performance techniques hit a wall, as long as the result
+  doesn't depend on the path.
 - Fix causes rather than hiding them behind fades, fallbacks or flattening.
 - GL JS and its fixtures are a good guide to correct behaviour, not a pixel
   target.
