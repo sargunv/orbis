@@ -787,7 +787,21 @@ impl Map {
                     globe,
                     ..at
                 };
-                placements(tms, &draw, at).next()
+                // The cover partitions the world and each quad is exactly
+                // its tile, so nothing needs clipping, and a seam pixel is
+                // the rasterizer's to give to one tile's triangles. Clipped
+                // to the tile, a seam through pixel centres (a globe turned
+                // 45°) cracked where the rasterizer gave its pixels to the
+                // tile whose far edge it is: the half-open rectangle
+                // discarded them. The rectangle reaches everywhere but on
+                // to the poles, which only the world's edge rows' caps do
+                // (`project.wgsl`'s `reaches_pole`).
+                let mut row = placements(tms, &draw, at).next()?;
+                let clip = &mut row.clips[0];
+                let pole = |y: i16, extreme: i16, short: i16| if y == extreme { y } else { short };
+                clip.min = [i16::MIN, pole(clip.min[1], i16::MIN, i16::MIN + 1)];
+                clip.max = [i16::MAX, pole(clip.max[1], i16::MAX, i16::MAX - 1)];
+                Some(row)
             })
             .collect();
         report.tiles_drawn += rows.len() as u32;

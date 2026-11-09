@@ -124,7 +124,8 @@ struct Ground {
 
 // Vertices at y -32768 and 32767 are at the North and South Pole (caps,
 // orb-layout's `NORTH_POLE_Y`): there on a globe where the row's clip
-// rectangles reach past the tile's edge toward that pole, and on the edge
+// rectangles reach on to that pole (to the same extreme, as frame.rs's
+// `placements` has them on the world's edge rows), and on the edge
 // otherwise.
 const SPHERE_RADIUS: f32 = 6378137.0;
 
@@ -132,7 +133,7 @@ fn reaches_pole(tile: Tile, north: bool) -> bool {
     for (var i = 0u; i < 4u; i++) {
         let lo = unpack_i16x2(tile.clips[i].x);
         let hi = unpack_i16x2(tile.clips[i].y);
-        if lo.x <= hi.x && ((north && lo.y < 0.0) || (!north && hi.y > tile.extent)) {
+        if lo.x <= hi.x && ((north && lo.y < -32767.5) || (!north && hi.y > 32766.5)) {
             return true;
         }
     }
