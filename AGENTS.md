@@ -132,6 +132,13 @@ Advice that cost time to learn, not rules:
   then.
 - On tile-based GPUs (Apple, phones), per-pass GPU timestamps show where
   work waits, not where it is. Compare whole-frame times.
+- Burn issues down rather than piling them up. The focus is performance,
+  size, style parity and clean, modern Rust. Fix small follow-ups in the
+  same piece of work. File an issue only for something substantial in that
+  focus, and drop the rest with a line in the commit or the closing comment.
+- Keep tracking issues easy to scan: what's open on top. Remove finished
+  entries, or move them into a short "Done" list at the bottom, rather than
+  leaving them ticked in place.
 - Other sessions' builds make wall times noisy. Compare a change in one
   session, interleaved: copy the old `orbis` and `orb-bench` aside and run
   `cargo xtask h2h … --bin before=<copy>/orbis`. Instructions retired (the
