@@ -737,6 +737,64 @@ fn camera_only_frames_write_no_rows() {
 /// At zoom 22 a square's corner draws where the CPU projects it, to a
 /// pixel: rows' origins and the camera subtract as hi and lo parts on the
 /// GPU.
+/// A GeoJSON source past its maxzoom: dashed lines, a dashed ring, a
+/// gradient and line labels that run across its slices' edges, laid out
+/// again at each zoom along the data tile's whole lines. Zooming into it
+/// draws what a fresh map there does.
+#[test]
+fn overscaled_geojson_after_a_gesture_is_a_fresh_map_s() {
+    let (lon, lat) = (STATION.lon, STATION.lat);
+    // A spiral of about 40 turns' worth of vertices, and a ring.
+    let spiral: Vec<String> = (0..160)
+        .map(|i| {
+            let a = f64::from(i) * 0.4;
+            let r = 0.0004 + 0.00004 * f64::from(i);
+            format!("[{}, {}]", lon + r * a.cos(), lat + r * a.sin())
+        })
+        .collect();
+    let ring: Vec<String> = (0..=24)
+        .map(|i| {
+            let a = f64::from(i % 24) * std::f64::consts::TAU / 24.0;
+            format!("[{}, {}]", lon + 0.004 * a.cos(), lat + 0.003 * a.sin())
+        })
+        .collect();
+    let style = format!(
+        r##"{{"version": 8,
+            "glyphs": "file://{data}/glyphs/{{fontstack}}/{{range}}.pbf",
+            "sources": {{
+                "lines": {{"type": "geojson", "maxzoom": 11, "data":
+                    {{"type": "FeatureCollection", "features": [
+                    {{"type": "Feature", "properties": {{"name": "Spiral Street"}},
+                      "geometry": {{"type": "LineString", "coordinates": [{spiral}]}}}},
+                    {{"type": "Feature", "properties": {{}},
+                      "geometry": {{"type": "Polygon", "coordinates": [[{ring}]]}}}}]}}}},
+                "metered": {{"type": "geojson", "maxzoom": 11, "lineMetrics": true, "data":
+                    {{"type": "LineString", "coordinates": [{spiral}]}}}}}},
+            "layers": [
+                {{"id": "background", "type": "background",
+                  "paint": {{"background-color": "#f4f1ea"}}}},
+                {{"id": "gradient", "type": "line", "source": "metered",
+                  "paint": {{"line-width": 10, "line-offset": 8,
+                             "line-gradient": ["interpolate", ["linear"], ["line-progress"],
+                                               0, "#1060c0", 0.5, "#10c060", 1, "#c01060"]}}}},
+                {{"id": "dashes", "type": "line", "source": "lines",
+                  "paint": {{"line-width": 4, "line-color": "#202020",
+                             "line-dasharray": [3, 2]}}}},
+                {{"id": "names", "type": "symbol", "source": "lines",
+                  "layout": {{"symbol-placement": "line", "symbol-spacing": 120,
+                              "text-field": ["get", "name"],
+                              "text-font": ["Noto Sans Regular"], "text-size": 14}},
+                  "paint": {{"text-color": "#800000", "text-halo-color": "#fff",
+                             "text-halo-width": 1.5}}}}]}}"##,
+        data = data().display(),
+        spiral = spiral.join(", "),
+        ring = ring.join(", "),
+    );
+    let start = (Geodetic::new(lon - 0.004, lat - 0.002), 13.4, 0.0, 0.0);
+    let end = (Geodetic::new(lon + 0.0011, lat + 0.0007), 16.6, 30.0, 40.0);
+    assert_same("overscaled-geojson", both_ways(&style, start, end, 30));
+}
+
 #[test]
 fn zoom_22_draws_to_the_pixel() {
     let runtime = Runtime::new(&RuntimeOptions::default()).unwrap();
