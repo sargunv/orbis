@@ -148,6 +148,7 @@ impl LayerBuilder {
             properties,
             clip: self.clip,
             labels: None,
+            data_features: None,
         }
     }
 }

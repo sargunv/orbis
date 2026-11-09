@@ -179,7 +179,8 @@ fn layout_normalized(
                     let clipped = if whole[slot] {
                         Some((a, b))
                     } else {
-                        clip_segment(a, b, 0, extent).map(|(ca, cb, _, _)| (ca, cb))
+                        clip_segment(a.map(i64::from), b.map(i64::from), 0, extent)
+                            .map(|(ca, cb, _, _)| (ca, cb))
                     };
                     if let Some((ca, cb)) = clipped {
                         let flat = [f64::from(-dy / length), f64::from(dx / length)];

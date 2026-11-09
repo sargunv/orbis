@@ -18,12 +18,17 @@ pub(crate) fn has_textures(layer: &orb_style::Layer) -> bool {
             || layer.ramp(LINE_GRADIENT).is_some())
 }
 
+/// `overscaled` is the data tile an overzoom slice's lines lay out along
+/// (`Layer::overscaled_lines`): a step gradient's resolution follows its
+/// lines, as GL JS's overscaled tile's does.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn textures(
     line: &orb_style::Layer,
     layer: &Layer,
     features: &[u32],
     zoom: f64,
     source_maxzoom: u8,
+    overscaled: Option<&Layer>,
     props: &mut [u32],
     images: &mut Vec<ImageRef>,
 ) {
@@ -41,10 +46,15 @@ pub(crate) fn textures(
     let width = line.get(LINE_WIDTH).bind(layer);
     let gradient = line.ramp(LINE_GRADIENT).map(|g| g.expression());
     let nearest = gradient.is_some_and(|g| g.is_step());
+    let lines = overscaled.unwrap_or(layer);
     let max_length = features
         .iter()
         .map(|&f| {
-            layer
+            let f = match overscaled {
+                Some(_) => layer.data_feature(f as usize),
+                None => f,
+            };
+            lines
                 .geometry(f as usize)
                 .parts()
                 .map(|p| {
@@ -64,13 +74,13 @@ pub(crate) fn textures(
         .fold(0.0, f64::max);
     // GL JS reserves resolution for overzooming a source's last canonical tile
     // through its default camera maxZoom (22), then clamps to texture limits.
-    let overzoom = if zoom == f64::from(source_maxzoom) {
+    let overzoom = if zoom == f64::from(source_maxzoom) || overscaled.is_some() {
         2f64.powi(22 - i32::from(source_maxzoom)).max(1.0)
     } else {
         1.0
     };
     let resolution = if nearest {
-        ((max_length / f64::from(layer.extent()) * 1024.0 * overzoom)
+        ((max_length / f64::from(lines.extent()) * 1024.0 * overzoom)
             .clamp(256.0, 16384.0)
             .ceil() as usize)
             .next_power_of_two()

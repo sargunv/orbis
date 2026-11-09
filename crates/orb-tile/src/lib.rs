@@ -27,6 +27,7 @@ pub use decode::DecodeError;
 pub use dem::DemGrid;
 pub use geometry::{FeatureGeometry, GeometryType, Part};
 pub use overzoom::Ancestor;
+pub use subdivide::grid_crossings;
 
 #[cfg(test)]
 mod tests;
@@ -71,6 +72,9 @@ pub struct Layer {
     /// What an overzoom slice lays its labels out from, when that is an
     /// ancestor's slice ([`Layer::labelled`]).
     labels: Option<Box<overzoom::Labels>>,
+    /// An overzoom slice's features' indices in the data tile it slices
+    /// ([`Layer::data_feature`]).
+    data_features: Option<Vec<u32>>,
 }
 
 impl Layer {
@@ -162,7 +166,17 @@ impl Layer {
                 .iter()
                 .map(|(k, c)| size_of::<(String, Column)>() + k.len() + c.bytes())
                 .sum::<usize>()
-            + self.labels.as_ref().map_or(0, |l| l.layer.bytes())
+            + self.labels.as_ref().map_or(0, |l| l.bytes())
+            + self.data_features.as_ref().map_or(0, |d| d.len() * 4)
+    }
+
+    /// Feature `feature`'s index in the data tile this layer came from: an
+    /// overzoom slice keeps only the features it meets, so its indices
+    /// differ from its data tile's.
+    pub fn data_feature(&self, feature: usize) -> u32 {
+        self.data_features
+            .as_ref()
+            .map_or(feature as u32, |d| d[feature])
     }
 
     /// Every property column with its key.

@@ -709,7 +709,7 @@ impl TileWorker {
             return Ok(frame);
         }
         let geojson = matches!(self.plan.source_def(index).kind, SourceKind::GeoJson(_));
-        let frame = if data_zoom < tile.z && !geojson {
+        let frame = if data_zoom < tile.z {
             // An ancestor's overzoomed tiles slice its one decode.
             let whole = request.data_tile();
             let whole_key = (source, began, whole);
@@ -724,7 +724,7 @@ impl TileWorker {
                     frame
                 }
             };
-            Arc::new(slice(&whole_frame, tile, data_zoom))
+            Arc::new(slice(&whole_frame, tile, data_zoom, geojson))
         } else {
             Arc::new(self.decode(bytes, encoding, index, &data, tile, data_zoom)?)
         };
@@ -780,14 +780,20 @@ fn overzoom(frame: TileFrame, tile: TileIndex, data_zoom: u8) -> TileFrame {
     if data_zoom >= tile.z {
         return frame;
     }
-    slice(&frame, tile, data_zoom)
+    slice(&Arc::new(frame), tile, data_zoom, false)
 }
 
-/// [`overzoom`] of an ancestor's frame that stays whole.
-fn slice(frame: &TileFrame, tile: TileIndex, data_zoom: u8) -> TileFrame {
+/// [`overzoom`] of an ancestor's frame that stays whole. A GeoJSON
+/// source's labels lay out in its data tile at any depth, as GL JS and
+/// MapLibre Native overscale it whole.
+fn slice(frame: &Arc<TileFrame>, tile: TileIndex, data_zoom: u8, geojson: bool) -> TileFrame {
     let depth = tile.z - data_zoom;
     let mask = (1u32 << depth) - 1;
-    let labels_zoom = data_zoom.max(VECTOR_LABEL_ZOOM).min(tile.z);
+    let labels_zoom = if geojson {
+        data_zoom
+    } else {
+        data_zoom.max(VECTOR_LABEL_ZOOM).min(tile.z)
+    };
     frame.overzoom(
         depth,
         tile.col & mask,

@@ -20,9 +20,18 @@
 //! GL JS slices only so far below a source's last tile, then lays deeper
 //! tiles out from that slice, overscaled. A slice deeper than where its
 //! labels lay out carries that ancestor's slice for them (`Labels`), so
-//! line labels run on across slice edges as GL JS's do.
+//! line labels run on across slice edges as GL JS's do. Where that
+//! ancestor is the data tile itself, as it always is for GeoJSON (GL JS
+//! and MapLibre Native overscale a GeoJSON source's last tile whole), its
+//! slices share the data tile's layer, and their lines lay out along it
+//! too ([`Layer::overscaled_lines`]): dash, pattern and gradient run on
+//! across slice edges as along the data tile's lines.
+//!
+//! A slice keeps only the features it meets; [`Layer::data_feature`]
+//! gives each one's index in the data tile.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use crate::{GeometryType, Layer, LayerBuilder, TileFrame};
 
@@ -34,10 +43,35 @@ type Point = [f64; 2];
 /// slice's edges rather than starting again at each.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Labels {
-    /// The ancestor's slice, in its own units: the slice's features, in
-    /// order, with their geometry there (none for those it lacks).
-    pub(crate) layer: Layer,
-    pub(crate) ancestor: Ancestor,
+    layer: Overscaled,
+    ancestor: Ancestor,
+}
+
+/// The tile an overzoom slice's labels lay out in.
+#[derive(Clone, Debug, PartialEq)]
+enum Overscaled {
+    /// The data tile's layer, at this index of its frame, which its slices
+    /// share.
+    Data(Arc<TileFrame>, usize),
+    /// An ancestor's slice of it, in its own units, cut at its buffer.
+    Slice(Box<Layer>),
+}
+
+impl Labels {
+    fn layer(&self) -> &Layer {
+        match &self.layer {
+            Overscaled::Data(frame, at) => &frame.layers[*at],
+            Overscaled::Slice(layer) => layer,
+        }
+    }
+
+    /// Heap bytes it holds of its own: none of a shared data tile.
+    pub(crate) fn bytes(&self) -> usize {
+        match &self.layer {
+            Overscaled::Data(..) => 0,
+            Overscaled::Slice(layer) => layer.bytes(),
+        }
+    }
 }
 
 /// An overzoom slice's place in the ancestor its labels lay out in.
@@ -55,24 +89,28 @@ impl TileFrame {
     ///
     /// Labels lay out from the ancestor `labels_depth` (at most `depth`)
     /// below this tile: past it, each layer with lines or polygons carries
-    /// the ancestor's slice ([`Layer::labelled`]) and keeps every feature
-    /// that has geometry in either, so the two share feature indices.
-    pub fn overzoom(&self, depth: u8, col: u32, row: u32, labels_depth: u8) -> Self {
+    /// the ancestor's slice ([`Layer::labelled`]), or this tile's layer
+    /// itself when `labels_depth` is 0.
+    pub fn overzoom(self: &Arc<Self>, depth: u8, col: u32, row: u32, labels_depth: u8) -> Self {
         assert!(depth <= 30 && col < 1u32 << depth && row < 1u32 << depth);
         assert!(labels_depth <= depth);
         Self {
             layers: self
                 .layers
                 .iter()
-                .map(|l| {
+                .enumerate()
+                .map(|(at, l)| {
+                    let mut child = slice(l, depth, col, row);
                     let shapes = l.types.iter().any(|&t| t != GeometryType::Point);
                     if labels_depth < depth && shapes {
-                        labelled_slice(l, depth, col, row, labels_depth)
-                    } else {
-                        slice(l, depth, col, row, None).0
+                        let labels = labels(self, at, depth, [col, row], labels_depth);
+                        child.labels = Some(Box::new(labels));
                     }
+                    child
                 })
-                .filter(|l| !l.is_empty())
+                .filter(|l| {
+                    !l.is_empty() || l.labels.as_ref().is_some_and(|l| !l.layer().is_empty())
+                })
                 .collect(),
         }
     }
@@ -82,13 +120,22 @@ impl Layer {
     /// What labels lay out from, with the ancestor it is in when that isn't
     /// this tile: an overzoom slice past its labels' ancestor gives that
     /// ancestor's slice; another gives itself without the pieces of lines
-    /// it keeps past its buffer for their strokes, GL JS's slice. Feature
-    /// indices stay.
+    /// it keeps past its buffer for their strokes, GL JS's slice.
     pub fn labelled(&self) -> (Cow<'_, Layer>, Option<Ancestor>) {
         match self.ancestor_labels() {
             Some((layer, ancestor)) => (Cow::Borrowed(layer), Some(ancestor)),
             None => (self.within_buffer(), None),
         }
+    }
+
+    /// The data tile's layer an overzoom slice's lines lay out along, with
+    /// the slice's place in it, when GL JS overscales the data tile whole
+    /// (its labels' ancestor is the data tile): its features are this
+    /// layer's [`data_feature`](Self::data_feature)s. Line distance runs
+    /// on along each whole line there, across the slice's edges.
+    pub fn overscaled_lines(&self) -> Option<(&Layer, Ancestor)> {
+        let labels = self.labels.as_deref()?;
+        matches!(labels.layer, Overscaled::Data(..)).then(|| (labels.layer(), labels.ancestor))
     }
 
     /// Polygon ring `ring` of this layer as GL JS's slice clips it. A
@@ -126,7 +173,7 @@ impl Layer {
 
     /// The ancestor's slice labels lay out from, if they lay out in one.
     pub fn ancestor_labels(&self) -> Option<(&Layer, Ancestor)> {
-        self.labels.as_deref().map(|l| (&l.layer, l.ancestor))
+        self.labels.as_deref().map(|l| (l.layer(), l.ancestor))
     }
 
     /// The layer without the pieces of lines an overzoom slice keeps past
@@ -153,7 +200,9 @@ impl Layer {
         for f in 0..self.len() {
             copy_feature(&mut builder, self, f, |r| !lines(f) || inside(r));
         }
-        Cow::Owned(builder.finish())
+        let mut layer = builder.finish();
+        layer.data_features.clone_from(&self.data_features);
+        Cow::Owned(layer)
     }
 }
 
@@ -185,47 +234,41 @@ fn copy_feature(
     }
 }
 
-/// [`slice`] at `depth`, carrying its labels' ancestor's slice
-/// `labels_depth` below the source tile. The ancestor slices the source as
-/// GL JS does (lines end at its buffer); at the source tile itself it is
-/// the source layer, as GL JS overscales a source's last tile whole.
-fn labelled_slice(layer: &Layer, depth: u8, col: u32, row: u32, labels_depth: u8) -> Layer {
+/// The labels of `frame`'s layer `at` sliced at `depth` and `cell`: its
+/// ancestor's slice `labels_depth` below the source tile, which slices the
+/// source as GL JS does (lines end at its buffer), or at the source tile
+/// itself the source layer, as GL JS overscales a source's last tile whole.
+fn labels(
+    frame: &Arc<TileFrame>,
+    at: usize,
+    depth: u8,
+    cell: [u32; 2],
+    labels_depth: u8,
+) -> Labels {
     let up = depth - labels_depth;
-    let (ancestor, ancestor_kept): (Cow<'_, Layer>, Vec<u32>) = if labels_depth == 0 {
-        (Cow::Borrowed(layer), (0..layer.len() as u32).collect())
+    let layer = if labels_depth == 0 {
+        Overscaled::Data(Arc::clone(frame), at)
     } else {
-        let (sliced, kept) = slice(layer, labels_depth, col >> up, row >> up, None);
-        (Cow::Owned(sliced.within_buffer().into_owned()), kept)
+        let sliced = slice(
+            &frame.layers[at],
+            labels_depth,
+            cell[0] >> up,
+            cell[1] >> up,
+        );
+        Overscaled::Slice(Box::new(sliced.within_buffer().into_owned()))
     };
-    let (mut child, kept) = slice(layer, depth, col, row, Some(&ancestor_kept));
-    let mut builder = LayerBuilder::new(layer.name(), ancestor.extent());
-    builder.clipped_at(ancestor.clip_buffer());
-    let mut at = 0;
-    for &f in &kept {
-        while ancestor_kept.get(at).is_some_and(|&a| a < f) {
-            at += 1;
-        }
-        if ancestor_kept.get(at) == Some(&f) {
-            copy_feature(&mut builder, &ancestor, at, |_| true);
-        } else {
-            copy_feature(&mut builder, layer, f as usize, |_| false);
-        }
-    }
     let mask = (1u32 << up) - 1;
-    child.labels = Some(Box::new(Labels {
-        layer: builder.finish(),
+    Labels {
+        layer,
         ancestor: Ancestor {
             scale: 1 << up,
-            cell: [col & mask, row & mask],
+            cell: cell.map(|c| c & mask),
         },
-    }));
-    child
+    }
 }
 
-/// The slice of `layer` at `depth`, and the indices of the source features
-/// it has, in order. Features in `keep` (sorted) stay even where nothing of
-/// them is left, with no geometry.
-fn slice(layer: &Layer, depth: u8, col: u32, row: u32, keep: Option<&[u32]>) -> (Layer, Vec<u32>) {
+/// The slice of `layer` at `depth`, with the features it meets.
+fn slice(layer: &Layer, depth: u8, col: u32, row: u32) -> Layer {
     let scale = 2f64.powi(i32::from(depth)) * 8192.0 / f64::from(layer.extent());
     let offset = [f64::from(col) * 8192.0, f64::from(row) * 8192.0];
     let buffer = (128.0 * f64::from(layer.extent()) / 4096.0)
@@ -243,15 +286,13 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32, keep: Option<&[u32]>) -> 
         ]
     };
     let mut kept = Vec::new();
-    let mut keep = keep.unwrap_or_default().iter().copied().peekable();
     for feature in 0..layer.len() {
         let kind = layer.geometry_type(feature);
         let parts = slice_feature(layer, feature, source_buffer, buffer, place);
-        let keep = keep.next_if_eq(&(feature as u32)).is_some();
-        if parts.is_empty() && !keep {
+        if parts.is_empty() {
             continue;
         }
-        kept.push(feature as u32);
+        kept.push(layer.data_feature(feature));
         builder.begin_feature(None, kind);
         if let Some(id) = layer.ids().get(feature) {
             builder.set_id(id.to_owned());
@@ -277,7 +318,9 @@ fn slice(layer: &Layer, depth: u8, col: u32, row: u32, keep: Option<&[u32]>) -> 
             }
         }
     }
-    (builder.finish(), kept)
+    let mut sliced = builder.finish();
+    sliced.data_features = Some(kept);
+    sliced
 }
 
 /// A feature's parts in a slice `buffer` past the square, placed by
@@ -465,9 +508,9 @@ mod tests {
         for p in [[0, 0], [4096, 0], [4096, 4096], [0, 4096]] {
             b.push_vertex(p);
         }
-        let child = TileFrame {
+        let child = Arc::new(TileFrame {
             layers: vec![b.finish()],
-        }
+        })
         .overzoom(2, 1, 0, 2);
         let l = &child.layers[0];
         assert_eq!(l.extent(), 8192);
@@ -509,9 +552,9 @@ mod tests {
         for p in [[1900, 100], [2200, 100], [2200, 200], [1900, 200]] {
             b.push_vertex(p);
         }
-        let child = TileFrame {
+        let child = Arc::new(TileFrame {
             layers: vec![b.finish()],
-        }
+        })
         .overzoom(1, 0, 0, 1);
         let l = &child.layers[0];
         let ring = l
@@ -548,9 +591,9 @@ mod tests {
             b.begin_ring();
             line.iter().for_each(|&p| b.push_vertex(p));
         }
-        let source = TileFrame {
+        let source = Arc::new(TileFrame {
             layers: vec![b.finish()],
-        };
+        });
         // The slice 4 zooms down at (5, 1), its labels in the ancestor 2
         // zooms down at (1, 0).
         let child = source.overzoom(4, 5, 1, 2);
@@ -559,14 +602,11 @@ mod tests {
             Some(ValueRef::Str(s)) => s.to_owned(),
             other => panic!("{other:?}"),
         };
-        // The slice keeps what its ancestor has, with no geometry where
-        // nothing of it is left, so the two share feature indices.
-        assert_eq!(l.len(), 2);
-        assert_eq!(
-            (name(l, 0), name(l, 1)),
-            ("through".into(), "beside".into())
-        );
-        assert_eq!(l.geometry(1).parts().count(), 0);
+        // The slice keeps what it meets, with each one's index in the
+        // data tile.
+        assert_eq!(l.len(), 1);
+        assert_eq!(name(l, 0), "through");
+        assert_eq!(l.data_feature(0), 0);
         let (labels, ancestor) = l.labelled();
         assert_eq!(
             ancestor,
@@ -577,6 +617,7 @@ mod tests {
         );
         assert_eq!(labels.len(), 2);
         assert_eq!(name(&labels, 1), "beside");
+        assert_eq!(labels.data_feature(1), 1);
         // In the ancestor's units, cut at its buffer.
         let ring = labels
             .geometry(1)
@@ -587,7 +628,39 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(ring, [[-256, 7200], [8448, 7200]]);
+        assert!(l.overscaled_lines().is_none());
         // At the labels' own zoom, a slice is its own.
         assert!(source.overzoom(2, 1, 0, 2).layers[0].labelled().1.is_none());
+    }
+
+    #[test]
+    fn slices_of_a_wholly_overscaled_tile_share_it() {
+        let mut b = LayerBuilder::new("roads", 4096);
+        for line in [[[0, 300], [4096, 300]], [[0, 3000], [4096, 3000]]] {
+            b.begin_feature(None, GeometryType::LineString);
+            b.begin_part();
+            b.begin_ring();
+            line.iter().for_each(|&p| b.push_vertex(p));
+        }
+        let source = Arc::new(TileFrame {
+            layers: vec![b.finish()],
+        });
+        // Its labels and lines lay out in the data tile itself.
+        let child = source.overzoom(2, 1, 3, 0);
+        let l = &child.layers[0];
+        assert_eq!(l.len(), 1);
+        assert_eq!(l.data_feature(0), 1);
+        let (data, ancestor) = l.overscaled_lines().unwrap();
+        assert!(std::ptr::eq(data, &source.layers[0]));
+        assert_eq!(
+            ancestor,
+            Ancestor {
+                scale: 4,
+                cell: [1, 3]
+            }
+        );
+        assert_eq!(l.labelled().0.len(), 2);
+        // Only what the slice holds counts towards it.
+        assert!(child.bytes() < source.bytes());
     }
 }

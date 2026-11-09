@@ -337,7 +337,7 @@ impl Map {
             if resident.meshes.iter().any(|m| !m.hits.is_empty()) {
                 drawn.push(crate::query::DrawnTile::new(
                     source_key,
-                    tile,
+                    (tile, endpoint.data_tile(tile)),
                     &rows[&tile],
                     tms,
                     resident.series.as_deref(),

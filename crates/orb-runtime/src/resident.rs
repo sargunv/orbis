@@ -161,11 +161,8 @@ pub(crate) fn ready_source(
             warped,
             pyramid: TilePyramid::new(
                 endpoint.minzoom,
-                if image {
-                    endpoint.maxzoom
-                } else {
-                    endpoint.cover_zoom()
-                },
+                // Tiles past a source's maxzoom overzoom its last ones.
+                if image { endpoint.maxzoom } else { 24 },
                 // Map::trim_cache bounds the cache by memory.
                 usize::MAX,
             ),

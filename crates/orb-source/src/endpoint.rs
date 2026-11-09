@@ -233,14 +233,6 @@ impl TileEndpoint {
         }
     }
 
-    pub fn cover_zoom(&self) -> u8 {
-        if self.data_url.is_some() {
-            self.maxzoom
-        } else {
-            24
-        }
-    }
-
     pub fn data_tile(&self, mut tile: TileIndex) -> TileIndex {
         while tile.z > self.maxzoom {
             tile = tile.parent().expect("ancestor");

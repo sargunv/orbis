@@ -126,7 +126,9 @@ impl crate::Map {
 
     /// GL JS `querySourceFeatures`: every feature in the tiles of `source`
     /// drawn last frame, of `source_layer` or of every layer, that a v8
-    /// `filter` (JSON) selects. A feature crossing tiles comes once per tile.
+    /// `filter` (JSON) selects. A feature crossing tiles comes once per tile,
+    /// and past the source's maxzoom once per data tile, whole, as MapLibre
+    /// Native's overscaled tiles give it.
     pub fn query_source(
         &self,
         source: &str,
@@ -141,9 +143,19 @@ impl crate::Map {
         let Some(index) = plan.sources.iter().position(|s| s.id == source) else {
             return done(Err(format!("no source {source}")));
         };
-        let requests = style.placed[index]
-            .iter()
-            .filter_map(|&tile| {
+        let SourceState::Ready { endpoint, .. } = &style.sources[index] else {
+            return done(Ok("[]".into()));
+        };
+        let mut data_tiles: Vec<TileIndex> = Vec::new();
+        for &tile in &style.placed[index] {
+            let data = endpoint.data_tile(tile);
+            if !data_tiles.contains(&data) {
+                data_tiles.push(data);
+            }
+        }
+        let requests = data_tiles
+            .into_iter()
+            .filter_map(|tile| {
                 let request = self.tile_request(index, tile)?;
                 Some((
                     (index, tile, String::new()),
@@ -188,15 +200,23 @@ impl crate::Map {
             .cluster(crate::ClusterRequest { tile, query }, done);
     }
 
-    /// How tile `tile` of plan source `index` was loaded.
-    /// The oldest style revision a drawn tile's meshes were laid out with:
-    /// its features are read from the data of then.
+    /// The oldest style revision the drawn tiles with data tile `tile` (of
+    /// plan source `index`) had their meshes laid out with: its features
+    /// are read from the data of then.
     fn drawn_revision(&self, index: usize, tile: TileIndex) -> Option<u64> {
         let style = self.style.as_ref()?;
-        let SourceState::Ready { pyramid, .. } = &style.sources[index] else {
+        let SourceState::Ready {
+            pyramid, endpoint, ..
+        } = &style.sources[index]
+        else {
             return None;
         };
-        pyramid.get(tile)?.meshes.iter().map(|m| m.layout_rev).min()
+        style.placed[index]
+            .iter()
+            .filter(|&&t| endpoint.data_tile(t) == tile)
+            .filter_map(|&t| pyramid.get(t))
+            .flat_map(|r| r.meshes.iter().map(|m| m.layout_rev))
+            .min()
     }
 
     fn tile_request(&self, index: usize, tile: TileIndex) -> Option<TileRequest> {

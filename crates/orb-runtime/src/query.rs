@@ -89,7 +89,8 @@ impl<'a> Reader<'a> {
 /// tile, as lines and circles pick them.
 ///
 /// Words, per feature: its length in words, then `min_x, min_y, max_x,
-/// max_y` (i32), `has_id, [id], parts, {rings, {points, {x, y}}}`.
+/// max_y` (i32), its index in the data tile (an overzoom slice's differs),
+/// `has_id, [id], parts, {rings, {points, {x, y}}}`.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HitGeometry {
     /// The layer's data units per tile side.
@@ -108,6 +109,8 @@ pub struct HitGeometry {
 impl HitGeometry {
     /// Feature `feature` of the tile's `layer`, with `id`, and its parts
     /// if `with_parts`: its record's first word, added unless it is here.
+    /// A label's feature, without parts, may come from the layer its labels
+    /// lay out from (`orb_tile::Layer::labelled`).
     pub(crate) fn add(
         &mut self,
         layer: &orb_tile::Layer,
@@ -119,7 +122,7 @@ impl HitGeometry {
             return at;
         }
         let at = self.words.len() as u32;
-        if self.words.is_empty() {
+        if with_parts && self.extent == 0 {
             self.extent = layer.extent();
             self.clip = layer.clip_buffer();
         }
@@ -130,6 +133,7 @@ impl HitGeometry {
             i32::MAX as u32,
             i32::MIN as u32,
             i32::MIN as u32,
+            layer.data_feature(feature as usize),
         ]);
         words.push(u32::from(id.is_some()));
         if let Some(id) = id {
@@ -224,6 +228,8 @@ struct FeatureRef<'a> {
     bounds: &'a [u32],
     id: Option<&'a [u32]>,
     feature: u32,
+    /// Its index in the data tile.
+    data_feature: u32,
     kind: u32,
     extent: u32,
     /// Its layer's clip buffer ([`HitGeometry`]'s).
@@ -393,6 +399,7 @@ impl MeshHits {
         let record = self.geometry.record(node[0])?;
         let mut r = Reader::new(record);
         let bounds = r.take(4)?;
+        let data_feature = r.next()?;
         let id = if r.next()? != 0 {
             let start = r.at;
             let len = r.next()? as usize;
@@ -406,6 +413,7 @@ impl MeshHits {
             bounds,
             id,
             feature: node[1],
+            data_feature,
             kind: node[2],
             extent: self.geometry.extent,
             clip: self.geometry.clip,
@@ -417,12 +425,12 @@ impl MeshHits {
         })
     }
 
-    /// The id of the feature at index `feature` of its source layer.
-    fn id_of(&self, feature: u32) -> Option<String> {
+    /// The feature at index `feature` of the layer its node laid out.
+    fn label(&self, feature: u32) -> Option<FeatureRef<'_>> {
         let by_feature = self
             .by_feature
             .get_or_init(|| self.features().map(|(at, f)| (f.feature, at)).collect());
-        self.feature(*by_feature.get(&feature)?).ok()?.id()
+        self.feature(*by_feature.get(&feature)?).ok()
     }
 
     /// The features, unpacked.
@@ -572,6 +580,9 @@ pub(crate) struct DrawnTile {
     /// The plan source's key.
     pub(crate) source: u32,
     pub(crate) tile: TileIndex,
+    /// The tile its data comes from: an overzoom slice's ancestor at its
+    /// source's maxzoom, whose features queries answer with.
+    pub(crate) data: TileIndex,
     pub(crate) copies: Vec<DrawnCopy>,
 }
 
@@ -586,7 +597,7 @@ impl DrawnTile {
     /// A tile's draws, as frames place them.
     pub(crate) fn new(
         source: u32,
-        tile: TileIndex,
+        (tile, data): (TileIndex, TileIndex),
         draws: &[&orb_source::Draw],
         tms: &TileMatrixSet,
         series: Option<&orb_crs::Series>,
@@ -614,6 +625,7 @@ impl DrawnTile {
         Self {
             source,
             tile,
+            data,
             copies: draws
                 .iter()
                 .map(|d| DrawnCopy {
@@ -1226,10 +1238,12 @@ impl Scene<'_> {
                     elevation,
                     (at.shift, at.circle_pitch),
                 )?;
+                // An overzoom slice's feature answers as its data tile's,
+                // once, as MapLibre Native's overscaled tiles answer.
                 let key = FeatureKey {
                     source: drawn.source,
-                    tile: drawn.tile,
-                    feature: f.feature,
+                    tile: drawn.data,
+                    feature: f.data_feature,
                 };
                 Some((screen, layer.hit(id, self.generation), key))
             }
@@ -1256,28 +1270,36 @@ impl Scene<'_> {
                     .iter()
                     .map(|&[dx, dy, r]| [anchor.x + dx, anchor.y + dy, r])
                     .collect();
+                let (id, key) = self.label_feature(label)?;
                 Some((
                     ScreenHit::label(boxes, circles),
-                    layer.hit(self.label_id(label), self.generation),
-                    label.key,
+                    layer.hit(id, self.generation),
+                    key,
                 ))
             }
         }
     }
 
-    /// A label's feature id, from its tile's records of the symbol layer's
-    /// features (on its icon node or its text node).
-    fn label_id(&self, label: &LabelHit) -> Option<String> {
+    /// A label's feature id and where it lives in its data tile, from its
+    /// tile's records of the symbol layer's features (on its icon node or
+    /// its text node).
+    fn label_feature(&self, label: &LabelHit) -> Option<(Option<String>, FeatureKey)> {
         let key = label.key;
         let at = self
             .drawn
             .iter()
             .position(|d| d.source == key.source && d.tile == key.tile)?;
-        self.tiles[at]?
+        let f = self.tiles[at]?
             .meshes
             .iter()
             .filter(|(node, _)| *node / 2 == label.node / 2)
-            .find_map(|(_, mesh)| mesh.id_of(key.feature))
+            .find_map(|(_, mesh)| mesh.label(key.feature))?;
+        let key = FeatureKey {
+            tile: self.drawn[at].data,
+            feature: f.data_feature,
+            ..key
+        };
+        Some((f.id(), key))
     }
 
     /// The topmost feature under `point`, in pixels of `view`: the first

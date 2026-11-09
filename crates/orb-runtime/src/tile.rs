@@ -116,8 +116,9 @@ struct Split {
 
 /// Splits `features` of `layer` into groups for [`MESH_POINTS`]. Only the
 /// geometry decides it, so a job that sends only property rows splits as
-/// the layout did. A single part larger than the cap stays whole.
-fn split_features(layer: &Layer, features: Vec<u32>) -> Split {
+/// the layout did. A single part larger than the cap stays whole, and a
+/// feature larger than it stays whole unless `split_parts`.
+fn split_features(layer: &Layer, features: Vec<u32>, split_parts: bool) -> Split {
     let part_points = |feature: u32| -> Vec<usize> {
         layer
             .geometry(feature as usize)
@@ -132,7 +133,7 @@ fn split_features(layer: &Layer, features: Vec<u32>) -> Split {
         let mut start = 0;
         let mut total = 0;
         for (i, &n) in parts.iter().enumerate() {
-            if i > start && total + n > MESH_POINTS {
+            if split_parts && i > start && total + n > MESH_POINTS {
                 pieces.push((feature, start..i, total));
                 start = i;
                 total = 0;
@@ -226,11 +227,14 @@ fn features(
 
 /// A node's geometry over `features`. `bend` cuts fills for a tile drawn
 /// through a curved warp or on a globe, and extends them to the poles.
+///
+/// An overzoom slice's line node lays out along its data tile's lines,
+/// `overscaled` (`Layer::overscaled_lines`).
 fn layout(
     layer: &Layer,
     features: &[u32],
     style_layer: &orb_style::Layer,
-    family: Family,
+    (family, overscaled): (Family, Option<(&Layer, orb_tile::Ancestor)>),
     zoom: f64,
     bend: Option<orb_layout::fill::Bend>,
     units_per_metre: f64,
@@ -272,7 +276,18 @@ fn layout(
                 miter_limit: miter_limit.evaluate(zoom, feature as usize),
                 round_limit: round_limit.evaluate(zoom, feature as usize),
             };
-            line::layout_in_extent(layer, features, params, 8192)
+            match overscaled {
+                Some((data, ancestor)) => {
+                    let data_features: Vec<u32> = features
+                        .iter()
+                        .map(|&f| layer.data_feature(f as usize))
+                        .collect();
+                    let params = |slot: usize| params(features[slot]);
+                    let cells = bend.map(|b| b.cells);
+                    line::layout_overscaled(data, &data_features, params, ancestor, cells)
+                }
+                None => line::layout_in_extent(layer, features, params, 8192),
+            }
         }
         _ => unreachable!("vector nodes have feature selections"),
     }
@@ -467,44 +482,36 @@ pub(crate) fn build(
         let Some((layer, name)) = node_layer(frame, plan, node, zoom) else {
             continue;
         };
-        // Symbol rows follow the features their layout selected. Other
-        // nodes skip the features a slice keeps only for its labels'
-        // ancestor, with nothing of them in the slice.
-        let selected = match layer.ancestor_labels() {
-            Some((labels, ancestor)) if node.family.is_symbol() => features(
-                plan,
-                node,
-                labels,
-                (zoom, in_ancestor(canonical, Some(ancestor))),
-            ),
-            Some(_) => {
-                let mut selected = features(plan, node, layer, (zoom, canonical));
-                selected.retain(|&f| layer.geometry(f as usize).parts().next().is_some());
-                selected
-            }
-            None => features(plan, node, layer, (zoom, canonical)),
+        // Symbol rows follow the features their layout selected, in the
+        // ancestor's slice labels lay out from, if they do
+        // (`Layer::labelled`; a slice's own layer has the same features as
+        // what it lays labels out from otherwise).
+        let (layer, ancestor) = match layer.ancestor_labels() {
+            Some((labels, ancestor)) if node.family.is_symbol() => (labels, Some(ancestor)),
+            _ => (layer, None),
         };
+        // Where `within` and `distance` find the features' geometry.
+        let geometry_tile = in_ancestor(canonical, ancestor);
+        let selected = features(plan, node, layer, (zoom, geometry_tile));
         if selected.is_empty() {
             continue;
         }
+        // An overzoom slice's lines lay out along its data tile's.
+        let overscaled = (node.family == Family::Line)
+            .then(|| layer.overscaled_lines())
+            .flatten();
         // Large layers draw as several meshes (see `split_features`);
-        // symbol nodes' rows follow their whole bucket.
+        // symbol nodes' rows follow their whole bucket, and overscaled
+        // lines lay out whole features.
         let split = if node.family.is_symbol() {
             Split {
                 pieces: None,
                 groups: vec![selected],
             }
         } else {
-            split_features(layer, selected)
+            split_features(layer, selected, overscaled.is_none())
         };
         let tile_layer = layer;
-        // Where `within` and `distance` find the features' geometry.
-        let geometry_tile = match layer.ancestor_labels() {
-            Some((_, ancestor)) if node.family.is_symbol() => {
-                in_ancestor(canonical, Some(ancestor))
-            }
-            _ => canonical,
-        };
         let tile_promote = match &source_def.kind {
             SourceKind::Vector(v) => v
                 .promote_id
@@ -552,7 +559,7 @@ pub(crate) fn build(
                         layer,
                         &features,
                         style_layer,
-                        node.family,
+                        (node.family, overscaled),
                         zoom,
                         bend,
                         units_per_metre,
@@ -686,7 +693,17 @@ pub(crate) fn build(
                     SourceKind::Vector(source) => source.tileset.maxzoom.unwrap_or(22.0) as u8,
                     _ => unreachable!("line source"),
                 };
-                crate::line::textures(l, layer, &features, zoom, maxzoom, &mut props, &mut images);
+                let overscaled = overscaled.map(|(data, _)| data);
+                crate::line::textures(
+                    l,
+                    layer,
+                    &features,
+                    zoom,
+                    maxzoom,
+                    overscaled,
+                    &mut props,
+                    &mut images,
+                );
             }
             let promote = match &source_def.kind {
                 SourceKind::Vector(v) => v

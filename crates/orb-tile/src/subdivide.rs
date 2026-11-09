@@ -82,7 +82,7 @@ fn subdivide(layer: &Layer, cells: u32) -> Layer {
 /// order from `a`, without its ends. Each crossing is computed from the
 /// segment's ends in a fixed order, so a segment shared by two rings (or
 /// two tiles) gets the same points either way.
-pub(crate) fn grid_crossings(a: [i32; 2], b: [i32; 2], step: f64, out: &mut Vec<[i32; 2]>) {
+pub fn grid_crossings(a: [i32; 2], b: [i32; 2], step: f64, out: &mut Vec<[i32; 2]>) {
     out.clear();
     let (lo, hi, flip) = if a <= b { (a, b, false) } else { (b, a, true) };
     let mut ts: Vec<(f64, [i32; 2])> = Vec::new();

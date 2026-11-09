@@ -6,7 +6,9 @@
 //!   in successive bytes. Both vectors are scaled by 63 and rounded like
 //!   JavaScript's `Math.round`. Offset normals are bounded join miters,
 //!   easing toward segment normals near hairpins.
-//! - Word 2: flags: `round` in bit 0 and `up` in bit 1; bits 2–15 store half the distance in normalized 8192 units.
+//! - Word 2: flags: `round` in bit 0 and `up` in bit 1; bits 2–31 store
+//!   half the distance in normalized 8192 units. An overzoom slice's lines
+//!   run on from its data tile's (`layout_overscaled`), past 15 bits.
 //! - Word 3: feature slot (position in the selection).
 //! - Word 4: f32 progress within this tiled line, before clip-range remapping.
 //!   With GeoJSON metrics, word 2 stores global progress × 32767, quantized
@@ -24,7 +26,7 @@
 //! BSD-3-Clause; copyright and terms in `LICENSE-MapLibre` alongside this module.
 //! Distance follows the pinned shader's two-tile-unit quantization.
 
-use orb_tile::{GeometryType, Layer};
+use orb_tile::{Ancestor, GeometryType, Layer};
 
 use crate::clip::{ClippedLine, clip_polyline};
 use crate::fill::pack_position;
@@ -32,6 +34,8 @@ use crate::{Mesh, MeshBuilder};
 
 /// Words per line vertex.
 pub const STRIDE: usize = 5;
+/// Half the line distance, in word 2's bits 2–31.
+const DISTANCE_MASK: u32 = u32::MAX >> 2;
 const EXTRUDE_SCALE: f64 = 63.0;
 const COS_HALF_SHARP_CORNER: f64 = 0.7933533402912352; // cos(75° / 2)
 // Offset normals use the same signed bytes as extrusion. Near hairpins,
@@ -84,63 +88,249 @@ pub fn layout_in_extent(
     output_extent: u32,
 ) -> Mesh {
     let extent = i32::try_from(output_extent).expect("extent fits i32");
+    let scale = f64::from(output_extent) / f64::from(layer.extent());
+    let place = |p: &[i32; 2]| p.map(|v| js_round(f64::from(v) * scale) as i64);
+    let frame = Frame {
+        extent,
+        sharp_corner_offset: 15.0 * f64::from(extent) / 512.0,
+        overscale: 1.0,
+        step: None,
+    };
+    lay_out(
+        layer,
+        features,
+        |slot| parameters(features[slot]),
+        place,
+        &frame,
+    )
+}
+
+/// Lays out an overzoom slice's lines, as GL JS lays out the data tile it
+/// overscales: `features` of the data tile's `layer` (one per slot),
+/// along their whole lines there, in the slice's units (extent 8192) at
+/// `ancestor`, its place in that tile. Line distance runs on from the
+/// data tile's line starts, reset where GL JS resets it in the data tile,
+/// and `lineMetrics` progress runs along its whole lines, so neither
+/// starts again at the slice's edges. `parameters` is called with a slot.
+/// With `cells`, lines get a vertex wherever they cross a grid of `cells`
+/// × `cells` over the slice, as `TileFrame::subdivided` gives the slice's
+/// own, for a curved warp.
+pub fn layout_overscaled(
+    layer: &Layer,
+    features: &[u32],
+    parameters: impl FnMut(usize) -> LineLayout,
+    ancestor: Ancestor,
+    cells: Option<u32>,
+) -> Mesh {
+    let overscale = f64::from(ancestor.scale);
+    let grid = 8192.0 / f64::from(layer.extent());
+    let offset = ancestor.cell.map(|c| i64::from(c) * 8192);
+    let scale = i64::from(ancestor.scale);
+    // GL JS's bucket rounds the data tile's vertices to its grid first.
+    let place = |p: &[i32; 2]| {
+        let p = p.map(|v| js_round(f64::from(v) * grid) as i64 * scale);
+        [p[0] - offset[0], p[1] - offset[1]]
+    };
+    let frame = Frame {
+        extent: 8192,
+        // GL JS's sharp corners at its overscaling, in slice units.
+        sharp_corner_offset: if overscale <= 16.0 {
+            15.0 * 8192.0 / 512.0
+        } else {
+            0.0
+        },
+        overscale,
+        step: cells.filter(|&c| c > 1).map(|c| 8192.0 / f64::from(c)),
+    };
+    lay_out(layer, features, parameters, place, &frame)
+}
+
+/// The units a layout's lines land in.
+struct Frame {
+    /// Units per tile side.
+    extent: i32,
+    sharp_corner_offset: f64,
+    /// Units per unit of the tile the lines were laid out in by GL JS,
+    /// whose units its distance resets count: an overzoom slice's scale in
+    /// its data tile, 1 otherwise.
+    overscale: f64,
+    /// The grid lines get a vertex at, if any, this far apart.
+    step: Option<f64>,
+}
+
+fn lay_out(
+    layer: &Layer,
+    features: &[u32],
+    mut parameters: impl FnMut(usize) -> LineLayout,
+    place: impl Fn(&[i32; 2]) -> [i64; 2],
+    frame: &Frame,
+) -> Mesh {
+    let extent = frame.extent;
     let margin = extent;
     assert!(
         extent <= i32::from(i16::MAX) - margin,
         "extent {extent} plus margin exceeds i16 positions"
     );
     let mut builder = MeshBuilder::new(STRIDE);
-    let sharp_corner_offset = 15.0 * f64::from(extent) / 512.0;
+    let distance_scale = 8192.0 / f64::from(extent);
     for (slot, &feature) in features.iter().enumerate() {
         let feature = feature as usize;
         let kind = layer.geometry_type(feature);
         if kind == GeometryType::Point {
             continue;
         }
-        let params = parameters(feature as u32);
+        let params = parameters(slot);
         let clips = feature_clips(layer, feature);
+        // GL JS resets distance past half its 15 bits, without metrics.
+        let reset = (clips.is_none()).then_some(16384.0 / distance_scale * frame.overscale);
         for part in layer.geometry(feature).parts() {
             for ring in part.rings() {
                 let ring = match kind {
                     GeometryType::Polygon => layer.outline(ring),
                     _ => ring.into(),
                 };
-                let scaled: Vec<_> = ring
-                    .iter()
-                    .map(|p| {
-                        p.map(|v| {
-                            js_round(
-                                f64::from(v) * f64::from(output_extent) / f64::from(layer.extent()),
-                            ) as i32
-                        })
-                    })
-                    .collect();
-                let total_distance: f64 = scaled
-                    .windows(2)
-                    .map(|p| Point::from(p[1]).sub(Point::from(p[0])).mag())
-                    .sum();
-                for line in clip_polyline(
-                    &scaled,
-                    kind == GeometryType::Polygon,
-                    -margin,
-                    extent + margin,
-                ) {
+                let mut scaled: Vec<[i64; 2]> = ring.iter().map(&place).collect();
+                scaled.dedup();
+                let closed = kind == GeometryType::Polygon;
+                let total_distance: f64 = scaled.windows(2).map(|p| length(p[0], p[1])).sum();
+                let resets =
+                    reset.map(|at| Resets::along(&scaled, closed, at, frame.sharp_corner_offset));
+                for mut line in clip_polyline(&scaled, closed, -margin, extent + margin) {
+                    if let Some(step) = frame.step {
+                        subdivide(&mut line, step);
+                    }
+                    let start = resets
+                        .as_ref()
+                        .map_or(line.start_distance, |r| r.distance(line.start_distance));
                     Extrusion {
                         builder: &mut builder,
                         slot: slot as u32,
                         edges: [None; 2],
-                        distance_scale: 8192.0 / f64::from(extent),
-                        distance: 0.0,
+                        distance_scale,
+                        overscale: frame.overscale,
+                        reset,
+                        distance: start,
                         distance_point: None,
                         clips,
                         total_distance,
+                        last: None,
+                        at_clip: false,
                     }
-                    .add_line(&line, &params, sharp_corner_offset);
+                    .add_line(&line, &params, frame.sharp_corner_offset);
                 }
             }
         }
     }
     builder.finish()
+}
+
+/// Adds a vertex to `line` wherever it crosses a grid line `step` apart.
+fn subdivide(line: &mut ClippedLine, step: f64) {
+    let n = line.points.len();
+    let mut points = Vec::with_capacity(n);
+    let mut crossings = Vec::new();
+    let mut seam = None;
+    for i in 0..n {
+        if line.seam.is_some_and(|(at, _)| at == i) {
+            seam = Some(points.len());
+        }
+        points.push(line.points[i]);
+        let next = match line.points.get(i + 1) {
+            Some(&next) => next,
+            None if line.closed => line.points[0],
+            None => break,
+        };
+        orb_tile::grid_crossings(line.points[i], next, step, &mut crossings);
+        points.extend_from_slice(&crossings);
+    }
+    line.points = points;
+    line.seam = line.seam.zip(seam).map(|((_, d), at)| (at, d));
+}
+
+fn length(a: [i64; 2], b: [i64; 2]) -> f64 {
+    (b[0] as f64 - a[0] as f64).hypot(b[1] as f64 - a[1] as f64)
+}
+
+/// Where GL JS resets a line's distance as it lays the whole line out: at
+/// each vertex the distance since the last reset passes `at`. A piece of
+/// the line clipped out of it starts with GL JS's distance there.
+struct Resets(Vec<f64>);
+
+impl Resets {
+    /// GL JS's resets along `line` (deduplicated; a ring may repeat its
+    /// first vertex), whose distance starts at its first vertex with the
+    /// closing edge's length when it is a ring, as GL JS's does. It checks
+    /// at each vertex and at the points it adds `sharp_offset` either side
+    /// of a sharp corner.
+    fn along(line: &[[i64; 2]], closed: bool, at: f64, sharp_offset: f64) -> Self {
+        let n = line.len() - usize::from(closed && line.len() > 1 && line.first() == line.last());
+        let ring = closed && n > 1;
+        let len = n + usize::from(ring);
+        let point = |i: usize| line[i % n].map(|v| v as f64);
+        let direction = |a: [f64; 2], b: [f64; 2]| {
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let m = d[0].hypot(d[1]);
+            [d[0] / m, d[1] / m]
+        };
+        let mut distance = if ring {
+            length(line[n - 1], line[0])
+        } else {
+            0.0
+        };
+        let mut resets = vec![0.0];
+        let mut last = 0.0;
+        let mut check = |distance: f64| {
+            if distance - last > at {
+                last = distance;
+                resets.push(distance);
+            }
+        };
+        for i in 0..len {
+            let prev = if i > 0 {
+                Some(point(i - 1))
+            } else {
+                ring.then(|| point(n - 1))
+            };
+            let next = if i + 1 < len {
+                Some(point(i + 1))
+            } else {
+                ring.then(|| point(1))
+            };
+            let p = point(i);
+            let sharp = match (prev, next) {
+                (Some(a), Some(b)) if sharp_offset > 0.0 => {
+                    let (d1, d2) = (direction(a, p), direction(p, b));
+                    let cos = d1[0] * d2[0] + d1[1] * d2[1];
+                    ((1.0 + cos) / 2.0).max(0.0).sqrt() < COS_HALF_SHARP_CORNER
+                }
+                _ => false,
+            };
+            let before = if i > 0 {
+                length(line[i - 1], line[i % n])
+            } else {
+                0.0
+            };
+            if sharp && i > 0 && before > 2.0 * sharp_offset {
+                check(distance + before - sharp_offset);
+            }
+            distance += before;
+            check(distance);
+            if let Some(b) = next.filter(|_| sharp && i + 1 < len) {
+                let after = (b[0] - p[0]).hypot(b[1] - p[1]);
+                if after > 2.0 * sharp_offset {
+                    check(distance + sharp_offset);
+                }
+            }
+        }
+        Self(resets)
+    }
+
+    /// GL JS's distance at `distance` along the whole line, as
+    /// [`ClippedLine::start_distance`] counts it.
+    fn distance(&self, distance: f64) -> f64 {
+        let i = self.0.partition_point(|&r| r <= distance);
+        distance - self.0[i.saturating_sub(1)]
+    }
 }
 
 /// GeoJSON-vt's range along the original line. Absent for ordinary vector
@@ -267,15 +457,25 @@ struct Extrusion<'a> {
     // Last vertex on each side of the strip (GL JS's e1/e2).
     edges: [Option<u32>; 2],
     distance_scale: f64,
+    /// GL JS's units per unit of the tile it lays the line out in, for
+    /// `lineMetrics` progress packed as a distance there ([`Frame`]).
+    overscale: f64,
+    /// The distance past which GL JS starts it again, if it does.
+    reset: Option<f64>,
     distance: f64,
     distance_point: Option<Point>,
     clips: Option<[f64; 2]>,
     total_distance: f64,
+    /// The last pair added, as `add_current_vertex` took it.
+    last: Option<(Point, Point, f64, f64, bool, Point)>,
+    /// Whether the vertex being added is where the line was clipped: GL
+    /// JS has no vertex there to reset its distance at.
+    at_clip: bool,
 }
 
 impl Extrusion<'_> {
+    /// Adds `line`, its distance starting from `self.distance`.
     fn add_line(&mut self, line: &ClippedLine, params: &LineLayout, sharp_offset: f64) {
-        self.distance = line.start_distance;
         let points = &line.points;
         let len = points.len() + usize::from(line.closed);
         let miter_limit = if params.join == LineJoin::Bevel {
@@ -292,6 +492,7 @@ impl Extrusion<'_> {
             next_normal = Some(Point::from(points[0]).sub(last).unit().perp());
         }
         for i in 0..len {
+            self.at_clip = (i == 0 && line.start_clipped) || (i == len - 1 && line.end_clipped);
             let next = if i == len - 1 {
                 line.closed.then(|| Point::from(points[1]))
             } else {
@@ -469,6 +670,14 @@ impl Extrusion<'_> {
                     }
                 }
             }
+            if let Some((at, distance)) = line.seam
+                && at == i
+                && let Some((p, normal, left, right, round, offset)) = self.last
+            {
+                // A ring's distance starts again at its first vertex.
+                self.distance = distance;
+                self.add_current_vertex(p, normal, left, right, round, offset);
+            }
             current = Some(p);
             if sharp && i < len - 1 {
                 let delta = next.expect("middle vertex").sub(p);
@@ -505,7 +714,8 @@ impl Extrusion<'_> {
         };
         self.add_half_vertex(p, left, offset_normal, round, false);
         self.add_half_vertex(p, right, offset_normal.mul(-1.0), round, true);
-        if self.clips.is_none() && self.distance * self.distance_scale > 16384.0 {
+        self.last = Some((p, normal, end_left, end_right, round, offset_normal));
+        if !self.at_clip && self.reset.is_some_and(|at| self.distance > at) {
             self.distance = 0.0;
             self.add_current_vertex(p, normal, end_left, end_right, round, offset_normal);
         }
@@ -522,7 +732,7 @@ impl Extrusion<'_> {
     fn scaled_distance(&self) -> f64 {
         self.clips
             .map_or(self.distance * self.distance_scale, |[start, end]| {
-                (start + (end - start) * self.progress()) * 32767.0
+                (start + (end - start) * self.progress()) * 32767.0 * self.overscale
             })
     }
 
@@ -536,7 +746,7 @@ impl Extrusion<'_> {
         let oy = js_round(EXTRUDE_SCALE * offset.y) as i64 as i8 as u8;
         let flags = u32::from(round)
             | u32::from(up) << 1
-            | ((self.scaled_distance() / 2.0) as u32 & 16383) << 2;
+            | ((self.scaled_distance() / 2.0) as u32 & DISTANCE_MASK) << 2;
         let data = u32::from(x) | u32::from(y) << 8 | u32::from(ox) << 16 | u32::from(oy) << 24;
         let vertex = self.builder.push_vertex(
             position,
@@ -944,8 +1154,9 @@ mod tests {
             &[[-5000, 50], [1000, 50], [9000, 50]],
             &params(LineJoin::Miter, LineCap::Round),
         );
-        // Past 16384 normalized units the distance resets: a pair repeats.
-        counts(&mesh, 8, 6);
+        // GL JS resets the distance at the last vertex, past the clip, so
+        // no pair repeats where the line is clipped.
+        counts(&mesh, 6, 4);
         assert_eq!(
             positions(&mesh),
             [
@@ -955,8 +1166,6 @@ mod tests {
                 [1000, 50],
                 [8192, 50],
                 [8192, 50],
-                [8192, 50],
-                [8192, 50]
             ]
         );
         assert!(data(&mesh).iter().all(|v| v[2] & 1 == 0));
@@ -980,9 +1189,9 @@ mod tests {
         let mesh = layout(&b.finish(), &[0], |_| {
             params(LineJoin::Miter, LineCap::Round)
         });
-        // Four positions, two sharp-corner insertions, and the pair a
-        // distance reset repeats.
-        counts(&mesh, 14, 12);
+        // Four positions and two sharp-corner insertions; GL JS resets the
+        // distance at the last vertex, past the clip.
+        counts(&mesh, 12, 10);
         let positions = positions(&mesh);
         assert_eq!(positions.first(), Some(&[-4096, 10]));
         assert_eq!(positions.last(), Some(&[-4096, 20]));
@@ -1111,6 +1320,81 @@ mod tests {
         assert_eq!(first[2] >> 2, (904.0 / 6000.0 * 32767.0 / 2.0) as u32);
     }
 
+    /// Distances (word 2) and progress (word 4) at each position.
+    fn distances(mesh: &Mesh) -> Vec<([i16; 2], u32, f32)> {
+        let positions = positions(mesh);
+        let words = mesh.vertices.as_chunks::<STRIDE>().0;
+        positions
+            .into_iter()
+            .zip(words)
+            .map(|(p, v)| (p, (v[2] >> 2) * 2, f32::from_bits(v[4])))
+            .collect()
+    }
+
+    /// An overzoom slice's lines lay out along the data tile's whole lines:
+    /// at the data tile's vertices, each slice has the data tile's
+    /// distance in its units, reset where the data tile's is, and its
+    /// `lineMetrics` progress.
+    #[test]
+    fn overscaled_slices_run_on_along_the_data_tiles_lines() {
+        // A spiral and a 12-gon in 30° turns, too gentle for sharp corners,
+        // whose points differ between overscalings. Slices of four cut the
+        // polygon's ring, through its first vertex for some.
+        let around = |i: i32, r: f64| {
+            let a = f64::from(i) * std::f64::consts::PI / 6.0;
+            [4096.0 + r * a.cos(), 4096.0 + r * a.sin()].map(|v| v.round() as i32)
+        };
+        let spiral: Vec<_> = (0..18)
+            .map(|i| around(i, 3800.0 - 120.0 * f64::from(i)))
+            .collect();
+        let gon: Vec<_> = (0..12).map(|i| around(i, 3800.0)).collect();
+        let cases = [
+            (GeometryType::LineString, &spiral, false, 2),
+            (GeometryType::LineString, &spiral, true, 2),
+            (GeometryType::Polygon, &gon, false, 4),
+        ];
+        for (kind, ring, metrics, scale) in cases {
+            let mut b = LayerBuilder::new("roads", 8192);
+            feature(&mut b, kind, &[ring]);
+            if metrics {
+                b.set_property("geojsonvt_clip_start", orb_tile::Value::F64(0.0));
+                b.set_property("geojsonvt_clip_end", orb_tile::Value::F64(1.0));
+            }
+            let layer = b.finish();
+            let butt = params(LineJoin::Miter, LineCap::Butt);
+            let whole = distances(&layout(&layer, &[0], |_| butt));
+            // Without metrics, the whole line's distance resets once.
+            let resets = whole.iter().filter(|&&(_, d, _)| d == 0).count();
+            assert_eq!(
+                resets,
+                if metrics { 2 } else { 4 } - 2 * usize::from(kind == GeometryType::Polygon)
+            );
+            let mut matched = 0;
+            for cell in (0..scale * scale).map(|c| [c % scale, c / scale]) {
+                let ancestor = Ancestor { scale, cell };
+                let slice = layout_overscaled(&layer, &[0], |_| butt, ancestor, None);
+                for (q, d, progress) in distances(&slice) {
+                    let p = [0, 1].map(|i| i32::from(q[i]) + (cell[i] * 8192) as i32);
+                    if p.iter().any(|v| v % scale as i32 != 0) {
+                        continue;
+                    }
+                    let p = p.map(|v| (v / scale as i32) as i16);
+                    let at: Vec<_> = whole.iter().filter(|w| w.0 == p).collect();
+                    if at.is_empty() {
+                        continue;
+                    }
+                    matched += 1;
+                    assert!(
+                        at.iter().any(|w| d.abs_diff(w.1 * scale) <= 2 * scale
+                            && (progress - w.2).abs() < 1e-3),
+                        "{kind:?} {p:?} in {cell:?}: {d} {progress}, whole {at:?}"
+                    );
+                }
+            }
+            assert!(matched >= ring.len() * 2, "{matched}");
+        }
+    }
+
     #[test]
     fn ordinary_long_lines_duplicate_a_pair_at_distance_reset() {
         let points: Vec<_> = (0..40)
@@ -1133,11 +1417,15 @@ mod tests {
             builder: &mut builder,
             slot: 7,
             distance_scale: 1.0,
+            overscale: 1.0,
+            reset: None,
             edges: [None; 2],
             distance: 0.0,
             distance_point: None,
             clips: None,
             total_distance: 0.0,
+            last: None,
+            at_clip: false,
         };
         extrusion.add_half_vertex(
             Point { x: -10.0, y: 20.0 },
