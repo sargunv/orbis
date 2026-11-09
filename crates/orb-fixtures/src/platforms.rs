@@ -7,14 +7,17 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use crate::{Counts, images::Image, pixelmatch, run_suite, write_json};
+use crate::{Counts, Suite, images::Image, native, pixelmatch, pixelmatch_cpp, write_json};
 
-pub(crate) fn run(root: &Path, filter: &str, platform: &str) -> Result<(), String> {
-    let output = root.join("docs/scratch/rt");
+pub(crate) fn run(root: &Path, filter: &str, platform: &str, suite: Suite) -> Result<(), String> {
+    let output = match suite {
+        Suite::Render => root.join("docs/scratch/rt"),
+        Suite::NativeRender => root.join("docs/scratch/rt").join(suite.name()),
+    };
     // Only the container sets this; its suite writes its own report without
     // recursively launching Docker or replacing the host's combined report.
     if std::env::var_os("ORB_FIXTURES_LAVAPIPE").is_some() {
-        run_suite(root, filter, "lavapipe")?;
+        suite.run(root, filter, "lavapipe")?;
         return Ok(());
     }
     std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
@@ -26,14 +29,14 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str) -> Result<(), Strin
     let mut reports = BTreeMap::new();
     // Chrome always gets a fresh native baseline from the same invocation.
     if ["native", "chrome", "all"].contains(&platform) {
-        reports.insert("native", run_suite(root, filter, "native")?);
+        reports.insert("native", suite.run(root, filter, "native")?);
     }
     if ["chrome", "all"].contains(&platform) {
-        reports.insert("chrome", run_suite(root, filter, "chrome")?);
+        reports.insert("chrome", suite.run(root, filter, "chrome")?);
     }
     if ["lavapipe", "all"].contains(&platform) {
         let start = Instant::now();
-        container(root, filter)?;
+        container(root, filter, suite, &output)?;
         let path = output.join("lavapipe/summary.json");
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let mut report: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
@@ -42,7 +45,7 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str) -> Result<(), Strin
     }
     let identity =
         if let (Some(native), Some(chrome)) = (reports.get("native"), reports.get("chrome")) {
-            identity(&output, native, chrome)?
+            identity(&output, native, chrome, suite)?
         } else {
             Value::Null
         };
@@ -54,6 +57,30 @@ pub(crate) fn run(root: &Path, filter: &str, platform: &str) -> Result<(), Strin
         }
         print!("{platform:<9} ");
         counts_from(&report["totals"]).print("TOTAL");
+        if let Some(ignored) = report.get("native_ignored") {
+            println!(
+                "  Native ignores {} of them: {} pass, {} fail, {} skip",
+                ignored["pass"].as_u64().unwrap_or(0)
+                    + ignored["fail"].as_u64().unwrap_or(0)
+                    + ignored["skip"].as_u64().unwrap_or(0),
+                ignored["pass"],
+                ignored["fail"],
+                ignored["skip"]
+            );
+        }
+        if let Some(gl_js) = report.get("gl_js") {
+            println!(
+                "  shared with GL JS: {} ({} with the same style); expected images comparable \
+                 in {}, agreeing in {}; where they disagree Orbis matches {}; \
+                 Orbis matches GL JS's image in {}",
+                gl_js["shared"],
+                gl_js["same_style"],
+                gl_js["comparable"],
+                gl_js["references_agree"],
+                gl_js["references_disagree"],
+                gl_js["matches_gl_js"]
+            );
+        }
         println!(
             "  suite {:.3} s{}",
             report["total_seconds"].as_f64().unwrap(),
@@ -91,8 +118,8 @@ fn counts_from(v: &Value) -> Counts {
 }
 
 /// Runs the suite in the software-rendering container: Mesa's lavapipe
-/// (Vulkan).
-fn container(root: &Path, filter: &str) -> Result<(), String> {
+/// (Vulkan). Its report goes to `<output>/lavapipe`.
+fn container(root: &Path, filter: &str, suite: Suite, output: &Path) -> Result<(), String> {
     let software = "lavapipe";
     let dockerfile = root.join("crates/orb-fixtures/lavapipe/Dockerfile");
     run_command(
@@ -101,12 +128,17 @@ fn container(root: &Path, filter: &str) -> Result<(), String> {
             .arg(dockerfile)
             .arg(root.join("crates/orb-fixtures/lavapipe")),
     )?;
-    let output = root.join("docs/scratch/rt").join(software);
+    let output = &output.join(software);
+    let target = output
+        .strip_prefix(root)
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .into_owned();
     // No old report can be mistaken for this run's result.
     if output.exists() {
-        std::fs::remove_dir_all(&output).map_err(|e| e.to_string())?;
+        std::fs::remove_dir_all(output).map_err(|e| e.to_string())?;
     }
-    std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(output).map_err(|e| e.to_string())?;
     run_command(
         Command::new("docker")
             .args(["run", "--rm", "--init", "--mount"])
@@ -116,7 +148,7 @@ fn container(root: &Path, filter: &str) -> Result<(), String> {
             ))
             .args(["--mount"])
             .arg(format!(
-                "type=bind,source={},target=/work/docs/scratch/rt/{software}",
+                "type=bind,source={},target=/work/{target}",
                 output.display()
             ))
             .args(["--env", "ORB_FIXTURES_LAVAPIPE=1"])
@@ -135,6 +167,8 @@ fn container(root: &Path, filter: &str) -> Result<(), String> {
                 "-p",
                 "orb-fixtures",
                 "--",
+                "--suite",
+                suite.name(),
                 "--filter",
                 filter,
             ]),
@@ -155,7 +189,10 @@ fn run_command(command: &mut Command) -> Result<(), String> {
     }
 }
 
-fn identity(output: &Path, native: &Value, chrome: &Value) -> Result<Value, String> {
+/// Compares native and Chrome images of every native pass, with the suite's
+/// comparison: GL JS's pixelmatch and the test's threshold for GL JS's
+/// suite, Native's pixelmatch on premultiplied pixels for Native's.
+fn identity(output: &Path, native: &Value, chrome: &Value, suite: Suite) -> Result<Value, String> {
     let dir = output.join("identity");
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -180,20 +217,35 @@ fn identity(output: &Path, native: &Value, chrome: &Value) -> Result<Value, Stri
         let id = test["id"].as_str().unwrap();
         let metadata = &test["metadata"];
         let allowed = metadata["allowed"].as_f64().unwrap();
-        let mut result = json!({"id":id,"allowed":allowed,"threshold":metadata["threshold"]});
+        let threshold = metadata["threshold"].as_f64().unwrap_or(native::THRESHOLD);
+        let mut result = json!({"id":id,"allowed":allowed,"threshold":threshold});
         if let Some(other) = chrome.get(id).filter(|t| t["image"].is_string()) {
             let a = Image::read(&output.join("native").join(test["image"].as_str().unwrap()))?;
             let b = Image::read(&output.join("chrome").join(other["image"].as_str().unwrap()))?;
             if (a.width, a.height) != (b.width, b.height) {
                 return Err(format!("{id}: identity dimensions differ"));
             }
-            let (count, diff) = pixelmatch::compare(
-                &a.pixels,
-                &b.pixels,
-                a.width as usize,
-                a.height as usize,
-                metadata["threshold"].as_f64().unwrap(),
-            );
+            let (count, diff) = match suite {
+                Suite::Render => pixelmatch::compare(
+                    &a.pixels,
+                    &b.pixels,
+                    a.width as usize,
+                    a.height as usize,
+                    threshold,
+                ),
+                Suite::NativeRender => {
+                    let (mut a, mut b) = (a.clone(), b.clone());
+                    a.premultiply_native();
+                    b.premultiply_native();
+                    pixelmatch_cpp::compare(
+                        &a.pixels,
+                        &b.pixels,
+                        a.width as usize,
+                        a.height as usize,
+                        native::THRESHOLD,
+                    )
+                }
+            };
             let fraction = count as f64 / (f64::from(a.width) * f64::from(a.height));
             result["difference"] = json!(fraction);
             result["different_pixels"] = json!(count);
@@ -255,7 +307,7 @@ mod tests {
         let test = |id: &str, status: &str, allowed: f64| json!({"id":id,"status":status,"image":"a.png", "metadata":{"allowed":allowed,"threshold":0.1285}});
         let native = json!({"tests":[test("exact", "pass", 0.0),test("different", "pass", 0.0),test("allowed", "pass", 1.0),test("missing", "pass", 0.0),test("failed", "fail", 0.0),test("skipped", "skip", 0.0)]});
         let chrome = json!({"tests":[{"id":"exact","image":"../native/a.png"},{"id":"different","image":"b.png"},{"id":"allowed","image":"b.png"},{"id":"missing","status":"skip"}]});
-        let report = identity(&output, &native, &chrome).unwrap();
+        let report = identity(&output, &native, &chrome, Suite::Render).unwrap();
         assert_eq!(report["eligible"], 4);
         assert_eq!(report["match"], 2);
         assert_eq!(report["different"], 1);

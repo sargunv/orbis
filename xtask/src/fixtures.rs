@@ -67,7 +67,7 @@ const ASSETS: &str = "test/integration/assets/";
 const GLYPHS: &str = "glyphs/";
 
 /// The generated description inside the mirror, left out of its hash.
-const SOURCE_MD: &str = "SOURCE.md";
+pub(crate) const SOURCE_MD: &str = "SOURCE.md";
 
 fn fixtures_dir() -> PathBuf {
     let xtask = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -77,26 +77,46 @@ fn fixtures_dir() -> PathBuf {
 /// Fetches the mirror into `fixtures/gl-js/` unless the one there matches the
 /// pin.
 pub(crate) fn ensure() -> Result<(), String> {
-    let out = fixtures_dir().join("gl-js");
+    install(
+        "gl-js",
+        COMMIT,
+        MIRROR_SHA256,
+        "xtask/src/fixtures.rs",
+        mirror,
+    )
+}
+
+/// Builds a mirror with `build` into `fixtures/<name>.partial/` and moves it
+/// to `fixtures/<name>/` once it hashes to `sha256`, unless the one there
+/// already does. `pin` names the file that holds the pin, for the message
+/// a mismatch prints.
+pub(crate) fn install(
+    name: &str,
+    commit: &str,
+    sha256: &str,
+    pin: &str,
+    build: fn(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let out = fixtures_dir().join(name);
     if out.exists() {
         let hash = content_hash(&out)?;
-        if hash == MIRROR_SHA256 {
-            eprintln!("fixtures/gl-js matches {COMMIT} (sha256 {hash})");
+        if hash == sha256 {
+            eprintln!("fixtures/{name} matches {commit} (sha256 {hash})");
             return Ok(());
         }
-        eprintln!("fixtures/gl-js differs from the pin (sha256 {hash}); fetching it again");
+        eprintln!("fixtures/{name} differs from the pin (sha256 {hash}); fetching it again");
     }
-    let staging = fixtures_dir().join("gl-js.partial");
+    let staging = fixtures_dir().join(format!("{name}.partial"));
     if staging.exists() {
         fs::remove_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
     }
-    mirror(&staging)?;
+    build(&staging)?;
     let hash = content_hash(&staging)?;
-    if hash != MIRROR_SHA256 {
+    if hash != sha256 {
         return Err(format!(
-            "the mirror built from {COMMIT} hashes to {hash}, not the pinned {MIRROR_SHA256}; \
-             it is left in {} for review. If the pin changed on purpose, set MIRROR_SHA256 \
-             in xtask/src/fixtures.rs to the new hash.",
+            "the mirror built from {commit} hashes to {hash}, not the pinned {sha256}; \
+             it is left in {} for review. If the pin changed on purpose, set the hash \
+             in {pin} to the new one.",
             staging.display()
         ));
     }
@@ -104,14 +124,14 @@ pub(crate) fn ensure() -> Result<(), String> {
         fs::remove_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     }
     fs::rename(&staging, &out).map_err(|e| format!("{}: {e}", out.display()))?;
-    eprintln!("fixtures/gl-js verified (sha256 {hash})");
+    eprintln!("fixtures/{name} verified (sha256 {hash})");
     Ok(())
 }
 
 /// SHA-256 over every file in the mirror but `SOURCE.md`, in path order:
 /// each file's `/`-separated relative path, a NUL, its length as a
 /// little-endian `u64`, then its bytes.
-fn content_hash(dir: &Path) -> Result<String, String> {
+pub(crate) fn content_hash(dir: &Path) -> Result<String, String> {
     let mut files = Vec::new();
     walk(dir, String::new(), &mut files)?;
     files.sort();
@@ -143,11 +163,11 @@ fn walk(dir: &Path, prefix: String, files: &mut Vec<String>) -> Result<(), Strin
     Ok(())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn get(url: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn get(url: &str) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     ureq::get(url)
         .call()
@@ -194,27 +214,32 @@ fn mirror(out: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn open(archive: &[u8]) -> Archive<GzDecoder<Cursor<&[u8]>>> {
+pub(crate) fn open(archive: &[u8]) -> Archive<GzDecoder<Cursor<&[u8]>>> {
     Archive::new(GzDecoder::new(Cursor::new(archive)))
 }
 
-fn entry_path<R: Read>(entry: &tar::Entry<R>) -> Result<String, String> {
+pub(crate) fn entry_path<R: Read>(entry: &tar::Entry<R>) -> Result<String, String> {
     let path = entry.path_bytes();
     String::from_utf8(path.into_owned()).map_err(|e| format!("non-UTF-8 path in tarball: {e}"))
 }
 
-/// A tarball path without the `maplibre-gl-js-<commit>/` root GitHub wraps
-/// every entry in. A different root means the tarball isn't the pinned commit.
-fn unwrap_root(path: &str) -> Result<Option<&str>, String> {
-    let Some((root, rest)) = path.split_once('/') else {
+/// A tarball path without the `<repo>-<commit>/` root GitHub wraps every
+/// entry in (`root`). A different root means the tarball isn't the pinned
+/// commit.
+pub(crate) fn unwrap_root<'a>(path: &'a str, root: &str) -> Result<Option<&'a str>, String> {
+    let Some((top, rest)) = path.split_once('/') else {
         return Ok(None);
     };
-    if root != format!("maplibre-gl-js-{COMMIT}") {
+    if top != root {
         return Err(format!(
             "tarball entry {path} is not under the pinned commit"
         ));
     }
     Ok(Some(rest))
+}
+
+fn gl_js_root() -> String {
+    format!("maplibre-gl-js-{COMMIT}")
 }
 
 struct Scanned {
@@ -260,7 +285,7 @@ fn scan(archive: &[u8]) -> Result<Scanned, String> {
             continue;
         }
         let path = entry_path(&entry)?;
-        let Some(path) = unwrap_root(&path)? else {
+        let Some(path) = unwrap_root(&path, &gl_js_root())? else {
             continue;
         };
         if let Some(rel) = path.strip_prefix(ASSETS) {
@@ -583,7 +608,7 @@ fn extract(archive: &[u8], out: &Path, wanted: &BTreeSet<String>) -> Result<Writ
             continue;
         }
         let path = entry_path(&entry)?;
-        let Some(path) = unwrap_root(&path)? else {
+        let Some(path) = unwrap_root(&path, &gl_js_root())? else {
             continue;
         };
         let mut query = false;

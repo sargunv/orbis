@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Image {
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -73,6 +73,35 @@ impl Image {
                     *c = (f64::from(*c) / alpha) as u32 as u8;
                 }
             }
+        }
+    }
+
+    /// Native's `util::premultiply`, as its `decodeImage` applies it to
+    /// expected PNGs.
+    pub(crate) fn premultiply_native(&mut self) {
+        for pixel in self.pixels.as_chunks_mut::<4>().0 {
+            let a = u32::from(pixel[3]);
+            for c in &mut pixel[..3] {
+                *c = ((u32::from(*c) * a + 127) / 255) as u8;
+            }
+        }
+    }
+
+    /// Native's `util::unpremultiply`, as its `encodePNG` writes images.
+    pub(crate) fn unpremultiply_native(&self) -> Self {
+        let mut pixels = self.pixels.clone();
+        for pixel in pixels.as_chunks_mut::<4>().0 {
+            let a = u32::from(pixel[3]);
+            for c in &mut pixel[..3] {
+                if let Some(v) = (255 * u32::from(*c) + a / 2).checked_div(a) {
+                    *c = v.min(255) as u8;
+                }
+            }
+        }
+        Self {
+            width: self.width,
+            height: self.height,
+            pixels,
         }
     }
 }

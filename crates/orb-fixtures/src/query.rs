@@ -50,9 +50,13 @@ pub(crate) fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, 
     std::fs::create_dir_all(&output).map_err(|e| e.to_string())?;
     let started = Instant::now();
     let mut backend = if name == "chrome" {
-        Backend::Chrome(chrome::Chrome::new(root)?)
+        Backend::Chrome(chrome::Chrome::new(
+            root,
+            &assets(root),
+            crate::fetch::Assets::GlJs,
+        )?)
     } else {
-        runtime(root)?
+        runtime(&assets(root), crate::fetch::Assets::GlJs)?
     };
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;
@@ -212,7 +216,7 @@ fn prefix(id: &str) -> String {
 }
 
 /// Runs the query on a settled map and waits for its workers.
-fn query_native(map: &mut Map, [x1, y1, x2, y2]: [f64; 4]) -> Result<Value, String> {
+pub(crate) fn query_native(map: &mut Map, [x1, y1, x2, y2]: [f64; 4]) -> Result<Value, String> {
     let id = map.query_rendered(glam::DVec2::new(x1, y1), glam::DVec2::new(x2, y2));
     let deadline = Instant::now() + Duration::from_secs(30);
     let json = loop {

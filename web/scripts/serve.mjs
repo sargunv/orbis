@@ -16,9 +16,10 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/ja
 // `isolated` serves the pages cross-origin isolated, which refines
 // `performance.now()` from 100 µs to 5 µs in Chrome. `assets` serves that
 // directory at `fixtures/` too (the GL JS fixtures'), its JSON's `local://`
-// URLs pointing there. `mounts` serves more directories, by path prefix
-// (`{ "mlnrs/": dir }`).
-export async function serveDemo({ isolated = false, assets, mounts = {} } = {}) {
+// URLs pointing there; `offline` points its `https://` and `mapbox://` URLs
+// at its `https/` and `mapbox/` directories too (MapLibre Native's cache).
+// `mounts` serves more directories, by path prefix (`{ "mlnrs/": dir }`).
+export async function serveDemo({ isolated = false, assets, offline = false, mounts = {} } = {}) {
   await build({ configFile: fileURLToPath(new URL("../vite.config.js", import.meta.url)), logLevel: "warn" });
   const isolation = isolated
     ? { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp" }
@@ -53,6 +54,7 @@ export async function serveDemo({ isolated = false, assets, mounts = {} } = {}) 
       if (dir === assets && extname(path) === ".json") {
         const here = `http://127.0.0.1:${server.address().port}/orbis/fixtures/`;
         body = body.toString().replaceAll("local://", here).replaceAll("http://localhost:2900/", here);
+        if (offline) body = body.replaceAll("https://", `${here}https/`).replaceAll("mapbox://", `${here}mapbox/`);
       }
       res.writeHead(200, { "content-type": types[extname(path)] ?? "application/octet-stream",
         ...isolation });

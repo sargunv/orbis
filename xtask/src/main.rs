@@ -12,6 +12,7 @@ mod expression_fixtures;
 mod fixtures;
 mod h2h;
 mod labels;
+mod native_fixtures;
 mod pmtiles;
 mod support;
 mod sweep;
@@ -43,8 +44,10 @@ cargo xtask <task>
   web          build core.wasm into web/pkg, report sizes
   pages        build the Pages site (web, then Vite) into web/dist; the
                Pages workflow runs it and deploys on every push to main
-  rt [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]
-               the GL JS fixtures
+  rt [--suite <suite>] [--filter <substring>] [--platform native|chrome|lavapipe|all]
+               the fixtures: GL JS's render (default) and query suites, or
+               MapLibre Native's native-render, native-query and
+               native-expression suites; lavapipe runs the render suites
   support      docs/style-support.md, the style support matrix, from the
                spec's v8.json, orb-style's property table and the latest
                fixture results in docs/scratch/rt; run it after the fixtures
@@ -61,9 +64,11 @@ cargo xtask <task>
   sweep [--dry-run] [--target-dir <path>] [--keep-hours <n>]  prune stale build
                artifacts: keep every build compiled in the last <n> hours
                (default 6) and the 2 newest builds of each crate
-  fixtures [expressions]  fetch and verify the pinned GL JS fixture mirror
-               (fixtures/gl-js, not committed); with `expressions`, bundle the
-               pinned style-spec expression fixtures into orb-expr
+  fixtures [gl-js|native|expressions]  fetch and verify the pinned GL JS
+               and MapLibre Native fixture mirrors (fixtures/gl-js and
+               fixtures/native, not committed), or one of them; with
+               `expressions`, bundle the pinned style-spec expression
+               fixtures into orb-expr
   demo-data    reproduce the committed Tokyo MVT/MLT PMTiles extracts, then
                add Liberty's labels, sprite and glyph subsets to their styles
   unicode      regenerate orb-text's character tables from the UCD
@@ -91,7 +96,12 @@ fn main() -> ExitCode {
         Some("fixtures") if args.get(1).map(String::as_str) == Some("expressions") => {
             expression_fixtures::bundle()
         }
-        Some("fixtures") => fixtures::ensure(),
+        Some("fixtures") => match args.get(1).map(String::as_str) {
+            Some("gl-js") => fixtures::ensure(),
+            Some("native") => native_fixtures::ensure(),
+            None => fixtures::ensure().and_then(|()| native_fixtures::ensure()),
+            Some(other) => Err(format!("fixtures: unknown mirror `{other}`")),
+        },
         Some("demo-data") => pmtiles::extract().and_then(|()| labels::generate()),
         Some("unicode") => unicode::generate(),
         Some("help") | None => {
@@ -110,7 +120,20 @@ fn main() -> ExitCode {
 }
 
 fn rt(args: &[String]) -> Result<(), String> {
-    fixtures::ensure()?;
+    let suite = args
+        .windows(2)
+        .find(|pair| pair[0] == "--suite")
+        .map_or("render", |pair| pair[1].as_str());
+    if suite.starts_with("native-") {
+        native_fixtures::ensure()?;
+    } else {
+        fixtures::ensure()?;
+    }
+    // Native's render suite also compares with GL JS's images where the
+    // suites share a test.
+    if suite == "native-render" {
+        fixtures::ensure()?;
+    }
     if args
         .windows(2)
         .any(|pair| pair[0] == "--platform" && ["chrome", "all"].contains(&pair[1].as_str()))

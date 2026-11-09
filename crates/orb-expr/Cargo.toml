@@ -6,6 +6,10 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# The expression conformance runner, public for orb-fixtures.
+conformance = []
+
 [dependencies]
 serde.workspace = true
 orb-tile.workspace = true

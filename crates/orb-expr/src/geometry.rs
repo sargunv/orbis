@@ -77,7 +77,7 @@ fn lng_lat(p: Point, tile: CanonicalTile, extent: f64) -> Point {
 }
 /// Fixture adapter: the reference runner quantizes its GeoJSON inputs into
 /// local integer coordinates before invoking expression evaluation.
-#[cfg(test)]
+#[cfg(any(test, feature = "conformance"))]
 pub(crate) fn fixture_geometry(json: &Json, tile: CanonicalTile) -> Option<FeatureGeometry> {
     let geometries = parse_geojson(json)?;
     let kind = match json.get("type")?.as_str()? {

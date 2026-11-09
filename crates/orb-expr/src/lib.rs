@@ -52,8 +52,11 @@ use ir::{Deps, Ir, Op};
 use json::{Json, Span};
 use parse::Parser;
 
-#[cfg(test)]
-mod conformance;
+/// The style-spec expression suite's runner, for the fixture harness
+/// (`orb-fixtures`) to run MapLibre Native's copy of the suite with.
+#[cfg(any(test, feature = "conformance"))]
+#[doc(hidden)]
+pub mod conformance;
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, target_arch = "wasm32"))]
@@ -190,7 +193,7 @@ impl Expression {
     }
 
     /// The path, within the expression, of the operator that failed.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "conformance"))]
     fn error_path(&self, error: &EvalError) -> &str {
         &self.ir.paths[error.node as usize]
     }

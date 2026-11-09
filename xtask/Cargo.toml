@@ -19,6 +19,7 @@ mlt-core = { version = "=0.22.1", default-features = false, features = ["__priva
 brotli.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 ureq.workspace = true
+rusqlite.workspace = true
 flate2.workspace = true
 tar.workspace = true
 sha2.workspace = true

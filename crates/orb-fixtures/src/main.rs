@@ -1,4 +1,5 @@
-//! Sequential offscreen render measurements against the read-only GL JS mirror.
+//! Sequential offscreen render measurements against the read-only GL JS
+//! and MapLibre Native mirrors.
 
 #![forbid(unsafe_code)]
 
@@ -7,8 +8,11 @@ mod dem;
 mod fetch;
 mod images;
 mod metadata;
+mod native;
+mod native_expression;
 mod operations;
 mod pixelmatch;
+mod pixelmatch_cpp;
 mod platforms;
 mod query;
 mod scope;
@@ -41,20 +45,17 @@ fn run() -> Result<(), String> {
     let mut filter = String::new();
     let mut platform = "native".to_string();
     let mut suite = "render".to_string();
+    const USAGE: &str = "usage: orb-fixtures [--suite render|query|native-render|native-query|native-expression] [--filter <substring>] [--platform native|chrome|lavapipe|all]";
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--suite" => suite = args.next().ok_or("--suite needs render|query")?,
+            "--suite" => suite = args.next().ok_or(USAGE)?,
             "--filter" => filter = args.next().ok_or("--filter needs a substring")?,
             "--platform" => {
                 platform = args
                     .next()
                     .ok_or("--platform needs native|chrome|lavapipe|all")?
             }
-            _ => {
-                return Err(format!(
-                    "unknown argument {arg}; usage: orb-fixtures [--suite render|query] [--filter <substring>] [--platform native|chrome|lavapipe|all]"
-                ));
-            }
+            _ => return Err(format!("unknown argument {arg}; {USAGE}")),
         }
     }
     if !["native", "chrome", "lavapipe", "all"].contains(&platform.as_str()) {
@@ -65,19 +66,55 @@ fn run() -> Result<(), String> {
         .canonicalize()
         .map_err(|e| e.to_string())?;
     match suite.as_str() {
-        "render" => platforms::run(&root, &filter, &platform),
-        "query" => {
+        "render" => platforms::run(&root, &filter, &platform, Suite::Render),
+        "native-render" => platforms::run(&root, &filter, &platform, Suite::NativeRender),
+        "query" | "native-query" => {
             if !["native", "chrome", "all"].contains(&platform.as_str()) {
-                return Err("the query suite runs natively and in Chrome".into());
+                return Err("the query suites run natively and in Chrome".into());
             }
             for name in ["native", "chrome"] {
                 if platform == name || platform == "all" {
-                    query::run_suite(&root, &filter, name)?;
+                    if suite == "query" {
+                        query::run_suite(&root, &filter, name)?;
+                    } else {
+                        native::run_query_suite(&root, &filter, name)?;
+                    }
                 }
             }
             Ok(())
         }
-        _ => Err(format!("unknown suite {suite}")),
+        // The expressions evaluate on the CPU, the same code on every
+        // platform.
+        "native-expression" => native_expression::run(&root, &filter),
+        _ => Err(format!("unknown suite {suite}; {USAGE}")),
+    }
+}
+
+/// The render suites, which run on every platform.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Suite {
+    /// GL JS's render tests (`fixtures/gl-js/render`).
+    Render,
+    /// MapLibre Native's (`fixtures/native/integration/render-tests`).
+    NativeRender,
+}
+
+impl Suite {
+    /// Its name for `--suite`, and its report directory under
+    /// `docs/scratch/rt` (GL JS's render suite writes there directly).
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Suite::Render => "render",
+            Suite::NativeRender => "native-render",
+        }
+    }
+
+    /// Runs the suite on one platform; its summary.
+    pub(crate) fn run(self, root: &Path, filter: &str, platform: &str) -> Result<Value, String> {
+        match self {
+            Suite::Render => run_suite(root, filter, platform),
+            Suite::NativeRender => native::run_render_suite(root, filter, platform),
+        }
     }
 }
 
@@ -87,13 +124,13 @@ enum Backend {
     Chrome(chrome::Chrome),
 }
 
-/// The runtime every native fixture's map is made from, fetching the
-/// mirror's assets for GL JS's test server.
-pub(crate) fn runtime(root: &Path) -> Result<Backend, String> {
-    let assets = assets(root);
+/// The runtime every native fixture's map is made from, fetching a
+/// mirror's `assets` the way its suite's test server or cache serves them.
+pub(crate) fn runtime(assets: &Path, kind: fetch::Assets) -> Result<Backend, String> {
+    let assets = assets.to_path_buf();
     let runtime = Runtime::new(&RuntimeOptions::default()).map_err(|e| e.to_string())?;
     runtime.set_request_transform(Some(Arc::new(move |url: &str| {
-        let url = fetch::resolve(&assets, url)?;
+        let url = fetch::resolve(&assets, url, kind)?;
         Some(orb_api::Request {
             url,
             headers: Vec::new(),
@@ -130,8 +167,12 @@ fn run_suite(root: &Path, filter: &str, name: &str) -> Result<Value, String> {
     std::fs::create_dir_all(output.join("failures")).map_err(|e| e.to_string())?;
     let started = Instant::now();
     let mut backend = match name {
-        "chrome" => Backend::Chrome(chrome::Chrome::new(root)?),
-        _ => runtime(root)?,
+        "chrome" => Backend::Chrome(chrome::Chrome::new(
+            root,
+            &assets(root),
+            fetch::Assets::GlJs,
+        )?),
+        _ => runtime(&assets(root), fetch::Assets::GlJs)?,
     };
     let mut paths = Vec::new();
     discover(&fixtures, &mut paths)?;

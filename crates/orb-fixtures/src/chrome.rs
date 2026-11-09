@@ -8,7 +8,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{Value, json};
 
-use crate::{images::Image, metadata::Metadata};
+use crate::{fetch::Assets, images::Image, metadata::Metadata};
 
 pub(crate) struct Chrome {
     child: Child,
@@ -19,10 +19,13 @@ pub(crate) struct Chrome {
 }
 
 impl Chrome {
-    /// The driver, drawing on WebGPU.
-    pub(crate) fn new(root: &Path) -> Result<Self, String> {
+    /// The driver, drawing on WebGPU, serving `assets` to the page as
+    /// `kind`'s suite serves them.
+    pub(crate) fn new(root: &Path, assets: &Path, kind: Assets) -> Result<Self, String> {
         let mut child = Command::new("node")
             .arg(root.join("web/scripts/render-fixtures.mjs"))
+            .arg(assets)
+            .args((kind == Assets::Native).then_some("--offline"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -73,6 +76,11 @@ impl Chrome {
             .as_object_mut()
             .expect("an object")
             .extend(extra.as_object().expect("an object").clone());
+        self.request(request)
+    }
+
+    /// Sends one request and reads the reply.
+    pub(crate) fn request(&mut self, request: Value) -> Result<Value, String> {
         let input = self.input.as_mut().expect("open transport");
         serde_json::to_writer(&mut *input, &request).map_err(|e| e.to_string())?;
         input

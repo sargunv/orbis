@@ -3,9 +3,12 @@
 <title>Orbis · fixture driver</title>
 <script type="module">
 // `cargo xtask rt --platform chrome`'s page (web/scripts/render-fixtures.mjs):
-// one GL JS fixture through the orbis package, settled as orb-fixtures
-// settles it natively. `window.fixture(request)` resolves to its
-// premultiplied RGBA pixels as base64, or with `query` set to its features' JSON.
+// one fixture through the orbis package, settled as orb-fixtures settles it
+// natively: a GL JS fixture as GL JS's harness does, a MapLibre Native one
+// (`native` set) as Native's runner does. `window.fixture(request)`
+// resolves to its RGBA pixels as base64 (a GL JS fixture's premultiplied, a
+// Native one's straight, from `snapshot()`), or with `query` set to its
+// features' JSON.
 import { createMap } from "orbis";
 
 const assets = new URL("fixtures/", location.href).href;
@@ -39,7 +42,73 @@ async function apply(map, [name, ...args]) {
   }
 }
 
+const base64 = (data) => {
+  let binary = "";
+  for (let i = 0; i < data.length; i += 8192) binary += String.fromCharCode(...data.subarray(i, i + 8192));
+  return btoa(binary);
+};
+
+// MapLibre Native's runner reads every request from its cache: its
+// `https://` and `mapbox://` URLs are files under the assets too.
+const offline = (text) => local(text).replaceAll("https://", `${assets}https/`).replaceAll("mapbox://", `${assets}mapbox/`);
+
+/** A Native fixture: operations apply before the first frame, `wait` and
+ * the feature-state calls draw a still first, and the picture is a still
+ * (orb-fixtures' `native.rs`). */
+async function native(r) {
+  const container = document.createElement("div");
+  Object.assign(container.style, { width: `${r.width}px`, height: `${r.height}px` });
+  document.body.replaceChildren(container);
+  const warnings = [];
+  const map = await createMap({
+    container, style: JSON.parse(offline(r.style)), interactive: false, pixelRatio: r.ratio,
+    constraints: { minZoom: 0, maxZoom: 25.5, maxPitch: r.max_pitch }, fadeDuration: 0, antialias: false,
+    crossSourceCollisions: r.cross_source_collisions, localIdeographFontFamily: false,
+  });
+  map.on("warning", ({ message }) => warnings.push(message));
+  map.on("error", ({ message }) => warnings.push(message));
+  const still = () => map.snapshot(r.width, r.height, r.ratio);
+  try {
+    // Native loads a style document before the runner goes on; here it
+    // loads in a frame or two.
+    for (const end = performance.now() + r.timeout_ms; ;) {
+      try { map.getStyle(); break; } catch (e) { if (performance.now() > end) throw e; }
+      map.triggerRepaint();
+      await new Promise((resolve) => setTimeout(resolve, 16));
+    }
+    for (const op of JSON.parse(offline(JSON.stringify(r.operations)))) {
+      const [name, ...args] = op;
+      try {
+        if (["wait", "setFeatureState", "getFeatureState", "removeFeatureState"].includes(name)) await still();
+        if (["wait", "sleep", "getFeatureState"].includes(name) || name.startsWith("probe")) continue;
+        if (name === "setStyle") map.setStyle(args[0]);
+        else if (name === "addImage" || name === "updateImage") {
+          // Native's addImage replaces an image of the same name.
+          if (map.hasImage(args[0])) map.removeImage(args[0]);
+          await apply(map, ["addImage", args[0], `mapbox/render-tests/${args[1]}`, args[2]]);
+        } else await apply(map, op);
+      } catch (e) { warnings.push(`operation ${JSON.stringify(op)}: ${e?.message ?? e}`); }
+    }
+    if (r.query) {
+      await still();
+      // Queries read the last interactive frame, which stills don't
+      // replace: draw the settled map as one.
+      for (const end = performance.now() + r.timeout_ms; ;) {
+        const drawn = map.once("render");
+        map.triggerRepaint();
+        if ((await drawn).idle || performance.now() > end) break;
+      }
+      return JSON.stringify(await map.queryRenderedFeatures([r.query.slice(0, 2), r.query.slice(2)]));
+    }
+    const image = await still();
+    return { rgba: base64(image.data), warnings, width: image.width, height: image.height };
+  } finally {
+    map.remove();
+  }
+}
+
 window.fixture = async (r) => {
+  if (r.native) return native(r);
   const container = document.createElement("div");
   Object.assign(container.style, { width: `${r.width / r.ratio}px`, height: `${r.height / r.ratio}px` });
   document.body.replaceChildren(container);
@@ -86,9 +155,7 @@ window.fixture = async (r) => {
       return JSON.stringify(await map.queryRenderedFeatures([r.query.slice(0, 2), r.query.slice(2)]));
     }
     const { data } = await map.readPixels({ premultiplied: true });
-    let binary = "";
-    for (let i = 0; i < data.length; i += 8192) binary += String.fromCharCode(...data.subarray(i, i + 8192));
-    return { rgba: btoa(binary), warnings, frames, tiles_drawn: stats.tilesDrawn, timed_out: timedOut };
+    return { rgba: base64(data), warnings, frames, tiles_drawn: stats.tilesDrawn, timed_out: timedOut };
   } finally {
     map.remove();
   }

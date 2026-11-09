@@ -6,9 +6,11 @@
 /web/pkg/
 /web/node_modules/
 /web/dist/
-# The GL JS fixture mirror, fetched by `cargo xtask fixtures`.
+# The GL JS and MapLibre Native fixture mirrors, fetched by `cargo xtask fixtures`.
 /fixtures/gl-js/
 /fixtures/gl-js.partial/
+/fixtures/native/
+/fixtures/native.partial/
 # Built by `cargo xtask apple` and `cargo xtask android`.
 /hosts/apple/OrbisC.xcframework/
 /hosts/apple/.build/

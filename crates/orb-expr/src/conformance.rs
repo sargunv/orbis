@@ -1,6 +1,8 @@
 //! The complete pinned style-spec expression conformance suite. Native and
 //! wasm tests share compilation, inputs, error paths and output comparisons.
 //! See `tests/data/SOURCE.md` for the upstream version and regeneration.
+//! With the `conformance` feature, [`check`] runs one fixture for
+//! `orb-fixtures`, which runs MapLibre Native's copy of the suite.
 
 use crate::eval::{Evaluator, Feature};
 use crate::ir::KeyId;
@@ -11,6 +13,7 @@ use crate::property::{PropertyExpression, PropertySpec, PropertyType};
 use crate::value::{Type, Value};
 use crate::{Expression, Kind};
 
+#[cfg(test)]
 pub(crate) const FIXTURES: &str = include_str!("../tests/data/expression-fixtures.json");
 const ROOT_KEY: &str = "layers[0].paint.some-property";
 
@@ -183,9 +186,28 @@ fn numbers_match(a: f64, b: f64) -> bool {
     a == b || (a - b).abs() <= 2.0 * 10f64.powf(magnitude.log10().ceil() - 6.0)
 }
 
+/// Whose expectations a fixture holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reference {
+    /// maplibre-style-spec's, which GL JS's harness checks: evaluation
+    /// errors name the property and the failing subexpression's path.
+    StyleSpec,
+    /// MapLibre Native's copy (`metrics/integration/expression-tests`):
+    /// evaluation errors are the bare message, and formatted sections
+    /// predate `verticalAlign`. Native's runner also checks serialization
+    /// and a round trip through it, which Orbis doesn't have.
+    Native,
+}
+
 /// Compares an output with the fixture's, numbers to about six significant
 /// figures as the reference runner does.
-fn matches(actual: &Value<'_>, expected: &Json, color_as_array: bool) -> bool {
+fn matches(
+    actual: &Value<'_>,
+    expected: &Json,
+    color_as_array: bool,
+    reference: Reference,
+) -> bool {
+    let matches = |a: &Value<'_>, e: &Json| matches(a, e, false, reference);
     match (actual, &expected.value) {
         (Value::Null, JsonValue::Null) => true,
         (Value::Bool(a), JsonValue::Bool(b)) => a == b,
@@ -199,22 +221,28 @@ fn matches(actual: &Value<'_>, expected: &Json, color_as_array: bool) -> bool {
                     .all(|(a, b)| b.as_f64().is_some_and(|b| numbers_match(f64::from(*a), b)))
         }
         (Value::Array(a), JsonValue::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| matches(a, b, false))
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| matches(a, b))
         }
         (Value::Object(a), JsonValue::Object(b)) => {
             a.len() == b.len()
                 && a.iter().all(|(k, v)| {
                     b.iter()
                         .find(|m| m.key == *k)
-                        .is_some_and(|m| matches(v, &m.value, false))
+                        .is_some_and(|m| matches(v, &m.value))
                 })
+        }
+        (Value::Formatted(_), _) if reference == Reference::Native => {
+            let text = actual
+                .to_json_string()
+                .replace(r#","verticalAlign":null"#, "");
+            json::parse(&text).is_ok_and(|j| matches(&Value::from_json(&j), expected))
         }
         (Value::Image { .. } | Value::Formatted(_) | Value::TypedArray(..), _) => {
             json::parse(&actual.to_json_string())
-                .is_ok_and(|j| matches(&Value::from_json(&j), expected, false))
+                .is_ok_and(|j| matches(&Value::from_json(&j), expected))
         }
         (Value::Color(c), JsonValue::Object(_)) => json::parse(&Value::Color(*c).to_json_string())
-            .is_ok_and(|j| matches(&Value::from_json(&j), expected, false)),
+            .is_ok_and(|j| matches(&Value::from_json(&j), expected)),
         _ => false,
     }
 }
@@ -313,11 +341,24 @@ pub(crate) fn json_feature(feature: &Json) -> JsonFeature<'_> {
     }
 }
 
+#[cfg(test)]
 fn run_fixture(name: &str, fixture: &Json) -> Result<(), String> {
+    check(name, fixture, Reference::StyleSpec)
+}
+
+fn field<'a>(name: &str, json: &'a Json, key: &str) -> Result<&'a Json, String> {
+    json.get(key).ok_or_else(|| format!("{name}: no {key}"))
+}
+
+/// Runs one fixture (a parsed `test.json`): compiles its expression for its
+/// property spec, checks the compiled result or errors, then evaluates each
+/// input and checks its output, as `reference`'s runner does. Why it
+/// failed, if it did.
+pub fn check(name: &str, fixture: &Json, reference: Reference) -> Result<(), String> {
     let (spec, expected_type) = fixture_spec(fixture);
-    let expression = fixture.get("expression").expect("expression");
-    let expected = fixture.get("expected").expect("expected");
-    let compiled = expected.get("compiled").expect("compiled");
+    let expression = field(name, fixture, "expression")?;
+    let expected = field(name, fixture, "expected")?;
+    let compiled = field(name, expected, "compiled")?;
     let result = compile(expression, &spec, expected_type.as_ref());
 
     let want = compiled.get("result").and_then(Json::as_str);
@@ -381,17 +422,24 @@ fn run_fixture(name: &str, fixture: &Json) -> Result<(), String> {
         .get("inputs")
         .and_then(Json::as_array)
         .unwrap_or_default();
-    assert_eq!(
-        inputs.len(),
-        outputs.len(),
-        "{name}: fixture input/output count"
-    );
+    if inputs.len() != outputs.len() {
+        return Err(format!(
+            "{name}: {} inputs but {} outputs",
+            inputs.len(),
+            outputs.len()
+        ));
+    }
     let color = *parsed.expression().ty() == Type::Color;
     for (i, (input, want)) in inputs.iter().zip(outputs).enumerate() {
         let result = evaluate(parsed, fixture, input);
         let ok = match (&result, want.get("error").and_then(Json::as_str)) {
             (Err(e), Some(message)) => {
-                let got = format!("{ROOT_KEY}{}: {e}", parsed.expression().error_path(e));
+                let got = match reference {
+                    Reference::StyleSpec => {
+                        format!("{ROOT_KEY}{}: {e}", parsed.expression().error_path(e))
+                    }
+                    Reference::Native => e.to_string(),
+                };
                 if got == message {
                     true
                 } else {
@@ -400,7 +448,7 @@ fn run_fixture(name: &str, fixture: &Json) -> Result<(), String> {
                     ));
                 }
             }
-            (Ok(v), None) => matches(v, want, color),
+            (Ok(v), None) => matches(v, want, color, reference),
             (Ok(v), Some(_)) => {
                 return Err(format!("{name}: input {i}: want {want}, got {v:?}"));
             }
