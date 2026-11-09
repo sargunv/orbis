@@ -32,9 +32,10 @@ pub(crate) fn runtime_reason(message: &str) -> Option<&'static str> {
 
 /// Whether a runtime warning is one GL JS gives too for the same input,
 /// which a test may provoke on purpose (a glyph range that 404s, drawn
-/// locally instead).
+/// locally instead; GeoJSON data that isn't GeoJSON, which leaves its
+/// source empty).
 pub(crate) fn mirrors_gl_js(message: &str) -> bool {
-    message.contains("its glyphs are drawn with local fonts instead")
+    message.contains("its glyphs are drawn with local fonts instead") || message.contains("GeoJSON")
 }
 
 /// The skip reason of a parser warning that an edit raised at runtime:
