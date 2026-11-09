@@ -96,35 +96,42 @@ fn subdivide(layer: &Layer, cells: [u32; 2]) -> Layer {
 pub fn grid_crossings(a: [i32; 2], b: [i32; 2], step: [f64; 2], out: &mut Vec<[i32; 2]>) {
     out.clear();
     let (lo, hi, flip) = if a <= b { (a, b, false) } else { (b, a, true) };
-    let mut ts: Vec<(f64, [i32; 2])> = Vec::new();
-    for axis in 0..2 {
+    // Per axis, the lines it crosses, each with how far along lo → hi.
+    let crossings = |axis: usize| {
         let (p, q) = (f64::from(lo[axis]), f64::from(hi[axis]));
-        if p == q {
-            continue;
+        let (min, max, step) = (p.min(q), p.max(q), step[axis]);
+        let first = (min / step).floor() + 1.0;
+        let mut count = 0;
+        while p != q && (first + f64::from(count)) * step < max {
+            count += 1;
         }
-        let (min, max) = (p.min(q), p.max(q));
-        let step = step[axis];
-        let mut k = (min / step).floor() + 1.0;
-        while k * step < max {
+        let other = 1 - axis;
+        (0..count).map(move |i| {
+            // Ascending along lo → hi.
+            let k = first + f64::from(if p < q { i } else { count - 1 - i });
             let line = k * step;
             let t = (line - p) / (q - p);
-            let other = 1 - axis;
             let mut point = [0; 2];
             point[axis] = line.round() as i32;
             point[other] =
                 (f64::from(lo[other]) + t * f64::from(hi[other] - lo[other])).round() as i32;
-            ts.push((t, point));
-            k += 1.0;
-        }
-    }
-    ts.sort_by(|x, y| x.0.total_cmp(&y.0));
-    if flip {
-        ts.reverse();
-    }
-    for (_, point) in ts {
+            (t, point)
+        })
+    };
+    let (mut xs, mut ys) = (crossings(0).peekable(), crossings(1).peekable());
+    loop {
+        let point = match (xs.peek(), ys.peek()) {
+            (Some(x), Some(y)) if y.0 < x.0 => ys.next(),
+            (Some(_), _) => xs.next(),
+            (None, _) => ys.next(),
+        };
+        let Some((_, point)) = point else { break };
         if out.last() != Some(&point) && point != a && point != b {
             out.push(point);
         }
+    }
+    if flip {
+        out.reverse();
     }
 }
 

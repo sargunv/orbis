@@ -190,6 +190,7 @@ fn lay_out(
     };
     let mut builder = MeshBuilder::new(stride);
     let distance_scale = 8192.0 / f64::from(extent);
+    let (mut scaled, mut lines) = (Vec::new(), Vec::new());
     for (slot, &feature) in features.iter().enumerate() {
         let feature = feature as usize;
         let kind = layer.geometry_type(feature);
@@ -206,7 +207,8 @@ fn lay_out(
                     GeometryType::Polygon => layer.outline(ring),
                     _ => ring.into(),
                 };
-                let mut scaled: Vec<[i64; 2]> = ring.iter().map(&place).collect();
+                scaled.clear();
+                scaled.extend(ring.iter().map(&place));
                 scaled.dedup();
                 let closed = kind == GeometryType::Polygon;
                 let total_distance: f64 = scaled.windows(2).map(|p| length(p[0], p[1])).sum();
@@ -220,9 +222,10 @@ fn lay_out(
                 let resets = reset
                     .filter(|&at| longest > at)
                     .map(|at| Resets::along(&scaled, closed, at, frame.sharp_corner_offset));
-                for mut line in clip_polyline(&scaled, closed, -margin, extent + margin) {
+                clip_polyline(&scaled, closed, -margin, extent + margin, &mut lines);
+                for line in &mut lines {
                     if let Some(step) = frame.step {
-                        subdivide(&mut line, step);
+                        subdivide(line, step);
                     }
                     let start = resets
                         .as_ref()
@@ -242,7 +245,7 @@ fn lay_out(
                         at_clip: false,
                         metrics: frame.metrics,
                     }
-                    .add_line(&line, &params, frame.sharp_corner_offset);
+                    .add_line(line, &params, frame.sharp_corner_offset);
                 }
             }
         }

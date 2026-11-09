@@ -44,7 +44,7 @@ impl<'a> FeatureGeometry<'a> {
         }
     }
 
-    pub fn parts(&self) -> impl ExactSizeIterator<Item = Part<'a>> + 'a {
+    pub fn parts(&self) -> impl ExactSizeIterator<Item = Part<'a>> + use<'a> {
         let layer = self.layer;
         self.parts.clone().map(move |p| Part {
             layer,
@@ -62,7 +62,7 @@ pub struct Part<'a> {
 }
 
 impl<'a> Part<'a> {
-    pub fn rings(&self) -> impl ExactSizeIterator<Item = &'a [[i32; 2]]> + 'a {
+    pub fn rings(&self) -> impl ExactSizeIterator<Item = &'a [[i32; 2]]> + use<'a> {
         let layer = self.layer;
         self.rings.clone().map(move |r| {
             &layer.vertices[layer.ring_vertices[r] as usize..layer.ring_vertices[r + 1] as usize]

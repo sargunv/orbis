@@ -45,31 +45,37 @@ pub fn layout_in_extent(
     }
     let extent = output_extent as i32;
     let mut normalized = LayerBuilder::new("extrusion", output_extent);
+    let rings = || {
+        (features.iter())
+            .flat_map(|&f| layer.geometry(f as usize).parts())
+            .flat_map(|part| part.rings())
+    };
+    normalized.reserve(rings().map(<[_]>::len).sum());
+    let scale = |p: &[i32; 2]| {
+        p.map(|v| {
+            (f64::from(v) * f64::from(output_extent) / f64::from(layer.extent()) + 0.5).floor()
+                as i32
+        })
+    };
+    let mut scaled = Vec::new();
     for &feature in features {
         let feature = feature as usize;
         normalized.begin_feature(None, layer.geometry_type(feature));
+        let polygon = layer.geometry_type(feature) == GeometryType::Polygon;
         for part in layer.geometry(feature).parts() {
             normalized.begin_part();
             for ring in part.rings() {
                 normalized.begin_ring();
-                let scaled: Vec<[i32; 2]> = ring
-                    .iter()
-                    .map(|p| {
-                        p.map(|v| {
-                            (f64::from(v) * f64::from(output_extent) / f64::from(layer.extent())
-                                + 0.5)
-                                .floor() as i32
-                        })
-                    })
-                    .collect();
-                let polygon = layer.geometry_type(feature) == GeometryType::Polygon;
-                let ring = if rounded && polygon {
-                    round_ring(&scaled, rounding, extent)
+                if rounded && polygon {
+                    scaled.clear();
+                    scaled.extend(ring.iter().map(scale));
+                    for p in round_ring(&scaled, rounding, extent) {
+                        normalized.push_vertex(p);
+                    }
                 } else {
-                    scaled
-                };
-                for p in ring {
-                    normalized.push_vertex(p);
+                    for p in ring {
+                        normalized.push_vertex(scale(p));
+                    }
                 }
             }
         }
@@ -139,10 +145,11 @@ fn layout_normalized(
         let p = [v[0] as i16, (v[0] >> 16) as i16];
         builder.push_vertex(p, &[v[0], v[1], 1, 16384]);
     }
-    for t in roof.vertex_indices().collect::<Vec<_>>().as_chunks::<3>().0 {
+    let mut indices = roof.vertex_indices();
+    while let (Some(a), Some(b), Some(c)) = (indices.next(), indices.next(), indices.next()) {
         // Tile Y points south; world Y points north. Reverse winding
         // so outward faces are counterclockwise after projection.
-        builder.push_triangle(t[0], t[2], t[1]);
+        builder.push_triangle(a, c, b);
     }
     let extent = layer.extent() as i32;
     for (slot, &feature) in features.iter().enumerate() {

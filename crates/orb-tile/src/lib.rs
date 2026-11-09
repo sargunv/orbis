@@ -86,8 +86,8 @@ pub(crate) fn owner_keeps<'r>(
 /// land on that line.
 fn reach(vertices: &[[i32; 2]], extent: u32) -> i32 {
     let extent = extent as i32;
-    let (lo, hi) = (vertices.iter().flatten())
-        .fold((0, extent), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    let (lo, hi) =
+        (vertices.iter().flatten()).fold((0, extent), |(lo, hi), &v| (lo.min(v), hi.max(v)));
     lo.saturating_neg().max(hi - extent)
 }
 

@@ -139,7 +139,11 @@ mod tests {
         let (mut ab, mut ba) = (Vec::new(), Vec::new());
         clip_step(&[a, b, [18, 40]], 0, 0, true, &mut ab);
         clip_step(&[b, a, [-38, -60]], 0, 0, true, &mut ba);
-        let on = |ring: &[[i32; 2]]| ring.iter().find(|p| p[0] == 0 && (-20..-10).contains(&p[1])).copied();
+        let on = |ring: &[[i32; 2]]| {
+            ring.iter()
+                .find(|p| p[0] == 0 && (-20..-10).contains(&p[1]))
+                .copied()
+        };
         assert_eq!(on(&ab), on(&ba));
         assert!(on(&ab).is_some());
     }

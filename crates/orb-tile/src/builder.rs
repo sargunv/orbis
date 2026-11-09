@@ -73,6 +73,11 @@ impl LayerBuilder {
         self.ring_vertices.push(len_u32(self.vertices.len()));
     }
 
+    /// Makes room for `vertices` more.
+    pub fn reserve(&mut self, vertices: usize) {
+        self.vertices.reserve(vertices);
+    }
+
     pub fn push_vertex(&mut self, vertex: [i32; 2]) {
         debug_assert!(!self.ring_vertices.is_empty(), "push_vertex outside a ring");
         self.vertices.push(vertex);

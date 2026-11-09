@@ -141,7 +141,10 @@ impl Column {
     /// dictionary entries they use.
     pub fn select(&self, rows: &[u32]) -> Self {
         let ranks: Vec<Option<usize>> = rows.iter().map(|&r| self.rank(r as usize)).collect();
-        let present = Bitmap::from_rows(rows.len(), (ranks.iter().enumerate()).filter_map(|(i, r)| r.map(|_| i)));
+        let present = Bitmap::from_rows(
+            rows.len(),
+            (ranks.iter().enumerate()).filter_map(|(i, r)| r.map(|_| i)),
+        );
         let kept = || ranks.iter().flatten().copied();
         let data = match &self.data {
             ColumnData::Bool(v) => ColumnData::Bool(kept().map(|i| v[i]).collect()),

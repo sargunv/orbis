@@ -16,25 +16,20 @@ pub(crate) struct ClippedLine {
     pub(crate) seam: Option<(usize, f64)>,
 }
 
-/// Clips segments independently, without introducing edges along the square.
-/// Consecutive duplicates and zero-length intersections are discarded. A ring
-/// crossing the square becomes open pieces with both ends marked as clipped.
-/// Source positions may lie far outside the square (an overzoom slice lays
-/// out its data tile's lines in its own units).
+/// Clips segments independently, without introducing edges along the square,
+/// into `out` (cleared first). Consecutive duplicates and zero-length
+/// intersections are discarded. A ring crossing the square becomes open
+/// pieces with both ends marked as clipped. Source positions may lie far
+/// outside the square (an overzoom slice lays out its data tile's lines in
+/// its own units).
 pub(crate) fn clip_polyline(
     source: &[[i64; 2]],
     closed: bool,
     min: i32,
     max: i32,
-) -> Vec<ClippedLine> {
-    let mut points = source.to_vec();
-    points.dedup();
-    if closed && points.len() > 1 && points.first() == points.last() {
-        points.pop();
-    }
-    if points.len() < if closed { 3 } else { 2 } {
-        return Vec::new();
-    }
+    out: &mut Vec<ClippedLine>,
+) {
+    out.clear();
     let length =
         |a: [i64; 2], b: [i64; 2]| (b[0] as f64 - a[0] as f64).hypot(b[1] as f64 - a[1] as f64);
     let inside = |p: &[i64; 2]| {
@@ -44,50 +39,79 @@ pub(crate) fn clip_polyline(
     // A rotated ring's distance from its first vertex to where it starts,
     // its perimeter, and where its first vertex lands.
     let mut rotation = None;
-    if closed {
-        if let Some(outside) = points.iter().position(|p| !inside(p)) {
-            // Starting outside avoids splitting a connected piece at the ring
-            // seam. Every surviving piece then starts and ends at a clip edge.
-            let n = points.len();
-            let offset: f64 = (0..outside).map(|i| length(points[i], points[i + 1])).sum();
-            let perimeter: f64 = (0..n).map(|i| length(points[i], points[(i + 1) % n])).sum();
-            let closing = length(points[n - 1], points[0]);
-            points.rotate_left(outside);
-            points.push(points[0]);
-            rotation = Some((offset, perimeter, closing, (n - outside) % n));
-        } else {
-            return vec![ClippedLine {
-                points: points.iter().map(|p| p.map(|v| v as i32)).collect(),
-                closed: true,
-                start_clipped: false,
-                end_clipped: false,
-                start_distance: 0.0,
-                seam: None,
-            }];
+    let rotated;
+    let points = if closed {
+        if source.iter().all(inside) {
+            let mut points: Vec<[i32; 2]> = Vec::with_capacity(source.len());
+            for p in source.iter().map(|p| p.map(|v| v as i32)) {
+                if points.last() != Some(&p) {
+                    points.push(p);
+                }
+            }
+            while points.len() > 1 && points.first() == points.last() {
+                points.pop();
+            }
+            if points.len() >= 3 {
+                out.push(ClippedLine {
+                    points,
+                    closed: true,
+                    start_clipped: false,
+                    end_clipped: false,
+                    start_distance: 0.0,
+                    seam: None,
+                });
+            }
+            return;
         }
-    }
+        let mut points = source.to_vec();
+        points.dedup();
+        if points.len() > 1 && points.first() == points.last() {
+            points.pop();
+        }
+        if points.len() < 3 {
+            return;
+        }
+        // Starting outside avoids splitting a connected piece at the ring
+        // seam. Every surviving piece then starts and ends at a clip edge.
+        let outside = points.iter().position(|p| !inside(p)).expect("one outside");
+        let n = points.len();
+        let offset: f64 = (0..outside).map(|i| length(points[i], points[i + 1])).sum();
+        let perimeter: f64 = (0..n).map(|i| length(points[i], points[(i + 1) % n])).sum();
+        let closing = length(points[n - 1], points[0]);
+        points.rotate_left(outside);
+        points.push(points[0]);
+        rotation = Some((offset, perimeter, closing, (n - outside) % n));
+        rotated = points;
+        &rotated[..]
+    } else {
+        source
+    };
 
-    let mut out = Vec::new();
     let mut piece: Option<ClippedLine> = None;
     let mut distance = 0.0;
-    for (i, segment) in points.windows(2).enumerate() {
+    // Segments' indices count only those of nonzero length, as along the
+    // line without its consecutive duplicates.
+    let segments = points.windows(2).filter(|s| s[0] != s[1]);
+    for (i, segment) in segments.enumerate() {
         let segment_start = distance;
         distance += length(segment[0], segment[1]);
         let Some((a, b, start_clipped, end_clipped)) =
             clip_segment(segment[0], segment[1], min, max)
         else {
-            finish_line(&mut piece, &mut out);
+            finish_line(&mut piece, out);
             continue;
         };
         if start_clipped {
-            finish_line(&mut piece, &mut out);
+            finish_line(&mut piece, out);
         }
         // Keep a single-point intersection until the next segment so an
         // entry exactly at an existing vertex still suppresses its cap.
         let line = piece.get_or_insert_with(|| {
             let start = segment_start + length(segment[0], a.map(i64::from));
+            let mut points = Vec::with_capacity(points.len() - i);
+            points.push(a);
             ClippedLine {
-                points: vec![a],
+                points,
                 closed: false,
                 start_clipped,
                 end_clipped: false,
@@ -110,11 +134,10 @@ pub(crate) fn clip_polyline(
         }
         line.end_clipped = end_clipped;
         if end_clipped {
-            finish_line(&mut piece, &mut out);
+            finish_line(&mut piece, out);
         }
     }
-    finish_line(&mut piece, &mut out);
-    out
+    finish_line(&mut piece, out);
 }
 
 fn finish_line(piece: &mut Option<ClippedLine>, out: &mut Vec<ClippedLine>) {
@@ -167,9 +190,15 @@ pub(crate) fn clip_segment(
 mod tests {
     use super::*;
 
+    fn clip(source: &[[i64; 2]], closed: bool, min: i32, max: i32) -> Vec<ClippedLine> {
+        let mut out = Vec::new();
+        clip_polyline(source, closed, min, max, &mut out);
+        out
+    }
+
     #[test]
     fn keeps_and_deduplicates_inside_lines() {
-        let lines = clip_polyline(&[[1, 1], [1, 1], [9, 9], [9, 9]], false, 0, 10);
+        let lines = clip(&[[1, 1], [1, 1], [9, 9], [9, 9]], false, 0, 10);
         assert_eq!(
             lines,
             [ClippedLine {
@@ -181,13 +210,13 @@ mod tests {
                 seam: None,
             }]
         );
-        assert!(clip_polyline(&[[1, 1], [1, 1]], false, 0, 10).is_empty());
-        assert!(clip_polyline(&[], false, 0, 10).is_empty());
+        assert!(clip(&[[1, 1], [1, 1]], false, 0, 10).is_empty());
+        assert!(clip(&[], false, 0, 10).is_empty());
     }
 
     #[test]
     fn clips_crossings_even_when_both_endpoints_are_outside() {
-        let lines = clip_polyline(&[[-20, 5], [20, 5]], false, -1, 11);
+        let lines = clip(&[[-20, 5], [20, 5]], false, -1, 11);
         assert_eq!(
             lines,
             [ClippedLine {
@@ -199,15 +228,15 @@ mod tests {
                 seam: None,
             }]
         );
-        let diagonal = clip_polyline(&[[-10, -10], [20, 20]], false, 0, 10);
+        let diagonal = clip(&[[-10, -10], [20, 20]], false, 0, 10);
         assert_eq!(diagonal[0].points, [[0, 0], [10, 10]]);
-        let vertical = clip_polyline(&[[5, -10], [5, 20]], false, 0, 10);
+        let vertical = clip(&[[5, -10], [5, 20]], false, 0, 10);
         assert_eq!(vertical[0].points, [[5, 0], [5, 10]]);
     }
 
     #[test]
     fn splits_exit_and_reentry_without_connecting_clip_edges() {
-        let lines = clip_polyline(&[[1, 1], [20, 1], [20, 9], [1, 9]], false, 0, 10);
+        let lines = clip(&[[1, 1], [20, 1], [20, 9], [1, 9]], false, 0, 10);
         assert_eq!(
             lines,
             [
@@ -230,18 +259,18 @@ mod tests {
             ]
         );
         // An excursion must split even if both crossings round to one point.
-        let same = clip_polyline(&[[1, 5], [20, 5], [1, 5]], false, 0, 10);
+        let same = clip(&[[1, 5], [20, 5], [1, 5]], false, 0, 10);
         assert_eq!(same.len(), 2);
     }
 
     #[test]
     fn closed_rings_stay_closed_only_when_unclipped() {
         let ring = [[1, 1], [9, 1], [9, 9], [1, 1], [1, 1]];
-        let lines = clip_polyline(&ring, true, 0, 10);
+        let lines = clip(&ring, true, 0, 10);
         assert_eq!(lines[0].points, [[1, 1], [9, 1], [9, 9]]);
         assert!(lines[0].closed);
         // Start inside, cross twice: the original seam must remain connected.
-        let clipped = clip_polyline(&[[5, 1], [20, 1], [20, 9], [5, 9]], true, 0, 10);
+        let clipped = clip(&[[5, 1], [20, 1], [20, 9], [5, 9]], true, 0, 10);
         assert_eq!(
             clipped,
             [ClippedLine {
@@ -257,22 +286,20 @@ mod tests {
             }]
         );
         // A surrounding polygon has no visible outline, unlike clip_ring.
-        assert!(
-            clip_polyline(&[[-20, -20], [20, -20], [20, 20], [-20, 20]], true, 0, 10).is_empty()
-        );
+        assert!(clip(&[[-20, -20], [20, -20], [20, 20], [-20, 20]], true, 0, 10).is_empty());
     }
 
     #[test]
     fn handles_tile_boundaries_tangencies_and_extreme_source_positions() {
-        assert!(clip_polyline(&[[-1, 1], [1, -1]], false, 0, 10).is_empty());
-        assert!(clip_polyline(&[[-10, -1], [20, -1]], false, 0, 10).is_empty());
-        let edge = clip_polyline(&[[0, 0], [0, 10]], false, 0, 10);
+        assert!(clip(&[[-1, 1], [1, -1]], false, 0, 10).is_empty());
+        assert!(clip(&[[-10, -1], [20, -1]], false, 0, 10).is_empty());
+        let edge = clip(&[[0, 0], [0, 10]], false, 0, 10);
         assert_eq!(edge[0].points, [[0, 0], [0, 10]]);
         assert!(!edge[0].start_clipped && !edge[0].end_clipped);
-        let at_vertices = clip_polyline(&[[-1, 5], [0, 5], [10, 5], [11, 5]], false, 0, 10);
+        let at_vertices = clip(&[[-1, 5], [0, 5], [10, 5], [11, 5]], false, 0, 10);
         assert_eq!(at_vertices[0].points, [[0, 5], [10, 5]]);
         assert!(at_vertices[0].start_clipped && at_vertices[0].end_clipped);
-        let extreme = clip_polyline(&[[i64::MIN >> 11, 5], [i64::MAX >> 11, 5]], false, 0, 10);
+        let extreme = clip(&[[i64::MIN >> 11, 5], [i64::MAX >> 11, 5]], false, 0, 10);
         assert_eq!(extreme[0].points, [[0, 5], [10, 5]]);
     }
 }
