@@ -18,6 +18,10 @@
 //   tiles, and back goes back without a reload; a click opens a feature
 //   popup only while the style editor is open; picking any entry keeps
 //   the camera, its style's own camera never applying.
+// - `light`: the Terrain entry's light switch, offline: `&light=viewport`
+//   anchors its hillshade and light to the viewport as the style loads,
+//   the ⋯ menu's switch edits them in place and keeps the URL and the
+//   editor in step, and another entry hides it and drops `&light`.
 // - `compare`: the comparison on the Tokyo extract: the plain page fetches
 //   no other engine and isn't isolated; each pair of engines (Orbis, GL JS
 //   and MapLibre Native, Orbis and GL JS twice too) loads only its engines,
@@ -37,7 +41,7 @@
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,editor,switching,compare,gestures,offline]
+//   pnpm e2e [--only=scenario,edits,editor,switching,light,compare,gestures,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -48,7 +52,7 @@ import { decodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor,switching,compare,gestures").split(",");
+const only = arg("only", "scenario,edits,editor,switching,light,compare,gestures").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -700,6 +704,60 @@ async function switching(browser, server) {
   console.log(`switching: ${keys.length} entries keep the camera; Arctic clamps it into its plane`);
 }
 
+async function light(browser, server) {
+  // Wide enough that the editor is a side panel.
+  const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+  // The style is the demo's; its tiles would come from the network, which
+  // fails here: the switch only edits the style.
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.route((u) => !u.href.startsWith(server.url), (route) => route.abort("internetdisconnected"));
+  await page.goto(`${server.url}?style=terrain&light=viewport&edit`);
+  const choice = page.locator("#light-choice");
+  await page.waitForFunction(() => app.map && !document.getElementById("light-choice").hidden, null,
+    { timeout: 60_000 });
+  // Every illumination anchor in the map's style, and the editor's.
+  const anchors = () => page.evaluate(async () => {
+    const of = (style) => style && [...style.layers.filter((l) => l.type === "hillshade")
+      .map((l) => l.paint["hillshade-illumination-anchor"]), style.light.anchor];
+    return { map: of(await app.map.getStyle()), editor: of(app.editor.style),
+      checked: document.querySelector('#light-choice [aria-checked="true"]')?.dataset.anchor,
+      light: new URLSearchParams(location.search).get("light") };
+  });
+  // The map answers edits and queries in its own time: the state settles.
+  const settles = async (expected, message) => {
+    let seen;
+    for (const until = Date.now() + 10_000; Date.now() < until; await page.waitForTimeout(50)) {
+      seen = await anchors();
+      if (JSON.stringify(seen) === JSON.stringify(expected)) return;
+    }
+    assert.deepEqual(seen, expected, message);
+  };
+  const all = (anchor) => ({ map: [anchor, anchor], editor: [anchor, anchor], checked: anchor,
+    light: anchor === "map" ? null : anchor });
+  await settles(all("viewport"), "&light=viewport applies as the style loads");
+  await page.click("#menu-button");
+  await choice.locator('[data-anchor="map"]').click();
+  await settles(all("map"), "the style's own anchor, map, leaves the URL without &light");
+  // The arrow keys move the choice, as in a radio group.
+  await page.keyboard.press("ArrowRight");
+  await settles(all("viewport"), "the arrow keys choose the viewport");
+  assert.ok(await page.evaluate(() => document.getElementById("menu").matches(":popover-open")),
+    "the menu stays open for another choice");
+  // The editor's Reset returns to the style as loaded (with &light), and the switch follows it.
+  await page.keyboard.press("ArrowLeft");
+  await settles(all("map"), "the arrow keys choose the map");
+  await page.keyboard.press("Escape");
+  await page.locator(".editor-head .text-button").click();
+  await settles(all("viewport"), "Reset returns to the style as loaded");
+  await page.evaluate(() => app.show("tokyo"));
+  await page.waitForFunction(() => app.scene === "tokyo" && document.getElementById("light-choice").hidden);
+  assert.equal(new URL(page.url()).searchParams.has("light"), false, "another entry drops &light");
+  assert.deepEqual(errors, []);
+  await page.close();
+  console.log("light: &light, the switch, the editor and another entry agree on the anchor");
+}
+
 async function offline(browser, server) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   const errors = [];
@@ -1088,6 +1146,7 @@ const CHECKS = {
   edits,
   editor,
   switching,
+  light,
   compare,
   gestures,
   offline,

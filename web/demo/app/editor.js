@@ -340,6 +340,12 @@ export function editor({ onClose, onReplaced }) {
       original = JSON.stringify(style);
       if (tab === "json" && !root.hidden) showTab("json"); else renderLayers();
     },
+    /** Re-reads the style after an edit made outside the editor; Reset still returns to the style as loaded. */
+    async refresh() {
+      if (!map) return;
+      style = await map.getStyle();
+      if (tab === "json" && !root.hidden) showTab("json"); else renderLayers();
+    },
     show(on) {
       root.hidden = !on;
       if (on) showTab(tab);

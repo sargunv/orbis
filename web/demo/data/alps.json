@@ -38,7 +38,7 @@
     "horizon-fog-blend": 0.7,
     "fog-ground-blend": 0.6
   },
-  "light": {"anchor": "viewport", "position": [1.15, 210, 30], "intensity": 0.4},
+  "light": {"anchor": "map", "position": [1.15, 210, 30], "intensity": 0.4},
   "layers": [
     {"id": "background", "type": "background", "paint": {"background-color": "#eef0e6"}},
     {
@@ -86,6 +86,7 @@
       "type": "hillshade",
       "source": "hillshade",
       "paint": {
+        "hillshade-illumination-anchor": "map",
         "hillshade-exaggeration": 0.45,
         "hillshade-shadow-color": "#4a5560",
         "hillshade-highlight-color": "#ffffff",

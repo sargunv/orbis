@@ -9,6 +9,8 @@
 // flight; without it the map stays put and settles),
 // `&debug`, `&edit`, `&compare[=<left>,<right>]` (two engines' maps of
 // the style side by side, Orbis and GL JS by default, app/compare.js),
+// `&light=map|viewport` (where an entry with the light switch anchors its
+// light, when not where its style does, app/light.js),
 // `&lose=<ms>` (lose the GPU that long after
 // loading, to show recovery), and the camera as
 // `#zoom/lat/lon[/bearing/pitch]`.
@@ -20,6 +22,7 @@ import { comparison, formatPair, parsePair } from "./app/compare.js";
 import { editor as createEditor } from "./app/editor.js";
 import { Highlighter, targetOf } from "./app/highlight.js";
 import { hud as createHud } from "./app/hud.js";
+import { anchorOf, lightSwitch, setAnchor } from "./app/light.js";
 import { picker as createPicker } from "./app/picker.js";
 import { offline as createOffline } from "./app/offline.js";
 import { featurePopup } from "./app/popup.js";
@@ -39,6 +42,8 @@ let switches = 0;
 let styleLoading = false;
 /** The loaded style's own sky, which an entry's `sky` stands in for. */
 let styleSky = null;
+/** The loaded style's own illumination anchor, which `&light` overrides. */
+let styleAnchor;
 
 // Chrome tone: dark maps and a dark system preference turn it dark.
 const prefersDark = matchMedia("(prefers-color-scheme: dark)");
@@ -61,11 +66,12 @@ const searchOf = (query) => {
   const search = query.toString().replace(/=(?=&|$)/g, "");
   return search ? `?${search}` : "";
 };
-/** The app's URL for `next` with `camera` as its hash. `&flight` stays only for an entry with one. */
+/** The app's URL for `next` with `camera` as its hash. `&flight` and `&light` stay only for an entry with one. */
 function urlFor(next, camera) {
   const query = params();
   query.delete("format");
   if (!next.scene.flight) query.delete("flight");
+  if (!next.scene.light) query.delete("light");
   const style = styleParam(next);
   if (style) query.set("style", style); else query.delete("style");
   return `${location.pathname}${searchOf(query)}${camera ? hashOf(camera) : ""}`;
@@ -101,8 +107,27 @@ const compare = comparison({
 });
 const editor = createEditor({
   onClose: () => setEditing(false),
-  onReplaced: () => { highlighter?.reset(); clearPopup(); },
+  onReplaced: () => { highlighter?.reset(); clearPopup(); void showLight(); },
 });
+const light = lightSwitch({
+  async onPick(anchor) {
+    if (!map) return;
+    light.show(anchor);
+    if (anchor !== anchorOf(await map.getStyle())) await setAnchor(map, anchor);
+    await showLight();
+    await editor.refresh();
+  },
+});
+/** Shows the style's illumination anchor in the menu and the URL, for an entry with the light switch. */
+async function showLight() {
+  if (!map || styleLoading || !current.scene.light) {
+    light.show(null);
+    return;
+  }
+  const anchor = anchorOf(await map.getStyle());
+  light.show(anchor);
+  setParam("light", anchor !== styleAnchor && anchor);
+}
 
 /** Opens or closes the style editor; feature popups and highlights live only while it's open. */
 function setEditing(on) {
@@ -255,6 +280,7 @@ function go(next, { camera, history: mode = "push" } = {}) {
   clearPopup();
   say(`Loading ${next.scene.name}…`);
   styleLoading = true;
+  void showLight();
   app.dataset.map = "loading";
   // The style's `styleload` applies the entry's projection and sky. The
   // style's own camera is a fresh page's (load), never a switch's.
@@ -318,13 +344,20 @@ async function load(next, { camera }) {
     const { scene } = current;
     styleLoading = false;
     highlighter.reset();
-    styleSky = (await map.getStyle()).sky ?? null;
+    const loaded = await map.getStyle();
+    styleSky = loaded.sky ?? null;
     if (scene.projection || scene.sky) {
       await map.edit((tx) => {
         if (scene.projection) tx.setProjection(scene.projection);
         if (scene.sky) tx.setSky(scene.sky);
       });
     }
+    if (scene.light) {
+      styleAnchor = anchorOf(loaded);
+      const wanted = params().get("light");
+      if ((wanted === "map" || wanted === "viewport") && wanted !== styleAnchor) await setAnchor(map, wanted);
+    }
+    await showLight();
     await editor.attach(map);
     attributionControl.update(editor.style);
     compare.attach(map, scene);

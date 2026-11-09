@@ -44,6 +44,13 @@
 </div>
 
 <div class="menu" id="menu" popover>
+  <div class="menu-item menu-choice" id="light-choice" hidden>
+    <span class="menu-text"><span id="light-label">Light</span><span class="menu-note">Fixed to the ground, or turning with the view</span></span>
+    <span class="segmented" role="radiogroup" aria-labelledby="light-label">
+      <button type="button" role="radio" aria-checked="true" data-anchor="map">Map</button>
+      <button type="button" role="radio" aria-checked="false" data-anchor="viewport" tabindex="-1">Viewport</button>
+    </span>
+  </div>
   <button type="button" class="menu-item" id="debug-toggle" role="switch" aria-checked="false"><span>Debug overlay</span><span class="switch" aria-hidden="true"></span></button>
   <button type="button" class="menu-item" id="compare-toggle" role="switch" aria-checked="false" disabled>
     <span class="menu-text"><span>Compare engines</span><span class="menu-note">Orbis, GL JS or MapLibre Native on each side</span></span><span class="switch" aria-hidden="true"></span>

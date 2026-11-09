@@ -44,13 +44,16 @@ const TOKYO_BOUNDS = tileBounds([139.725, 35.677, 139.755, 35.697], 14);
  * view in range (the globe no smaller than at zoom 0), on both maps of a
  * comparison, and clamp it on a switch. `projection` is a v8 projection the
  * map switches to once the style loads, and `sky` a v8 sky it puts in
- * place of the style's then too. `unsupported` says, by engine, why that
- * engine can't show the entry in the comparison (app/compare.js).
+ * place of the style's then too. `light` offers the ⋯ menu's switch
+ * between a map- and a viewport-anchored light (app/light.js), `&light=`
+ * in the URL. `unsupported` says, by engine, why that engine can't show
+ * the entry in the comparison (app/compare.js).
  *
  * @typedef {{ key: string, name: string, detail?: string, url: string, provider: string,
  *   swatch: [string, string, string], dark?: boolean, basemap?: boolean, camera?: object,
  *   constraints?: object, flight?: object[], formats?: Record<string, string>,
- *   projection?: object, sky?: object, unsupported?: { gljs?: string, native?: string } }} Scene
+ *   light?: boolean, projection?: object, sky?: object,
+ *   unsupported?: { gljs?: string, native?: string } }} Scene
  */
 
 /** A blue sky around the globe, a subtle rim at low zoom that thins out as it hands over to Mercator. */
@@ -75,7 +78,7 @@ export const GROUPS = [
         swatch: ["#24476b", "#e9eef2", "#9aa6ad"],
         unsupported: { gljs: "GL JS can't draw tile matrix sets", native: "MapLibre Native can't draw tile matrix sets" } },
       { key: "terrain", name: "Terrain", detail: "3D terrain from Mapterhorn's global elevation, under a sky",
-        url: alps, flight: alpsFlight.legs, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
+        url: alps, flight: alpsFlight.legs, light: true, swatch: ["#eef0e4", "#9fb7c9", "#7d8a74"] },
     ],
   },
   {
