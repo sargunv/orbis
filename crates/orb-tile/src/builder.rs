@@ -1,6 +1,6 @@
 use rustc_hash::FxHashMap;
 
-use crate::{Bitmap, Column, ColumnData, GeometryType, Layer, Value};
+use crate::{Bitmap, Column, ColumnData, GeometryType, Layer, Value, ValueRef};
 
 /// Builds a [`Layer`] one feature at a time.
 ///
@@ -177,9 +177,9 @@ impl LayerBuilder {
         self.part_rings.push(len_u32(self.ring_vertices.len()));
         self.ring_vertices.push(len_u32(self.vertices.len()));
 
-        let ids = typed_column(len, self.ids);
+        let ids = typed_column(len, &borrowed(&self.ids));
         let properties = (self.columns.into_iter())
-            .map(|(key, values)| (key, typed_column(len, values)))
+            .map(|(key, values)| (key, typed_column(len, &borrowed(&values))))
             .chain(coded)
             .collect();
         let buffer = (self.clip).unwrap_or_else(|| crate::reach(&self.vertices, self.extent));
@@ -228,16 +228,16 @@ enum Kind {
     Mixed,
 }
 
-fn kind<'a>(values: impl Iterator<Item = &'a Value>) -> Kind {
+fn kind<'a>(values: impl Iterator<Item = ValueRef<'a>>) -> Kind {
     let mut kind = None;
     for value in values {
         let k = match value {
-            Value::Bool(_) => Kind::Bool,
-            Value::I64(_) => Kind::I64,
-            Value::U64(_) => Kind::U64,
-            Value::F64(_) => Kind::F64,
-            Value::Str(_) => Kind::Str,
-            Value::Json(_) => Kind::Mixed,
+            ValueRef::Bool(_) => Kind::Bool,
+            ValueRef::I64(_) => Kind::I64,
+            ValueRef::U64(_) => Kind::U64,
+            ValueRef::F64(_) => Kind::F64,
+            ValueRef::Str(_) => Kind::Str,
+            ValueRef::Json(_) => Kind::Mixed,
         };
         kind = Some(match kind {
             None => k,
@@ -258,25 +258,26 @@ fn presence(len: usize, features: impl Iterator<Item = u32>) -> Bitmap {
     Bitmap::from_rows(len, features.map(|f| f as usize))
 }
 
-fn number(value: &Value) -> f64 {
-    match *value {
-        Value::I64(v) => v as f64,
-        Value::U64(v) => v as f64,
-        Value::F64(v) => v,
+fn number(value: ValueRef<'_>) -> f64 {
+    match value {
+        ValueRef::I64(v) => v as f64,
+        ValueRef::U64(v) => v as f64,
+        ValueRef::F64(v) => v,
         _ => unreachable!("a number column"),
     }
 }
 
-fn typed_column(len: usize, values: Vec<(u32, Value)>) -> Column {
-    let kind = kind(values.iter().map(|(_, v)| v));
+/// A column of `len` rows from its present rows' values, by row, typed
+/// as [`LayerBuilder`] says. Equal strings share a dictionary code.
+pub(crate) fn typed_column(len: usize, values: &[(u32, ValueRef<'_>)]) -> Column {
     let present = presence(len, values.iter().map(|(f, _)| *f));
-    let values = values.into_iter().map(|(_, v)| v);
-    let data = match kind {
-        Kind::Bool => ColumnData::Bool(values.map(|v| v == Value::Bool(true)).collect()),
+    let values = values.iter().map(|&(_, v)| v);
+    let data = match kind(values.clone()) {
+        Kind::Bool => ColumnData::Bool(values.map(|v| v == ValueRef::Bool(true)).collect()),
         Kind::I64 => ColumnData::I64(
             values
                 .map(|v| match v {
-                    Value::I64(v) => v,
+                    ValueRef::I64(v) => v,
                     _ => unreachable!("an i64 column"),
                 })
                 .collect(),
@@ -284,19 +285,19 @@ fn typed_column(len: usize, values: Vec<(u32, Value)>) -> Column {
         Kind::U64 => ColumnData::U64(
             values
                 .map(|v| match v {
-                    Value::U64(v) => v,
+                    ValueRef::U64(v) => v,
                     _ => unreachable!("a u64 column"),
                 })
                 .collect(),
         ),
-        Kind::F64 | Kind::Number => ColumnData::F64(values.map(|v| number(&v)).collect()),
+        Kind::F64 | Kind::Number => ColumnData::F64(values.map(number).collect()),
         Kind::Str => {
             let mut dictionary = Vec::new();
-            let mut lookup: FxHashMap<String, u32> = FxHashMap::default();
+            let mut lookup: FxHashMap<&str, u32> = FxHashMap::default();
             let codes = values
                 .map(|v| match v {
-                    Value::Str(s) => *lookup.entry(s).or_insert_with_key(|s| {
-                        dictionary.push(s.clone());
+                    ValueRef::Str(s) => *lookup.entry(s).or_insert_with(|| {
+                        dictionary.push(s.to_owned());
                         len_u32(dictionary.len() - 1)
                     }),
                     _ => unreachable!("a string column"),
@@ -304,9 +305,14 @@ fn typed_column(len: usize, values: Vec<(u32, Value)>) -> Column {
                 .collect();
             ColumnData::Str { dictionary, codes }
         }
-        Kind::Mixed => ColumnData::Mixed(values.collect()),
+        Kind::Mixed => ColumnData::Mixed(values.map(ValueRef::to_owned).collect()),
     };
     Column::new(present, data)
+}
+
+/// `values` borrowed, for [`typed_column`].
+fn borrowed(values: &[(u32, Value)]) -> Vec<(u32, ValueRef<'_>)> {
+    values.iter().map(|(f, v)| (*f, v.as_ref())).collect()
 }
 
 /// Property columns whose values index a table of values, as an MVT
@@ -359,7 +365,7 @@ impl<'a> CodedColumns<'a> {
             .map(|(key, column)| {
                 let row = |&(_, v): &(u32, u32)| &values[v as usize];
                 let present = presence(len, column.iter().map(|(f, _)| *f));
-                let data = match kind(column.iter().map(row)) {
+                let data = match kind(column.iter().map(|e| row(e).as_ref())) {
                     Kind::Bool => ColumnData::Bool(
                         column
                             .iter()
@@ -383,7 +389,7 @@ impl<'a> CodedColumns<'a> {
                             .collect(),
                     ),
                     Kind::F64 | Kind::Number => {
-                        ColumnData::F64(column.iter().map(|e| number(row(e))).collect())
+                        ColumnData::F64(column.iter().map(|e| number(row(e).as_ref())).collect())
                     }
                     Kind::Str => {
                         let mut dictionary = Vec::new();
@@ -421,7 +427,6 @@ impl<'a> CodedColumns<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ValueRef;
 
     fn sample() -> Layer {
         let mut b = LayerBuilder::new("roads", 4096);

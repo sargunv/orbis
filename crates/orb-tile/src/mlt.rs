@@ -3,8 +3,11 @@
 use mlt_core::geo_types::{Geometry, LineString, Polygon};
 use mlt_core::{Decoder, LendingIterator, ParsedLayer, Parser, PropValueRef};
 
-use crate::decode::{finish_layer, signed_area};
-use crate::{DecodeError, GeometryType, LayerBuilder, TileFrame, Value};
+use rustc_hash::FxHashMap;
+
+use crate::builder::typed_column;
+use crate::decode::{finish_layer_with, signed_area};
+use crate::{DecodeError, GeometryType, LayerBuilder, TileFrame, ValueRef};
 
 /// Decode an uncompressed MLT tile into the same conventions as [`crate::mvt`].
 ///
@@ -29,6 +32,14 @@ pub fn decode(bytes: &[u8]) -> Result<TileFrame, DecodeError> {
         };
         let mut builder = LayerBuilder::new(layer.name(), layer.extent().get());
         let names: Vec<_> = layer.iterate_prop_names().map(|n| n.to_string()).collect();
+        // Per name, the first column of that name, which takes the values
+        // of any later one; per column, its present values by feature,
+        // borrowed from the layer until the columns are typed.
+        let mut first = FxHashMap::default();
+        let column_of: Vec<usize> = (names.iter().enumerate())
+            .map(|(i, name)| *first.entry(name.as_str()).or_insert(i))
+            .collect();
+        let mut columns: Vec<Vec<(u32, ValueRef<'_>)>> = vec![Vec::new(); names.len()];
         let mut features = layer.iter_features();
         while let Some(feature) = features.next() {
             let feature = feature?;
@@ -43,13 +54,24 @@ pub fn decode(bytes: &[u8]) -> Result<TileFrame, DecodeError> {
                 builder.abandon_feature();
                 continue;
             }
-            for (name, value) in names.iter().zip(feature.iter_all_properties()) {
+            let row = (builder.features() - 1) as u32;
+            for (&at, value) in column_of.iter().zip(feature.iter_all_properties()) {
                 if let Some(value) = value {
-                    builder.set_property(name, property(value));
+                    let column = &mut columns[at];
+                    let value = property(value);
+                    match column.last_mut() {
+                        Some((r, v)) if *r == row => *v = value,
+                        _ => column.push((row, value)),
+                    }
                 }
             }
         }
-        tile.layers.push(finish_layer(builder));
+        let len = builder.features();
+        let columns = (names.into_iter().zip(&columns))
+            .filter(|(_, values)| !values.is_empty())
+            .map(|(name, values)| (name, typed_column(len, values)))
+            .collect();
+        tile.layers.push(finish_layer_with(builder, columns));
     }
     Ok(tile)
 }
@@ -148,17 +170,17 @@ fn polygon_ring(line: &LineString<i32>, exterior: bool, builder: &mut LayerBuild
     true
 }
 
-fn property(value: PropValueRef<'_>) -> Value {
+fn property(value: PropValueRef<'_>) -> ValueRef<'_> {
     match value {
-        PropValueRef::Bool(v) => Value::Bool(v),
-        PropValueRef::I8(v) => Value::I64(i64::from(v)),
-        PropValueRef::I32(v) => Value::I64(i64::from(v)),
-        PropValueRef::I64(v) => Value::I64(v),
-        PropValueRef::U8(v) => Value::U64(u64::from(v)),
-        PropValueRef::U32(v) => Value::U64(u64::from(v)),
-        PropValueRef::U64(v) => Value::U64(v),
-        PropValueRef::F32(v) => Value::F64(f64::from(v)),
-        PropValueRef::F64(v) => Value::F64(v),
-        PropValueRef::Str(v) => Value::Str(v.to_owned()),
+        PropValueRef::Bool(v) => ValueRef::Bool(v),
+        PropValueRef::I8(v) => ValueRef::I64(i64::from(v)),
+        PropValueRef::I32(v) => ValueRef::I64(i64::from(v)),
+        PropValueRef::I64(v) => ValueRef::I64(v),
+        PropValueRef::U8(v) => ValueRef::U64(u64::from(v)),
+        PropValueRef::U32(v) => ValueRef::U64(u64::from(v)),
+        PropValueRef::U64(v) => ValueRef::U64(v),
+        PropValueRef::F32(v) => ValueRef::F64(f64::from(v)),
+        PropValueRef::F64(v) => ValueRef::F64(v),
+        PropValueRef::Str(v) => ValueRef::Str(v),
     }
 }

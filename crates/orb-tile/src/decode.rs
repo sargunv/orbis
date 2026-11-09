@@ -71,11 +71,7 @@ pub(crate) fn signed_area(points: impl Iterator<Item = [i32; 2]>) -> i128 {
     area
 }
 
-pub(crate) fn finish_layer(builder: crate::LayerBuilder) -> crate::Layer {
-    finish_layer_with(builder, Vec::new())
-}
-
-/// [`finish_layer`], with columns besides the builder's.
+/// Finishes a decoded layer with `columns` besides the builder's.
 pub(crate) fn finish_layer_with(
     builder: crate::LayerBuilder,
     columns: Vec<(String, crate::Column)>,
