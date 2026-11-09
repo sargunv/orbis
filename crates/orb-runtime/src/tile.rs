@@ -482,7 +482,9 @@ pub(crate) fn build(
         let Some((layer, name)) = node_layer(frame, plan, node, zoom) else {
             continue;
         };
-        // Symbol rows follow the features their layout selected.
+        // Symbol rows follow the features their layout selected. Other
+        // nodes skip the features a slice keeps only for its labels'
+        // ancestor, with nothing of them in the slice.
         let selected = match layer.ancestor_labels() {
             Some((labels, ancestor)) if node.family.is_symbol() => features(
                 plan,
@@ -490,7 +492,12 @@ pub(crate) fn build(
                 labels,
                 (zoom, in_ancestor(canonical, Some(ancestor))),
             ),
-            _ => features(plan, node, layer, (zoom, canonical)),
+            Some(_) => {
+                let mut selected = features(plan, node, layer, (zoom, canonical));
+                selected.retain(|&f| layer.geometry(f as usize).parts().next().is_some());
+                selected
+            }
+            None => features(plan, node, layer, (zoom, canonical)),
         };
         if selected.is_empty() {
             continue;
