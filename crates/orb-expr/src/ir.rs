@@ -46,6 +46,11 @@ impl Deps {
         self.0 & other.0 == other.0 && other.0 != 0
     }
 
+    /// Whether every input this depends on is among `other`'s.
+    pub(crate) fn within(self, other: Self) -> bool {
+        self.0 & !other.0 == 0
+    }
+
     pub(crate) fn is_empty(self) -> bool {
         self.0 == 0
     }

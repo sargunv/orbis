@@ -35,6 +35,8 @@ pub(crate) struct ResidentSymbols {
     /// The layer's key.
     pub(crate) layer: u32,
     pub(crate) bucket: u64,
+    /// The largest `symbol-height-offset` its labels lift by, metres.
+    pub(crate) max_height_offset: f64,
     rows: Vec<u32>,
     retired: Retired,
 }
@@ -675,6 +677,7 @@ impl Labels {
         let owner = ResidentSymbols {
             layer: s.layer,
             bucket: self.next_bucket,
+            max_height_offset: s.meta.max_height_offset,
             rows: s
                 .glyphs
                 .iter()

@@ -49,25 +49,29 @@ impl Map {
         }
         let zoom = self.camera.state().zoom(self.surface.projection());
         // The tallest extrusion, as this frame's paint has it, or the
-        // highest a symbol layer lifts its labels (`symbol-height-offset`,
-        // where every feature shares it at this zoom): their tiles stay
-        // covered while the lifted content can show, as in GL JS.
+        // highest a symbol layer lifts its labels (`symbol-height-offset`):
+        // their tiles stay covered while the lifted content can show, as in
+        // GL JS. A lift is the most its expression can give at this zoom,
+        // which holds for every tile however the camera got here. One the
+        // expression doesn't bound (a bare `get`) is read from the tiles
+        // below, once the cover is known.
+        let mut unbounded = Vec::new();
         let height = (plan.nodes.iter().enumerate())
             .filter(|(_, n)| n.source == index)
             .map(|(i, n)| {
-                let offset = n
-                    .family
-                    .is_symbol()
-                    .then(|| plan.style.layers[n.layer].get(orb_style::SYMBOL_HEIGHT_OFFSET));
-                let lifted = offset
-                    .filter(|o| {
-                        matches!(
-                            o.kind(),
-                            orb_style::Kind::Constant | orb_style::Kind::Camera
-                        )
-                    })
-                    .map_or(0.0, |o| o.evaluate(zoom).max(0.0) as f32);
-                renderer.cull_elevation(i as u32).max(lifted)
+                let layer = &plan.style.layers[n.layer];
+                let lifted = if n.family.is_symbol() {
+                    layer.get(orb_style::SYMBOL_HEIGHT_OFFSET).max_value(zoom)
+                } else {
+                    Some(0.0)
+                };
+                let lifted = lifted.unwrap_or_else(|| {
+                    unbounded.push(crate::style::layer_key(n.key));
+                    0.0
+                });
+                renderer
+                    .cull_elevation(i as u32)
+                    .max(lifted.max(0.0) as f32)
             })
             .fold(0.0f32, f32::max);
         // Circles and heatmaps draw from the tile their point is in alone,
@@ -158,14 +162,34 @@ impl Map {
                     warps.footprint(tms, tile)
                 })
             }
-            (None, false) => view.cover_volume(
-                tms,
-                endpoint.cover_px,
-                pyramid.max_zoom(),
-                f64::from(height) * self.extrusion_scale(),
-                elevation.map(|e| e as &dyn orb_camera::Elevation),
-                margin,
-            ),
+            (None, false) => {
+                let volume = |height: f32| {
+                    view.cover_volume(
+                        tms,
+                        endpoint.cover_px,
+                        pyramid.max_zoom(),
+                        f64::from(height) * self.extrusion_scale(),
+                        elevation.map(|e| e as &dyn orb_camera::Elevation),
+                        margin,
+                    )
+                };
+                let cover = volume(height);
+                // Lifts no expression bounds: the highest the covered tiles
+                // hold, as each laid out, widens the cover. It comes from
+                // this cover's own tiles, not from what loaded before, so a
+                // map reached by a gesture covers what a fresh one does.
+                let lifted = (cover.iter())
+                    .filter(|_| !unbounded.is_empty())
+                    .filter_map(|t| pyramid.get(t.index))
+                    .flat_map(|tile| &tile.symbols)
+                    .filter(|s| unbounded.contains(&s.layer))
+                    .fold(0.0f32, |max, s| max.max(s.max_height_offset as f32));
+                if lifted > height {
+                    volume(lifted)
+                } else {
+                    cover
+                }
+            }
             (None, true) => view.cover_warped(tms, endpoint.cover_px, pyramid.max_zoom(), |tile| {
                 warps.surface_footprint(tms, tile)
             }),

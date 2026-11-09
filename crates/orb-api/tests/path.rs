@@ -7,7 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use orb_api::{CameraTarget, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target};
+use orb_api::{
+    CameraTarget, Constraints, Geodetic, Map, MapOptions, Runtime, RuntimeOptions, Target,
+};
 
 const WIDTH: u32 = 512;
 const HEIGHT: u32 = 384;
@@ -49,6 +51,14 @@ fn extruded_tokyo() -> String {
     style
 }
 
+/// Lets a globe's camera look past its horizon.
+fn steep() -> Constraints {
+    Constraints {
+        max_pitch: 179.0,
+        ..Constraints::default()
+    }
+}
+
 /// A camera: centre, zoom, bearing, pitch.
 type At = (Geodetic, f64, f64, f64);
 
@@ -78,6 +88,7 @@ fn both_ways(style: &str, start: At, end: At, steps: u32) -> (Vec<u8>, Vec<u8>) 
     let mut target = Target::texture(&runtime, WIDTH, HEIGHT, 1.0);
 
     let mut moved = Map::new(&runtime, MapOptions::default());
+    moved.set_constraints(steep());
     moved.set_style_json(style).unwrap();
     moved.jump_to(&camera(start));
     settle(&mut moved, &mut target);
@@ -116,6 +127,7 @@ fn fresh_at(
     at: At,
 ) -> (Vec<u8>, orb_api::CameraState) {
     let mut fresh = Map::new(runtime, MapOptions::default());
+    fresh.set_constraints(steep());
     fresh.set_style_json(style).unwrap();
     fresh.jump_to(&camera(at));
     settle(&mut fresh, target);
@@ -280,6 +292,48 @@ fn a_globe_gesture_draws_what_a_fresh_globe_does() {
     let start = (Geodetic::new(139.6, 35.6), 9.0, 0.0, 0.0);
     let end = (STATION, 12.3, -25.0, 40.0);
     assert_same("globe", both_ways(&style, start, end, 30));
+}
+
+/// Satellites lifted by a data-driven `symbol-height-offset`, over a globe
+/// looking past its horizon: the far ones' ground is out of view. A gesture
+/// that passed over one, and saw how high it flies, covers no more than a
+/// fresh map, which knows only what the covered tiles hold (GL JS keeps the
+/// highest it has seen).
+#[test]
+fn lifted_labels_cover_what_a_fresh_globe_does() {
+    let satellite = |lon: f64, lat: f64, altitude: u32| {
+        format!(
+            r#"{{"type": "Feature", "properties": {{"altitude": {altitude}}},
+                "geometry": {{"type": "Point", "coordinates": [{lon}, {lat}]}}}}"#
+        )
+    };
+    let style = format!(
+        r##"{{"version": 8, "projection": {{"type": "globe"}},
+            "glyphs": "file://{data}/glyphs/{{fontstack}}/{{range}}.pbf",
+            "sources": {{"satellites": {{"type": "geojson", "data":
+                {{"type": "FeatureCollection", "features": [{far}, {near}, {lone}]}}}}}},
+            "layers": [
+                {{"id": "background", "type": "background",
+                  "paint": {{"background-color": "#c9d9e8"}}}},
+                {{"id": "satellites", "type": "symbol", "source": "satellites",
+                  "layout": {{"symbol-height-offset": ["get", "altitude"],
+                              "symbol-height-anchor": "absolute",
+                              "text-field": ["to-string", ["get", "altitude"]],
+                              "text-font": ["Noto Sans Regular"], "text-size": 16,
+                              "text-allow-overlap": true, "text-ignore-placement": true}},
+                  "paint": {{"text-color": "#c00", "text-halo-color": "#fff",
+                             "text-halo-width": 2}}}}]}}"##,
+        data = data().display(),
+        // Shows, its tile kept by the height of `near` on the covered ground.
+        far = satellite(2.3522, 45.9188, 500_000),
+        near = satellite(2.3522, 60.0, 500_000),
+        // Higher than anything the covered tiles hold, so its tile goes
+        // uncovered and it doesn't show, though the gesture starts over it.
+        lone = satellite(-3.0, 18.0, 3_000_000),
+    );
+    let start = (Geodetic::new(-3.0, 18.0), 4.0, 0.0, 0.0);
+    let end = (Geodetic::new(2.3522, 52.0566), 4.3, 180.0, 95.0);
+    assert_same("lifted", both_ways(&style, start, end, 20));
 }
 
 /// A directory of DEM tiles, removed when the test is done with it.

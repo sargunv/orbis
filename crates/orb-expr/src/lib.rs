@@ -31,6 +31,7 @@ mod locale;
 mod parse;
 mod parse_extra;
 mod property;
+mod range;
 mod tile;
 mod value;
 

@@ -595,6 +595,22 @@ impl<'a, T: PropertyValue> PropertyRef<'a, T> {
     }
 }
 
+impl PropertyRef<'_, f64> {
+    /// The largest value at `zoom` over every feature, the default that
+    /// a `null` or failed evaluation falls back to included: `None` when
+    /// the expression sets no bound (a bare `get`).
+    pub fn max_value(&self, zoom: f64) -> Option<f64> {
+        match self.kind() {
+            Kind::Constant | Kind::Camera => Some(self.evaluate(zoom)),
+            Kind::Source | Kind::Composite => {
+                let expression = self.as_expression()?.expression();
+                let max = expression.max_number(zoom)?;
+                Some(max.max(self.default.get()))
+            }
+        }
+    }
+}
+
 /// A typed property held outside a layer (the light, the sky, the
 /// terrain): a slot and its default.
 #[derive(Clone, Debug)]
