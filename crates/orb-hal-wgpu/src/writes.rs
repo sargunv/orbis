@@ -2,6 +2,11 @@
 //! the start of the next submission. `GPUQueue.writeBuffer` costs
 //! some microseconds a call however few bytes it carries, and a frame
 //! writes hundreds of small runs: symbol state words, tile rows, paint.
+//!
+//! Natively the upload goes through a staging belt: mapped buffers that
+//! return once the GPU has copied from them. wgpu's `write_buffer` makes
+//! a staging buffer for every call, and making a Metal buffer is a trip
+//! into the kernel: on sparse views, a tenth of a frame.
 
 use std::sync::Mutex;
 
@@ -17,7 +22,10 @@ struct Pending {
     copies: Vec<(BufferId, u64, u64, u64)>,
     /// The upload, reused while it's big enough: writes to it are ordered
     /// after the submissions that copied from it.
+    #[cfg(target_arch = "wasm32")]
     staging: Option<wgpu::Buffer>,
+    #[cfg(not(target_arch = "wasm32"))]
+    belt: Option<wgpu::util::StagingBelt>,
 }
 
 /// The writes gathered since the last submission.
@@ -55,6 +63,38 @@ impl Writes {
 
     /// Uploads the gathered writes and copies them into place in
     /// `encoder`, ahead of anything else it records.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn encode(
+        &self,
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        buffer: impl Fn(BufferId) -> wgpu::Buffer,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        let mut pending = self.0.lock().expect("writes poisoned");
+        if pending.copies.is_empty() {
+            pending.data.clear();
+            return;
+        }
+        let Pending { data, copies, belt } = &mut *pending;
+        let belt = belt
+            .get_or_insert_with(|| wgpu::util::StagingBelt::new(device.clone(), GATHERED as u64));
+        let size = wgpu::BufferSize::new(data.len() as u64).expect("writes gathered");
+        let align = wgpu::BufferSize::new(wgpu::COPY_BUFFER_ALIGNMENT).expect("nonzero");
+        let slice = belt.allocate(size, align);
+        slice
+            .get_mapped_range_mut()
+            .expect("the belt's slice is mapped")
+            .copy_from_slice(data);
+        let (staging, start) = (slice.buffer().clone(), slice.offset());
+        for (id, offset, at, len) in copies.drain(..) {
+            encoder.copy_buffer_to_buffer(&staging, start + at, &buffer(id), offset, len);
+        }
+        belt.finish_and_recall_on_submit(encoder);
+        data.clear();
+    }
+
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn encode(
         &self,
         device: &wgpu::Device,

@@ -79,6 +79,9 @@ pub struct WgpuGpu {
     uploaded: Uploaded,
     /// Small buffer writes, copied in at the next submission.
     writes: writes::Writes,
+    /// Readback buffers back from their last readback, for the next of
+    /// their size: a new one maps fresh pages each time.
+    readbacks: offscreen::Readbacks,
     pipelines_created: u32,
     /// Set when the device made by `offscreen` is lost.
     #[cfg(not(target_arch = "wasm32"))]
@@ -211,6 +214,7 @@ impl WgpuGpu {
             host_images: Slots::default(),
             uploaded: Uploaded::default(),
             writes: writes::Writes::default(),
+            readbacks: Default::default(),
             pipelines_created: 0,
             #[cfg(not(target_arch = "wasm32"))]
             lost: Default::default(),

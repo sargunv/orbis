@@ -12,17 +12,27 @@ use orb_hal::{BufferId, TextureId};
 
 use crate::WgpuGpu;
 
+/// Readback buffers not in use, shared with the readbacks' futures.
+pub(crate) type Readbacks = std::sync::Arc<std::sync::Mutex<Vec<wgpu::Buffer>>>;
+
+/// The most readback buffers kept.
+const READBACKS: usize = 2;
+
 /// An instance, configured from the environment, and its default adapter.
-async fn adapter(
-    skip_indirect_validation: bool,
-) -> Result<(wgpu::Instance, wgpu::Adapter), String> {
-    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-    if skip_indirect_validation {
-        descriptor
-            .flags
-            .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
-    }
-    let instance = wgpu::Instance::new(descriptor);
+///
+/// Without wgpu's indirect-call validation unless the environment asks
+/// for it (`WGPU_VALIDATION_INDIRECT_CALL=1`): Orbis's indirect arguments
+/// are its cull shader's, bounded by the scene's own buffers, and the
+/// validation costs every frame a compute pass, a buffer and a copy (on
+/// sparse 512 px views a sixth of the frame: 0.06 ms of CPU, 0.15 ms of
+/// wall). After it, Qualcomm's Vulkan driver also draws nothing from
+/// drawIndexedIndirect (Adreno 619 measured; gfx-rs/wgpu#8801 on 650/740).
+async fn adapter() -> Result<(wgpu::Instance, wgpu::Adapter), String> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor
+        .flags
+        .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+    let instance = wgpu::Instance::new(descriptor.with_env());
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions::default())
         .await
@@ -36,17 +46,7 @@ impl WgpuGpu {
     /// choose the adapter. Natively the device keeps its instance, so it can
     /// also draw to window surfaces.
     pub async fn offscreen() -> Result<Self, String> {
-        let (mut instance, mut adapter) = adapter(false).await?;
-        // After wgpu's indirect-call validation pass, Qualcomm's Vulkan
-        // driver draws nothing from drawIndexedIndirect (Adreno 619
-        // measured; gfx-rs/wgpu#8801 on 650/740). Orbis's indirect
-        // arguments are its cull shader's, bounded by the scene's own
-        // buffers, so there the validation is skipped.
-        const QUALCOMM: u32 = 0x5143;
-        let info = adapter.get_info();
-        if info.backend == wgpu::Backend::Vulkan && info.vendor == QUALCOMM {
-            (instance, adapter) = self::adapter(true).await?;
-        }
+        let (instance, adapter) = adapter().await?;
         // Orbis draws indirectly from compute; devices without that (the
         // iOS simulator's Metal) can't draw it.
         let downlevel = adapter.get_downlevel_capabilities().flags;
@@ -135,11 +135,19 @@ impl WgpuGpu {
         let (width, height) = (texture.width(), texture.height());
         let row = width * 4;
         let padded_row = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("readback"),
-            size: u64::from(padded_row * height),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
+        let size = u64::from(padded_row * height);
+        let kept = {
+            let mut kept = self.readbacks.lock().expect("readbacks poisoned");
+            let at = kept.iter().position(|b| b.size() == size);
+            at.map(|at| kept.swap_remove(at))
+        };
+        let buffer = kept.unwrap_or_else(|| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("readback"),
+                size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
         });
         let mut encoder = self
             .device
@@ -158,7 +166,7 @@ impl WgpuGpu {
             texture.size(),
         );
         self.queue.submit([encoder.finish()]);
-        let device = self.device.clone();
+        let (device, readbacks) = (self.device.clone(), self.readbacks.clone());
         async move {
             let mapped = map_read(&device, &buffer).await;
             let mut pixels = Vec::with_capacity((row * height) as usize);
@@ -166,6 +174,13 @@ impl WgpuGpu {
                 let start = (y * padded_row) as usize;
                 pixels.extend_from_slice(&mapped[start..start + row as usize]);
             }
+            drop(mapped);
+            buffer.unmap();
+            let mut kept = readbacks.lock().expect("readbacks poisoned");
+            if kept.len() == READBACKS {
+                kept.remove(0);
+            }
+            kept.push(buffer);
             pixels
         }
     }
