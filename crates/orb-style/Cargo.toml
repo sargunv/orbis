@@ -10,6 +10,7 @@ version.workspace = true
 serde.workspace = true
 orb-crs.workspace = true
 orb-expr.workspace = true
+rustc-hash.workspace = true
 orb-tile.workspace = true
 
 [lints]

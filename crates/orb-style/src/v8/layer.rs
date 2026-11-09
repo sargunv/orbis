@@ -2,7 +2,6 @@
 //! order of the property table ([`PropertyId`]).
 
 use crate::*;
-use std::collections::HashSet;
 
 use orb_expr::json::{Json, JsonValue, Member};
 use orb_expr::{Filter, Kind, PropertyExpression, Value};
@@ -335,7 +334,7 @@ pub(crate) fn parse_layer(
     json: &Json,
     index: usize,
     sources: &[std::sync::Arc<Source>],
-    ids: &mut HashSet<String>,
+    ids: &mut rustc_hash::FxHashSet<String>,
 ) -> Option<Layer> {
     let path = format!("layers[{index}]");
     let members = cx.object(json, &path)?;
@@ -488,7 +487,7 @@ fn layout_group(layer: &Json) -> u64 {
             }
         }
     }
-    let mut h = std::hash::DefaultHasher::new();
+    let mut h = rustc_hash::FxHasher::default();
     for key in [
         "type",
         "source",

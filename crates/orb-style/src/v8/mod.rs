@@ -19,7 +19,6 @@ mod sprite;
 mod terrain;
 mod tx;
 
-use std::collections::HashSet;
 use std::fmt;
 
 pub use doc::StyleDoc;
@@ -236,7 +235,7 @@ fn parse_root(cx: &mut Cx, doc: &Json, overrides: &[(String, Value<'static>)]) -
         Some(layers) => match cx.array(layers, "layers") {
             None => Vec::new(),
             Some(items) => {
-                let mut ids = HashSet::new();
+                let mut ids = rustc_hash::FxHashSet::default();
                 items
                     .iter()
                     .enumerate()
@@ -322,7 +321,7 @@ pub fn parse_layer(
     previews: Previews,
 ) -> Result<(Layer, Vec<Diagnostic>), Diagnostics> {
     let mut cx = Cx::new(state, previews);
-    let layer = layer::parse_layer(&mut cx, json, index, sources, &mut HashSet::new());
+    let layer = layer::parse_layer(&mut cx, json, index, sources, &mut Default::default());
     cx.finish(layer)
 }
 
