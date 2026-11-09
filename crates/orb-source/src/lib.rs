@@ -52,7 +52,8 @@ enum State<T> {
     /// stands in.
     Missing,
     /// Failed for a reason that may pass, such as the network: ancestors or
-    /// children stand in, as for a loading tile, and it is requested again
+    /// children stand in, as for a loading tile, its nearest ancestor
+    /// requested if none is loaded, and it is requested again
     /// once [`TilePyramid::retry_failed`] finds `retry_at` (ms) has passed.
     Failed {
         retry_at: f64,
@@ -230,6 +231,10 @@ impl<T> TilePyramid<T> {
                 },
             }
 
+            let failed = matches!(
+                self.tiles.get(&ideal).map(|e| &e.state),
+                Some(State::Failed { .. })
+            );
             let mut descendants = Vec::new();
             let mut missing = Vec::new();
             self.descendant_coverage(ideal, &branches, &mut descendants, &mut missing);
@@ -239,14 +244,25 @@ impl<T> TilePyramid<T> {
                     draws.insert((tile.z, tile, covered.wrap), vec![tile]);
                 }
             }
-            if !missing.is_empty()
-                && let Some(ancestor) = self.ready_ancestor(ideal)
-            {
-                update.used.push(ancestor);
-                draws
-                    .entry((ancestor.z, ancestor, covered.wrap))
-                    .or_default()
-                    .extend(missing);
+            if missing.is_empty() {
+                continue;
+            }
+            match self.ready_ancestor(ideal) {
+                Some(ancestor) => {
+                    update.used.push(ancestor);
+                    draws
+                        .entry((ancestor.z, ancestor, covered.wrap))
+                        .or_default()
+                        .extend(missing);
+                }
+                // A failed tile with no ancestor loaded asks for its
+                // nearest one, as GL JS loads errored tiles' parents: the
+                // region shows coarser data while the tile waits for its
+                // retry, not the background.
+                None if failed => {
+                    self.stand_in(ideal, &mut requested, &mut update);
+                }
+                None => {}
             }
         }
 
@@ -469,6 +485,23 @@ impl<T> TilePyramid<T> {
         self.cover.contains(&tile)
     }
 
+    /// Whether the last plan wants `tile`: a tile of its cover, or the
+    /// ancestor of one that failed (even while it's retried) or is
+    /// missing, which it asks for to stand in.
+    pub fn wants(&self, tile: TileIndex) -> bool {
+        self.cover.contains(&tile)
+            || self.cover.iter().any(|&t| {
+                t.z > tile.z
+                    && TileIndex::new(tile.z, t.col >> (t.z - tile.z), t.row >> (t.z - tile.z))
+                        == tile
+                    && (self.failures.contains_key(&t)
+                        || matches!(
+                            self.tiles.get(&t).map(|e| &e.state),
+                            Some(State::Failed { .. } | State::Missing)
+                        ))
+            })
+    }
+
     /// Evicts a ready tile that only stands in: one the last plan's cover
     /// doesn't hold, standing in for no missing tile. A fresh view of the
     /// cover would never have loaded it, so it makes room for the cover's
@@ -549,9 +582,9 @@ impl<T> TilePyramid<T> {
         }
     }
 
-    /// The nearest ancestor of a missing tile that isn't missing, as GL JS
-    /// loads the parents of tiles that failed: requested when not yet
-    /// known. Ancestors on the way stay in use.
+    /// The nearest ancestor of a missing or failed tile that is neither,
+    /// as GL JS loads the parents of tiles that failed: requested when not
+    /// yet known. Ancestors on the way stay in use.
     fn stand_in(
         &self,
         mut tile: TileIndex,
@@ -570,8 +603,8 @@ impl<T> TilePyramid<T> {
                     }
                     return StandIn::Loading;
                 }
-                Some(State::Missing) => tile = parent,
-                Some(State::Loading | State::Failed { .. }) => return StandIn::Loading,
+                Some(State::Missing | State::Failed { .. }) => tile = parent,
+                Some(State::Loading) => return StandIn::Loading,
                 Some(State::Ready(_)) => return StandIn::Ready(parent),
                 Some(State::Empty) => break,
             }
@@ -1023,6 +1056,29 @@ mod tests {
         // A tile of the cover never goes.
         assert_eq!(p.evict_stand_in(near), None);
         assert_eq!(p.get(t(2, 3, 0)), Some(&"in the cover"));
+    }
+
+    #[test]
+    fn failed_tiles_ask_for_their_nearest_ancestor() {
+        let mut p = TilePyramid::new(0, 14, 8);
+        let view = cover(&[(3, 1, 2)]);
+        p.update(&view);
+        p.insert_failed(t(3, 1, 2), 0.0);
+        // Nothing loaded stands in: the parent is requested, then drawn.
+        let update = p.update(&view);
+        assert_eq!(update.request, [t(2, 0, 1)]);
+        assert!(update.draw.is_empty());
+        p.insert_failed(t(2, 0, 1), 0.0);
+        assert_eq!(p.update(&view).request, [t(1, 0, 0)]);
+        p.insert(t(1, 0, 0), "grandparent");
+        assert_eq!(
+            p.update(&view).draw,
+            [Draw {
+                tile: t(1, 0, 0),
+                wrap: 0,
+                regions: vec![t(3, 1, 2)]
+            }]
+        );
     }
 
     #[test]

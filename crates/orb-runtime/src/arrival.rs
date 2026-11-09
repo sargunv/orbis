@@ -429,11 +429,14 @@ impl Map {
         // Room: what's free first; then unused tiles go, this source's
         // before others'; under the budget the pools grow before they do.
         // While other tiles load (they free the stand-ins they replace),
-        // this one waits. Otherwise the tiles it replaces go, then, for a
-        // tile of the cover, tiles that only stand in (a fresh view of
-        // this cover would hold none of them), its own ancestors first.
-        // A tile the cover has left since it was requested is forgotten;
-        // one of the cover gives way, to be tried again later.
+        // this one waits. Otherwise, for a tile of the cover, the tiles it
+        // replaces go, then tiles that only stand in (a fresh view of this
+        // cover would hold none of them), its own ancestors first. A tile
+        // outside the cover takes nothing from it.
+        // A tile the plan no longer wants (neither in the cover nor
+        // standing in for a tile of it that failed) is forgotten; one it
+        // wants gives way, to be tried again later, and its ancestor is
+        // asked to stand in.
         let others_loading = style
             .sources
             .iter()
@@ -481,14 +484,9 @@ impl Map {
                 }
                 None if others_loading => None,
                 None => match &mut style.sources[source] {
-                    SourceState::Ready { pyramid, .. } => {
-                        let covered = pyramid.covers(tile);
-                        pyramid.evict_within(tile).or_else(|| {
-                            covered
-                                .then(|| evict_stand_in(&mut style.sources, source, tile))
-                                .flatten()
-                        })
-                    }
+                    SourceState::Ready { pyramid, .. } if pyramid.covers(tile) => pyramid
+                        .evict_within(tile)
+                        .or_else(|| evict_stand_in(&mut style.sources, source, tile)),
                     _ => None,
                 },
             };
@@ -504,7 +502,7 @@ impl Map {
         let SourceState::Ready { pyramid, .. } = &mut style.sources[source] else {
             unreachable!("checked above");
         };
-        let covered = pyramid.covers(tile);
+        let wanted = pyramid.wants(tile);
         let mut resident = match uploaded {
             Ok(resident) => resident,
             Err(Some(e)) => {
@@ -513,7 +511,7 @@ impl Map {
                 return None;
             }
             Err(None) if others_loading => return Some(build),
-            Err(None) if !covered => {
+            Err(None) if !wanted => {
                 pyramid.forget_loading(tile);
                 return None;
             }
