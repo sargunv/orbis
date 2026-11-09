@@ -109,9 +109,9 @@ fn feature(
     let feature = (builder.features() - 1) as u32;
     let mut tags = Repeated::new(bytes, 2);
     while let Some(key) = tags.next()? {
-        let index = tags
-            .next()?
-            .ok_or(DecodeError::InvalidValue("odd property tag count"))?;
+        let Some(index) = tags.next()? else {
+            return Err(DecodeError::InvalidValue("odd property tag count"));
+        };
         if key as usize >= keys {
             return Err(DecodeError::InvalidTagIndex {
                 table: "key",
@@ -234,13 +234,19 @@ fn geometry(
     Ok(nonempty)
 }
 
+// The decoder's hot paths build their errors only on failure: `ok_or`
+// would build and drop one for every vertex and every byte read, and
+// `DecodeError` has a variant with a destructor.
 fn advance(commands: &mut Repeated<'_>, cursor: &mut [i32; 2]) -> Result<(), DecodeError> {
     for coordinate in cursor {
-        let delta = commands.next()?.ok_or(DecodeError::UnexpectedEnd)?;
+        let Some(delta) = commands.next()? else {
+            return Err(DecodeError::UnexpectedEnd);
+        };
         let delta = ((delta >> 1) as i32) ^ -((delta & 1) as i32);
-        *coordinate = coordinate
-            .checked_add(delta)
-            .ok_or(DecodeError::CoordinateOverflow)?;
+        let Some(moved) = coordinate.checked_add(delta) else {
+            return Err(DecodeError::CoordinateOverflow);
+        };
+        *coordinate = moved;
     }
     Ok(())
 }
@@ -294,10 +300,9 @@ impl<'a> Reader<'a> {
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8], DecodeError> {
-        let (head, tail) = self
-            .bytes
-            .split_at_checked(len)
-            .ok_or(DecodeError::UnexpectedEnd)?;
+        let Some((head, tail)) = self.bytes.split_at_checked(len) else {
+            return Err(DecodeError::UnexpectedEnd);
+        };
         self.bytes = tail;
         Ok(head)
     }
@@ -386,7 +391,10 @@ impl<'a> Reader<'a> {
             if groups.is_empty() {
                 return Ok(());
             }
-            (field, wire) = self.field()?.ok_or(DecodeError::UnexpectedEnd)?;
+            let Some(next) = self.field()? else {
+                return Err(DecodeError::UnexpectedEnd);
+            };
+            (field, wire) = next;
         }
     }
 }
