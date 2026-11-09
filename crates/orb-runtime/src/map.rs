@@ -908,6 +908,7 @@ impl Map {
         labels.fade_duration = old.fade_duration;
         labels.cross_source_collisions = old.cross_source_collisions;
         labels.ideographs = old.ideographs.clone();
+        labels.stable_labels = old.stable_labels;
         self.labels = labels;
         self.label_epoch += 1;
         *self.picking.get_mut() = Default::default();
