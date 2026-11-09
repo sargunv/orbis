@@ -13,6 +13,7 @@ conformance = []
 [dependencies]
 serde.workspace = true
 orb-tile.workspace = true
+rustc-hash.workspace = true
 
 [lints]
 workspace = true

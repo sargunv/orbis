@@ -209,7 +209,9 @@ impl Grouping {
             return None;
         }
         let limit = layer.len() / 4 + 8;
-        let mut index: std::collections::HashMap<Box<[u64]>, u32, Fx> = Default::default();
+        // Fx rather than SipHash: several times faster on short keys, and
+        // codes are no denial-of-service vector.
+        let mut index: rustc_hash::FxHashMap<Box<[u64]>, u32> = Default::default();
         let mut key = Vec::with_capacity(columns.len() + 1);
         let mut of_row = Vec::with_capacity(layer.len());
         let mut first = Vec::new();
@@ -238,42 +240,6 @@ impl Grouping {
             of_row.push(group);
         }
         Some(Self { of_row, first })
-    }
-}
-
-/// Firefox's hash, for the short keys of [`Grouping::new`]: several times
-/// faster than the standard library's SipHash, which guards against
-/// adversarial keys that tile values can't choose.
-#[derive(Clone, Copy, Default)]
-struct Fx(u64);
-
-impl std::hash::BuildHasher for Fx {
-    type Hasher = Fx;
-
-    fn build_hasher(&self) -> Fx {
-        Fx(0)
-    }
-}
-
-impl std::hash::Hasher for Fx {
-    fn write(&mut self, bytes: &[u8]) {
-        for chunk in bytes.chunks(8) {
-            let mut word = [0; 8];
-            word[..chunk.len()].copy_from_slice(chunk);
-            self.write_u64(u64::from_le_bytes(word));
-        }
-    }
-
-    fn write_u64(&mut self, word: u64) {
-        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
-    }
-
-    fn write_usize(&mut self, word: usize) {
-        self.write_u64(word as u64);
-    }
-
-    fn finish(&self) -> u64 {
-        self.0
     }
 }
 
