@@ -581,6 +581,39 @@ fn extrusion_opacity_follows_the_feature_with_the_expressions_preview() {
     assert_eq!(a, b, "without the preview both draw opaque");
 }
 
+/// A per-feature extrusion opacity is a property of each building, not the
+/// layer: a value that is zero without a feature still draws the buildings
+/// it makes opaque, and a building at zero hides nothing behind it.
+#[test]
+fn extrusions_at_zero_opacity_hide_nothing() {
+    let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");
+    // A wide low building, and a narrow tall one standing on its roof.
+    let style = r##"{"version": 8, "center": [0, 0], "zoom": 2, "sources": {"b": {"type": "geojson",
+        "data": {"type": "FeatureCollection", "features": [
+          {"type": "Feature", "properties": {"k": "low", "h": 1000}, "geometry": {"type": "Polygon",
+            "coordinates": [[[-10, -10], [10, -10], [10, 10], [-10, 10], [-10, -10]]]}},
+          {"type": "Feature", "properties": {"k": "tall", "h": 100000}, "geometry": {"type": "Polygon",
+            "coordinates": [[[-3, -3], [3, -3], [3, 3], [-3, 3], [-3, -3]]]}}]}}},
+      "layers": [
+        {"id": "background", "type": "background", "paint": {"background-color": "#000000"}},
+        {"id": "b", "type": "fill-extrusion", "source": "b", "paint": {
+          "fill-extrusion-color": "#ffffff", "fill-extrusion-height": ["get", "h"],
+          "fill-extrusion-opacity": ["match", ["get", "k"], "low", 1, 0]}}]}"##;
+    let mut map = Map::new(
+        &runtime,
+        MapOptions {
+            previews: orb_api::Previews::ALL,
+            ..MapOptions::default()
+        },
+    );
+    map.set_style_json(style).expect("style");
+    let image = map.snapshot(SIZE, SIZE, 1.0).expect("snapshot");
+    let centre = pixel(&image.pixels, SIZE / 2, SIZE / 2);
+    let beside = pixel(&image.pixels, SIZE / 2 + 24, SIZE / 2);
+    assert!(beside[0] > 100, "the low building draws: {beside:?}");
+    assert_eq!(centre, beside, "the tall one at zero hides none of it");
+}
+
 #[test]
 fn padding_draws_the_center_where_it_projects() {
     let runtime = Runtime::new(&RuntimeOptions::default()).expect("runtime");

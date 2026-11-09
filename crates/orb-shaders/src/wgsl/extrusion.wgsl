@@ -142,6 +142,12 @@ fn extrusion_vertex(v: Pulled) -> ExtrusionOut {
     if (node.table_mask & EXTRUSION_OPACITY_ROWS) != 0u {
         let at = vec2<f32>(f32((flags >> 8u) & 255u), f32((flags >> 16u) & 255u)) / 255.0;
         opacity = mix(at.x, at.y, curve_t(node.curves[3], tile.zoom));
+        // The target keeps the nearest surface per pixel: a building at
+        // zero would hide what stands behind it.
+        if opacity <= 0.0 {
+            out.position = discarded_vertex();
+            return out;
+        }
     }
     var vertical_gradient = node.vertical_gradient != 0u;
     if (node.table_mask & EXTRUSION_GRADIENT_ROWS) != 0u {

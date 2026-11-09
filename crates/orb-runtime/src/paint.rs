@@ -366,9 +366,13 @@ fn write_paint(
             }
             continue;
         }
+        // A layer-wide extrusion opacity of zero hides the layer; a
+        // per-feature one hides only its own buildings, in the shader.
         let visible = layer.is_visible_at(zoom)
-            && (layer.ty != LayerType::FillExtrusion
-                || layer.get(orb_style::EXTRUSION_OPACITY).evaluate(zoom) > 0.0);
+            && (layer.ty != LayerType::FillExtrusion || {
+                let opacity = layer.get(orb_style::EXTRUSION_OPACITY);
+                is_per_feature(opacity.kind()) || opacity.evaluate(zoom) > 0.0
+            });
         let draped = draping && node.family.is_draped();
         renderer.set_visible(
             index,
