@@ -107,15 +107,16 @@ pub struct HitGeometry {
 }
 
 impl HitGeometry {
-    /// Feature `feature` of the tile's `layer`, with `id`, and its parts
-    /// if `with_parts`: its record's first word, added unless it is here.
+    /// Feature `feature` of the tile's `layer`, with `id` (formatted as GL
+    /// JS keys feature state, once), and its parts if `with_parts`: its
+    /// record's first word, added unless it is here.
     /// A label's feature, without parts, may come from the layer its labels
     /// lay out from (`orb_tile::Layer::labelled`).
     pub(crate) fn add(
         &mut self,
         layer: &orb_tile::Layer,
         feature: u32,
-        id: Option<&str>,
+        id: Option<orb_tile::ValueRef<'_>>,
         with_parts: bool,
     ) -> u32 {
         if let Some(&at) = self.added.get(&(feature, with_parts)) {
@@ -137,7 +138,7 @@ impl HitGeometry {
         ]);
         words.push(u32::from(id.is_some()));
         if let Some(id) = id {
-            write_text(words, id);
+            write_text(words, &crate::features::state_key(id));
         }
         let parts: Vec<_> = layer.geometry(f).parts().filter(|_| with_parts).collect();
         words.push(parts.len() as u32);
@@ -2261,7 +2262,7 @@ mod tests {
         }
         let layer = b.finish();
         let mut geometry = HitGeometry::default();
-        let point = geometry.add(&layer, 0, Some("seven"), true);
+        let point = geometry.add(&layer, 0, Some(orb_tile::ValueRef::Str("seven")), true);
         let polygon = geometry.add(&layer, 1, None, true);
         assert_eq!(geometry.add(&layer, 1, None, true), polygon);
         let mut hits = MeshHits::new(0);

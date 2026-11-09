@@ -873,6 +873,22 @@ pub(crate) fn build(
             // Unless its producer said, a scan of the layer's vertices:
             // once per layer, not once per building.
             let clip_buffer = (node.family == Family::FillExtrusion).then(|| layer.clip_buffer());
+            // What a hit test reads of each feature's paint.
+            let dimensions: &[_] = match style_layer.ty {
+                LayerType::Circle => &[orb_style::CIRCLE_RADIUS, orb_style::CIRCLE_STROKE_WIDTH],
+                LayerType::Line => &[
+                    orb_style::LINE_WIDTH,
+                    orb_style::LINE_GAP_WIDTH,
+                    orb_style::LINE_OFFSET,
+                ],
+                LayerType::FillExtrusion => {
+                    &[orb_style::EXTRUSION_HEIGHT, orb_style::EXTRUSION_BASE]
+                }
+                _ => &[],
+            };
+            let dimensions: Vec<_> = (dimensions.iter())
+                .map(|&key| style_layer.get(key).bind(layer))
+                .collect();
             for &f in features.iter().filter(|_| kind.is_some()) {
                 let i = f as usize;
                 let shape = layer.geometry_type(i);
@@ -890,23 +906,12 @@ pub(crate) fn build(
                 let id = tile_promote
                     .unwrap_or(tile_layer.ids())
                     .get(feature as usize);
-                let id = id.map(crate::features::state_key);
-                let at = |key| style_layer.get(key).bind(layer).evaluate(zoom, i);
+                let at = |d: usize| dimensions[d].evaluate(zoom, i);
                 let dimensions = match style_layer.ty {
-                    LayerType::Circle => [
-                        at(orb_style::CIRCLE_RADIUS),
-                        at(orb_style::CIRCLE_STROKE_WIDTH),
-                        0.0,
-                        0.0,
-                    ],
+                    LayerType::Circle => [at(0), at(1), 0.0, 0.0],
                     LayerType::Line => {
-                        let offset = at(orb_style::LINE_OFFSET);
-                        [
-                            at(orb_style::LINE_WIDTH) / 2.0,
-                            at(orb_style::LINE_GAP_WIDTH),
-                            offset.abs(),
-                            offset,
-                        ]
+                        let offset = at(2);
+                        [at(0) / 2.0, at(1), offset.abs(), offset]
                     }
                     // Whether it's whole, as layout keeps it, for picking
                     // to own it as drawing does.
@@ -915,13 +920,13 @@ pub(crate) fn build(
                             bend.is_none() && layer.is_whole(i, clip_buffer.unwrap_or_default()),
                         )),
                         0.0,
-                        at(orb_style::EXTRUSION_HEIGHT),
-                        at(orb_style::EXTRUSION_BASE),
+                        at(0),
+                        at(1),
                     ],
                     _ => [0.0; 4],
                 };
                 let parts = kind != crate::query::LABEL;
-                let record = geometry.add(tile_layer, feature, id.as_deref(), parts);
+                let record = geometry.add(tile_layer, feature, id, parts);
                 hits.push(geometry, record, feature, kind, dimensions);
             }
             build.meshes.push(NodeMesh {
