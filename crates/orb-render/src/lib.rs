@@ -163,8 +163,8 @@ struct Node {
     /// (`*-layer-opacity`, `*-layer-blend`): below opacity 1 or blending
     /// other than normally, the layer composites once.
     composite: Option<(u32, f32, Blend)>,
-    /// It has drawn since it was made: its pipelines were asked for, and
-    /// the bundles record it. Until then it costs nothing, neither
+    /// It has been shown since it was made: its pipelines were asked for,
+    /// and the bundles record it. Until then it costs nothing, neither
     /// pipelines nor targets nor passes.
     drawn: bool,
 }
@@ -207,7 +207,7 @@ pub struct Renderer {
     symbol_pass_buffer: BufferId,
     symbol_pass_layout: BindGroupLayoutId,
     /// Nodes changed since pipelines were last made for them, or one
-    /// may have started to draw.
+    /// was shown.
     pipelines_stale: bool,
     /// Pipelines the device had compiled when the bundles were recorded.
     made_seen: u32,
@@ -1287,28 +1287,22 @@ impl Renderer {
         self.atmosphere.set(gpu, self.target, frame, paint, view);
     }
 
-    /// Asks for the pipelines the nodes that draw need and counts those
+    /// Asks for the pipelines the nodes shown need and counts those
     /// compiling: a frame is complete only once none are.
     pub fn pipelines(&mut self, gpu: &mut dyn Gpu) -> PipelineCounts {
-        if std::mem::take(&mut self.pipelines_stale) | self.scene.take_nodes_filled() {
+        if std::mem::take(&mut self.pipelines_stale) {
             self.make_pipelines(gpu);
         }
         gpu.poll_pipelines()
     }
 
-    /// Whether node `i` draws now: it is shown at this zoom and has
-    /// meshes. Only such nodes ask for pipelines, so a still compiles what
-    /// it shows and no more.
-    fn draws(&self, i: usize) -> bool {
-        self.nodes[i].cull.visible && self.scene.node_has_meshes(i as u32)
-    }
-
-    /// Makes the pipelines the nodes that draw need and that aren't made
-    /// yet, in draw order: the device compiles them in the order they are
-    /// asked for (the cull's was first), and
+    /// Makes the pipelines the nodes shown need (their layers draw at this
+    /// zoom) and that aren't made yet, in draw order: the device compiles
+    /// them in the order they are asked for (the cull's was first), and
     /// [`prioritize`](Self::prioritize) moves what the view shows ahead.
-    /// A node drawing for the first time records the bundles again, which
-    /// left it out.
+    /// A still compiles what its zoom shows and no more, while the
+    /// compiles still overlap the tiles' loading. A node shown for the
+    /// first time records the bundles again, which left it out.
     fn make_pipelines(&mut self, gpu: &mut dyn Gpu) {
         let layouts = [self.draw_layout, self.node_layout];
         let drape_target = TargetFormat {
@@ -1318,7 +1312,7 @@ impl Renderer {
         let own_drape = self.target.color != DRAPE_FORMAT;
         let (mut started, mut draped) = (false, false);
         for i in 0..self.nodes.len() {
-            if !self.draws(i) {
+            if !self.nodes[i].cull.visible {
                 continue;
             }
             let node = &mut self.nodes[i];

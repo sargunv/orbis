@@ -855,9 +855,6 @@ pub(crate) struct Scene {
     rows_dirty: Vec<(u32, TileRow)>,
     /// The quantum rows' origins are split at ([`quantum`]).
     quantum: f64,
-    /// A node without meshes got one since the last
-    /// [`take_nodes_filled`](Self::take_nodes_filled).
-    nodes_filled: bool,
 }
 
 /// Counts for the stats HUD and memory accounting.
@@ -993,7 +990,6 @@ impl Scene {
             tile_rows: Vec::new(),
             rows_dirty: Vec::new(),
             quantum: 0.0,
-            nodes_filled: false,
         }
     }
 
@@ -1037,11 +1033,6 @@ impl Scene {
     /// Whether render `node` has any resident mesh.
     pub(crate) fn node_has_meshes(&self, node: u32) -> bool {
         !self.nodes[node as usize].meshes.is_empty()
-    }
-
-    /// Whether a node without meshes got one since the last call.
-    pub(crate) fn take_nodes_filled(&mut self) -> bool {
-        std::mem::take(&mut self.nodes_filled)
     }
 
     pub(crate) fn stats(&self) -> SceneStats {
@@ -1441,9 +1432,7 @@ impl Scene {
                 MeshId(self.meshes.len() as u32 - 1)
             }
         };
-        let meshes = &mut self.nodes[node as usize].meshes;
-        self.nodes_filled |= meshes.is_empty();
-        meshes.push(id);
+        self.nodes[node as usize].meshes.push(id);
         self.tiles[tile.0 as usize]
             .as_mut()
             .expect("checked above")
