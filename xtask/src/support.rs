@@ -195,6 +195,24 @@ fn spec_inputs(spec: &Value) -> String {
     }
 }
 
+/// A fixture run's column header, from its directory under
+/// `docs/scratch/rt`: the suite, then the platform it ran on.
+fn label(name: &str) -> String {
+    let (suite, platform) = match name.split_once('/') {
+        Some(parts) => parts,
+        // GL JS's render suite reports at the top level.
+        None => ("render", name),
+    };
+    let suite = match suite {
+        "render" => "GL JS render",
+        "query" => "GL JS query",
+        "native-render" => "Native render",
+        "native-query" => "Native query",
+        other => other,
+    };
+    format!("{suite} ({platform})")
+}
+
 /// Whether test `id` is named for property `name`: a directory of its id.
 fn names(id: &str, name: &str) -> bool {
     let mut parts: Vec<&str> = id.split('/').collect();
@@ -282,8 +300,8 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
          the first versions with the property and its data-driven form (the\n\
          spec's `sdk-support`; Native is Android's); **Orbis** what Orbis reads,\n\
          the spec's inputs and, after `+`, those `orbis:expressions` adds;\n\
-         **Fixtures** the render tests named for the property that pass, per\n\
-         fixture run.\n",
+         then, per fixture run (its suite and platform), the tests named for\n\
+         the property that pass.\n",
     );
     // Runs whose tests are named for properties: the render suites.
     let named = |s: &Suite| {
@@ -292,7 +310,8 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
             .flat_map(|t| t.properties())
             .any(|id| s.tests.iter().any(|(test, _)| names(test, id.name())))
     };
-    let fixture_suites: Vec<&Suite> = suites.iter().filter(|s| named(s)).collect();
+    let mut fixture_suites: Vec<&Suite> = suites.iter().filter(|s| named(s)).collect();
+    fixture_suites.sort_by_key(|s| label(&s.name));
     for ty in LayerType::V8 {
         let _ = write!(
             out,
@@ -300,7 +319,7 @@ fn render(spec: &Value, version: &str, suites: &[Suite]) -> String {
             ty.name()
         );
         for s in &fixture_suites {
-            let _ = write!(out, " Fixtures `{}` |", s.name);
+            let _ = write!(out, " {} |", label(&s.name));
         }
         out.push_str("\n|---|---|---|---|---|---|---|");
         out.push_str(&"---|".repeat(fixture_suites.len()));
