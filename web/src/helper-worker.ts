@@ -32,18 +32,22 @@ self.onmessage = async ({ data: { module, port, placement } }: MessageEvent<Star
   };
   self.addEventListener("unhandledrejection", (e) => { if (trapped(e.reason)) e.preventDefault(); });
   self.addEventListener("error", (e) => { if (trapped(e.error)) e.preventDefault(); });
-  port.onmessage = placement ? placer(port) : jobs(port, trapped);
+  port.onmessage = placement ? placer(port, trapped) : jobs(port, trapped);
 };
 
-function placer(port: MessagePort): (e: MessageEvent) => void {
+function placer(port: MessagePort, trapped: (e: unknown) => boolean): (e: MessageEvent) => void {
   const placer = new PlacementWorker();
   return ({ data }) => {
-    if (data?.trap) placer.trap();
     try {
+      if (data?.trap) placer.trap();
       const reply = placer.receive(data);
       if (reply) port.postMessage(reply, [reply.committed.buffer]);
     } catch (e) {
-      // A frame asked for is always answered, so the map asks again.
+      // A trap in a frame's placement loses the worker like any other: its
+      // wasm is unusable, so answering with an error would have the map
+      // ask the same dead worker again. Any other failure answers a frame
+      // asked for, so the map asks again.
+      if (trapped(e)) return;
       if (data?.place) port.postMessage({ error: String(e instanceof Error ? e.message : e) });
       else console.error(e);
     }
