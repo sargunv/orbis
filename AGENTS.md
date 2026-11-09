@@ -165,6 +165,9 @@ Advice that cost time to learn, not rules:
 - Label an issue `blocked` only when it needs the owner (their hardware,
   accounts or a decision) and nothing in it can move without them. Split
   the owner's part into its own issue so the rest stays workable.
+- Put screenshots in issues with `gh issue comment <n> --attach ./shot.png#alt`
+  (or `gh issue create … --attach`), cropped to the map. Never push branches
+  or commits to host media.
 - Keep tracking issues easy to scan: what's open on top. Remove finished
   entries, or move them into a short "Done" list at the bottom, rather than
   leaving them ticked in place.
