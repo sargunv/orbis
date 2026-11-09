@@ -732,17 +732,20 @@ impl JobWorker {
                 JobAnswer::Load(Ok(Loaded::Missing)) => {
                     reply(&JobReply::Missing { id }, None, None)
                 }
-                // A terrain DEM tile is data: the core decodes it exactly
-                // (`orb_host::decode_image`), for the GPU and the CPU.
+                // A terrain DEM tile's texels, for the GPU and its
+                // elevations for the CPU.
                 JobAnswer::Load(Ok(Loaded::Image {
                     bytes,
                     kind: ImageKind::Dem,
                 })) if let Some(DemUnpack(unpack)) = dem_unpack => {
-                    let decoded = orb_host::decode_image(&bytes).and_then(|image| {
-                        let grid =
-                            orb_tile::DemGrid::from_rgba(image.width, &image.pixels, unpack)?;
-                        Ok((image, grid))
-                    });
+                    let decoded = crate::host::decode_image(&bytes)
+                        .await
+                        .map_err(|e| format!("{e:?}"))
+                        .and_then(|image| {
+                            let grid =
+                                orb_tile::DemGrid::from_rgba(image.width, &image.pixels, unpack)?;
+                            Ok((image, grid))
+                        });
                     match decoded {
                         Ok((image, grid)) => reply(
                             &JobReply::Dem {

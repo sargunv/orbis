@@ -15,7 +15,9 @@ pub use orb_host::FontFileFaces;
 pub use storage::{FileStorage, wait};
 
 use orb_host::jobs::{Executor, ThreadPool};
-use orb_host::{Fetch, FetchDone, FetchError, ImageDecode, ImageDone, Request, RequestTransform};
+use orb_host::{
+    DecodedImage, Fetch, FetchDone, FetchError, ImageDecode, ImageDone, Request, RequestTransform,
+};
 
 /// Fetches `http(s)://` URLs with ureq and `file://` URLs from disk, on a
 /// small pool of I/O threads, through an [`HttpCache`] when it has one.
@@ -337,15 +339,26 @@ pub fn write_atomically(path: &std::path::Path, data: &[u8]) -> std::io::Result<
     written
 }
 
-/// Decodes images with the core's decoder ([`orb_host::decode_image`]),
-/// JPEG included here, on the caller's thread (tile and sprite decodes
-/// already run on job threads).
+/// Decodes PNG, JPEG and WebP images with `image`, exactly (DEM tiles are
+/// data), on the caller's thread (tile and sprite decodes already run on
+/// job threads).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeImageDecode;
 
 impl ImageDecode for NativeImageDecode {
     fn decode(&self, bytes: Vec<u8>, done: ImageDone) {
-        done(orb_host::decode_image(&bytes));
+        done(
+            image::load_from_memory(&bytes)
+                .map(|image| {
+                    let rgba = image.into_rgba8();
+                    DecodedImage {
+                        width: rgba.width(),
+                        height: rgba.height(),
+                        pixels: rgba.into_raw(),
+                    }
+                })
+                .map_err(|e| e.to_string()),
+        );
     }
 }
 

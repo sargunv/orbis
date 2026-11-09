@@ -2338,7 +2338,6 @@ dependencies = [
 name = "orb-host"
 version = "0.0.0"
 dependencies = [
- "image",
  "orb-text",
 ]
 

@@ -8,9 +8,8 @@ version.workspace = true
 
 [dependencies]
 fontdb = "0.24.0"
-# JPEG for raster imagery; the core decodes PNG and WebP (`orb_host::decode_image`).
 image = { workspace = true, features = ["jpeg"] }
-orb-host = { workspace = true, features = ["decode", "fonts"] }
+orb-host = { workspace = true, features = ["fonts"] }
 orb-text = { workspace = true, features = ["fonts"] }
 ureq.workspace = true
 

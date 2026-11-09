@@ -10,12 +10,8 @@ version.workspace = true
 # `FontFileFaces`: `FontFiles` drawn by `orb-text` in this module (native
 # hosts and the test harness; map pages load `shaper.wasm` instead).
 fonts = ["dep:orb-text", "orb-text/fonts"]
-# `decode_image`: the core's own PNG and WebP decoder, for DEM tiles on every
-# platform and for native hosts' images.
-decode = ["dep:image"]
 
 [dependencies]
-image = { workspace = true, optional = true }
 orb-text = { workspace = true, optional = true }
 
 [lints]

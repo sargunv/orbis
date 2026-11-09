@@ -238,14 +238,6 @@ impl Jobs for PoolJobs {
                     missing: true,
                     ..TileResult::default()
                 })),
-                // DEM tiles are data: the core decodes them exactly.
-                Ok(crate::Loaded::Image { bytes, kind }) if kind == ImageKind::Dem => executor
-                    .spawn(Box::new(move || {
-                        done(
-                            orb_host::decode_image(&bytes)
-                                .and_then(|i| image_result(kind, i, dem_unpack)),
-                        );
-                    })),
                 Ok(crate::Loaded::Image { bytes, kind }) => executor.spawn(Box::new(move || {
                     decode.decode(
                         bytes,
