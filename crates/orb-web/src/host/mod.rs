@@ -15,8 +15,8 @@ use wasm_bindgen_futures::JsFuture;
 pub(crate) struct WebFetch;
 
 /// Decodes images with the browser's decoder: `createImageBitmap` without
-/// premultiplication or colour conversion, read back through an
-/// `OffscreenCanvas`, on the page or in a worker.
+/// premultiplication or colour conversion, read back through a
+/// `VideoFrame` or a canvas ([`read_bitmap`]), on the page or in a worker.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct WebImageDecode;
 
@@ -101,15 +101,84 @@ fn word_starts(segmenter: Option<&JsValue>, text: &str) -> Vec<usize> {
 /// Decodes an image to straight RGBA8 texels.
 pub(crate) async fn decode_image(bytes: &[u8]) -> Result<DecodedImage, JsValue> {
     let bitmap = decode_bitmap(bytes).await?;
-    let image = read_bitmap(&bitmap);
+    let image = read_bitmap(&bitmap).await;
     bitmap.close();
     image
+}
+
+/// Reads a bitmap's straight RGBA8 texels: through a `VideoFrame` where
+/// this context reads one exactly, and otherwise through a canvas.
+///
+/// A canvas's readback isn't exact. It keeps texels premultiplied, so
+/// translucent ones lose precision, and browsers that resist
+/// fingerprinting (Brave) perturb what `getImageData` returns, which turns
+/// a DEM tile's texels into spikes. GL JS reads through a `VideoFrame` once
+/// a probe finds the canvas distorted (its #3185); a frame is exact and,
+/// in Chrome, faster than the canvas (0.33 against 0.47 ms for a 512 px
+/// tile), so here it's the first choice wherever it reads exactly.
+async fn read_bitmap(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
+    if let Ok(pixels) = JsFuture::from(frames::read_frame(bitmap)).await
+        && let Some(pixels) = pixels.dyn_ref::<Uint8Array>()
+    {
+        return Ok(DecodedImage {
+            width: bitmap.width(),
+            height: bitmap.height(),
+            pixels: pixels.to_vec(),
+        });
+    }
+    read_canvas(bitmap)
+}
+
+mod frames {
+    use wasm_bindgen::prelude::wasm_bindgen;
+
+    // `readFrame(bitmap)` resolves to the bitmap's RGBA8 texels, read
+    // through a `VideoFrame`, or to nothing where this context's frames
+    // don't read exactly: the first call finds out, decoding a 4 × 4 PNG
+    // whose texel bytes count up by 37 from 11 (alphas among them a
+    // canvas loses precision at) and reading it back. A frame is copied
+    // in its own format (RGBA or BGRA, X for opaque), as GL JS copies it:
+    // copying with `format: "RGBA"` converts, and isn't exact.
+    #[wasm_bindgen(inline_js = r#"
+const PROBE = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAT0lEQVR42gFEALv/AAswVXqfxOkOM1h9osfsETYAW4Clyu8UOV6DqM3yFzxhhgCr0PUaP2SJrtP4HUJnjLHWAPsgRWqPtNn+I0htkrfcASYmMCAhKZAw6QAAAABJRU5ErkJggg==";
+let exact;
+async function read(bitmap) {
+  const frame = new VideoFrame(bitmap, { timestamp: 0 });
+  try {
+    const { width, height } = bitmap;
+    const format = frame.format ?? "";
+    const bgr = format.startsWith("BGR");
+    if (!bgr && !format.startsWith("RGB")) throw new Error(`frame format ${format}`);
+    const data = new Uint8Array(width * height * 4);
+    await frame.copyTo(data, { layout: [{ offset: 0, stride: width * 4 }] });
+    const opaque = format.endsWith("X");
+    for (let i = 0; i < data.length; i += 4) {
+      if (bgr) [data[i], data[i + 2]] = [data[i + 2], data[i]];
+      if (opaque) data[i + 3] = 255;
+    }
+    return data;
+  } finally {
+    frame.close();
+  }
+}
+export async function readFrame(bitmap) {
+  exact ??= createImageBitmap(new Blob([Uint8Array.from(atob(PROBE), (c) => c.charCodeAt(0))]),
+    { premultiplyAlpha: "none", colorSpaceConversion: "none" })
+    .then((probe) => read(probe).finally(() => probe.close()))
+    .then((data) => data.every((v, i) => v === (11 + 37 * i) % 256), () => false);
+  return (await exact) ? read(bitmap).catch(() => undefined) : undefined;
+}
+"#)]
+    extern "C" {
+        #[wasm_bindgen(js_name = readFrame)]
+        pub(super) fn read_frame(bitmap: &web_sys::ImageBitmap) -> js_sys::Promise;
+    }
 }
 
 /// Reads a bitmap's straight RGBA8 texels through an `OffscreenCanvas`
 /// that reads back often: the CPU draws it, without the GPU context (about
 /// 10 ms to create on a page) and readback a GPU canvas costs.
-fn read_bitmap(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
+fn read_canvas(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
     let (width, height) = (bitmap.width(), bitmap.height());
     let canvas = web_sys::OffscreenCanvas::new(width, height)?;
     let options = js_sys::Object::new();
@@ -123,7 +192,7 @@ fn read_bitmap(bitmap: &web_sys::ImageBitmap) -> Result<DecodedImage, JsValue> {
     Ok(DecodedImage {
         width,
         height,
-        pixels: data.data().to_vec(),
+        pixels: data.data().0,
     })
 }
 
@@ -342,6 +411,9 @@ impl orb_host::Clock for WebClock {
 /// Local glyphs drawn on the browser's canvas exactly as GL JS's TinySDF
 /// 2.3.0 draws them: a 48 px font, measured with `measureText` and filled
 /// at the ink box's pen offset inside a six-texel border, then read back.
+/// The readback is the canvas's, not a `VideoFrame`'s ([`read_bitmap`]):
+/// coverage is synchronous, and the small changes a fingerprinting
+/// browser makes to an alpha barely move a glyph's distance field.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CanvasGlyphs;
 

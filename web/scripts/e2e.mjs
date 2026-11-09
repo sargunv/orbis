@@ -35,24 +35,29 @@
 //   half-life and length), a pinch's zoom glide, Shift-drag box zoom with
 //   its box shown, Shift-double-click, double-tap, two-finger tap and
 //   double-tap-drag zoom, and a turn near north settling on north.
+// - `readback`: decoded images read back exactly where a canvas's
+//   readback is perturbed, as fingerprinting browsers (Brave) perturb it: a
+//   DEM tile and a sprite drawn on fixture.html come out the same with every
+//   context's `getImageData` flipping texels' low bits, and differently once
+//   `VideoFrame` is gone too, so the noise reaches what a canvas reads.
 // - `offline` (only when asked for: it needs the network): downloads the
 //   live map's view at `--at` from the Offline areas dialog, then reloads
 //   with every request but the demo server's failing and checks the map
 //   draws without errors. `cargo test -p orb-api --test regions --
 //   --ignored` does the same natively.
 //
-//   pnpm e2e [--only=scenario,edits,editor,switching,light,compare,gestures,offline]
+//   pnpm e2e [--only=scenario,edits,editor,switching,light,compare,gestures,readback,offline]
 //     [--writes=500] [--at=#13/35.6830/139.7520] [--pairs=orbis,native;gljs,gljs]
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { decodePng } from "./png.mjs";
+import { decodePng, encodePng } from "./png.mjs";
 import { launchChromium, serveDemo } from "./serve.mjs";
 
 const arg = (name, fallback) => process.argv.slice(2).find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3) ?? fallback;
-const only = arg("only", "scenario,edits,editor,switching,light,compare,gestures").split(",");
+const only = arg("only", "scenario,edits,editor,switching,light,compare,gestures,readback").split(",");
 const writes = Number(arg("writes", 500));
 const at = arg("at", "#13/35.6830/139.7520");
 const SIZE = 200;
@@ -1141,6 +1146,88 @@ async function gestures(browser, server) {
     + `two-finger tap, double-tap-drag (${quick.toFixed(3)}) and north snap (from ${turned.toFixed(1)}°) as expected`);
 }
 
+/** Patches this context, and every worker it starts, before their own
+ * scripts run: `noise` flips the low bit of the red byte of about half the
+ * texels a 2D canvas's `getImageData` returns (a DEM's 6.5 km in Mapbox
+ * encoding), `!frames` takes `VideoFrame` away. */
+function perturbReadback(noise, frames) {
+  if (noise) {
+    for (const Context of [globalThis.CanvasRenderingContext2D, globalThis.OffscreenCanvasRenderingContext2D]) {
+      if (!Context) continue;
+      const read = Context.prototype.getImageData;
+      Context.prototype.getImageData = function (...args) {
+        const image = read.apply(this, args);
+        for (let i = 0; i < image.data.length; i += 4) image.data[i] ^= Math.imul(i, 0x9e3779b1) >>> 31;
+        return image;
+      };
+    }
+  }
+  if (!frames) delete globalThis.VideoFrame;
+  const Base = globalThis.Worker;
+  if (!Base) return;
+  const patch = `data:text/javascript,${encodeURIComponent(`(${perturbReadback})(${noise}, ${frames})`)}`;
+  globalThis.Worker = class extends Base {
+    constructor(url, options) {
+      // Static imports run in order: the patch, then the worker's script.
+      const source = `import ${JSON.stringify(patch)}; import ${JSON.stringify(String(url))};`;
+      super(URL.createObjectURL(new Blob([source], { type: "text/javascript" })), options);
+    }
+  };
+}
+
+async function readback(browser, server) {
+  // A Mapbox-encoded DEM of hills 800 m high, every tile the same.
+  const size = 256;
+  const dem = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const metres = 1000 + 800 * Math.sin(x / 20) * Math.cos(y / 25);
+      const v = Math.round((metres + 10000) * 10);
+      dem.set([v >> 16, (v >> 8) & 255, v & 255, 255], (y * size + x) * 4);
+    }
+  }
+  await writeFile(join(server.styles, "dem.png"), encodePng(size, size, dem));
+  const style = {
+    version: 8,
+    sprite: `${server.url}e2e/data/sprites/ofm`,
+    sources: {
+      dem: { type: "raster-dem", tiles: [`${server.url}e2e/styles/dem.png`], tileSize: size, encoding: "mapbox", maxzoom: 14 },
+      point: { type: "geojson", data: { type: "Point", coordinates: [0, 0] } },
+    },
+    terrain: { source: "dem" },
+    layers: [
+      { id: "background", type: "background", paint: { "background-color": "#ddd" } },
+      { id: "hillshade", type: "hillshade", source: "dem" },
+      { id: "icon", type: "symbol", source: "point", layout: { "icon-image": "pedestrian_polygon", "icon-size": 2 } },
+    ],
+    center: [0, 0], zoom: 12, pitch: 60,
+  };
+  const request = { native: true, style: JSON.stringify(style), width: 256, height: 256, ratio: 1, max_pitch: 60,
+    cross_source_collisions: true, timeout_ms: 20_000, operations: [] };
+  const draw = async (noise, frames) => {
+    const { page, errors } = await open(browser, { width: 256, height: 256 });
+    try {
+      if (noise || !frames) await page.addInitScript(`(${perturbReadback})(${noise}, ${frames})`);
+      await page.goto(`${server.url}fixture.html`);
+      await page.waitForFunction(() => window.fixture);
+      const { rgba, warnings } = await page.evaluate((r) => window.fixture(r), request);
+      assert.deepEqual([...warnings, ...errors], [], `noise ${noise}, frames ${frames}`);
+      return Buffer.from(rgba, "base64");
+    } finally {
+      await page.close();
+    }
+  };
+  const clean = await draw(false, true);
+  const noisy = await draw(true, true);
+  const canvas = await draw(true, false);
+  const differing = (a, b) => a.reduce((n, v, i) => n + (v !== b[i]), 0);
+  assert.equal(differing(clean, noisy), 0, "a perturbed canvas changed what was drawn");
+  // Spikes in the DEM change most of the picture.
+  const reached = differing(clean, canvas) / clean.length;
+  assert.ok(reached > 0.25, `the noise never reached a canvas readback (${reached})`);
+  console.log(`readback: the DEM and sprite exact under a perturbed canvas (${(reached * 100).toFixed(0)}% of bytes differ through it)`);
+}
+
 const CHECKS = {
   scenario,
   edits,
@@ -1149,6 +1236,7 @@ const CHECKS = {
   light,
   compare,
   gestures,
+  readback,
   offline,
 };
 const DATA = fileURLToPath(new URL("../demo/data/", import.meta.url));
