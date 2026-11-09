@@ -1,8 +1,9 @@
 # Camera reference vectors
 
-`data/covers.json` contains 66 **tile sets returned by GL JS itself**, at the
-commit pinned in `xtask/src/fixtures.rs`. `generate-covers.mjs` constructs the
-upstream `MercatorTransform` and calls upstream `coveringTiles` in Node; it
+`data/covers.json` contains 66 Web Mercator and 74 globe **tile sets returned
+by GL JS itself**, at the commit pinned in `xtask/src/fixtures.rs`.
+`generate-covers.mjs` constructs the upstream `MercatorTransform` (or
+`GlobeTransform`) and calls upstream `coveringTiles` in Node; it
 contains no copy of their camera, culling or LOD implementation. SHA-256 checks
 reject changed reference implementations before generation. Neither Node nor
 upstream sources are needed to run the Rust tests.
@@ -15,6 +16,19 @@ default maxPitch=60 clamp and our maxPitch=85 interaction clamp. Cameras in the
 JSON are the resolved upstream cameras (after its viewport constraints).
 The Rust comparison filters source minzoom just as `TilePyramid` does, and
 compares sorted `(wrap, zoom, column, row)` sets, not traversal order.
+
+Its `globe` set holds 74 covers from upstream's `GlobeTransform`: GL JS's own
+globe cases (`covering_tiles.test.ts` and `globe_covering_tiles.test.ts`:
+zoomed out and in, pitched, pitched and rotated, distant narrow-FOV cameras,
+both sides of the antimeridian, zoom 11 at five latitudes, the south pole)
+and a sweep over Tokyo at zooms 1.5–10 and pitches 0–60°, north-up and
+rotated, plus the hand-off zooms 11.5 and 11.9, both poles, a pitched
+antimeridian, overzoomed and minzoom sources, 256 px tiles and rounded raster
+covers. Orbis measures detail on the sphere where GL JS measures it on the
+Mercator plane, and each culls with its own conservative volumes, so
+`globe_covers_match_pinned_gl_js` holds every visible point of the view to be
+covered within a zoom level of GL JS's tile there and no case to take many
+more tiles; most cases match exactly, and their count is a floor.
 
 Regenerate from the pinned tarball (from the repository root, Node 24):
 
@@ -62,4 +76,5 @@ committed here.
 
 `cargo test --release -p orb-camera --test covers globe_cover_cost -- --nocapture`
 prints the globe's cover counts and times beside Web Mercator's for the same
-cameras.
+cameras, and holds the globe to about Mercator's tile count where it fills the
+view.

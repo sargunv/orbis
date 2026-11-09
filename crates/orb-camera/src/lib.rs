@@ -28,7 +28,7 @@ pub use terrain::Elevation;
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use glam::{DMat4, DVec2, DVec3, DVec4};
+use glam::{DMat3, DMat4, DVec2, DVec3, DVec4};
 use orb_crs::{
     CoverDecision, CoveredTile, Footprint, Projection, Surface, TileIndex, TileMatrixSet,
     WorldRect, sphere,
@@ -791,9 +791,13 @@ impl View {
     }
 
     /// The tiles of `tms` that cover a globe view: those on the eye's side
-    /// of the horizon and in the frustum, each at the zoom whose tiles span
-    /// `tile_px` pixels at its distance (so tiles coarsen toward the
-    /// horizon and, being smaller on the sphere, toward the poles).
+    /// of the horizon and in the frustum, at GL JS's globe level of
+    /// detail. While the covering zoom (the target's tile zoom) is 4 or
+    /// less, every tile takes it. Past that, each tile takes the zoom whose
+    /// tiles span `tile_px` pixels at its nearest point, with GL JS's
+    /// distance and pitch terms: the tile under the eye gets the target's
+    /// zoom, and tiles coarsen with distance, with their angle from
+    /// straight down, and (being smaller on the sphere) toward the poles.
     fn cover_globe(
         &self,
         globe: &GlobeView,
@@ -804,11 +808,24 @@ impl View {
         let eye = globe.target + globe.eye;
         let eye_dir = eye.normalize();
         let horizon = globe.horizon_angle();
-        let scale = globe.metres_per_px * tile_px;
+        // Points that can face the eye lie in front of the horizon's plane.
+        let horizon_plane = sphere::RADIUS * horizon.cos();
         let center_distance = globe.eye.length();
         let projection = tms.projection();
-        let (behavior, fov_scale, penalty, threshold) = self.pitched_lod();
-        let weight = self.lod_weight(threshold);
+        // The zoom whose tiles span `tile_px` pixels where the set's scale
+        // factor is `scale`, at the target's distance.
+        let zoom_at =
+            |scale: f64| (tms.tile_span(0) / (globe.metres_per_px * scale * tile_px)).log2();
+        let covering = zoom_at(projection.scale_factor(sphere::geodetic(globe.target)));
+        // (A set whose plane doesn't reach the target has no covering zoom.)
+        let fixed = covering.is_finite() && tile_zoom(covering) <= GLOBE_FIXED_ZOOM;
+        let covering = tile_zoom(covering);
+        let (behavior, fov_scale, penalty, _) = self.pitched_lod();
+        // The point under the eye on the set's plane, for tiles' nearest
+        // points.
+        let under = projection.forward(sphere::geodetic(eye_dir));
+        let period = projection.wrap_period();
+        let frustum = GlobeFrustum::new(globe);
         tms.cover_with(0..=0, None, max_zoom, |index, _| {
             let b = tms.tile_bounds(index);
             // A grid of the tile's points on the sphere, row by row: 5×5
@@ -839,9 +856,9 @@ impl View {
             }
             let grid = &points[..n * n];
             let points = &points[..count];
-            // Its cap: the widest angle from its centre to a point, plus
-            // the widest gap between neighbouring points.
             let finite = || points.iter().copied().filter(|p| p.is_finite());
+            // The widest gap between neighbouring points: the sphere bulges
+            // past them by at most its sagitta.
             let pair = |a: usize, b: usize| {
                 let (a, b) = (grid[a], grid[b]);
                 (a.is_finite() && b.is_finite()).then(|| a.angle_between(b))
@@ -855,6 +872,8 @@ impl View {
                     gap = gap.max(pair(k, k + n).unwrap_or(0.0));
                 }
             }
+            // Its cap: the widest angle from its centre to a point, plus
+            // the gap.
             let radius = finite()
                 .map(|p| center.angle_between(p))
                 .fold(0.0, f64::max)
@@ -862,62 +881,176 @@ impl View {
             if center.angle_between(eye_dir) - radius > horizon {
                 return CoverDecision::Skip;
             }
-            // Its box, bulged by the sagitta between points.
+            // Its box in the east, north and up frame at its centre, padded
+            // by the sagitta: far tighter than a box on the sphere's axes,
+            // which a tile tilted to them fills only diagonally.
             let bulge = sphere::RADIUS * (1.0 - (gap / 2.0).min(FRAC_PI_2).cos());
+            let up = center / sphere::RADIUS;
+            let east = DVec3::Z.cross(up).try_normalize().unwrap_or(DVec3::Y);
+            let frame = DMat3::from_cols(east, up.cross(east), up);
+            let to_local = frame.transpose();
             let (mut lo, mut hi) = (DVec3::INFINITY, DVec3::NEG_INFINITY);
             for p in finite() {
-                lo = lo.min(p - globe.target);
-                hi = hi.max(p - globe.target);
+                let local = to_local * (p - center);
+                lo = lo.min(local);
+                hi = hi.max(local);
             }
-            if !box_in_frustum(&globe.view_proj, lo - bulge, hi + bulge, DVec2::ZERO) {
+            let (lo, hi) = (lo - bulge, hi + bulge);
+            let corners = box_corners(lo, hi).map(|c| center + frame * c);
+            // Outside if the box is wholly behind the horizon's plane or
+            // outside a plane of the frustum, or if the frustum, cut off
+            // at the horizon, is wholly outside a face of the box or a
+            // plane through the sphere's centre and an edge's ends (GL JS's
+            // east and west planes, for any set's edges).
+            if corners.iter().all(|c| c.dot(eye_dir) < horizon_plane)
+                || !corners_in_frustum(
+                    &globe.view_proj,
+                    &corners.map(|c| c - globe.target),
+                    DVec2::ZERO,
+                )
+            {
                 return CoverDecision::Skip;
             }
-            // Its side at the centre, along its middle row and column, on
-            // the sphere: chords between the grid's points fall short of
-            // the arc by 3% on a hemisphere-wide tile, which is enough to
-            // floor the zoom a level too coarse.
-            let mid = steps / 2;
-            let length = |at: &dyn Fn(usize) -> usize| {
-                (0..steps)
-                    .map(|i| (grid[at(i)], grid[at(i + 1)]))
-                    .filter(|(a, b)| a.is_finite() && b.is_finite())
-                    .map(|(a, b)| a.angle_between(b) * sphere::RADIUS)
-                    .sum::<f64>()
-            };
-            let side = length(&|i| mid * n + i).max(length(&|j| j * n + mid));
-            // The eye's distance to the nearest point of the cap: straight
-            // down when it is over the cap, else to the cap's rim.
-            let off = (center.angle_between(eye_dir) - radius).max(0.0);
-            let height = eye.length();
-            let distance = (height * height + sphere::RADIUS * sphere::RADIUS
-                - 2.0 * height * sphere::RADIUS * off.cos())
-            .max(0.0)
-            .sqrt()
-            .max(center_distance * 1e-3);
-            let mut desired =
-                f64::from(index.z) + (side / scale).log2() + (center_distance / distance).log2();
-            // Past GL JS's pitch threshold, its LOD terms eased in, with
-            // the tile's pitch measured from the sphere's up at its nearest
-            // point: the cap's rim toward the eye, or under the eye.
-            if weight > 0.0 {
-                let toward = center - eye_dir * center.dot(eye_dir);
-                let nearest = if off > 0.0 && toward.length() > 0.0 {
-                    eye_dir * off.cos() + toward.normalize() * off.sin()
-                } else {
-                    eye_dir
-                } * sphere::RADIUS;
-                let tile_pitch = (eye - nearest).angle_between(nearest);
-                desired += weight
-                    * (behavior * tile_pitch.cos().max(1e-6).log2() / 2.0
-                        - fov_scale.log2()
-                        - penalty);
+            let faces = (0..3).any(|axis| {
+                let a = frame.col(axis);
+                let at = a.dot(center);
+                frustum.beyond(a, at + lo[axis]) || frustum.beyond(-a, -(at + hi[axis]))
+            });
+            let last = n * n - 1;
+            let edges = [
+                (0, steps),
+                (last - steps, last),
+                (0, last - steps),
+                (steps, last),
+            ];
+            let sides = edges.into_iter().any(|(a, b)| {
+                // Ends nearly the same or nearly opposite pin no plane:
+                // the cross product's length over the chord's (times the
+                // radius) is the cosine of half the angle between them.
+                let (a, b) = (grid[a], grid[b]);
+                let (cross, chord) = (a.cross(b), a.distance(b));
+                if !(chord > 1e-9 * sphere::RADIUS
+                    && cross.length() > 1e-3 * chord * sphere::RADIUS)
+                {
+                    return false;
+                }
+                let normal = cross.normalize();
+                let normal = normal * normal.dot(center).signum();
+                let offset = finite()
+                    .map(|p| normal.dot(p))
+                    .fold(f64::INFINITY, f64::min);
+                frustum.beyond(normal, offset - bulge)
+            });
+            if faces || sides {
+                return CoverDecision::Skip;
             }
+            if fixed {
+                return if f64::from(index.z) < covering {
+                    CoverDecision::Refine
+                } else {
+                    CoverDecision::Accept
+                };
+            }
+            // Its nearest point to the eye: the point under the eye clamped
+            // into it on the set's plane (the nearest where the plane keeps
+            // the sphere's shapes), or else one of its grid or a pole past
+            // its edge.
+            let shift = period.map_or(0.0, |p| ((b.center().x - under.x) / p).round() * p);
+            let inside = projection.inverse((under + DVec2::new(shift, 0.0)).clamp(b.min, b.max));
+            let inside = if inside.lon.is_finite() && inside.lat.is_finite() {
+                inside
+            } else {
+                sphere::geodetic(center)
+            };
+            let nearest = finite()
+                .chain([sphere::ecef(inside, 0.0)])
+                .min_by(|a, b| a.distance_squared(eye).total_cmp(&b.distance_squared(eye)))
+                .unwrap_or(center);
+            let distance = nearest.distance(eye).max(center_distance * 1e-3);
+            // GL JS's default LOD at the tile's scale (taken in the tile,
+            // even when the nearest point is a pole past it), with the
+            // tile's pitch, as GL JS's, its nearest point's angle from
+            // straight down at the eye. (Its angle to the ground there
+            // grows on toward the horizon, and the behaviour term would
+            // coarsen far tiles levels more than GL JS does.)
+            let tile_pitch = (eye - nearest).angle_between(eye);
+            let desired = zoom_at(projection.scale_factor(inside))
+                + (center_distance / distance / fov_scale).log2()
+                + behavior * tile_pitch.cos().max(1e-6).log2() / 2.0
+                - penalty;
             if f64::from(index.z) < tile_zoom(desired) {
                 CoverDecision::Refine
             } else {
                 CoverDecision::Accept
             }
         })
+    }
+}
+
+/// The covering zoom up to which GL JS's globe gives every tile that zoom;
+/// past it, tiles take zooms by distance.
+const GLOBE_FIXED_ZOOM: f64 = 4.0;
+
+/// A globe view's frustum cut off where it passes the horizon, as GL JS
+/// fits its globe frustum's far plane to the horizon: its eight corners
+/// in sphere space.
+struct GlobeFrustum {
+    corners: [DVec3; 8],
+}
+
+impl GlobeFrustum {
+    fn new(globe: &GlobeView) -> Self {
+        let inverse = globe.view_proj.inverse();
+        let ndc = box_corners(DVec3::new(-1.0, -1.0, 0.0), DVec3::ONE);
+        let mut corners = ndc.map(|c| inverse.project_point3(c) + globe.target);
+        if globe.plane.is_some() {
+            return Self { corners };
+        }
+        let eye = globe.target + globe.eye;
+        let up = eye.normalize();
+        let plane = sphere::RADIUS * sphere::RADIUS / eye.length();
+        let forward = -globe.eye.normalize();
+        let depth = |p: DVec3| (p - eye).dot(forward);
+        // The farthest depth at which the edges meet the horizon's plane
+        // (or their full length where they don't)...
+        let rays = (0..4)
+            .map(|i| {
+                let (near, along) = (corners[i], corners[i + 4] - corners[i]);
+                let t = (plane - near.dot(up)) / along.dot(up);
+                if along.dot(up) < 0.0 && t >= 0.0 {
+                    depth(near + along * t.min(1.0))
+                } else {
+                    depth(corners[i + 4])
+                }
+            })
+            .fold(0.0, f64::max);
+        // ...but no farther than the farthest visible point of the sphere:
+        // on the horizon, or where the sphere faces straight back along
+        // the view if it can be seen there.
+        let ring = (plane * up - eye).dot(forward)
+            + (sphere::RADIUS * sphere::RADIUS - plane * plane)
+                .max(0.0)
+                .sqrt()
+                * (forward - up * forward.dot(up)).length();
+        let back = forward * sphere::RADIUS;
+        let visible = if back.dot(eye) >= sphere::RADIUS * sphere::RADIUS {
+            ring.max(depth(back))
+        } else {
+            ring
+        };
+        let far = rays.min(visible);
+        for i in 0..4 {
+            let (near, along) = (corners[i], corners[i + 4] - corners[i]);
+            let s = ((far - depth(near)) / along.dot(forward)).clamp(0.0, 1.0);
+            corners[i + 4] = near + along * s;
+        }
+        Self { corners }
+    }
+
+    /// Whether all of it is on the outer side of a plane: every corner
+    /// `p` has `normal · p < offset`.
+    fn beyond(&self, normal: DVec3, offset: f64) -> bool {
+        self.corners.iter().all(|c| normal.dot(*c) < offset)
     }
 }
 
@@ -978,13 +1111,26 @@ impl Frustum {
 /// Whether a box may meet the frustum of `view_proj` widened by `margin`
 /// (NDC per unit w): no clip plane has all eight corners outside.
 fn box_in_frustum(view_proj: &DMat4, lo: DVec3, hi: DVec3, margin: DVec2) -> bool {
-    let corners: [_; 8] = std::array::from_fn(|i| {
-        let x = if i & 1 == 0 { lo.x } else { hi.x };
-        let y = if i & 2 == 0 { lo.y } else { hi.y };
-        let z = if i & 4 == 0 { lo.z } else { hi.z };
-        *view_proj * DVec4::new(x, y, z, 1.0)
-    });
-    let all = |f: &dyn Fn(&DVec4) -> bool| corners.iter().all(f);
+    corners_in_frustum(view_proj, &box_corners(lo, hi), margin)
+}
+
+/// A box's corners: bit 0 of the index picks x's end, bit 1 y's, bit 2 z's.
+fn box_corners(lo: DVec3, hi: DVec3) -> [DVec3; 8] {
+    std::array::from_fn(|i| {
+        DVec3::new(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        )
+    })
+}
+
+/// Whether a convex volume with these corners may meet the frustum of
+/// `view_proj` widened by `margin` (NDC per unit w): no clip plane has
+/// them all outside.
+fn corners_in_frustum(view_proj: &DMat4, corners: &[DVec3; 8], margin: DVec2) -> bool {
+    let clip = corners.map(|c| *view_proj * c.extend(1.0));
+    let all = |f: &dyn Fn(&DVec4) -> bool| clip.iter().all(f);
     let (mx, my) = (1.0 + margin.x, 1.0 + margin.y);
     !(all(&|c| c.x > c.w * mx)
         || all(&|c| c.x < -c.w * mx)
