@@ -494,10 +494,10 @@ impl Map {
                 area: inside_texels(&endpoint.tms, tile, [tile_image.width, tile_image.height]),
             }
         });
-        // Labels take their icons' atlas rectangles as they upload: a tile
-        // with labels waits for the sprites' pixels (layout needed only
-        // their JSON).
-        if style.sprite_pixels_loading > 0 && !build.symbols.is_empty() {
+        // Labels take their images' atlas rectangles as they upload: a tile
+        // whose labels show images waits for the sprites' pixels (layout
+        // needed only their JSON).
+        if style.awaits_sprite_pixels(&build) {
             return Some(build);
         }
         let sizes = mesh_sizes(plan, &build);

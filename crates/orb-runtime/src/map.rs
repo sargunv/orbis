@@ -323,6 +323,15 @@ pub(crate) struct LoadedStyle {
     pub(crate) globe_meshes: bool,
 }
 
+impl LoadedStyle {
+    /// Whether `build`'s labels would take image rectangles from the atlas
+    /// before the sprites' pixels are in it. Labels of text alone take
+    /// none, so they don't wait.
+    pub(crate) fn awaits_sprite_pixels(&self, build: &crate::jobs::TileResult) -> bool {
+        self.sprite_pixels_loading > 0 && build.symbols.iter().any(|s| !s.images.is_empty())
+    }
+}
+
 /// What tiles and styles let go of between frames, released from the
 /// renderer at the next.
 #[derive(Debug, Default)]
