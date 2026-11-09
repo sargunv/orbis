@@ -1422,6 +1422,37 @@ pub(crate) mod tests {
         assert!(!gets.iter().any(|u| u.contains("/glyphs/")), "{gets:?}");
     }
 
+    /// A tile whose bytes arrive after its style was replaced isn't built:
+    /// the map drops a replaced style's results.
+    #[test]
+    fn loads_of_a_replaced_style_are_not_built() {
+        struct Held(Mutex<Vec<orb_host::FetchDone>>);
+        impl Fetch for Held {
+            fn get(&self, _: &str, done: orb_host::FetchDone) {
+                self.0.lock().unwrap().push(done);
+            }
+            fn get_range(&self, _: &str, _: u64, _: u64, _: orb_host::FetchDone) {
+                unreachable!("no archives")
+            }
+        }
+        let fetch = Arc::new(Held(Mutex::default()));
+        let host = crate::JobHost::new(fetch.clone(), Arc::new(orb_host::jobs::Inline));
+        let worker = Arc::new(TileWorker::new(SYMBOLS).unwrap());
+        host.set_style(1, Arc::clone(&worker));
+        let (tx, rx) = std::sync::mpsc::channel();
+        host.load(symbol_request(), Box::new(move |r| tx.send(r).unwrap()));
+        host.set_style(2, worker);
+        let (z, x, y) = SYMBOL_TILE;
+        let bytes = std::fs::read(format!("{ASSETS}/tiles/{z}-{x}-{y}.mvt")).unwrap();
+        for done in std::mem::take(&mut *fetch.0.lock().unwrap()) {
+            done(Ok(bytes.clone()));
+        }
+        let Some(Err(e)) = rx.try_iter().next() else {
+            panic!("answered without a build")
+        };
+        assert_eq!(e, "style 1 was replaced");
+    }
+
     /// A tile asked for while the sprites load is fetched at once, and laid
     /// out once the icons it waits for arrive.
     #[test]

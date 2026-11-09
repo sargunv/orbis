@@ -8,6 +8,7 @@
 //! platform decodes them its own way.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use orb_host::jobs::Executor;
@@ -51,6 +52,9 @@ pub struct JobHost {
     /// The latest revision of the current style and of the one before it,
     /// whose requests may still be in flight.
     styles: Mutex<Vec<(u64, Arc<TileWorker>)>>,
+    /// The newest style's id: a load for an older one whose bytes arrive
+    /// after it was replaced isn't built, since the map drops its result.
+    newest: Arc<AtomicU64>,
     data_loads: Arc<Mutex<DataLoads>>,
     glyphs: Arc<GlyphLoads>,
     /// The host's local fonts, if any.
@@ -269,6 +273,7 @@ impl JobHost {
             fetch,
             executor,
             styles: Mutex::new(Vec::new()),
+            newest: Arc::default(),
             data_loads: Arc::default(),
             local: Mutex::new(None),
             files: Mutex::new(None),
@@ -311,6 +316,7 @@ impl JobHost {
         let mut styles = self.styles.lock().expect("styles poisoned");
         styles.retain(|(i, _)| *i + 1 >= id && *i != id);
         styles.push((id, worker));
+        self.newest.fetch_max(id, Ordering::Relaxed);
     }
 
     /// Applies a revision of style `id` sent from another worker.
@@ -410,12 +416,16 @@ impl JobHost {
             return;
         }
         let data_tile = request.data_tile();
+        let newest = Arc::clone(&self.newest);
         self.loader.load(
             request.location.clone(),
             data_tile,
             request.encoding,
             Box::new(move |fetched| {
                 executor.spawn(Box::new(move || match fetched {
+                    _ if newest.load(Ordering::Relaxed) > request.style => {
+                        done(Err(format!("style {} was replaced", request.style)))
+                    }
                     Ok((bytes, encoding)) => {
                         let request = TileRequest {
                             encoding,
