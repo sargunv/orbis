@@ -94,6 +94,23 @@ Several agent sessions often share this machine.
 - Commit and push straight to `main`. There are no PRs and no CI; the one
   workflow publishes the demo.
 
+## Commits
+
+Subjects follow [Conventional Commits](https://www.conventionalcommits.org/):
+`type(scope): summary`, all lowercase after the colon except proper names,
+with no trailing period.
+
+- Types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`,
+  `chore`. Mark a breaking change to the public API with `!`.
+- The scope is the crate without its `orb-` prefix (`render`, `symbol`,
+  `camera`), or `web`, `demo`, `xtask`, `fixtures` or `hosts`. Leave it out
+  when a change spans many.
+- The body is prose: what changed and why, with measured numbers where they
+  matter. The subject says what; the body says why.
+
+For example: `fix(source): request a failed tile's parent instead of leaving
+a hole`.
+
 ## Notes from earlier agents
 
 Advice that cost time to learn, not rules:
