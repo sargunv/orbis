@@ -193,8 +193,16 @@ fn lay_out(
                 scaled.dedup();
                 let closed = kind == GeometryType::Polygon;
                 let total_distance: f64 = scaled.windows(2).map(|p| length(p[0], p[1])).sum();
-                let resets =
-                    reset.map(|at| Resets::along(&scaled, closed, at, frame.sharp_corner_offset));
+                // GL JS's resets, unless the line is too short for any, as
+                // most are. A ring's distance starts with its closing edge,
+                // and runs at most twice its length.
+                let longest = match (scaled.first(), scaled.last()) {
+                    (Some(&a), Some(&b)) if closed => 2.0 * (total_distance + length(b, a)),
+                    _ => total_distance,
+                };
+                let resets = reset
+                    .filter(|&at| longest > at)
+                    .map(|at| Resets::along(&scaled, closed, at, frame.sharp_corner_offset));
                 for mut line in clip_polyline(&scaled, closed, -margin, extent + margin) {
                     if let Some(step) = frame.step {
                         subdivide(&mut line, step);
